@@ -14,6 +14,15 @@ ROOT = Path(__file__).resolve().parent.parent
 HOOK = "_ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc"
 LOAD = "_ZN17StarfishMediaAPIs4LoadEPKcPFvixS1_PvES2_"
 FILLER = "synthetic-padding-line\n" * 100000  # More than 2 MiB, far beyond a pipe buffer.
+# Hang guards, not budgets. This file's own timeouts used to be 20 s per gate run and 5 s for the
+# parallel-invocation rendezvous, which a quiet machine meets many times over; on a 3-core macOS runner
+# with a cargo build beside it the run that pipes 2.8 MiB through the gate took longer than 20 s and
+# the whole step went red with TimeoutExpired (build-bench run 37694891086; the same tests finish in
+# 15 s on a dev Mac and in 92 s there). They exist so a gate that DEADLOCKS (the SIGPIPE regressions
+# this file pins) fails the test instead of hanging the suite, so they only have to be far above any
+# machine's honest time.
+GATE_HANG_GUARD = 240
+RENDEZVOUS_HANG_GUARD = 120
 
 FAKE_TOOL = r'''#!/usr/bin/env python3
 import json, os, signal, sys, time
@@ -25,7 +34,7 @@ spec = json.loads(Path(os.environ["ELF_TEST_SPEC"]).read_text())
 if key == "readelf:-h" and "ELF_TEST_BARRIER" in os.environ:
     barrier = Path(os.environ["ELF_TEST_BARRIER"])
     (barrier / ("ready-" + os.environ["ELF_TEST_RUN"])).touch()
-    until = time.monotonic() + 5
+    until = time.monotonic() + RENDEZVOUS_HANG_GUARD
     while len(list(barrier.glob("ready-*"))) < 2:
         if time.monotonic() > until: sys.exit(99)
         time.sleep(0.01)
@@ -37,7 +46,7 @@ while data:
     count = os.write(1, data)
     data = data[count:]
 sys.exit(record.get("exit", 0))
-'''
+'''.replace("RENDEZVOUS_HANG_GUARD", str(RENDEZVOUS_HANG_GUARD))
 
 
 def defaults():
@@ -86,7 +95,7 @@ class ElfGateTests(unittest.TestCase):
                     "ELF_TEST_SPEC": str(self.spec)})
         env.update(extra_env or {})
         return subprocess.run(["bash", str(self.script), "synthetic.elf"], cwd=self.root,
-                              env=env, capture_output=True, text=True, timeout=20)
+                              env=env, capture_output=True, text=True, timeout=GATE_HANG_GUARD)
 
     def assert_pass(self, spec):
         result = self.run_gate(spec)

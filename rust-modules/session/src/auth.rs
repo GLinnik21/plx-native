@@ -2160,13 +2160,23 @@ impl AdmissionBudget {
         &mut self,
         request: impl FnOnce(Instant) -> plx_plex::plex::EndpointAdmission,
     ) -> plx_plex::plex::EndpointAdmission {
+        self.attempt_on(Instant::now, request)
+    }
+
+    /// [`Self::attempt`] reading time from `now`. The profile worker passes
+    /// [`ProfileWorkIo::admission_clock`], so a host test can spend request time without sleeping.
+    fn attempt_on(
+        &mut self,
+        now: fn() -> Instant,
+        request: impl FnOnce(Instant) -> plx_plex::plex::EndpointAdmission,
+    ) -> plx_plex::plex::EndpointAdmission {
         if self.exhausted() {
             return plx_plex::plex::EndpointAdmission::Timeout;
         }
-        let started = Instant::now();
+        let started = now();
         let deadline = started.checked_add(self.remaining).unwrap_or(started);
         let outcome = request(deadline);
-        self.remaining = self.remaining.saturating_sub(started.elapsed());
+        self.remaining = self.remaining.saturating_sub(now().saturating_duration_since(started));
         outcome
     }
 }
@@ -4299,6 +4309,8 @@ pub trait ProfileWorkIo {
         self.admit(source, client_id)
     }
     fn admission_budget(&self) -> Duration { ADMISSION_BUDGET }
+    /// The clock the admission budget is charged against. Only a host test replaces it.
+    fn admission_clock(&self) -> fn() -> Instant { Instant::now }
     fn gap(&mut self);
 }
 
@@ -4483,6 +4495,7 @@ pub fn profile_switch_worker_with_io(
 
     let household = stored.household_ids();
     let mut admission_budget = AdmissionBudget::new(io.admission_budget());
+    let admission_clock = io.admission_clock();
     let mut order = grants.clone();
     if let Some(pos) = order
         .iter()
@@ -4525,7 +4538,7 @@ pub fn profile_switch_worker_with_io(
             let Some(winner) = winner else { break };
             let origin = winner.origin_url.clone();
             if rejected_origins.contains(&origin) { break; }
-            let admission = admission_budget.attempt(|deadline|
+            let admission = admission_budget.attempt_on(admission_clock, |deadline|
                 io.admit_until(&winner, &cid, deadline));
             if admission == plx_plex::plex::EndpointAdmission::Usable {
                 selected_mid = Some(winner.machine_id.clone());

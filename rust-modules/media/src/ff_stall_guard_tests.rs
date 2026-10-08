@@ -1497,6 +1497,13 @@ fn teardown_outranks_a_simultaneous_hold() {
 }
 
 /// The retry wait keeps its original end across rechecks, and a stop ends it at once.
+///
+/// Neither half counts rechecks inside a wall-clock window (a scheduler stall of a few tens of
+/// milliseconds on a loaded runner would make a 120 ms wait see two checks instead of ten). The
+/// first half asserts only a lower bound on the elapsed time, which an oversleep cannot break. The
+/// second wait is ten seconds long and only a stop can end it early, so it ending at all, in the
+/// plain failure, proves the wait was re-asked as each check fell due: the checkpoint is asked
+/// exactly four times, three that continue and the stop.
 #[test]
 fn the_retry_wait_keeps_its_end_across_rechecks_and_ends_on_a_stop() {
     let mut aq = crate::aq::aq_new(1 << 20);
@@ -1509,13 +1516,8 @@ fn the_retry_wait_keeps_its_end_across_rechecks_and_ends_on_a_stop() {
         started.elapsed() >= wait,
         "a recheck never shortens the wait"
     );
-    assert!(
-        rechecking.calls() > 2,
-        "the wait re-asked as its checks fell due"
-    );
     let mut stopping =
-        plx_base::checkpoint::TestCheckpoint::stopping_after(1, std::time::Duration::from_millis(10));
-    let started = std::time::Instant::now();
+        plx_base::checkpoint::TestCheckpoint::stopping_after(3, std::time::Duration::from_millis(10));
     let stopped = hls_wait(
         &mut *aq,
         std::time::Duration::from_secs(10),
@@ -1524,9 +1526,13 @@ fn the_retry_wait_keeps_its_end_across_rechecks_and_ends_on_a_stop() {
     );
     assert!(
         matches!(stopped, Err(HlsExit::Failed(_))),
-        "an unlatched stop is a plain failure"
+        "an unlatched stop is a plain failure, and only a stop ends the ten-second wait"
     );
-    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    assert_eq!(
+        stopping.calls(),
+        4,
+        "the wait re-asked as its checks fell due: three that continued, then the stop"
+    );
     crate::aq::aq_destroy(&mut *aq);
 }
 

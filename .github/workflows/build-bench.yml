@@ -1,53 +1,60 @@
 # The DAILY build-time measurement behind the live page https://plxnative.com/ci/.
 #
-# Once a day this builds the tip of main on a GitHub-hosted macOS runner with the repository's own
+# Once a day this builds the tip of main on GitHub-hosted macOS runners with the repository's own
 # benchmark (`make build-bench`, tools/build-bench.py) and appends one record to build-history.json
 # on the orphan `ci-metrics` branch (tools/build-history.py), next to ci-history.json, which
 # ci-metrics.yml keeps. The page reads both, so "what do I wait for on my machine, and is it getting
 # slower" is a chart that updates itself, not a number somebody pasted into a pull request.
 #
-# WHAT IS MEASURED (every row a median of 3 runs, with min and max, in seconds):
-#   noop      host test build with nothing changed (reports whether the app crate recompiled);
-#   leaf, ui, screens, app
-#             the same build after appending a comment to a leaf file of plx_base / plx_ui /
-#             plx_screens / the app crate: the worst, a middle and the two top layers' edit-rebuild;
-#   tests     the default-feature unit suite on a warm tree (tools/cargo-test-parallel.py);
-#   check     `make check`'s whole host gate, ONE run, and its cargo and python branches. It is the
-#             slowest row and the one most likely to need something a runner lacks, so it runs in its
-#             own job, on its own runner, beside the rest: it cannot lengthen the day's wall time or
-#             load the machine the other rows are timed on, and a red or unrunnable gate costs only
-#             its own rows (the record lists it in `failed`).
-# The scenarios of the first job are named in DEFAULT_ONLY below; `workflow_dispatch` takes another
-# list (and then skips the gate job).
+# WHAT IS MEASURED (every row a median of 3 runs, with min and max, in seconds), on THREE runners that
+# work side by side so a day takes the longest of them, not the sum:
+#   measure / base   noop  host test build with nothing changed (reports whether the app crate recompiled);
+#                    leaf  the same build after appending a comment to a leaf file of plx_base, the
+#                          crate every other layer depends on (the worst edit-rebuild);
+#                    ui    ... of plx_ui (a middle layer);
+#   measure / top    screens, app   ... of plx_screens and of the app crate (the two top layers: what a
+#                          UI developer waits for), and
+#                    tests the default-feature unit suite on a warm tree (tools/cargo-test-parallel.py);
+#   gate             `make check`'s whole host gate, ONE run, and its cargo and python branches. It is
+#                    the slowest row and the one most likely to need something a runner lacks, so it
+#                    runs on its own runner: it cannot lengthen the day's wall time or load the machines
+#                    the other rows are timed on.
+# A leg is a set of scenario ids (LEGS in the plan step below). `workflow_dispatch` takes another list;
+# the ids go to the leg that owns them and the gate job is skipped.
 #
-# RUNNER TIME, an ESTIMATE until the first run (a workflow file can only be dispatched or
-# scheduled from the default branch, so this could not be run before it merges): the repository's own
-# CI history gives the yardsticks, medians of recent runs on the same runner families: the macOS
-# simulator job (a debug build of the whole workspace, FFmpeg cached) 8.5 min; the host unit job on
-# a 4-core Linux runner 4.3 min, the hostsim one 3.5, lint 2.7, the python gates 2.9. From those:
-#   measure   setup 3 + untimed warm-up 4 + 3 rounds of six rows at about 4 min a round = ~19 min
-#             (up to ~27 on a day the dependency cache misses);
-#   gate      setup 3 + the gate's cargo half (lint, unit suites, hostsim ~11 min serial) = ~15 min
-#             (up to ~25 on a cache miss), in parallel with `measure`.
-# So a day takes ~19 minutes of wall time and ~34 minutes of macOS runner time.
+# WHY THREE RUNNERS. The first real run (37694891086) put every timed row on one runner and took 29
+# minutes of a 35-minute limit: 3 minutes of untimed warm-up build, 14 minutes of timed rows, and 11
+# minutes of untimed REBUILDS, because putting an edited file back with the time of the put-back made
+# cargo see it as changed, so every edit row was followed by a rebuild of the crates it had just timed
+# before the next row could start. The benchmark now puts the file back with its original mtime (see
+# EditGuard in tools/build-bench.py), which removes those 11 minutes from every leg, and the legs split
+# what remains: the base leg takes ~9 minutes and the top leg ~10 (a rehearsal of this workflow on the same runner image, run 37703389591: 9.4 and 9.7 minutes of job time), in parallel. Every row still has 3 runs.
+#
+# A RED STEP IS A RED RUN. The gate job is not `continue-on-error`: when `make check` fails on the
+# runner the job, and so the run in the Actions list, is red, and the log carries the failing steps'
+# own output (build-bench prints it). The publish job still runs and still records the day's build rows,
+# because it depends on the measurement jobs having left documents, not on their succeeding; the record
+# then lists `check` (or `tests`) in `failed`, with a one-line reason, and the page says "make check
+# failed on the runner on <date>" in that row's place. Only a measurement that did not complete (a
+# build error, a missing leg) records nothing.
 #
 # WHAT IS CACHED, so what "cold" means in the numbers: Swatinem/rust-cache restores the dependency
 # artifacts of rust-modules/target (and drops the workspace's own crates from it when it saves), so
 # the workspace crates the host test build names compile from scratch once per run, in the benchmark's UNTIMED warm-up
 # build; every timed row is a rebuild on that warm tree, which is the same thing a developer's
 # `make test-fast` rebuilds, whatever the cache held. The `check` row is one run whose cargo half
-# starts from the cached dependencies and a tree the benchmark already built. Nothing downloads
-# during a timed row. A runner image or toolchain update shows up as a step in the series: the
-# record carries the image name and the rustc version for exactly that reason.
+# starts from the cached dependencies. Nothing downloads during a timed row. A runner image or
+# toolchain update shows up as a step in the series: the record carries the image name and the rustc
+# version for exactly that reason.
 #
-# WHAT THE NUMBERS ARE FOR: the TREND of one fixed runner type (a few cores, shared with other
-# tenants), not the absolute time on a developer's Mac, which is several times faster. A noisy day
-# (the benchmark printed a load or swap warning) is recorded with `noisy: true` and drawn marked,
-# not dropped; the min-max band says how far to trust a point.
+# WHAT THE NUMBERS ARE FOR: the TREND of one fixed runner type (3 vCPUs of an Apple M1 virtual machine,
+# shared with other tenants), not the absolute time on a developer's Mac, which has more and faster
+# cores. A row whose runs differ by more than half its median (and by at least 2 s) is recorded with
+# `noisy: true` and drawn ringed (tools/build-history.py), not dropped; the min-max band says how far to trust a point.
 #
-# COST: a public repository's runner minutes are free; the job is bounded by timeout-minutes below
-# and by a step limit on the `check` run. It runs for the default branch of THIS repository only
-# (a fork's copy, or a dispatch from another branch, skips).
+# COST: a public repository's runner minutes are free; every job is bounded by timeout-minutes below.
+# It runs for the default branch of THIS repository only (a fork's copy, or a dispatch from another
+# branch, skips).
 #
 # Trigger a measurement by hand (a same-day run REPLACES that day's record):
 #   gh workflow run build-bench.yml
@@ -74,62 +81,94 @@ concurrency:
   group: build-bench
   cancel-in-progress: false
 
-env:
-  # The daily set. `check` is not here: it has its own step.
-  DEFAULT_ONLY: noop,leaf,ui,screens,app,tests
-
 jobs:
   measure:
-    name: Time the build on a macOS runner
+    name: Time the build on a macOS runner (${{ matrix.leg }})
     if: github.repository == 'GLinnik21/plx-native' && github.ref_name == github.event.repository.default_branch
     runs-on: macos-latest
+    strategy:
+      # A leg that fails must not cancel the other: its rows are still worth having.
+      fail-fast: false
+      matrix:
+        include:
+          - leg: base
+            daily: noop,leaf,ui
+          - leg: top
+            daily: screens,app,tests
     permissions:
       contents: read
-    # Setup ~3 min, the untimed warm-up build 4-12 min depending on the dependency cache, the timed
-    # rows ~12 min. 35 bounds a hung step (unset = 360).
-    timeout-minutes: 35
+    # Expected 9-10 minutes: setup under 1, the untimed warm-up build 2-4 (more on a dependency cache
+    # miss), the timed rows 5-6. 30 is three times that: it bounds a hung step and leaves a slow day
+    # room (unset = 360).
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: plan
+        name: Which scenarios this leg times
+        env:
+          ASKED: ${{ inputs.only }}
+          LEG: ${{ matrix.leg }}
+          DAILY: ${{ matrix.daily }}
+          # The ids the `top` leg owns; `base` takes every other id.
+          TOP: screens,app,tests
+        run: |
+          set -euo pipefail
+          # The ids go into a make variable: only names, never anything a shell could read as more.
+          [[ -z "$ASKED" || "$ASKED" =~ ^[a-z,-]+$ ]]
+          mine=""
+          if [ -z "$ASKED" ]; then
+            mine="$DAILY"
+          else
+            for id in ${ASKED//,/ }; do
+              owned=base
+              case ",$TOP," in *",$id,"*) owned=top ;; esac
+              if [ "$owned" = "$LEG" ]; then mine="${mine:+$mine,}$id"; fi
+            done
+          fi
+          echo "this leg times: ${mine:-nothing}"
+          echo "only=$mine" >> "$GITHUB_OUTPUT"
+
+      - if: steps.plan.outputs.only != ''
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Install what the host build links
+        if: steps.plan.outputs.only != ''
         # Same packages as the macOS simulator job; bounded because macOS runners have no timeout(1).
         timeout-minutes: 15
         run: brew install sdl2_ttf cmake pkg-config
 
-      - id: toolchain
-        name: Install the nightly toolchain the Makefile names
+      - name: Install the nightly toolchain the Makefile names
+        if: steps.plan.outputs.only != ''
         run: |
           set -euo pipefail
           nightly="$(make -s print-bench-config | sed -n 's/^RUST_NIGHTLY=//p')"
           test -n "$nightly"
           rustup toolchain install "$nightly" --profile minimal --component clippy --component rust-src
           rustup run "$nightly" rustc --version
-          echo "nightly=$nightly" >> "$GITHUB_OUTPUT"
 
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - if: steps.plan.outputs.only != ''
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: rust-modules
           key: build-bench
 
       - name: make build-bench (median of 3 runs)
+        if: steps.plan.outputs.only != ''
         env:
-          ONLY: ${{ inputs.only || env.DEFAULT_ONLY }}
-        run: |
-          set -euo pipefail
-          # The ids go into a make variable: only names, never anything a shell could read as more.
-          [[ "$ONLY" =~ ^[a-z,-]+$ ]]
-          make build-bench ARGS="--runs 3 --only $ONLY --json $RUNNER_TEMP/bench.json"
+          ONLY: ${{ steps.plan.outputs.only }}
+          LEG: ${{ matrix.leg }}
+        run: make build-bench ARGS="--runs 3 --only $ONLY --json $RUNNER_TEMP/bench-$LEG.json"
 
-      - name: Keep the documents for the publish job
-        if: always()
+      - name: Keep the document for the publish job
+        # Also when the benchmark was red: the recorder decides what a red document is worth.
+        if: always() && steps.plan.outputs.only != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: build-bench-rows
-          path: ${{ runner.temp }}/bench.json
-          if-no-files-found: error
+          name: build-bench-rows-${{ matrix.leg }}
+          path: ${{ runner.temp }}/bench-${{ matrix.leg }}.json
+          if-no-files-found: ignore
           retention-days: 3
 
   gate:
@@ -139,8 +178,10 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: read
-    # Setup ~3 min, then the gate once: ~11 min of cargo on a warm dependency cache, ~20 on a cold one.
-    timeout-minutes: 30
+    # Expected ~16 minutes: setup ~1, then the gate once, its cargo branch (lint, unit suites, hostsim, 14.6 min),
+    # its harness (11.2) and its python steps (4.8) side by side on 3 cores (a rehearsal on this runner image, run
+    # 37704884914, green). 40 leaves a slow day or a cache miss room.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -165,13 +206,15 @@ jobs:
           key: build-bench-gate
 
       - name: make build-bench, the whole gate once
-        # May fail (a tool the gate shells out to that a runner lacks) without costing the rest of
-        # the day: the document it still writes then lists `check` as failed. Bounded on its own.
-        continue-on-error: true
-        timeout-minutes: 25
+        # RED when the gate is red, deliberately: the step has no continue-on-error, so a broken gate
+        # turns this job and the run red in the Actions list. The failing steps' own output is in this
+        # step's log (build-bench prints it), and the publish job still records the day's other rows
+        # and names the failure in the record. Bounded on its own.
+        timeout-minutes: 30
         run: make build-bench ARGS="--runs 1 --only check --json $RUNNER_TEMP/check.json"
 
       - name: Keep the document for the publish job
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: build-bench-gate
@@ -181,11 +224,12 @@ jobs:
 
   publish:
     name: Record the day on the ci-metrics branch
-    # The gate job is waited for but not required: it may be skipped (a narrowed manual run) or
-    # fail; the rows job is the one a record cannot do without.
+    # The measurement jobs are waited for but not required to be green: a red gate or a red unit test
+    # still leaves a document, and the recorder decides what a red document is worth (it refuses a
+    # failed build, and records `check` or `tests` as failed). A job that left no document is caught by
+    # the step below.
     needs: [measure, gate]
-    # A failed measurement writes nothing.
-    if: always() && needs.measure.result == 'success'
+    if: ${{ !cancelled() && needs.measure.result != 'skipped' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write    # the push to the ci-metrics branch, and nothing else
@@ -232,16 +276,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           BENCH_DIR: ${{ runner.temp }}/bench
+          ASKED: ${{ inputs.only }}
         run: |
           set -euo pipefail
+          # A daily run needs both legs' documents: a leg that timed out or never started left none, and
+          # a record without half its rows would read as a day those rows did not exist.
+          if [ -z "$ASKED" ]; then
+            for leg in base top; do
+              [ -f "$BENCH_DIR/bench-$leg.json" ] || { echo "the $leg measurement left no document: nothing recorded" >&2; exit 1; }
+            done
+          fi
+          args=()
+          for f in "$BENCH_DIR"/bench-*.json "$BENCH_DIR"/check.json; do
+            if [ -f "$f" ]; then args+=(--bench "$f"); fi
+          done
+          [ "${#args[@]}" -gt 0 ] || { echo "no benchmark document: nothing recorded" >&2; exit 1; }
           auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           for attempt in 1 2 3; do
             # Both files are derived from what is on the branch NOW, so a lost race redoes this step
             # from the new tip instead of rebasing a stale summary over it.
-            args=(--bench "$BENCH_DIR/bench.json")
-            if [ -f "$BENCH_DIR/check.json" ]; then args+=(--bench "$BENCH_DIR/check.json"); fi
             python3 ../tools/build-history.py "${args[@]}" --in build-history.json --out build-history.json --run-id "$GITHUB_RUN_ID"
             python3 ../tools/ci-summary.py --history ci-history.json --bench build-history.json --out ci-summary.json
             git add build-history.json ci-summary.json

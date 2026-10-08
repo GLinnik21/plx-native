@@ -75,12 +75,18 @@ comparable), and is selected only by name:
             exclusively, so taking it again would wait on itself). The sample is the gate's wall
             time; the times of its two top-level branches, `cargo` and `python`, are read from the
             `==== step: cargo -- ok (123.4s ...) ====` banners tools/check-parallel.py prints and
-            reported beside it. A red gate is a failed run: nothing is recorded for it. It is the
-            slowest row by far, so the daily runner job (.github/workflows/build-bench.yml) runs it
-            once, as `--only check --runs 1`.
+            reported beside it. A red gate is a failed run: nothing is recorded for it, and the report
+            names the steps that failed and prints their own output (the gate's whole output would
+            otherwise be lost: this script captures it). It is the slowest row by far, so the daily
+            runner job (.github/workflows/build-bench.yml) runs it once, as `--only check --runs 1`.
 
 Every timed scenario runs `--runs` times (default 3), INTERLEAVED (one round runs each scenario in
-turn), and is reported as median / min / max. The host's load average and swap are sampled before
+turn), and is reported as median / min / max. An edit row is timed on a tree that is already built:
+the benchmark puts the file back with its ORIGINAL modification time, so cargo (which judges a path
+package by mtime) finds the tree fresh again and the next row needs no rebuild first. (Restoring only
+the bytes made every edit row follow an untimed rebuild of the same size, which doubled the daily
+runner job.) The unit suite counts a failing test as a failed scenario with the test names (its time
+is not a number worth keeping), not as a timing. The host's load average and swap are sampled before
 every run and a WARNING is printed when load exceeds the core count or swap is over 90% full: on a
 shared Mac that makes every number noisy. (Load right after a build includes that build, so a
 warning from the second round on is a hint, not a verdict.)
@@ -97,8 +103,8 @@ Safety: refuses under RELEASE=1; never touches the TV; never cleans a target dir
 EDIT-TARGET files, refuses to start if one has uncommitted changes, restores the original bytes in
 a `finally` (SIGTERM/SIGHUP included) and verifies `git diff --quiet` on them at the end.
 
-Exit status: 0 ok; 1 a scenario failed (the table of what ran is still printed); 2 refused to start;
-3 an edit target did not verify clean at the end.
+Exit status: 0 ok; 1 a scenario failed or a unit test was red (the table of what ran is still
+printed); 2 refused to start; 3 an edit target did not verify clean at the end.
 """
 from __future__ import annotations
 
@@ -402,6 +408,78 @@ def parse_check_branches(text: str) -> dict[str, float]:
     return out
 
 
+STEP_FAILED = re.compile(r"^==== step: (.*) \u2014 FAILED, exit (-?\d+) \(", re.M)
+BRANCH_FAILED = re.compile(r"^==== check: (\w+) \u2014 (?:ALSO )?FAILED, exit (-?\d+)", re.M)
+FAILED_TEST = re.compile(r"^test (\S+) \.\.\. FAILED$", re.M)
+FAILED_UNITTEST = re.compile(r"^(?:ERROR|FAIL): (test\S* \([\w.]+\))", re.M)
+FAILURE_NAMES_SHOWN = 20
+BLOCK_LINES_SHOWN = 60
+
+
+def failed_steps(text: str) -> list[tuple[str, int, str]]:
+    """(command, exit code, its own output) of every step tools/check-parallel.py printed as FAILED.
+
+    The step runner prints a step whole under its banner the moment it ends, so a failed step's
+    block runs from its banner to the next `====` line. This script captures the gate's output,
+    so without this the only trace of why a gate went red on a runner is the tail of the log."""
+    out: list[list] = []
+    cur = None
+    for line in text.splitlines():
+        m = STEP_FAILED.match(line)
+        if m:
+            cur = [m.group(1), int(m.group(2)), []]
+            out.append(cur)
+        elif line.startswith("==== "):
+            cur = None
+        elif cur is not None:
+            cur[2].append(line)
+    return [(name, code, "\n".join(block)) for name, code, block in out]
+
+
+def failed_tests(text: str) -> list[str]:
+    """The names libtest printed as `test <name> ... FAILED`, once each, in order of appearance."""
+    return list(dict.fromkeys(FAILED_TEST.findall(text)))
+
+
+def failed_unittests(text: str) -> list[str]:
+    """The `ERROR: test_x (module.Class.test_x)` / `FAIL: ...` headings Python's unittest prints, once each."""
+    return list(dict.fromkeys(FAILED_UNITTEST.findall(text)))
+
+
+def check_failure_summary(code: int, text: str) -> str:
+    """One line for the record and the table: which steps, branches and tests made the gate red."""
+    parts = []
+    steps = failed_steps(text)
+    if steps:
+        parts.append(f"{len(steps)} step(s) failed: " + "; ".join(name for name, _, _ in steps))
+    branches = sorted({m.group(1) for m in BRANCH_FAILED.finditer(text)})
+    if branches:
+        parts.append("branch(es) failed: " + ", ".join(branches))
+    tests = failed_tests(text)
+    if tests:
+        parts.append(f"{len(tests)} test(s) failed: " + ", ".join(tests[:FAILURE_NAMES_SHOWN]))
+    unit = failed_unittests(text)
+    if unit:
+        parts.append(f"{len(unit)} python test(s) failed: " + ", ".join(unit[:FAILURE_NAMES_SHOWN]))
+    if not parts:
+        parts.append("no failed step or test could be read from its output: " + text.strip()[-300:])
+    return f"check: the gate exited {code}: " + " | ".join(parts)
+
+
+def log_check_failure(text: str) -> None:
+    """Put what the gate said about its failures into this script's own log (the runner's job log)."""
+    for name, code, block in failed_steps(text):
+        log(f"the gate's step `{name}` failed (exit {code}); its output, last {BLOCK_LINES_SHOWN} lines:")
+        for line in block.splitlines()[-BLOCK_LINES_SHOWN:]:
+            log("    " + line)
+    names = failed_tests(text) + failed_unittests(text)
+    if names:
+        log("failing tests: " + ", ".join(names))
+    log(f"the gate's output, last {BLOCK_LINES_SHOWN} lines:")
+    for line in text.splitlines()[-BLOCK_LINES_SHOWN:]:
+        log("    " + line)
+
+
 def parse_test_result(text: str) -> dict | None:
     m = re.findall(r"test result: (\w+)\. (\d+) passed; (\d+) failed; (\d+) ignored", text)
     if not m:
@@ -415,7 +493,14 @@ def parse_test_result(text: str) -> dict | None:
 # ---------------------------------------------------------------- edit guard
 
 class EditGuard:
-    """Appends a comment to a tracked file and restores the original bytes no matter what."""
+    """Appends a comment to a tracked file and restores the original bytes AND mtime no matter what.
+
+    The mtime is the point of the second half. Cargo judges a path package fresh when no source file
+    is newer than the dependency info its last build wrote, so a file put back with the time of the
+    put-back looks edited: every edit row would be followed by an untimed rebuild of the very crates
+    it just timed, before the next row could start from a built tree. The original time is older than
+    that dependency info, so the tree reads fresh again (its artifacts were compiled from the file
+    with a trailing comment, which is the same program) and the next row starts at once."""
 
     def __init__(self, repo: Path):
         self.repo = repo
@@ -439,6 +524,7 @@ class EditGuard:
     def edited(self, rel: str):
         path = self.repo / rel
         original = path.read_bytes()
+        stamp = path.stat()
         self.counter += 1
         try:
             suffix = b"" if original.endswith(b"\n") else b"\n"
@@ -446,6 +532,7 @@ class EditGuard:
             yield
         finally:
             path.write_bytes(original)
+            os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
 
     def verify_clean(self, rels) -> list[str]:
         return [rel for rel in rels
@@ -466,6 +553,7 @@ class Bench:
         self.sizes: dict | None = None
         self.warnings: list[str] = []
         self.failure: str | None = None
+        self.red: list[str] = []  # scenarios that ran to the end but are red (a failing unit test)
 
     def skip_reason(self, sid: str) -> str | None:
         if sid.endswith("-inc") and not self.cold \
@@ -504,7 +592,6 @@ class Bench:
             inc = sid.endswith("-inc")
             self.ensure_warm(inc)
             with self.guard.edited(EDIT_FILES[sid]):
-                self.warm = dict.fromkeys(self.warm, False)  # the restored file's new mtime stales BOTH trees
                 secs, b = self.cargo.build(inc, f"{sid} edit-rebuild")
             sample.update(seconds=secs, **b)
         elif sid == "tests":
@@ -514,12 +601,17 @@ class Bench:
             if result is None:
                 raise BenchError(f"unit suite: no `test result:` line (cargo exited "
                                  f"{proc.returncode}): {proc.stderr.strip()[-400:]}")
-            sample.update(seconds=secs, **result)
+            output = proc.stdout + proc.stderr
+            names = failed_tests(output) if result["failed"] or result["status"] != "ok" else []
+            if names:
+                log(f"unit suite: {len(names)} test(s) FAILED: " + ", ".join(names[:FAILURE_NAMES_SHOWN]))
+            sample.update(seconds=secs, failed_tests=names[:FAILURE_NAMES_SHOWN], **result)
         elif sid == "check":
             secs, proc = self.cargo.run_check(self.repo)
             if proc.returncode != 0:
-                tail = (proc.stdout + proc.stderr).strip()[-600:]
-                raise BenchError(f"check: the gate exited {proc.returncode}: {tail}")
+                output = proc.stdout + proc.stderr
+                log_check_failure(output)
+                raise BenchError(check_failure_summary(proc.returncode, output))
             branches = parse_check_branches(proc.stdout)
             missing = [b for b in CHECK_BRANCHES if b not in branches]
             if missing:
@@ -573,6 +665,17 @@ class Bench:
             for sid in active:
                 if len(self.results[sid]["samples"]) < self.runs:
                     self.results[sid]["status"] = "incomplete" if self.results[sid]["samples"] else "failed"
+        for sid in active:
+            res = self.results[sid]
+            reds = [s for s in res["samples"] if s.get("failed") or s.get("status") == "FAILED"]
+            if reds:
+                # A suite with a red test is not a timing worth keeping, but it is not a build failure
+                # either: the other scenarios' numbers stand, and this one is named red.
+                names = list(dict.fromkeys(n for s in reds for n in s.get("failed_tests", [])))
+                res["status"] = "failed"
+                res["note"] = (f"{max(s.get('failed', 0) for s in reds)} unit test(s) failed"
+                               + (": " + ", ".join(names[:FAILURE_NAMES_SHOWN]) if names else ""))
+                self.red.append(sid)
         if "sizes" in self.requested:
             self.sizes = self.measure_sizes()
 
@@ -684,6 +787,9 @@ def render_markdown(doc: dict) -> str:
         lines += [f"WARNING: {w}" for w in doc["warnings"]]
         lines += ["", "WARNING: the host was loaded (load above core count or swap over 90% full): "
                   "these numbers are noisy; compare medians of repeated runs only."]
+    for sc in doc["scenarios"]:
+        if sc["id"] in doc.get("red", []):
+            lines += ["", f"RED: {sc['name']}: {sc['note']}"]
     if doc.get("failure"):
         lines += ["", f"FAILED: {doc['failure']}"]
     return "\n".join(lines)
@@ -797,6 +903,7 @@ def main(argv=None) -> int:
         "sizes": bench.sizes,
         "warnings": bench.warnings,
         "failure": bench.failure,
+        "red": bench.red,
         "restored_clean": not bad,
         "scenarios": scenario_docs(bench),
     }
@@ -807,7 +914,7 @@ def main(argv=None) -> int:
         print(f"build-bench: ERROR: these edit targets differ from HEAD after the run: {', '.join(bad)}",
               file=sys.stderr)
         return 3
-    return 1 if bench.failure else 0
+    return 1 if bench.failure or bench.red else 0
 
 
 if __name__ == "__main__":

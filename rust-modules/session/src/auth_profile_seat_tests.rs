@@ -577,8 +577,27 @@ fn stalled_losing_remote_probe_does_not_consume_the_healthy_lan_winner_admission
         "authenticated admission starts after the identity race has produced a winner");
 }
 
+/// A virtual clock for [`LaterProbeBudgetIo`]: time passes only when a scripted step spends it, so
+/// the budget arithmetic is exact and no wall-clock sleep decides the outcome. Thread-local, and
+/// every test runs on its own thread, so nothing is shared between tests.
+mod virtual_time {
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        static BASE: Instant = Instant::now();
+        static SPENT: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    }
+
+    pub fn now() -> Instant { BASE.with(|base| *base + SPENT.with(Cell::get)) }
+
+    pub fn spend(duration: Duration) { SPENT.with(|spent| spent.set(spent.get() + duration)); }
+}
+
 struct LaterProbeBudgetIo {
     admissions: Vec<String>,
+    /// The budget each admission was handed: its deadline less the virtual time it was asked at.
+    budgets: Vec<Duration>,
 }
 impl ProfileWorkIo for LaterProbeBudgetIo {
     fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
@@ -602,7 +621,7 @@ impl ProfileWorkIo for LaterProbeBudgetIo {
         -> (Option<SourceRef>, SettledProbe) {
         let plan = probe::plan(resource, CredentialPolicy::build());
         if resource.client_identifier == "b" {
-            std::thread::sleep(Duration::from_millis(35));
+            virtual_time::spend(Duration::from_millis(35));
             return (None, settled_probe(&plan, Outcome::Unreachable, None, None));
         }
         let winner = source("a", true, &resource.access_token);
@@ -612,39 +631,47 @@ impl ProfileWorkIo for LaterProbeBudgetIo {
     fn probe_cached(&mut self, resource: &Resource, cached: &SourceRef, _: &[i64], _: &[String])
         -> Option<(Option<SourceRef>, SettledProbe)> {
         if resource.client_identifier != "b" { return None; }
-        std::thread::sleep(Duration::from_millis(35));
+        virtual_time::spend(Duration::from_millis(35));
         let plan = probe::plan(resource, CredentialPolicy::build());
         let mut winner = cached.clone();
         winner.token = resource.access_token.clone();
         Some((Some(winner.clone()), settled_probe(&plan, Outcome::Reachable,
             Some(probe::Location::Relay), Some(winner.address))))
     }
-    fn admit_until(&mut self, source: &SourceRef, _: &str, _: Instant)
+    fn admit_until(&mut self, source: &SourceRef, _: &str, deadline: Instant)
         -> plx_plex::plex::EndpointAdmission {
         self.admissions.push(source.machine_id.clone());
+        self.budgets.push(deadline.saturating_duration_since(virtual_time::now()));
         if source.machine_id == "a" {
-            std::thread::sleep(Duration::from_millis(45));
+            virtual_time::spend(Duration::from_millis(45));
             plx_plex::plex::EndpointAdmission::Timeout
         } else {
             plx_plex::plex::EndpointAdmission::Usable
         }
     }
     fn admission_budget(&self) -> Duration { Duration::from_millis(100) }
+    fn admission_clock(&self) -> fn() -> Instant { virtual_time::now }
     fn gap(&mut self) {}
 }
 
+/// Only authenticated request time spends the cross-server admission budget. A's admission takes
+/// 45 ms of a 100 ms budget; B's two identity probes then take 70 ms, which would exhaust what is
+/// left if probing were charged, and B must still be admitted with exactly the 55 ms A left it.
+/// The time is virtual (`virtual_time`): a scheduler stall on a loaded runner cannot move it.
 #[test]
 fn later_direct_and_cached_identity_probes_do_not_consume_the_admission_budget() {
     let mut stored = cached_session(None);
     stored.sources.push(source("b", false, "old-b-token"));
     let sink = CapturingSink::default();
-    let mut io = LaterProbeBudgetIo { admissions: Vec::new() };
+    let mut io = LaterProbeBudgetIo { admissions: Vec::new(), budgets: Vec::new() };
     profile_switch_worker_with_io(1, SessionIdentity::of(&stored), stored,
         UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() },
         None, false, &sink, &mut io);
     let events = sink.0.into_inner();
     assert_eq!(io.admissions, ["a", "b"],
         "only authenticated request time may consume the cross-server admission budget");
+    assert_eq!(io.budgets, [Duration::from_millis(100), Duration::from_millis(55)],
+        "B receives what A's request left, with its own probing uncharged");
     assert_eq!(ready_primary(&events).map(|server| server.machine_id.as_str()), Some("b"));
 }
 

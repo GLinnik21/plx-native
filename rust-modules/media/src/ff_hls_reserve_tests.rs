@@ -692,12 +692,17 @@ fn an_earlier_liveness_boundary_stays_transport_even_if_reserve_spends_before_cl
     );
 }
 
+/// The user-pause clock is pinned (`pinned_pause_clock`), so every interval below is exactly as
+/// long as it is advanced by, and a scheduler stall on a loaded runner cannot lengthen one: 20 ms
+/// running, an 80 ms Pause->Resume hidden inside one blocked call, then 70 ms more running against
+/// an 80 ms budget.
 #[test]
 fn bounded_downshift_spends_internal_hold_but_excludes_a_hidden_user_pause_cycle() {
     let _guard = plx_base::testlock::serial();
     let old_paused = crate::player::TX
         .paused
         .load(std::sync::atomic::Ordering::Acquire);
+    let clock = crate::player::pinned_pause_clock::Pinned::now();
     crate::player::TX.commit_paused(false);
     struct Restore(bool);
     impl Drop for Restore {
@@ -712,9 +717,9 @@ fn bounded_downshift_spends_internal_hold_but_excludes_a_hidden_user_pause_cycle
         false,
     );
     let attempted = reserve.active(false).expect("bounded recovery deadline");
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    clock.advance(std::time::Duration::from_millis(20));
     crate::player::TX.commit_paused(true);
-    std::thread::sleep(std::time::Duration::from_millis(80));
+    clock.advance(std::time::Duration::from_millis(80));
     crate::player::TX.commit_paused(false);
 
     assert!(
@@ -725,7 +730,7 @@ fn bounded_downshift_spends_internal_hold_but_excludes_a_hidden_user_pause_cycle
 
     // `rebuffering=true` models B=0 with the native clock held. A non-floor recovery remains
     // bounded and therefore spends this involuntary stall even though Δplayhead is zero.
-    std::thread::sleep(std::time::Duration::from_millis(70));
+    clock.advance(std::time::Duration::from_millis(70));
     assert!(reserve.expire_if_due(true));
     assert!(reserve.expired);
 }

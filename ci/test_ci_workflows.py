@@ -355,26 +355,53 @@ class BuildBenchWorkflow(unittest.TestCase):
         for job in ("measure", "gate"):
             self.assertIn("persist-credentials: false", job_body(self.NAME, job), job)
 
-    def test_the_jobs_are_bounded(self):
-        for job, ceiling in (("measure", 40), ("gate", 40), ("publish", 10)):
+    def test_the_jobs_are_bounded_with_room_to_spare(self):
+        # The first real run took 29 minutes of a 35-minute limit; the limits now leave a slow day
+        # more than twice what a leg is expected to take (~13 min base, ~10 min top).
+        for job, ceiling in (("measure", 30), ("gate", 40), ("publish", 10)):
             m = re.search(r"(?m)^    timeout-minutes: (\d+)$", job_body(self.NAME, job))
             self.assertIsNotNone(m, job)
             self.assertLessEqual(int(m.group(1)), ceiling, job)
-        # the whole-gate run is bounded on its own, and may not fail the measurement
+        self.assertGreaterEqual(int(re.search(r"(?m)^    timeout-minutes: (\d+)$", job_body(self.NAME, "measure")).group(1)), 25)
+
+    def test_the_measurement_is_split_into_legs_that_every_scenario_belongs_to_once(self):
+        measure = job_body(self.NAME, "measure")
+        legs = dict(re.findall(r"- leg: (\w+)\n\s+daily: (\S+)", measure))
+        self.assertEqual(sorted(legs), ["base", "top"])
+        daily = [sid for ids in legs.values() for sid in ids.split(",")]
+        self.assertEqual(len(daily), len(set(daily)), "a scenario in two legs is timed twice")
+        top = re.search(r"TOP: (\S+)", measure).group(1).split(",")
+        self.assertEqual(sorted(top), sorted(legs["top"].split(",")), "the plan step must route a manual list the way the daily one is split")
+        self.assertIn("fail-fast: false", measure)       # a failing leg must not cancel the other
+        self.assertNotIn("check", daily)                 # the gate has its own job
+        self.assertIn("--runs 3", measure)               # every row keeps three runs
+        # every leg leaves its own document for the publish job
+        self.assertIn("build-bench-rows-${{ matrix.leg }}", measure)
+        self.assertIn("bench-$LEG.json", measure)
+
+    def test_a_red_gate_makes_the_run_red_but_not_the_record_empty(self):
         gate = job_body(self.NAME, "gate")
         step = gate[gate.index("the whole gate once"):gate.index("Keep the document")]
-        self.assertIn("continue-on-error: true", step)
+        # no continue-on-error: this was how a broken gate stayed invisible
+        self.assertNotIn("continue-on-error", job_body(self.NAME, "gate"))
+        self.assertNotIn("continue-on-error", job_body(self.NAME, "measure"))
         self.assertRegex(step, r"timeout-minutes: \d+")
         self.assertIn("--only check", step)
+        # the document is uploaded however the step ended
+        upload = gate[gate.index("Keep the document"):]
+        self.assertIn("if: always()", upload)
         # ...and the rows job never runs it (a slow, runner-dependent row must not delay the rest)
-        self.assertNotIn("check", re.findall(r"--only (\S+)", job_body(self.NAME, "measure"))[0].split(","))
+        self.assertNotIn("--only check", job_body(self.NAME, "measure"))
 
-    def test_a_failed_measurement_publishes_nothing(self):
+    def test_the_record_waits_for_the_measurements_but_not_for_them_to_be_green(self):
         publish = job_body(self.NAME, "publish")
         self.assertIn("needs: [measure, gate]", publish)
-        self.assertIn("always() && needs.measure.result == 'success'", publish)
-        # the gate job may be skipped or red; only the rows job gates the record
+        # runs when a measurement job was red (its document is still there), not when nothing ran or the run was cancelled
+        self.assertIn("!cancelled() && needs.measure.result != 'skipped'", publish)
+        self.assertNotIn("needs.measure.result == 'success'", publish)
         self.assertNotIn("needs.gate", publish)
+        # a leg that left no document records nothing, rather than a day without half its rows
+        self.assertIn("left no document: nothing recorded", publish)
         self.assertRegex(publish, r"python3 \.\./tools/build-history\.py")
         self.assertRegex(publish, r"python3 \.\./tools/ci-summary\.py --history ci-history\.json --bench build-history\.json --out ci-summary\.json")
 
@@ -400,7 +427,7 @@ class BuildBenchWorkflow(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("build_bench_for_wf", ROOT / "tools" / "build-bench.py")
         bb = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(bb)
-        daily = re.search(r"DEFAULT_ONLY: (\S+)", code(self.NAME)).group(1).split(",")
+        daily = [sid for ids in re.findall(r"daily: (\S+)", code(self.NAME)) for sid in ids.split(",")]
         self.assertTrue(set(daily) <= set(bb.ALL_SCENARIOS), daily)
         self.assertNotIn("check", daily)   # the gate has its own, failure-tolerant step
         self.assertNotIn("arm", daily)     # no ARM archive on a runner; the benchmark never builds FFmpeg

@@ -359,7 +359,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   EXCLUSIVELY (it waits for every running check, and no new `make check` starts while it waits or
   runs, so its numbers never share the machine), refuses `RELEASE=1`, never touches
   the TV and never cleans a target dir. It edits `cbuf.rs` and `plx_ui`'s `lib.rs` only while a row is being
-  timed, refuses to start if either has uncommitted changes, restores the original bytes in a
+  timed, refuses to start if either has uncommitted changes, restores the original bytes and mtime in a
   `finally` and verifies with `git diff --quiet` at the end (exit 3 if not); a cargo failure stops
   the run, prints the table so far and exits 1. A first run in a fresh checkout includes an untimed
   warm-up build per tree. **When to run it:** every PR that touches `Makefile`, `Cargo.toml`,
@@ -378,20 +378,36 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   skeletons still equal the Makefile's recipes.
 - **The daily build-time series** (`.github/workflows/build-bench.yml`, `tools/build-history.py`).
   Every day at 04:17 UTC, and on `gh workflow run build-bench.yml` (a same-day run replaces that day's
-  record; `-f only=noop,leaf` narrows it), a GitHub-hosted macOS runner builds main's tip and times,
-  with this benchmark, a no-op host build, the edit-rebuild of `plx_base`, `plx_ui`, `plx_screens`
-  and the app crate, and the unit suite (each the median of 3 runs, with min and max), and, in a
-  second job on its own runner, `make check` once with its cargo and python branches (the opt-in
-  scenario: `make build-bench ARGS='--only check --runs 1'` times it locally; it runs
-  `check-unlocked`, because the benchmark already holds the check lock). One record per day is
-  appended to `build-history.json` on the `ci-metrics` branch (the same branch as `ci-history.json`,
-  pushed with a retry because `ci-metrics.yml` writes it too) and summarised into `ci-summary.json`
-  beside it; the page at plxnative.com/ci/ reads those files. The numbers are for the trend of one
-  runner type, not the absolute time on a dev Mac. A failed benchmark writes nothing; a red `check`
-  costs only its own rows; a day whose runner printed load or swap warnings is recorded with
-  `noisy: true` and drawn marked, never dropped. `ci/test_build_history.py` pins the record and the
-  merge, and `ci/test_ci_workflows.py` the workflow's triggers (no pull-request trigger), guards,
-  permissions and timeouts.
+  record; `-f only=noop,leaf` narrows it), GitHub-hosted macOS runners build main's tip and time, with
+  this benchmark, on three runners side by side: the `base` leg (a no-op host build and the
+  edit-rebuild of `plx_base` and `plx_ui`), the `top` leg (the edit-rebuild of `plx_screens` and the
+  app crate, and the unit suite), each the median of 3 runs with min and max, and the `gate` job,
+  `make check` once with its cargo and python branches (the opt-in scenario: `make build-bench
+  ARGS='--only check --runs 1'` times it locally; it runs `check-unlocked`, because the benchmark
+  already holds the check lock). The legs exist because one runner took 29 of its 35 minutes on the
+  first run: 11 of them were untimed rebuilds that followed every edit row, since putting the edited
+  file back with the time of the put-back made cargo (which judges a path package by mtime) see it as
+  changed. The benchmark now restores the file's original mtime, so only the first build of a run is
+  an untimed warm-up. One record per day is appended to `build-history.json` on the `ci-metrics`
+  branch (the same branch as `ci-history.json`, pushed with a retry because `ci-metrics.yml` writes it
+  too) and summarised into `ci-summary.json` beside it; the page at plxnative.com/ci/ reads those
+  files. The numbers are for the trend of one runner type (3 vCPUs of a shared Apple M1 virtual
+  machine; the record names it and the page prints that next to the charts), not the absolute time on
+  a dev Mac. **Failures are loud and cost only their own rows.** A build that failed, or a leg that
+  left no document, records nothing. A red `make check` makes the `gate` job, and so the run, red (no
+  `continue-on-error`; the failing steps' own output is in the job log), and a red unit suite makes
+  its leg red, but the record still files the day's other rows and lists `check` or `tests` in
+  `failed` with a one-line `failure_notes` reason, which the page prints ("make check failed on the
+  runner on <date>"). **Noise is a property of a row**, judged by `tools/build-history.py` from the
+  row's own runs: `spread` = (max - min) / median, `noisy` when it is above 0.5 and the runs differ
+  by at least 2 s (provisional: the first record's rows spread 26% to 57% because each row's first
+  round ran 40-55% slower than the other two; a one-run row has no spread). The load and swap
+  warnings are kept as the raw count `warnings` and decide nothing, because a 3-core runner running a
+  parallel build always exceeds its core count. The rule is applied again to every stored row on each
+  write, so retuning the constants retunes the history. `ci/test_build_history.py` pins the record,
+  the rule and the merge, `ci/test_build_bench.py` the restore and the failure reports, and
+  `ci/test_ci_workflows.py` the workflow's triggers (no pull-request trigger), guards, permissions,
+  legs and timeouts.
 - `make test` — `deploy` then `run` (the normal iteration command).
 - `make kill` — close the app on the TV.
 - **`make SYMBOLS=1 symbols`** — build with DWARF and split it into **`pkg/plxnative.debug`**, the

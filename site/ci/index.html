@@ -109,6 +109,9 @@ section.chart { background: var(--panel); border: 1px solid var(--rule); border-
 .tip .t { color: var(--muted); }
 .tip .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
 .empty { color: var(--muted); margin: 0; padding: 24px 0; }
+.fails { margin: 0; display: grid; gap: 2px; font-size: 13px; color: var(--bad); }
+.fails:empty { display: none; }
+.fails span { overflow-wrap: anywhere; }
 .plot svg { touch-action: pan-y; }
 .mk { cursor: pointer; outline: none; }
 .mk:focus-visible circle.badge { stroke: var(--focus); stroke-width: 2; }
@@ -197,7 +200,7 @@ code { font-family: var(--font-mono); font-size: 0.92em; background: var(--chip)
     </section>
 
     <div class="group" id="bench-wrap" hidden>
-      <p class="group-note"><b>Local builds, measured daily</b> on a GitHub macOS runner at the tip of <code>main</code> (<code>make build-bench</code>): for the trend, not for the seconds on your Mac. A point is the median of that day's runs, the band is fastest to slowest, and an orange dot on the axis marks a day the runner reported load: read it as noise.</p>
+      <p class="group-note"><b>Local builds, measured daily</b> on a GitHub macOS runner (<span id="bench-runner">a shared virtual machine</span>) at the tip of <code>main</code> (<code>make build-bench</code>): for the trend, not for the seconds on your Mac, which has more and faster cores. A point is the median of that day's runs and the band is fastest to slowest. An orange ring round a point marks a row whose runs differed by more than half its median: the runner is shared, so read that point as a guess. A red cross marks a day a step failed on the runner.</p>
       <p class="status" id="bench-status" role="status" hidden></p>
       <section class="chart" id="b-edit" hidden>
         <div class="chart-head"><h2>Edit one file, then rebuild</h2></div>
@@ -208,11 +211,13 @@ code { font-family: var(--font-mono); font-size: 0.92em; background: var(--chip)
         <div class="chart-head"><h2>make check, the whole gate</h2></div>
         <div class="legend"></div>
         <div class="plot"></div>
+        <p class="fails"></p>
       </section>
       <section class="chart" id="b-fast" hidden>
         <div class="chart-head"><h2>No-op build and unit suite</h2></div>
         <div class="legend"></div>
         <div class="plot"></div>
+        <p class="fails"></p>
       </section>
     </div>
 
@@ -383,6 +388,7 @@ function prepare(doc) {
 
 const BENCH_FIXED = { "b-check": ["check", "check.cargo", "check.python"], "b-fast": ["noop", "tests"] };
 const BENCH_CHARTS = ["b-edit", "b-check", "b-fast"];
+const BENCH_FAIL_WHAT = { check: "make check", tests: "The unit suite" };
 
 function prepareBench(doc) {
   const recs = (Array.isArray(doc && doc.records) ? doc.records : [])
@@ -390,12 +396,19 @@ function prepareBench(doc) {
   if (!recs.length) { BENCH = null; return; }
   const ids = [], label = {};
   for (const r of recs) for (const [id, row] of Object.entries(r.rows)) { if (!ids.includes(id)) ids.push(id); label[id] = row.label || label[id] || id; }
-  const rn = (r) => (r.runner && (r.runner.image || r.runner.os) ? [r.runner.os, r.runner.arch, r.runner.cores ? r.runner.cores + " cores" : ""].filter(Boolean).join(" ") : "GitHub runner");
   BENCH = {
-    ids, label,
-    rows: recs.map((r) => ({ d: r.d, sha: String(r.commit || ""), noisy: !!r.noisy, rec: r,
-      title: `Daily run, ${rn(r)}` + (r.noisy ? `; the runner reported ${r.warnings || "some"} load warning${r.warnings === 1 ? "" : "s"}, so read this day as noise` : "") + ((r.failed || []).length ? `; failed: ${r.failed.join(", ")}` : "") })),
+    ids, label, last: recs[recs.length - 1],
+    rows: recs.map((r) => ({ d: r.d, sha: String(r.commit || ""), rec: r,
+      fails: Array.isArray(r.failed) ? r.failed : [], notes: r.failure_notes && typeof r.failure_notes === "object" ? r.failure_notes : {},
+      title: `Daily run, ${benchRunnerText(r) || "GitHub runner"}` + ((r.failed || []).length ? `; failed on the runner: ${r.failed.join(", ")}` : "") })),
   };
+}
+
+// What the runner of a record is, in the record's own words: image, CPU, cores, architecture.
+function benchRunnerText(rec) {
+  const r = (rec || (BENCH && BENCH.last) || {}).runner;
+  if (!r) return "";
+  return [r.image, r.cpu, r.cores ? r.cores + " cores" : "", r.arch].filter(Boolean).join(", ");
 }
 
 function benchData(id) {
@@ -404,10 +417,11 @@ function benchData(id) {
   const want = BENCH_FIXED[id] ? BENCH_FIXED[id].filter((k) => BENCH.ids.includes(k)) : BENCH.ids.filter((k) => !fixed.includes(k));
   const series = want.map((k, n) => {
     const col = n, pick = (f) => BENCH.rows.map((r) => (r.rec.rows[k] && typeof r.rec.rows[k][f] === "number" ? r.rec.rows[k][f] : null));
-    return mk(k, BENCH.label[k], "--c" + (col % NPAL), pick("median"), { raw: true, sparse: true, w: id === "b-check" && n > 0 ? 1.6 : 2.4, dash: col >= NPAL, band: id !== "b-edit" && (id !== "b-check" || n === 0), lo: pick("min"), hi: pick("max") });
+    const flag = BENCH.rows.map((r) => !!(r.rec.rows[k] && r.rec.rows[k].noisy));
+    return mk(k, BENCH.label[k], "--c" + (col % NPAL), pick("median"), { raw: true, sparse: true, w: id === "b-check" && n > 0 ? 1.6 : 2.4, dash: col >= NPAL, band: id !== "b-edit" && (id !== "b-check" || n === 0), lo: pick("min"), hi: pick("max"), noisy: flag });
   });
   const top = Math.max(0, ...series.flatMap((s) => s.vals.filter((v) => v != null)));
-  return { rows: BENCH.rows, series, unit: top >= 300 ? "min" : "s" };
+  return { rows: BENCH.rows, series, unit: top >= 300 ? "min" : "s", failIds: BENCH_FIXED[id] || [] };
 }
 
 function chartData(id) {
@@ -438,7 +452,7 @@ function chartData(id) {
 }
 
 function mk(id, label, col, vals, o = {}) {
-  return { id, label, col, vals, sm: o.raw ? vals : medians(vals), w: o.w || 2.2, dots: !!o.dots, dash: !!o.dash, thin: !!o.thin, op: o.op || 1, lo: o.lo, hi: o.hi, band: !!o.band, sparse: !!o.sparse, raw: !!o.raw };
+  return { id, label, col, vals, sm: o.raw ? vals : medians(vals), w: o.w || 2.2, dots: !!o.dots, dash: !!o.dash, thin: !!o.thin, op: o.op || 1, lo: o.lo, hi: o.hi, band: !!o.band, sparse: !!o.sparse, raw: !!o.raw, noisy: o.noisy || null };
 }
 
 // ---- change markers on the wait chart ----
@@ -565,7 +579,13 @@ function drawLines(id) {
   const legend = sec.querySelector(".legend");
   legend.innerHTML = legendHtml(id, series);
   legend.classList.toggle("many", series.length > 3);
-  if (!rows.length || !series.length) { plot.innerHTML = `<p class="empty">No runs with these jobs yet.</p>`; if (marksEl) marksEl.innerHTML = ""; return; }
+  // a step that failed on the runner on some day in range: a line under the chart, a cross on its day, and
+  // in place of the chart when there is no number at all ("make check failed on the runner on 7 Oct")
+  const failIds = data.failIds || [];
+  const failed = BENCH_CHARTS.includes(id) ? rows.filter((r) => r.d >= axisFrom()).flatMap((r) => r.fails.filter((f) => failIds.includes(f)).map((f) => ({ r, f }))) : [];
+  const failsEl = sec.querySelector(".fails");
+  if (failsEl) failsEl.innerHTML = failed.slice(-3).map(({ r, f }) => `<span>${esc(BENCH_FAIL_WHAT[f] || f)} failed on the runner on ${fmtDate(r.d)}${r.notes[f] ? ": " + esc(r.notes[f]) : ""}.</span>`).join("") + (failed.length > 3 ? `<span>and ${failed.length - 3} earlier days in this range.</span>` : "");
+  if (!rows.length || !series.length) { plot.innerHTML = failed.length ? "" : `<p class="empty">No runs with these jobs yet.</p>`; if (marksEl) marksEl.innerHTML = ""; return; }
   const live = series.filter((s) => !HIDDEN[id].has(s.id));
   if (!rows.some((r) => r.d >= axisFrom())) { plot.innerHTML = `<p class="empty">No points in this range.</p>`; if (marksEl) marksEl.innerHTML = ""; return; }
   const last = AXIS.end, from0 = axisFrom();
@@ -589,6 +609,10 @@ function drawLines(id) {
     if (!se.band) continue;
     const c = css(se.col); let run = [];
     const flushBand = () => {
+      if (run.length === 1) {   // a single day has no neighbour to span a band to: draw its range as a whisker
+        const wx = x(rows[run[0]].d), top = y(se.hi[run[0]] / div), bot = y(se.lo[run[0]] / div);
+        s += `<path d="M${wx.toFixed(1)},${top.toFixed(1)}V${bot.toFixed(1)}M${(wx - 4).toFixed(1)},${top.toFixed(1)}h8M${(wx - 4).toFixed(1)},${bot.toFixed(1)}h8" stroke="${c}" stroke-opacity="0.55" stroke-width="1.5" fill="none"/>`;
+      }
       if (run.length > 1) s += `<polygon points="${run.map((i) => `${x(rows[i].d).toFixed(1)},${y(se.hi[i] / div).toFixed(1)}`).join(" ")} ${[...run].reverse().map((i) => `${x(rows[i].d).toFixed(1)},${y(se.lo[i] / div).toFixed(1)}`).join(" ")}" fill="${c}" fill-opacity="0.16" stroke="none"/>`;
       run = [];
     };
@@ -619,8 +643,10 @@ function drawLines(id) {
       if (!next && !se.thin) s += `<circle cx="${x(rows[i].d)}" cy="${y(se.sm[i] / div)}" r="4" fill="${c}" stroke="${css("--panel")}" stroke-width="2"/>`;
     }
   }
-  // days the runner reported load warnings: a tick on the axis, so a noisy point reads as noise
-  for (const i of vis) if (rows[i].noisy) s += `<circle cx="${x(rows[i].d).toFixed(1)}" cy="${m.t + ih - 5}" r="3" fill="${css("--warn")}"/>`;
+  // a ring round the point of a row whose runs disagreed (its own spread, judged by tools/build-history.py)
+  for (const se of live) if (se.noisy) for (const i of vis) if (se.noisy[i] && se.vals[i] != null && se.vals[i] / div <= ytop) s += `<circle cx="${x(rows[i].d).toFixed(1)}" cy="${y(se.sm[i] / div).toFixed(1)}" r="7.5" fill="none" stroke="${css("--warn")}" stroke-width="2"/>`;
+  // a cross on the axis for a day a step failed on the runner
+  for (const i of vis) if (failIds.some((f) => rows[i].fails && rows[i].fails.includes(f))) { const cx = x(rows[i].d), cy = m.t + ih - 8; s += `<path d="M${(cx - 4).toFixed(1)},${(cy - 4).toFixed(1)}l8,8M${(cx + 4).toFixed(1)},${(cy - 4).toFixed(1)}l-8,8" stroke="${css("--bad")}" stroke-width="2.2" stroke-linecap="round" fill="none"/>`; }
   // numbered markers along the top, each straight above the line it names
   for (const k of cl) {
     const on = isSel(k), cy = m.t - 20;
@@ -645,8 +671,9 @@ function drawLines(id) {
     const r = rows[best], cx = x(r.d);
     cur.setAttribute("x1", cx); cur.setAttribute("x2", cx); cur.setAttribute("stroke-opacity", "0.35");
     const lines = live.filter((se) => se.vals[best] != null)
-      .map((se) => `<div class="mono"><i class="sw" style="background:var(${se.col})"></i><b>${unitVal(se.vals[best])}</b> ${unit} ${esc(se.label)}${se.raw ? (se.lo && se.lo[best] != null ? ` <span class="t">(${unitVal(se.lo[best])} to ${unitVal(se.hi[best])})</span>` : "") : ` <span class="t">(median ${unitVal(se.sm[best])})</span>`}</div>`).join("");
-    tip.innerHTML = `<div class="t mono">${fmtStamp(r.d)} | ${esc(r.sha)}</div><div>${esc(r.title)}</div>` + (lines || `<div class="t">no data for the visible series</div>`);
+      .map((se) => `<div class="mono"><i class="sw" style="background:var(${se.col})"></i><b>${unitVal(se.vals[best])}</b> ${unit} ${esc(se.label)}${se.raw ? (se.lo && se.lo[best] != null ? ` <span class="t">(${unitVal(se.lo[best])} to ${unitVal(se.hi[best])}${se.noisy && se.noisy[best] ? "; runs disagree, a guess" : ""})</span>` : "") : ` <span class="t">(median ${unitVal(se.sm[best])})</span>`}</div>`).join("");
+    const bad = (r.fails || []).filter((f) => failIds.includes(f)).map((f) => `<div class="mono">${esc(BENCH_FAIL_WHAT[f] || f)} failed on the runner${r.notes[f] ? ": " + esc(r.notes[f]) : ""}</div>`).join("");
+    tip.innerHTML = `<div class="t mono">${fmtStamp(r.d)} | ${esc(r.sha)}</div><div>${esc(r.title)}</div>` + (lines || `<div class="t">no data for the visible series</div>`) + bad;
     tip.hidden = false;
     const px = (cx / W) * box.width; const tw = tip.offsetWidth;
     tip.style.left = Math.min(Math.max(0, px + 12), Math.max(0, box.width - tw)) + "px";
@@ -772,7 +799,7 @@ function renderSummary() {
   const ms = SUMMARY.metrics.filter((m) => typeof m.now === "number")
     .sort((a, b) => (STATE_RANK[a.state] ?? 4) - (STATE_RANK[b.state] ?? 4) || (b.change7_pct || 0) - (a.change7_pct || 0) || b.now - a.now);
   const open = ms.filter((m) => m.state === "worse").length, shown = Math.max(8, open);
-  nowEl.innerHTML = `<h2>What a developer waits for</h2><p class="hint">Median of the last 7 days against the 7 days before and 30 days ago. Worse first. CI rows come from the runs on GitHub; local rows are the daily measurement on a GitHub macOS runner, good for the trend, not for the seconds on your Mac.</p>` +
+  nowEl.innerHTML = `<h2>What a developer waits for</h2><p class="hint">Median of the last 7 days against the 7 days before and 30 days ago. Worse first. CI rows come from the runs on GitHub; local rows are the daily measurement on a GitHub macOS runner${benchRunnerText() ? " (" + esc(benchRunnerText()) + ")" : ""}, good for the trend, not for the seconds on your Mac.</p>` +
     `<ul class="now">${ms.slice(0, shown).map(nowRow).join("")}</ul>` +
     (ms.length > shown ? `<details class="more"><summary>Show the other ${ms.length - shown}</summary><ul class="now">${ms.slice(shown).map(nowRow).join("")}</ul></details>` : "");
 
@@ -786,6 +813,8 @@ function renderBenchShell() {
   st.hidden = !!BENCH;
   for (const id of BENCH_CHARTS) document.getElementById(id).hidden = !BENCH;
   if (!BENCH) st.textContent = "No daily measurement has been written yet. The first one is taken by the scheduled run at 04:17 UTC after this page ships (or by hand: gh workflow run build-bench.yml), and these charts appear when it has pushed it.";
+  const rn = document.getElementById("bench-runner");
+  if (BENCH && benchRunnerText()) rn.textContent = benchRunnerText();
   wrap.hidden = false;
 }
 
