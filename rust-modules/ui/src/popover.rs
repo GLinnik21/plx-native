@@ -866,6 +866,12 @@ pub mod host {
         n > 0 && super::HOST_CLOSING.load(Relaxed) == n
     }
 
+    /// How many times [`invalidate`] ran on this thread (host-test stand-in cache only).
+    #[cfg(test)]
+    pub fn invalidations() -> u32 {
+        mock::INVALIDATIONS.with(|c| c.get())
+    }
+
     /// Throw the snapshot away; the next page pass will draw the real page and take a new one.
     pub fn invalidate() {
         unsafe {

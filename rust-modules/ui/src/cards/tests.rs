@@ -785,7 +785,7 @@ fn the_opener_redraw_paints_only_a_known_element() {
 
 /// **The element a surface lifts is OUT of the page pass and in the lift, in both sections** — the
 /// doubled-title guard. The page pass (a frame carrying `lifted`) paints every card but the lifted
-/// one and says so (`press::lift_owns`, which silences the press spring's page damage); the opener
+/// one and says so (`popover::lift_owns`, which silences the press spring's page damage); the opener
 /// lift's own frame (no `lifted`) paints exactly that card. Between them the card is drawn ONCE.
 #[test]
 fn the_lifted_card_is_left_out_of_the_page_pass_and_drawn_by_the_lift() {

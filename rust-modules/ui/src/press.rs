@@ -187,8 +187,9 @@ impl Press {
     /// TOOK (the item menu opens over the card). The last is deliberately the same spring: the
     /// card goes from its dip (a press-in on the focus pop; [`DIP`] is a popped card's unpopped
     /// size) back up to its pop on the underdamped release a normal OK press gets, as the menu
-    /// opens, and the opener's lift and the page both draw that scale (see [`tick`](Self::tick)
-    /// for how the frozen host snapshot keeps up). Ending the press at rest instead — which this
+    /// opens, and whoever draws the card draws that scale: the opener's lift alone for a card a card
+    /// section left out of the page pass, the page as well for an opener no card section draws (see
+    /// [`tick`](Self::tick) for how the frozen host snapshot keeps up in each case). Ending the press at rest instead — which this
     /// module did from 2026-10-07 to rc.3 — pops the card in one frame, the "still no animation"
     /// of the 0.8.0-rc.3 report.
     pub fn cancel(&mut self) {

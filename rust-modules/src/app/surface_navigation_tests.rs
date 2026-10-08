@@ -1,5 +1,10 @@
 //! Route/chrome identity and the surface architecture: profile/card menus, Settings and
 //! player panels, and the heartbeat word each mounted screen reports.
+//!
+//! The tests marked `#[cfg(feature = "hostsim")]` below (the item-menu opener-lift ones) run ONLY
+//! with that feature: `make test-crate C=app T=<filter>` filters them out and exits 0. Run them with
+//! `CARGO_INCREMENTAL=0 PATH="$HOME/.cargo/bin:$PATH" cargo +nightly test --lib -p plxnative-modules --features hostsim -- <filter>`
+//! from `rust-modules/`.
 
 use super::*;
 use plx_machine::machine::Chrome;
@@ -701,6 +706,8 @@ fn page_damage_frames_across_a_taken_holds_spring(lift_owns_the_card: bool) -> (
             if damage { damaged += 1; }
         }
     }
+    // The flag is per thread and a later test on this thread must not inherit it.
+    plx_ui::popover::set_lift_owns(false);
     (moving, damaged)
 }
 

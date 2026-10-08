@@ -6,6 +6,9 @@ use std::cell::RefCell;
 
 thread_local! {
     pub(super) static PIXELS: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) };
+    /// How many times the snapshot was thrown away on this thread (`FrameCache::invalidate`), for
+    /// a test that grades WHEN the dispatcher re-takes it.
+    pub(super) static INVALIDATIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 pub(super) struct FrameCache {
@@ -18,6 +21,7 @@ impl FrameCache {
         Self { snapshot: None, off: false }
     }
     pub(super) fn invalidate(&mut self) {
+        INVALIDATIONS.with(|c| c.set(c.get() + 1));
         self.snapshot = None;
     }
     /// Host logic tests construct dispatchers without a GL context, so they always take the live

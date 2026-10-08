@@ -2420,11 +2420,14 @@ fn strip_menu_arg(
 }
 
 /// **What the opener lift reads of the press: the dispatcher's own, live.** The lift is the page's
-/// focused card drawn a second time above the dim, and the page draws it at the press scale
-/// (`DrawFrame.press`, from `Dispatcher::parts`), so the lift must be handed the SAME number or the
-/// two disagree on every frame the press is moving. They did, while this was a constant `1.0`: a
-/// taken hold's card was drawn at its pop by the lift and at its dip by the page and the host
-/// snapshot, and the owner saw a poster that popped in one frame with its title doubled.
+/// focused card drawn a second time above the dim. A card a card section left out of the page pass
+/// (`DrawFrame::lifted`) is drawn by the lift ALONE, at this scale. An opener no card section draws
+/// (the Detail episode strip, season tabs, hero buttons, the Home hero) is still drawn by the page
+/// at the press scale (`DrawFrame.press`, from `Dispatcher::parts`), so there the lift must be
+/// handed the SAME number or the two disagree on every frame the press is moving. They did, while
+/// this was a constant `1.0`: a taken hold's card was drawn at its pop by the lift and at its dip
+/// by the page and the host snapshot, and the owner saw a poster that popped in one frame with its
+/// title doubled.
 ///
 /// Only the scale is the lift's business; a hold in flight or the hint's elapsed time is not (the
 /// lift draws one card, not the page's hold hint).
@@ -2470,8 +2473,9 @@ pub(crate) fn opener_parts(
 ///
 /// **It does not touch the press.** A hold the screen answered was already abandoned onto its
 /// release spring by the dispatcher (`InputMachine::cancel_press`), so the card springs from its dip
-/// up to its pop as the menu opens, and the press is the ONE owner of that motion: the page and
-/// the opener lift ([`opener_press`]) draws it, live above the frozen page. The page pass leaves
+/// up to its pop as the menu opens, and the press is the ONE owner of that motion: the opener
+/// lift ([`opener_press`]) draws it live above the frozen page (and, for an opener no card section
+/// draws, the page draws it too). The page pass leaves
 /// the lifted card out (`DrawFrame::lifted`), so the snapshot holds no copy of it to go stale and
 /// the spring is not page damage (`Press::tick`); only an opener no card section draws keeps the
 /// per-frame re-take. Ending the press at rest here instead (`Press::settle`, rc.3) made the
