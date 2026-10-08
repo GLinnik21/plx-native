@@ -1046,6 +1046,59 @@ class ManifestAndAdopt(unittest.TestCase):
         self.assertNotEqual(combined("a"), combined("b"), "a gfx/machine/framedump.rs change must change the tree hash")
 
 
+class CommittedSiteMedia(unittest.TestCase):
+    """What is committed in `site/media/` is the Linux CI film the manifest says it is, and the page
+    declares the codecs the files really carry. These read the repository, not a fixture."""
+
+    MEDIA = ROOT / "site" / "media"
+
+    def manifest(self):
+        return json.loads((self.MEDIA / sv.MANIFEST_NAME).read_text())
+
+    def test_the_manifest_is_the_linux_ci_render(self):
+        m = self.manifest()
+        self.assertEqual(m["platform"], "linux-ci", "only the Linux workflow's render may be committed")
+        self.assertTrue(m["gates"]["passed"])
+        self.assertFalse(m["tree_dirty"])
+
+    def test_every_listed_file_is_present_with_its_sha256(self):
+        m = self.manifest()
+        self.assertEqual(sorted(m["outputs"]), sorted(sv.MEDIA_NAMES))
+        for name, entry in sorted(m["outputs"].items()):
+            path = self.MEDIA / name
+            self.assertTrue(path.is_file(), f"{name} is listed in the manifest but absent from site/media")
+            self.assertEqual(sv.sha256_file(path), entry["sha256"], f"{name} differs from the manifest")
+            self.assertEqual(path.stat().st_size, entry["bytes"], name)
+        self.assertEqual(sv.verify_manifest(m, self.MEDIA, ("outputs",)), [])
+
+    @staticmethod
+    def box_payload(data, fourcc, size):
+        i = data.find(fourcc)
+        assert i > 0, f"no {fourcc!r} box"
+        return data[i + 4:i + 4 + size]
+
+    def codec_string(self, video):
+        """The RFC 6381 string a player needs for this file, read from its sample-description box."""
+        data = (self.MEDIA / video.name).read_bytes()
+        if video.codec == "h264":
+            _, profile, compat, level = self.box_payload(data, b"avcC", 4)
+            return f"avc1.{profile:02X}{compat:02X}{level:02X}"
+        b1, b2 = self.box_payload(data, b"av1C", 4)[1:3]
+        profile, level = b1 >> 5, b1 & 31
+        tier = "H" if b2 & 0x80 else "M"
+        depth = 12 if b2 & 0x20 else 10 if b2 & 0x40 else 8
+        return f"av01.{profile}.{level:02d}{tier}.{depth:02d}"
+
+    def test_index_html_declares_the_codecs_the_files_carry(self):
+        html = (ROOT / "site" / "index.html").read_text()
+        feel = html[html.index('id="feel"'):html.index('id="why"')]
+        declared = dict(re.findall(r'src="media/([^"]+)"\s+type=\'video/mp4; codecs="([^"]+)"\'', feel))
+        self.assertEqual(sorted(declared), sorted(v.name for v in sv.VIDEOS))
+        for v in sv.VIDEOS:
+            self.assertEqual(declared[v.name], self.codec_string(v),
+                             f"the <source> for {v.name} declares a different codec string than the file carries")
+
+
 class RealFfmpeg(unittest.TestCase):
     @unittest.skipUnless(REAL_FFMPEG, "set PLXNATIVE_SITE_VIDEO_FFMPEG=<ffmpeg with libsvtav1 + libx264> to run the encode smoke case "
                                       "(needs a real ffmpeg; kept out of `make check`)")

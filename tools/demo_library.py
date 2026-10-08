@@ -1252,7 +1252,7 @@ def site_credits(assets, catalog, dst=SITE_CREDITS):
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Credits and licences for the openly licensed artwork in the PlxNative screenshots." />
+    <meta name="description" content="Credits and licences for the openly licensed artwork in the PlxNative screenshots and demo video." />
     <title>Artwork credits — PlxNative</title>
     <link rel="canonical" href="https://plxnative.com/credits.html" />
     <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
@@ -1263,7 +1263,7 @@ def site_credits(assets, catalog, dst=SITE_CREDITS):
     <meta property="og:site_name" content="PlxNative" />
     <meta property="og:url" content="https://plxnative.com/credits.html" />
     <meta property="og:title" content="Artwork credits — PlxNative" />
-    <meta property="og:description" content="Credits and licences for the openly licensed artwork in the PlxNative screenshots." />
+    <meta property="og:description" content="Credits and licences for the openly licensed artwork in the PlxNative screenshots and demo video." />
     <meta property="og:image" content="https://plxnative.com/media/og-card.jpg" />
     <meta property="og:image:type" content="image/jpeg" />
     <meta property="og:image:width" content="1200" />
@@ -1272,7 +1272,7 @@ def site_credits(assets, catalog, dst=SITE_CREDITS):
     <meta property="og:locale" content="en_US" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="Artwork credits — PlxNative" />
-    <meta name="twitter:description" content="Credits and licences for the openly licensed artwork in the PlxNative screenshots." />
+    <meta name="twitter:description" content="Credits and licences for the openly licensed artwork in the PlxNative screenshots and demo video." />
     <meta name="twitter:image" content="https://plxnative.com/media/og-card.jpg" />
     <meta name="twitter:image:alt" content="PlxNative home screen on an LG TV, next to the headline: Plex that feels fast on LG TVs." />
     <link rel="stylesheet" href="styles.css" />
@@ -1307,12 +1307,12 @@ def site_credits(assets, catalog, dst=SITE_CREDITS):
         <section class="credits-intro" aria-labelledby="credits-title">
           <h1 id="credits-title">Artwork credits</h1>
           <p class="lead">
-            The screenshots on this site show PlxNative browsing a demo library made entirely of openly
+            The screenshots and the demo video on this site show PlxNative browsing a demo library made entirely of openly
             licensed and public-domain works: open movies by Blender Studio and others.
           </p>
           <p>
             Each work is listed with its author, licence, source and the changes made. Every picture was
-            scaled and cropped to the app&rsquo;s layout, and the screenshots themselves are cropped and
+            scaled and cropped to the app&rsquo;s layout, and the screenshots and the video are cropped and
             resized for this site. Nothing was redrawn or otherwise altered except where noted.
           </p>
         </section>

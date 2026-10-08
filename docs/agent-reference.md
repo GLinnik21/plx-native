@@ -441,7 +441,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   held about 4 s (the shelf's `ok` opens details, the default Continue Watching setting; nothing
   plays), `back` (the shelf, that card focused), `up` `up` to the profile chip and on to the Movies
   tab, `ok` for the Movies library (hub shelves), two `right`s, `back`, then `down` onto Continue,
-  about 27 s: the last frame equals the first (129 pixels in the tab bar differ by 1/255). Every
+  about 27 s: the last frame equals the first to within 1/255 per channel (`storyboard.loop` in `render.json` and `feel.manifest.json` counts the pixels that differ). Every
   hero page it shows passes `demo_library.py hero-report` and is not `not_in_video`, and the title
   whose Detail it opens is not one whose hero page it shows. NOT filmed: scrolling on Detail, any
   popover or modal, any title flagged `not_in_video` opened (`gates` checks the mock's request log,
@@ -461,16 +461,15 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   frames differ from the first of them by at most 3/255 in every channel, or by more in at most
   0.01 % of the pixels; the spring tails), `storyboard/opened`, `storyboard/no-playback`,
   `storyboard/loop` (read from `end.match_first_frame` in `feel.json`: the last frame differs from
-  the first by at most 1/255 in every channel; the committed film measures 129 px at 1/255, all in the
-  tab bar) and `hero-pool` (fail closed: every hero page the film SHOWED, read from the app's event log
+  the first by at most 1/255 in every channel; `storyboard.loop` in the manifest records the count) and `hero-pool` (fail closed: every hero page the film SHOWED, read from the app's event log
   (`home: hero page slot N rk=R`, one line per page turn, plus the pinned page), is in the
   hero-report pass set and not `not_in_video`; `render.json` records them under `hero_pool`).
   A page push or pop dips through about three flat frames of the backdrop between the outgoing fade
   and the incoming one: that is the app's own page transition, not a hold. The AV1 encodes use CRF 22 with a keyframe every 8 s (`AV1_CODEC`; the 720p one every 12 s,
-  `AV1_720_GOP`, to stay at 1.15x of today's file against the 1.25x limit). They were re-tuned for HEADROOM
+  `AV1_720_GOP`, to stay under the 1.25x size limit). They were re-tuned for HEADROOM
   after the first Linux render read min VMAF 79.69 against the 80.0 floor on the 1080p one (macOS 80.10, at CRF 28 / 2 s; the 720p one, at CRF 25 / 4 s, read SSIM min 0.9709
-  against 0.97): now VMAF min 84.5 and 85.3, SSIM min 0.9796
-  and 0.9746. The floors did not move; a lower CRF is paid for by the longer GOP, never by a looser gate. The SSIM and VMAF gates pair frames by index in ONE time base
+  against 0.97): the macOS preview then read VMAF min 84.5 and 85.3, SSIM min 0.9796
+  and 0.9746; the committed Linux film's own numbers are the `vmaf/*` and `ssim/*` gates in `site/media/feel.manifest.json`. The floors did not move; a lower CRF is paid for by the longer GOP, never by a looser gate. The SSIM and VMAF gates pair frames by index in ONE time base
   (`BY_INDEX`, `settb=1/60,setpts=N`): pairing in each file's own time base rounded two frames of
   this film onto their neighbours and read them as SSIM 0.66 and VMAF 0.
   A page pushed in a dump does not hold its captured image while the destination's layout moves

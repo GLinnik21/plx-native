@@ -1,0 +1,704 @@
+{
+ "artifacts": {
+  "contact-sheet.jpg": {
+   "bytes": 838708,
+   "sha256": "e2600134a225eafd082d654290124715c8102bebc47b040b67878d913753d806"
+  },
+  "derived.sha256": {
+   "bytes": 12832,
+   "sha256": "1d7e6090285896c8cec572c144656857a986ca5b932027656ee1ba3d16f31233"
+  },
+  "dump-a.json": {
+   "bytes": 318,
+   "sha256": "ade23d5a8330625b428fe11150f8d1d0fc20340badccf78fc51a056c7fabe169"
+  },
+  "dump-b.json": {
+   "bytes": 302,
+   "sha256": "28af8d3d2b35c55d08ac9084a3d64f9b820f389207ed0317adac9abaf3aa8cc9"
+  },
+  "frames.tsv": {
+   "bytes": 50759,
+   "sha256": "a02ed0b77a5a0f5f74b3718be7c6125b64a17ebc902d1609051b3e3c41d183b3"
+  },
+  "gates.json": {
+   "bytes": 6269,
+   "sha256": "e921144421e03a048800726af054cacddb0a8082d2c0584e2fc6ab0b57d9b3a8"
+  },
+  "master.framemd5": {
+   "bytes": 131496,
+   "sha256": "8b36f013d8513ec5138355771a297915022bdf7f395b2c3f3dc44d3f71cc97e0"
+  },
+  "render.json": {
+   "bytes": 5811,
+   "sha256": "f0f11c561cb53313b3ba615693b9142f0dd7014bcd6998522f9f75453ec9cf26"
+  }
+ },
+ "catalog_sha256": "60621be5561022e362fab7aeaac116f1646bc508f2192ee5339c522de34f5465",
+ "environment": {
+  "cpu": {
+   "logical": 4,
+   "model": "AMD EPYC 7763 64-Core Processor"
+  },
+  "derive_ffmpeg": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers",
+  "env": {
+   "GALLIUM_DRIVER": "llvmpipe",
+   "LC_ALL": "C",
+   "LIBGL_ALWAYS_SOFTWARE": "1",
+   "LP_NATIVE_VECTOR_WIDTH": "256",
+   "SDL_VIDEODRIVER": "x11",
+   "TZ": "UTC"
+  },
+  "gl": {
+   "llvm": "20.1.2",
+   "mesa": "25.2.8-0ubuntu0.24.04.4",
+   "renderer": "llvmpipe (LLVM 20.1.2, 256 bits)",
+   "version": "4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4"
+  },
+  "glxinfo": "name of display: :99\ndisplay: :99  screen: 0\ndirect rendering: Yes\nExtended renderer info (GLX_MESA_query_renderer):\n    Vendor: Mesa (0xffffffff)\n    Device: llvmpipe (LLVM 20.1.2, 256 bits) (0xffffffff)\n    Version: 25.2.8\n    Accelerated: no\n    Video memory: 15989MB\n    Unified memory: yes\n    Preferred profile: core (0x1)\n    Max core profile version: 4.5\n    Max compat profile version: 4.5\n    Max GLES1 profile version: 1.1\n    Max GLES[23] profile version: 3.2\nMemory info (GL_ATI_meminfo):\n    VBO free memory - total: 0 MB, largest block: 0 MB\n    VBO free aux. memory - total: 14915 MB, largest block: 14915 MB\n    Texture free memory - total: 0 MB, largest block: 0 MB\n    Texture free aux. memory - total: 14915 MB, largest block: 14915 MB\n    Renderbuffer free memory - total: 0 MB, largest block: 0 MB\n    Renderbuffer free aux. memory - total: 14915 MB, largest block: 14915 MB\nMemory info (GL_NVX_gpu_memory_info):\n    Dedicated video memory: 0 MB\n    Total available memory: 15989 MB\n    Currently available dedicated video memory: 0 MB\nOpenGL vendor string: Mesa\nOpenGL renderer string: llvmpipe (LLVM 20.1.2, 256 bits)\nOpenGL core profile version string: 4.5 (Core Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL core profile shading language version string: 4.50\nOpenGL core profile context flags: (none)\nOpenGL core profile profile mask: core profile\n\nOpenGL version string: 4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL shading language version string: 4.50\nOpenGL context flags: (none)\nOpenGL profile mask: compatibility profile\n\nOpenGL ES profile version string: OpenGL ES 3.2 Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL ES profile shading language version string: OpenGL ES GLSL ES 3.20",
+  "kernel": "Linux 6.17.0-1022-azure",
+  "os": "Ubuntu 24.04.5 LTS",
+  "packages": {
+   "ffmpeg": "7:6.1.1-3ubuntu5",
+   "libgl1-mesa-dri": "25.2.8-0ubuntu0.24.04.4",
+   "libglx-mesa0": "25.2.8-0ubuntu0.24.04.4",
+   "libllvm16t64": "1:16.0.6-23ubuntu4",
+   "libllvm17t64": "1:17.0.6-9ubuntu1",
+   "libllvm18": "1:18.1.3-1ubuntu1",
+   "libllvm19": "1:19.1.1-1ubuntu1~24.04.2",
+   "libllvm20": "1:20.1.2-0ubuntu1~24.04.3",
+   "libsdl2-2.0-0": "2.30.0+dfsg-1ubuntu3.1",
+   "python3-pil": "10.2.0-1ubuntu1.3",
+   "xvfb": "2:21.1.12-1ubuntu1.8"
+  },
+  "pillow": "10.2.0",
+  "runner_image": {
+   "os": "ubuntu24",
+   "version": "20261004.327.1"
+  }
+ },
+ "gates": {
+  "passed": true,
+  "results": [
+   {
+    "detail": "ffv1 1920x1080 bgr0, 1641 frames (want ffv1 1920x1080)",
+    "name": "master/format",
+    "status": "pass"
+   },
+   {
+    "detail": "all 1641 rows are T(n) = round(n*1000/60) ms",
+    "name": "frames/t_ms",
+    "status": "pass"
+   },
+   {
+    "detail": "1641 frames agree",
+    "name": "frames/count",
+    "status": "pass"
+   },
+   {
+    "detail": "0 of 1641 written frames carry placeholder debt",
+    "name": "placeholder-debt",
+    "status": "pass"
+   },
+   {
+    "detail": "1641 frames scanned inline, 0 flagged",
+    "name": "sentinel/inline",
+    "status": "pass"
+   },
+   {
+    "detail": "1641 master frames rescanned, none holds a connected 64-pixel run of #FF00FE",
+    "name": "sentinel/master",
+    "status": "pass"
+   },
+   {
+    "detail": "both renders agree on 1641 frames (n, t_ms, xxh3, debt: 694a024effb2)",
+    "name": "run-twice",
+    "status": "pass"
+   },
+   {
+    "detail": "2 hero page(s) shown (102, 101), each passes hero-report and none is not_in_video; 2 page turn(s)",
+    "name": "hero-pool",
+    "status": "pass"
+   },
+   {
+    "detail": "1 titles opened (105), none flagged not_in_video (of 6 flagged); focus at rest is judged by position, not recorded",
+    "name": "storyboard/opened",
+    "status": "pass"
+   },
+   {
+    "detail": "14 beats at rest (<= 3/255, or <= 0.01% of pixels moved, over the last 12 frames)",
+    "name": "storyboard/rest",
+    "status": "pass"
+   },
+   {
+    "detail": "no stream, transcode, timeline, scrobble or play-queue request reached the mock",
+    "name": "storyboard/no-playback",
+    "status": "pass"
+   },
+   {
+    "detail": "the last frame (1640) is 12 px from the first, by at most 1/255 on a channel (limit 1/255): the film loops without a visible seam",
+    "name": "storyboard/loop",
+    "status": "pass"
+   },
+   {
+    "detail": "4,402,370 bytes is 1.18x today's 3,720,930 (limit 1.25x)",
+    "name": "size/feel-720p60.av1.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "4,268,004 bytes is 0.72x today's 5,961,659 (limit 1.25x)",
+    "name": "size/feel-720p60.h264.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "8,276,609 bytes is 1.07x today's 7,743,989 (limit 1.25x)",
+    "name": "size/feel-1080p60.av1.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "8,075,130 bytes is 0.68x today's 11,883,745 (limit 1.25x)",
+    "name": "size/feel-1080p60.h264.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "215,941 bytes is 0.78x today's 278,321 (limit 1.25x)",
+    "name": "size/feel-poster.jpg",
+    "status": "pass"
+   },
+   {
+    "detail": "78,468 bytes is 0.76x today's 102,805 (limit 1.25x)",
+    "name": "size/feel-poster-narrow.jpg",
+    "status": "pass"
+   },
+   {
+    "detail": "format as the site expects",
+    "name": "format/feel-720p60.av1.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "min 0.9756 (floor 0.97), mean 0.9983 (floor 0.985)",
+    "name": "ssim/feel-720p60.av1.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "mean 97.65, min 84.59 (provisional floors)",
+    "name": "vmaf/feel-720p60.av1.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "flat-pair fraction 0.551 vs master 0.545: excess +0.007 (limit 0.1, provisional ROI (0, 446, 448, 216))",
+    "name": "banding/feel-720p60.av1.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "SSIM(first, last) 0.9990 >= 0.995",
+    "name": "seam/feel-720p60.av1.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "format as the site expects",
+    "name": "format/feel-720p60.h264.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "min 0.9878 (floor 0.97), mean 0.9953 (floor 0.985)",
+    "name": "ssim/feel-720p60.h264.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "mean 97.05, min 89.40 (provisional floors)",
+    "name": "vmaf/feel-720p60.h264.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "flat-pair fraction 0.571 vs master 0.545: excess +0.027 (limit 0.1, provisional ROI (0, 446, 448, 216))",
+    "name": "banding/feel-720p60.h264.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "SSIM(first, last) 0.9962 >= 0.995",
+    "name": "seam/feel-720p60.h264.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "format as the site expects",
+    "name": "format/feel-1080p60.av1.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "min 0.9801 (floor 0.97), mean 0.9982 (floor 0.985)",
+    "name": "ssim/feel-1080p60.av1.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "mean 97.63, min 83.40 (provisional floors)",
+    "name": "vmaf/feel-1080p60.av1.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "flat-pair fraction 0.630 vs master 0.609: excess +0.021 (limit 0.1, provisional ROI (0, 668, 672, 324))",
+    "name": "banding/feel-1080p60.av1.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "SSIM(first, last) 0.9989 >= 0.995",
+    "name": "seam/feel-1080p60.av1.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "format as the site expects",
+    "name": "format/feel-1080p60.h264.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "min 0.9890 (floor 0.97), mean 0.9958 (floor 0.985)",
+    "name": "ssim/feel-1080p60.h264.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "mean 97.07, min 89.85 (provisional floors)",
+    "name": "vmaf/feel-1080p60.h264.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "flat-pair fraction 0.633 vs master 0.609: excess +0.024 (limit 0.1, provisional ROI (0, 668, 672, 324))",
+    "name": "banding/feel-1080p60.h264.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "SSIM(first, last) 0.9964 >= 0.995",
+    "name": "seam/feel-1080p60.h264.mp4",
+    "status": "pass"
+   },
+   {
+    "detail": "format as the site expects",
+    "name": "format/feel-poster.jpg",
+    "status": "pass"
+   },
+   {
+    "detail": "min 0.9905 (floor 0.97), mean 0.9905 (floor 0.97)",
+    "name": "ssim/feel-poster.jpg",
+    "status": "pass"
+   },
+   {
+    "detail": "format as the site expects",
+    "name": "format/feel-poster-narrow.jpg",
+    "status": "pass"
+   },
+   {
+    "detail": "min 0.9871 (floor 0.97), mean 0.9871 (floor 0.97)",
+    "name": "ssim/feel-poster-narrow.jpg",
+    "status": "pass"
+   },
+   {
+    "detail": "SSIM(first, last) 1.0000 >= 0.995",
+    "name": "seam/master",
+    "status": "pass"
+   }
+  ]
+ },
+ "hero_pool": {
+  "eligible": [
+   "101",
+   "102",
+   "104",
+   "105",
+   "106",
+   "117",
+   "122",
+   "124",
+   "125"
+  ],
+  "logged": [
+   "102",
+   "101"
+  ],
+  "turns": [
+   "101",
+   "102"
+  ]
+ },
+ "opened_rating_keys": [
+  "105"
+ ],
+ "outputs": {
+  "feel-1080p60.av1.mp4": {
+   "bytes": 8276609,
+   "sha256": "51e333d24351916f8310328b8f318d25e35e8e3a874ddc30ae88dbee08bf8b2d"
+  },
+  "feel-1080p60.h264.mp4": {
+   "bytes": 8075130,
+   "sha256": "2a5e53701bb9fea8625478253f2cb1cd19244c13cb5134f425fd4784cd79eb79"
+  },
+  "feel-720p60.av1.mp4": {
+   "bytes": 4402370,
+   "sha256": "470081b094d8405379f1a2f70a4541791ff444c75d206689251a38e21edbb883"
+  },
+  "feel-720p60.h264.mp4": {
+   "bytes": 4268004,
+   "sha256": "9b987b95b4c910642192df46780a9b99352e9dddd26c551311e5b544f755bc13"
+  },
+  "feel-poster-narrow.jpg": {
+   "bytes": 78468,
+   "sha256": "2189a751786811eb1746a1da2ea261ba39292161c7dde7f097e14d34edbc53c3"
+  },
+  "feel-poster.jpg": {
+   "bytes": 215941,
+   "sha256": "e1a250f6c3fafd0a75c8eb02a3f71f8292b2e89ecf1a4ed796f7224fe7680a35"
+  }
+ },
+ "platform": "linux-ci",
+ "render": {
+  "dump": {
+   "clock_origin_ms": 1000000,
+   "hold_reasons": {
+    "carried-work": 4,
+    "claim:browse": 1,
+    "placeholder": 39,
+    "settling": 1765,
+    "source-busy": 241,
+    "tex-pending": 2
+   },
+   "holds": 2014,
+   "iterations": 3775,
+   "preroll": 120,
+   "unconverted_takes": [],
+   "wall_ms": 160126
+  },
+  "frames": {
+   "count": 1641,
+   "fps": 60,
+   "height": 1080,
+   "width": 1920
+  },
+  "hero_pool": {
+   "eligible": [
+    "101",
+    "102",
+    "104",
+    "105",
+    "106",
+    "117",
+    "122",
+    "124",
+    "125"
+   ],
+   "logged": [
+    "102",
+    "101"
+   ],
+   "turns": [
+    "101",
+    "102"
+   ]
+  },
+  "hold_hint": "suppressed",
+  "not_in_video": [
+   "109",
+   "110",
+   "112",
+   "118",
+   "126",
+   "202"
+  ],
+  "opened_rating_keys": [
+   "105"
+  ],
+  "placeholder_debt": {
+   "frames_with_debt": 0
+  },
+  "platform": "linux-ci",
+  "playback_requests": [],
+  "schema": 1,
+  "sentinel": {
+   "hits": 0,
+   "scanned_frames": 1641
+  },
+  "storyboard": {
+   "beats": [
+    {
+     "end": 132,
+     "keys": [],
+     "name": "hero",
+     "start": 0
+    },
+    {
+     "end": 180,
+     "keys": [
+      "right"
+     ],
+     "name": "to-info",
+     "start": 132
+    },
+    {
+     "end": 306,
+     "keys": [
+      "right"
+     ],
+     "name": "hero-next",
+     "start": 180
+    },
+    {
+     "end": 348,
+     "keys": [
+      "left"
+     ],
+     "name": "to-continue",
+     "start": 306
+    },
+    {
+     "end": 444,
+     "keys": [
+      "left"
+     ],
+     "name": "hero-back",
+     "start": 348
+    },
+    {
+     "end": 528,
+     "keys": [
+      "down"
+     ],
+     "name": "shelf",
+     "start": 444
+    },
+    {
+     "end": 639,
+     "keys": [
+      "right",
+      "right"
+     ],
+     "name": "shelf-right",
+     "start": 528
+    },
+    {
+     "end": 885,
+     "keys": [
+      "ok"
+     ],
+     "name": "detail",
+     "start": 639
+    },
+    {
+     "end": 981,
+     "keys": [
+      "back"
+     ],
+     "name": "back-shelf",
+     "start": 885
+    },
+    {
+     "end": 1194,
+     "keys": [
+      "up",
+      "up",
+      "right",
+      "right"
+     ],
+     "name": "to-tab-bar",
+     "start": 981
+    },
+    {
+     "end": 1296,
+     "keys": [
+      "ok"
+     ],
+     "name": "library",
+     "start": 1194
+    },
+    {
+     "end": 1419,
+     "keys": [
+      "right",
+      "right"
+     ],
+     "name": "library-move",
+     "start": 1296
+    },
+    {
+     "end": 1491,
+     "keys": [
+      "back"
+     ],
+     "name": "return-home",
+     "start": 1419
+    },
+    {
+     "end": 1641,
+     "keys": [
+      "down"
+     ],
+     "name": "to-hero",
+     "start": 1491
+    }
+   ],
+   "extra_holds": null,
+   "file_sha256": "a212e726d1686151aa05923727b6c86c76acf1f3517658b768c26426d67867d3",
+   "frames": 1641,
+   "hold_hint": "suppressed",
+   "keys": "252:right,300:right,426:left,468:left,564:down,648:right,681:right,759:ok,1005:back,1101:up,1152:up,1203:right,1254:right,1314:ok,1416:right,1449:right,1539:back,1611:down",
+   "loop": {
+    "differing": 12,
+    "frames": [
+     0,
+     1640
+    ],
+    "max_delta": 1
+   },
+   "pin_hero": true,
+   "preroll": 120,
+   "rest": [
+    {
+     "beat": "hero",
+     "frames": [
+      119,
+      131
+     ],
+     "max_delta": 0,
+     "moved": 0.0
+    },
+    {
+     "beat": "to-info",
+     "frames": [
+      167,
+      179
+     ],
+     "max_delta": 1,
+     "moved": 0.0
+    },
+    {
+     "beat": "hero-next",
+     "frames": [
+      293,
+      305
+     ],
+     "max_delta": 1,
+     "moved": 0.0
+    },
+    {
+     "beat": "to-continue",
+     "frames": [
+      335,
+      347
+     ],
+     "max_delta": 3,
+     "moved": 0.0
+    },
+    {
+     "beat": "hero-back",
+     "frames": [
+      431,
+      443
+     ],
+     "max_delta": 1,
+     "moved": 0.0
+    },
+    {
+     "beat": "shelf",
+     "frames": [
+      515,
+      527
+     ],
+     "max_delta": 2,
+     "moved": 0.0
+    },
+    {
+     "beat": "shelf-right",
+     "frames": [
+      626,
+      638
+     ],
+     "max_delta": 1,
+     "moved": 0.0
+    },
+    {
+     "beat": "detail",
+     "frames": [
+      872,
+      884
+     ],
+     "max_delta": 0,
+     "moved": 0.0
+    },
+    {
+     "beat": "back-shelf",
+     "frames": [
+      968,
+      980
+     ],
+     "max_delta": 0,
+     "moved": 0.0
+    },
+    {
+     "beat": "to-tab-bar",
+     "frames": [
+      1181,
+      1193
+     ],
+     "max_delta": 2,
+     "moved": 0.0
+    },
+    {
+     "beat": "library",
+     "frames": [
+      1283,
+      1295
+     ],
+     "max_delta": 1,
+     "moved": 0.0
+    },
+    {
+     "beat": "library-move",
+     "frames": [
+      1406,
+      1418
+     ],
+     "max_delta": 1,
+     "moved": 0.0
+    },
+    {
+     "beat": "return-home",
+     "frames": [
+      1478,
+      1490
+     ],
+     "max_delta": 1,
+     "moved": 0.0
+    },
+    {
+     "beat": "to-hero",
+     "frames": [
+      1628,
+      1640
+     ],
+     "max_delta": 0,
+     "moved": 0.0
+    }
+   ],
+   "scene": "home",
+   "script": "storyboard",
+   "triggers": {}
+  },
+  "storyboard_sha256": "7fb67ee2b3d698f5fa3bd5c202e453912ded9c41a4e75a3ac3487b4383c8234a"
+ },
+ "schema": 1,
+ "storyboard_sha256": "7fb67ee2b3d698f5fa3bd5c202e453912ded9c41a4e75a3ac3487b4383c8234a",
+ "tools": {
+  "ffmpeg": {
+   "archive_sha256": "c03023a986dec781a5ab6bb8821d6544b40eb86e96f34283880a0fae8105da67",
+   "canonical": true,
+   "pin": "linux-x86_64",
+   "sha256": "a6201b7a10dc4f6c90938fce42041eec18c6af49aa0116131fb942ce733b247f",
+   "version": "ffmpeg version n9.0.2-22-g46d8f462ee-20261007 Copyright (c) 2000-2026 the FFmpeg developers"
+  },
+  "python": "3.12.3"
+ },
+ "tree_dirty": false,
+ "tree_hash": {
+  "assets": "d1cad6f4b465b935156793b577f2e743100e4ce0",
+  "combined": "55e00d76d4a089664b7e9a7d9cc1f64022b4326c69bb6c9bd8dbc3b2305ef3f5",
+  "locales": "61e42783503619f6e0166e0711a32dfe29f2f00c",
+  "rust-modules": "4660cc9740a3d6f94bc3bb3f045826c6f366e751",
+  "src": "ef3ecd2bd458671ce529974f0f9094c4437c8b93",
+  "tests/video": "a4c28579d517bbeeda316a98de9196bbfd17cc6f"
+ }
+}

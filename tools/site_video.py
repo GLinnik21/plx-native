@@ -313,14 +313,14 @@ AV1_CODEC = ["-c:v", "libsvtav1", "-preset", "4", "-crf", "22", "-g", "480",
              "-svtav1-params", "tune=0:film-grain=0", "-pix_fmt", "yuv420p"]
 H264_CODEC = ["-c:v", "libx264", "-preset", "veryslow", "-crf", "18", "-tune", "animation",
               "-profile:v", "high", "-pix_fmt", "yuv420p", "-x264-params", "aq-mode=3:deblock=-1,-1"]
-POSTER_QUALITY = ["-q:v", "3"]  # provisional: today's feel-poster.jpg is 278 KB; the size gate bounds it
+POSTER_QUALITY = ["-q:v", "3"]  # provisional: the size gate bounds it against the poster in site/media
 
 
 # The AV1 encodes' CRF and GOP were re-tuned for HEADROOM, not to pass: the first Linux (llvmpipe) render of the
 # 27 s film failed `vmaf/feel-1080p60.av1.mp4` at min 79.69 against the 80.0 floor while macOS read 80.10, and the
 # 720p one read SSIM min 0.9709 against 0.97. The floors are untouched. The film's three full-frame backdrops
 # make a keyframe most of the bytes of a short-GOP AV1 file, so a longer GOP buys the size budget a finer CRF
-# spends (measured on the committed film, macOS: CRF 28 / GOP 120, the old 1080p setting, 9,012,205 bytes = 1.16x
+# spends (measured on the macOS preview of this film: CRF 28 / GOP 120, the old 1080p setting, 9,012,205 bytes = 1.16x
 # of today's file, VMAF min 80.10, SSIM min 0.9726; CRF 22 / GOP 480, 8,052,122 bytes = 1.04x, VMAF min 84.52,
 # SSIM min 0.9796). The phone-sized file keeps a still longer GOP (12 s, one keyframe near the loop point and
 # one mid-film) because 1280x720 at CRF 22 / GOP 480 is 1.23x, 0.02 under the 1.25x limit: CRF 22 / GOP 720 is
