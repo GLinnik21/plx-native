@@ -59,7 +59,9 @@ Nothing is committed but the manifests and the two captured detail fixtures: the
 the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`, ~390 MB of sources,
 283 MB of it the complete Sintel the player figure plays), so a fresh clone rebuilds them with one
 command. Derivation is ffmpeg with fixed filters and fixed
-encoder settings, so one ffmpeg build derives byte-identical files every time. The clear logos
+encoder settings, so one ffmpeg build derives byte-identical files every time. A derived file's name
+carries a hash of its recipe (`derived_file`), so checkouts that share the cache never overwrite one
+another's artwork. The clear logos
 (`logo` in the catalog, see `derive_logo`) are cut from each film's own poster by a keyed recipe,
 or, for a `logo-title-card` asset, trimmed to the lettering of the film's own title card; both
 are done with Pillow, the one Python package the screenshots need. An episode marked `stand_in` also gets a STAND-IN video
@@ -345,52 +347,69 @@ def derived_dir():
     return cache_dir() / "derived"
 
 
+# Bump when the deriving CODE changes the pixels an unchanged recipe makes (a filter, a quality, the
+# keying maths): it is part of every derived file's name, so the old files are simply not looked at.
+DERIVE_VERSION = 1
+
+DERIVED_EXT = {"logo": "png", "stand-in": "mp4"}
+
+
+def derived_parts(assets, rec, role):
+    """What decides the bytes of one derived file: the source's hash, the frame it is cut to and the
+    recipe less its `subject` (a declaration about the picture, not a step in making it)."""
+    if role in ("poster", "art", "thumb"):
+        recipe = rec[role]
+        size = {"poster": POSTER, "art": ART, "thumb": THUMB}[role]
+        return [assets[recipe["asset"]]["sha256"], list(size), recipe_stamp(recipe)]
+    if role == "logo":
+        return [assets[rec["logo"]["asset"]]["sha256"], rec["logo"]]
+    if role == "stand-in":
+        return [rec["minutes"], STAND_IN]
+    raise KeyError(role)
+
+
+def derived_file(assets, cache, key, rec, role):
+    """The cache path of one derived file, `derived/<item>/<role>-<12 hex>.<ext>`. The name carries a
+    hash of `derived_parts` and `DERIVE_VERSION`, so two checkouts whose catalogs hold different
+    recipes for the same title write DIFFERENT files into the one shared cache instead of
+    overwriting each other's; `derive` and the mock server both resolve a file through here. Files
+    for superseded recipes are left behind (delete the `derived` directory to reclaim them)."""
+    h = hashlib.sha256(json.dumps([DERIVE_VERSION, role, derived_parts(assets, rec, role)],
+                                  sort_keys=True).encode()).hexdigest()[:12]
+    return pathlib.Path(cache) / "derived" / key.replace("/", "_") / f"{role}-{h}.{DERIVED_EXT.get(role, 'jpg')}"
+
+
+def _atomically(dst, make):
+    """Run `make(path)` into a sibling temp file and rename it into place, so an interrupted run
+    never leaves a half-written file under a name the next run would trust."""
+    tmp = dst.with_name(f"{dst.stem}.tmp{dst.suffix}")
+    make(tmp)
+    os.replace(tmp, dst)
+
+
 def derive(assets, catalog):
     paths = fetch(assets)
     out = derived_dir()
     out.mkdir(parents=True, exist_ok=True)
-    report = {}
+    count = 0
     for key, kind, rec in item_keys(catalog):
-        jobs = []
-        if "poster" in rec:
-            jobs.append(("poster", POSTER, rec["poster"]))
-        if "art" in rec:
-            jobs.append(("art", ART, rec["art"]))
-        if "thumb" in rec:
-            jobs.append(("thumb", THUMB, rec["thumb"]))
-        for role, size, recipe in jobs:
-            dst = out / key.replace("/", "_") / f"{role}.jpg"
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            stamp = dst.with_suffix(".recipe")
-            want = json.dumps([assets[recipe["asset"]]["sha256"], size, recipe_stamp(recipe)], sort_keys=True)
-            if not dst.exists() or not stamp.exists() or stamp.read_text() != want:
-                derive_image(paths[recipe["asset"]], dst, size, recipe)
-                stamp.write_text(want)
-            report[f"{key}:{role}"] = sha256(dst)
-        if "logo" in rec:
-            recipe = rec["logo"]
-            dst = out / key.replace("/", "_") / "logo.png"
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            stamp = dst.with_suffix(".recipe")
-            want = json.dumps([assets[recipe["asset"]]["sha256"], recipe], sort_keys=True)
-            if not dst.exists() or not stamp.exists() or stamp.read_text() != want:
-                derive_logo(paths, dst, recipe)
-                stamp.write_text(want)
-            report[f"{key}:logo"] = sha256(dst)
+        roles = [r for r in ("poster", "art", "thumb", "logo") if r in rec]
         if rec.get("stand_in"):
-            dst = out / key.replace("/", "_") / "stand-in.mp4"
+            roles.append("stand-in")
+        for role in roles:
+            dst = derived_file(assets, cache_dir(), key, rec, role)
             dst.parent.mkdir(parents=True, exist_ok=True)
-            stamp = dst.with_suffix(".recipe")
-            want = json.dumps([rec["minutes"], STAND_IN], sort_keys=True)
-            if not dst.exists() or not stamp.exists() or stamp.read_text() != want:
-                derive_stand_in(dst, rec["minutes"] * 60)
-                stamp.write_text(want)
-            report[f"{key}:stand-in"] = sha256(dst)
-    for m in catalog["movies"]:
-        if "media" in m:
-            report[f"{m['id']}:media"] = assets[m["media"]]["sha256"]
-    (out / "derived.json").write_text(json.dumps(report, indent=1, sort_keys=True))
-    print(f"demo_library: {len(report)} derived files in {out}", flush=True)
+            count += 1
+            if dst.exists():
+                continue
+            if role == "logo":
+                _atomically(dst, lambda t: derive_logo(paths, t, rec["logo"]))
+            elif role == "stand-in":
+                _atomically(dst, lambda t: derive_stand_in(t, rec["minutes"] * 60))
+            else:
+                size = {"poster": POSTER, "art": ART, "thumb": THUMB}[role]
+                _atomically(dst, lambda t: derive_image(paths[rec[role]["asset"]], t, size, rec[role]))
+    print(f"demo_library: {count} derived files in {out}", flush=True)
     return out
 
 

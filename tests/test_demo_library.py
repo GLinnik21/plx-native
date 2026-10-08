@@ -202,8 +202,8 @@ class Completeness(unittest.TestCase):
     # the list's own file: growing the list means editing this table, which a reviewer sees. When a
     # content PR fixes a gap it deletes the entry from `pending.json` AND lowers the number here;
     # a category that reaches zero leaves the table.
-    PENDING_CEILING = {"backdrop": 1, "country": 1, "creators": 1, "hero_art": 3,
-                       "logo": 25, "poster": 2, "writers": 1}
+    PENDING_CEILING = {"backdrop": 1, "country": 1, "creators": 1, "hero_art": 1,
+                       "logo": 1, "poster": 1, "writers": 1}
 
     CITED = {"source": "https://www.wikidata.org/wiki/Q42", "retrieved": "2026-10-07"}
 
@@ -223,10 +223,11 @@ class Completeness(unittest.TestCase):
         gaps = tool.complete_gaps(self.assets, dict(self.catalog, movies=movies)).get(key, [])
         return [g for g in gaps if g != "hero_art"]
 
-    def test_sintel_has_only_its_hero_art_gap_and_tears_of_steel_lacks_its_logo_too(self):
+    def test_sintel_and_tears_of_steel_are_complete_and_sprite_fright_lacks_a_hero_frame(self):
         gaps = tool.complete_gaps(self.assets, self.catalog)
-        self.assertEqual(gaps["sintel"], ["hero_art"])
-        self.assertEqual(gaps["tears-of-steel"], ["hero_art", "logo"])
+        self.assertNotIn("sintel", gaps)
+        self.assertNotIn("tears-of-steel", gaps)
+        self.assertEqual(gaps["sprite-fright"], ["hero_art"])
 
     def test_each_required_field_is_a_gap_when_absent(self):
         # field removed from a complete title -> the category it is reported under
@@ -371,6 +372,28 @@ class HeroGeometry(unittest.TestCase):
 
     def setUp(self):
         self.assets, self.catalog = tool.load()
+
+    def test_the_pinned_hero_declares_a_box_without_changing_a_pixel_of_its_backdrop(self):
+        # Sintel's derived backdrop is in docs/screenshots/home.jpg and the site close-ups: declaring
+        # its subject must leave the recipe stamp (what decides the pixels) as it was.
+        films = {m["id"]: m for m in self.catalog["movies"]}
+        art = films["sintel"]["art"]
+        self.assertEqual(tool.recipe_stamp(art), {"asset": "bs-sintel-header", "mode": "cover", "anchor": "right"})
+        v = tool.hero_geometry(self.assets, films["sintel"])
+        self.assertEqual(v["verdict"], "pass", v["reasons"])
+        # 2048x872 -> scale 1080/872, cut at the right: x*1.2385-616.4, y*1.2385
+        for got, want in zip(v["box"], (1047.0, 290.0, 1322.0, 701.0)):
+            self.assertAlmostEqual(got, want, delta=1.0)
+
+    def test_tears_of_steel_is_a_cover_crop_with_the_face_clear_of_every_text_zone(self):
+        films = {m["id"]: m for m in self.catalog["movies"]}
+        v = tool.hero_geometry(self.assets, films["tears-of-steel"])
+        self.assertEqual(v["verdict"], "pass", v["reasons"])
+        # 3840x1600 -> scale 0.675, cut at the left (nothing taken from it): x*0.675, y*0.675
+        for got, want in zip(v["box"], (1181.25, 121.5, 1795.5, 700.65)):
+            self.assertAlmostEqual(got, want, delta=1.0)
+        self.assertGreaterEqual(v["centre_x"], tool.HERO_CENTRE_MIN_X)
+        self.assertEqual({n: a for n, a in v["overlaps"].items() if a}, {})
 
     def art(self, w, h, subject, **recipe):
         """(assets, record) for a title whose backdrop is a `w`x`h` source with `recipe`."""
@@ -550,17 +573,16 @@ class HeroGeometry(unittest.TestCase):
             with self.subTest(title=m["id"]):
                 verdict = tool.hero_geometry(self.assets, m)["verdict"]
                 self.assertEqual("hero_art" in gaps.get(m["id"], []), m["id"] in eligible and verdict == "fail")
-        # the three Blender films still waiting for a box (they sit in the app's pool, so cannot be flagged)
-        self.assertEqual(sorted(k for k, g in gaps.items() if "hero_art" in g),
-                         ["sintel", "sprite-fright", "tears-of-steel"])
+        # the one Blender film still waiting for a box (it sits in the app's pool, so cannot be flagged)
+        self.assertEqual(sorted(k for k, g in gaps.items() if "hero_art" in g), ["sprite-fright"])
 
     def test_a_passing_declared_subject_clears_the_pending_entry(self):
         movies = copy.deepcopy(self.catalog["movies"])
-        sintel = next(m for m in movies if m["id"] == "sintel")
-        self.assertEqual((sintel["art"]["mode"], sintel["art"]["anchor"]), ("cover", "right"))
-        sintel["art"]["subject"] = [1500, 100, 1900, 500]  # 2048x872 source
+        sprite = next(m for m in movies if m["id"] == "sprite-fright")
+        self.assertEqual((sprite["art"]["mode"], sprite["art"]["anchor"]), ("cover", "right"))
+        sprite["art"]["subject"] = [1280, 80, 1750, 540]  # 1920x850 source -> frame [1106, 102, 1703, 686]
         cat = dict(self.catalog, movies=movies)
-        self.assertNotIn("sintel", tool.complete_gaps(self.assets, cat))
+        self.assertNotIn("sprite-fright", tool.complete_gaps(self.assets, cat))
         with self.assertRaises(AssertionError) as e:  # ...and the now-stale pending entry is refused
             tool.check_complete(self.assets, cat)
         self.assertIn("hero_art", str(e.exception))
@@ -569,6 +591,32 @@ class HeroGeometry(unittest.TestCase):
         a = {"asset": "x", "mode": "cover", "anchor": "right"}
         self.assertEqual(tool.recipe_stamp(a), tool.recipe_stamp(dict(a, subject=[1, 2, 3, 4])))
         self.assertNotEqual(tool.recipe_stamp(a), tool.recipe_stamp(dict(a, anchor="left")))
+
+    def test_two_recipes_for_one_asset_derive_to_two_paths_and_a_subject_to_one(self):
+        # The cache is shared by every checkout on a machine: a file named by the title alone is
+        # overwritten by whichever checkout derived last, so the name carries the recipe's hash.
+        assets = {"x": {"sha256": "a" * 64}, "y": {"sha256": "b" * 64}}
+        rec = {"art": {"asset": "x", "mode": "cover", "anchor": "right"}}
+        path = lambda r, role="art", cache="/c": tool.derived_file(assets, cache, "film", r, role)
+        again = {"art": dict(rec["art"], subject=[1, 2, 3, 4])}
+        self.assertEqual(path(rec), path(again))  # a declaration about the picture changes no pixel
+        for other in ({"art": dict(rec["art"], anchor="left")}, {"art": dict(rec["art"], asset="y")},
+                      {"art": dict(rec["art"], mode="extend")}):
+            self.assertNotEqual(path(rec), path(other), other)
+        self.assertNotEqual(path(rec), path({"poster": rec["art"]}, "poster"))
+        self.assertRegex(str(path(rec)), r"^/c/derived/film/art-[0-9a-f]{12}\.jpg$")
+        self.assertRegex(str(path({"logo": {"asset": "x", "box": [0, 0, 1, 1]}}, "logo")), r"/logo-[0-9a-f]{12}\.png$")
+        self.assertRegex(str(tool.derived_file(assets, "/c", "show/1/2", {"minutes": 3}, "stand-in")),
+                         r"/derived/show_1_2/stand-in-[0-9a-f]{12}\.mp4$")
+        before = path(rec)
+        with unittest.mock.patch.object(tool, "DERIVE_VERSION", tool.DERIVE_VERSION + 1):
+            self.assertNotEqual(before, tool.derived_file(assets, "/c", "film", rec, "art"))
+
+    def test_the_mock_serves_a_file_from_the_path_derive_wrote(self):
+        assets = {"x": {"sha256": "a" * 64}}
+        rec = {"art": {"asset": "x", "mode": "cover", "anchor": "right"}}
+        self.assertEqual(mock_pms.demo_derived_file(assets, "/c", "film", rec, "art"),
+                         tool.derived_file(assets, "/c", "film", rec, "art"))
 
     # ---- the zones are pinned to the Rust layout ---------------------------------------------
 
@@ -656,9 +704,8 @@ class HeroGeometry(unittest.TestCase):
     def test_hero_report_prints_each_eligible_title_offline(self):
         r = self._run("hero-report")
         self.assertEqual(r.returncode, 0, r.stderr)
-        for key in ("sintel", "sprite-fright", "tears-of-steel"):
-            self.assertRegex(r.stdout, rf"(?m)^{key} .*\bfail no-subject\b")
-        for key in ("spring", "charge", "cosmos-laundromat", "hero", "singularity", "metropolis", "the-general",
+        self.assertRegex(r.stdout, r"(?m)^sprite-fright .*\bfail no-subject\b")
+        for key in ("sintel", "tears-of-steel", "spring", "charge", "cosmos-laundromat", "hero", "singularity", "metropolis", "the-general",
                     "safety-last", "the-daily-dweebs"):
             self.assertRegex(r.stdout, rf"(?m)^{key} .*\bpass\b")
         self.assertRegex(r.stdout, r"(?m)^sherlock-holmes .*\bskip\b")
@@ -814,23 +861,23 @@ class TitleFlags(unittest.TestCase):
     # ---- the logo-title-card asset kind ------------------------------------------------------
 
     def card(self, **fields):
-        base = dict(self.assets["sintel-poster"], kind="logo-title-card", of="wing-it", origin="official-title-card")
+        base = dict(self.assets["sintel-poster"], kind="logo-title-card", of="the-general", origin="official-title-card")
         base.update(fields)
         return {k: v for k, v in base.items() if v is not None}
 
-    def with_card(self, title="wing-it", **fields):
-        assets = dict(self.assets, **{"wing-it-card": self.card(**fields)})
-        cat = self.cat(**{title: {"logo": {"asset": "wing-it-card"}}})
+    def with_card(self, title="the-general", **fields):
+        assets = dict(self.assets, **{"the-general-card": self.card(**fields)})
+        cat = self.cat(**{title: {"logo": {"asset": "the-general-card"}}})
         return assets, cat
 
     def test_a_title_card_is_the_logo_source_of_its_own_title_and_satisfies_the_logo_gap(self):
         assets, cat = self.with_card()
         self.assertTrue(tool.check(assets, cat))
-        self.assertNotIn("logo", tool.complete_gaps(assets, cat).get("wing-it", []))
-        self.assertIn("logo", tool.complete_gaps(self.assets, self.catalog).get("wing-it", ["logo"]))
+        self.assertNotIn("logo", tool.complete_gaps(assets, cat).get("the-general", []))
+        self.assertIn("logo", tool.complete_gaps(self.assets, self.catalog).get("the-general", ["logo"]))
 
     def test_a_title_card_of_another_film_is_refused_as_a_logo(self):
-        assets, cat = self.with_card(title="sintel")  # the card says it is of wing-it
+        assets, cat = self.with_card(title="sintel")  # the card says it is of the-general
         self.assertIn("own card", self.refused(cat, assets))
 
     def test_a_title_card_records_what_it_is_of_and_where_it_comes_from(self):
@@ -844,10 +891,10 @@ class TitleFlags(unittest.TestCase):
 
     def test_a_title_card_is_a_source_for_a_logo_and_nothing_else(self):
         assets, _ = self.with_card()
-        for role, recipe in (("poster", {"asset": "wing-it-card"}),
-                             ("art", {"asset": "wing-it-card", "mode": "cover"})):
+        for role, recipe in (("poster", {"asset": "the-general-card"}),
+                             ("art", {"asset": "the-general-card", "mode": "cover"})):
             with self.subTest(role=role):
-                cat = self.cat(**{"wing-it": {role: recipe}})
+                cat = self.cat(**{"the-general": {role: recipe}})
                 self.assertIn("title card", self.refused(cat, assets))
 
     def test_a_title_cards_licence_rules_are_those_of_every_asset(self):
@@ -874,7 +921,7 @@ class TitleFlags(unittest.TestCase):
             text = (pathlib.Path(d) / "CREDITS.md").read_text()
             self.assertIn("clear logo, the film's own title card", text)
             works = tool.site_works(assets, cat)
-        entry = next(w for w in works if w["id"] == "wing-it")["entries"]
+        entry = next(w for w in works if w["id"] == "the-general")["entries"]
         self.assertTrue(any("title card" in " ".join(e["changes"]) for e in entry))
 
     @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow absent")
@@ -892,6 +939,29 @@ class TitleFlags(unittest.TestCase):
             Image.new("RGB", (40, 30), (9, 9, 9)).save(src)  # no transparent ground: refused, not guessed
             with self.assertRaises(SystemExit):
                 tool.derive_logo({"card": src}, dst, {"asset": "card"})
+
+
+    @unittest.skipUnless(importlib.util.find_spec("PIL"), "Pillow absent")
+    def test_a_title_card_with_keys_is_keyed_to_its_lettering_and_trimmed(self):
+        # A film frame (white lettering on a black ground, no alpha) is cut with the same keys a
+        # poster is: the ground goes transparent, the lettering takes `fill`, the result is trimmed.
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            src, dst = pathlib.Path(d) / "frame.png", pathlib.Path(d) / "logo.png"
+            frame = Image.new("RGB", (60, 40), (10, 10, 10))
+            frame.paste((250, 250, 250), (20, 15, 40, 25))  # a 20x10 patch of lettering
+            frame.paste((90, 90, 90), (2, 2, 6, 6))  # a grey speck the key must drop
+            frame.save(src)
+            recipe = {"asset": "frame", "box": [0, 0, 60, 40], "scale": 1, "keys": [
+                {"signal": "light", "levels": [150, 200], "fill": "#f2f2f2", "smooth": 3}]}
+            tool.derive_logo({"frame": src}, dst, recipe)
+            out = Image.open(dst)
+            self.assertEqual((out.mode, out.size), ("RGBA", (20, 10)))
+            self.assertEqual(out.getpixel((10, 5)), (242, 242, 242, 255))
+            self.assertEqual(tool.derive_logo({"frame": src}, dst, recipe), None)  # deterministic
+            first = dst.read_bytes()
+            tool.derive_logo({"frame": src}, dst, recipe)
+            self.assertEqual(dst.read_bytes(), first)
 
 
 class OwnerDecisions(unittest.TestCase):
@@ -917,15 +987,20 @@ class OwnerDecisions(unittest.TestCase):
                 self.assertEqual((v["verdict"], v["reasons"]), ("pass", []), v)
                 self.assertEqual(self.films[key]["art"]["mode"], "cover")
 
-    def test_hubblecast_and_nosferatu_have_no_logo_by_decision_and_are_never_opened_in_the_video(self):
-        self.assertEqual(sorted(self.catalog["logo_none_approved"]), ["hubblecast", "nosferatu"])
-        for key in ("hubblecast", "nosferatu"):
+    def test_a_title_with_no_clear_logo_is_so_by_decision_and_is_never_opened_in_the_video(self):
+        # Hubblecast and Nosferatu from the first decision; the four others (2026-10-08) are the titles
+        # whose lettering could not be cut cleanly from their poster or a title frame: no ugly logo ships.
+        none = ["hubblecast", "metropolis", "nosferatu", "sita-sings-the-blues", "the-cabinet-of-dr-caligari",
+                "the-general"]
+        self.assertEqual(sorted(self.catalog["logo_none_approved"]), none)
+        for key in none:
             self.assertTrue(self.films[key].get("not_in_video"), key)
             self.assertNotIn("logo", tool.complete_gaps(self.assets, self.catalog).get(key, []))
 
     def test_a_still_serves_as_the_poster_only_where_the_owner_approved_it(self):
         self.assertEqual(sorted(self.catalog["still_poster_approved"]),
-                         ["caminandes", "glass-half", "hero", "hubblecast", "singularity", "wing-it"])
+                         ["caminandes", "glass-half", "hero", "hubblecast", "singularity", "sita-sings-the-blues",
+                          "wing-it"])
         for key in self.catalog["still_poster_approved"]:
             self.assertTrue(self.films[key]["poster"]["still_as_poster"], key)
         flagged = {k for k, t in self.films.items() if t.get("poster", {}).get("still_as_poster")}
@@ -1374,7 +1449,7 @@ class Catalog(unittest.TestCase):
         part = it["Media"][0]["Part"][0]
         self.assertEqual(it["duration"], 180_000)
         self.assertIn(part["id"], self.lib.media_files)
-        self.assertEqual(self.lib.media_files[part["id"]].name, "stand-in.mp4")
+        self.assertRegex(self.lib.media_files[part["id"]].name, r"^stand-in-[0-9a-f]{12}\.mp4$")
 
     def test_an_unknown_hero_is_refused(self):
         with self.assertRaises(ValueError):

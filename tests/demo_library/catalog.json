@@ -209,7 +209,13 @@
    "art": {
     "asset": "bs-sintel-header",
     "mode": "cover",
-    "anchor": "right"
+    "anchor": "right",
+    "subject": [
+     1343,
+     234,
+     1565,
+     566
+    ]
    },
    "collections": [
     "Blender Open Movies"
@@ -431,7 +437,10 @@
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "logo": {
+    "asset": "bs-logo-charge"
+   }
   },
   {
    "id": "tears-of-steel",
@@ -511,13 +520,22 @@
     "asset": "tears-of-steel-poster"
    },
    "art": {
-    "asset": "tears-of-steel-backdrop",
+    "asset": "tears-of-steel-frame-07",
     "mode": "cover",
-    "anchor": "center"
+    "anchor": "left",
+    "subject": [
+     1750,
+     180,
+     2660,
+     1038
+    ]
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "logo": {
+    "asset": "bs-logo-tears-of-steel"
+   }
   },
   {
    "id": "cosmos-laundromat",
@@ -593,7 +611,10 @@
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "logo": {
+    "asset": "bs-logo-cosmos-laundromat"
+   }
   },
   {
    "id": "big-buck-bunny",
@@ -663,7 +684,10 @@
    "collections": [
     "Blender Open Movies"
    ],
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "bs-logo-big-buck-bunny"
+   }
   },
   {
    "id": "elephants-dream",
@@ -733,7 +757,10 @@
    "collections": [
     "Blender Open Movies"
    ],
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "bs-logo-elephants-dream"
+   }
   },
   {
    "id": "nosferatu",
@@ -883,7 +910,8 @@
      800,
      430
     ]
-   }
+   },
+   "not_in_video": true
   },
   {
    "id": "night-of-the-living-dead",
@@ -955,7 +983,27 @@
     "mode": "cover",
     "anchor": "center"
    },
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "night-of-the-living-dead-1968-title-screen",
+    "box": [
+     150,
+     600,
+     1150,
+     350
+    ],
+    "scale": 1,
+    "keys": [
+     {
+      "signal": "light",
+      "levels": [
+       185,
+       235
+      ],
+      "fill": "#f2f2f2"
+     }
+    ]
+   }
   },
   {
    "id": "the-general",
@@ -1037,7 +1085,8 @@
      910,
      520
     ]
-   }
+   },
+   "not_in_video": true
   },
   {
    "id": "sherlock-jr",
@@ -1114,7 +1163,27 @@
     "mode": "cover",
     "anchor": "center"
    },
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "sherlock-jr-1924-poster",
+    "box": [
+     40,
+     300,
+     940,
+     135
+    ],
+    "scale": 1,
+    "keys": [
+     {
+      "signal": "dark",
+      "levels": [
+       90,
+       125
+      ],
+      "fill": "#ececec"
+     }
+    ]
+   }
   },
   {
    "id": "his-girl-friday",
@@ -1188,7 +1257,26 @@
     "mode": "cover",
     "anchor": "center"
    },
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "his-girl-friday-1940-poster",
+    "box": [
+     60,
+     2230,
+     1000,
+     420
+    ],
+    "scale": 0.6,
+    "keys": [
+     {
+      "signal": "red",
+      "levels": [
+       60,
+       110
+      ]
+     }
+    ]
+   }
   },
   {
    "id": "plan-9-from-outer-space",
@@ -1260,7 +1348,27 @@
     "mode": "cover",
     "anchor": "center"
    },
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "plan-9-from-outer-space-1957-poster",
+    "box": [
+     540,
+     930,
+     1610,
+     1870
+    ],
+    "scale": 0.3,
+    "keys": [
+     {
+      "signal": "red",
+      "levels": [
+       100,
+       140
+      ],
+      "fill": "#e8472f"
+     }
+    ]
+   }
   },
   {
    "id": "the-kid",
@@ -1333,7 +1441,26 @@
     "mode": "cover",
     "anchor": "center"
    },
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "the-kid-1921-poster",
+    "box": [
+     285,
+     1890,
+     1432,
+     320
+    ],
+    "scale": 0.5,
+    "keys": [
+     {
+      "signal": "red",
+      "levels": [
+       40,
+       90
+      ]
+     }
+    ]
+   }
   },
   {
    "id": "safety-last",
@@ -1412,6 +1539,25 @@
      1140,
      600
     ]
+   },
+   "logo": {
+    "asset": "safety-last-1923-poster",
+    "box": [
+     30,
+     292,
+     560,
+     102
+    ],
+    "scale": 1.5,
+    "keys": [
+     {
+      "signal": "light",
+      "levels": [
+       150,
+       215
+      ]
+     }
+    ]
    }
   },
   {
@@ -1482,7 +1628,8 @@
     "mode": "cover",
     "anchor": "center"
    },
-   "not_hero": true
+   "not_hero": true,
+   "not_in_video": true
   },
   {
    "id": "a-trip-to-the-moon",
@@ -1544,7 +1691,28 @@
     "mode": "cover",
     "anchor": "center"
    },
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "a-trip-to-the-moon-1902-title-card",
+    "box": [
+     150,
+     135,
+     520,
+     175
+    ],
+    "scale": 2,
+    "keys": [
+     {
+      "signal": "light",
+      "levels": [
+       130,
+       200
+      ],
+      "fill": "#f2f2f2",
+      "smooth": 5
+     }
+    ]
+   }
   },
   {
    "id": "wing-it",
@@ -1609,7 +1777,10 @@
    "collections": [
     "Blender Open Movies"
    ],
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "bs-logo-wing-it"
+   }
   },
   {
    "id": "coffee-run",
@@ -1674,7 +1845,10 @@
    "collections": [
     "Blender Open Movies"
    ],
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "bs-logo-coffee-run"
+   }
   },
   {
    "id": "hero",
@@ -1744,7 +1918,10 @@
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "logo": {
+    "asset": "bs-logo-hero"
+   }
   },
   {
    "id": "glass-half",
@@ -1817,7 +1994,10 @@
    "collections": [
     "Blender Open Movies"
    ],
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "bs-logo-glass-half"
+   }
   },
   {
    "id": "the-daily-dweebs",
@@ -1890,6 +2070,9 @@
      1500,
      410
     ]
+   },
+   "logo": {
+    "asset": "bs-logo-the-daily-dweebs"
    }
   },
   {
@@ -1960,7 +2143,10 @@
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "logo": {
+    "asset": "bs-logo-singularity"
+   }
   },
   {
    "id": "sita-sings-the-blues",
@@ -2053,14 +2239,16 @@
    ],
    "summary": "The Ramayana, told with the torch songs of Annette Hanshaw: Sita, loyal to a husband who doubts her, and an animator in New York whose own marriage is coming apart.",
    "poster": {
-    "asset": "sita-still-ram-sita-gods"
+    "asset": "sita-sings-the-blues-2120-frame",
+    "still_as_poster": true
    },
    "art": {
     "asset": "sita-still-ram-sita-gods",
     "mode": "cover",
     "anchor": "center"
    },
-   "not_hero": true
+   "not_hero": true,
+   "not_in_video": true
   },
   {
    "id": "seder-masochism",
@@ -2128,7 +2316,27 @@
     "mode": "cover",
     "anchor": "center"
    },
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "seder-masochism-poster",
+    "box": [
+     60,
+     480,
+     1100,
+     70
+    ],
+    "scale": 0.8,
+    "keys": [
+     {
+      "signal": "light",
+      "levels": [
+       100,
+       170
+      ],
+      "smooth": 5
+     }
+    ]
+   }
   }
  ],
  "shows": [
@@ -2243,7 +2451,10 @@
      ]
     }
    ],
-   "not_hero": true
+   "not_hero": true,
+   "logo": {
+    "asset": "bs-logo-caminandes-2"
+   }
   },
   {
    "id": "sherlock-holmes",
@@ -2846,11 +3057,16 @@
   "glass-half",
   "singularity",
   "caminandes",
-  "hubblecast"
+  "hubblecast",
+  "sita-sings-the-blues"
  ],
  "logo_none_approved": [
   "hubblecast",
-  "nosferatu"
+  "nosferatu",
+  "sita-sings-the-blues",
+  "metropolis",
+  "the-general",
+  "the-cabinet-of-dr-caligari"
  ],
  "continue_watching": [
   {
