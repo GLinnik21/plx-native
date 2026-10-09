@@ -411,7 +411,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `ci/test_ci_workflows.py` the workflow's triggers (no pull-request trigger), guards, permissions,
   legs and timeouts.
 - **How the site demo video updates itself** (`.github/workflows/site-video.yml`, the last job of
-  `release.yml`, `site_video.py`'s `release-ref` / `needs-render` / `adopt` / `commit-message`). The
+  `release.yml`, `site_video.py`'s `release-ref` / `needs-render` / `adopt`). The
   film refreshes AFTER A STABLE RELEASE and after nothing else: `release.yml`'s final job
   (`site-video`, `continue-on-error`, `actions: write` as its only write scope) dispatches
   `site-video.yml` ON THE NEW TAG (`gh workflow run site-video.yml --ref vX.Y.Z`) once the release is
@@ -422,8 +422,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   refused by the workflow. **The workflow renders its own checkout and no input names a ref**: a run
   on a tag has caches of its own (a cache is restorable only by runs of the ref that wrote it and the
   branches below it, never by main), so the cache steps that restore into the tree being rendered
-  cannot poison anything main runs; an earlier design that checked out `inputs.ref` on a main run was
-  refused by CodeQL ("cache poisoning via execution of untrusted code", 11 alerts). Five jobs (`stills`, the film's sibling, is the next bullet).
+  cannot poison anything main runs (CodeQL reads a checkout of a ref an input names, followed by cache
+  steps, as "cache poisoning via execution of untrusted code"). Five jobs (`stills`, the film's sibling, is the next bullet).
   `decide` (`contents: read`) reads `github.ref`: a tag must be a stable `vX.Y.Z` whose commit is an
   ancestor of main for the run to publish, `refs/heads/main` (a maintainer's manual dispatch) may
   publish, and a branch renders as a dry run only (a tag that is not a stable `vX.Y.Z` on main fails `decide`

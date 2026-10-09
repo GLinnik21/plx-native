@@ -1371,33 +1371,16 @@ class CodecStringsFollowTheFilm(unittest.TestCase):
         self.assertEqual((again, moved), (html, []))
 
 
-class CommitMessage(unittest.TestCase):
-    def test_it_names_the_tag_the_gates_the_run_and_the_remedy(self):
+class FilmParagraph(unittest.TestCase):
+    def test_it_names_the_tag_the_source_and_the_gates(self):
         manifest = {"tree_hash": {"combined": "0123456789abcdef" * 4},
                     "gates": {"passed": True, "results": [{"status": "pass"}] * 41 + [{"status": "skip"}]}}
-        msg = sv.commit_message(manifest, "v0.9.0", "https://github.com/o/r/actions/runs/1", "abc1234")
-        subject, _, body = msg.partition("\n\n")
-        self.assertEqual(subject, "Site: demo video re-rendered for v0.9.0")
-        self.assertLessEqual(len(subject), 72)
-        for needle in ("v0.9.0 (abc1234)", "0123456789ab", "42 gates: 41 pass, 1 skip", "https://github.com/o/r/actions/runs/1",
-                       "not taste", "revert"):
-            self.assertIn(needle, body)
+        para = sv.film_paragraph(manifest, "v0.9.0", "abc1234")
+        for needle in ("v0.9.0 (abc1234)", "0123456789ab", "42 gates: 41 pass, 1 skip"):
+            self.assertIn(needle, para)
 
-    def test_a_manual_dispatch_on_main_has_no_tag_and_names_the_commit(self):
-        msg = sv.commit_message({"gates": {"results": []}}, "", "https://github.com/o/r/actions/runs/1",
-                                "0123456789abcdef0123456789abcdef01234567")
-        self.assertEqual(msg.split("\n")[0], "Site: demo video re-rendered for main@01234567")
-
-    def test_the_command_reads_the_manifest_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = pathlib.Path(tmp, "m.json")
-            path.write_text(json.dumps({"gates": {"results": []}}))
-            out = io.StringIO()
-            with unittest.mock.patch("sys.stdout", out):
-                code = sv.main(["commit-message", "--manifest", str(path), "--tag", "v1.0.0", "--run-url", "u", "--source-sha", "s"])
-        self.assertEqual(code, 0)
-        self.assertTrue(out.getvalue().startswith("Site: demo video re-rendered for v1.0.0\n\n"))
-        self.assertIn("no results", out.getvalue())
+    def test_a_manifest_without_gates_reads_as_no_results(self):
+        self.assertIn("0 gates: no results", sv.film_paragraph({}, "main@01234567", "0123456789abcdef"))
 
 
 class CommittedSiteMedia(unittest.TestCase):

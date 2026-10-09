@@ -407,25 +407,19 @@ tags 30 days after publishing them, on purpose and by design — every nightly's
 meaning anything without warning. The rule above is about a claim nobody was told was temporary;
 a nightly's claim always was.
 
-### The website's demo film refreshes by itself after a stable release
+### The website's demo film and stills refresh by themselves after a stable release
 
 Nothing to run. When a stable `vX.Y.Z` release is published from main, `release.yml`'s last job
-dispatches `site-video.yml` ON that tag (`--ref vX.Y.Z`): it renders the tagged tree on Linux, and, if
-the film inputs or the stills inputs changed since what is committed, commits `Site: demo video and stills
-re-rendered for vX.Y.Z` (or `demo video` / `stills` for what changed) to main as the bot (the film, its glows,
-the credits and the `codecs=` strings in `site/index.html`, the stills) and
-dispatches the page deploy. A release candidate, a nightly and a maintenance-line patch never start it,
-and it can never block or fail the release (a separate run). What a releaser checks afterwards: (1) the
-**Site video** run for the tag in the Actions tab is green ("nothing to render" is a green outcome; a
-red `render` job leaves the old film on the site, a red `stills` job with a green `render` lands the film and
-keeps the old stills; read which job is red, then re-run it with `gh workflow run site-video.yml --ref
-vX.Y.Z`); (2) **look at the film on the site**, since the gates prove determinism and quality, not
-taste; a bad one is `git revert <the bot's commit>` and a push to main (a revert takes the film and the stills together). Force a render although the
-inputs match: `gh workflow run site-video.yml --ref main -f force=true`. A dry run that publishes
-nothing and prints the diff it would commit: `-f publish=false` (a branch always is one; `docs/agent-reference.md`,
-"How the site demo video updates itself"). The same run also re-renders the simulator-made STILLS
-(every scene captured twice and held to its noise bound, `python3 tools/site_stills.py files`) and lands them in the
-same bot commit (`Site: demo video and stills re-rendered for vX.Y.Z`); a scene over its bound fails the `stills`
-job (named in the log), leaves the run red and does not hold the film back: re-run the failed job. Nothing in
-step 2 needs committing by hand. `navblur-transition.jpg` is a photograph of the panel that no tool
-makes; retake it only when the transition changes.
+dispatches `site-video.yml` ON that tag: it renders the tagged tree on Linux and, if the film's or the
+stills' inputs changed since what is committed, commits `Site: demo video and stills re-rendered for
+vX.Y.Z` (or `demo video` / `stills`) to main as the bot, then dispatches the page deploy. A release
+candidate, a nightly and a maintenance-line patch never start it, and it can never block or fail the
+release (a separate run). What a releaser checks afterwards: (1) the **Site video** run for the tag in
+the Actions tab is green ("nothing to render" is a green outcome; a red `render` job leaves the old
+film, a red `stills` job with a green `render` lands the film and keeps the old stills; re-run the red
+job with `gh workflow run site-video.yml --ref vX.Y.Z`); (2) **look at the film on the site**, since the
+gates prove determinism and quality, not taste; a bad one is `git revert <the bot's commit>` and a push
+to main (it takes the film and the stills together). Forcing a render, dry runs and the rest of the
+operation are in `docs/agent-reference.md`, "How the site demo video updates itself". Nothing in step 2
+needs committing by hand; `navblur-transition.jpg` is a photograph of the panel that no tool makes, so
+retake it only when the transition changes.
