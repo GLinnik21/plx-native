@@ -200,8 +200,31 @@ typedef int (*SMP_LoadWithContextFn)(
     const char *payload,
     void (*cb)(int, long long, const char *, void *),
     void *ctx);
-extern void SMP_Feed(void *sret, void *self, const char *payload)
-    __asm__("_ZN17StarfishMediaAPIs4FeedB5cxx11EPKc");
+/* Feed returns std::string, so its mangled name carries the library's string ABI: `B5cxx11` on
+ * webOS 3.9.2 and later, the pre-C++11 copy-on-write string on 3.4.0 and earlier
+ * (`_ZN17StarfishMediaAPIs4FeedEPKc`). Either way the hidden sret slot starts with the char
+ * pointer, so the reply reads the same; only the COW string must be released through the
+ * firmware's own destructor (`_ZNSsD1Ev`), because its buffer is a refcounted heap rep. Both are
+ * resolved at runtime: a strong reference to the cxx11 name is a lazily-bound PLT slot that kills
+ * the process at the first Feed on 3.4.0 (tools/fwcompat.py --release 3.4.0). */
+typedef void (*SMP_FeedFn)(void *sret, void *self, const char *payload);
+typedef void (*CowStringDtorFn)(void *str);
+static SMP_FeedFn g_feed;
+static CowStringDtorFn g_feed_reply_dtor;
+static pthread_once_t g_feed_once = PTHREAD_ONCE_INIT;
+static void sf_resolve_feed_once(void) {
+    g_feed = (SMP_FeedFn)dlsym(RTLD_DEFAULT, "_ZN17StarfishMediaAPIs4FeedB5cxx11EPKc");
+    if (!g_feed) {
+        g_feed = (SMP_FeedFn)dlsym(RTLD_DEFAULT, "_ZN17StarfishMediaAPIs4FeedEPKc");
+        if (g_feed) g_feed_reply_dtor = (CowStringDtorFn)dlsym(RTLD_DEFAULT, "_ZNSsD1Ev");
+    }
+    if (elogf) {
+        fprintf(elogf, "feed abi: %s fn=%p dtor=%p\n",
+                !g_feed ? "NONE" : g_feed_reply_dtor ? "cow" : "cxx11",
+                (void *)g_feed, (void *)g_feed_reply_dtor);
+        fflush(elogf);
+    }
+}
 extern int  SMP_Play(void *self) __asm__("_ZN17StarfishMediaAPIs4PlayEv");
 extern int  SMP_Unload(void *self) __asm__("_ZN17StarfishMediaAPIs6UnloadEv");
 extern void SMP_notifyForeground(void *self) __asm__("_ZN17StarfishMediaAPIs16notifyForegroundEv");
@@ -676,20 +699,21 @@ char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData) {
        pump.rs returning early. Guard it here too so the object can never be fed mid-ctor. */
     void *object = sf_ready_object();
     if (!object) return 'e';
+    pthread_once(&g_feed_once, sf_resolve_feed_once);
+    if (!g_feed) return 'e';
     char j[160];
     snprintf(j, sizeof j, "{\"bufferAddr\":\"%p\",\"bufferSize\":%u,\"pts\":%lld,\"esData\":%d}",
              (const void *)p, size, pts, esData);
     unsigned char ret[32];
     memset(ret, 0, sizeof ret);
-    SMP_Feed(ret, object, j);
+    g_feed(ret, object, j);
     char *s = *(char **)ret;             /* std::string _M_p at offset 0 */
     static int logged = 0;
     if (elogf && logged < 3) { logged++;
         fprintf(elogf, "feed reply=\"%s\"\n", s ? s : "(null)"); fflush(elogf); }
-    if (!s) return 'e';
-    if (strstr(s, "BufferFull")) return 'B';
-    if (strstr(s, "Ok")) return 'O';
-    return 'e';
+    char verdict = !s ? 'e' : strstr(s, "BufferFull") ? 'B' : strstr(s, "Ok") ? 'O' : 'e';
+    if (g_feed_reply_dtor) g_feed_reply_dtor(ret);
+    return verdict;
 }
 
 /* ---- ACB verbs (the 3-arg taskId ABI is hidden) ----

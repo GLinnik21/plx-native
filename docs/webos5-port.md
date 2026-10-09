@@ -56,6 +56,10 @@ webOS 5** — 5.3.1 and 6.4.0 keep a `libcurl.so.5` compat alias beside the real
 the break is at 7.4.0. And **webOS 3.9.2 has libAcbAPI**; `docs/distribution.md` §3.2 said it did
 not. 3.9.2 fails for a different reason (FFmpeg 55, and a pre-C++11 `std::string` ABI, so
 `StarfishMediaAPIs::Feed` carries a different mangling).
+**Update 2026-10-09:** neither still blocks the loader. FFmpeg is bundled, and `src/starfish.c`
+resolves `Feed` under either mangling at runtime. Graded against 3.4.0 and 3.9.2, the v0.8.0
+binary's only other missing import was `SDL_webOSCursorVisibility`, now also looked up at runtime.
+A 2016 set on 3.4.3 plays.
 
 ### An external check on the FFmpeg decision
 
