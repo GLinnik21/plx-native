@@ -140,6 +140,9 @@ mod tests {
 
     struct Rig {
         _serial: plx_base::testlock::Serial,
+        /// The sink clock reads this virtual time on the test thread, so the position a test
+        /// grades is a function of what it advanced, not of how long its statements took.
+        clock: crate::player::ffi_host::pinned_clock::Pinned,
         pa: super::super::adapter::PlayerAdapter,
     }
 
@@ -152,9 +155,11 @@ mod tests {
             SHARED.reset_hls_clock_for_test();
             SHARED.seeking.store(false, std::sync::atomic::Ordering::Relaxed);
             clear();
+            let clock = crate::player::ffi_host::pinned_clock::Pinned::now();
             crate::player::ffi_host::clock_run_for_test(CLAIM_OFFSET_NS);
             Rig {
                 _serial: serial,
+                clock,
                 pa: super::super::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() }),
             }
         }
@@ -166,8 +171,9 @@ mod tests {
         fn position(&self) -> (i64, bool) {
             crate::player::ffi_host::clock_state_for_test()
         }
+        /// Let the flight run: a clock that was still running would advance by exactly this.
         fn wait(&self) {
-            std::thread::sleep(std::time::Duration::from_millis(60));
+            self.clock.advance_ms(60);
         }
     }
 

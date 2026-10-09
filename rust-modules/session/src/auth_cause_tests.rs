@@ -187,7 +187,13 @@ fn the_untrusted_discovery_says_the_new_sentence_and_reports_as_the_silent_class
     assert_ne!(message, msg::browse_auth_servers_unreachable(), "this is not 'none of them answered'");
     // The telemetry schema is the privacy-reviewed closed one: no new class, no verify code. The
     // verdict reports as exactly what an unreachable-servers discovery reports as.
-    let (_, silent) = discovery_failure(&Discovery::ServersUnreachable { trigger }).unwrap();
+    let (_, mut silent) = discovery_failure(&Discovery::ServersUnreachable { trigger }).unwrap();
+    // Each context is stamped with the wall clock when it is built (`IncidentContext::new`), so two
+    // built a millisecond apart differ in `occurred_at_ms` alone. When it was raised is not part of
+    // the class the verdict reports as; everything else is compared.
+    let mut incident = incident;
+    incident.occurred_at_ms = 0;
+    silent.occurred_at_ms = 0;
     assert_eq!(format!("{incident:?}"), format!("{silent:?}"));
     assert!(matches!(verdict, Discovery::TlsUntrusted { trigger: DiscoveryTrigger::Rediscover }));
 }
