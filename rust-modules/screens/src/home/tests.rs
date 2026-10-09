@@ -3905,3 +3905,40 @@ fn covering_home_cancels_its_page_even_after_focus_has_left_the_entry() {
     assert_eq!(out.iter().filter(|fx| matches!(fx.fx,
         Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { before: true, .. }))))).count(),1);
 }
+
+fn page_requests(out: &[Stamped<TestHost>]) -> usize {
+    out.iter().filter(|fx| matches!(fx.fx,
+        Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { .. }))))).count()
+}
+
+// A page the store gave up on leaves no store change behind, so the row's once-per-edge latch is
+// still set when the owner presses again. A focus move or an at-edge press on that row re-asks.
+#[test]
+fn a_row_whose_page_was_given_up_asks_again_on_the_next_focus_move_or_edge_press() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[5] };
+    let next = FocusKey { entry: s.entry, elem: s.rows[0].elems[4] };
+    let tick = |ms| ScreenEvent::Tick(Tick { ms, dt_us: 16_667 });
+    let mut requests = page_requests(&step(&mut s, snapshot.view(), Some(key), &tick(0)).1);
+    requests += page_requests(&step(&mut s, snapshot.view(), Some(key), &tick(17)).1);
+    assert_eq!(requests, 1, "the latch holds while nothing changed");
+    step(&mut s, snapshot.view(), Some(next), &ScreenEvent::FocusMoved { from: Some(key), to: next, by: By::Dir });
+    requests += page_requests(&step(&mut s, snapshot.view(), Some(next), &tick(34)).1);
+    requests += page_requests(&step(&mut s, snapshot.view(), Some(next), &tick(51)).1);
+    assert_eq!(requests, 2, "a focus move on the same row asks once more");
+    step(&mut s, snapshot.view(), Some(next), &ScreenEvent::Input(InputEvent {
+        at: Tick::default(),
+        source: Source::Sdl,
+        kind: InputKind::Key { key: Key::Left, sym: 0, wcode: 0, edge: Edge::Down, at_edge: true },
+    }));
+    requests += page_requests(&step(&mut s, snapshot.view(), Some(next), &tick(68)).1);
+    requests += page_requests(&step(&mut s, snapshot.view(), Some(next), &tick(85)).1);
+    assert_eq!(requests, 3, "an edge press asks once more");
+}

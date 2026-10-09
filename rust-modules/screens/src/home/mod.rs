@@ -2369,6 +2369,9 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 if let Some((row, _)) = self.focused_grid(*from) {
                     if self.focused_grid(Some(*to)).is_none_or(|(next, _)| next != row) {
                         self.cancel_row_page(row, cx, fx);
+                    } else if let Some(shelf) = self.grid.shelves.get_mut(row) {
+                        // A page the store gave up on leaves no landing to clear the latch.
+                        shelf.reset_page_requests();
                     }
                 }
                 self.feed_shelves(ev, cx, fx);
@@ -2451,6 +2454,9 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 ..
             }) if *at_edge && matches!(key, Key::Left | Key::Right) => {
                 let direction = if *key == Key::Left { -1 } else { 1 };
+                if let Some((row, _)) = self.focused_grid(cx.focus.current) {
+                    if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.reset_page_requests(); }
+                }
                 if matches!(self.focused_loc(cx.focus.current), Some(Located::Hero(_)))
                     && self.flip(H::hubs(cx), direction)
                 {
