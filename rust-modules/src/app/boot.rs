@@ -366,11 +366,23 @@ mod seam_order_tests {
 ///
 /// One door rather than a branch at each of the five call sites, so the platform question is
 /// asked once and the call sites read the same on both.
+///
+/// Resolved at runtime rather than linked: webOS 3.4 ships SDL 2.0.3, which has none of LG's
+/// `SDL_webOS*` extensions, and a strong reference there is a lazily-bound PLT slot that kills
+/// the process on the first D-pad press (`tools/fwcompat.py --release 3.4.0`).
 #[inline]
 pub(crate) unsafe fn hide_cursor() {
     #[cfg(not(feature = "hostsim"))]
     {
-        SDL_webOSCursorVisibility(0);
+        type CursorVisibility = unsafe extern "C" fn(c_int) -> c_int;
+        static SYM: std::sync::OnceLock<Option<CursorVisibility>> = std::sync::OnceLock::new();
+        let f = SYM.get_or_init(|| {
+            let p = plx_base::dynlib::Handle::self_handle().sym("SDL_webOSCursorVisibility")?;
+            (!p.is_null()).then(|| std::mem::transmute::<*mut std::ffi::c_void, CursorVisibility>(p))
+        });
+        if let Some(f) = f {
+            f(0);
+        }
     }
 }
 /// Advance the once-per-second LOOP-RATE window: bump `iters_ct` and, when a full second has
