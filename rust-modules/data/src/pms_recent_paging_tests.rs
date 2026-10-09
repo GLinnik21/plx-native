@@ -481,3 +481,60 @@ fn walking_backward_visits_every_position() {
 fn walking_backward_over_a_hidden_section_visits_every_visible_position() {
     check_backward_walk(true);
 }
+
+#[test]
+fn a_failed_window_reload_keeps_the_first_page_instead_of_failing_the_refresh() {
+    use std::io::{Read, Write};
+    let _guard = plx_base::testlock::serial();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut served = 0;
+        while std::time::Instant::now() < deadline && served < 3 {
+            let (mut socket, _) = match plx_base::testnet::accept(&listener) {
+                Ok(socket) => socket,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("window failure fixture accept failed: {error}"),
+            };
+            socket.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+            let mut request = [0; 4096];
+            let n = socket.read(&mut request).unwrap();
+            let path = String::from_utf8_lossy(&request[..n]).split_whitespace().nth(1).unwrap().to_owned();
+            let (status, body) = if path.starts_with("/hubs/home/recentlyAdded?") {
+                ("500 Internal Server Error", String::new())
+            } else if path.starts_with("/hubs/continueWatching?") {
+                ("200 OK", serde_json::json!({"MediaContainer":{"Hub":[]}}).to_string())
+            } else {
+                let metadata: Vec<_> = (0..12).map(|i| serde_json::json!({
+                    "ratingKey":i.to_string(),"type":"movie","title":"Fresh movie","thumb":"/poster"})).collect();
+                ("200 OK", serde_json::json!({"MediaContainer":{"Hub":[{"hubIdentifier":"home.movies.recent",
+                    "type":"movie","title":"Recent","key":"/hubs/home/recentlyAdded?type=1",
+                    "more":true,"Metadata":metadata}]}}).to_string())
+            };
+            write!(socket,"HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            served += 1;
+        }
+    });
+    plx_plex::plex::reset_servers_for_test();
+    let registered = plx_plex::plex::register_for_test("window-fail-http", "127.0.0.1", i32::from(port), "synthetic", "fixture");
+    let mut owner = Owner::default();
+    seed(&mut owner.state, vec![src(registered.raw(), "", HubState::Ready, Some(page(36,24,true)))]);
+    let mut held = None;
+    let _ = request_refetch_hubs_with_scope(&mut owner.state, &owner.adapter, &BrowseScope::standalone(),
+        &mut |request| { held = Some(request); true });
+    let request = held.unwrap();
+    assert!(!request.windows.is_empty(), "the refresh must try to reload the paged window");
+    let result = request.fetch();
+    server.join().unwrap();
+    let build = result.expect("a failed window reload must not fail the source refresh");
+    assert_eq!(build.shelves[0].items[0].title, "Fresh movie");
+    assert_eq!(build.shelves[0].offset, 0);
+    assert_eq!(build.shelves[0].items.len(), 12);
+    reset(&mut owner.state,&owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}

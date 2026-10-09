@@ -1487,7 +1487,9 @@ impl HubRequest {
                 for (window, end) in &self.windows {
                     let Some(shelf) = build.shelves.iter_mut().find(|shelf|
                         shelf.hub_id == window.id && shelf.key == window.key) else { continue };
-                    let mut refreshed = fetch_page(self.client.resource, self.sid, window, *end)?.shelves.pop()?;
+                    // `/hubs` itself answered: a failed window reload keeps the first-page shelf.
+                    let Some(mut refreshed) = fetch_page(self.client.resource, self.sid, window, *end)
+                        .and_then(|page| page.shelves.into_iter().next()) else { continue };
                     if !refreshed.items.is_empty() {
                         refreshed.title = shelf.title.clone();
                         *shelf = refreshed;
