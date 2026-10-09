@@ -1427,7 +1427,17 @@ fn start_bufferfeed_inner(
     // very next seek dereferences whatever now lives there. The reload fallback is slower but is
     // built out of Load/Play alone and assumes no layout at all. Re-enable per release only once
     // somebody has re-derived the offsets on that firmware.
-    super::INPLACE_SEEK_OK.store(sink().window_mode() != super::VP_EXPORTED, Ordering::Relaxed);
+    //
+    // NOR on webOS 3.x, for the same reason from the other side: 3.4.0's libplayerAPIs predates
+    // the C++11 string ABI (its Feed carries the old mangling), so StarfishMediaAPIs' layout is a
+    // different object, and the first fast-forward on a 3.4.0 set crashed through these offsets.
+    // An unknown release (`major == 0`, os_info unreadable) takes the reload path too: slower
+    // seeks are the cost, a dereference through an unverified layout is the alternative.
+    let layout_known = plx_platform::tv::device::info().major >= 4;
+    super::INPLACE_SEEK_OK.store(
+        layout_known && sink().window_mode() != super::VP_EXPORTED,
+        Ordering::Relaxed,
+    );
     pa.install(eng);
     native_start.commit();
     clock_start.commit();
