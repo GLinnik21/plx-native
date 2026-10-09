@@ -1018,8 +1018,10 @@ impl HomeScreen {
             let want = shelf.on(&ScreenEvent::Tick(t), cx, &src, fx);
             let before = focused.is_some_and(|(r, col)| r == row && col < 6)
                 && self.hub(view, row).is_some_and(|hub| hub.offset > 0);
+            let backward = shelf.want_before(
+                self.hub(view, row).map_or(0, |hub| hub.offset), visible && before);
             if visible
-                && (before || matches!(want, Some(ui_cards::CardEvent::Want(_)))) {
+                && (backward || (!before && matches!(want, Some(ui_cards::CardEvent::Want(_))))) {
                 if let Some(HubIdentity::Identifier { sid, id, key }) = self.hub(view, row).and_then(|hub| hub.identity) {
                     fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page {
                         sid, id: id.into(), key: key.into(), before,

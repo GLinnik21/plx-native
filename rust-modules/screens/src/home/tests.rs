@@ -3841,3 +3841,46 @@ fn returning_to_a_previous_recent_page_does_not_load_the_next_page_again() {
             Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { .. }))))));
     }
 }
+
+#[test]
+fn a_pending_backward_page_is_requested_once_across_many_ticks() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[5] };
+    let mut requests = 0;
+    for frame in 0..90 {
+        let (_, out, _) = step(&mut s, snapshot.view(), Some(key),
+            &ScreenEvent::Tick(Tick { ms: frame * 17, dt_us: 16_667 }));
+        requests += out.iter().filter(|fx| matches!(fx.fx,
+            Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { before: true, .. }))))).count();
+    }
+    assert_eq!(requests, 1);
+}
+
+#[test]
+fn leaving_a_backward_page_edge_allows_a_new_request_on_return() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[5] };
+    let away = FocusKey { entry: s.entry, elem: s.rows[0].elems[12] };
+    let mut requests = 0;
+    for (frame, current) in [key, key, away, key, key].into_iter().enumerate() {
+        let (_, out, _) = step(&mut s, snapshot.view(), Some(current),
+            &ScreenEvent::Tick(Tick { ms: frame as u32 * 17, dt_us: 16_667 }));
+        requests += out.iter().filter(|fx| matches!(fx.fx,
+            Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { before: true, .. }))))).count();
+    }
+    assert_eq!(requests, 2);
+}

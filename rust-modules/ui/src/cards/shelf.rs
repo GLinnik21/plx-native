@@ -37,6 +37,7 @@ pub struct Shelf {
     /// the source left it in a content landing (it joined another section), and nobody lets go.
     left: bool,
     asked: Option<(usize, usize)>,
+    asked_before: Option<usize>,
     /// How far past the screen edge a card still paints and registers a stop (default 0).
     margin: f32,
     /// The page is still dissolving in ([`dormant`](Shelf::dormant)): no card is lifted yet.
@@ -49,7 +50,7 @@ pub struct Shelf {
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
-        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None,
+        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None,
             margin: 0.0, dormant: false, slept: false, pool: RowPool::new() }
     }
 
@@ -208,6 +209,20 @@ impl Shelf {
     #[cfg(test)]
     pub(crate) fn pool_len(&self) -> usize {
         self.pool.len()
+    }
+
+    /// Request an earlier window once while its leading edge remains active.
+    /// Leaving the edge or landing another offset admits a new request.
+    pub fn want_before(&mut self, offset: usize, active: bool) -> bool {
+        if !active {
+            self.asked_before = None;
+            return false;
+        }
+        if self.asked_before == Some(offset) {
+            return false;
+        }
+        self.asked_before = Some(offset);
+        true
     }
 
     /// The paging rule: the window's last card plus look-ahead (or the focused card's, if further).
