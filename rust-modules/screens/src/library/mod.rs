@@ -2,6 +2,7 @@
 mod identity;
 mod bookmark;
 mod layout;
+mod lookahead;
 mod parts;
 mod rail;
 #[cfg(test)]

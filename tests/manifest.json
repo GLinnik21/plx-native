@@ -17,9 +17,11 @@
       },
       "triggers": {
         "plxnative-postergate": "settle",
+        "plxnative-cardspeed": "120",
+        "plxnative-lookahead": "0",
         "plxnative-library": true
       },
-      "comment": "Finite fast scroll from the grid head to its deepest row (row 18 at most), followed by a complete art window. The scene sizes the sweep to the Library grid it boots into and logs the plan (`poster-gate: ... phase=planned`); the settled row must lie beyond the head's screenful, so it needs a grid of rows_per_screen+1 rows (4 rows = 19+ items at six columns, 1080p) with reachable artwork, and a smaller one fails as UNFIT CATALOG rather than as a regression. Motion FPS and zero new admissions for fast-moving cards are graded separately from the settled request/upload/render proof. No activation or viewing-history writes."
+      "comment": "Finite fast scroll from the grid head to its deepest row (row 18 at most), followed by a complete art window. The scene sizes the sweep to the Library grid it boots into and logs the plan (`poster-gate: ... phase=planned`); the settled row must lie beyond the head's screenful, so it needs a grid of rows_per_screen+1 rows (4 rows = 19+ items at six columns, 1080p) with reachable artwork, and a smaller one fails as UNFIT CATALOG rather than as a regression. Motion FPS and zero new admissions for fast-moving cards are graded separately from the settled request/upload/render proof. No activation or viewing-history writes. The scene arms `plxnative-cardspeed=120`: the shipping app no longer declines a moving card, and this scene grades exactly that decline, so it turns the old gate back on. It also pins `plxnative-lookahead=0`: the shipping app warms the next rows at rest, and this scene's premise (the poster_gate.rs plan) is that the settled window was never warmed, so it turns the at-rest lookahead off."
     },
     {
       "name": "poster-eviction-reversal",
@@ -34,9 +36,11 @@
       },
       "triggers": {
         "plxnative-postergate": "eviction",
+        "plxnative-cardspeed": "120",
+        "plxnative-lookahead": "0",
         "plxnative-library": true
       },
-      "comment": "Warm the grid head, a middle row and the deepest row (rows 0, 6 and 12 at most; sized to the booted Library grid) under an explicit texture ceiling of 1.5x the measured warm window, never above 12 MiB (`phase=ceiling`), reverse quickly across the actually evicted rows, then require them to rearm and render fully. The source retains 64 slots; this scene exercises real byte-LRU eviction before source identity recycling, and the grade requires real evictions, evicted refusals in the reversal and rearms at rest. Needs 2x rows_per_screen grid rows (6 rows = 31+ items at six columns, 1080p); a smaller grid fails as UNFIT CATALOG. No activation or viewing-history writes."
+      "comment": "Warm the grid head, a middle row and the deepest row (rows 0, 6 and 12 at most; sized to the booted Library grid) under an explicit texture ceiling of 1.5x the measured warm window, never above 12 MiB (`phase=ceiling`), reverse quickly across the actually evicted rows, then require them to rearm and render fully. The source retains 64 slots; this scene exercises real byte-LRU eviction before source identity recycling, and the grade requires real evictions, evicted refusals in the reversal and rearms at rest. Needs 2x rows_per_screen grid rows (6 rows = 31+ items at six columns, 1080p); a smaller grid fails as UNFIT CATALOG. No activation or viewing-history writes. The scene arms `plxnative-cardspeed=120`: the shipping app no longer declines a moving card, and this scene grades exactly that decline, so it turns the old gate back on. It also pins `plxnative-lookahead=0`: the shipping app warms the next rows at rest, and this scene's premise (the poster_gate.rs plan) is that the settled window was never warmed, so it turns the at-rest lookahead off."
     },
     {
       "name": "poster-hero-grid-dive",
@@ -50,9 +54,11 @@
         "moving_fps_floor": 55
       },
       "triggers": {
-        "plxnative-postergate": "dive"
+        "plxnative-postergate": "dive",
+        "plxnative-cardspeed": "120",
+        "plxnative-lookahead": "0"
       },
-      "comment": "Warm Home shelf 0 at its deepest card (column 11 at most), return to the hero, then dive back through the retained horizontal offset. Shelf 0 is the only one the hero's DOWN door lands on, so the column, not the shelf, is sized to the catalog. The explicit 12 MiB texture ceiling makes hero art evict shelf art, so the dive must refuse actual demand and refill it at rest. Needs Home shelf 0 to retain the graded 1000 px offset, i.e. >=10 cards; a shorter shelf fails as UNFIT CATALOG. Seeding focus onto a card activates nothing: no OK, no play, no viewing-history writes."
+      "comment": "Warm Home shelf 0 at its deepest card (column 11 at most), return to the hero, then dive back through the retained horizontal offset. Shelf 0 is the only one the hero's DOWN door lands on, so the column, not the shelf, is sized to the catalog. The explicit 12 MiB texture ceiling makes hero art evict shelf art, so the dive must refuse actual demand and refill it at rest. Needs Home shelf 0 to retain the graded 1000 px offset, i.e. >=10 cards; a shorter shelf fails as UNFIT CATALOG. Seeding focus onto a card activates nothing: no OK, no play, no viewing-history writes. The scene arms `plxnative-cardspeed=120`: the shipping app no longer declines a moving card, and this scene grades exactly that decline, so it turns the old gate back on. It also pins `plxnative-lookahead=0`: the shipping app warms the next rows at rest, and this scene's premise (the poster_gate.rs plan) is that the settled window was never warmed, so it turns the at-rest lookahead off."
     },
     {
       "name": "home-hero",
@@ -154,6 +160,68 @@
         "tail_s": 5
       },
       "comment": "The Library with a hundred and seventy recommended shelves, forty of them promoted collections (#412), against the SYNTHETIC mock only: `./tests/run.py --fps --mock --filter library-shelves-deep` starts tests/mock_pms.py --section-hubs 170 --section-hubs-linked 40 itself. This is the INSTRUMENT for #412: the section's shelf count has no cap, so all 170 land, and the scene FAILS if fewer than `walk.min_landed` (150) do (a build that bounds the Library at twelve shelves lands 12, and its shorter walk would otherwise pass on those 12). The walk length derives from what LANDED, as home-grid-deep's does: the shelf count is the seated section's `libhubs: section N landed M shelves` line (`plxnative-library` with no value seats the preferred Movies library, index 0), then one Down per shelf, a second for each linked shelf (its heading is a stop of its own, then its row) and `extra_rows` more to cross the toolbar into the grid, at ~3 keys/s, a rest, and Up back; keys are only ever down/up. Graded: synthetic identity, keys sent == the expected count, a `focus route=library ... region=grid` fingerprint (`plxnative-focus`, armed here) inside the walk window, a `region=shelf row=R` fingerprint there with R >= min_landed - 1 (the SCREEN must show a deep shelf, not only the store having landed 170, or a screen that capped its rows again would pass), loop_floor 50 and fps_floor 30 (library-scroll's) on that window. frame_gt33, the worst frame and p99 are printed, NOT graded (plxnative-framedrop is armed so the heartbeat carries them). max_rows >= 170 + 40 + extra_rows; run_secs covers it plus the launch wait (tests hold it to that). NOT yet run on a device."
+    },
+    {
+      "name": "library-burst",
+      "tier": "ui",
+      "route": "library",
+      "run_secs": 90,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-library": true,
+        "plxnative-framedrop": 25,
+        "plxnative-focus": true,
+        "plxnative-phcount": true
+      },
+      "mock": {
+        "movies": 1000,
+        "only": true
+      },
+      "walk": {
+        "landed": "library",
+        "burst": 4,
+        "bursts": 8,
+        "key_ms": 125,
+        "rest_ms": 1500,
+        "max_rows": 40,
+        "extra_rows": 6,
+        "fingerprint_region": "grid",
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "tail_s": 5
+      },
+      "comment": "An INSTRUMENT, not a regression gate: how many LOADING (placeholder) poster tiles a viewer sees scrolling the Library grid in short bursts with rests between them, against the SYNTHETIC mock only (`./tests/run.py --fps --mock --filter library-burst`, a 1000-movie library). library-scroll's oscillator reverses every 350 ms and never rests, so it cannot show what a strategy that warms upcoming rows while the grid is AT REST buys; this does. The walk (tests/mock_fps.py `burst_plan`, the same KeyWalk machinery as the deep scenes, one ssh paced from the Mac, keys only down/up): Down once per landed shelf plus `extra_rows` (6) to cross the toolbar into the grid, a rest, then 8 bursts of 4 Downs 125 ms apart each followed by 1.5 s of rest, then the same 8 bursts of Up back. The placeholder count is the `phcount: frames=F ph_frames=P draws=D ph=N` line the app writes once a second when `plxnative-phcount` is armed (rust-modules/src/dev/scenarios/phcount.rs, from ui::card_motion_metrics, which counts at the card primitive whether a card resolved a texture): ph is the card draws that showed a skeleton, i.e. placeholder tile-frames. PRINTED: ph in total, in the prelude, in the bursts and per burst (a sample belongs to the burst of the last key before it, so a burst owns the rest after it; good to about one line either side of a boundary), the share of card frames that showed one, median fps (and min/max), the usual frame_gt33/worst/p99 drops (plxnative-framedrop is armed so the heartbeat carries them) and the pupf/pupf_ge22/pup poster-upload tally; the generic loop= median is printed too. GRADED: only the synthetic identity line, keys sent == the expected count, and a `focus route=library ... region=grid` fingerprint (`plxnative-focus`) inside the walk window (plus the generic guard of at least 5 post-warmup loop samples). No floor, no ceiling: a candidate is compared by running the scene on both builds. Measured on the television (1000-movie mock, two runs each, placeholder tile-frames): 28,969 / 28,080 with no lookahead and the old moving-card decline (`lookahead=0 cardspeed=120`), 6,668 / 6,605 with 3 rows of lookahead, 3,552 / 2,948 with the decline off alone, 1,349 / 1,285 with both, which is the shipping default. Dev triggers pass through. The shipping defaults are 3 rows of at-rest poster lookahead and NO moving-card decline; `--extra-trigger plxnative-lookahead=0` measures the baseline without the lookahead (`=1`..`=4` another depth) and `--extra-trigger plxnative-cardspeed=120` brings the old moving-card decline back (it also takes any other px/s limit). `mock.movies` is 1000 (mock_pms.py's maximum) where library-scroll takes the default 48, so 32 grid rows of the walk exist. run_secs covers the walk's worst case plus the 10 s launch wait (tests hold it to that)."
+    },
+    {
+      "name": "library-hold",
+      "tier": "ui",
+      "route": "library",
+      "run_secs": 90,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-library": true,
+        "plxnative-framedrop": 25,
+        "plxnative-focus": true,
+        "plxnative-phcount": true
+      },
+      "mock": {
+        "movies": 1000,
+        "only": true
+      },
+      "walk": {
+        "landed": "library",
+        "burst": 16,
+        "bursts": 3,
+        "key_ms": 125,
+        "rest_ms": 2000,
+        "max_rows": 40,
+        "extra_rows": 6,
+        "fingerprint_region": "grid",
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "tail_s": 5
+      },
+      "comment": "An INSTRUMENT, not a regression gate: library-burst's sibling for a LONG held scroll. Same mock block (1000 movies, synthetic only), triggers, printing and grading as library-burst (see its comment; `./tests/run.py --fps --mock --filter library-hold`), but the walk is 3 bursts of 16 Downs 125 ms apart (2 s of held-key scroll, 16 rows deep per burst, 48 rows down in all of the 166-row grid) each followed by 2 s of rest, then 3 bursts of 16 Ups back. It shows how many LOADING (placeholder) poster tiles a viewer sees when a held Down key outruns the posters, and what the rest after each hold recovers. The prelude is unchanged (Down once per landed shelf plus `extra_rows` (6) to cross the toolbar into the grid, a rest); the walk is 13 + 96 keys on a 7-shelf landing, about 24.75 s from first press to last. Measured on the television (two runs each): 35,850 / 35,592 placeholder tile-frames with no lookahead and the old decline, 31,478 / 32,299 with lookahead alone, 4,168 / 4,362 with both (the shipping default). The placeholder tally, grading and dev triggers are library-burst's (`--extra-trigger plxnative-lookahead=0` and `--extra-trigger plxnative-cardspeed=120` pass through: the baseline without the lookahead, and the old moving-card decline). run_secs covers the walk's worst case plus the 10 s launch wait (tests hold it to that)."
     },
     {
       "name": "home-idle",

@@ -295,6 +295,22 @@ impl Grid {
         poster_grid::visible_in(&self.spec.geom(), len, self.spec.top, self.scroll.pos)
     }
 
+    /// The run of cards [`draw`](Self::draw) actually paints out of `len`: [`window`](Self::window)
+    /// minus the cards the primitive culls (`card_row::paint_visible`, at rest scale) and the row
+    /// resting over the content edge. `0..0` when none. How a screen tells the cards it is NOT
+    /// drawing (the rows to prefetch) from the ones it is, without naming the L0 test.
+    pub fn painted(&self, p: Painter, len: usize) -> std::ops::Range<usize> {
+        let bands = self.bands.geometry();
+        let window = self.window(len);
+        // The test is pure, so the two ends are found from their own side: only the culled cards at
+        // each edge are tested, not the whole window.
+        let shown = |&i: &usize| {
+            !self.above_edge(i, &bands) && card_row::paint_visible(p, super::to_local(p, self.cell(i, &bands)), 1.0, false)
+        };
+        let Some(first) = window.clone().find(shown) else { return 0..0 };
+        first..window.rev().find(shown).unwrap_or(first) + 1
+    }
+
     /// The caption-band geometry (the owner's page layout reads the document height from it).
     pub fn band_geometry(&self) -> [GridBand; poster_grid::MAX_GRID_BANDS] {
         self.bands.geometry()

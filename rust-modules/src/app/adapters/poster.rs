@@ -147,6 +147,12 @@ enum Touch {
     Draw,
     /// A prefetch: neither. See [`poster_warm`].
     Warm,
+    /// An AT-REST lookahead warm (the Library grid's next rows, `screens/src/library/lookahead.rs`). A prefetch
+    /// like [`Touch::Warm`] in every respect but its slot: it is stamped like a draw (a fresh LRU
+    /// age, so it is not the next miss's first victim) and flagged [`Pslot::ahead`], and it picks
+    /// its own victim ([`ahead_victim`]) so two lookahead warms cannot recycle each other. See the
+    /// "Lookahead" note at [`AHEAD_PROTECT`].
+    Ahead,
 }
 
 // `Warm` — what a prefetch did — is the library's `ui::tex::Warm` now (re-exported through
@@ -173,6 +179,9 @@ struct Pslot {
     state: c_int,
     /// A draw has asked for this key. Workers serve visible work before speculative warms.
     visible: bool,
+    /// Claimed by an at-rest lookahead warm ([`Touch::Ahead`]) and not yet drawn. Cleared by the
+    /// first Draw hit: a lookahead card that scrolled into view is an ordinary slot from then on.
+    ahead: bool,
     use_: c_uint,  // LRU clock
     gen: c_uint,   // bumped on eviction; stale-decode guard
     cache_gen: u64, // account epoch captured when queued, before any worker can race sign-out
@@ -224,6 +233,7 @@ impl Pslot {
         px: 0,
         state: P_EMPTY,
         visible: false,
+        ahead: false,
         use_: 0,
         gen: 0,
         cache_gen: 0,
@@ -881,9 +891,20 @@ fn logo_failed(srv: ServerId, rk: &str) -> bool {
 /// texture, and no test binary on this host links GL.
 ///
 /// Note the second clause is what bounds a prefetch's depth, and it is sharper than eviction:
-/// `P_WANT`/`P_LOADING`/`P_DECODED` are never victims, so a batch of in-flight warms does not merely
-/// age the store out, it can make this return `None` for a poster the user is looking at — which is
-/// a tile that is never even REQUESTED, not one that arrives late.
+/// `P_LOADING`/`P_DECODED` are never victims (a worker holds them), so a batch of in-flight warms
+/// does not merely age the store out, it can make this return `None` for a poster the user is
+/// looking at — which is a tile that is never even REQUESTED, not one that arrives late.
+///
+/// **A STALE want is the last resort** (the third clause, [`WANT_STALE_FRAMES`]). A fast scroll
+/// claims a slot for every card it passes, and on a slow server the workers fall behind: the queue
+/// fills with requests for rows that left the screen before a worker reached them. Those wants are
+/// settled for nobody, yet without this clause they are never victims, so the rows ON screen found
+/// `store_full`. A `P_WANT` slot no worker has picked up (so there is nothing off-lock to
+/// invalidate; the `gen` bump on a claim retires any stale reference) that a draw has not touched
+/// for [`WANT_STALE_FRAMES`] frames is a card that scrolled away: the demand is real only while it
+/// is drawn, and a later draw simply asks again. Settled slots still go first, so this never costs
+/// a picture the store holds. Only DRAWN demand qualifies (`visible`): a speculative warm or a
+/// lookahead entry has never been drawn and is bounded by [`warm_admissible`] instead.
 fn victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
     if let Some(i) = (0..PT_CAP).find(|&i| slots[i].state == P_EMPTY) {
         return Some(i);
@@ -892,16 +913,113 @@ fn victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
     let mut pick = None;
     for i in 0..PT_CAP {
         let s = &slots[i];
-        if (s.state == P_READY || s.state == P_FAILED || s.state == P_RETRY || s.state == P_EVICTED)
-            && s.frame != frame
-            && s.use_ < oldest
-        {
+        if is_settled_victim(s, frame) && s.use_ < oldest {
+            oldest = s.use_;
+            pick = Some(i);
+        }
+    }
+    if pick.is_some() {
+        return pick;
+    }
+    for i in 0..PT_CAP {
+        let s = &slots[i];
+        if want_is_stale(s, frame) && s.use_ < oldest {
             oldest = s.use_;
             pick = Some(i);
         }
     }
     pick
 }
+
+/// How many frames a queued, DRAWN request may go without a draw touching it before [`victim`]
+/// may recycle it for a card that is on screen now. Long enough that a card still on screen (drawn
+/// every frame) or briefly covered by a menu is never mistaken for a departed one, short enough
+/// that a held scroll's dead requests (about one new card per frame at the fastest) cannot fill
+/// the store's 64 slots.
+const WANT_STALE_FRAMES: c_uint = 8;
+
+/// A settled slot (nothing in flight or queued for it) that was not drawn this frame: the slots
+/// [`victim`] and [`ahead_victim`] may recycle without costing a request.
+fn is_settled_victim(s: &Pslot, frame: c_uint) -> bool {
+    matches!(s.state, P_READY | P_FAILED | P_RETRY | P_EVICTED) && s.frame != frame
+}
+
+/// A request a worker has not picked up whose card has not been drawn for [`WANT_STALE_FRAMES`].
+fn want_is_stale(s: &Pslot, frame: c_uint) -> bool {
+    s.state == P_WANT && s.visible && frame.wrapping_sub(s.frame) >= WANT_STALE_FRAMES
+}
+
+/// **Lookahead** ([`Touch::Ahead`]): the slots a screen's at-rest lookahead may claim, as a PURE
+/// function of the store, like [`victim`]. A lookahead warm is ordinary demand for a slot that
+/// nothing is looking at yet, so it is allowed to recycle only what a picture on screen cannot
+/// be: the rule, in order, is
+///
+/// 1. the first EMPTY slot;
+/// 2. else the least-recently-used settled slot that is NOT itself a lookahead entry, was not
+///    drawn this frame, and is OLDER than the [`AHEAD_PROTECT`] most recently used ordinary
+///    slots. At rest nothing is stamped with the current frame, so recency is the only thing that
+///    tells the cards on screen (the newest draws) from the rows that scrolled away;
+/// 3. else, only once [`AHEAD_MAX`] slots are already lookahead entries, the oldest of THEM.
+///    Clause 3 is what lets a jump to a new place reclaim the old place's lookahead, and is bounded
+///    for the reason the next paragraph gives.
+///
+/// Why two lookahead warms cannot recycle each other forever (the thrash
+/// `scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows` records for the plain
+/// `Touch::Warm`, whose age-0 slot is the first victim of the next warm): a lookahead slot gets a
+/// FRESH clock age, so it is the newest thing in the store and last in line for clause 2 and 3's
+/// "oldest"; clause 2 never takes one at all; and clause 3 only fires at [`AHEAD_MAX`] entries,
+/// which the screen's set ([`tex::AHEAD_SET_MAX`] cards, strictly fewer) cannot fill by itself —
+/// so every clause-3 eviction removes an entry older than the set's newest, and the screen runs
+/// out of older strangers after finitely many. A Draw is unaffected by any of this: [`victim`]
+/// still sees a lookahead slot as an ordinary settled one, so a visible miss always finds a slot
+/// unless every slot is in flight or was drawn this frame.
+fn ahead_victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
+    if let Some(i) = (0..PT_CAP).find(|&i| slots[i].state == P_EMPTY) {
+        return Some(i);
+    }
+    let mut oldest = c_uint::MAX;
+    let mut pick = None;
+    for i in 0..PT_CAP {
+        let s = &slots[i];
+        if !s.ahead && is_settled_victim(s, frame) && s.use_ < oldest
+            // `newer` counts every ordinary slot younger than this one, in flight or settled.
+            && slots.iter().filter(|o| !o.ahead && o.state != P_EMPTY && o.use_ > s.use_).count()
+                >= AHEAD_PROTECT
+        {
+            oldest = s.use_;
+            pick = Some(i);
+        }
+    }
+    if pick.is_some() || slots.iter().filter(|s| s.ahead).count() < AHEAD_MAX {
+        return pick;
+    }
+    for i in 0..PT_CAP {
+        let s = &slots[i];
+        if s.ahead && is_settled_victim(s, frame) && s.use_ < oldest {
+            oldest = s.use_;
+            pick = Some(i);
+        }
+    }
+    pick
+}
+
+/// The most recently used ordinary slots a lookahead warm may never recycle: the cards on screen.
+///
+/// This is the ONLY protection the cards on screen have against a lookahead claim. The claim runs
+/// in `prepare`, before any draw of the frame, so no slot carries the current frame's stamp and
+/// [`ahead_victim`]'s "not drawn this frame" test protects nothing; recency does the work, on the
+/// premise that the last frame drew the cards on screen and so left them the newest ordinary
+/// slots. That holds only while the protected count covers every card a screen paints at once:
+/// [`tex::ON_SCREEN_ART_MAX`] (the Library: six columns by five partly visible rows, 30, pinned to
+/// the layout in `screens/src/library/lookahead_tests.rs`), which 32 keeps out of reach while
+/// leaving [`AHEAD_MAX`] slots for the lookahead itself. The assertion below fails the build if
+/// either number moves past the other.
+const AHEAD_PROTECT: usize = 32;
+const _: () = assert!(AHEAD_PROTECT >= tex::ON_SCREEN_ART_MAX);
+/// The most slots lookahead entries may hold. `AHEAD_PROTECT + AHEAD_MAX == PT_CAP`, and
+/// [`tex::AHEAD_SET_MAX`] (what a screen may ask for at once) stays below it.
+const AHEAD_MAX: usize = PT_CAP - AHEAD_PROTECT;
+const _: () = assert!(tex::AHEAD_SET_MAX < AHEAD_MAX);
 
 /// What one store probe found: the slot's key once its pixels have been handed to the render
 /// cache (READY), else `None` while the slot is empty, in flight, or failed. The texture and its
@@ -913,8 +1031,9 @@ type Hit = Option<PosterKey>;
 /// admitted. Three things decide, and `touch` is only the first: `touch` itself (LRU bookkeeping on
 /// every hit, and whether a P_EVICTED slot is eligible to recover at all), the speculation bound
 /// [`warm_admissible`] for a Warm, and the drawn card's placement scope
-/// ([`plx_ui::card_motion::declines_request`]) for a Draw. Unknown or moving card
-/// placement declines new work; featured images outside that scope remain eligible.
+/// ([`plx_ui::card_motion::declines_request`]) for a Draw. An unknown card placement declines new
+/// work (a moving one too, but only under the dev trigger `plxnative-cardspeed`); featured images
+/// outside that scope remain eligible.
 /// A refusal claims no source slot; a follow-up present samples placement again.
 fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // The array's own precondition, checked before a slot can be claimed for a key that could
@@ -923,12 +1042,12 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     if !is_fetchable(key_s) {
         return (None, Warm::Known);
     }
-    // A scoped card DRAW may not START work with unknown or fast placement, at
-    // EVERY point work begins — the fresh miss far below, but equally the two re-arm transitions
-    // inside the matching-slot loop. Those matter more than the miss rather than less: a fast
-    // scroll is exactly what evicts textures, so scrolling back across the same rows finds
-    // P_EVICTED slots, and re-arming each one is a full fetch, decode and upload that the gate
-    // would never see if it only guarded the miss. A HIT is deliberately untouched: art that is
+    // A scoped card DRAW may not START work with unknown placement (or, under the dev trigger
+    // `plxnative-cardspeed`, fast placement), at EVERY point work begins — the fresh miss far
+    // below, but equally the two re-arm transitions inside the matching-slot loop. Those matter
+    // more than the miss rather than less: a scroll is what evicts textures, so scrolling back
+    // across the same rows finds P_EVICTED slots, and re-arming each one is a full fetch, decode
+    // and upload that the gate would never see if it only guarded the miss. A HIT is deliberately untouched: art that is
     // already resident still draws and still takes its LRU touch, so declining never blanks a
     // tile that had its picture.
     // (`declines_request` is always false in a frame dump: a frozen clock never leaves `Unknown`.)
@@ -967,6 +1086,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 // Promotion is monotone: a warm never demotes a key a draw is waiting on. If it
                 // is still queued, the next worker rescan will now choose it before speculation.
                 g.slots[i].visible = true;
+                g.slots[i].ahead = false;
                 if g.slots[i].state == P_WANT { CV.notify_one(); }
             }
             // a parked transient failure is SCHEDULED by the first draw that finds it, and goes
@@ -1015,7 +1135,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
             // set for it), but one that keeps recurring rapidly waits out a bounded backoff instead
             // of retrying on every single draw.
             if g.slots[i].state == P_EVICTED {
-                if touch == Touch::Warm {
+                if touch != Touch::Draw {
                     return (None, Warm::Known);
                 }
                 let now = crate::app::clock::now();
@@ -1071,17 +1191,21 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // Admit speculation only into a quiet visible queue, and never enough of it to occupy both
     // workers. `Full` tells the caller this frame's one prefetch attempt is spent without claiming
     // a slot.
-    if touch == Touch::Warm && !warm_admissible(&g.slots) {
+    if touch != Touch::Draw && !warm_admissible(&g.slots) {
         return (None, Warm::Full);
     }
-    // A card MISS with unknown placement or fast on-screen motion claims no slot and starts
-    // no acquisition. That tile draws its placeholder and asks again next frame. Other cards,
-    // featured images, and previously admitted work remain eligible; this gate defers only
-    // the drawn card's new demand until its placement is known and sufficiently still.
+    // A card MISS with unknown placement (or, under the dev trigger `plxnative-cardspeed`, fast
+    // on-screen motion) claims no slot and starts no acquisition. That tile draws its placeholder
+    // and asks again next frame. Other cards, featured images, and previously admitted work remain
+    // eligible; this gate defers only the drawn card's new demand until its placement is known
+    // (and, under the trigger, sufficiently still). The shipping default declines only the
+    // unknown placement: a moving card claims its slot at once.
     //
-    // **Why the request is declined outright rather than merely paced.** Every weaker bound was
-    // measured on the dev set against a 1000-movie mock library (`fps:library-scroll`, panel
-    // off, two runs each, dropped frames after warmup):
+    // **History: why the moving-card decline was once outright rather than paced.** Every weaker
+    // bound was measured on the dev set against a 1000-movie mock library (`fps:library-scroll`,
+    // panel off, two runs each, dropped frames after warmup). These numbers predate PR #563's
+    // offscreen warm-up and the at-rest lookahead (`screens/src/library/lookahead.rs`), and the
+    // shipping default has since dropped the moving-card decline:
     //
     // |                                                     | drops      | median fps |
     // |-----------------------------------------------------|------------|------------|
@@ -1098,6 +1222,16 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // then the fetch and the decode are already paid for and the refused pixels only accumulate
     // in `TexCache::pending` at 375 KB each. The request is the last point at which this work
     // can still be declined for free.
+    //
+    // **Why the default no longer declines.** Remeasured on the television with the lookahead in
+    // place (1000-movie mock, panel off, two runs each; the old default is `plxnative-lookahead=0
+    // plxnative-cardspeed=120`): placeholder tile-frames seen — `library-burst` 28,969 / 28,080
+    // old default, 1,759 / 1,761 new; `library-hold` 35,850 / 35,592 old, 4,280 / 3,902 new —
+    // against frames over 33 ms of 7 / 16 old and 30 / 10 new in `library-burst`, and of 3 / 8 old
+    // and 18 / 19 new in `library-hold`. `library-scroll` holds a 60 fps median on both, with a
+    // late-upload share of 6% / 14%. The cost of a request per passing card is queue depth on a
+    // slow server, which [`victim`] (a stale request is recyclable) and [`next_wanted`] (newest
+    // draw first) bound.
     if decline {
         plx_ui::card_motion::deferred();
         #[cfg(feature = "devtriggers")]
@@ -1106,7 +1240,8 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         return (None, Warm::Full);
     }
     // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
-    let idx = match victim(&g.slots, g.frame) {
+    let chosen = if touch == Touch::Ahead { ahead_victim(&g.slots, g.frame) } else { victim(&g.slots, g.frame) };
+    let idx = match chosen {
         Some(i) => i,
         None => { trace::outcome("store_full"); return (None, Warm::Full) } // all visible: skip
     };
@@ -1126,6 +1261,12 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         // carries evict-protection — and unlike a literal 0 it does not depend on `poster_pump`
         // having bumped the frame counter yet (a screen's update runs BEFORE the pump).
         Touch::Warm => (0, g.frame.wrapping_sub(1)),
+        // A fresh age (never the next victim of a Warm or a lookahead claim) with the same
+        // unprotected frame stamp: a Draw this frame still outranks it.
+        Touch::Ahead => {
+            g.clock = g.clock.wrapping_add(1);
+            (g.clock, g.frame.wrapping_sub(1))
+        }
     };
     {
         let s = &mut g.slots[idx];
@@ -1138,6 +1279,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         s.srv = srv; // captured HERE, on the main thread — the worker asks no one which server
         s.state = P_WANT;
         s.visible = touch == Touch::Draw;
+        s.ahead = touch == Touch::Ahead;
         s.use_ = use_;
         s.frame = frame;
         s.pw = 0;
@@ -1210,6 +1352,13 @@ impl tex::Source for PosterSource {
             }
             None => Warm::Known,
         }
+    }
+    /// The at-rest lookahead: a [`warm`](Self::warm) that survives. Same key, same admission
+    /// ([`warm_admissible`]), same dormancy for an EVICTED slot — only the slot it claims differs
+    /// ([`ahead_victim`]), which is what keeps a screenful of lookahead from evicting itself.
+    fn warm_ahead(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm {
+        let srv = ServerId::from_raw(srv);
+        built_key(srv, path, w, h, png).map_or(Warm::Known, |k| lookup(srv, k, Touch::Ahead).1)
     }
     fn logo(&self, srv: u16, rk: &str) -> Option<PosterKey> {
         logo_probe(ServerId::from_raw(srv), rk)
@@ -1290,8 +1439,13 @@ fn next_wanted(slots: &[Pslot; PT_CAP]) -> Option<usize> {
     if std::env::var_os("PLX_TEST_FIFO_POSTER_QUEUE").is_some() {
         return (0..PT_CAP).find(|&i| slots[i].state == P_WANT);
     }
+    // Drawn demand first, and of that the MOST RECENTLY drawn: on a slow server a scroll leaves
+    // requests for rows that are gone behind the ones on screen, and a worker that served them in
+    // slot order would spend its seconds on pictures nobody sees. Within the newest frame the
+    // lowest LRU age is the card drawn first, i.e. reading order. Speculation comes last.
     (0..PT_CAP)
-        .find(|&i| slots[i].state == P_WANT && slots[i].visible)
+        .filter(|&i| slots[i].state == P_WANT && slots[i].visible)
+        .max_by_key(|&i| (slots[i].frame, std::cmp::Reverse(slots[i].use_)))
         .or_else(|| (0..PT_CAP).find(|&i| slots[i].state == P_WANT))
 }
 
@@ -2203,6 +2357,11 @@ mod tests {
         }
     }
 
+    /// A queued request no worker has picked up: P_WANT, last drawn on frame `frame`, LRU age `use_`.
+    fn want(frame: c_uint, use_: c_uint, visible: bool) -> Pslot {
+        Pslot { state: P_WANT, visible, frame, use_, ..Pslot::ZERO }
+    }
+
     #[test]
     fn a_repoint_with_the_same_url_and_token_retires_the_old_request_generation() {
         let (_fresh, sid, tok) = one_server();
@@ -2583,15 +2742,16 @@ mod tests {
         store().slots = [Pslot::ZERO; PT_CAP];
     }
 
-    /// A DRAW in a fast-moving card scope claims no slot for a miss. The same draw claims one
-    /// when that scope permits admission. Demand is deferred, never dropped: the next frame
-    /// asks again without leaving a queued request behind.
+    /// Under `plxnative-cardspeed` (the guard), a DRAW in a fast-moving card scope claims no slot
+    /// for a miss. The same draw claims one when that scope permits admission. Demand is
+    /// deferred, never dropped: the next frame asks again without leaving a queued request behind.
     #[test]
     fn a_fast_scroll_declines_a_visible_miss_and_a_settle_takes_it() {
         let (_fresh, sid, _) = one_server();
         let path = key_for(sid, "/library/metadata/4242/thumb", 2, 2, 0);
         store().slots = [Pslot::ZERO; PT_CAP];
 
+        let _enforce = plx_ui::card_motion::enforce_for_test();
         let motion = plx_ui::card_motion::Scope::moving_for_test();
         assert!(plx_ui::card_motion::declines_request(), "the fixture is a fast scroll");
         let (hit, warm) = lookup(sid, &path, Touch::Draw);
@@ -2611,14 +2771,41 @@ mod tests {
         store().slots = [Pslot::ZERO; PT_CAP];
     }
 
+    /// The shipping default: a fast-moving card is not refused. Only an `Unknown` placement is.
+    #[test]
+    fn by_default_a_fast_scroll_claims_the_slot_and_only_an_unknown_placement_declines() {
+        let (_fresh, sid, _) = one_server();
+        let _default = plx_ui::card_motion::default_for_test();
+        let path = key_for(sid, "/library/metadata/4245/thumb", 2, 2, 0);
+        store().slots = [Pslot::ZERO; PT_CAP];
+
+        {
+            let _unknown = plx_ui::card_motion::Scope::unknown_for_test();
+            assert!(plx_ui::card_motion::declines_request());
+            let (_, warm) = lookup(sid, &path, Touch::Draw);
+            assert_eq!(warm, Warm::Full, "an unknown placement still waits for its second sample");
+            assert!(store().slots.iter().all(|s| s.state == P_EMPTY));
+        }
+        let _motion = plx_ui::card_motion::Scope::moving_for_test();
+        assert!(!plx_ui::card_motion::declines_request(), "the fixture is a fast scroll, and it is admitted");
+        let (_, warm) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(warm, Warm::Claimed, "a moving card claims its slot at once");
+        assert_eq!(store().slots[0].state, P_WANT);
+        assert!(store().slots[0].visible);
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
     /// The wiring `declines_in` is a pure function of: in a frame dump the SAME fast-moving draw
-    /// claims a slot, because a dump never declines for motion (`card_motion::declines_request`).
+    /// claims a slot, because a dump never declines for motion (`card_motion::declines_request`),
+    /// even with `plxnative-cardspeed` armed.
     #[test]
     fn an_armed_dump_claims_a_slot_for_the_miss_a_fast_scroll_would_decline() {
         let (_fresh, sid, _) = one_server();
         let path = key_for(sid, "/library/metadata/4243/thumb", 2, 2, 0);
         store().slots = [Pslot::ZERO; PT_CAP];
 
+        let _enforce = plx_ui::card_motion::enforce_for_test();
         let _motion = plx_ui::card_motion::Scope::moving_for_test();
         assert!(plx_ui::card_motion::declines_request(), "the fixture is a fast scroll");
         {
@@ -2637,7 +2824,19 @@ mod tests {
     /// A future position term in any screen reaches this same transformed centre.
     #[test]
     fn the_card_renderer_scopes_every_art_variant_and_unknown_misses_converge() {
+        card_renderer_frames(false);
+    }
+
+    /// The same three frames under `plxnative-cardspeed`: the card that jumped 80 px between two
+    /// frames is `Moving` and still claims nothing until it settles.
+    #[test]
+    fn under_cardspeed_a_moving_card_claims_no_slot_until_it_settles() {
+        card_renderer_frames(true);
+    }
+
+    fn card_renderer_frames(enforced: bool) {
         let (_fresh, sid, _) = one_server();
+        let _enforce = if enforced { plx_ui::card_motion::enforce_for_test() } else { plx_ui::card_motion::default_for_test() };
         tex::install(&SOURCE);
         tex::reset_for_test(16 * 1024 * 1024);
         store().slots = [Pslot::ZERO; PT_CAP];
@@ -2660,11 +2859,12 @@ mod tests {
                 plx_ui::widgets::Art::Person { sid: sid.raw(), key: "/test-person", res: (250, 250) }] {
                 plx_ui::widgets::resolve_card_art(painter, rect, &art);
             }
-            if frame < 2 {
+            // Frame 0 is `Unknown`; frame 1 jumped 80 px in 16 ms (`Moving`, 5000 px/s); frame 2 held.
+            if frame == 0 || enforced && frame == 1 {
                 assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "unknown/moving cards must claim no slots");
                 assert!(plx_machine::idle::take_local_damage() > 0, "a refused unknown needs a follow-up present");
             } else {
-                assert_eq!(store().slots.iter().filter(|s| s.state == P_WANT).count(), 4, "all four settled variants must queue art");
+                assert_eq!(store().slots.iter().filter(|s| s.state == P_WANT).count(), 4, "all four admitted variants must queue art");
             }
         }
         assert!(!plx_ui::card_motion::declines_request(), "hero work after a card is outside its scope");
@@ -2687,6 +2887,7 @@ mod tests {
             slot.state = P_RETRY;
             slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
         }
+        let _enforce = plx_ui::card_motion::enforce_for_test();
         let motion = plx_ui::card_motion::Scope::moving_for_test();
         plx_machine::idle::take_local_damage();
         assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
@@ -2733,6 +2934,7 @@ mod tests {
         }
         let (_, rearmed0) = residency_counts_for_test();
 
+        let _enforce = plx_ui::card_motion::enforce_for_test();
         let motion = plx_ui::card_motion::Scope::moving_for_test();
         let (hit, warm) = lookup(sid, &path, Touch::Draw);
         assert_eq!(hit, None, "an evicted slot has no pixels to hand back");
@@ -2777,6 +2979,7 @@ mod tests {
             slot.retry_at = Some(0);
         }
 
+        let _enforce = plx_ui::card_motion::enforce_for_test();
         let motion = plx_ui::card_motion::Scope::moving_for_test();
         let (hit, _) = lookup(sid, &path, Touch::Draw);
         assert_eq!(hit, None, "a parked retry has no pixels");
@@ -3774,5 +3977,263 @@ mod tests {
         slots[41].visible = true;
         assert!(!warm_admissible(&slots),
             "visible work closes prefetch admission regardless of slot index");
+    }
+
+    // ---- A held scroll on a slow server -------------------------------------------------------
+
+    /// **The slow-server scroll.** No worker ever runs here (the fetch outlasts the whole scroll),
+    /// the grid is 6 columns by 5 rows and a new row arrives every 8 frames: by the time 64 slots
+    /// are spoken for, most of them name rows that left the screen. The row on screen NOW must
+    /// still find its slots, and the worker's next pick must be on screen, not the oldest request.
+    #[test]
+    fn a_held_scroll_on_a_slow_server_never_starves_the_rows_on_screen() {
+        let (_fresh, sid, _) = one_server();
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            g.frame = 1000;
+        }
+        let key = |n: usize| key_for(sid, &format!("/library/metadata/{}/thumb", 9000 + n), 2, 2, 0);
+        let (cols, rows) = (6usize, 5usize);
+        let mut first_row = 0usize;
+        for frame in 0..400usize {
+            store().frame += 1;
+            if frame % 8 == 0 {
+                first_row += 1; // one new row every 8 frames: 6 cards / 8 frames at 60 fps = 45 cards/s
+            }
+            for c in 0..cols * rows {
+                lookup(sid, &key(first_row * cols + c), Touch::Draw);
+            }
+            // After the first screenful the window is always fully queued: none of its cards was
+            // refused for want of a slot.
+            if frame >= 8 {
+                let g = store();
+                for c in 0..cols * rows {
+                    let k = key(first_row * cols + c);
+                    assert!(
+                        g.slots.iter().any(|s| s.state == P_WANT && s.visible && key_bytes(s) == k.as_bytes()),
+                        "frame {frame}: on-screen card {c} has no queued request (store full of dead requests)"
+                    );
+                }
+            }
+        }
+        // The worker's next pick is a card on screen, not the oldest request in slot order.
+        let g = store();
+        let picked = next_wanted(&g.slots).expect("work is queued");
+        let on_screen: Vec<String> = (0..cols * rows).map(|c| key(first_row * cols + c)).collect();
+        assert!(
+            on_screen.iter().any(|k| k.as_bytes() == key_bytes(&g.slots[picked])),
+            "the worker served a row that already left the screen"
+        );
+        drop(g);
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The store's rule for a stale request: last resort only, drawn demand only, never in flight.
+    #[test]
+    fn a_stale_queued_request_is_recycled_only_when_nothing_better_exists() {
+        let f: c_uint = 100;
+        let stale = f - WANT_STALE_FRAMES;
+        // Every slot a request: the stale one with the oldest draw goes; a fresh one never does.
+        let mut slots: [Pslot; PT_CAP] = std::array::from_fn(|i| want(f - 1, 1000 + i as c_uint, true));
+        slots[5] = want(stale, 400, true);
+        slots[9] = want(stale - 3, 300, true);
+        assert_eq!(victim(&slots, f), Some(9), "the request drawn longest ago is the one a draw recycles");
+        slots[9].state = P_LOADING;
+        assert_eq!(victim(&slots, f), Some(5), "a request a worker holds is never recycled");
+        slots[5].frame = stale + 1;
+        assert_eq!(victim(&slots, f), None, "a request drawn within the window is a card still on screen");
+        // Speculation (a warm, a lookahead entry) was never drawn: not this clause's to take.
+        slots[5] = want(0, 1, false);
+        assert_eq!(victim(&slots, f), None);
+        slots[5] = Pslot { ahead: true, ..want(0, 1, false) };
+        assert_eq!(victim(&slots, f), None);
+        // A settled slot is always preferred to a stale request: no picture is thrown away for it.
+        slots[5] = want(stale, 400, true);
+        slots[20] = ready(2000, f - 1);
+        assert_eq!(victim(&slots, f), Some(20));
+        // An empty slot first of all.
+        slots[33] = Pslot::ZERO;
+        assert_eq!(victim(&slots, f), Some(33));
+    }
+
+    /// The lookahead's victim is untouched: a stale drawn request is not lookahead's to take.
+    #[test]
+    fn a_lookahead_claim_never_recycles_a_queued_request() {
+        let f: c_uint = 100;
+        let slots: [Pslot; PT_CAP] = std::array::from_fn(|i| want(1, 1 + i as c_uint, true));
+        assert_eq!(ahead_victim(&slots, f), None);
+    }
+
+    /// Queued DRAWN requests are served newest-draw first (ties in reading order); speculation
+    /// stays behind every one of them.
+    #[test]
+    fn queued_requests_are_served_most_recently_drawn_first() {
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        slots[3] = want(10, 100, true); // drawn long ago
+        slots[9] = want(40, 400, true); // newest frame, drawn second
+        slots[20] = want(40, 399, true); // newest frame, drawn first: reading order
+        slots[1] = want(60, 5, false); // a lookahead/prefetch want, never drawn
+        assert_eq!(next_wanted(&slots), Some(20));
+        slots[20].state = P_LOADING;
+        assert_eq!(next_wanted(&slots), Some(9));
+        slots[9].state = P_LOADING;
+        assert_eq!(next_wanted(&slots), Some(3), "an old drawn request still outranks speculation");
+        slots[3].state = P_LOADING;
+        assert_eq!(next_wanted(&slots), Some(1));
+    }
+
+    // ---- Lookahead (`Touch::Ahead`, `ahead_victim`) -------------------------------------------
+
+    /// A settled lookahead entry with LRU age `use_`.
+    fn ahead_slot(use_: c_uint) -> Pslot {
+        Pslot { ahead: true, ..ready(use_, 0) }
+    }
+
+    #[test]
+    fn a_lookahead_claim_is_flagged_aged_like_a_draw_and_adopted_by_the_draw_that_reaches_it() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/7001/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            g.frame = 5;
+            g.clock = 10;
+        }
+        assert_eq!(lookup(sid, &path, Touch::Ahead).1, Warm::Claimed);
+        {
+            let g = store();
+            let s = &g.slots[0];
+            assert!(s.ahead && !s.visible && s.state == P_WANT);
+            assert!(s.use_ > 10, "a fresh age, unlike a Warm's 0, so the next miss does not take it first");
+            assert_ne!(s.frame, 5, "and no frame protection, so a Draw this frame still outranks it");
+        }
+        assert_eq!(lookup(sid, &path, Touch::Ahead).1, Warm::Known, "the second ask is a hit, not a claim");
+        store().slots[0].state = P_READY;
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, Some(PosterKey(0)), "the lookahead entry is exactly the slot the draw hits");
+        let g = store();
+        assert!(!g.slots[0].ahead && g.slots[0].visible && g.slots[0].frame == 5,
+            "drawn once, it is an ordinary visible slot: no longer reclaimable as lookahead");
+        drop(g);
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    #[test]
+    fn lookahead_keeps_the_prefetch_bound_and_never_revives_an_evicted_slot() {
+        let (_fresh, sid, _) = one_server();
+        let a = key_for(sid, "/library/metadata/7002/thumb", 2, 2, 0);
+        let b = key_for(sid, "/library/metadata/7003/thumb", 2, 2, 0);
+        store().slots = [Pslot::ZERO; PT_CAP];
+        assert_eq!(lookup(sid, &a, Touch::Ahead).1, Warm::Claimed);
+        assert_eq!(lookup(sid, &b, Touch::Ahead).1, Warm::Full,
+            "one speculative fetch in flight spends the whole allowance, exactly as for a Warm");
+        store().slots[0].state = P_EVICTED;
+        assert_eq!(lookup(sid, &a, Touch::Ahead).1, Warm::Known);
+        assert_eq!(store().slots[0].state, P_EVICTED, "only a Draw re-arms an evicted slot");
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// **A visible miss always wins a slot.** Even a store with nothing but lookahead in it gives
+    /// one up to a Draw (the oldest), because the Draw's victim rule counts a lookahead slot as an
+    /// ordinary settled one.
+    #[test]
+    fn a_draw_miss_takes_a_slot_from_a_store_full_of_lookahead() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/7004/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = std::array::from_fn(|i| ahead_slot(100 + i as c_uint));
+            g.slots[23].use_ = 3; // the oldest
+            g.frame = 9;
+        }
+        let (hit, warm) = lookup(sid, &path, Touch::Draw);
+        assert_eq!((hit, warm), (None, Warm::Claimed));
+        let g = store();
+        assert_eq!(g.slots[23].state, P_WANT, "the oldest lookahead entry went");
+        assert!(g.slots[23].visible && !g.slots[23].ahead);
+        assert_eq!(g.slots.iter().filter(|s| s.ahead).count(), PT_CAP - 1);
+        drop(g);
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    #[test]
+    fn a_lookahead_claim_never_takes_a_slot_the_frame_drew_or_the_newest_ordinary_ones() {
+        let f: c_uint = 20;
+        // 32 ordinary slots drawn most recently (the cards on screen), 32 older ones.
+        let mut slots: [Pslot; PT_CAP] = std::array::from_fn(|i| ready(1000 + i as c_uint, 3));
+        for (i, s) in slots.iter_mut().enumerate().take(32) { s.use_ = 1 + i as c_uint; }
+        assert_eq!(ahead_victim(&slots, f), Some(0), "the oldest of the unprotected half");
+        // Protect: only the 32 newest are off limits, so a store with exactly 32 ordinary slots
+        // and the rest lookahead offers no ordinary victim.
+        let mut mixed: [Pslot; PT_CAP] = std::array::from_fn(|i| ahead_slot(1 + i as c_uint));
+        for (i, s) in mixed.iter_mut().enumerate().take(32) { *s = ready(500 + i as c_uint, 3); }
+        for s in mixed.iter_mut().skip(32).take(31) { s.frame = 0; }
+        mixed[63] = Pslot { state: P_LOADING, ..ready(2, 0) }; // 31 settled lookahead + 1 ordinary in flight
+        assert_eq!(ahead_victim(&mixed, f), None,
+            "below the lookahead cap with every ordinary slot protected: no slot, the warming stops");
+        // A drawn-this-frame slot is never a victim, protected or not.
+        let drawn = [ready(1, f); PT_CAP];
+        assert_eq!(ahead_victim(&drawn, f), None);
+        // Empty first.
+        let mut one_hole = [ready(1, 3); PT_CAP];
+        one_hole[40] = Pslot::ZERO;
+        assert_eq!(ahead_victim(&one_hole, f), Some(40));
+    }
+
+    /// At the cap the oldest LOOKAHEAD entry is recycled (a jump reclaims the old place's rows);
+    /// below it, lookahead is never taken by lookahead.
+    #[test]
+    fn lookahead_recycles_its_own_oldest_only_at_the_cap() {
+        let f: c_uint = 20;
+        let mut slots: [Pslot; PT_CAP] = std::array::from_fn(|i| ready(1000 + i as c_uint, 3));
+        for (i, s) in slots.iter_mut().enumerate().take(AHEAD_MAX) { *s = ahead_slot(50 + i as c_uint); }
+        slots[11].use_ = 4;
+        assert_eq!(ahead_victim(&slots, f), Some(11), "at the cap the oldest lookahead entry goes");
+        // One lookahead entry short of the cap, with an old ordinary slot to take instead.
+        slots[0] = ready(1, 3);
+        assert_eq!(slots.iter().filter(|s| s.ahead).count(), AHEAD_MAX - 1);
+        assert_eq!(ahead_victim(&slots, f), Some(0), "below the cap an ordinary old slot is taken, never a lookahead one");
+    }
+
+    /// **Two lookahead warms do not evict each other in a loop.** The store is simulated purely
+    /// (a slot's identity rides in `pw`): a screenful of ordinary slots on top, stale slots below,
+    /// then a lookahead set is asked for one card per "frame" until a frame asks for nothing.
+    /// Then the user jumps and the SAME bounded process runs for an overlapping set.
+    #[test]
+    fn a_lookahead_set_converges_and_stops_even_across_a_jump() {
+        const SET: c_int = tex::AHEAD_SET_MAX as c_int;
+        let f: c_uint = 100;
+        let mut clock: c_uint = 1000;
+        let mut slots: [Pslot; PT_CAP] = std::array::from_fn(|i| Pslot {
+            pw: -(i as c_int) - 1,
+            ..ready(if i < 32 { 500 + i as c_uint } else { 1 + i as c_uint }, 3)
+        });
+        let on_screen: Vec<c_int> = (0..32).map(|i| -(i as c_int) - 1).collect();
+        // One card per frame, nearest first (list order), until nothing is missing.
+        let mut run = |slots: &mut [Pslot; PT_CAP], set: &[c_int]| -> usize {
+            let mut claims = 0;
+            for _frame in 0..500 {
+                let Some(&want) = set.iter().find(|&&id| !slots.iter().any(|s| s.state != P_EMPTY && s.pw == id))
+                else { return claims };
+                let Some(at) = ahead_victim(slots, f) else { return claims };
+                clock += 1;
+                slots[at] = Pslot { pw: want, ahead: true, ..ready(clock, f - 1) };
+                claims += 1;
+            }
+            panic!("the lookahead never converged: it is evicting itself");
+        };
+        let first: Vec<c_int> = (1..=SET).collect();
+        assert_eq!(run(&mut slots, &first), SET as usize, "one claim per card, no re-claims");
+        assert!(first.iter().all(|id| slots.iter().any(|s| s.pw == *id)), "the whole set is resident");
+        // The jump: a half-overlapping set of the same size.
+        let second: Vec<c_int> = (SET / 2 + 1..=SET / 2 + SET).collect();
+        let claims = run(&mut slots, &second);
+        assert!(claims <= SET as usize, "at most one claim per card of the new set; got {claims}");
+        assert!(second.iter().all(|id| slots.iter().any(|s| s.pw == *id)), "the new set is resident");
+        assert!(on_screen.iter().all(|id| slots.iter().any(|s| s.pw == *id)),
+            "the cards on screen (the newest ordinary slots) were never recycled");
+        // And a third ask for the same set claims nothing: the page can go idle.
+        assert_eq!(run(&mut slots, &second), 0);
     }
 }

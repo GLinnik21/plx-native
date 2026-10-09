@@ -132,6 +132,12 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - Use the `which-tier` skill to choose between host checks, `ui-sim`, and real-device verification.
   Pixel output, LG text rasterization, video-plane composition, performance, and native playback
   generally need the TV before being called verified.
+- **A frame drop is diagnosed with the tools that point at it, not guessed at.** Any late frame, fps
+  dip or "I see it stutter" on the TV goes straight to the `profile-tv` skill: Mali HWCNT, the
+  every-frame legs and `tools/tv-sched-trace.sh`, attributing the late frames' time before any cause
+  is named. A count of late frames, an A/B between two builds, or a reading of the heartbeat line
+  is not a diagnosis, and "probably the upload" is not a finding. State a cause only with the
+  counter or trace evidence behind it; what was not measured is reported as not determined.
 - FFI, linkage, `dynlib!`, Starfish, ACB, curl, or bundled-FFmpeg changes require the
   `fw-compat-reviewer` custom agent (`fw_compat_reviewer` in Codex), or the equivalent manual
   review, before push.
