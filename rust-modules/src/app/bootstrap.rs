@@ -51,11 +51,7 @@ impl HomeIo {
         cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
         launch: &mut dyn FnMut(plx_data::pms::HubRequest) -> bool) -> plx_data::stores::StoreOutcome {
         hubs.controlled(cmd, dt, &mut |request| {
-            let (epoch, req, sid, client, token_gen) = request.descriptor();
-            let mut descriptor = serde_json::json!({"kind":"hubs", "epoch":epoch,
-                "req":req, "sid":sid, "client":client, "token_gen":token_gen});
-            if let Some(page) = request.page_descriptor() { descriptor["page"] = page; }
-            self.admit(descriptor, || launch(request))
+            self.admit(hubs_descriptor(&request), || launch(request))
         })
     }
     pub(crate) fn hubs_with_directory(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
@@ -70,11 +66,7 @@ impl HomeIo {
         directory: plx_data::stores::browse::DirectoryView<'_>,
         launch: &mut dyn FnMut(plx_data::pms::HubRequest) -> bool) -> plx_data::stores::StoreOutcome {
         hubs.controlled_with_directory(cmd, dt, directory, &mut |request| {
-            let (epoch, req, sid, client, token_gen) = request.descriptor();
-            let mut descriptor = serde_json::json!({"kind":"hubs", "epoch":epoch,
-                "req":req, "sid":sid, "client":client, "token_gen":token_gen});
-            if let Some(page) = request.page_descriptor() { descriptor["page"] = page; }
-            self.admit(descriptor, || launch(request))
+            self.admit(hubs_descriptor(&request), || launch(request))
         })
     }
     pub(crate) fn discovery_owned(&mut self, stores: &plx_data::stores::Stores) {
@@ -372,4 +364,13 @@ impl Preflight {
     }
     pub(crate) fn replay(&self) -> bool { matches!(self, Self::Replay { .. }) }
     pub(crate) fn controlled(&self) -> bool { !matches!(self, Self::Live) }
+}
+
+/// The admission descriptor of one Hubs request, with its page query when it carries one.
+fn hubs_descriptor(request: &plx_data::pms::HubRequest) -> serde_json::Value {
+    let (epoch, req, sid, client, token_gen) = request.descriptor();
+    let mut descriptor = serde_json::json!({"kind":"hubs", "epoch":epoch,
+        "req":req, "sid":sid, "client":client, "token_gen":token_gen});
+    if let Some(page) = request.page_descriptor() { descriptor["page"] = page; }
+    descriptor
 }

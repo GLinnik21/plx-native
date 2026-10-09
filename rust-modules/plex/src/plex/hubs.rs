@@ -11,9 +11,14 @@
 use super::client::{Client, QueryBuilder};
 use super::models::MediaContainer;
 
+/// The keys a hub's pages may be fetched from: the only prefixes a server's listing keys use.
+pub fn is_pageable_hub_key(key: &str) -> bool {
+    key.starts_with("/hubs/") || key.starts_with("/library/sections/")
+}
+
 impl Client {
     pub fn hub_items_paged(&self, key: &str, start: i64, size: i64) -> Option<MediaContainer> {
-        if !key.starts_with("/hubs/") && !key.starts_with("/library/sections/") { return None; }
+        if !is_pageable_hub_key(key) { return None; }
         self.get_json(&hub_page_path(key, start, size))
     }
 

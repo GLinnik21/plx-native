@@ -18,6 +18,11 @@ pub enum HubsCmd {
     EditItem { sid: plx_plex::plex::ServerId, rk: String, edit: crate::pms::LocalEdit },
 }
 
+impl HubsCmd {
+    /// Page requests move a window, not the catalog, so they do not bump the notice generation.
+    pub fn is_paging(&self) -> bool { matches!(self, HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }) }
+}
+
 pub use crate::pms::Landing as HubsResult;
 
 /// One Hubs owner: logical state, the worker adapter all current fetches capture, and notice.
@@ -197,7 +202,7 @@ impl HubsStore {
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
         plx_base::testlock::assert_held("controlled hubs store");
         self.prepare_command(cmd.as_ref());
-        let command = cmd.is_some() && !matches!(cmd.as_ref(), Some(HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }));
+        let command = cmd.as_ref().is_some_and(|cmd| !cmd.is_paging());
         let outcome = crate::pms::controlled_work(&mut self.state, &self.adapter, cmd, dt, launch);
         if command || outcome.changed { self.bump(); }
         outcome
@@ -211,7 +216,7 @@ impl HubsStore {
         #[cfg(any(test, feature = "test-support"))]
         plx_base::testlock::assert_held("controlled hubs store with Browse owner");
         self.prepare_command(cmd.as_ref());
-        let command = cmd.is_some() && !matches!(cmd.as_ref(), Some(HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }));
+        let command = cmd.as_ref().is_some_and(|cmd| !cmd.is_paging());
         let outcome = crate::pms::controlled_work_with_directory(&mut self.state, &self.adapter, cmd, dt, directory, launch);
         if command || outcome.changed { self.bump(); }
         outcome
@@ -222,7 +227,7 @@ impl HubsStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn run(&mut self, cmd: HubsCmd) -> super::StoreOutcome {
         self.prepare_command(Some(&cmd));
-        let notice = !matches!(cmd, HubsCmd::Page { .. } | HubsCmd::CancelPage { .. });
+        let notice = !cmd.is_paging();
         let answer = crate::pms::run(&mut self.state, &self.adapter, cmd);
         if notice || answer.changed { self.bump(); }
         answer
@@ -237,7 +242,7 @@ impl HubsStore {
         directory: crate::stores::browse::DirectoryView<'_>,
     ) -> super::StoreOutcome {
         self.prepare_command(Some(&cmd));
-        let notice = !matches!(cmd, HubsCmd::Page { .. } | HubsCmd::CancelPage { .. });
+        let notice = !cmd.is_paging();
         let answer = crate::pms::run_with_directory(&mut self.state, &self.adapter, cmd, directory);
         if notice || answer.changed { self.bump(); }
         answer

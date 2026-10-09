@@ -88,6 +88,7 @@ pub mod discover;
 pub mod retry;
 
 // The re-exports are the public surface the call sites import.
+pub use hubs::is_pageable_hub_key;
 pub use client::ArtFetch;
 pub use client::JsonDeadlineOutcome;
 // The one percent-encoder (RFC 3986 unreserved passthrough) — see its doc.

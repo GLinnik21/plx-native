@@ -3,10 +3,26 @@
 //! The fetch + JSON parse go through the typed `plx_plex::plex` client (serde DTOs) — no
 //! hand-built paths or `Value` scraping here.
 //!
-//! Each production Bridge owns a HubsStore with its own PmsState and PmsAdapter.
-//! Commands enter through run_with_directory, results through land_with_directory.
-//! Controlled work captures each immutable request before the adapter launches it.
-//! The catalog mutators are private. Test entry points require the catalog test lock.
+//! **This is the data module `stores::hubs` (`docs/stores-as-machines.md`) is a machine over** —
+//! each production `Bridge` owns a `stores::hubs::HubsStore`, whose `run`/`run_with_directory`
+//! forward each `HubsCmd` variant into `request_refetch_hubs`/`reset`/`edit_item`/`page`/
+//! `cancel_page` here against its own `PmsState`/`Arc<PmsAdapter>`, the same relationship the owned
+//! `BrowseStore::run` has to Browse commands against its explicit state. Controlled work captures
+//! each immutable request before the adapter launches it. **The cross-module entry points
+//! (`run_with_directory`, `land_with_directory`, `tick*`) cannot be scoped narrower than `pub`, and
+//! that is a fact about Rust module topology, not an oversight**: `pms` and `stores` are both
+//! top-level children of the crate root, so neither is an ancestor of the other, and `pub(in path)`
+//! requires `path` to name an ancestor of the ITEM's own module. There is no visibility keyword
+//! that means "visible to `stores::hubs` and nobody else" for an item defined here. What IS
+//! enforceable, and is: (1) anything with no caller outside this file at all — `hub_state` — is
+//! plain private, not `pub`; (2) every mutator `stores::hubs` (or a test) can reach —
+//! `request_refetch_hubs`, `edit_item`, `tick`, `apply_landing`, `reset`, and the `_for_test`
+//! seeds — asserts `plx_base::testlock::held()` under `#[cfg(test)]` before it touches the
+//! crate-wide test-only state those seeds still share (see `lib.rs::testlock` and D5), which is the
+//! runtime half of the same contract a compile-time visibility keyword cannot express across two
+//! sibling modules. `ci/allow/mutators.txt`'s `# count: 0` already proves no PRODUCTION line
+//! outside `pms`/`stores::hubs` spells the old direct-call form; this is the part that
+//! keyword-level `pub(super)` genuinely cannot add on top of that count.
 use plx_plex::plex::ServerId;
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
@@ -16,14 +32,36 @@ use std::sync::{Arc, LazyLock, Mutex};
 pub mod record;
 pub mod initial;
 
-/// Home's preview budget across all sources. Ordinary rows spend their published card count;
-/// a Recently Added row spends at most 12 slots and holds a moving window of at most 24 cards.
-/// Thus the published rows hold at most twice this budget, plus at most eight retained heroes.
-/// Whole rows beyond the preview budget are omitted after the library-pin filter.
+/// Cards Home holds at most, across EVERY source: a distant ceiling on the one catalog the whole
+/// screen indexes into, not a per-server one — see [`allot`] for how the sources divide it.
+///
+/// A bound exists because the catalog is resident memory on a TV with a few hundred MB for the
+/// whole app, and only the Recently Added listings page (`docs/pms-api.md` §3), so nothing else
+/// limits what a server (or a household of shares) may send. 2,048 is about 170 full rows of 12,
+/// an order of magnitude past any Home a person scrolls and measured on the TV (`home-grid-deep`,
+/// issue #395) at 2,040 cards, about 1,343 KB of catalog (about 0.65 KB a card, 170 hubs); the
+/// `hubs: landed` log line reports the live figure. It used to be 256, which cut a Home of more
+/// than about 21 rows off in the middle.
+///
+/// An ordinary row spends its published card count; a Recently Added row spends at most 12 slots
+/// ([`shelf_cost`]) while holding a moving window of at most 24 cards, so the published rows hold
+/// at most twice this budget, plus at most eight retained heroes.
+///
+/// It is applied in exactly one place: [`merge_with_scope`], AFTER the pin filter and the
+/// per-shelf [`MAX_SHELF_ITEMS`] ceiling, through [`allot`] and the whole-shelf rule — so an
+/// unpinned library spends none of it, and what falls past it is whole shelves from the tail of a
+/// source, never a truncated row. [`project`] does not truncate. Rows dropped by the bound are
+/// logged by [`pump`].
 pub(crate) const HOME_CARDS_MAX: usize = 2048;
 
-/// Cards in one shelf window. Recently Added replaces overlapping windows as the user scrolls;
-/// other shelves retain the existing cap. Home's focus projection uses the same limit.
+/// Cards one shelf holds at most — the number the grid can address (the owned Home's `MAX_ITEMS`
+/// is this constant).
+///
+/// The MERGED deck reaches it: three sources' Continue Watching is up to 36 cards, and a Recently
+/// Added window reaches 24 from one server as the user scrolls (the window replaces its
+/// overlapping pages). The home grid's focus ring and its OK dispatch clamp differently past this
+/// number — the ring stops at the last addressable card while the press opens whatever column the
+/// raw index names. Cap the data and the two can never disagree.
 pub const MAX_SHELF_ITEMS: usize = 24;
 
 pub const KIND_COLLECTION: c_int = 4;
@@ -758,6 +796,10 @@ struct Shelf {
     more: bool,
 }
 
+impl Shelf {
+    fn is(&self, id: &str, key: &str) -> bool { self.hub_id == id && self.key == key }
+}
+
 /// ONE source's whole contribution to Home — its Continue Watching items (merged with everyone
 /// else's into a single shelf) and its own shelves (kept whole, annotated with its owner's handle).
 ///
@@ -784,7 +826,7 @@ struct PageQuery {
 
 fn recent_listing(id: &str, key: &str) -> bool {
     plx_plex::plex::hub_title::is_recently_added_hub(id)
-        && (key.starts_with("/hubs/") || key.starts_with("/library/sections/"))
+        && plx_plex::plex::is_pageable_hub_key(key)
 }
 
 // Paging must not spend the preview slots of another row. Each window is still bounded to 24.
@@ -792,13 +834,16 @@ fn shelf_cost(shelf: &Shelf, len: usize) -> usize {
     if recent_listing(&shelf.hub_id, &shelf.key) { len.min(HUB_FETCH_COUNT as usize) } else { len }
 }
 
+fn find_shelf<'a>(shelves: &'a [Shelf], id: &str, key: &str) -> Option<&'a Shelf> {
+    shelves.iter().find(|shelf| shelf.is(id, key))
+}
+
 fn request_page(state: &mut PmsState, adapter: &PmsAdapter, sid: ServerId,
     id: &str, key: &str, before: bool, scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
     let Some(source) = state.srcs.iter_mut().find(|source| source.sid == sid) else { return None };
     if refresh_src_lifecycle(source) { return None; }
     if source.fetching || source.page.is_some() || source.state != HubState::Ready { return None; }
-    let Some(shelf) = source.last.as_ref().and_then(|build| build.shelves.iter()
-        .find(|shelf| shelf.hub_id == id && shelf.key == key)) else { return None };
+    let Some(shelf) = source.last.as_ref().and_then(|build| find_shelf(&build.shelves, id, key)) else { return None };
     if !recent_listing(id, key) || (before && shelf.offset == 0) || (!before && !shelf.more) { return None; }
     let start = if before { shelf.offset } else { shelf.end.max(shelf.offset + shelf.items.len()) };
     source.retry_n = 0;
@@ -815,6 +860,22 @@ fn cancel_page(state: &mut PmsState, sid: ServerId, id: &str, key: &str) {
     source.seq = source.seq.wrapping_add(1);
     source.retry_n = 0;
     source.retry_s = 0.0;
+}
+
+/// The shared body of `Page` and `CancelPage`, for both command runners.
+fn run_page_cmd(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope, cmd: crate::stores::hubs::HubsCmd,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    use crate::stores::hubs::HubsCmd;
+    let mut endpoints = crate::stores::EndpointRefreshSet::default();
+    match cmd {
+        HubsCmd::CancelPage { sid, id, key } => cancel_page(state, sid, &id, &key),
+        HubsCmd::Page { sid, id, key, before } => {
+            sync_roster_with_scope(state, scope);
+            if let Some(endpoint) = request_page(state, adapter, sid, &id, &key, before, scope, launch) { endpoints.insert(endpoint); }
+        }
+        _ => {}
+    }
+    endpoints
 }
 
 fn hidden_sections(scope: &BrowseScope, sid: ServerId) -> Vec<i64> {
@@ -897,9 +958,8 @@ fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimu
 
 fn land_page(source: &mut Src, page: &PageQuery, build: SourceBuild) -> bool {
     let Some(current) = source.last.as_mut().and_then(|build| build.shelves.iter_mut()
-        .find(|shelf| shelf.hub_id == page.id && shelf.key == page.key)) else { return false };
-    let Some(mut next) = build.shelves.into_iter().find(|shelf|
-        shelf.hub_id == page.id && shelf.key == page.key) else { return false };
+        .find(|shelf| shelf.is(&page.id, &page.key))) else { return false };
+    let Some(mut next) = build.shelves.into_iter().find(|shelf| shelf.is(&page.id, &page.key)) else { return false };
     if next.items.is_empty() || (next.more && next.offset == current.offset && next.end <= current.end) {
         current.more = false;
         return true;
@@ -1374,7 +1434,7 @@ impl Src {
             client: LandingClient::live(client), token_gen: client.token_gen(),
             page: self.page.clone(),
             window: self.page.as_ref().and_then(|page| self.last.as_ref().and_then(|build|
-                build.shelves.iter().find(|shelf| shelf.hub_id == page.id && shelf.key == page.key))).cloned(),
+                find_shelf(&build.shelves, &page.id, &page.key))).cloned(),
             windows: self.last.as_ref().map_or_else(Vec::new, |build| build.shelves.iter()
                 .filter(|shelf| recent_listing(&shelf.hub_id, &shelf.key)
                     && (shelf.offset > 0 || shelf.end > HUB_FETCH_COUNT as usize))
@@ -1485,8 +1545,7 @@ impl HubRequest {
             None => {
                 let mut build = fetch_source(self.client.resource, self.sid)?;
                 for (window, end) in &self.windows {
-                    let Some(shelf) = build.shelves.iter_mut().find(|shelf|
-                        shelf.hub_id == window.id && shelf.key == window.key) else { continue };
+                    let Some(shelf) = build.shelves.iter_mut().find(|shelf| shelf.is(&window.id, &window.key)) else { continue };
                     // `/hubs` itself answered: a failed window reload keeps the first-page shelf.
                     let Some(mut refreshed) = fetch_page(self.client.resource, self.sid, window, *end)
                         .and_then(|page| page.shelves.into_iter().next()) else { continue };
@@ -2009,6 +2068,9 @@ pub fn with_refused_fetches_for_test<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// The Retry control's kick: try every source again NOW, from the bottom of the ladder — a person
+/// who asks for it should never be made to sit out a 30-second automatic wait. A no-op for any
+/// source whose fetch is already in flight; a pending page request is re-sent by the same kick.
 fn retry_now_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
     s.retry_n = 0;
     s.retry_s = 0.0;
@@ -2123,15 +2185,9 @@ fn run_with_scope(
 ) -> crate::stores::StoreOutcome {
     use crate::stores::hubs::HubsCmd;
     match cmd {
-        HubsCmd::CancelPage { sid, id, key } => {
-            cancel_page(state, sid, &id, &key);
-            crate::stores::StoreOutcome::changed(false)
-        }
-        HubsCmd::Page { sid, id, key, before } => {
+        paging @ (HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }) => {
             let mut launch = |r| spawn_fetch(adapter, r);
-            sync_roster_with_scope(state, scope);
-            let mut endpoints = crate::stores::EndpointRefreshSet::default();
-            if let Some(endpoint) = request_page(state, adapter, sid, &id, &key, before, scope, &mut launch) { endpoints.insert(endpoint); }
+            let endpoints = run_page_cmd(state, adapter, scope, paging, &mut launch);
             crate::stores::StoreOutcome { changed: false, endpoints }
         }
         HubsCmd::RefetchHubs => {
@@ -2172,18 +2228,9 @@ fn controlled_work_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, c
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
     use crate::stores::hubs::HubsCmd;
     let before = state.catalog_gen;
-    let command = cmd.is_some() && !matches!(cmd.as_ref(), Some(HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }));
+    let command = cmd.as_ref().is_some_and(|cmd| !cmd.is_paging());
     let endpoints = match cmd {
-        Some(HubsCmd::CancelPage { sid, id, key }) => {
-            cancel_page(state, sid, &id, &key);
-            crate::stores::EndpointRefreshSet::default()
-        }
-        Some(HubsCmd::Page { sid, id, key, before }) => {
-            sync_roster_with_scope(state, scope);
-            let mut endpoints = crate::stores::EndpointRefreshSet::default();
-            if let Some(endpoint) = request_page(state, adapter, sid, &id, &key, before, scope, launch) { endpoints.insert(endpoint); }
-            endpoints
-        }
+        Some(paging) if paging.is_paging() => run_page_cmd(state, adapter, scope, paging, launch),
         Some(HubsCmd::RefetchHubs) => request_refetch_hubs_with_scope(state, adapter, scope, launch),
         Some(HubsCmd::Retry) => {
             let gen = state.hub_gen;
