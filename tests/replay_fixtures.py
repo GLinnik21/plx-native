@@ -11,9 +11,14 @@ event log, evidence) from `mkdtemp`, reads its recording and the assets read-onl
 the recorded clock (`app::clock::set_replay`), never on wall time. Each replay's output is printed
 whole when it finishes, so concurrent logs never interleave, and a failing replay never stops the
 others.
+
+Each replay opens a 1920x1080 simulator window unless `--window WxH` / `PLX_REPLAY_WINDOW` says
+otherwise. The canvas, and everything graded, is 1920x1080 logical either way; a smaller window
+only means fewer pixels for a software-GL runner to fill (the macOS CI job uses 960x540).
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import functools
 import json
 import os
 from pathlib import Path
@@ -29,6 +34,12 @@ import time
 MAX_DEFAULT_JOBS = 4
 MODES = ('targets', 'resolve')
 JOBS_ENV = 'PLX_REPLAY_JOBS'
+WINDOW_ENV = 'PLX_REPLAY_WINDOW'
+# The window the simulator opens for a replay, `PLXNATIVE_WIN`. The authored canvas is 1920x1080
+# logical whatever the window is (`surface::scale`/`viewport` map it; layout, hit resolution and
+# the graded hash never see pixels), so this only sets how many pixels a software GL context fills.
+DEFAULT_WINDOW = '1920x1080'
+MAX_WINDOW_W = 7680
 
 DIFFS = ('diverged', 'present_diffs', 'input_diffs', 'result_diffs', 'land_diffs',
          'effect_diffs', 'focus_diffs', 'hit_diffs')
@@ -102,11 +113,43 @@ def resolve_jobs(flag, environ, cpus):
     return flag
 
 
-def run_fixture(binary, assets, fixture, mode, output, timeout):
+def parse_window(value):
+    """A replay window as `<w>x<h>`, or ValueError.
+
+    Strict on purpose: plain decimal digits around a lowercase `x`, no sign, space or zero, at most
+    8K wide, and exactly 16:9. The simulator would accept a looser string (and any positive size),
+    but an aspect other than the canvas's letterboxes the viewport, which switches the page-capture
+    path from render-into-texture to copy (`FrameCache::render_available`) -- a different render
+    than the one the committed recordings were graded against."""
+    match = re.fullmatch(r'([1-9][0-9]*)x([1-9][0-9]*)', value) if isinstance(value, str) else None
+    if match is None:
+        raise ValueError(f'replay window must look like 1920x1080 (digits x digits), got {value!r}')
+    width, height = int(match.group(1)), int(match.group(2))
+    if width > MAX_WINDOW_W or width * 9 != height * 16:
+        raise ValueError(f'replay window must be 16:9 and at most {MAX_WINDOW_W} wide '
+                         f'(the canvas is 1920x1080), got {value!r}')
+    return value
+
+
+def resolve_window(flag, environ):
+    """Window size: `--window` wins, then `PLX_REPLAY_WINDOW`, then the full-size default."""
+    if flag is None and environ.get(WINDOW_ENV, '') != '':
+        flag, source = environ[WINDOW_ENV], WINDOW_ENV
+    else:
+        source = '--window'
+    if flag is None:
+        return DEFAULT_WINDOW
+    try:
+        return parse_window(flag)
+    except ValueError as error:
+        raise ValueError(f'{source}: {error}') from None
+
+
+def run_fixture(binary, assets, fixture, mode, output, timeout, window=DEFAULT_WINDOW):
     runtime = Path(tempfile.mkdtemp(prefix=fixture.name + '-' + mode + '-', dir=output))
     (runtime / 'plxnative-recplay').write_text('v1\n' + mode + '\n' + str(fixture))
     env = dict(os.environ, PLXNATIVE_RUNTIME_DIR=str(runtime), PLXNATIVE_APP_DIR=str(assets),
-               PLXNATIVE_WIN='1920x1080')
+               PLXNATIVE_WIN=window)
     command = [str(binary), '127.0.0.1', '9']
     if sys.platform == 'darwin':
         command = ['/usr/bin/sandbox-exec', '-p',
@@ -138,6 +181,10 @@ def main():
     parser.add_argument('--jobs', type=int,
                         help=f'replays to run at once (default: ${JOBS_ENV}, else the CPU count '
                              f'capped at {MAX_DEFAULT_JOBS}; 1 runs them one after another)')
+    parser.add_argument('--window', metavar='WxH',
+                        help=f'simulator window for every replay (default: ${WINDOW_ENV}, else '
+                             f'{DEFAULT_WINDOW}); 16:9 only. The canvas is 1920x1080 logical '
+                             'whatever this is, so a smaller one only cuts software-GL fill cost')
     args = parser.parse_args()
     try:
         fixtures = discover(args.fixtures.resolve())
@@ -149,12 +196,16 @@ def main():
         jobs = resolve_jobs(args.jobs, os.environ, os.cpu_count())
     except ValueError as error:
         parser.error(str(error))
+    try:
+        window = resolve_window(args.window, os.environ)
+    except ValueError as error:
+        parser.error(str(error))
     output = args.output or Path(tempfile.mkdtemp(prefix='plxnative-replay-gate-'))
     output.mkdir(parents=True, exist_ok=True)
     failures = run_all(args.sim.resolve(), args.assets.resolve(), fixtures, output.resolve(),
-                       args.timeout, jobs)
+                       args.timeout, jobs, functools.partial(run_fixture, window=window))
     print(f'{len(fixtures)} fixtures, {len(fixtures) * len(MODES)} replays, {len(failures)} failures; '
-          f'{jobs} parallel; evidence {output}', flush=True)
+          f'{jobs} parallel; window {window}; evidence {output}', flush=True)
     return bool(failures)
 
 
