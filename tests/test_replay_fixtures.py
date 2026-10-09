@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import re
 import tempfile
 import threading
 import time
@@ -157,6 +158,57 @@ class ParallelRunTests(unittest.TestCase):
             self.assertEqual(len(lines), 4)
             self.assertTrue(all(line.startswith(('a/', 'b/')) and ': ok [' in line for line in lines))
 
+    def test_shards_partition_the_replay_list_and_none_is_empty(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixtures = self.fixtures(Path(temp), ['a', 'b', 'c', 'd', 'e'])
+            everything = replay.replay_order(fixtures)
+            self.assertEqual(len(everything), 10)
+            for count in (1, 2, 3, 7, 10):
+                with self.subTest(count=count):
+                    slices = [replay.select_shard(everything, (index, count))
+                              for index in range(1, count + 1)]
+                    # Every replay runs exactly once across the shards.
+                    self.assertEqual(sorted(sum(slices, []), key=str), sorted(everything, key=str))
+                    self.assertEqual(len({replay for each in slices for replay in each}), 10)
+                    self.assertLessEqual(max(map(len, slices)) - min(map(len, slices)), 1)
+            with self.assertRaisesRegex(ValueError, 'selects no replay'):
+                replay.select_shard(everything, (11, 11))
+
+    def test_shards_pair_long_recordings_with_short_ones(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixtures = self.fixtures(Path(temp), ['a', 'b', 'c'])  # 1, 2 and 3 ticks over a base of 1
+            frames = {fixture: replay.expected_counts(fixture)[0] for fixture in fixtures}
+            order = replay.replay_order(fixtures)
+            loads = [sum(frames[fixture] for fixture, _ in replay.select_shard(order, (index, 3)))
+                     for index in (1, 2, 3)]
+            # Six replays of 1, 1, 2, 2, 3, 3 frames over three shards: dealing 1..3 then 3..1 gives
+            # 3+1, 3+1 and 2+2; a plain round-robin would give 3+2, 3+2 and 1+1.
+            self.assertEqual(sorted(loads), [4, 4, 4])
+
+    def test_the_shard_flag_is_strict(self):
+        self.assertEqual(replay.parse_shard('2/3'), (2, 3))
+        for bad in ('0/3', '4/3', '1/0', '1', '1/', 'a/b', '-1/3', '1/3/3', ''):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                replay.parse_shard(bad)
+
+    def test_run_all_runs_only_the_selected_replays(self):
+        with tempfile.TemporaryDirectory() as temp:
+            fixtures = self.fixtures(Path(temp), ['one', 'two', 'three'])
+            ran = []
+
+            def fake(binary, assets, fixture, mode, output, timeout):
+                ran.append((fixture.name, mode))
+                return f'{fixture.name}/{mode}: ok'
+
+            for shard in ((1, 2), (2, 2)):
+                chosen = replay.select_shard(replay.replay_order(fixtures), shard)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    replay.run_all(Path('sim'), Path('pkg'), fixtures, Path('out'), 5, 2, fake,
+                                   replays=chosen)
+            self.assertEqual(len(ran), 6)
+            self.assertEqual(len(set(ran)), 6)
+
     def test_run_fixture_gives_each_replay_its_own_runtime_dir_and_a_timeout(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -174,6 +226,22 @@ class ParallelRunTests(unittest.TestCase):
             self.assertEqual(runtimes, ['solo-resolve', 'solo-targets'])
             for path in outputs.iterdir():
                 self.assertIn(path.name.split('-')[1], (path / 'plxnative-recplay').read_text())
+
+
+class WorkflowShardTests(unittest.TestCase):
+    """Simulator CI splits the gate across runners; a shard left out of its matrix would silently
+    stop running, so the workflow and the script's partition are held together here."""
+
+    def test_the_macos_job_runs_every_shard_exactly_once(self):
+        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/simulators.yml').read_text()
+        job = workflow[workflow.index('\n  macos:\n'):workflow.index('\n  macos-host-tests:\n')]
+        shards = re.search(r'^\s+shard: \[([0-9, ]+)\]$', job, re.M)
+        count = re.search(r'^\s+REPLAY_SHARDS: (\d+)$', job, re.M)
+        self.assertTrue(shards and count, 'the macos job lost its shard matrix or REPLAY_SHARDS')
+        listed = [int(n) for n in shards[1].split(',')]
+        self.assertEqual(listed, list(range(1, int(count[1]) + 1)))
+        self.assertIn('--shard "${{ matrix.shard }}/$REPLAY_SHARDS"', job)
+        self.assertNotIn('fail-fast: true', job)
 
 
 if __name__ == '__main__':

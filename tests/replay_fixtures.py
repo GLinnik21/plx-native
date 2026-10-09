@@ -11,6 +11,11 @@ event log, evidence) from `mkdtemp`, reads its recording and the assets read-onl
 the recorded clock (`app::clock::set_replay`), never on wall time. Each replay's output is printed
 whole when it finishes, so concurrent logs never interleave, and a failing replay never stops the
 others.
+
+`--shard I/N` runs only the I-th of N disjoint slices of the full replay list, so that N machines
+can split one gate between them (Simulator CI does). The slices partition the list by
+construction, so nothing is skipped as long as every I in 1..N runs, and
+`tests/test_replay_fixtures.py` holds the workflow to that.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -102,6 +107,27 @@ def resolve_jobs(flag, environ, cpus):
     return flag
 
 
+def parse_shard(text):
+    """`I/N` -> (I, N) with 1 <= I <= N."""
+    match = re.fullmatch(r'(\d+)/(\d+)', text)
+    if not match or not 1 <= int(match[1]) <= int(match[2]):
+        raise ValueError(f'--shard must be I/N with 1 <= I <= N, got {text!r}')
+    return int(match[1]), int(match[2])
+
+
+def select_shard(replays, shard):
+    """The `shard` = (I, N) slice of `replays`. The list is dealt out boustrophedon (1..N, then
+    N..1, and so on): `replay_order` sorts it longest first, so every shard gets one long
+    recording paired with a short one and the slices stay balanced in frames, not just in count."""
+    index, count = shard
+    chosen = [replay for position, replay in enumerate(replays)
+              if (position % count if position // count % 2 == 0 else count - 1 - position % count)
+              == index - 1]
+    if not chosen:
+        raise ValueError(f'--shard {index}/{count} selects no replay out of {len(replays)}')
+    return chosen
+
+
 def run_fixture(binary, assets, fixture, mode, output, timeout):
     runtime = Path(tempfile.mkdtemp(prefix=fixture.name + '-' + mode + '-', dir=output))
     (runtime / 'plxnative-recplay').write_text('v1\n' + mode + '\n' + str(fixture))
@@ -135,6 +161,9 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--timeout', type=float, default=300,
                         help='seconds each replay may run, counted from its own start')
+    parser.add_argument('--shard', type=parse_shard, metavar='I/N',
+                        help='run only the I-th of N disjoint slices of the replay list '
+                             '(default: all of it)')
     parser.add_argument('--jobs', type=int,
                         help=f'replays to run at once (default: ${JOBS_ENV}, else the CPU count '
                              f'capped at {MAX_DEFAULT_JOBS}; 1 runs them one after another)')
@@ -151,10 +180,16 @@ def main():
         parser.error(str(error))
     output = args.output or Path(tempfile.mkdtemp(prefix='plxnative-replay-gate-'))
     output.mkdir(parents=True, exist_ok=True)
+    try:
+        replays = select_shard(replay_order(fixtures), args.shard) if args.shard else None
+    except ValueError as error:
+        parser.error(str(error))
     failures = run_all(args.sim.resolve(), args.assets.resolve(), fixtures, output.resolve(),
-                       args.timeout, jobs)
-    print(f'{len(fixtures)} fixtures, {len(fixtures) * len(MODES)} replays, {len(failures)} failures; '
-          f'{jobs} parallel; evidence {output}', flush=True)
+                       args.timeout, jobs, replays=replays)
+    ran = replays or replay_order(fixtures)
+    which = f' (shard {args.shard[0]}/{args.shard[1]})' if args.shard else ''
+    print(f'{len({fixture for fixture, _ in ran})} fixtures, {len(ran)} replays, {len(failures)} '
+          f'failures; {jobs} parallel{which}; evidence {output}', flush=True)
     return bool(failures)
 
 
@@ -166,8 +201,9 @@ def replay_order(fixtures):
                   key=lambda replay: -cost[replay[0]])
 
 
-def run_all(binary, assets, fixtures, output, timeout, jobs, run=run_fixture):
-    """Run every replay with at most `jobs` at once; return the failures.
+def run_all(binary, assets, fixtures, output, timeout, jobs, run=run_fixture, replays=None):
+    """Run every replay (or just `replays`, a selection of `replay_order(fixtures)`) with at most
+    `jobs` at once; return the failures.
 
     A replay's report is printed in one call when it finishes (stdout for a pass, stderr for a
     FAIL), so output stays readable at any width. Nothing short-circuits: all replays run."""
@@ -185,7 +221,7 @@ def run_all(binary, assets, fixtures, output, timeout, jobs, run=run_fixture):
         return report, error, time.monotonic() - began
 
     with ThreadPoolExecutor(max_workers=jobs) as pool:
-        for done in as_completed([pool.submit(one, replay) for replay in replay_order(fixtures)]):
+        for done in as_completed([pool.submit(one, replay) for replay in replays or replay_order(fixtures)]):
             report, error, seconds = done.result()
             if error is None:
                 print(f'{report} [{seconds:.0f} s]', flush=True)

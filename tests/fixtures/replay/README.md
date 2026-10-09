@@ -15,6 +15,10 @@ The replays are independent processes (own runtime dir, recorded clock, no netwo
 by side: `--jobs N` / `PLX_REPLAY_JOBS=N`, default the CPU count capped at 4, `1` for serial. Each
 replay's line is printed whole when it finishes, every replay runs even after one fails, and the
 exit status is nonzero if any did; the timeout counts from each replay's own start.
+`--shard I/N` runs the I-th of N disjoint slices of the replay list (Simulator CI runs three, one per
+runner, because the replay is bound by the runner's software OpenGL renderer, not by this program's
+build profile); the slices partition the list, and `test_replay_fixtures.py` holds the workflow's
+shard matrix to `1..N`.
 The renderer-backed replay gate is separate from the pure host suite: `make check` tests its
 strict result parser, but does not launch the simulator.
 

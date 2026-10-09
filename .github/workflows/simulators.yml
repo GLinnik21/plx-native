@@ -125,10 +125,23 @@ jobs:
           retention-days: 7
 
   macos:
-    name: macOS simulator build + launch
+    name: macOS simulator build + launch (replay shard ${{ matrix.shard }})
     runs-on: macos-latest
     # Measured max 22.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 50
+    # The replay step is CPU-bound in macOS's software OpenGL renderer (the runner has no GPU), not
+    # in this program's own code, so an optimised build barely moves it (measured: 208 s -> 178 s)
+    # and the six replays already saturate the runner's three cores. What shortens it is more
+    # cores: each shard is a runner of its own that builds the simulator and runs its slice of the
+    # same six replays (`tests/replay_fixtures.py --shard`), so a pull request waits for the
+    # slowest slice instead of the sum of the three. `REPLAY_SHARDS` and the `shard` list MUST stay
+    # 1..N in step, or a slice of the gate would never run: `tests/test_replay_fixtures.py` checks it.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      REPLAY_SHARDS: 3
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install SDL
@@ -195,18 +208,21 @@ jobs:
         run: |
           python3 tests/replay_fixtures.py \
             --sim "$GITHUB_WORKSPACE/rust-modules/target-sim-ci/debug/plxnative-sim" \
+            --shard "${{ matrix.shard }}/$REPLAY_SHARDS" \
             --output "$RUNNER_TEMP/plxnative-replay"
       - name: Preserve replay evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: simulator-replay-${{ github.sha }}
+          name: simulator-replay-${{ matrix.shard }}-${{ github.sha }}
           path: |
             ${{ runner.temp }}/plxnative-replay/**/plxnative-events.log
             ${{ runner.temp }}/plxnative-replay/**/sim.out
           if-no-files-found: ignore
           retention-days: 7
       - name: Launch and capture 1080p frame
+        # One shard is enough: the same binary is built on all three.
+        if: matrix.shard == 1
         run: |
           python3 tools/sim-smoke.py \
             --binary "$GITHUB_WORKSPACE/rust-modules/target-sim-ci/debug/plxnative-sim" \
@@ -214,7 +230,7 @@ jobs:
             --assets "$GITHUB_WORKSPACE/pkg" \
             --output "$RUNNER_TEMP/plxnative-macos.png"
       - name: Preserve macOS capture
-        if: always()
+        if: always() && matrix.shard == 1
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: simulator-macos-${{ github.sha }}
