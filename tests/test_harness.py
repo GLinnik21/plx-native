@@ -6321,8 +6321,8 @@ class FpsMock(unittest.TestCase):
     def test_under_mock_only_scenes_with_a_mock_block_run(self):
         runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), True)
         names = {s["name"] for s in runnable}
-        self.assertEqual(names, {"home-grid", "home-grid-deep", "home-hint", "library-shelves-deep",
-                                 "hero-pong", "grid-pong", "home-idle", "item-menu", "library-scroll",
+        self.assertEqual(names, {"home-grid", "home-grid-deep", "home-recent-paging", "home-hint",
+                                 "library-shelves-deep", "hero-pong", "grid-pong", "home-idle", "item-menu", "library-scroll",
                                  "library-idle", "collection-page", "person-page", "search-type",
                                  "show-detail", "home-hold", "collection-hold", "home-tap",
                                  "collection-tap"})
@@ -6332,10 +6332,10 @@ class FpsMock(unittest.TestCase):
 
     def test_without_mock_a_mock_only_scene_is_skipped_and_the_rest_unchanged(self):
         runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), False)
-        self.assertEqual([n for n, _ in skipped], ["home-grid-deep", "library-shelves-deep"])
+        self.assertEqual([n for n, _ in skipped], ["home-grid-deep", "home-recent-paging", "library-shelves-deep"])
         self.assertIn("--mock", skipped[0][1])
         self.assertIn("home-grid", {s["name"] for s in runnable})
-        self.assertEqual(len(runnable), len(self.scenes) - 2)
+        self.assertEqual(len(runnable), len(self.scenes) - 3)
 
     def test_a_mock_scene_naming_a_library_item_carries_its_own_rating_key(self):
         # the overlay's ratingKey is the real server's; under --mock the scene opens `mock.rk`
@@ -6513,6 +6513,100 @@ class FpsMock(unittest.TestCase):
         for s in self.scenes.values():
             if s.get("walk"):
                 self.assertLessEqual(self.mf.walk_secs_needed(s), s["run_secs"], s["name"])
+
+    # --- the row walk (home-recent-paging) ---------------------------------------------
+    def test_recent_paging_scene_is_a_mock_only_row_walk_of_the_deep_scenes_pace(self):
+        sc, deep = self.scenes["home-recent-paging"], self.scenes["home-grid-deep"]
+        self.assertEqual((sc["tier"], sc["route"]), ("ui", "home"))
+        self.assertEqual(sc["mock"], {"movies": 300, "only": True})
+        self.assertEqual(self.mf.mock_server_args(sc), ["--movies", "300"])
+        self.assertEqual(sc["triggers"], deep["triggers"])
+        self.assertEqual(sc["walk"]["key_gap_s"], deep["walk"]["key_gap_s"])
+        self.assertEqual((sc["walk"]["row_down"], sc["walk"]["cards"]), (1, 96))
+        self.assertEqual((sc["loop_floor"], sc["fps_floor"]), (deep["loop_floor"], deep["fps_floor"]))
+        self.assertIn("./tests/run.py --fps --mock --filter home-recent-paging", sc["comment"])
+
+    def test_row_walk_plan_is_down_right_left_and_nothing_else(self):
+        walk = self.scenes["home-recent-paging"]["walk"]
+        plan = self.mf.row_walk_plan(walk)
+        self.assertEqual(plan, ["down"] + ["right"] * 96 + ["left"] * 96)
+        self.assertEqual(self.mf.row_walk_plan({"row_down": 2, "cards": 3}),
+                         ["down", "down", "right", "right", "right", "left", "left", "left"])
+        self.assertTrue(set(plan) <= set(self.mf.ROW_WALK_KEYS))
+        for banned in ("ok", "enter", "back", "up"):
+            self.assertNotIn(banned, plan)
+        # the walker and the grader take the plan from the same place; the rest is at the turn
+        sc = self.scenes["home-recent-paging"]
+        self.assertEqual(self.mf.scene_walk_plan(sc, 5), plan)
+        self.assertEqual(self.mf.rest_after(sc, plan), 1 + 96)
+
+    def test_row_walk_run_secs_covers_the_walk(self):
+        sc = self.scenes["home-recent-paging"]
+        self.assertTrue(self.mf.is_row_walk(sc["walk"]))
+        self.assertGreaterEqual(sc["run_secs"], self.mf.walk_secs_needed(sc))
+        self.assertAlmostEqual(
+            self.mf.walk_secs_needed(sc),
+            self.mf.LAUNCH_WAIT_S + 5 + 15 + 3 + 193 * 0.33 + 4 + 5)
+        self.assertFalse(self.mf.is_row_walk(self.scenes["home-grid-deep"]["walk"]))
+
+    LANDED = "hubs: landed — 24 items, 3 shelves (merge 10 us, catalog ~5 KB)"
+
+    def test_page_landings_counts_forward_and_total_inside_the_window(self):
+        win = [self.KEY, self.LANDED, self.KEY, self.LANDED, self.KEY, self.LANDED,
+               self.KEY, self.LANDED]
+        self.assertEqual(self.mf.page_landings(win, 3), (3, 4))
+        self.assertEqual(self.mf.page_landings(win, None), (4, 4))
+        self.assertEqual(self.mf.page_landings(win, 99), (4, 4))
+        self.assertEqual(self.mf.page_landings([], 3), (0, 0))
+
+    def _paging_log(self, landings, keys=7):
+        """A synthetic row-walk log: the initial landing BEFORE the first key, then `keys` key
+        lines of which the first `keys - 2` are the forward half; `landings` land in it."""
+        out = [self.SYN, self.LANDED] + [self._beat(fps=1)] * 3
+        for i in range(keys):
+            out += [self.KEY, self._beat(fps=40)]
+            if i < landings:
+                out.append(self.LANDED)
+        return out + [self._beat(fps=40)] * 2 + [self._beat(fps=1)] * 5
+
+    def _paging_scene(self):
+        s = copy.deepcopy(self.scenes["home-recent-paging"])
+        s["walk"].update(row_down=1, cards=4, min_page_landings=3)  # 1 down, 4 right, 4 left
+        return s
+
+    def test_row_walk_prints_the_landings_and_frame_stats(self):
+        ok, detail = self._run_scene(self._paging_scene(), self._paging_log(4, keys=9),
+                                     {"rows": 3, "sent": 9, "error": None})
+        self.assertTrue(ok, detail)
+        self.assertIn("page landings in window: 4 forward, 4 total", detail)
+        self.assertIn("gt33=", detail)
+        self.assertIn("worst=", detail)
+        self.assertIn("p99max=", detail)
+        self.assertIn("median=", detail)
+
+    def test_row_walk_fails_when_the_forward_half_did_not_page(self):
+        # 2 landings in the forward half (keys 1..5) against a required 3: paging did not happen
+        ok, detail = self._run_scene(self._paging_scene(), self._paging_log(2, keys=9),
+                                     {"rows": 3, "sent": 9, "error": None})
+        self.assertFalse(ok)
+        self.assertIn("paging did not happen", detail)
+        self.assertIn("2 page landing(s)", detail)
+        # landings only AFTER the turn-around do not count toward the forward half
+        log = self._paging_log(0, keys=9) + [self.KEY, self.LANDED] * 0
+        late = [ln for ln in log]
+        idx = [i for i, ln in enumerate(late) if ln == self.KEY]
+        for i in reversed(idx[6:]):
+            late.insert(i + 2, self.LANDED)
+        ok, detail = self._run_scene(self._paging_scene(), late,
+                                     {"rows": 3, "sent": 9, "error": None})
+        self.assertFalse(ok)
+        self.assertIn("paging did not happen", detail)
+
+    def test_row_walk_fails_when_it_sent_fewer_keys_than_its_plan(self):
+        ok, detail = self._run_scene(self._paging_scene(), self._paging_log(4, keys=9),
+                                     {"rows": 3, "sent": 5, "error": None})
+        self.assertFalse(ok)
+        self.assertIn("never ran to completion", detail)
 
     def test_walk_secs_needed_counts_the_launch_wait(self):
         # KeyWalk sleeps `LAUNCH_WAIT_S` before it looks at the log; the sleep is part of run_secs

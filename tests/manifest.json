@@ -124,6 +124,34 @@
       "comment": "Home with a hundred and seventy rows (#395), against the SYNTHETIC mock only: `./tests/run.py --fps --mock --filter home-grid-deep` starts tests/mock_pms.py --home-hubs 170 itself and needs no Plex account. plxnative-homeosc sweeps only ~9 rows either side of the top, so this scene instead presses Down once per LANDED row (the count is read from the `hubs: landed` log line, never hard-coded: a build with a card bound lands fewer rows than one without) at ~3 keys/s, rests, and presses Up back, and grades the heartbeats of THAT window. Floors are home-grid's own (loop_floor 50, fps_floor 20 on the median; see its notes): the walk steps focus every 330 ms exactly as its oscillator does every 350 ms, so the same duty-cycle reasoning applies. plxnative-framedrop is armed (25 ms) because the heartbeat only carries its frame_n/frame_gt33/frame_max fields then; frame_gt33, the worst frame and p99 over the window are printed in the result and NOT graded. run_secs covers max_rows both ways at key_gap_s (tests hold it to that); keys are only ever down/up, never ok or back. run_secs was 150 until #412: the corrected walk_secs_needed also counts KeyWalk's 10 s launch wait (154 s here)."
     },
     {
+      "name": "home-recent-paging",
+      "tier": "ui",
+      "route": "home",
+      "loop_floor": 50,
+      "fps_floor": 20,
+      "run_secs": 115,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-grid": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 300,
+        "only": true
+      },
+      "walk": {
+        "row_down": 1,
+        "cards": 96,
+        "key_gap_s": 0.33,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "min_page_landings": 6
+      },
+      "comment": "Frames while server pages land under MOVING focus (#567): Home's Recently Added Movies row holds a 24-card window and fetches the next 12 when focus nears the end. Run it with `./tests/run.py --fps --mock --filter home-recent-paging` (starts tests/mock_pms.py --movies 300 itself, no Plex account, mock only). `plxnative-grid` seats row 0 (Continue Watching), so the row walk presses Down `row_down` (1) time to reach Recently Added Movies, then Right 96 times at 0.33 s (96 / 12 = 8 page landings expected), rests 4 s, and Left 96 times back. Keys are only ever down/right/left, never ok or back. The result prints the window's heartbeat fps median/min, frame_gt33, the worst frame, p99 and the number of page landings (`hubs: landed` lines) in the window; frame_gt33 is NOT graded yet. The scene FAILS with `paging did not happen` when the forward half saw fewer than 6 landings (min_page_landings). loop_floor and fps_floor are BORROWED from home-grid-deep, not measured for this scene. run_secs covers the walk (tests hold it to walk_secs_needed)."
+    },
+    {
       "name": "library-shelves-deep",
       "tier": "ui",
       "route": "library",
