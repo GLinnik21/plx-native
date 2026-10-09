@@ -351,21 +351,16 @@ class NeedsRender(unittest.TestCase):
         self.assertTrue(self.decide(force=True))
 
 
-class Decide(unittest.TestCase):
-    def test_forced_and_unreadable_manifests_render_and_a_matching_tree_does_not(self):
-        self.assertTrue(ss.needs_render(force=True)[0])
-        self.assertTrue(ss.needs_render(manifest_path="/nonexistent/m.json")[0])
-        with tempfile.TemporaryDirectory() as d:
-            m = pathlib.Path(d, "m.json")
-            m.write_text(json.dumps({"tree_hash": ss.tree_hashes()}))
-            self.assertFalse(ss.needs_render(manifest_path=m)[0])
-
+class CommitMessage(unittest.TestCase):
     def test_commit_message_for_each_combination_and_for_none(self):
         stills = {"tree_hash": {"combined": "a" * 64}, "files": {"a": {}, "b": {}}}
         msg = ss.commit_message("v1.2.3", "https://run", "f" * 40, stills=stills)
         self.assertTrue(msg.startswith("Site: stills re-rendered for v1.2.3\n"))
         self.assertIn("revert this commit", msg)
         self.assertTrue(ss.commit_message("", "u", "f" * 40, stills=stills).startswith("Site: stills re-rendered for main@ffffffff"))
+        both = ss.commit_message("v1.2.3", "https://run", "f" * 40, film={"gates": {"results": []}}, stills=stills)
+        self.assertTrue(both.startswith("Site: demo video and stills re-rendered for v1.2.3\n"))
+        self.assertEqual(both.count("Run: https://run"), 1)
         with self.assertRaises(ss.Failure):
             ss.commit_message("v1.2.3", "u", "s")
 

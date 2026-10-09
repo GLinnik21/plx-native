@@ -5,7 +5,6 @@
     python3 tools/site_stills.py render --out DIR --bin SIM     # screenshots (each captured twice) + variants + glows, then DIR/files
     python3 tools/site_stills.py manifest DIR                   # DIR/stills.manifest.json (after `render`)
     python3 tools/site_stills.py adopt DIR [--write] [--expect-rev REV]   # dry run unless --write
-    python3 tools/site_stills.py tree-hash [--rev REV]          # the stills' inputs' tree hash
     python3 tools/site_stills.py needs-render [--rev REV] [--force]   # needs_stills=true|false against the committed manifest
     python3 tools/site_stills.py commit-message --tag T --run-url U --source-sha S [--film-manifest M] [--stills-manifest M]
 
@@ -90,10 +89,8 @@ def _site_video():
 
 
 # Scenes whose stills stay a maintainer's `make screenshots` on a Mac (then `render-site-variants.py` and
-# `render-site-glows.py`), each with the reason it cannot be made on the runner. NONE today: the two player scenes
-# (`player`, `site-up-next`) were manual until the host FFmpeg was found to be deleted by `make screenshots-sim`
-# (see the workflow), and the six scenes that "differed" on Linux differ by one level of llvmpipe rounding, which the
-# stability bound (not byte identity) accepts. A scene put here takes everything derived from its JPEG with it.
+# `render-site-glows.py`), each with the reason it cannot be made on the runner. NONE today. A scene put here takes
+# everything derived from its JPEG with it.
 MANUAL_SCENES = {}
 DESTS = {"docs": "docs/screenshots", "site": "site/media"}
 
@@ -142,30 +139,13 @@ def sha256_file(path):
 
 
 def tree_hashes(run=subprocess.run, root=ROOT, rev="HEAD"):
-    out = {}
-    for p in TREE_PATHS:
-        done = run(["git", "-C", str(root), "rev-parse", f"{rev}:{p}"], capture_output=True, text=True)
-        if done.returncode != 0:
-            raise Failure(f"cannot read the git object of {p} at {rev}: {done.stderr.strip()}")
-        out[p] = done.stdout.strip()
-    out["combined"] = hashlib.sha256("".join(out[p] for p in TREE_PATHS).encode()).hexdigest()
-    return out
+    return _site_video().git_tree_hashes(TREE_PATHS, run, root, rev)
 
 
 def needs_render(rev="HEAD", force=False, manifest_path=None, run=subprocess.run, root=ROOT):
-    """(render?, why): yes when forced, when the committed manifest is unreadable, or when its recorded
-    `tree_hash.combined` differs from the one at `rev` (same inputs, same stills: the committed ones stand)."""
-    if force:
-        return True, "forced"
-    path = pathlib.Path(manifest_path) if manifest_path else root / MANIFEST_REL
-    try:
-        recorded = json.loads(path.read_text())["tree_hash"]["combined"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return True, f"no readable tree hash in {path.name}"
-    here = tree_hashes(run, root, rev)["combined"]
-    if here == recorded:
-        return False, f"the stills' inputs at {rev} are the committed stills' (tree hash {here[:12]})"
-    return True, f"the stills' inputs changed: committed {recorded[:12]}, {rev} {here[:12]}"
+    """(render?, why): the stills' inputs at `rev` against the committed manifest's (`site_video.inputs_verdict`)."""
+    return _site_video().inputs_verdict("the stills", rev, force, manifest_path or root / MANIFEST_REL,
+                                        lambda: tree_hashes(run, root, rev)["combined"])
 
 
 def read_stability(path):
@@ -341,9 +321,7 @@ def commit_message(tag, run_url, source_sha, film=None, stills=None):
         "demo video" if film is not None else "stills"
     paras = []
     if film is not None:
-        sv = _site_video()
-        body = sv.commit_message(film, tag, run_url, source_sha).split("\n\n", 1)[1]
-        paras.append(body.rsplit("\n\nThe gates prove", 1)[0])
+        paras.append(_site_video().film_paragraph(film, tag, source_sha))
     if stills is not None:
         tree = (stills.get("tree_hash") or {}).get("combined", "?")[:12]
         n = len(stills.get("files", {}))
@@ -391,10 +369,6 @@ def cmd_adopt(args):
     adopt(args.dir, write=args.write, expect_rev=args.expect_rev)
 
 
-def cmd_tree_hash(args):
-    print(tree_hashes(rev=args.rev)["combined"])
-
-
 def cmd_needs_render(args):
     render_it, why = needs_render(args.rev, args.force, args.manifest)
     print(f"needs_stills={'true' if render_it else 'false'}")
@@ -428,9 +402,6 @@ def main(argv=None):
     p.add_argument("--write", action="store_true")
     p.add_argument("--expect-rev")
     p.set_defaults(fn=cmd_adopt)
-    p = sub.add_parser("tree-hash")
-    p.add_argument("--rev", default="HEAD")
-    p.set_defaults(fn=cmd_tree_hash)
     p = sub.add_parser("needs-render")
     p.add_argument("--rev", default="HEAD")
     p.add_argument("--force", action="store_true")

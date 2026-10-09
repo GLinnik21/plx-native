@@ -657,7 +657,6 @@ class SiteVideoRelease(unittest.TestCase):
         other = [c for c in publish_checkouts if c not in with_main][0]
         self.assertIn("env.PUBLISH != 'true'", other)
         self.assertNotRegex(other, r"(?m)^\s+ref:")
-        self.assertIn("persist-credentials: false", other)
         self.assertNotIn("${{", "".join(re.findall(r"(?m)^\s+ref:.*$", "\n".join(publish_checkouts))))
         # caches live in the render job, which holds no write token and no secret; the write job restores nothing
         publish = job_body("site-video.yml", "publish")

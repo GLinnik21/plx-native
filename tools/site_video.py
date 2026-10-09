@@ -12,9 +12,7 @@ and adopt them into `site/media/`.
     python3 tools/site_video.py verify DIR|feel.manifest.json
     python3 tools/site_video.py adopt artifact.zip|DIR [--write] [--expect-rev REV] [--derive]   # dry run unless --write
     python3 tools/site_video.py release-ref REF                      # prints the tag; fails for an rc, a nightly, a branch
-    python3 tools/site_video.py tree-hash [--rev REV]                # the film inputs' tree hash
     python3 tools/site_video.py needs-render [--rev REV] [--force]   # needs_render=true|false against the committed manifest
-    python3 tools/site_video.py commit-message --manifest M --tag T --run-url U --source-sha S   # the bot commit's text
 
 THE FILM REFRESHES ITSELF after a stable release (docs/agent-reference.md, "The site demo video"): `release.yml`
 dispatches `site-video.yml` ON the new `vX.Y.Z` tag, whose `decide` job asks `release-ref` and `needs-render`, whose
@@ -1071,16 +1069,23 @@ def collect_environment(env=None, run=subprocess.run, root="/"):
     }
 
 
+def git_tree_hashes(paths, run, root, rev):
+    """{path: git object id at `rev`} for every path, plus `combined` (a sha256 over the ids in order). Shared with
+    `site_stills.py`, whose inputs are a different path list hashed the same way."""
+    out = {}
+    for p in paths:
+        done = run(["git", "-C", str(root), "rev-parse", f"{rev}:{p}"], capture_output=True, text=True)
+        if done.returncode != 0:
+            raise Failure(f"cannot read the git object of {p} at {rev}: {done.stderr.strip()}")
+        out[p] = done.stdout.strip()
+    out["combined"] = hashlib.sha256("".join(out[p] for p in paths).encode()).hexdigest()
+    return out
+
+
 def tree_hashes(run=subprocess.run, root=ROOT, rev="HEAD"):
     """Git tree ids of every path in `TREE_PATHS` at `rev` (HEAD by default), and whether the working tree
     differs from HEAD there (always False for any other `rev`: a revision has no working tree)."""
-    out = {}
-    for p in TREE_PATHS:
-        done = run(["git", "-C", str(root), "rev-parse", f"{rev}:{p}"], capture_output=True, text=True)
-        if done.returncode != 0:
-            raise Failure(f"cannot read the git tree of {p} at {rev}: {done.stderr.strip()}")
-        out[p] = done.stdout.strip()
-    out["combined"] = hashlib.sha256("".join(out[p] for p in TREE_PATHS).encode()).hexdigest()
+    out = git_tree_hashes(TREE_PATHS, run, root, rev)
     if rev != "HEAD":
         return out, False
     dirty = run(["git", "-C", str(root), "status", "--porcelain", "--"] + list(TREE_PATHS),
@@ -1102,40 +1107,41 @@ def stable_release_tag(ref):
     return tag if STABLE_TAG.fullmatch(tag) else None
 
 
-def needs_render(rev="HEAD", force=False, manifest_path=None, run=subprocess.run, root=ROOT):
-    """(render?, why): does the film have to be rendered again for `rev`? Yes when forced, when the committed
-    manifest is absent or unreadable, or when its recorded `tree_hash.combined` (the trees of everything that
-    can change a pixel, `TREE_PATHS`) differs from the one at `rev`. No otherwise: the same inputs render the
-    same film, which two renders and the hold gate prove, so the committed one stands."""
+def inputs_verdict(what, rev, force, manifest_path, hash_at):
+    """(render?, why) for one set of inputs: yes when forced, when the committed manifest at `manifest_path` has no
+    readable `tree_hash.combined`, or when that differs from `hash_at()`, the combined hash at `rev`. No otherwise:
+    the same inputs render the same files, so the committed ones stand. `what` names them in the reason
+    ("the film", "the stills"); `hash_at` is called only when the manifest is readable and the run is not forced."""
     if force:
         return True, "forced"
-    path = pathlib.Path(manifest_path) if manifest_path else SITE_MEDIA / MANIFEST_NAME
+    path = pathlib.Path(manifest_path)
     try:
         recorded = json.loads(path.read_text())["tree_hash"]["combined"]
     except (OSError, ValueError, KeyError, TypeError):
         return True, f"no readable tree hash in {path.name}"
-    here = tree_hashes(run, root, rev)[0]["combined"]
+    here = hash_at()
     if here == recorded:
-        return False, f"the film's inputs at {rev} are the committed film's (tree hash {here[:12]})"
-    return True, f"the film's inputs changed: committed {recorded[:12]}, {rev} {here[:12]}"
+        return False, f"{what}'s inputs at {rev} are the committed ones' (tree hash {here[:12]})"
+    return True, f"{what}'s inputs changed: committed {recorded[:12]}, {rev} {here[:12]}"
 
 
-def commit_message(manifest, tag, run_url, source_sha):
-    """The bot commit that lands a re-rendered film: the gates' summary and the run, so a bad film is one
-    revert away. The gates prove determinism and quality, never taste."""
+def needs_render(rev="HEAD", force=False, manifest_path=None, run=subprocess.run, root=ROOT):
+    """(render?, why): does the film have to be rendered again for `rev`? `TREE_PATHS` are its inputs; two renders
+    and the hold gate prove the same inputs render the same film (`inputs_verdict`)."""
+    return inputs_verdict("the film", rev, force, manifest_path or SITE_MEDIA / MANIFEST_NAME,
+                          lambda: tree_hashes(run, root, rev)[0]["combined"])
+
+
+def film_paragraph(manifest, tag, source_sha):
+    """The film's paragraph of the bot commit (`site_stills.commit_message` writes the rest): which render it is and
+    the gates' summary. The gates prove determinism and quality, never taste."""
     results = manifest.get("gates", {}).get("results", [])
     counts = collections.Counter(r.get("status") for r in results)
     summary = ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) or "no results"
     tree = (manifest.get("tree_hash") or {}).get("combined", "?")[:12]
-    # A maintainer's manual dispatch on main has no tag: the commit names the film's source instead.
-    tag = tag or f"main@{source_sha[:8]}"
-    return (f"Site: demo video re-rendered for {tag}\n\n"
-            f"Rendered by the site-video workflow from {tag} ({source_sha}), film inputs tree hash {tree}, on the\n"
+    return (f"Rendered by the site-video workflow from {tag} ({source_sha}), film inputs tree hash {tree}, on the\n"
             f"pinned Linux/llvmpipe stack: two renders agreed frame for frame, the hold-injection gate and the\n"
-            f"sentinel scan passed, and every quality gate passed ({len(results)} gates: {summary}).\n"
-            f"Run: {run_url}\n\n"
-            f"The gates prove determinism and quality, not taste. If this film looks wrong, revert this commit;\n"
-            f"nothing else depends on it.\n")
+            f"sentinel scan passed, and every quality gate passed ({len(results)} gates: {summary}).")
 
 
 # ------------------------------------------------------------------ the page's codec strings --------
@@ -2067,19 +2073,10 @@ def cmd_release_ref(args):
     print(tag)
 
 
-def cmd_tree_hash(args):
-    print(tree_hashes(rev=args.rev)[0]["combined"])
-
-
 def cmd_needs_render(args):
     render, why = needs_render(args.rev, args.force, args.manifest)
     print(f"needs_render={'true' if render else 'false'}")
     print(f"reason={why}")
-
-
-def cmd_commit_message(args):
-    manifest = json.loads(pathlib.Path(args.manifest).read_text())
-    sys.stdout.write(commit_message(manifest, args.tag, args.run_url, args.source_sha))
 
 
 def main(argv=None):
@@ -2180,23 +2177,12 @@ def main(argv=None):
     p.add_argument("ref")
     p.set_defaults(fn=cmd_release_ref)
 
-    p = sub.add_parser("tree-hash", help="print the combined git tree hash of everything that can change the film")
-    p.add_argument("--rev", default="HEAD")
-    p.set_defaults(fn=cmd_tree_hash)
-
     p = sub.add_parser("needs-render", help="print needs_render=true|false and reason=...: is the committed film "
                                             "(site/media/feel.manifest.json) of different film inputs than REV?")
     p.add_argument("--rev", default="HEAD")
     p.add_argument("--force", action="store_true")
     p.add_argument("--manifest", help="the committed manifest (default site/media/feel.manifest.json)")
     p.set_defaults(fn=cmd_needs_render)
-
-    p = sub.add_parser("commit-message", help="print the bot commit message for a re-rendered film")
-    p.add_argument("--manifest", required=True)
-    p.add_argument("--tag", required=True)
-    p.add_argument("--run-url", required=True)
-    p.add_argument("--source-sha", required=True)
-    p.set_defaults(fn=cmd_commit_message)
     args = ap.parse_args(argv)
     try:
         return args.fn(args) or 0

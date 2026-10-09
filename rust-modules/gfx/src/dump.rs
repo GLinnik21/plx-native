@@ -33,7 +33,7 @@
 //!   it is SYNCHRONOUS and PER CALL (`gfx::probe_mode`): copy the tap boxes, `glReadPixels`, return;
 //!   no cadence, no fence. The refusal paths (`may_read == false`, a blur-source pass, a frozen
 //!   page) still answer with the last latched value.
-//! * **Held repeats** ([`held_repeat`]). A page image's capture step (its replacement step is the product's; a dump never reaches it) and a page dip's
+//! * **Held repeats** ([`held_repeat`]). A page image's capture step and a page dip's
 //!   floor frame advance once per virtual frame, not once per held iteration.
 //!
 //! The order within one iteration is: landing takes, then the busy/debt sample, then the draw.
@@ -101,10 +101,8 @@
 //!   at its mount (a card shelf's label band, the focus pop, the caption, an `Xfade` fade-in)
 //!   runs them unseen under the image and the image is then replaced by the page mid-flight (or
 //!   finished): a cut in the film. A dump has the whole page's data at mount and is not bound by
-//!   frame cost, so it can film the layout as it is each frame. This replaces two earlier
-//!   exceptions (a `layout_holds_page_image` that lifted the image at the dip's end, and an
-//!   `Xfade::tick` that skipped the fader's In ramp), both of which patched the same seam from
-//!   the wrong side. The product's own behaviour at that seam is unmeasured on the television.
+//!   frame cost, so it can film the layout as it is each frame. The product's own behaviour at
+//!   that seam is unmeasured on the television.
 //! * `src/app/adapters/poster.rs` `evict_cooldown_due` (T): a cooldown is always over, and a failed
 //!   fetch is recorded (`note_dump_failure`, an observation for the driver, not a drawn change)
 //!   instead of waiting out a retry on a clock that is held still.
