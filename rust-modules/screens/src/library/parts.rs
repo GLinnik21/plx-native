@@ -134,6 +134,8 @@ pub(super) struct GridPart {
     grid: Grid,
     snapshot: Option<plx_data::stores::browse::ListingSnapshot>,
     indexes: GridIndexes,
+    /// Render history for the at-rest poster lookahead (`lookahead.rs`); never logical state.
+    rest: super::lookahead::Rest,
     #[cfg(test)]
     test_ops: PublicationOps,
 }
@@ -152,7 +154,7 @@ impl GridPart {
         // The retained snapshot is a read-publication cache, not another cursor. Its placement
         // projection and identity are traversed below; its Arc address never enters logical state.
         let Self { entry: _, group, elems, known, identity, layout, scroll, target_layout,
-            scroll_target, grid, snapshot: _, indexes: _, #[cfg(test)] test_ops: _ } = self;
+            scroll_target, grid, snapshot: _, indexes: _, rest: _, #[cfg(test)] test_ops: _ } = self;
         c.u32(group.0).seq(elems.len());
         for elem in elems { c.u32(*elem); }
         c.seq(known.len());
@@ -185,6 +187,7 @@ impl GridPart {
                 .columns(layout.cols(), layout.style(), MARGIN_X).external()),
             snapshot: None,
             indexes: GridIndexes::default(),
+            rest: Default::default(),
             #[cfg(test)] test_ops: PublicationOps::default(),
         }
     }
@@ -323,6 +326,29 @@ impl GridPart {
     pub(super) fn index_of(&self, elem: u32) -> Option<usize> {
         self.indexes.index_of(elem)
     }
+
+    /// The at-rest poster lookahead (`lookahead.rs`), `ahead` rows deep; `0` is off and touches
+    /// nothing. Called every prepared frame. Once the grid has rested and the poster source is
+    /// quiet it warms ONE not-yet-held card of the rows just beyond the painted window, nearest
+    /// first, through the key the card's own draw resolves, so a later draw is a hit.
+    pub(super) fn prepare_ahead<H: LibraryLike>(&mut self, ahead: usize, cx: &Cx<'_, H>) {
+        use plx_ui::tex::Warm;
+        if ahead == 0 { return; }
+        let resting = self.rest.observe(self.scroll, self.scroll_target);
+        if !resting || self.elems.is_empty() || !plx_ui::tex::source_idle() { return; }
+        let view = H::listing(cx);
+        let (len, cols) = (self.elems.len(), self.layout.cols());
+        let painted = self.painted();
+        let rows = len.div_ceil(cols).min(self.layout.rows);
+        for index in super::lookahead::candidates(painted, cols, rows, len, ahead, self.rest.forward()) {
+            let Some(item) = view.item(index) else { continue };
+            let Some((srv, path, w, h)) = plx_ui::widgets::card_art_request(&grid_art(item)) else { continue };
+            if plx_ui::tex::warm_ahead_on(srv, path, w, h, false) != Warm::Known { return; }
+        }
+    }
+
+    /// The run of cards the grid paints now (`Grid::painted`): the rest of the window is buffered.
+    pub(super) fn painted(&self) -> std::ops::Range<usize> { self.grid.painted(Painter::root(), self.elems.len()) }
 
     pub(super) fn elem_at(&self, index: usize) -> Option<u32> {
         self.elems.get(index).copied()
@@ -528,12 +554,14 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
 }
 
 impl<H: LibraryLike> Part<H> for GridPart {
-    fn prepare(&mut self, _budget: &mut Budget, _cx: &Cx<'_, H>) {}
+    fn prepare(&mut self, _budget: &mut Budget, cx: &Cx<'_, H>) { self.prepare_ahead(super::lookahead::rows(), cx); }
 
     fn draw(&mut self, f: &mut plx_ui::screen::DrawFrame<'_, '_, H>, _rect: Rect) {
         // Metadata still pages ahead via LibraryWork::Want. Hidden artwork waits until visible
         // (`Grid` paints only cards `paint_visible`): repeated warms recycle cold cache slots and
-        // keep idle uploading. The grid also registers the stops of the cards it draws.
+        // keep idle uploading. The one exception is the at-rest lookahead (`prepare`, on by
+        // default), whose own slots the source protects. The grid also registers the stops of the
+        // cards it draws.
         let p = Self::painter(f);
         let src = self.source(f.cx);
         self.grid.draw(f, p, &src);

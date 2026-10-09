@@ -43,6 +43,8 @@ pub(crate) mod screenshot;
 #[cfg(feature = "devtriggers")]
 pub(crate) mod clock_fact;
 #[cfg(feature = "devtriggers")]
+pub(crate) mod phcount;
+#[cfg(feature = "devtriggers")]
 pub(crate) mod poster_gate;
 #[cfg(feature = "devtriggers")]
 pub(crate) mod tls_selftest;
@@ -1923,6 +1925,8 @@ mod replay_after_eos_tests {
 pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     #[cfg(feature = "devtriggers")]
     poster_gate::tick(app, fr.now);
+    #[cfg(feature = "devtriggers")]
+    phcount::tick(fr.now);
     autoplay_arm(app, fr);
     grid_library_search_heroidx_arm(app, fr);
     settings_boot_arm(app, fr);

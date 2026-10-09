@@ -71,14 +71,20 @@ pub trait Source {
     /// A DRAW's probe: `Some(key)` once the source has handed the cache this key's pixels (the
     /// texture may still be waiting for upload). A miss claims a slot and starts the fetch —
     /// UNLESS the source declines the request, which it may do for its own admission reasons
-    /// (today: an unknown or fast-moving card placement, and a slot cooling
-    /// down from rapid re-eviction). So `None` means empty, DEFERRED, in flight or failed, and
+    /// (today: an unknown card placement, a fast-moving one only under the dev
+    /// trigger `plxnative-cardspeed`, and a slot cooling down from rapid re-eviction). So `None` means empty, DEFERRED, in flight or failed, and
     /// the cache must go on drawing its placeholder without inferring that work is under way —
     /// asking again next frame is how a deferred request is eventually honoured. Touches the
     /// source's LRU.
     fn probe(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Option<PosterKey>;
     /// The prefetch twin: start the fetch, take nothing, protect nothing.
     fn warm(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm;
+    /// The AT-REST lookahead twin of [`warm`](Self::warm): the same request, but the claimed slot
+    /// is kept (see [`AHEAD_SET_MAX`]) instead of being the next miss's first victim. A source
+    /// with no such distinction answers as `warm` does.
+    fn warm_ahead(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm {
+        self.warm(srv, path, w, h, png)
+    }
     /// An item's clearLogo, at the source's one logo request box.
     fn logo(&self, srv: u16, rk: &str) -> Option<PosterKey>;
     fn logo_warm(&self, srv: u16, rk: &str) -> Warm;
@@ -279,6 +285,28 @@ pub fn warm_on(srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm {
         return Warm::Known;
     }
     with_source(|s| s.warm(srv, path, w, h, png), Warm::Known)
+}
+
+/// The most cards a screen may ask [`warm_ahead_on`] to keep resident at once. A source holds a
+/// bounded number of lookahead entries (strictly more than this), which is what lets a screen
+/// stop asking once its whole set is resident.
+pub const AHEAD_SET_MAX: usize = 30;
+
+/// The most cards of art any screen paints at once: the Library grid's six columns by the five
+/// rows a screenful spans, partly scrolled (`screens/src/library/lookahead_tests.rs` pins it to
+/// the layout at every scroll position). A source must keep at least this many of its most
+/// recently used slots out of reach of a lookahead claim, which runs in `prepare`, before any draw
+/// of the frame has stamped the cards on screen as in use (`poster.rs`, `AHEAD_PROTECT`).
+pub const ON_SCREEN_ART_MAX: usize = 30;
+
+/// The at-rest lookahead twin of [`warm_on`]: the same arguments (so the same key a card will
+/// later resolve), a claim that outlives the next miss. For a screen at rest only, one card per
+/// frame, nearest first, stopping at the first [`Warm::Claimed`] or [`Warm::Full`].
+pub fn warm_ahead_on(srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm {
+    if path.is_empty() {
+        return Warm::Known;
+    }
+    with_source(|s| s.warm_ahead(srv, path, w, h, png), Warm::Known)
 }
 
 /// An item's clearLogo as a texture plus its TRUE pixel size; `None` while pending or absent.

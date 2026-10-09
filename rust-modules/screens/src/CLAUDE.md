@@ -129,7 +129,8 @@ smallest worked example.
   `cards_conformance_tests.rs`; the shared drivers live in `ui/src/cards/conformance.rs`.
 - A screen never names L0 (`CardRow`, `GridPop`, `GridBands`, `cards::paint_visible`, ...): the
   `cards` gate in `ci/check-deps.sh` fails it. Everything a layout needs is re-exported from
-  `plx_ui::cards`.
+  `plx_ui::cards`; which cards the grid actually paints (the Library's poster lookahead needs the
+  rows it does NOT) is `Grid::painted`.
 
 ## Verifying a screen change
 
