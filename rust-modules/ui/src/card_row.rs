@@ -1919,7 +1919,7 @@ mod tests {
             last = history.observe(Identity { owner: 1, asset: 1 },
                 Rect::new(0.0, ROW_PITCH_FIXED + row.under_band(), 250.0, 375.0), frame * 16);
             if frame > 0 && (row.under_band() - before).abs() / DT > 120.0 {
-                assert_eq!(last, Verdict::Moving, "band-only displacement must defer poster work");
+                assert_eq!(last, Verdict::Moving, "band-only displacement classifies as Moving");
                 saw_fast = true;
             }
         }

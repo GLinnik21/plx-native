@@ -24,6 +24,8 @@ pub struct Stats {
     pub lost: u64,
     pub last_draws: u64,
     pub last_ready: u64,
+    /// Presented frames (a subset of `frames`) that drew at least one card with no texture.
+    pub ph_frames: u64,
 }
 impl Stats {
     pub fn full(self) -> bool { !self.frame_observed && self.last_draws >= 6 && self.last_ready == self.last_draws }
@@ -41,6 +43,7 @@ pub fn presented(now: u32) { note(|s| {
     if !s.frame_observed { return; }
     s.frame_observed = false;
     s.frames += 1;
+    s.ph_frames += (s.last_draws > s.last_ready) as u64;
     if s.frame_moving {
         s.moving_frames += 1;
         if s.moving_frames == 1 { s.moving_first_ms = now; }
@@ -73,9 +76,43 @@ pub fn evicted() { note(|s| s.lost += 1); }
 
 pub fn rearmed() { note(|s| s.rearmed += 1); }
 
+/// One `phcount:` event-log line for the interval between two snapshots: how many presented
+/// frames drew cards (`frames`), how many of those showed at least one card with no texture
+/// (`ph_frames`), and the card draws (`draws`) and the ones with no texture (`ph`, the
+/// placeholder tile-frames). `tests/mock_fps.py` parses it by these field names.
+pub fn interval_line(prev: Stats, cur: Stats) -> String {
+    format!(
+        "phcount: frames={} ph_frames={} draws={} ph={}",
+        cur.frames.saturating_sub(prev.frames),
+        cur.ph_frames.saturating_sub(prev.ph_frames),
+        cur.draws.saturating_sub(prev.draws),
+        cur.draws.saturating_sub(cur.ready).saturating_sub(prev.draws.saturating_sub(prev.ready)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_interval_line_counts_only_what_the_interval_drew() {
+        arm();
+        let _scope = crate::card_motion::Scope::moving_for_test();
+        // frame 1: six cards, two without a texture
+        frame();
+        for ready in [true, true, true, true, false, false] { draw(ready); }
+        presented(16);
+        let first = snapshot();
+        assert_eq!(interval_line(Stats::default(), first), "phcount: frames=1 ph_frames=1 draws=6 ph=2");
+        // frame 2: all six ready; frame 3: one without
+        frame();
+        for _ in 0..6 { draw(true); }
+        presented(32);
+        frame();
+        for ready in [true, true, true, true, true, false] { draw(ready); }
+        presented(48);
+        assert_eq!(interval_line(first, snapshot()), "phcount: frames=2 ph_frames=1 draws=12 ph=1");
+        ACTIVE.with(|s| *s.borrow_mut() = None);
+    }
     #[test]
     fn drawing_without_a_swap_is_not_frame_rate_evidence() {
         arm();

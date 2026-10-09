@@ -384,16 +384,39 @@ def walk_downs(scene, shelves):
     return int(shelves) + linked_landed(scene, shelves) + int(w.get("extra_rows", 0))
 
 
+def is_burst(scene):
+    """Whether the scene's `walk` is a burst walk (`walk.burst`): short runs of keys with rests
+    between them, instead of one continuous Down leg and one Up leg."""
+    return bool((scene.get("walk") or {}).get("burst"))
+
+
+def burst_shape(walk):
+    """`(burst, bursts, key_s, rest_s)` of a burst walk: `burst` keys `key_ms` apart, then
+    `rest_ms` of nothing, `bursts` times in each direction. Refuses a shape that is not a walk."""
+    burst, bursts = int(walk["burst"]), int(walk["bursts"])
+    key_s, rest_s = float(walk["key_ms"]) / 1000.0, float(walk["rest_ms"]) / 1000.0
+    if burst < 1 or bursts < 1 or key_s <= 0 or rest_s < 0:
+        raise ValueError(f"walk burst={burst} bursts={bursts} key_ms/rest_ms={key_s * 1000}/"
+                         f"{rest_s * 1000} is not a walk")
+    return burst, bursts, key_s, rest_s
+
+
 def walk_secs_needed(scene):
     """Seconds one walk can take at most: the launch wait, land wait, settle, down + up at
     `key_gap_s`, the rest between the legs, and a closing tail. The manifest's `run_secs` must
     cover it (a unit test holds every walk scene to that), because the run is a fixed `sleep` on
-    the TV."""
+    the TV. A burst walk (`walk.burst`) spends `max_rows` keys `key_ms` apart reaching the grid,
+    a rest, then `bursts` bursts down and as many back up, each followed by its rest."""
     w = scene["walk"]
-    keys = len(row_walk_plan(w)) if is_row_walk(w) else 2 * int(w["max_rows"])
+    if is_burst(scene):
+        burst, bursts, key_s, rest_s = burst_shape(w)
+        walking = (int(w["max_rows"]) * key_s + rest_s
+                   + 2 * bursts * (burst * key_s + rest_s))
+    else:
+        keys = len(row_walk_plan(w)) if is_row_walk(w) else 2 * int(w["max_rows"])
+        walking = keys * float(w["key_gap_s"]) + w.get("rest_s", 4)
     return (LAUNCH_WAIT_S + scene.get("warmup_s", 5) + w.get("land_wait_s", 15)
-            + w.get("settle_s", 3) + keys * float(w["key_gap_s"]) + w.get("rest_s", 4)
-            + w.get("tail_s", 5))
+            + w.get("settle_s", 3) + walking + w.get("tail_s", 5))
 
 
 def grid_fingerprint_seen(window, route, region):
@@ -428,20 +451,6 @@ def row_walk_plan(walk):
     plan = ["down"] * int(walk.get("row_down", 0)) + ["right"] * n + ["left"] * n
     assert all(k in ROW_WALK_KEYS for k in plan)
     return plan
-
-
-def scene_walk_plan(scene, rows):
-    """The key plan of `scene`'s walk once `rows` Home rows have landed: the row walk's fixed
-    plan, or `walk_plan` of the Down/Up walk. One definition for the walker and the grader."""
-    w = scene["walk"]
-    return row_walk_plan(w) if is_row_walk(w) else walk_plan(walk_downs(scene, rows), w)
-
-
-def rest_after(scene, plan):
-    """How many keys of `plan` are sent before the rest between the two legs: half of a
-    Down/Up walk, `row_down` + `cards` of a row walk (the turn-around is after the Rights)."""
-    w = scene["walk"]
-    return int(w.get("row_down", 0)) + int(w["cards"]) if is_row_walk(w) else len(plan) // 2
 
 
 def page_landings(window, forward_keys=None):
@@ -481,6 +490,49 @@ def walk_plan(rows, walk):
     plan = ["down"] * n + ["up"] * n
     assert all(k in WALK_KEYS for k in plan)
     return plan
+
+
+def burst_plan(rows, walk):
+    """The ordered `(key, seconds_until_the_next_key)` pairs of a burst walk over `rows` landed
+    shelves: the Downs that cross the shelves and the toolbar into the grid (`walk_downs`'s share
+    is the caller's `rows`, capped at `max_rows`) at `key_ms`, a rest, then `bursts` bursts of
+    `burst` Downs, then the same bursts of Ups. Every burst ends in `rest_ms`; the keys inside a
+    burst are `key_ms` apart. Raises if a token outside WALK_KEYS could ever be produced."""
+    burst, bursts, key_s, rest_s = burst_shape(walk)
+    n = min(int(rows), int(walk["max_rows"]))
+    steps = [("down", key_s)] * n
+    if steps:
+        steps[-1] = ("down", rest_s)
+    for key in ("down", "up"):
+        for _ in range(bursts):
+            steps += [(key, key_s)] * (burst - 1) + [(key, rest_s)]
+    assert all(k in WALK_KEYS for k, _ in steps)
+    return steps
+
+
+def walk_steps(scene, rows):
+    """`(key, seconds_until_the_next_key)` for every key the walk of `scene` presses over `rows`
+    landed shelves/rows. A plain walk is `walk_plan` at `key_gap_s` with `rest_s` added after the
+    last Down; a row walk (`walk.cards`) is `row_walk_plan`, resting after its Rights instead; a
+    burst walk is `burst_plan`. KeyWalk paces itself from this and nothing else."""
+    w = scene["walk"]
+    if is_burst(scene):
+        return burst_plan(walk_downs(scene, rows), w)
+    if is_row_walk(w):
+        plan = row_walk_plan(w)
+        half = int(w.get("row_down", 0)) + int(w["cards"])
+    else:
+        plan = walk_plan(walk_downs(scene, rows), w)
+        half = len(plan) // 2
+    gap, rest = float(w["key_gap_s"]), float(w.get("rest_s", 4))
+    return [(key, gap + (rest if i + 1 == half else 0.0)) for i, key in enumerate(plan)]
+
+
+def walk_expected_keys(scene, rows):
+    """How many keys a complete walk of `scene` sends over `rows` landed shelves/rows, 0 when
+    nothing landed. The grader's count and the walker's plan are the same list, so they cannot
+    disagree."""
+    return len(walk_steps(scene, rows)) if rows else 0
 
 
 def walk_window(lines, tail_beats=2):
@@ -531,6 +583,85 @@ def describe_walk(rows_landed, keys_seen, stats, hub_lands, unit="row"):
             f"frames={stats['frames']} gt33={stats['gt33']} gt50={stats['gt50']} "
             f"gt100={stats['gt100']} worst={stats['max_ms']:.1f}ms p99max={stats['p99_ms']:.1f}ms "
             f"(recorded, not graded) | {'shelves' if unit == 'shelf' else 'hubs'} landed {hub_lands}x")
+
+
+# ---------------------------------------------------------------------------
+# Placeholder accounting (a burst walk's instrument)
+# ---------------------------------------------------------------------------
+# `phcount: frames=F ph_frames=P draws=D ph=N`, one line per second while `plxnative-phcount` is
+# armed (`card_motion_metrics::interval_line`): presented card frames, those that showed at least
+# one card without a texture, card draws and the draws without a texture (the placeholder
+# tile-frames). It is its own event-log line, not a heartbeat field.
+PHCOUNT_RE = re.compile(r"^phcount: frames=(\d+) ph_frames=(\d+) draws=(\d+) ph=(\d+)\s*$")
+
+
+def phcount_samples(window):
+    """The `phcount:` lines of `window` as `(keys_before, frames, ph_frames, draws, ph)`, where
+    `keys_before` is how many key lines precede the sample in the window (its place in the walk)."""
+    out, keys = [], 0
+    for ln in window or []:
+        if KEY_RE.search(ln):
+            keys += 1
+            continue
+        m = PHCOUNT_RE.match(ln.strip())
+        if m:
+            out.append((keys, *(int(g) for g in m.groups())))
+    return out
+
+
+def placeholder_tally(window, walk, prelude_keys):
+    """Placeholder tile-frames of a burst walk's `window`, or None when no `phcount:` line is in it
+    (the instrument was not armed, or the build has no devtriggers: not the same as zero).
+
+    `prelude_keys` is how many keys cross into the grid before the first burst. A sample belongs
+    to the burst of the last key before it, so a burst owns the rest that follows it (that is the
+    time a warm-while-at-rest strategy works in); its second-granular lines make a per-burst count
+    good to about a line either side of a boundary. Bursts `0..bursts-1` are the Down leg and
+    `bursts..2*bursts-1` the Up leg."""
+    samples = phcount_samples(window)
+    if not samples:
+        return None
+    burst, bursts, _, _ = burst_shape(walk)
+    per = [0] * (2 * bursts)
+    prelude = 0
+    for keys, _frames, _ph_frames, _draws, ph in samples:
+        if keys <= prelude_keys:
+            prelude += ph
+        else:
+            per[min((keys - prelude_keys - 1) // burst, 2 * bursts - 1)] += ph
+    return {"lines": len(samples), "frames": sum(x[1] for x in samples),
+            "ph_frames": sum(x[2] for x in samples), "draws": sum(x[3] for x in samples),
+            "ph": sum(x[4] for x in samples), "prelude": prelude, "per_burst": per,
+            "bursts": bursts}
+
+
+_FPS_RE = re.compile(r"\bfps=(\d+)")
+_PUP_RE = {k: re.compile(rf"\b{k}=(\d+)") for k in ("pupf", "pupf_ge22", "pup")}
+
+
+def describe_burst(window, route, walk, prelude_keys):
+    """The printed (never graded) half of a burst walk: placeholder tile-frames in total and per
+    burst, the median `fps=` over the window's heartbeats, and the poster-upload tally
+    (`pupf=`/`pupf_ge22=`/`pup=`) summed over them."""
+    beats = [ln for ln in window or [] if HEARTBEAT_RE.match(ln) and f"route={route}" in ln]
+    fps = sorted(int(m.group(1)) for ln in beats if (m := _FPS_RE.search(ln)))
+    med = f"{fps[len(fps) // 2]} (min {fps[0]}, max {fps[-1]}, n={len(fps)})" if fps else "n/a"
+    pup = {k: sum(int(m.group(1)) for ln in beats if (m := rx.search(ln)))
+           for k, rx in _PUP_RE.items()}
+    seen = any("pupf=" in ln for ln in beats)
+    tally = placeholder_tally(window, walk, prelude_keys)
+    if tally is None:
+        ph = ("placeholders: n/a (no `phcount:` line in the walk window: is plxnative-phcount "
+              "armed, and is this a devtriggers build?)")
+    else:
+        b = tally["bursts"]
+        ph = (f"placeholders: ph={tally['ph']} tile-frames in {tally['lines']} s "
+              f"({tally['ph_frames']} of {tally['frames']} card frames showed one; "
+              f"prelude ph={tally['prelude']}, bursts ph={sum(tally['per_burst'])}) | "
+              f"per burst down {tally['per_burst'][:b]} up {tally['per_burst'][b:]}")
+    ups = (f"pupf={pup['pupf']} pupf_ge22={pup['pupf_ge22']} pup={pup['pup']}" if seen
+           else "pupf/pup n/a")
+    return f" | burst: {ph} | median fps {med} | {ups} (recorded, not graded)"
 
 
 class KeyWalk(threading.Thread):
@@ -586,23 +717,18 @@ class KeyWalk(threading.Thread):
         self.rows = found
         if self.cancel.wait(float(self.walk.get("settle_s", 3))):
             return
-        plan = scene_walk_plan(self.scene, self.rows)
-        gap = float(self.walk["key_gap_s"])
-        rest = float(self.walk.get("rest_s", 4))
+        steps = walk_steps(self.scene, self.rows)
         proc = subprocess.Popen(self.ssh_argv(self.tv, "sh"), stdin=subprocess.PIPE, text=True,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
-            half = rest_after(self.scene, plan)
             nxt = time.monotonic()
-            for i, key in enumerate(plan):
+            for key, delay_s in steps:
                 if self.cancel.is_set():
                     break
                 proc.stdin.write(f"echo {key} > {self.fifo}\n")
                 proc.stdin.flush()
                 self.sent += 1
-                nxt += gap
-                if i + 1 == half:
-                    nxt += rest
+                nxt += delay_s
                 delay = nxt - time.monotonic()
                 if delay > 0:
                     self.cancel.wait(delay)

@@ -34,16 +34,7 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
     plx_ui::tex::install(&ArtSpy);
     let painter = plx_ui::Painter::root();
     for episodes in [false, true] {
-        let sid = plx_plex::plex::ServerId::from_raw(0);
-        let mut fixture = Fixture::new();
-        fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid,
-            (0..1200).map(|i| Some(plx_data::pms::PmsMovie {
-                sid, rk: i.to_string(), kind: if episodes { 3 } else { 0 },
-                thumb: format!("/poster/{i}"), still: format!("/still/{i}"),
-                ..Default::default()
-            })).collect(), Vec::new()).with_library_type(if episodes {
-                plx_data::browse::LibraryType::Episodes
-            } else { plx_data::browse::LibraryType::Primary });
+        let fixture = Fixture::art_listing(episodes);
         let mut page = fixture.screen();
         let layout = page.layout;
         let scroll = layout.row_reveal(20);
@@ -54,6 +45,8 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
             painter, page.pair.detail.rect_at(&fixture.cx(None), i), 1.0, false)).collect();
         assert!(lo > 0 && !visible.is_empty() && visible.len() < hi - lo,
             "the fixture needs both actually visible cards and culled buffered cards");
+        assert_eq!(page.pair.detail.painted(), visible[0]..visible[visible.len() - 1] + 1,
+            "Grid::painted is the run of cards the draw's own cull keeps (what the lookahead steps beyond)");
         // The focused card can also be outside the viewport (e.g. while a retained page is
         // translated). Exercise its separate paint path, as well as the ordinary grid loop.
         let hidden_focus = page.key(page.pair.detail.elem_at(0).unwrap());
@@ -75,7 +68,7 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
                 let expected: Vec<_> = visible.iter().map(|i| format!("{prefix}{i}")).collect();
                 assert_eq!(calls.0.len(), expected.len() * 12, "visible tiles continue resolving artwork");
                 for frame in calls.0.chunks_exact(expected.len()) {
-                    assert_eq!(frame, expected, "hidden artwork must not enter the source by any path");
+                    assert_eq!(frame, expected, "a DRAW must not admit hidden artwork (the at-rest lookahead in `prepare` is the one sanctioned path)");
                 }
             });
             ART_REQUESTS.with(|calls| *calls.borrow_mut() = Default::default());

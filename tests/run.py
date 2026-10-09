@@ -6168,11 +6168,10 @@ def grade_walk_prelude(scene, lines, walker):
                 f"{unit}s landed than min_landed (a short or failed fetch, or the data layer "
                 f"dropped {unit}s)"), lines, ""
     # Home: one Down per landed row. Library: one per shelf, a second for each linked shelf, and
-    # `extra_rows` more past the shelves (`mock_fps.walk_downs`), all capped at `max_rows`.
-    if mock_fps.is_row_walk(walk):
-        want = len(mock_fps.row_walk_plan(walk)) if rows else 0
-    else:
-        want = 2 * min(mock_fps.walk_downs(scene, rows), int(walk["max_rows"])) if rows else 0
+    # `extra_rows` more past the shelves (`mock_fps.walk_downs`), all capped at `max_rows`, then
+    # the Up leg; a row walk (`walk.cards`) is its fixed plan and a burst walk (`walk.burst`) adds
+    # its bursts instead (`mock_fps.walk_steps`).
+    want = mock_fps.walk_expected_keys(scene, rows)
     if walker.sent < want or want == 0:
         return (f"the key walk sent {walker.sent} of {want} key(s) ({rows} {unit}(s) landed); it "
                 f"never ran to completion — raise run_secs or look at the log"), lines, ""
@@ -6210,6 +6209,9 @@ def grade_walk_prelude(scene, lines, walker):
         if paging_fail:
             return paging_fail, lines, ""
         detail += paging_detail
+    if mock_fps.is_burst(scene):
+        prelude = min(mock_fps.walk_downs(scene, rows), int(walk["max_rows"]))
+        detail += mock_fps.describe_burst(window, scene["route"], walk, prelude)
     return None, window, detail
 
 

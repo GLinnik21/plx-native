@@ -600,14 +600,21 @@ pub fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> (u32, f32, f32
     if p.is_recording() { return (0, 0.0, 0.0); }
     let _admission = art.motion_identity()
         .map(|id| crate::card_motion::Scope::card(id, p.to_screen(rect).0));
-    let image = match art {
-        Art::Poster(m) => m.map(|m| resolve_tex_wh_on(m.src, m.thumb, POSTER_RES.0, POSTER_RES.1, 0)).unwrap_or((0, 0.0, 0.0)),
-        Art::Still(m) => m.map(|m| resolve_tex_wh_on(m.src, still_key(&m), STILL_RES.0, STILL_RES.1, 0)).unwrap_or((0, 0.0, 0.0)),
-        Art::Thumb { sid, key, res } | Art::Person { sid, key, res } => resolve_tex_wh_on(*sid, key, res.0, res.1, 0),
-    };
+    let image = card_art_request(art).map_or((0, 0.0, 0.0), |(srv, path, w, h)| resolve_tex_wh_on(srv, path, w, h, 0));
     #[cfg(feature = "devtriggers")]
     crate::card_motion_metrics::draw(image.0 != 0);
     image
+}
+
+/// The `(server, path, width, height)` [`resolve_card_art`] asks the source for, for a screen that
+/// must WARM exactly that key (the Library's at-rest lookahead). [`resolve_card_art`] resolves
+/// through this, so the two cannot name different keys; `screens/src/library/lookahead_tests.rs::the_lookahead_asks_for_the_key_the_card_draw_resolves` pins it. `None` for an empty slot.
+pub fn card_art_request<'a>(art: &Art<'a>) -> Option<(u16, &'a str, c_int, c_int)> {
+    Some(match art {
+        Art::Poster(m) => { let m = (*m)?; (m.src, m.thumb, POSTER_RES.0, POSTER_RES.1) }
+        Art::Still(m) => { let m = (*m)?; (m.src, still_key(&m), STILL_RES.0, STILL_RES.1) }
+        Art::Thumb { sid, key, res } | Art::Person { sid, key, res } => (*sid, *key, res.0, res.1),
+    })
 }
 
 /// The name a poster card draws on the neutral collection tile, when it draws one: a collection

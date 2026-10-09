@@ -495,6 +495,37 @@ The landed count is the data layer's, so a library walk with `min_landed` also r
 that capped its rows again (store 170, page 12) would still walk into the grid and pass.
 The linked-shelf count is derived from the mock's own arguments, not read from the app.
 
+`library-burst` is an **instrument, not a gate**: how many loading (placeholder) poster tiles a
+viewer sees scrolling the Library grid in short bursts with rests between them (`library-scroll`
+never rests, so it cannot show a strategy that warms upcoming rows while the grid is at rest).
+`--mock` serves a 1000-movie library; the walk (`walk.burst`, the same `KeyWalk`) presses Down once
+per landed shelf plus `extra_rows` into the grid, rests, then `bursts` (8) bursts of `burst` (4)
+Downs `key_ms` (125) apart, each followed by `rest_ms` (1500), then the same bursts of Up. The
+count is the `phcount: frames=F ph_frames=P draws=D ph=N` line the app writes once a second while
+`plxnative-phcount` is armed (scene-armed; `ui::card_motion_metrics`, counted at the card primitive:
+`ph` is card draws that showed a skeleton, `ph_frames` the presented card frames that showed at
+least one, `frames`/`draws` the totals). Printed, not graded: `ph` in total, in the prelude, in the
+bursts and per burst (a sample belongs to the burst of the last key before it), the share of card
+frames that showed one, median `fps=`, the usual frame drops and the `pupf=`/`pupf_ge22=`/`pup=`
+tally; `n/a` when no `phcount:` line is in the window (never a zero). Graded: the synthetic identity,
+keys sent == the plan, and a `focus route=library … region=grid` fingerprint in the window. Dev
+triggers pass through like any scene's. The app ships with 3 rows of at-rest poster lookahead and
+no moving-card decline, so a plain run measures the shipping behaviour; the two triggers rebuild
+the baselines it was measured against (`plxnative-lookahead=0` is no lookahead, `=1`..`=4` another
+depth; `plxnative-cardspeed=120` is the old decline of poster work for a card moving over 120 px/s):
+
+```bash
+tools/tv-lock.sh with --why "fps burst" -- ./tests/run.py --fps --mock --filter library-burst
+tools/tv-lock.sh with --why "fps burst" -- ./tests/run.py --fps --mock --filter library-burst \
+    --extra-trigger plxnative-cardspeed=120 --extra-trigger plxnative-lookahead=0
+```
+
+`library-hold` is `library-burst`'s sibling for a long held scroll: the same mock, triggers, printing
+and grading (it is `--mock`-only too), but 3 bursts of 16 Downs `key_ms` (125) apart, each followed by
+2 s of rest, then 3 bursts of 16 Ups (13 + 96 keys on a 7-shelf landing, about 25 s from first press
+to last; 48 of the 166 grid rows). It shows how many placeholder tiles a held Down key outruns the
+posters by, and what each rest recovers. Run it the same way, `--filter library-hold`.
+
 `home-hint` is the instrument for Home's "Hold OK for options" glass hint (`ui::hold_hint`): Home
 rests on a shelf tile for 14 s so the window contains the hint's 1.5 s dwell, fade-in, standing and
 fade-out. It sends no key. `frame_gt33`, `frame_max` and p99 are printed from the heartbeats (read

@@ -34,8 +34,9 @@ the old image. Changed versioned source paths miss immediately rather than waiti
 RAM residency remains independent of library size: 64 source slots and a 44 MiB GPU texture
 budget. Demand workers stop claiming requests when combined decoded and pending-upload pixels
 reach 8 MiB; already active decodes can temporarily exceed this admission threshold. If the GPU evicts an image while its source slot survives, the next draw requests its
-pixels again through the same disk-first path, respecting scrolling deferral and the source's
-residency backoff. Sign-out advances the cache epoch and sweeps all
+pixels again through the same disk-first path, subject to the source's residency backoff (a card is
+deferred only while its placement is still unknown, one sample; a moving card is no longer
+deferred unless the dev trigger `plxnative-cardspeed=<px/s>` arms the decline). Sign-out advances the cache epoch and sweeps all
 candidate directories; requests capture that epoch when queued, so old work cannot read, remove,
 write or publish images after account erasure. Profile switching within one account retains
 reusable artwork. Filesystem deletion failures remain best effort, like the existing avatar cache.
