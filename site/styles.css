@@ -1540,35 +1540,29 @@ video::-webkit-media-controls-start-playback-button {
 .press-section > .kicker {
   margin-bottom: clamp(20px, 3vh, 28px);
 }
-/* Two columns of equal citations on wide screens, a ruled list on phones. Each
-   item is topped by the same hairline the section opens with, so the block reads
-   as a set of peers rather than one headline followed by footnotes. Two columns,
-   not one per outlet: the list grows, and a 2-up grid stays balanced at any even
-   count where three columns left a lone orphan on the fourth. */
+/* A ruled list, newest first: one line per article on wide screens (outlet,
+   headline, date), so the section stays a short citation block however many
+   outlets join it. On phones each row stacks its label line over the headline. */
 .press-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: clamp(32px, 4.5vh, 48px) clamp(32px, 4.5vw, 72px);
+  list-style: none;
+  margin: 0;
+  padding: 0;
   max-width: 1080px;
+  box-shadow: inset 0 -1px 0 var(--hairline);
 }
 .press-item {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
-  padding-top: 20px;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 6px 32px;
+  padding: 16px 0;
   box-shadow: inset 0 1px 0 var(--hairline);
-  transition: box-shadow 200ms ease;
-}
-.press-item:hover,
-.press-item:focus-visible {
-  box-shadow: inset 0 1px 0 var(--text-tertiary);
 }
 .press-meta {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: 4px 12px;
+  gap: 2px 10px;
 }
 .press-outlet {
   font-size: 15px;
@@ -1579,51 +1573,39 @@ video::-webkit-media-controls-start-playback-button {
 /* The article's language, set like the section kicker so it reads as a label
    and not as part of the outlet's name. */
 .press-lang {
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 1px;
   text-transform: uppercase;
   color: var(--text-tertiary);
 }
 .press-headline {
-  max-width: 34ch;
-  font-size: clamp(19px, 1.65vw, 23px);
-  line-height: 1.3;
-  letter-spacing: -0.35px;
+  font-size: 17px;
+  line-height: 1.4;
+  letter-spacing: -0.2px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-reading);
   text-wrap: pretty;
-}
-/* An English rendering under a headline in another language, so the citation
-   says something to a reader who cannot read the original. */
-.press-gloss {
-  max-width: 52ch;
-  font-size: 15px;
-  line-height: 1.45;
-  color: var(--text-tertiary);
-  text-wrap: pretty;
-}
-.press-link {
-  margin-top: auto;
-  padding-top: 6px;
-  font-size: 14px;
-  font-weight: 700;
-  color: var(--text-tertiary);
   transition: color 200ms ease;
 }
-.press-item:hover .press-link,
-.press-item:focus-visible .press-link {
+.press-date {
+  font-size: 14px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.press-item:hover .press-headline,
+.press-item:focus-visible .press-headline {
   color: var(--text-primary);
 }
 @media (max-width: 759px) {
-  .press-list {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0;
-  }
   .press-item {
-    padding: 20px 0 22px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 14px 0 16px;
   }
   .press-headline {
-    font-size: 20px;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    font-size: 16px;
   }
 }
 
