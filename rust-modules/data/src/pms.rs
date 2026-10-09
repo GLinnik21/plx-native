@@ -853,8 +853,10 @@ fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimu
     while requests < 8 || (!page.before && cursor < minimum_end) {
         requests += 1;
         if rows.len() >= MAX_SHELF_ITEMS || (page.before && cursor == 0) { break; }
-        let start = if page.before { cursor.saturating_sub(MAX_SHELF_ITEMS) } else { cursor };
-        let size = if page.before { cursor - start } else { MAX_SHELF_ITEMS };
+        // Backward pages ask only for the room left beside the retained overlap, so every row
+        // fetched is kept and `offset` stays the first server position the window covers.
+        let size = if page.before { cursor.min(MAX_SHELF_ITEMS - rows.len()) } else { MAX_SHELF_ITEMS };
+        let start = if page.before { cursor - size } else { cursor };
         let mc = fetch(start, size)?;
         if mc.offset != start as i64 { return None; }
         let got = mc.metadata.len().min(size);
@@ -876,7 +878,6 @@ fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimu
         if page.before {
             fresh.extend(rows);
             rows = fresh;
-            if rows.len() > MAX_SHELF_ITEMS { rows.drain(..rows.len() - MAX_SHELF_ITEMS); }
             cursor = start;
             offset = start;
             if total > 0 { more = end < total; }

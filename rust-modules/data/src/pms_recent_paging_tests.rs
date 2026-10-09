@@ -369,9 +369,16 @@ fn fully_hidden_pages_advance_in_both_directions_without_losing_focus() {
     query.start=current.offset;
     current=fetch_window(sid(0),&query,Some(&current),0,|start,size| Some(filtered_listing(start,size)))
         .unwrap().shelves.remove(0);
-    assert_eq!(current.offset,108);
+    assert_eq!(current.offset,204);
     assert_eq!(current.items.len(),12);
     assert!(current.items.iter().any(|item| item.rk=="305"));
+    for expected in [108,12] {
+        query.start=current.offset;
+        current=fetch_window(sid(0),&query,Some(&current),0,|start,size| Some(filtered_listing(start,size)))
+            .unwrap().shelves.remove(0);
+        assert_eq!(current.offset,expected);
+        assert_eq!(current.items.len(),12);
+    }
     query.start=current.offset;
     current=fetch_window(sid(0),&query,Some(&current),0,|start,size| Some(filtered_listing(start,size)))
         .unwrap().shelves.remove(0);
@@ -420,4 +427,57 @@ fn observed_recently_added_response_shape_stops_at_the_short_last_page() {
     assert_eq!(shelf.items[0].rk,"36");
     assert_eq!(shelf.end,50);
     assert!(!shelf.more);
+}
+
+fn walk_listing(start: usize, size: usize, total: usize, hidden_middle: bool) -> plx_plex::plex::MediaContainer {
+    let metadata: Vec<_> = (start..(start + size).min(total)).map(|i| serde_json::json!({
+        "ratingKey":i.to_string(),"type":"movie","title":"Movie","thumb":"/poster",
+        "librarySectionID":if hidden_middle && (40..70).contains(&i) { 8 } else { 7 }
+    })).collect();
+    serde_json::from_value(serde_json::json!({"offset":start,"totalSize":total,"Metadata":metadata})).unwrap()
+}
+
+// Walks forward to a window near the end of the list, then backward to the start, asserting that
+// every visible position is reached and no window exceeds the card cap.
+fn check_backward_walk(hidden_middle: bool) {
+    let _guard = plx_base::testlock::serial();
+    const TOTAL: usize = 110;
+    let hidden = if hidden_middle { vec![8] } else { Vec::new() };
+    let visible = |p: usize| !(hidden_middle && (40..70).contains(&p));
+    let mut query = PageQuery { id:"home.movies.recent".into(),key:"/hubs/home/recentlyAdded?type=1".into(),
+        start:0,before:false,hidden };
+    let mut current = fetch_window(sid(0),&query,None,0,|start,size| Some(walk_listing(start,size,TOTAL,hidden_middle)))
+        .unwrap().shelves.remove(0);
+    while current.end < TOTAL {
+        query.start = current.end;
+        current = fetch_window(sid(0),&query,Some(&current),0,|start,size| Some(walk_listing(start,size,TOTAL,hidden_middle)))
+            .unwrap().shelves.remove(0);
+    }
+    assert!(current.offset >= 84, "forward walk reached the tail window, got {}", current.offset);
+    let mut seen: std::collections::BTreeSet<usize> = current.positions.iter().copied().collect();
+    query.before = true;
+    while current.offset > 0 {
+        let previous_first = current.positions[0];
+        query.start = current.offset;
+        current = fetch_window(sid(0),&query,Some(&current),0,|start,size| Some(walk_listing(start,size,TOTAL,hidden_middle)))
+            .unwrap().shelves.remove(0);
+        assert!(current.items.len() <= MAX_SHELF_ITEMS);
+        assert!(current.offset < query.start, "a backward page makes progress");
+        for p in current.offset..previous_first {
+            assert!(!visible(p) || current.positions.contains(&p), "position {p} skipped by a backward page");
+        }
+        seen.extend(current.positions.iter().copied());
+    }
+    let want: std::collections::BTreeSet<usize> = (0..TOTAL).filter(|p| visible(*p)).collect();
+    assert_eq!(seen, want);
+}
+
+#[test]
+fn walking_backward_visits_every_position() {
+    check_backward_walk(false);
+}
+
+#[test]
+fn walking_backward_over_a_hidden_section_visits_every_visible_position() {
+    check_backward_walk(true);
 }
