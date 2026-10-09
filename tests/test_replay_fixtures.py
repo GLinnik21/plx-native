@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import re
 import tempfile
 import threading
 import time
@@ -174,6 +175,69 @@ class ParallelRunTests(unittest.TestCase):
             self.assertEqual(runtimes, ['solo-resolve', 'solo-targets'])
             for path in outputs.iterdir():
                 self.assertIn(path.name.split('-')[1], (path / 'plxnative-recplay').read_text())
+
+
+class WindowTests(unittest.TestCase):
+    """The replay window: full size by default, chosen by the driver, strictly validated."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    def test_the_default_is_the_full_canvas_and_flag_beats_environment(self):
+        self.assertEqual(replay.DEFAULT_WINDOW, '1920x1080')
+        self.assertEqual(replay.resolve_window(None, {}), '1920x1080')
+        self.assertEqual(replay.resolve_window(None, {replay.WINDOW_ENV: ''}), '1920x1080')
+        self.assertEqual(replay.resolve_window(None, {replay.WINDOW_ENV: '960x540'}), '960x540')
+        self.assertEqual(replay.resolve_window('480x270', {replay.WINDOW_ENV: '960x540'}), '480x270')
+
+    def test_malformed_or_off_canvas_windows_are_refused_with_the_source_named(self):
+        for bad in ('', '960', '960x', 'x540', '960X540', '960 x 540', ' 960x540', '960x540 ',
+                    '960,540', '0x0', '960x0', '-960x-540', '+960x540', '0960x540', '9.6e2x540',
+                    '960x540x2', 'wide', '1920x1081', '960x1080', '1000x540', '15360x8640'):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    replay.parse_window(bad)
+                with self.assertRaisesRegex(ValueError, '^--window: '):
+                    replay.resolve_window(bad, {})
+                if bad:  # an empty variable means "unset", by design
+                    with self.assertRaisesRegex(ValueError, f'^{replay.WINDOW_ENV}: '):
+                        replay.resolve_window(None, {replay.WINDOW_ENV: bad})
+        for good in ('1920x1080', '960x540', '640x360', '480x270', '3840x2160'):
+            self.assertEqual(replay.parse_window(good), good)
+
+    def test_the_window_reaches_the_simulators_environment(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'fixture').mkdir()
+            (root / 'sim.sh').write_text('#!/bin/sh\nprintf "%s" "$PLXNATIVE_WIN" > "$PLXNATIVE_RUNTIME_DIR/win"\n'
+                                         'exit 1\n')
+            (root / 'sim.sh').chmod(0o755)
+            fixture = root / 'fixture'
+            (fixture / 'manifest.json').write_text('{}')
+            (fixture / 'rec-0000.jsonl').write_text('\n'.join(map(json.dumps, [
+                {'f': 0, 't': 'tick'}, {'f': 0, 't': 'st', 'hash': 1}])))
+            seen = {}
+            for label, kwargs in (('default', {}), ('small', {'window': '960x540'})):
+                out = root / label
+                out.mkdir()
+                with mock.patch.object(replay.sys, 'platform', 'linux'):
+                    with self.assertRaises(ValueError):  # the fake simulator prints no summary
+                        replay.run_fixture(root / 'sim.sh', root, fixture, 'targets', out, 5, **kwargs)
+                (runtime,) = out.iterdir()
+                seen[label] = (runtime / 'win').read_text()
+            self.assertEqual(seen, {'default': '1920x1080', 'small': '960x540'})
+
+    def test_the_macos_replay_step_passes_a_window_the_driver_accepts(self):
+        text = (self.ROOT / '.github/workflows/simulators.yml').read_text()
+        job = re.search(r'(?m)^  macos:\n(.*?)(?=^  [A-Za-z0-9_-]+:\s*$)', text, re.S).group(1)
+        step = re.search(r'(?m)^      - name: Replay all committed product recordings\n(.*?)(?=^      - name: )',
+                         job, re.S).group(1)
+        command = ' '.join(line for line in step.splitlines() if not line.lstrip().startswith('#'))
+        windows = re.findall(r'--window\s+(\S+)', command)
+        self.assertEqual(len(windows), 1, command)
+        self.assertEqual(replay.parse_window(windows[0]), windows[0])
+        # The launch step keeps its own full-size window, so CI still opens a 1080p one.
+        self.assertIn('Launch and capture 1080p frame', job)
+        self.assertNotIn('--window', job.split('Launch and capture 1080p frame')[1])
 
 
 if __name__ == '__main__':
