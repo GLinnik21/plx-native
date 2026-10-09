@@ -391,3 +391,33 @@ fn refreshing_a_sparse_window_scans_its_existing_range() {
     assert_eq!(shelf.items[17].rk,"305");
     assert_eq!(shelf.end,312);
 }
+
+#[test]
+fn observed_recently_added_response_shape_stops_at_the_short_last_page() {
+    let _guard = plx_base::testlock::serial();
+    let response = |start: usize, count: usize| {
+        let metadata: Vec<_> = (start..start + count).map(|i| serde_json::json!({
+            "ratingKey":i.to_string(),"type":"movie","title":"Movie","thumb":"/poster"
+        })).collect();
+        serde_json::from_value::<plx_plex::plex::MediaContainer>(serde_json::json!({
+            "offset":start,"size":count,"totalSize":50,"Metadata":metadata
+        })).unwrap()
+    };
+    let first = response(0,36);
+    assert_eq!(first.offset,0);
+    assert_eq!(first.metadata.len(),36);
+    assert_eq!(first.total_size,50);
+    let query = PageQuery { id:"home.movies.recent".into(),key:"/hubs/home/recentlyAdded?type=1".into(),
+        start:36,before:false,hidden:Vec::new() };
+    let mut calls = Vec::new();
+    let result = fetch_window(sid(0),&query,None,0,|start,size| {
+        calls.push((start,size));
+        Some(response(36,14))
+    }).unwrap();
+    let shelf = &result.shelves[0];
+    assert_eq!(calls,vec![(36,24)]);
+    assert_eq!(shelf.items.len(),14);
+    assert_eq!(shelf.items[0].rk,"36");
+    assert_eq!(shelf.end,50);
+    assert!(!shelf.more);
+}

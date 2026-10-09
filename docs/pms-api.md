@@ -259,6 +259,12 @@ Verified hub list (`MediaContainer.Hub[]`), each hub has
 and `identifier`). Home requests all rows, with 12 preview cards per row. Recently Added rows
 load more items through their provider's listing `key`, with both `X-Plex-Container-Start` and
 `X-Plex-Container-Size`. The client preserves the key's type, library, and sort parameters.
+Other Home rows, including collections, keep their 12-card preview.
+
+A PMS response observed on 2026-10-09 returned `offset=0`, `size=36`, and `totalSize=50`.
+The next response returned `offset=36`, `size=14`, and `totalSize=50`. This confirms the
+required offset fields on that server. Other server versions remain unverified. The client
+rejects a response whose offset differs from the requested start.
 
 Home keeps a moving window of at most 24 cards per Recently Added row, with an overlap of up to 12 eligible cards.
 Server offsets are kept separately from visible card positions. A page retains the overlap
