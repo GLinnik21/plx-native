@@ -813,8 +813,19 @@ fn request_page(state: &mut PmsState, adapter: &PmsAdapter, sid: ServerId,
     // Half a window overlaps the prior page so focus and scroll can follow the same item.
     let start = if before { shelf.offset.saturating_sub(step) }
         else { shelf.end.max(shelf.offset + shelf.items.len()).saturating_sub(step) };
+    source.retry_n = 0;
     source.page = Some(PageQuery { id: id.into(), key: key.into(), start });
     kick_with(state.hub_gen, adapter, source, launch)
+}
+
+fn cancel_page(state: &mut PmsState, sid: ServerId, id: &str, key: &str) {
+    let Some(source) = state.srcs.iter_mut().find(|source| source.sid == sid
+        && source.page.as_ref().is_some_and(|page| page.id == id && page.key == key)) else { return };
+    source.page = None;
+    source.fetching = false;
+    source.seq = source.seq.wrapping_add(1);
+    source.retry_n = 0;
+    source.retry_s = 0.0;
 }
 
 fn fetch_page(client: &plx_plex::plex::Client, sid: ServerId, page: &PageQuery) -> Option<SourceBuild> {
@@ -1792,6 +1803,12 @@ fn landed_ok(s: &mut Src, b: SourceBuild) {
 fn landed_fail(s: &mut Src) -> crate::stores::EndpointRefresh {
     s.retry_n = s.retry_n.saturating_add(1);
     s.retry_s = backoff_secs(s.retry_n);
+    if s.page.is_some() && s.retry_n >= 3 {
+        s.page = None;
+        s.retry_s = 0.0;
+        plx_base::eventlog::log(&format!("hubs: source {} page failed after {} attempts", s.sid.raw(), s.retry_n));
+        return crate::stores::EndpointRefresh { sid: s.sid };
+    }
     if s.page.is_none() { s.state = HubState::Failed; }
     // the ONE line that says a dead source is dead ON PURPOSE and is coming back — without it the
     // whole recovery is invisible in the event log. The SLOT, never the handle: a plex.tv username
@@ -2046,7 +2063,7 @@ pub fn land_with_directory(
 pub fn run(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome {
     use crate::stores::hubs::HubsCmd;
     match cmd {
-        HubsCmd::RefetchHubs | HubsCmd::Reset | HubsCmd::Page { .. } =>
+        HubsCmd::RefetchHubs | HubsCmd::Reset | HubsCmd::Page { .. } | HubsCmd::CancelPage { .. } =>
             run_with_scope(state, adapter, cmd, &BrowseScope::standalone()),
         other => run_without_browse(state, adapter, other),
     }
@@ -2069,6 +2086,10 @@ fn run_with_scope(
 ) -> crate::stores::StoreOutcome {
     use crate::stores::hubs::HubsCmd;
     match cmd {
+        HubsCmd::CancelPage { sid, id, key } => {
+            cancel_page(state, sid, &id, &key);
+            crate::stores::StoreOutcome::changed(false)
+        }
         HubsCmd::Page { sid, id, key, before } => {
             let mut launch = |r| spawn_fetch(adapter, r);
             sync_roster_with_scope(state, scope);
@@ -2104,7 +2125,7 @@ fn run_without_browse(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: crat
         #[cfg(not(any(test, feature = "test-support")))]
         HubsCmd::EditItem { .. } =>
             unreachable!("Hubs EditItem requires a retained Browse directory"),
-        HubsCmd::RefetchHubs | HubsCmd::Reset | HubsCmd::Page { .. } =>
+        HubsCmd::RefetchHubs | HubsCmd::Reset | HubsCmd::Page { .. } | HubsCmd::CancelPage { .. } =>
             unreachable!("Browse-scoped Hubs command reached the independent runner"),
     }
 }
@@ -2127,8 +2148,12 @@ fn controlled_work_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, c
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
     use crate::stores::hubs::HubsCmd;
     let before = state.catalog_gen;
-    let command = cmd.is_some() && !matches!(cmd.as_ref(), Some(HubsCmd::Page { .. }));
+    let command = cmd.is_some() && !matches!(cmd.as_ref(), Some(HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }));
     let endpoints = match cmd {
+        Some(HubsCmd::CancelPage { sid, id, key }) => {
+            cancel_page(state, sid, &id, &key);
+            crate::stores::EndpointRefreshSet::default()
+        }
         Some(HubsCmd::Page { sid, id, key, before }) => {
             sync_roster_with_scope(state, scope);
             let mut endpoints = crate::stores::EndpointRefreshSet::default();

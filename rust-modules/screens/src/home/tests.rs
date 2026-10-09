@@ -3884,3 +3884,24 @@ fn leaving_a_backward_page_edge_allows_a_new_request_on_return() {
     }
     assert_eq!(requests, 2);
 }
+
+#[test]
+fn covering_home_cancels_its_page_even_after_focus_has_left_the_entry() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[5] };
+    step(&mut s, snapshot.view(), Some(key), &ScreenEvent::Tick(Tick { ms: 0, dt_us: 16_667 }));
+    let (_, out, _) = step(&mut s, snapshot.view(), None, &ScreenEvent::Cover);
+    assert_eq!(out.iter().filter(|fx| matches!(fx.fx,
+        Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::CancelPage { .. }))))).count(),1);
+    step(&mut s, snapshot.view(), Some(key), &ScreenEvent::Uncover);
+    let (_, out, _) = step(&mut s, snapshot.view(), Some(key), &ScreenEvent::Tick(Tick { ms: 1000, dt_us: 16_667 }));
+    assert_eq!(out.iter().filter(|fx| matches!(fx.fx,
+        Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { before: true, .. }))))).count(),1);
+}

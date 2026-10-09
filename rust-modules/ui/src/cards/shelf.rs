@@ -211,6 +211,16 @@ impl Shelf {
         self.pool.len()
     }
 
+    pub fn has_page_request(&self) -> bool {
+        self.asked.is_some() || self.asked_before.is_some()
+    }
+
+    /// Release paging demand when the owner leaves this row.
+    pub fn reset_page_requests(&mut self) {
+        self.asked = None;
+        self.asked_before = None;
+    }
+
     /// Request an earlier window once while its leading edge remains active.
     /// Leaving the edge or landing another offset admits a new request.
     pub fn want_before(&mut self, offset: usize, active: bool) -> bool {

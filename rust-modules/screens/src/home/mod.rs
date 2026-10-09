@@ -2250,6 +2250,19 @@ impl HomeScreen {
         self.grid.shelves = shelves;
     }
 
+    fn cancel_row_page<H: HomeLike>(&mut self, row: usize, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let requested = self.grid.shelves.get(row).is_some_and(ui_cards::Shelf::has_page_request);
+        if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.reset_page_requests(); }
+        if !requested { return; }
+        if let Some(hub) = self.hub(H::hubs(cx), row).filter(|hub| hub.more || hub.offset > 0) {
+            if let Some(HubIdentity::Identifier { sid, id, key }) = hub.identity {
+                fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::CancelPage {
+                    sid, id: id.into(), key: key.into(),
+                }))));
+            }
+        }
+    }
+
     fn activation_elem(&self, engine_elem: u32) -> u32 {
         let engine_grid = self.locate(engine_elem).is_some_and(Located::on_grid);
         let picture_grid = self.snap.pos >= 0.5;
@@ -2327,6 +2340,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 Handled::Yes
             }
             ScreenEvent::Cover => {
+                for row in 0..self.rows.len() { self.cancel_row_page(row, cx, fx); }
                 self.covered = true;
                 Handled::Yes
             }
@@ -2351,6 +2365,11 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { from, to, by } => {
+                if let Some((row, _)) = self.focused_grid(*from) {
+                    if self.focused_grid(Some(*to)).is_none_or(|(next, _)| next != row) {
+                        self.cancel_row_page(row, cx, fx);
+                    }
+                }
                 self.feed_shelves(ev, cx, fx);
                 let from_loc = from.and_then(|key| self.locate(key.elem));
                 let to_loc = self.locate(to.elem);

@@ -262,8 +262,9 @@ load more items through their provider's listing `key`, with both `X-Plex-Contai
 
 Home keeps a moving window of at most 24 cards per Recently Added row, with a 12-item overlap.
 It requests another window near the visible end and fetches an earlier window when the user
-scrolls back. Requests run outside the drawing loop. Failed requests retain the current cards
-and use the existing retry delay. A normal refresh reloads the current window. A profile change
+scrolls back. Requests run outside the drawing loop. Failed page requests retain the current
+cards and stop after three attempts. Leaving the row cancels its paging demand. Returning to
+the row can start another attempt. A normal refresh reloads the current window. A profile change
 starts from the new profile's preview. Both operations reject old results.
 The shared shelf widget draws only visible cards. Paging preserves the banner's current items.
 

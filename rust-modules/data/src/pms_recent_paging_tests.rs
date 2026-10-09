@@ -211,3 +211,63 @@ fn check_refetch_window(change_profile: bool) {
     reset(&mut owner.state,&owner.adapter);
     plx_plex::plex::reset_servers_for_test();
 }
+
+#[test]
+fn a_page_that_never_succeeds_stops_retrying_and_releases_the_source() {
+    let _guard = plx_base::testlock::serial();
+    let mut owner = owner();
+    let cards = rks(&owner.state, 0);
+    let mut request = ask(&mut owner, false).unwrap();
+    for attempt in 0..3 {
+        deliver(&mut owner, request, None);
+        let mut retry = None;
+        let _ = step_landings_with(&mut owner.state, &owner.adapter, Some(plx_plex::plex::retry::RETRY_MAX_S), Vec::new,
+            &mut |request| { retry = Some(request); true });
+        if attempt == 2 {
+            assert!(retry.is_none(), "a page has a finite retry budget");
+            break;
+        }
+        request = retry.unwrap();
+    }
+    assert_eq!(rks(&owner.state, 0), cards);
+    assert!(owner.state.srcs[0].page.is_none());
+    assert!(ask(&mut owner, false).is_some(), "new demand can retry the row");
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn leaving_a_page_releases_another_row_and_rejects_the_abandoned_result() {
+    let _guard = plx_base::testlock::serial();
+    for failed in [false, true] {
+        let mut owner = owner();
+        let mut tv = page(0, 12, true).shelves.remove(0);
+        tv.hub_id = "home.television.recent".into();
+        tv.key = "/hubs/home/recentlyAdded?type=2".into();
+        owner.state.srcs[0].last.as_mut().unwrap().shelves.push(tv);
+        let old = ask(&mut owner, false).unwrap().complete(Some(page(0, 24, true)));
+        if failed {
+            let mut failure = old.clone();
+            failure.build = None;
+            let _ = super::land(&mut owner.state, &owner.adapter, &failure);
+        }
+        let _ = controlled_work(&mut owner.state, &owner.adapter,
+            Some(crate::stores::hubs::HubsCmd::CancelPage { sid: sid(0), id: "home.movies.recent".into(),
+                key: "/hubs/home/recentlyAdded?type=1".into() }), 0.0, &mut |_| panic!("cancel must not launch"));
+        let mut next = None;
+        let _ = request_page(&mut owner.state, &owner.adapter, sid(0), "home.television.recent",
+            "/hubs/home/recentlyAdded?type=2", false, &mut |request| { next = Some(request); true });
+        let next = next.expect("another row can use the released source");
+        let _ = super::land(&mut owner.state, &owner.adapter, &old);
+        assert_eq!(owner.state.srcs[0].page.as_ref().unwrap().id, "home.television.recent");
+        assert!(owner.state.srcs[0].fetching);
+        let mut build = page(0,24,true);
+        build.shelves[0].hub_id = "home.television.recent".into();
+        build.shelves[0].key = "/hubs/home/recentlyAdded?type=2".into();
+        deliver(&mut owner, next, Some(build));
+        assert!(owner.state.srcs[0].page.is_none());
+        assert_eq!(owner.state.srcs[0].last.as_ref().unwrap().shelves[1].items.len(),24);
+        reset(&mut owner.state,&owner.adapter);
+    }
+    plx_plex::plex::reset_servers_for_test();
+}
