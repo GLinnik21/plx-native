@@ -1427,7 +1427,22 @@ fn start_bufferfeed_inner(
     // very next seek dereferences whatever now lives there. The reload fallback is slower but is
     // built out of Load/Play alone and assumes no layout at all. Re-enable per release only once
     // somebody has re-derived the offsets on that firmware.
-    super::INPLACE_SEEK_OK.store(sink().window_mode() != super::VP_EXPORTED, Ordering::Relaxed);
+    //
+    // NOR when the library is the pre-C++11 build (`inplace_layout_known`): its StarfishMediaAPIs
+    // is a different object from the 4.5 one, and the first fast-forward on a 3.4.0 set crashed
+    // through these offsets. The old-ABI Feed (`sf_feed_abi_is_cow`) is the direct evidence, and
+    // it covers 3.9.x too. A KNOWN release below 4 is refused as well; an UNKNOWN one
+    // (`major == 0`, os_info unreadable) with the C++11 Feed keeps in-place seek, as before
+    // #578, because that Feed says the library is 4.x or later and the VP_EXPORTED exclusion
+    // below already handles 5+.
+    let layout_known = inplace_layout_known(
+        plx_platform::tv::device::info().major,
+        sink().feed_abi_is_cow(),
+    );
+    super::INPLACE_SEEK_OK.store(
+        layout_known && sink().window_mode() != super::VP_EXPORTED,
+        Ordering::Relaxed,
+    );
     pa.install(eng);
     native_start.commit();
     clock_start.commit();
@@ -2815,6 +2830,14 @@ pub fn feed_sample(mt: &MainThread, eng: &mut Engine) {
         s.next += 1;
         fed += 1;
     }
+}
+
+/// Whether the decompiled StarfishMediaAPIs offsets (see the NOR comment in `start_bufferfeed_inner`)
+/// may be trusted for in-place seek. The old-ABI `Feed` is the primary gate: it proves
+/// libplayerAPIs is the pre-C++11 build, so 3.9.x is excluded without listing releases. A known
+/// release below 4 is refused too; `major == 0` (release unknown) defers to the Feed evidence.
+fn inplace_layout_known(major: u32, feed_abi_is_cow: bool) -> bool {
+    !feed_abi_is_cow && (major == 0 || major >= 4)
 }
 
 #[cfg(test)]
@@ -5112,5 +5135,21 @@ mod load_refusal_tests {
             super::super::FailureKind::TvPipeline,
             "and the verdict must name the television's pipeline, not a generic stop"
         );
+    }
+}
+
+#[cfg(test)]
+mod inplace_layout_tests {
+    use super::inplace_layout_known;
+
+    #[test]
+    fn in_place_seek_needs_the_cxx11_feed_and_a_release_that_is_unknown_or_4_plus() {
+        assert!(inplace_layout_known(4, false));
+        assert!(inplace_layout_known(0, false));
+        assert!(inplace_layout_known(11, false));
+        assert!(!inplace_layout_known(3, false));
+        assert!(!inplace_layout_known(3, true));
+        assert!(!inplace_layout_known(4, true));
+        assert!(!inplace_layout_known(0, true));
     }
 }

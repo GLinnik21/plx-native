@@ -25,7 +25,7 @@ pub(crate) struct Harness {
 fn cx_of<'a>(ms: u32, press: f32, focus: Option<FocusKey<u32>>) -> Cx<'a, TestHost> {
     static MEASURE: FixtureMeasure = FixtureMeasure;
     Cx { views: (), tick: Tick { ms, dt_us: 16_667 }, measure: &MEASURE,
-        press: PressRead { scale: press, ..Default::default() },
+        press: PressRead { scale: press, owner: focus, ..Default::default() },
         focus: FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) }
 }
 
@@ -130,7 +130,7 @@ impl Harness {
         let (_, moving) = plx_machine::idle::scoped_motion(|| {
             static MEASURE: FixtureMeasure = FixtureMeasure;
             let cx = Cx::<TestHost> { views: (), tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &MEASURE,
-                press: PressRead { scale: self.press, ..Default::default() },
+                press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)), &mut present);
             Machine::<TestHost>::step(&mut self.screen, &ev, &cx, &mut fx);

@@ -212,6 +212,9 @@ python3 ci/test_cargo_seed.py
 # pure logic, manifest tamper, adopt refusing anything but `linux-ci`, and the pinned-ffmpeg fetch against a
 # fake opener. Offline, no ffmpeg; the one real-ffmpeg case is off unless PLXNATIVE_SITE_VIDEO_FFMPEG is set.
 python3 tests/test_site_video.py
+# tools/site_stills.py, the simulator-made stills' half of the same refresh: which files it owns (read from the
+# generating tools), the manual set, adopt's refusals and the decide/commit-message logic. Offline.
+python3 tests/test_site_stills.py
 # The placeholder-accounting gate (rust-modules/ui/src/placeholder.rs): every reference to
 # SKELETON_TOP / SKELETON_BOT / CARD_PLACEHOLDER / STALE_ALPHA / Spinner::new|leading / a `*_loading`
 # message needs a `placeholder::` counter call beside it or a reasoned `placeholder-exempt:` comment, so

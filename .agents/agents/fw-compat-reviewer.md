@@ -235,16 +235,18 @@ Reading the output:
 
 * **Always pass `--min-release 4.4.2`: a bare `tools/fwcompat.py` EXITS 1 on a perfectly healthy
   binary.** Verified 2026-08-23 on this checkout — same ELF, byte-identical table, `bare exit=1`
-  against `--min-release 4.4.2 exit=0`. With no floor every release gates, and the five oldest
-  fail permanently (next bullet). So a `set -e`, a wrapper script, or anyone who reads `$?`
+  against `--min-release 4.4.2 exit=0`. With no floor every release gates, including the
+  old images below the floor (next bullet). So a `set -e`, a wrapper script, or anyone who reads `$?`
   instead of the table gets a regression that is not one. docs/agent-reference.md's own example line
   (`tools/fwcompat.py   # the matrix: OK/FAIL per release`) does not mention it.
-* **`--min-release 4.4.2` is the floor, and there is a reason.** The five oldest images (1.2.0,
-  1.4.0, 2.2.3, 3.4.0, 3.9.2) fail permanently and for something nobody intends to fix: they
-  predate the C++11 `std::string` ABI, so `StarfishMediaAPIs::Feed` has a different mangling.
-  `tools/fwcompat.py --release 3.9.2` shows it directly — the two missing symbols are
-  `SDL_webOSCursorVisibility` and `_ZN17StarfishMediaAPIs4FeedB5cxx11EPKc`, the `B5cxx11` tag being
-  the whole story. Those rows are still printed; they just do not set the exit status.
+* **`--min-release 4.4.2` is the floor, and there is a reason.** It is the oldest release this
+  project has graded as healthy; the older images (1.2.0, 1.4.0, 2.2.3, 3.4.0, 3.9.2) predate the
+  C++11 `std::string` ABI and are untested on a set apart from one 3.4.3 (webOS 1.x/2.x were never
+  tried). They used to fail on two missing symbols, `SDL_webOSCursorVisibility` and
+  `StarfishMediaAPIs::Feed`'s C++11 name, but since #578 both are `dlsym`'d at runtime
+  (`src/starfish.c`, `rust-modules/src/app/boot.rs`), so the binary no longer imports them. Re-run
+  `tools/fwcompat.py` for what the old rows print now; they are still printed below the floor and
+  do not set the exit status.
 * **Baseline as of 2026-08-23** (verified by running it): `15 DT_NEEDED, 319 undefined dynamic
   symbols`, **OK on 4.4.2, 4.10.0, 5.3.1, 6.4.0, 7.4.0, 8.3.0, 9.2.0, 10.2.0, 11.2.0**. Anything
   else at or above the floor is a regression introduced by the diff. Do not quote this baseline as

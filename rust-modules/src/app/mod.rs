@@ -90,13 +90,6 @@ const SCR_W: c_int = plx_base::surface::LOGICAL_W as c_int;
 const SCR_H: c_int = plx_base::surface::LOGICAL_H as c_int;
 pub(crate) const COLS: c_int = 10;
 
-// `SDL_webOSCursorVisibility` is declared apart from the rest because it exists ONLY in LG's
-// SDL fork. Naming it in the shared block would make the host simulator fail to link.
-#[cfg(not(feature = "hostsim"))]
-extern "C" {
-    fn SDL_webOSCursorVisibility(visible: c_int) -> c_int;
-}
-
 // Desktop-only window management. Apart for the mirror-image reason: a television owns the whole
 // panel and never asks how big a display is, so on that build these would be dead code — which
 // `[workspace.lints.rust] warnings = "deny"` makes a build failure, not a warning.

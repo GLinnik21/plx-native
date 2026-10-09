@@ -277,7 +277,7 @@ pub struct Split<'a, H: Host> {
 #[derive(Clone)]
 pub struct CxParts<K> {
     pub tick: Tick,
-    pub press: PressRead,
+    pub press: PressRead<K>,
     pub focus: FocusRead<K>,
     pub owner: InputOwner,
 }
@@ -732,6 +732,7 @@ where
                 scale: self.input.press.scale(),
                 is_long: self.input.press.was_long(),
                 held_ms: self.input.press.held_ms(tick.ms),
+                owner: self.input.dip_owner,
             },
             focus: self.input.engine.read(owner),
             owner,
@@ -1167,7 +1168,7 @@ where
         let why = self.present.why();
         report.underlay_moving = self.present.page_moving();
         self.page_quiescent = !report.underlay_moving
-            && !layout_holds_page_image()
+            && !plx_machine::idle::page_layout_moving()
             && !self.budget.has_queued_work();
         report.video_only = self.present.video_plane()
             && !self.present.changed()
@@ -1371,7 +1372,7 @@ where
         let page_quiescent = self.page_quiescent
             && !plx_gfx::text::prewarm_pending()
             && !self.present.page_moving()
-            && !layout_holds_page_image()
+            && !plx_machine::idle::page_layout_moving()
             && !self.budget.has_queued_work();
         let mut image = self.page_image;
         let paint = if eligible {
@@ -2086,10 +2087,15 @@ where
                         rig.log("focus: no current focus — seated by the first group's policy");
                     }
                     match outcome {
-                        Outcome::Moved { from, to, by } => out.push(Stamped {
-                            from: MachineId::Input,
-                            fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::FocusMoved { from, to, by })),
-                        }),
+                        Outcome::Moved { from, to, by } => {
+                            // Navigation abandons the press (§7.4): the pressed card springs back
+                            // where it is while focus moves on, and the tap never commits.
+                            self.input.abandon_if_off(entry, to);
+                            out.push(Stamped {
+                                from: MachineId::Input,
+                                fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::FocusMoved { from, to, by })),
+                            });
+                        }
                         Outcome::Edge(EdgeRule::Screen) => {
                             if let ScreenEvent::Input(iev) = ev {
                                 let mut again = iev.clone();
@@ -2275,11 +2281,9 @@ where
         let outcome = self.focus_resolution(rig, parts, entry, 2, tap,
             |engine, view, cx| engine.reconcile(owner, view, cx));
         if let Outcome::Moved { from, to, by } = outcome {
-            if self.input.arm.is_some_and(|arm| arm.key.entry == entry && arm.key != to) {
-                // A catalog reconciliation changes the cursor, not the identity of an ongoing
-                // gesture. Never let release activate the fallback item that replaced its arm.
-                self.input.cancel_press();
-            }
+            // A catalog reconciliation changes the cursor, not the identity of an ongoing
+            // gesture. Never let release activate the fallback item that replaced its arm.
+            self.input.abandon_if_off(entry, to);
             if let Some(id) = self.nav.instance_of(entry) {
                 let mut out = Vec::new();
                 self.execute_deliver(rig, parts, MachineId::Instance(id), Delivery::Screen(ScreenEvent::FocusMoved { from, to, by }), &mut out, report, tap);
@@ -2525,27 +2529,6 @@ where
     pub fn viewport() -> Rect {
         Rect::FULL
     }
-}
-
-/// Whether the destination's layout motion keeps a pushed page's frozen image up
-/// ([`PageImage`](super::containers::transition::PageImage)'s quiescence test, read at both of its
-/// sites). **In a frame dump it never does** (`plx_gfx::dump::armed`, a constant `false` on the
-/// television binary, so this folds to `page_layout_moving()` there): a dump hands the page its
-/// whole data before the dip's floor, so the springs a page starts on arrival (a card shelf's
-/// label band, the focus pop) run entirely under the held image and the replacement capture shows
-/// them already finished, a caption that pops into place where the product shows it fading in. A
-/// dump lifts the image as soon as the dip is over and the capture is clean, and films that motion
-/// live.
-#[inline(always)]
-fn layout_holds_page_image() -> bool {
-    holds_page_image(plx_gfx::dump::armed(), plx_machine::idle::page_layout_moving())
-}
-
-/// The rule of [`layout_holds_page_image`] on its two inputs, so a test states it without arming
-/// the process-global dump switch (which other tests of this binary read unserialised).
-#[inline(always)]
-const fn holds_page_image(dump: bool, layout_moving: bool) -> bool {
-    !dump && layout_moving
 }
 
 // ==============================================================================================
@@ -3280,22 +3263,5 @@ mod prewarm_pass_tests {
         assert_eq!(prewarm_text_target(false, true, false), Some(PrewarmTarget::HeldTop));
         // OUT shows the OUTGOING page's image: its text is resident; the destination is not.
         assert_eq!(prewarm_text_target(true, true, false), Some(PrewarmTarget::Pending));
-    }
-}
-
-#[cfg(test)]
-mod dump_page_image_tests {
-    use super::holds_page_image;
-
-    /// A page that starts a layout spring on arrival keeps a pushed page's image up in the product,
-    /// and in a frame dump does not: the image lifts at the end of the dip and the spring is filmed
-    /// live, instead of running entirely under the held image and popping in finished (the Movies
-    /// library's focused caption, `tests/video/feel.json`).
-    #[test]
-    fn a_frame_dump_does_not_hold_the_page_image_for_layout_motion() {
-        assert!(holds_page_image(false, true), "outside a dump a moving layout holds the page image");
-        assert!(!holds_page_image(true, true), "in a dump the same motion is filmed, not hidden");
-        assert!(!holds_page_image(false, false), "a settled layout holds nothing");
-        assert!(!holds_page_image(true, false));
     }
 }

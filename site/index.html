@@ -257,9 +257,9 @@
                     <!-- Phones get a 720p encode at about half the bytes; the browser takes the
                          first source whose media and type it accepts. -->
                     <source media="(max-width: 759px)" src="media/feel-720p60.av1.mp4" type='video/mp4; codecs="av01.0.08M.08"' />
-                    <source media="(max-width: 759px)" src="media/feel-720p60.h264.mp4" type='video/mp4; codecs="avc1.640032"' />
+                    <source media="(max-width: 759px)" src="media/feel-720p60.h264.mp4" type='video/mp4; codecs="avc1.640020"' />
                     <source src="media/feel-1080p60.av1.mp4" type='video/mp4; codecs="av01.0.09M.08"' />
-                    <source src="media/feel-1080p60.h264.mp4" type='video/mp4; codecs="avc1.640033"' />
+                    <source src="media/feel-1080p60.h264.mp4" type='video/mp4; codecs="avc1.64002A"' />
                   </video>
                   <button class="demo-toggle" id="demo-toggle" type="button" aria-label="Play video" hidden>
                     <svg class="demo-toggle-play" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5Z"></path></svg>
@@ -421,23 +421,36 @@
 
         <section class="press-section" aria-label="Press">
           <p class="kicker" data-reveal>Featured in</p>
-          <div class="press-list">
-            <a class="press-item" data-reveal href="https://www.androidauthority.com/lg-tv-slow-plex-app-plx-native-3712671/">
-              <span class="press-outlet">Android Authority</span>
-              <span class="press-headline">&ldquo;This clever Plex app could give your aging LG TV a new lease on life&rdquo;</span>
-              <span class="press-link">Read the article →</span>
-            </a>
-            <a class="press-item" data-reveal href="https://www.avpasion.com/app-grauita-plex-vuelva-volar-televisores-lg/" hreflang="es">
-              <span class="press-outlet">AVPasión</span>
-              <span class="press-headline" lang="es">&ldquo;PlxNative: la app gratuita para acelerar Plex en tu televisor LG con webOS&rdquo;</span>
-              <span class="press-link">Read the article (Spanish) →</span>
-            </a>
-            <a class="press-item" data-reveal href="https://paspu.com/plxnative-lg-webos-tv-lerde-plex-deneyimini-hizlandiriyor/" hreflang="tr">
-              <span class="press-outlet">Paspu</span>
-              <span class="press-headline" lang="tr">&ldquo;PlxNative, LG webOS TV&rsquo;lerde Plex deneyimini hızlandırıyor&rdquo;</span>
-              <span class="press-link">Read the article (Turkish) →</span>
-            </a>
-          </div>
+          <ol class="press-list">
+            <li data-reveal>
+              <a class="press-item" href="https://www.telesatellite.com/actu/69862-plxnative-un-client-plex-natif-pour-tv-lg-webos-signe-du.html" hreflang="fr">
+                <span class="press-meta"><span class="press-outlet">Telesatellite</span><span class="press-lang">French</span></span>
+                <span class="press-headline" lang="fr">&ldquo;PlxNative&nbsp;: un client Plex natif pour TV LG webOS, signe du ras-le-bol des Smart TV&rdquo;</span>
+                <time class="press-date" datetime="2026-10-09">Oct 9, 2026</time>
+              </a>
+            </li>
+            <li data-reveal>
+              <a class="press-item" href="https://www.avpasion.com/app-grauita-plex-vuelva-volar-televisores-lg/" hreflang="es">
+                <span class="press-meta"><span class="press-outlet">AVPasión</span><span class="press-lang">Spanish</span></span>
+                <span class="press-headline" lang="es">&ldquo;PlxNative: la app gratuita para acelerar Plex en tu televisor LG con webOS&rdquo;</span>
+                <time class="press-date" datetime="2026-10-03">Oct 3, 2026</time>
+              </a>
+            </li>
+            <li data-reveal>
+              <a class="press-item" href="https://paspu.com/plxnative-lg-webos-tv-lerde-plex-deneyimini-hizlandiriyor/" hreflang="tr">
+                <span class="press-meta"><span class="press-outlet">Paspu</span><span class="press-lang">Turkish</span></span>
+                <span class="press-headline" lang="tr">&ldquo;PlxNative, LG webOS TV&rsquo;lerde Plex deneyimini hızlandırıyor&rdquo;</span>
+                <time class="press-date" datetime="2026-09-18">Sep 18, 2026</time>
+              </a>
+            </li>
+            <li data-reveal>
+              <a class="press-item" href="https://www.androidauthority.com/lg-tv-slow-plex-app-plx-native-3712671/">
+                <span class="press-meta"><span class="press-outlet">Android Authority</span></span>
+                <span class="press-headline">&ldquo;This clever Plex app could give your aging LG TV a new lease on life&rdquo;</span>
+                <time class="press-date" datetime="2026-09-17">Sep 17, 2026</time>
+              </a>
+            </li>
+          </ol>
         </section>
 
         <section class="install-section" id="install" aria-labelledby="install-title">

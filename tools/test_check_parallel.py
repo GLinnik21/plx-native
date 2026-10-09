@@ -304,26 +304,47 @@ class StepMode(unittest.TestCase):
             with open(manifest, "w") as handle:
                 handle.write(long_step + "\n" + step("print('quick-done')") + "\n")
             runner = subprocess.Popen([sys.executable, TOOL, "--jobs", "2", "--steps", manifest],
-                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                       start_new_session=True)
+            lines = []
+            quick_printed = threading.Event()
+
+            def read():
+                for line in runner.stdout:
+                    lines.append(line)
+                    # The line itself, not the banner: a banner repeats the command, which names the word.
+                    if line == "quick-done\n":
+                        quick_printed.set()
+
+            reader = threading.Thread(target=read, daemon=True)
+            reader.start()
             pids = []
             try:
-                self.assertTrue(wait_for(lambda: os.path.exists(pidfile), 60), "the step never started")
+                # Interrupt only once the quick step has ENDED and been printed whole (the runner's stdout
+                # says so) and the long one is demonstrably running. With both facts in hand, "the
+                # finished step is kept, the running one is shown as partial" is what must come out; a
+                # fixed delay proved neither (CI saw the signal arrive before the quick step had started).
+                self.assertTrue(quick_printed.wait(60), "the quick step was never printed")
+                self.assertTrue(wait_for(lambda: os.path.exists(pidfile), 60), "the long step never started")
                 with open(pidfile) as f:
                     pids = [int(p) for p in f.read().split()]
                 os.killpg(runner.pid, signal.SIGTERM)
-                out, _ = runner.communicate(timeout=90)
+                runner.wait(timeout=90)
+                reader.join(30)
                 self.assertTrue(wait_for(lambda: not any(alive(p) for p in pids), 20), f"left running: {pids}")
             finally:
                 runner.kill()
                 runner.wait()
+                reader.join(30)
+                runner.stdout.close()
                 for pid in pids:
                     if alive(pid):
                         os.kill(pid, signal.SIGKILL)
+        out = "".join(lines)
         self.assertEqual(runner.returncode, 128 + signal.SIGTERM)
-        self.assertIn("quick-done", out)
-        self.assertIn("branch-output-so-far", out)
-        self.assertIn("interrupted", out)
+        self.assertRegex(out, r"==== step: .*quick-done.* — ok \(.*\) ====\nquick-done\n", "the finished step is printed whole")
+        self.assertRegex(out, r"long\.py .* — interrupted, output so far is partial \(.*\) ====\nbranch-output-so-far\n")
+        self.assertIn("1 of 2 steps had finished", out)
 
 
 def alive(pid):

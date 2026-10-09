@@ -1365,7 +1365,7 @@ fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
     engine.set(OWNER, first, Some(page.shelves[0].group), By::Restore);
     let resting = page.place(&first.elem, &fixture.cx(Some(first)), At::Drawn).unwrap();
     let mut pressed_cx = fixture.cx(Some(first));
-    pressed_cx.press = PressRead { scale: 0.85, is_long: true, held_ms: None };
+    pressed_cx.press = PressRead { scale: 0.85, is_long: true, held_ms: None, owner: Some(first) };
     let pressed = page.place(&first.elem, &pressed_cx, At::Drawn).unwrap();
     assert!(pressed.rect.w < resting.rect.w);
     let rect = |r: Rect| [r.x, r.y, r.w, r.h];

@@ -221,7 +221,52 @@ fn enabled() -> bool {
 }
 
 fn now_ms() -> i64 {
+    #[cfg(test)]
+    if let Some(pinned) = pinned_clock::read() {
+        return pinned;
+    }
     i64::from(super::vclock_ms())
+}
+
+/// A per-thread virtual reading for [`now_ms`], so a test that grades the clock's POSITION is not
+/// graded on how many real milliseconds its own statements took. The sink clock adds the wall time
+/// since it last started running, in whole milliseconds, so a test that starts it at an exact
+/// offset and pauses it one statement later reads that offset only when no millisecond boundary
+/// falls between the two: a loaded runner makes one fall there often enough to be a flake
+/// (`claim_hold`'s "stopped AT the claim offset" read 1 ms high). Pinned, time moves only when
+/// [`pinned_clock::Pinned::advance`] says so; dropping the guard restores the real clock. The
+/// pin starts at the real reading, so it shares the ticker thread's time base.
+#[cfg(test)]
+pub(super) mod pinned_clock {
+    use std::cell::Cell;
+
+    thread_local! {
+        static PINNED: Cell<Option<i64>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn read() -> Option<i64> {
+        PINNED.with(Cell::get)
+    }
+
+    pub(crate) struct Pinned;
+
+    impl Pinned {
+        /// Pin this thread's sink clock at the real time now.
+        pub(crate) fn now() -> Self {
+            PINNED.with(|p| p.set(Some(i64::from(super::super::vclock_ms()))));
+            Pinned
+        }
+
+        pub(crate) fn advance_ms(&self, by: i64) {
+            PINNED.with(|p| p.set(p.get().map(|at| at + by)));
+        }
+    }
+
+    impl Drop for Pinned {
+        fn drop(&mut self) {
+            PINNED.with(|p| p.set(None));
+        }
+    }
 }
 /// The rebase `sf_on_event` applies to a reported position (`playpos = fed - pts_shift +
 /// disp_base`), inverted: the fed PTS at which the app will read `media_ns`.
@@ -790,6 +835,9 @@ impl VideoSink for HostSink {
     }
     unsafe fn send_segment(&self, _: &MainThread) -> c_int {
         sf_send_segment()
+    }
+    fn feed_abi_is_cow(&self) -> bool {
+        false
     }
     unsafe fn feed(
         &self,

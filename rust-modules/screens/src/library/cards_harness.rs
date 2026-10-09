@@ -101,7 +101,7 @@ impl Harness {
     fn cx(&self) -> Cx<'_, LibHost> {
         Cx { views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
             tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
-            press: PressRead { scale: self.press, ..Default::default() },
+            press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
             focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) }
     }
 
@@ -109,7 +109,7 @@ impl Harness {
         let cx: Cx<'_, LibHost> = Cx {
             views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
             tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
-            press: PressRead { scale: self.press, ..Default::default() },
+            press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
             focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
         self.screen.sync(&cx);
     }
@@ -121,7 +121,7 @@ impl Harness {
             let cx: Cx<'_, LibHost> = Cx {
                 views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
                 tick: Tick { ms: self.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
-                press: PressRead { scale: self.press, ..Default::default() },
+                press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
                 focus: FocusRead { current: self.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let mut fx = Effects::new(&mut out, MachineId::Instance(INSTANCE), &mut present);
             Machine::<LibHost>::step(&mut self.screen, &ev, &cx, &mut fx);
@@ -179,14 +179,14 @@ impl CardHarness for Harness {
         Some(match self.set {
             Set::Grid => {
                 let mut cx = self.cx();
-                cx.press = PressRead { scale: press, ..Default::default() };
+                cx.press = PressRead { scale: press, owner: cx.focus.current, ..Default::default() };
                 self.screen.pair.detail.rect_at(&cx, col)
             }
             // The rect the page's real stop recording registers for the card (`record_stops`, what the
             // draw ends with): the pointer's target, built from the draw's own placement.
             Set::Shelf => {
                 let mut cx = self.cx();
-                cx.press = PressRead { scale: press, ..Default::default() };
+                cx.press = PressRead { scale: press, owner: cx.focus.current, ..Default::default() };
                 let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
                 self.screen.record_stops(&mut frame);
                 frame.into_stops().into_iter().find(|stop| stop.key.elem == elem)?.rect
@@ -383,7 +383,7 @@ mod pop_tests {
             let cx: Cx<'_, LibHost> = Cx {
                 views: Views { listing: h.listing.view(), directory: h.directory.view(), hubs: h.hubs.view() },
                 tick: Tick { ms: h.ms, dt_us: 16_667 }, measure: &FixtureMeasure,
-                press: PressRead { scale: h.press, ..Default::default() },
+                press: PressRead { scale: h.press, owner: h.focus, ..Default::default() },
                 focus: FocusRead { current: h.focus, ..Default::default() }, owner: InputOwner::Entry(ENTRY) };
             let _discovery = plx_ui::frame::backdrop::discover(std::rc::Rc::new(std::cell::RefCell::new(Default::default())));
             let mut frame = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());

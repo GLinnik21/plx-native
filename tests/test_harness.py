@@ -1205,6 +1205,84 @@ class FrameCeilingsManifest(unittest.TestCase):
                          "a cold open grades its FIRST frames")
 
 
+class UploadPacingGrading(unittest.TestCase):
+    """`grade_upload_pacing` — `upload_per_frame_min`/`upload_late_share_max` over the heartbeat's `pupf=` tally."""
+
+    HB = ("loop=60 route=library fps=60 worstframe=1.0ms worstprep=0.4ms carried=0 dropped=0 "
+          "budget=3/0 evicted_hot=0 frame_n=60 frame_gt16=3 frame_gt33=0 frame_gt50=0 "
+          "frame_gt100=0 frame_max=20.0ms frame_p95=17.0ms frame_p99=18.0ms")
+
+    def _lines(self, *tallies, route="library"):
+        out = []
+        for frames, late, uploads in tallies:
+            out.append(self.HB.replace("route=library", f"route={route}")
+                       + f" pupf={frames} pupf_ge22={late} pup={uploads}")
+        return out
+
+    def test_the_share_of_late_upload_frames_is_graded_against_the_limit(self):
+        scene = {"upload_late_share_max": 0.35}
+        ok, detail = run.grade_upload_pacing(scene, self._lines((10, 1, 14), (17, 0, 25)),
+                                             "library", None)
+        self.assertTrue(ok, detail)
+        self.assertIn("1/27", detail)
+        # the backstop: well over a third of the upload frames late
+        ok, detail = run.grade_upload_pacing(scene, self._lines((10, 5, 10), (17, 8, 17)),
+                                             "library", None)
+        self.assertFalse(ok)
+        self.assertIn("FAIL", detail)
+        # the limit is inclusive
+        ok, _ = run.grade_upload_pacing({"upload_late_share_max": 0.2}, self._lines((20, 4, 30)),
+                                        "library", None)
+        self.assertTrue(ok)
+
+    def test_the_uploads_per_frame_floor_passes_the_fix_and_fails_the_base(self):
+        scene = {"upload_per_frame_min": 1.25}
+        # the fix's weakest measured run: 1.41 uploads per upload frame
+        ok, detail = run.grade_upload_pacing(scene, self._lines((20, 6, 28), (17, 5, 24)),
+                                             "library", None)
+        self.assertTrue(ok, detail)
+        self.assertIn("1.41", detail)
+        # the base: exactly one upload per upload frame, however few late frames it had
+        ok, detail = run.grade_upload_pacing(scene, self._lines((20, 0, 20), (17, 0, 17)),
+                                             "library", None)
+        self.assertFalse(ok)
+        self.assertIn("FAIL", detail)
+        self.assertIn("1.00", detail)
+        # both keys together: the floor can fail while the backstop passes, and the reverse
+        both = {"upload_per_frame_min": 1.25, "upload_late_share_max": 0.35}
+        self.assertFalse(run.grade_upload_pacing(both, self._lines((20, 0, 20)), "library", None)[0])
+        self.assertFalse(run.grade_upload_pacing(both, self._lines((20, 10, 40)), "library", None)[0])
+        self.assertTrue(run.grade_upload_pacing(both, self._lines((20, 6, 30)), "library", None)[0])
+
+    def test_a_scene_that_loaded_nothing_or_a_log_without_the_field_fails_not_passes(self):
+        scene = {"upload_late_share_max": 0.35, "upload_per_frame_min": 1.25}
+        for lines in ([], [self.HB], self._lines((5, 0, 9)), self._lines((40, 0, 70), route="home")):
+            ok, detail = run.grade_upload_pacing(scene, lines, "library", None)
+            self.assertFalse(ok, lines)
+            self.assertIn("need 15", detail)
+        ok, _ = run.grade_upload_pacing({**scene, "upload_frames_min": 5}, self._lines((5, 0, 9)),
+                                        "library", None)
+        self.assertTrue(ok)
+
+    def test_a_scene_without_the_key_is_untouched_and_the_key_arms_the_detector_quietly(self):
+        self.assertEqual(run.grade_upload_pacing({}, [], "library", None), (True, ""))
+        self.assertIsNone(run.frame_ceiling_threshold({"loop_floor": 30}))
+        self.assertEqual(run.frame_ceiling_threshold({"upload_late_share_max": 0.35}),
+                         str(run.UPLOAD_GATE_THRESHOLD_MS))
+        self.assertEqual(run.frame_ceiling_threshold({"upload_per_frame_min": 1.25}),
+                         str(run.UPLOAD_GATE_THRESHOLD_MS))
+        # an explicit ceiling still wins: its threshold is the lower one
+        self.assertEqual(run.frame_ceiling_threshold({"upload_late_share_max": 0.35,
+                                                      "stall_ceiling_ms": 60}), "60")
+
+    def test_library_scroll_declares_the_gate_and_arms_the_detector(self):
+        s = {x["name"]: x for x in _manifest()["fps_scenes"]}["library-scroll"]
+        self.assertEqual(s["upload_late_share_max"], 0.35)
+        self.assertEqual(s["upload_per_frame_min"], 1.25)
+        self.assertGreaterEqual(s["upload_frames_min"], 1)
+        self.assertIsNotNone(run.frame_ceiling_threshold(s))
+
+
 class BenchGrading(unittest.TestCase):
     """`parse_bench`/`grade_bench` — the stress-bench (`push-100`/`modal-100`) parser and its four
     fail conditions (missed refreshes, drift, rss-growth, incomplete-run). Synthetic `bench:`

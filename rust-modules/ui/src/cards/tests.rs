@@ -26,13 +26,18 @@ const EXT: GridSpec = GridSpec::new(520.0, 96.0).columns(4, EXT_STYLE, 160.0).ex
 type Cx9<'a> = Cx<'a, FixtureHost>;
 
 /// The frame context every rig hands a section: `view` as the store, the tick at `ms`, press
-/// `press`, the engine's focus on `focus`, entry `ENTRY` the owner.
+/// `press` on the focused card, the engine's focus on `focus`, entry `ENTRY` the owner.
 fn cx9(view: &FixtureView, ms: u32, press: f32, focus: Option<FocusKey<u32>>) -> Cx9<'_> {
+    cx9_pressed(view, ms, press, focus, focus)
+}
+
+/// [`cx9`] with the press owned by `pressed`, which is not `focus` once a press was abandoned.
+fn cx9_pressed(view: &FixtureView, ms: u32, press: f32, focus: Option<FocusKey<u32>>, pressed: Option<FocusKey<u32>>) -> Cx9<'_> {
     Cx {
         views: FixtureViews { store: view },
         tick: Tick { ms, dt_us: 16_667 },
         measure: &FixtureMeasure,
-        press: PressRead { scale: press, ..Default::default() },
+        press: PressRead { scale: press, owner: pressed, ..Default::default() },
         focus: FocusRead { current: focus, ..Default::default() },
         owner: InputOwner::Entry(ENTRY),
     }
@@ -43,11 +48,14 @@ struct Cards {
     more: bool,
     /// The screen rect each card was really painted at, as the overlay hook saw it.
     drawn: std::cell::RefCell<Vec<(u32, Rect)>>,
+    /// Cards from this index on are not interned yet: `elem` answers the shared header id `0`
+    /// (`Members::elem`'s `unwrap_or(HEADER_ELEM)`) and `index_of` knows no such element.
+    unindexed_from: usize,
 }
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, drawn: Default::default() }
+        Self { elems, more, drawn: Default::default(), unindexed_from: usize::MAX }
     }
 }
 
@@ -56,10 +64,10 @@ impl CardSource<FixtureHost> for Cards {
         self.elems.len()
     }
     fn elem(&self, i: usize) -> u32 {
-        self.elems[i]
+        if i >= self.unindexed_from { 0 } else { self.elems[i] }
     }
     fn index_of(&self, e: &u32) -> Option<usize> {
-        self.elems.iter().position(|x| x == e)
+        self.elems.iter().take(self.unindexed_from).position(|x| x == e)
     }
     fn art(&self, _i: usize) -> Art<'_> {
         Art::Poster(None)
@@ -256,6 +264,8 @@ struct Rig<S: Section> {
     view: FixtureView,
     focus: Option<FocusKey<u32>>,
     press: f32,
+    /// The card the press dip belongs to when that is not the focused one (an abandoned press).
+    pressed: Option<FocusKey<u32>>,
     ms: u32,
 }
 
@@ -267,6 +277,7 @@ impl<S: Section> Rig<S> {
             view: FixtureView::default(),
             focus: None,
             press: 1.0,
+            pressed: None,
             ms: 0,
         }
     }
@@ -276,7 +287,7 @@ impl<S: Section> Rig<S> {
     }
 
     fn cx_with(&self, press: f32) -> Cx9<'_> {
-        cx9(&self.view, self.ms, press, self.focus)
+        cx9_pressed(&self.view, self.ms, press, self.focus, self.pressed.or(self.focus))
     }
 
     /// Step one event through the section: the event it reported and whether the step moved.
@@ -285,7 +296,7 @@ impl<S: Section> Rig<S> {
         let mut out = Vec::new();
         let mut reported = None;
         let (_, moving) = plx_machine::idle::scoped_motion(|| {
-            let cx = cx9(&self.view, self.ms, self.press, self.focus);
+            let cx = cx9_pressed(&self.view, self.ms, self.press, self.focus, self.pressed.or(self.focus));
             let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(9)), &mut present);
             reported = self.sect.on(&ev, &cx, &self.src, &mut fx);
         });
@@ -2338,4 +2349,114 @@ fn grid_pool_drops_a_let_go_pushed_beyond_the_search_window() {
     }
     r.run(1);
     assert_eq!(r.sect.scale_of(&r.cx(), &r.src, &100), Some(1.0), "100 is out of the window: its let-go is dropped");
+}
+
+/// One frame of an abandoned press: the press dip and the drawn width of the pressed card and of
+/// its neighbour, each relative to a card at rest.
+struct AbandonRow {
+    ms: u32,
+    what: &'static str,
+    dip: f32,
+    pressed: f32,
+    neighbour: f32,
+    /// The press reported motion this frame (what keeps frames coming and the page repainting).
+    motion: bool,
+}
+
+/// OK goes down on card 100 and is held for 350 ms (the `collection-tap` scene's cycle), then Right
+/// moves focus to 101. The dispatcher abandons the press on that move (`Press::cancel`); the press
+/// dip stays with the card that was pressed while it springs back, so the pressed card is the
+/// press's owner after focus has left it. Real `Press`, real section, one 16 ms frame at a time.
+fn abandoned_press_trace<S: Section + 'static>() -> Vec<AbandonRow> {
+    crate::popover::set_lift_owns(false);
+    let mut r = Rig::<S>::new(6);
+    r.land_focus(100, By::Dir);
+    r.run(120);
+    let rest = r.drawn_rect(101, 1.0).unwrap().w;
+    let mut press = crate::press::Press::new();
+    let row = |r: &Rig<S>, ms: u32, what, dip, motion| {
+        let width = |elem| r.drawn_rect(elem, dip).unwrap().w / rest;
+        AbandonRow { ms, what, dip, pressed: width(100), neighbour: width(101), motion }
+    };
+    let t0 = r.ms;
+    let mut rows = vec![row(&r, 0, "idle", 1.0, false)];
+    r.pressed = r.focus;
+    press.begin(r.ms);
+    let mut what = "ok-down";
+    for n in 1..=45 {
+        if n == 22 {
+            press.cancel();
+            r.land_focus(101, By::Dir);
+            what = "RIGHT";
+        }
+        r.ms += MS;
+        let (_, motion) = plx_machine::idle::scoped_motion(|| press.tick(r.ms, MS as f32 / 1000.0));
+        r.feed(ScreenEvent::Tick(Tick { ms: r.ms, dt_us: 16_667 }));
+        let dip = if press.is_active() { press.scale() } else { 1.0 };
+        rows.push(row(&r, r.ms - t0, what, dip, motion));
+        what = "";
+    }
+    rows
+}
+
+/// Navigating away from a held press must not make any card jump: the pressed card springs back
+/// from its dip (the underdamped release) while the neighbour takes the ordinary focus pop with no
+/// dip. Neither card's drawn width may change by more than 3 % between two consecutive frames
+/// (the ordinary per-frame animation step is under 1 %; the bug was +8.6 % / -7.9 % in one frame).
+fn abandoned_press_never_jumps<S: Section + 'static>() {
+    let rows = abandoned_press_trace::<S>();
+    println!("  ms  event    press  pressed  neighbour  motion");
+    for r in &rows {
+        println!("{:4}  {:8} {:.3}  {:.3}    {:.3}      {}", r.ms, r.what, r.dip, r.pressed, r.neighbour, r.motion);
+    }
+    for pair in rows.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        for (name, before, after) in [("pressed card (100)", a.pressed, b.pressed), ("neighbour (101)", a.neighbour, b.neighbour)] {
+            assert!((after / before - 1.0).abs() < 0.03,
+                "{name} jumped {:+.1} % in ONE frame at {} ms ({before:.3} -> {after:.3})", (after / before - 1.0) * 100.0, b.ms);
+        }
+    }
+    // The spring-back runs on a card that no longer has focus: it must keep reporting motion for as
+    // long as the dip is visibly moving, or the pressed card would freeze mid-spring on the page.
+    for r in rows.iter().skip_while(|r| r.what != "RIGHT").skip(1).filter(|r| (r.dip - 1.0).abs() > 0.03) {
+        assert!(r.motion, "the spring-back at {} ms (press {:.3}) reported no motion", r.ms, r.dip);
+    }
+    let last = rows.last().unwrap();
+    assert!((last.pressed - 1.0).abs() < 0.01, "the pressed card settles at its rest size, not a dip");
+    assert!((last.neighbour - rows[0].pressed).abs() < 0.01, "the neighbour settles at the focus pop with no dip");
+}
+
+#[test]
+fn shelf_abandoned_press_never_jumps() {
+    abandoned_press_never_jumps::<Shelf>();
+}
+
+#[test]
+fn grid_abandoned_press_never_jumps() {
+    abandoned_press_never_jumps::<Grid>();
+}
+
+/// A press owned by the shared header id (`Collection`/`Person` header press) must dip NO member
+/// card, including the ones with no interned element yet whose `elem(i)` falls back to that id.
+/// The owner resolves once per pass through `index_of`, like focus, so the fallback never matches.
+fn a_header_press_dips_no_unindexed_member<S: Section + 'static>() {
+    let mut r = Rig::<S>::new(6);
+    r.src.unindexed_from = 3;
+    r.pressed = Some(FocusKey { entry: ENTRY, elem: 0 });
+    let rects = |r: &Rig<S>, press| r.stops(press).into_iter().map(|s| s.rect).collect::<Vec<_>>();
+    assert_eq!(rects(&r, 0.9), rects(&r, 1.0), "no card dips for a press owned by the header id");
+    r.pressed = Some(FocusKey { entry: ENTRY, elem: 101 });
+    let (dipped, rest) = (rects(&r, 0.9), rects(&r, 1.0));
+    assert!(dipped[1].w < rest[1].w * 0.95, "the indexed owner card still dips");
+    assert_eq!(dipped[2], rest[2], "only the owner dips");
+}
+
+#[test]
+fn shelf_header_press_dips_no_unindexed_member() {
+    a_header_press_dips_no_unindexed_member::<Shelf>();
+}
+
+#[test]
+fn grid_header_press_dips_no_unindexed_member() {
+    a_header_press_dips_no_unindexed_member::<Grid>();
 }

@@ -244,6 +244,11 @@ make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero 
   composes `site/og/card.html` around the home figure the same run staged, so a run that includes
   `home` needs a headless Chromium (Chrome, Chromium or a Playwright cache; `CHROME=` overrides).
   Outputs are all-or-nothing: one failed scene and nothing is written anywhere.
+- **After a stable release these refresh themselves** (`site-video.yml`'s `stills` job,
+  `tools/site_stills.py`, on Linux/llvmpipe with the pinned ffmpeg): every scene is captured twice and the pair
+  must agree within the scene's `max_delta`, the first capture is adopted. `python3 tools/site_stills.py files`
+  lists them; `files --manual` is empty today (only the TV photograph `navblur-transition.jpg` is by hand). A Mac
+  render is a preview of what the bot commits (the two differ by renderer noise, not by content).
 - **The site's copies follow the render.** After re-rendering the `site-*` scenes, run
   `python3 tools/render-site-variants.py` (the WebP of every close-up and the phone copies of
   tiles and player) and then `python3 tools/render-site-glows.py`; both read the rendered JPEGs.
@@ -380,7 +385,7 @@ device-verified" is a useful, honest status. "Verified" without a TV is not.
 
 `make site-video-sim` builds the simulator for the demo-video pipeline (`--no-default-features
 --features hostsim,devtriggers,placeholder-sentinel`, release, its own target dir, libass only), and
-`python3 tools/site_video.py render --out DIR --storyboard` plays `tests/video/feel.json` (positions and durations, compiled to the driver's key schedule: Home hero, hero paged to the second page and back, down to the Continue Watching shelf, the third card's Detail opened with OK and held about 4 s, back, the Movies library, back to Home, about 27 s; no scrolling on Detail, no modal; shot with the hold hint taught, so card rests and the card OK are not capped: `render --storyboard` sets the `plxnative-hintoff` trigger (`devtriggers` builds only; it calls `hold_hint::teach_all_for_dev`, once, at boot) because the capsule is a one-time teaching overlay and a film has no viewer to teach) and records its sha256, `--extra-holds`, `--trigger`, how far each beat still moved at its end (`storyboard.rest`) and which titles it opened and `hold_hint: suppressed` in `render.json`. Before the film boots the launcher signs the simulator in to the mock's Demo account through the app's own QR sign-in (a prep boot with the `plxnative-login` trigger), because `up` from the hero always lands on the profile chip and an account-less session would read "Sign in" there. A page that mounts hidden and fades in (an `Xfade` mount, the Library's) arrives COMPLETE in a dump, so a push dips into a finished page. Either way `render` runs the simulator headless against the mock catalog (without `--storyboard` it holds Home for `--frames`, 180 by default) and leaves
+`python3 tools/site_video.py render --out DIR --storyboard` plays `tests/video/feel.json` (positions and durations, compiled to the driver's key schedule: Home hero, hero paged to the second page and back, down to the Continue Watching shelf, the third card's Detail opened with OK and held about 4 s, back, the Movies library, back to Home, about 27 s; no scrolling on Detail, no modal; shot with the hold hint taught, so card rests and the card OK are not capped: `render --storyboard` sets the `plxnative-hintoff` trigger (`devtriggers` builds only; it calls `hold_hint::teach_all_for_dev`, once, at boot) because the capsule is a one-time teaching overlay and a film has no viewer to teach) and records its sha256, `--extra-holds`, `--trigger`, how far each beat still moved at its end (`storyboard.rest`) and which titles it opened and `hold_hint: suppressed` in `render.json`. Before the film boots the launcher signs the simulator in to the mock's Demo account through the app's own QR sign-in (a prep boot with the `plxnative-login` trigger), because `up` from the hero always lands on the profile chip and an account-less session would read "Sign in" there. A pushed page is filmed LIVE under the dip, never as a held image (`plx_gfx::dump`'s one page rule: every dip frame re-captures the page, `PageImage::step_filmed`), so a page that mounts hidden and fades in (an `Xfade` mount, the Library's) fades in as it does in the product, with its entrance springs playing, and nothing cuts when the dip ends. Either way `render` runs the simulator headless against the mock catalog (without `--storyboard` it holds Home for `--frames`, 180 by default) and leaves
 `master.mkv`, `frames.tsv`, `dump.json` and `render.json`. The simulator side is
 `rust-modules/src/dev/framedump.rs`, armed by `PLXNATIVE_DUMP=<dir>` (its module doc lists the
 variables). It drives the app from VIRTUAL time (`clock::set_replay`, 60 fps), forces a present every
@@ -389,10 +394,11 @@ drawn, no queued upload, an idle poster source, no open landing claim). While a 
 upload, the poster source or a claim is outstanding it repeats the frame with `dt == 0` and writes
 nothing; virtual time is never skipped, so a push to a page is filmed as the product plays it (70 ms
 out, two consecutive alpha-0 frames (the out ramp clamps to 0, then `DipPhase::Hold`, as in the
-product), 140 ms in, one replacement capture, then live: the product also keeps the image on while
-the destination's layout moves, a dump does not, so the destination's springs, such as the Library's
-focused caption fading in, are filmed). A held page image is reported, not a hold
-reason: a capture with debt is re-captured on each repeat until clean (`plx_gfx::dump::held_repeat`).
+product), 140 ms in, then live. The product freezes the image captured at the floor through the In half and
+on while the destination's layout moves; a dump re-captures the page live on every frame of the dip
+instead, so the destination's springs, such as the Library's focused caption fading in, are
+filmed and nothing cuts). A capture with debt is re-captured on each repeat until clean
+(`plx_gfx::dump::held_repeat`).
 `--preroll` (default 60) only chooses how much boot is not written. `site_video.py gates` fails any
 `frames.tsv` row whose `t_ms` is not `round(n * 1000 / 60)`. Run it twice and compare `frames.tsv`
 (`site_video.py gates --frames-b`): the xxh3 column must match. The stronger check is

@@ -1,4 +1,4 @@
-# count: 9
+# count: 7
 # The files allowed to name the frame-dump switch (`plx_gfx::dump`: `armed`, `held_repeat`, the driver's `arm` / `set_held_repeat` and the test guards `Armed` / `HeldRepeat`), one `path<TAB>what it does with it` line each (ci/check-dump-consumers.py).
 # The gate compares this list to the tree as an exact set: a new file naming the switch fails it, and so does an entry whose file stopped naming it. `gfx/src/dump.rs` DEFINES the switch and is not listed.
 # A branch on the switch may replace a timing input with a constant or make a per-iteration stepper idempotent on a held repeat; it may never skip a state or change what a settled frame shows. The rule, and the kind of every consumer, is the `//!` of rust-modules/gfx/src/dump.rs. Do not add a line to make a new file pass: read the rule, make the branch fit it, list it there, then here.
@@ -7,7 +7,5 @@ rust-modules/gfx/src/text.rs	prewarm drains run to empty and the surface-text la
 rust-modules/src/app/adapters/poster.rs	evict_cooldown_due (timing input) and the failed-fetch record; its test arms the switch under testlock::serial
 rust-modules/src/dev/framedump.rs	the DRIVER: arm, set_held_repeat, and the held-repeat read in idle_dt
 rust-modules/ui/src/card_motion.rs	declines_request: the motion verdict (derived from dt) becomes admit (timing input)
-rust-modules/ui/src/containers/transition.rs	PageDip::tick floor and PageImage::plan step stand still on a held repeat (idempotent stepper); its tests hold HeldRepeat
-rust-modules/ui/src/dispatch.rs	layout_holds_page_image: an EXCEPTION that changes the picture on purpose (see dump.rs)
+rust-modules/ui/src/containers/transition.rs	PageDip::tick floor and PageImage::plan step stand still on a held repeat (idempotent stepper); PageImage::plan under armed() is step_filmed: the dip re-captures the page live every frame and ends live, never a held image (the one rule, dump.rs); its tests hold HeldRepeat / Armed under testlock::serial
 rust-modules/ui/src/frame/budget.rs	Budget::take ignores elapsed microseconds (timing input)
-rust-modules/ui/src/xfade.rs	Xfade::tick Hold goes straight to Idle: an EXCEPTION that skips the In state (see dump.rs)

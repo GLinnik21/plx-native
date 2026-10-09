@@ -80,6 +80,7 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
             scale: 0.85,
             is_long: true,
             held_ms: None,
+            owner: None,
         },
         owner,
     };

@@ -935,3 +935,42 @@ fn resolve_mode_reports_every_mismatch_and_continues_from_the_recording() {
     let silent = replay(&rec, false);
     assert!(silent.focus_diffs.is_empty(), "targets mode does not grade the engine");
 }
+
+/// §7.4 "navigation cancels the press": OK down on a card, then a direction key (before `LONG_MS`)
+/// that MOVES focus. The press is abandoned onto its release spring: it no longer arms the card
+/// focus left, so the tap never commits and a later hold is not delivered, and the dip stays owned
+/// by the card that was pressed until the spring has settled.
+#[test]
+fn a_direction_key_that_moves_focus_abandons_a_held_card_press() {
+    for page in [700u32, 701] {
+        let (mut d, mut rig) = boot(FixtureArg::Page(page));
+        let first = elem(&d);
+        d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
+        for ms in (32..=352).step_by(16) { d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap); }
+        assert!(d.input.arm.is_some() && d.input.press.scale() < 0.93, "page {page}: armed and dipped");
+        let pressed = d.input.arm.unwrap().key;
+        let mut moved = false;
+        for k in [Key::Right, Key::Down, Key::Left, Key::Up] {
+            d.frame(&mut rig, tick(368), vec![key(k, tick(368))], vec![], &mut NoTap);
+            if elem(&d) != first { moved = true; break; }
+        }
+        assert!(moved, "the fixture page has a second focusable element");
+        assert!(d.input.arm.is_none(), "page {page}: focus moved off the pressed card but the press is still armed on it");
+        assert!(!d.input.press.is_live(), "page {page}: the press is still live (held) after navigation");
+        assert!(d.input.press.is_active(), "page {page}: the abandoned press springs back, it does not vanish");
+        assert_eq!(d.input.dip_owner, Some(pressed), "page {page}: the spring-back belongs to the pressed card");
+        // What the draw side is HANDED (`Dispatcher::parts`), not the machine's field: the dispatcher
+        // must publish the owner or no card dips in the real app.
+        let read = d.parts(tick(368)).press;
+        assert_eq!(read.owner, Some(pressed), "page {page}: parts() publishes the pressed card as the dip owner");
+        assert!(read.scale > 0.0, "page {page}: and the press scale it dips by");
+        let mut ms = 384;
+        while d.input.press.is_active() && ms < 1200 {
+            d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+            ms += 16;
+        }
+        assert!(!d.input.press.is_active(), "page {page}: the spring settles well before the hold cap");
+        assert_eq!(d.input.dip_owner, None, "page {page}: the owner is released with the spring");
+        assert_eq!(d.parts(tick(ms)).press.owner, None, "page {page}: parts() publishes no owner once the spring settled");
+    }
+}

@@ -192,8 +192,16 @@ jobs:
       - name: Build native macOS simulator
         run: make sim-macos SIM_TDIR=rust-modules/target-sim-ci
       - name: Replay all committed product recordings
+        # 960x540, not the driver's 1920x1080 default. The runner has no GPU (the log says `GL:
+        # Apple Software Renderer`), so a replay is CPU-bound in the rasteriser and costs what the
+        # window has pixels: a lone 584-frame replay took 72 s at 1920x1080 and 24.6 s at 960x540
+        # (diagnostic run 37869088696), with the same counters. The graded hash is logical state
+        # (route, overlay, focus, tree, session, present decisions) on a fixed 1920x1080 canvas
+        # that `surface::viewport` scales into the window, so the window changes no grade. The
+        # launch step below still opens a full-size window.
         run: |
           python3 tests/replay_fixtures.py \
+            --window 960x540 \
             --sim "$GITHUB_WORKSPACE/rust-modules/target-sim-ci/debug/plxnative-sim" \
             --output "$RUNNER_TEMP/plxnative-replay"
       - name: Preserve replay evidence

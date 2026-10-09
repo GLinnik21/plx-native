@@ -388,7 +388,8 @@ pub struct Tex {
 /// The GL half behind the cache: the real one wraps `gfx::tex_upload`/`warm_tex`; tests stub it.
 pub trait Uploader {
     fn upload(&mut self, d: &Decoded) -> Tex;
-    /// `gfx::warm_tex`: touch the texture inside the presented frame's GL scope (residency).
+    /// `gfx::warm_tex`: sample the texture once into a tiny offscreen target so it is resident
+    /// now (never framebuffer 0 — see that fn for why the back-buffer wait must not land here).
     fn warm(&mut self, t: Tex);
     fn free(&mut self, t: Tex);
 }

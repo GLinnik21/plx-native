@@ -26,6 +26,7 @@ int  sf_set_time_to_decode(long long position_ns); /* Kodi in-place seek: setTim
 int  sf_set_content_info(long long position_ns);   /* webOS<11 in-place seek: loadSpi_getInfo + setContentInfo(ptsToDecode); 0 = pipeline not reachable */
 int  sf_send_segment(void);                        /* Kodi in-place seek: CustomPipeline::sendSegmentEvent; 0 = pipeline not reachable */
 char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData); /* 'O'/'B'/'e' */
+int  sf_feed_abi_is_cow(void);       /* 1 = Feed is the pre-C++11 copy-on-write build (webOS 3.x); resolves Feed on first use */
 void sf_unload(void);                /* Unload the pipeline */
 /* After Unload: close native callback admission and wait (without a timeout) for every admitted
  * callbackFunctionHook call. 1 proves this object's ELF interposer was actually crossed. */

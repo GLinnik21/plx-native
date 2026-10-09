@@ -456,12 +456,14 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // The render cache's upload step under the frame budget (§3.3 step 9, §10: "a frame that
     // does not present uploads nothing"). Two placement rules, both load-bearing:
     //
-    // * **Only on a presenting frame.** `GfxUploader::warm` is `gfx::warm_tex`, which DRAWS
-    //   a 1x1 quad to force residency; there is no GL scope to draw into on a frame that is
-    //   skipped wholesale.
-    // * **Before the draw, never after.** That quad goes into framebuffer 0, and the page's
-    //   own `frame_clear` overwrites the pixel. After the draw it would be a white pixel over
-    //   the finished picture — over FILM, on a player frame.
+    // * **Only on a presenting frame.** The spec's rule: a frame that is skipped wholesale
+    //   uploads nothing and the queue waits (`GfxUploader::warm` is `gfx::warm_tex`, which
+    //   also draws, so it wants the frame's GL state in place).
+    // * **Before the draw.** `warm_tex` draws into its own tiny offscreen target and never
+    //   touches framebuffer 0 (the first framebuffer-0 draw of a frame is where the back-buffer
+    //   wait lands, and it must stay with the page's `frame_clear`, not with this window), so
+    //   there is no pixel to show over the picture — film included — wherever it runs; it stays
+    //   here so the upload's cost is bounded by the budget and off the draw.
     if fr.present {
         // A Tracks/More page's text, recorded in `update` or, on the mount frame, in the overlay's
         // `prepare` (`PanelMotion::prewarm_text`), and uploaded here: `fr.present` already carries the window-activity gate, so a frame that

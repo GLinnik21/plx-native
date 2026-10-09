@@ -15,6 +15,10 @@ The replays are independent processes (own runtime dir, recorded clock, no netwo
 by side: `--jobs N` / `PLX_REPLAY_JOBS=N`, default the CPU count capped at 4, `1` for serial. Each
 replay's line is printed whole when it finishes, every replay runs even after one fails, and the
 exit status is nonzero if any did; the timeout counts from each replay's own start.
+Each opens a 1920x1080 simulator window by default; `--window WxH` / `PLX_REPLAY_WINDOW=WxH` (16:9
+only) picks another, and the macOS CI job uses 960x540 because its runner has no GPU and a replay
+costs what the window has pixels (a 584-frame replay: 72 s at 1920x1080, 24.6 s at 960x540). The
+canvas and everything graded are 1920x1080 logical either way, so the window changes no grade.
 The renderer-backed replay gate is separate from the pure host suite: `make check` tests its
 strict result parser, but does not launch the simulator.
 
