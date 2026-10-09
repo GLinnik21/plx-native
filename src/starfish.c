@@ -201,8 +201,8 @@ typedef int (*SMP_LoadWithContextFn)(
     void (*cb)(int, long long, const char *, void *),
     void *ctx);
 /* Feed returns std::string, so its mangled name carries the library's string ABI: `B5cxx11` on
- * webOS 3.9.2 and later, the pre-C++11 copy-on-write string on 3.4.0 and earlier
- * (`_ZN17StarfishMediaAPIs4FeedEPKc`). Either way the hidden sret slot starts with the char
+ * the 4.x inventories and later (4.4.2 is the oldest graded with it), the pre-C++11
+ * copy-on-write string on 3.9.2 and earlier (`_ZN17StarfishMediaAPIs4FeedEPKc`). Either way the hidden sret slot starts with the char
  * pointer, so the reply reads the same; only the COW string must be released through the
  * firmware's own destructor (`_ZNSsD1Ev`), because its buffer is a refcounted heap rep. Both are
  * resolved at runtime: a strong reference to the cxx11 name is a lazily-bound PLT slot that kills
@@ -211,16 +211,23 @@ typedef void (*SMP_FeedFn)(void *sret, void *self, const char *payload);
 typedef void (*CowStringDtorFn)(void *str);
 static SMP_FeedFn g_feed;
 static CowStringDtorFn g_feed_reply_dtor;
+/* Set when the COW name is the one that resolved. Kept apart from g_feed_reply_dtor because that
+ * can be NULL on a COW library (`_ZNSsD1Ev` missing), and the ABI is then still COW. */
+static int g_feed_cow;
 static pthread_once_t g_feed_once = PTHREAD_ONCE_INIT;
 static void sf_resolve_feed_once(void) {
     g_feed = (SMP_FeedFn)dlsym(RTLD_DEFAULT, "_ZN17StarfishMediaAPIs4FeedB5cxx11EPKc");
     if (!g_feed) {
         g_feed = (SMP_FeedFn)dlsym(RTLD_DEFAULT, "_ZN17StarfishMediaAPIs4FeedEPKc");
-        if (g_feed) g_feed_reply_dtor = (CowStringDtorFn)dlsym(RTLD_DEFAULT, "_ZNSsD1Ev");
+        if (g_feed) {
+            g_feed_cow = 1;
+            g_feed_reply_dtor = (CowStringDtorFn)dlsym(RTLD_DEFAULT, "_ZNSsD1Ev");
+        }
     }
     if (elogf) {
+        /* cow with dtor=(nil) means every Feed reply leaks its string rep. */
         fprintf(elogf, "feed abi: %s fn=%p dtor=%p\n",
-                !g_feed ? "NONE" : g_feed_reply_dtor ? "cow" : "cxx11",
+                !g_feed ? "NONE" : g_feed_cow ? "cow" : "cxx11",
                 (void *)g_feed, (void *)g_feed_reply_dtor);
         fflush(elogf);
     }
@@ -712,8 +719,17 @@ char sf_feed(const unsigned char *p, unsigned size, long long pts, int esData) {
     if (elogf && logged < 3) { logged++;
         fprintf(elogf, "feed reply=\"%s\"\n", s ? s : "(null)"); fflush(elogf); }
     char verdict = !s ? 'e' : strstr(s, "BufferFull") ? 'B' : strstr(s, "Ok") ? 'O' : 'e';
-    if (g_feed_reply_dtor) g_feed_reply_dtor(ret);
+    /* The COW destructor reads the rep header just below _M_p, so a NULL _M_p (Feed returned
+       without constructing its result) would fault. */
+    if (s && g_feed_reply_dtor) g_feed_reply_dtor(ret);
     return verdict;
+}
+
+/* 1 when the library's Feed is the pre-C++11 copy-on-write build: direct evidence that its
+   StarfishMediaAPIs layout is not the 4.5 one the in-place seek offsets were decompiled from. */
+int sf_feed_abi_is_cow(void) {
+    pthread_once(&g_feed_once, sf_resolve_feed_once);
+    return g_feed_cow;
 }
 
 /* ---- ACB verbs (the 3-arg taskId ABI is hidden) ----

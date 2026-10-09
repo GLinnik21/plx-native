@@ -42,6 +42,7 @@ mod sys {
         pub(super) fn sf_set_content_info(position_ns: i64) -> c_int;
         pub(super) fn sf_send_segment() -> c_int;
         pub(super) fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_char;
+        pub(super) fn sf_feed_abi_is_cow() -> c_int;
         pub(super) fn sf_unload();
         pub(super) fn sf_callback_gate_retire() -> c_int;
         pub(super) fn sf_callback_intercepts() -> c_uint;
@@ -125,6 +126,11 @@ impl plx_platform::tv::sink::VideoSink for StarfishSink {
     #[inline]
     unsafe fn send_segment(&self, _: &MainThread) -> c_int {
         sys::sf_send_segment()
+    }
+    #[inline]
+    fn feed_abi_is_cow(&self) -> bool {
+        // SAFETY: the C accessor takes no arguments and resolves under pthread_once.
+        unsafe { sys::sf_feed_abi_is_cow() != 0 }
     }
     #[inline]
     unsafe fn feed(

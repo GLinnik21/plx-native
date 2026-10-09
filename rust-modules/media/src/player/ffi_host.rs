@@ -836,6 +836,9 @@ impl VideoSink for HostSink {
     unsafe fn send_segment(&self, _: &MainThread) -> c_int {
         sf_send_segment()
     }
+    fn feed_abi_is_cow(&self) -> bool {
+        false
+    }
     unsafe fn feed(
         &self,
         _: &MainThread,

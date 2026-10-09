@@ -42,6 +42,9 @@ pub trait VideoSink: Sync {
     unsafe fn set_time_to_decode(&self, mt: &MainThread, position_ns: i64) -> c_int;
     unsafe fn set_content_info(&self, mt: &MainThread, position_ns: i64) -> c_int;
     unsafe fn send_segment(&self, mt: &MainThread) -> c_int;
+    /// True when the library's `Feed` is the pre-C++11 copy-on-write-string build (webOS 3.x).
+    /// A memoized read, so it takes no `MainThread`.
+    fn feed_abi_is_cow(&self) -> bool;
     unsafe fn feed(&self, mt: &MainThread, p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_char;
     unsafe fn unload(&self, mt: &MainThread);
     unsafe fn callback_gate_retire(&self, mt: &MainThread) -> c_int;
@@ -91,6 +94,7 @@ impl VideoSink for NoSink {
     unsafe fn set_time_to_decode(&self, _mt: &MainThread, _position_ns: i64) -> c_int { 0 }
     unsafe fn set_content_info(&self, _mt: &MainThread, _position_ns: i64) -> c_int { 0 }
     unsafe fn send_segment(&self, _mt: &MainThread) -> c_int { 0 }
+    fn feed_abi_is_cow(&self) -> bool { false }
     unsafe fn feed(&self, _mt: &MainThread, _p: *const u8, _size: c_uint, _pts: i64, _es_data: c_int) -> c_char {
         b'e' as c_char
     }
