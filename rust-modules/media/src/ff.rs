@@ -2352,9 +2352,13 @@ fn avio_stopped(s: &mut AvioState) -> c_int {
     AVERROR_IO
 }
 
+/// Reopens [`read_cb`] tries, within one read, after the transfer is cut mid-body.
+const BODY_HEAL_ATTEMPTS: u8 = 3;
+
 extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
     unsafe {
         let s = &mut *(op as *mut AvioState);
+        let mut heals: u8 = 0;
         loop {
             // interrupt: bail out of a blocked read on teardown (aborted) only. A seek does NOT
             // interrupt the read — the demux thread services it itself between two av_read_frame
@@ -2481,6 +2485,28 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 continue;
             }
             if r < 0 {
+                // A server that drops the connection mid-body (a PMS that reaps the socket while
+                // the viewer is paused, a reset from the LAN) is answered by reopening at the byte
+                // we stopped at. libavformat only heals through `seek_cb` when the demuxer itself
+                // seeks; a plain read failure reaches `av_read_frame` as EIO and ends the session,
+                // which is how pausing for the subtitle menu stopped playback on a webOS 3.4 set.
+                // Stall timeouts (rc=28) stay with the stall guard; only cut transfers heal here.
+                // Direct play only: an HLS segment read carries an acquisition runtime whose
+                // checkpoint and deadlines bound the transfer, but `cs.seek` reopens through
+                // `start()` with neither, and a failed segment is the HLS retry policy's to answer.
+                let direct_play = s.acquisition.is_none();
+                if let Src::Curl(cs) = &mut s.src {
+                    let cut = cs
+                        .body_failure()
+                        .is_some_and(|f| matches!(f.rc, 18 | 55 | 56 | 92));
+                    let inside = s.off >= 0 && (s.size < 0 || s.off < s.size);
+                    if direct_play && cut && inside && heals < BODY_HEAL_ATTEMPTS {
+                        heals += 1;
+                        if cs.seek(s.off) {
+                            continue;
+                        }
+                    }
+                }
                 // Teardown was handled above through the AU flag and remains EOF. A negative
                 // result here is therefore a real transport/range failure.
                 s.io_failed = true;

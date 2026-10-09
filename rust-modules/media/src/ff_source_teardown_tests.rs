@@ -771,6 +771,58 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
     });
 }
 
+/// A server that cuts the transfer mid-body (rc=56, a PMS reaping the socket while the viewer sat
+/// in the subtitle menu on a webOS 3.4 set) used to end the session: libavformat heals only through
+/// `seek_cb`, and a plain read failure never reaches it. The read callback now reopens at the byte
+/// it stopped at, a bounded number of times. The counting listener answers every request with a
+/// fresh 8-byte 200, so the reopen at offset 0 succeeds and the read ends in EOF: this test pins
+/// that a reopen is attempted and that the read settles. The recovery itself and the bound are
+/// pinned against a server that honours `Range` by the `cutting_server` tests below.
+#[test]
+fn a_cut_transfer_is_reopened_at_its_offset_before_the_read_fails() {
+    let Some(_gate) = curl_gate() else { return };
+    with_counting_listener(|port, _, requests| {
+        let mut cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
+            .expect("fixture: open");
+        cs.fail_body_for_test(56);
+        let before = requests.load(Ordering::Acquire);
+        let mut aq = crate::aq::aq_new(1 << 20);
+        let mut st = AvioState {
+            src: Src::Curl(cs),
+            aq: &mut *aq,
+            off: 0,
+            size: 16,
+            io_failed: false,
+            body_active_us: 0,
+            body_bytes: 0,
+            first_byte_at: None,
+            reserve_deadline: ReserveDeadlineState::new(None, false),
+            transport_watchdog: None,
+            acquisition: None,
+            bounce: Vec::new(),
+            bounce_pos: 0,
+        };
+        let op = &mut st as *mut AvioState as *mut c_void;
+        let mut dst = [0u8; 8];
+        let mut terminal = 1;
+        for _ in 0..8 {
+            terminal = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
+            if terminal <= 0 {
+                break;
+            }
+        }
+        assert!(
+            requests.load(Ordering::Acquire) > before,
+            "a transfer cut mid-body must be reopened before the read gives up"
+        );
+        assert!(
+            terminal == AVERROR_IO || terminal == AVERROR_EOF,
+            "the read must settle, not loop: {terminal}"
+        );
+        crate::aq::aq_destroy(&mut *aq);
+    });
+}
+
 /// Issue #266 PR 4's normalize run: a direct-play Part sat inside `avformat_open_input` (the
 /// server was slow to serve it), the viewer turned Normalize Loudness on, and `reload_transcode`
 /// tore that demuxer down. Teardown aborts the lanes, `read_cb` answers the abort with EOF, and
@@ -802,4 +854,127 @@ fn a_demux_aborted_by_teardown_before_its_first_unit_is_not_a_failure() {
         open_input_failure_note(-1_094_995_529, false),
         "ff: open_input failed r=-1094995529",
     );
+}
+
+/// Read the whole source through `read_cb` the way direct play does (`acquisition: None`); returns
+/// (bytes, terminal result, `io_failed`, the body failure rc the source still reports).
+fn read_all_through_read_cb(port: u16) -> (Vec<u8>, c_int, bool, Option<c_int>) {
+    let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
+        .expect("fixture: open");
+    let size = cs.size();
+    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut st = AvioState {
+        src: Src::Curl(cs),
+        aq: &mut *aq,
+        off: 0,
+        size,
+        io_failed: false,
+        body_active_us: 0,
+        body_bytes: 0,
+        first_byte_at: None,
+        reserve_deadline: ReserveDeadlineState::new(None, false),
+        transport_watchdog: None,
+        acquisition: None,
+        bounce: Vec::new(),
+        bounce_pos: 0,
+    };
+    let op = &mut st as *mut AvioState as *mut c_void;
+    let mut got = Vec::new();
+    let mut dst = [0u8; 32768];
+    let terminal = loop {
+        let r = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
+        if r <= 0 {
+            break r;
+        }
+        got.extend_from_slice(&dst[..r as usize]);
+    };
+    let rc = match &st.src {
+        Src::Curl(cs) => cs.body_failure().map(|f| f.rc),
+        _ => None,
+    };
+    let io_failed = st.io_failed;
+    crate::aq::aq_destroy(&mut *aq);
+    (got, terminal, io_failed, rc)
+}
+
+/// Four short closes in a row, each answered by a reopen at the byte the reader stopped at: every
+/// byte arrives in order, the read ends in EOF and `io_failed` stays clear.
+#[test]
+fn a_short_close_mid_body_is_reopened_and_every_byte_arrives() {
+    let Some(_gate) = curl_gate() else { return };
+    let (port, file, seen) = cutting_server(300_000, 4, 50_000, false);
+    let (got, terminal, io_failed, _) = read_all_through_read_cb(port);
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen, [None, Some(50_000), Some(100_000), Some(150_000), Some(200_000)]);
+    assert_eq!(terminal, AVERROR_EOF);
+    assert!(got == file && !io_failed);
+}
+
+/// The same recovery when the cut is an RST rather than a short close.
+#[test]
+fn a_reset_mid_body_is_reopened_and_every_byte_arrives() {
+    let Some(_gate) = curl_gate() else { return };
+    let (port, file, seen) = cutting_server(300_000, 2, 50_000, true);
+    let (got, terminal, io_failed, _) = read_all_through_read_cb(port);
+    let seen = seen.lock().unwrap().clone();
+    // An RST may discard bytes still in the client's socket buffer, so the reopen offsets are
+    // wherever the reader really stopped: graded on the reopen happening and the bytes being right.
+    assert_eq!(seen.len(), 3, "one open and one reopen per cut");
+    assert_eq!(terminal, AVERROR_EOF);
+    assert!(got == file && !io_failed);
+}
+
+/// A server that cuts every connection before sending a byte: the read reopens exactly
+/// `BODY_HEAL_ATTEMPTS` times and then fails with `AVERROR_IO`, rather than looping.
+#[test]
+fn a_server_that_always_cuts_fails_after_three_reopens() {
+    let Some(_gate) = curl_gate() else { return };
+    let (port, _, seen) = cutting_server(300_000, usize::MAX, 0, false);
+    let (got, terminal, io_failed, _) = read_all_through_read_cb(port);
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 4, "the open and exactly three reopens");
+    assert_eq!(terminal, AVERROR_IO);
+    assert!(io_failed && got.is_empty());
+}
+
+/// `read_cb` is shared with HLS segment reads, which carry an `AcquisitionRuntime`. Their
+/// transfers are bounded by its checkpoint and deadlines and a failed segment is the HLS retry
+/// policy's to answer, so a cut there must end the read without a silent, unbounded reopen.
+#[test]
+fn a_cut_hls_segment_read_is_not_reopened_by_the_read_callback() {
+    let Some(_gate) = curl_gate() else { return };
+    let (port, _, seen) = cutting_server(300_000, 1, 50_000, false);
+    let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
+        .expect("fixture: open");
+    let size = cs.size();
+    let mut aq = crate::aq::aq_new(1 << 20);
+    let (reserve_deadline, runtime) =
+        SegmentAcquisition::for_test(None, false, false).begin(&mut *aq);
+    let mut st = AvioState {
+        src: Src::Curl(cs),
+        aq: &mut *aq,
+        off: 0,
+        size,
+        io_failed: false,
+        body_active_us: 0,
+        body_bytes: 0,
+        first_byte_at: None,
+        reserve_deadline,
+        transport_watchdog: None,
+        acquisition: Some(runtime),
+        bounce: Vec::new(),
+        bounce_pos: 0,
+    };
+    let op = &mut st as *mut AvioState as *mut c_void;
+    let mut dst = [0u8; 32768];
+    let terminal = loop {
+        let r = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
+        if r <= 0 {
+            break r;
+        }
+    };
+    assert_eq!(terminal, AVERROR_IO);
+    assert!(st.io_failed);
+    assert_eq!(seen.lock().unwrap().len(), 1, "no reopen: the cut is the retry policy's");
+    crate::aq::aq_destroy(&mut *aq);
 }
