@@ -726,6 +726,28 @@ impl Bridge {
         self.library_commands.push_back(plx_screens::registry::LibraryCmd::Enter(kind));
     }
 
+    /// **Aim the store at the PRESS, a dip-out ahead of a Library that is not on screen yet.** The
+    /// page is shown as the one image captured on the frame it mounts (`PageImage`), and a Library
+    /// that mounts over a store still pointing at another kind has nothing to draw there but its
+    /// spinner: the select it would send from its first tick lands a frame after the capture, so
+    /// the dip brings up an empty page and the grid appears in one frame when the image is
+    /// replaced. The target is the page's own (`DirectoryView::kind_address`, which its first tick
+    /// sends too, so the second select is the same command on a store already there). A store
+    /// already on a library of this kind stays on it (the reader's last pick), as
+    /// `LibraryScreen::sync` keeps it. Not for a Library already on top: its `LibraryCmd::Enter` saves the outgoing
+    /// section's cursor from the listing it is still showing, before it switches.
+    pub(crate) fn aim_library(&mut self, kind: plx_data::browse::SecKind) {
+        let target = {
+            let directory = self.directory.view();
+            let current = directory.current().map(|i| directory.sections()[i].kind);
+            directory.kind_address(kind).filter(|_| current != Some(kind))
+        };
+        if let Some(target) = target {
+            self.browse_run(plx_data::stores::browse::BrowseCmd::Addressed { target,
+                work: plx_data::stores::browse::LibraryWork::Commit { select: true, choice: false, query: None } });
+        }
+    }
+
     fn deliver_library_commands(&mut self, d: &mut Dispatcher<AppHost>) {
         if d.nav.top_page().is_none_or(|page| page.arg != AppArg::Library || page.inst.is_none()) { return; }
         while let Some(command) = self.library_commands.pop_front() { Self::library_command(d, command); }
@@ -2840,8 +2862,12 @@ pub(crate) fn nav_tab(
             }
             AppArg::Home
         }
-        HomeTab::Movies => { rig.enter_library(plx_data::browse::SecKind::Movie); AppArg::Library }
-        HomeTab::Shows => { rig.enter_library(plx_data::browse::SecKind::Show); AppArg::Library }
+        HomeTab::Movies | HomeTab::Shows => {
+            let kind = if tab == HomeTab::Movies { plx_data::browse::SecKind::Movie } else { plx_data::browse::SecKind::Show };
+            rig.enter_library(kind);
+            if d.top_arg() != Some(&AppArg::Library) { rig.aim_library(kind); }
+            AppArg::Library
+        }
         HomeTab::Search => AppArg::Search,
     };
     nav_peer(d, arg, ret);
@@ -3479,6 +3505,10 @@ mod hubs_dump_tests;
 #[cfg(test)]
 #[path = "library_bookmark_tests.rs"]
 mod library_bookmark_tests;
+
+#[cfg(test)]
+#[path = "library_push_capture_tests.rs"]
+mod library_push_capture_tests;
 
 #[cfg(test)]
 #[path = "library_diagnostic_tests.rs"]
