@@ -771,6 +771,56 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
     });
 }
 
+/// A server that cuts the transfer mid-body (rc=56, a PMS reaping the socket while the viewer sat
+/// in the subtitle menu on a webOS 3.4 set) used to end the session: libavformat heals only through
+/// `seek_cb`, and a plain read failure never reaches it. The read callback now reopens at the byte
+/// it stopped at, a bounded number of times. This fixture ignores `Range`, so the reopen is refused
+/// past byte zero and the read must still end as an I/O error rather than loop or fake EOF.
+#[test]
+fn a_cut_transfer_is_reopened_at_its_offset_before_the_read_fails() {
+    let Some(_gate) = curl_gate() else { return };
+    with_counting_listener(|port, _, requests| {
+        let mut cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0)
+            .expect("fixture: open");
+        cs.fail_body_for_test(56);
+        let before = requests.load(Ordering::Acquire);
+        let mut aq = crate::aq::aq_new(1 << 20);
+        let mut st = AvioState {
+            src: Src::Curl(cs),
+            aq: &mut *aq,
+            off: 0,
+            size: 16,
+            io_failed: false,
+            body_active_us: 0,
+            body_bytes: 0,
+            first_byte_at: None,
+            reserve_deadline: ReserveDeadlineState::new(None, false),
+            transport_watchdog: None,
+            acquisition: None,
+            bounce: Vec::new(),
+            bounce_pos: 0,
+        };
+        let op = &mut st as *mut AvioState as *mut c_void;
+        let mut dst = [0u8; 8];
+        let mut terminal = 1;
+        for _ in 0..8 {
+            terminal = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
+            if terminal <= 0 {
+                break;
+            }
+        }
+        assert!(
+            requests.load(Ordering::Acquire) > before,
+            "a transfer cut mid-body must be reopened before the read gives up"
+        );
+        assert!(
+            terminal == AVERROR_IO || terminal == AVERROR_EOF,
+            "the read must settle, not loop: {terminal}"
+        );
+        crate::aq::aq_destroy(&mut *aq);
+    });
+}
+
 /// Issue #266 PR 4's normalize run: a direct-play Part sat inside `avformat_open_input` (the
 /// server was slow to serve it), the viewer turned Normalize Loudness on, and `reload_transcode`
 /// tore that demuxer down. Teardown aborts the lanes, `read_cb` answers the abort with EOF, and
