@@ -1309,6 +1309,10 @@ impl Src {
             gen: generation, seq: mint(), sid: self.sid,
             client: LandingClient::live(client), token_gen: client.token_gen(),
             page: self.page.clone(),
+            windows: self.last.as_ref().map_or_else(Vec::new, |build| build.shelves.iter()
+                .filter(|shelf| recent_listing(&shelf.hub_id, &shelf.key)
+                    && (shelf.offset > 0 || shelf.end > HUB_FETCH_COUNT as usize))
+                .map(|shelf| PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(), start: shelf.offset }).collect()),
         };
         self.client = Some(client);
         self.token_gen = request.token_gen;
@@ -1352,6 +1356,16 @@ fn refresh_src_lifecycle(s: &mut Src) -> bool {
     s.token_gen = token_gen;
     s.fetching = false;
     s.page = None;
+    // Retained cards may still paint during the new profile's fetch, but its request must
+    // start at the preview rather than reuse the previous profile's listing positions.
+    if let Some(build) = s.last.as_mut() {
+        for shelf in build.shelves.iter_mut().filter(|shelf| recent_listing(&shelf.hub_id, &shelf.key)) {
+            shelf.items.truncate(HUB_FETCH_COUNT as usize);
+            shelf.offset = 0;
+            shelf.end = 0;
+            shelf.more = false;
+        }
+    }
     s.state = HubState::Loading;
     s.retry_s = 0.0;
     s.retry_n = 0;
@@ -1386,6 +1400,7 @@ pub struct HubRequest {
     client: LandingClient,
     token_gen: u32,
     page: Option<PageQuery>,
+    windows: Vec<PageQuery>,
 }
 
 impl HubRequest {
@@ -1398,7 +1413,19 @@ impl HubRequest {
     fn fetch(&self) -> Option<SourceBuild> {
         match &self.page {
             Some(page) => fetch_page(self.client.resource, self.sid, page),
-            None => fetch_source(self.client.resource, self.sid),
+            None => {
+                let mut build = fetch_source(self.client.resource, self.sid)?;
+                for window in &self.windows {
+                    let Some(shelf) = build.shelves.iter_mut().find(|shelf|
+                        shelf.hub_id == window.id && shelf.key == window.key) else { continue };
+                    let mut refreshed = fetch_page(self.client.resource, self.sid, window)?.shelves.pop()?;
+                    if !refreshed.items.is_empty() {
+                        refreshed.title = shelf.title.clone();
+                        *shelf = refreshed;
+                    }
+                }
+                Some(build)
+            },
         }
     }
     fn complete(self, build: Option<SourceBuild>) -> Landing {
@@ -1796,6 +1823,7 @@ fn retry_due(s: &mut Src, dt: f32) -> bool {
 /// Keep request admission/state identical when another adapter holds the request instead of
 /// launching a worker. The returned admission decision still controls latch release/backoff.
 fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, launch: impl FnOnce(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+    refresh_src_lifecycle(s);
     if s.fetching {
         return None; // one in flight already — its spinner is the honest answer
     }

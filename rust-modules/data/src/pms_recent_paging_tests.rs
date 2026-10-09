@@ -142,3 +142,72 @@ fn a_page_reads_the_provider_listing_and_counts_raw_results_before_filtering() {
     assert_eq!(page.shelves[0].items[0].sec, 7);
     plx_plex::plex::reset_servers_for_test();
 }
+
+#[test]
+fn a_normal_refetch_reloads_the_current_recent_window() {
+    check_refetch_window(false);
+}
+
+#[test]
+fn a_profile_refetch_starts_at_the_preview_instead_of_the_old_window() {
+    check_refetch_window(true);
+}
+
+fn check_refetch_window(change_profile: bool) {
+    use std::io::{Read, Write};
+    let _guard = plx_base::testlock::serial();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut paths = Vec::new();
+        while std::time::Instant::now() < deadline && paths.len() < 3 {
+            let (mut socket, _) = match plx_base::testnet::accept(&listener) {
+                Ok(socket) => socket,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("refresh fixture accept failed: {error}"),
+            };
+            socket.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+            let mut request = [0; 4096];
+            let n = socket.read(&mut request).unwrap();
+            let path = String::from_utf8_lossy(&request[..n]).split_whitespace().nth(1).unwrap().to_owned();
+            let metadata = |start: usize, count: usize| (start..start + count).map(|i| serde_json::json!({
+                "ratingKey":i.to_string(),"type":"movie","title":"Refreshed movie","thumb":"/poster"
+            })).collect::<Vec<_>>();
+            let body = if path.starts_with("/hubs/home/recentlyAdded?") {
+                serde_json::json!({"MediaContainer":{"offset":36,"totalSize":12000,"Metadata":metadata(36,24)}})
+            } else if path.starts_with("/hubs/continueWatching?") {
+                serde_json::json!({"MediaContainer":{"Hub":[]}})
+            } else {
+                serde_json::json!({"MediaContainer":{"Hub":[{"hubIdentifier":"home.movies.recent",
+                    "type":"movie","title":"Recent","key":"/hubs/home/recentlyAdded?type=1",
+                    "more":true,"Metadata":metadata(0,12)}]}})
+            }.to_string();
+            write!(socket,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            paths.push(path);
+        }
+        paths
+    });
+    plx_plex::plex::reset_servers_for_test();
+    let registered = plx_plex::plex::register_for_test("refresh-http", "127.0.0.1", i32::from(port), "synthetic", "fixture");
+    let mut owner = Owner::default();
+    seed(&mut owner.state, vec![src(registered.raw(), "", HubState::Ready, Some(page(36,24,true)))]);
+    if change_profile { plx_plex::plex::client_for(registered).unwrap().set_token("new-synthetic-profile"); }
+    let mut held = None;
+    let _ = request_refetch_hubs_with_scope(&mut owner.state, &owner.adapter, &BrowseScope::standalone(),
+        &mut |request| { held = Some(request); true });
+    let request = held.unwrap();
+    let result = request.fetch();
+    deliver(&mut owner, request, result);
+    let paths = server.join().unwrap();
+    assert_eq!(hubs_snapshot(&owner.state).view().hub(0).unwrap().offset,if change_profile { 0 } else { 36 });
+    assert_eq!(rks(&owner.state,0).contains(&"54".into()),!change_profile);
+    assert_eq!(paths.iter().any(|path| path.contains("X-Plex-Container-Start=36")),!change_profile);
+    assert_eq!(hubs_snapshot(&owner.state).view().hub(0).unwrap().items[0].title,"Refreshed movie");
+    reset(&mut owner.state,&owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}

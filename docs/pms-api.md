@@ -263,7 +263,8 @@ load more items through their provider's listing `key`, with both `X-Plex-Contai
 Home keeps a moving window of at most 24 cards per Recently Added row, with a 12-item overlap.
 It requests another window near the visible end and fetches an earlier window when the user
 scrolls back. Requests run outside the drawing loop. Failed requests retain the current cards
-and use the existing retry delay. Profile changes and authoritative refreshes reject old results.
+and use the existing retry delay. A normal refresh reloads the current window. A profile change
+starts from the new profile's preview. Both operations reject old results.
 The shared shelf widget draws only visible cards. Paging preserves the banner's current items.
 
 `pms.rs::HOME_CARDS_MAX` is a 2,048-slot preview budget. A Recently Added window spends at most
