@@ -1916,7 +1916,7 @@ class MockPms:
             pid = int(segs[2]) if segs[2].isdigit() else -1
             return j(self.container(Metadata=lib.person_media(pid)))
         if catalog and segs[:2] == ["hubs", "demo"] and len(segs) == 3:
-            hub = next((hub for hub in lib.data["hubs"] if hub.get("hubIdentifier") == segs[2] and "recent" in hub), None)
+            hub = next((hub for hub in lib.catalog["hubs"] if hub.get("hubIdentifier") == segs[2] and "recent" in hub), None)
             if hub:
                 page, extra = paged(lib.recent(hub["recent"], 1000))
                 return j(self.container(Metadata=page, **extra))
