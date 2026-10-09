@@ -284,6 +284,14 @@ impl LibraryScreen {
         (self.page_fade.alpha(), scale)
     }
 
+    /// `(page fade alpha, grid fade alpha, still loading, section key, grid tiles)`: what a
+    /// draw of the page would put on screen now.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_content(&self) -> (f32, f32, bool, i64, usize) {
+        (self.page_fade.alpha(), self.grid_fade.alpha(), self.readout == Readout::Loading,
+            self.section.as_ref().map_or(-1, |section| section.key), self.pair.detail.elems.len())
+    }
+
     fn reseat<H: LibraryLike>(&self, focus: FocusTarget<u32>, fx: &mut Effects<'_, H>) {
         fx.push(Fx::Deliver(MachineId::Instance(self.instance),
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))));
@@ -1010,11 +1018,8 @@ impl LibraryScreen {
                 self.pair.master.advance(cx, current_grid, self.live && self.readout == Readout::Grid, tick.dt());
                 if let Some(kind) = self.wanted_kind {
                     let directory = H::directory(cx);
-                    if let Some(section) = directory.preferred(kind).and_then(|i| directory.sections().get(i)) {
-                        if let (Some(sid), Some(epoch)) = (section.sid, directory.epoch()) {
-                            self.store(SectionAddress { epoch, sid, section: section.key },
-                                LibraryWork::Commit { select: true, choice: false, query: None }, fx);
-                        }
+                    if let Some(target) = directory.kind_address(kind) {
+                        self.store(target, LibraryWork::Commit { select: true, choice: false, query: None }, fx);
                     } else {
                         self.readout = readout(directory.kind_fetch(kind), 0, directory.kind_fetch(kind), -1);
                     }

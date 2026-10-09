@@ -539,6 +539,13 @@ impl<'a> DirectoryView<'a> {
             super::SecKind::Show => 1,
         }]
     }
+    /// **Where the store goes to show a library of `kind`:** the reader's preferred library of
+    /// that kind, addressed in this epoch. The one rule the Library page (from its first tick) and
+    /// the bridge (a dip ahead of the page, `Bridge::aim_library`) both select by.
+    pub fn kind_address(self, kind: super::SecKind) -> Option<crate::stores::browse::SectionAddress> {
+        let section = self.sections().get(self.preferred(kind)?)?;
+        Some(crate::stores::browse::SectionAddress { epoch: self.epoch()?, sid: section.sid?, section: section.key })
+    }
     pub fn kind_fetch(self, kind: super::SecKind) -> SecFetch {
         self.0.kind_fetch[match kind {
             super::SecKind::Movie => 0,
