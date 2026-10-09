@@ -38,7 +38,11 @@ credits, the two cannot drift apart, and a failed run leaves every directory as 
 `--check-determinism` captures every scene twice and compares the two PNGs pixel by pixel: every
 channel of every pixel may differ by at most the scene's `max_delta` (default 1: the GPU's
 rounding, which is not bit-stable run to run), except inside the scene's `free_regions`, each of
-which must carry a `tolerance_reason`.
+which must carry a `tolerance_reason`. `--report FILE` also writes each scene's verdict (pixels
+that differ, the largest difference, the bound, the files it makes) as JSON, which is what
+`tools/site_stills.py` gates the release refresh on. `--retry-unstable` lets a scene whose two captures
+disagree take a third: the first capture that another agrees with is the one written (a runner that stalls one
+capture mid-fade must not fail the refresh; three that never agree still do).
 
 `--hero-variants` also renders the home scene once per film in the catalog's `hero` and
 `hero_alternatives` as `home-hero-<film>.jpg`, for choosing the hero; `--hero` swaps the film the
@@ -251,6 +255,49 @@ def compare(a, b, w, h, free_regions):
     return n, worst
 
 
+def pair_report(scene, png, again, defaults, canvas):
+    """The determinism verdict for two captures of one scene: {identical, pixels, worst, bound, free_regions,
+    ok}. `pixels` is how many differ outside the scene's `free_regions`, `worst` the largest channel
+    difference there; `ok` is `worst <= bound` (the scene's `max_delta`, else the default)."""
+    bound = scene.get("max_delta", defaults["max_delta"])
+    free = scene.get("free_regions", [])
+    if again == png:
+        return {"identical": True, "pixels": 0, "worst": 0, "bound": bound, "free_regions": len(free), "ok": True}
+    k = render_scale(scene)
+    n, worst = compare(png, again, canvas[0] * k, canvas[1] * k, [[v * k for v in r] for r in free])
+    return {"identical": False, "pixels": n, "worst": worst, "bound": bound, "free_regions": len(free),
+            "total": canvas[0] * k * canvas[1] * k, "ok": worst <= bound}
+
+
+def stable_capture(take, scene, defaults, canvas, retry=False):
+    """Capture a scene until two captures agree: `take()` returns one PNG. Returns (png to adopt, report).
+
+    Two captures; if they are within the scene's bound the first is adopted. If not and `retry`, a third is taken
+    and the first capture that another agrees with is adopted: llvmpipe on a shared runner sometimes stalls a
+    capture (it settles seconds late, caught mid-fade: 13 levels on 2% of the pixels, measured), and one stalled
+    capture of three must not fail a release's refresh. Three captures that do not agree in any pair fail, and the
+    report says which pairs and by how much. `report['captures']` is how many were taken, `report['discarded']`
+    what the outlier was off by."""
+    first, second = take(), take()
+    r = pair_report(scene, first, second, defaults, canvas)
+    r["captures"] = 2
+    if r["ok"] or not retry:
+        return first, r
+    third = take()
+    r13 = pair_report(scene, first, third, defaults, canvas)
+    r23 = pair_report(scene, second, third, defaults, canvas)
+    if r13["ok"]:
+        keep, ok, out = first, r13, {"capture": 2, "pixels": r["pixels"], "worst": r["worst"]}
+    elif r23["ok"]:
+        keep, ok, out = second, r23, {"capture": 1, "pixels": r["pixels"], "worst": r["worst"]}
+    else:
+        r["captures"] = 3
+        r["pairs"] = {"1-3": [r13["pixels"], r13["worst"]], "2-3": [r23["pixels"], r23["worst"]]}
+        return first, r
+    ok = dict(ok, captures=3, discarded=out)
+    return keep, ok
+
+
 def encode(png, dst, crop, size, quality=2):
     """PNG → JPEG: the `crop` rectangle `(x, y, w, h)` of the capture, at `size` `(w, h)` and
     ffmpeg JPEG quality `quality`, deterministically for a given ffmpeg build."""
@@ -316,6 +363,11 @@ def main():
     ap.add_argument("--only", help="comma-separated scene names or output files (home, ux-detail.jpg, …)")
     ap.add_argument("--check-determinism", action="store_true",
                     help="capture every scene twice and require the documented tolerance")
+    ap.add_argument("--retry-unstable", action="store_true",
+                    help="with --check-determinism, take a third capture of a scene whose two disagree and adopt the "
+                         "first one another agrees with (three that never agree still fail)")
+    ap.add_argument("--report", type=pathlib.Path,
+                    help="with --check-determinism, write each scene's verdict here as JSON (also when a scene failed)")
     ap.add_argument("--hero", help="the film the home scenes pin (default: the catalog's `hero`)")
     ap.add_argument("--hero-variants", action="store_true",
                     help="also render home-hero-<film>.jpg for the catalog's hero and its alternatives")
@@ -360,25 +412,25 @@ def main():
             jobs.append((dict(home, name=f"home-hero-{film}"), film,
                          [{"file": f"home-hero-{film}.jpg", "size": size}]))
 
-    report = []
+    report, reports = [], {}
 
     def render(scene, hero, outputs, stage):
-        png, _ = capture(a.bin, scene, defaults, hero, a.keep)
+        take = lambda: capture(a.bin, scene, defaults, hero, a.keep)[0]  # noqa: E731
         if a.check_determinism:
-            again, _ = capture(a.bin, scene, defaults, hero, a.keep)
-            bound = scene.get("max_delta", defaults["max_delta"])
-            free = scene.get("free_regions", [])
-            if again == png:
+            png, r = stable_capture(take, scene, defaults, canvas, a.retry_unstable)
+            reports[scene["name"]] = dict(r, files=[o["file"] for o in outputs])
+            free = f" outside {r['free_regions']} free region(s)" if r["free_regions"] else ""
+            if r["identical"]:
                 report.append(f"{scene['name']}: identical")
             else:
-                k = render_scale(scene)
-                n, worst = compare(png, again, canvas[0] * k, canvas[1] * k,
-                                   [[v * k for v in r] for r in free])
-                verdict = "within" if worst <= bound else "OVER"
-                where = f" outside {len(free)} free region(s)" if free else ""
-                report.append(f"{scene['name']}: {n} pixel(s) differ{where}, max |Δ| {worst} {verdict} {bound}")
-                if worst > bound:
-                    raise RuntimeError(f"not deterministic: max |Δ| {worst} > {bound}{where}")
+                verdict = "within" if r["ok"] else "OVER"
+                more = f", {r['captures']} captures (one off by {r['discarded']['worst']})" if r.get("discarded") else ""
+                report.append(f"{scene['name']}: {r['pixels']} pixel(s) differ{free}, max |Δ| {r['worst']} {verdict} {r['bound']}{more}")
+            if not r["ok"]:
+                raise RuntimeError(f"not deterministic: max |Δ| {r['worst']} > {r['bound']}{free} "
+                                   f"({', '.join(o['file'] for o in outputs)})")
+        else:
+            png = take()
         for o in outputs:
             if "card" not in o:
                 dest, file, crop, size, quality = output_spec(scene, o, canvas)
@@ -393,6 +445,8 @@ def main():
     failed = render_set(jobs, render, dests, a.keep)
     for line in report:
         print(f"determinism  {line}")
+    if a.report:
+        a.report.write_text(json.dumps(reports, indent=1, sort_keys=True) + "\n")
     if failed:
         die(f"{len(failed)} scene(s) failed: {', '.join(failed)}; nothing was written")
     where = ", ".join(sorted({str(d) for d in dests.values()}))
