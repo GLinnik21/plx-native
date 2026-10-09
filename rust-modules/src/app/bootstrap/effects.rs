@@ -216,6 +216,10 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
     Ok(match command {
         StoreCmd::Hubs(HubsCmd::Reset) => json!({"hubs":"reset"}),
         StoreCmd::Hubs(HubsCmd::RefetchHubs) => json!({"hubs":"refetch"}),
+        StoreCmd::Hubs(HubsCmd::Page { sid, id, key, before }) =>
+            json!({"hubs":{"page":[sid.raw(),id,key,before]}}),
+        StoreCmd::Hubs(HubsCmd::CancelPage { sid, id, key }) =>
+            json!({"hubs":{"cancel_page":[sid.raw(),id,key]}}),
         StoreCmd::Hubs(HubsCmd::Retry) => json!({"hubs":"retry"}),
         StoreCmd::Browse(BrowseCmd::Reset) => json!({"browse":"reset"}),
         StoreCmd::Browse(BrowseCmd::Discovery(result)) => plx_data::browse::record::encode(result),

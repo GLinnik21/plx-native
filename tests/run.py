@@ -6169,7 +6169,8 @@ def grade_walk_prelude(scene, lines, walker):
                 f"dropped {unit}s)"), lines, ""
     # Home: one Down per landed row. Library: one per shelf, a second for each linked shelf, and
     # `extra_rows` more past the shelves (`mock_fps.walk_downs`), all capped at `max_rows`, then
-    # the Up leg; a burst walk (`walk.burst`) adds its bursts instead (`mock_fps.walk_steps`).
+    # the Up leg; a row walk (`walk.cards`) is its fixed plan and a burst walk (`walk.burst`) adds
+    # its bursts instead (`mock_fps.walk_steps`).
     want = mock_fps.walk_expected_keys(scene, rows)
     if walker.sent < want or want == 0:
         return (f"the key walk sent {walker.sent} of {want} key(s) ({rows} {unit}(s) landed); it "
@@ -6199,6 +6200,15 @@ def grade_walk_prelude(scene, lines, walker):
     keys_seen = sum(1 for ln in window if mock_fps.KEY_RE.search(ln))
     detail = mock_fps.describe_walk(final if final else rows, keys_seen, stats,
                                     mock_fps.landed_lands(scene, lines), unit)
+    if mock_fps.is_row_walk(walk):
+        # The row walk exists to measure frames while pages land under moving focus: a run that
+        # never paged measured nothing, so it fails rather than printing a clean number.
+        forward_keys = int(walk.get("row_down", 0)) + int(walk["cards"])
+        paging_fail, paging_detail = mock_fps.describe_paging(
+            window, forward_keys, int(walk.get("min_page_landings", 6)))
+        if paging_fail:
+            return paging_fail, lines, ""
+        detail += paging_detail
     if mock_fps.is_burst(scene):
         prelude = min(mock_fps.walk_downs(scene, rows), int(walk["max_rows"]))
         detail += mock_fps.describe_burst(window, scene["route"], walk, prelude)

@@ -10,7 +10,7 @@ use super::test_support::land;
 fn home_group_identity_uses_provider_and_server_not_title_or_position() {
     let id = "home.movies.recent";
     let mut hub = HubRow { title: "Recent movies".into(), hub_id: id.into(),
-        key: String::new(), source: "Alice".into(), total: 0, start: 0, len: 1 };
+        key: String::new(), source: "Alice".into(), total: 0, offset: 0, more: false, start: 0, len: 1 };
     let items = vec![row(0, "a"), row(1, "b"), row(0, "c")];
     let want = |slot| Some(HubIdentity::Identifier { sid: sid(slot), id, key: "" });
     assert_eq!(stable_hub_identity(&hub, &items), want(0));
@@ -213,7 +213,7 @@ fn a_mixed_section_hub_keeps_its_identity_when_the_leading_library_changes() {
 #[test]
 fn merged_home_deck_identity_survives_a_different_leading_server() {
     let mut hub = HubRow { title: "Continue Watching".into(), hub_id: "home.continue".into(),
-        key: String::new(), source: String::new(), total: 0, start: 0, len: 1 };
+        key: String::new(), source: String::new(), total: 0, offset: 0, more: false, start: 0, len: 1 };
     let items = vec![row(0, "a"), row(1, "b")];
     assert_eq!(stable_hub_identity(&hub, &items), Some(HubIdentity::ContinueWatching));
     hub.start = 1;
@@ -1095,4 +1095,21 @@ fn the_merged_deck_is_capped_at_what_the_grid_can_address() {
     assert_eq!(hub_count(&o.state), 1);
     assert_eq!(hub_len(&o.state, 0), MAX_SHELF_ITEMS, "36 cards merged, 24 drawable");
     reset(&mut o.state, &o.adapter);
+}
+
+#[test]
+fn paging_a_recent_row_does_not_remove_other_home_rows() {
+    let _guard = plx_base::testlock::serial();
+    let mut shelves: Vec<_> = (0..170).map(|i| {
+        let keys: Vec<_> = (0..12).map(|j| format!("{i}-{j}")).collect();
+        shelf(0, "Recent", "home.movies.recent", &keys.iter().map(String::as_str).collect::<Vec<_>>())
+    }).collect();
+    shelves[0].key = "/hubs/home/recentlyAdded?type=1".into();
+    shelves[0].items.extend((12..24).map(|j| row(0, &format!("0-{j}"))));
+    let mut source = Src::new(sid(0), String::new());
+    source.state = HubState::Ready;
+    source.last = Some(built(0, &[], shelves));
+    let (_, hubs, _) = merge(&[source]);
+    assert_eq!(hubs.len(), 170);
+    assert_eq!(hubs[0].len, 24);
 }

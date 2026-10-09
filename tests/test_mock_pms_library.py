@@ -33,6 +33,17 @@ def get(pms, path):
 
 
 class LibraryRail(unittest.TestCase):
+    def test_catalog_recent_hub_pages_through_its_provider_key(self):
+        lib = object.__new__(CatalogLibrary)
+        lib.__dict__.update(Library(movies=60).__dict__)
+        lib.catalog = {"hubs": [{"hubIdentifier": "home.movies.recent", "recent": "movie"}]}
+        pms = MockPms(lib)
+        response = get(pms, "/hubs/demo/home.movies.recent"
+                           "?X-Plex-Container-Start=36&X-Plex-Container-Size=24")
+        self.assertEqual(response["offset"], 36)
+        self.assertEqual(response["Metadata"], lib.recent("movie", 1000)[36:60])
+        self.assertEqual(response["totalSize"], len(lib.recent("movie", 1000)))
+
     def test_collection_ids_and_collection_routes_match_pms(self):
         pms = MockPms(Library())
         collections = get(pms, "/library/sections/1/collections")["Metadata"]

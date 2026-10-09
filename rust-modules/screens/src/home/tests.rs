@@ -3770,3 +3770,176 @@ fn every_shelf_cards_stop_from_the_real_draw_is_the_placed_rect() {
         assert!(popped.rect.w > CARD_W, "the focused card's stop is its popped rect");
     }
 }
+
+#[test]
+fn a_recent_page_keeps_the_focused_card_and_its_drawn_position() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let old = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(old.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[18] };
+    pop_card(&mut s, old.view(), key, 90);
+    let before = drawn_rect(&s, old.view(), Some(key), 0, 18);
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let next = plx_data::pms::hubs_snapshot(&state);
+    step(&mut s, next.view(), Some(key), &ScreenEvent::StoreChanged(StoreId::Hubs.ord(), next.view().generation));
+    step(&mut s, next.view(), Some(key), &ScreenEvent::Tick(Tick { ms: 1600, dt_us: 16_667 }));
+    assert_eq!(s.rows[0].elems[6], key.elem);
+    assert_eq!(s.focused_item(Some(key), &cx(next.view(), Some(key))).unwrap().rk, "19");
+    let after = drawn_rect(&s, next.view(), Some(key), 0, 6);
+    assert!((after.x - before.x).abs() < 0.1);
+    assert!((after.y - before.y).abs() < 0.1);
+    assert!((after.w - before.w).abs() < 0.1);
+}
+
+#[test]
+fn recent_rows_request_pages_only_when_the_shelves_are_visible() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 12, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    let is_page = |out: &[Stamped<TestHost>]| out.iter().any(|fx|
+        matches!(fx.fx, Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { .. })))));
+    let tick = ScreenEvent::Tick(Tick { ms: 16, dt_us: 0 });
+    let focus = Some(FocusKey { entry: s.entry, elem: s.rows[0].elems[6] });
+    assert!(!is_page(&step(&mut s, snapshot.view(), focus, &tick).1));
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    s.grid.scroll_y.pos = 10000.0;
+    s.layout_grid();
+    assert!(!is_page(&step(&mut s, snapshot.view(), focus, &tick).1));
+    s.grid.scroll_y.pos = 0.0;
+    s.layout_grid();
+    assert!(is_page(&step(&mut s, snapshot.view(), focus, &tick).1));
+}
+
+#[test]
+fn returning_to_a_previous_recent_page_does_not_load_the_next_page_again() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let old = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(old.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[5] };
+    pop_card(&mut s, old.view(), key, 90);
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let next = plx_data::pms::hubs_snapshot(&state);
+    step(&mut s, next.view(), Some(key), &ScreenEvent::StoreChanged(StoreId::Hubs.ord(), next.view().generation));
+    assert_eq!(s.rows[0].elems[17], key.elem);
+    for frame in 0..90 {
+        let (_, out, _) = step(&mut s, next.view(), Some(key),
+            &ScreenEvent::Tick(Tick { ms: 1600 + frame * 17, dt_us: 16_667 }));
+        assert!(!out.iter().any(|fx| matches!(fx.fx,
+            Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { .. }))))));
+    }
+}
+
+#[test]
+fn a_pending_backward_page_is_requested_once_across_many_ticks() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[5] };
+    let mut requests = 0;
+    for frame in 0..90 {
+        let (_, out, _) = step(&mut s, snapshot.view(), Some(key),
+            &ScreenEvent::Tick(Tick { ms: frame * 17, dt_us: 16_667 }));
+        requests += out.iter().filter(|fx| matches!(fx.fx,
+            Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { before: true, .. }))))).count();
+    }
+    assert_eq!(requests, 1);
+}
+
+#[test]
+fn leaving_a_backward_page_edge_allows_a_new_request_on_return() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[5] };
+    let away = FocusKey { entry: s.entry, elem: s.rows[0].elems[12] };
+    let mut requests = 0;
+    for (frame, current) in [key, key, away, key, key].into_iter().enumerate() {
+        let (_, out, _) = step(&mut s, snapshot.view(), Some(current),
+            &ScreenEvent::Tick(Tick { ms: frame as u32 * 17, dt_us: 16_667 }));
+        requests += out.iter().filter(|fx| matches!(fx.fx,
+            Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { before: true, .. }))))).count();
+    }
+    assert_eq!(requests, 2);
+}
+
+#[test]
+fn covering_home_cancels_its_page_even_after_focus_has_left_the_entry() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[5] };
+    step(&mut s, snapshot.view(), Some(key), &ScreenEvent::Tick(Tick { ms: 0, dt_us: 16_667 }));
+    let (_, out, _) = step(&mut s, snapshot.view(), None, &ScreenEvent::Cover);
+    assert_eq!(out.iter().filter(|fx| matches!(fx.fx,
+        Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::CancelPage { .. }))))).count(),1);
+    step(&mut s, snapshot.view(), Some(key), &ScreenEvent::Uncover);
+    let (_, out, _) = step(&mut s, snapshot.view(), Some(key), &ScreenEvent::Tick(Tick { ms: 1000, dt_us: 16_667 }));
+    assert_eq!(out.iter().filter(|fx| matches!(fx.fx,
+        Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { before: true, .. }))))).count(),1);
+}
+
+fn page_requests(out: &[Stamped<TestHost>]) -> usize {
+    out.iter().filter(|fx| matches!(fx.fx,
+        Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { .. }))))).count()
+}
+
+// A page the store gave up on leaves no store change behind, so the row's once-per-edge latch is
+// still set when the owner presses again. A focus move or an at-edge press on that row re-asks.
+#[test]
+fn a_row_whose_page_was_given_up_asks_again_on_the_next_focus_move_or_edge_press() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[5] };
+    let next = FocusKey { entry: s.entry, elem: s.rows[0].elems[4] };
+    let tick = |ms| ScreenEvent::Tick(Tick { ms, dt_us: 16_667 });
+    let mut requests = page_requests(&step(&mut s, snapshot.view(), Some(key), &tick(0)).1);
+    requests += page_requests(&step(&mut s, snapshot.view(), Some(key), &tick(17)).1);
+    assert_eq!(requests, 1, "the latch holds while nothing changed");
+    step(&mut s, snapshot.view(), Some(next), &ScreenEvent::FocusMoved { from: Some(key), to: next, by: By::Dir });
+    requests += page_requests(&step(&mut s, snapshot.view(), Some(next), &tick(34)).1);
+    requests += page_requests(&step(&mut s, snapshot.view(), Some(next), &tick(51)).1);
+    assert_eq!(requests, 2, "a focus move on the same row asks once more");
+    step(&mut s, snapshot.view(), Some(next), &ScreenEvent::Input(InputEvent {
+        at: Tick::default(),
+        source: Source::Sdl,
+        kind: InputKind::Key { key: Key::Left, sym: 0, wcode: 0, edge: Edge::Down, at_edge: true },
+    }));
+    requests += page_requests(&step(&mut s, snapshot.view(), Some(next), &tick(68)).1);
+    requests += page_requests(&step(&mut s, snapshot.view(), Some(next), &tick(85)).1);
+    assert_eq!(requests, 3, "an edge press asks once more");
+}

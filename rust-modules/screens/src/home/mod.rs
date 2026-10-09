@@ -49,6 +49,18 @@ use plx_ui::widgets::{
 use plx_ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 
 use super::clock_readout::ClockWatch;
+
+/// Cards from either end of a Recently Added row at which Home asks for the neighbouring page.
+const PAGE_EDGE_CARDS: usize = 6;
+
+/// A paging command for a hub, when the hub has a listing identity to page by.
+fn hub_page_cmd(hub: &HubRef<'_>,
+    make: impl FnOnce(plx_plex::plex::ServerId, String, String) -> HubsCmd) -> Option<HubsCmd> {
+    match hub.identity {
+        Some(HubIdentity::Identifier { sid, id, key }) => Some(make(sid, id.into(), key.into())),
+        _ => None,
+    }
+}
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
     tile_facts, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
@@ -1007,10 +1019,26 @@ impl HomeScreen {
         let mut shelves = std::mem::take(&mut self.grid.shelves);
         for (row, shelf) in shelves.iter_mut().enumerate() {
             shelf.dormant(dormant);
-            let src = self.cards(view, row);
+            let top = heading_y(shelf.base_y(), shelf.heading_lift());
+            let bottom = shelf.base_y() + CARD_H + shelf.under_band();
+            let visible = !dormant && on_axis(top, bottom - top, SCR_H, 0.0);
+            let mut src = self.cards(view, row);
+            src.paging = visible && focused.is_some_and(|(r, col)|
+                r == row && col.saturating_add(PAGE_EDGE_CARDS) >= self.rows[row].elems.len());
             // The shelf skips a row at exact rest with nothing focused, and parks one that has
             // settled once focus left it.
-            shelf.on(&ScreenEvent::Tick(t), cx, &src, fx);
+            let want = shelf.on(&ScreenEvent::Tick(t), cx, &src, fx);
+            let before = focused.is_some_and(|(r, col)| r == row && col < PAGE_EDGE_CARDS)
+                && self.hub(view, row).is_some_and(|hub| hub.offset > 0);
+            let backward = shelf.want_before(
+                self.hub(view, row).map_or(0, |hub| hub.offset), visible && before);
+            if visible
+                && (backward || (!before && matches!(want, Some(ui_cards::CardEvent::Want(_))))) {
+                if let Some(cmd) = self.hub(view, row).and_then(|hub| hub_page_cmd(&hub,
+                    |sid, id, key| HubsCmd::Page { sid, id, key, before })) {
+                    fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(cmd))));
+                }
+            }
         }
         self.grid.shelves = shelves;
         let revealed = focused.map(|(row, _)| (row, Some(row)))
@@ -1675,7 +1703,7 @@ impl HomeScreen {
 
     /// Row `row`'s cards as `cards::Shelf` reads them.
     fn cards<'a>(&'a self, view: HubsView<'a>, row: usize) -> HomeCards<'a> {
-        HomeCards { home: self, view, row, hover: Hover::Focus }
+        HomeCards { paging: false, home: self, view, row, hover: Hover::Focus }
     }
 
     fn draw_status(&self, view: HubsView<'_>, env: &Env, p: Painter, focus: Option<Located>) {
@@ -2233,6 +2261,17 @@ impl HomeScreen {
         self.grid.shelves = shelves;
     }
 
+    fn cancel_row_page<H: HomeLike>(&mut self, row: usize, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let requested = self.grid.shelves.get(row).is_some_and(ui_cards::Shelf::has_page_request);
+        if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.reset_page_requests(); }
+        if !requested { return; }
+        if let Some(hub) = self.hub(H::hubs(cx), row).filter(|hub| hub.more || hub.offset > 0) {
+            if let Some(cmd) = hub_page_cmd(&hub, |sid, id, key| HubsCmd::CancelPage { sid, id, key }) {
+                fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(cmd))));
+            }
+        }
+    }
+
     fn activation_elem(&self, engine_elem: u32) -> u32 {
         let engine_grid = self.locate(engine_elem).is_some_and(Located::on_grid);
         let picture_grid = self.snap.pos >= 0.5;
@@ -2310,6 +2349,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 Handled::Yes
             }
             ScreenEvent::Cover => {
+                for row in 0..self.rows.len() { self.cancel_row_page(row, cx, fx); }
                 self.covered = true;
                 Handled::Yes
             }
@@ -2325,6 +2365,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 Handled::Yes
             }
             ScreenEvent::StoreChanged(ord, _) if *ord == StoreId::Hubs.ord() => {
+                for shelf in &mut self.grid.shelves { shelf.reset_page_requests(); }
                 self.projected_generation = None;
                 self.sync_catalog(cx);
                 if self.rows.is_empty() {
@@ -2334,6 +2375,14 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { from, to, by } => {
+                if let Some((row, _)) = self.focused_grid(*from) {
+                    if self.focused_grid(Some(*to)).is_none_or(|(next, _)| next != row) {
+                        self.cancel_row_page(row, cx, fx);
+                    } else if let Some(shelf) = self.grid.shelves.get_mut(row) {
+                        // A page the store gave up on leaves no landing to clear the latch.
+                        shelf.reset_page_requests();
+                    }
+                }
                 self.feed_shelves(ev, cx, fx);
                 let from_loc = from.and_then(|key| self.locate(key.elem));
                 let to_loc = self.locate(to.elem);
@@ -2414,6 +2463,9 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 ..
             }) if *at_edge && matches!(key, Key::Left | Key::Right) => {
                 let direction = if *key == Key::Left { -1 } else { 1 };
+                if let Some((row, _)) = self.focused_grid(cx.focus.current) {
+                    if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.reset_page_requests(); }
+                }
                 if matches!(self.focused_loc(cx.focus.current), Some(Located::Hero(_)))
                     && self.flip(H::hubs(cx), direction)
                 {
@@ -2944,6 +2996,7 @@ struct HomeCards<'a> {
     row: usize,
     /// How the row's stops treat a passing pointer (one answer for the row, it shares one y).
     hover: Hover,
+    paging: bool,
 }
 
 impl<'a> HomeCards<'a> {
@@ -2953,6 +3006,9 @@ impl<'a> HomeCards<'a> {
 }
 
 impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
+    fn more(&self) -> bool {
+        self.paging && self.home.hub(self.view, self.row).is_some_and(|hub| hub.more)
+    }
     fn len(&self) -> usize {
         self.home.rows.get(self.row).map_or(0, |r| r.elems.len())
     }

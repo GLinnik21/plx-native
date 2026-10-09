@@ -105,7 +105,7 @@ fn retained_home_publication_survives_commit_and_reset_without_copying_items() {
 fn home_group_falls_back_to_provider_key_not_label_or_position() {
     let items = vec![row(0, "a"), row(1, "b")];
     let mut hub = HubRow { title: "Display title".into(), hub_id: String::new(),
-        key: "/library/collections/7/children".into(), source: String::new(), total: 0, start: 0, len: 1 };
+        key: "/library/collections/7/children".into(), source: String::new(), total: 0, offset: 0, more: false, start: 0, len: 1 };
     let key = "/library/collections/7/children";
     assert_eq!(stable_hub_identity(&hub, &items), Some(HubIdentity::Key { sid: sid(0), key }));
     hub.title = "Other locale".into();
@@ -213,7 +213,7 @@ fn a_catalog_row_is_found_by_its_server_and_key_never_by_the_key_alone() {
         hub_id: "home.continue".into(),
         key: String::new(),
         source: String::new(),
-        total: 0,
+        total: 0, offset: 0, more: false,
         start: 0,
         len: 3,
     }];

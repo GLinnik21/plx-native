@@ -5,23 +5,24 @@
 //!
 //! **This is the data module `stores::hubs` (`docs/stores-as-machines.md`) is a machine over** —
 //! each production `Bridge` owns a `stores::hubs::HubsStore`, whose `run`/`run_with_directory`
-//! forward each `HubsCmd` variant straight into `request_refetch_hubs`/`request_retry`/`reset`/
-//! `edit_item` here against its own `PmsState`/`Arc<PmsAdapter>`, the same relationship the owned
-//! `BrowseStore::run` has to Browse commands against its explicit state. **Those forwarding targets
-//! cannot be scoped narrower than `pub`, and that is a fact about Rust module topology,
-//! not an oversight**: `pms` and `stores` are both top-level children of the crate root, so
-//! neither is an ancestor of the other, and `pub(in path)` requires `path` to name an ancestor of
-//! the ITEM's own module. There is no visibility keyword that means "visible to `stores::hubs`
-//! and nobody else" for an item defined here. What IS enforceable, and is: (1) anything with no
-//! caller outside this file at all — `hub_state` — is plain private, not `pub`; (2) every
-//! mutator `stores::hubs` (or a test) can reach — `request_refetch_hubs`, `request_retry`,
-//! `edit_item`, `tick`, `apply_landing`, `reset`, and the `_for_test` seeds — asserts
-//! `plx_base::testlock::held()` under `#[cfg(test)]` before it touches the crate-wide test-only
-//! state those seeds still share (see `lib.rs::testlock` and D5), which is the runtime half of
-//! the same contract a compile-time visibility keyword cannot express across two sibling
-//! modules. `ci/allow/mutators.txt`'s `# count: 0` already
-//! proves no PRODUCTION line outside `pms`/`stores::hubs` spells the old direct-call form; this
-//! is the part that keyword-level `pub(super)` genuinely cannot add on top of that count.
+//! forward each `HubsCmd` variant into `request_refetch_hubs`/`reset`/`edit_item`/`page`/
+//! `cancel_page` here against its own `PmsState`/`Arc<PmsAdapter>`, the same relationship the owned
+//! `BrowseStore::run` has to Browse commands against its explicit state. Controlled work captures
+//! each immutable request before the adapter launches it. **The cross-module entry points
+//! (`run_with_directory`, `land_with_directory`, `tick*`) cannot be scoped narrower than `pub`, and
+//! that is a fact about Rust module topology, not an oversight**: `pms` and `stores` are both
+//! top-level children of the crate root, so neither is an ancestor of the other, and `pub(in path)`
+//! requires `path` to name an ancestor of the ITEM's own module. There is no visibility keyword
+//! that means "visible to `stores::hubs` and nobody else" for an item defined here. What IS
+//! enforceable, and is: (1) anything with no caller outside this file at all — `hub_state` — is
+//! plain private, not `pub`; (2) every mutator `stores::hubs` (or a test) can reach —
+//! `request_refetch_hubs`, `edit_item`, `tick`, `apply_landing`, `reset`, and the `_for_test`
+//! seeds — asserts `plx_base::testlock::held()` under `#[cfg(test)]` before it touches the
+//! crate-wide test-only state those seeds still share (see `lib.rs::testlock` and D5), which is the
+//! runtime half of the same contract a compile-time visibility keyword cannot express across two
+//! sibling modules. `ci/allow/mutators.txt`'s `# count: 0` already proves no PRODUCTION line
+//! outside `pms`/`stores::hubs` spells the old direct-call form; this is the part that
+//! keyword-level `pub(super)` genuinely cannot add on top of that count.
 use plx_plex::plex::ServerId;
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
@@ -35,29 +36,32 @@ pub mod initial;
 /// screen indexes into, not a per-server one — see [`allot`] for how the sources divide it.
 ///
 /// A bound exists because the catalog is resident memory on a TV with a few hundred MB for the
-/// whole app, and `/hubs` has no paging (`docs/pms-api.md` §3), so nothing else limits what a
-/// server (or a household of shares) may send. 2,048 is about 170 full rows of 12, an order of
-/// magnitude past any Home a person scrolls and measured on the TV (`home-grid-deep`, issue #395)
-/// at 2,040 cards, about 1,343 KB of catalog (about 0.65 KB a card, 170 hubs); the `hubs: landed`
-/// log line reports the live figure. It used to be 256, which cut a Home of more than about 21 rows
-/// off in the middle.
+/// whole app, and only the Recently Added listings page (`docs/pms-api.md` §3), so nothing else
+/// limits what a server (or a household of shares) may send. 2,048 is about 170 full rows of 12,
+/// an order of magnitude past any Home a person scrolls and measured on the TV (`home-grid-deep`,
+/// issue #395) at 2,040 cards, about 1,343 KB of catalog (about 0.65 KB a card, 170 hubs); the
+/// `hubs: landed` log line reports the live figure. It used to be 256, which cut a Home of more
+/// than about 21 rows off in the middle.
+///
+/// An ordinary row spends its published card count; a Recently Added row spends at most 12 slots
+/// ([`shelf_cost`]) while holding a moving window of at most 24 cards, so the published rows hold
+/// at most twice this budget, plus at most eight retained heroes.
 ///
 /// It is applied in exactly one place: [`merge_with_scope`], AFTER the pin filter and the
 /// per-shelf [`MAX_SHELF_ITEMS`] ceiling, through [`allot`] and the whole-shelf rule — so an
 /// unpinned library spends none of it, and what falls past it is whole shelves from the tail of a
-/// source, never a truncated row. [`project`] does not truncate: one source's [`SourceBuild`] is
-/// bounded by what that server sends (12 cards per shelf, [`HUB_FETCH_COUNT`], times its hubs).
-/// Rows dropped by the bound are logged by [`pump`].
+/// source, never a truncated row. [`project`] does not truncate. Rows dropped by the bound are
+/// logged by [`pump`].
 pub(crate) const HOME_CARDS_MAX: usize = 2048;
 
-/// Cards one shelf holds at most — the number the grid can address (the owned Home's `MAX_ITEMS` is this
-/// constant).
+/// Cards one shelf holds at most — the number the grid can address (the owned Home's `MAX_ITEMS`
+/// is this constant).
 ///
-/// It was unreachable with one server, because `/hubs?count=12` bounds every shelf at 12. The
-/// MERGED deck is what reaches it: three sources' Continue Watching is up to 36 cards, and
-/// the home grid's focus ring and its OK dispatch clamp differently past this number — the ring stops
-/// at the last addressable card while the press opens whatever column the raw index names. Cap the
-/// data and the two can never disagree.
+/// The MERGED deck reaches it: three sources' Continue Watching is up to 36 cards, and a Recently
+/// Added window reaches 24 from one server as the user scrolls (the window replaces its
+/// overlapping pages). The home grid's focus ring and its OK dispatch clamp differently past this
+/// number — the ring stops at the last addressable card while the press opens whatever column the
+/// raw index names. Cap the data and the two can never disagree.
 pub const MAX_SHELF_ITEMS: usize = 24;
 
 pub const KIND_COLLECTION: c_int = 4;
@@ -442,6 +446,10 @@ struct HubRow {
     total: usize,
     start: usize,
     len: usize,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default)]
+    more: bool,
 }
 fn hubs(state: &PmsState) -> &Vec<HubRow> {
     &published_home(state).hubs
@@ -509,9 +517,12 @@ pub struct HubRef<'a> {
     pub identity: Option<HubIdentity<'a>>,
     pub title: &'a str,
     pub source: &'a str,
-    /// Every item the shelf's listing holds (0 when unknown); `items` is the capped page.
+    /// Every item the listing holds, or zero when unknown. `items` is the current window.
     pub total: usize,
     pub items: &'a [Arc<PmsMovie>],
+    /// Server offset of the current window, used to request an earlier page.
+    pub offset: usize,
+    pub more: bool,
 }
 
 /// Provider identities are tagged: a listing key cannot collide with an identifier that
@@ -552,6 +563,7 @@ impl<'a> HubsView<'a> {
         Some(HubRef {
             identity: stable_hub_identity(row, &self.data.items),
             title: &row.title, source: &row.source, total: row.total,
+            offset: row.offset, more: row.more,
             items: self.data.items.get(row.start..end)?,
         })
     }
@@ -635,7 +647,8 @@ fn request_refetch_hubs_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapte
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     for s in srcs.iter_mut() {
         s.fetching = false;
-        if let Some(request) = retry_now_with(gen, adapter, s, launch) { endpoints.insert(request); }
+        s.page = None;
+        if let Some(request) = retry_now_with(gen, adapter, s, scope, launch) { endpoints.insert(request); }
     }
     state.srcs = srcs;
     endpoints
@@ -666,7 +679,7 @@ pub enum LocalEdit {
 ///
 /// This is one half of a pair and is useless alone: it is what the user SEES, and the refetch the
 /// write's landing kicks is what the server SAYS. Where they disagree the refetch wins, silently.
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 fn edit_item(state: &mut PmsState, sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
     edit_item_with_scope(state, sid, rk, edit, &BrowseScope::standalone())
 }
@@ -770,9 +783,21 @@ struct Shelf {
     hub_id: String,
     key: String,
     items: Vec<Arc<PmsMovie>>,
+    #[serde(default)]
+    positions: Vec<usize>,
     /// Every item the hub's listing holds (`plex::Hub::total`) — a collection shelf's "· N".
     #[serde(default)]
     total: usize,
+    #[serde(default)]
+    offset: usize,
+    #[serde(default)]
+    end: usize,
+    #[serde(default)]
+    more: bool,
+}
+
+impl Shelf {
+    fn is(&self, id: &str, key: &str) -> bool { self.hub_id == id && self.key == key }
 }
 
 /// ONE source's whole contribution to Home — its Continue Watching items (merged with everyone
@@ -785,6 +810,180 @@ struct Shelf {
 struct SourceBuild {
     cw: Vec<CwItem>,
     shelves: Vec<Shelf>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PageQuery {
+    id: String,
+    key: String,
+    start: usize,
+    #[serde(default)]
+    before: bool,
+    #[serde(default)]
+    hidden: Vec<i64>,
+}
+
+fn recent_listing(id: &str, key: &str) -> bool {
+    plx_plex::plex::hub_title::is_recently_added_hub(id)
+        && plx_plex::plex::is_pageable_hub_key(key)
+}
+
+// Paging must not spend the preview slots of another row. Each window is still bounded to 24.
+fn shelf_cost(shelf: &Shelf, len: usize) -> usize {
+    if recent_listing(&shelf.hub_id, &shelf.key) { len.min(HUB_FETCH_COUNT as usize) } else { len }
+}
+
+fn find_shelf<'a>(shelves: &'a [Shelf], id: &str, key: &str) -> Option<&'a Shelf> {
+    shelves.iter().find(|shelf| shelf.is(id, key))
+}
+
+fn request_page(state: &mut PmsState, adapter: &PmsAdapter, sid: ServerId,
+    id: &str, key: &str, before: bool, scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+    let Some(source) = state.srcs.iter_mut().find(|source| source.sid == sid) else { return None };
+    if refresh_src_lifecycle(source) { return None; }
+    if source.fetching || source.page.is_some() || source.state != HubState::Ready { return None; }
+    let Some(shelf) = source.last.as_ref().and_then(|build| find_shelf(&build.shelves, id, key)) else { return None };
+    if !recent_listing(id, key) || (before && shelf.offset == 0) || (!before && !shelf.more) { return None; }
+    let start = if before { shelf.offset } else { shelf.end.max(shelf.offset + shelf.items.len()) };
+    source.retry_n = 0;
+    source.page = Some(PageQuery { id: id.into(), key: key.into(), start, before,
+        hidden: hidden_sections(scope, sid) });
+    kick_with(state.hub_gen, adapter, source, scope, launch)
+}
+
+fn cancel_page(state: &mut PmsState, sid: ServerId, id: &str, key: &str) {
+    let Some(source) = state.srcs.iter_mut().find(|source| source.sid == sid
+        && source.page.as_ref().is_some_and(|page| page.id == id && page.key == key)) else { return };
+    source.page = None;
+    source.fetching = false;
+    source.seq = source.seq.wrapping_add(1);
+    source.retry_n = 0;
+    source.retry_s = 0.0;
+}
+
+/// The shared body of `Page` and `CancelPage`, for both command runners.
+fn run_page_cmd(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope, cmd: crate::stores::hubs::HubsCmd,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    use crate::stores::hubs::HubsCmd;
+    let mut endpoints = crate::stores::EndpointRefreshSet::default();
+    match cmd {
+        HubsCmd::CancelPage { sid, id, key } => cancel_page(state, sid, &id, &key),
+        HubsCmd::Page { sid, id, key, before } => {
+            sync_roster_with_scope(state, scope);
+            if let Some(endpoint) = request_page(state, adapter, sid, &id, &key, before, scope, launch) { endpoints.insert(endpoint); }
+        }
+        _ => {}
+    }
+    endpoints
+}
+
+fn hidden_sections(scope: &BrowseScope, sid: ServerId) -> Vec<i64> {
+    scope.pins.iter().filter(|(server, section, pinned)| *server == sid && *section != 0 && !pinned)
+        .map(|(_, section, _)| *section).collect()
+}
+
+fn window_items(shelf: &Shelf, hidden: &[i64]) -> Vec<(usize, Arc<PmsMovie>)> {
+    shelf.positions.iter().copied().zip(&shelf.items).filter(|(_, item)| !hidden.contains(&item.sec))
+        .map(|(position, item)| (position, Arc::clone(item)))
+        .collect()
+}
+
+fn fetch_page(client: &plx_plex::plex::Client, sid: ServerId, page: &PageQuery, minimum_end: usize) -> Option<SourceBuild> {
+    fetch_window(sid, page, None, minimum_end, |start, size| client.hub_items_paged(&page.key, start as i64, size as i64))
+}
+
+fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_end: usize,
+    mut fetch: impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>) -> Option<SourceBuild> {
+    let mut rows = current.map_or_else(Vec::new, |shelf| window_items(shelf, &page.hidden));
+    let retained_all = rows.len() <= HUB_FETCH_COUNT as usize;
+    if page.before { rows.truncate(HUB_FETCH_COUNT as usize); }
+    else if !retained_all { rows.drain(..rows.len() - HUB_FETCH_COUNT as usize); }
+    let mut offset = if page.before { page.start } else {
+        current.filter(|_| retained_all).map_or_else(|| rows.first().map_or(page.start, |row| row.0), |shelf| shelf.offset)
+    };
+    let mut end = if page.before {
+        current.filter(|_| retained_all).map_or_else(|| rows.last().map_or(page.start, |row| row.0 + 1), |shelf| shelf.end)
+    } else { page.start };
+    let mut total = current.map_or(0, |shelf| shelf.total);
+    let mut more = page.before && current.is_some_and(|shelf| shelf.more || !retained_all);
+    let mut cursor = page.start;
+    // Keep each worker bounded even when several consecutive server pages are hidden.
+    // A partial window retains the overlap and publishes its advanced server cursor.
+    let mut requests = 0;
+    while requests < 8 || (!page.before && cursor < minimum_end) {
+        requests += 1;
+        if rows.len() >= MAX_SHELF_ITEMS || (page.before && cursor == 0) { break; }
+        // Backward pages ask only for the room left beside the retained overlap, so every row
+        // fetched is kept and `offset` stays the first server position the window covers.
+        let size = if page.before { cursor.min(MAX_SHELF_ITEMS - rows.len()) } else { MAX_SHELF_ITEMS };
+        let start = if page.before { cursor - size } else { cursor };
+        let mc = fetch(start, size)?;
+        if mc.offset != start as i64 { return None; }
+        let got = mc.metadata.len().min(size);
+        total = mc.total_size.max(0) as usize;
+        let raw_end = start.saturating_add(got);
+        let mut fresh = Vec::new();
+        for (i, item) in mc.metadata.iter().take(got).enumerate() {
+            if !page.before { end = start + i + 1; }
+            if !listable(&item.kind) { continue; }
+            let item = parse_item(item, sid);
+            if item.title.is_empty() || item.thumb.is_empty() || page.hidden.contains(&item.sec)
+                || rows.iter().any(|(_, row)| row.rk == item.rk) { continue; }
+            if page.before { fresh.push((start + i, Arc::new(item))); }
+            else {
+                rows.push((start + i, Arc::new(item)));
+                if rows.len() == MAX_SHELF_ITEMS { break; }
+            }
+        }
+        if page.before {
+            fresh.extend(rows);
+            rows = fresh;
+            cursor = start;
+            offset = start;
+            if total > 0 { more = end < total; }
+        } else {
+            if got == 0 { end = start; }
+            more = got > 0 && if total > 0 { end < total } else { end < raw_end || got == size };
+            cursor = end;
+            if !more { break; }
+        }
+    }
+    let (positions, items) = rows.into_iter().unzip();
+    Some(SourceBuild { cw: Vec::new(), shelves: vec![Shelf {
+        title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
+        total, offset, end, more,
+    }] })
+}
+
+fn land_page(source: &mut Src, page: &PageQuery, build: SourceBuild) -> bool {
+    let Some(current) = source.last.as_mut().and_then(|build| build.shelves.iter_mut()
+        .find(|shelf| shelf.is(&page.id, &page.key))) else { return false };
+    let Some(mut next) = build.shelves.into_iter().find(|shelf| shelf.is(&page.id, &page.key)) else { return false };
+    if next.items.is_empty() || (next.more && next.offset == current.offset && next.end <= current.end) {
+        current.more = false;
+        return true;
+    }
+    next.items.truncate(MAX_SHELF_ITEMS);
+    current.items = next.items;
+    current.positions = next.positions;
+    current.offset = next.offset;
+    current.end = next.end;
+    current.more = next.more;
+    current.total = next.total;
+    true
+}
+
+// Scrolling an old Recently Added page must not change the banner's current selection.
+fn preserve_heroes(state: &PmsState, build: &mut HubBuild) {
+    let previous = published_home(state);
+    build.2.clear();
+    for hero in &previous.heroes {
+        let item = &previous.items[hero.idx];
+        let idx = build.0.iter().position(|row| plx_plex::plex::same_item((row.sid, &row.rk), (item.sid, &item.rk)))
+            .unwrap_or_else(|| { build.0.push(Arc::clone(item)); build.0.len() - 1 });
+        build.2.push(HeroSlot { idx, source: hero.source.clone() });
+    }
 }
 
 /// GET one source's hubs and project them. `None` = the request failed (transport, HTTP, or
@@ -867,7 +1066,8 @@ fn project(
         if hub.hub_identifier == "home.continue" || hub.hub_identifier == "home.ondeck" {
             continue; // superseded by the dedicated hub above
         }
-        let items: Vec<Arc<PmsMovie>> = hub.metadata.iter().filter_map(&keep).map(Arc::new).collect();
+        let (positions, items): (Vec<usize>, Vec<Arc<PmsMovie>>) = hub.metadata.iter().enumerate()
+            .filter_map(|(i, item)| keep(item).map(|item| (i, Arc::new(item)))).unzip();
         if items.is_empty() {
             continue;
         }
@@ -887,8 +1087,12 @@ fn project(
             ),
             hub_id: hub.hub_identifier.clone(),
             key: hub.key.clone(),
-            items,
+            items, positions,
             total: hub.total(),
+            offset: 0,
+            end: hub.metadata.len(),
+            more: recent_listing(&hub.hub_identifier, &hub.key)
+                && (hub.more || hub.total() > hub.metadata.len() || hub.metadata.len() >= HUB_FETCH_COUNT as usize),
         });
     }
     out
@@ -995,7 +1199,7 @@ fn bound_overflow(srcs: &[Src], scope: &BrowseScope, build: &HubBuild) -> (usize
     }
     let deck = build.1.first().filter(|h| h.hub_id == "home.continue");
     let published_shelves = build.1.len() - usize::from(deck.is_some());
-    let published_cards = build.0.len() - deck.map_or(0, |h| h.len);
+    let published_cards: usize = build.1.iter().map(|hub| hub.len).sum::<usize>() - deck.map_or(0, |h| h.len);
     (offered_shelves - published_shelves, offered_cards - published_cards)
 }
 
@@ -1054,6 +1258,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
             total: 0,
             start: 0,
             len: new_cat.len(),
+            offset: 0, more: false,
         });
     }
 
@@ -1066,7 +1271,9 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     let publishable = publishable_shelves(&live, pins);
     let row_want: Vec<usize> = publishable
         .iter()
-        .map(|shelves| shelves.iter().map(Vec::len).sum())
+        .zip(&live)
+        .map(|(shelves, (_, build))| shelves.iter().zip(&build.shelves)
+            .map(|(items, shelf)| shelf_cost(shelf, items.len())).sum())
         .collect();
     let rows_for = allot(HOME_CARDS_MAX - new_cat.len(), &row_want);
 
@@ -1075,7 +1282,8 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
         for (sh, items) in b.shelves.iter().zip(&publishable[i]) {
             // A shelf is published whole or not at all, and once one does not fit the source stops:
             // skipping ahead to a smaller later shelf would reorder the household's Home.
-            if items.len() > rows_left {
+            let cost = shelf_cost(sh, items.len());
+            if cost > rows_left {
                 break;
             }
             if items.is_empty() {
@@ -1086,7 +1294,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
                 new_cat.push(Arc::clone(m));
                 row_handle.push(handle);
             }
-            rows_left -= new_cat.len() - start;
+            rows_left -= cost;
             new_hubs.push(HubRow {
                 title: sh.title.clone(),
                 hub_id: sh.hub_id.clone(),
@@ -1095,6 +1303,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
                 total: sh.total,
                 start,
                 len: new_cat.len() - start,
+                offset: sh.offset, more: sh.more,
             });
         }
     }
@@ -1201,6 +1410,7 @@ struct Src {
     /// is dropped: [`HUB_GEN`] says "a different account or server set", this says "an older attempt
     /// at the same one", and only the pair rules out both double-applies.
     seq: u32,
+    page: Option<PageQuery>,
     retry_s: f32,
     retry_n: u32,
     /// The projection this source last ANSWERED with, kept across a failure. This is what makes a
@@ -1222,11 +1432,18 @@ impl Src {
         let request = HubRequest {
             gen: generation, seq: mint(), sid: self.sid,
             client: LandingClient::live(client), token_gen: client.token_gen(),
+            page: self.page.clone(),
+            window: self.page.as_ref().and_then(|page| self.last.as_ref().and_then(|build|
+                find_shelf(&build.shelves, &page.id, &page.key))).cloned(),
+            windows: self.last.as_ref().map_or_else(Vec::new, |build| build.shelves.iter()
+                .filter(|shelf| recent_listing(&shelf.hub_id, &shelf.key)
+                    && (shelf.offset > 0 || shelf.end > HUB_FETCH_COUNT as usize))
+                .map(|shelf| (PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(), start: shelf.offset, before: false, hidden: Vec::new() }, shelf.end)).collect()),
         };
         self.client = Some(client);
         self.token_gen = request.token_gen;
         self.fetching = true;
-        self.state = HubState::Loading;
+        if self.page.is_none() { self.state = HubState::Loading; }
         self.retry_s = 0.0;
         self.seq = request.seq;
         Some(request)
@@ -1242,6 +1459,7 @@ impl Src {
             state: HubState::Loading,
             fetching: false,
             seq: 0,
+            page: None,
             retry_s: 0.0,
             retry_n: 0,
             last: None,
@@ -1263,6 +1481,18 @@ fn refresh_src_lifecycle(s: &mut Src) -> bool {
     s.client = client;
     s.token_gen = token_gen;
     s.fetching = false;
+    s.page = None;
+    // Retained cards may still paint during the new profile's fetch, but its request must
+    // start at the preview rather than reuse the previous profile's listing positions.
+    if let Some(build) = s.last.as_mut() {
+        for shelf in build.shelves.iter_mut().filter(|shelf| recent_listing(&shelf.hub_id, &shelf.key)) {
+            shelf.items.truncate(HUB_FETCH_COUNT as usize);
+            shelf.positions.truncate(HUB_FETCH_COUNT as usize);
+            shelf.offset = 0;
+            shelf.end = 0;
+            shelf.more = false;
+        }
+    }
     s.state = HubState::Loading;
     s.retry_s = 0.0;
     s.retry_n = 0;
@@ -1296,11 +1526,37 @@ pub struct HubRequest {
     sid: ServerId,
     client: LandingClient,
     token_gen: u32,
+    page: Option<PageQuery>,
+    windows: Vec<(PageQuery, usize)>,
+    window: Option<Shelf>,
 }
 
 impl HubRequest {
     pub fn descriptor(&self) -> (u32, u32, u16, u32, u32) {
         (self.gen, self.seq, self.sid.raw(), self.client.instance, self.token_gen)
+    }
+    pub fn page_descriptor(&self) -> Option<serde_json::Value> {
+        self.page.as_ref().map(|page| serde_json::json!({"id":page.id,"key":page.key,"start":page.start,"before":page.before,"hidden":page.hidden}))
+    }
+    fn fetch(&self) -> Option<SourceBuild> {
+        match &self.page {
+            Some(page) => fetch_window(self.sid, page, self.window.as_ref(), 0, |start, size|
+                self.client.resource.hub_items_paged(&page.key, start as i64, size as i64)),
+            None => {
+                let mut build = fetch_source(self.client.resource, self.sid)?;
+                for (window, end) in &self.windows {
+                    let Some(shelf) = build.shelves.iter_mut().find(|shelf| shelf.is(&window.id, &window.key)) else { continue };
+                    // `/hubs` itself answered: a failed window reload keeps the first-page shelf.
+                    let Some(mut refreshed) = fetch_page(self.client.resource, self.sid, window, *end)
+                        .and_then(|page| page.shelves.into_iter().next()) else { continue };
+                    if !refreshed.items.is_empty() {
+                        refreshed.title = shelf.title.clone();
+                        *shelf = refreshed;
+                    }
+                }
+                Some(build)
+            },
+        }
     }
     fn complete(self, build: Option<SourceBuild>) -> Landing {
         Landing { gen: self.gen, seq: self.seq, sid: self.sid,
@@ -1666,7 +1922,13 @@ fn landed_ok(s: &mut Src, b: SourceBuild) {
 fn landed_fail(s: &mut Src) -> crate::stores::EndpointRefresh {
     s.retry_n = s.retry_n.saturating_add(1);
     s.retry_s = backoff_secs(s.retry_n);
-    s.state = HubState::Failed;
+    if s.page.is_some() && s.retry_n >= 3 {
+        s.page = None;
+        s.retry_s = 0.0;
+        plx_base::eventlog::log(&format!("hubs: source {} page failed after {} attempts", s.sid.raw(), s.retry_n));
+        return crate::stores::EndpointRefresh { sid: s.sid };
+    }
+    if s.page.is_none() { s.state = HubState::Failed; }
     // the ONE line that says a dead source is dead ON PURPOSE and is coming back — without it the
     // whole recovery is invisible in the event log. The SLOT, never the handle: a plex.tv username
     // is the friend's, and the event log is what users send us.
@@ -1696,7 +1958,8 @@ fn retry_due(s: &mut Src, dt: f32) -> bool {
 /// loop would draw no frames while the loading spinner is supposed to be visible.
 /// Keep request admission/state identical when another adapter holds the request instead of
 /// launching a worker. The returned admission decision still controls latch release/backoff.
-fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, launch: impl FnOnce(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, launch: impl FnOnce(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+    refresh_src_lifecycle(s);
     if s.fetching {
         return None; // one in flight already — its spinner is the honest answer
     }
@@ -1707,8 +1970,9 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, launch: impl FnOnce(Hu
     let Some(c) = plx_plex::plex::client_for(s.sid) else {
         return Some(landed_fail(s));
     };
-    let Some(request) = s.begin_request(c, gen,
+    let Some(mut request) = s.begin_request(c, gen,
         || adapter.next_request.fetch_add(1, Ordering::Relaxed)) else { return None };
+    for (window, _) in &mut request.windows { window.hidden = hidden_sections(scope, request.sid); }
     let sid = request.sid;
     let spawned = launch(request);
     if !spawned {
@@ -1741,15 +2005,14 @@ pub fn spawn_fetch(adapter: &Arc<PmsAdapter>, request: HubRequest) -> bool {
     let worker_adapter = Arc::clone(adapter);
     adapter.owed.fetch_add(1, Ordering::SeqCst);
     let spawned = !refused && plx_base::task::spawn_small("hubs", move || {
-        let (client, sid) = (request.client.resource, request.sid);
         #[cfg(any(test, feature = "test-support"))]
         let build = match late {
             Some((extra, items, takes_at_spawn)) =>
                 late_build_for_test(&worker_adapter, takes_at_spawn, extra, items),
-            None => catch_unwind(move || fetch_source(client, sid)).ok().flatten(),
+            None => catch_unwind(std::panic::AssertUnwindSafe(|| request.fetch())).ok().flatten(),
         };
         #[cfg(not(any(test, feature = "test-support")))]
-        let build = catch_unwind(move || fetch_source(client, sid)).ok().flatten();
+        let build = catch_unwind(std::panic::AssertUnwindSafe(|| request.fetch())).ok().flatten();
         // Outside the panic guard: every admitted worker answers, including a panicking fetch.
         worker_adapter.results.lock().unwrap_or_else(|e| e.into_inner()).push(request.complete(build));
     });
@@ -1805,29 +2068,13 @@ pub fn with_refused_fetches_for_test<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
-fn retry_now_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
-    s.retry_n = 0;
-    s.retry_s = 0.0;
-    kick_with(gen, adapter, s, launch)
-}
-
 /// The Retry control's kick: try every source again NOW, from the bottom of the ladder — a person
 /// who asks for it should never be made to sit out a 30-second automatic wait. A no-op for any
-/// source whose fetch is already in flight.
-fn request_retry(state: &mut PmsState, adapter: &Arc<PmsAdapter>) -> crate::stores::EndpointRefreshSet {
-    // Same test-only catalog guard as `request_refetch_hubs` — the catalog is `PmsState`, a
-    // field of the per-`Bridge` `HubsStore`, not a crate-global; see `lib.rs::testlock` and D5.
-    #[cfg(any(test, feature = "test-support"))]
-    plx_base::testlock::assert_held("the pms hub catalog (request_retry)");
-    let gen = state.hub_gen;
-    let mut srcs = std::mem::take(&mut state.srcs);
-    let mut endpoints = crate::stores::EndpointRefreshSet::default();
-    let mut launch = |r| spawn_fetch(adapter, r);
-    for s in srcs.iter_mut() {
-        if let Some(request) = retry_now_with(gen, adapter, s, &mut launch) { endpoints.insert(request); }
-    }
-    state.srcs = srcs;
-    endpoints
+/// source whose fetch is already in flight; a pending page request is re-sent by the same kick.
+fn retry_now_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+    s.retry_n = 0;
+    s.retry_s = 0.0;
+    kick_with(gen, adapter, s, scope, launch)
 }
 
 /// Move the worker mailbox into one owned batch. No source or catalog state changes here.
@@ -1918,12 +2165,7 @@ pub fn land_with_directory(
 /// module boundary. Relocating the match here is what lets those four go private.
 #[cfg(any(test, feature = "test-support"))]
 pub fn run(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome {
-    use crate::stores::hubs::HubsCmd;
-    match cmd {
-        HubsCmd::RefetchHubs | HubsCmd::Reset =>
-            run_with_scope(state, adapter, cmd, &BrowseScope::standalone()),
-        other => run_without_browse(state, adapter, other),
-    }
+    run_with_scope(state, adapter, cmd, &BrowseScope::standalone())
 }
 
 pub fn run_with_directory(
@@ -1943,6 +2185,11 @@ fn run_with_scope(
 ) -> crate::stores::StoreOutcome {
     use crate::stores::hubs::HubsCmd;
     match cmd {
+        paging @ (HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }) => {
+            let mut launch = |r| spawn_fetch(adapter, r);
+            let endpoints = run_page_cmd(state, adapter, scope, paging, &mut launch);
+            crate::stores::StoreOutcome { changed: false, endpoints }
+        }
         HubsCmd::RefetchHubs => {
             let mut launch = |r| spawn_fetch(adapter, r);
             crate::stores::StoreOutcome {
@@ -1950,29 +2197,16 @@ fn run_with_scope(
                 endpoints: request_refetch_hubs_with_scope(state, adapter, scope, &mut launch),
             }
         }
-        HubsCmd::Retry => run_without_browse(state, adapter, cmd),
+        HubsCmd::Retry => {
+            let mut launch = |request| spawn_fetch(adapter, request);
+            controlled_work_with_scope(state, adapter, Some(cmd), 0.0, scope, &mut launch)
+        },
         HubsCmd::EditItem { sid, rk, edit } => crate::stores::StoreOutcome::changed(
             edit_item_with_scope(state, sid, &rk, edit, scope)),
         HubsCmd::Reset => {
             reset_with_scope(state, adapter, scope);
             crate::stores::StoreOutcome::changed(true)
         }
-    }
-}
-
-fn run_without_browse(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome {
-    use crate::stores::hubs::HubsCmd;
-    match cmd {
-        HubsCmd::Retry =>
-            crate::stores::StoreOutcome { changed: true, endpoints: request_retry(state, adapter) },
-        #[cfg(any(test, feature = "test-support"))]
-        HubsCmd::EditItem { sid, rk, edit } =>
-            crate::stores::StoreOutcome::changed(edit_item(state, sid, &rk, edit)),
-        #[cfg(not(any(test, feature = "test-support")))]
-        HubsCmd::EditItem { .. } =>
-            unreachable!("Hubs EditItem requires a retained Browse directory"),
-        HubsCmd::RefetchHubs | HubsCmd::Reset =>
-            unreachable!("Browse-scoped Hubs command reached the independent runner"),
     }
 }
 
@@ -1994,15 +2228,16 @@ fn controlled_work_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, c
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
     use crate::stores::hubs::HubsCmd;
     let before = state.catalog_gen;
-    let command = cmd.is_some();
+    let command = cmd.as_ref().is_some_and(|cmd| !cmd.is_paging());
     let endpoints = match cmd {
+        Some(paging) if paging.is_paging() => run_page_cmd(state, adapter, scope, paging, launch),
         Some(HubsCmd::RefetchHubs) => request_refetch_hubs_with_scope(state, adapter, scope, launch),
         Some(HubsCmd::Retry) => {
             let gen = state.hub_gen;
             let mut srcs = std::mem::take(&mut state.srcs);
             let mut endpoints = crate::stores::EndpointRefreshSet::default();
             for source in srcs.iter_mut() {
-                if let Some(request) = retry_now_with(gen, adapter, source, launch) { endpoints.insert(request); }
+                if let Some(request) = retry_now_with(gen, adapter, source, scope, launch) { endpoints.insert(request); }
             }
             state.srcs = srcs;
             endpoints
@@ -2039,6 +2274,8 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     let cur = state.hub_gen;
     let mut srcs = std::mem::take(&mut state.srcs);
     let mut dirty = false;
+    let mut paged = false;
+    let mut refreshed = false;
     for l in landed {
         // A landing from before the last authoritative fetch describes a server (or an account) we
         // have since moved off, and one whose seq has been superseded describes an attempt this
@@ -2053,6 +2290,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         if l.gen != cur || l.seq != s.seq || !lifecycle_matches {
             if l.gen == cur && l.seq == s.seq && !lifecycle_matches {
                 s.fetching = false;
+                s.page = None;
                 s.state = HubState::Loading;
                 s.retry_s = 0.0;
             }
@@ -2061,8 +2299,16 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         s.fetching = false;
         match l.build {
             Some(b) => {
-                landed_ok(s, b);
-                dirty = true;
+                if let Some(page) = s.page.take() {
+                    dirty |= land_page(s, &page, b);
+                    paged = true;
+                    s.retry_n = 0;
+                    s.retry_s = 0.0;
+                } else {
+                    landed_ok(s, b);
+                    dirty = true;
+                    refreshed = true;
+                }
             }
             None => { endpoints.insert(landed_fail(s)); }
         }
@@ -2072,8 +2318,8 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     // nothing, so it re-kicks on the spot rather than wedging that source on a spinner forever.
     if let Some(dt) = dt {
         for s in srcs.iter_mut() {
-            if s.state != HubState::Ready && !s.fetching && retry_due(s, dt) {
-                if let Some(request) = kick_with(cur, adapter, s, &mut *launch) { endpoints.insert(request); }
+            if (s.state != HubState::Ready || s.page.is_some()) && !s.fetching && retry_due(s, dt) {
+                if let Some(request) = kick_with(cur, adapter, s, scope, &mut *launch) { endpoints.insert(request); }
             }
         }
     }
@@ -2092,7 +2338,8 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     let scope_moved = browse_scope_moved(state, scope);
     let build = (dirty || scope_moved).then(|| {
         let t0 = std::time::Instant::now();
-        let build = merge_with_scope(&srcs, scope);
+        let mut build = merge_with_scope(&srcs, scope);
+        if paged && !refreshed && !scope_moved { preserve_heroes(state, &mut build); }
         let took = t0.elapsed();
         let over = bound_overflow(&srcs, scope, &build);
         (build, took, over)
@@ -2150,7 +2397,7 @@ fn build_test(n: usize) -> SourceBuild {
                     ..PmsMovie::default()
                 }))
                 .collect(),
-            total: 0,
+            total: 0, offset: 0, end: 0, more: false, positions: (0..n).collect(),
         }],
     }
 }
@@ -2213,7 +2460,7 @@ pub fn seed_two_library_home_for_test(
             hub_id: "home.movies.recent".into(),
             key: String::new(),
             items: vec![item(&sections[0], "alpha"), item(&sections[1], "beta")],
-            total: 0,
+            total: 0, offset: 0, end: 0, more: false, positions: Vec::new(),
         }],
     });
     let scope = BrowseScope::retained(directory);
@@ -2366,6 +2613,20 @@ pub fn seed_named_hubs_for_test(
 }
 
 #[cfg(any(test, feature = "test-support"))]
+pub fn seed_recent_window_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, offset: usize, items: usize, more: bool) {
+    seed_named_hubs_for_test(state, adapter, items,
+        &[("home.movies.recent", "/hubs/home/recentlyAdded?type=1", "Recent")]);
+    let shelf = &mut state.srcs[0].last.as_mut().unwrap().shelves[0];
+    shelf.offset = offset;
+    shelf.end = offset + items;
+    shelf.positions = (offset..offset + items).collect();
+    shelf.more = more;
+    for (i, item) in shelf.items.iter_mut().enumerate() { Arc::make_mut(item).rk = (offset + i + 1).to_string(); }
+    let build = merge(&state.srcs);
+    commit(state, build);
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub fn reverse_test_hubs(state: &mut PmsState) {
     plx_base::testlock::assert_held("the pms hub catalog (reverse_test_hubs)");
     for source in state.srcs.iter_mut() {
@@ -2380,7 +2641,15 @@ pub fn remove_test_item(state: &mut PmsState, rk: &str) {
     plx_base::testlock::assert_held("the pms hub catalog (remove_test_item)");
     for source in state.srcs.iter_mut() {
         if let Some(build) = source.last.as_mut() {
-            for shelf in &mut build.shelves { shelf.items.retain(|item| item.rk != rk); }
+            for shelf in &mut build.shelves {
+                let mut index = 0;
+                shelf.positions.retain(|_| {
+                    let keep = shelf.items[index].rk != rk;
+                    index += 1;
+                    keep
+                });
+                shelf.items.retain(|item| item.rk != rk);
+            }
         }
     }
     let build = merge(&state.srcs);
@@ -2428,6 +2697,10 @@ mod hero_pool_tests;
 #[cfg(test)]
 #[path = "pms_multi_source_merge_tests.rs"]
 mod multi_source_merge_tests;
+
+#[cfg(test)]
+#[path = "pms_recent_paging_tests.rs"]
+mod recent_paging_tests;
 
 #[cfg(test)]
 #[path = "pms_owed_tests.rs"]

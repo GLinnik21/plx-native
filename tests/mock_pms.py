@@ -1839,6 +1839,10 @@ class MockPms:
             if q.get("includeMeta") == "1":
                 extra["Meta"] = self.sort_meta(q.get("type"))
             return j(self.container(Metadata=page, **extra))
+        if len(segs) == 4 and segs[:2] == ["library", "sections"] and segs[3] == "recentlyAdded":
+            kind = {"1": "movie", "2": "episode"}.get(segs[2], "movie")
+            page, extra = paged(lib.recent(kind, 1000))
+            return j(self.container(Metadata=page, **extra))
         if len(segs) == 4 and segs[:2] == ["library", "sections"]:
             d = segs[3]
             if d == "collections":
@@ -1911,6 +1915,11 @@ class MockPms:
         if segs[:2] == ["library", "people"] and len(segs) == 4 and segs[3] == "media":
             pid = int(segs[2]) if segs[2].isdigit() else -1
             return j(self.container(Metadata=lib.person_media(pid)))
+        if catalog and segs[:2] == ["hubs", "demo"] and len(segs) == 3:
+            hub = next((hub for hub in lib.catalog["hubs"] if hub.get("hubIdentifier") == segs[2] and "recent" in hub), None)
+            if hub:
+                page, extra = paged(lib.recent(hub["recent"], 1000))
+                return j(self.container(Metadata=page, **extra))
         if p == "/hubs" or p == "/hubs/promoted":
             hubs = [{"title": "home.continue", "type": "mixed", "hubIdentifier": "home.continue",
                      "key": "/hubs/continueWatching", "size": 0, "Metadata": []},

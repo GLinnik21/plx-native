@@ -51,9 +51,7 @@ impl HomeIo {
         cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
         launch: &mut dyn FnMut(plx_data::pms::HubRequest) -> bool) -> plx_data::stores::StoreOutcome {
         hubs.controlled(cmd, dt, &mut |request| {
-            let (epoch, req, sid, client, token_gen) = request.descriptor();
-            self.admit(serde_json::json!({"kind":"hubs", "epoch":epoch,
-                "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
+            self.admit(hubs_descriptor(&request), || launch(request))
         })
     }
     pub(crate) fn hubs_with_directory(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
@@ -68,9 +66,7 @@ impl HomeIo {
         directory: plx_data::stores::browse::DirectoryView<'_>,
         launch: &mut dyn FnMut(plx_data::pms::HubRequest) -> bool) -> plx_data::stores::StoreOutcome {
         hubs.controlled_with_directory(cmd, dt, directory, &mut |request| {
-            let (epoch, req, sid, client, token_gen) = request.descriptor();
-            self.admit(serde_json::json!({"kind":"hubs", "epoch":epoch,
-                "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
+            self.admit(hubs_descriptor(&request), || launch(request))
         })
     }
     pub(crate) fn discovery_owned(&mut self, stores: &plx_data::stores::Stores) {
@@ -85,11 +81,13 @@ impl HomeIo {
     }
 }
 
-pub(crate) const ADMISSION_SHAPE: &str = "HomeAdmissionV1{frame:u64,ordered_request:Home|Discovery,epoch:u32,sid:u16,client:u32,token_gen:u32,admitted:bool}";
+pub(crate) const ADMISSION_SHAPE: &str = "HomeAdmissionV1{frame:u64,ordered_request:Home|Discovery,epoch:u32,sid:u16,client:u32,token_gen:u32,page:Option<{id:str,key:str,start:u64,before:bool,hidden:[i64]}>,admitted:bool}";
 pub(crate) fn validate_admission(value: &serde_json::Value, client: u32) -> Result<(), &'static str> {
     let object = value.as_object().ok_or("invalid synchronous admission")?;
     let hubs = value["kind"] == "hubs";
-    let keys: &[&str] = if hubs { &["kind","epoch","req","sid","client","token_gen","admitted"] }
+    let keys: &[&str] = if hubs && object.contains_key("page") {
+        &["kind","epoch","req","sid","client","token_gen","page","admitted"]
+    } else if hubs { &["kind","epoch","req","sid","client","token_gen","admitted"] }
         else { &["epoch","source","sid","client","token_gen","name","sections","counts","admitted"] };
     if object.len() != keys.len() || keys.iter().any(|key| !object.contains_key(*key))
         || value["admitted"].as_bool().is_none() || value["client"] != client
@@ -98,6 +96,12 @@ pub(crate) fn validate_admission(value: &serde_json::Value, client: u32) -> Resu
     }
     for key in ["epoch","client","token_gen"] {
         value[key].as_u64().and_then(|n| u32::try_from(n).ok()).ok_or("invalid admission identity")?;
+    }
+    if let Some(page) = object.get("page") {
+        if page.as_object().is_none_or(|page| page.len() != 5)
+            || page["id"].as_str().is_none() || page["key"].as_str().is_none()
+            || page["start"].as_u64().is_none() || page["before"].as_bool().is_none()
+            || page["hidden"].as_array().is_none_or(|hidden| hidden.iter().any(|section| section.as_i64().is_none())) { return Err("invalid hubs page"); }
     }
     if hubs { value["req"].as_u64().and_then(|n| u32::try_from(n).ok()).ok_or("invalid admission request")?; }
     else {
@@ -360,4 +364,13 @@ impl Preflight {
     }
     pub(crate) fn replay(&self) -> bool { matches!(self, Self::Replay { .. }) }
     pub(crate) fn controlled(&self) -> bool { !matches!(self, Self::Live) }
+}
+
+/// The admission descriptor of one Hubs request, with its page query when it carries one.
+fn hubs_descriptor(request: &plx_data::pms::HubRequest) -> serde_json::Value {
+    let (epoch, req, sid, client, token_gen) = request.descriptor();
+    let mut descriptor = serde_json::json!({"kind":"hubs", "epoch":epoch,
+        "req":req, "sid":sid, "client":client, "token_gen":token_gen});
+    if let Some(page) = request.page_descriptor() { descriptor["page"] = page; }
+    descriptor
 }

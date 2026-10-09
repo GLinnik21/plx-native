@@ -39,6 +39,15 @@ Scene fields (tests/manifest.json, `fps_scenes`):
                                 `libhubs: section N landed M shelves` line, a second Down per
                                 linked shelf, `extra_rows` more to reach the grid, and a
                                 `focus route=... region=grid` fingerprint required in the window
+  "walk": {"row_down": 1, "cards": 96, "key_gap_s": 0.33, ...}
+                                a ROW walk (#567, `home-recent-paging`): after Home lands, press Down
+                                `row_down` times to reach a named row (the `plxnative-grid` trigger
+                                seats row 0, the first shelf, so 1 reaches the second), then Right
+                                `cards` times, rest `rest_s`, Left `cards` times back. Only
+                                down/right/left, never ok or back. `max_rows` is not used. The
+                                result prints the page landings (`hubs: landed` lines) inside the
+                                window; `min_page_landings` (default 6) of them must fall in the
+                                forward half or the scene FAILS ("paging did not happen")
   "walk": {"min_landed": 150, ...}
                                 the scene FAILS when fewer shelves (rows) than that landed, so a
                                 cap that shortens the surface cannot pass on the shorter walk
@@ -66,6 +75,8 @@ MOCK_SERVER_VERSION = "1.41.0.0000-synthetic"
 # The only keys a walk may press. Never `ok`/`enter` (a Home card press resumes playback and writes
 # a household's viewing record) and never `back` (on a root screen it leaves the app).
 WALK_KEYS = ("down", "up")
+# A row walk (`walk.cards`) moves ALONG a row: Down to reach it, then Right and Left. Same bans.
+ROW_WALK_KEYS = ("down", "right", "left")
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +413,8 @@ def walk_secs_needed(scene):
         walking = (int(w["max_rows"]) * key_s + rest_s
                    + 2 * bursts * (burst * key_s + rest_s))
     else:
-        walking = 2 * int(w["max_rows"]) * float(w["key_gap_s"]) + w.get("rest_s", 4)
+        keys = len(row_walk_plan(w)) if is_row_walk(w) else 2 * int(w["max_rows"])
+        walking = keys * float(w["key_gap_s"]) + w.get("rest_s", 4)
     return (LAUNCH_WAIT_S + scene.get("warmup_s", 5) + w.get("land_wait_s", 15)
             + w.get("settle_s", 3) + walking + w.get("tail_s", 5))
 
@@ -425,6 +437,50 @@ def deepest_shelf_row(window, route):
 
 KEY_RE = re.compile(r"\bkey type=0x300\b")
 HEARTBEAT_RE = re.compile(r"^loop=\d+ route=\w+")
+
+
+def is_row_walk(walk):
+    """Whether `walk` walks ALONG a row (`walk.cards`) rather than down the Home rows."""
+    return "cards" in walk
+
+
+def row_walk_plan(walk):
+    """The ordered key tokens of a row walk: `row_down` Downs to reach the row, `cards` Rights
+    along it, then `cards` Lefts back. Nothing else can be produced."""
+    n = int(walk["cards"])
+    plan = ["down"] * int(walk.get("row_down", 0)) + ["right"] * n + ["left"] * n
+    assert all(k in ROW_WALK_KEYS for k in plan)
+    return plan
+
+
+def page_landings(window, forward_keys=None):
+    """`(forward, total)` `hubs: landed` lines in `window`: every landing after the walk's first
+    key is a page (or a refresh), and `forward` counts those before the `forward_keys`-th key line
+    (the forward half of a row walk). `forward` is `total` when `forward_keys` is None or the
+    window holds fewer key lines than that."""
+    total = forward = 0
+    keys = 0
+    turned = False
+    for ln in window or []:
+        if KEY_RE.search(ln):
+            keys += 1
+            turned = forward_keys is not None and keys > forward_keys
+        elif LANDED_RE.match(ln.strip()):
+            total += 1
+            forward += 0 if turned else 1
+    return forward, total
+
+
+def describe_paging(window, forward_keys, min_forward):
+    """`(failure_or_None, detail)` for a row walk: the page landings in the window, graded only
+    on the forward half reaching `min_forward`."""
+    fwd, total = page_landings(window, forward_keys)
+    detail = f" | page landings in window: {fwd} forward, {total} total"
+    if fwd < min_forward:
+        return (f"paging did not happen: {fwd} page landing(s) (`hubs: landed`) in the forward half "
+                f"of the walk, fewer than the {min_forward} required ({total} in the whole window)"
+                ), detail
+    return None, detail
 
 
 def walk_plan(rows, walk):
@@ -457,13 +513,18 @@ def burst_plan(rows, walk):
 def walk_steps(scene, rows):
     """`(key, seconds_until_the_next_key)` for every key the walk of `scene` presses over `rows`
     landed shelves/rows. A plain walk is `walk_plan` at `key_gap_s` with `rest_s` added after the
-    last Down; a burst walk is `burst_plan`. KeyWalk paces itself from this and nothing else."""
+    last Down; a row walk (`walk.cards`) is `row_walk_plan`, resting after its Rights instead; a
+    burst walk is `burst_plan`. KeyWalk paces itself from this and nothing else."""
     w = scene["walk"]
     if is_burst(scene):
         return burst_plan(walk_downs(scene, rows), w)
-    plan = walk_plan(walk_downs(scene, rows), w)
+    if is_row_walk(w):
+        plan = row_walk_plan(w)
+        half = int(w.get("row_down", 0)) + int(w["cards"])
+    else:
+        plan = walk_plan(walk_downs(scene, rows), w)
+        half = len(plan) // 2
     gap, rest = float(w["key_gap_s"]), float(w.get("rest_s", 4))
-    half = len(plan) // 2
     return [(key, gap + (rest if i + 1 == half else 0.0)) for i, key in enumerate(plan)]
 
 

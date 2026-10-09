@@ -19,9 +19,9 @@ fn request_addresses_do_not_alias_across_sources_or_profile_resets() {
     let mut second = Src::new(b_sid, String::new());
     let mint = || o.adapter.next_request.fetch_add(1, Ordering::Relaxed);
     let mut held = None;
-    kick_with(o.state.hub_gen, &o.adapter, &mut first, |request| { held = Some(request); true });
+    kick_with(o.state.hub_gen, &o.adapter, &mut first, &BrowseScope::standalone(), |request| { held = Some(request); true });
     let a = held.unwrap().seq;
-    kick_with(o.state.hub_gen, &o.adapter, &mut first, |_| panic!("an in-flight source must not invoke the adapter again"));
+    kick_with(o.state.hub_gen, &o.adapter, &mut first, &BrowseScope::standalone(), |_| panic!("an in-flight source must not invoke the adapter again"));
     assert!(first.begin_request(ca, 1, || panic!("single flight must not mint again")).is_none());
     let b = second.begin_request(cb, 1, mint).unwrap().seq;
     first.fetching = false; // the prior attempt completed
@@ -42,13 +42,13 @@ fn endpoint_outcomes_cover_missing_client_refusal_and_failed_arrival() {
     plx_plex::plex::reset_servers_for_test();
     reset(&mut o.state, &o.adapter);
     let mut missing = Src::new(sid(0), String::new());
-    assert_eq!(kick_with(o.state.hub_gen, &o.adapter, &mut missing, |_| panic!("missing client cannot spawn")).unwrap().sid, sid(0));
+    assert_eq!(kick_with(o.state.hub_gen, &o.adapter, &mut missing, &BrowseScope::standalone(), |_| panic!("missing client cannot spawn")).unwrap().sid, sid(0));
     assert_eq!(missing.state, HubState::Failed);
     assert_eq!(missing.retry_s, RETRY_MIN_S);
 
     let id = plx_plex::plex::register_for_test("endpoint-hub", "127.0.0.1", 9, "synthetic", "cid");
     let mut s = Src::new(id, String::new());
-    assert_eq!(kick_with(o.state.hub_gen, &o.adapter, &mut s, |_| false).unwrap().sid, id);
+    assert_eq!(kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |_| false).unwrap().sid, id);
     assert!(!s.fetching);
     assert_eq!(s.retry_s, RETRY_MIN_S);
     seed(&mut o.state, vec![s]);

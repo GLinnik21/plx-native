@@ -256,11 +256,32 @@ Verified hub list (`MediaContainer.Hub[]`), each hub has
 | `custom.collection.*` | collection shelves | `/library/collections/{id}/children` |
 
 **`/hubs` has no paging** (`docs/plex-openapi.json`: its only parameters are `count`, `onlyTransient`
-and `identifier`), so a server that promotes many libraries and collections answers with all of them
-in one response and the client cannot ask for "the next page of hubs". Home therefore takes every
-hub the server sends, 12 cards per hub (`count=12`), and bounds only the merged catalog:
-`pms.rs::HOME_CARDS_MAX` = 2,048 cards (about 170 full rows), whole shelves dropped from the tail of
-a source when it is exceeded, logged as `hubs: card bound 2048 reached`.
+and `identifier`). Home requests all rows, with 12 preview cards per row. Recently Added rows
+load more items through their provider's listing `key`, with both `X-Plex-Container-Start` and
+`X-Plex-Container-Size`. The client preserves the key's type, library, and sort parameters.
+Other Home rows, including collections, keep their 12-card preview.
+
+A PMS response observed on 2026-10-09 returned `offset=0`, `size=36`, and `totalSize=50`.
+The next response returned `offset=36`, `size=14`, and `totalSize=50`. This confirms the
+required offset fields on that server. Other server versions remain unverified. The client
+rejects a response whose offset differs from the requested start.
+
+Home keeps a moving window of at most 24 cards per Recently Added row, with an overlap of up to 12 eligible cards.
+Server offsets are kept separately from visible card positions. A page retains the overlap
+and skips items from hidden libraries. One paging worker scans at most eight server chunks.
+If those chunks are hidden, it publishes the advanced cursor and keeps the current cards.
+A refresh scans the previous raw range so that hidden items do not shorten the retained window.
+It requests another window near the visible end and fetches an earlier window when the user
+scrolls back. Requests run outside the drawing loop. Failed page requests retain the current
+cards and stop after three attempts. Leaving the row cancels its paging demand. Returning to
+the row can start another attempt. A normal refresh reloads the current window. A profile change
+starts from the new profile's preview. Both operations reject old results.
+The shared shelf widget draws only visible cards. Paging preserves the banner's current items.
+
+`pms.rs::HOME_CARDS_MAX` is a 2,048-slot preview budget. A Recently Added window spends at most
+12 preview slots. Other rows spend their published card count. Thus published rows hold at most
+4,096 cards, plus at most eight retained banner items. Whole rows beyond the preview budget
+are omitted from the tail of a source and logged as `hubs: card bound 2048 reached`.
 
 Verified Continue Watching item (movie, trimmed):
 
