@@ -159,6 +159,36 @@ pub fn draw_subtitles(hud_up: bool, burned: bool) {
 /// (`docs/ass-subtitles.md`).
 pub fn draw_subtitle_message(text: &str, hud_up: bool) {
     let scale = subtitle_size_scale(plx_media::route::subtitle_size());
+    let lines = caption_wrap(text, scale);
+    if lines.is_empty() {
+        return;
+    }
+    let cx = SCR_W * 0.5;
+    // sit near the bottom normally; lift above the scrubber/tabs while the HUD is up; the viewer's
+    // Position pick lifts it further still, same direction, on top of that. The HUD-up floor is the
+    // transport's ceiling, so a block that grows down cannot run into the scrubber.
+    let baseline = (if hud_up { SUB_CEIL_Y } else { SUB_BASE_Y })
+        - subtitle_position_lift(plx_media::route::subtitle_position());
+    let floor = if hud_up { SUB_CEIL_Y } else { CAPTION_FLOOR_Y };
+    let lay = caption_layout(lines.len(), scale, baseline, floor);
+    let ink = subtitle_ink(); // white unless the viewer picked a dimmer tone (track menu)
+    let outline = theme::scrim_black(0.85);
+    let p = Painter::root();
+    for (i, ln) in lines.iter().enumerate() {
+        let top = lay.line_top(i);
+        if let Ok(cs) = CString::new(ln.as_str()) {
+            // dark outline (4 offsets) then the bold caption in its tone — legible over any scene
+            for (dx, dy) in [(-2.0f32, 0.0f32), (2.0, 0.0), (0.0, -2.0), (0.0, 2.0)] {
+                p.text(cs.as_ptr(), cx + dx, top + 4.0 + dy, lay.face, outline, 1, 1);
+            }
+            p.text(cs.as_ptr(), cx, top + 4.0, lay.face, ink, 1, 1);
+        }
+    }
+}
+
+/// The caption's lines: each newline-separated segment word-wrapped at the viewer's size. Every
+/// wrapped line is kept, so a long cue is never cut short; [`caption_layout`] fits the block.
+fn caption_wrap(text: &str, scale: f32) -> Vec<String> {
     let max_chars = ((42.0 / scale).round() as usize).max(20);
     let mut lines: Vec<String> = Vec::new();
     for seg in text.split('\n') {
@@ -166,38 +196,52 @@ pub fn draw_subtitle_message(text: &str, hud_up: bool) {
         if seg.is_empty() {
             continue;
         }
-        for l in wrap(seg, max_chars) {
-            if lines.len() < MAX_CAPTION_LINES {
-                lines.push(l);
-            }
+        lines.extend(wrap(seg, max_chars));
+    }
+    lines
+}
+
+/// Where one caption block is drawn: `face` is the text size in px, `pitch` the line pitch, `top`
+/// the y of the first line's box, `lines` how many lines the block holds.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CaptionLayout {
+    face: i32,
+    pitch: f32,
+    top: f32,
+    lines: usize,
+}
+
+impl CaptionLayout {
+    fn line_top(&self, i: usize) -> f32 {
+        self.top + i as f32 * self.pitch
+    }
+}
+
+/// The steps a caption block too tall for its area is stepped down through, as factors of the
+/// viewer's own size. The first step is that size, so a block that fits is drawn as it always was.
+const CAPTION_FIT_STEPS: [f32; 4] = [1.0, 0.875, 0.75, 0.625];
+
+/// The lowest y a caption block may reach with the transport down: the screen's bottom margin.
+const CAPTION_FLOOR_Y: f32 = SCR_H - plx_ui::consts::MARGIN_Y;
+
+/// Place one caption block of `lines` lines at the viewer's `scale`, its bottom on `baseline` for a
+/// block of up to [`CAPTION_ANCHOR_LINES`] lines. A taller block keeps that anchor's top and grows
+/// DOWN, so it moves away from the Timing capsule rather than up into it. If the block would pass
+/// `floor`, the size steps down through [`CAPTION_FIT_STEPS`] until it fits; at the smallest step it
+/// is drawn anyway, since no line is ever dropped.
+fn caption_layout(lines: usize, scale: f32, baseline: f32, floor: f32) -> CaptionLayout {
+    let anchored = lines.min(CAPTION_ANCHOR_LINES) as f32;
+    let top = baseline - anchored * CAPTION_LINE_PITCH * scale;
+    let mut lay = CaptionLayout { face: 0, pitch: 0.0, top, lines };
+    for &step in CAPTION_FIT_STEPS.iter() {
+        let s = scale * step;
+        // subtitle caption: media chrome, a documented carve-out from theme::size (see HUD_TITLE_SZ)
+        lay = CaptionLayout { face: (36.0 * s).round() as i32, pitch: CAPTION_LINE_PITCH * s, top, lines };
+        if top + lines as f32 * lay.pitch <= floor {
+            break;
         }
     }
-    if lines.is_empty() {
-        return;
-    }
-    // subtitle caption: media chrome, a documented carve-out from theme::size (see HUD_TITLE_SZ)
-    let sz = (36.0 * scale).round() as i32;
-    let lh = CAPTION_LINE_PITCH * scale;
-    let n = lines.len() as f32;
-    let cx = SCR_W * 0.5;
-    // sit near the bottom normally; lift above the scrubber/tabs while the HUD is up; the viewer's
-    // Position pick lifts it further still, same direction, on top of that
-    let baseline = (if hud_up { SUB_CEIL_Y } else { SUB_BASE_Y })
-        - subtitle_position_lift(plx_media::route::subtitle_position());
-    let block_top = baseline - n * lh;
-    let ink = subtitle_ink(); // white unless the viewer picked a dimmer tone (track menu)
-    let outline = theme::scrim_black(0.85);
-    let p = Painter::root();
-    for (i, ln) in lines.iter().enumerate() {
-        let top = block_top + i as f32 * lh;
-        if let Ok(cs) = CString::new(ln.as_str()) {
-            // dark outline (4 offsets) then the bold caption in its tone — legible over any scene
-            for (dx, dy) in [(-2.0f32, 0.0f32), (2.0, 0.0), (0.0, -2.0), (0.0, 2.0)] {
-                p.text(cs.as_ptr(), cx + dx, top + 4.0 + dy, sz, outline, 1, 1);
-            }
-            p.text(cs.as_ptr(), cx, top + 4.0, sz, ink, 1, 1);
-        }
-    }
+    lay
 }
 
 /// The ink both subtitle draws use this frame: the viewer's tone ([`plx_media::player::subtitle_tone`])
@@ -246,18 +290,19 @@ fn subtitle_position_lift(position: plx_plex::plex::session::SubtitlePosition) -
 const SUB_BASE_Y: f32 = SCR_H - 100.0;
 const SUB_CEIL_Y: f32 = SCR_H - 300.0;
 
-/// The most caption lines [`draw_subtitle_message`] ever stacks (the rest of a longer cue is
-/// dropped), and the reason the Timing capsule's y is fixed rather than following the caption
-/// block (`appkit::timing_capsule`, plan `subtitle-menu-capsule` §4): a live cue's line count changes
-/// frame to frame, and a capsule that tracked it would jump under a viewer's thumb mid-hold.
-const MAX_CAPTION_LINES: usize = 3;
+/// The caption line count the block is bottom-anchored at, and the reason the Timing capsule's y is
+/// fixed rather than following the caption block (`appkit::timing_capsule`, plan
+/// `subtitle-menu-capsule` §4): a live cue's line count changes frame to frame, and a capsule that
+/// tracked it would jump under a viewer's thumb mid-hold. A block taller than this keeps the
+/// anchor's top and grows down ([`caption_layout`]); it never has lines cut.
+const CAPTION_ANCHOR_LINES: usize = 3;
 /// The vertical pitch of one caption line in [`draw_subtitle_message`] — its 36 px face plus
 /// leading.
 const CAPTION_LINE_PITCH: f32 = 48.0;
-/// The Timing capsule's bottom y — [`SUB_BASE_Y`] cleared by the tallest caption block this app
-/// ever draws ([`MAX_CAPTION_LINES`] at [`CAPTION_LINE_PITCH`]), so the capsule never overlaps
-/// even a three-line cue.
-pub const CAPSULE_BOTTOM_Y: f32 = SUB_BASE_Y - MAX_CAPTION_LINES as f32 * CAPTION_LINE_PITCH;
+/// The Timing capsule's bottom y — [`SUB_BASE_Y`] cleared by the tallest caption block that stays
+/// bottom-anchored ([`CAPTION_ANCHOR_LINES`] at [`CAPTION_LINE_PITCH`]). A taller block grows down
+/// from the same top, so the capsule never overlaps any caption.
+pub const CAPSULE_BOTTOM_Y: f32 = SUB_BASE_Y - CAPTION_ANCHOR_LINES as f32 * CAPTION_LINE_PITCH;
 
 /// Map a decoded image-subtitle rect from the stream's `cw`×`ch` authoring canvas onto the video
 /// rect — which is always the full panel here (the video track is authored 1920×1080; see the
@@ -2895,5 +2940,70 @@ mod tests {
             transport_mark(false, Busy::Transport, false, 90 * S, 42 * S, Some(0)),
             TransportMark::FastForward
         );
+    }
+
+    /// **A cue is never cut at a line count**: every wrapped line of every segment survives the
+    /// wrap, however many there are.
+    #[test]
+    fn a_six_line_cue_wraps_to_six_lines() {
+        let text = "one\ntwo\nthree\nfour\nfive\nsix";
+        assert_eq!(caption_wrap(text, 1.0), ["one", "two", "three", "four", "five", "six"]);
+        let long = "word ".repeat(120);
+        let wrapped = caption_wrap(long.trim(), 1.0);
+        assert!(wrapped.len() > 3, "a long cue wraps past the anchor count, got {}", wrapped.len());
+        assert_eq!(wrapped.join(" ").split_whitespace().count(), 120, "no word is lost");
+    }
+
+    /// **A 1-3 line caption lays out exactly as it did before the fit rule**: 36 px at the
+    /// viewer's default size, a 48 px pitch, and the block's bottom on the baseline.
+    #[test]
+    fn a_three_line_caption_keeps_its_size_and_position() {
+        let lay = caption_layout(3, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y);
+        assert_eq!(lay.face, 36);
+        assert_eq!(lay.pitch, 48.0);
+        assert_eq!(lay.top, 836.0);
+        assert_eq!(lay.line_top(0), 836.0);
+        assert_eq!(lay.line_top(2), 932.0);
+        let one = caption_layout(1, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y);
+        assert_eq!((one.face, one.top), (36, 932.0), "one line sits on the baseline");
+        let two = caption_layout(2, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y);
+        assert_eq!((two.face, two.top), (36, 884.0));
+    }
+
+    /// **A six-line block at the default size is too tall for the area below the capsule, so it
+    /// steps down, and every one of its lines is still laid out inside the floor.**
+    #[test]
+    fn a_six_line_block_steps_down_and_keeps_every_line() {
+        let lay = caption_layout(6, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y);
+        assert!(lay.face < 36, "the face steps down, got {}", lay.face);
+        assert_eq!(lay.lines, 6);
+        let bottom = lay.line_top(5) + lay.pitch;
+        assert!(bottom <= CAPTION_FLOOR_Y, "the block ends at {bottom}, past the floor");
+    }
+
+    /// **A block that cannot fit even at the smallest step is still drawn whole.** Lines are never
+    /// dropped to make room.
+    #[test]
+    fn a_block_too_tall_for_any_step_keeps_all_its_lines() {
+        let lay = caption_layout(12, 1.5, SUB_BASE_Y, CAPTION_FLOOR_Y);
+        assert_eq!(lay.lines, 12);
+        assert_eq!(lay.face, (36.0 * 1.5 * CAPTION_FIT_STEPS[3]).round() as i32, "smallest step");
+    }
+
+    /// **The Timing capsule's y is the same for a 1, 3 or 6-line caption.** Its bottom edge is
+    /// [`CAPSULE_BOTTOM_Y`], and a taller block grows down from that edge, never up into the
+    /// capsule.
+    #[test]
+    fn the_capsule_edge_is_fixed_and_a_taller_block_grows_away_from_it() {
+        assert_eq!(CAPSULE_BOTTOM_Y, 836.0);
+        for n in [1usize, 3, 6] {
+            let lay = caption_layout(n, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y);
+            assert!(
+                lay.top >= CAPSULE_BOTTOM_Y,
+                "{n} lines: block top {} rises into the capsule (bottom {CAPSULE_BOTTOM_Y})",
+                lay.top
+            );
+        }
+        assert_eq!(caption_layout(6, 1.0, SUB_BASE_Y, CAPTION_FLOOR_Y).top, CAPSULE_BOTTOM_Y);
     }
 }
