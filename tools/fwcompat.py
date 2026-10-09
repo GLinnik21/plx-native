@@ -287,11 +287,11 @@ def cmd_grade(args, db):
     worst = 0
     for fw, mlibs, msyms in rows:
         ok = not mlibs and not msyms
-        # Releases below the floor are graded and PRINTED but do not set the exit status. The five
-        # oldest (webOS 1.2.0 through 3.9.2) fail permanently and for reasons nobody intends to
-        # fix — they predate the C++11 std::string ABI, so StarfishMediaAPIs::Feed has a different
-        # mangling — so counting them would make this tool useless as a gate while hiding the
-        # regression it exists to catch.
+        # Releases below the floor are graded and PRINTED but do not set the exit status. The
+        # oldest releases predate the C++11 std::string ABI, so StarfishMediaAPIs::Feed carries a
+        # different mangling there; src/starfish.c now resolves either name at runtime and
+        # 3.4.3 has run on hardware, but webOS 1.x/2.x were never tried, so counting them would
+        # make this tool useless as a gate while hiding the regression it exists to catch.
         counts = floor is None or relver(fw.release) >= floor
         if counts and not ok:
             worst = 1

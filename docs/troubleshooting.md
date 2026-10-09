@@ -5,8 +5,8 @@ This page is about what to do when something doesn't work.
 
 ## The app tile does nothing
 
-PlxNative needs **webOS 4.0 or newer** — older firmware can't start it at all, so the tile just
-does nothing when you select it. See [Will it work on my
+PlxNative needs **webOS 4.0 or newer** (webOS 3.4.3 has also been tested and works). Older
+firmware may not be able to start it at all, so the tile just does nothing when you select it. See [Will it work on my
 television?](../README.md#will-it-work-on-my-television) for the full picture, including sets
 that start but hit a specific known problem.
 

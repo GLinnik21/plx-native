@@ -328,6 +328,9 @@ refinements the table understated:
   corrected 2026-08-05**: 3.9.2 *has* `libAcbAPI.so.1`. It fails on the FFmpeg SONAMEs (it ships
   55/55/52/2, not 57/57/55/4) and on `StarfishMediaAPIs::Feed`, which carries a pre-C++11
   `std::string` mangling there. Check either with `tools/fwcompat.py --release 3.9.2`.
+  **Update 2026-10-09:** both reasons are gone (bundled FFmpeg; `Feed` and
+  `SDL_webOSCursorVisibility` resolved at runtime), and a 3.4.3 set plays. The `>=4.0` catalogue
+  bound in `docs/webosbrew-package.yml` is unchanged pending wider 3.x testing.
 
 ### 3.3 The pinning inside our own code (`audit:portability`, file-cited)
 
