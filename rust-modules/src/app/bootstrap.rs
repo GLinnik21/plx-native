@@ -89,7 +89,7 @@ impl HomeIo {
     }
 }
 
-pub(crate) const ADMISSION_SHAPE: &str = "HomeAdmissionV1{frame:u64,ordered_request:Home|Discovery,epoch:u32,sid:u16,client:u32,token_gen:u32,page:Option<{id:str,key:str,start:u64}>,admitted:bool}";
+pub(crate) const ADMISSION_SHAPE: &str = "HomeAdmissionV1{frame:u64,ordered_request:Home|Discovery,epoch:u32,sid:u16,client:u32,token_gen:u32,page:Option<{id:str,key:str,start:u64,before:bool,hidden:[i64]}>,admitted:bool}";
 pub(crate) fn validate_admission(value: &serde_json::Value, client: u32) -> Result<(), &'static str> {
     let object = value.as_object().ok_or("invalid synchronous admission")?;
     let hubs = value["kind"] == "hubs";
@@ -106,9 +106,10 @@ pub(crate) fn validate_admission(value: &serde_json::Value, client: u32) -> Resu
         value[key].as_u64().and_then(|n| u32::try_from(n).ok()).ok_or("invalid admission identity")?;
     }
     if let Some(page) = object.get("page") {
-        if page.as_object().is_none_or(|page| page.len() != 3)
+        if page.as_object().is_none_or(|page| page.len() != 5)
             || page["id"].as_str().is_none() || page["key"].as_str().is_none()
-            || page["start"].as_u64().is_none() { return Err("invalid hubs page"); }
+            || page["start"].as_u64().is_none() || page["before"].as_bool().is_none()
+            || page["hidden"].as_array().is_none_or(|hidden| hidden.iter().any(|section| section.as_i64().is_none())) { return Err("invalid hubs page"); }
     }
     if hubs { value["req"].as_u64().and_then(|n| u32::try_from(n).ok()).ok_or("invalid admission request")?; }
     else {

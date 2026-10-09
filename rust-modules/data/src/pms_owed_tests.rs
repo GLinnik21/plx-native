@@ -24,7 +24,7 @@ fn a_spawn_raises_the_claim_and_the_take_of_its_landing_releases_it() {
     let mut s = Src::new(sid, String::new());
     assert!(!owed(&o.adapter), "nothing spawned, nothing owed");
     with_late_fetches_for_test(0, 1, || {
-        assert!(kick_with(o.state.hub_gen, &o.adapter, &mut s, |r| spawn_fetch(&o.adapter, r)).is_none());
+        assert!(kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |r| spawn_fetch(&o.adapter, r)).is_none());
     });
     assert!(s.fetching && owed(&o.adapter), "the claim is raised on the spawning thread, before the worker");
     let first = take_landings(&o.adapter);
@@ -44,7 +44,7 @@ fn a_refused_launch_gives_the_claim_back() {
     let sid = plx_plex::plex::register_for_test("owed-refused", "127.0.0.1", 9, "synthetic", "cid");
     let mut s = Src::new(sid, String::new());
     let refused = with_refused_fetches_for_test(|| {
-        kick_with(o.state.hub_gen, &o.adapter, &mut s, |r| spawn_fetch(&o.adapter, r))
+        kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |r| spawn_fetch(&o.adapter, r))
     });
     assert!(refused.is_some(), "a refused launch is an endpoint failure");
     assert!(!s.fetching && !owed(&o.adapter), "nothing will ever answer, so nothing is owed");
@@ -59,7 +59,7 @@ fn a_launcher_that_does_not_spawn_here_is_never_counted() {
     let sid = plx_plex::plex::register_for_test("owed-held", "127.0.0.1", 9, "synthetic", "cid");
     let mut s = Src::new(sid, String::new());
     let mut held = None;
-    kick_with(o.state.hub_gen, &o.adapter, &mut s, |r| { held = Some(r); true });
+    kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |r| { held = Some(r); true });
     assert!(held.is_some() && s.fetching);
     assert!(!owed(&o.adapter), "a request another adapter holds is not this mailbox's debt (replay)");
     plx_plex::plex::reset_servers_for_test();
@@ -75,7 +75,7 @@ fn exactly_one_landing_answers_each_spawned_request_and_the_claim_counts_them_do
     let (mut sa, mut sb) = (Src::new(a, String::new()), Src::new(b, String::new()));
     with_late_fetches_for_test(0, 1, || {
         for s in [&mut sa, &mut sb] {
-            kick_with(o.state.hub_gen, &o.adapter, s, |r| spawn_fetch(&o.adapter, r));
+            kick_with(o.state.hub_gen, &o.adapter, s, &BrowseScope::standalone(), |r| spawn_fetch(&o.adapter, r));
         }
     });
     assert_eq!(o.adapter.owed.load(Ordering::SeqCst), 2);

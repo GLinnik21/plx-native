@@ -2356,6 +2356,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 Handled::Yes
             }
             ScreenEvent::StoreChanged(ord, _) if *ord == StoreId::Hubs.ord() => {
+                for shelf in &mut self.grid.shelves { shelf.reset_page_requests(); }
                 self.projected_generation = None;
                 self.sync_catalog(cx);
                 if self.rows.is_empty() {

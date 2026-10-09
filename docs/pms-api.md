@@ -260,7 +260,11 @@ and `identifier`). Home requests all rows, with 12 preview cards per row. Recent
 load more items through their provider's listing `key`, with both `X-Plex-Container-Start` and
 `X-Plex-Container-Size`. The client preserves the key's type, library, and sort parameters.
 
-Home keeps a moving window of at most 24 cards per Recently Added row, with a 12-item overlap.
+Home keeps a moving window of at most 24 cards per Recently Added row, with an overlap of up to 12 eligible cards.
+Server offsets are kept separately from visible card positions. A page retains the overlap
+and skips items from hidden libraries. One paging worker scans at most eight server chunks.
+If those chunks are hidden, it publishes the advanced cursor and keeps the current cards.
+A refresh scans the previous raw range so that hidden items do not shorten the retained window.
 It requests another window near the visible end and fetches an earlier window when the user
 scrolls back. Requests run outside the drawing loop. Failed page requests retain the current
 cards and stop after three attempts. Leaving the row cancels its paging demand. Returning to

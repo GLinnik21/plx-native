@@ -139,6 +139,7 @@ pub(super) fn shelf(slot: u16, title: &str, hub_id: &str, rks: &[&str]) -> Shelf
         hub_id: hub_id.into(),
         key: String::new(),
         items: rks.iter().map(|r| row(slot, r)).collect(),
+        positions: (0..rks.len()).collect(),
         total: 0, offset: 0, end: 0, more: false,
     }
 }

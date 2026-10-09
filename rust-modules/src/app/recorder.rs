@@ -2368,7 +2368,7 @@ mod tests {
         // **A collection shelf's total moves it to this value.** A Home shelf and a hub row carry
         // the hub's `totalSize` (the linked heading's "· N"), in both the hubs record and the
         // hubs initial state.
-        assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0xdfca_e6c0_6f49_7ac5);
+        assert_eq!(plx_ui::rec::state_fp(APP_SHAPES), 0x68eb_d05d_f046_ba72);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result

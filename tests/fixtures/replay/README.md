@@ -370,3 +370,9 @@ This macOS display runs at 120 Hz. The recordings use shorter idle intervals and
 key interval to stay within the replay memory budget. A host test checks the committed
 recordings' initial hashes and request validation. Targets and Resolve replay checks also
 verify the recorded behavior.
+
+The review fixes add raw item positions and the page direction and hidden-library list to
+the recorded data state. The state shape changed from 6411129155501563480 to
+9159381185758612433. All three anchors were recorded again against the synthetic server
+and installed with `tools/plxnative-rec rerecord`. Their anchor flags remain set.
+Targets and Resolve both report SAME, with every difference counter at zero.

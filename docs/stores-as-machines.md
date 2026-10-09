@@ -68,7 +68,7 @@ exactly these (file: callers):
 | metadata | `MetadataCmd::{RequestDetail,Clear,ClearItem,Withdraw,Reset,LoadSeason,SetNowPlaying,SetWatchedLocal,InstallPlaying,MarkSkipped}` — the private `request_detail`/`clear`/`clear_item`/`withdraw`/`load_season`/`set_now_playing`/`set_watched_local`/`install_playing`/`mark_skipped` functions behind them are not reachable directly | Detail emits `AppFx::Store` (the mount-time `RequestDetail` `screens/registry.rs` used to queue for a fresh Detail page raced `DetailScreen`'s own `Enter(Fresh)` decision and issued it twice; `registry.rs` no longer queues one, so `Enter` is the one place a page decides it needs a fetch — nothing re-asks on `Tick` or `StoreChanged`, because the slot is a mailbox other flows (the item menu's Play, the play paths) fill by design; a Detail SURFACE that is dismissed sends `Withdraw` on `ScreenEvent::Closing`, ahead of its host's `Enter(Restored)`, so its unlanded request cannot displace the item that page found loaded, and its `ClearItem` follows at teardown unless the page withdrew and then asked for its own address again — `data/src/stores/metadata.rs` says which cases); `app/bridge.rs` delivers to that Bridge's `MetadataStore`; `app/boot.rs` and `app/content.rs` call `Bridge::metadata_run` directly (`load_detail_now` is deleted, D7) |
 | metadata | `pump_detail`, `pump_season`, `pump_alt_sources` | PUMP doors, `pub(crate)` by design — stepped by the store's own `run`/pump path, not called by a screen |
 | search | `set_query`, `reset`, `pump` | none direct — reached only through `StoreCmd::Search` from the owned `screens/search/mod.rs` (`ui/search/mod.rs` and `ui/search/recents.rs` are both deleted) |
-| pms | `request_refetch_hubs`, `request_retry`, `reset` (`#[cfg(test)]`-only since D3's follow-up) | none direct — reached only through `HubsCmd::{RefetchHubs,Retry,Reset}` via `Bridge::hubs_run`, called from `app/{boot,run}.rs` (`ui/home.rs` is deleted; the owned Home emits `StoreCmd::Hubs(..)` and never a mutator — see the Phase 8 note below) |
+| pms | `run_with_directory`, controlled work, and result landing | HubsStore owns the state and adapter. Home emits `StoreCmd::Hubs(..)`. Retry and page work capture the current Browse scope before a worker starts. |
 
 The phase-4 CENSUS is historical: the 87/51/24/21/17/4 `pub(crate) fn` counts above are a
 2026-09-07 snapshot, never re-run. The table's CALLER column is not — it is the part kept current
@@ -84,10 +84,9 @@ Phase 7 (2026-09-08) mounted Detail and Person from `screens/` and retired their
 the table now names the live callers. Phase 8 (2026-09-09) did the same to Home and took two of the
 table's cells with it: `ui/home.rs` is deleted, so it is no caller of anything, and `pms::pump` —
 the "legacy callers' combined pass" it was the last caller of — is deleted with it, along with
-`stores::hubs::pump`. The pms row is `request_refetch_hubs`, `request_retry`, `reset` (private,
-the last one `#[cfg(test)]`-only), reached only through `HubsCmd::{RefetchHubs,Retry,Reset}` via
-`Bridge::hubs_run`, called from `app/{boot,run}.rs`; the owned Home emits `StoreCmd::Hubs(..)` and
-never a mutator, and the store's own `tick` is what a frame drives now. Person, Filmography and
+`stores::hubs::pump`. HubsStore now forwards commands through `run_with_directory` and captures worker inputs
+through controlled work. The owned Home emits `StoreCmd::Hubs(..)` and never calls a catalog
+mutator. The store owns the work and result handling. Person, Filmography and
 PersonBio read only the owner-borrowed
 `PersonView`; Filmography reacts to Person notices but does not mutate the store.
 
