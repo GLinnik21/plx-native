@@ -438,6 +438,15 @@ def run_surface(name, profile_name, args):
             fails.append(f"seated at item {first_seen}, not on the first row: the order model may be wrong")
         time.sleep(1.0)
         pms.link.set("all", link_conditioner.make_profile(profile))
+
+        def arm():
+            """An error profile also fails the first read of EVERY page of the walked list (not the
+            head page), so a short list cannot be walked past a random rate that happened to spare
+            it. Called again before the walk back, which zeroes the counts: each direction fails."""
+            if profile.error_rate:
+                pms.link.set_faults([link_conditioner.make_fault(spec["pages"], attempts=1,
+                                                                 kind=profile.error_kind)])
+        arm()
         t0 = time.monotonic()
         gap = args.gap_ms / 1000
         stride = spec["stride"]
@@ -470,6 +479,8 @@ def run_surface(name, profile_name, args):
                 time.sleep(2)
         walk(spec["key"], lambda cur: cur >= tail, "forward")
         time.sleep(2)
+        t_back = time.monotonic()
+        arm()
         walk(spec["back"], lambda cur: cur < stride, "back")
         # at rest: every placeholder must resolve within a bound derived from the profile
         rest_bound = 3 + 2 * (profile.latency_ms + profile.jitter_ms) / 1000 + \
@@ -540,9 +551,15 @@ def run_surface(name, profile_name, args):
         else:
             retried += 1
     walked_failed = [r for r in failed_pages if pages_rx.search(r["path"]) and r["start"] not in (None, "0")]
-    if profile.error_rate and not walked_failed:
-        fails.append("the error profile failed none of this list's pages, so its retry/reach assertion is "
-                     f"vacuous ({len(failed_reads)} reads failed in all, {len(failed_pages)} listings)")
+    if profile.error_rate:
+        # `arm()` fails a page of the walked list in each direction by construction; none failing
+        # means the page endpoint was never asked for (or the pattern is wrong), not a pass.
+        for label, there in (("forward", [r for r in walked_failed if r["t_recv"] < t_back]),
+                             ("back", [r for r in walked_failed if r["t_recv"] >= t_back])):
+            if not there:
+                fails.append(f"the {label} walk failed none of this list's pages, so its retry/reach "
+                             f"assertion is vacuous ({len(failed_reads)} reads failed in all, "
+                             f"{len(failed_pages)} listings)")
     ph = [int(m.group(2)) for t, line in lines if t >= t0 for m in [PH_RE.match(line)] if m]
     ph_at_rest = [int(m.group(2)) for t, line in lines if t >= t_end - rest_bound + 1 for m in [PH_RE.match(line)] if m]
     if ph_at_rest and ph_at_rest[-1] > 0:
@@ -553,7 +570,7 @@ def run_surface(name, profile_name, args):
                               "late_frames_logged": len(late), "late_within_-50..+250ms_of_a_landing": near,
                               "late_elsewhere": away},
               "pages_landed": len(timeline), "failed_reads": len(failed_reads),
-              "failed_pages": len(failed_pages), "failed_pages_retried_ok": retried, "failed_refetches_not_retried": redundant,
+              "failed_pages": len(failed_pages), "walked_pages_failed": len(walked_failed), "failed_pages_retried_ok": retried, "failed_refetches_not_retried": redundant,
               "max_ask_to_landed_ms": max([p["ask_to_landed_ms"] for p in timeline] or [0]),
               "placeholder_frames_per_second_max": max(ph or [0]),
               "placeholder_seconds": sum(1 for p in ph if p), "page_timeline": timeline[:12]}

@@ -2344,7 +2344,7 @@ class Handler(BaseHTTPRequestHandler):
         if split.path in ("/_mock/link", "/_mock/wire"):
             return self._link_control(method, split.path, body)
         t_recv = time.monotonic()
-        plan = self.server.pms.link.plan(split.path, split.query)
+        plan = self.server.pms.link.plan(split.path, split.query, self.headers.get("X-Plex-Container-Start"))
         if plan is not None and plan.delay_s:
             time.sleep(plan.delay_s)
         if plan is not None and plan.fail:
@@ -2416,6 +2416,10 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST":
             try:
                 req = json.loads(body or b"{}")
+                if "faults" in req:  # replaces the targeted faults (and zeroes their counts)
+                    pms.link.set_faults([link_conditioner.make_fault(**f) for f in req["faults"]])
+                if "faults" in req and not ({"spec", "class", "profile", "overrides"} & set(req)):
+                    return send(200, {"faults": [f.to_json() for f in pms.link.faults()]})
                 if "spec" in req:
                     klass, profile = link_conditioner.parse_spec(req["spec"])
                 else:
@@ -2427,7 +2431,8 @@ class Handler(BaseHTTPRequestHandler):
                 return send(400, {"error": str(e)})
         elif method != "GET":
             return send(405, {"error": "method not allowed"})
-        send(200, {c: p.to_json() for c, p in pms.link.profiles().items()})
+        send(200, dict({c: p.to_json() for c, p in pms.link.profiles().items()},
+                       faults=[f.to_json() for f in pms.link.faults()]))
 
     def do_GET(self):
         self._do("GET")
@@ -2475,7 +2480,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           authorize_after=None, plex_pass=True, loudness_analysis=True,
           refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
           home_hubs=0, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0,
-          home_users=1, link=(), shows=6, seasons=2, episodes=6):
+          home_users=1, link=(), link_faults=(), shows=6, seasons=2, episodes=6):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -2517,6 +2522,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     for spec in link:
         klass, profile = link_conditioner.parse_spec(spec)
         pms.link.set(klass, profile)
+    pms.link.set_faults([link_conditioner.parse_fault(f) for f in link_faults])
     pms.plex_pass = plex_pass
     pms.home_hubs = home_hubs
     pms.section_hubs = section_hubs
@@ -3127,6 +3133,11 @@ def main():
     ap.add_argument("--decision-delay-ms", type=int, default=0, metavar="N",
                     help="sleep N ms before answering a /video/:/transcode/universal/decision or "
                          "start.* request, so a route flight is observably in flight (default 0)")
+    ap.add_argument("--link-fault", action="append", default=[], metavar="REGEX[@k=v,..]",
+                    help="fail the first `attempts` (default 1) requests for each page (same path and "
+                         "X-Plex-Container-Start >= min_start, default 1) of every endpoint whose path "
+                         "matches REGEX, kind=reset|503; repeatable. Re-arm live with POST /_mock/link "
+                         "{\"faults\": [{\"path\": REGEX, \"attempts\": 1, \"kind\": \"503\"}]}")
     ap.add_argument("--link", action="append", default=[], metavar="SPEC",
                     help="condition the link like macOS Network Link Conditioner: "
                          "[class=]profile[:k=v,...], class listing|image|all, profile "
@@ -3166,8 +3177,10 @@ def main():
     try:
         for spec in link:
             link_conditioner.parse_spec(spec)
+        for spec in a.link_fault:
+            link_conditioner.parse_fault(spec)
     except ValueError as e:
-        ap.error(f"--link: {e}")
+        ap.error(f"--link/--link-fault: {e}")
     if not (1 <= a.shows <= 200 and 1 <= a.seasons <= 20 and 1 <= a.episodes <= 900):
         ap.error("--shows 1..200, --seasons 1..20, --episodes 1..900")
     if not 0 <= a.movies <= 1000:
@@ -3195,7 +3208,7 @@ def main():
                          section_hubs=a.section_hubs,
                          section_hubs_linked=a.section_hubs_linked,
                          decision_delay_ms=a.decision_delay_ms, home_users=a.home_users,
-                         link=link, shows=a.shows, seasons=a.seasons, episodes=a.episodes)
+                         link=link, link_faults=a.link_fault, shows=a.shows, seasons=a.seasons, episodes=a.episodes)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"
