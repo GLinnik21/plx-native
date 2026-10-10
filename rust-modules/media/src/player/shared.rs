@@ -776,6 +776,15 @@ pub struct Shared {
     /// session, and the index says whether it was immediate or after a long healthy run.
     pub dg_cb_err: AtomicI32,
     pub dg_cb_err_at: AtomicU32,
+    /// The firmware's own error NUMBER (`num`) of that same first `ty == 18` callback — the
+    /// `601` of `type=18 num=601 Resource Allocation Error`. Latched together with `dg_cb_err`
+    /// (first one wins, so a later callback cannot overwrite the explanation) and cleared where
+    /// that clears. Already clamped to the `i32` range: it is the one number a handled `tv_pipeline`
+    /// report carries about the refusal, never the callback's string. A SYNCHRONOUS Load refusal
+    /// (`sf_load` returning 0) has no number to latch — Starfish's `Load` hands back a bare
+    /// success flag, and the other refusals inside `sf_load` are the seam's own lifecycle gates —
+    /// so a session that failed that way leaves this at 0 ("none recorded").
+    pub dg_cb_err_num: AtomicI32,
     /// The media GET's HTTP status and the bytes actually delivered to the demuxer. Written by the
     /// DEMUX thread — the third writer of this block. 0/0 = no connection was ever made, which is
     /// a different failure from a connection that answered 401.
@@ -916,6 +925,7 @@ impl Shared {
             dg_feed_state: AtomicU8::new(0),
             dg_cb_err: AtomicI32::new(0),
             dg_cb_err_at: AtomicU32::new(0),
+            dg_cb_err_num: AtomicI32::new(0),
             dg_http_status: AtomicI32::new(0),
             dg_transport_rc: AtomicI32::new(0),
             dg_transport_age_ms: AtomicI64::new(-1),
@@ -1511,6 +1521,7 @@ impl Shared {
         // playback red for the life of the process.
         self.dg_cb_err.store(0, Ordering::Relaxed);
         self.dg_cb_err_at.store(0, Ordering::Relaxed);
+        self.dg_cb_err_num.store(0, Ordering::Relaxed);
         self.dg_http_status.store(0, Ordering::Relaxed);
         self.dg_transport_rc.store(0, Ordering::Relaxed);
         self.dg_transport_age_ms.store(-1, Ordering::Relaxed);

@@ -149,6 +149,10 @@
     "value": "pipeline",
     "description": "Field name in the consent preview's list of possible playback-error values: the playback pipeline stage."
   },
+  "core.preview_domain_pipeline_error": {
+    "value": "TV firmware error number (0 = none recorded)",
+    "description": "Field name in the consent preview's list of possible playback-error values: the whole number the television's own video pipeline reported with its first error, or 0 when it reported none. Its possible values are a range of integers rather than a list of codes."
+  },
   "core.preview_domain_http": {
     "value": "HTTP",
     "description": "Field name in the consent preview's list of possible playback-error values: the HTTP status class."

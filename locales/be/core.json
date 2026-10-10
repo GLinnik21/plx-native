@@ -26,6 +26,7 @@
   "core.preview_domain_observed_rate": "вымераная хуткасць",
   "core.preview_domain_raster": "разрозненне",
   "core.preview_domain_pipeline": "этап прайгравання",
+  "core.preview_domain_pipeline_error": "нумар памылкі прашыўкі тэлевізара (0 = нічога не зафіксавана)",
   "core.preview_domain_http": "HTTP",
   "core.preview_domain_buffer": "буфер",
   "core.preview_domain_transport": "збой перадачы",

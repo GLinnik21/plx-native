@@ -419,6 +419,7 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
         transport,
         transfer_age,
         started: SAW_START.load(Relaxed),
+        pipeline_error: super::SHARED.dg_cb_err_num.load(Relaxed),
         refusal: refusal_context(ps),
     }
 }
@@ -1227,6 +1228,23 @@ mod tests {
         let mut transcode = crate::route::PlaybackSession::default();
         crate::route::install_transcode_for_test(&mut transcode, false, false);
         assert_eq!(mode(&transcode), "transcode");
+    }
+
+    /// The firmware's error number reaches the report context from the callback's latch: a
+    /// simulated `type=18 num=601` then a failure reports 601, and a session whose pipeline never
+    /// spoke an error reports 0.
+    #[test]
+    fn a_type_18_callback_number_reaches_the_error_context() {
+        let _g = plx_base::testlock::serial();
+        let ps = crate::route::PlaybackSession::default();
+        super::super::SHARED.reset_session();
+        assert_eq!(error_context(&ps).pipeline_error, 0, "no callback, nothing to report");
+        let epoch = super::super::SHARED.begin_native_session().expect("session");
+        super::super::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
+        assert_eq!(error_context(&ps).pipeline_error, 601);
+        super::super::SHARED.retire_native_session(epoch);
+        super::super::SHARED.reset_session();
+        assert_eq!(error_context(&ps).pipeline_error, 0, "the latch does not outlive its session");
     }
 
     /// The other half: a failure on a playback that DID install a route keeps the real tags.

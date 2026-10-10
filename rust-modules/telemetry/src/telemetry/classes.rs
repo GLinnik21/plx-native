@@ -686,6 +686,11 @@ pub struct PlaybackErrorContext {
     /// How long that transfer had lived.
     pub transfer_age: TransferAgeClass,
     pub started: bool,
+    /// The TV firmware's own error number for the pipeline's first `type=18` error callback (601 =
+    /// resource allocation), or 0 when none was recorded. An integer in the `i32` range and
+    /// nothing else: the callback's string is free text that can carry a URI or a path and has no
+    /// field here.
+    pub pipeline_error: i32,
     /// Only for a refusal the server made at `/decision` — see [`RefusalContext`].
     pub refusal: Option<RefusalContext>,
 }

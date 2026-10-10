@@ -26,6 +26,7 @@
   "core.preview_domain_observed_rate": "velocidad observada",
   "core.preview_domain_raster": "resolución",
   "core.preview_domain_pipeline": "fase de reproducción",
+  "core.preview_domain_pipeline_error": "número de error del firmware del televisor (0 = ninguno registrado)",
   "core.preview_domain_http": "HTTP",
   "core.preview_domain_buffer": "búfer",
   "core.preview_domain_transport": "fallo de transporte",

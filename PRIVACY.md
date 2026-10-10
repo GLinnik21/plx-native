@@ -121,6 +121,12 @@ error, and `reopen_failed` when the retry after it was refused as well) — and 
 running, so a connection cut at a fixed time is visible as one bucket). Both appear as a tag and
 in the playback context; both are `none` / `unknown` when no transfer failure was recorded.
 
+The report also carries `pipeline_error`, which explains a `tv_pipeline` failure: the whole number
+the television's own video pipeline gave with its first error in that playback (for example `601`
+for a resource-allocation refusal), `0` when it gave none, and otherwise any 32-bit integer. It is
+a number and nothing else — the firmware's accompanying text is not sent, because it can name
+addresses or files. It appears as a tag and in the playback context.
+
 When the failure is the media server **refusing to play or convert the item** (`decision_refused`),
 that report also carries four closed fields about the refusal — and never the server's own
 explanation, which is free text that can name files, paths and servers and stays on the television:

@@ -2256,9 +2256,17 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
         // it is the one value this project has ever acted on, and it sits below the 0x1c point
         // where the numbering shifts between webOS 4 and 5+, so it means the same on both. Naming
         // any higher type would be a confident lie on the firmware we cannot test.
+        //
+        // The firmware's own error NUMBER rides in the same latch (`601` = resource allocation),
+        // clamped to the `i32` range: it is the one integer a handled `tv_pipeline` report carries
+        // about the refusal. The callback's STRING (`s`, logged below) is never kept: it is free
+        // text and can hold a URI or a path.
         if ty == 18 && SHARED.dg_cb_err.load(Relaxed) == 0 {
             SHARED.dg_cb_err.store(ty, Relaxed);
             SHARED.dg_cb_err_at.store(n, Relaxed);
+            SHARED
+                .dg_cb_err_num
+                .store(num.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32, Relaxed);
         }
         let preview = if s.is_null() {
             String::new()
@@ -2690,6 +2698,69 @@ mod tests {
             !failed(),
             "a seek zeroes `frames`; the refusal predicate must read `seen_frame`, not that"
         );
+        SHARED.retire_native_session(epoch);
+        SHARED.reset_session();
+    }
+
+    /// **The firmware's error number is latched beside the type, once.** `type=18 num=601
+    /// Resource Allocation Error` is the shape the lab recorded; the `601` is what a handled
+    /// `tv_pipeline` report carries, so it must survive a later healthy callback and a later,
+    /// different error, and must go with the rest of the session at `reset_session`.
+    #[test]
+    fn the_first_type_18_latches_its_number_and_nothing_later_erases_or_replaces_it() {
+        let _guard = plx_base::testlock::serial();
+        let num = || SHARED.dg_cb_err_num.load(std::sync::atomic::Ordering::Acquire);
+        SHARED.reset_session();
+        let epoch = SHARED.begin_native_session().expect("session");
+        assert_eq!(num(), 0, "nothing recorded yet");
+        sf_on_event(epoch, 2, 0, c"{\"loadCompleted\":true}".as_ptr());
+        assert_eq!(num(), 0, "a healthy callback is not an error");
+        sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
+        assert_eq!(num(), 601);
+        sf_on_event(epoch, 2, 0, c"{}".as_ptr());
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
+        assert_eq!(num(), 601, "a later healthy callback does not erase the latch");
+        sf_on_event(epoch, 18, 99, std::ptr::null());
+        assert_eq!(num(), 601, "the FIRST error is the one that explains the session");
+        assert_eq!(SHARED.dg_cb_err.load(std::sync::atomic::Ordering::Acquire), 18);
+        SHARED.retire_native_session(epoch);
+        SHARED.reset_session();
+        assert_eq!(num(), 0, "cleared where `dg_cb_err` is cleared");
+    }
+
+    /// The number is bounded to the `i32` range on the way in: the callback hands over an `i64`,
+    /// and the report carries only a value a fixed-width integer field can hold.
+    #[test]
+    fn a_type_18_number_outside_the_i32_range_is_clamped_not_wrapped() {
+        let _guard = plx_base::testlock::serial();
+        let num = || SHARED.dg_cb_err_num.load(std::sync::atomic::Ordering::Acquire);
+        for (given, want) in [
+            (i64::MAX, i32::MAX),
+            (i64::from(i32::MAX) + 1, i32::MAX),
+            (i64::MIN, i32::MIN),
+            (-5, -5),
+        ] {
+            SHARED.reset_session();
+            let epoch = SHARED.begin_native_session().expect("session");
+            sf_on_event(epoch, 18, given, std::ptr::null());
+            assert_eq!(num(), want, "num {given}");
+            SHARED.retire_native_session(epoch);
+        }
+        SHARED.reset_session();
+    }
+
+    /// A SYNCHRONOUS Load refusal (`sf_load` returning 0) has no firmware number: Starfish's `Load`
+    /// answers with a bare success flag, and the other refusals inside `sf_load` are the seam's own
+    /// lifecycle gates. So it publishes `load_failed` and leaves the latch at 0 — pinned so a
+    /// number is never invented for it.
+    #[test]
+    fn a_synchronous_load_refusal_publishes_no_firmware_number() {
+        let _guard = plx_base::testlock::serial();
+        SHARED.reset_session();
+        let epoch = SHARED.begin_native_session().expect("session");
+        assert!(SHARED.publish_native_load_failure(epoch));
+        assert!(SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(SHARED.dg_cb_err_num.load(std::sync::atomic::Ordering::Acquire), 0);
         SHARED.retire_native_session(epoch);
         SHARED.reset_session();
     }

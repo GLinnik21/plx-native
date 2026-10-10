@@ -154,6 +154,7 @@ pub fn event_body(
             "playback.started": if context.started { "yes" } else { "no" },
             "playback.transport": context.transport.code(),
             "playback.transfer_age": context.transfer_age.code(),
+            "playback.pipeline_error": context.pipeline_error.to_string(),
         },
         "contexts": {"playback": {
             "type": "playback",
@@ -168,6 +169,7 @@ pub fn event_body(
             "buffer": context.buffer.code(),
             "transport": context.transport.code(),
             "transfer_age": context.transfer_age.code(),
+            "pipeline_error": context.pipeline_error,
             "started": context.started,
         }},
         "breadcrumbs": {"values": breadcrumbs},
@@ -321,6 +323,7 @@ pub fn preview_event() -> Vec<u8> {
             transport: TransportClass::RecvError,
             transfer_age: TransferAgeClass::S30To90,
             started: true,
+            pipeline_error: 601,
             // Representative of a `decision_refused` report's extra block, shown here so the
             // consent screen's sample carries every key a report can; a real report has it only
             // when the server refused the plan.
@@ -359,7 +362,7 @@ pub fn preview_domains() -> String {
     use FailureClass as F;
     use plx_platform::i18n::msg;
     // The labels are the reader's words; the codes after them are the wire values themselves.
-    let domains: [(&str, String); 19] = [
+    let domains: [(&str, String); 20] = [
         (msg::core_preview_domain_failure_kind(), codes(
             &[
                 F::DecisionRefused,
@@ -416,6 +419,9 @@ pub fn preview_domains() -> String {
         )),
         (msg::core_preview_domain_raster(), codes(&[X::Unknown, X::Sd, X::Hd, X::Fhd, X::Uhd], X::code)),
         (msg::core_preview_domain_pipeline(), codes(&[L::Loading, L::Playing, L::Bound, L::Streaming], L::code)),
+        // The one NUMERIC field, so its domain is its range rather than a list of words: the TV
+        // firmware's own error number (0 = none recorded), already clamped to `i32`.
+        (msg::core_preview_domain_pipeline_error(), format!("{} to {}", i32::MIN, i32::MAX)),
         (msg::core_preview_domain_http(), codes(
             &[
                 H::None,
@@ -515,6 +521,7 @@ mod tests {
             transport: TransportClass::None,
             transfer_age: TransferAgeClass::Unknown,
             started: true,
+            pipeline_error: 0,
             refusal: None,
         }
     }
@@ -763,6 +770,7 @@ mod tests {
                 "http",
                 "media_rate",
                 "pipeline",
+                "pipeline_error",
                 "raster",
                 "requested_quality",
                 "selected_quality",
@@ -778,6 +786,7 @@ mod tests {
                 "playback.declared_rate",
                 "playback.delivery",
                 "playback.kind",
+                "playback.pipeline_error",
                 "playback.requested_quality",
                 "playback.selected_quality",
                 "playback.started",
@@ -872,6 +881,7 @@ mod tests {
                 "playback.declared_rate",
                 "playback.delivery",
                 "playback.kind",
+                "playback.pipeline_error",
                 "playback.refusal_general",
                 "playback.refusal_transcode",
                 "playback.requested_quality",
@@ -1057,6 +1067,58 @@ mod tests {
             "none / partial / recv_error / send_error / got_nothing / timeout / http2 / reopen_failed / other"
         ));
         assert!(legend.contains("unknown / <5s / 5-30s / 30-90s / 90-300s / 300s+"));
+    }
+
+    /// **The firmware's error number.** A `tv_pipeline` report used to say only that the pipeline
+    /// failed; the number the firmware gave (601 = resource allocation) rides along as a tag to
+    /// search on and as an integer in the playback context. It is a number, not a class: the
+    /// callback's string is free text and has no field.
+    #[test]
+    fn a_pipeline_error_number_is_tagged_and_in_the_context_as_an_integer() {
+        let mut ctx = context();
+        ctx.pipeline_error = 601;
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            FailureClass::TvPipeline,
+            ctx,
+            &[],
+        ))
+        .expect("handled event JSON");
+        assert_eq!(v["tags"]["playback.pipeline_error"], "601");
+        assert_eq!(v["contexts"]["playback"]["pipeline_error"], 601);
+        assert!(v["contexts"]["playback"]["pipeline_error"].is_i64(), "an integer, not a string");
+        // Grouping is unchanged: the number explains a group, it does not split it.
+        assert_eq!(v["fingerprint"], serde_json::json!(["playback-error", "tv_pipeline"]));
+        // No number recorded says 0 in the same two places.
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            None,
+            FailureClass::TvPipeline,
+            context(),
+            &[],
+        ))
+        .expect("handled event JSON");
+        assert_eq!(v["tags"]["playback.pipeline_error"], "0");
+        assert_eq!(v["contexts"]["playback"]["pipeline_error"], 0);
+    }
+
+    /// The consent screen lists the field and its whole domain, and `PRIVACY.md` names it: a key in
+    /// the payload that neither mentions is a payload nobody was shown.
+    #[test]
+    fn consent_preview_and_privacy_name_the_pipeline_error_number() {
+        let v: Value = serde_json::from_slice(&preview_event()).expect("preview JSON");
+        assert_eq!(v["contexts"]["playback"]["pipeline_error"], 601, "{v}");
+        assert_eq!(v["tags"]["playback.pipeline_error"], "601");
+        let legend = preview_domains();
+        assert!(
+            legend.contains(&format!("{} to {}", i32::MIN, i32::MAX)),
+            "the legend states the whole integer range: {legend}"
+        );
+        let privacy = include_str!("../../../../PRIVACY.md");
+        assert!(privacy.contains("pipeline_error"), "PRIVACY.md omitted pipeline_error");
     }
 
     #[test]
