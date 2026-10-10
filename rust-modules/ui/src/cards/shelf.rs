@@ -55,6 +55,9 @@ pub struct Shelf {
     left: bool,
     asked: Option<(usize, usize)>,
     asked_before: Option<usize>,
+    /// The edge a page ask handed to the owner is out for, until it lands or is cancelled
+    /// ([`Shelf::page_cancel`]).
+    in_flight: Option<PageEdge>,
     /// The element the last tick had focused (`pool::key`), in the cell the row recorded: what
     /// tells a landing that moved the cards from a focus that moved over them.
     anchor: Option<(usize, u64)>,
@@ -94,7 +97,7 @@ struct WalkKey {
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
-        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, anchor: None,
+        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, in_flight: None, anchor: None,
             margin: 0.0, dormant: false, slept: false, pool: RowPool::new(),
             warm: Warm { last: None, forward: true, walk: None } }
     }
@@ -280,13 +283,20 @@ impl Shelf {
     }
 
     pub fn has_page_request(&self) -> bool {
-        self.asked.is_some() || self.asked_before.is_some()
+        self.asked.is_some() || self.asked_before.is_some() || self.in_flight.is_some()
     }
 
     /// Release paging demand when the owner leaves this row.
     pub fn reset_page_requests(&mut self) {
         self.asked = None;
         self.asked_before = None;
+    }
+
+    /// The owner withdrew the ask itself (it left the row): there is nothing for
+    /// [`page_cancel`](Self::page_cancel) to withdraw. A landing does not call this: the ask it
+    /// answered is simply no longer in the store, and a late cancel for it is a no-op there.
+    pub fn drop_page_flight(&mut self) {
+        self.in_flight = None;
     }
 
     /// Request an earlier window once while its leading edge remains active.
@@ -317,15 +327,51 @@ impl Shelf {
         offset: usize,
         active: bool,
     ) -> Option<PageEdge> {
-        // The engine's focus, not the picture's: a hero dive keeps the card it came from lifted, and
-        // the paging follows the card the engine holds.
-        let focus = cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem));
-        let before = offset > 0 && focus.is_some_and(|i| i < PAGE_EDGE_CARDS);
-        if self.want_before(offset, active && before) {
-            return Some(PageEdge::Before);
+        let focus = self.engine_focus(cx, src);
+        let before = Self::near(PageEdge::Before, focus, src.len(), offset);
+        let edge = if self.want_before(offset, active && before) {
+            Some(PageEdge::Before)
+        } else {
+            let after = Self::near(PageEdge::After, focus, src.len(), offset);
+            (active && wanted && after && !before).then_some(PageEdge::After)
+        };
+        if edge.is_some() { self.in_flight = edge; }
+        edge
+    }
+
+    /// The engine's focus as an index into the source, not the picture's: a hero dive keeps the card
+    /// it came from lifted, and the paging follows the card the engine holds.
+    fn engine_focus<H: Host, S: CardSource<H>>(&self, cx: &Cx<'_, H>, src: &S) -> Option<usize> {
+        cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem))
+    }
+
+    /// Whether focus index `focus` is inside the zone of `edge` that asks for a page there.
+    fn near(edge: PageEdge, focus: Option<usize>, len: usize, offset: usize) -> bool {
+        match edge {
+            PageEdge::Before => offset > 0 && focus.is_some_and(|i| i < PAGE_EDGE_CARDS),
+            PageEdge::After => focus.is_some_and(|i| i.saturating_add(PAGE_EDGE_CARDS) >= len),
         }
-        let after = focus.is_some_and(|i| i.saturating_add(PAGE_EDGE_CARDS) >= src.len());
-        (active && wanted && after && !before).then_some(PageEdge::After)
+    }
+
+    /// The edge whose page ask the owner must withdraw this tick, if any: one handed out by
+    /// [`page_ask`](Self::page_ask) that has not landed while focus has left that edge's zone (or
+    /// the owner stopped showing the row). Call it every frame before `page_ask`, with the same
+    /// `offset` and `active`, and cancel the owner's store ask for the edge it names.
+    ///
+    /// A page slides the window by half of it, keeping the half on focus's side of the edge, so a
+    /// landing is only safe while focus is still in that half. An ask is sent with focus at most
+    /// [`PAGE_EDGE_CARDS`] from the edge, which leaves that many presses of margin; withdrawing it on
+    /// the first press out of the zone keeps a landing that is already on its way (the owner acts on a
+    /// view one landing old, and the cancel takes a frame to reach the store) well inside the margin.
+    /// The row asks again when focus returns to the edge.
+    pub fn page_cancel<H: Host, S: CardSource<H>>(&mut self, cx: &Cx<'_, H>, src: &S, offset: usize, active: bool)
+        -> Option<PageEdge> {
+        let edge = self.in_flight?;
+        let focus = self.engine_focus(cx, src);
+        if active && Self::near(edge, focus, src.len(), offset) { return None; }
+        self.reset_page_requests();
+        self.in_flight = None;
+        Some(edge)
     }
 
     /// The paging rule: the window's last card plus look-ahead (or the focused card's, if further).
