@@ -58,9 +58,32 @@ fn find<H: Host, S: CardSource<H>>(src: &S, k: u64) -> Option<usize> {
     (0..src.len().min(MAX_ROW_ITEMS)).find(|&j| key(&src.elem(j)) == k)
 }
 
-/// The cell within [`SEARCH`] of `at` showing the element whose [`key`] is `k`.
-pub(crate) fn find_near<H: Host, S: CardSource<H>>(src: &S, k: u64, at: usize) -> Option<usize> {
-    (at.saturating_sub(SEARCH)..src.len().min(at.saturating_add(SEARCH))).find(|&j| key(&src.elem(j)) == k)
+/// The cell NEAREST `at` showing the element whose [`key`] is `k`, at any distance: a rule that
+/// keeps focus where it is must not depend on how far the cards moved. Work is bounded by the
+/// source (one hash per card, nearest first) and is spent only on a tick whose focused element
+/// is no longer in its cell, which [`anchor_of`] re-arms at the end of, so a landing pays it once.
+pub(crate) fn find_nearest<H: Host, S: CardSource<H>>(src: &S, k: u64, at: usize) -> Option<usize> {
+    let n = src.len();
+    let is = |j: usize| j < n && key(&src.elem(j)) == k;
+    (0..n.max(at.saturating_add(1))).find_map(|d| [at.checked_sub(d), at.checked_add(d)].into_iter().flatten().find(|&j| is(j)))
+}
+
+/// The element a section had focused at the end of its tick and the cell it stood in: what
+/// [`slid`] reads next tick. Kept by the section itself, since a deliberate move re-arms the
+/// grid's pop on the NEW cell before the tick runs and the row's own record is the old one.
+pub(crate) fn anchor_of<H: Host, S: CardSource<H>>(src: &S, focus: Option<usize>) -> Option<(usize, u64)> {
+    focus.filter(|&i| i < src.len()).map(|i| (i, key(&src.elem(i))))
+}
+
+/// Where the card an [`anchor_of`] named stands now when a content landing moved it and it is
+/// still in the source: `(was, is)`. The one rule behind a Shelf's and a Grid's carry of a focus
+/// that changes in the same tick as the cards move.
+pub(crate) fn slid<H: Host, S: CardSource<H>>(src: &S, anchor: Option<(usize, u64)>) -> Option<(usize, usize)> {
+    let (p, k) = anchor?;
+    if p < src.len() && key(&src.elem(p)) == k {
+        return None;
+    }
+    find_nearest::<H, S>(src, k, p).map(|q| (p, q))
 }
 
 /// The elements of one [`CardRow`] whose pop springs are off rest, and the cell each is in.

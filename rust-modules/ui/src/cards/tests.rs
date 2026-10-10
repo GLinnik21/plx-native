@@ -613,6 +613,90 @@ fn shelf_slide_before_a_move_in_one_tick_keeps_the_row_in_place() {
     a_slide_under_a_moving_focus_keeps_the_row_in_place(false);
 }
 
+/// The requirement under every landing rule: focus never moves under the user, whatever the order
+/// of the events and however far the cards moved. `insert` cards arrive before the focused one
+/// (a whole number of rows for a grid) between the same two ticks as the engine hands focus on, by
+/// every cause that can: a key, the pointer, a restore, a reconcile naming another card, a
+/// reconcile naming the same card again. A card that stayed must stay where it is drawn, and the
+/// focused one must end on the screen. `far` is more than any search distance a section once had.
+fn a_shift_under_a_focus_change_keeps_the_view_in_place<S: Section>(n: usize, insert_rows: usize) {
+    let cols = S::columns().unwrap_or(1);
+    let at = if cols > 1 { 2 * cols + 1 } else { 20 };
+    let insert = insert_rows * cols;
+    let causes = [(By::Dir, false), (By::Pointer, false), (By::Restore, false), (By::Reconcile, false), (By::Reconcile, true)];
+    for (by, same) in causes {
+        for move_first in [true, false] {
+            let mut r = settled::<S>(n);
+            r.land_focus(100 + at as u32, By::Restore);
+            r.run(240);
+            let stayed = 100 + at as u32 - 1;
+            let target = if same { 100 + at as u32 } else { 100 + at as u32 + 1 };
+            let before = r.sect.place(&r.cx(), &r.src, stayed, At::Drawn).unwrap().rect;
+            let slide = |r: &mut Rig<S>| {
+                for k in 0..insert {
+                    r.src.elems.insert(0, 900 + k as u32);
+                }
+            };
+            if move_first {
+                r.land_focus(target, by);
+                slide(&mut r);
+            } else {
+                slide(&mut r);
+                r.land_focus(target, by);
+            }
+            let why = format!("{by:?} same={same} move_first={move_first} insert={insert}");
+            r.run(1);
+            // an owner that scrolls a page around the section (the external grid) hears of it
+            assert_eq!(r.sect.landed(), Some(super::Landed { from: at, to: at + insert }), "{why}: the landing is reported");
+            let now = r.sect.place(&r.cx(), &r.src, stayed, At::Drawn).unwrap().rect;
+            assert!((now.x - before.x).abs() < 100.0 && (now.y - before.y).abs() < 100.0,
+                "{why}: a card that stayed jumped from {before:?} to {now:?} in the landing tick");
+            // the pop followed the cards too: a key lets the card it left go while the new one
+            // grows; a restore or reconcile adopts its card whole and nothing else is lifted
+            let scale = |r: &Rig<S>, e: u32| r.sect.scale_of(&r.cx(), &r.src, e).unwrap();
+            // (cells past the shelf's spring array share one spring: no let-go to follow there)
+            let own_cells = cols > 1 || at + insert + 1 < crate::card_row::MAX_ROW_ITEMS;
+            if matches!(by, By::Dir | By::Pointer) && own_cells {
+                assert!(scale(&r, 100 + at as u32) > 1.01, "{why}: the let-go followed its card");
+                assert!(scale(&r, target) > 1.0 && scale(&r, target) < S::focus_scale() - 0.005, "{why}: the new card grows from rest");
+                assert_eq!(r.src.elems.iter().filter(|&&e| scale(&r, e) > 1.0005).count(), 2, "{why}: only those two");
+            } else if !matches!(by, By::Dir | By::Pointer) {
+                assert_eq!(lifted(&r), 1, "{why}: one card is lifted");
+                assert!((scale(&r, target) - S::focus_scale()).abs() < 0.002, "{why}: the adopted card is whole");
+            }
+            r.run(240);
+            let on = r.sect.place(&r.cx(), &r.src, target, At::Drawn).unwrap().rect;
+            assert!(on.cx() > 0.0 && on.cx() < crate::consts::SCR_W && on.cy() > 0.0 && on.cy() < crate::consts::SCR_H,
+                "{why}: the focused card ended off screen at {on:?}");
+            assert_eq!(lifted(&r), 1, "{why}: one card is lifted once everything settles");
+        }
+    }
+}
+#[test]
+fn shelf_keeps_its_view_when_cards_arrive_under_any_focus_change() {
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<Shelf>(40, 12);
+}
+#[test]
+fn shelf_carries_its_let_go_when_cards_arrive_under_a_key() {
+    // two cards in: the focused pair stays inside the shelf's spring array
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<Shelf>(40, 2);
+}
+#[test]
+fn shelf_keeps_its_view_when_cards_arrive_far_under_any_focus_change() {
+    // 150 cards before it: farther than the search distance the first fix gave up at
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<Shelf>(400, 150);
+}
+#[test]
+fn grid_keeps_its_view_when_cards_arrive_under_any_focus_change() {
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<Grid>(120, 3);
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<Grid>(900, 30);
+}
+#[test]
+fn external_grid_keeps_its_view_when_cards_arrive_under_any_focus_change() {
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<ExtGrid>(120, 3);
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<ExtGrid>(900, 30);
+}
+
 /// The farthest a `n`-card HOME shelf can scroll.
 fn home_max_scroll(n: usize) -> f32 {
     let sty = &RowStyle::HOME;

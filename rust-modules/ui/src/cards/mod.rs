@@ -192,6 +192,11 @@ pub(crate) enum Seen {
 }
 
 impl Seen {
+    /// A focus change was announced since the last tick (anything but [`Seen::Nothing`]).
+    pub(crate) fn announced(self) -> bool {
+        self != Seen::Nothing
+    }
+
     pub(crate) fn of(by: &crate::screen::By, arrived: usize) -> Self {
         if matches!(by, crate::screen::By::Dir | crate::screen::By::Pointer) { Seen::Deliberate(arrived) } else { Seen::Other }
     }
