@@ -1,5 +1,5 @@
-//! Library operations (impl Client): sections, section items, metadata, children/leaves,
-//! related — plus the two part-level playback ops (stream selection, direct-play target).
+//! Library operations (impl Client): sections, section items (`section_items_query`), metadata,
+//! children (`children`, `children_paged`), related (`related`) — plus the two part-level playback ops (stream selection, direct-play target).
 use super::client::{Client, QueryBuilder, StreamUrl};
 use super::models::{MediaContainer, Metadata};
 use super::paging::{paged_path, PageReq};

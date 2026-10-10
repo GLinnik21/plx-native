@@ -10,10 +10,10 @@
 //! the read layer (`pms`/`metadata`/`posters`/`detail`) and the playback layer (`route.rs`
 //! decision/start/stop/selection, PlayQueue/identity, and the player's `/:/timeline`) all go
 //! through `client()` (history: `docs/plex-api-migration.md`). The module-wide allow covers
-//! the ops written ahead of a UI feature (browse/leaves — no callers yet). `search` had one
-//! too until the Search screen landed and `crate::search` began calling it; the name was left
-//! in this list for several commits afterwards, long enough for a test-manifest note to cite
-//! it as the check for whether that screen existed.
+//! the few items the library build does not reach: transport helpers on `Client` (`get_bytes`,
+//! `get_void`, `get_status_until`, `post_status_until`) and a handful of functions
+//! (`servers::register_with_client_id`, `transcoder::profile_for`, `session::peek_locked`,
+//! `session::install_or_drop_after_write`).
 #![allow(dead_code)]
 
 mod client;

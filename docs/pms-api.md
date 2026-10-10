@@ -257,17 +257,19 @@ Verified hub list (`MediaContainer.Hub[]`), each hub has
 
 **The spec gives `/hubs` no paging** (`docs/plex-openapi.json`: its only parameters are `count`, `onlyTransient`
 and `identifier`), but a windowed request does page its hub list on a live server (see [Paging, observed](#paging-observed)).
-Home reads all rows, in windows of `HUB_WINDOW` hubs (`home_hubs` is the whole-list fallback), with 12 preview cards per row. Recently Added rows
-load more items through their provider's listing `key`, with both `X-Plex-Container-Start` and
-`X-Plex-Container-Size`. The client preserves the key's type, library, and sort parameters.
-Other Home rows, including collections, keep their 12-card preview.
+Home reads all rows, in windows of `HUB_WINDOW` hubs (`home_hubs` is the whole-list fallback), with 12 preview cards per row. A row pages
+through its provider's listing `key`, with both `X-Plex-Container-Start` and
+`X-Plex-Container-Size`, when `plx_plex::plex::is_pageable_hub_key` admits the key: `/hubs/…`,
+`/library/sections/…` and `/library/metadata/{id}/similar`. The client preserves the key's type,
+library, and sort parameters. A row behind any other key, such as a collection's
+`/library/collections/{id}/children`, keeps its 12-card preview and logs that once per hub.
 
 A PMS response observed on 2026-10-09 returned `offset=0`, `size=36`, and `totalSize=50`.
 The next response returned `offset=36`, `size=14`, and `totalSize=50`. This confirms the
 required offset fields on that server. Other server versions remain unverified. The client
 rejects a response whose offset differs from the requested start.
 
-Home keeps a moving window of at most 24 cards per Recently Added row, with an overlap of up to 12 eligible cards.
+Home keeps a moving window of at most 24 cards per pageable row, with an overlap of up to 12 eligible cards.
 Server offsets are kept separately from visible card positions. A page retains the overlap
 and skips items from hidden libraries. One paging worker scans at most eight server chunks.
 If those chunks are hidden, it publishes the advanced cursor and keeps the current cards.
@@ -1260,7 +1262,9 @@ only `size`.
 | Key of `movie.topunwatched` and `movie.by.actor.or.director` (random hubs) | yes | not recorded | The listing came back in the same order on two calls; the windows (0,6) and (6,50) together equal the whole listing; every preview card is in it. The library held only 13 items, so large lists are not covered. |
 
 
-- 3 startup requests: `/library/sections` (find movie/show keys), `/hubs/promoted` (home shelves, items include Media for instant resume), then lazy `/library/sections/{key}/all` pages of 50.
+## App data-layer summary
+
+- 3 startup requests: `/library/sections` (find movie/show keys), `/hubs/promoted` (home shelves, items include Media for instant resume), then lazy `/library/sections/{key}/all` pages of `stores::page_cache::PAGE` (60).
 - One JSON shape covers movie/show/season/episode; parse the field table in §2 with all-optional semantics.
 - Every image through `/photo/:/transcode` at exact card size; never raw `thumb`.
 - Direct play = `Media[].Part[].key` + token; server supports byte ranges.

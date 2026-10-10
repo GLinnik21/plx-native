@@ -519,6 +519,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **No 'see all' on a shelf and no hub paging** — `minor` / `medium`
   Official shelves end in a 'see all' affordance that opens the hub's full listing, and hubs page beyond their inline items. We render only the inline Metadata[] each hub arrives with and drop the hub's own key/more/size, so a shelf can never be expanded or extended.
+  **Hub paging fixed:** a row whose key `is_pageable_hub_key` admits now slides a 24-card window over the hub's own listing (`stores/paging.rs`). The trailing "see all" tile is still absent.
   *Where:* rust-modules/src/plex/models.rs (Hub.key/more/size), rust-modules/src/pms.rs (carry them on HubRow), rust-modules/src/ui/home.rs (trailing see-all tile + activation) reusing the Library grid; endpoint GET {hub.key} with X-Plex-Container-Start/Size.
   *Verified:* Confirmed: models.rs:101-111 Hub carries only type/hubIdentifier/title/Metadata — no key, no more, no size; HubRow (pms.rs:158-166) keeps title/hub_id/start/len; Grid::draw iterates 0..pms::hub_len(r) (home.rs:542) and nothing renders a trailing affordance (zero hits for 'see all'/see_all in the tree). One fact that sharpens the gap: the inline item count is capped by our own REQUEST, not by the server — pms.rs:234 calls client().home_hubs(12), so each shelf receives at most 12 items and the UI's MAX_ITEMS=24 never binds. Everything past item 12 of every hub is unreachable today, which makes '
 
@@ -823,7 +824,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   scroll positions and two BACK meanings for one library. What remains open is Plex's
   Recommended/Library/Collections/Categories VIEW-MODE axis and the category browsing under it.
   A section used to stop at twelve shelves; since issue #412 it publishes every hub the server sends
-  (the hub list is read whole), keeping a descriptor for each; cards are held for 16 rows at a
+  (the hub list is read in windows of `HUB_WINDOW` hubs, whole only for a server that ignores the window), keeping a descriptor for each; cards are held for 16 rows at a
   time and every row pages through a 24-card window, so nothing is dropped.
   *Where (still):* the categories half — `browse` generalising its single genre facet, and a
   value-tile level in `ui/library.rs`.
@@ -1652,6 +1653,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **Long subtitle cues are silently truncated: a 42-CHARACTER wrap and a hard 3-line cap that DROPS the rest** — `minor` / `small`
   The plain-text subtitle renderer word-wraps by character count (42) rather than by pixels, then keeps only the first three lines and discards the remainder without an ellipsis. 42 characters at 36px is roughly 750px — under 40% of the panel width — so ordinary long sentences (SDH captions, Cyrillic dubs) wrap to four or more lines and the tail of the sentence is simply never shown. The codebase already owns a pixel word-wrapping primitive that the HUD does not use here.
+  **Fixed:** the 3-line cap is gone. `rust-modules/appkit/src/player_hud.rs` keeps every wrapped line (`CaptionPlan`) and `CaptionPager` pages a caption taller than the panel.
   *Where:* rust-modules/src/ui/player_hud.rs:38-102 — either widen/measure with crate::text::text_width or move the caption onto ui/text_view.rs's TextView (noting the renderer is a documented immediate-mode carve-out, ui/CLAUDE.md).
   *Device:* none known — main-thread GLES text drawing that already runs every frame; TTF_SizeUTF8 measurement is memoised elsewhere in the same file (player_hud.rs:171-191) if per-frame measuring is a concern on the Mali budget.
   *Verified:* CONFIRMED. rust-modules/src/ui/player_hud.rs:38-57 `fn wrap(s: &str, max: usize)` counts `chars()`, called at :73 as `wrap(seg, 42)`; :73-77 `for l in wrap(seg, 42) { if lines.len() < 3 { lines.push(l); } }` — the 4th line and beyond are dropped with no ellipsis and no marker. The pixel-accurate alternative exists and is used elsewhere in the same screen family: rust-modules/src/ui/text_view.rs (greedy pixel word-wrap at :132-157, `max_lines` with an ellipsized last line at :83-85/:142-158, `measure_h`), consumed by info_panel.rs and detail.rs:1512/1582. minor/small is right. device_risk 'none
