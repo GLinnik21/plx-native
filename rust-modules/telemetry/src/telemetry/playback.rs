@@ -1171,7 +1171,9 @@ mod tests {
 
     /// **Why the failed attempt was made, and which open of the playback it was.** Both ride as a
     /// tag to search on and in the playback context, as closed strings (the ordinal is `1`..`9`
-    /// then `9+`, a string in both places so the saturated value fits), and neither splits a group.
+    /// then `9+`, a string in both places so the saturated value fits). Neither the cause nor the
+    /// ordinal splits a group, with one exception: the `preview` origin groups apart under its own
+    /// fingerprint segment, because a trailer is not a playback (asserted below).
     #[test]
     fn the_attempt_origin_and_ordinal_are_tagged_and_in_the_context_as_closed_strings() {
         for origin in AttemptOrigin::ALL {

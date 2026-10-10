@@ -318,8 +318,9 @@ pub enum DeliveryReason {
     LinkFallback,
     OriginalRecovery,
     OriginalOpenRollback,
-    /// The viewer picked a fixed quality rung whose route the current stream cannot satisfy, so
-    /// the playback is re-encoded at that rung.
+    /// The viewer picked a quality the current stream cannot satisfy, so the playback is
+    /// re-encoded: a fixed rung re-encodes at that rung (a transcode), and Auto, when it cannot
+    /// keep the bytes on screen, rebuilds the adaptive HLS ladder at its re-entry rung.
     QualityPick,
 }
 

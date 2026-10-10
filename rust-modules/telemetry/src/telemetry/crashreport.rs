@@ -196,6 +196,11 @@ pub fn module_images(f: &Fault, read: impl Fn(&ModuleMapping) -> Option<Vec<u8>>
 /// nothing and the module is left out, which costs a name and never invents one. Firmware
 /// libraries survive until a reboot, which also clears the log, so they still match.
 ///
+/// **One exception, development only:** `make deploy` overwrites the bundled libraries IN PLACE
+/// (the same inode), so a crash from the previous deploy's mapping followed by a new deploy passes
+/// this check with the new file's build id. A shipped install writes new inodes, so the pairing
+/// holds there; a development crash report that straddles a deploy can still be mis-symbolicated.
+///
 /// Opened `O_NONBLOCK` so a FIFO put in the path's place cannot hold the boot path.
 fn read_module_head(m: &ModuleMapping) -> Option<Vec<u8>> {
     use std::io::Read;
