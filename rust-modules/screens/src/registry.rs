@@ -707,6 +707,20 @@ pub enum PageMemory {
     Search(crate::search::Memory),
 }
 
+impl PageMemory {
+    /// What an entry far below the top keeps (`plx_ui::containers::stack::DEEP`): Detail's key
+    /// table shrinks to the focused card's identity, so the page that reloads on return seats the
+    /// same card by it; `next_elem` stays, so no key minted later reuses a released number. The
+    /// other pages bound their own memory (Home and Library prune theirs, the card pages keep one
+    /// key per card the store holds) and are left as they are.
+    pub fn shed_to_identity(&mut self, focus: Option<u32>) {
+        if let Self::Detail(memory) = self {
+            memory.keys.retain(|key| Some(key.elem) == focus);
+            memory.keys.shrink_to_fit();
+        }
+    }
+}
+
 impl plx_machine::machine::LogicalState for DetailIdentity {
     fn write(&self, c: &mut plx_machine::machine::Canon) {
         match self {

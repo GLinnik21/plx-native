@@ -139,7 +139,10 @@ fn a_detail_related_card_opens_its_menu_at_the_drawn_rect_and_other_shelves_open
     };
     let bits = |r: plx_ui::Rect| [r.x.to_bits(), r.y.to_bits(), r.w.to_bits(), r.h.to_bits()];
     let mut cards = Vec::new();
-    for elem in 0..4096u32 + 2048 {
+    // The page's identity keys are interned from 2^31 (`detail::FIRST_ITEM_ELEM`), above the
+    // section blocks, so the walk covers the low controls and then the interned range.
+    let interned = 1u32 << 31;
+    for elem in (0..4096u32 + 2048).chain(interned..interned + 256) {
         let Some(arg) = answers(&d, &rig, elem) else { continue };
         assert!(matches!(arg.kind, ItemMenuKind::Card { from_deck: false, .. }) && !arg.from_home);
         cards.push((arg.rk, elem));

@@ -109,7 +109,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         sid,
         rk: rk.into(),
         keys: vec![], next_elem: FIRST_ITEM_ELEM, key_by_local: Default::default(),
-        local_by_key: Default::default(), gone: Default::default(), return_pending: false,
+        local_by_key: Default::default(), prev_by_key: Default::default(), gone: Default::default(), return_pending: false,
         pending_season: None,
         season_settle: 0.0,
         preview_dwell: 0.0,
@@ -962,6 +962,28 @@ fn the_element_blocks_are_wide_disjoint_and_below_the_engine_keys() {
     assert_eq!(FIRST_ITEM_ELEM, 1 << 31, "engine keys start above every local block");
 }
 
+/// The key a card answers to is its engine key, not its local id. A caller outside the crate (the
+/// app's menu-opener route) asks about focus keys it did not mint, so it must look in the interned
+/// range; a card's key sitting in the low range again, or a local id leaking out as a focus key,
+/// is what this pins.
+#[test]
+fn card_focus_keys_live_in_the_interned_range_and_locals_are_not_focus_keys() {
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.related = vec![Default::default(), Default::default()];
+    let _guard = install(d);
+    let screen = bare(&_guard, sid, "show");
+    let meta = test_store().view();
+    for i in 0..2 {
+        let local = related::elem(i).unwrap();
+        let key = screen.engine_key(local).expect("a related card key");
+        assert!(key >= FIRST_ITEM_ELEM, "card {i} is keyed from the interned range");
+        assert!(screen.locate(key, meta) == Some(Located::Related(i)));
+        assert!(screen.locate(local, meta).is_none(), "a local id is not a focus key");
+    }
+    clear();
+}
+
 /// A list that arrives whole is addressable whole. A 600-credit item has a card for every credit,
 /// and Right walks the shelf to its last one; the old block clamped the shelf at 512.
 #[test]
@@ -998,6 +1020,45 @@ fn a_six_hundred_credit_item_addresses_every_cast_card_and_right_reaches_the_las
         assert_eq!(next.elem, key_at(&screen, i), "Right reaches credit {i} in order");
         at = next.elem;
     }
+    clear();
+}
+
+/// The 600th credit is drawn when focus is on it, and the shelf registers stops only for the cards
+/// in reach, so the draw work follows the screen and not the credit count.
+#[test]
+fn a_six_hundred_credit_shelf_draws_its_last_card_with_stops_for_the_visible_range_only() {
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.cast = (0..600)
+        .map(|i| plx_data::metadata::Cast {
+            tag: format!("person {i}"), role: String::new(), thumb: String::new(), id: i, tag_key: format!("p{i}"),
+        })
+        .collect();
+    let _guard = install(d);
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let last = screen.engine_key(cast::elem(599).unwrap()).unwrap();
+    let top = {
+        let d = screen.detail(test_store().view()).unwrap();
+        screen.section_top(4, d, &measure)
+    };
+    screen.scroll.jump(top);
+    screen.scroll_target = top;
+    let first = screen.engine_key(cast::elem(0).unwrap()).unwrap();
+    let to = FocusKey { entry: EntryId(7), elem: last };
+    step(&mut screen, &ScreenEvent::FocusMoved {
+        from: Some(FocusKey { entry: EntryId(7), elem: first }), to, by: By::Dir,
+    }, Some(last));
+    let context = cx(&measure, Some(last));
+    for n in 1..=240u32 {
+        step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 17 * n, dt_us: 16_667 }), Some(last));
+        drawn_stops(&mut screen, &context);
+    }
+    let stops = drawn_stops(&mut screen, &context);
+    let cast_stops: Vec<_> = stops.iter().filter(|stop| screen.locate(stop.key.elem, test_store().view()).is_some_and(|l| matches!(l, Located::Cast(_)))).collect();
+    assert!(cast_stops.iter().any(|stop| stop.key.elem == last), "credit 600 is drawn");
+    assert!(cast_stops.len() < 60, "stops follow the visible range, got {}", cast_stops.len());
     clear();
 }
 
@@ -3884,5 +3945,89 @@ fn the_hold_hint_stands_on_a_resting_related_card_once_per_run() {
     assert!(!screen.hold_hint.visible(), "a menu taking focus hides it");
     rest(&mut screen, on(card), 4.0);
     assert!(!screen.hold_hint.visible(), "and not a second time on a Detail page this run");
+    clear();
+}
+
+/// Every season switch lands a different set of episode identities. The key table keeps the
+/// current pass, the previous one, the focus and the remembered keys, and above twice one pass plus
+/// 256 drops the oldest rest, so a hundred switches stay bounded. The focused card's key never
+/// changes, and a season that left and came back inside the bound gets the same keys.
+#[test]
+fn the_key_table_stays_bounded_over_a_hundred_season_switches_and_focus_never_moves() {
+    let sid = ServerId::UNSET;
+    let season_eps = |n: usize| -> Vec<_> {
+        (0..40).map(|i| episode(&format!("s{n}e{i}"), i as i64 + 1)).collect()
+    };
+    let mut d = detail(sid, "show");
+    d.related = vec![Default::default(), Default::default(), Default::default()];
+    d.episodes = season_eps(0).into();
+    let _guard = install(d.clone());
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let focus = screen.engine_key(related::elem(1).unwrap()).unwrap();
+    let ep_key = |screen: &DetailScreen, n: usize| {
+        screen.keys.iter().find(|k| matches!(&k.identity,
+            DetailIdentity::Episode { rk, text: false, .. } if *rk == format!("s{n}e5"))).map(|k| k.elem)
+    };
+    let first = ep_key(&screen, 0).expect("season 0 interned");
+    let mut widest = 0;
+    for n in 1..=100 {
+        d.episodes = season_eps(n).into();
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d.clone()));
+        screen.sync_keys(test_store().view());
+        screen.prune_keys(&[focus]);
+        let pass = screen.local_by_key.len();
+        assert!(screen.keys.len() <= 2 * pass + 256, "switch {n}: {} keys for a pass of {pass}", screen.keys.len());
+        assert_eq!(screen.engine_key(related::elem(1).unwrap()), Some(focus), "switch {n} moved the focused card's key");
+        assert!(screen.keys.iter().any(|k| k.elem == focus), "the focus key is never pruned");
+        widest = widest.max(screen.keys.len());
+    }
+    assert!(widest < 500, "the table grew with the switches: {widest}");
+    // Out past the bound, season 0's keys are gone; coming back mints new ones, never reusing a live one.
+    assert!(ep_key(&screen, 0).is_none());
+    assert_ne!(first, 0);
+
+    // Inside the bound the same season returns to the same key.
+    d.episodes = season_eps(101).into();
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d.clone()));
+    screen.sync_keys(test_store().view());
+    screen.prune_keys(&[focus]);
+    let a = ep_key(&screen, 101).unwrap();
+    for n in [102, 101] {
+        d.episodes = season_eps(n).into();
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d.clone()));
+        screen.sync_keys(test_store().view());
+        screen.prune_keys(&[focus]);
+    }
+    assert_eq!(ep_key(&screen, 101), Some(a), "a season that left and returned within the bound keeps its key");
+    clear();
+}
+
+/// An entry far below the top keeps one identity: the focused card's. The page that reloads on
+/// return interns the same card under the same key, so focus seats on it.
+#[test]
+fn a_shed_detail_memory_holds_one_identity_and_the_reloaded_page_seats_the_same_card() {
+    use crate::registry::{DetailMemory, PageMemory};
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.related = (0..5).map(|i| plx_data::metadata::Related { rk: format!("rel-{i}"), ..Default::default() }).collect();
+    let _guard = install(d);
+    for n in 0..40usize {
+        let mut screen = bare(&_guard, sid, "show");
+        screen.sync_keys(test_store().view());
+        let focus = screen.engine_key(related::elem(n % 5).unwrap()).unwrap();
+        let mut memory = PageMemory::Detail(DetailMemory {
+            spot: Default::default(), keys: screen.keys.clone(), next_elem: screen.next_elem,
+        });
+        assert!(matches!(&memory, PageMemory::Detail(m) if m.keys.len() > 1));
+        memory.shed_to_identity(Some(focus));
+        let PageMemory::Detail(shed) = &memory else { unreachable!() };
+        assert_eq!(shed.keys.len(), 1, "route and one identity only");
+        assert_eq!(shed.keys[0].elem, focus);
+        let mut returned = bare(&_guard, sid, "show");
+        returned.restore_memory(shed, test_store().view());
+        assert_eq!(returned.engine_key(related::elem(n % 5).unwrap()), Some(focus), "the same card, the same key");
+        assert!(returned.locate(focus, test_store().view()) == Some(Located::Related(n % 5)));
+    }
     clear();
 }

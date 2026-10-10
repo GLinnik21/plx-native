@@ -49,6 +49,12 @@ pub trait Host: 'static {
     /// Whether this effect needs the emitting page's frozen navigation bookmark. Hosts may
     /// exempt housekeeping which never navigates; unknown effects retain the safe default.
     fn app_fx_needs_return(_fx: &Self::Fx) -> bool { true }
+
+    /// Cut an entry's saved page memory down to what a cold restore needs, once the entry sits
+    /// more than the stack's `DEEP` levels below the top: the route (kept by the entry) and the
+    /// focused identity, `focus` being the entry's saved focus key. The default keeps everything,
+    /// which is right for a host whose memory is already small.
+    fn shed_memory(_memory: &mut Self::Memory, _focus: Option<Self::Elem>) {}
 }
 
 macro_rules! newtype {
