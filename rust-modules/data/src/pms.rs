@@ -23,6 +23,7 @@
 //! sibling modules. `ci/allow/mutators.txt`'s `# count: 0` already proves no PRODUCTION line
 //! outside `pms`/`stores::hubs` spells the old direct-call form; this is the part that
 //! keyword-level `pub(super)` genuinely cannot add on top of that count.
+use crate::stores::paging;
 use plx_plex::plex::ServerId;
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
@@ -72,7 +73,7 @@ pub fn listable(type_str: &str) -> bool {
 
 /// Items asked of each hub endpoint, per source. `/hubs?count=` is items-per-hub, so this bounds
 /// a shelf, never the number of shelves.
-const HUB_FETCH_COUNT: i64 = 12;
+pub(crate) const HUB_FETCH_COUNT: i64 = 12;
 
 /// A catalog row — owned strings (the old C-ABI fixed `[u8; N]` buffers are gone; no C
 /// consumer remains). Fields pub so the UI / route / player read them directly.
@@ -883,76 +884,23 @@ fn hidden_sections(scope: &BrowseScope, sid: ServerId) -> Vec<i64> {
         .map(|(_, section, _)| *section).collect()
 }
 
-fn window_items(shelf: &Shelf, hidden: &[i64]) -> Vec<(usize, Arc<PmsMovie>)> {
-    shelf.positions.iter().copied().zip(&shelf.items).filter(|(_, item)| !hidden.contains(&item.sec))
-        .map(|(position, item)| (position, Arc::clone(item)))
-        .collect()
-}
-
 fn fetch_page(client: &plx_plex::plex::Client, sid: ServerId, page: &PageQuery, minimum_end: usize) -> Option<SourceBuild> {
     fetch_window(sid, page, None, minimum_end, |start, size| client.hub_items_paged(&page.key, start as i64, size as i64))
 }
 
 fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_end: usize,
-    mut fetch: impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>) -> Option<SourceBuild> {
-    let mut rows = current.map_or_else(Vec::new, |shelf| window_items(shelf, &page.hidden));
-    let retained_all = rows.len() <= HUB_FETCH_COUNT as usize;
-    if page.before { rows.truncate(HUB_FETCH_COUNT as usize); }
-    else if !retained_all { rows.drain(..rows.len() - HUB_FETCH_COUNT as usize); }
-    let mut offset = if page.before { page.start } else {
-        current.filter(|_| retained_all).map_or_else(|| rows.first().map_or(page.start, |row| row.0), |shelf| shelf.offset)
-    };
-    let mut end = if page.before {
-        current.filter(|_| retained_all).map_or_else(|| rows.last().map_or(page.start, |row| row.0 + 1), |shelf| shelf.end)
-    } else { page.start };
-    let mut total = current.map_or(0, |shelf| shelf.total);
-    let mut more = page.before && current.is_some_and(|shelf| shelf.more || !retained_all);
-    let mut cursor = page.start;
-    // Keep each worker bounded even when several consecutive server pages are hidden.
-    // A partial window retains the overlap and publishes its advanced server cursor.
-    let mut requests = 0;
-    while requests < 8 || (!page.before && cursor < minimum_end) {
-        requests += 1;
-        if rows.len() >= MAX_SHELF_ITEMS || (page.before && cursor == 0) { break; }
-        // Backward pages ask only for the room left beside the retained overlap, so every row
-        // fetched is kept and `offset` stays the first server position the window covers.
-        let size = if page.before { cursor.min(MAX_SHELF_ITEMS - rows.len()) } else { MAX_SHELF_ITEMS };
-        let start = if page.before { cursor - size } else { cursor };
-        let mc = fetch(start, size)?;
-        if mc.offset != start as i64 { return None; }
-        let got = mc.metadata.len().min(size);
-        total = mc.total_size.max(0) as usize;
-        let raw_end = start.saturating_add(got);
-        let mut fresh = Vec::new();
-        for (i, item) in mc.metadata.iter().take(got).enumerate() {
-            if !page.before { end = start + i + 1; }
-            if !listable(&item.kind) { continue; }
-            let item = parse_item(item, sid);
-            if item.title.is_empty() || item.thumb.is_empty() || page.hidden.contains(&item.sec)
-                || rows.iter().any(|(_, row)| row.rk == item.rk) { continue; }
-            if page.before { fresh.push((start + i, Arc::new(item))); }
-            else {
-                rows.push((start + i, Arc::new(item)));
-                if rows.len() == MAX_SHELF_ITEMS { break; }
-            }
-        }
-        if page.before {
-            fresh.extend(rows);
-            rows = fresh;
-            cursor = start;
-            offset = start;
-            if total > 0 { more = end < total; }
-        } else {
-            if got == 0 { end = start; }
-            more = got > 0 && if total > 0 { end < total } else { end < raw_end || got == size };
-            cursor = end;
-            if !more { break; }
-        }
-    }
+    fetch: impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>) -> Option<SourceBuild> {
+    let ask = paging::Ask { start: page.start, before: page.before, hidden: &page.hidden };
+    let current = current.map(|shelf| {
+        let rows = shelf.positions.iter().copied().zip(shelf.items.iter().map(Arc::clone)).collect::<Vec<_>>();
+        (rows, paging::PageInfo { offset: shelf.offset, end: shelf.end, total: shelf.total, more: shelf.more })
+    });
+    let (rows, info) = paging::fetch_window(sid, &ask, current.as_ref().map(|(rows, info)| (rows.as_slice(), *info)),
+        minimum_end, fetch)?;
     let (positions, items) = rows.into_iter().unzip();
     Some(SourceBuild { cw: Vec::new(), shelves: vec![Shelf {
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
-        total, offset, end, more,
+        total: info.total, offset: info.offset, end: info.end, more: info.more,
     }] })
 }
 
