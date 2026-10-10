@@ -909,11 +909,15 @@ fn run_page_cmd(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
             for sid in sids { cancel_page(state, sid, DECK_ID, ""); }
         }
         HubsCmd::CancelPage { sid, id, key } => cancel_page(state, sid, &id, &key),
+        // The asker read a window that a landing has since replaced: where its focus stood in
+        // the old one says nothing about the new one, and moving that would slide the cards from
+        // under a focus that is nowhere near the edge.
+        HubsCmd::Page { seen, .. } if seen != state.catalog_gen => {}
         HubsCmd::Page { id, before, .. } if id == DECK_ID => {
             sync_roster_with_scope(state, scope);
             endpoints = request_deck_page(state, adapter, before, scope, launch);
         }
-        HubsCmd::Page { sid, id, key, before } => {
+        HubsCmd::Page { sid, id, key, before, .. } => {
             sync_roster_with_scope(state, scope);
             if let Some(endpoint) = request_page(state, adapter, sid, &id, &key, before, scope, launch) { endpoints.insert(endpoint); }
         }

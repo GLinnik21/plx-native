@@ -3821,6 +3821,44 @@ fn recent_rows_request_pages_only_when_the_shelves_are_visible() {
     assert!(is_page(&step(&mut s, snapshot.view(), focus, &tick).1));
 }
 
+/// The app's frame, which the other paging cases never produce: views are captured, THEN the
+/// frame's landing is delivered to the store, THEN the screen ticks on the captured view. With a
+/// key held, the row's ask is re-armed every step, so on the frame a page lands the tick asks from
+/// the 12-card window (focus six from its end) while the store already holds 24 with focus in the
+/// middle. The store moved the 24: the cards slid twelve places under a focus drawn at the right
+/// of the screen, which a row scrolled to its start cannot keep there.
+#[test]
+fn a_tick_on_the_view_from_before_the_frames_landing_does_not_move_the_landed_window() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 12, true);
+    let captured = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(captured.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    s.layout_grid();
+    // the landing: delivered after the capture, before the tick
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let focus = Some(FocusKey { entry: s.entry, elem: s.rows[0].elems[10] });
+    let tick = ScreenEvent::Tick(Tick { ms: 16, dt_us: 0 });
+    let asks: Vec<_> = step(&mut s, captured.view(), focus, &tick).1.into_iter().filter_map(|fx| match fx.fx {
+        Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { before, seen, .. }))) => Some((before, seen)),
+        _ => None,
+    }).collect();
+    // The ask names the window it was computed from, which is what lets the store refuse it
+    // (`an_ask_computed_from_a_window_the_store_has_since_moved_is_refused`, in `plx_data`).
+    let landed = plx_data::pms::hubs_snapshot(&state);
+    assert_eq!(asks, vec![(false, captured.view().generation)], "the captured window ends six cards past the focus");
+    assert_ne!(captured.view().generation, landed.view().generation);
+    // the next frame captures the landed window: focus is ten cards into 24, and nothing is due
+    let _ = step(&mut s, landed.view(), focus, &ScreenEvent::StoreChanged(StoreId::Hubs.ord(), landed.view().generation));
+    assert_eq!(s.rows[0].elems.len(), 24);
+    let again = step(&mut s, landed.view(), focus, &tick).1.into_iter().filter(|fx|
+        matches!(fx.fx, Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { .. }))))).count();
+    assert_eq!(again, 0);
+}
+
 #[test]
 fn the_continue_watching_row_asks_for_a_page_at_its_trailing_edge() {
     let _guard = plx_base::testlock::serial();

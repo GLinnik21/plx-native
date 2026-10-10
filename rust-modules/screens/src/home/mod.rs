@@ -1068,7 +1068,7 @@ impl HomeScreen {
             if let Some(edge) = shelf.page_ask(cx, &src, wanted, offset, visible) {
                 let before = edge == ui_cards::PageEdge::Before;
                 if let Some(cmd) = self.hub(view, row).and_then(|hub| hub_page_cmd(&hub,
-                    |sid, id, key| HubsCmd::Page { sid, id, key, before })) {
+                    |sid, id, key| HubsCmd::Page { sid, id, key, before, seen: view.generation })) {
                     fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(cmd))));
                 }
             }

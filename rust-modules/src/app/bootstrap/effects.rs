@@ -217,7 +217,8 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
     Ok(match command {
         StoreCmd::Hubs(HubsCmd::Reset) => json!({"hubs":"reset"}),
         StoreCmd::Hubs(HubsCmd::RefetchHubs) => json!({"hubs":"refetch"}),
-        StoreCmd::Hubs(HubsCmd::Page { sid, id, key, before }) =>
+        // `seen` is the generation of the frame's own view, which the recording already fixes.
+        StoreCmd::Hubs(HubsCmd::Page { sid, id, key, before, seen: _ }) =>
             json!({"hubs":{"page":[sid.raw(),id,key,before]}}),
         StoreCmd::Hubs(HubsCmd::CancelPage { sid, id, key }) =>
             json!({"hubs":{"cancel_page":[sid.raw(),id,key]}}),
