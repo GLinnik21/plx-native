@@ -157,6 +157,14 @@
     "value": "picture shown in this attempt",
     "description": "Field name in the consent preview's list of possible playback-error values: whether the attempt that failed (the latest opening of the video, such as after a quality switch) had put a picture on screen before it failed, as against the playback as a whole. Its possible values are yes and no."
   },
+  "core.preview_domain_attempt_origin": {
+    "value": "why this attempt was made",
+    "description": "Field name in the consent preview's list of possible playback-error values: what led to the attempt that failed, such as the first press of Play, a Retry, a quality change the viewer made, a switch the app made on its own, a recovery after a failed attempt, or reopening after the app returned to the foreground."
+  },
+  "core.preview_domain_attempt_ordinal": {
+    "value": "which attempt of this playback (1 to 9, then 9+)",
+    "description": "Field name in the consent preview's list of possible playback-error values: how many times the video had been opened during this playback, counting the failed attempt, every Retry and every switch. Its possible values are the numbers 1 to 9 and then 9+."
+  },
   "core.preview_domain_http_status": {
     "value": "HTTP status number (0 = none)",
     "description": "Field name in the consent preview's list of possible playback-error values: the exact HTTP status number the media server answered with, from 100 to 599, or 0 when none was recorded. Its possible values are a range of integers rather than a list of codes."

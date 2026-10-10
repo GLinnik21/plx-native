@@ -117,7 +117,7 @@ report ID as a crash report, and the same television model, SoC, hardware revisi
 and the `rtkmem`/`install` sandbox facts a crash report carries. Buffering, seeking, holding
 a low quality, or rejecting an adaptive-bitrate candidate does not by itself send a report.
 The closed diagnostic vocabulary includes terminal kinds such as `playback_interrupted` and
-`original_rollback`; HLS direction `refresh`; delivery reason `original_open_rollback`; and
+`original_rollback`; HLS direction `refresh`; delivery reasons `original_open_rollback` and `quality_pick`; and
 Original-check outcomes `started`, `succeeded`, `no_body`, `deadline`, `transport`,
 `inconclusive`, `server_state` and `refused`.
 
@@ -145,6 +145,17 @@ picture on screen before it failed; and `http_status`, the exact HTTP status num
 answered with (`100` to `599`), or `0` when none was recorded. The status is a number and nothing
 else — the server's accompanying text is not sent. All three appear as a tag and in the playback
 context; `http` keeps its coarse class beside the number.
+
+Two more closed fields say why that attempt was made and which one it was, because a failure after
+a Retry or a handoff reads differently from the first open: `attempt_origin`, one of `fresh` (the
+Play the viewer pressed) / `user_retry` (Retry, or *Switch to Auto and play*, on the failure
+screen) / `quality_change` (a quality the viewer picked, including one picked on the failure
+screen) / `auto_handoff` (a change of delivery the app made on its own) / `recovery` (the app
+reopening the video after an attempt failed to open) / `resume` (reopening where playback left off
+after the app returned to the foreground); and `attempt_ordinal`, which open of this playback it
+was, `1` to `9` and then `9+`, counting the first open, every retry and every handoff. The count
+starts again at `1` with each new Play and is kept only in memory. Both appear as a tag and in the
+playback context.
 
 When the failure is the media server **refusing to play or convert the item** (`decision_refused`),
 that report also carries four closed fields about the refusal — and never the server's own

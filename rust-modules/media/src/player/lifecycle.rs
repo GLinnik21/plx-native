@@ -764,15 +764,18 @@ fn run_foreground_effects<A: ForegroundActuator>(
     let mut launched = false;
     while let Some(next) = effect.take() {
         effect = match next {
-            ForegroundEffect::Prepare { id, resume_ns } => match actuator.prepare_resume(ps, resume_ns) {
-                crate::player::ResumeStart::Settled(outcome) => {
-                    lifecycle.finish_prepare(id, matches!(outcome, crate::player::ResumeOutcome::Prepared))
+            ForegroundEffect::Prepare { id, resume_ns } => {
+                // The restore reopens the engine at the parked position: that open is a resume.
+                crate::player::report::note_attempt(crate::player::report::AttemptOrigin::Resume);
+                match actuator.prepare_resume(ps, resume_ns) {
+                    crate::player::ResumeStart::Settled(outcome) => lifecycle
+                        .finish_prepare(id, matches!(outcome, crate::player::ResumeOutcome::Prepared)),
+                    crate::player::ResumeStart::Pending => {
+                        let _ = lifecycle.finish_prepare_pending(id);
+                        None
+                    }
                 }
-                crate::player::ResumeStart::Pending => {
-                    let _ = lifecycle.finish_prepare_pending(id);
-                    None
-                }
-            },
+            }
             ForegroundEffect::Load {
                 id,
                 resume_ns,

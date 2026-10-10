@@ -28,6 +28,8 @@
   "core.preview_domain_pipeline": "fase de reproducción",
   "core.preview_domain_pipeline_error": "número de error del firmware del televisor (0 = ninguno registrado)",
   "core.preview_domain_attempt_started": "imagen mostrada en este intento",
+  "core.preview_domain_attempt_origin": "motivo de este intento",
+  "core.preview_domain_attempt_ordinal": "número de intento de esta reproducción (de 1 a 9, luego 9+)",
   "core.preview_domain_http_status": "número de estado HTTP (0 = ninguno)",
   "core.preview_domain_http": "HTTP",
   "core.preview_domain_buffer": "búfer",

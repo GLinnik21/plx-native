@@ -10,6 +10,17 @@
 //! `Error`; ordinary low quality, buffering and rejected ABR candidates remain breadcrumbs at most,
 //! never errors of their own.
 //!
+//! # A failure says WHY the attempt it ended was made
+//!
+//! A report names the attempt that failed beside the playback it failed in: the route being opened
+//! and whether that open ever showed a picture (`attempted_delivery`, `attempt_started`), why it
+//! was made (`attempt_origin`: a Play, a Retry, a quality pick, an automatic handoff, a recovery, a
+//! foreground resume) and which open of the session it was (`attempt_ordinal`). Origin and ordinal
+//! are decided where the open is, never inferred from the failure: [`requested`] for a request
+//! (a Retry continues the count, a Play restarts it) and [`note_delivery_requested_for`] /
+//! [`note_attempt`] for a reload of the same playback. They live in [`AttemptLedger`], not in the
+//! trace, because a Retry stops the failed playback first and that clears the trace.
+//!
 //! # These are TRANSITIONS, not log lines
 //!
 //! The first design put `playback.started` on the engine's `load:` line. That line is the wrong
@@ -39,7 +50,7 @@ use plx_telemetry::diag::schema::DiagEvent;
 // classifies a live playback INTO it. Re-exported here so the player and the route layer keep
 // naming the closed domains where they report from.
 pub use plx_telemetry::telemetry::classes::{
-    AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DeliveryReason, HttpClass,
+    AttemptOrdinal, AttemptOrigin, AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DeliveryReason, HttpClass,
     LoadElapsedClass, OriginalProbePhase, PipelineClass, PlaybackErrorContext, QualityClass,
     RasterClass, RateClass, RefusalContext, TraceAge, TraceDirection, TraceEvent, TraceOutcome,
     TraceStep, TransferAgeClass, TransportClass, VideoCodecClass,
@@ -105,6 +116,50 @@ static REQUESTED_MS: AtomicI64 = AtomicI64::new(0);
 /// are deliberately absent: one entry per segment would both drown the causal transitions and turn
 /// a long film into a larger report than a short one.
 pub const ERROR_TRACE_MAX: usize = 32;
+
+/// **Why the engine open now in flight was made, and which open of the session it is.** Two small
+/// closed values and the generation they belong to; no history and nothing the viewer typed or
+/// chose beyond the cause. Kept apart from [`PlaybackTrace`] on purpose: a Retry tears the failed
+/// playback down first, and that teardown clears the trace (`ended` -> [`clear_error_trace`]), but
+/// the Retry is the SECOND open of the same session, which only a counter that outlives the trace
+/// can say. A fresh Play restarts it; [`note_attempt_for`] and [`requested`] advance it.
+struct AttemptLedger {
+    generation: u32,
+    origin: AttemptOrigin,
+    ordinal: AttemptOrdinal,
+}
+
+impl AttemptLedger {
+    /// A new request begins. A fresh Play starts the session over; a Retry (or a quality pick on
+    /// the failure screen) is the next open of the session it repeats.
+    fn begin(&mut self, generation: u32, origin: AttemptOrigin) {
+        self.ordinal = match origin {
+            AttemptOrigin::Fresh => AttemptOrdinal::FIRST,
+            _ => self.ordinal.next(),
+        };
+        self.generation = generation;
+        self.origin = origin;
+    }
+
+    /// The playback in force opens its engine again, for `origin`. Another playback's note (a stale
+    /// generation, or none) changes nothing.
+    fn reopen(&mut self, generation: u32, origin: AttemptOrigin) {
+        if generation != 0 && self.generation == generation {
+            self.ordinal = self.ordinal.next();
+            self.origin = origin;
+        }
+    }
+}
+
+fn ledger() -> std::sync::MutexGuard<'static, AttemptLedger> {
+    LEDGER.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+static LEDGER: std::sync::Mutex<AttemptLedger> = std::sync::Mutex::new(AttemptLedger {
+    generation: 0,
+    origin: AttemptOrigin::Fresh,
+    ordinal: AttemptOrdinal::FIRST,
+});
 
 /// The current play attempt's in-memory, privacy-bounded history. It lives in [`super::SHARED`]
 /// because both the demux worker (ABR/probe) and main thread (request/seek/error) append to it.
@@ -250,7 +305,7 @@ impl PlaybackTrace {
 
 /// The wire class of the quality the viewer picked. `QualityClass` is telemetry's closed domain and
 /// cannot name `route::Quality`, so the mapping lives with the producer.
-fn selected_quality_class(q: crate::route::Quality) -> QualityClass {
+pub fn selected_quality_class(q: crate::route::Quality) -> QualityClass {
     use crate::route::Quality as Q;
     match q {
         Q::Auto => QualityClass::Auto,
@@ -381,7 +436,9 @@ pub fn note_delivery_requested_for(
     delivery: DeliveryClass,
     requested: QualityClass,
     reason: DeliveryReason,
+    origin: AttemptOrigin,
 ) {
+    note_attempt_for(generation, origin);
     push_trace_for(
         generation,
         TraceEvent::DeliveryRequested {
@@ -390,6 +447,27 @@ pub fn note_delivery_requested_for(
             reason,
         },
     );
+}
+
+/// A new engine open of this playback is decided, for `origin`. The generation guard is the
+/// trace's own: a late note from a previous Play's worker changes nothing. Not consent-gated: the
+/// ledger holds a count and a cause, never a history.
+pub fn note_attempt_for(generation: u32, origin: AttemptOrigin) {
+    ledger().reopen(generation, origin);
+}
+
+/// [`note_attempt_for`] for the playback now in force, for the callers that run on the main thread
+/// and so cannot be stale (the foreground restore).
+pub fn note_attempt(origin: AttemptOrigin) {
+    let mut ledger = ledger();
+    let generation = ledger.generation;
+    ledger.reopen(generation, origin);
+}
+
+/// Why the open now in force was made and which open of the session it is.
+fn attempt_snapshot() -> (AttemptOrigin, AttemptOrdinal) {
+    let ledger = ledger();
+    (ledger.origin, ledger.ordinal)
 }
 
 pub fn note_hls_committed_for(
@@ -477,6 +555,7 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
         (trace.attempted_delivery(), trace.attempt_started())
     };
     let http_status = super::SHARED.dg_http_status.load(Relaxed);
+    let (attempt_origin, attempt_ordinal) = attempt_snapshot();
     PlaybackErrorContext {
         delivery,
         selected,
@@ -494,6 +573,8 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
         // opening; else the session's own, which is also the attempt's when nothing was switched.
         attempted_delivery: refusal.map(|r| r.attempted).or(noted).unwrap_or(delivery),
         attempt_started,
+        attempt_origin,
+        attempt_ordinal,
         http_status: HttpClass::exact_status(http_status),
         pipeline_error: super::SHARED.dg_cb_err_num.load(Relaxed),
         refusal,
@@ -502,6 +583,31 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
 
 /// The refusal block for a refusal the SERVER made at `/decision`, else `None`.
 ///
+/// Test-only window onto the context a failure would report, for route tests that drive a
+/// decision and need to see what the report would say about it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn error_context_for_test(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
+    error_context(ps)
+}
+
+/// A picture from the playback's route is on the panel, as the observer notes it when the derived
+/// state reaches `Playing`. A route test has no engine to derive that state from.
+#[cfg(any(test, feature = "test-support"))]
+pub fn note_presented_for_test(ps: &crate::route::PlaybackSession) {
+    push_trace(presented_event(ps));
+}
+
+/// Put the per-attempt latches back the way an idle player has them, after a route test that
+/// asked for a trace.
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_latches_for_test() {
+    super::SHARED.pb_state.store(super::shared::PlaybackState::Idle as u8, Relaxed);
+    LAST.store(super::shared::PlaybackState::Idle as u8, Relaxed);
+    SAW_START.store(false, Relaxed);
+    SAW_FAIL.store(false, Relaxed);
+    clear_error_trace();
+}
+
 /// **`attempted` is read from the contract, and that is honest.** `build_stream` stores the route it
 /// is about to ask for in `plan.contract` BEFORE it asks `/decision`, and `apply_plan` installs
 /// the contract of a refusing plan like any other (only the URL and the encoder session are
@@ -542,7 +648,15 @@ fn presented_event(ps: &crate::route::PlaybackSession) -> TraceEvent {
 ///
 /// Mints the id and clears every latch, so a second Play on the same item is a second attempt with
 /// its own funnel rather than a silent no-op against the first one's latches.
-pub fn requested(ps: &crate::route::PlaybackSession, server: plx_plex::plex::ServerId) -> u32 {
+///
+/// `origin` is why the viewer or the app is making it ([`AttemptOrigin`]): `Fresh` for a Play,
+/// which also restarts the session's open count; `UserRetry` or `QualityChange` for the resolve a
+/// failure screen's Retry or quality pick starts, which continues it.
+pub fn requested(
+    ps: &crate::route::PlaybackSession,
+    server: plx_plex::plex::ServerId,
+    origin: AttemptOrigin,
+) -> u32 {
     resolve_replaced_attempt(ps);
     let id = new_attempt_id();
     let at = now_ms();
@@ -567,6 +681,7 @@ pub fn requested(ps: &crate::route::PlaybackSession, server: plx_plex::plex::Ser
         previous + 1
     };
     ATTEMPT.store(id, Relaxed);
+    ledger().begin(generation, origin);
     // Snapshot the server slot AND the connection together, in one store — see
     // `ATTEMPT_CONNECTION`'s doc for why `emit` must never re-read the live client, and why this
     // must not be three separate stores.
@@ -1035,7 +1150,7 @@ mod tests {
             "m1", &o, "tok", None, "cid", connection,
         );
         let ps = crate::route::PlaybackSession::default();
-        requested(&ps, sid);
+        requested(&ps, sid, AttemptOrigin::Fresh);
         assert_eq!(
             attempt_connection_snapshot_for_test(),
             (Some(plx_plex::plex::probe::Location::Local), Some(plx_plex::plex::IpVersion::V4)),
@@ -1353,7 +1468,7 @@ mod tests {
         // The route the session had: HLS.
         let mut ps = crate::route::PlaybackSession::default();
         crate::route::install_transcode_for_test(&mut ps, false, true);
-        let generation = requested(&ps, plx_plex::plex::ServerId::UNSET);
+        let generation = requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
         let set = |state: S| {
             crate::player::SHARED.pb_state.store(state as u8, Relaxed);
             tick(&ps);
@@ -1363,6 +1478,11 @@ mod tests {
         assert!(SAW_START.load(Relaxed), "the session played");
         let playing = error_context(&ps);
         assert!(playing.started && playing.attempt_started, "a picture is up on this attempt");
+        assert_eq!(
+            (playing.attempt_origin, playing.attempt_ordinal),
+            (AttemptOrigin::Fresh, AttemptOrdinal::FIRST),
+            "the Play the viewer pressed is the first open, and says so",
+        );
 
         // The viewer picks Original: the new route is requested, and its open begins.
         note_delivery_requested_for(
@@ -1370,6 +1490,7 @@ mod tests {
             DeliveryClass::Direct,
             QualityClass::Original,
             DeliveryReason::OriginalRecovery,
+            AttemptOrigin::QualityChange,
         );
         set(S::Connecting);
         set(S::Error);
@@ -1379,6 +1500,8 @@ mod tests {
         assert!(ctx.started, "the session did play");
         assert_eq!(ctx.attempted_delivery.code(), "original_direct", "the route that was being opened");
         assert!(!ctx.attempt_started, "the Original open never showed a picture");
+        assert_eq!(ctx.attempt_origin.code(), "quality_change", "the viewer asked for Original");
+        assert_eq!(ctx.attempt_ordinal.code(), "2", "the second open of this playback");
 
         crate::player::SHARED.pb_state.store(S::Idle as u8, Relaxed);
         LAST.store(S::Idle as u8, Relaxed);
@@ -1386,6 +1509,154 @@ mod tests {
         SAW_FAIL.store(false, Relaxed);
         clear_error_trace();
         consent::install(previous.unwrap_or_default());
+    }
+
+    /// Run `body` with error reporting consented, then put every latch back.
+    fn consented<T>(body: impl FnOnce() -> T) -> T {
+        use plx_telemetry::telemetry::consent::{self, Consent};
+        let previous = consent::current();
+        let mut enabled = Consent::default();
+        enabled.errors = true;
+        enabled.asked_version = consent::POLICY_VERSION;
+        consent::install(enabled);
+        let out = body();
+        crate::player::SHARED.pb_state.store(S::Idle as u8, Relaxed);
+        LAST.store(S::Idle as u8, Relaxed);
+        SAW_START.store(false, Relaxed);
+        SAW_FAIL.store(false, Relaxed);
+        clear_error_trace();
+        consent::install(previous.unwrap_or_default());
+        out
+    }
+
+    /// Present `state` to the per-frame observer, as the main loop does once a frame.
+    fn observe(ps: &crate::route::PlaybackSession, state: S) {
+        crate::player::SHARED.pb_state.store(state as u8, Relaxed);
+        tick(ps);
+    }
+
+    /// **A Retry press is the SECOND open of the session, and the report says why.** The failed
+    /// playback is torn down first (`ended` clears the trace) and the retry mints a new attempt, so
+    /// the count has to outlive both. A fresh Play afterwards starts again at the first.
+    #[test]
+    fn a_retry_press_reports_user_retry_as_the_second_open_and_a_fresh_play_starts_over() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            let ps = crate::route::PlaybackSession::default();
+            let sid = plx_plex::plex::ServerId::UNSET;
+            requested(&ps, sid, AttemptOrigin::Fresh);
+            observe(&ps, S::Connecting);
+            observe(&ps, S::Error);
+            let first = error_context(&ps);
+            assert_eq!((first.attempt_origin.code(), first.attempt_ordinal.code()), ("fresh", "1"));
+
+            // The Retry: the failed playback is stopped (which clears the trace), then re-requested.
+            clear_error_trace();
+            requested(&ps, sid, AttemptOrigin::UserRetry);
+            observe(&ps, S::Resolving);
+            observe(&ps, S::Error);
+            let retried = error_context(&ps);
+            assert_eq!(retried.attempt_origin.code(), "user_retry");
+            assert_eq!(retried.attempt_ordinal.code(), "2");
+
+            // A quality pick on the failure screen is a retry too, with its own cause.
+            clear_error_trace();
+            requested(&ps, sid, AttemptOrigin::QualityChange);
+            let picked = error_context(&ps);
+            assert_eq!((picked.attempt_origin.code(), picked.attempt_ordinal.code()), ("quality_change", "3"));
+
+            // Pressing Play on an item starts a new session.
+            clear_error_trace();
+            requested(&ps, sid, AttemptOrigin::Fresh);
+            let fresh = error_context(&ps);
+            assert_eq!((fresh.attempt_origin.code(), fresh.attempt_ordinal.code()), ("fresh", "1"));
+        });
+    }
+
+    /// The ordinal is bounded: a session that keeps failing reads `9+`, never a bigger number.
+    #[test]
+    fn the_attempt_ordinal_saturates_at_nine_plus() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            let ps = crate::route::PlaybackSession::default();
+            let sid = plx_plex::plex::ServerId::UNSET;
+            requested(&ps, sid, AttemptOrigin::Fresh);
+            let mut seen = vec![error_context(&ps).attempt_ordinal.code()];
+            for _ in 0..12 {
+                requested(&ps, sid, AttemptOrigin::UserRetry);
+                seen.push(error_context(&ps).attempt_ordinal.code());
+            }
+            assert_eq!(
+                seen,
+                ["1", "2", "3", "4", "5", "6", "7", "8", "9", "9+", "9+", "9+", "9+"],
+            );
+        });
+    }
+
+    /// **A recovery that also fails is ONE failure to the viewer, and one report.** The first open
+    /// fails, the app starts a recovery on its own (the HUD reads Resolving through the flight, so
+    /// the failure is not published), and the recovery's open fails too. The attempt latch means one
+    /// report; the report names the open that failed last, which is the recovery's, the second.
+    /// When the recovery cannot even start, the first open's failure stands, as itself.
+    #[test]
+    fn a_recovery_that_also_fails_emits_one_report_and_names_the_recovery() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            let ps = crate::route::PlaybackSession::default();
+            let sid = plx_plex::plex::ServerId::UNSET;
+            let before = plx_telemetry::telemetry::playback::report_calls_for_test();
+            let generation = requested(&ps, sid, AttemptOrigin::Fresh);
+            observe(&ps, S::Connecting);
+            // The first open failed; the recovery flight flies (Resolving), lands, and reopens.
+            observe(&ps, S::Resolving);
+            note_delivery_requested_for(
+                generation,
+                DeliveryClass::Hls,
+                QualityClass::Unknown,
+                DeliveryReason::OriginalOpenRollback,
+                AttemptOrigin::Recovery,
+            );
+            observe(&ps, S::Connecting);
+            observe(&ps, S::Error);
+            // The error read-out is republished on the frames that follow.
+            observe(&ps, S::Error);
+            let ctx = error_context(&ps);
+            assert_eq!((ctx.attempt_origin.code(), ctx.attempt_ordinal.code()), ("recovery", "2"));
+            assert_eq!(
+                plx_telemetry::telemetry::playback::report_calls_for_test() - before,
+                1,
+                "one report for the one failure the viewer saw",
+            );
+
+            // The flight refused: no second open was ever decided, so the first open is what failed.
+            clear_error_trace();
+            requested(&ps, sid, AttemptOrigin::Fresh);
+            observe(&ps, S::Connecting);
+            observe(&ps, S::Error);
+            let refused = error_context(&ps);
+            assert_eq!((refused.attempt_origin.code(), refused.attempt_ordinal.code()), ("fresh", "1"));
+        });
+    }
+
+    /// A late note from an earlier Play's worker (a stale generation) must not rewrite the cause or
+    /// the count of the playback now in force.
+    #[test]
+    fn a_stale_generation_note_does_not_touch_the_attempt() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            let ps = crate::route::PlaybackSession::default();
+            let sid = plx_plex::plex::ServerId::UNSET;
+            let old = requested(&ps, sid, AttemptOrigin::Fresh);
+            let current = requested(&ps, sid, AttemptOrigin::Fresh);
+            assert_ne!(old, current);
+            note_attempt_for(old, AttemptOrigin::AutoHandoff);
+            note_attempt_for(0, AttemptOrigin::AutoHandoff);
+            let ctx = error_context(&ps);
+            assert_eq!((ctx.attempt_origin.code(), ctx.attempt_ordinal.code()), ("fresh", "1"));
+            note_attempt_for(current, AttemptOrigin::AutoHandoff);
+            let ctx = error_context(&ps);
+            assert_eq!((ctx.attempt_origin.code(), ctx.attempt_ordinal.code()), ("auto_handoff", "2"));
+        });
     }
 
     /// The other cases of the same rule, on the pure trace: no route change noted means the attempt

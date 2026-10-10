@@ -20,6 +20,7 @@
 //! through a `PlayerReq`.
 
 use super::*;
+use plx_media::player::report::AttemptOrigin;
 // The list is what the LOOP still spells, and phase 12 (PX-PLAYER) is why it is short: the scrub
 // gesture's constants and its two pure policies (`scrub_press`, `failed_key_action`) are read by
 // `screens::player` alone now, so re-exporting them here would be this module claiming a
@@ -120,7 +121,7 @@ pub(crate) fn apply_more_action(ps: &mut plx_media::route::PlaybackSession, pa: 
             let failed = matches!(plx_media::player::state(ps), plx_media::player::PlaybackState::Error);
             if failed {
                 plx_media::route::set_quality_for_retry(q);
-                retry_failed_playback(ps, pa, bridge.metadata_mut(), None);
+                retry_failed_playback(ps, pa, bridge.metadata_mut(), None, AttemptOrigin::QualityChange);
             } else {
                 plx_media::route::set_quality(ps, q);
             }
@@ -140,12 +141,15 @@ pub(crate) fn apply_more_action(ps: &mut plx_media::route::PlaybackSession, pa: 
 /// the current playhead and the Engine lifecycle.
 ///
 /// `direct_play` overrides the Direct Play mode the retry resolves under; `None` keeps the failed
-/// attempt's own (a retry is the SAME request).
+/// attempt's own (a retry is the SAME request). `origin` is why the viewer asked — a Retry press
+/// or a quality pick on the failure screen — and rides to the error report of the attempt this
+/// starts, which is the next open of the same session.
 pub(crate) fn retry_failed_playback(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     meta: &mut plx_data::stores::metadata::MetadataStore,
     direct_play: Option<plx_plex::plex::session::DirectPlayMode>,
+    origin: AttemptOrigin,
 ) -> bool {
     // URL/dev-trigger playback has no Plex descriptor.  Check BEFORE teardown: extinguishing its
     // Error Engine and only then discovering it cannot be rebuilt would replace an actionable
@@ -162,7 +166,7 @@ pub(crate) fn retry_failed_playback(
         .max(plx_media::route::unpresented_resume_ns(ps))
         .max(0);
     plx_media::player::stop_bufferfeed(ps, pa);
-    if plx_media::route::retry_current_play(ps, meta, resume_ns, direct_play) {
+    if plx_media::route::retry_current_play(ps, meta, resume_ns, direct_play, origin) {
         plx_machine::idle::invalidate();
         true
     } else {
@@ -187,7 +191,7 @@ pub(crate) fn play_automatically(
 ) -> bool {
     use plx_plex::plex::session::{DirectPlayMode, DirectPlayModePref};
     plx_media::route::choose::<DirectPlayModePref>(DirectPlayMode::Auto, plx_media::route::How::Optimistic(None));
-    retry_failed_playback(ps, pa, meta, Some(DirectPlayMode::Auto))
+    retry_failed_playback(ps, pa, meta, Some(DirectPlayMode::Auto), AttemptOrigin::UserRetry)
 }
 
 /// **Where a session that is STARTING returns to** — the whole of what `app::nav::Origin` was,
@@ -557,7 +561,7 @@ pub(crate) fn player_requests(
     for req in reqs {
         match req {
             PlayerReq::RetryPlayback => {
-                retry_failed_playback(ps, pa, bridge.metadata_mut(), None);
+                retry_failed_playback(ps, pa, bridge.metadata_mut(), None, AttemptOrigin::UserRetry);
             }
             PlayerReq::PlayAutomatically => {
                 play_automatically(ps, pa, bridge.metadata_mut());

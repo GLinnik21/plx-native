@@ -732,6 +732,16 @@ pub enum RecoveryCause {
 }
 
 impl RecoveryCause {
+    /// Why the open this recovery makes is made, as a failed open reports it: the viewer asked for
+    /// it (an Original pick, or the enhancement they turned off) or the Auto worker did.
+    pub const fn attempt_origin(self) -> crate::player::report::AttemptOrigin {
+        use crate::player::report::AttemptOrigin as O;
+        match self {
+            Self::Automatic => O::AutoHandoff,
+            Self::ManualOriginal | Self::EnhancementReleased => O::QualityChange,
+        }
+    }
+
     /// The log prefix this cause's recovery lines carry.
     fn log_tag(self) -> &'static str {
         match self {
@@ -4115,6 +4125,13 @@ pub(super) fn install_auto_hls_outcome(
         crate::player::report::DeliveryClass::Hls,
         crate::player::report::rung_quality_class(rung),
         reason,
+        match reason {
+            // The source that never opened is replaced by HLS: the app's own recovery.
+            crate::player::report::DeliveryReason::OriginalOpenRollback => {
+                crate::player::report::AttemptOrigin::Recovery
+            }
+            _ => crate::player::report::AttemptOrigin::AutoHandoff,
+        },
     );
     Some(installed)
 }
@@ -4474,6 +4491,7 @@ pub(super) fn install_original_recovery(
         crate::player::report::DeliveryClass::Remux,
         crate::player::report::QualityClass::Original,
         crate::player::report::DeliveryReason::OriginalRecovery,
+        plan.cause.attempt_origin(),
     );
     Some(AutoOriginalReload::Remux)
 }
@@ -4662,6 +4680,7 @@ fn recover_original_direct(
         crate::player::report::DeliveryClass::Direct,
         crate::player::report::QualityClass::Original,
         crate::player::report::DeliveryReason::OriginalRecovery,
+        cause.attempt_origin(),
     );
     Some(AutoOriginalReload::Direct)
 }
@@ -6575,6 +6594,23 @@ fn apply_quality_choice(ps: &mut PlaybackSession, q: Quality) {
             .map(|rung| format!(" at {}kbps HLS", rung.kbps()))
             .unwrap_or_default(),
     ));
+    // The pick is a new open of the route it names, whatever the pump makes of the refresh: say so
+    // now, or a failure of that open reads as one of the route the playback had (S5a left this
+    // path with no `DeliveryRequested`, so `attempted_delivery` fell back to the installed route).
+    crate::player::report::note_delivery_requested_for(
+        playback_trace_generation(),
+        if adaptive {
+            crate::player::report::DeliveryClass::Hls
+        } else {
+            crate::player::report::DeliveryClass::Transcode
+        },
+        starting_rung.map_or_else(
+            || crate::player::report::selected_quality_class(q),
+            crate::player::report::rung_quality_class,
+        ),
+        crate::player::report::DeliveryReason::QualityPick,
+        crate::player::report::AttemptOrigin::QualityChange,
+    );
     crate::player::request_transcode_refresh(ps);
 }
 
@@ -7327,6 +7363,7 @@ pub fn request_play(
         None,
         None,
         false,
+        crate::player::report::AttemptOrigin::Fresh,
     )
 }
 
@@ -7358,6 +7395,8 @@ pub fn request_preview(
         None,
         None,
         false,
+        // A preview mints no attempt (`requested` is not called), so this is never read.
+        crate::player::report::AttemptOrigin::Fresh,
     )
 }
 
@@ -7371,6 +7410,7 @@ fn request_play_inner(
     retry: Option<RetryContext>,
     trace_generation: Option<u32>,
     drain_previous: bool,
+    origin: crate::player::report::AttemptOrigin,
 ) -> bool {
     let sid = request.sid;
     let rk = &request.rk;
@@ -7395,7 +7435,7 @@ fn request_play_inner(
     let trace_generation = if request.preview {
         0
     } else {
-        trace_generation.unwrap_or_else(|| crate::player::report::requested(ps, sid))
+        trace_generation.unwrap_or_else(|| crate::player::report::requested(ps, sid, origin))
     };
     // The fields a play REQUEST owns, as against the ones only a landing may install: the HUD
     // strings (published now, so the pre-roll has a title through the whole resolve) and the five
@@ -7665,12 +7705,15 @@ fn apply_retry_enhancement(env: &mut ResolveEnv, retry: RetryContext) {
 }
 
 /// `direct_play` replaces the failed attempt's Direct Play mode for this resolve (the failure
-/// read-out's *Switch to Auto and play*); `None` keeps it.
+/// read-out's *Switch to Auto and play*); `None` keeps it. `origin` is why the viewer asked: a
+/// Retry press is `user_retry`, a quality pick on the failure screen is `quality_change`. The new
+/// attempt is the NEXT open of the same session, so its ordinal continues the failed one's.
 pub fn retry_current_play(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
     resume_ns: i64,
     direct_play: Option<DirectPlayMode>,
+    origin: crate::player::report::AttemptOrigin,
 ) -> bool {
     let Some(request) = ps.request.clone() else {
         crate::player::log("playback retry: no Plex request descriptor");
@@ -7681,7 +7724,7 @@ pub fn retry_current_play(
         quality(),
     ));
     let retry = retry_context_with(ps, resume_ns, direct_play);
-    request_play_inner(ps, meta, request, Some(retry), None, true)
+    request_play_inner(ps, meta, request, Some(retry), None, true, origin)
 }
 
 /// [`rescue_retry_context`] with the failed attempt's Direct Play mode optionally replaced — the
@@ -7834,7 +7877,16 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
             crate::player::log(
                 "playback resolve: desired contract changed in flight; discarding and resolving the latest contract",
             );
-            let _ = request_play_inner(ps, meta, request, Some(retry), Some(trace_generation), false);
+            let _ = request_play_inner(
+                ps,
+                meta,
+                request,
+                Some(retry),
+                Some(trace_generation),
+                false,
+                // Unused: the attempt is already minted and this resolve continues it.
+                crate::player::report::AttemptOrigin::Fresh,
+            );
         } else {
             cancel_playback_request(ps, has_url(ps));
         }

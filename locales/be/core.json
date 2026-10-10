@@ -28,6 +28,8 @@
   "core.preview_domain_pipeline": "этап прайгравання",
   "core.preview_domain_pipeline_error": "нумар памылкі прашыўкі тэлевізара (0 = нічога не зафіксавана)",
   "core.preview_domain_attempt_started": "кадр паказаны ў гэтай спробе",
+  "core.preview_domain_attempt_origin": "прычына гэтай спробы",
+  "core.preview_domain_attempt_ordinal": "нумар спробы гэтага прайгравання (ад 1 да 9, потым 9+)",
   "core.preview_domain_http_status": "нумар статусу HTTP (0 = няма)",
   "core.preview_domain_http": "HTTP",
   "core.preview_domain_buffer": "буфер",

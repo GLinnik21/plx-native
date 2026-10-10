@@ -1,8 +1,9 @@
 //! **The closed vocabulary of a handled playback-error report.**
 //!
 //! Every value [`super::playback`] serialises is a member of one of these enums, a bool
-//! (`attempt_started`), or one of two bounded integers (`http_status`, 100-599 else 0, and
-//! `pipeline_error`, the firmware's `i32` error number); there is no free-text slot. Every
+//! (`attempt_started`), a bounded ordinal (`attempt_ordinal`, `1`..`9` else `9+`), or one of two
+//! bounded integers (`http_status`, 100-599 else 0, and `pipeline_error`, the firmware's `i32`
+//! error number); there is no free-text slot. Every
 //! enum's `code` is the wire string, written out and never derived from a variant name, because a
 //! rename is a refactor and must not silently re-partition a year of dashboards. The telemetry
 //! layer owns the schema; `player::report` is the producer that classifies a live playback into
@@ -317,15 +318,115 @@ pub enum DeliveryReason {
     LinkFallback,
     OriginalRecovery,
     OriginalOpenRollback,
+    /// The viewer picked a fixed quality rung whose route the current stream cannot satisfy, so
+    /// the playback is re-encoded at that rung.
+    QualityPick,
 }
 
 impl DeliveryReason {
+    pub const ALL: [Self; 4] = [
+        Self::LinkFallback,
+        Self::OriginalRecovery,
+        Self::OriginalOpenRollback,
+        Self::QualityPick,
+    ];
+
     pub const fn code(self) -> &'static str {
         match self {
             Self::LinkFallback => "link_fallback",
             Self::OriginalRecovery => "original_recovery",
             Self::OriginalOpenRollback => "original_open_rollback",
+            Self::QualityPick => "quality_pick",
         }
+    }
+}
+
+/// **Why an engine open was made.** An attempt that fails reads differently by cause: a fresh Play
+/// that never opened is a different bug from an Original open the viewer asked for mid-film or a
+/// recovery the app started on its own. The producer (`player::report`) names the cause where the
+/// open is decided; a value is never inferred from a failure.
+///
+/// Adding a cause is ONE place here: a variant, its `code`, and a slot in [`Self::ALL`], which the
+/// consent legend, the tests and the sample all read (the compiler checks `code` is exhaustive).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttemptOrigin {
+    /// The first open after the viewer pressed Play.
+    Fresh,
+    /// The viewer pressed Retry (or the failure screen's *Switch to Auto and play*) on a failure.
+    UserRetry,
+    /// The viewer chose a quality, from the menu or from the failure screen, and the open follows
+    /// from that choice (including an Original they asked for).
+    QualityChange,
+    /// The app changed the delivery on its own: a link fallback or an automatic Original attempt.
+    AutoHandoff,
+    /// The app reopened a route after a failed open: the rollback from Original, or the HLS that
+    /// replaces an Original source that never opened.
+    Recovery,
+    /// The session was reopened at its position after the app returned to the foreground.
+    Resume,
+}
+
+impl AttemptOrigin {
+    pub const ALL: [Self; 6] = [
+        Self::Fresh,
+        Self::UserRetry,
+        Self::QualityChange,
+        Self::AutoHandoff,
+        Self::Recovery,
+        Self::Resume,
+    ];
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::UserRetry => "user_retry",
+            Self::QualityChange => "quality_change",
+            Self::AutoHandoff => "auto_handoff",
+            Self::Recovery => "recovery",
+            Self::Resume => "resume",
+        }
+    }
+}
+
+/// **Which engine open of the playback session this was**, counting the first, every Retry and
+/// every handoff or recovery: `1`..`9`, then `9+`. Bounded on purpose, so a session that flaps for
+/// an hour is one value rather than a free number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttemptOrdinal(u8);
+
+impl AttemptOrdinal {
+    /// The count that reads `9+`; anything above saturates to it.
+    const SATURATED: u8 = 10;
+    pub const FIRST: Self = Self(1);
+
+    /// `n` opens, clamped into `1..=10`; 0 (nothing was counted) reads as the first.
+    pub fn new(n: u32) -> Self {
+        Self(n.clamp(1, u32::from(Self::SATURATED)) as u8)
+    }
+
+    /// The ordinal after one more open.
+    pub fn next(self) -> Self {
+        Self::new(u32::from(self.0) + 1)
+    }
+
+    pub const fn code(self) -> &'static str {
+        match self.0 {
+            0 | 1 => "1",
+            2 => "2",
+            3 => "3",
+            4 => "4",
+            5 => "5",
+            6 => "6",
+            7 => "7",
+            8 => "8",
+            9 => "9",
+            _ => "9+",
+        }
+    }
+
+    /// Every value `code` can produce, in order, for the consent legend.
+    pub fn all() -> impl Iterator<Item = Self> {
+        (1..=u32::from(Self::SATURATED)).map(Self::new)
     }
 }
 
@@ -705,6 +806,11 @@ pub struct PlaybackErrorContext {
     /// Whether THIS attempt (the engine open that failed) put a picture on the panel, as against
     /// `started`, which is true for a session that played before the switch that failed.
     pub attempt_started: bool,
+    /// Why THAT open was made, and which open of the playback session it was (the first, a Retry,
+    /// a handoff...). `delivery` and `attempted_delivery` say what was opened; these say why and
+    /// how many times.
+    pub attempt_origin: AttemptOrigin,
+    pub attempt_ordinal: AttemptOrdinal,
     /// The exact HTTP status the media source answered with, 100-599, or 0 when none was recorded
     /// or the number is not a valid status. Beside [`HttpClass`], never instead of it.
     pub http_status: u16,

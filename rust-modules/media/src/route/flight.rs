@@ -665,6 +665,7 @@ fn install_recovery_landing(
                             crate::player::report::DeliveryClass::Hls,
                             crate::player::report::QualityClass::Unknown,
                             crate::player::report::DeliveryReason::OriginalOpenRollback,
+                            crate::player::report::AttemptOrigin::Recovery,
                         );
                     }
                     RecoveryVerdict::Install
