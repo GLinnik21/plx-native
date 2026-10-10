@@ -1391,7 +1391,7 @@ fn a_row_with_hits_past_its_window_asks_for_the_next_one_and_keeps_the_focused_c
     fixture.query("slide").shelves(vec![first]);
     let mut screen = fixture.screen();
     let pages = |out: &[Stamped<HostFixture>]| out.iter().filter(|e| matches!(&e.fx, Fx::App(AppFx::Store(
-        StoreId::Search, StoreCmd::Search(SearchCmd::Page { kind: Kind::Movie, before: false }))))).count();
+        StoreId::Search, StoreCmd::Search(SearchCmd::Page { kind: Kind::Movie, before: false, .. }))))).count();
     // mid-row: nothing is asked
     let mid = screen.key(screen.rows[0].elems[3]);
     deliver(&mut screen, &fixture, Some(mid), ScreenEvent::FocusMoved { from: None, to: mid, by: By::Dir });

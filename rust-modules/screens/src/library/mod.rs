@@ -542,6 +542,7 @@ impl LibraryScreen {
         let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
         let ticking = matches!(ev, ScreenEvent::Tick(_));
         let mut asks = Vec::new();
+        let seen = hubs.revision().unwrap_or_default();
         for (index, row) in self.shelves.iter_mut().enumerate() {
             let shelf = hubs.shelves().get(index);
             let at = focus.and_then(|elem| row.elems.iter().position(|key| *key == elem));
@@ -560,7 +561,7 @@ impl LibraryScreen {
             }
         }
         if let Some(target) = self.address(cx).filter(|_| !asks.is_empty()) {
-            for (id, key, before) in asks { self.store(target, LibraryWork::HubPage { id, key, before }, fx); }
+            for (id, key, before) in asks { self.store(target, LibraryWork::HubPage { id, key, before, seen }, fx); }
         }
     }
 

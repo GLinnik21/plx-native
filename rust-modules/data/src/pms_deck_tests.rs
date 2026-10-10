@@ -113,6 +113,32 @@ fn the_row_reaches_every_in_progress_item_of_every_server_and_comes_back() {
     plx_plex::plex::reset_servers_for_test();
 }
 
+/// The deck's page ask rides `HubsCmd::Page` like any Home row's, so it is refused the same way when
+/// it names a window the deck has since moved, and honoured from the window that stands.
+#[test]
+fn a_deck_ask_computed_from_a_window_the_deck_has_since_moved_is_refused() {
+    let _guard = plx_base::testlock::serial();
+    let a = Listing::new(0, (0..60).map(|i| 9000 - i * 20));
+    let b = Listing::new(1, (0..60).map(|i| 8990 - i * 20));
+    let listings = [&a, &b];
+    let mut owner = deck_owner(&listings);
+    let cmd = |seen: u32| Some(crate::stores::hubs::HubsCmd::Page { sid: sid(0), id: DECK_ID.into(), key: String::new(),
+        before: false, seen });
+    let seen = hubs_snapshot(&owner.state).view().generation;
+    move_deck(&mut owner, &listings, false, None);
+    let moved = rks(&owner.state, 0);
+    let now = hubs_snapshot(&owner.state).view().generation;
+    assert_ne!(seen, now, "the landing published a new window");
+    let mut launched = 0;
+    let _ = controlled_work(&mut owner.state, &owner.adapter, cmd(seen), 0.0, &mut |_| { launched += 1; true });
+    assert_eq!(launched, 0, "the ask names a window the deck no longer holds");
+    assert!(owner.state.deck_ask.is_none());
+    assert_eq!(rks(&owner.state, 0), moved);
+    let _ = controlled_work(&mut owner.state, &owner.adapter, cmd(now), 0.0, &mut |_| { launched += 1; true });
+    assert!(launched > 0, "from the window that stands it is honoured");
+    plx_plex::plex::reset_servers_for_test();
+}
+
 #[test]
 fn a_server_that_does_not_answer_does_not_stop_the_others() {
     let _guard = plx_base::testlock::serial();

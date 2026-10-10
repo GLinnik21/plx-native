@@ -448,7 +448,7 @@ impl SearchScreen {
                 let ask = (offset, edge == PageEdge::Before);
                 if self.page_sent[slot] != Some(ask) {
                     self.page_sent[slot] = Some(ask);
-                    self.store(SearchCmd::Page { kind: self.rows[row].kind, before: ask.1 }, fx);
+                    self.store(SearchCmd::Page { kind: self.rows[row].kind, before: ask.1, seen: offset }, fx);
                 }
             }
         }

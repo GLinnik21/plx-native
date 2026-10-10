@@ -1636,8 +1636,12 @@ fn commit_window(state: &mut SearchState, k: usize, lo: usize) {
 /// repeating this; the sources whose lanes do not already hold the new depths are asked (through
 /// the same fan-out as the first fetch) and the cards move when the last has answered. Returns
 /// whether the window moved at once.
-fn page(state: &mut SearchState, kind: Kind, before: bool) -> bool {
+fn page(state: &mut SearchState, kind: Kind, before: bool, seen: usize) -> bool {
     let Some(k) = KINDS.iter().position(|x| *x == kind) else { return false };
+    // The asker read a window that a slide has since replaced: where its focus stood in the old
+    // one says nothing about the new one. The slide's publication carries another start, which
+    // lets the screen ask again from the window that stands.
+    if state.wins[k].lo != seen { return false }
     if terms(state.query()).is_none() { return false }
     if state.wins[k].pending.is_some() {
         // going back is the way out of a slide that cannot finish (a source that keeps failing); going
@@ -1837,7 +1841,7 @@ fn run_with_optional_directory(
             true
         }
         SearchCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(state, sid, &rk, on),
-        SearchCmd::Page { kind, before } => page(state, kind, before),
+        SearchCmd::Page { kind, before, seen } => page(state, kind, before, seen),
     }
 }
 

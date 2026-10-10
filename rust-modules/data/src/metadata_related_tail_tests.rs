@@ -119,7 +119,8 @@ fn detail() -> &'static Detail {
 fn slide(before: bool) {
     let state = || (detail().related_tail.offset, detail().related_tail.end, detail().related_tail.row.clone());
     let was = state();
-    assert!(want_related(test_state(), test_adapter(), before), "a request starts");
+    let seen = (detail().related_tail.offset, detail().related_tail.end);
+    assert!(want_related(test_state(), test_adapter(), before, seen), "a request starts");
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while state() == was && std::time::Instant::now() < until {
         pump_related_pages(test_state(), test_adapter());
@@ -334,4 +335,28 @@ fn a_hub_that_reshuffles_on_every_read_is_walked_to_the_end() {
     let mut expected: Vec<String> = (12..70).map(|i| plain(1, i)).collect();
     expected.sort();
     assert_eq!(got, expected, "every tail item exactly once");
+}
+
+/// A frame captures its views before its landings are delivered, so the tick after a window's
+/// landing can ask from the window it replaced. Honoured, it would slide the NEW window with focus
+/// in the middle of it. The ask names the window it was read from and the store refuses one for a
+/// window it has since slid; and when every landing meets one, the row still reaches its end.
+#[test]
+fn an_ask_computed_from_a_window_the_row_has_since_slid_is_refused() {
+    let _serial = plx_base::testlock::serial();
+    let server = serve(vec![(1, 112)], plain);
+    let mc = related_response(&[(1, 12, 112, true)], "");
+    open(&server, &mc);
+    let mut reached = std::collections::BTreeSet::new();
+    while detail().related_tail.more {
+        let stale = (detail().related_tail.offset, detail().related_tail.end);
+        slide(false);
+        reached.extend(window().into_iter().map(|(_, rk)| rk));
+        let at = (detail().related_tail.offset, detail().related_tail.end);
+        assert_ne!(stale, at);
+        assert!(!want_related(test_state(), test_adapter(), false, stale), "the window it names is gone");
+        assert!(!test_adapter().rel_pages.lock().unwrap().inflight, "and no read went out");
+        assert_eq!((detail().related_tail.offset, detail().related_tail.end), at);
+    }
+    assert_eq!(reached.len(), 112 - 12, "every tail item was reached");
 }

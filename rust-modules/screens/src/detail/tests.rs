@@ -1849,7 +1849,7 @@ fn episode_text_ok_activates_on_down_without_arming_a_holdable_press() {
 /// pixels, which need the app and the TV.
 #[test]
 fn a_long_episode_summary_is_readable_to_its_end_through_the_episode_route() {
-    use crate::about_panel::AboutPanelScreen;
+    use crate::registry::AboutPanelScreen;
     let sid = ServerId::UNSET;
     let summary = "word ".repeat(400);
 

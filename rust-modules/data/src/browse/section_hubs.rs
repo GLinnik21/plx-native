@@ -314,7 +314,11 @@ impl SecHubs {
     }
 
     /// The page asks to move row `id`'s window; refused when the row cannot move that way.
-    fn want_page(&mut self, id: &str, key: &str, before: bool) -> bool {
+    fn want_page(&mut self, seen: u64, id: &str, key: &str, before: bool) -> bool {
+        // The asker read a window that a landing has since replaced: where its focus stood in the
+        // old one says nothing about the new one. The landing's publication rebuilds the shelves,
+        // which re-arms the row to ask again from the window that stands.
+        if seen != self.revision { return false; }
         let Some(shelf) = self.committed.iter().find(|shelf| shelf.is(id, key)) else { return false };
         if !plx_plex::plex::is_pageable_hub_key(key) || shelf.released()
             || (before && shelf.offset == 0) || (!before && !shelf.more) { return false; }
@@ -751,9 +755,9 @@ impl super::BrowseState {
     }
 
     /// The page asks to move row `id`'s window. Returns whether a read was queued.
-    pub(super) fn hubs_page(&mut self, sec: usize, id: &str, key: &str, before: bool,
+    pub(super) fn hubs_page(&mut self, sec: usize, seen: u64, id: &str, key: &str, before: bool,
         adapter: &Arc<super::BrowseAdapter>) -> bool {
-        let asked = self.state_mut(sec).is_some_and(|st| st.hubs.want_page(id, key, before));
+        let asked = self.state_mut(sec).is_some_and(|st| st.hubs.want_page(seen, id, key, before));
         self.hubs_pump_spawns(adapter);
         asked
     }

@@ -74,7 +74,7 @@
 //!   the episodes off-thread (debounced landing through `pump_season`).
 //! - `WantEpisodes{lo, hi, focus, restore}` → `metadata::want_episodes` — fetch the pages of a long
 //!   season the screen needs and evict the ones it does not (`pump_episode_pages` installs them).
-//! - `WantRelated{before}` → `metadata::want_related` — slide the Related row's tail window
+//! - `WantRelated{before, seen}` → `metadata::want_related` — slide the Related row's tail window
 //!   (`pump_related_pages` installs it).
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
 //! - `SetWatchedLocal{sid, rk, on}` → `metadata::set_watched_local` — the optimistic half of a
@@ -195,8 +195,11 @@ pub enum MetadataCmd {
     WantEpisodes { lo: usize, hi: usize, focus: Option<usize>, restore: Option<usize> },
     /// The Related row's tail window moves one step: `before` to the previous, else to the next.
     /// Ignored while a read of it is out or the window has nothing more that way; the shelf says
-    /// it again at its next edge.
-    WantRelated { before: bool },
+    /// it again at its next edge. `seen` is the `(offset, end)` of the tail window in the view the
+    /// ask was computed from: a frame captures its views before its landings are delivered, so
+    /// the ask can come from a window the store has since slid, and such an ask is refused (the
+    /// landing's publication re-arms the shelf, which asks again from the window that stands).
+    WantRelated { before: bool, seen: (usize, usize) },
     SetNowPlaying(Option<crate::metadata::NowPlaying>),
     /// The optimistic half of a view-state write on the loaded item, its episodes and Related.
     SetWatchedLocal { sid: ServerId, rk: String, on: bool },
