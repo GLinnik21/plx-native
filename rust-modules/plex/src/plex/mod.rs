@@ -111,7 +111,7 @@ pub use origin::{plex_direct_literal, url_host, CredentialPolicy, Origin, Resolv
 pub use servers::{
     client, client_for, client_opt, commit_if_current, commit_reachability_if_current,
     count as server_count, current as current_server, describe as describe_server,
-    describe_name as describe_server_name, facts as server_facts, ids as server_ids, install,
+    describe_name as describe_server_name, facts as server_facts, id_space_exhausted, ids as server_ids, install,
     facts_gen as server_facts_gen, is_household, owner_credit,
     probe_result as server_probe_result, publish_probe_result, register,
     roster_gen as server_roster_gen, same_item, set_current, Grant, GrantEvidence,
