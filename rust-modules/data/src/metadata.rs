@@ -4724,11 +4724,15 @@ pub fn pump_episode_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
 
 #[derive(Default)]
 struct RelPages {
-    /// A window read is out; the next edge is asked for once it lands.
+    /// A window read is out; the next edge is asked for once it lands. Held until the worker is
+    /// finished, withdrawn or not: a read cannot be stopped, and a second one beside it would read
+    /// the same hubs twice for a reader rocking across the edge.
     inflight: bool,
-    /// Bumped when the reader withdraws the read: a worker started under an older one discards its
-    /// answer and leaves `inflight` to whoever asks next.
-    epoch: u64,
+    /// The reader withdrew the read that is out: its answer is discarded when it lands.
+    withdrawn: bool,
+    /// What the read out is for (item, window it starts from, direction), so an ask for the same
+    /// thing meanwhile adopts it.
+    out: Option<(plx_plex::plex::ServerId, String, (usize, usize), bool)>,
     landed: Vec<RelLanded>,
 }
 
@@ -4802,15 +4806,24 @@ fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdap
     }
     {
         let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
-        if rel.inflight { return false; }
+        if rel.inflight {
+            if rel.withdrawn && rel.out.as_ref().is_some_and(|(sid, rk, from, was_before)|
+                *from == seen && *was_before == before && plx_plex::plex::same_item((d.sid, &d.rk), (*sid, rk))) {
+                // The read the reader walked away from is the one asked for again, from the window
+                // that still stands, so it answers this ask too.
+                rel.withdrawn = false;
+            }
+            return false;
+        }
         // A window read from this one has answered and waits for the pump: the edge is already
         // served, and reading it again would only land on a window that is gone by then.
         let served = rel.landed.iter().any(|l| l.window.is_some() && l.from == seen
             && plx_plex::plex::same_item((d.sid, &d.rk), (l.sid, &l.rk)));
         if served { return false; }
         rel.inflight = true;
+        rel.withdrawn = false;
+        rel.out = Some((d.sid, d.rk.clone(), seen, before));
     }
-    let epoch = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).epoch;
     let (sid, rk) = (d.sid, d.rk.clone());
     let info = PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };
     let rows: Vec<Row> = t.positions.iter().copied()
@@ -4834,22 +4847,25 @@ fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdap
             Some((rows, info, std::mem::take(&mut hubs), state))
         })).unwrap_or(None);
         let mut rel = worker.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
-        if rel.epoch != epoch { return; }
         rel.inflight = false;
+        rel.out = None;
+        if std::mem::take(&mut rel.withdrawn) { return; }
         rel.landed.push(RelLanded { sid, rk, from: (info.offset, info.end), window });
     });
     if !spawned {
-        adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).inflight = false;
+        let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+        rel.inflight = false;
+        rel.out = None;
     }
     spawned
 }
 
 /// Withdraws the Related read: one out is discarded when it lands, one landed and not yet installed
-/// is dropped, and the next edge may ask again at once. Main thread only.
+/// is dropped. The read out keeps its single-flight latch until it has finished, so the next edge
+/// asks again only after it (or adopts it, for the same window). Main thread only.
 fn cancel_related(adapter: &MetadataAdapter) -> bool {
     let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
-    rel.epoch = rel.epoch.wrapping_add(1);
-    rel.inflight = false;
+    if rel.inflight { rel.withdrawn = true; }
     rel.landed.clear();
     false
 }

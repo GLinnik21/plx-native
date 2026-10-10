@@ -130,6 +130,31 @@ fn a_listing_that_reshuffles_between_requests_still_shows_every_item_once() {
 }
 
 #[test]
+fn a_rescan_through_more_than_a_window_of_known_keys_does_not_end_the_row() {
+    let (len, known) = (1000, 600);
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut hubs = published(&one_row(&(0..12).collect::<Vec<_>>(), len));
+    // The row has shown 600 keys through its ledger and is on a rescan of the listing from 0.
+    let shelf = &mut Arc::make_mut(&mut hubs.committed)[0];
+    let window: Vec<usize> = (known - 12..known).collect();
+    shelf.items = window.iter().map(|k| PmsMovie { rk: k.to_string(), sid: sid(), ..Default::default() }).collect();
+    shelf.positions = window.clone();
+    (shelf.offset, shelf.end, shelf.more) = (known - 12, known, true);
+    shelf.row.ledger = Some(paging::Ledger { keys: (0..known).map(|k| paging::LedgerKey::new(&k.to_string())).collect(),
+        active: true, next: 0, rescans: 1, ..Default::default() });
+    let mut reached = std::collections::HashSet::new();
+    for _ in 0..400 {
+        if !hubs.want_page(hubs.revision, ID, KEY, false) { break; }
+        let ask = hubs.next_ask().unwrap();
+        step(&mut hubs, &ask, listing);
+        reached.extend(keys(&hubs.committed[0]));
+    }
+    assert!(reached.contains("999"), "the rescan reached the last item");
+    assert_eq!(reached.len(), len - known + 12, "every unseen item, none twice");
+    assert!(!hubs.committed[0].more);
+}
+
+#[test]
 fn a_row_with_a_key_the_pager_does_not_admit_keeps_its_preview() {
     let mc: Container = serde_json::from_value(serde_json::json!({"Hub": [{
         "hubIdentifier": "test.section.unadmitted", "title": "Playlist", "type": "movie",

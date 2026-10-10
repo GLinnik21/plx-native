@@ -383,7 +383,11 @@ impl SecHubs {
             }
         } else if next.items.is_empty() || (next.more && next.offset == current.offset && next.end <= current.end) {
             let shelf = &mut Arc::make_mut(&mut self.committed)[at];
-            shelf.more = false;
+            // An ask that moved nothing but advanced the ledger's walk of the listing (every key it
+            // read was already known) keeps that walk and the row open; the row ends when the ledger
+            // says the listing ended. Any other row that moved nothing has nothing more to read.
+            if !next.items.is_empty() && next.row != shelf.row { shelf.row = next.row; shelf.total = next.total; }
+            else { shelf.more = false; }
             self.revised();
             return true;
         }
