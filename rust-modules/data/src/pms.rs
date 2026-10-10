@@ -657,6 +657,8 @@ fn request_refetch_hubs_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapte
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     for s in srcs.iter_mut() {
         s.fetching = false;
+        s.abandoned.clear();
+        s.adoptable = false;
         s.page = None;
     }
     let mut turn = fanout_turn(&mut state.fanout, &srcs, |_| true);
@@ -848,6 +850,12 @@ struct SourceBuild {
     lane: deck::Lane,
 }
 
+/// A page read the user walked away from whose worker has not landed yet.
+struct Abandoned {
+    seq: u32,
+    page: PageQuery,
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PageQuery {
@@ -877,6 +885,20 @@ fn request_page(state: &mut PmsState, adapter: &PmsAdapter, sid: ServerId,
     id: &str, key: &str, before: bool, scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
     let Some(source) = state.srcs.iter_mut().find(|source| source.sid == sid) else { return None };
     if refresh_src_lifecycle(source) { return None; }
+    if source.adoptable && !source.fetching && source.page.is_none() && source.abandoned.last()
+        .is_some_and(|a| a.page.id == id && a.page.key == key && a.page.before == before) {
+        // The read the user walked away from is still out and is the one being asked for again.
+        // Nothing has been asked of this source since, so the window it was read for is the one
+        // that stands and the read answers this ask too.
+        if let Some(read) = source.abandoned.pop() {
+            source.seq = read.seq;
+            source.page = Some(read.page);
+            source.fetching = true;
+            source.adoptable = false;
+        }
+        return None;
+    }
+    if source.abandoned.iter().any(|a| a.page.id == id && a.page.key == key) { return None; }
     if source.fetching || source.page.is_some() || source.state != HubState::Ready { return None; }
     let Some(shelf) = source.last.as_ref().and_then(|build| find_shelf(&build.shelves, id, key)) else { return None };
     if !pages(key) || (before && shelf.offset == 0) || (!before && !shelf.more) { return None; }
@@ -890,6 +912,14 @@ fn request_page(state: &mut PmsState, adapter: &PmsAdapter, sid: ServerId,
 fn cancel_page(state: &mut PmsState, sid: ServerId, id: &str, key: &str) {
     let Some(source) = state.srcs.iter_mut().find(|source| source.sid == sid
         && source.page.as_ref().is_some_and(|page| page.id == id && page.key == key)) else { return };
+    if source.fetching {
+        // The worker is reading and cannot be stopped; its landing will be dropped as stale. The
+        // row stays spoken for until then (`abandoned`).
+        if let Some(page) = source.page.take() {
+            source.adoptable = page.id != DECK_ID;
+            source.abandoned.push(Abandoned { seq: source.seq, page });
+        }
+    }
     source.page = None;
     source.fetching = false;
     source.seq = source.seq.wrapping_add(1);
@@ -1043,7 +1073,8 @@ fn request_deck_page(state: &mut PmsState, adapter: &PmsAdapter, before: bool, s
     let mut waiting = Vec::new();
     for &i in &short {
         let s = &mut srcs[i];
-        if refresh_src_lifecycle(s) || s.fetching || s.page.is_some() || s.state != HubState::Ready { continue; }
+        if refresh_src_lifecycle(s) || s.fetching || s.page.is_some() || s.state != HubState::Ready
+            || s.abandoned.iter().any(|a| a.page.id == DECK_ID) { continue; }
         s.retry_n = 0;
         s.page = Some(PageQuery { id: DECK_ID.into(), key: String::new(), start: 0, before, hidden: Vec::new(), reload: false });
         waiting.push(i);
@@ -1085,8 +1116,18 @@ fn land_page(source: &mut Src, page: &PageQuery, build: SourceBuild) -> bool {
     let Some(current) = source.last.as_mut().and_then(|build| build.shelves.iter_mut()
         .find(|shelf| shelf.is(&page.id, &page.key))) else { return false };
     let Some(mut next) = build.shelves.into_iter().find(|shelf| shelf.is(&page.id, &page.key)) else { return false };
-    if next.items.is_empty() || (next.more && next.offset == current.offset && next.end <= current.end) {
+    if next.items.is_empty() {
         current.more = false;
+        return true;
+    }
+    if next.more && next.offset == current.offset && next.end <= current.end {
+        // An ask that moved nothing. A row read through its ledger may still have made progress:
+        // every key the ask read was already known, and the listing offset it reached is in the
+        // new row state. Keeping that is what lets the next ask read on instead of re-reading the
+        // same known rows forever; the row ends only when the ledger says the listing ended
+        // (`more` false). Any other row that moved nothing has nothing more to read.
+        if next.row == current.row { current.more = false; }
+        else { current.row = next.row; current.total = next.total; }
         return true;
     }
     next.items.truncate(MAX_SHELF_ITEMS);
@@ -1833,6 +1874,14 @@ struct Src {
     /// at the same one", and only the pair rules out both double-applies.
     seq: u32,
     page: Option<PageQuery>,
+    /// Page reads withdrawn (focus left the edge) while their worker was already reading. A worker
+    /// cannot be stopped; its landing is dropped as stale (`seq` moved on) and removes its entry.
+    /// While an entry stands, the row it reads is not asked again, so rocking across an edge never
+    /// has two reads of one row out; the other rows of the source may be asked meanwhile.
+    abandoned: Vec<Abandoned>,
+    /// Whether the newest entry of `abandoned` is still the last thing this source did, so an ask
+    /// for the same page can take that read back. Cleared by every new request and every reset.
+    adoptable: bool,
     retry_s: f32,
     retry_n: u32,
     /// A fetch was wanted and the fan-out gate had no room for it. Stays set until the fetch starts,
@@ -1862,6 +1911,7 @@ impl Src {
         mint: impl FnOnce() -> u32,
     ) -> Option<HubRequest> {
         if self.fetching { return None; }
+        self.adoptable = false;
         let request = HubRequest {
             gen: generation, seq: mint(), sid: self.sid,
             client: LandingClient::live(client), token_gen: client.token_gen(),
@@ -1901,6 +1951,8 @@ impl Src {
             fetching: false,
             seq: 0,
             page: None,
+            abandoned: Vec::new(),
+            adoptable: false,
             retry_s: 0.0,
             retry_n: 0,
             deferred: false,
@@ -1925,6 +1977,8 @@ fn refresh_src_lifecycle(s: &mut Src) -> bool {
     s.client = client;
     s.token_gen = token_gen;
     s.fetching = false;
+    s.abandoned.clear();
+    s.adoptable = false;
     s.page = None;
     // Retained cards may still paint during the new profile's fetch, but its request must
     // start at the preview rather than reuse the previous profile's listing positions.
@@ -2471,6 +2525,12 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, l
         // nothing will ever fill the mailbox (the thread limit refused us), so release the latch
         // here and back off — `pump` will try again on the ladder.
         s.fetching = false;
+        if s.page.is_some() {
+            // The system refusing a thread says nothing about the server, so a page ask does not
+            // spend one of its three attempts on it; it backs off and asks again.
+            s.retry_s = backoff_secs(s.retry_n.max(1));
+            return Some(crate::stores::EndpointRefresh { sid: s.sid });
+        }
         Some(landed_fail(s))
     } else {
         plx_base::eventlog::log(&format!("hubs: source {} fetching (off-thread)", sid.raw()));
@@ -2824,9 +2884,14 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         if l.gen != cur || l.seq != s.seq || !lifecycle_matches {
             if l.gen == cur && l.seq == s.seq && !lifecycle_matches {
                 s.fetching = false;
+                s.abandoned.clear();
+                s.adoptable = false;
                 s.page = None;
                 s.state = HubState::Loading;
                 s.retry_s = 0.0;
+            } else if l.gen == cur {
+                // a read the user withdrew has finished: its row is free to be asked again
+                s.abandoned.retain(|a| a.seq != l.seq);
             }
             continue;
         }

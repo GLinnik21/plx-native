@@ -250,6 +250,158 @@ fn a_recent_row_whose_listing_stops_holding_moves_to_its_ledger_and_still_reache
     plx_plex::plex::reset_servers_for_test();
 }
 
+/// A row that is read through its ledger and has shown `known` keys, whose last rescan of the
+/// listing is at offset `next`.
+fn ledger_owner(id: &str, known: usize, next: usize, len: usize) -> Owner {
+    let mut owner = owner_with(id, RECENT, len);
+    let window = known - 12..known;
+    let mut shelf = shelf(0, "Row", id, &window.clone().map(|k| k.to_string()).collect::<Vec<_>>().iter().map(String::as_str).collect::<Vec<_>>());
+    shelf.key = RECENT.into();
+    shelf.positions = window.clone().collect();
+    shelf.offset = window.start;
+    shelf.end = known;
+    shelf.total = len;
+    shelf.more = true;
+    shelf.row.ledger = Some(paging::Ledger { keys: (0..known).map(|k| paging::LedgerKey::new(&k.to_string())).collect(),
+        active: true, next, rescans: 1, ..Default::default() });
+    seed(&mut owner.state, vec![src(0, "", HubState::Ready, Some(built(0, &[], vec![shelf])))]);
+    owner
+}
+
+#[test]
+fn a_rescan_through_more_than_a_window_of_known_keys_does_not_end_the_row() {
+    let _guard = plx_base::testlock::serial();
+    let (len, known) = (1000, 600);
+    // The ledger holds the first 600 listing rows, so the rescan from 0 reads 600 known rows
+    // before the first unseen one.
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut owner = ledger_owner("home.movies.recent", known, 0, len);
+    let mut reached: Vec<String> = shown(&owner);
+    for _ in 0..400 {
+        let Some(request) = ask_row(&mut owner, "home.movies.recent", RECENT, false) else { break };
+        answer(&mut owner, request, listing, batch(|_| true));
+        let window = shown(&owner);
+        assert!(window.len() <= 24);
+        for key in &window {
+            if !reached.contains(key) { reached.push(key.clone()); }
+        }
+    }
+    assert!(reached.contains(&"999".to_string()), "the rescan reached the last item; stopped at {:?}", shown(&owner));
+    assert_eq!(reached.len(), 12 + (len - known), "every unseen item was reached, none twice");
+    assert!(ask_row(&mut owner, "home.movies.recent", RECENT, false).is_none(), "the server's end ends the row");
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn a_1000_item_listing_that_reshuffles_is_walked_to_its_last_item_and_back() {
+    let _guard = plx_base::testlock::serial();
+    let len = 1000;
+    let mut owner = owner_with("home.movies.recent", RECENT, len);
+    let mut requests = 0;
+    let mut listing = {
+        let mut reshuffled = reshuffling(len);
+        move |start: usize, size: usize| {
+            requests += 1;
+            if requests <= 2 { Some(container(start, len, start..(start + size).min(len))) } else { reshuffled(start, size) }
+        }
+    };
+    let mut ever: std::collections::BTreeSet<String> = shown(&owner).into_iter().collect();
+    let mut previous: std::collections::HashSet<String> = ever.iter().cloned().collect();
+    let mut windows = vec![shown(&owner)];
+    for _ in 0..2000 {
+        let Some(request) = ask_row(&mut owner, "home.movies.recent", RECENT, false) else { break };
+        // Each ask is bounded however the listing shifts: at most eight reads of it.
+        let mut reads = 0;
+        answer(&mut owner, request, |start, size| { reads += 1; listing(start, size) }, batch(|_| true));
+        assert!(reads <= 8, "an ask read the listing {reads} times");
+        let window = shown(&owner);
+        assert!(window.len() <= 24);
+        for key in &window {
+            if !previous.contains(key) { assert!(ever.insert(key.clone()), "{key} appeared a second time"); }
+        }
+        previous = window.iter().cloned().collect();
+        windows.push(window);
+    }
+    assert_eq!(ever.len(), len, "every item was reached");
+    // And back to the first window, over the ledger.
+    let mut steps = 0;
+    while let Some(request) = ask_row(&mut owner, "home.movies.recent", RECENT, true) {
+        answer(&mut owner, request, &mut listing, batch(|_| true));
+        assert!(shown(&owner).len() <= 24);
+        steps += 1;
+        assert!(steps < 2000);
+    }
+    assert_eq!(shown(&owner)[..12], windows[0][..12]);
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+// ---- one read in flight per row --------------------------------------------------------------
+
+const RECENT_ID: &str = "home.movies.recent";
+
+fn withdraw(owner: &mut Owner) { cancel_page(&mut owner.state, sid(0), RECENT_ID, RECENT); }
+
+#[test]
+fn rocking_across_the_edge_never_has_two_reads_of_a_row_in_flight() {
+    let _guard = plx_base::testlock::serial();
+    let len = 100;
+    let mut owner = owner_with(RECENT_ID, RECENT, len);
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut launched = Vec::new();
+    for _ in 0..3 {
+        if let Some(request) = ask_row(&mut owner, RECENT_ID, RECENT, false) { launched.push(request); }
+        assert!(launched.len() <= 1, "{} reads of one row are out at once", launched.len());
+        withdraw(&mut owner);
+    }
+    // The last ask is one the user still wants: it adopts the read that is out rather than start another.
+    assert!(ask_row(&mut owner, RECENT_ID, RECENT, false).is_none(), "the read in flight is adopted");
+    answer(&mut owner, launched.remove(0), listing, batch(|_| true));
+    assert_eq!(shown(&owner).len(), 24, "the adopted read moved the window");
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn a_withdrawn_read_is_discarded_and_frees_the_row_when_it_lands() {
+    let _guard = plx_base::testlock::serial();
+    let len = 100;
+    let mut owner = owner_with(RECENT_ID, RECENT, len);
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let before = shown(&owner);
+    let request = ask_row(&mut owner, RECENT_ID, RECENT, false).unwrap();
+    withdraw(&mut owner);
+    answer(&mut owner, request, listing, batch(|_| true));
+    assert_eq!(shown(&owner), before, "a withdrawn landing changes nothing");
+    assert_eq!(owner.state.srcs[0].retry_n, 0, "and blames nobody");
+    let again = ask_row(&mut owner, RECENT_ID, RECENT, false).expect("the row can be asked again once the old read is over");
+    answer(&mut owner, again, listing, batch(|_| true));
+    assert_eq!(shown(&owner).len(), 24);
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn a_launch_the_system_refused_is_not_a_failed_page() {
+    let _guard = plx_base::testlock::serial();
+    let mut owner = owner_with(RECENT_ID, RECENT, 100);
+    let _ = request_page(&mut owner.state, &owner.adapter, sid(0), RECENT_ID, RECENT, false, &BrowseScope::standalone(),
+        &mut |_| false);
+    for round in 0..6 {
+        let source = &mut owner.state.srcs[0];
+        assert!(!source.fetching);
+        assert_eq!(source.retry_n, 0, "refusal {round}: a refused spawn is not one of the three failures");
+        assert!(source.page.is_some(), "the page is still wanted");
+        assert!(source.retry_s > 0.0, "but it backs off rather than spin");
+        // The pump's retry: the same ask again, refused again.
+        source.retry_s = 0.0;
+        let _ = kick_with(owner.state.hub_gen, &owner.adapter, source, &BrowseScope::standalone(), |_| false);
+    }
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
 // ---- the preview rule ----------------------------------------------------------------------------
 
 const HUB_KEY: &str = "/hubs/sections/1/genre/7";

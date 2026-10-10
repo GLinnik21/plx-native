@@ -361,9 +361,18 @@ fn an_ask_computed_from_a_window_the_row_has_since_slid_is_refused() {
     assert_eq!(reached.len(), 112 - 12, "every tail item was reached");
 }
 
+/// Waits for the Related read that is out to finish.
+fn wait_for_related_read() {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while test_adapter().rel_pages.lock().unwrap().inflight && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(!test_adapter().rel_pages.lock().unwrap().inflight, "the read finished");
+}
+
 /// Focus left the edge a window was asked from while the read was out: the page withdraws the ask,
-/// and the answer that arrives afterwards must not install, whether it lands before or after the
-/// withdrawal. The shelf can ask again at once.
+/// and the answer that arrives afterwards must not install. The read cannot be stopped, so the row
+/// is asked again only once it has finished: no second read goes out beside it.
 #[test]
 fn a_withdrawn_read_never_installs_its_window() {
     let _serial = plx_base::testlock::serial();
@@ -374,12 +383,31 @@ fn a_withdrawn_read_never_installs_its_window() {
     let was = at();
     assert!(want_related(test_state(), test_adapter(), false, was), "a request starts");
     cancel_related(test_adapter());
-    assert!(!test_adapter().rel_pages.lock().unwrap().inflight, "the shelf may ask again at once");
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert!(test_adapter().rel_pages.lock().unwrap().inflight, "the worker is still reading, so the latch is held");
+    assert!(!want_related(test_state(), test_adapter(), true, was) || at() == was, "an ask for another direction starts nothing beside it");
+    wait_for_related_read();
     assert!(!pump_related_pages(test_state(), test_adapter()), "nothing landed to install");
     assert_eq!(at(), was);
     slide(false);
     assert_ne!(at(), was, "and the next ask slides the window");
+}
+
+/// Rocking across the edge: ask, withdraw, ask the same window again while the first read is still
+/// out. One read answers both, and its window installs.
+#[test]
+fn an_ask_for_the_window_a_withdrawn_read_is_reading_adopts_that_read() {
+    let _serial = plx_base::testlock::serial();
+    let server = serve(vec![(1, 112)], plain);
+    let mc = related_response(&[(1, 12, 112, true)], "");
+    open(&server, &mc);
+    let at = || (detail().related_tail.offset, detail().related_tail.end);
+    let was = at();
+    assert!(want_related(test_state(), test_adapter(), false, was), "a request starts");
+    cancel_related(test_adapter());
+    assert!(!want_related(test_state(), test_adapter(), false, was), "no second read starts");
+    wait_for_related_read();
+    assert!(pump_related_pages(test_state(), test_adapter()), "the adopted read's window installs");
+    assert_ne!(at(), was);
 }
 
 /// A read has answered and its window waits for the next pump to install it. An edge asked in
