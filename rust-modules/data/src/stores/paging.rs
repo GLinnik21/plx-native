@@ -363,6 +363,14 @@ fn materialise(sid: ServerId, keys: &[String], hidden: &[i64], cache: &HashMap<S
     }).collect())
 }
 
+/// The cards of a released row, read again by the rating keys it showed, in the order it showed
+/// them. A key the server no longer returns is left out.
+pub fn kept_cards(sid: ServerId, keys: &[String], hidden: &[i64],
+    many: &mut impl FnMut(&[String]) -> Option<MediaContainer>) -> Option<Vec<Arc<PmsMovie>>> {
+    let cards = materialise(sid, keys, hidden, &HashMap::new(), many)?;
+    Some(cards.into_iter().filter_map(|fetched| match fetched { Fetched::Card(card) => Some(card), _ => None }).collect())
+}
+
 /// Moves a window over a ledger by one ask. `current` is the window as it stands, its positions
 /// indices into the ledger. A forward ask keeps the last twelve rows and adds up to twelve: from
 /// the ledger where it already holds the keys (a window that moved back), else from the listing,
@@ -525,6 +533,11 @@ pub struct RowState {
     pub mode: RowMode,
     #[serde(default)]
     pub ledger: Option<Ledger>,
+    /// The rating keys of the cards a released row showed, in order, for a row whose listing cannot
+    /// say them again (it has no key the pager reads, or it has not been compared with its listing
+    /// and may be a random sample). Empty while the row holds cards.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kept: Vec<String>,
 }
 
 impl RowState {
