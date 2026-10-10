@@ -1,4 +1,4 @@
-{"updated":"2026-10-10T20:22:29Z",
+{"updated":"2026-10-10T20:29:44Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -2167,7 +2167,8 @@
 {"id":38037357421,"at":"2026-10-10T08:17:20Z","sha":"e84b1cd9e","title":"Stop the public rewrite from resurrecting preferences set back to their default (#582)","pr":586,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"Linux simulator build + launch":220,"macOS simulator build + launch":151,"macOS tests against bundled FFmpeg and ASS":97}},
 {"id":38062851743,"at":"2026-10-10T15:15:11Z","sha":"b0b5b85f3","title":"Detail: a return from the player re-reads the page, so Play resumes where the stop left off","pr":597,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":167,"Windows launcher syntax":14,"Linux simulator build + launch":183,"macOS tests against bundled FFmpeg and ASS":133}},
 {"id":38063965478,"at":"2026-10-10T15:31:33Z","sha":"1e07e0bc2","title":"Detail: a return from the player re-reads the page, so Play resumes where the stop left off (#575)","pr":597,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":14,"macOS tests against bundled FFmpeg and ASS":127,"macOS simulator build + launch":143,"Linux simulator build + launch":153}},
-{"id":38083125131,"at":"2026-10-10T20:16:53Z","sha":"aa20433a3","title":"Troubleshooting: tell AV1 users to try the nightly","pr":602,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":16,"Linux simulator build + launch":200,"macOS simulator build + launch":132,"macOS tests against bundled FFmpeg and ASS":131}}
+{"id":38083125131,"at":"2026-10-10T20:16:53Z","sha":"aa20433a3","title":"Troubleshooting: tell AV1 users to try the nightly","pr":602,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":16,"Linux simulator build + launch":200,"macOS simulator build + launch":132,"macOS tests against bundled FFmpeg and ASS":131}},
+{"id":38083725093,"at":"2026-10-10T20:26:00Z","sha":"17290659f","title":"AV1: direct-play on sets whose codec table lists an AV1 decoder","pr":602,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":213,"macOS tests against bundled FFmpeg and ASS":140,"Windows launcher syntax":12,"macOS simulator build + launch":173}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
