@@ -83,8 +83,8 @@ fn a_failed_source_backs_off_alone_and_the_others_still_answer() {
     owner.set_query("wallace");
     let gen = owner.state.gen;
 
-    owner.adapter.fetch[0].claim(gen);
-    owner.adapter.fetch[1].claim(gen);
+    owner.adapter.mailbox(0).claim(gen);
+    owner.adapter.mailbox(1).claim(gen);
     owner.land(
         0,
         gen,
@@ -106,8 +106,8 @@ fn a_failed_source_backs_off_alone_and_the_others_still_answer() {
         RETRY_FRAMES,
         "the failed source backs off before retrying"
     );
-    assert!(!owner.adapter.fetch[0].busy()
-        && !owner.adapter.fetch[1].busy());
+    assert!(!owner.adapter.mailbox(0).busy()
+        && !owner.adapter.mailbox(1).busy());
     plx_plex::plex::reset_servers_for_test();
 }
 
