@@ -6,8 +6,8 @@ use plx_ui::cards::{self as ui_cards, RowStyle};
 use plx_machine::machine::GroupId;
 use plx_ui::{theme, Painter};
 
-pub const RELATED_ELEM_RANGE_START: u32 = 640;
-pub const RELATED_ELEM_RANGE_END: u32 = 1152;
+pub const RELATED_ELEM_RANGE_START: u32 = 2 * super::SECTION_BLOCK;
+pub const RELATED_ELEM_RANGE_END: u32 = 3 * super::SECTION_BLOCK;
 pub const RELATED_GROUP: GroupId = GroupId(3);
 /// Heading cap top to card top — the SHARED shelf pitch (`consts::TITLE_DY + CARD_DY`), the same
 /// 60 a Home or Library shelf puts between its heading and its posters. It was a local 46, so the

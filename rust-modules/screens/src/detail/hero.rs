@@ -31,8 +31,9 @@ use plx_ui::text_view::TextView;
 use plx_ui::widgets::{CircleButton, PosterMark};
 use plx_ui::{theme, Painter, Rect};
 
-/// The hero's whole `u32` elem namespace. A later Detail package's own range must start here.
-pub const HERO_ELEM_RANGE_END: u32 = 64;
+/// The hero owns the local ids below the season block; its controls are the `ELEM_*` ids at its
+/// bottom.
+pub const HERO_ELEM_RANGE_END: u32 = super::SECTION_BLOCK;
 
 pub const ELEM_PLAY: u32 = 0;
 pub const ELEM_RESTART: u32 = 1;
