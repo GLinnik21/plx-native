@@ -546,6 +546,35 @@ fn focus_on_a_tail_card_survives_the_window_sliding() {
     plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
+/// The page is read again for the same item (a return from the player, a watched toggle) while
+/// focus stands on a card deep in the Related row, away from the head. The fresh read holds only
+/// the head page; it lands through the store's own install, and the card under the focus is the
+/// same card (by ratingKey) at the same place, not whatever the head's column index now names.
+#[test]
+fn a_reread_of_the_page_leaves_focus_on_the_same_related_card() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig) = boot_with(with_tail(72));
+    let key = FocusKey { entry: screen(&d).entry, elem: screen(&d).engine_key(related::elem(3 + 8).unwrap()).unwrap() };
+    d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
+    let card = |d: &Dispatcher<TestHost>| {
+        let index = screen(d).locate(d.focus().unwrap().elem, test_store().view())?.index();
+        Some((index, test_store().view().current()?.related.get(index)?.rk.clone()))
+    };
+    assert_eq!(card(&d), Some((11, "t80".to_string())));
+    // the fresh page: the head and no window
+    let mut fresh = with_tail(0);
+    fresh.related.truncate(3);
+    fresh.related_tail.positions.clear();
+    fresh.related_tail.end = 24;
+    let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
+    let (state, adapter) = test_store().split_for_test();
+    assert!(plx_data::metadata::land_detail_for_test(state, adapter, ServerId::UNSET, "a", generation, Some(fresh)));
+    d.store_changed(StoreId::Metadata.ord(), 32);
+    frame(&mut d, &mut rig, 32);
+    assert_eq!(d.focus(), Some(key), "the focused card keeps its key through the re-read");
+    assert_eq!(card(&d), Some((11, "t80".to_string())), "and it is still the same card, in the same place");
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}
 
 /// The invariant behind "focus never moves under the user" on the Related row, driven through the
 /// real dispatcher (keys, the focus engine, the page) and a stand-in store that applies the

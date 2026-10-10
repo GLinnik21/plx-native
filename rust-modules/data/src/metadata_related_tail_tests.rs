@@ -403,3 +403,58 @@ fn an_edge_asked_while_a_landing_waits_to_install_reads_nothing_twice() {
     assert!(pump_related_pages(test_state(), test_adapter()));
     assert_ne!(at(), was);
 }
+
+/// The page for the SAME item is read again (a return from the player, a watched toggle): the
+/// fresh detail holds only the head page, but the user stands deep in the row. The window, its
+/// positions and its ledger carry over, so the card under the focus is still in the row at the
+/// place it was; a read that finds other hubs, or another item, keeps nothing of it.
+#[test]
+fn a_reread_of_the_same_item_keeps_the_window_the_row_had_slid_to() {
+    let _serial = plx_base::testlock::serial();
+    let server = serve(vec![(1, 312)], plain);
+    let mc = related_response(&[(1, 12, 312, true)], "");
+    open(&server, &mc);
+    for _ in 0..8 { slide(false); }
+    let (before, tail_before) = (window(), detail().related_tail.clone());
+    assert!(tail_before.offset >= 60, "the row is walked well past the head: {}", tail_before.offset);
+    let sid = detail().sid;
+    let land = |rk: &str, fresh: Detail| {
+        let gen = begin_detail_for_test(test_adapter(), sid, rk);
+        land_detail_for_test(test_state(), test_adapter(), sid, rk, gen, Some(fresh))
+    };
+    let fresh = |rk: &str| {
+        let rows = related_rows(&mc, sid, "page");
+        Detail { sid, rk: rk.into(), related: rows.related, related_tail: rows.tail, ..Default::default() }
+    };
+    assert!(land("page", fresh("page")));
+    assert_eq!(window(), before, "the same cards stand at the same tail positions");
+    let t = &detail().related_tail;
+    assert_eq!((t.offset, t.end, t.total, t.more), (tail_before.offset, tail_before.end, tail_before.total, tail_before.more));
+    assert_eq!(t.row, tail_before.row, "and the ledger");
+    assert_eq!(detail().related.len(), t.head + before.len(), "no more than the head and one window");
+    // the carried window still slides on from where it stands
+    slide(false);
+    assert!(detail().related_tail.offset > tail_before.offset);
+    // hubs the window was not read from: nothing of it survives
+    let mut moved = fresh("page");
+    moved.related_tail.hubs[0].key = "/library/metadata/9/similar".into();
+    assert!(land("page", moved));
+    assert_eq!((detail().related_tail.offset, detail().related.len()), (0, detail().related_tail.head));
+}
+
+/// Another item's page starts at its own head, whatever window the last one stood at.
+#[test]
+fn a_read_of_another_item_drops_the_window() {
+    let _serial = plx_base::testlock::serial();
+    let server = serve(vec![(1, 312)], plain);
+    let mc = related_response(&[(1, 12, 312, true)], "");
+    open(&server, &mc);
+    for _ in 0..3 { slide(false); }
+    assert!(detail().related_tail.offset > 0);
+    let sid = detail().sid;
+    let rows = related_rows(&mc, sid, "other");
+    let next = Detail { sid, rk: "other".into(), related: rows.related, related_tail: rows.tail, ..Default::default() };
+    let gen = begin_detail_for_test(test_adapter(), sid, "other");
+    assert!(land_detail_for_test(test_state(), test_adapter(), sid, "other", gen, Some(next)));
+    assert_eq!((detail().related_tail.offset, detail().related.len()), (0, detail().related_tail.head));
+}
