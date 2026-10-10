@@ -1145,7 +1145,7 @@ impl LibraryScreen {
                     self.relayout(focused);
                     // The scroll stepped and the grid was handed it: the cells it paints this
                     // frame (its window moved with the step) must hold keys before it draws.
-                    self.project_grid(cx);
+                    if self.wanted_kind.is_none() { self.project_grid(cx); }
                     let hint = self.hint_input(cx);
                     self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev));
                     // A first seat that applies a bookmarked scroll clamps it to the document, so

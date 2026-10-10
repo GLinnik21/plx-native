@@ -2087,7 +2087,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Person adopts `cards::Stack` (cards-stack PR 5): its logical state gains the stack's motion canon
 // (`stack:Stack{scroll,target,sections}`), the same as Collection's; the previous pin was
 // 0xbc1d_d51d_5b11_1273.
-const SCREEN_SHAPES_PIN: u64 = 0xdb39_f424_a0be_5fd2;
+// The Library grid projects keys for its wanted windows only (`LibraryGrid{total,windows,..}`
+// replaces a key per slot); the previous pin was 0xdb39_f424_a0be_5fd2.
+const SCREEN_SHAPES_PIN: u64 = 0x7435_d234_b769_60c2;
 
 #[cfg(test)]
 mod arg_tests {
