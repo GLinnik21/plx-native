@@ -244,6 +244,13 @@ pub fn restore_server_selection(server: plx_plex::plex::ServerId, meta: plx_data
 
 /// The line to draw at `now_ns`, if a sidecar is selected and the server is not burning it.
 pub fn active(now_ns: i64, burned: bool) -> Option<String> {
+    active_span(now_ns, burned).map(|(text, _, _)| text)
+}
+
+/// [`active`] with the `(start_ns, end_ns)` the cue is shown over, in the subtitle clock — what a
+/// caption too tall for one screen pages across. The on-screen failure notice has no cue span; it
+/// comes back as `(0, i64::MAX)`.
+pub fn active_span(now_ns: i64, burned: bool) -> Option<(String, i64, i64)> {
     let st = state();
     if burned {
         return None; // the server BURNS the selection; drawing it too would double the line
@@ -251,11 +258,11 @@ pub fn active(now_ns: i64, burned: bool) -> Option<String> {
     let want = st.want.as_ref()?;
     if let Some((source, why, at)) = &st.failed {
         if source == want && at.elapsed() < FAILURE_SHOWN {
-            return Some(why.message().to_string());
+            return Some((why.message().to_string(), 0, i64::MAX));
         }
     }
     match &st.loaded {
-        Some((source, Content::Plain(subs))) if source == want => subs.line_at(now_ns),
+        Some((source, Content::Plain(subs))) if source == want => subs.cue_at(now_ns),
         _ => None,
     }
 }
@@ -433,8 +440,14 @@ impl Subtitles {
     }
 
     /// The caption at `now_ns`: only the cue that covers it is cut from the text.
+    #[cfg(test)]
     fn line_at(&self, now_ns: i64) -> Option<String> {
-        cue_at_indexed(&self.spans, &self.ends, now_ns).map(|span| cue_text(&self.text, span))
+        self.cue_at(now_ns).map(|(text, _, _)| text)
+    }
+
+    /// The caption at `now_ns` with the `(start_ns, end_ns)` it is shown over.
+    fn cue_at(&self, now_ns: i64) -> Option<(String, i64, i64)> {
+        cue_at_indexed(&self.spans, &self.ends, now_ns).map(|span| (cue_text(&self.text, span), span.start_ns, span.end_ns))
     }
 
     /// Index a whole subtitle file. An empty index comes back for a file too large to be a

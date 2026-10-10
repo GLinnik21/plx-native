@@ -1915,6 +1915,12 @@ pub fn push_subtitle_cue(
 }
 /// the selected track's subtitle text active at `now_ns`, or None (also None when off).
 pub fn active_subtitle(now_ns: i64) -> Option<String> {
+    active_subtitle_span(now_ns).map(|(text, _, _)| text)
+}
+
+/// [`active_subtitle`] with the cue's `(start_ns, end_ns)` in the subtitle clock (the clock
+/// [`subtitle_clock_ns`] converts the playhead to).
+pub fn active_subtitle_span(now_ns: i64) -> Option<(String, i64, i64)> {
     let sel = SHARED.desired_sub_idx.load(Relaxed);
     if sel < 0 {
         return None;
@@ -1924,7 +1930,7 @@ pub fn active_subtitle(now_ns: i64) -> Option<String> {
     cues.iter()
         .rev()
         .find(|c| c.track == sel && lookup_ns >= c.start_ns && lookup_ns < c.end_ns)
-        .map(|c| c.text.clone())
+        .map(|c| (c.text.clone(), c.start_ns, c.end_ns))
 }
 
 /// **The IDENTITY of the text cue active at `now_ns`** — its start, or 0 for none.
