@@ -180,8 +180,23 @@ pub(super) fn refresh(id: ServerId) {
     }
 }
 
+/// Move the single-flight flag of a server that has an entry. Never CREATES one: the worker that
+/// clears the flag may finish after a sign-out dropped the entry ([`forget_below`]), and a flag
+/// write that re-created it would leave the revoked server's row behind.
 fn set_inflight(id: ServerId, on: bool) {
-    with_table(|t| t.entry(id.raw()).or_default().inflight = on);
+    with_table(|t| {
+        if let Some(e) = t.get_mut(&id.raw()) {
+            e.inflight = on;
+        }
+    });
+}
+
+/// A sign-out raised the registry floor to `floor`: drop the entry of every slot below it. Slot
+/// numbers are never reused, so those rows could never be read again (every reader resolves the
+/// client first) and would only accumulate, one per registration ever made in the process. Called
+/// AFTER the floor moved, so a [`store`] still in flight finds its server gone and writes nothing.
+pub(super) fn forget_below(floor: usize) {
+    with_table(|t| t.retain(|&slot, _| slot as usize >= floor));
 }
 
 /// One round trip, one log line, for the server whose client was captured at the spawn site.
@@ -255,6 +270,10 @@ fn store(id: ServerId, sub: Subscription, version: &str) {
         return;
     }
     with_table(|t| {
+        // a fetch that outlived its server's sign-out must not file the answer of a revoked slot
+        if super::client_for(id).is_none() {
+            return;
+        }
         let e = t.entry(id.raw()).or_default();
         e.sub = sub;
         e.version = version.to_owned();
@@ -353,6 +372,29 @@ mod tests {
     /// as a live two-server roster to any later test that derives one: `pms::sync_roster` kept a
     /// seeded source table alive on exactly that, and which test inherited the leak depended on
     /// parallel completion order — the worst shape a flake can take.
+    #[test]
+    fn a_sign_out_removes_the_revoked_servers_rows_and_a_late_answer_does_not_return_them() {
+        use super::super::servers;
+        let _g = plx_base::testlock::serial();
+        servers::reset_for_test();
+        // past the old sixteen-slot table, so the rows are keyed on a slot the array never held
+        let ids: Vec<ServerId> = (0..18)
+            .map(|i| servers::register_with_client_id(&format!("mach-so-{i}"), "10.0.0.1", 32400, "tok", "cid"))
+            .collect();
+        let far = *ids.last().unwrap();
+        assert!(far.raw() >= 16);
+        store(far, Subscription::Yes, "1.43.3.10861-cd85035e7");
+        assert!(with_table(|t| t.contains_key(&far.raw())));
+
+        servers::revoke_all();
+        assert!(!with_table(|t| t.contains_key(&far.raw())), "the signed-out server's row is gone");
+        // and the worker that was still out cannot bring it back
+        store(far, Subscription::Yes, "late");
+        set_inflight(far, false);
+        assert!(!with_table(|t| t.contains_key(&far.raw())));
+        servers::reset_for_test();
+    }
+
     #[test]
     fn one_servers_plex_pass_is_never_read_as_the_others() {
         use super::super::servers;

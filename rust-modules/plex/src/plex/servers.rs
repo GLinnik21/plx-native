@@ -1472,6 +1472,9 @@ pub fn revoke_all() {
         s.on_grant.store(false, Ordering::Release);
     });
     FLOOR.store(n, Ordering::Release);
+    // The per-server rows of the dependant tables go with the slots: the numbers are never
+    // reused, so nothing could read them again. After the floor, so a late writer finds no client.
+    super::serverinfo::forget_below(n);
     ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     if n > floor {
         plx_base::eventlog::log(&format!(
