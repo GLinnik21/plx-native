@@ -77,6 +77,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         scroll_target: 0.0, episode_scroll: Spring::at(0.0), tab_scroll: Spring::at(0.0),
         episode_cells: episodes::Cells::new(),
             ep_want: Default::default(),
+            related_before: Default::default(),
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: plx_ui::cards::Shelf::new(entry, &plx_ui::cards::RowStyle::HOME), collection: plx_ui::cards::Shelf::new(entry, &plx_ui::cards::RowStyle::HOME),
@@ -500,5 +501,43 @@ fn a_show_pages_draw_does_not_grow_with_seasons_off_the_row() {
     let full = census(show(16));
     assert_eq!(census(show(64)), full, "draw census grew with off-screen seasons");
     assert!(full.get(&(100, false)).copied().unwrap_or(0) > 0, "the page drew text: {full:?}");
+}
+
+/// A page whose Related row is a 3-card head and a 24-card window of its tail starting at tail
+/// position `from`; card `t{n}` is tail position `n`.
+fn with_tail(from: usize) -> Detail {
+    let mut d = item("a", false);
+    d.related = (0..3).map(|i| plx_data::pms::PmsMovie { sid: ServerId::UNSET, rk: format!("h{i}"), ..Default::default() }).collect();
+    d.related.extend((from..from + 24).map(|n| plx_data::pms::PmsMovie { sid: ServerId::UNSET, rk: format!("t{n}"), ..Default::default() }));
+    d.related_tail = plx_data::metadata::RelatedTail {
+        hubs: vec![plx_data::metadata::TailHub { key: "/library/metadata/1/similar".into(), preview: 3, len: Some(100) }],
+        head: 3,
+        positions: (from..from + 24).collect(),
+        offset: from,
+        end: from + 24,
+        total: 100,
+        more: true,
+        ..Default::default()
+    };
+    d
+}
+
+#[test]
+fn focus_on_a_tail_card_survives_the_window_sliding() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig) = boot_with(with_tail(0));
+    let at = |d: &Dispatcher<TestHost>, n: usize| screen(d).engine_key(related::elem(3 + n).unwrap()).unwrap();
+    let key = FocusKey { entry: screen(&d).entry, elem: at(&d, 20) };
+    d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
+    assert_eq!(screen(&d).locate(key.elem, test_store().view()).unwrap().index(), 23);
+    // The window moves twelve forward: `t20` is now the ninth tail card, and the cards it left are gone.
+    land(&mut d, &mut rig, with_tail(12), 32);
+    assert_eq!(d.focus(), Some(key), "the focused card keeps its key through the slide");
+    assert_eq!(screen(&d).locate(key.elem, test_store().view()).unwrap().index(), 3 + 8);
+    // And back.
+    land(&mut d, &mut rig, with_tail(0), 48);
+    assert_eq!(d.focus(), Some(key));
+    assert_eq!(screen(&d).locate(key.elem, test_store().view()).unwrap().index(), 23);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 

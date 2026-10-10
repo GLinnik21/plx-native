@@ -142,6 +142,11 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
         }
     }
 
+    /// Only Related has anything behind its cards: the tail of the hubs' own listings.
+    fn more(&self) -> bool {
+        self.which == Which::Related && self.d.related_tail.more
+    }
+
     fn progress(&self, i: usize) -> Option<f32> {
         match self.which {
             Which::Related | Which::Collection => self.movies().get(i).and_then(|m| m.resume_frac()),
