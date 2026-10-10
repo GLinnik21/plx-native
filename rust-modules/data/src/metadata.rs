@@ -4749,9 +4749,9 @@ struct RelPages {
     inflight: bool,
     /// The reader withdrew the read that is out: its answer is discarded when it lands.
     withdrawn: bool,
-    /// What the read out is for (item, window it starts from, direction), so an ask for the same
-    /// thing meanwhile adopts it.
-    out: Option<(plx_plex::plex::ServerId, String, (usize, usize), bool)>,
+    /// What the read out is for (item, window it starts from, direction, and the tail position a
+    /// seek opens at), so an ask for the same thing meanwhile adopts it and no other does.
+    out: Option<(plx_plex::plex::ServerId, String, (usize, usize), bool, Option<usize>)>,
     landed: Vec<RelLanded>,
 }
 
@@ -4838,6 +4838,7 @@ fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
     if seen != (t.offset, t.end) { return false; }
     let before = matches!(ask, RelatedAsk::Edge { before: true });
     let seek = matches!(ask, RelatedAsk::Seek(_));
+    let seek_at = if let RelatedAsk::Seek(at) = ask { Some(at) } else { None };
     if t.hubs.is_empty() || t.head > d.related.len() || (before && t.offset == 0)
         || (matches!(ask, RelatedAsk::Edge { before: false }) && !t.more)
         // A position past a hub whose length is not yet known cannot be addressed: the hubs'
@@ -4848,8 +4849,8 @@ fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
     {
         let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
         if rel.inflight {
-            if rel.withdrawn && rel.out.as_ref().is_some_and(|(sid, rk, from, was_before)|
-                *from == seen && *was_before == before && plx_plex::plex::same_item((d.sid, &d.rk), (*sid, rk))) {
+            if rel.withdrawn && rel.out.as_ref().is_some_and(|(sid, rk, from, was_before, was_seek)|
+                *from == seen && *was_before == before && *was_seek == seek_at && plx_plex::plex::same_item((d.sid, &d.rk), (*sid, rk))) {
                 // The read the reader walked away from is the one asked for again, from the window
                 // that still stands, so it answers this ask too.
                 rel.withdrawn = false;
@@ -4863,7 +4864,7 @@ fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
         if served { return false; }
         rel.inflight = true;
         rel.withdrawn = false;
-        rel.out = Some((d.sid, d.rk.clone(), seen, before));
+        rel.out = Some((d.sid, d.rk.clone(), seen, before, seek_at));
     }
     let (sid, rk) = (d.sid, d.rk.clone());
     let info = PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };

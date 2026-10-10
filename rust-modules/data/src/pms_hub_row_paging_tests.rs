@@ -450,6 +450,27 @@ fn rocking_across_the_edge_never_has_two_reads_of_a_row_in_flight() {
     plx_plex::plex::reset_servers_for_test();
 }
 
+/// The shelf repeats an ask nobody answered, so the same ask reaches the store again while its read
+/// is out: it starts no second read, and the one read answers the row once.
+#[test]
+fn a_repeated_ask_for_a_row_whose_read_is_in_flight_starts_no_second_read() {
+    let _guard = plx_base::testlock::serial();
+    let len = 100;
+    let mut owner = owner_with(RECENT_ID, RECENT, len);
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let before = shown(&owner);
+    let request = ask_row(&mut owner, RECENT_ID, RECENT, false).expect("the first ask starts the read");
+    for _ in 0..5 {
+        assert!(ask_row(&mut owner, RECENT_ID, RECENT, false).is_none(), "a repeat while it is out starts nothing");
+    }
+    assert!(owner.state.srcs[0].fetching, "the one read is still the one out");
+    answer(&mut owner, request, listing, batch(|_| true));
+    assert_ne!(shown(&owner), before, "and it moved the window");
+    assert!(!owner.state.srcs[0].fetching && owner.state.srcs[0].page.is_none(), "answered once");
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
 #[test]
 fn a_withdrawn_read_is_discarded_and_frees_the_row_when_it_lands() {
     let _guard = plx_base::testlock::serial();

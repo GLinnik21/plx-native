@@ -400,6 +400,44 @@ fn a_failed_row_page_is_asked_for_again_without_a_new_ask_from_the_page() {
     }
 }
 
+/// The shelf repeats an ask nobody answered, so the store sees the same ask again and again: one
+/// the store already holds (waiting, in flight, or backing off after a failure) is neither a second
+/// read nor a restart of its backoff; one it refused for naming a window that has since been
+/// replaced is taken when the shelf sends it again from the window that stands.
+#[test]
+fn a_repeated_ask_is_idempotent_and_one_refused_for_a_replaced_window_is_taken_when_resent() {
+    let len = 500;
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut hubs = published(&one_row(&(0..12).collect::<Vec<_>>(), len));
+    let window = keys(&hubs.committed[0]);
+    let revision = hubs.revision;
+    assert!(hubs.want_page(revision, ID, KEY, false));
+    let ask = hubs.next_ask().unwrap();
+    hubs.inflight = Some((ask.clone(), false));
+    for _ in 0..5 {
+        assert!(!hubs.want_page(revision, ID, KEY, false), "the same ask while its read is out is not a second ask");
+        assert_eq!((hubs.inflight.clone(), hubs.next_ask()), (Some((ask.clone(), false)), Some(ask.clone())));
+    }
+    assert!(step(&mut hubs, &ask, |_, _| None) || hubs.ask.is_some(), "a failed read keeps the ask");
+    let backoff = hubs.ask_retry_left;
+    assert!(backoff > 0, "and arms its backoff");
+    assert!(!hubs.want_page(revision, ID, KEY, false), "a repeat while it backs off is not a new ask");
+    assert_eq!(hubs.ask_retry_left, backoff, "and does not restart the backoff");
+    assert_eq!(keys(&hubs.committed[0]), window, "nothing moved");
+    // the ask was computed from a window a landing has since replaced: refused, nothing held
+    hubs.cancel_page(ID, KEY);
+    hubs.revised();
+    assert!(!hubs.want_page(revision, ID, KEY, false), "the old revision is refused");
+    assert!(hubs.next_ask().is_none(), "and leaves nothing behind");
+    // the publication re-arms the shelf, which sends it again from the window that stands
+    assert!(hubs.want_page(hubs.revision, ID, KEY, false), "the same ask, current this time, is taken");
+    let ask = hubs.next_ask().unwrap();
+    hubs.inflight = Some((ask.clone(), false));
+    assert!(step(&mut hubs, &ask, listing));
+    assert_ne!(keys(&hubs.committed[0]), window);
+    assert!(hubs.next_ask().is_none(), "answered once");
+}
+
 /// Reach survives the guard: when every landing meets a stale ask (the worst frame order), the
 /// ask the missed publication re-arms comes from the window that stands, and the row still
 /// reaches its last card.

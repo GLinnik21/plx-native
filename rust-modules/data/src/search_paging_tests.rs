@@ -353,6 +353,40 @@ fn an_ask_computed_from_a_window_the_row_has_since_slid_is_refused() {
     assert_eq!(rig.shelf(Kind::Movie).window.start, first);
 }
 
+/// The shelf repeats an ask nobody answered and the page sends each repeat on: an identical ask
+/// while the slide is pending is neither a second slide nor a second read of any source, and one
+/// refused for naming a replaced window (`seen`) is taken when sent again from the window that
+/// stands.
+#[test]
+fn a_repeated_slide_ask_reads_and_slides_once_and_a_refused_one_is_taken_when_resent() {
+    let reads = |repeats: usize| {
+        let mut rig = Rig::new(2, Fake::new().movies(300));
+        rig.fake.lock().unwrap().log.clear();
+        let seen = rig.seen(Kind::Movie);
+        for _ in 0..repeats {
+            rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen });
+        }
+        rig.drain(6 * nsrc() + 12);
+        let log = rig.fake.lock().unwrap().log.len();
+        (log, rig.seen(Kind::Movie), rig.keys(Kind::Movie))
+    };
+    let once = reads(1);
+    assert!(once.0 > 0 && once.1 .1 > 12, "one ask reads and the window moves: {once:?}");
+    assert_eq!(reads(5), once, "five identical asks read and slide exactly as one does");
+    let mut rig = Rig::new(2, Fake::new().movies(300));
+    let stale = rig.seen(Kind::Movie);
+    rig.page(Kind::Movie, false);
+    let moved = rig.seen(Kind::Movie);
+    assert_ne!(moved, stale);
+    rig.fake.lock().unwrap().log.clear();
+    rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: stale });
+    rig.drain(6 * nsrc() + 12);
+    assert_eq!((rig.seen(Kind::Movie), rig.fake.lock().unwrap().log.len()), (moved, 0), "refused: no slide, no read");
+    rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: moved });
+    rig.drain(6 * nsrc() + 12);
+    assert_ne!(rig.seen(Kind::Movie), moved, "sent again from the window that stands, it is taken");
+}
+
 /// What tells the shelf an ask was answered when the window it sees did not move: the row's epoch
 /// moves on every slide that commits and does not on a read that failed, and a new query starts
 /// the count over with the row.

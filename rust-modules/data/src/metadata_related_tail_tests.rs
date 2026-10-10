@@ -487,6 +487,40 @@ fn a_read_of_another_item_drops_the_window() {
     assert_eq!((detail().related_tail.offset, detail().related.len()), (0, detail().related_tail.head));
 }
 
+/// The shelf repeats an ask nobody answered, so the store hears the same ask again while its read
+/// is out: one read answers all of them, a seek included, and an ask the store refused because the
+/// read it was out on had been withdrawn is taken once that read has finished.
+#[test]
+fn a_repeated_related_ask_starts_one_read_and_one_refused_during_a_withdrawn_read_is_taken_after_it() {
+    let _serial = plx_base::testlock::serial();
+    let server = serve(vec![(1, 312)], plain);
+    let mc = related_response(&[(1, 12, 312, true)], "");
+    open(&server, &mc);
+    let at = || (detail().related_tail.offset, detail().related_tail.end);
+    let was = at();
+    assert!(want_related(test_state(), test_adapter(), false, was), "the first ask starts the read");
+    for _ in 0..5 {
+        assert!(!want_related(test_state(), test_adapter(), false, was), "a repeat while it is out starts nothing");
+        assert!(!ask_related(test_state(), test_adapter(), RelatedAsk::Seek(150), was), "nor does a seek beside it");
+    }
+    wait_for_related_read();
+    assert_eq!(test_adapter().rel_pages.lock().unwrap().landed.len(), 1, "one read answered all of them");
+    assert!(pump_related_pages(test_state(), test_adapter()));
+    let next = at();
+    assert_ne!(next, was);
+    // the reader walked away from this read; a seek meanwhile is refused, and taken once it is over
+    assert!(want_related(test_state(), test_adapter(), false, next));
+    cancel_related(test_adapter());
+    assert!(!ask_related(test_state(), test_adapter(), RelatedAsk::Seek(150), next), "refused beside the withdrawn read");
+    wait_for_related_read();
+    assert!(!pump_related_pages(test_state(), test_adapter()), "the withdrawn read installs nothing");
+    assert_eq!(at(), next);
+    assert!(ask_related(test_state(), test_adapter(), RelatedAsk::Seek(150), next), "sent again, the seek is taken");
+    wait_for_related_read();
+    assert!(pump_related_pages(test_state(), test_adapter()));
+    assert_eq!(at(), (138, 162), "and its window opens where it was asked");
+}
+
 /// The Detail page lets go of the Related row's asks on every Metadata notice, so a landing must
 /// announce itself whether or not it moved the window the page sees: one that installs the window
 /// already standing still reports a change (which bumps the store), and a failed read reports none.
