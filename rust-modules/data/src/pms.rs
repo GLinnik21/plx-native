@@ -2674,3 +2674,7 @@ impl plx_base::tile::Tile for PmsMovie {
         self.unwatched
     }
 }
+
+#[cfg(test)]
+#[path = "pms_hub_row_paging_tests.rs"]
+mod hub_row_paging_tests;
