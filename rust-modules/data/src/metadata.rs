@@ -10,7 +10,7 @@ pub mod sub_layout;
 pub mod track_label;
 pub mod track_names;
 use std::panic::catch_unwind;
-pub use episode_list::EpisodeList;
+pub use episode_list::{EpisodeList, PAGE as EPISODE_PAGE};
 
 /// **Stage B of the store-ownership migration** (`docs/stores-as-machines.md`, D4): a borrowed
 /// handle onto this layer's read surface, shaped like `crate::person::PersonView`. Every method
@@ -1875,6 +1875,16 @@ fn reset(state: &mut MetadataState, adapter: &MetadataAdapter) {
 pub fn set_current_for_test(state: &mut MetadataState, d: Option<Detail>) {
     plx_base::testlock::assert_held("the detail store (set_current_for_test)");
     state.current = d;
+}
+
+/// TEST-ONLY in-place edit of the loaded item, for a test that lands an episode page or drops one
+/// the way the pump does, without replacing the whole `Detail`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn edit_current_for_test(state: &mut MetadataState, f: impl FnOnce(&mut Detail)) {
+    plx_base::testlock::assert_held("the detail store (edit_current_for_test)");
+    if let Some(d) = state.current.as_mut() {
+        f(d);
+    }
 }
 
 /// TEST-ONLY installer for the playing item's markers: lets a rig put a segment under the playhead

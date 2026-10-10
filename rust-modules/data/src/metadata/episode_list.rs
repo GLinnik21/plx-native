@@ -70,6 +70,18 @@ impl EpisodeList {
         self.iter_loaded().find(|(_, e)| e.rk == rating_key).map(|(i, _)| i)
     }
 
+    /// The loaded index closest to `i`; a tie goes to the lower. `None` when nothing has landed.
+    pub fn nearest_loaded(&self, i: usize) -> Option<usize> {
+        let held = |p: usize| self.pages.get(p).and_then(|rows| rows.as_ref()).filter(|rows| !rows.is_empty());
+        let home = (i / PAGE).min(self.pages.len().checked_sub(1)?);
+        let below = (0..=home).rev().find_map(|p| held(p).map(|rows| (p * PAGE + rows.len() - 1).min(i)));
+        let above = (home..self.pages.len()).find_map(|p| held(p).map(|_| (p * PAGE).max(i)));
+        match (below, above) {
+            (Some(lo), Some(hi)) => Some(if i - lo <= hi - i { lo } else { hi }),
+            (lo, hi) => lo.or(hi),
+        }
+    }
+
     /// The pages covering the index range `lo..hi` that have not landed.
     pub fn missing(&self, lo: usize, hi: usize) -> impl Iterator<Item = usize> + '_ {
         let end = self.pages.len();

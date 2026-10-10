@@ -134,8 +134,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         scroll_target: 0.0,
         episode_scroll: Spring::at(0.0),
         tab_scroll: Spring::at(0.0),
-        episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
-        episode_text_lift: [plx_ui::text_lift::TextLift::new(); EP_SCALE_MAX],
+        episode_cells: episodes::Cells::new(),
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::cards::RowStyle::HOME),
@@ -4029,5 +4028,158 @@ fn a_shed_detail_memory_holds_one_identity_and_the_reloaded_page_seats_the_same_
         assert_eq!(returned.engine_key(related::elem(n % 5).unwrap()), Some(focus), "the same card, the same key");
         assert!(returned.locate(focus, test_store().view()) == Some(Located::Related(n % 5)));
     }
+    clear();
+}
+
+/// A season of `total` episodes of which only the listed 60-episode pages have landed.
+fn long_season(total: usize, pages: &[usize]) -> Detail {
+    let mut d = detail(ServerId::UNSET, "show");
+    d.episodes = plx_data::metadata::EpisodeList::with_total(total);
+    for &p in pages {
+        d.episodes.set_page(p, episode_rows(total, p));
+    }
+    d
+}
+
+fn episode_rows(total: usize, page: usize) -> Vec<plx_data::metadata::Episode> {
+    (page * 60..((page + 1) * 60).min(total)).map(|i| episode(&format!("e{i}"), i as i64 + 1)).collect()
+}
+
+fn land_page(total: usize, page: usize) {
+    plx_data::metadata::edit_current_for_test(test_store().state_mut(), |d| d.episodes.set_page(page, episode_rows(total, page)));
+}
+
+fn episode_key(screen: &DetailScreen, i: usize, row: episodes::Row) -> Option<u32> {
+    screen.engine_key(episodes::elem(i, row)?)
+}
+
+/// Episode 257 of a long season used to be unreachable (`MAX_ITEMS` 256). With the pages landing as
+/// the walk reaches them, Right from the first episode reaches the 1,000th, and the focused cell's
+/// identity changes only by the key.
+#[test]
+fn a_thousand_episode_season_is_walked_to_its_last_episode_with_right() {
+    let total = 1000;
+    let _guard = install(long_season(total, &[0]));
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let mut at = episode_key(&screen, 0, episodes::Row::Still).expect("page 0 is keyed");
+    let mut reached = 0;
+    while reached + 1 < total {
+        let context = cx(&measure, Some(at));
+        match Focusable::<TestHost>::neighbour(&screen, FocusKey { entry: EntryId(7), elem: at }, Dir::Right, &context) {
+            Step::Move(next) => {
+                reached += 1;
+                assert!(screen.locate(next.elem, test_store().view()) == Some(Located::Episode(reached, episodes::Row::Still)));
+                at = next.elem;
+            }
+            Step::Edge => {
+                // a hole: the press stops, the page lands, the same press goes on
+                assert!(test_store().view().current().unwrap().episodes.get(reached + 1).is_none(), "Right stopped at {reached} with the next episode loaded");
+                land_page(total, (reached + 1) / 60);
+                screen.sync_keys(test_store().view());
+                assert_eq!(episode_key(&screen, reached, episodes::Row::Still), Some(at), "landing did not rekey the focused episode");
+            }
+        }
+    }
+    assert!(screen.locate(at, test_store().view()) == Some(Located::Episode(999, episodes::Row::Still)));
+    clear();
+}
+
+/// The strip keys, lays out and draws the cells on the axis only, however long the season.
+#[test]
+fn a_long_season_registers_stops_for_the_visible_cells_only() {
+    let all: Vec<usize> = (0..17).collect();
+    let _guard = install(long_season(1000, &all));
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let top = {
+        let d = screen.detail(test_store().view()).unwrap();
+        screen.section_top(2, d, &measure)
+    };
+    screen.scroll.jump(top);
+    screen.scroll_target = top;
+    screen.episode_scroll.jump(episodes::strip_x(700) - plx_ui::consts::MARGIN_X);
+    let stops = drawn_stops(&mut screen, &cx(&measure, None));
+    let eps: Vec<usize> = stops
+        .iter()
+        .filter_map(|s| match screen.locate(s.key.elem, test_store().view()) {
+            Some(Located::Episode(i, _)) => Some(i),
+            _ => None,
+        })
+        .collect();
+    assert!(!eps.is_empty() && eps.iter().all(|i| (698..708).contains(i)), "only the cells on the axis: {eps:?}");
+    clear();
+}
+
+/// A hole in view draws the still's skeleton; the page landing fills it and the focused cell does
+/// not move.
+#[test]
+fn a_hole_in_view_draws_a_skeleton_and_fills_on_landing_without_moving_the_focus() {
+    let _guard = install(long_season(200, &[0]));
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let focus = episode_key(&screen, 59, episodes::Row::Still).unwrap();
+    let top = {
+        let d = screen.detail(test_store().view()).unwrap();
+        screen.section_top(2, d, &measure)
+    };
+    screen.scroll.jump(top);
+    screen.scroll_target = top;
+    screen.episode_scroll.jump(episodes::strip_x(58) - plx_ui::consts::MARGIN_X);
+    let context = cx(&measure, Some(focus));
+    let skeletons = |screen: &mut DetailScreen| {
+        let (_, frame) = plx_ui::placeholder::capture(|| {
+            drawn_stops(screen, &context);
+        });
+        frame.of(plx_ui::placeholder::Reason::CardSkeleton)
+    };
+    let before_rect = Focusable::<TestHost>::place(&screen, &focus, &context, At::SpringTarget).unwrap().rect;
+    assert!(skeletons(&mut screen) >= 2, "the cells past the landed page are skeletons");
+    land_page(200, 1);
+    screen.sync_keys(test_store().view());
+    assert_eq!(skeletons(&mut screen), 0, "the landing fills the holes in view");
+    assert_eq!(episode_key(&screen, 59, episodes::Row::Still), Some(focus), "the focused identity is unchanged");
+    let after_rect = Focusable::<TestHost>::place(&screen, &focus, &context, At::SpringTarget).unwrap().rect;
+    assert_eq!(before_rect, after_rect, "the focused cell did not move");
+    clear();
+}
+
+/// Right and Left stop at a hole rather than seat on a cell that is not there.
+#[test]
+fn left_and_right_stop_at_a_hole() {
+    let _guard = install(long_season(300, &[0, 2]));
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let context = cx(&measure, None);
+    let step_from = |i: usize, dir: Dir| {
+        let at = episode_key(&screen, i, episodes::Row::Still).unwrap();
+        Focusable::<TestHost>::neighbour(&screen, FocusKey { entry: EntryId(7), elem: at }, dir, &context)
+    };
+    assert!(matches!(step_from(59, Dir::Right), Step::Edge), "page 1 is a hole");
+    assert!(matches!(step_from(120, Dir::Left), Step::Edge), "page 1 is a hole");
+    assert!(matches!(step_from(58, Dir::Right), Step::Move(_)));
+    clear();
+}
+
+/// A restore onto episode 700 seats it once its page is in, and waits for the page rather than
+/// seating on another episode.
+#[test]
+fn a_restore_onto_episode_700_waits_for_its_page_and_then_seats_it() {
+    let _guard = install(long_season(1000, &[0]));
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    screen.restore_intent = Some(RestoreIntent {
+        spot: Spot { section: 2, col: 700, ..Default::default() },
+        episode: Some("e700".into()),
+        season_requested: true,
+    });
+    screen.sync_keys(test_store().view());
+    assert_eq!(screen.restore_focus(test_store().view()), None, "episode 700's page has not landed");
+    land_page(1000, 11);
+    screen.sync_keys(test_store().view());
+    assert_eq!(screen.restore_focus(test_store().view()), episode_key(&screen, 700, episodes::Row::Still));
     clear();
 }
