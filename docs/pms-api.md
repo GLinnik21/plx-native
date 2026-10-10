@@ -17,7 +17,7 @@ All endpoints below were verified live on 2026-07-03 with read-only GETs, **exce
 
 **JSON instead of XML:** send `Accept: application/json`. Every response is wrapped in a top-level `MediaContainer` object.
 
-**Paging:** either headers `X-Plex-Container-Start` / `X-Plex-Container-Size` or same-named query params. Response carries `size`, `totalSize`, `offset`.
+**Paging:** either headers `X-Plex-Container-Start` / `X-Plex-Container-Size` or same-named query params. A paged response carries `size`, `totalSize`, `offset`; an unpaged one carries neither total nor offset (see [Paging, observed](#paging-observed)).
 
 ---
 
@@ -255,8 +255,9 @@ Verified hub list (`MediaContainer.Hub[]`), each hub has
 | `movie.recentlyadded.1` (promoted) | Recently Added in Movies | `/library/sections/1/all?sort=addedAt:desc` |
 | `custom.collection.*` | collection shelves | `/library/collections/{id}/children` |
 
-**`/hubs` has no paging** (`docs/plex-openapi.json`: its only parameters are `count`, `onlyTransient`
-and `identifier`). Home requests all rows, with 12 preview cards per row. Recently Added rows
+**The spec gives `/hubs` no paging** (`docs/plex-openapi.json`: its only parameters are `count`, `onlyTransient`
+and `identifier`), but a windowed request does page its hub list on a live server (see [Paging, observed](#paging-observed)).
+Home requests all rows, with 12 preview cards per row. Recently Added rows
 load more items through their provider's listing `key`, with both `X-Plex-Container-Start` and
 `X-Plex-Container-Size`. The client preserves the key's type, library, and sort parameters.
 Other Home rows, including collections, keep their 12-card preview.
@@ -382,8 +383,9 @@ Measured on this server, and every one of these is a thing the OpenAPI spec does
   hub is required, not a nicety.
 * **`count` defaults to 6** and is honoured up to at least 24. It is items-per-hub; it never
   changes how many hubs come back.
-* **There is no paging of hubs** (the route's parameters are `count`, `onlyTransient` and
-  `identifier`), so a server with many promoted collections answers with all of them at once. The
+* **The spec gives the hub list no paging** (the route's parameters are `count`, `onlyTransient` and
+  `identifier`); a windowed request pages it on a live server (see [Paging, observed](#paging-observed)).
+  The Library asks for it unwindowed, so a server with many promoted collections answers with all of them at once. The
   Library takes every hub the server sends, at most `MAX_SHELF_ITEMS` (24) cards each, and bounds
   only the section's total: `section_hubs::SECTION_CARDS_MAX` = `HOME_CARDS_MAX` = 2,048 cards,
   whole shelves dropped from the tail and logged as `libhubs: card bound 2048 reached`.
@@ -1227,7 +1229,30 @@ it is a 400).
 
 ---
 
-## App data-layer summary
+## Paging, observed
+
+Observed on PMS 1.43.4 with a small library, by read-only GETs. Only the endpoints in the table were
+probed; the other listings this file describes are not covered by this section.
+
+A request pages when it carries the window's start (`X-Plex-Container-Start`, as a query parameter or
+a header; see the paging gotcha in §2b). A paged answer echoes `offset`, carries the listing's
+`totalSize`, and `size` is the number of rows returned. An unpaged answer carries no `totalSize` and
+no `offset`: a `similar` listing without a window has none, and a library search without one carries
+only `size`.
+
+| Endpoint | Pages? | Carries `totalSize` and `offset` when paged | Notes |
+|---|---|---|---|
+| `/hubs/continueWatching/items` (the key of the Continue Watching hub) | yes | yes | Windows (0,3) and (3,3) are contiguous; rows are sorted by `lastViewedAt`, descending. The library held six items, so nothing past twelve was seen. |
+| `/library/metadata/{id}/similar` (the key of `movie.similar`) | yes | yes | `totalSize` 24 to 26 across calls; windows are contiguous; the related hub's preview is the exact head of the listing; order is stable. |
+| `/library/sections/{id}/all` with a `title=` filter | yes | yes | Pages as an unfiltered section listing does. |
+| `/library/sections/{id}/collections?title=`, `/library/sections/{id}/all?type=18&title=`, `/library/all?type=18&title=` | yes | yes | Matches collections by title. For the same three-letter prefix, the collection hub of `/hubs/search` returned no rows, so the two match sets are not known to be equal. |
+| `/library/search?searchTypes=movies`, `tv`, `people`, `music` | yes | yes | Each row is `{Metadata, score}`; a people row is `{Directory, score}`, with `tagKey` and `count`. `totalSize` is capped by `limit` (`tv` gave 30 at `limit=30`). `searchTypes=movies,tv` returns one mixed list, movies first, then shows, then episodes. |
+| `/library/search` with a kind the server does not know (`shows`, `episodes`, `actors`, `bogus`) | not applicable | `totalSize=0` | Empty, with no error: an unsupported kind looks like no hits. |
+| `/hubs?count=…` (the hub list) | yes, by hub | yes | A window of three over ten hubs returned three hubs, `totalSize=10`, `offset` echoed. |
+| `/hubs/sections/{id}?count=…` (one library's hub list) | yes, by hub | yes | Windows (0,3) and (3,3) over nine hubs; order is stable across two calls. |
+| `/hubs/search` with a window | no | not per hub | Not a per-hub offset: seven hubs shrank to one hub with two rows, with `size=7`, `totalSize=17`, `offset=10`. Search hubs carry no key, and `more` is false even on a hub cut at its limit. |
+| Key of `movie.topunwatched` and `movie.by.actor.or.director` (random hubs) | yes | not recorded | The listing came back in the same order on two calls; the windows (0,6) and (6,50) together equal the whole listing; every preview card is in it. The library held only 13 items, so large lists are not covered. |
+
 
 - 3 startup requests: `/library/sections` (find movie/show keys), `/hubs/promoted` (home shelves, items include Media for instant resume), then lazy `/library/sections/{key}/all` pages of 50.
 - One JSON shape covers movie/show/season/episode; parse the field table in §2 with all-optional semantics.

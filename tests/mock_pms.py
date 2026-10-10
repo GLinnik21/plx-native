@@ -204,6 +204,9 @@ SUB_SEARCH_LANGS = {"en": ("eng", "English"), "nl": ("nld", "Nederlands"), "es":
 # so a deliberately huge --shows run remains this module's problem to notice, not to silently hit.
 EXTRA_MEDIA_RK_BASE = 990001
 EXTRA_MEDIA_PART_ID_BASE = 991001
+# `Library(extras=N)` clips: ten ids per movie from 800001, clear of the movie ids (to 2000), the
+# episode ids (rk*10+n from 2001) and the fixture blocks above.
+EXTRA_CLIP_RK_BASE = 800001
 # #266 enhancement fixtures (module doc): own librarySectionID (3, never registered in
 # `Library.sections`), so they never appear in a section/rail listing or count, but are always
 # present and reachable directly by ratingKey. 960001..960005 sits clear of the generated range
@@ -271,14 +274,23 @@ class Library:
     seasons, episodes, media parts, chapters, markers, watch state and blur colours. Generated
     ids are dense from 1; the opt-in verification ids are fixed and deliberately conspicuous."""
 
+    # Clips per movie for `/library/metadata/{id}/extras`. A class default, not an instance
+    # attribute, so a default library's `__dict__` (pinned by test_default_generated_data_is_stable)
+    # is unchanged: the detail pages the recorded fixtures came from have no clips, and keep none.
+    extras_per_movie = 0
+
     def __init__(self, seed=1, movies=48, shows=6, seasons=2, episodes=6, rail_fixture=False,
-                 media=None, extra_media=None, loudness_analysis=True):
+                 media=None, extra_media=None, loudness_analysis=True, extras=0):
         # Movie keys start at 1001; shows start at 2001. Refuse a fixture that would silently
         # overwrite a film with a show instead of exercising the requested listing size.
         if not 0 <= movies <= 1000:
             raise ValueError("movies must be between 0 and 1000")
+        if not 0 <= extras <= 9:
+            raise ValueError("extras must be between 0 and 9 clips per movie")
         # #266: whether a generated/verification audio stream carries canNormalizeLoudness.
         self.loudness_analysis = loudness_analysis
+        if extras:
+            self.extras_per_movie = extras
         rng = random.Random(seed)
         self.seed = seed
         self.machine = "s%08x" % rng.getrandbits(32) + "s%08x" % rng.getrandbits(32)
@@ -790,7 +802,9 @@ class Library:
         if a:
             rows = [it for it in rows if any(str(t["id"]) == a for t in
                     it.get("Role", []) + it.get("Director", []) + it.get("Writer", []))]
-        c = q.get("collection")
+        # `tagId` is the key of a `collection.related` hub, the only tag id these listings are
+        # asked for with; it filters the same way `collection` does.
+        c = q.get("collection") or q.get("tagId")
         if c:
             rows = [it for it in rows if any(str(t["id"]) == c for t in it.get("Collection", []))]
         sort = q.get("sort", "titleSort")
@@ -857,6 +871,52 @@ class Library:
     def person_media(self, pid):
         return [it for it in self.items.values() if it["type"] in ("movie", "show") and any(
             t["id"] == pid for t in it.get("Role", []) + it.get("Director", []) + it.get("Writer", []))]
+
+    def similar(self, rk):
+        """What `/library/metadata/{id}/similar` lists: the other items of the same type, in library
+        order, the item itself left out. The `related` hub is the head of this list."""
+        it = self.items.get(rk)
+        return [x for x in self.items.values() if it and x["type"] == it["type"] and x is not it]
+
+    def extras(self, rk):
+        """Clips for a movie, as `/library/metadata/{id}/extras` lists them. Generated only when the
+        library was built with `extras=N` (see `__init__`); titles come from the closed alphabet."""
+        it = self.items.get(rk)
+        if not it or it["type"] != "movie" or not self.extras_per_movie:
+            return []
+        rows = []
+        for i in range(self.extras_per_movie):
+            key = EXTRA_CLIP_RK_BASE + (rk - 1001) * 10 + i
+            rows.append({"ratingKey": str(key), "key": f"/library/metadata/{key}", "type": "clip",
+                         "subtype": "trailer" if i == 0 else "behindTheScenes",
+                         "title": "s" + hashlib.md5(f"clip{key}".encode()).hexdigest()[:8],
+                         "duration": 90000, "thumb": f"/library/metadata/{key}/thumb/1"})
+        return rows
+
+    def search_results(self, query, kinds, limit=None):
+        """`/library/search` rows for the requested `kinds`, in PMS' listing order: movies, then the
+        shows and the episodes (`tv`), then the people (`people`), each as a `SearchResult`.
+
+        `music` is not modelled (the mock has no artists, albums or tracks), so it answers nothing,
+        as does an unknown kind: PMS answers an unsupported `searchTypes` with an empty result rather
+        than an error, which a client cannot tell from "no hits". `limit` caps the list before a
+        window is applied, which is why PMS' `totalSize` is capped by it."""
+        hits = search_matcher(query)
+        rows = []
+        if "movies" in kinds:
+            rows += [{"Metadata": it, "score": "0.90000"} for it in self.items.values()
+                     if it["type"] == "movie" and hits(it["title"])]
+        if "tv" in kinds:
+            for kind in ("show", "episode"):
+                rows += [{"Metadata": it, "score": "0.90000"} for it in self.items.values()
+                         if it["type"] == kind and hits(it["title"])]
+        if "people" in kinds:
+            for person in self.people.values():
+                if hits(person["tag"]):
+                    count = len(self.person_media(person["id"]))
+                    rows.append({"Directory": dict(person, type="actor", count=count),
+                                 "score": "0.90000"})
+        return rows if limit is None else rows[:limit]
 
     def composite(self, rk, width, height):
         """The server's automatic collection poster (`/library/collections/<rk>/composite/<stamp>`):
@@ -1666,7 +1726,7 @@ class MockPms:
         mc = {"size": 0, "allowSync": False, "identifier": "com.plexapp.plugins.library",
               "mediaTagPrefix": "/system/bundle/media/flags/", "mediaTagVersion": 1}
         mc.update(kw)
-        for k in ("Metadata", "Directory", "Hub"):
+        for k in ("Metadata", "Directory", "Hub", "SearchResult"):
             if k in mc:
                 mc["size"] = len(mc[k])
         return {"MediaContainer": mc}
@@ -1734,10 +1794,15 @@ class MockPms:
             return j(current)
 
         def paged(rows):
-            start = int(q.get("X-Plex-Container-Start",
-                              headers.get("X-Plex-Container-Start", 0)))
-            size = int(q.get("X-Plex-Container-Size",
-                             headers.get("X-Plex-Container-Size", len(rows))))
+            """PMS pages a listing only when the request carries the window's start, as a query
+            parameter or as a header, and then echoes its `offset` beside the listing's `totalSize`.
+            An unpaged answer carries neither: a client reads the whole list from it. A Size
+            without a Start is ignored, as PMS ignores it (docs/pms-api.md, "Paging gotcha")."""
+            start_key, size_key = "X-Plex-Container-Start", "X-Plex-Container-Size"
+            if start_key not in q and start_key not in headers:
+                return rows, {}
+            start = max(0, int(q.get(start_key, headers.get(start_key, 0))))
+            size = max(0, int(q.get(size_key, headers.get(size_key, len(rows) - start))))
             return rows[start:start + size], {"totalSize": len(rows), "offset": start}
 
         write_path = (p in ("/:/timeline", "/:/scrobble", "/:/unscrobble", "/:/progress",
@@ -1874,14 +1939,21 @@ class MockPms:
             if sub == "tree" and rk == VERIFY_SHOW_RK and getattr(lib, "media_files", None):
                 return j(self.container(Setting=list(VERIFY_PREFS)))
             if sub == "children":
-                return j(self.container(Metadata=lib.children(rk)))
+                page, extra = paged(lib.children(rk))
+                return j(self.container(Metadata=page, **extra))
+            if sub == "extras":
+                page, extra = paged(lib.extras(rk))
+                return j(self.container(Metadata=page, **extra))
+            if sub == "similar":
+                page, extra = paged(lib.similar(rk))
+                return j(self.container(Metadata=page, **extra))
             if sub == "allLeaves":
                 return j(self.container(Metadata=lib.leaves(rk)))
             if sub == "subtitles":
                 return self.subtitle_search(lib, rk, method, q, j)
             if sub == "related":
                 it = lib.items.get(rk)
-                pool = [x for x in lib.items.values() if it and x["type"] == it["type"] and x is not it]
+                pool = lib.similar(rk)
                 hubs = [{"title": "related", "type": it["type"] if it else "movie",
                          "hubIdentifier": "related", "size": min(8, len(pool)), "Metadata": pool[:8]}]
                 # A member movie also gets one `collection.related.{section}.{n}` hub per
@@ -1914,7 +1986,8 @@ class MockPms:
             return j(self.container(Metadata=page, **extra), 200 if coll else 404)
         if segs[:2] == ["library", "people"] and len(segs) == 4 and segs[3] == "media":
             pid = int(segs[2]) if segs[2].isdigit() else -1
-            return j(self.container(Metadata=lib.person_media(pid)))
+            page, extra = paged(lib.person_media(pid))
+            return j(self.container(Metadata=page, **extra))
         if catalog and segs[:2] == ["hubs", "demo"] and len(segs) == 3:
             hub = next((hub for hub in lib.catalog["hubs"] if hub.get("hubIdentifier") == segs[2] and "recent" in hub), None)
             if hub:
@@ -1942,7 +2015,9 @@ class MockPms:
                                  "more": False, "Metadata": rows})
             for h in hubs:
                 h["size"] = len(h["Metadata"])
-            return j(self.container(Hub=hubs))
+            # A window on `/hubs` pages the hub list itself, one hub per row.
+            page, extra = paged(hubs)
+            return j(self.container(Hub=page, **extra))
         if len(segs) == 4 and segs[:3] == ["hubs", "mock", "shelf"] and self.home_hubs:
             page, extra = paged(lib.recent("movie", 1000))
             return j(self.container(Metadata=page, **extra))
@@ -1951,6 +2026,9 @@ class MockPms:
             return j(self.container(Hub=[{"title": "Continue Watching", "type": "mixed",
                                           "hubIdentifier": "home.continue", "key": "/hubs/continueWatching",
                                           "size": len(rows), "Metadata": rows}]))
+        if p == "/hubs/continueWatching/items":
+            page, extra = paged(lib.continue_watching())
+            return j(self.container(Metadata=page, **extra))
         if p == "/hubs/continueWatching":
             rows = lib.continue_watching()[:int(q.get("count", 12))]
             return j(self.container(Hub=[{"title": "home.continue", "type": "mixed",
@@ -1977,12 +2055,20 @@ class MockPms:
                 # #412: pad the section's shelves up to exactly `--section-hubs` hubs.
                 hubs = hubs[:self.section_hubs]
                 hubs += self.section_pad_hubs(key, kind, self.section_hubs - len(hubs))
-            return j(self.container(Hub=hubs))
+            # As on `/hubs`: a window pages the section's shelves, not the rows inside them.
+            page, extra = paged(hubs)
+            return j(self.container(Hub=page, **extra))
         if len(segs) == 6 and segs[:3] == ["hubs", "mock", "section"] and segs[4] == "shelf" \
                 and self.section_hubs:
             kind = {"1": "movie", "2": "show"}.get(segs[3], "movie")
             page, extra = paged(lib.recent(kind, 1000))
             return j(self.container(Metadata=page, **extra))
+        if p == "/library/search":
+            lim = q.get("limit", "")
+            kinds = q.get("searchTypes", "").split(",")
+            page, extra = paged(lib.search_results(q.get("query", ""), kinds,
+                                                   int(lim) if lim.isdigit() else None))
+            return j(self.container(SearchResult=page, **extra))
         if p == "/hubs/search":
             lim = q.get("limit", "")
             return j(self.container(Hub=lib.search(q.get("query", ""), int(lim) if lim.isdigit() else 3,
