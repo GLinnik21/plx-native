@@ -50,6 +50,7 @@ pub mod hubs;
 pub mod metadata;
 pub mod person;
 pub mod collection;
+pub mod page_cache;
 pub mod search;
 pub mod subsearch;
 pub mod tape;
