@@ -1254,15 +1254,18 @@ fn fetch_source(c: &plx_plex::plex::Client, sid: ServerId) -> Option<SourceBuild
     // important shelf to a transient error would be worse than briefly showing the previous one.
     let cw = c.continue_watching(HUB_FETCH_COUNT)?;
     let mut build = project(&mc, &cw, sid);
-    if !build.cw.is_empty() && !build.lane.done {
-        // The first window is the merge of the servers' previews, which is the deck's order only if
-        // no server holds a newer card past its preview: one more page per server makes it so. A
-        // failed read leaves the preview, and the lane reads on when the user asks.
-        build.lane.rows = build.cw.clone();
-        let _ = deck::read_ahead(sid, &mut build.lane, MAX_SHELF_ITEMS, &[],
-            |start, size| c.continue_watching_page(start as i64, size as i64));
-    }
+    with_lookahead(&mut build, sid, |start, size| c.continue_watching_page(start as i64, size as i64));
     Some(build)
+}
+
+/// The first window is the merge of the servers' previews, which is the deck's order only if no
+/// server holds a newer card past its preview: one more page per server makes it so. A failed read
+/// leaves the preview, and the lane reads on when the user asks.
+fn with_lookahead(build: &mut SourceBuild, sid: ServerId,
+    list: impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>) {
+    if build.cw.is_empty() || build.lane.done { return; }
+    build.lane.rows = build.cw.clone();
+    let _ = deck::read_ahead(sid, &mut build.lane, MAX_SHELF_ITEMS, &[], list);
 }
 
 /// Project one source's `/hubs` + `/hubs/continueWatching` responses into its [`SourceBuild`].
@@ -3103,3 +3106,7 @@ impl plx_base::tile::Tile for PmsMovie {
 #[cfg(test)]
 #[path = "pms_hub_row_paging_tests.rs"]
 mod hub_row_paging_tests;
+
+#[cfg(test)]
+#[path = "pms_deck_tests.rs"]
+mod deck_tests;
