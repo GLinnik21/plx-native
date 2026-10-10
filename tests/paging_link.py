@@ -106,7 +106,7 @@ SURFACES = {
     "library-section-hub-row": {
         "what": "Library > Movies > a pageable section shelf (a Shelf; the hub's own key serves the listing)",
         "mock": {"movies": 300, "section_hubs": 3}, "triggers": {"plxnative-library": "0"},
-        "pick": lambda f: f["route"] == "library" and f.get("region") == "shelf" and f.get("row") == "1",
+        "pick": lambda f: f["route"] == "library" and f.get("region") == "shelf" and f.get("row") == "2",
         "seat": "down", "key": "right", "back": "left", "stride": 1, "window_max": 24,
         "pages": r"^/hubs/mock/section/1/shelf/",
         "order": lambda lib, pms: _recent(lib),
@@ -408,13 +408,12 @@ def run_surface(name, profile_name, args):
         time.sleep(3)
 
         def focus_now():
-            """Index in `order` of the focused item, if the walked list holds the focus."""
+            """Index in `order` of the focused item (the newest focus line that names one of the
+            walked list's items: a frame that drew no card names only the page's own key)."""
+            index = {rk: i for i, rk in enumerate(order)}
             hit = sim.latest(lambda t, line: line.startswith("focus ") and (lambda f: f is not None
-                             and spec["pick"](f) and item_of(f) is not None)(parse_focus(line)))
-            if hit is None:
-                return None
-            rk = item_of(parse_focus(hit[1]))
-            return order.index(rk) if rk in order else None
+                             and spec["pick"](f) and item_of(f) in index)(parse_focus(line)))
+            return None if hit is None else index[item_of(parse_focus(hit[1]))]
 
         # Seat: press `seat` until the walked list holds the focus; the list is known only once
         # the app has asked for it (the grid's order comes from the listing query it sent).
