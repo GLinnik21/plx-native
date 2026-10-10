@@ -17,6 +17,7 @@ fn marking_an_item_watched_flips_every_row_that_names_it_and_retires_its_resume_
         cw: vec![CwItem {
             last_viewed_at: 9,
             m: started(0, "7"),
+            position: 0,
         }],
         shelves: vec![shelf(
             0,
@@ -76,10 +77,12 @@ fn a_deck_removal_leaves_the_deck_only_and_keeps_the_resume_point() {
             CwItem {
                 last_viewed_at: 9,
                 m: started(0, "7"),
+                position: 0,
             },
             CwItem {
                 last_viewed_at: 8,
                 m: started(0, "8"),
+                position: 0,
             },
         ],
         shelves: vec![Shelf { positions: Vec::new(),
@@ -122,10 +125,12 @@ fn a_removed_deck_card_leaves_the_shelves_behind_it_correctly_addressed() {
             CwItem {
                 last_viewed_at: 9,
                 m: started(0, "7"),
+                position: 0,
             },
             CwItem {
                 last_viewed_at: 8,
                 m: started(0, "8"),
+                position: 0,
             },
         ],
         shelves: vec![shelf(

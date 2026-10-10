@@ -162,6 +162,7 @@ pub(super) fn built(slot: u16, cw: &[(i64, &str)], shelves: Vec<Shelf>) -> Sourc
             .map(|&(t, r)| CwItem {
                 last_viewed_at: t,
                 m: row(slot, r),
+                position: 0,
             })
             .collect(),
         shelves,

@@ -23,7 +23,7 @@
 //! sibling modules. `ci/allow/mutators.txt`'s `# count: 0` already proves no PRODUCTION line
 //! outside `pms`/`stores::hubs` spells the old direct-call form; this is the part that
 //! keyword-level `pub(super)` genuinely cannot add on top of that count.
-use crate::stores::paging;
+use crate::stores::{deck, paging};
 use plx_plex::plex::ServerId;
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
@@ -770,10 +770,16 @@ type HubBuild = (Vec<Arc<PmsMovie>>, Vec<HubRow>, Vec<HeroSlot>);
 /// survive the projection.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct CwItem {
-    last_viewed_at: i64,
-    m: Arc<PmsMovie>,
+pub(crate) struct CwItem {
+    pub(crate) last_viewed_at: i64,
+    pub(crate) m: Arc<PmsMovie>,
+    /// Where the listing behind `/hubs/continueWatching/items` holds this card; 0 until the deck
+    /// is placed, when a preview card takes its place in the preview.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(crate) position: usize,
 }
+
+fn is_zero(n: &usize) -> bool { *n == 0 }
 
 /// One shelf as a source projected it: rows already parsed, filtered and stamped with the server
 /// they came from, so the merge is pure arithmetic over owned data and never touches a wire DTO.
@@ -815,6 +821,10 @@ impl Shelf {
 struct SourceBuild {
     cw: Vec<CwItem>,
     shelves: Vec<Shelf>,
+    /// This server's part of the Continue Watching deck beyond its preview (`stores::deck`). Absent
+    /// until the row has a listing to read, so an older recording decodes unchanged.
+    #[serde(default, skip_serializing_if = "deck::Lane::is_default")]
+    lane: deck::Lane,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -1020,7 +1030,7 @@ fn fetch_row(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_e
     }
     let (rows, info) = result?;
     let (positions, items) = rows.into_iter().unzip();
-    Some(SourceBuild { cw: Vec::new(), shelves: vec![Shelf {
+    Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf {
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
         total: info.total, offset: info.offset, end: info.end, more: info.more, row: state,
     }] })
@@ -1076,7 +1086,7 @@ fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimu
     let (rows, info) = paging::fetch_window(sid, &ask, current.as_ref().map(|(rows, info)| (rows.as_slice(), *info)),
         minimum_end, fetch)?;
     let (positions, items) = rows.into_iter().unzip();
-    Some(SourceBuild { cw: Vec::new(), shelves: vec![Shelf {
+    Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf {
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
         total: info.total, offset: info.offset, end: info.end, more: info.more, row: Default::default(),
     }] })
@@ -1162,14 +1172,22 @@ fn project(
         out.cw = hub
             .metadata
             .iter()
-            .filter_map(|it| {
+            .enumerate()
+            .filter_map(|(position, it)| {
                 keep(it).map(|m| CwItem {
                     last_viewed_at: it.last_viewed_at,
                     m: Arc::new(m),
+                    position,
                 })
             })
             .collect();
         if !out.cw.is_empty() {
+            // The preview is the head of the listing behind `/hubs/continueWatching/items`; the
+            // lane remembers where it ends so the deck can read on from there.
+            let key = |it: Option<&plx_plex::plex::Metadata>| it.map_or_else(String::new, |it| clean(&it.rating_key));
+            let more = hub.more || hub.total() > hub.metadata.len() || hub.metadata.len() >= HUB_FETCH_COUNT as usize;
+            out.lane = deck::Lane::preview(&key(hub.metadata.first()), &key(hub.metadata.last()),
+                hub.metadata.len(), hub.total(), !more);
             break; // the first hub that has anything in it IS the deck
         }
     }

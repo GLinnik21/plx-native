@@ -165,9 +165,9 @@ impl Initial {
 }
 
 fn source_build(b: &SourceBuild, w: &mut impl Sink) {
-    let SourceBuild { cw, shelves } = b;
+    let SourceBuild { cw, shelves, .. } = b;
     w.u64(cw.len() as u64);
-    for item in cw { let CwItem { last_viewed_at, m } = item; w.u64(*last_viewed_at as u64); movie(m, w); }
+    for item in cw { let CwItem { last_viewed_at, m, .. } = item; w.u64(*last_viewed_at as u64); movie(m, w); }
     w.u64(shelves.len() as u64);
     for shelf in shelves {
         // `row` is paging state a row only has after a user asked for more; a boot capture has none,
