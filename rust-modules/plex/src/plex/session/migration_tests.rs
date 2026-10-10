@@ -866,6 +866,49 @@ fn helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_
     assert!(opened.server_key_pins.is_empty(), "no key carried over from the previous account");
 }
 
+/// **Issue #385: an answer to "Connect without encryption?" belongs to the account that gave it.**
+/// Same shape as the learned-key test above, same reason: the answer rides in the PUBLIC
+/// preferences, which ClearTenure retains whole, so sign-out has to drop it by name. Through the
+/// real helper backend: an answer is stored, sign-out and "Delete all local data" leave the record
+/// naming no server and no account fingerprint, and the same account signing back in is asked
+/// again rather than handed its earlier answer.
+#[test]
+fn helper_signout_forgets_the_plaintext_answers_and_signing_back_in_asks_again() {
+    let mut backend = plx_platform::storage::backend::Backend::new(
+        Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
+    let mut transport = |request: Request| Ok(backend.dispatch(request));
+    let session = Session { language: plx_platform::i18n::Preference::Be, ..fixture() };
+    commit_fresh(&session, &mut transport);
+
+    // An answer write: public-only, the auth half untouched.
+    let answered = session.with_plaintext_choice("account-fingerprint", "machine", PlaintextChoice::Allowed);
+    let client::Load::Present(before) = client::load_with(&mut transport).unwrap() else { panic!("helper snapshot") };
+    assert!(matches!(
+        persistence::commit_session_with(&answered, false, SaveAuthority::PublicOnly, 4, &mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    let client::Load::Present(after) = client::load_with(&mut transport).unwrap() else { panic!("helper snapshot") };
+    assert_eq!(before.state.auth_envelope, after.state.auth_envelope, "an answer write reseals nothing");
+    assert!(stored_preferences(&mut transport).get("plaintext_consent").is_some(), "the answer is stored");
+
+    // Sign-out.
+    assert!(matches!(persistence::commit_clear_with(&mut transport), persistence::CanonicalCommit::Durable { .. }));
+    let kept = stored_preferences(&mut transport);
+    assert!(kept.get("plaintext_consent").is_none(), "sign-out must forget every plaintext answer: {kept}");
+    assert_eq!(kept["language"], "be", "the install-wide language is still retained");
+
+    // "Delete all local data" follows sign-out and must leave the record just as clean.
+    assert!(matches!(persistence::reset_cleared_language_with(&mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    assert!(stored_preferences(&mut transport).get("plaintext_consent").is_none());
+
+    // The same account signs back in: it is asked again.
+    commit_fresh(&session, &mut transport);
+    let persistence::CanonicalRead::Opened { session: opened, .. } = persistence::load_helper_with(&mut transport) else {
+        panic!("the returning account's session opens")
+    };
+    assert_eq!(opened.plaintext_choice("account-fingerprint", "machine"), PlaintextChoice::Undecided);
+}
+
 #[test]
 fn canonical_pending_secure_import_is_not_missing_or_permission_to_import_another_file() {
     let mut pending = state::CanonicalState::new(state::Flavor::Stable, state::Generation([1; 16]));
