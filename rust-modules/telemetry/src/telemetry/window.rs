@@ -103,7 +103,59 @@ impl Observation {
     }
 }
 
+/// **Whether a background or foreground cycle is open.** The 16-slot ring is shared by every
+/// breadcrumb, and the teardown and exported-window steps (`native_unload` ... `exported_window_*`)
+/// are run by every engine that comes and goes: a trailer's start and stop, a seek or quality
+/// reload, an abandoned Load's release. On webOS 5 a trailer alone is four steps, so browsing a
+/// few would push a later cycle's `will_foreground`, `wm_*` and `first_frame` out. Those steps are
+/// therefore crumbs of a CYCLE only ([`record_in_cycle`]): it opens at any of the four lifecycle
+/// edges ([`lifecycle`]) and closes at `background_done`, `foreground_done` or the first resumed
+/// frame; [`CycleScope`] holds it open for work the foreground machine runs after its arm.
+static CYCLE_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static CYCLE_SCOPES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn in_cycle() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    CYCLE_OPEN.load(Relaxed) || CYCLE_SCOPES.load(Relaxed) != 0
+}
+
+/// Keeps the cycle open while alive. The foreground machine's later steps (a restore whose Load
+/// waits for a PMS flight to land) run on frames after `foreground_done`, and their window create
+/// is still the cycle's.
+pub struct CycleScope(());
+
+impl CycleScope {
+    pub fn enter() -> Self {
+        CYCLE_SCOPES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(())
+    }
+}
+
+impl Drop for CycleScope {
+    fn drop(&mut self) {
+        CYCLE_SCOPES.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Close any open cycle, for a test that opened one without finishing it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn close_cycle_for_test() {
+    CYCLE_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// [`record`] a step the engine's generic teardown and create paths run, but only inside a
+/// lifecycle cycle (see [`CYCLE_OPEN`]); outside one it is not a crumb at all.
+pub fn record_in_cycle(observation: Observation) {
+    if in_cycle() {
+        record(observation);
+    }
+}
+
 pub fn record(observation: Observation) {
+    // The cycle's end is tracked whether or not the owner consented: it is control flow, not data.
+    if matches!(observation.stage, Stage::BackgroundDone | Stage::ForegroundDone | Stage::FirstFrame) {
+        CYCLE_OPEN.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
     record_if_allowed(observation, |observation| {
         #[cfg(any(test, feature = "test-support"))]
         RECORDED.with(|r| r.borrow_mut().push(observation.stage.code()));
@@ -139,6 +191,7 @@ pub fn lifecycle(event: u32, playing: bool) {
         0x106 => Stage::DidForeground,
         _ => return,
     };
+    CYCLE_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
     record(Observation::step(stage, Some(playing)));
 }
 
@@ -340,21 +393,132 @@ mod tests {
         }
     }
 
-    /// The longest background + foreground cycle with playback must fit the 16-slot ring whole
-    /// (PRIVACY.md says "last 16"), so its first step is still there when the cycle's last crashes.
-    /// The webOS 5 exported-window path is the longer one (the ACB path swaps the two window steps
-    /// for `acb_plane_unload`): 8 pre-existing steps plus 7 new ones.
+    /// The labels one simulated session leaves in the 16-slot ring: every step goes through the
+    /// real recording path (`lifecycle`, `record`, and `record_in_cycle` for the engine's generic
+    /// steps), and the ring is the capture's last `LIMIT` entries, as `sanitise` bounds it.
+    fn ring_of(session: impl FnOnce()) -> Vec<&'static str> {
+        use crate::telemetry::consent::{self, Consent};
+        let _guard = plx_base::testlock::serial();
+        let previous = consent::current();
+        let mut enabled = Consent::default();
+        enabled.errors = true;
+        enabled.asked_version = consent::POLICY_VERSION;
+        consent::install(enabled);
+        close_cycle_for_test();
+        take_recorded_for_test();
+        session();
+        close_cycle_for_test();
+        consent::install(previous.unwrap_or_default());
+        let all = take_recorded_for_test();
+        all[all.len().saturating_sub(LIMIT)..].to_vec()
+    }
+
+    fn step(stage: Stage) {
+        record(Observation::step(stage, Some(true)));
+    }
+
+    fn engine_step(stage: Stage) {
+        record_in_cycle(Observation::step(stage, None));
+    }
+
+    /// One trailer's start and stop, or a reload's teardown, as the engine's generic paths record
+    /// them on webOS 5: the longest an engine's steps get.
+    fn engine_comes_and_goes() {
+        for stage in [
+            Stage::ExportedWindowCreate, Stage::NativeUnload, Stage::NativeDestroyed,
+            Stage::ExportedWindowDestroy,
+        ] {
+            engine_step(stage);
+        }
+    }
+
+    /// The run.rs background arm: both edges, the surface release, the teardown of a playing
+    /// engine, then the DID edge's `background_done`.
+    fn background(playing: bool) {
+        lifecycle(0x103, playing);
+        step(Stage::WaylandReleased);
+        lifecycle(0x104, playing);
+        if playing {
+            for stage in [Stage::NativeUnload, Stage::NativeDestroyed, Stage::ExportedWindowDestroy] {
+                engine_step(stage);
+            }
+        }
+        step(Stage::BackgroundDone);
+    }
+
+    /// The run.rs foreground arm: both edges, the window grab, the restoring Load's window create,
+    /// then the DID edge's `foreground_done`. `first_frame` comes later, from the first present.
+    fn foreground(playing: bool) {
+        lifecycle(0x105, playing);
+        lifecycle(0x106, playing);
+        step(Stage::WmQuery);
+        step(Stage::WmReady);
+        if playing {
+            engine_step(Stage::ExportedWindowCreate);
+        }
+        step(Stage::ForegroundDone);
+    }
+
+    /// S12a: the longest cycle (webOS 5 exported window, playing at the background, reloaded at the
+    /// foreground) leaves its whole sequence in the ring even with trailer starts and reloads
+    /// before, between and after, because those add no crumbs outside a cycle.
     #[test]
-    fn the_longest_background_cycle_fits_the_ring() {
-        let cycle = [
-            Stage::WillBackground, Stage::WaylandReleased, Stage::DidBackground,
-            Stage::NativeUnload, Stage::NativeDestroyed, Stage::ExportedWindowDestroy,
-            Stage::BackgroundDone, Stage::WillForeground, Stage::DidForeground, Stage::WmQuery,
-            Stage::WmReady, Stage::ExportedWindowCreate, Stage::FirstFrame,
-            Stage::FirstSwapComplete, Stage::ForegroundDone,
-        ];
-        assert!(cycle.len() <= LIMIT, "{} steps would evict the start of the cycle", cycle.len());
-        assert!(cycle.iter().all(|s| Stage::ALL.iter().any(|a| a.code() == s.code())));
+    fn a_whole_cycle_survives_in_the_ring_through_trailer_churn() {
+        let ring = ring_of(|| {
+            for _ in 0..6 {
+                engine_comes_and_goes();
+            }
+            background(true);
+            engine_comes_and_goes();
+            foreground(true);
+            engine_comes_and_goes();
+            step(Stage::FirstFrame);
+            step(Stage::FirstSwapComplete);
+            engine_comes_and_goes();
+        });
+        assert_eq!(
+            ring,
+            [
+                "will_background", "wayland_released", "did_background", "native_unload",
+                "native_destroyed", "exported_window_destroy", "background_done",
+                "will_foreground", "did_foreground", "wm_query", "wm_ready",
+                "exported_window_create", "foreground_done", "first_frame", "first_swap_complete",
+            ],
+        );
+        assert!(ring.len() <= LIMIT);
+    }
+
+    /// The same cycle without playback has no engine steps, and the key crumbs are the same.
+    #[test]
+    fn a_cycle_without_playback_records_only_its_lifecycle_steps() {
+        let ring = ring_of(|| {
+            engine_comes_and_goes();
+            background(false);
+            foreground(false);
+            step(Stage::FirstFrame);
+        });
+        assert_eq!(
+            ring,
+            [
+                "will_background", "wayland_released", "did_background", "background_done",
+                "will_foreground", "did_foreground", "wm_query", "wm_ready", "foreground_done",
+                "first_frame",
+            ],
+        );
+    }
+
+    /// A scope keeps the cycle open past `foreground_done`: a restore whose Load waits for a flight
+    /// to land creates its window on a later frame, and that create is still the cycle's.
+    #[test]
+    fn a_cycle_scope_holds_a_late_restore_inside_the_cycle() {
+        let ring = ring_of(|| {
+            foreground(false);
+            engine_comes_and_goes(); // a trailer between frames: not the cycle's
+            let _late = CycleScope::enter();
+            engine_step(Stage::ExportedWindowCreate);
+        });
+        assert_eq!(ring.last(), Some(&"exported_window_create"));
+        assert_eq!(ring.iter().filter(|l| **l == "exported_window_create").count(), 1);
     }
 
     /// The test-support capture sits AFTER the consent check, so it shows exactly what the native

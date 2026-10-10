@@ -747,6 +747,8 @@ pub fn drive_foreground<A: ForegroundActuator>(
     input: ForegroundInput,
     actuator: &mut A,
 ) -> ForegroundActivation {
+    // The restoring Load's window create is a step of the foreground cycle (`window::CycleScope`).
+    let _cycle = plx_telemetry::telemetry::window::CycleScope::enter();
     let effect = match lifecycle.claim(input) {
         ForegroundClaimResult::Ordinary => return ForegroundActivation::Ordinary,
         ForegroundClaimResult::Suppressed => return ForegroundActivation::Handled,
@@ -841,6 +843,9 @@ pub fn poll_foreground_flight<A: ForegroundActuator>(
     ps: &mut crate::route::PlaybackSession,
     actuator: &mut A,
 ) -> ForegroundActivation {
+    // A restore whose Load waited for a flight starts it here, frames after `foreground_done`;
+    // its exported-window create is still the foreground cycle's.
+    let _cycle = plx_telemetry::telemetry::window::CycleScope::enter();
     match lifecycle.state {
         ForegroundState::PreparePending { .. } => match actuator.land_prepare(ps) {
             FlightLanding::Waiting => ForegroundActivation::Handled,
