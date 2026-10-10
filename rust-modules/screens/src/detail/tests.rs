@@ -109,7 +109,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         sid,
         rk: rk.into(),
         keys: vec![], next_elem: FIRST_ITEM_ELEM, key_by_local: Default::default(),
-        local_by_key: Default::default(), gone: Default::default(), return_pending: false,
+        local_by_key: Default::default(), prev_by_key: Default::default(), gone: Default::default(), return_pending: false,
         pending_season: None,
         season_settle: 0.0,
         preview_dwell: 0.0,
@@ -3906,5 +3906,60 @@ fn the_hold_hint_stands_on_a_resting_related_card_once_per_run() {
     assert!(!screen.hold_hint.visible(), "a menu taking focus hides it");
     rest(&mut screen, on(card), 4.0);
     assert!(!screen.hold_hint.visible(), "and not a second time on a Detail page this run");
+    clear();
+}
+
+/// Every season switch lands a different set of episode identities. The key table keeps the
+/// current pass, the previous one, the focus and the remembered keys, and above twice one pass plus
+/// 256 drops the oldest rest, so a hundred switches stay bounded. The focused card's key never
+/// changes, and a season that left and came back inside the bound gets the same keys.
+#[test]
+fn the_key_table_stays_bounded_over_a_hundred_season_switches_and_focus_never_moves() {
+    let sid = ServerId::UNSET;
+    let season_eps = |n: usize| -> Vec<_> {
+        (0..40).map(|i| episode(&format!("s{n}e{i}"), i as i64 + 1)).collect()
+    };
+    let mut d = detail(sid, "show");
+    d.related = vec![Default::default(), Default::default(), Default::default()];
+    d.episodes = season_eps(0).into();
+    let _guard = install(d.clone());
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let focus = screen.engine_key(related::elem(1).unwrap()).unwrap();
+    let ep_key = |screen: &DetailScreen, n: usize| {
+        screen.keys.iter().find(|k| matches!(&k.identity,
+            DetailIdentity::Episode { rk, text: false, .. } if *rk == format!("s{n}e5"))).map(|k| k.elem)
+    };
+    let first = ep_key(&screen, 0).expect("season 0 interned");
+    let mut widest = 0;
+    for n in 1..=100 {
+        d.episodes = season_eps(n).into();
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d.clone()));
+        screen.sync_keys(test_store().view());
+        screen.prune_keys(&[focus]);
+        let pass = screen.local_by_key.len();
+        assert!(screen.keys.len() <= 2 * pass + 256, "switch {n}: {} keys for a pass of {pass}", screen.keys.len());
+        assert_eq!(screen.engine_key(related::elem(1).unwrap()), Some(focus), "switch {n} moved the focused card's key");
+        assert!(screen.keys.iter().any(|k| k.elem == focus), "the focus key is never pruned");
+        widest = widest.max(screen.keys.len());
+    }
+    assert!(widest < 500, "the table grew with the switches: {widest}");
+    // Out past the bound, season 0's keys are gone; coming back mints new ones, never reusing a live one.
+    assert!(ep_key(&screen, 0).is_none());
+    assert_ne!(first, 0);
+
+    // Inside the bound the same season returns to the same key.
+    d.episodes = season_eps(101).into();
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d.clone()));
+    screen.sync_keys(test_store().view());
+    screen.prune_keys(&[focus]);
+    let a = ep_key(&screen, 101).unwrap();
+    for n in [102, 101] {
+        d.episodes = season_eps(n).into();
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d.clone()));
+        screen.sync_keys(test_store().view());
+        screen.prune_keys(&[focus]);
+    }
+    assert_eq!(ep_key(&screen, 101), Some(a), "a season that left and returned within the bound keeps its key");
     clear();
 }

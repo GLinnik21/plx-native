@@ -120,6 +120,9 @@ pub struct DetailScreen {
     // Published identity projections, rebuilt only at mount/landings, never while drawing.
     key_by_local: std::collections::HashMap<u32, u32>,
     local_by_key: std::collections::HashMap<u32, u32>,
+    /// `local_by_key` as the pass before the current one saw it: those keys are kept by
+    /// [`Self::prune_keys`] so a season switch and straight back keeps every identity's key.
+    prev_by_key: std::collections::HashMap<u32, u32>,
     /// Where each card-shelf card that left the page last stood (engine key to local key), kept so
     /// `reconcile` can put focus on the same position in that shelf; dropped if the card returns.
     /// Not logical state: it is a projection of past publications, like the two maps above.
@@ -416,6 +419,7 @@ impl DetailScreen {
             next_elem: FIRST_ITEM_ELEM,
             key_by_local: Default::default(),
             local_by_key: Default::default(),
+            prev_by_key: Default::default(),
             gone: Default::default(),
             return_pending: false,
             pending_season: None,
@@ -574,7 +578,7 @@ impl DetailScreen {
             self.key_by_local.insert(local, elem);
             self.local_by_key.insert(elem, local);
         }
-        for (elem, local) in before {
+        for (&elem, &local) in &before {
             if !self.local_by_key.contains_key(&elem) && Self::card_shelf_of(local) {
                 self.gone.insert(elem, local);
             }
@@ -584,7 +588,37 @@ impl DetailScreen {
         if let Some(key) = pending_key {
             self.pending_season = self.local_by_key.get(&key).and_then(|local| season::locate(*local));
         }
+        self.prev_by_key = before;
         self.spot_facts = SpotFacts::of(self, meta);
+    }
+
+    /// Bound the key table, modelled on Home's `prune_keys`. A key is needed while its card is on
+    /// the page, was on it one pass ago (a season switched away and straight back keeps its keys),
+    /// or is one the input engine holds: the focus, the pending season, a group's remembered
+    /// cursor. Above twice one pass plus 256 the oldest of the rest go (elems are minted in
+    /// order). `held` is the engine's keys; the focus is never pruned and never moves.
+    fn prune_keys(&mut self, held: &[u32]) {
+        let live = |elem: u32| self.local_by_key.contains_key(&elem) || self.prev_by_key.contains_key(&elem) || held.contains(&elem);
+        let pending = self.pending_season.and_then(season::elem).and_then(|local| self.engine_key(local));
+        let cap = 2 * self.local_by_key.len() + 256;
+        if self.keys.len() <= cap {
+            return;
+        }
+        let mut oldest: Vec<u32> = self.keys.iter().map(|key| key.elem)
+            .filter(|&elem| !live(elem) && Some(elem) != pending)
+            .collect();
+        oldest.sort_unstable();
+        let drop: std::collections::HashSet<u32> = oldest.into_iter().take(self.keys.len() - cap).collect();
+        if drop.is_empty() {
+            return;
+        }
+        self.keys.retain(|key| !drop.contains(&key.elem));
+        self.gone.retain(|elem, _| !drop.contains(elem));
+    }
+
+    /// The keys the input engine holds for this entry: its focus and every group's remembered one.
+    fn held_keys<H: plx_machine::machine::Host<Elem = u32>>(cx: &Cx<'_, H>) -> Vec<u32> {
+        cx.focus.current.iter().map(|key| key.elem).chain(cx.focus.remembered.iter().map(|(_, elem)| *elem)).collect()
     }
 
     /// Whether `local` is a card on one of the four card shelves (Related, Collection, Extras, Cast).
@@ -1729,6 +1763,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
         match ev {
             ScreenEvent::Mount => {
                 self.sync_keys(meta);
+                self.prune_keys(&Self::held_keys(cx));
                 Handled::Yes
             }
             ScreenEvent::RestoreMemory(PageMemory::Detail(memory)) => {
@@ -1780,6 +1815,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 self.layout.set(None);
                 if *ord == StoreId::Metadata.ord() {
                     self.sync_keys(meta);
+                    self.prune_keys(&Self::held_keys(cx));
                     self.season_metrics.invalidate();
                     self.about_rows.invalidate();
                     if let Some(detail) = self.detail(meta) {
