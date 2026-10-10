@@ -81,13 +81,21 @@ available, and SDL's version numbers. They contain no window addresses or viewin
 They are collected only while crash reporting is enabled and accompany a crash rather than being
 sent as usage events. Disabling crash reports removes the local trace.
 
-When the television's own crash reporter leaves nothing for a crash, PlxNative sends a simpler
-report built from its own crash log instead. It carries the same kernel name and release, webOS
-and hardware compatibility details as a native report, and the file name (never the folder) and
-build identifier of each system library the faulting address and the return address were in, with
-the library's load address and size. It also says in one fixed word why the primary report is
-missing: `no_envelope` (the crash reporter left no report at all) or `envelope_unmatched` (it
-left reports, none of them this crash). No path, library folder or other file content is sent.
+When the television's own crash reporter leaves nothing for a crash that was a native fault (a
+signal such as a segmentation fault), PlxNative sends a simpler report built from its own crash
+log instead. It carries the same kernel name and release, webOS and hardware compatibility
+details as a native report, and the file name (never the folder) and build identifier of each
+library (a library of the television's firmware or one bundled with PlxNative) the faulting
+address and the return address were in, with the library's load address and size. It also says in
+one fixed word why the primary report is missing: `no_envelope` (no usable report was left:
+the crash reporter left none, or left one that was malformed and was deleted before the comparison,
+which looks the same) or `envelope_unmatched` (it left reports, none of them this crash). No path, library
+folder or other file content is sent.
+
+When the crash was a Rust panic rather than a fault, the fallback report is smaller still: the
+source file and line of the panic, a hash of the panic message (the message itself is never sent),
+the app version and build identifier of PlxNative and the Crash report ID below. It carries none of the library
+details above.
 
 Every crash and error report carries a **Crash report ID**: a random identifier created on this
 television when you turn crash reports on, sent as the report's `user.id`. It exists so that

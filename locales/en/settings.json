@@ -1131,8 +1131,8 @@
     "value": "internal thread label",
     "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
   },
-  "settings.consent.placeholder.system_library": {
-    "value": "system library file name",
+  "settings.consent.placeholder.library": {
+    "value": "library file name",
     "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
   },
   "settings.consent.placeholder.webos_release": {

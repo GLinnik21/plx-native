@@ -1,6 +1,8 @@
 //! **The closed vocabulary of a handled playback-error report.**
 //!
-//! Every value [`super::playback`] serialises is a member of one of these enums, and every
+//! Every value [`super::playback`] serialises is a member of one of these enums, a bool
+//! (`attempt_started`), or one of two bounded integers (`http_status`, 100-599 else 0, and
+//! `pipeline_error`, the firmware's `i32` error number); there is no free-text slot. Every
 //! enum's `code` is the wire string, written out and never derived from a variant name, because a
 //! rename is a refactor and must not silently re-partition a year of dashboards. The telemetry
 //! layer owns the schema; `player::report` is the producer that classifies a live playback into

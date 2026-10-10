@@ -61,9 +61,11 @@ pub fn signal_name(sig: u32) -> &'static str {
     }
 }
 
-/// One fault as numeric machine state plus a strictly validated ELF identity. The one `String` is
-/// exactly 40 lowercase hex digits parsed from our own startup marker; no path or signal text can
-/// inhabit this type.
+/// One fault as numeric machine state plus a strictly validated ELF identity. The build id
+/// `String` is exactly 40 lowercase hex digits parsed from our own startup marker. The only other
+/// text is each [`ModuleMapping`]'s path, which passed [`parse_module`]'s allowlist and is kept
+/// solely to open the file for its build id; of it only the basename is ever sent
+/// ([`ModuleMapping::file_name`]). No signal text and no other part of a path is retained.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Fault {
     pub signal: u32,
@@ -126,11 +128,13 @@ pub struct ModuleImage {
 /// **Only what [`reconcile`] can tell apart is here.** It sees the pending envelopes and the log's
 /// reports, nothing else, so it can say "the daemon left nothing" versus "it left something that
 /// is not this crash" and cannot say whether the daemon was absent, timed out, or was refused by
-/// consent: none of those leaves a record the importer reads. A rejected envelope is deleted by
-/// `native::read_pending` before reconcile runs, so it is not distinguishable here either.
+/// consent: none of those leaves a record the importer reads. A rejected (malformed or oversized)
+/// envelope is deleted by `native::read_pending` before reconcile runs, so it is not
+/// distinguishable here either: it is reported as [`NativePath::NoEnvelope`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativePath {
-    /// No native envelope was pending at all.
+    /// No usable native envelope was pending: the daemon left none, or the one it left was
+    /// rejected and deleted before the comparison.
     NoEnvelope,
     /// Envelopes were pending, none of them this crash's build and signal.
     EnvelopeUnmatched,
@@ -778,7 +782,7 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
         &FaultExtra {
             native_path: NativePath::NoEnvelope,
             modules: vec![ModuleImage {
-                file: "<system library file name>".to_string(),
+                file: "<library file name>".to_string(),
                 image_addr: 0x20000,
                 image_size: 0x1000,
                 code_id: "0".repeat(40),
@@ -822,7 +826,7 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
             });
         }
     }
-    // Entry 0 is the app's own image, entry 1 a system library holding pc or lr.
+    // Entry 0 is the app's own image, entry 1 a library holding pc or lr.
     for i in 0..2 {
         if let Some(image) = fault_json.pointer_mut(&format!("/debug_meta/images/{i}")) {
             image["image_addr"] = serde_json::json!("<load address>");
@@ -1437,7 +1441,9 @@ mod tests {
         assert!(parse("nothing to see").is_empty());
     }
 
-    /// **THE GUARANTEE.** No text from the log reaches the event body.
+    /// **THE GUARANTEE.** No text from the log reaches the event body, apart from the basename of
+    /// a library whose mapping passed the path allowlist (see [`ModuleMapping`]: the rest of that
+    /// path is kept only to open the file and is never sent).
     ///
     /// The record fixture deliberately contains a library path, an install path and a signal name;
     /// none of them may appear in what is sent. The name that IS sent comes from `signal_name`, a
@@ -1516,7 +1522,7 @@ mod tests {
 
     // ---- fallback events say which modules faulted and why the daemon's report is absent ----
 
-    /// A fault whose `pc` is inside a system library and whose `lr` is inside the app's own image.
+    /// A fault whose `pc` is inside a library and whose `lr` is inside the app's own image.
     const WAYLAND_REC: &str = "\nimg: build_id=11223344556677889900aabbccddeeff00112233 image_addr=0x10000 image_size=0x5f0000\n\
         *** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0xb6f10123 lr=0x4bccd0\n\
         reg: sp=0xbe8f1a90 fp=0x0 ip=0x1 cpsr=0x60000010 r0=0x0 r1=0x2a\n\
@@ -1766,7 +1772,7 @@ mod tests {
         assert_eq!(fault["contexts"]["crash"]["native_path"], "no_envelope");
         let images = fault["debug_meta"]["images"].as_array().unwrap();
         assert_eq!(images.len(), 2, "the app's image and a library");
-        assert_eq!(images[1]["code_file"], "<system library file name>");
+        assert_eq!(images[1]["code_file"], "<library file name>");
         let mut all = Vec::new();
         strings(&fault, &mut all);
         assert!(all.iter().all(|s| !s.starts_with('/')));

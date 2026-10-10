@@ -283,7 +283,7 @@
   "settings.consent.placeholder.thread_address": "адрас інструкцыі патоку",
   "settings.consent.placeholder.thread_id": "id патоку",
   "settings.consent.placeholder.thread_label": "унутраная назва патоку",
-  "settings.consent.placeholder.system_library": "імя файла сістэмнай бібліятэкі",
+  "settings.consent.placeholder.library": "імя файла бібліятэкі",
   "settings.consent.placeholder.webos_release": "версія webOS",
   "settings.consent.placeholder.webos_codename": "кодавая назва версіі webOS",
   "settings.consent.placeholder.webos_api": "версія API webOS",

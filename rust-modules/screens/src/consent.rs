@@ -1357,7 +1357,7 @@ fn placeholder(token: &str) -> Option<&'static str> {
         "thread instruction address" => msg::settings_consent_placeholder_thread_address(),
         "thread id" => msg::settings_consent_placeholder_thread_id(),
         "internal thread label" => msg::settings_consent_placeholder_thread_label(),
-        "system library file name" => msg::settings_consent_placeholder_system_library(),
+        "library file name" => msg::settings_consent_placeholder_library(),
         "webOS release" => msg::settings_consent_placeholder_webos_release(),
         "webOS release codename" => msg::settings_consent_placeholder_webos_codename(),
         "webOS API version" => msg::settings_consent_placeholder_webos_api(),

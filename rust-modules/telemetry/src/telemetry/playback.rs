@@ -1,8 +1,9 @@
 //! Handled playback errors for Sentry: one terminal event, preceded by a bounded typed trace.
 //!
 //! This is deliberately not a log uploader. Every value accepted here is a closed enum from
-//! [`super::classes`]; there is no title, URL, rating key, playhead, duration, measured bitrate or
-//! free-text error slot. Sparse transitions are retained in memory only while error reporting is
+//! [`super::classes`], a bool (`attempt_started`), or one of two bounded integers: `http_status`
+//! (100-599, else 0) and `pipeline_error` (the firmware's own `i32` error number). There is no
+//! title, URL, rating key, playhead, duration, measured bitrate or free-text error slot. Sparse transitions are retained in memory only while error reporting is
 //! enabled, and nothing is queued unless the viewer actually reaches `PlaybackState::Error`.
 
 use super::classes::{FailureClass, PlaybackErrorContext, TraceEvent, TraceOutcome, TraceStep};
