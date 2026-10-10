@@ -297,7 +297,6 @@ impl Layout {
     /// Grid rows one screenful spans below the content top: a row revealed at the top of the
     /// viewport leaves every row at least this far below it undrawn. The grid head band only
     /// pushes rows further down, so the document's head shows no more than this either.
-    #[cfg(any(test, feature = "devtriggers"))]
     pub(super) fn rows_per_screen(&self) -> usize {
         ((SCR_H - CONTENT_TOP) / self.grid_pitch()).ceil() as usize
     }
