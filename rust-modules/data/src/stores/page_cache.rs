@@ -76,6 +76,19 @@ impl<T> PageCache<T> {
         self.pages.get(p)?.rows.as_ref()?.get(offset)
     }
 
+    /// Edits the loaded row at index `i` in place, and reports whether there was one to edit. A
+    /// page still shared with a reader is copied first, so the reader keeps the old row.
+    pub fn edit(&mut self, i: usize, f: impl FnOnce(&mut T)) -> bool
+    where
+        T: Clone,
+    {
+        let Some((p, offset)) = self.locate(i) else { return false };
+        let Some(rows) = self.pages.get_mut(p).and_then(|page| page.rows.as_mut()) else { return false };
+        let Some(row) = Arc::make_mut(rows).get_mut(offset) else { return false };
+        f(row);
+        true
+    }
+
     pub fn is_loaded(&self, page: usize) -> bool {
         self.pages.get(page).is_some_and(|p| p.rows.is_some())
     }
@@ -86,6 +99,11 @@ impl<T> PageCache<T> {
         let first = self.page_of(lo).min(end);
         let last = if hi > lo { (self.page_of(hi - 1) + 1).min(end) } else { first };
         (first..last.max(first)).filter(move |&p| !self.is_loaded(p))
+    }
+
+    /// Pages in the directory: `total` items at `PAGE` each, the last one possibly short.
+    pub fn page_count(&self) -> usize {
+        self.pages.len()
     }
 
     pub fn loaded_pages(&self) -> usize {
