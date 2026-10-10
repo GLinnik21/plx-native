@@ -39,7 +39,8 @@ looking at:
   `/tmp` is refused and never chmod'ed or truncated. Stated plainly, the residual exposure: another
   native app on the same television that runs in the app's group can read all three files, and the
   stderr log (whatever aborts and the television's own libraries print), the crash log's C-side
-  records (a faulting address, registers, one memory-map line) and the C-side lines the shim and
+  records (a faulting address, registers, the crash's wall-clock second, and the memory-map lines
+  holding the faulting pc, the lr and our own binary) and the C-side lines the shim and
   the Starfish seam write into the event log are not passed through that scrubber. A credential in
   any of them is a valid report too.
 - **TLS.** Certificate verification is on for every HTTPS request, with one bounded exception and

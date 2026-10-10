@@ -782,10 +782,12 @@ pub fn sentry_body(
     if !registers.as_object().is_some_and(serde_json::Map::is_empty) {
         body["exception"]["values"][0]["stacktrace"]["registers"] = registers;
     }
-    // **No debug image rather than a broken one.** An entry whose `debug_id` matches no uploaded
-    // object yields `missing_symbol` and NO error — see `sentry::IMAGE_ADDR`'s measured table — so a
-    // build whose id could not be read is better off saying nothing than asserting a pairing that
-    // does not exist. The addresses are still in the frames, and `code_id` still names the build.
+    // **No debug image rather than a broken one, for the app's own image.** An entry whose
+    // `debug_id` matches no uploaded object yields `missing_symbol` and NO error — see
+    // `sentry::IMAGE_ADDR`'s measured table — so a build whose id could not be read is better off
+    // saying nothing than asserting a pairing that does not exist. The addresses are still in the
+    // frames, and `code_id` still names the build. (A firmware library without a build id is the
+    // deliberate exception, and is added below by `module_images` with a nil `debug_id`.)
     let mut images = Vec::new();
     if let (Some(did), false) = (debug_id, effective_build_id.is_empty()) {
         let image_addr = f.image.as_ref().map(|i| i.image_addr).unwrap_or_else(|| {
@@ -1297,10 +1299,12 @@ fn execute(plan: &Plan, fresh: bool, fx: &mut impl Recovery) {
 /// pre-binding mark conservatively cuts off the existing log instead, so nothing from before a
 /// provable consent boundary is sent.
 ///
-/// **No debug image without a build id.** An image entry carrying an empty or wrong `debug_id` does
-/// not degrade to an unsymbolicated frame with a warning; it produces `missing_symbol` and no error
-/// at all, which is indistinguishable from never having uploaded symbols. Sending no image at least
-/// says so.
+/// **No debug image for the app's own image without a build id.** An image entry carrying an empty
+/// or wrong `debug_id` does not degrade to an unsymbolicated frame with a warning; it produces
+/// `missing_symbol` and no error at all, which is indistinguishable from never having uploaded
+/// symbols. Sending no image at least says so. The one deliberate exception is a firmware library
+/// with no build id: [`module_images`] lists it by name with a nil `debug_id` and no `code_id`,
+/// because attributing a crash to a library is worth more than the silent `missing_symbol`.
 pub fn recover_pending() {
     recover_pending_at(&log_path());
 }
@@ -1986,13 +1990,6 @@ mod tests {
         let f = only_fault(log);
         assert!(f.modules.is_empty());
         assert!(module_images(&f, |_| Some(elf_without_build_id())).is_empty());
-    }
-
-    #[test]
-    fn a_module_without_a_readable_build_id_is_left_out() {
-        let f = only_fault(WAYLAND_REC);
-        assert!(module_images(&f, |_| None).is_empty());
-        assert!(module_images(&f, |_| Some(b"not an elf".to_vec())).is_empty());
     }
 
     #[test]

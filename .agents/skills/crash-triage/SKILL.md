@@ -222,7 +222,7 @@ Four things to check, and the third and fourth are the ones no host test can rea
 
 1. `crashtest: DELIBERATE crash, kind=segv signal=11` in the event log — so nobody later mistakes
    this for the bug they were hunting.
-2. `*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x… lr=0x…` in the crash log, with a `reg:` line under it.
+2. `*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x… lr=0x…` in the crash log, with a `time:` line and a `reg:` line under it.
 3. **`at:` and `bin:` lines.** These come from `/proc/self/maps` and exist on no development Mac;
    `ci/crashtrace-test.c` grades the reader against fixtures, but only the set proves it against
    the real file. `bin:` must name the install you deployed to.

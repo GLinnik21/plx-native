@@ -64,8 +64,9 @@ pub(crate) fn desktop_window_size() -> (c_int, c_int) {
 /// generated. `crashtrace.c` says so itself. Two deliberate SIGSEGVs produced the signal status and
 /// an empty `/var/log/reports/librdx/`.
 ///
-/// The line this hook writes is also the crash channel's PANIC input: `telemetry::crashreport`
-/// reads the log on the next launch, hashes the message and sends the location only.
+/// The record this hook writes (the panic line and its `time:` line) is also the crash channel's
+/// PANIC input: `telemetry::crashreport` reads the log on the next launch, hashes the message and
+/// sends the location and the bounded crash time, never the message.
 pub(crate) fn install_panic_logger() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {

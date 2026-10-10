@@ -152,7 +152,7 @@ static inline int plx_map_line_kind(const char *line, size_t n, unsigned long pc
  *
  * Returns the length written. `tools/crash-report.sh` reads the signal number and name out of it
  * with one sed and the two addresses with two more, all `head -1` over the block — which is why
- * the register line that follows deliberately repeats neither `pc=` nor `lr=`. */
+ * the lines below it (`time:`, `reg:`) deliberately repeat neither `pc=` nor `lr=`. */
 static inline size_t plx_fmt_signal(char *out, size_t cap, int sig, const char *name,
                                     unsigned long addr, unsigned long pc, unsigned long lr) {
     struct plx_sbuf b = { out, 0, cap };

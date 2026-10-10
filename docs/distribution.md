@@ -665,7 +665,9 @@ world-readable `/tmp` on the TV across many runs.
   and the C-side
   `fprintf(elogf, …)` lines in `src/starfish.c` bypass the scrubber (they carry
   pointers, library paths, Starfish pipeline ids and Starfish JSON replies, no credential); the
-  crash log is a signal, a faulting PC, one `/proc/self/maps` line, the build id and panic text; the
+  crash log is a signal, a faulting PC, the crash's wall-clock second (a `time:` line, also written
+  under the panic text by the Rust hook), the `/proc/self/maps` lines holding the pc, the lr and
+  our own binary, the build id and panic text; the
   stderr log is whatever aborts, panics, GL info logs and the television's own libraries print,
   and **the stderr log does not go through `scrub_local`, nor do the C tracer's records in the
   crash log** (the panic text the Rust hook appends to it does, since the follow-up of the same day).
