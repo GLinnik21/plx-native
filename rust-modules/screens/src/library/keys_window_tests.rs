@@ -99,13 +99,19 @@ fn the_keys_registered_per_frame_do_not_grow_with_the_listing() {
 fn every_cell_the_grid_can_paint_holds_a_key() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
-    fixture.listing = partial(5_000, 0..60);
+    fixture.listing = partial(5_000, 0..60).with_library_type(plx_data::browse::LibraryType::Episodes);
     let mut page = fixture.screen();
-    for row in [0, 3, 40, 400, 1_100] {
-        scroll_to_row(&mut page, &fixture, row);
-        let window = page.pair.detail.window();
-        assert!(!window.is_empty());
-        assert!(window.clone().all(|i| page.pair.detail.elem_at(i).is_some()), "row {row}: a painted cell has no key in {window:?}");
+    let mut engine = FocusEngine::new();
+    // The scroll spring runs on its own, several rows per frame at first: in every frame the
+    // cells the grid paints (its own window, after the frame's scroll step) must be keyed.
+    for target_row in [40, 400, 1_100, 10] {
+        page.scroll_target = page.target_layout.row_reveal(target_row);
+        for n in 0..90 {
+            frame(&mut page, &mut engine, &fixture, 100 * target_row as u32 + n * 16);
+            let window = page.pair.detail.window();
+            assert!(window.clone().all(|i| page.pair.detail.elem_at(i).is_some()),
+                "row {target_row}, frame {n}: a painted cell has no key in {window:?}");
+        }
     }
 }
 
@@ -254,4 +260,28 @@ fn shelf_keys_stay_bounded_over_rotating_refetches() {
         peak = peak.max(shelf_keys(&page));
     }
     assert!(peak <= 2 * (12 + 12) + 256, "shelf keys grew to {peak} over 50 refetches");
+}
+
+#[test]
+fn a_focus_far_from_the_scroll_keeps_its_key_through_pruning() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    fixture.listing = partial(20_000, 0..60);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let index = 101;
+    let elem = deep(&mut page, &fixture, index);
+    seat(&mut page, &mut engine, &fixture, elem);
+    // The scroll walks far away while the engine keeps its focus on the slot: the table is pruned
+    // around the focus, never of it.
+    for row in (200..4_000).step_by(37) {
+        let y = page.target_layout.row_reveal(row);
+        page.scroll.jump(y);
+        page.scroll_target = y;
+        page.sync(&fixture.cx(engine.current(OWNER)));
+        assert!(page.keys.key(elem).is_some(), "row {row}: the focused key was pruned");
+    }
+    assert!(grid_keys(&page) <= 2 * page.pair.detail.projected() + 256);
+    assert_eq!(page.pair.detail.index_of(elem), Some(index));
 }
