@@ -5148,6 +5148,13 @@ pub fn refuse_by_server_for_test(
     ps.src_vcodec = src_vcodec.to_owned();
     ps.src_acodec = src_acodec.to_owned();
 }
+/// Test-only: leave `ps` as [`apply_plan`] leaves a session RESOLVED for a hero preview, after the
+/// preview machinery has retired it (`preview` cleared, `resolved_as_preview` kept).
+#[cfg(any(test, feature = "test-support"))]
+pub fn resolve_as_preview_for_test(ps: &mut PlaybackSession) {
+    ps.preview = false;
+    ps.resolved_as_preview = true;
+}
 /// Test-only: install a live transcode route (`encoder` session, optional remux, optional
 /// fixed-HLS delivery) the way a successful [`apply_plan`] leaves it.
 #[cfg(any(test, feature = "test-support"))]
@@ -7395,8 +7402,9 @@ pub fn request_preview(
         None,
         None,
         false,
-        // A preview mints no attempt (`requested` is not called), so this is never read.
-        crate::player::report::AttemptOrigin::Fresh,
+        // A preview mints no attempt (`requested` is not called), so the ledger never reads this;
+        // it names the cause truthfully for whoever reads the request.
+        crate::player::report::AttemptOrigin::Preview,
     )
 }
 

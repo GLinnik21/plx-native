@@ -4,11 +4,15 @@
 //! [`super::classes`], a bool (`attempt_started`), a bounded ordinal (`attempt_ordinal`: `1` to `9`,
 //! then `9+`), or one of two bounded integers: `http_status` (100-599, else 0) and `pipeline_error`
 //! (the firmware's own `i32` error number). `attempt_origin` and `attempt_ordinal` say why the
-//! failed engine open was made and which open of the playback it was. There is no
+//! failed engine open was made and which open of the playback it was. The fingerprint is
+//! `["playback-error", kind]`, except for origin `preview` (a failed detail-page trailer), which
+//! groups apart as `["playback-error", "preview", kind]`. There is no
 //! title, URL, rating key, playhead, duration, measured bitrate or free-text error slot. Sparse transitions are retained in memory only while error reporting is
 //! enabled, and nothing is queued unless the viewer actually reaches `PlaybackState::Error`.
 
-use super::classes::{FailureClass, PlaybackErrorContext, TraceEvent, TraceOutcome, TraceStep};
+use super::classes::{
+    AttemptOrigin, FailureClass, PlaybackErrorContext, TraceEvent, TraceOutcome, TraceStep,
+};
 use serde_json::{Map, Value};
 
 /// How telemetry erases the in-memory trace the player keeps for the current attempt. The trace
@@ -142,7 +146,13 @@ pub fn event_body(
         "logger": "playback",
         "transaction": "playback",
         "culprit": format!("playback::{code}"),
-        "fingerprint": ["playback-error", code],
+        // A preview is not a playback the viewer asked for: its failures group apart. Every other
+        // origin keeps `["playback-error", code]` exactly.
+        "fingerprint": if context.attempt_origin == AttemptOrigin::Preview {
+            serde_json::json!(["playback-error", "preview", code])
+        } else {
+            serde_json::json!(["playback-error", code])
+        },
         "exception": {"values": [{
             "type": "PlaybackError",
             "value": code,
@@ -1182,17 +1192,54 @@ mod tests {
                 assert_eq!(v["contexts"]["playback"]["attempt_origin"], origin.code());
                 assert_eq!(v["tags"]["playback.attempt_ordinal"], want, "ordinal {n}");
                 assert_eq!(v["contexts"]["playback"]["attempt_ordinal"], want, "ordinal {n}");
-                assert_eq!(
-                    v["fingerprint"],
-                    serde_json::json!(["playback-error", "media_source"]),
-                    "the cause explains a group, it does not split it",
-                );
+                // The cause explains a group, it does not split it; the one exception is a
+                // preview, which is not a playback at all and groups apart (below).
+                let want_fingerprint = if origin == AttemptOrigin::Preview {
+                    serde_json::json!(["playback-error", "preview", "media_source"])
+                } else {
+                    serde_json::json!(["playback-error", "media_source"])
+                };
+                assert_eq!(v["fingerprint"], want_fingerprint, "{}", origin.code());
             }
         }
         // The wire values are written out, never derived from a variant name.
         let codes: Vec<_> = AttemptOrigin::ALL.iter().map(|o| o.code()).collect();
-        assert_eq!(codes, ["fresh", "user_retry", "quality_change", "auto_handoff", "recovery", "resume"]);
+        assert_eq!(
+            codes,
+            ["fresh", "user_retry", "quality_change", "auto_handoff", "recovery", "resume", "preview"],
+        );
         assert_eq!(AttemptOrdinal::all().count(), 10, "1..=9 and the saturated value");
+    }
+
+    /// **A failed detail-page preview is its own Sentry issue.** A trailer is not a playback the
+    /// viewer asked for, so its failures must not pile into the playback groups (PLX-NATIVE-15).
+    /// The fingerprint carries `preview` for that origin alone; every other origin keeps the
+    /// `["playback-error", code]` shape byte for byte, for every failure kind.
+    #[test]
+    fn only_a_preview_failure_groups_apart_and_every_other_fingerprint_is_unchanged() {
+        use crate::telemetry::classes::FailureClass as F;
+        for kind in [F::MediaSource, F::TvPipeline, F::DecisionRefused, F::Unspecified] {
+            for origin in AttemptOrigin::ALL {
+                let mut ctx = context();
+                ctx.attempt_origin = origin;
+                let v: Value = serde_json::from_slice(&event_body(
+                    &"a".repeat(32),
+                    "0123456789abcdef",
+                    Some(&"e".repeat(32)),
+                    kind,
+                    ctx,
+                    &[],
+                ))
+                .expect("handled event JSON");
+                let want = if origin == AttemptOrigin::Preview {
+                    serde_json::json!(["playback-error", "preview", kind.code()])
+                } else {
+                    serde_json::json!(["playback-error", kind.code()])
+                };
+                assert_eq!(v["fingerprint"], want, "{} / {}", origin.code(), kind.code());
+                assert_eq!(v["tags"]["playback.kind"], kind.code(), "the kind is still the kind");
+            }
+        }
     }
 
     /// The consent screen shows what a report can carry: the sample event holds every new key, the
@@ -1226,7 +1273,9 @@ mod tests {
         assert!(legend.contains("100 to 599"), "the http_status domain");
         // Every origin and every ordinal the producer can send is listed, in the enum's own order.
         assert!(
-            legend.contains("fresh / user_retry / quality_change / auto_handoff / recovery / resume"),
+            legend.contains(
+                "fresh / user_retry / quality_change / auto_handoff / recovery / resume / preview"
+            ),
             "the attempt_origin domain",
         );
         assert!(legend.contains("1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 9+"), "the attempt_ordinal domain");
@@ -1246,7 +1295,10 @@ mod tests {
             assert!(privacy.contains(key), "PRIVACY.md omitted {key}");
         }
         for origin in AttemptOrigin::ALL {
-            assert!(privacy.contains(origin.code()), "PRIVACY.md omitted the origin {}", origin.code());
+            // Backticked, as PRIVACY.md writes every wire value: a bare word such as `preview`
+            // already appears in its prose, so a bare match would pass for an omission.
+            let quoted = format!("`{}`", origin.code());
+            assert!(privacy.contains(&quoted), "PRIVACY.md omitted the origin {}", origin.code());
         }
         assert!(privacy.contains("9+") && privacy.contains("quality_pick"));
     }

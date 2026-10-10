@@ -505,6 +505,14 @@ pub fn blocked(sid: ServerId, rk: &str) -> bool {
     told.0.is_some()
 }
 
+/// Has the preview session now running, or the one that last ran, put a picture on the panel?
+/// The machine keeps the fact past its own retirement (`picture_ms` is cleared only by the next
+/// [`Machine::start`]), which is what lets a failure report — observed a frame after the session
+/// retired — say that a trailer which played and then failed did start.
+pub fn picture_shown() -> bool {
+    with_mut(|m| m.picture_ms.is_some())
+}
+
 pub fn occupies() -> bool {
     with_mut(|m| m.phase != Phase::Idle)
 }

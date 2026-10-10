@@ -364,16 +364,21 @@ pub enum AttemptOrigin {
     Recovery,
     /// The session was reopened at its position after the app returned to the foreground.
     Resume,
+    /// A detail-page trailer preview, which is not a playback the viewer asked for: it opens in the
+    /// background on a dwell, direct play only, and writes no watch state. A failure of it is its
+    /// own issue group (see `playback::event_body`), not a playback failure.
+    Preview,
 }
 
 impl AttemptOrigin {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Fresh,
         Self::UserRetry,
         Self::QualityChange,
         Self::AutoHandoff,
         Self::Recovery,
         Self::Resume,
+        Self::Preview,
     ];
 
     pub const fn code(self) -> &'static str {
@@ -384,6 +389,7 @@ impl AttemptOrigin {
             Self::AutoHandoff => "auto_handoff",
             Self::Recovery => "recovery",
             Self::Resume => "resume",
+            Self::Preview => "preview",
         }
     }
 }

@@ -15,11 +15,15 @@
 //! A report names the attempt that failed beside the playback it failed in: the route being opened
 //! and whether that open ever showed a picture (`attempted_delivery`, `attempt_started`), why it
 //! was made (`attempt_origin`: a Play, a Retry, a quality pick, an automatic handoff, a recovery, a
-//! foreground resume) and which open of the session it was (`attempt_ordinal`). Origin and ordinal
-//! are decided where the open is, never inferred from the failure: [`requested`] for a request
-//! (a Retry continues the count, a Play restarts it) and [`note_delivery_requested_for`] /
-//! [`note_attempt`] for a reload of the same playback. They live in [`AttemptLedger`], not in the
-//! trace, because a Retry stops the failed playback first and that clears the trace.
+//! foreground resume, a trailer preview) and which open of the session it was (`attempt_ordinal`).
+//! Origin and ordinal are decided where the open is, never inferred from the failure: [`requested`]
+//! for a request (a Retry continues the count, a Play restarts it) and
+//! [`note_delivery_requested_for`] / [`note_attempt`] for a reload of the same playback. They live
+//! in [`AttemptLedger`], not in the trace, because a Retry stops the failed playback first and that
+//! clears the trace. The one origin that is NOT decided at an open is `preview`: a detail-page
+//! trailer never passes [`requested`], so [`error_context`] recognises its session
+//! (`route::preview_request`) and [`as_preview`] tells the failure as a preview's, in one place,
+//! with [`REPORT_PREVIEW_FAILURES`] as the switch that drops those reports.
 //!
 //! # These are TRANSITIONS, not log lines
 //!
@@ -556,7 +560,7 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
     };
     let http_status = super::SHARED.dg_http_status.load(Relaxed);
     let (attempt_origin, attempt_ordinal) = attempt_snapshot();
-    PlaybackErrorContext {
+    let context = PlaybackErrorContext {
         delivery,
         selected,
         requested,
@@ -578,7 +582,46 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
         http_status: HttpClass::exact_status(http_status),
         pipeline_error: super::SHARED.dg_cb_err_num.load(Relaxed),
         refusal,
+    };
+    if crate::route::preview_request(ps) {
+        as_preview(context)
+    } else {
+        context
     }
+}
+
+/// **Whether a failed detail-page preview is reported at all.** This is the one switch: `false`
+/// keeps the failure on the television (the trace is still sealed, so withdrawal's eraser has
+/// nothing to miss) and `tick` queues nothing for a preview. Everything else a preview report
+/// differs by is [`as_preview`] and the fingerprint's `preview` segment in
+/// `telemetry::playback::event_body`, both keyed on [`AttemptOrigin::Preview`], so dropping preview
+/// reports is this constant alone.
+const REPORT_PREVIEW_FAILURES: bool = true;
+
+/// **A failed preview, told as what it was (Sentry PLX-NATIVE-15).** A trailer is not a playback
+/// the viewer asked for: it opens in the background on a dwell, never passes [`requested`] (so the
+/// trace has no `Requested` step and no `Presented` one, and the attempt ledger and the funnel's
+/// `started` latch still describe the LAST film), and can only ever open the Original direct route
+/// (`preview::accepts_direct_play` refuses anything else). So, for a session resolved as a preview:
+///
+/// * the origin is [`AttemptOrigin::Preview`] and the ordinal the first, never the film's;
+/// * the attempted route is the server's refusal's when it made one, else direct play, which is
+///   what a preview asks for; `delivery` stays what was installed, so a refused landing still
+///   reads `unknown`;
+/// * `started` and `attempt_started` are the preview machine's own record of a picture
+///   ([`super::preview::picture_shown`]). The trace cannot say: it never sees a preview's
+///   `Presented`, so it would claim "no picture" for a trailer that played and then lost its
+///   connection.
+fn as_preview(mut context: PlaybackErrorContext) -> PlaybackErrorContext {
+    let shown = super::preview::picture_shown();
+    context.started = shown;
+    context.attempt_started = shown;
+    context.attempt_origin = AttemptOrigin::Preview;
+    context.attempt_ordinal = AttemptOrdinal::FIRST;
+    context.attempted_delivery = context
+        .refusal
+        .map_or(DeliveryClass::Direct, |refusal| refusal.attempted);
+    context
 }
 
 /// The refusal block for a refusal the SERVER made at `/decision`, else `None`.
@@ -874,7 +917,10 @@ pub fn tick(ps: &crate::route::PlaybackSession) {
             let shape = super::error_now(ps);
             let kind = shape.kind.class();
             let trace = finish_trace(TraceEvent::Failed { kind });
-            plx_telemetry::telemetry::playback::report_error(kind, error_context(ps), &trace);
+            let context = error_context(ps);
+            if context.attempt_origin != AttemptOrigin::Preview || REPORT_PREVIEW_FAILURES {
+                plx_telemetry::telemetry::playback::report_error(kind, context, &trace);
+            }
             emit(DiagEvent::PlaybackFailed {
                 playback_id: ATTEMPT.load(Relaxed),
                 mode: mode(ps),
@@ -1509,6 +1555,139 @@ mod tests {
         SAW_FAIL.store(false, Relaxed);
         clear_error_trace();
         consent::install(previous.unwrap_or_default());
+    }
+
+    /// The sealed trace the shared slot now holds.
+    fn trace_steps() -> Vec<TraceStep> {
+        super::super::SHARED
+            .playback_trace
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot()
+    }
+
+    /// The handled event a failure in `ps` would queue, as the telemetry serializer builds it.
+    fn event_for(ps: &crate::route::PlaybackSession) -> serde_json::Value {
+        let kind = crate::player::error_now(ps).kind.class();
+        serde_json::from_slice(&plx_telemetry::telemetry::playback::event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            kind,
+            error_context(ps),
+            &trace_steps(),
+        ))
+        .expect("handled event JSON")
+    }
+
+    /// A session as a hero preview leaves it when its landing is refused: resolved for a preview,
+    /// retired by the machine, no route installed.
+    fn refused_preview() -> crate::route::PlaybackSession {
+        let mut ps = crate::route::PlaybackSession::default();
+        crate::route::resolve_as_preview_for_test(&mut ps);
+        crate::route::refuse_for_test(&mut ps, crate::route::PlayVerdict::DirectPlayDisabled);
+        ps
+    }
+
+    /// **Sentry PLX-NATIVE-15.** A detail-page preview never passes [`requested`], so its failure
+    /// seals a trace with no `Requested` step; it used to report kind `unspecified`, delivery
+    /// `unknown` and the first-open defaults of whatever film played last, and landed in the
+    /// playback issues. It now says it is a preview, names the route a preview can only ever open
+    /// (direct play) and groups apart.
+    #[test]
+    fn a_failed_preview_with_no_requested_step_reports_origin_preview_a_known_route_and_its_own_group() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            crate::player::preview::reset_for_test();
+            clear_error_trace();
+            // A film that failed on its second open leaves its cause and count behind; neither is
+            // the preview's.
+            ledger().begin(7, AttemptOrigin::QualityChange);
+            ledger().reopen(7, AttemptOrigin::UserRetry);
+            let ps = refused_preview();
+            let calls = plx_telemetry::telemetry::playback::report_calls_for_test();
+            observe(&ps, S::Error);
+
+            let steps = trace_steps();
+            assert!(
+                !steps.iter().any(|s| matches!(s.event, TraceEvent::Requested { .. })),
+                "a preview mints no attempt, so its trace has no Requested step",
+            );
+            assert!(matches!(steps.last().map(|s| s.event), Some(TraceEvent::Failed { .. })));
+            assert_eq!(
+                plx_telemetry::telemetry::playback::report_calls_for_test() - calls,
+                1,
+                "the failure is reported once",
+            );
+
+            let ctx = error_context(&ps);
+            assert_eq!(ctx.attempt_origin, AttemptOrigin::Preview);
+            assert_eq!(ctx.attempt_ordinal, AttemptOrdinal::FIRST, "not the last film's count");
+            assert_eq!(ctx.delivery.code(), "unknown", "no route was installed, and that stays true");
+            assert_eq!(ctx.attempted_delivery.code(), "original_direct", "a preview opens direct play only");
+            assert!(!ctx.attempt_started && !ctx.started, "the refused landing never opened an engine");
+
+            let v = event_for(&ps);
+            let kind = v["tags"]["playback.kind"].as_str().expect("kind tag").to_owned();
+            assert_eq!(v["fingerprint"], serde_json::json!(["playback-error", "preview", kind]));
+            assert_eq!(v["tags"]["playback.attempt_origin"], "preview");
+            assert_eq!(v["tags"]["playback.attempted_delivery"], "original_direct");
+            assert_eq!(v["contexts"]["playback"]["attempt_ordinal"], "1");
+
+            ledger().begin(0, AttemptOrigin::Fresh);
+        });
+    }
+
+    /// **Whether the attempt showed a picture is the preview machine's fact, not the film
+    /// trace's.** A preview pushes no `Presented` step (its trace generation is 0), so the trace
+    /// would always say "no picture" even for a trailer that played and then lost its connection;
+    /// and the funnel's `started` latch belongs to the LAST film. Both come from the machine's own
+    /// record of a picture.
+    #[test]
+    fn a_trailer_that_played_then_failed_does_not_claim_it_never_started() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            let ps = refused_preview();
+            // A film played earlier in the session: its latch is up, the preview's picture is not.
+            SAW_START.store(true, Relaxed);
+            crate::player::preview::reset_for_test();
+            let never = error_context(&ps);
+            assert!(!never.attempt_started, "no picture from this preview");
+            assert!(!never.started, "the last film's start is not the preview's");
+
+            // The trailer showed a picture, then ended in failure; the machine is idle again.
+            SAW_START.store(false, Relaxed);
+            crate::player::preview::force_playing_for_test();
+            crate::player::preview::set_phase_for_test(crate::player::preview::Phase::Idle);
+            let played = error_context(&ps);
+            assert!(played.attempt_started, "the trailer put a picture on the panel");
+            assert!(played.started);
+            assert_eq!(played.attempt_origin, AttemptOrigin::Preview);
+
+            // The next preview starts from nothing again.
+            crate::player::preview::reset_for_test();
+            assert!(!error_context(&ps).attempt_started);
+        });
+    }
+
+    /// A film's failure is untouched by any of this: its origin comes from the ledger and its
+    /// fingerprint is `["playback-error", code]`.
+    #[test]
+    fn a_film_failure_keeps_its_origin_and_the_playback_fingerprint() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            crate::player::preview::reset_for_test();
+            let mut ps = crate::route::PlaybackSession::default();
+            crate::route::refuse_for_test(&mut ps, crate::route::PlayVerdict::DirectPlayDisabled);
+            requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
+            observe(&ps, S::Resolving);
+            observe(&ps, S::Error);
+            assert_eq!(error_context(&ps).attempt_origin, AttemptOrigin::Fresh);
+            let v = event_for(&ps);
+            let kind = v["tags"]["playback.kind"].as_str().expect("kind tag").to_owned();
+            assert_eq!(v["fingerprint"], serde_json::json!(["playback-error", kind]));
+            assert_eq!(v["tags"]["playback.attempt_origin"], "fresh");
+        });
     }
 
     /// Run `body` with error reporting consented, then put every latch back.

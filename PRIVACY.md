@@ -108,7 +108,7 @@ the local identifier; enabling them later creates a new one. Reports already sen
 identifier, so copy it down first if you intend to ask for their deletion.
 
 The same independent choice also covers a handled playback-error report when playback reaches its
-explicit terminal error screen. That report contains a fixed failure kind, delivery and quality
+explicit terminal error screen, or when a trailer preview behind a detail page fails. That report contains a fixed failure kind, delivery and quality
 classes, coarse raster, rate, HTTP and buffer classes, whether a first picture appeared, and at
 most 32 typed playback transitions with bucketed elapsed times. It contains no title, ratingKey,
 URL, path, playhead, duration, exact bitrate, server identity, address, token, account or profile,
@@ -152,10 +152,15 @@ Play the viewer pressed) / `user_retry` (Retry, or *Switch to Auto and play*, on
 screen) / `quality_change` (a quality the viewer picked, including one picked on the failure
 screen) / `auto_handoff` (a change of delivery the app made on its own) / `recovery` (the app
 reopening the video after an attempt failed to open) / `resume` (reopening where playback left off
-after the app returned to the foreground); and `attempt_ordinal`, which open of this playback it
-was, `1` to `9` and then `9+`, counting the first open, every retry and every handoff. The count
-starts again at `1` with each new Play and is kept only in memory. Both appear as a tag and in the
-playback context.
+after the app returned to the foreground) / `preview` (the trailer that plays quietly behind a
+detail page, which the viewer did not press Play for); and `attempt_ordinal`, which open of this
+playback it was, `1` to `9` and then `9+`, counting the first open, every retry and every handoff.
+The count starts again at `1` with each new Play and is kept only in memory. Both appear as a tag
+and in the playback context. A trailer preview that fails is reported with the same fields and no
+more: it is marked `preview`, it counts as the first open, it names direct play as the attempted
+delivery (the only route a preview ever opens), and its `started` and `attempt_started` fields
+say whether the trailer actually showed a picture before it failed. Sentry files it in an issue of
+its own, apart from playback failures.
 
 When the failure is the media server **refusing to play or convert the item** (`decision_refused`),
 that report also carries four closed fields about the refusal — and never the server's own

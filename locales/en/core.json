@@ -159,7 +159,7 @@
   },
   "core.preview_domain_attempt_origin": {
     "value": "why this attempt was made",
-    "description": "Field name in the consent preview's list of possible playback-error values: what led to the attempt that failed, such as the first press of Play, a Retry, a quality change the viewer made, a switch the app made on its own, a recovery after a failed attempt, or reopening after the app returned to the foreground."
+    "description": "Field name in the consent preview's list of possible playback-error values: what led to the attempt that failed, such as the first press of Play, a Retry, a quality change the viewer made, a switch the app made on its own, a recovery after a failed attempt, reopening after the app returned to the foreground, or the trailer that plays behind a detail page."
   },
   "core.preview_domain_attempt_ordinal": {
     "value": "which attempt of this playback (1 to 9, then 9+)",
