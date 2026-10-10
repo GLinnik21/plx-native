@@ -337,6 +337,55 @@ fn a_1000_item_listing_that_reshuffles_is_walked_to_its_last_item_and_back() {
     plx_plex::plex::reset_servers_for_test();
 }
 
+// ---- the frame-thread side of an ask does not scale with the ledger -----------------------------
+
+/// What an ask costs the frame thread is structural: the ledger the request carries IS the one the
+/// row holds (shared storage, counted references), however long it is. A copy would make the ask
+/// O(keys) on the frame thread; `Keys::shares` is false for a copy.
+#[test]
+fn the_frame_thread_side_of_an_ask_shares_the_ledger_it_does_not_copy_it() {
+    let _guard = plx_base::testlock::serial();
+    for known in [600, 20_000] {
+        let mut owner = ledger_owner(RECENT_ID, known, known, known * 2);
+        let held = find_shelf(&owner.state.srcs[0].last.as_ref().unwrap().shelves, RECENT_ID, RECENT).unwrap()
+            .row.ledger.clone().unwrap();
+        let request = ask_row(&mut owner, RECENT_ID, RECENT, false).unwrap();
+        let sent = request.window.as_ref().unwrap().row.ledger.as_ref().unwrap();
+        assert!(sent.keys.shares(&held.keys), "{known} keys: the request carries the row's own ledger");
+        assert_eq!(held.keys.index_len(), known, "and every key has its position");
+        reset(&mut owner.state, &owner.adapter);
+        plx_plex::plex::reset_servers_for_test();
+    }
+}
+
+/// A worker that changes its clone takes its own copy; the row's ledger is not touched, and the
+/// position of every key stays right through a middle insert, a drop and an append.
+#[test]
+fn changing_a_shared_ledger_copies_it_for_the_changer_and_keeps_positions_right() {
+    let key = |n: usize| paging::LedgerKey::new(&n.to_string());
+    let held = paging::Ledger::from_rows(&rows_of(0..1000), 1000);
+    let mut worker = held.clone();
+    assert!(worker.keys.shares(&held.keys));
+    worker.note(&rows_of([5usize, 1000, 1001, 6].into_iter()));
+    worker.keys.retain(|k| *k != key(3));
+    worker.keys.push(key(2000));
+    assert!(!worker.keys.shares(&held.keys), "the changer holds its own copy");
+    assert_eq!(held.keys.len(), 1000, "and the row's ledger is untouched");
+    for (at, k) in worker.keys.iter().enumerate() {
+        assert_eq!(worker.keys.position_of(k), Some(at));
+    }
+    assert_eq!(worker.keys.index_len(), worker.keys.len());
+    assert_eq!(worker.position("1000"), Some(5), "a new key lands beside the known row it sat next to");
+}
+
+/// Bytes the ledger costs per 10 000 keys: the keys, and the index beside them.
+#[test]
+fn a_ledger_costs_sixteen_bytes_a_key_and_an_index_entry() {
+    assert_eq!(std::mem::size_of::<paging::LedgerKey>(), 16);
+    let ledger = paging::Ledger::from_rows(&rows_of(0..10_000), 10_000);
+    assert_eq!(ledger.keys.index_len(), 10_000);
+}
+
 // ---- one read in flight per row --------------------------------------------------------------
 
 const RECENT_ID: &str = "home.movies.recent";
