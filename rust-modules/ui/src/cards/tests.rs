@@ -1160,6 +1160,64 @@ fn page_ask_yields_at_most_one_edge_a_frame() {
     assert_eq!(page_frame(&mut r, 24, true), None, "the trailing ask waits behind the leading one");
 }
 
+/// Seconds between the repeats of an ask that nothing answered, frame by frame at 60 Hz.
+fn repeat_gaps(r: &mut Rig<Shelf>, offset: usize, frames: usize) -> Vec<f32> {
+    let (mut gaps, mut since) = (Vec::new(), r.ms);
+    for _ in 0..frames {
+        if page_frame(r, offset, true).is_some() {
+            gaps.push((r.ms - since) as f32 / 1000.0);
+            since = r.ms;
+        }
+    }
+    gaps
+}
+
+#[test]
+fn an_unanswered_trailing_ask_is_repeated_on_a_ladder_that_caps_while_focus_stands_there() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Dir);
+    // the scroll settling moves the look-ahead `end`, which is a new ask each time: let it settle
+    repeat_gaps(&mut r, 0, 180);
+    r.sect.reset_page_requests();
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After));
+    // two minutes standing at the edge, no key, nothing landing
+    let gaps = repeat_gaps(&mut r, 0, 120 * 60);
+    assert!(gaps.len() >= 8, "the ask keeps being repeated: {gaps:?}");
+    assert!((gaps[0] - 0.25).abs() < 0.05, "the first repeat is quick: {gaps:?}");
+    assert!(gaps.windows(2).take(6).all(|w| w[1] > w[0] * 1.8), "the interval climbs a rung each time: {gaps:?}");
+    assert!(gaps.iter().all(|g| *g < 30.2), "and never passes the 30 s cap: {gaps:?}");
+    assert!((gaps[gaps.len() - 1] - 30.0).abs() < 0.1, "the cap repeats for as long as the user stays: {gaps:?}");
+    // leaving the zone withdraws it and ends the repeats
+    r.land_focus(110, By::Dir);
+    assert_eq!(cancel_frame(&mut r, 0, true), Some(PageEdge::After));
+    assert!(repeat_gaps(&mut r, 0, 60 * 40).is_empty(), "no repeats once focus has left the edge");
+}
+
+#[test]
+fn an_unanswered_leading_ask_is_repeated_and_a_fresh_window_starts_the_ladder_over() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(102, By::Dir);
+    assert_eq!(page_frame(&mut r, 24, true), Some(PageEdge::Before));
+    let gaps = repeat_gaps(&mut r, 24, 60 * 10);
+    assert!(gaps.len() >= 4 && (gaps[0] - 0.25).abs() < 0.05, "{gaps:?}");
+    // a landing that moves the window (another offset) is a new ask, quick again
+    assert_eq!(page_frame(&mut r, 12, true), Some(PageEdge::Before));
+    let gaps = repeat_gaps(&mut r, 12, 60);
+    assert!((gaps[0] - 0.25).abs() < 0.05, "a new window starts at the first rung: {gaps:?}");
+}
+
+#[test]
+fn no_repeat_is_sent_when_the_source_has_nothing_more_there() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Dir);
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After));
+    r.src.more = false;
+    assert!(repeat_gaps(&mut r, 0, 60 * 60).is_empty(), "the end of the listing ends the asking");
+}
+
 // ---- idle ------------------------------------------------------------------------------------
 
 /// Motion is reported while a pop runs and nothing is reported once everything settles, with focus

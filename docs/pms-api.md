@@ -1261,6 +1261,7 @@ only `size`.
 | `/hubs/sections/{id}?count=…` (one library's hub list) | yes, by hub | yes | Windows (0,3) and (3,3) over nine hubs; order is stable across two calls. |
 | `/hubs/search` with a window | no | not per hub | Not a per-hub offset: seven hubs shrank to one hub with two rows, with `size=7`, `totalSize=17`, `offset=10`. Search hubs carry no key, and `more` is false even on a hub cut at its limit. |
 | Key of `movie.topunwatched` and `movie.by.actor.or.director` (random hubs) | yes | not recorded | The listing came back in the same order on two calls; the windows (0,6) and (6,50) together equal the whole listing; every preview card is in it. The library held only 13 items, so large lists are not covered. |
+| `/playlists/all` (the key of the playlists hub in the Home hub list, `/hubs` and `/hubs/promoted`) | yes | yes | Measured on PMS 1.43: `X-Plex-Container-Start=2&X-Plex-Container-Size=2` answered `size` 2, `totalSize` 5, `offset` 2, items of type `playlist`. The app does not page it and no row shows it: a hub of type `playlist` is not listed (`pms::listable`), so it never reaches a shelf, and `is_pageable_hub_key` does not admit the key. |
 
 
 ## App data-layer summary

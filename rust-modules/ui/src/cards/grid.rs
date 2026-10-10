@@ -248,7 +248,7 @@ impl Grid {
     fn want<H: Host, S: CardSource<H>>(&mut self, cx: &Cx<'_, H>, src: &S) -> Option<CardEvent<H::Elem>> {
         let window = ((self.scroll.pos + SCR_H - self.spec.top) / self.spec.geom().pitch()).ceil().max(0.0) as usize * self.spec.cols;
         let focus = super::focused_index(&cx.focus, self.entry, src).map_or(0, |i| i + 1 + self.ahead);
-        super::want(&mut self.asked, src.len(), window.max(focus), src.more()).map(CardEvent::Want)
+        super::want(&mut self.asked, src.len(), window.max(focus), src.more(), false).map(CardEvent::Want)
     }
 
     /// The landing the last tick carried the focused card's pop through (see [`Landed`]).

@@ -253,3 +253,24 @@ fn reset_wipes_the_catalog_and_re_arms_the_fetch() {
     assert_eq!(hub_state(&o.state), HubState::Loading);
     assert!(o.state.srcs.is_empty());
 }
+
+/// The Home hub list of a real PMS carries a hub whose key is `/playlists/all` (it honours the
+/// window: measured, see docs/pms-api.md, "Paging, observed"). It never reaches a shelf: the hub's
+/// type is `playlist`, and a playlist is not a type a card shows (`listable`), whether the hub says
+/// `playlist` or `mixed`. So `is_pageable_hub_key` admits nothing for it, and a row that cannot
+/// exist has no preview to keep.
+#[test]
+fn a_playlists_hub_reaches_no_shelf_so_its_key_is_not_admitted() {
+    let body = r#"{"MediaContainer":{"Hub":[
+      {"hubIdentifier":"home.playlists","key":"/playlists/all","type":"playlist","title":"Playlists","size":2,"more":true,
+       "Metadata":[{"ratingKey":"7","type":"playlist","title":"Mix","thumb":"/p","playlistType":"video"},
+                   {"ratingKey":"8","type":"playlist","title":"Mix 2","thumb":"/p","playlistType":"video"}]},
+      {"hubIdentifier":"home.mixed.playlists","key":"/playlists/all","type":"mixed","title":"Mixed","size":1,"more":true,
+       "Metadata":[{"ratingKey":"9","type":"playlist","title":"Mix 3","thumb":"/p"}]}
+    ]}}"#;
+    let mc = serde_json::from_str::<plx_plex::plex::Envelope>(body).unwrap().media_container;
+    let build = project(&mc, &plx_plex::plex::MediaContainer::default(), sid(0));
+    assert!(build.shelves.is_empty(), "no playlist card reaches a shelf");
+    assert!(!plx_plex::plex::is_pageable_hub_key("/playlists/all"));
+    assert!(!plx_plex::plex::is_pageable_hub_key("/playlists/all?playlistType=video"));
+}

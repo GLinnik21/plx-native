@@ -256,6 +256,105 @@ impl LedgerKey {
     }
 }
 
+/// The keys a ledger holds, in order, and where each one is.
+///
+/// Shared, not copied: cloning a ledger (the frame thread hands one to each page worker, and the
+/// worker hands a changed one back) is two reference-count bumps however many keys it holds, so the
+/// frame-thread side of an ask is the window and nothing else. The worker that changes the keys
+/// takes its own copy on the first change (copy-on-write: `Arc::make_mut`), off the frame thread;
+/// the single-flight latch of a row means one worker at a time holds a clone to change. `index` is
+/// the position of every key, so the lookups an ask makes per window row are O(1). Memory: the keys
+/// at `size_of::<LedgerKey>()` bytes each plus one index entry per key.
+#[derive(Clone, Debug, Default)]
+pub struct Keys {
+    list: Arc<Vec<LedgerKey>>,
+    index: Arc<HashMap<LedgerKey, usize>>,
+}
+
+impl Keys {
+    fn indexed(list: &[LedgerKey]) -> Arc<HashMap<LedgerKey, usize>> {
+        Arc::new(list.iter().enumerate().map(|(at, key)| (key.clone(), at)).collect())
+    }
+
+    pub fn position_of(&self, key: &LedgerKey) -> Option<usize> {
+        self.index.get(key).copied()
+    }
+
+    pub fn contains(&self, key: &LedgerKey) -> bool {
+        self.index.contains_key(key)
+    }
+
+    /// Appends a key the ledger does not hold.
+    pub fn push(&mut self, key: LedgerKey) {
+        let at = self.list.len();
+        if Arc::make_mut(&mut self.index).insert(key.clone(), at).is_none() {
+            Arc::make_mut(&mut self.list).push(key);
+        }
+    }
+
+    /// Changes the order or the set in place; the index is rebuilt once afterwards.
+    pub fn edit(&mut self, change: impl FnOnce(&mut Vec<LedgerKey>)) {
+        change(Arc::make_mut(&mut self.list));
+        self.index = Self::indexed(&self.list);
+    }
+
+    pub fn retain(&mut self, mut keep: impl FnMut(&LedgerKey) -> bool) {
+        self.edit(|list| list.retain(|key| keep(key)));
+    }
+
+    /// Whether `other` is the same storage, not a copy of it.
+    #[cfg(test)]
+    pub fn shares(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.list, &other.list) && Arc::ptr_eq(&self.index, &other.index)
+    }
+
+    #[cfg(test)]
+    pub fn index_len(&self) -> usize {
+        self.index.len()
+    }
+}
+
+impl std::ops::Deref for Keys {
+    type Target = [LedgerKey];
+    fn deref(&self) -> &[LedgerKey] {
+        &self.list
+    }
+}
+
+impl PartialEq for Keys {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.list, &other.list) || self.list == other.list
+    }
+}
+
+impl Eq for Keys {}
+
+impl From<Vec<LedgerKey>> for Keys {
+    fn from(list: Vec<LedgerKey>) -> Self {
+        let index = Self::indexed(&list);
+        Self { list: Arc::new(list), index }
+    }
+}
+
+impl FromIterator<LedgerKey> for Keys {
+    fn from_iter<I: IntoIterator<Item = LedgerKey>>(keys: I) -> Self {
+        let mut seen = HashSet::new();
+        keys.into_iter().filter(|key| seen.insert(key.clone())).collect::<Vec<_>>().into()
+    }
+}
+
+impl serde::Serialize for Keys {
+    fn serialize<S: serde::Serializer>(&self, out: S) -> Result<S::Ok, S::Error> {
+        self.list.serialize(out)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Keys {
+    fn deserialize<D: serde::Deserializer<'de>>(from: D) -> Result<Self, D::Error> {
+        Vec::<LedgerKey>::deserialize(from).map(Self::from)
+    }
+}
+
 /// Consecutive passes over a listing that find nothing new before the row stops looking.
 const IDLE_PASSES: u8 = 2;
 
@@ -263,7 +362,7 @@ const IDLE_PASSES: u8 = 2;
 /// indices into `keys`, and the window moves over the ledger rather than over the listing.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Ledger {
-    pub keys: Vec<LedgerKey>,
+    pub keys: Keys,
     /// Whether the window is read from the ledger (the listing could not be addressed) or the
     /// ledger only records what a stable listing showed, in case it stops being stable.
     #[serde(default)]
@@ -296,8 +395,7 @@ impl Ledger {
     }
 
     pub fn position(&self, key: &str) -> Option<usize> {
-        let key = LedgerKey::new(key);
-        self.keys.iter().position(|known| *known == key)
+        self.keys.position_of(&LedgerKey::new(key))
     }
 
     /// Whether the window holds keys the ledger knows in an order other than its own: the listing
@@ -317,18 +415,20 @@ impl Ledger {
     pub fn note(&mut self, rows: &[Row]) {
         let keys: Vec<LedgerKey> = rows.iter().map(|(_, item)| LedgerKey::new(&item.rk)).collect();
         let Some(anchor) = keys.iter().position(|key| self.keys.contains(key)) else {
-            self.keys.extend(keys);
+            for key in keys { self.keys.push(key); }
             return;
         };
-        let at = self.keys.iter().position(|k| *k == keys[anchor]).unwrap_or(0);
-        for key in keys[..anchor].iter().rev() { self.keys.insert(at, key.clone()); }
-        let mut cursor = at + anchor;
-        for key in &keys[anchor..] {
-            match self.keys.iter().position(|k| k == key) {
-                Some(index) => cursor = index + 1,
-                None => { self.keys.insert(cursor, key.clone()); cursor += 1; }
+        self.keys.edit(|ledger| {
+            let at = ledger.iter().position(|k| *k == keys[anchor]).unwrap_or(0);
+            for key in keys[..anchor].iter().rev() { ledger.insert(at, key.clone()); }
+            let mut cursor = at + anchor;
+            for key in &keys[anchor..] {
+                match ledger.iter().position(|k| k == key) {
+                    Some(index) => cursor = index + 1,
+                    None => { ledger.insert(cursor, key.clone()); cursor += 1; }
+                }
             }
-        }
+        });
     }
 }
 
@@ -413,7 +513,6 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
     if ask.before { rows.truncate(half); }
     else if rows.len() > half { rows.drain(..rows.len() - half); }
     let mut cache: HashMap<String, Arc<PmsMovie>> = HashMap::new();
-    let mut known: HashSet<LedgerKey> = ledger.keys.iter().cloned().collect();
     let mut total = info.total;
     let mut requests = 0;
     let mut cursor = rows.last().and_then(|(_, item)| ledger.position(&item.rk))
@@ -434,7 +533,6 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
                     Fetched::Gone => {
                         let gone = LedgerKey::new(key);
                         ledger.keys.retain(|k| *k != gone);
-                        known.remove(&gone);
                     }
                 }
             }
@@ -455,7 +553,6 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
                     Fetched::Gone => {
                         let gone = LedgerKey::new(key);
                         ledger.keys.retain(|k| *k != gone);
-                        known.remove(&gone);
                     }
                 }
             }
@@ -468,22 +565,28 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
         let mc = list(start, MAX_SHELF_ITEMS)?;
         total = if mc.total_size > 0 { mc.total_size as usize } else { total };
         if mc.offset != start as i64 || mc.metadata.len() > MAX_SHELF_ITEMS {
-            // The server ignored the paging: this one response is the whole listing.
+            // The server ignored the paging: this one response is the whole listing, and it is
+            // taken as such rather than failing the page (which would leave everything past the
+            // window unreachable). MEMORY: the response and one parsed card per listed item are
+            // alive for this one read, on the worker, so the transient bound is the size of that
+            // listing; what the row keeps afterwards is the ledger (16 bytes a key) and its
+            // window of at most `MAX_SHELF_ITEMS` cards. Every later ask reads the window back by
+            // key (`many`) and never asks the listing again.
             let mut keys = Vec::new();
-            known.clear();
+            let mut seen = HashSet::new();
             for item in &mc.metadata {
                 let key = clean(&item.rating_key);
                 let Some(shown) = card(sid, item, ask.hidden) else { continue };
-                if known.insert(LedgerKey::new(&key)) {
+                if seen.insert(LedgerKey::new(&key)) {
                     keys.push(LedgerKey::new(&key));
                     cache.insert(key, shown);
                 }
             }
             total = mc.metadata.len();
-            ledger.keys = keys;
+            ledger.keys = keys.into();
             ledger.next = ledger.keys.len();
             ledger.done = true;
-            rows.retain(|(_, item)| known.contains(&LedgerKey::new(&item.rk)));
+            rows.retain(|(_, item)| ledger.keys.contains(&LedgerKey::new(&item.rk)));
             cursor = rows.last().and_then(|(_, item)| ledger.position(&item.rk)).map_or(0, |i| i + 1);
             first = rows.first().and_then(|(_, item)| ledger.position(&item.rk)).unwrap_or(cursor);
             continue;
@@ -493,12 +596,11 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
             if rows.len() >= MAX_SHELF_ITEMS { break; }
             processed += 1;
             let key = LedgerKey::new(&clean(&item.rating_key));
-            if known.contains(&key) { continue; }
+            if ledger.keys.contains(&key) { continue; }
             let Some(shown) = card(sid, item, ask.hidden) else {
                 if ledger.rescans == 0 { ledger.filtered += 1; }
                 continue;
             };
-            known.insert(key.clone());
             ledger.keys.push(key);
             ledger.added += 1;
             rows.push((0, shown));

@@ -337,6 +337,55 @@ fn a_1000_item_listing_that_reshuffles_is_walked_to_its_last_item_and_back() {
     plx_plex::plex::reset_servers_for_test();
 }
 
+// ---- the frame-thread side of an ask does not scale with the ledger -----------------------------
+
+/// What an ask costs the frame thread is structural: the ledger the request carries IS the one the
+/// row holds (shared storage, counted references), however long it is. A copy would make the ask
+/// O(keys) on the frame thread; `Keys::shares` is false for a copy.
+#[test]
+fn the_frame_thread_side_of_an_ask_shares_the_ledger_it_does_not_copy_it() {
+    let _guard = plx_base::testlock::serial();
+    for known in [600, 20_000] {
+        let mut owner = ledger_owner(RECENT_ID, known, known, known * 2);
+        let held = find_shelf(&owner.state.srcs[0].last.as_ref().unwrap().shelves, RECENT_ID, RECENT).unwrap()
+            .row.ledger.clone().unwrap();
+        let request = ask_row(&mut owner, RECENT_ID, RECENT, false).unwrap();
+        let sent = request.window.as_ref().unwrap().row.ledger.as_ref().unwrap();
+        assert!(sent.keys.shares(&held.keys), "{known} keys: the request carries the row's own ledger");
+        assert_eq!(held.keys.index_len(), known, "and every key has its position");
+        reset(&mut owner.state, &owner.adapter);
+        plx_plex::plex::reset_servers_for_test();
+    }
+}
+
+/// A worker that changes its clone takes its own copy; the row's ledger is not touched, and the
+/// position of every key stays right through a middle insert, a drop and an append.
+#[test]
+fn changing_a_shared_ledger_copies_it_for_the_changer_and_keeps_positions_right() {
+    let key = |n: usize| paging::LedgerKey::new(&n.to_string());
+    let held = paging::Ledger::from_rows(&rows_of(0..1000), 1000);
+    let mut worker = held.clone();
+    assert!(worker.keys.shares(&held.keys));
+    worker.note(&rows_of([5usize, 1000, 1001, 6].into_iter()));
+    worker.keys.retain(|k| *k != key(3));
+    worker.keys.push(key(2000));
+    assert!(!worker.keys.shares(&held.keys), "the changer holds its own copy");
+    assert_eq!(held.keys.len(), 1000, "and the row's ledger is untouched");
+    for (at, k) in worker.keys.iter().enumerate() {
+        assert_eq!(worker.keys.position_of(k), Some(at));
+    }
+    assert_eq!(worker.keys.index_len(), worker.keys.len());
+    assert_eq!(worker.position("1000"), Some(5), "a new key lands beside the known row it sat next to");
+}
+
+/// Bytes the ledger costs per 10 000 keys: the keys, and the index beside them.
+#[test]
+fn a_ledger_costs_sixteen_bytes_a_key_and_an_index_entry() {
+    assert_eq!(std::mem::size_of::<paging::LedgerKey>(), 16);
+    let ledger = paging::Ledger::from_rows(&rows_of(0..10_000), 10_000);
+    assert_eq!(ledger.keys.index_len(), 10_000);
+}
+
 // ---- one read in flight per row --------------------------------------------------------------
 
 const RECENT_ID: &str = "home.movies.recent";
@@ -398,6 +447,48 @@ fn a_launch_the_system_refused_is_not_a_failed_page() {
         source.retry_s = 0.0;
         let _ = kick_with(owner.state.hub_gen, &owner.adapter, source, &BrowseScope::standalone(), |_| false);
     }
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+// ---- an ask the store could not take is taken when the shelf repeats it ---------------------------
+//
+// The shelf repeats an unanswered ask on a ladder while focus stands in the edge zone
+// (`plx_ui::cards::Shelf::page_ask`); these pin that the store side of each dead end accepts the
+// repeat once what stopped it is over, with no other input between.
+
+#[test]
+fn a_page_given_up_after_three_failed_reads_is_read_again_by_the_next_ask() {
+    let _guard = plx_base::testlock::serial();
+    let mut owner = owner_with(RECENT_ID, RECENT, 100);
+    assert!(ask_row(&mut owner, RECENT_ID, RECENT, false).is_some());
+    for _ in 0..3 {
+        owner.state.srcs[0].fetching = false;
+        let _ = landed_fail(&mut owner.state.srcs[0]);
+    }
+    let source = &owner.state.srcs[0];
+    assert!(source.page.is_none(), "after three failures the page is dropped");
+    assert!(find_shelf(&source.last.as_ref().unwrap().shelves, RECENT_ID, RECENT).unwrap().more,
+        "and the row still says there is more");
+    assert!(ask_row(&mut owner, RECENT_ID, RECENT, false).is_some(), "the repeat of the ask starts a fresh read");
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn an_ask_refused_for_a_withdrawn_read_is_taken_once_that_read_has_landed() {
+    let _guard = plx_base::testlock::serial();
+    let len = 100;
+    let mut owner = owner_with(RECENT_ID, RECENT, len);
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let ghost = ask_row(&mut owner, RECENT_ID, RECENT, false).unwrap();
+    withdraw(&mut owner);
+    // something else was asked of the source since, so the ghost can no longer be taken back
+    owner.state.srcs[0].adoptable = false;
+    assert!(ask_row(&mut owner, RECENT_ID, RECENT, false).is_none(), "refused while the ghost is out");
+    assert!(ask_row(&mut owner, RECENT_ID, RECENT, false).is_none(), "and still refused: repeating does not stack reads");
+    answer(&mut owner, ghost, listing, batch(|_| true));
+    assert!(ask_row(&mut owner, RECENT_ID, RECENT, false).is_some(), "the next repeat is taken");
     reset(&mut owner.state, &owner.adapter);
     plx_plex::plex::reset_servers_for_test();
 }
@@ -602,6 +693,31 @@ fn a_500_card_collection_row_pages_to_its_end_and_back_through_the_store() {
         reset(&mut owner.state, &owner.adapter);
         plx_plex::plex::reset_servers_for_test();
     }
+}
+
+/// A server that ignores the window on a key answers the whole listing from its first row. The
+/// row still reaches every item, on the way out and back, and keeps only its 24-card window.
+#[test]
+fn a_300_card_row_whose_server_ignores_the_window_is_walked_to_its_last_item_and_back() {
+    let _guard = plx_base::testlock::serial();
+    let len = 300;
+    let mut reads = 0;
+    let mut owner = paged_owner("movie.genre", &(0..12).collect::<Vec<_>>(), len);
+    let mut ignoring = |_: usize, _: usize| { reads += 1; Some(container(0, len, 0..len)) };
+    let windows = walk_through_the_store(&mut owner, "movie.genre", &mut ignoring);
+    assert_eq!(shown(&owner).last().unwrap(), "299", "the last item is reached");
+    assert_each_once(&windows, len);
+    assert!(windows.iter().all(|w| w.len() <= 24));
+    let mut back = 0;
+    while let Some(request) = ask_row(&mut owner, "movie.genre", HUB_KEY, true) {
+        answer(&mut owner, request, &mut ignoring, batch(|_| true));
+        assert!(shown(&owner).len() <= 24);
+        back += 1;
+        assert!(back < 400);
+    }
+    assert_eq!(shown(&owner)[0], "0", "and the first item again");
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
 }
 
 #[test]
