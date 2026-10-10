@@ -86,6 +86,7 @@ pub(crate) fn install_panic_logger() {
         let _ = record_panic_in_crash_log(
             &plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::CRASH),
             &line,
+            plx_telemetry::telemetry::crashreport::now_secs(),
         );
         default(info); // preserve default behaviour (stderr -> plxnative-stderr.log)
     }));
@@ -102,8 +103,19 @@ pub(crate) fn install_panic_logger() {
 /// link, 0640, never truncated) rather than a bare `OpenOptions` at the umask's mode, so a name
 /// planted in the shared `/tmp` is refused instead of written through. `Err` is for the hook to
 /// ignore: a panic hook has nowhere to report a failure to.
-fn record_panic_in_crash_log(path: &std::path::Path, line: &str) -> std::io::Result<()> {
-    plx_base::eventlog::append_record(path, &plx_base::eventlog::scrub::scrub_local(line))
+///
+/// **The record is two lines in ONE write:** the panic line and the `time: <unix seconds>` line the
+/// C tracer also writes under a signal record ([`plx_telemetry::telemetry::crashreport::crash_time_record`]
+/// is the one spelling). The crash importer sends it as the event's `timestamp`, so the report says
+/// when the panic happened rather than when the next launch found it. `0` (a clock that reads
+/// nothing) writes no time line.
+fn record_panic_in_crash_log(path: &std::path::Path, line: &str, unix_secs: u64) -> std::io::Result<()> {
+    let mut record = plx_base::eventlog::scrub::scrub_local(line);
+    if unix_secs > 0 {
+        record.push('\n');
+        record.push_str(&plx_telemetry::telemetry::crashreport::crash_time_record(unix_secs));
+    }
+    plx_base::eventlog::append_record(path, &record)
 }
 
 #[cfg(test)]
@@ -127,15 +139,22 @@ mod panic_log_tests {
     fn the_panic_text_is_scrubbed_like_every_event_log_line() {
         let dir = scratch("scrub");
         let path = dir.join("crash.log");
-        record_panic_in_crash_log(&path, LINE).unwrap();
+        record_panic_in_crash_log(&path, LINE, 1_750_000_000).unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(!written.contains("SECRETTOKEN"), "{written}");
         assert!(!written.contains("192-168-1-50") && !written.contains("plex.direct"), "{written}");
         assert!(written.starts_with("*** RUST PANIC [demux] at src/ff.rs:1204: "), "the record's shape survives: {written}");
-        assert!(written.ends_with('\n') && written.matches('\n').count() == 1, "one newline-terminated record");
-        // And the crash report parser still reads the scrubbed record.
+        assert!(
+            written.ends_with("\ntime: 1750000000\n") && written.matches('\n').count() == 2,
+            "the panic line, then its time line, newline-terminated: {written}"
+        );
+        // And the crash report parser still reads the scrubbed record, with the time it was given.
         let reports = plx_telemetry::telemetry::crashreport::parse(&written);
         assert_eq!(reports.len(), 1, "{written}");
+        assert!(
+            matches!(&reports[0], plx_telemetry::telemetry::crashreport::Report::Panic(p) if p.crash_time == Some(1_750_000_000)),
+            "{reports:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -147,14 +166,14 @@ mod panic_log_tests {
         let path = dir.join("crash.log");
         std::fs::write(&path, b"*** SIGNAL 11 earlier\n").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
-        record_panic_in_crash_log(&path, "*** RUST PANIC [t] at src/a.rs:1: boom").unwrap();
+        record_panic_in_crash_log(&path, "*** RUST PANIC [t] at src/a.rs:1: boom", 1_750_000_000).unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().mode() & 0o7777, 0o640);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            "*** SIGNAL 11 earlier\n*** RUST PANIC [t] at src/a.rs:1: boom\n"
+            "*** SIGNAL 11 earlier\n*** RUST PANIC [t] at src/a.rs:1: boom\ntime: 1750000000\n"
         );
         let fresh = dir.join("fresh.log");
-        record_panic_in_crash_log(&fresh, "*** RUST PANIC [t] at src/a.rs:1: boom").unwrap();
+        record_panic_in_crash_log(&fresh, "*** RUST PANIC [t] at src/a.rs:1: boom", 1_750_000_000).unwrap();
         assert_eq!(std::fs::metadata(&fresh).unwrap().mode() & 0o7777, 0o640);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -170,11 +189,11 @@ mod panic_log_tests {
 
         let linked = dir.join("symlinked.log");
         symlink(&victim, &linked).unwrap();
-        assert!(record_panic_in_crash_log(&linked, LINE).is_err());
+        assert!(record_panic_in_crash_log(&linked, LINE, 1_750_000_000).is_err());
 
         let hard = dir.join("hardlinked.log");
         std::fs::hard_link(&victim, &hard).unwrap();
-        assert!(record_panic_in_crash_log(&hard, LINE).is_err());
+        assert!(record_panic_in_crash_log(&hard, LINE, 1_750_000_000).is_err());
 
         let meta = std::fs::metadata(&victim).unwrap();
         assert_eq!(meta.mode() & 0o7777, 0o600, "never widened");

@@ -33,7 +33,9 @@ const PENDING_DIR: &str = "plxnative-sentry-pending";
 pub struct Guard;
 
 /// Enough identity to pair a native envelope with the crash log's record of the same death. There
-/// is no timestamp in the async-signal-safe fallback record.
+/// is no timestamp to pair on in the async-signal-safe fallback record: it carries a wall-clock
+/// second (`time:`), but that is the TV's clock and is only sent as the fallback event's own
+/// `timestamp`, never compared with the envelope's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CrashKey {
     pub build_id: String,

@@ -38,6 +38,7 @@
 #include <stddef.h>
 #include <string.h>   /* memset, in install only — NOT in the handler */
 #include <sys/resource.h>
+#include <time.h>     /* time(): async-signal-safe, used by the handler for the record's time: line */
 
 /* ---------------------------------------------------------------------------------------------
  * The tracer proper.
@@ -229,6 +230,19 @@ static void crash_handler(int sig, siginfo_t *si, void *uc) {
     struct plx_sbuf b = { rec_buf, 0, sizeof rec_buf };
     b.n = plx_fmt_signal(rec_buf, sizeof rec_buf, sig, signame(sig), addr, pc, lr);
     emit(&b);
+    /* The crash's wall-clock second, on its own line under the signal line (see `plx_fmt_time`).
+     * `time()` is on POSIX's async-signal-safe list: it reads the clock and takes no lock and
+     * allocates nothing (it was not measured on the television's glibc, which is the one thing a
+     * host test cannot show, but nothing in its contract can block). Wall clock, not
+     * monotonic, on purpose: this is the time Sentry is told, and monotonic seconds mean nothing
+     * to it. A set whose clock is wrong records a wrong time, which the importer's window check
+     * (`crashreport::crash_timestamp`) drops when it is absurd; a failed call (-1) writes no line
+     * at all rather than a made-up one. */
+    time_t now = time(NULL);
+    if (now > 0) {
+        b.n = plx_fmt_time(rec_buf, sizeof rec_buf, (unsigned long)now);
+        emit(&b);
+    }
 #if defined(__arm__)
     emit_regs(&c->uc_mcontext);
 #endif

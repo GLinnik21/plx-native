@@ -92,7 +92,9 @@ signal such as a segmentation fault), PlxNative sends a simpler report built fro
 log instead. It carries the same kernel name and release, webOS and hardware compatibility
 details as a native report, and the file name (never the folder) and build identifier of each
 library (a library of the television's firmware or one bundled with PlxNative) the faulting
-address and the return address were in, with the library's load address and size. It also says in
+address and the return address were in, with the library's load address and size. It carries the
+time of the crash, to the second, as the television's clock read it when the crash was logged (it
+is left out when that clock reads an implausible time). It also says in
 one fixed word why the primary report is missing: `no_envelope` (no usable report was left:
 the crash reporter left none, or left one that was malformed and was deleted before the comparison,
 which looks the same) or `envelope_unmatched` (it left reports, none of them this crash). No path, library
@@ -101,8 +103,8 @@ folder or other file content is sent.
 When the crash was a Rust panic rather than a fault, the fallback report is smaller still: the
 source file and line of the panic, a hash of the panic message (the message itself is never sent),
 the app version and build identifier of PlxNative, the `environment` label of the build (`production`
-or `development`) and the Crash report ID below. It carries none of the library
-details above.
+or `development`), the time of the panic (read and bounded as above) and the Crash report ID below.
+It carries none of the library details above.
 
 Every crash and error report carries a **Crash report ID**: a random identifier created on this
 television when you turn crash reports on, sent as the report's `user.id`. It exists so that

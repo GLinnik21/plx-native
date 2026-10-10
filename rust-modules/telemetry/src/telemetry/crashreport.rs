@@ -11,7 +11,8 @@
 //! string lifted out of a file.
 //!
 //! It is enforced structurally rather than by care. [`parse`] reads **numbers only** — the signal
-//! number, `addr`, `pc`, `lr`, and the registers — and the signal's NAME is then derived from
+//! number, `addr`, `pc`, `lr`, the registers and the crash's wall-clock second (`time:`, digits
+//! only, sent as the event's `timestamp` only inside [`crash_timestamp`]'s window) — and the signal's NAME is then derived from
 //! [`signal_name`], a fixed table in this file. So even the one human-readable token in the record
 //! (`SIGSEGV`) reaches Sentry as a `&'static str` this crate owns, not as bytes that happened to be
 //! in a file. A tracer that one day wrote something unexpected there could not smuggle it out.
@@ -83,6 +84,9 @@ pub struct Fault {
     pub registers: Registers,
     /// The mapped modules that contain `pc` or `lr`, from the record's `at:` lines.
     pub modules: Vec<ModuleMapping>,
+    /// Unix seconds the tracer stamped on the record (`time:` line), as read. NOT yet checked
+    /// against the clock: [`crash_timestamp`] does that when a body is built.
+    pub crash_time: Option<u64>,
 }
 
 /// One `/proc/self/maps` line the tracer kept because it contains the fault's `pc` or `lr`.
@@ -154,6 +158,57 @@ impl NativePath {
 pub struct FaultExtra {
     pub native_path: NativePath,
     pub modules: Vec<ModuleImage>,
+}
+
+/// The crash log line that stamps a record with the wall-clock second it was written:
+/// `time: <unix seconds>`. The C tracer (`src/crashtrace.c`) writes the same spelling after each
+/// `*** SIGNAL` line and the panic hook writes it after each `*** RUST PANIC` line; [`parse`]
+/// reads it back. One spelling here so the writer and the reader cannot drift.
+pub fn crash_time_record(unix_secs: u64) -> String {
+    format!("time: {unix_secs}")
+}
+
+/// The wall clock in Unix seconds, `0` if it reads before the epoch. Public so the panic hook
+/// (`app/boot.rs`, where a wall-clock read is not allowed) stamps its record with the same clock
+/// [`crash_timestamp`] later checks it against.
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// How far back a crash time is still sent. Sentry drops an event whose `timestamp` is older than
+/// 30 days outright, which would cost a crash that today lands (stamped with its receipt time), so
+/// an older crash is sent without one; 25 days leaves room for the queue and a retry.
+const MAX_CRASH_AGE_SECS: u64 = 25 * 86_400;
+/// Clock skew tolerated into the future. Sentry rejects an event more than about a minute ahead.
+const FUTURE_SLACK_SECS: u64 = 60;
+/// A clock earlier than this has not been set (a television that has not synced yet reads 1970),
+/// so it is no reference to bound a crash time against: nothing is sent.
+const FIRST_PLAUSIBLE_NOW: u64 = 1_704_067_200; // 2024-01-01T00:00:00Z
+
+/// The crash time to send, or `None` to send no `timestamp` at all (Sentry then stamps the event
+/// with its receipt time, which is what happened before the record carried one).
+///
+/// `recorded` is what the tracer wrote; it was read from a file, so it is held to a window around
+/// `now` rather than trusted: not in the future (beyond [`FUTURE_SLACK_SECS`]), not older than
+/// [`MAX_CRASH_AGE_SECS`], and never against a clock that was not set. A time outside the window
+/// is dropped, not clamped: a made-up time is worse than a missing one.
+pub fn crash_timestamp(recorded: Option<u64>, now: u64) -> Option<u64> {
+    let t = recorded?;
+    (now >= FIRST_PLAUSIBLE_NOW
+        && t <= now.saturating_add(FUTURE_SLACK_SECS)
+        && t >= now.saturating_sub(MAX_CRASH_AGE_SECS))
+    .then_some(t)
+}
+
+/// A `time:` line's value: 1 to 12 ASCII digits and nothing else. The window check is
+/// [`crash_timestamp`]'s, which needs the clock; this only refuses what is not a number.
+fn parse_crash_time(s: &str) -> Option<u64> {
+    (!s.is_empty() && s.len() <= 12 && s.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| s.parse().ok())
+        .flatten()
 }
 
 /// Resolve each mapped module of `f` to an image entry. `read` returns the head of the file the
@@ -329,6 +384,9 @@ pub struct PanicReport {
     pub message_hash: u64,
     /// The same validated ELF identity as a signal record, when a startup marker preceded it.
     pub image: Option<ImageIdentity>,
+    /// Unix seconds the panic hook stamped on the record (`time:` line), as read; see
+    /// [`Fault::crash_time`].
+    pub crash_time: Option<u64>,
 }
 
 /// Whether a string is plausibly one of OUR source locations, and therefore safe to send.
@@ -460,6 +518,21 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                 f.registers.lr.get_or_insert(f.lr);
                 f.registers.pc.get_or_insert(f.pc);
             }
+        } else if let Some(rest) = l.strip_prefix("time: ") {
+            // The record's own wall-clock second. Applied to the report just above it and only if
+            // that report has none yet, so a stray later line cannot move a recorded time, and a
+            // panic's abort (folded into the panic) cannot overwrite the panic's.
+            if let Some(t) = parse_crash_time(rest) {
+                match out.last_mut() {
+                    Some(Report::Fault(f)) => {
+                        f.crash_time.get_or_insert(t);
+                    }
+                    Some(Report::Panic(p)) => {
+                        p.crash_time.get_or_insert(t);
+                    }
+                    None => {}
+                }
+            }
         } else if l.starts_with("*** RUST PANIC ") {
             if PANIC_FOLLOWUPS.iter().any(|m| l.ends_with(m))
                 && matches!(out.last(), Some(Report::Panic(_)))
@@ -490,6 +563,7 @@ fn parse_fault(rest: &str, whole: &str, image: Option<ImageIdentity>) -> Option<
             ..Registers::default()
         },
         modules: Vec::new(),
+        crash_time: None,
     })
 }
 
@@ -566,6 +640,7 @@ fn parse_panic(l: &str) -> Option<PanicReport> {
         location: location.to_string(),
         message_hash: message_hash(&l[after + rel + 2..]),
         image: None,
+        crash_time: None,
     })
 }
 
@@ -602,6 +677,10 @@ fn registers_json(r: &Registers) -> serde_json::Value {
 
 /// The Sentry event body for one fault.
 ///
+/// **`timestamp` is the crash's own time**, from the record's `time:` line, and is absent when the
+/// record has none or [`crash_timestamp`] rejects it, so Sentry never shows the (later) time the
+/// report was imported.
+///
 /// `image_addr` comes from [`super::sentry::image_addr`] — the running binary's own lowest
 /// `PT_LOAD`, not zero. Its doc carries the measured A/B that settled why zero is the trap.
 ///
@@ -624,6 +703,12 @@ pub fn sentry_body(
         .map(|i| i.build_id.as_str())
         .unwrap_or(build_id);
     let registers = registers_json(&f.registers);
+    // Oldest first, which is the order Sentry renders bottom-up: lr is the caller, so it goes first
+    // and pc — the faulting instruction — ends up on top.
+    let frames = [
+        serde_json::json!({"instruction_addr": format!("0x{:x}", f.lr), "platform": "native"}),
+        serde_json::json!({"instruction_addr": format!("0x{:x}", f.pc), "platform": "native"}),
+    ];
     let mut body = serde_json::json!({
         "event_id": event_id,
         "platform": "native",
@@ -640,14 +725,12 @@ pub fn sentry_body(
             "value": format!("{name} at 0x{:x}", f.addr),
             "mechanism": {"type": "signalhandler", "handled": false,
                           "meta": {"signal": {"number": f.signal, "name": name}}},
-            "stacktrace": {"frames": [
-                // Oldest first, which is the order Sentry renders bottom-up: lr is the caller, so
-                // it goes first and pc — the faulting instruction — ends up on top.
-                {"instruction_addr": format!("0x{:x}", f.lr), "platform": "native"},
-                {"instruction_addr": format!("0x{:x}", f.pc), "platform": "native"},
-            ]},
+            "stacktrace": {"frames": frames},
         }]},
     });
+    if let Some(t) = crash_timestamp(f.crash_time, now_secs()) {
+        body["timestamp"] = serde_json::json!(t);
+    }
     if !registers.as_object().is_some_and(serde_json::Map::is_empty) {
         body["exception"]["values"][0]["stacktrace"]["registers"] = registers;
     }
@@ -737,6 +820,10 @@ pub fn panic_sentry_body(
     if let Some(image) = &p.image {
         body["dist"] = serde_json::Value::String(image.build_id.clone());
     }
+    // The panic's own time (the hook's `time:` line), under the same bounds as a fault's.
+    if let Some(t) = crash_timestamp(p.crash_time, now_secs()) {
+        body["timestamp"] = serde_json::json!(t);
+    }
     super::sentry::attach_user(&mut body, errors_id);
     serde_json::to_vec(&body).unwrap_or_default()
 }
@@ -777,6 +864,8 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
             cpsr: all,
         },
         modules: Vec::new(),
+        // So the real serializer emits the field; the value is replaced by a placeholder below.
+        crash_time: Some(now_secs()),
     };
     let mut fault_json: serde_json::Value = serde_json::from_slice(&sentry_body(
         &fault,
@@ -806,6 +895,7 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
 
     fault_json["event_id"] = serde_json::json!("<stable id for this crash-log record>");
     fault_json["dist"] = serde_json::json!("<crashed ELF build id>");
+    fault_json["timestamp"] = serde_json::json!("<crash time>");
     fault_json["exception"]["values"][0]["value"] = serde_json::json!("SIGSEGV at <fault address>");
     if let Some(frames) = fault_json
         .pointer_mut("/exception/values/0/stacktrace/frames")
@@ -845,6 +935,7 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
         location: "src/example.rs:42".to_string(),
         message_hash: 0,
         image: Some(image),
+        crash_time: Some(now_secs()),
     };
     let mut panic_json: serde_json::Value = serde_json::from_slice(&panic_sentry_body(
         &panic,
@@ -855,6 +946,7 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
     let source = "<validated compile-time source:line>";
     panic_json["event_id"] = serde_json::json!("<stable id for this crash-log record>");
     panic_json["dist"] = serde_json::json!("<crashed ELF build id>");
+    panic_json["timestamp"] = serde_json::json!("<crash time>");
     panic_json["exception"]["values"][0]["value"] = serde_json::json!(
         "Rust panic at <validated compile-time source:line> (msg <message hash>)"
     );
@@ -1504,6 +1596,7 @@ mod tests {
             location: "src/example.rs:42".into(),
             message_hash: 7,
             image: None,
+            crash_time: None,
         };
         let id = "0123456789abcdef0123456789abcdef";
         for body in [
@@ -1620,6 +1713,89 @@ mod tests {
         assert!(path.is_none(), "a path reached the body: {path:?}");
         let text = String::from_utf8(body).unwrap();
         assert!(!text.contains("/usr/lib") && !text.contains("/media"));
+    }
+
+
+    // ---- the fallback event carries the crash's own time ----
+
+    fn body_json(f: &Fault) -> serde_json::Value {
+        serde_json::from_slice(&sentry_body(f, "e", BUILD, Some("did"), None, &extra())).unwrap()
+    }
+
+    #[test]
+    fn a_recorded_crash_time_is_parsed_from_its_line() {
+        let f = only_fault(&format!("{REC}time: 1750000000\n"));
+        assert_eq!(f.crash_time, Some(1_750_000_000));
+        assert_eq!(only_fault(REC).crash_time, None, "a record from before the line existed");
+        for bad in ["time: \n", "time: -5\n", "time: 17e9\n", "time: 99999999999999999999999\n", "time: 1 2\n"] {
+            assert_eq!(only_fault(&format!("{REC}{bad}")).crash_time, None, "{bad:?}");
+        }
+        // The first stamp wins, so a later stray line cannot move a recorded time.
+        let two = only_fault(&format!("{REC}time: 1750000000\ntime: 1750000999\n"));
+        assert_eq!(two.crash_time, Some(1_750_000_000));
+    }
+
+    #[test]
+    fn the_fault_body_carries_the_crash_time_it_was_given() {
+        let t = now_secs() - 3_600;
+        let f = only_fault(&format!("{REC}time: {t}\n"));
+        assert_eq!(body_json(&f)["timestamp"], serde_json::json!(t));
+    }
+
+    #[test]
+    fn a_fault_without_a_time_gets_no_timestamp_field() {
+        let body = body_json(&only_fault(REC));
+        assert!(body.get("timestamp").is_none(), "not zero and not now: {body}");
+    }
+
+    #[test]
+    fn an_absurd_or_future_crash_time_is_omitted_not_sent() {
+        let now = now_secs();
+        for t in [0, 1, 1_000_000_000, now + 3_600, now + 10 * 365 * 86_400, now - 40 * 86_400] {
+            let f = only_fault(&format!("{REC}time: {t}\n"));
+            assert!(body_json(&f).get("timestamp").is_none(), "{t} must not be sent");
+        }
+    }
+
+    #[test]
+    fn the_time_window_is_checked_against_now() {
+        let now = 1_800_000_000;
+        assert_eq!(crash_timestamp(Some(now - 60), now), Some(now - 60));
+        assert_eq!(crash_timestamp(Some(now), now), Some(now));
+        assert_eq!(crash_timestamp(Some(now + 30), now), Some(now + 30), "a little skew is tolerated");
+        assert_eq!(crash_timestamp(Some(now + 3_600), now), None, "future");
+        assert_eq!(crash_timestamp(Some(now - 24 * 86_400), now), Some(now - 24 * 86_400));
+        assert_eq!(crash_timestamp(Some(now - 26 * 86_400), now), None, "older than Sentry accepts");
+        assert_eq!(crash_timestamp(Some(0), now), None);
+        assert_eq!(crash_timestamp(None, now), None);
+        assert_eq!(crash_timestamp(Some(now), 5), None, "a clock that has not been set is no reference");
+    }
+
+    #[test]
+    fn a_panic_record_carries_its_crash_time_too() {
+        let t = now_secs() - 120;
+        let log = format!("*** RUST PANIC [t] at src/a.rs:1: boom\n{}\n", crash_time_record(t));
+        let Some(Report::Panic(p)) = parse(&log).into_iter().next() else { panic!("a panic") };
+        assert_eq!(p.crash_time, Some(t));
+        let v: serde_json::Value = serde_json::from_slice(&panic_sentry_body(&p, "e", None)).unwrap();
+        assert_eq!(v["timestamp"], serde_json::json!(t));
+        let bare = PanicReport { crash_time: None, ..p };
+        let v: serde_json::Value = serde_json::from_slice(&panic_sentry_body(&bare, "e", None)).unwrap();
+        assert!(v.get("timestamp").is_none());
+    }
+
+    #[test]
+    fn a_panics_abort_does_not_move_the_panics_time() {
+        let t = now_secs() - 120;
+        let log = format!(
+            "*** RUST PANIC [t] at src/a.rs:1: boom\n{}\n\n*** SIGNAL 6 (SIGABRT) addr=0x1 pc=0x2 lr=0x3\ntime: {}\n",
+            crash_time_record(t),
+            t + 1
+        );
+        let reports = parse(&log);
+        assert_eq!(reports.len(), 1);
+        let Report::Panic(p) = &reports[0] else { panic!("the panic is the report") };
+        assert_eq!(p.crash_time, Some(t));
     }
 
     #[test]
@@ -1856,6 +2032,7 @@ mod tests {
             location: "src/ff.rs:1204".into(),
             message_hash: message_hash(msg),
             image: None,
+            crash_time: None,
         };
         let rendered = format!("{r:?}");
         assert!(!rendered.contains("Dune"), "a title reached the report");

@@ -48,6 +48,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static int failures = 0;
@@ -154,6 +155,19 @@ static void one_case(const char *name, int sig, const char *signame, enum how ho
     }
     expect(name, count(log, " pc=0x") == 2, "no pc= field");
     expect(name, count(log, " lr=0x") == 2, "no lr= field");
+
+    /* The crash's own wall-clock second, on the line under the signal line, once per descriptor.
+     * It is what the importer sends as the event's `timestamp`; without it Sentry shows the time
+     * of the NEXT LAUNCH. The value is checked against the clock this test runs on (the child
+     * wrote it a moment ago), not against a constant. */
+    expect(name, count(log, "\ntime: ") == 2, "no time: line under the signal line");
+    {
+        const char *t = strstr(log, "\ntime: ");
+        long long secs = t ? atoll(t + 7) : 0;
+        long long now = (long long)time(NULL);
+        expect(name, secs > 0 && secs <= now && now - secs < 60,
+               "the time: line does not hold the current unix second");
+    }
 
     /* (1)+(4) A REAL FAULT carries a real address. `raise()` cannot: the kernel fills `si_addr`
      * only for a genuine memory fault, so this assertion is scoped to the case that produces one. */

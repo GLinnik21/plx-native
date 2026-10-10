@@ -93,6 +93,24 @@ int main(void) {
                out,
                "\n*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0xb6f2a1c4 lr=0xb6f2a0e8\n");
     }
+    /* The record's second line: the wall-clock second the crash happened, which the Rust importer
+     * reads back as the event's `timestamp` (`crashreport::crash_time_record` is the same
+     * spelling). Pinned byte for byte because a change here silently strips the time off every
+     * fallback event. */
+    {
+        char out[64];
+        size_t n = plx_fmt_time(out, sizeof out - 1, 1750000000UL);
+        out[n] = 0;
+        eq_str("time line", out, "time: 1750000000\n");
+        n = plx_fmt_time(out, sizeof out - 1, 0);
+        out[n] = 0;
+        eq_str("time line, zero", out, "time: 0\n");
+        char small[32];
+        memset(small, '#', sizeof small);
+        n = plx_fmt_time(small, 8, 1750000000UL);
+        eq_int("time line truncated length", (long)n, 8);
+        eq_int("time line wrote nothing past cap", small[8], '#');
+    }
     /* Truncation is silent and must not overrun. The buffer here cannot hold the whole line; the
      * only assertion that matters is that nothing past `cap` was written, which the canary
      * checks. */
