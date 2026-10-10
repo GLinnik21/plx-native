@@ -613,6 +613,8 @@ pub struct SearchState {
     /// This owner's memo of the built [`scope::SourceScopeSnapshot`] (`search/scope.rs`). Interior
     /// mutable because `snapshot`/`snapshot_with_directory` are reached through `&self`.
     scope_cache: scope::ScopeCache,
+    /// Which servers may have a request out this pump ([`crate::stores::fanout`]).
+    fanout: crate::stores::fanout::Fanout,
 }
 
 impl Default for SearchState {
@@ -629,6 +631,7 @@ impl Default for SearchState {
             armed: false,
             src: Vec::new(),
             scope_cache: scope::ScopeCache::default(),
+            fanout: Default::default(),
         }
     }
 }
@@ -1002,6 +1005,10 @@ fn pump_with_optional_directory(
         }
     }
     let mut landed = false;
+    // Which sources may start a request this pump. A source's countdown is stepped inside the sweep
+    // below, so it is judged here as it will stand after that step.
+    let (running, wanting) = fanout_candidates(state, adapter, &live);
+    let mut turn = state.fanout.begin(running, &wanting);
     for i in live.iter().copied() {
         let counted = source_mut(state, i);
         if counted.retry_cd > 0 {
@@ -1016,6 +1023,7 @@ fn pump_with_optional_directory(
         let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Search,
             || adapter.mailbox(i).busy(), || adapter.mailbox(i).take_current(|m| m.gen));
         if let Some(m) = taken {
+            turn.finished();
             if m.gen == state.gen {
                 record(state, i, m.what);
                 landed = true;
@@ -1024,7 +1032,7 @@ fn pump_with_optional_directory(
             // arm is skipped with it on purpose — a stale failure that armed the backoff would
             // delay the current query's first answer by ~2 s for an error that was never about it.
         }
-        maybe_spawn(state, adapter, i);
+        maybe_spawn(state, adapter, i, &mut turn);
     }
     // The SHELVES are rebuilt only when something landed, but the STATE is recomputed every frame:
     // it is a scan of one status per live slot, and making it conditional on a landing left the one
@@ -1253,18 +1261,32 @@ fn state_from_refs(sources: &[&Source], asking: bool) -> State {
 /// `pump`, which is what makes the failure path self-healing: a refused `spawn_small` (the
 /// device's thread ceiling) or a transient network error simply retries after the backoff instead
 /// of latching the screen on a spinner forever.
-fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) {
+/// Would a request for source `i` leave now, given its countdown `retry_cd`? The one statement of
+/// the preconditions, read both when the pump opens ([`fanout_candidates`]) and at the spawn.
+fn wants_spawn(state: &SearchState, adapter: &SearchAdapter, i: usize, retry_cd: u32) -> bool {
     if state.armed {
-        return; // still settling — the keystroke burst is not over
+        return false; // still settling: the keystroke burst is not over
     }
-    let src = source(state, i);
+    // a source that has answered has had its say about this query
+    !adapter.mailbox(i).busy() && retry_cd == 0 && source(state, i).status != Status::Answered
+        && terms(state.query()).is_some()
+}
+
+/// How many sources have a request out, and which of `live` want one now, in roster order.
+fn fanout_candidates(state: &SearchState, adapter: &SearchAdapter, live: &[usize]) -> (usize, Vec<usize>) {
+    let running = live.iter().filter(|&&i| adapter.mailbox(i).busy()).count();
+    let wanting = live.iter().copied()
+        .filter(|&i| wants_spawn(state, adapter, i, source(state, i).retry_cd.saturating_sub(1)))
+        .collect();
+    (running, wanting)
+}
+
+fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize,
+    turn: &mut crate::stores::fanout::FanoutTurn) {
+    if !wants_spawn(state, adapter, i, source(state, i).retry_cd) || !turn.admit(i) {
+        return; // not due, or ungranted: it stays wanted and the next pump asks again
+    }
     let mailbox = adapter.mailbox(i);
-    if mailbox.busy() || src.retry_cd > 0 {
-        return;
-    }
-    if src.status == Status::Answered {
-        return; // this source has had its say about this query
-    }
     let Some(q) = terms(state.query()) else { return };
     let q = q.to_string();
     // `sid` is captured HERE, on the main thread, and resolved through `client_for` on the worker.

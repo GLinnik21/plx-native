@@ -234,3 +234,26 @@ fn a_favourite_edit_with_no_query_resident_only_refreshes_the_snapshot() {
         "…but the snapshot is current, so the next query does not open by re-arming"
     );
 }
+
+/// **A search over forty servers asks all forty and never has more than four out at once.** The
+/// registry no longer stops at sixteen, so what bounded the fan-out was the old table; now it is the
+/// store's own gate (`stores::fanout`). A claim stays raised until the pump takes its answer, so the
+/// claims counted after a pump are exactly the requests out.
+#[test]
+fn a_search_over_forty_servers_asks_them_four_at_a_time() {
+    let _g = fresh();
+    let mut owner = Owner::default();
+    register(&mut owner, 40);
+    owner.state.query = Some(Arc::from("wallace"));
+    owner.state.armed = false;
+    let mut asked = std::collections::BTreeSet::new();
+    for _ in 0..2000 {
+        owner.pump(0.016);
+        let out: Vec<usize> = slots().into_iter().filter(|&i| owner.adapter.mailbox(i).busy()).collect();
+        assert!(out.len() <= crate::stores::fanout::WIDTH, "{} requests out at once", out.len());
+        asked.extend(out);
+        if asked.len() == 40 { break; }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(asked.len(), 40, "a wanted server was never asked");
+}
