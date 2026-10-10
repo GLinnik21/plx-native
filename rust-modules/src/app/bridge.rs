@@ -167,6 +167,10 @@ impl Host for AppHost {
     // screen bundle; current focus and group cursors remain the input engine's state.
     type Memory = PageMemory;
 
+    fn shed_memory(memory: &mut PageMemory, focus: Option<u32>) {
+        memory.shed_to_identity(focus);
+    }
+
     fn app_fx_needs_return(fx: &AppFx) -> bool {
         !matches!(fx, AppFx::Store(..) | AppFx::StoreWork(_)
             | AppFx::Library(LibraryReq::PublishShelves { .. }))

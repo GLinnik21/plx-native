@@ -3963,3 +3963,32 @@ fn the_key_table_stays_bounded_over_a_hundred_season_switches_and_focus_never_mo
     assert_eq!(ep_key(&screen, 101), Some(a), "a season that left and returned within the bound keeps its key");
     clear();
 }
+
+/// An entry far below the top keeps one identity: the focused card's. The page that reloads on
+/// return interns the same card under the same key, so focus seats on it.
+#[test]
+fn a_shed_detail_memory_holds_one_identity_and_the_reloaded_page_seats_the_same_card() {
+    use crate::registry::{DetailMemory, PageMemory};
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.related = (0..5).map(|i| plx_data::metadata::Related { rk: format!("rel-{i}"), ..Default::default() }).collect();
+    let _guard = install(d);
+    for n in 0..40usize {
+        let mut screen = bare(&_guard, sid, "show");
+        screen.sync_keys(test_store().view());
+        let focus = screen.engine_key(related::elem(n % 5).unwrap()).unwrap();
+        let mut memory = PageMemory::Detail(DetailMemory {
+            spot: Default::default(), keys: screen.keys.clone(), next_elem: screen.next_elem,
+        });
+        assert!(matches!(&memory, PageMemory::Detail(m) if m.keys.len() > 1));
+        memory.shed_to_identity(Some(focus));
+        let PageMemory::Detail(shed) = &memory else { unreachable!() };
+        assert_eq!(shed.keys.len(), 1, "route and one identity only");
+        assert_eq!(shed.keys[0].elem, focus);
+        let mut returned = bare(&_guard, sid, "show");
+        returned.restore_memory(shed, test_store().view());
+        assert_eq!(returned.engine_key(related::elem(n % 5).unwrap()), Some(focus), "the same card, the same key");
+        assert!(returned.locate(focus, test_store().view()) == Some(Located::Related(n % 5)));
+    }
+    clear();
+}
