@@ -1005,7 +1005,10 @@ QUICK_SECS = 20
 #   * PGS and SRT subtitles. The demuxer would carry them, but the `sub cue` / `image cue`
 #     log lines a case would grade sit behind `desired_sub_idx`, which only the Plex path
 #     ever writes — so a subtitle case down here would assert nothing at all.
-#   * AV1. There is no Load payload video codec for it.
+#   * AV1. The dev set's codec table lists no AV1 decoder, so this tier's TV declares no AV1
+#     video codec, and the AV1 fixtures (`movie_av1_no_dp_audio`) expect a TRANSCODE there. On a
+#     set whose table lists an AV1 decoder the same file would direct-stream video with converted
+#     audio.
 #
 # `declare` IS THE TRIGGER'S PLAYBACK HALF, recorded verbatim into fixtures.json so the
 # harness writes `/tmp/plxnative-playurl` FROM the pack instead of restating it, and read

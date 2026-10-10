@@ -1827,10 +1827,10 @@ resume, the `/:/timeline` reporter — which is also why it needs somebody's lib
 It needs a TV address and nothing else — no token, no ratingKey, no `manifest.local.json`, no
 sharing — so it is the only tier a stranger can run, and it is what separates "the player is
 broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
-the player feeds `{h264,hevc}` × `{aac,ac3,eac3,dts}` in mkv/mp4/m4v. Auto intersects this
+the player feeds `{h264,hevc}` (plus `av1` on a set whose codec table lists an AV1 decoder) × `{aac,ac3,eac3,dts}` in mkv/mp4/m4v. Auto intersects this
 software set with the device table and per-codec channel ceilings; DTS requires a measured
 DTS row and feeds only the DTS core when an HD extension is present. The implemented Load
-strings are `H264`/`H265` and `AC3`/`AC3 PLUS`/`AAC`/`DTS`; these are not the firmware's whole
+strings are `H264`/`H265`/`AV1` (AV1 only on such a set) and `AC3`/`AC3 PLUS`/`AAC`/`DTS`; these are not the firmware's whole
 vocabulary. The six AC3/EAC3/AAC combinations and H264/DTS are covered
 here, plus DV 8.1, both containers, in-place seek in each, and the FRAME-RATE axis added the same
 day (`pipe_h264_1080p5994` is the only fixture that reaches `fps_rational`'s 1001-denominator

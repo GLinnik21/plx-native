@@ -6,6 +6,7 @@ found the bug and then deliberately reverted, because it was not the ABR defect 
 booked for. What landed afterwards is exactly the measured shape and no more —
 `engine::sink_envelope`: H.264 declares `1920x1080@60` when the session's widest raster fits FHD
 (the transcode case, i.e. most of a library), keeps `3840x2160@60` otherwise, HEVC is unchanged,
+AV1 (only on a set whose codec table lists an AV1 decoder) follows the HEVC envelope (unmeasured),
 and the device's own per-codec row (now read WITH `maxFrameRate`) clamps only when the table was
 actually measured. The asynchronous `type=18` is also a verdict now (§3.5's second defect). NOT
 re-measured on 10.3.1. **The frame-rate leg was run on the dev set (webOS 4.10) on 2026-09-03

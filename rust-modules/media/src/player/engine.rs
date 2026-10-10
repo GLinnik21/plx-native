@@ -545,13 +545,61 @@ const ENVELOPE_FHD60: SinkEnvelope = SinkEnvelope {
 ///   fallback is never a clamp. A clamped 1088 is normalised to 1080 for the same reason as
 ///   above, and `fps` is never raised above 60 by the table (120 is a claim nobody has tested).
 ///
+/// The video codec one Load declares: what the payload's `codec.video` names, and what the
+/// `dg_load_v` diagnostic code says. Written once here so the three never disagree.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum LoadVideo {
+    H264,
+    H265,
+    Av1,
+}
+
+impl LoadVideo {
+    /// The route's stream vcodec -> what the Load declares. Everything but `"hevc"` and `"av1"`
+    /// stays H.264, as it always has.
+    pub(crate) fn of_stream(vcodec: &str) -> Self {
+        match vcodec {
+            "hevc" => Self::H265,
+            "av1" => Self::Av1,
+            _ => Self::H264,
+        }
+    }
+    /// The payload's `codec.video` string. libpf selects its AV1 caps for `"AV1"`; the pipeline
+    /// has no av1parse, so an AV1 Load carries its configuration in-band (see `ff.rs`).
+    pub(crate) fn payload_name(self) -> &'static str {
+        match self {
+            Self::H264 => "H264",
+            Self::H265 => "H265",
+            Self::Av1 => "AV1",
+        }
+    }
+    /// `SHARED.dg_load_v`'s code (video 1 = H264, 2 = H265, 3 = AV1).
+    pub(crate) fn diag_code(self) -> u8 {
+        match self {
+            Self::H264 => 1,
+            Self::H265 => 2,
+            Self::Av1 => 3,
+        }
+    }
+}
+
+/// True when the Load must be refused: an AV1 stream on a set whose table lists no AV1 decoder.
+/// Only reachable when a server ignores the profile we sent, so the refusal is a refusal to
+/// declare a codec the set may not have, never a fallback to H.264 for an AV1 bitstream.
+pub(crate) fn load_video_refused(lv: LoadVideo, caps: &plx_platform::devcaps::Caps) -> bool {
+    lv == LoadVideo::Av1 && !caps.av1
+}
+
 /// `maxFrameRate`: **H.264 declares the stream's own rate class** (24/25/30/50/60, never below
 /// the stream; 60 when the rate is unknown) — see the measurement inside; HEVC stays at 60, the
 /// value every Dolby Vision verification was taken under. `/tmp/plxnative-sinkmax=WxH@F`
 /// overrides the whole result so the remaining legs are an A/B with no rebuild. Pure; the
 /// wrappers feed it the route.
+///
+/// AV1 copies HEVC's rule because only H.264 was measured to need the FHD declaration on
+/// webOS 10; AV1 is unmeasured on that axis (issue #593).
 fn sink_envelope(
-    is_h265: bool,
+    video: LoadVideo,
     max_raster: (u16, u16),
     stream_fps: f64,
     caps: &plx_platform::devcaps::Caps,
@@ -559,7 +607,7 @@ fn sink_envelope(
 ) -> SinkEnvelope {
     let fits_fhd = |w: u32, h: u32| w > 0 && h > 0 && w <= 1920 && h <= 1088;
     let (mw, mh) = (u32::from(max_raster.0), u32::from(max_raster.1));
-    let mut env = if !is_h265 && fits_fhd(mw, mh) {
+    let mut env = if video == LoadVideo::H264 && fits_fhd(mw, mh) {
         ENVELOPE_FHD60
     } else {
         ENVELOPE_UHD60
@@ -575,11 +623,15 @@ fn sink_envelope(
     // what the eye saw: declared at 60 the 4K 24p stream was PRESENTED at 13.0 fps mean, worst
     // second 10; declared at 24, 24.1 fps.** The class, not the exact value: 23.976 → 24 keeps
     // the declaration a ceiling the stream fits under.
-    if !is_h265 && stream_fps > 0.0 && stream_fps.is_finite() {
+    if video == LoadVideo::H264 && stream_fps > 0.0 && stream_fps.is_finite() {
         env.fps = fps_class(stream_fps);
     }
     if measured {
-        let (rw, rh, rf) = if is_h265 { caps.hevc_row } else { caps.h264_row };
+        let (rw, rh, rf) = match video {
+            LoadVideo::H264 => caps.h264_row,
+            LoadVideo::H265 => caps.hevc_row,
+            LoadVideo::Av1 => caps.av1_row,
+        };
         let clamp = |v: u32, bound: u32| if bound == 0 { v } else { v.min(bound) };
         env.w = clamp(env.w, rw);
         env.h = clamp(env.h, rh);
@@ -596,16 +648,21 @@ fn sink_envelope(
 /// every arm that sends one (the local-sample feeds and the streamed `/tmp/plxnative-noaudio`
 /// path), so the `load:` line's `max=` reports what was SENT rather than the streamed builder's
 /// initializer. The test below pins these to the strings themselves.
-fn static_envelope(hevc: bool) -> SinkEnvelope {
-    if hevc {
-        ENVELOPE_UHD60
-    } else {
-        SinkEnvelope {
+fn static_envelope(video: LoadVideo) -> SinkEnvelope {
+    match video {
+        LoadVideo::H264 => SinkEnvelope {
             w: 1920,
             h: 1080,
             fps: 30,
-        }
+        },
+        LoadVideo::H265 | LoadVideo::Av1 => ENVELOPE_UHD60,
     }
+}
+
+/// The `PAYLOAD_H265` template with its codec named AV1: the static Load for an AV1 stream on
+/// the no-audio path, which keeps that template's envelope and transport.
+fn av1_static_payload() -> String {
+    PAYLOAD_H265.replacen(r#""video":"H265""#, r#""video":"AV1""#, 1)
 }
 
 /// The smallest of the broadcast/film rate classes the stream fits under: 24, 25, 30, 50, 60,
@@ -619,7 +676,7 @@ fn fps_class(fps: f64) -> u32 {
     fps.ceil() as u32
 }
 
-fn sink_envelope_now(ps: &crate::route::PlaybackSession, is_h265: bool) -> SinkEnvelope {
+fn sink_envelope_now(ps: &crate::route::PlaybackSession, video: LoadVideo) -> SinkEnvelope {
     if let Some(spec) = plx_base::devtrig::read("sinkmax") {
         if let Some(env) = parse_sinkmax(&spec) {
             #[cfg(feature = "devtriggers")]
@@ -632,7 +689,7 @@ fn sink_envelope_now(ps: &crate::route::PlaybackSession, is_h265: bool) -> SinkE
         log(&format!("sinkmax: unparseable spec {spec:?} — ignored"));
     }
     sink_envelope(
-        is_h265,
+        video,
         crate::route::sink_max_raster(ps),
         crate::route::stream_fps(ps),
         plx_platform::devcaps::caps(),
@@ -1141,28 +1198,34 @@ fn start_bufferfeed_inner(
     // The LG-side audio name the payload ended up carrying, hoisted so the `load:` line below can
     // report it. "-" is the video-only case, where there is no audio ES to name.
     let mut audio_declared: &str = "-";
-    // ...and the video name beside it, for the same reason and to keep the hevc->"H265" mapping
-    // written ONCE: the `load:` line below would otherwise re-read the route and re-derive it.
+    // ...and the video name beside it, for the same reason and to keep the codec->name mapping
+    // written ONCE (`LoadVideo`): the `load:` line below would otherwise re-read the route and
+    // re-derive it.
     let mut video_declared: &str = "-";
     let payload_str: &str = if stream {
-        let hevc = crate::route::stream_vcodec(ps) == "hevc";
-        video_declared = if hevc { "H265" } else { "H264" };
+        let lv = LoadVideo::of_stream(&crate::route::stream_vcodec(ps));
+        if load_video_refused(lv, plx_platform::devcaps::caps()) {
+            log("start_bufferfeed: AV1 stream but the device table lists no AV1 decoder; refusing the Load");
+            SHARED.demux_failed.store(true, Ordering::Release);
+            return Err(crate::route::RouteStartResult::StartFailed);
+        }
+        video_declared = lv.payload_name();
         // Record what the payload ACTUALLY says, for the diagnostics read-out — including the
         // video-only case, where `dg_load_a == 0` is the whole explanation for silence.
-        SHARED
-            .dg_load_v
-            .store(if hevc { 2 } else { 1 }, Ordering::Relaxed);
+        SHARED.dg_load_v.store(lv.diag_code(), Ordering::Relaxed);
         if no_audio {
             SHARED.dg_load_a.store(0, Ordering::Relaxed);
             // A static payload declares its own envelope; say so on the `load:` line.
-            sink_env = static_envelope(hevc);
-            if hevc {
-                PAYLOAD_H265
-            } else {
-                PAYLOAD_V
+            sink_env = static_envelope(lv);
+            match lv {
+                LoadVideo::H264 => PAYLOAD_V,
+                LoadVideo::H265 => PAYLOAD_H265,
+                LoadVideo::Av1 => {
+                    stream_payload = av1_static_payload();
+                    stream_payload.as_str()
+                }
             }
         } else {
-            let vc = video_declared;
             // LG's pipeline names E-AC3 "AC3 PLUS" (Dolby Digital Plus), NOT "EAC3" — the
             // wrong string leaves the audio ES unconfigured, and with audioSync the video
             // sink slaves to the dead audio clock and stalls (verified: video-only plays).
@@ -1181,18 +1244,18 @@ fn start_bufferfeed_inner(
             // the declaration and refuses every H.264 Load at 4K60 (`smp_cb type=18 num=601`) —
             // i.e. every server transcode. `sink_envelope` is the rule now, and it is deliberately
             // no wider than what was measured: `docs/webos10-resource-allocation.md`.
-            // `vc` is the STREAM's declared codec; `is_h265` above belongs to the local-sample
+            // `lv` is the STREAM's declared codec; `is_h265` above belongs to the local-sample
             // path and is false here for every streamed HEVC playback (device-measured 2026-09-03:
             // three HEVC cells declared FHD before this read the right flag).
-            sink_env = sink_envelope_now(ps, vc == "H265");
-            stream_payload = build_av_payload(ps, vc, ac, sink_env);
+            sink_env = sink_envelope_now(ps, lv);
+            stream_payload = build_av_payload(ps, lv.payload_name(), ac, sink_env);
             &stream_payload
         }
     } else if is_h265 {
-        sink_env = static_envelope(true);
+        sink_env = static_envelope(LoadVideo::H265);
         PAYLOAD_H265
     } else {
-        sink_env = static_envelope(false);
+        sink_env = static_envelope(LoadVideo::H264);
         PAYLOAD_V
     };
     // The windowId splice happens HERE, at the single point every payload variant passes through,
@@ -4989,9 +5052,9 @@ mod sink_envelope_tests {
             ((0, 0), ENVELOPE_UHD60),  // nobody said: today's value
             ((1920, 0), ENVELOPE_UHD60),
         ] {
-            assert_eq!(sink_envelope(false, raster, 0.0, &c, true), want, "h264 {raster:?}");
+            assert_eq!(sink_envelope(LoadVideo::H264, raster, 0.0, &c, true), want, "h264 {raster:?}");
             assert_eq!(
-                sink_envelope(false, raster, 0.0, &c, false),
+                sink_envelope(LoadVideo::H264, raster, 0.0, &c, false),
                 want,
                 "h264 {raster:?} unmeasured"
             );
@@ -5002,24 +5065,24 @@ mod sink_envelope_tests {
     fn hevc_keeps_the_verified_4k60_on_a_4k_set_whatever_the_source() {
         let c = caps(DEV_SET.0, DEV_SET.1);
         for raster in [(720, 480), (1920, 1080), (3840, 2160), (0, 0)] {
-            assert_eq!(sink_envelope(true, raster, 0.0, &c, true), ENVELOPE_UHD60, "{raster:?}");
-            assert_eq!(sink_envelope(true, raster, 0.0, &c, false), ENVELOPE_UHD60, "{raster:?}");
+            assert_eq!(sink_envelope(LoadVideo::H265, raster, 0.0, &c, true), ENVELOPE_UHD60, "{raster:?}");
+            assert_eq!(sink_envelope(LoadVideo::H265, raster, 0.0, &c, false), ENVELOPE_UHD60, "{raster:?}");
         }
     }
 
     #[test]
     fn a_measured_full_hd_table_clamps_both_codecs_and_the_assumed_table_clamps_nothing() {
         let c = caps(FHD_SET.0, FHD_SET.1);
-        assert_eq!(sink_envelope(true, (3840, 2160), 0.0, &c, true), ENVELOPE_FHD60);
-        assert_eq!(sink_envelope(false, (3840, 2160), 0.0, &c, true), ENVELOPE_FHD60);
-        assert_eq!(sink_envelope(true, (0, 0), 0.0, &c, true), ENVELOPE_FHD60);
+        assert_eq!(sink_envelope(LoadVideo::H265, (3840, 2160), 0.0, &c, true), ENVELOPE_FHD60);
+        assert_eq!(sink_envelope(LoadVideo::H264, (3840, 2160), 0.0, &c, true), ENVELOPE_FHD60);
+        assert_eq!(sink_envelope(LoadVideo::H265, (0, 0), 0.0, &c, true), ENVELOPE_FHD60);
         // the same rows, not measured: never a clamp
-        assert_eq!(sink_envelope(true, (3840, 2160), 0.0, &c, false), ENVELOPE_UHD60);
-        assert_eq!(sink_envelope(true, (0, 0), 0.0, &plx_platform::devcaps::Caps::assumed(), true), ENVELOPE_UHD60);
+        assert_eq!(sink_envelope(LoadVideo::H265, (3840, 2160), 0.0, &c, false), ENVELOPE_UHD60);
+        assert_eq!(sink_envelope(LoadVideo::H265, (0, 0), 0.0, &plx_platform::devcaps::Caps::assumed(), true), ENVELOPE_UHD60);
         // a table stating a lower frame rate clamps it; a higher one never raises it
         let slow = caps((3840, 2160, 30), (3840, 2160, 120));
-        assert_eq!(sink_envelope(false, (3840, 2160), 0.0, &slow, true).fps, 30);
-        assert_eq!(sink_envelope(true, (3840, 2160), 0.0, &slow, true).fps, 60);
+        assert_eq!(sink_envelope(LoadVideo::H264, (3840, 2160), 0.0, &slow, true).fps, 30);
+        assert_eq!(sink_envelope(LoadVideo::H265, (3840, 2160), 0.0, &slow, true).fps, 60);
     }
 
     /// The device measurement behind the rate rule: 4K H.264 declared at 60 is re-announced at
@@ -5028,13 +5091,13 @@ mod sink_envelope_tests {
     fn h264_declares_the_streams_rate_class_and_hevc_keeps_60() {
         let c = caps(DEV_SET.0, DEV_SET.1);
         for (fps, want) in [(24.0, 24), (23.976, 24), (25.0, 25), (29.97, 30), (30.0, 30), (50.0, 50), (59.94, 60), (60.0, 60), (120.0, 60), (0.0, 60)] {
-            assert_eq!(sink_envelope(false, (3840, 2160), fps, &c, true).fps, want, "h264 {fps}");
-            assert_eq!(sink_envelope(false, (1920, 1080), fps, &c, true).fps, want, "h264 fhd {fps}");
-            assert_eq!(sink_envelope(true, (3840, 2160), fps, &c, true).fps, 60, "hevc {fps}");
+            assert_eq!(sink_envelope(LoadVideo::H264, (3840, 2160), fps, &c, true).fps, want, "h264 {fps}");
+            assert_eq!(sink_envelope(LoadVideo::H264, (1920, 1080), fps, &c, true).fps, want, "h264 fhd {fps}");
+            assert_eq!(sink_envelope(LoadVideo::H265, (3840, 2160), fps, &c, true).fps, 60, "hevc {fps}");
         }
         // the table still clamps a class from above
         let slow = caps((3840, 2160, 25), (3840, 2160, 60));
-        assert_eq!(sink_envelope(false, (3840, 2160), 30.0, &slow, true).fps, 25);
+        assert_eq!(sink_envelope(LoadVideo::H264, (3840, 2160), 30.0, &slow, true).fps, 25);
     }
 
     #[test]
@@ -5052,11 +5115,11 @@ mod sink_envelope_tests {
     /// The static payloads' declared envelopes, read out of the strings that are actually sent.
     #[test]
     fn the_static_envelopes_are_the_static_payloads_own_numbers() {
-        for (hevc, payload) in [(false, PAYLOAD_V), (true, PAYLOAD_H265)] {
-            let e = static_envelope(hevc);
-            assert!(payload.contains(&format!(r#""maxWidth":{}"#, e.w)), "{hevc}");
-            assert!(payload.contains(&format!(r#""maxHeight":{}"#, e.h)), "{hevc}");
-            assert!(payload.contains(&format!(r#""maxFrameRate":{}"#, e.fps)), "{hevc}");
+        for (video, payload) in [(LoadVideo::H264, PAYLOAD_V), (LoadVideo::H265, PAYLOAD_H265)] {
+            let e = static_envelope(video);
+            assert!(payload.contains(&format!(r#""maxWidth":{}"#, e.w)), "{video:?}");
+            assert!(payload.contains(&format!(r#""maxHeight":{}"#, e.h)), "{video:?}");
+            assert!(payload.contains(&format!(r#""maxFrameRate":{}"#, e.fps)), "{video:?}");
         }
     }
 
@@ -5069,6 +5132,77 @@ mod sink_envelope_tests {
         assert_eq!(parse_sinkmax("1920x1080"), None);
         assert_eq!(parse_sinkmax("0x1080@60"), None);
         assert_eq!(parse_sinkmax("abc"), None);
+    }
+
+    #[test]
+    fn load_video_maps_exactly_today_plus_av1() {
+        for (vcodec, want) in [
+            ("hevc", LoadVideo::H265),
+            ("h264", LoadVideo::H264),
+            ("av1", LoadVideo::Av1),
+            ("vp9", LoadVideo::H264),
+            ("", LoadVideo::H264),
+            ("HEVC", LoadVideo::H264),
+        ] {
+            assert_eq!(LoadVideo::of_stream(vcodec), want, "{vcodec:?}");
+        }
+        let all = [LoadVideo::H264, LoadVideo::H265, LoadVideo::Av1];
+        assert_eq!(all.map(LoadVideo::payload_name), ["H264", "H265", "AV1"]);
+        assert_eq!(all.map(LoadVideo::diag_code), [1, 2, 3]);
+    }
+
+    #[test]
+    fn av1_envelope_follows_hevc_and_its_own_row() {
+        let mut c = caps(DEV_SET.0, DEV_SET.1);
+        c.av1 = true;
+        c.av1_row = (3840, 2160, 30);
+        assert_eq!(sink_envelope(LoadVideo::Av1, (1920, 1080), 23.976, &c, false), ENVELOPE_UHD60);
+        assert_eq!(
+            sink_envelope(LoadVideo::Av1, (1920, 1080), 23.976, &c, true),
+            SinkEnvelope { w: 3840, h: 2160, fps: 30 }
+        );
+        c.av1_row = (0, 0, 0);
+        assert_eq!(sink_envelope(LoadVideo::Av1, (1920, 1080), 23.976, &c, true), ENVELOPE_UHD60);
+    }
+
+    #[test]
+    fn static_envelope_av1_is_uhd60() {
+        assert_eq!(static_envelope(LoadVideo::Av1), ENVELOPE_UHD60);
+        assert_eq!(static_envelope(LoadVideo::H265), ENVELOPE_UHD60);
+        assert_eq!(static_envelope(LoadVideo::H264), SinkEnvelope { w: 1920, h: 1080, fps: 30 });
+    }
+
+    #[test]
+    fn the_av1_static_payload_declares_av1() {
+        let p = av1_static_payload();
+        assert_eq!(PAYLOAD_H265.matches(r#""video":"H265""#).count(), 1);
+        assert!(p.contains(r#""video":"AV1""#), "{p}");
+        assert!(!p.contains("H265"), "{p}");
+        assert!(p.contains(r#""maxWidth":3840"#) && p.contains(r#""maxHeight":2160"#), "{p}");
+    }
+
+    #[test]
+    fn load_video_refused_only_for_av1_without_the_row() {
+        let assumed = plx_platform::devcaps::Caps::assumed();
+        assert!(load_video_refused(LoadVideo::Av1, &assumed));
+        assert!(!load_video_refused(LoadVideo::H264, &assumed));
+        assert!(!load_video_refused(LoadVideo::H265, &assumed));
+        let with_row = plx_platform::devcaps::Caps { av1: true, ..plx_platform::devcaps::Caps::assumed() };
+        for video in [LoadVideo::H264, LoadVideo::H265, LoadVideo::Av1] {
+            assert!(!load_video_refused(video, &with_row), "{video:?}");
+        }
+    }
+
+    #[test]
+    fn load_v_name_is_the_name_the_payload_declares() {
+        use crate::player::load_v_name;
+        assert_eq!(load_v_name(1), "H264");
+        assert_eq!(load_v_name(2), "H265");
+        assert_eq!(load_v_name(3), "AV1");
+        assert_eq!(load_v_name(0), "—");
+        for video in [LoadVideo::H264, LoadVideo::H265, LoadVideo::Av1] {
+            assert_eq!(load_v_name(video.diag_code()), video.payload_name());
+        }
     }
 }
 

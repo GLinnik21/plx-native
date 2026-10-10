@@ -814,7 +814,7 @@ pub struct Shared {
     pub dg_fed_v_pts: AtomicI64,
     pub dg_fed_a_pts: AtomicI64,
     /// The codec strings this session actually put in the Starfish Load payload, as small codes
-    /// (0 = none/not built; video 1 = H264, 2 = H265; audio 1 = AC3, 2 = AC3 PLUS, 3 = AAC).
+    /// (0 = none/not built; video 1 = H264, 2 = H265, 3 = AV1; audio 1 = AC3, 2 = AC3 PLUS, 3 = AAC).
     ///
     /// Codes rather than strings so they need no lock on the render path — and the PAYLOAD's view
     /// rather than a re-derivation, because the whole class of bug here is the payload disagreeing

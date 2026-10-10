@@ -44,7 +44,8 @@ the `_single` we do use) can be fed from a single appsrc is unexamined.
 Profiles not present here: **4** is dual-layer and deprecated (P&L §1.1 p. 6); **9** is single-layer
 **AVC**, and now falls back without a node because codec eligibility is part of
 `Dovi::presentation` itself (the old gate/payload disagreement has a host regression); **10** and
-**20** are AV1 and MV-HEVC, and this panel has no decoder for either.
+**20** are AV1 and MV-HEVC, and this panel has no Dolby Vision decoder for either. (A set whose
+codec table lists an AV1 decoder can direct-play plain AV1, but that is not a Dolby Vision path.)
 
 ---
 

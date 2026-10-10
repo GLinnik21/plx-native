@@ -678,8 +678,9 @@ fn is_on(a: Action) -> bool {
 /// **"Original" is a claim about the SOURCE, and for some sources it is false.**
 ///
 /// Every other rung names a bound the viewer can reason about — "1080p · 20 Mbps". This one names a
-/// provenance, and when the television cannot decode the source video at all (AV1, VP9, MPEG-2 —
-/// `route::source_decodable`) the server must re-encode the pixels whatever is picked. The row
+/// provenance, and when the television cannot decode the source video at all (VP9, MPEG-2, and AV1
+/// on a set whose codec table lists no AV1 decoder — `route::source_decodable`) the server must
+/// re-encode the pixels whatever is picked. The row
 /// still does something: it is the only rung that sends no bitrate or resolution cap. But it cannot
 /// deliver the original, and until this it said so nowhere, while the DETAIL page for the same item
 /// already said "Converts on server" from the same predicate.
@@ -735,7 +736,8 @@ mod tests {
 
     /// **The Original row says so when it cannot be Original.**
     ///
-    /// For a source this television cannot decode — AV1, VP9, MPEG-2 — the server must re-encode
+    /// For a source this television cannot decode — VP9, MPEG-2, and AV1 on a set whose codec table
+    /// lists no AV1 decoder — the server must re-encode
     /// the pixels whatever rung is picked, so the word "Original" is a promise the pipeline cannot
     /// keep. The DETAIL page for the same item already said "Converts on server" from the same
     /// predicate; the quality picker, which is where a viewer goes to do something about it, said

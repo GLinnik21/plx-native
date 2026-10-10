@@ -13,6 +13,8 @@ fn p8_without_confirmed_dv_support_uses_base_layer() {
         h264_row: (0, 0, 0),
         hevc_row: (0, 0, 0),
         vp9: false,
+        av1: false,
+        av1_row: (0, 0, 0),
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
     };
@@ -49,6 +51,8 @@ fn p5_without_confirmed_dv_support_requires_video_encode() {
         h264_row: (0, 0, 0),
         hevc_row: (0, 0, 0),
         vp9: false,
+        av1: false,
+        av1_row: (0, 0, 0),
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
     };
@@ -136,6 +140,8 @@ fn a_profile_5_source_does_not_direct_play_undeclared() {
         h264_row: (0, 0, 0),
         hevc_row: (0, 0, 0),
         vp9: false,
+        av1: false,
+        av1_row: (0, 0, 0),
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
     };
@@ -175,6 +181,8 @@ fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
         h264_row: (0, 0, 0),
         hevc_row: (0, 0, 0),
         vp9: false,
+        av1: false,
+        av1_row: (0, 0, 0),
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
     };
@@ -193,6 +201,7 @@ fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
     assert_eq!(n.track_type, "single");
     assert_eq!(n.encryption_type, "clear");
     // ...and the size and codec halves of the gate are untouched by any of it
+    // Holds because these caps carry no AV1 row (av1: false), not because of the Dolby gate.
     assert!(!video_direct_plays("av1", 3840, 1602, dv, &caps));
     let small = plx_platform::devcaps::Caps {
         hevc_max: (1920, 1088),
@@ -214,6 +223,8 @@ fn a_dual_layer_profile_7_source_does_not_direct_play() {
         h264_row: (0, 0, 0),
         hevc_row: (0, 0, 0),
         vp9: false,
+        av1: false,
+        av1_row: (0, 0, 0),
         audio: "eac3".into(),
         audio_channels: Default::default(),
     };
@@ -250,6 +261,8 @@ fn profile_8_and_plain_files_are_unaffected() {
         h264_row: (0, 0, 0),
         hevc_row: (0, 0, 0),
         vp9: false,
+        av1: false,
+        av1_row: (0, 0, 0),
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
     };
@@ -397,6 +410,8 @@ fn the_direct_play_gate_and_the_payload_node_can_never_disagree() {
         h264_row: (0, 0, 0),
         hevc_row: (0, 0, 0),
         vp9: false,
+        av1: false,
+        av1_row: (0, 0, 0),
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
     };
@@ -541,6 +556,8 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
         h264_row: (0, 0, 0),
         hevc_row: (0, 0, 0),
         vp9: false,
+        av1: false,
+        av1_row: (0, 0, 0),
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
     };
@@ -587,6 +604,8 @@ fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
         h264_row: (0, 0, 0),
         hevc_row: (0, 0, 0),
         vp9: false,
+        av1: false,
+        av1_row: (0, 0, 0),
         audio: "aac".into(),
         audio_channels: Default::default(),
     };
