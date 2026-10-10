@@ -1088,8 +1088,9 @@ impl Season {
 /// asking the next caller to remember `plex::current_server()` is the wrong answer here.
 pub type Related = crate::pms::PmsMovie;
 
-/// The collection shelf holds at most this many members — the Related shelf's own bound.
-pub const COLLECTION_MAX: usize = RELATED_MAX;
+/// The collection shelf's preview length. Its heading opens the full Collection page, so this is
+/// a shelf length, not a limit on what the collection can show.
+pub const COLLECTION_MAX: usize = 20;
 
 /// A member movie's collection, split out of `/related`. PMS answers a member with a
 /// `collection.related.*` hub that lists the WHOLE collection in the collection's own order, the
@@ -3143,14 +3144,11 @@ fn resolve_trailer(
     e.playable().then_some(e)
 }
 
-/// Shelf cap. The extras element range is the same number, so a dropped tail is never a tile
-/// the page promised and then could not focus.
-const EXTRAS_MAX: usize = 32;
-
+/// Every extras row with a key, in server order. The shelf is the whole list: a tile the server
+/// sent is a tile the page shows, and the trailer picker reads the same list.
 fn extras_from_rows(rows: &[plx_plex::plex::Metadata]) -> Vec<Extra> {
     rows.iter()
         .filter(|x| !x.rating_key.is_empty())
-        .take(EXTRAS_MAX)
         .map(convert_extra)
         .collect()
 }
@@ -3172,16 +3170,10 @@ fn project_extras(
         if !slot.playable() {
             *slot = winner.clone();
         }
-    } else if d.extras.len() < EXTRAS_MAX {
-        d.extras.insert(0, winner.clone());
     } else {
-        // The winner can be ANY row in server order — `extras_from_rows` already capped the
-        // shelf to `EXTRAS_MAX` before this ran, so a `primaryExtraKey` past that cut would
-        // otherwise leave `trailer_rk` naming a key `d.extras` never carries. `Detail::trailer()`
-        // would then silently fall back to the first playable trailer among the 32 KEPT rows
-        // (or find none), which is not the server's own answer. The winner earns a guaranteed
-        // slot; the shelf's own last tile pays for it instead of the picker's contract.
-        d.extras.pop();
+        // The winner is one of `rows`, so it is normally on the shelf already. Only a row the
+        // shelf filters out (an empty key) can be missing, and `trailer_rk` must still name a
+        // key `d.extras` carries, or `Detail::trailer()` falls back to another trailer.
         d.extras.insert(0, winner.clone());
     }
     d.trailer_rk = winner.rk;
@@ -3201,11 +3193,6 @@ fn fetch_related(sid: plx_plex::plex::ServerId, rk: &str) -> RelatedRows {
     };
     related_rows(&mc, sid, rk)
 }
-
-/// Related tiles this shelf holds at most. PMS answers `/related` with several titled hubs and we
-/// concatenate them, so without a cap a well-connected film can carry a hundred rows into a strip
-/// that shows six.
-const RELATED_MAX: usize = 20;
 
 /// `/related`'s response for item `rk` → the page's collection shelf and Related row. **PURE**,
 /// split out of [`fetch_related`] so the things that can be wrong here are host-testable: which
@@ -3245,9 +3232,6 @@ fn related_rows(mc: &plx_plex::plex::MediaContainer, sid: plx_plex::plex::Server
             // worker reads no statics, because "the current server" can change while a fetch is in
             // flight and the rows in hand belong to the machine that was asked.
             out.push(crate::pms::parse_item(x, sid));
-            if out.len() >= RELATED_MAX {
-                return RelatedRows { collection, related: out };
-            }
         }
     }
     RelatedRows { collection, related: out }
@@ -5107,6 +5091,14 @@ mod trailer_tests {
         project_extras(&mut d, plx_plex::plex::ServerId::UNSET, &rows, "");
         assert_eq!(d.trailer().unwrap().rk, "9");
         assert_eq!(d.extras.len(), 2, "the shelf keeps the featurette");
+        // every row reaches the shelf, however many there are, and the picker still names the
+        // same trailer: the one that sits past the old 32-row cut
+        let mut many: Vec<_> = (0..100).map(|i| bts(&format!("{}", 1000 + i))).collect();
+        many.push(trailer("9000", "/library/parts/9000"));
+        let mut d = Detail::default();
+        project_extras(&mut d, plx_plex::plex::ServerId::UNSET, &many, "");
+        assert_eq!(d.extras.len(), 101, "every extras row is on the shelf");
+        assert_eq!(d.trailer().expect("a trailer").rk, "9000");
         let bare = Extra {
             title: "No still".into(),
             subtype: "featurette".into(),

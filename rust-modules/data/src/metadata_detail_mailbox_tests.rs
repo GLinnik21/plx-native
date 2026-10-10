@@ -212,7 +212,7 @@ fn a_lone_member_gets_no_collection_shelf_and_a_large_one_is_capped() {
 /// twice side by side. **The cap counts kept rows**, so a response padded with duplicates cannot
 /// spend the budget on tiles that were never added.
 #[test]
-fn related_rows_dedupe_across_hubs_and_cap_the_shelf() {
+fn related_rows_dedupe_across_hubs_and_keep_every_title() {
     let hub = |keys: &[i32]| {
         let rows: Vec<String> = keys
             .iter()
@@ -245,8 +245,8 @@ fn related_rows_dedupe_across_hubs_and_cap_the_shelf() {
         .media_container;
     assert!(related_rows(&mc, SRV_A, "page").related.is_empty(), "no ratingKey, no tile");
 
-    // the cap, counted in KEPT rows: 30 distinct keys, each repeated twice
-    let many: Vec<i32> = (0..30).collect();
+    // every distinct title is kept, however many hubs repeat it: 60 keys, each named twice
+    let many: Vec<i32> = (0..60).collect();
     let body = format!(
         r#"{{"MediaContainer":{{"Hub":[{},{}]}}}}"#,
         hub(&many),
@@ -256,11 +256,11 @@ fn related_rows_dedupe_across_hubs_and_cap_the_shelf() {
         .expect("parses")
         .media_container;
     let rows = related_rows(&mc, SRV_A, "page").related;
-    assert_eq!(rows.len(), RELATED_MAX, "the shelf is capped");
+    assert_eq!(rows.len(), 60, "every distinct title is a tile; nothing is cut at the tail");
     assert_eq!(
         rows.last().map(|m| m.rk.as_str()),
-        Some("19"),
-        "…at the 20th DISTINCT title"
+        Some("59"),
+        "…through the last DISTINCT title"
     );
 }
 
