@@ -171,6 +171,11 @@ impl CardHarness for Harness {
         if now != want { self.focus(now.elem, By::Reconcile); }
         Ok(())
     }
+    fn shift(&mut self, by: usize) -> Result<(), &'static str> {
+        for k in 0..by { self.rks.insert(0, format!("arrived{k}")); }
+        self.republish();
+        Ok(())
+    }
     fn memory_roundtrip(&mut self) -> Result<Box<dyn CardHarness>, &'static str> {
         let mem = Screen::<SearchHost>::memory_at(&self.screen, self.focus);
         let mut fresh = Harness::new(self.rks.clone());

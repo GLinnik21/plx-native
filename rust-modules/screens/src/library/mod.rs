@@ -674,7 +674,8 @@ impl LibraryScreen {
         }
         self.relayout(Some(key));
         let want = if let Some(index) = self.pair.detail.index_of(key.elem) {
-            Some(self.target_layout.row_reveal(index / self.layout.cols()))
+            // held in the coordinates `scroll` is in until the grid's tick rebases both by a landing
+            Some(self.target_layout.row_reveal(index / self.layout.cols()) - self.pair.detail.pending_shift(cx))
         } else if let Some(index) = self.shelves.iter().position(|row|
             row.elems.contains(&key.elem) || row.heading_elem() == Some(key.elem)) {
             Some(self.target_layout.shelf_reveal(&self.target_run, index))
