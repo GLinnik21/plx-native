@@ -116,7 +116,7 @@ pub use servers::{
     probe_result as server_probe_result, publish_probe_result, register,
     roster_gen as server_roster_gen, same_item, set_current, Grant, GrantEvidence,
     ServerFacts,
-    ServerId, MAX_SERVERS,
+    ServerId,
 };
 // Sign-out. `pub` like the function itself: retiring the whole table is `auth::sign_out`'s
 // to call and nothing else's — a caller that merely wants to stop using a server wants

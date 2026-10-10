@@ -324,8 +324,10 @@ Three design choices carry the weight, and each is a prevented bug rather than a
   re-point lands at frame N+1 with that worker mid-request. Re-pointing publishes a NEW leaked
   `Client` over the pointer, so the worst case for the old reference is **one request sent to where
   that server used to be** — never a dangling pointer, which is the failure that has no debugger on
-  this device. The leak is bounded: a handful of small structs, written on login / profile switch /
-  server switch, never per frame.
+  this device. The leak is one small struct per registration ever made, written on login / profile switch /
+  server switch, never per frame; ids are never reused and the table grows by segments, with no
+  server-count ceiling short of the `u16` id space. A sign-out removes the revoked slots' rows from
+  the keyed per-server tables (`serverinfo`).
 - **Token generations come from a process-global sequence, so no two clients ever share one.**
   `token_gen` was a single process-wide counter, which cannot express "server B's token changed".
   Its only reader is `app::adapters::poster::built_key`'s memo and that memo compares **one number** — so two

@@ -2088,6 +2088,20 @@ pub fn install_source_for_test(&mut self, sid: ServerId, movies: Vec<PmsMovie>, 
     self.revision += 1;
 }
 
+/// Open a person page through the store's own `open`, for suites outside this module.
+pub fn open_for_test(&mut self, adapter: &PersonAdapter, sid: ServerId, key: &str, guid: &str, name: &str) {
+    open(self, adapter, sid, key, guid, name, "");
+}
+
+/// Would the open page ask server `sid` for something right now? True once it is a source with a
+/// request addressable (its resolve, or its media for the origin).
+pub fn asks_server_for_test(&self, sid: ServerId) -> bool {
+    self.current.as_ref().is_some_and(|p| {
+        p.srcs.iter().any(|s| s.sid == sid)
+            && [K_RESOLVE, K_MEDIA].iter().any(|&k| fx(sid, k).and_then(|i| address(i, p)).is_some())
+    })
+}
+
 pub fn seed_ownership_fixture_for_test(&mut self, adapter: &Arc<PersonAdapter>) {
     self.retry_cd[0] = 17;
     adapter.mailbox(1).claim(self.generation.max(1));
