@@ -185,6 +185,7 @@ import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # demo_library.qr
+import link_conditioner  # noqa: E402
 
 VERIFY_SHOW_RK = 900001
 VERIFY_SEASON_RK = 900002
@@ -207,6 +208,9 @@ EXTRA_MEDIA_PART_ID_BASE = 991001
 # `Library(extras=N)` clips: ten ids per movie from 800001, clear of the movie ids (to 2000), the
 # episode ids (rk*10+n from 2001) and the fixture blocks above.
 EXTRA_CLIP_RK_BASE = 800001
+# Episode ids of a library built with more than nine episodes a season (`--episodes`): srk*10+e
+# would run into the next season's ids. 3_000_000 clears every block above; a season takes 1000.
+LONG_SEASON_RK_BASE = 3_000_000
 # #266 enhancement fixtures (module doc): own librarySectionID (3, never registered in
 # `Library.sections`), so they never appear in a section/rail listing or count, but are always
 # present and reachable directly by ratingKey. 960001..960005 sits clear of the generated range
@@ -326,7 +330,10 @@ class Library:
                 season = self._season(rng, srk, show, s)
                 self.items[srk] = season
                 for e in range(1, episodes + 1):
-                    erk = srk * 10 + e
+                    # srk*10+e is unique only for e <= 9; a long season (--episodes) takes its own
+                    # id block, clear of every other (the default keeps its historical ids).
+                    erk = srk * 10 + e if episodes <= 9 else \
+                        LONG_SEASON_RK_BASE + (srk - 20010) * 1000 + e
                     part += 1
                     self.items[erk] = self._episode(rng, erk, season, show, e, part)
         self._add_empty_collection(sname(rng))
@@ -1592,6 +1599,8 @@ class MockPms:
         self.section_hubs = 0
         self.section_hubs_linked = 0
         self.lock = threading.Lock()
+        self.link = link_conditioner.Conditioner()  # `--link`; a no-op until a profile is set
+        self.wire_log = []  # `GET /_mock/wire`: per-request arrival/finish times under the link
         self.requests = []  # (path, status) in arrival order, for the harness
         self.unknown = []
         self.writes = []
@@ -1955,7 +1964,10 @@ class MockPms:
                 it = lib.items.get(rk)
                 pool = lib.similar(rk)
                 hubs = [{"title": "related", "type": it["type"] if it else "movie",
-                         "hubIdentifier": "related", "size": min(8, len(pool)), "Metadata": pool[:8]}]
+                         "hubIdentifier": "related", "size": min(8, len(pool)), "Metadata": pool[:8],
+                         # What a server names so the rest of the list can be read: the app pages
+                         # it (hubs.rs::is_similar_key), so the related row has a tail.
+                         "key": f"/library/metadata/{rk}/similar"}]
                 # A member movie also gets one `collection.related.{section}.{n}` hub per
                 # collection (a live probe): titled with the collection, keyed by the section's
                 # TAG-id filter, listing EVERY member — the movie itself included.
@@ -2326,6 +2338,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n) if n else b""
+        split = urllib.parse.urlsplit(self.path)
+        if split.path in ("/_mock/link", "/_mock/wire"):
+            return self._link_control(method, split.path, body)
+        t_recv = time.monotonic()
+        plan = self.server.pms.link.plan(split.path, split.query)
+        if plan is not None and plan.delay_s:
+            time.sleep(plan.delay_s)
+        if plan is not None and plan.fail:
+            self._wire(plan, split, t_recv, 0, 503 if plan.fail == "503" else 0, True)
+            if plan.fail == "reset":
+                # SO_LINGER 0 turns close() into an RST: the client sees a reset mid-request, as
+                # on a dropped WAN link, not a clean empty answer.
+                self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                                           struct.pack("ii", 1, 0))
+                self.close_connection = True
+                self.connection.close()
+                return
+            self.send_response(503)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         status, ctype, data = self.server.pms.handle(method, self.path, body, self.headers)
         with self.server.pms.lock:
             self.server.pms.requests.append((self.path, status))
@@ -2335,7 +2368,62 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Plex-Protocol", "1.0")
         self.end_headers()
         if method != "HEAD":
+            if plan is not None and plan.kbit:
+                link_conditioner.write_throttled(self.wfile.write, data, plan.kbit)
+            else:
+                self.wfile.write(data)
+        self._wire(plan, split, t_recv, len(data), status, False)
+
+    def _wire(self, plan, split, t_recv, nbytes, status, failed):
+        """One row of `GET /_mock/wire`: when the request arrived and when its answer finished
+        (both `time.monotonic()` seconds on THIS process's clock), so a test reads how long each
+        page spent in flight. Control requests are never logged."""
+        if plan is None:
+            return
+        q = {k: v[-1] for k, v in urllib.parse.parse_qs(split.query).items()}
+        row = {"t_recv": t_recv, "t_done": time.monotonic(), "class": plan.klass, "path": split.path,
+               "start": q.get("X-Plex-Container-Start", self.headers.get("X-Plex-Container-Start")),
+               "size": q.get("X-Plex-Container-Size", self.headers.get("X-Plex-Container-Size")),
+               "bytes": nbytes, "status": status, "failed": failed}
+        with self.server.pms.lock:
+            self.server.pms.wire_log.append(row)
+
+    def _link_control(self, method, path, body):
+        """`/_mock/link` (read or change the link profile at run time) and `/_mock/wire` (the wire
+        log). Loopback only: the profile is a test knob, and a LAN-facing mock must not let a
+        neighbour slow the owner's server down."""
+        def send(status, obj):
+            data = json.dumps(obj).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
             self.wfile.write(data)
+        if self.client_address[0] not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+            return send(403, {"error": "loopback only"})
+        pms = self.server.pms
+        if path == "/_mock/wire":
+            if method == "DELETE":
+                with pms.lock:
+                    pms.wire_log.clear()
+                return send(200, {"ok": True})
+            with pms.lock:
+                return send(200, {"now": time.monotonic(), "rows": list(pms.wire_log)})
+        if method == "POST":
+            try:
+                req = json.loads(body or b"{}")
+                if "spec" in req:
+                    klass, profile = link_conditioner.parse_spec(req["spec"])
+                else:
+                    klass = req.get("class", link_conditioner.ALL)
+                    profile = link_conditioner.make_profile(req.get("profile", "none"),
+                                                            **req.get("overrides", {}))
+                pms.link.set(klass, profile)
+            except (ValueError, TypeError, AttributeError, json.JSONDecodeError) as e:
+                return send(400, {"error": str(e)})
+        elif method != "GET":
+            return send(405, {"error": "method not allowed"})
+        send(200, {c: p.to_json() for c, p in pms.link.profiles().items()})
 
     def do_GET(self):
         self._do("GET")
@@ -2383,7 +2471,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           authorize_after=None, plex_pass=True, loudness_analysis=True,
           refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
           home_hubs=0, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0,
-          home_users=1):
+          home_users=1, link=(), shows=6, seasons=2, episodes=6):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -2405,16 +2493,26 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     live, through `POST /_mock/config`. `transcode_fixture` is the file every
     `/video/:/transcode/universal/start*` request serves instead of the plain 404, Range/206
     included; `None` (default) leaves that endpoint unchanged. `decision_delay_ms` sleeps that long
-    before answering a transcode decision or start request (`0`, the default, answers at once)."""
+    before answering a transcode decision or start request (`0`, the default, answers at once).
+
+    `link` is a list of `tests/link_conditioner.py` specs (`"3g"`, `"image=edge"`, ...) applied in
+    order to the link the listener answers through; `seed` also seeds its jitter and failures.
+    `shows`/`seasons`/`episodes` size the generated TV library (an `episodes` over 60 is a season
+    that pages)."""
     if transcode_fixture is not None and not pathlib.Path(transcode_fixture).is_file():
         raise ValueError(f"--transcode-fixture file is missing: {transcode_fixture}")
     if catalog is not None:
         lib = CatalogLibrary(catalog, cache=catalog_cache, hero=hero,
                              loudness_analysis=loudness_analysis)
     else:
-        lib = Library(seed=seed, movies=movies, rail_fixture=rail_fixture, media=media,
-                      extra_media=extra_media, loudness_analysis=loudness_analysis)
+        lib = Library(seed=seed, movies=movies, shows=shows, seasons=seasons, episodes=episodes,
+                      rail_fixture=rail_fixture, media=media, extra_media=extra_media,
+                      loudness_analysis=loudness_analysis)
     pms = MockPms(lib)
+    pms.link = link_conditioner.Conditioner(seed=seed)
+    for spec in link:
+        klass, profile = link_conditioner.parse_spec(spec)
+        pms.link.set(klass, profile)
     pms.plex_pass = plex_pass
     pms.home_hubs = home_hubs
     pms.section_hubs = section_hubs
@@ -2678,6 +2776,8 @@ def selftest():
 
     _selftest_plaintext_only_lan()
     _selftest_section_hubs()
+    _selftest_paging()
+    _selftest_link()
     print("mock_pms selftest: ok")
 
 
@@ -2709,6 +2809,156 @@ def _selftest_section_hubs():
         for h in hubs[2:]:
             assert h["Metadata"], h["hubIdentifier"]
             assert jget(h["key"])["Metadata"], h["key"]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def _selftest_paging():
+    """Every endpoint the app pages (`ci/plex-requests.ini`, class `paged`) honours
+    `X-Plex-Container-Start`/`-Size` in BOTH forms (query and header) with a correct `totalSize`,
+    `size` and `offset`, and 24-row windows walked end to end return the unpaged list exactly."""
+    import urllib.request
+
+    srv, pms = serve(0, seed=3, movies=130, shows=1, seasons=1, episodes=75, home_hubs=4,
+                     section_hubs=4)
+    try:
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+
+        def get(path, headers=None):
+            req = urllib.request.Request(base + path, headers=headers or {})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return json.loads(r.read())["MediaContainer"]
+
+        def rows(mc):
+            for k in ("Metadata", "SearchResult", "Hub", "Directory"):
+                if k in mc:
+                    return mc[k]
+            return []
+
+        def ident(row):
+            return row.get("ratingKey") or row.get("hubIdentifier") or json.dumps(row, sort_keys=True)
+
+        season = next(rk for rk, it in pms.lib.items.items() if it["type"] == "season")
+        coll = pms.lib.collections[1]["ratingKey"]
+        endpoints = {
+            "section all": "/library/sections/1/all?type=1",
+            "section recentlyAdded": "/library/sections/1/recentlyAdded",
+            "section collections": "/library/sections/1/collections",
+            "home hub list": "/hubs",
+            "section hub list": "/hubs/sections/1",
+            "home hub items": "/hubs/mock/shelf/2",
+            "section hub items": "/hubs/mock/section/1/shelf/3",
+            "continue watching": "/hubs/continueWatching/items",
+            "typed search": f"/library/search?query={pms.lib.items[1001]['title'][:2]}&searchTypes=movies",
+            "season children": f"/library/metadata/{season}/children",
+            "related tail": "/library/metadata/1001/similar",
+            "collection children": f"/library/collections/{coll}/children",
+        }
+        sep = lambda path: "&" if "?" in path else "?"
+        for name, path in endpoints.items():
+            whole = get(path)
+            assert "totalSize" not in whole, f"{name}: an unpaged read must not carry totalSize"
+            full = [ident(r) for r in rows(whole)]
+            assert full, f"{name}: empty list, nothing to page"
+            for form in ("query", "header"):
+                got, start, total = [], 0, None
+                while True:
+                    if form == "query":
+                        mc = get(f"{path}{sep(path)}X-Plex-Container-Start={start}"
+                                 f"&X-Plex-Container-Size=24")
+                    else:
+                        mc = get(path, {"X-Plex-Container-Start": str(start),
+                                        "X-Plex-Container-Size": "24"})
+                    page = rows(mc)
+                    assert mc["offset"] == start, (name, form, mc["offset"], start)
+                    assert mc["size"] == len(page) <= 24, (name, form, mc["size"], len(page))
+                    total = mc["totalSize"] if total is None else total
+                    assert mc["totalSize"] == total == len(full), (name, form, mc["totalSize"], len(full))
+                    got += [ident(r) for r in page]
+                    start += 24
+                    if not page or start >= total:
+                        break
+                assert got == full, f"{name} ({form}): windows do not add up to the whole list"
+            past = get(f"{path}{sep(path)}X-Plex-Container-Start={len(full) + 5}&X-Plex-Container-Size=24")
+            assert rows(past) == [] and past["totalSize"] == len(full), name
+        # a Size without a Start is ignored, as PMS ignores it
+        lone = get("/library/sections/1/all?type=1&X-Plex-Container-Size=5")
+        assert lone["size"] > 5 and "totalSize" not in lone
+        # a season longer than the 60-row page is really longer, with unique ids
+        eps = pms.lib.children(season)
+        assert len(eps) == 75 and len({e["ratingKey"] for e in eps}) == 75
+        assert len(pms.lib.items) == len({int(k) for k in pms.lib.items})
+        # the related hub names the list its tail pages
+        rel = get("/library/metadata/1001/related")["Hub"][0]
+        assert rel["key"] == "/library/metadata/1001/similar", rel.get("key")
+        # the hub rows page far beyond one window (these are the rows the sliding window reads)
+        assert get("/hubs/mock/shelf/2?X-Plex-Container-Start=0&X-Plex-Container-Size=1")["totalSize"] == len(pms.lib.recent("movie", 1000)) >= 130
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def _selftest_link():
+    """The conditioner end to end: latency delays an answer, `kbit` paces the body, a class override
+    leaves the other class alone, the profile changes at run time, errors are reset or 503 and
+    reproducible under one seed, and the control surface is never conditioned."""
+    import urllib.error
+    import urllib.request
+
+    def timed(base, path):
+        t = time.monotonic()
+        try:
+            with urllib.request.urlopen(base + path, timeout=10) as r:
+                n = len(r.read())
+                return r.status, n, time.monotonic() - t
+        except urllib.error.HTTPError as e:
+            return e.code, 0, time.monotonic() - t
+        except (urllib.error.URLError, ConnectionError, OSError):
+            return 0, 0, time.monotonic() - t
+
+    def post(base, obj):
+        req = urllib.request.Request(base + "/_mock/link", data=json.dumps(obj).encode(),
+                                     method="POST")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+
+    srv, pms = serve(0, seed=5, movies=60, link=["listing=none:latency=150", "image=none:kbit=40"])
+    try:
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        status, _, took = timed(base, "/library/sections/1/all?type=1")
+        assert status == 200 and took >= 0.14, (status, took)
+        status, n, took = timed(base, "/photo/:/transcode?url=%2Fx&width=250&height=375")
+        assert status == 200 and took >= n * 8 / 40000 * 0.9, (n, took)  # paced at 40 kbit/s
+        _, _, fast = timed(base, "/_mock/requests")
+        assert fast < 0.1, fast  # control surface unconditioned
+        post(base, {"spec": "all=none"})
+        _, _, took = timed(base, "/library/sections/1/all?type=1")
+        assert took < 0.1, took  # fast again, mid-run
+        got = post(base, {"class": "listing", "profile": "very-bad"})
+        assert got["listing"]["error_rate"] == 0.2 and got["image"]["kbit"] == 0
+        try:
+            post(base, {"spec": "nope"})
+            raise AssertionError("a bad spec must be refused")
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+        # errors: reproducible under a seed, and both kinds really fail
+        post(base, {"spec": "all=none:error=0.5,kind=503"})
+        first = [timed(base, f"/library/metadata/{1001 + i}")[0] for i in range(30)]
+        srv2, _ = serve(0, seed=5, movies=60, link=["all=none:error=0.5,kind=503"])
+        try:
+            base2 = f"http://127.0.0.1:{srv2.server_address[1]}"
+            second = [timed(base2, f"/library/metadata/{1001 + i}")[0] for i in range(30)]
+        finally:
+            srv2.shutdown()
+            srv2.server_close()
+        assert first == second and 503 in first and 200 in first, (first, second)
+        post(base, {"spec": "all=none:error=1,kind=reset"})
+        assert timed(base, "/library/metadata/1001")[0] == 0
+        post(base, {"spec": "all=none"})
+        assert timed(base, "/library/metadata/1001")[0] == 200
+        wire = json.loads(urllib.request.urlopen(base + "/_mock/wire", timeout=5).read())["rows"]
+        assert wire and any(r["failed"] for r in wire) and all(r["t_done"] >= r["t_recv"] for r in wire)
     finally:
         srv.shutdown()
         srv.server_close()
@@ -2873,6 +3123,23 @@ def main():
     ap.add_argument("--decision-delay-ms", type=int, default=0, metavar="N",
                     help="sleep N ms before answering a /video/:/transcode/universal/decision or "
                          "start.* request, so a route flight is observably in flight (default 0)")
+    ap.add_argument("--link", action="append", default=[], metavar="SPEC",
+                    help="condition the link like macOS Network Link Conditioner: "
+                         "[class=]profile[:k=v,...], class listing|image|all, profile "
+                         f"{'|'.join(sorted(link_conditioner.PROFILES))}, keys latency/jitter/"
+                         "kbit/error/kind; repeatable, later wins. e.g. --link 3g --link "
+                         "image=edge:error=0.1. Change it live with POST /_mock/link")
+    ap.add_argument("--link-latency-ms", type=float, metavar="N",
+                    help="explicit latency for every class, applied after --link")
+    ap.add_argument("--link-jitter-ms", type=float, metavar="N", help="explicit jitter, as above")
+    ap.add_argument("--link-kbit", type=float, metavar="N", help="explicit downlink kbit/s (0: unlimited)")
+    ap.add_argument("--link-error-rate", type=float, metavar="F",
+                    help="fraction of requests that fail (0..1)")
+    ap.add_argument("--link-error-kind", choices=("reset", "503"), help="how a failing request fails")
+    ap.add_argument("--shows", type=int, default=6, help="generated shows (default 6)")
+    ap.add_argument("--seasons", type=int, default=2, help="seasons per show (default 2)")
+    ap.add_argument("--episodes", type=int, default=6,
+                    help="episodes per season (default 6; over 60 makes a season that pages)")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
@@ -2886,6 +3153,19 @@ def main():
         ap.error("--section-hubs-linked must not exceed --section-hubs")
     if a.decision_delay_ms < 0:
         ap.error("--decision-delay-ms must not be negative")
+    link = list(a.link)
+    explicit = {k: v for k, v in (("latency", a.link_latency_ms), ("jitter", a.link_jitter_ms),
+                                  ("kbit", a.link_kbit), ("error", a.link_error_rate),
+                                  ("kind", a.link_error_kind)) if v is not None}
+    if explicit:
+        link.append(":" + ",".join(f"{k}={v}" for k, v in explicit.items()))
+    try:
+        for spec in link:
+            link_conditioner.parse_spec(spec)
+    except ValueError as e:
+        ap.error(f"--link: {e}")
+    if not (1 <= a.shows <= 200 and 1 <= a.seasons <= 20 and 1 <= a.episodes <= 900):
+        ap.error("--shows 1..200, --seasons 1..20, --episodes 1..900")
     if not 0 <= a.movies <= 1000:
         ap.error("--movies must be between 0 and 1000")
     if (a.advertise_ip or a.insecure_fail_mode != "handshake") and not a.plaintext_only_lan:
@@ -2910,7 +3190,8 @@ def main():
                          transcode_fixture=a.transcode_fixture, home_hubs=a.home_hubs,
                          section_hubs=a.section_hubs,
                          section_hubs_linked=a.section_hubs_linked,
-                         decision_delay_ms=a.decision_delay_ms, home_users=a.home_users)
+                         decision_delay_ms=a.decision_delay_ms, home_users=a.home_users,
+                         link=link, shows=a.shows, seasons=a.seasons, episodes=a.episodes)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"

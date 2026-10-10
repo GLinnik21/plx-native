@@ -184,6 +184,64 @@
       "comment": "home-recent-paging with the Right key HELD instead of pressed once per card: the same row walk, mock, triggers and grading, but Right is pressed every 125 ms (key_gap_s 0.125, the cadence library-hold uses for its held scroll) instead of every 330 ms. The walk harness (tests/mock_fps.py KeyWalk) can only send discrete presses; it does not model key auto-repeat, and burst walks (walk.burst) carry only down/up, so a held Right is approximated by a continuous press cadence. 96 Rights at 125 ms cross eight 12-card page boundaries in about 12 s, so the pages must land while focus is already moving. Run it with `./tests/run.py --fps --mock --filter home-recent-paging-held` (starts tests/mock_pms.py --movies 300 itself, no Plex account, mock only). Keys are only ever down/right/left, never ok or back. frame_gt33, the worst frame and p99 are printed and NOT graded. No loop_floor or fps_floor is declared: the scene is not graded yet (the convention library-burst and library-hold follow), so the run grades only the walk's key count, the paging check (min_page_landings) and the generic guard of at least 5 post-warmup loop samples. run_secs covers the walk's worst case (about 66 s by walk_secs_needed)."
     },
     {
+      "name": "home-recent-paging-held-3g",
+      "tier": "ui",
+      "route": "home",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-grid": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 300,
+        "only": true,
+        "link": [
+          "3g"
+        ]
+      },
+      "walk": {
+        "row_down": 1,
+        "cards": 96,
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "min_page_landings": 6
+      },
+      "comment": "home-recent-paging-held against a 3G link (200 ms + 50 ms jitter, 780 kbit/s): tests/mock_pms.py --movies 300 --link 3g, started by --mock. The same held-Right row walk, grading and guards as the unconditioned scene; the page landings arrive while focus is moving, which the unconditioned loopback mock never does and which put the focused card on the wrong edge. Run it with `tools/tv-lock.sh with --why \"fps paging link\" -- ./tests/run.py --fps --mock --filter home-recent-paging-held-3g` on a `make ARM_PROFILE=release deploy` build (guest boot, synthetic mock, panel and sound off, per the profile-tv skill). frame_gt33, the worst frame and p99 are printed, NOT graded. The host counterpart, with focus/slot/reach assertions, is `python3 tests/paging_link.py`. NOT yet run on a device."
+    },
+    {
+      "name": "home-recent-paging-held-remote-wan",
+      "tier": "ui",
+      "route": "home",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-grid": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 300,
+        "only": true,
+        "link": [
+          "remote-wan"
+        ]
+      },
+      "walk": {
+        "row_down": 1,
+        "cards": 96,
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "min_page_landings": 6
+      },
+      "comment": "home-recent-paging-held against a far server (250 ms + 120 ms jitter, 4 Mbit/s): tests/mock_pms.py --movies 300 --link remote-wan, started by --mock. The same held-Right row walk, grading and guards as the unconditioned scene; the page landings arrive while focus is moving, which the unconditioned loopback mock never does and which put the focused card on the wrong edge. Run it with `tools/tv-lock.sh with --why \"fps paging link\" -- ./tests/run.py --fps --mock --filter home-recent-paging-held-remote-wan` on a `make ARM_PROFILE=release deploy` build (guest boot, synthetic mock, panel and sound off, per the profile-tv skill). frame_gt33, the worst frame and p99 are printed, NOT graded. The host counterpart, with focus/slot/reach assertions, is `python3 tests/paging_link.py`. NOT yet run on a device."
+    },
+    {
       "name": "library-shelves-deep",
       "tier": "ui",
       "route": "library",
