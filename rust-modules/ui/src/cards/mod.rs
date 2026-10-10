@@ -87,6 +87,8 @@ pub use stack::{Kind, SectionSpec, Stack, StackEvent, StackMemory, StackPage, St
 pub mod conformance;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod warm_tests;
 
 /// The one recovery position every card screen uses when the focused card is gone from its
 /// section: the slot it held, clamped to the section's new length. `None` when the section is

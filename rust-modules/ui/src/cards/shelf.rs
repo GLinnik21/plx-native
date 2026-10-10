@@ -22,6 +22,12 @@ use crate::{Painter, Rect};
 /// Cards past the last visible one the source is asked for.
 const LOOK_AHEAD: usize = 6;
 
+/// Cards the shelf keeps requested beyond the painted ones, in the direction of travel: a bound
+/// on WORK (the walk and the requests it can make), not on what the row can reach. About one
+/// screenful, so a held key on a slow server finds the next few cards already on their way. The
+/// poster source decides how many of them may be in flight (`PREFETCH_OUTSTANDING_MAX`).
+pub(super) const WARM_AHEAD_CARDS: usize = 8;
+
 /// Cards from either end of a row inside which focus counts as near that edge, for
 /// [`Shelf::page_ask`].
 pub const PAGE_EDGE_CARDS: usize = 6;
@@ -60,12 +66,37 @@ pub struct Shelf {
     slept: bool,
     /// The element-keyed pop pool (`pool.rs`).
     pool: RowPool,
+    /// Where the artwork warm-ahead stands ([`warm_ahead`](Shelf::warm_ahead)).
+    warm: Warm,
+}
+
+/// Render history of the shelf's artwork warm-ahead: never canonised, restored or compared.
+#[derive(Clone, Copy)]
+struct Warm {
+    /// The focused index the last tick saw, which names the direction of travel.
+    last: Option<usize>,
+    /// Travelling toward higher indexes (a shelf starts that way).
+    forward: bool,
+    /// The walk already made for one view of the row: `(which, scanned)`. `scanned` cards from the
+    /// nearest are held by the source, so the next tick resumes there instead of asking again.
+    walk: Option<(WalkKey, usize)>,
+}
+
+/// What a walk is a walk of: the same key means the same cards in the same order.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct WalkKey {
+    edge: usize,
+    forward: bool,
+    len: usize,
+    /// The element at the edge: a window that slid under an unchanged edge index changes it.
+    head: u64,
 }
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
         Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, anchor: None,
-            margin: 0.0, dormant: false, slept: false, pool: RowPool::new() }
+            margin: 0.0, dormant: false, slept: false, pool: RowPool::new(),
+            warm: Warm { last: None, forward: true, walk: None } }
     }
 
     /// Cards this far past the screen's leading (left) edge still paint (a popped card's shadow
@@ -114,6 +145,7 @@ impl Shelf {
         match ev {
             ScreenEvent::Tick(t) => {
                 self.tick(t.dt(), cx, src);
+                self.warm_ahead(cx, src);
                 self.want(cx, src)
             }
             ScreenEvent::FocusMoved { from, to, by } => {
@@ -310,6 +342,71 @@ impl Shelf {
         let focus = super::focused_index(&cx.focus, self.entry, src).map_or(0, |i| i + 1);
         let end = window.max(focus).saturating_add(LOOK_AHEAD);
         super::want(&mut self.asked, src.len(), end, src.more()).map(CardEvent::Want)
+    }
+
+    /// Request the artwork of the cards the focus is travelling toward, before they scroll in.
+    ///
+    /// A card asks for its art when it is first drawn on-axis, so a held key on a slow server
+    /// outruns the fetches and shows skeletons. This asks [`WARM_AHEAD_CARDS`] cards beyond the
+    /// painted ones in the direction of travel (the cards a window slide just landed there
+    /// included) through the Library's mechanism, `tex::warm_ahead_on`: the source admits the
+    /// request only while no drawn card is waiting and one speculative fetch is out, and claims
+    /// a slot only from outside the cards most recently drawn. So the visible cards' own requests
+    /// are never queued behind this, and nothing on screen is evicted for it.
+    ///
+    /// Bounded work: one claim per tick, nearest card first, at most `2 * WARM_AHEAD_CARDS`
+    /// lookups, and none at all once the walk for this view of the row is complete.
+    fn warm_ahead<H: Host, S: CardSource<H>>(&mut self, cx: &Cx<'_, H>, src: &S) {
+        let focus = super::focused_index(&cx.focus, self.entry, src).filter(|&i| !self.dormant && i < src.len());
+        let Some(focus) = focus else {
+            self.warm = Warm { last: None, forward: self.warm.forward, walk: None };
+            return;
+        };
+        // A landing moves the index under an unmoved focus: it says nothing about direction.
+        if let (Some(last), None) = (self.warm.last, self.landed) {
+            if last != focus {
+                self.warm.forward = focus > last;
+            }
+        }
+        self.warm.last = Some(focus);
+        let n = src.len();
+        let forward = self.warm.forward;
+        let pitch = self.pitch();
+        let sx = self.drawn_scroll(src);
+        // the first card past the painted run on each side (a card is painted while any of it shows)
+        let first_shown = ((sx - self.style.margin_x + self.style.gap) / pitch).floor().max(0.0) as usize;
+        let past_shown = ((sx + SCR_W - self.style.margin_x) / pitch).ceil().max(0.0) as usize;
+        // Cards between the painted run and the focus are about to scroll in too (the scroll
+        // lags a held key), so the walk starts at the painted edge, not at the focus.
+        let (edge, lag) = if forward {
+            (past_shown, (focus + 1).saturating_sub(past_shown))
+        } else {
+            (first_shown, first_shown.saturating_sub(focus))
+        };
+        let span = lag + WARM_AHEAD_CARDS;
+        let span = span.min(2 * WARM_AHEAD_CARDS);
+        let head = if edge < n { pool::key(&src.elem(edge)) } else { 0 };
+        let key = WalkKey { edge, forward, len: n, head };
+        let from = match self.warm.walk {
+            Some((k, scanned)) if k == key => scanned,
+            _ => 0,
+        };
+        for at in from..span {
+            // nearest first: forward walks up from the edge, backward walks down from just behind it
+            let Some(i) = (if forward { Some(edge + at) } else { edge.checked_sub(at + 1) }).filter(|&i| i < n) else {
+                break;
+            };
+            if !src.loaded(i) {
+                continue;
+            }
+            let Some((srv, path, w, h)) = crate::widgets::card_art_request(&src.art(i)) else { continue };
+            if crate::tex::warm_ahead_on(srv, path, w, h, false) != crate::tex::Warm::Known {
+                // claimed (the next tick finds it held and goes on) or refused (try again there)
+                self.warm.walk = Some((key, at));
+                return;
+            }
+        }
+        self.warm.walk = Some((key, span));
     }
 
     /// The cell the row last recorded as focused.
