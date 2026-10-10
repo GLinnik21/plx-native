@@ -962,6 +962,28 @@ fn the_element_blocks_are_wide_disjoint_and_below_the_engine_keys() {
     assert_eq!(FIRST_ITEM_ELEM, 1 << 31, "engine keys start above every local block");
 }
 
+/// The key a card answers to is its engine key, not its local id. A caller outside the crate (the
+/// app's menu-opener route) asks about focus keys it did not mint, so it must look in the interned
+/// range; a card's key sitting in the low range again, or a local id leaking out as a focus key,
+/// is what this pins.
+#[test]
+fn card_focus_keys_live_in_the_interned_range_and_locals_are_not_focus_keys() {
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.related = vec![Default::default(), Default::default()];
+    let _guard = install(d);
+    let screen = bare(&_guard, sid, "show");
+    let meta = test_store().view();
+    for i in 0..2 {
+        let local = related::elem(i).unwrap();
+        let key = screen.engine_key(local).expect("a related card key");
+        assert!(key >= FIRST_ITEM_ELEM, "card {i} is keyed from the interned range");
+        assert!(screen.locate(key, meta) == Some(Located::Related(i)));
+        assert!(screen.locate(local, meta).is_none(), "a local id is not a focus key");
+    }
+    clear();
+}
+
 /// A list that arrives whole is addressable whole. A 600-credit item has a card for every credit,
 /// and Right walks the shelf to its last one; the old block clamped the shelf at 512.
 #[test]
