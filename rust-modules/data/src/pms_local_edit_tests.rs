@@ -14,6 +14,7 @@ fn marking_an_item_watched_flips_every_row_that_names_it_and_retires_its_resume_
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let mut b = SourceBuild {
+        lane: Default::default(),
         cw: vec![CwItem {
             last_viewed_at: 9,
             m: started(0, "7"),
@@ -52,6 +53,7 @@ fn an_edit_never_reaches_the_same_rating_key_on_another_server() {
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let mut b = SourceBuild {
+        lane: Default::default(),
         cw: Vec::new(),
         shelves: vec![shelf(1, "Theirs", "h", &["7"])],
     };
@@ -73,6 +75,7 @@ fn a_deck_removal_leaves_the_deck_only_and_keeps_the_resume_point() {
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let mut b = SourceBuild {
+        lane: Default::default(),
         cw: vec![
             CwItem {
                 last_viewed_at: 9,
@@ -121,6 +124,7 @@ fn a_removed_deck_card_leaves_the_shelves_behind_it_correctly_addressed() {
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     let build = SourceBuild {
+        lane: Default::default(),
         cw: vec![
             CwItem {
                 last_viewed_at: 9,

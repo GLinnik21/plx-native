@@ -2596,6 +2596,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
 fn build_test(n: usize) -> SourceBuild {
     SourceBuild {
         cw: Vec::new(),
+        lane: Default::default(),
         shelves: vec![Shelf {
             title: "Continue Watching".into(),
             hub_id: "home.continue".into(),
@@ -2667,6 +2668,7 @@ pub fn seed_two_library_home_for_test(
     source.state = HubState::Ready;
     source.last = Some(SourceBuild {
         cw: Vec::new(),
+        lane: Default::default(),
         shelves: vec![Shelf {
             title: "Recent".into(),
             hub_id: "home.movies.recent".into(),
