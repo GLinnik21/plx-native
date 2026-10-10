@@ -70,6 +70,7 @@ JUMP_PX = 400          # a focused card that moves this far between two frames h
 KEY_APPLY_S = 0.15     # a key sent this long before a sample may still be applied after it (one key period + a frame)
 WANTED_AFTER_S = 5     # a failed page the focus still stands at this long after the failure is still wanted
 WANTED_MARGIN = 24     # items either side of a page that count as "at it" (the lookahead the lists read)
+RETRY_PER_PAGE_S = 6   # one failed read costs the store's retry backoff (about 2 s), twice over when the random rate adds one
 RETRY_WITHIN_S = 45    # a failed page must be asked for again, and answered, within this
 
 FOCUS_RE = re.compile(r"^focus route=(\w+) (.*)$")
@@ -489,6 +490,8 @@ def run_surface(name, profile_name, args):
             profile (every key, plus every page its worst round trip, times three)."""
             pages = len(order) / 12
             bound = len(order) / stride * gap * 1.5 + pages * (profile.latency_ms + profile.jitter_ms) / 1000 * 3 + 60
+            if profile.error_rate:
+                bound += pages * RETRY_PER_PAGE_S  # every page's first read fails: one store backoff each
             end = time.monotonic() + bound
             while time.monotonic() < end:
                 cur = focus_now()
