@@ -57,7 +57,7 @@ fn movie(rk: &str) -> Item {
 
 /// A shelf of `n` synthetic items, addressed so two shelves never share a result identity.
 fn shelf(kind: Kind, tag: &str, n: usize) -> Shelf {
-    Shelf { kind, items: (0..n).map(|i| movie(&format!("{tag}-{i}"))).collect() }
+    Shelf { window: Default::default(), kind, items: (0..n).map(|i| movie(&format!("{tag}-{i}"))).collect() }
 }
 
 struct Fixture {
@@ -822,8 +822,8 @@ fn shared_shelf(fixture: &mut Fixture) -> [plx_plex::plex::ServerId; 3] {
     let item = |sid| Item::Media(plx_data::pms::PmsMovie { sid, rk: format!("annotated-{sid:?}"),
         title: "Synthetic result".into(), ..Default::default() });
     fixture.query("annotated").shelves(vec![
-        Shelf { kind: Kind::Movie, items: vec![item(own), item(a), item(b)] },
-        Shelf { kind: Kind::Show, items: vec![item(own)] }]);
+        Shelf { window: Default::default(), kind: Kind::Movie, items: vec![item(own), item(a), item(b)] },
+        Shelf { window: Default::default(), kind: Kind::Show, items: vec![item(own)] }]);
     let handles: Vec<&str> = fixture.search.view().scope().sources().iter()
         .map(|source| source.handle.as_str()).collect();
     assert_eq!(handles, ["", "friend", "other"], "the fixture's own roster projection");
@@ -1333,7 +1333,7 @@ fn the_hold_hint_does_not_stand_on_a_collection_hit() {
             kind: plx_data::pms::KIND_COLLECTION, ..Default::default() },
         tag: i,
     })).collect();
-    fixture.query("hint").shelves(vec![Shelf { kind: Kind::Collection, items: hits }]);
+    fixture.query("hint").shelves(vec![Shelf { window: Default::default(), kind: Kind::Collection, items: hits }]);
     let mut screen = fixture.screen();
     let card = Some(screen.key(screen.rows[0].elems[1]));
     deliver(&mut screen, &fixture, card, ScreenEvent::FocusMoved { from: None, to: card.unwrap(), by: By::Dir });

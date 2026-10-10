@@ -211,13 +211,12 @@ fn a_tag_in_a_favourite_and_a_non_favourite_library_ranks_favourite_and_keeps_it
     assert_eq!(t.count, 8, "…and the count is every credit, both sections");
 }
 
-/// **The cap bounds what is DRAWN, not what is COUNTED.** The fill used to `break` out the
+/// **The window bounds what is DRAWN, not what is COUNTED.** The fill used to `break` out the
 /// moment the shelf was full, so once the favourite pass had filled it a later duplicate could
 /// no longer augment an already displayed tag — a person's total silently became however many
-/// the servers reported before the cap. The fold now runs to completion and the truncation is
-/// last.
+/// the servers reported before the cap. The fold runs over the whole window.
 #[test]
-fn a_duplicate_past_the_shelf_cap_still_augments_a_displayed_tags_count() {
+fn a_duplicate_at_the_windows_last_depth_still_augments_a_displayed_tags_count() {
     let sid = ServerId::from_raw(0);
     let person = |name: &str, key: &str, count: i64| {
         Item::Tag(TagHit {
@@ -232,15 +231,15 @@ fn a_duplicate_past_the_shelf_cap_still_augments_a_displayed_tags_count() {
     // Server A leads with our subject, so it is certainly drawn, and fills out behind it.
     let mut a: Projection = Default::default();
     a[3].push(person("Wallace Shawn", "gid-1", 5));
-    for i in 1..SHELF_MAX {
+    for i in 1..WINDOW / 2 {
         a[3].push(person(&format!("A filler {i}"), &format!("gid-a{i}"), 1));
     }
     // Server B repeats the subject as its LAST row. The merge is round robin by DEPTH, so the
-    // shelf is full around depth `SHELF_MAX / 2` and this duplicate is not even LOOKED at until
-    // depth `SHELF_MAX - 1` — which is the whole point: under the old `break` the fill had long
+    // shelf is full around depth `WINDOW / 2` and this duplicate is not even LOOKED at until
+    // depth `WINDOW / 2 - 1` — which is the whole point: under the old `break` the fill had long
     // since stopped and this row was never folded at all.
     let mut b: Projection = Default::default();
-    for i in 1..SHELF_MAX {
+    for i in 1..WINDOW / 2 {
         b[3].push(person(&format!("B filler {i}"), &format!("gid-b{i}"), 1));
     }
     b[3].push(person("Wallace Shawn", "gid-1", 3));
@@ -255,7 +254,7 @@ fn a_duplicate_past_the_shelf_cap_still_augments_a_displayed_tags_count() {
         .find(|s| s.kind == Kind::Person)
         .expect("a Person shelf")
         .items;
-    assert_eq!(people.len(), SHELF_MAX, "the shelf is capped as it always was");
+    assert_eq!(people.len(), WINDOW - 1, "two windows of a half each, one person folded");
     let Item::Tag(t) = &people[0] else {
         panic!("a person is a Tag row")
     };
@@ -427,12 +426,12 @@ fn the_merge_round_robins_every_answered_source_and_skips_the_rest() {
 #[test]
 fn a_merged_shelf_is_capped_at_the_card_rows_spring_count() {
     let many = |p: &str| {
-        (0..SHELF_MAX)
+        (0..WINDOW)
             .map(|i| media(&format!("{p}{i}")))
             .collect::<Vec<_>>()
     };
     let sh = merge_favs(&[answered(0, many("a")), answered(0, many("b"))]);
-    assert_eq!(sh[0].items.len(), SHELF_MAX);
+    assert_eq!(sh[0].items.len(), WINDOW);
     // …and the cap falls on a ROUND boundary rather than on one source: both are represented
     assert_eq!(titles(&sh[0])[..4], ["a0", "b0", "a1", "b1"]);
 }

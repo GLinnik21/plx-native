@@ -86,6 +86,11 @@ impl Lane {
             cov: (p, p), end: (p == 0 || (!people && p < super::LIMIT as usize)).then_some(p), ..Lane::EMPTY }
     }
 
+    /// Every card the lane holds, for an edit that must reach the copy a rebuild draws from.
+    pub fn items_mut(&mut self) -> impl Iterator<Item = &mut Item> {
+        self.preview.iter_mut().chain(self.rows.values_mut())
+    }
+
     pub fn preview_len(&self) -> usize { self.preview.len() }
     pub fn held(&self) -> usize { self.rows.len() }
 
