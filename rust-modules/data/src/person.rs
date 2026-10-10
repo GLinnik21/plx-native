@@ -565,12 +565,14 @@ pub struct MediaLanding {
 ///
 /// `incomplete` is set when a chunk of [`ROLES_CHUNK`] keys failed: the pairs of the chunks that
 /// answered are still applied, and the list is left uncaptioned so the failure backoff re-asks it.
-/// It defaults to `false` on decode because a recorded batch predates chunking and was one request.
+/// It defaults to `false` on decode and is omitted from the encoding while `false`, because a recorded
+/// batch predates chunking and was one request: it must re-encode to the bytes it was recorded as
+/// ([`validate_record`] refuses any reply that does not).
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct RolesLanding {
     keys: Vec<String>,
     pairs: Vec<(String, String)>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     incomplete: bool,
 }
 
@@ -2196,6 +2198,27 @@ mod tests {
         fn default() -> Self {
             Self { state: Default::default(), adapter: Arc::new(Default::default()) }
         }
+    }
+
+    /// A Roles landing recorded before chunking has no `incomplete` key. The tape check re-encodes
+    /// every reply and refuses one that differs, so it must come back byte for byte.
+    #[test]
+    fn an_old_shape_roles_landing_reencodes_to_its_recorded_bytes() {
+        let recorded = serde_json::json!({
+            "gen": 3,
+            "what": {"Roles": {"keys": ["1001", "1003"], "pairs": [["1001", "sab12"]]}},
+        });
+        assert_eq!(validate_record(F_PROFILE as u32 + 2, &recorded), Err("mismatched person terminal kind"));
+        let roles_slot = fx(S0, K_ROLES).unwrap() as u32;
+        assert_eq!(validate_record(roles_slot, &recorded), Ok(()));
+        let mail: Mail = serde_json::from_value(recorded.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&mail).unwrap(), recorded);
+        // A chunked batch that failed part-way still says so.
+        let partial = serde_json::json!({
+            "gen": 3,
+            "what": {"Roles": {"keys": ["1"], "pairs": [], "incomplete": true}},
+        });
+        assert_eq!(validate_record(roles_slot, &partial), Ok(()));
     }
 
     /// The fixture reads the mailbox table twice (in-flight and answered); it must not hold the
