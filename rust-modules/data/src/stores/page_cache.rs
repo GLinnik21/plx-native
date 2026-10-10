@@ -31,6 +31,30 @@ pub struct Keep {
     pub restore: Option<usize>,
 }
 
+/// Which of `pages` directory pages the keep rule holds: page 0, the pages covering `keep.wanted`
+/// with two either side, and the pages of the focus and restore targets. `page_of` maps an index
+/// to its page and gives `pages` for an index past the listing, so a target past the end keeps
+/// nothing. Shared with the unfiltered `SecItems` table in `browse`, which must not drift from it.
+pub(crate) fn kept_pages(pages: usize, keep: &Keep, page_of: impl Fn(usize) -> usize) -> Vec<bool> {
+    let mut kept = vec![false; pages];
+    if let Some(first) = kept.first_mut() {
+        *first = true;
+    }
+    let first = if keep.wanted.is_empty() { pages } else { page_of(keep.wanted.start) };
+    if first < pages {
+        let last = page_of(keep.wanted.end - 1);
+        let hi = (last + 3).min(pages);
+        let lo = first.saturating_sub(2).min(hi);
+        kept[lo..hi].fill(true);
+    }
+    for i in [keep.focus, keep.restore].into_iter().flatten() {
+        if let Some(slot) = kept.get_mut(page_of(i)) {
+            *slot = true;
+        }
+    }
+    kept
+}
+
 #[derive(Clone, Debug)]
 struct Page<T> {
     rows: Option<Arc<Vec<T>>>,
@@ -156,24 +180,7 @@ impl<T> PageCache<T> {
         if self.loaded_pages() <= MAX_LOADED {
             return;
         }
-        let n = self.pages.len();
-        let mut kept = vec![false; n];
-        if let Some(first) = kept.first_mut() {
-            *first = true;
-        }
-        let first = if keep.wanted.is_empty() { n } else { self.page_of(keep.wanted.start) };
-        if first < n {
-            // Two pages either side of the wanted range, clamped to the directory.
-            let last = self.page_of(keep.wanted.end - 1);
-            let hi = (last + 3).min(n);
-            let lo = first.saturating_sub(2).min(hi);
-            kept[lo..hi].fill(true);
-        }
-        for i in [keep.focus, keep.restore].into_iter().flatten() {
-            if let Some((p, _)) = self.locate(i) {
-                kept[p] = true;
-            }
-        }
+        let kept = kept_pages(self.pages.len(), keep, |i| self.page_of(i));
         for (page, keep) in self.pages.iter_mut().zip(kept) {
             if !keep {
                 page.rows = None;

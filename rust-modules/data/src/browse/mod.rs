@@ -59,6 +59,7 @@
 use plx_plex::plex::{SectionQuery, ServerId};
 use saved_view::ViewField;
 use crate::pms::{parse_item, PmsMovie};
+use crate::stores::page_cache::{kept_pages, Keep, MAX_LOADED};
 use std::panic::catch_unwind;
 #[cfg(test)]
 use std::panic::AssertUnwindSafe;
@@ -68,6 +69,11 @@ use std::sync::{Arc, Mutex};
 /// Page size for section listings. Two grid screens' worth (10 rows × 6) — big enough that a
 /// full-screen scroll rarely waits, small enough that a page parse stays invisible on-frame.
 const PAGE: usize = 60;
+
+/// The sections left most recently that keep the pages of the window they last showed. Every
+/// other section keeps its total and no pages, so a library a viewer has moved on from costs
+/// nothing but its count.
+const RECENT_SECTIONS: usize = 3;
 
 /// Frames between attempts to reach a source whose discovery failed. Far longer than the page
 /// retry (`RETRY_CD`, ~2 s): a page retry is racing a user looking at a spinner, while an
@@ -512,6 +518,15 @@ pub enum CursorAt {
     SlotIndex(usize),
 }
 
+impl Cursor {
+    /// The item index the bookmark points at.
+    fn slot(&self) -> usize {
+        match &self.at {
+            CursorAt::ItemKey { slot, .. } | CursorAt::SlotIndex(slot) => *slot,
+        }
+    }
+}
+
 /// Per-section browse state: the current query, the server-driven menus, the sparse item
 /// store, the library's own published shelves, and the remembered view (focus/scroll survive
 /// leaving the screen — state amnesia is the official app's loudest complaint).
@@ -562,6 +577,9 @@ struct SecState {
 /// as the flat vector did; `page_missing` is the fetch scan, over pages.
 /// Cloning retains the page table in O(1). Writes copy only the table of page handles and
 /// changed pages, never the whole loaded catalog. This is the Library read-view backing.
+/// Pages are also dropped again: a landing applies the keep rule ([`SecItems::evict`]) and a
+/// section the grid has left keeps no pages ([`BrowseState::apply_section_rule`]). A dropped page
+/// is a hole, the same as one never fetched, and `len` never changes with it.
 #[derive(Clone, Default)]
 struct SecItems {
     pages: Arc<Vec<Option<Arc<Vec<Option<PmsMovie>>>>>>,
@@ -615,6 +633,47 @@ impl SecItems {
         page.resize_with(n, || None);
         if let Some(cell) = page.get_mut(i % PAGE) {
             *cell = Some(m);
+        }
+    }
+    /// Lands a fetched page at `start`, then applies the keep rule. The only place eviction runs.
+    fn land(&mut self, start: usize, items: Vec<PmsMovie>, keep: &Keep) {
+        for (offset, item) in items.into_iter().enumerate() {
+            self.set(start + offset, item);
+        }
+        self.evict(keep);
+    }
+    /// Drops the pages `keep` does not hold, once more than `MAX_LOADED` are loaded. A dropped page
+    /// is a hole, as if it had never landed: `len` stays, so every index keeps its meaning, and
+    /// the next want for the page fetches it again. Readers that already cloned the table keep
+    /// their rows, the copy-on-write sharing `set` relies on.
+    fn evict(&mut self, keep: &Keep) {
+        if self.pages.iter().filter(|page| page.is_some()).count() <= MAX_LOADED {
+            return;
+        }
+        let (len, pages) = (self.len, self.pages.len());
+        let kept = kept_pages(pages, keep, |i| if i < len { i / PAGE } else { pages });
+        self.retain_pages(|p| kept[p]);
+    }
+    /// Keeps only the pages covering `window` (an empty window keeps none). Used for a section the
+    /// grid has left: its total stays, so its indices still mean what they meant.
+    fn retain_window(&mut self, window: std::ops::Range<usize>) {
+        let (lo, hi) = if window.is_empty() {
+            (0, 0)
+        } else {
+            (window.start / PAGE, window.end.div_ceil(PAGE))
+        };
+        self.retain_pages(|p| (lo..hi).contains(&p));
+    }
+    /// Drops the rows of every loaded page `keep` rejects. Copies the page table only when there
+    /// is something to drop, so a read view holding the table is not disturbed for nothing.
+    fn retain_pages(&mut self, keep: impl Fn(usize) -> bool) {
+        if !self.pages.iter().enumerate().any(|(p, page)| page.is_some() && !keep(p)) {
+            return;
+        }
+        for (p, slot) in Arc::make_mut(&mut self.pages).iter_mut().enumerate() {
+            if !keep(p) {
+                *slot = None;
+            }
         }
     }
     /// Does page `p` (items `p*PAGE ..`) have a slot not yet filled?
@@ -722,6 +781,9 @@ pub struct BrowseState {
     /// Wanted item-index range (inclusive lo, exclusive hi) — set by the grid each frame from its
     /// visible rows + lookahead; [`pump`] fetches the first missing page inside it.
     want: (usize, usize),
+    /// The sections left most recently, newest first, each with the window it last showed (see
+    /// [`RECENT_SECTIONS`]).
+    left: Vec<(usize, (usize, usize))>,
     gen: u32,
     sections_gen: u32,
     epoch: u32,
@@ -815,6 +877,7 @@ impl Default for BrowseState {
             states: Vec::new(),
             cur: 0,
             want: (0, 0),
+            left: Vec::new(),
             gen: 0,
             sections_gen: 0,
             epoch: 0,
@@ -972,9 +1035,28 @@ impl BrowseState {
         if i >= self.sections.len() || i == self.cur() {
             return;
         }
+        let left = self.cur();
+        // The section coming back to the screen is no longer "left", and must not use a slot.
+        self.left.retain(|&(section, _)| section != left && section != i);
+        self.left.insert(0, (left, self.want));
+        self.left.truncate(RECENT_SECTIONS);
         self.cur = i;
         self.bump_gen();
+        self.apply_section_rule();
         activate_source_of(i);
+    }
+    /// The grid's memory of the sections it is not showing: the recent few keep their last
+    /// window, the rest keep no pages. Runs on a switch, never per frame.
+    fn apply_section_rule(&mut self) {
+        for (section, state) in self.states.iter_mut().enumerate() {
+            if section == self.cur {
+                continue;
+            }
+            match self.left.iter().find(|&&(left, _)| left == section) {
+                Some(&(_, (lo, hi))) => state.items.retain_window(lo..hi),
+                None => state.items.retain_window(0..0),
+            }
+        }
     }
     fn want(&mut self, lo: usize, hi: usize) {
         self.want = (lo, hi);
@@ -2041,6 +2123,7 @@ impl BrowseState {
         self.view_memory = Default::default();
         self.tab_shape = u32::MAX;
         self.cur = 0;
+        self.left = Vec::new();
         self.retry_cd = 0;
         self.refresh_tab_shape();
     }
@@ -2451,6 +2534,10 @@ impl BrowseState {
                 }
             });
         // DUMP MODE: owed while the listing page's claim (`fetching`) is held.
+        // The wanted window, read before the landing borrows the section table: the grid's
+        // visible rows, the page a restore lands on, and nothing else (no focus index reaches
+        // the store, see `Keep`).
+        let wanted = self.want;
         let page = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
             || adapter.fetching.load(Ordering::SeqCst), || {
             adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -2520,9 +2607,14 @@ impl BrowseState {
                                     state.total = result.total;
                                     state.items.resize(state.total as usize);
                                 }
-                                for (offset, item) in result.items.into_iter().enumerate() {
-                                    state.items.set(result.start + offset, item);
-                                }
+                                // A pending restore lands on the bookmark's slot: its page stays
+                                // loaded until the restore seats (see `Keep::restore`).
+                                let keep = Keep {
+                                    wanted: wanted.0..wanted.1,
+                                    focus: None,
+                                    restore: state.cursor.as_deref().map(Cursor::slot),
+                                };
+                                state.items.land(result.start, result.items, &keep);
                                 changed = true;
                             }
                         }
@@ -3686,6 +3778,10 @@ mod fetch_state_tests;
 #[cfg(test)]
 #[path = "browse_home_and_tabs_tests.rs"]
 mod home_and_tabs_tests;
+
+#[cfg(test)]
+#[path = "browse_eviction_tests.rs"]
+mod eviction_tests;
 
 #[cfg(test)]
 #[path = "browse_reachability_tests.rs"]
