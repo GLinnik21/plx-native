@@ -146,6 +146,9 @@ def mock_scene(scene):
     out = dict(scene)
     if block.get("rk") is not None:
         out["rk"] = int(block["rk"])
+        # The overlay's `skip` says the REAL library has no item of this shape; the mock serves
+        # `mock.rk` from its own synthetic library, so that reason no longer applies.
+        out.pop("skip", None)
     if block.get("triggers"):
         out["triggers"] = {**scene.get("triggers", {}), **block["triggers"]}
     return out

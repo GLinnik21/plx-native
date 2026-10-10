@@ -35,6 +35,8 @@
     "show_detail": "<ratingKey: a SHOW, not an episode — ideally one season with many episodes>",
     "movie_cast0_in_both_libraries": "<ratingKey>",
     "collection": "<ratingKey: a movie COLLECTION, not a movie>",
-    "collection_member_movie": "<ratingKey>"
+    "collection_member_movie": "<ratingKey>",
+    "movie_with_related": "<ratingKey: a movie whose detail page has a long Related row>",
+    "show_long_season": "<ratingKey: a SHOW whose first season has over 60 episodes>"
   }
 }

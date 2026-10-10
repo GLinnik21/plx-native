@@ -469,14 +469,16 @@
       "route": "detail",
       "run_secs": 70,
       "warmup_s": 5,
+      "item": "movie_with_related",
       "triggers": {
-        "plxnative-detail": "1001",
+        "plxnative-detail": "$rk",
         "plxnative-detailsec": "2",
         "plxnative-focus": true,
         "plxnative-focusx": true,
         "plxnative-framedrop": 25
       },
       "mock": {
+        "rk": 1001,
         "movies": 300,
         "only": true,
         "link": [
@@ -506,14 +508,16 @@
       "route": "detail",
       "run_secs": 70,
       "warmup_s": 5,
+      "item": "movie_with_related",
       "triggers": {
-        "plxnative-detail": "1001",
+        "plxnative-detail": "$rk",
         "plxnative-detailsec": "2",
         "plxnative-focus": true,
         "plxnative-focusx": true,
         "plxnative-framedrop": 25
       },
       "mock": {
+        "rk": 1001,
         "movies": 300,
         "only": true,
         "link": [
@@ -543,13 +547,15 @@
       "route": "collection",
       "run_secs": 70,
       "warmup_s": 5,
+      "item": "collection",
       "triggers": {
-        "plxnative-collection": "50002",
+        "plxnative-collection": "$rk",
         "plxnative-focus": true,
         "plxnative-focusx": true,
         "plxnative-framedrop": 25
       },
       "mock": {
+        "rk": 50002,
         "movies": 1000,
         "only": true,
         "link": [
@@ -579,13 +585,15 @@
       "route": "collection",
       "run_secs": 70,
       "warmup_s": 5,
+      "item": "collection",
       "triggers": {
-        "plxnative-collection": "50002",
+        "plxnative-collection": "$rk",
         "plxnative-focus": true,
         "plxnative-focusx": true,
         "plxnative-framedrop": 25
       },
       "mock": {
+        "rk": 50002,
         "movies": 1000,
         "only": true,
         "link": [
@@ -615,13 +623,15 @@
       "route": "detail",
       "run_secs": 70,
       "warmup_s": 5,
+      "item": "show_long_season",
       "triggers": {
-        "plxnative-detail": "2001",
+        "plxnative-detail": "$rk",
         "plxnative-focus": true,
         "plxnative-focusx": true,
         "plxnative-framedrop": 25
       },
       "mock": {
+        "rk": 2001,
         "movies": 10,
         "shows": 2,
         "seasons": 2,
@@ -654,13 +664,15 @@
       "route": "detail",
       "run_secs": 70,
       "warmup_s": 5,
+      "item": "show_long_season",
       "triggers": {
-        "plxnative-detail": "2001",
+        "plxnative-detail": "$rk",
         "plxnative-focus": true,
         "plxnative-focusx": true,
         "plxnative-framedrop": 25
       },
       "mock": {
+        "rk": 2001,
         "movies": 10,
         "shows": 2,
         "seasons": 2,
