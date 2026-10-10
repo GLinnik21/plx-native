@@ -428,3 +428,33 @@ mod windows {
         assert_eq!((server.requests, shelves.len()), (1, 7));
     }
 }
+
+/// Focus left the edge a page was asked from while the read was out: the page withdraws the ask, and
+/// the read that lands afterwards must not slide the window from under it. An ask not yet claimed
+/// is simply dropped, and asking again afterwards works.
+#[test]
+fn a_withdrawn_ask_is_discarded_when_its_read_lands() {
+    let len = 500;
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut hubs = published(&one_row(&(0..12).collect::<Vec<_>>(), len));
+    let window = keys(&hubs.committed[0]);
+    let revision = hubs.revision;
+    // not yet claimed
+    assert!(hubs.want_page(revision, ID, KEY, false));
+    hubs.cancel_page(ID, KEY);
+    assert!(hubs.next_ask().is_none(), "an unclaimed ask is dropped");
+    // claimed by a worker, then withdrawn
+    assert!(hubs.want_page(revision, ID, KEY, false));
+    let ask = hubs.next_ask().unwrap();
+    hubs.inflight = Some((ask.clone(), false));
+    hubs.cancel_page(ID, KEY);
+    assert!(!step(&mut hubs, &ask, listing), "the landing changes nothing");
+    assert_eq!(keys(&hubs.committed[0]), window);
+    assert_eq!(hubs.revision, revision);
+    // and the row can be asked again, and that one lands
+    assert!(hubs.want_page(revision, ID, KEY, false));
+    let ask = hubs.next_ask().unwrap();
+    hubs.inflight = Some((ask.clone(), false));
+    assert!(step(&mut hubs, &ask, listing));
+    assert_ne!(keys(&hubs.committed[0]), window);
+}

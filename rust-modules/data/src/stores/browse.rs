@@ -135,7 +135,7 @@ impl BrowseStore {
             work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }, ..
         });
         let quiet = matches!(&cmd, BrowseCmd::Addressed {
-            work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres | LibraryWork::HubPage { .. }, ..
+            work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres | LibraryWork::HubPage { .. } | LibraryWork::HubPageCancel { .. }, ..
         });
         let roster_changed = if matches!(&cmd, BrowseCmd::RecheckShares) {
             self.sync_roster()
@@ -491,6 +491,13 @@ pub enum LibraryWork {
         key: String,
         before: bool,
         seen: u64,
+    },
+    /// Withdraw the page ask for row `id`: focus left the edge it was sent from, and a landing now
+    /// would slide the window from under it. A read already out is discarded when it lands; an ask
+    /// that has landed, or never was, makes this a no-op.
+    HubPageCancel {
+        id: String,
+        key: String,
     },
     /// The rows (hub order, inclusive) the page holds cards for. The store keeps those and gives
     /// the cards of the rest up to descriptors; sent when the range changes.

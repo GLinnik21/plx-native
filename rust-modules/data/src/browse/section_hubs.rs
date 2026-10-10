@@ -260,6 +260,9 @@ pub struct SecHubs {
     /// the list's refresh, nor the other way round.
     ask_fails: u32,
     ask_retry_left: u32,
+    /// The row read a worker is out on, and whether the page withdrew it since: a withdrawn read is
+    /// discarded when it lands, so its slide never reaches a window the reader has left.
+    inflight: Option<(RowAsk, bool)>,
 }
 
 /// One read of a row's listing: a page the user walked to, or the row's window re-read because it
@@ -330,6 +333,15 @@ impl SecHubs {
         true
     }
 
+    /// The page withdraws its ask for row `id`: focus left the edge it was sent from. The ask not yet
+    /// claimed is dropped; one a worker is out on is marked, and its landing discarded.
+    fn cancel_page(&mut self, id: &str, key: &str) {
+        if self.ask.as_ref().is_some_and(|ask| !ask.reload && ask.id == id && ask.key == key) { self.ask = None; }
+        if let Some((ask, withdrawn)) = self.inflight.as_mut() {
+            if !ask.reload && ask.id == id && ask.key == key { *withdrawn = true; }
+        }
+    }
+
     /// The page holds rows `lo..=hi`: rows that left the range give their cards up, rows that
     /// entered it are read again. Returns whether anything the page can see changed.
     fn set_hold(&mut self, lo: usize, hi: usize) -> bool {
@@ -350,6 +362,7 @@ impl SecHubs {
     /// the card count. Applied to the committed rows in place: the rows keep their number and their
     /// height, so nothing the page is looking at moves.
     fn land_row(&mut self, ask: &RowAsk, read: Option<Shelf>) -> bool {
+        if self.inflight.take().is_some_and(|(out, withdrawn)| withdrawn && out == *ask) { return false; }
         if !ask.reload && self.ask.as_ref() == Some(ask) { self.ask = None; }
         let Some(next) = read else {
             self.ask_fails = self.ask_fails.saturating_add(1);
@@ -567,6 +580,7 @@ impl super::BrowseState {
         let epoch = self.table_epoch();
         let worker_adapter = Arc::clone(adapter);
         let worker_ask = ask.clone();
+        if let Some(st) = self.state_mut(sec) { st.hubs.inflight = Some((ask.clone(), false)); }
         let spawned = plx_base::task::spawn_small("libhubs", move || {
             let shelf = catch_unwind(|| {
                 read_shelf(sid, window.as_ref()?, &worker_ask,
@@ -584,6 +598,7 @@ impl super::BrowseState {
         });
         if !spawned {
             adapter.hubs.fetching.store(false, Ordering::SeqCst);
+            if let Some(st) = self.state_mut(sec) { st.hubs.inflight = None; }
         }
     }
 
@@ -760,6 +775,14 @@ impl super::BrowseState {
         let asked = self.state_mut(sec).is_some_and(|st| st.hubs.want_page(seen, id, key, before));
         self.hubs_pump_spawns(adapter);
         asked
+    }
+
+    /// The page withdraws its ask for row `id`. Nothing the page shows changes.
+    pub(super) fn hubs_cancel_page(&mut self, sec: usize, id: &str, key: &str,
+        adapter: &Arc<super::BrowseAdapter>) -> bool {
+        if let Some(st) = self.state_mut(sec) { st.hubs.cancel_page(id, key); }
+        self.hubs_pump_spawns(adapter);
+        false
     }
 
     /// The page holds rows `lo..=hi`. Returns whether the published rows changed.
