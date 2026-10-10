@@ -33,13 +33,24 @@ use super::registry::{tile_facts, AppFx, CardKeys, CardPageMemory, CollectionLik
 
 #[cfg(test)]
 pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
+#[cfg(test)]
+mod window_tests; // the bounded projection, the window sent to the store, a hole's landing
 
 const HEADER_ELEM: u32 = 0;
 const RETRY_ELEM: u32 = 1;
 const FIRST_CARD_ELEM: u32 = 0x1000;
 /// Elements at and above this belong to grid slots whose member is not held (a page not read yet,
 /// or evicted): slot `i` is `HOLE_ELEM_BASE + i`. Real member keys are interned below it.
-const HOLE_ELEM_BASE: u32 = 0x4000_0000;
+///
+/// The range is `HOLE_ELEM_BASE..HOLE_ELEM_BASE + 0x3fff_ffff`: above `geom::NAMESPACE_FLOOR`
+/// (a hole is not an index into any index-keyed widget, and none here treats it as one), clear of
+/// the route-family band (`registry::BAND`, `ALERT`) that a different screen carves from
+/// `0x4000_0000`, and below the container's strip (`dispatch::STRIP_BASE`). Member keys count up
+/// from `FIRST_CARD_ELEM`; `Page::project` fails loudly before they could reach the base.
+const HOLE_ELEM_BASE: u32 = 0x5000_0000;
+const _: () = assert!(HOLE_ELEM_BASE >= plx_ui::geom::NAMESPACE_FLOOR);
+const _: () = assert!(HOLE_ELEM_BASE as u64 + 0x3fff_ffff < plx_ui::dispatch::STRIP_BASE as u64);
+const _: () = assert!(HOLE_ELEM_BASE > super::registry::ALERT + 0x100);
 
 fn hole_elem(index: usize) -> u32 { HOLE_ELEM_BASE + index.min(0x3fff_ffff) as u32 }
 
@@ -158,28 +169,90 @@ pub fn member_caption(item: &PmsMovie) -> TileLabel {
     ui_cards::poster_label(&tile_facts::of(item))
 }
 
-/// The grid's content (`CardSource`): the store's members read through the screen's derived index.
+/// One run of consecutive slots with a key and a label projected: slot `first + n` is `elems[n]`.
+#[derive(Default)]
+struct Run {
+    first: usize,
+    elems: Vec<u32>,
+    labels: Vec<String>,
+}
+
+/// The keys and labels of the slots the page can paint or step to, as of one store revision: a few
+/// runs, never the list. The listing's length stays the store's known count (navigation is by
+/// index), so a slot outside every run is read through the store's rows and the key table instead.
+/// Derived, not logical state.
+#[derive(Default)]
+struct Projection {
+    /// The listing's known count when this was projected.
+    total: usize,
+    runs: Vec<Run>,
+    /// The slot of every member element projected (a hole is its own slot).
+    index: std::collections::HashMap<u32, usize>,
+    /// The ranges `runs` was projected for, and the store revision they were read at.
+    applied: Vec<std::ops::Range<usize>>,
+    revision: Option<u64>,
+}
+
+impl Projection {
+    fn run_of(&self, index: usize) -> Option<(&Run, usize)> {
+        let at = self.runs.partition_point(|run| run.first <= index).checked_sub(1)?;
+        let run = &self.runs[at];
+        let offset = index - run.first;
+        (offset < run.elems.len()).then_some((run, offset))
+    }
+
+    fn elem(&self, index: usize) -> Option<u32> {
+        self.run_of(index).map(|(run, offset)| run.elems[offset])
+    }
+
+    fn label(&self, index: usize) -> Option<&str> {
+        self.run_of(index).map(|(run, offset)| run.labels[offset].as_str())
+    }
+
+    /// The slots held, which is what a projection costs.
+    fn cells(&self) -> usize { self.runs.iter().map(|run| run.elems.len()).sum() }
+}
+
+/// The slot ranges to project, sorted and merged, clamped to `total`.
+fn merged(mut ranges: Vec<std::ops::Range<usize>>, total: usize) -> Vec<std::ops::Range<usize>> {
+    ranges.retain_mut(|r| { r.end = r.end.min(total); r.start < r.end });
+    ranges.sort_by_key(|r| r.start);
+    let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+    for r in ranges {
+        match out.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
+/// The grid's content (`CardSource`): the store's members read through the screen's projection.
 /// Built from the screen's FIELDS, not `&CollectionScreen`, so a call can hold it while the grid
 /// itself is borrowed mutably.
 struct Members<'a> {
     collection: &'a Collection,
     cards: &'a CardKeys,
-    /// [`CollectionScreen::elems`] / [`CollectionScreen::labels`], derived by `sync`.
-    elems: &'a [u32],
-    labels: &'a [String],
+    /// [`Page::proj`], projected by `project` for the cells the page paints or steps to.
+    proj: &'a Projection,
 }
 
 impl<'a> Members<'a> {
-    /// Is [`Self::elems`] the index of `collection` as it stands? Items only append between
+    /// Is [`Self::proj`] the listing of `collection` as it stands? Items only append between
     /// syncs, so a length match is the check; a landing the page has not synced yet falls back to
-    /// the identity scan.
-    fn indexed(&self) -> bool {
-        self.elems.len() == self.collection.shown()
+    /// reading the rows against the key table.
+    fn fresh(&self) -> bool {
+        self.proj.total == self.collection.shown()
+    }
+
+    /// The element projected for `index`, if the projection is current and holds the slot.
+    fn projected(&self, index: usize) -> Option<u32> {
+        self.proj.elem(index).filter(|_| self.fresh())
     }
 
     fn elem_at(&self, index: usize) -> Option<u32> {
-        if self.indexed() { return self.elems.get(index).copied(); }
         if index >= self.collection.shown() { return None; }
+        if let Some(elem) = self.projected(index) { return Some(elem); }
         Some(self.collection.item(index).and_then(|item| self.cards.elem_for(item.sid, &item.rk))
             .unwrap_or_else(|| hole_elem(index)))
     }
@@ -188,16 +261,18 @@ impl<'a> Members<'a> {
         if elem >= HOLE_ELEM_BASE {
             return Some((elem - HOLE_ELEM_BASE) as usize).filter(|&i| i < self.collection.shown());
         }
-        if self.indexed() { return self.elems.iter().position(|&e| e == elem); }
+        if self.fresh() {
+            if let Some(&index) = self.proj.index.get(&elem) { return Some(index); }
+        }
         let identity = self.cards.get(elem)?;
         self.collection.position_of(identity.sid, &identity.rk)
     }
 
-    /// Card `index`'s persistent label: the one `sync` built, or — for a landing the page has not
-    /// synced yet — formatted now.
+    /// Card `index`'s persistent label: the one `project` built, or — for a slot outside the
+    /// projection, or a landing the page has not synced yet — formatted now.
     fn label_at(&self, index: usize) -> std::borrow::Cow<'a, str> {
-        match self.labels.get(index).filter(|_| self.indexed()) {
-            Some(label) => std::borrow::Cow::Borrowed(label.as_str()),
+        match self.proj.label(index).filter(|_| self.fresh()) {
+            Some(label) => std::borrow::Cow::Borrowed(label),
             None => std::borrow::Cow::Owned(self.collection.item(index).map(member_label).unwrap_or_default()),
         }
     }
@@ -229,20 +304,21 @@ struct Page {
     id: CollectionRef,
     header_marked: bool,
     cards: CardKeys,
-    /// `elems[i]` is the engine element of the synced collection's `items[i]`, rebuilt by
-    /// [`Self::sync`] so a frame finds a card's element or index without scanning identities.
-    /// Derived, not logical state.
-    elems: Vec<u32>,
-    /// `labels[i]` is `items[i]`'s persistent poster label ([`member_label`]), built beside
-    /// [`Self::elems`] so a frame formats none. Derived, not logical state.
-    labels: Vec<String>,
+    /// The keys and labels of the cells the page can paint or step to ([`Self::project`]), so a
+    /// frame finds a card's element or index without scanning identities. Derived, not logical
+    /// state.
+    proj: Projection,
+    /// The ranges and pinned keys [`CollectionScreen::plan`] last asked [`Self::project`] to keep:
+    /// the grid's painted cells with a row either side, the first row, and the rows around the
+    /// focus, the restore target and the group's remembered key.
+    want: (Vec<std::ops::Range<usize>>, Vec<u32>),
+    /// Where each pinned key was last seen, so its row is projected again after the key leaves
+    /// the projection (an element is not an index; this is how a pin finds its slot).
+    pin_index: Vec<(u32, usize)>,
     /// The header's meta line and the `(count, kind-only)` it was built for ([`meta_line`]).
     /// Derived, not logical state.
     meta: ((i64, bool), CString),
     return_pending: bool,
-    /// The keys of the previous sync's held rows, kept one sync longer than their rows so a card
-    /// that scrolls out and back keeps its element. Derived, not logical state.
-    previous: std::collections::HashSet<u32>,
     /// The focused member's element, and the remembered one a Back is waiting for: neither key is
     /// ever pruned.
     focus_elem: Option<u32>,
@@ -306,25 +382,12 @@ impl Page {
     fn sync_to(&mut self, collection: &Collection, revision: u64, measure: &dyn plx_machine::machine::Measure) {
         self.synced = Some(revision);
         self.sync(collection, measure);
+        self.proj.revision = Some(revision);
     }
 
     fn sync(&mut self, collection: &Collection, measure: &dyn plx_machine::machine::Measure) {
         if self.id.rk.is_empty() && !collection.id.rk.is_empty() { self.id.rk = collection.id.rk.clone(); }
-        // Only the rows held get a key; a slot whose member is not held is a hole element, so the
-        // table of keys follows the loaded pages and not the length of the list.
-        let shown = collection.shown();
-        let held: Vec<(usize, &PmsMovie)> = collection.loaded_rows().filter(|&(i, _)| i < shown).collect();
-        let keys = self.cards.intern_all(held.iter().map(|(_, item)| (item.sid, item.rk.as_str())), "collection");
-        self.elems = (0..shown).map(hole_elem).collect();
-        self.labels = vec![String::new(); shown];
-        for (&(i, item), key) in held.iter().zip(keys) {
-            self.elems[i] = key;
-            self.labels[i] = member_label(item);
-        }
-        let live: std::collections::HashSet<u32> = self.elems.iter().copied().filter(|&e| e < HOLE_ELEM_BASE).collect();
-        let pinned = [self.focus_elem, self.restore_elem];
-        self.cards.prune(&live, &self.previous, &pinned);
-        self.previous = live;
+        self.project(collection, None);
         self.counts = (collection.total, collection.kept_counts());
         self.meta = (meta_key(collection), meta_line(collection));
         self.summary_more = !collection.summary.is_empty() && summary_view(&collection.summary, measure).truncates(TEXT_W);
@@ -335,9 +398,67 @@ impl Page {
         }
     }
 
-    /// The grid's content: `collection` read through this page's derived index.
+    /// Project keys and labels for [`Self::want`] and bound the key table. Only the rows held
+    /// inside the wanted ranges get a key; a slot whose member is not held is a hole element, so
+    /// the work and the memory follow the window and not the length of the list. `revision` names
+    /// the store content the projection is current for (`None` forces it): a projection already
+    /// made for that revision and these ranges is left as it is.
+    fn project(&mut self, collection: &Collection, revision: Option<u64>) {
+        let shown = collection.shown();
+        let default = [0..4 * ui_cards::GRID_COLS];
+        let ranges = merged(if self.want.0.is_empty() { default.to_vec() } else { self.want.0.clone() }, shown);
+        if revision.is_some() && self.proj.revision == revision && self.proj.total == shown && self.proj.applied == ranges {
+            return;
+        }
+        let rows: Vec<(usize, &PmsMovie)> = ranges.iter().flat_map(|r| r.clone())
+            .filter_map(|i| collection.item(i).map(|item| (i, item))).collect();
+        let keys = self.cards.intern_all(rows.iter().map(|(_, item)| (item.sid, item.rk.as_str())), "collection");
+        // A member key must never reach the hole range; 0x4000_0000 minted keys is far beyond any
+        // session, so this is the loud failure of an impossible state, not a limit.
+        assert!(self.cards.next <= HOLE_ELEM_BASE, "collection element-key space reached the hole range");
+        let before: std::collections::HashSet<u32> = self.proj.index.keys().copied().collect();
+        let mut proj = Projection { total: shown, revision, ..Default::default() };
+        let mut held = rows.iter().zip(keys).peekable();
+        for range in &ranges {
+            let mut run = Run { first: range.start, elems: Vec::with_capacity(range.len()), labels: Vec::with_capacity(range.len()) };
+            for i in range.clone() {
+                match held.next_if(|((at, _), _)| *at == i) {
+                    Some(((_, item), key)) => {
+                        proj.index.entry(key).or_insert(i);
+                        run.elems.push(key);
+                        run.labels.push(member_label(item));
+                    }
+                    None => { run.elems.push(hole_elem(i)); run.labels.push(String::new()); }
+                }
+            }
+            proj.runs.push(run);
+        }
+        proj.applied = ranges;
+        self.proj = proj;
+        let pins = &self.want.1;
+        self.pin_index.retain(|(elem, _)| pins.contains(elem));
+        for &elem in pins {
+            if let Some(&index) = self.proj.index.get(&elem) {
+                match self.pin_index.iter_mut().find(|(e, _)| *e == elem) {
+                    Some(seen) => seen.1 = index,
+                    None => self.pin_index.push((elem, index)),
+                }
+            }
+        }
+        let (now, pins) = (&self.proj.index, &self.want.1);
+        self.cards.prune(self.proj.cells(), |elem| now.contains_key(&elem) || before.contains(&elem) || pins.contains(&elem));
+    }
+
+    /// The grid's content: `collection` read through this page's projection.
     fn members<'a>(&'a self, collection: &'a Collection) -> Members<'a> {
-        Members { collection, cards: &self.cards, elems: &self.elems, labels: &self.labels }
+        Members { collection, cards: &self.cards, proj: &self.proj }
+    }
+
+    /// Where member element `elem` sits: its slot in the listing, else the last slot a pinned key
+    /// was seen at (a focus whose page the store has not read back yet).
+    fn slot_of(&self, collection: &Collection, elem: u32) -> Option<usize> {
+        self.members(collection).index(elem)
+            .or_else(|| self.pin_index.iter().find(|(e, _)| *e == elem).map(|&(_, index)| index))
     }
 
     #[cfg(test)]
@@ -347,6 +468,25 @@ impl Page {
 
     fn item_index(&self, collection: &Collection, elem: u32) -> Option<usize> {
         self.members(collection).index(elem)
+    }
+
+    /// Test support: how many cells the page holds an element and a label for.
+    #[cfg(test)]
+    fn cells(&self) -> usize { self.proj.cells() }
+
+    /// Test support: the element projected for cell `index`, if any.
+    #[cfg(test)]
+    fn cell_elem(&self, index: usize) -> Option<u32> { self.proj.elem(index) }
+
+    /// Test support: the label projected for cell `index`, if any.
+    #[cfg(test)]
+    fn cell_label(&self, index: usize) -> Option<&str> { self.proj.label(index) }
+
+    /// Test support: also keep the rows around `index`, as navigating to it would have.
+    #[cfg(test)]
+    fn reach(&mut self, collection: &Collection, index: usize) {
+        self.want.0.push(index.saturating_sub(ui_cards::GRID_COLS)..index + 2 * ui_cards::GRID_COLS);
+        self.project(collection, None);
     }
 
     /// **A Back whose member has not landed yet.** The remembered member may sit past the pages
@@ -445,6 +585,16 @@ impl<H: ContentLike + CollectionLike> StackPage<H> for Page {
         H::collection(cx).revision() << 4 | status << 1 | u64::from(self.summary_more)
     }
 
+    /// A hole whose page has landed: the slot now holds its member under that member's own key.
+    /// Focus on the hole moves to it in the frame of the landing, in the same slot, so the
+    /// column and the cell under it stay.
+    fn supersede(&self, cx: &Cx<'_, H>, want: &u32) -> Option<u32> {
+        let slot = want.checked_sub(HOLE_ELEM_BASE)? as usize;
+        let collection = self.collection(cx)?;
+        let now = self.members(collection).projected(slot)?;
+        (now != *want && now < HOLE_ELEM_BASE).then_some(now)
+    }
+
     /// The remembered member of a Back has not landed yet (or the whole collection has not).
     fn pending(&self, cx: &Cx<'_, H>, want: &u32) -> bool {
         match self.collection(cx) {
@@ -528,8 +678,8 @@ impl CollectionScreen {
     pub fn new(entry: EntryId, id: CollectionRef) -> Self {
         Self {
             page: Page { entry, id, header_marked: false, cards: CardKeys::new(FIRST_CARD_ELEM),
-                elems: Vec::new(), labels: Vec::new(), meta: ((0, true), CString::default()),
-                return_pending: false, previous: Default::default(), focus_elem: None, restore_elem: None,
+                proj: Projection::default(), want: Default::default(), pin_index: Vec::new(), meta: ((0, true), CString::default()),
+                return_pending: false, focus_elem: None, restore_elem: None,
                 focus_index: None, restore_index: None, restore_counts: None, counts: (0, Vec::new()),
                 sent_window: None, want_end: 0, summary_more: false, links_c: Vec::new(), synced: None,
                 summary_lift: plx_ui::text_lift::TextLift::new() },
@@ -561,16 +711,61 @@ impl CollectionScreen {
         self.page.collection(cx)
     }
 
+    /// What the page keeps keys for: the cells the grid can paint or step to (its own window, a row
+    /// more each side as look-ahead), the first row (where a vertical move into the grid seats),
+    /// and the rows around the focus, the restore target and the group's remembered key, which are
+    /// also pinned against the key table's bound. Derived each frame from the grid's painted
+    /// range, so a scroll that moves the view without moving focus moves what is kept.
+    fn plan<H: ContentLike + CollectionLike>(&mut self, cx: &Cx<'_, H>) {
+        let Some(collection) = self.collection(cx) else { return };
+        let cols = ui_cards::GRID_COLS;
+        let row = |index: usize| (index / cols).saturating_sub(1) * cols..(index / cols + 2) * cols;
+        let mut ranges = match self.painted(cx) {
+            Some(painted) => vec![painted.start.saturating_sub(cols)..painted.end + cols],
+            None => vec![0..4 * cols],
+        };
+        ranges.push(0..cols);
+        let focus = cx.focus.current.filter(|key| key.entry == self.entry()).map(|key| key.elem);
+        let mut pins = Vec::new();
+        for elem in [focus, self.page.restore_elem, cx.focus.remembered(GRID_GROUP)].into_iter().flatten() {
+            if elem == HEADER_ELEM || elem == RETRY_ELEM { continue; }
+            if elem < HOLE_ELEM_BASE { pins.push(elem); }
+            if let Some(index) = self.page.slot_of(collection, elem) { ranges.push(row(index)); }
+        }
+        if let Some(index) = self.page.return_pending.then_some(self.page.restore_index).flatten() {
+            ranges.push(row(index));
+        }
+        self.page.want = (ranges, pins);
+    }
+
+    /// The cells the grid paints this frame, by the grid's own rule (`None` before its first
+    /// layout).
+    fn painted<H: ContentLike + CollectionLike>(&self, cx: &Cx<'_, H>) -> Option<std::ops::Range<usize>> {
+        self.stack.grid_window(&self.page, cx, Sec::Items)
+    }
+
+    /// Project again for the window the grid has NOW: a scroll step moves what it can paint after
+    /// the frame's first projection, and every cell it paints or steps to needs a key in the frame.
+    /// A no-op when neither the ranges nor the store's content moved.
+    fn reproject<H: ContentLike + CollectionLike>(&mut self, cx: &Cx<'_, H>) {
+        let Some(collection) = self.collection(cx) else { return };
+        self.plan(cx);
+        self.page.project(collection, Some(H::collection(cx).revision()));
+    }
+
     /// Tells the store which indices the screen shows or is about to show, which member holds
     /// focus and where a Back is restoring to, so it keeps those pages and drops the rest. The
-    /// window follows the focus (a page above, two below, then whatever the grid asked for);
-    /// it is sent only when it moves.
+    /// window is anchored on the focus while it is among the cells the grid paints, else on the
+    /// restore target, else on the top of what the grid paints: one page above, two below. The
+    /// anchor follows the grid's painted range (the one function the grid draws by), so a scroll
+    /// that does not move focus still moves the window. It is sent only when it moves.
     fn send_window<H: ContentLike + CollectionLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let Some(collection) = self.collection(cx) else { return };
+        let painted = self.painted(cx).unwrap_or(0..0);
         let focus = cx.focus.current.filter(|key| key.entry == self.entry())
             .and_then(|key| self.item_index(collection, key.elem));
         let restore = self.page.return_pending.then_some(self.page.restore_index).flatten();
-        let anchor = focus.or(restore).unwrap_or(0);
+        let anchor = focus.filter(|at| painted.contains(at)).or(restore).unwrap_or(painted.start);
         let wanted = anchor.saturating_sub(PAGE_SIZE)..(anchor + 2 * PAGE_SIZE).max(self.page.want_end.min(anchor + 3 * PAGE_SIZE));
         let window = (wanted, focus, restore);
         if self.page.sent_window.as_ref() == Some(&window) { return; }
@@ -596,16 +791,21 @@ impl CollectionScreen {
         // can wait for it and the keys prune never drops it.
         let elem = focus.filter(|key| key.entry == self.entry()).map(|key| key.elem)
             .filter(|&e| e != HEADER_ELEM && e != RETRY_ELEM).or(self.page.focus_elem);
-        let index = elem.and_then(|e| self.page.elems.iter().position(|&x| x == e)).or(self.page.focus_index);
+        let index = elem.and_then(|e| self.page.proj.index.get(&e).copied()).or(self.page.focus_index);
         CardPageMemory { cards: self.page.cards.clone(), header_marked: self.page.header_marked,
             total: self.page.counts.0, counts: self.page.counts.1.clone(),
             focus_index: index, focus_elem: elem }
     }
 
-    /// The member count a page entry asks the store for: one page, or — returning to a page
-    /// that remembers members — every member it knew, so the remembered one can be reached.
+    /// The member count a page entry asks the store for: one page, or — returning to a page whose
+    /// remembered member sits within the second — through that member, so the first ask reads it.
+    /// A deeper target is named by the `Window` that follows every tick (and the saved counts), not
+    /// by this first ask, so the key table's size is not what says how far the page had read.
     fn entry_want(&self) -> usize {
-        if self.page.return_pending { PAGE_SIZE.max(self.page.cards.len()) } else { PAGE_SIZE }
+        match self.page.restore_index.filter(|_| self.page.return_pending) {
+            Some(index) => (index + 1).clamp(PAGE_SIZE, 2 * PAGE_SIZE),
+            None => PAGE_SIZE,
+        }
     }
 
     #[cfg(test)]
@@ -693,6 +893,7 @@ impl CollectionScreen {
         let Some(collection) = self.collection(cx) else { return };
         let revision = H::collection(cx).revision();
         if self.page.synced != Some(revision) {
+            self.plan(cx);
             self.page.sync_to(collection, revision, cx.measure);
         }
     }
@@ -734,6 +935,7 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
             ScreenEvent::Tick(_) => self.resync(cx),
             ScreenEvent::StoreChanged(ord, _) if *ord == plx_data::stores::StoreId::Collection.ord() => {
                 if let Some(collection) = self.collection(cx) {
+                    self.plan(cx);
                     self.page.sync_to(collection, H::collection(cx).revision(), cx.measure);
                 }
             }
@@ -743,6 +945,10 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
             Some(StackEvent::Card(_, card)) => Some(card),
             _ => None,
         };
+        // The stack stepped the scroll: the cells the grid paints now hold keys before the frame
+        // is drawn or any key is stepped from. (Not before a restored page has merged its saved
+        // keys: a projection's fresh keys would take the elements those name.)
+        if !matches!(ev, ScreenEvent::RestoreMemory(_)) { self.reproject(cx); }
         match ev {
             ScreenEvent::RestoreMemory(PageMemory::Collection(memory)) => {
                 self.restore(memory); self.page.return_pending = true; Handled::Yes
@@ -863,7 +1069,7 @@ mod tests {
     use plx_ui::screen::Step;
     use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead};
 
-    struct CollectionHost;
+    pub(super) struct CollectionHost;
     impl Host for CollectionHost {
         type Arg = super::super::family::SettingsPage;
         type Fx = AppFx;
@@ -877,8 +1083,8 @@ mod tests {
         fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> { cx.views }
     }
 
-    fn item(rk: &str) -> PmsMovie { PmsMovie { rk: rk.into(), title: rk.into(), ..Default::default() } }
-    fn set() -> CollectionRef {
+    pub(super) fn item(rk: &str) -> PmsMovie { PmsMovie { rk: rk.into(), title: rk.into(), ..Default::default() } }
+    pub(super) fn set() -> CollectionRef {
         CollectionRef { sid: plx_plex::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 7, name: "Set".into() }
     }
     fn seeded() -> (plx_data::stores::collection::CollectionStore, CollectionScreen) {
@@ -890,7 +1096,7 @@ mod tests {
         step(&mut screen, ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }), &cx(store.view(), None));
         (store, screen)
     }
-    fn cx<'a>(view: plx_data::collection::CollectionView<'a>, focus: Option<plx_machine::machine::FocusKey<u32>>) -> Cx<'a, CollectionHost> {
+    pub(super) fn cx<'a>(view: plx_data::collection::CollectionView<'a>, focus: Option<plx_machine::machine::FocusKey<u32>>) -> Cx<'a, CollectionHost> {
         Cx { views: view, tick: Tick::default(), measure: &FixtureMeasure,
             press: PressRead::default(), focus: FocusRead { current: focus, ..Default::default() },
             owner: InputOwner::Entry(EntryId(9)) }
@@ -908,7 +1114,7 @@ mod tests {
         assert_eq!(caption.caption.unwrap().to_str().unwrap(), "Example Show · S3 · E4");
     }
 
-    fn step(screen: &mut CollectionScreen, ev: ScreenEvent<CollectionHost>,
+    pub(super) fn step(screen: &mut CollectionScreen, ev: ScreenEvent<CollectionHost>,
         cx: &Cx<'_, CollectionHost>) -> Vec<plx_machine::machine::Stamped<CollectionHost>> {
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
@@ -944,12 +1150,12 @@ mod tests {
     #[test]
     fn a_same_length_content_change_is_synced_by_the_frame_tick() {
         let (mut store, mut screen) = seeded();
-        let (before_elems, before_labels) = (screen.page.elems.clone(), screen.page.labels.clone());
+        let (before_elem, before_label) = (screen.page.cell_elem(1), screen.page.cell_label(1).map(str::to_owned));
         store.edit_for_test(|c| c.edit_items_for_test(|v| v[1] = PmsMovie { kind: 2, season_index: 4, ..item("z") }));
         tick_at(&mut screen, &store, None, 16);
-        assert_ne!(screen.page.elems[1], before_elems[1], "the replaced member has its own element");
-        assert_ne!(screen.page.labels[1], before_labels[1], "and its own label");
-        assert_eq!(screen.page.elems.len(), 3);
+        assert_ne!(screen.page.cell_elem(1), before_elem, "the replaced member has its own element");
+        assert_ne!(screen.page.cell_label(1).map(str::to_owned), before_label, "and its own label");
+        assert_eq!(screen.page.cells(), 3);
     }
 
     #[test]
@@ -1261,6 +1467,7 @@ mod tests {
             ms += 16;
             tick_at(&mut screen, &store, None, ms);
             let c = store.view().current().unwrap();
+            screen.page.reach(c, idx); // navigation would have projected the row it arrives on
             let key = screen.key_at(c, idx);
             ms += 16;
             tick_at(&mut screen, &store, Some(key), ms);
@@ -1297,6 +1504,7 @@ mod tests {
             c.evict_for_test(2900..3100, Some(3000), None);
         });
         tick_at(&mut screen, &store, None, 48);
+        screen.page.reach(store.view().current().unwrap(), 3000);
         let key = screen.key_at(store.view().current().unwrap(), 3000);
         tick_at(&mut screen, &store, Some(key), 64);
         let PageMemory::Collection(memory) = Screen::<CollectionHost>::memory_at(&screen, Some(key)) else { panic!() };
@@ -1333,6 +1541,7 @@ mod tests {
         store.edit_for_test(|c| { c.replace_items_for_test(many.clone()); c.evict_for_test(0..200, Some(100), None); });
         tick_at(&mut screen, &store, None, 64);
         let c = store.view().current().unwrap();
+        screen.page.reach(c, 100); // slot 100 is not painted from the top; scrolling to it projects it
         let members = screen.page.members(c);
         assert!(screen.page.elem_at(c, 100).is_some_and(|e| e < HOLE_ELEM_BASE), "slot 100 has its member");
         assert!(matches!(CardSource::<CollectionHost>::art(&members, 100), Art::Poster(Some(_))));
@@ -1347,6 +1556,7 @@ mod tests {
         store.edit_for_test(|c| c.replace_items_for_test(many.clone()));
         let mut original = original;
         original.page.sync(store.view().current().unwrap(), &FixtureMeasure);
+        original.page.reach(store.view().current().unwrap(), PAGE_SIZE + 5);
         let focus = original.key_at(store.view().current().unwrap(), PAGE_SIZE + 5);
         let PageMemory::Collection(memory) = Screen::<CollectionHost>::memory_at(&original, Some(focus)) else { panic!() };
 

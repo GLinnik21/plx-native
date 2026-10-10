@@ -605,14 +605,19 @@ impl CardKeys {
 
     pub fn len(&self) -> usize { self.keys.len() }
 
-    /// Drops every key that is not `live` (a row held now), in `previous` (held at the last
-    /// sync) or pinned (the focused member, the member a Back restores to). What remains is at
-    /// most two windows plus the pins, so the table follows the loaded pages and not the list;
-    /// `next` never moves back, so a dropped element is not handed out again.
-    pub fn prune(&mut self, live: &std::collections::HashSet<u32>,
-        previous: &std::collections::HashSet<u32>, pinned: &[Option<u32>]) {
-        self.keys.retain(|key| live.contains(&key.elem) || previous.contains(&key.elem)
-            || pinned.contains(&Some(key.elem)));
+    /// Bounds the table: above twice `window` (the cells the page keeps keys for) plus 256, the
+    /// oldest-interned keys go. A key `keep` names (a card projected now or a sync ago, the
+    /// focused member, the member a Back restores to, the group's remembered key) is never
+    /// dropped, so the table may stand over the bound only by those. `next` never moves back, so a
+    /// dropped element is not handed out again.
+    pub fn prune(&mut self, window: usize, keep: impl Fn(u32) -> bool) {
+        let mut excess = self.keys.len().saturating_sub(2 * window + 256);
+        if excess == 0 { return; }
+        self.keys.retain(|key| {
+            if excess == 0 || keep(key.elem) { return true; }
+            excess -= 1;
+            false
+        });
     }
 
     /// This registry's canonical bytes after the page's `next` — `len` then `(sid, rk, elem)` per
@@ -1401,6 +1406,35 @@ mod repeat_gate_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The card key table is bounded by twice the window plus 256: the oldest-interned keys go,
+    /// and a key the page names (focus, restore target, remembered key, a card in view) never does.
+    #[test]
+    fn card_keys_prune_to_twice_the_window_plus_256_and_never_drop_a_named_key() {
+        let mut keys = CardKeys::new(0x1000);
+        let sid = plx_plex::plex::ServerId::UNSET;
+        let elems: Vec<u32> = (0..2000).map(|i| keys.intern(sid, &format!("m{i}"), "test")).collect();
+        let (oldest, middle, newest) = (elems[0], elems[900], elems[1999]);
+        keys.prune(50, |elem| elem == oldest || elem == middle);
+        assert_eq!(keys.len(), 2 * 50 + 256, "pruned to the bound");
+        assert!(keys.get(oldest).is_some() && keys.get(middle).is_some(), "a named key stays even when it is the oldest");
+        assert!(keys.get(newest).is_some(), "the newest stay");
+        assert!(keys.get(elems[1]).is_none(), "the oldest unnamed go first");
+        let next = keys.next;
+        keys.prune(50, |_| false);
+        assert_eq!(keys.len(), 2 * 50 + 256, "already at the bound: nothing more goes");
+        assert_eq!(keys.next, next, "an element is not handed out again");
+        // under the bound nothing is dropped, named or not
+        let mut small = CardKeys::new(0x1000);
+        for i in 0..300 { small.intern(sid, &format!("s{i}"), "test"); }
+        small.prune(100, |_| false);
+        assert_eq!(small.len(), 300);
+        // named keys beyond the bound all stay (the bound is on the unnamed)
+        let mut named = CardKeys::new(0x1000);
+        let all: Vec<u32> = (0..400).map(|i| named.intern(sid, &format!("n{i}"), "test")).collect();
+        named.prune(0, |elem| all.contains(&elem));
+        assert_eq!(named.len(), 400);
+    }
 
     /// A row index stays itself under `band_elem`/`band_index` for the whole practical range of
     /// an action row (never more than two controls in this family today, but the round trip is
