@@ -22,7 +22,7 @@ pub const COLLECTION_GROUP: GroupId = GroupId(7);
 pub const HEADING_GROUP: GroupId = GroupId(8);
 
 const _: () = assert!(
-    (COLLECTION_ELEM_RANGE_END - MEMBERS_START) as usize >= plx_data::metadata::COLLECTION_MAX
+    (COLLECTION_ELEM_RANGE_END - MEMBERS_START) as usize >= plx_data::metadata::COLLECTION_PREVIEW
 );
 
 pub fn elem(index: usize) -> Option<u32> {
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn every_member_key_round_trips_and_never_names_the_heading() {
-        for i in 0..plx_data::metadata::COLLECTION_MAX {
+        for i in 0..plx_data::metadata::COLLECTION_PREVIEW {
             assert_eq!(locate(elem(i).unwrap()), Some(i));
         }
         assert_eq!(locate(HEADING_ELEM), None);

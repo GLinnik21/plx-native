@@ -1098,7 +1098,7 @@ pub type Related = crate::pms::PmsMovie;
 
 /// The collection shelf's preview length. Its heading opens the full Collection page, so this is
 /// a shelf length, not a limit on what the collection can show.
-pub const COLLECTION_MAX: usize = 20;
+pub const COLLECTION_PREVIEW: usize = 20;
 
 /// A member movie's collection, split out of `/related`. PMS answers a member with a
 /// `collection.related.*` hub that lists the WHOLE collection in the collection's own order, the
@@ -1114,7 +1114,7 @@ pub struct CollectionShelf {
     pub title: String,
     pub section: i64,
     pub tag: i64,
-    /// Server order, the page's own item included and unmarked, capped at [`COLLECTION_MAX`].
+    /// Server order, the page's own item included and unmarked, capped at [`COLLECTION_PREVIEW`].
     pub members: Vec<Related>,
     /// Every member the collection holds — the heading's "· N" — which `members` may cap.
     #[serde(default)]
@@ -3369,7 +3369,7 @@ fn key_shape(key: &str) -> String {
 
 /// One `collection.related.*` hub → the collection shelf, or `None` when the item is the
 /// collection's only listed member: a shelf of the page's own poster is no way to a collection.
-/// Members keep server order, the item's own tile included, capped at [`COLLECTION_MAX`].
+/// Members keep server order, the item's own tile included, capped at [`COLLECTION_PREVIEW`].
 fn collection_shelf(
     h: &plx_plex::plex::Hub,
     sid: plx_plex::plex::ServerId,
@@ -3389,7 +3389,7 @@ fn collection_shelf(
     // sent one, else every member it listed — both before the shelf's cap.
     let count = h.total().max(listed.len());
     let members: Vec<Related> = listed.into_iter()
-        .take(COLLECTION_MAX)
+        .take(COLLECTION_PREVIEW)
         .map(|x| crate::pms::parse_item(x, sid))
         .collect();
     if members.iter().all(|m| m.rk == rk) {

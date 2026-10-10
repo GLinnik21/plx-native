@@ -3637,6 +3637,29 @@ fn ok_on_the_heading_opens_the_collection_and_ok_on_a_member_opens_its_detail() 
     clear();
 }
 
+/// A collection bigger than the shelf's preview is reached through its heading: the shelf holds the
+/// preview, the heading says the whole count, and OK on it opens the Collection page (which pages).
+#[test]
+fn a_collection_past_the_preview_is_reached_through_its_heading() {
+    let sid = ServerId::UNSET;
+    let mut d = collection_movie(sid);
+    let c = d.collection.as_mut().unwrap();
+    c.members = (1..=plx_data::metadata::COLLECTION_PREVIEW).map(|i| collection_member(sid, &format!("m{i}"))).collect();
+    c.count = 45;
+    let _guard = install(d);
+    let mut screen = bare(&_guard, sid, "m1");
+    assert_eq!(collection::len(screen.detail(test_store().view()).unwrap()), plx_data::metadata::COLLECTION_PREVIEW);
+    assert_eq!(screen.detail(test_store().view()).unwrap().collection.as_ref().unwrap().count, 45,
+        "the heading counts the whole collection");
+    let (_, effects) = step(&mut screen, &ScreenEvent::Activate(collection::HEADING_ELEM),
+        Some(collection::HEADING_ELEM));
+    assert!(effects.iter().any(|e| matches!(&e.fx,
+        Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Collection(id))))
+            if id.sec == 1 && id.tag == 812)),
+        "the heading opens the Collection page, which holds all 45");
+    clear();
+}
+
 #[test]
 fn the_heading_is_a_hover_focus_stop_that_wins_over_the_member_cards() {
     use plx_ui::hit::{HitMap, PointerKind};
