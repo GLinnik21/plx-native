@@ -42,7 +42,7 @@ use super::{same_tag, tag_hit, Item, Kind, Projection};
 /// Rows per typed request, the overlap row excluded.
 pub(super) const PAGE: usize = 24;
 /// Requests one read may spend before it publishes what it has.
-const REQUESTS: usize = 8;
+pub(super) const REQUESTS: usize = 8;
 const FAV: &[(ServerId, i64, bool)] = &[];
 
 /// What a worker reads a lane with: the typed listing and the grown hub list.
@@ -50,6 +50,9 @@ pub(super) trait Io {
     fn listing(&mut self, kind: SearchKind, req: PageReq) -> Option<MediaContainer>;
     /// `/hubs/search?limit=`, projected.
     fn hubs(&mut self, limit: usize) -> Option<Projection>;
+    /// A test's fake serves every source; this says which one is about to ask.
+    #[cfg(test)]
+    fn serving(&mut self, _sid: ServerId) {}
 }
 
 /// What the Show and Episode lanes of one source share about its `tv` listing.
@@ -91,6 +94,7 @@ impl Lane {
         self.preview.iter_mut().chain(self.rows.values_mut())
     }
 
+    pub fn is_growth(&self) -> bool { self.growth }
     pub fn preview_len(&self) -> usize { self.preview.len() }
     pub fn held(&self) -> usize { self.rows.len() }
 

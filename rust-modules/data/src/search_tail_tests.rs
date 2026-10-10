@@ -22,6 +22,10 @@ pub(super) struct Fake {
     pub typed: bool,
     pub log: Vec<(SearchKind, usize, usize)>,
     pub hubs_asked: Vec<usize>,
+    /// Typed listing requests left to answer with a failure.
+    pub fail_listings: usize,
+    /// The server the store is asking for now ([`Io::serving`]); stamped on the cards of `hubs`.
+    pub serving: u16,
 }
 
 impl Fake {
@@ -34,11 +38,15 @@ impl Fake {
     fn of(&self, ty: &str) -> Vec<(&'static str, usize)> { self.tv.iter().filter(|m| m.0 == ty).copied().collect() }
 }
 
-fn card(m: &(&str, usize)) -> Item { Item::Media(crate::pms::parse_item(&md(m.0, m.1), sid())) }
 
 impl Io for Fake {
+    fn serving(&mut self, sid: ServerId) { self.serving = sid.raw(); }
     fn listing(&mut self, kind: SearchKind, req: PageReq) -> Option<MediaContainer> {
         self.log.push((kind, req.start, req.size));
+        if self.fail_listings > 0 {
+            self.fail_listings -= 1;
+            return None;
+        }
         let mut mc = MediaContainer { offset: req.start as i64, ..Default::default() };
         if !self.typed { return Some(mc); }
         let rows: Vec<SearchResult> = match kind {
@@ -51,12 +59,14 @@ impl Io for Fake {
     }
     fn hubs(&mut self, limit: usize) -> Option<Projection> {
         self.hubs_asked.push(limit);
+        let at = ServerId::from_raw(self.serving);
+        let card = |m: &(&str, usize)| Item::Media(crate::pms::parse_item(&md(m.0, m.1), at));
         let mut out: Projection = Default::default();
         out[0] = self.movies.iter().take(limit).map(card).collect();
         out[1] = self.of("show").iter().take(limit).map(card).collect();
         out[2] = self.of("episode").iter().take(limit).map(card).collect();
-        out[3] = self.people.iter().take(limit).map(|n| Item::Tag(tag_hit(&person(*n), sid(), &[]))).collect();
-        out[4] = self.collections.iter().take(limit).map(|m| Item::Collection(CollectionHit::from_row(&md(m.0, m.1), sid()))).collect();
+        out[3] = self.people.iter().take(limit).map(|n| Item::Tag(tag_hit(&person(*n), at, &[]))).collect();
+        out[4] = self.collections.iter().take(limit).map(|m| Item::Collection(CollectionHit::from_row(&md(m.0, m.1), at))).collect();
         Some(out)
     }
 }
@@ -211,4 +221,19 @@ fn a_listing_that_will_not_hold_still_is_still_reached_by_growing_the_limit() {
     want.remove(40 - 12); // the repeat of 5039 is not drawn twice
     assert_eq!(got, want, "every hit past the preview, once, in the new order");
     assert_eq!(lane.end, Some(100));
+}
+
+#[test]
+fn a_read_that_needs_more_than_one_jobs_requests_says_so_and_a_second_job_closes_the_range() {
+    let mut fake = Fake::new().movies(400);
+    let mut lane = Lane::from_preview(Kind::Movie, &preview(&fake, Kind::Movie));
+    let mut tv = TvMap::default();
+    let range = 12..300; // 12 pages of 24: more than one job's requests
+    lane.read(Kind::Movie, &mut tv, range.clone(), &mut fake, sid()).unwrap();
+    assert!(fake.log.len() <= tail::REQUESTS, "a job's work is bounded");
+    assert!(lane.needs(&range), "the lane knows it has not covered the range");
+    while lane.needs(&range) {
+        lane.read(Kind::Movie, &mut tv, range.clone(), &mut fake, sid()).unwrap();
+    }
+    assert!(range.clone().all(|d| lane.get(d).map(key) == Some(d.to_string())), "no hole in the depths");
 }
