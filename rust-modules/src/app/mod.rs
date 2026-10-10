@@ -287,6 +287,9 @@ pub(crate) struct App {
     pub(crate) menu_play_await: Option<MenuPlayAwait>,
     pub(crate) prev: u32,
     pub(crate) refresh_hubs_at: u32,
+    /// The Detail page a playback returned to, waiting for the stop report to land so it can
+    /// re-read the item (`content::refresh_after_playback`).
+    pub(crate) refresh_detail: Option<plx_data::stores::viewstate::DetailRefresh>,
     /// The HTTPS retry for servers on a plaintext grant (`plex::grant::UpgradeRetry`), stepped
     /// every frame beside the view-state pump (`app/run.rs`).
     pub(crate) plaintext_upgrade: plx_plex::plex::grant::UpgradeRetry,
