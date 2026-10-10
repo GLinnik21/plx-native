@@ -2771,7 +2771,7 @@ fn write_leb128(mut v: u64, out: &mut Vec<u8>) {
 
 /// One OBU inside a byte run: where its header starts, how long the header is (one byte, plus
 /// one when the extension flag is set), where its payload starts, and where it ends (exclusive).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ObuSpan {
     start: usize,
     header_len: usize,
