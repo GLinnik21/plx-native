@@ -89,6 +89,16 @@ impl<T> PageCache<T> {
         true
     }
 
+    /// Every loaded row with its absolute index, in index order.
+    pub fn loaded_rows(&self) -> impl Iterator<Item = (usize, &T)> + '_ {
+        let mut first = 0;
+        self.pages.iter().flat_map(move |page| {
+            let start = first;
+            first += usize::from(page.kept);
+            page.rows.iter().flat_map(|rows| rows.iter()).enumerate().map(move |(k, row)| (start + k, row))
+        })
+    }
+
     pub fn is_loaded(&self, page: usize) -> bool {
         self.pages.get(page).is_some_and(|p| p.rows.is_some())
     }

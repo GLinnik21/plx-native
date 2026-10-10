@@ -104,6 +104,19 @@ impl Collection {
     /// counts, so the index of every row the user has reached stays the same.
     pub fn shown(&self) -> usize { self.pages.first_index_of(self.read).min(self.total) }
 
+    /// The index of the loaded row that is `(sid, rk)`, if its page is held. An evicted row has no
+    /// index to give until its page is read again.
+    pub fn position_of(&self, sid: ServerId, rk: &str) -> Option<usize> {
+        self.pages.loaded_rows().find(|(_, m)| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk))).map(|(i, _)| i)
+    }
+
+    /// Every row held, with its absolute index.
+    pub fn loaded_rows(&self) -> impl Iterator<Item = (usize, &PmsMovie)> + '_ { self.pages.loaded_rows() }
+
+    /// One kept-row count per page read, for a screen to save with its position and send back as
+    /// [`CollectionCmd::Restore`](crate::stores::collection::CollectionCmd::Restore).
+    pub fn kept_counts(&self) -> Vec<u8> { self.pages.kept_counts() }
+
     /// Pages the screen shows or is restoring to whose rows are not held, below the frontier.
     fn wanted_pages(&self) -> Vec<usize> {
         let mut pages: Vec<usize> = self.pages.missing(self.wanted.start, self.wanted.end).collect();
@@ -118,6 +131,16 @@ impl Collection {
     /// The count of leading indices the screen needs known.
     fn need(&self) -> usize {
         self.focus.into_iter().chain(self.restore).map(|i| i + 1).fold(self.wanted.end, usize::max)
+    }
+
+    /// Test support: every row, read through `edit`, and put back (a hole reads as absent).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn edit_items_for_test(&mut self, edit: impl FnOnce(&mut Vec<PmsMovie>)) {
+        let mut items: Vec<PmsMovie> = (0..self.shown()).filter_map(|i| self.item(i).cloned()).collect();
+        edit(&mut items);
+        let more = self.more;
+        self.replace_items_for_test(items);
+        self.more = more;
     }
 
     /// Test support: replaces the listing with `items`, all of them read, as a server that honours

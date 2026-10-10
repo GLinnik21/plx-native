@@ -594,7 +594,7 @@ impl Page {
     }
 
     fn memory(&self) -> CardPageMemory {
-        CardPageMemory { cards: self.cards.clone(), header_marked: self.header_marked }
+        CardPageMemory { cards: self.cards.clone(), header_marked: self.header_marked, ..Default::default() }
     }
 
     #[cfg(test)]
