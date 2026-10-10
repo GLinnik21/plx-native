@@ -386,6 +386,8 @@ fn draw_cell(
     let focused_here = still_focused || scale > 1.001;
     let pop = widgets::pop_factor(scale, theme::EP_CARD_FOCUS_SCALE);
     let card = Rect::new(x, -theme::EP_CARD_FOCUS_LIFT * pop, W, H);
+    #[cfg(feature = "devtriggers")]
+    plx_ui::card_probe::begin_card();
     widgets::draw_card_peaked(
         p,
         card,
@@ -402,6 +404,12 @@ fn draw_cell(
     } else {
         card
     };
+    // `plxnative-focusx`: the strip is not a `cards::Shelf`, so it reports its focused still itself.
+    #[cfg(feature = "devtriggers")]
+    if still_focused && !p.is_recording() {
+        let at = p.to_screen(drawn).0;
+        plx_ui::card_probe::focused(at.x, at.y, at.w, i, d.episodes.len(), i);
+    }
     let st = state(ep);
     widgets::art_scrim(
         p,

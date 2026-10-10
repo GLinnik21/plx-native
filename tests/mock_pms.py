@@ -2382,6 +2382,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         q = {k: v[-1] for k, v in urllib.parse.parse_qs(split.query).items()}
         row = {"t_recv": t_recv, "t_done": time.monotonic(), "class": plan.klass, "path": split.path,
+               # a poster transcode names its item here (`/library/metadata/<rk>/thumb/..`)
+               "url": q.get("url"),
                "start": q.get("X-Plex-Container-Start", self.headers.get("X-Plex-Container-Start")),
                "size": q.get("X-Plex-Container-Size", self.headers.get("X-Plex-Container-Size")),
                "bytes": nbytes, "status": status, "failed": failed}

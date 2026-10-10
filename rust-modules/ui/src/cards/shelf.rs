@@ -609,7 +609,14 @@ impl Shelf {
         if focused {
             let label = src.label(i).revealed(self.row.band_reveal())
                 .settling(self.row.settle_lag(src.len(), i, self.style) * src.sweep());
+            #[cfg(feature = "devtriggers")]
+            crate::card_probe::begin_card();
             card_row::draw_focused(pr, src.art(i), rect, s, self.style, src.progress(i), &label, f.measure);
+            #[cfg(feature = "devtriggers")]
+            if !pr.is_recording() {
+                let at = pr.to_screen(rect).0;
+                crate::card_probe::focused(at.x, at.y, at.w, i, src.len(), i);
+            }
         } else {
             card_row::draw_tile(pr, src.art(i), rect, s, self.style, src.progress(i));
         }

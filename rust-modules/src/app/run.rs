@@ -2738,6 +2738,9 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 app.running = false;
             }
         }
+        // `plxnative-focusx`: the card read-out belongs to the frame just sampled.
+        #[cfg(feature = "devtriggers")]
+        plx_ui::card_probe::clear();
         // `coldopen screen=<name> ms=<n> prepared=<bool>` — one line per screen MOUNT, on every
         // build, no trigger (spec §8.4). The dispatcher owns both ends of the measurement (the
         // mount at nav commit, the first prepared+drawn frame); this drains what it closed.
