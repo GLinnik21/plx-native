@@ -163,8 +163,11 @@ pub struct AuthContext {
 /// installation, so [`Mutation::ClearTenure`] removes them while it retains every other
 /// preference (the install-wide language among them). They live in the public half on purpose:
 /// writing one must stay a public-only edit with no credential reseal. `server_key_pins` is the
-/// learned public key of each server the account reached (`plex::session::Session::server_key_pins`).
-pub const ACCOUNT_BOUND_PREFERENCES: &[&str] = &["server_key_pins"];
+/// learned public key of each server the account reached (`plex::session::Session::server_key_pins`);
+/// `plaintext_consent` is that account's answer, per server, to "Connect without encryption?"
+/// (`plex::session::Session::plaintext_consent`), which carries an account fingerprint and a
+/// `machineIdentifier`.
+pub const ACCOUNT_BOUND_PREFERENCES: &[&str] = &["server_key_pins", "plaintext_consent"];
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", deny_unknown_fields)]
@@ -1489,16 +1492,18 @@ mod tests {
         }
     }
 
-    /// ClearTenure drops exactly the account-bound preferences (a learned server key) and keeps
-    /// the rest, so the retained language and every other install preference survive sign-out.
+    /// ClearTenure drops exactly the account-bound preferences (a learned server key, a plaintext
+    /// consent answer) and keeps the rest, so the retained language and every other install
+    /// preference survive sign-out.
     #[test]
-    fn clear_tenure_forgets_the_learned_server_keys_and_keeps_other_preferences() {
+    fn clear_tenure_forgets_the_account_bound_preferences_and_keeps_the_rest() {
         let state = initial();
         let setting = Mutation::UpdatePreferences {
             public: PublicPayload {
                 preferences: json!({
                     "language": "be", "volume": 30,
                     "server_key_pins": [{"machine_id": "m", "pin": "sha256//x"}],
+                    "plaintext_consent": [{"account": "a", "choice": "allowed", "machine_id": "m"}],
                 }),
                 ..PublicPayload::default()
             },
