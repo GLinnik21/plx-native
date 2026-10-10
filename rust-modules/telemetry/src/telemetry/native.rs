@@ -1051,6 +1051,148 @@ mod tests {
         assert!(values.iter().all(|v| v.get("timestamp").and_then(serde_json::Value::as_str).is_some()));
     }
 
+    /// One breadcrumb exactly as sentry-native 0.16.6 holds it after the daemon reads a ring file:
+    /// `plx_sentry_window_breadcrumb` (src/sentry_context.c) builds `sentry_value_new_breadcrumb
+    /// ("state", stage)` + `category` + `level` + `data`, `sentry__usec_time_to_iso8601` stamps it
+    /// (`...SS.uuuuuuZ`, or `...SSZ` when the microseconds are exactly zero), and the ring file
+    /// stores it as msgpack, so integers come back as int32 and an empty `data` stays `{}`.
+    fn ring_crumb(
+        timestamp: &str,
+        category: &str,
+        message: &str,
+        data: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({"timestamp": timestamp, "type": "state", "category": category,
+            "level": "info", "message": message, "data": data})
+    }
+
+    /// `apply_breadcrumbs_from_ring_files` -> `sentry__value_merge_breadcrumbs`
+    /// (sentry_crash_daemon.c ~3336, sentry_value.c ~2164): both ring files merged by `strcmp` on
+    /// `timestamp`, the oldest dropped to fit `max_breadcrumbs`, and the result stored on the event as
+    /// a PLAIN ARRAY under `breadcrumbs` (not `{values: [...]}`).
+    fn daemon_merge(
+        mut ring1: Vec<serde_json::Value>,
+        ring2: Vec<serde_json::Value>,
+        max: usize,
+    ) -> serde_json::Value {
+        ring1.extend(ring2);
+        ring1.sort_by(|a, b| a["timestamp"].as_str().cmp(&b["timestamp"].as_str()));
+        let skip = ring1.len().saturating_sub(max);
+        serde_json::Value::Array(ring1.split_off(skip))
+    }
+
+    /// The envelope the daemon writes for a fatal signal in NATIVE mode: the base event
+    /// (`__sentry-event`, platform `native`) with the merged ring files laid over it.
+    fn daemon_envelope(breadcrumbs: serde_json::Value) -> Vec<u8> {
+        envelope(
+            "91ad1844-535b-4dac-89d9-5384165d703c",
+            serde_json::json!({
+                "platform": "native", "level": "fatal",
+                "dist": "11223344556677889900aabbccddeeff00112233",
+                "user": {"id": "0123456789abcdef0123456789abcdef"},
+                "exception": {"values": [{"mechanism": {"type": "signalhandler", "handled": false,
+                    "meta": {"signal": {"number": 11, "name": "SIGSEGV"}}}}]},
+                "breadcrumbs": breadcrumbs
+            }),
+        )
+    }
+
+    fn imported_crumbs(bytes: &[u8]) -> Vec<serde_json::Value> {
+        let (_, body, _) = event_from_envelope(bytes).expect("daemon envelope must import");
+        let event: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        event["breadcrumbs"]["values"]
+            .as_array()
+            .expect("breadcrumbs.values")
+            .clone()
+    }
+
+    /// S3a / h3 -- crash (a), a boot-time fault: `wm_query` .. `first_swap_complete`, split over the
+    /// two ring files as a wrapped ring leaves them. The daemon-shaped array must come out of
+    /// `event_from_envelope` + `sanitise_event` as `{values: [...]}` with every stage, its `data`
+    /// and its timestamp intact, in order. A foreign-family crumb the daemon also merged must go.
+    #[test]
+    fn daemon_merged_window_breadcrumbs_survive_the_importer_for_a_boot_crash() {
+        let ring1 = vec![
+            ring_crumb("2026-10-01T10:00:00.100000Z", "window", "wm_query", serde_json::json!({})),
+            ring_crumb("2026-10-01T10:00:00.250000Z", "window", "wm_ready", serde_json::json!({
+                "display": true, "surface": true, "sdl_major": 2, "sdl_minor": 0, "sdl_patch": 5})),
+        ];
+        let ring2 = vec![
+            ring_crumb("2026-10-01T10:00:00.400000Z", "http", "wm_ready", serde_json::json!({})),
+            ring_crumb("2026-10-01T10:00:00.900000Z", "window", "first_frame",
+                serde_json::json!({"playing": false})),
+            // whole-second stamp: sentry omits the fraction when the microseconds are zero. (The
+            // daemon's `strcmp` orders "..:01Z" AFTER "..:01.016000Z" -- '.' < 'Z' -- a one in a
+            // million misorder inside one second that the importer neither causes nor can fix.)
+            ring_crumb("2026-10-01T10:00:01Z", "window", "first_swap_complete",
+                serde_json::json!({"playing": false})),
+        ];
+        let merged = daemon_merge(ring1, ring2, super::super::window::LIMIT);
+        assert!(merged.is_array(), "the daemon writes a plain array");
+        let crumbs = imported_crumbs(&daemon_envelope(merged));
+        let got: Vec<(&str, &str)> = crumbs
+            .iter()
+            .map(|c| (c["message"].as_str().unwrap(), c["timestamp"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("wm_query", "2026-10-01T10:00:00.100000Z"),
+                ("wm_ready", "2026-10-01T10:00:00.250000Z"),
+                ("first_frame", "2026-10-01T10:00:00.900000Z"),
+                ("first_swap_complete", "2026-10-01T10:00:01Z"),
+            ]
+        );
+        assert_eq!(crumbs[0]["data"], serde_json::json!({}));
+        assert_eq!(
+            crumbs[1]["data"],
+            serde_json::json!({
+                "display": true, "surface": true, "sdl_major": 2, "sdl_minor": 0, "sdl_patch": 5})
+        );
+        assert_eq!(crumbs[2]["data"], serde_json::json!({"playing": false}));
+        assert!(crumbs.iter().all(|c| c["category"] == "window" && c["type"] == "state"));
+    }
+
+    /// S3a / h3 -- crash (b), a fault long after boot: lifecycle edges carrying `playing`, with
+    /// more crumbs than `max_breadcrumbs` so the daemon's own cap decides which survive.
+    #[test]
+    fn daemon_merged_lifecycle_breadcrumbs_survive_the_importer_after_a_ring_wrap() {
+        let limit = super::super::window::LIMIT;
+        let mut ring1 = Vec::new();
+        let mut ring2 = Vec::new();
+        for i in 0..(limit + 6) {
+            let (message, playing) = match i % 4 {
+                0 => ("will_background", true),
+                1 => ("did_background", true),
+                2 => ("will_foreground", false),
+                _ => ("did_foreground", false),
+            };
+            let stamp = format!("2026-10-01T11:00:{i:02}.500000Z");
+            let crumb =
+                ring_crumb(&stamp, "window", message, serde_json::json!({"playing": playing}));
+            if i < limit {
+                ring1.push(crumb);
+            } else {
+                ring2.push(crumb);
+            }
+        }
+        let merged = daemon_merge(ring1, ring2, limit);
+        assert_eq!(merged.as_array().unwrap().len(), limit);
+        let crumbs = imported_crumbs(&daemon_envelope(merged.clone()));
+        assert_eq!(crumbs.len(), limit, "every crumb the daemon kept must survive the importer");
+        for (got, sent) in crumbs.iter().zip(merged.as_array().unwrap()) {
+            assert_eq!(got["message"], sent["message"]);
+            assert_eq!(got["timestamp"], sent["timestamp"]);
+            assert_eq!(got["data"], sent["data"]);
+        }
+        assert!(crumbs
+            .iter()
+            .any(|c| c["message"] == "did_background" && c["data"]["playing"] == true));
+        assert!(crumbs
+            .iter()
+            .any(|c| c["message"] == "did_foreground" && c["data"]["playing"] == false));
+    }
+
     #[test]
     fn the_preview_declares_every_allowlisted_native_field() {
         let value: serde_json::Value = serde_json::from_slice(&preview_event()).unwrap();

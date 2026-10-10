@@ -224,6 +224,41 @@ mod tests {
         );
     }
 
+    /// S3a / h1 -- boot order, as far as a host can see it. `app::pre_boot_diagnostics` runs
+    /// `telemetry::boot` (consent published, THEN `native::sync` arms the backend and sets
+    /// `ACTIVE`) before `boot()` creates the window, so the first `window::record` (`wm_query`,
+    /// system.rs `sys_grab_wayland`) must find consent already published. This drives the real
+    /// `activate_initial` and checks the gate in front of the backend opens by the time it returns,
+    /// and that a stage recorded BEFORE it is dropped, not queued: the first-run corner where the
+    /// question is still unanswered at boot (so boot stages are lost if the owner opts in later)
+    /// is policy ("a television whose owner said no is not traced"), pinned here as such.
+    /// What it cannot see: `ACTIVE` is ARM-only, so the arming order itself stays a device fact.
+    #[test]
+    fn boot_publishes_consent_before_the_first_window_stage_is_recorded() {
+        let _guard = plx_base::testlock::serial();
+        use crate::telemetry::consent::{self, Consent};
+        let previous = consent::current();
+        consent::install(Consent::default());
+        let emitted = std::cell::RefCell::new(Vec::new());
+        let note = |o: Observation| emitted.borrow_mut().push(o.stage.code());
+        record_if_allowed(Observation::step(Stage::WmQuery, None), note);
+        assert!(emitted.borrow().is_empty(), "nothing is recorded before the decision is published");
+
+        let mut stored = Consent::default();
+        stored.errors = true;
+        stored.asked_version = consent::POLICY_VERSION;
+        let boot = crate::telemetry::activate_initial(stored);
+        record_if_allowed(Observation::step(Stage::WmQuery, None), note);
+        record_if_allowed(Observation::step(Stage::FirstFrame, Some(false)), note);
+        drop(boot);
+        consent::install(previous.unwrap_or_default());
+        assert_eq!(
+            *emitted.borrow(),
+            ["wm_query", "first_frame"],
+            "boot-time stages are recorded once boot has published the stored decision"
+        );
+    }
+
     #[test]
     fn native_step_timestamps_survive_but_arbitrary_strings_do_not() {
         for stamp in ["2026-09-11T20:25:53Z", "2026-09-11T20:25:53.190220Z"] {
