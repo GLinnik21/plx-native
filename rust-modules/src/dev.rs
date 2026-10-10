@@ -89,7 +89,8 @@ const DIAG: [&str; 37] = [
     // harness has to be able to observe the who's-watching picker, which a non-DIAG trigger would
     // suppress — the observer would remove the screen it was armed to watch.
     "plxnative-focus",
-    // `fx=` on Home's fingerprint (the focused card's drawn x): a pure observer of `focus`.
+    // `fx=` on Home's fingerprint (the focused card's drawn x) and, on every page that draws a
+    // card section, the `cd*` fields (`plx_ui::card_probe`): a pure observer of `focus`.
     "plxnative-focusx",
     // The two OVERDRAW surfaces and the hero-ground fold ([`plx_gfx::overdraw`],
     // `docs/backdrop-blur-profiling.md` Part 5). All three are measurement knobs whose whole

@@ -1404,6 +1404,11 @@ fn draw_label_block(
     // ([`anchor_label`]).
     let want = title_w_val.map_or(0.0, |w| lead + w).max(caption_w);
     let at = place_label_wide(p, rect, sty, title_run.max(caption_w.min(full)), want, label.settle_lag);
+    #[cfg(feature = "devtriggers")]
+    {
+        let placed = p.to_screen(Rect::new(at.x, 0.0, at.w, 1.0)).0;
+        crate::card_probe::caption(placed.x, placed.w);
+    }
 
     // Which lines of the block do not fit it? They glide together on ONE clock and ONE cycle (the
     // longest's); when none does, the clock is released so an overflowing block focused again

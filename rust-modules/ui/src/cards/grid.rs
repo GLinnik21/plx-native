@@ -479,7 +479,15 @@ impl Grid {
             let row = i / self.spec.cols;
             let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
             let label = src.label(i).revealed(card_row::band_reveal(open));
+            #[cfg(feature = "devtriggers")]
+            crate::card_probe::begin_card();
             card_row::draw_focused(p, src.art(i), rect, s, &self.spec.style, src.progress(i), &label, f.measure);
+            #[cfg(feature = "devtriggers")]
+            if !p.is_recording() {
+                let at = p.to_screen(rect).0;
+                let held = self.window(src.len());
+                crate::card_probe::focused(at.x, at.y, at.w, i.saturating_sub(held.start), held.len(), i);
+            }
         } else {
             card_row::draw_tile(p, src.art(i), rect, s, &self.spec.style, src.progress(i));
         }

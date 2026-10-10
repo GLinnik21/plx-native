@@ -1587,7 +1587,7 @@ class MockPms:
                 hubs.append({"title": f"Mock Shelf {i}", "type": kind, "size": len(recent),
                              "hubIdentifier": f"mock.section.{key}.shelf.{i}",
                              "key": f"/hubs/mock/section/{key}/shelf/{i}",
-                             "more": False, "Metadata": recent})
+                             "more": True, "totalSize": len(lib.recent(kind, 1000)), "Metadata": recent})
         return hubs
 
     def __init__(self, lib):
@@ -1965,6 +1965,8 @@ class MockPms:
                 pool = lib.similar(rk)
                 hubs = [{"title": "related", "type": it["type"] if it else "movie",
                          "hubIdentifier": "related", "size": min(8, len(pool)), "Metadata": pool[:8],
+                         # A server says there is more behind a preview (`more`, `totalSize`).
+                         "more": len(pool) > 8, "totalSize": len(pool),
                          # What a server names so the rest of the list can be read: the app pages
                          # it (hubs.rs::is_similar_key), so the related row has a tail.
                          "key": f"/library/metadata/{rk}/similar"}]
@@ -2382,6 +2384,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         q = {k: v[-1] for k, v in urllib.parse.parse_qs(split.query).items()}
         row = {"t_recv": t_recv, "t_done": time.monotonic(), "class": plan.klass, "path": split.path,
+               # a poster transcode names its item here (`/library/metadata/<rk>/thumb/..`)
+               "url": q.get("url"),
                "start": q.get("X-Plex-Container-Start", self.headers.get("X-Plex-Container-Start")),
                "size": q.get("X-Plex-Container-Size", self.headers.get("X-Plex-Container-Size")),
                "bytes": nbytes, "status": status, "failed": failed}

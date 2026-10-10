@@ -6400,12 +6400,17 @@ class FpsMock(unittest.TestCase):
         import mock_fps
         cls.mf = mock_fps
 
+    PAGING_SURFACES = tuple(f"{b}-paging-held-{l}" for b in ("library-grid", "library-shelf", "search-row",
+                                                              "related-row", "collection", "long-season")
+                            for l in ("3g", "remote-wan"))
+
     # --- scene selection --------------------------------------------------------------
     def test_under_mock_only_scenes_with_a_mock_block_run(self):
         runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), True)
         names = {s["name"] for s in runnable}
         self.assertEqual(names, {"home-grid", "home-grid-deep", "home-recent-paging", "home-recent-paging-held", "home-recent-paging-held-3g",
                                  "home-recent-paging-held-remote-wan", "home-hint",
+                                 *self.PAGING_SURFACES,
                                  "library-shelves-deep", "library-burst", "library-hold",
                                  "hero-pong", "grid-pong", "home-idle", "item-menu", "library-scroll",
                                  "library-idle", "collection-page", "person-page", "search-type",
@@ -6421,11 +6426,12 @@ class FpsMock(unittest.TestCase):
                                                    "home-recent-paging-held",
                                                    "home-recent-paging-held-3g",
                                                    "home-recent-paging-held-remote-wan",
+                                                   *self.PAGING_SURFACES,
                                                    "library-shelves-deep", "library-burst",
                                                    "library-hold"])
         self.assertIn("--mock", skipped[0][1])
         self.assertIn("home-grid", {s["name"] for s in runnable})
-        self.assertEqual(len(runnable), len(self.scenes) - 8)
+        self.assertEqual(len(runnable), len(self.scenes) - 8 - len(self.PAGING_SURFACES))
 
     def test_a_mock_scene_naming_a_library_item_carries_its_own_rating_key(self):
         # the overlay's ratingKey is the real server's; under --mock the scene opens `mock.rk`
@@ -6643,6 +6649,56 @@ class FpsMock(unittest.TestCase):
             self.mf.walk_secs_needed(sc),
             self.mf.LAUNCH_WAIT_S + 5 + 15 + 3 + 193 * 0.33 + 4 + 5)
         self.assertFalse(self.mf.is_row_walk(self.scenes["home-grid-deep"]["walk"]))
+
+    def test_the_surface_paging_scenes_walk_a_list_and_are_graded_on_how_deep_focus_got(self):
+        # one pair (3g, remote-wan) per surface; the walk is the Home row walk with its own keys, and
+        # `walk.reach` replaces the `hubs: landed` grading only Home logs
+        self.assertEqual(sorted(n for n in self.scenes if "-paging-held-" in n
+                                and not n.startswith("home-")), sorted(self.PAGING_SURFACES))
+        for name in self.PAGING_SURFACES:
+            sc = self.scenes[name]
+            w = sc["walk"]
+            self.assertTrue(sc["mock"]["only"] and sc["mock"]["link"], name)
+            self.assertIn("plxnative-focusx", sc["triggers"], name)
+            self.assertTrue(self.mf.is_row_walk(w), name)
+            plan = self.mf.row_walk_plan(w)
+            self.assertEqual(plan, ["down"] * w["row_down"] + [w["key"]] * w["cards"] + [w["back"]] * w["cards"])
+            self.assertTrue(set(plan) <= set(self.mf.ROW_WALK_KEYS))
+            for banned in ("ok", "enter", "back"):
+                self.assertNotIn(banned, plan)
+            self.assertLessEqual(self.mf.walk_secs_needed(sc), sc["run_secs"], name)
+            self.assertEqual(w["reach"]["route"], sc["route"], name)
+            self.assertIn(f"--filter {name}", sc["comment"])
+            args = self.mf.mock_server_args(sc)
+            self.assertIn("--link", args)
+            self.assertEqual(args[args.index("--link") + 1], sc["mock"]["link"][0])
+
+    FOCUSX = ("focus route=library pill=-1 card=1 menu=0 region=grid row=4 col=2 sid=0 rk=77 cdx={x} cdy=300 "
+              "cdw=255 cdi=2 cdn=36 cdg={g} cda=1 cdr=0 cdk=77 cdc=100 cdcw=140 press=0")
+
+    def test_describe_reach_fails_a_walk_that_never_paged_and_counts_frames_off_the_canvas(self):
+        reach = {"route": "library", "region": "grid", "min_global": 120}
+        deep = [self.FOCUSX.format(x=90, g=6), self.FOCUSX.format(x=-300, g=130), self.FOCUSX.format(x=1800, g=131),
+                "focus route=detail region=grid cdx=1 cdy=1 cdw=1 cdg=9999"]
+        fail, detail = self.mf.describe_reach(deep, "library", reach)
+        self.assertIsNone(fail)
+        self.assertIn("reached item 131 (3 drawn frames, 2 partly off the canvas)", detail)
+        fail, _ = self.mf.describe_reach(deep[:1], "library", reach)
+        self.assertIn("paging did not happen", fail)
+        self.assertIn("reached item 6", fail)
+        fail, _ = self.mf.describe_reach([], "library", reach)
+        self.assertIn("reached item none", fail)
+        # a different region's lines do not count towards a region's reach
+        fail, _ = self.mf.describe_reach([self.FOCUSX.format(x=90, g=500).replace("region=grid", "region=shelf")],
+                                         "library", reach)
+        self.assertIn("paging did not happen", fail)
+
+    def test_a_reach_walk_is_up_once_its_first_fingerprint_is_logged(self):
+        sc = self.scenes["search-row-paging-held-3g"]
+        self.assertIsNone(self.mf.landed_shelves(sc, ["hubs: landed — 24 items, 3 shelves (merge 1 us)"]))
+        self.assertEqual(self.mf.landed_shelves(sc, ["focus route=search zone=Field row=-1"]), 1)
+        self.assertEqual(self.mf.landed_lands(sc, ["focus route=search zone=Field row=-1"]), 1)
+        self.assertEqual(self.mf.landed_lands(sc, []), 0)
 
     LANDED = "hubs: landed — 24 items, 3 shelves (merge 10 us, catalog ~5 KB)"
 
