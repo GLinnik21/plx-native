@@ -298,6 +298,41 @@ fn an_ask_computed_from_a_revision_the_row_has_since_left_is_refused() {
     assert!(hubs.want_page(hubs.revision, ID, KEY, false), "from the window that stands it is due again");
 }
 
+/// A page read that fails is asked for again by the store's own backoff, on either side, with no new
+/// ask from the page: a reader held at the edge of a row presses into it and is not re-asking, so
+/// the retry is the store's. (The ask used to be dropped on landing, failed or not, which left the
+/// backoff with nothing to spawn: the row stayed short of its first card while the key was held.)
+#[test]
+fn a_failed_row_page_is_asked_for_again_without_a_new_ask_from_the_page() {
+    let len = 500;
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut hubs = published(&one_row(&(0..12).collect::<Vec<_>>(), len));
+    for _ in 0..4 {
+        assert!(hubs.want_page(hubs.revision, ID, KEY, false));
+        let ask = hubs.next_ask().unwrap();
+        step(&mut hubs, &ask, listing);
+    }
+    let offset = hubs.committed[0].offset;
+    assert!(offset > 0, "the window has moved on from the head");
+    for before in [true, false] {
+        let from = hubs.committed[0].offset;
+        assert!(hubs.want_page(hubs.revision, ID, KEY, before));
+        let ask = hubs.next_ask().unwrap();
+        step(&mut hubs, &ask, |_, _| None);
+        assert_eq!(hubs.committed[0].offset, from, "a failed read moves nothing");
+        let mut frames = 0;
+        while hubs.next_ask().is_none() && frames < 100_000 {
+            hubs.tick();
+            frames += 1;
+        }
+        let retry = hubs.next_ask().expect("the failed page is due again once its backoff has run");
+        assert_eq!((retry.before, retry.reload), (before, false), "the same page, not another");
+        step(&mut hubs, &retry, listing);
+        assert_ne!(hubs.committed[0].offset, from, "and it lands");
+        assert!(hubs.next_ask().is_none(), "a landed page is not asked for again");
+    }
+}
+
 /// Reach survives the guard: when every landing meets a stale ask (the worst frame order), the
 /// ask the missed publication re-arms comes from the window that stands, and the row still
 /// reaches its last card.

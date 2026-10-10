@@ -363,12 +363,15 @@ impl SecHubs {
     /// height, so nothing the page is looking at moves.
     fn land_row(&mut self, ask: &RowAsk, read: Option<Shelf>) -> bool {
         if self.inflight.take().is_some_and(|(out, withdrawn)| withdrawn && out == *ask) { return false; }
-        if !ask.reload && self.ask.as_ref() == Some(ask) { self.ask = None; }
+        // A failed page stays asked for: the backoff below re-spawns it. The page does not re-ask
+        // while focus stays on the edge it asked from, and `cancel_page` drops the ask when focus
+        // leaves, so keeping it cannot read a page nobody waits for.
         let Some(next) = read else {
             self.ask_fails = self.ask_fails.saturating_add(1);
             self.ask_retry_left = backoff_frames(self.ask_fails);
             return false;
         };
+        if !ask.reload && self.ask.as_ref() == Some(ask) { self.ask = None; }
         self.ask_fails = 0;
         let Some(at) = self.committed.iter().position(|shelf| shelf.is(&ask.id, &ask.key)) else { return false };
         let current = &self.committed[at];
