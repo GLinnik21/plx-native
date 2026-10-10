@@ -295,7 +295,7 @@ pub fn index_of_rk(state: &PmsState, sid: ServerId, rk: &str) -> c_int {
 
 // ---- helpers ----
 /// owned copy of a metadata string with newlines flattened to spaces (single-line UI fields)
-fn clean(s: &str) -> String {
+pub(crate) fn clean(s: &str) -> String {
     s.chars()
         .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
         .collect()
@@ -893,7 +893,8 @@ fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimu
     let ask = paging::Ask { start: page.start, before: page.before, hidden: &page.hidden };
     let current = current.map(|shelf| {
         let rows = shelf.positions.iter().copied().zip(shelf.items.iter().map(Arc::clone)).collect::<Vec<_>>();
-        (rows, paging::PageInfo { offset: shelf.offset, end: shelf.end, total: shelf.total, more: shelf.more })
+        (rows, paging::PageInfo { offset: shelf.offset, end: shelf.end, total: shelf.total, more: shelf.more,
+            unstable: false })
     });
     let (rows, info) = paging::fetch_window(sid, &ask, current.as_ref().map(|(rows, info)| (rows.as_slice(), *info)),
         minimum_end, fetch)?;

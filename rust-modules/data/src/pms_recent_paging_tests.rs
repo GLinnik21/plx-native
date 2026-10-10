@@ -351,7 +351,7 @@ fn fully_hidden_pages_advance_in_both_directions_without_losing_focus() {
     current=fetch_window(sid(0),&query,Some(&current),0,|start,size| {
         calls.push(start);Some(filtered_listing(start,size))
     }).unwrap().shelves.remove(0);
-    assert_eq!(calls,vec![12,36,60,84,108,132,156,180]);
+    assert_eq!(calls,vec![11,36,60,84,108,132,156,180]);
     assert_eq!(current.end,204);
     assert_eq!(current.items.len(),12);
     assert!(current.items.iter().any(|item| item.rk=="5"));
@@ -539,6 +539,113 @@ fn a_failed_window_reload_keeps_the_first_page_instead_of_failing_the_refresh() 
     plx_plex::plex::reset_servers_for_test();
 }
 
+// The window one level down, so a test can read the re-anchor flag beside its rows.
+fn window_info(shelf: &Shelf) -> paging::PageInfo {
+    paging::PageInfo { offset: shelf.offset, end: shelf.end, total: shelf.total, more: shelf.more, unstable: false }
+}
+
+fn window_rows(shelf: &Shelf) -> Vec<paging::Row> {
+    shelf.positions.iter().copied().zip(shelf.items.iter().map(Arc::clone)).collect()
+}
+
+fn row_keys(rows: &[paging::Row]) -> Vec<String> {
+    rows.iter().map(|(_, item)| item.rk.clone()).collect()
+}
+
+fn row_positions(rows: &[paging::Row]) -> Vec<usize> {
+    rows.iter().map(|(position, _)| *position).collect()
+}
+
+fn step(rows: &[paging::Row], info: paging::PageInfo, start: usize, before: bool, hidden: &[i64],
+    fetch: impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>) -> (Vec<paging::Row>, paging::PageInfo) {
+    paging::fetch_window(sid(0), &paging::Ask { start, before, hidden }, Some((rows, info)), 0, fetch).unwrap()
+}
+
+// Rows 12..=35 of the untouched listing, read as the window a backward ask starts from.
+fn first_window(start: usize) -> Shelf {
+    fetch_window(sid(0), &recent_query(start), None, 0, serve(|p| p, 100, Some(100), 0)).unwrap().shelves.remove(0)
+}
+
+#[test]
+fn a_forward_edge_that_moved_more_than_the_retained_half_is_found_on_the_other_side() {
+    let _guard = plx_base::testlock::serial();
+    // Rows 60..=83 are read. A forward ask keeps the last twelve, 72..=83, so 83 is the edge.
+    let first = first_window(60);
+    // Twenty rows before the window are removed, so every key now sits twenty positions lower:
+    // key 83 is at position 63, outside the page the ask reads from 83 but inside the page before it.
+    let mut shifted = serve(|p| p + 20, 200, Some(200), 0);
+    let (rows, info) = step(&window_rows(&first), window_info(&first), first.end, false, &[], &mut shifted);
+    assert!(!info.unstable);
+    assert_eq!(row_keys(&rows), key_range(72..=95), "the rows after the edge are read, with none skipped");
+    assert_eq!(row_positions(&rows), (52..76).collect::<Vec<_>>());
+    assert_eq!((info.offset, info.end), (52, 76));
+}
+
+#[test]
+fn a_forward_edge_missing_from_both_reads_returns_the_window_unchanged_and_unstable() {
+    let _guard = plx_base::testlock::serial();
+    let first = first_window(0);
+    // Key 23, the edge, is removed; no page of the listing holds it any more.
+    let mut removed = serve(|p| if p < 23 { p } else { p + 1 }, 100, Some(100), 0);
+    let (rows, info) = step(&window_rows(&first), window_info(&first), first.end, false, &[], &mut removed);
+    assert!(info.unstable, "the edge was not found, so the window is flagged");
+    assert_eq!(row_keys(&rows), key_range(0..=23), "nothing held is discarded");
+    assert_eq!(row_positions(&rows), (0..24).collect::<Vec<_>>());
+    assert_eq!((info.offset, info.end, info.more), (0, 24, first.more));
+}
+
+#[test]
+fn a_backward_ask_re_anchors_on_the_edge_after_an_item_is_added_at_the_head() {
+    let _guard = plx_base::testlock::serial();
+    let first = first_window(12);
+    // Between the asks one item lands at the head, so every position moves up by one: key 12 is at 13.
+    let mut shifted = serve(|p| if p == 0 { 999 } else { p - 1 }, 100, Some(100), 0);
+    let (rows, info) = step(&window_rows(&first), window_info(&first), first.offset, true, &[], &mut shifted);
+    assert!(!info.unstable);
+    assert_eq!(row_keys(&rows), key_range(0..=23), "the cards before the edge are read, with none repeated");
+    assert_eq!(row_positions(&rows), (1..=24).collect::<Vec<_>>());
+    assert_eq!((info.offset, info.end), (1, 25));
+}
+
+#[test]
+fn a_backward_ask_re_anchors_on_the_edge_after_an_earlier_item_is_removed() {
+    let _guard = plx_base::testlock::serial();
+    let first = first_window(12);
+    // Key 5 is removed, so the edge, key 12, moves down to position 11 and the page at 0..=12 holds it.
+    let mut shifted = serve(|p| if p < 5 { p } else { p + 1 }, 100, Some(100), 0);
+    let (rows, info) = step(&window_rows(&first), window_info(&first), first.offset, true, &[], &mut shifted);
+    assert!(!info.unstable);
+    let mut expected = key_range(0..=4);
+    expected.extend(key_range(6..=23));
+    assert_eq!(row_keys(&rows), expected, "key 11, the card before the edge, is read; removed key 5 is not");
+    assert_eq!(row_positions(&rows), (0..23).collect::<Vec<_>>());
+    assert_eq!(info.offset, 0);
+}
+
+#[test]
+fn a_gapped_ask_verifies_the_edge_where_it_stands_and_reads_past_the_hidden_rows() {
+    let _guard = plx_base::testlock::serial();
+    // Visible rows 0..=11 at positions 0..=11, then hidden rows (section 8) up to position 60.
+    let mut first = page(0, 12, true).shelves.remove(0);
+    for item in &mut first.items { Arc::make_mut(item).sec = 7; }
+    let info = paging::PageInfo { end: 60, total: 500, ..window_info(&first) };
+    // Between the asks one item lands at the head: key 11 moves from 11 to 12.
+    let shifted = |start: usize, size: usize| {
+        let metadata: Vec<_> = (start..(start + size).min(500)).map(|p| {
+            let key = if p == 0 { 999 } else { p - 1 };
+            serde_json::json!({"ratingKey": key.to_string(), "type": "movie", "title": "Movie", "thumb": "/poster",
+                "librarySectionID": if key < 12 || key >= 300 { 7 } else { 8 }})
+        }).collect();
+        Some(serde_json::from_value::<plx_plex::plex::MediaContainer>(
+            serde_json::json!({"offset": start, "totalSize": 500, "Metadata": metadata})).unwrap())
+    };
+    let (rows, info) = step(&window_rows(&first), info, 60, false, &[8], shifted);
+    assert!(!info.unstable);
+    assert_eq!(row_keys(&rows), key_range(0..=11), "the visible rows keep their keys");
+    assert_eq!(row_positions(&rows), (1..=12).collect::<Vec<_>>(), "and move up with the edge");
+    assert_eq!((info.offset, info.end), (1, 253), "the reads continue from the window's end, not from the edge");
+}
+
 // Characterisation of the window's edge cases, on today's code. Each test feeds `fetch_window` a
 // closure in place of the server, so the response shape is the only thing that varies.
 
@@ -586,7 +693,7 @@ fn a_paged_response_without_total_size_is_read_from_its_page_size_alone() {
         calls.push((start, size));
         listing(start, size)
     }).unwrap().shelves.remove(0);
-    assert_eq!(calls, vec![(24, 24)]);
+    assert_eq!(calls, vec![(23, 25)], "the ask starts at the retained edge row, 23");
     assert_eq!(second.positions, (12..30).collect::<Vec<_>>());
     assert_eq!(window_keys(&second), key_range(12..=29));
     assert_eq!((second.offset, second.end), (12, 30));
@@ -622,10 +729,9 @@ fn a_response_echoing_a_different_offset_drops_the_whole_page() {
         serve(|p| p, 100, Some(100), 0)(0, size)
     });
     assert!(ignored.is_none(), "an echoed offset other than the request fails the page");
-    assert_eq!(calls, vec![(24, 24)], "the mismatch is not retried inside one page");
+    assert_eq!(calls, vec![(23, 25)], "the mismatch is not retried inside one page");
 }
 
-// Pins today's behaviour; the shared window's re-anchor rule changes this.
 #[test]
 fn an_item_added_at_the_head_between_asks_shifts_the_window_without_a_duplicate() {
     let _guard = plx_base::testlock::serial();
@@ -635,53 +741,49 @@ fn an_item_added_at_the_head_between_asks_shifts_the_window_without_a_duplicate(
     let mut shifted = serve(|p| if p == 0 { 999 } else { p - 1 }, 100, Some(100), 0);
     let second = fetch_window(sid(0), &PageQuery { start: first.end, ..recent_query(0) }, Some(&first), 0, &mut shifted)
         .unwrap().shelves.remove(0);
-    // The edge is not re-checked: the retained rows keep their old positions, so position 24 is
-    // skipped and the window runs on from key 24 at its new position 25.
+    // The ask's page starts at the edge, key 23. It finds the edge at position 24, so the retained
+    // rows move up by one and the fresh rows continue from key 24 at position 25.
     assert_eq!(window_keys(&second), key_range(12..=35));
     let unique: std::collections::BTreeSet<_> = window_keys(&second).into_iter().collect();
     assert_eq!(unique.len(), 24, "no card appears twice");
     assert!(!unique.contains("999"), "the head item lies before the window and is not read");
-    let mut expected: Vec<usize> = (12..24).collect();
-    expected.extend(25..=36);
-    assert_eq!(second.positions, expected);
-    assert_eq!((second.offset, second.end), (12, 37));
+    assert_eq!(second.positions, (13..=36).collect::<Vec<_>>());
+    assert_eq!((second.offset, second.end), (13, 37));
     assert!(second.more);
 }
 
-// Pins today's behaviour; the shared window's re-anchor rule changes this.
 #[test]
 fn a_held_item_removed_between_asks_loses_the_item_after_it() {
     let _guard = plx_base::testlock::serial();
     let first = fetch_window(sid(0), &recent_query(0), None, 0, serve(|p| p, 100, Some(100), 0))
         .unwrap().shelves.remove(0);
-    // Key 20 is removed from the listing, so every later row moves up by one.
+    // Key 20 is removed from the listing, so every later row moves up by one. The edge, key 23, is
+    // now at position 22: the page at 23 misses it, and the one page before 23 finds it.
     let mut shifted = serve(|p| if p < 20 { p } else { p + 1 }, 100, Some(100), 0);
     let second = fetch_window(sid(0), &PageQuery { start: first.end, ..recent_query(0) }, Some(&first), 0, &mut shifted)
         .unwrap().shelves.remove(0);
     let keys = window_keys(&second);
     assert!(keys.contains(&"20".to_string()), "the window keeps the removed card until it is paged out");
-    assert!(!keys.contains(&"24".to_string()), "key 24, the next row after the window, is skipped");
-    let mut expected = key_range(12..=23);
-    expected.extend(key_range(25..=36));
-    assert_eq!(keys, expected);
-    assert_eq!((second.offset, second.end), (12, 36));
+    assert!(keys.contains(&"24".to_string()), "key 24, the row after the edge, is read");
+    assert_eq!(keys, key_range(12..=35));
+    assert_eq!((second.offset, second.end), (11, 35));
     assert!(second.more);
 }
 
-// Pins today's behaviour; the shared window's re-anchor rule changes this.
 #[test]
 fn a_page_of_only_held_rows_adds_nothing_and_stops_at_the_request_bound() {
     let _guard = plx_base::testlock::serial();
     let first = fetch_window(sid(0), &recent_query(0), None, 0, serve(|p| p, 100, Some(100), 0))
         .unwrap().shelves.remove(0);
-    // Every page from here on repeats rows 12..=23, which the retained half already holds.
+    // Every page from here on repeats rows 12..=23, which the retained half already holds. The first
+    // ask's page starts at the edge, row 23, which matches, so its overlap row is not added twice.
     let mut calls = Vec::new();
     let shelf = fetch_window(sid(0), &PageQuery { start: first.end, ..recent_query(0) }, Some(&first), 0, |start, size| {
         calls.push((start, size));
         serve(|p| 12 + p % 12, 10_000, Some(10_000), 0)(start, size)
     }).unwrap().shelves.remove(0);
     assert_eq!(calls.len(), 8, "the request bound ends the walk");
-    assert_eq!(calls[0], (24, 24));
+    assert_eq!(calls[0], (23, 25));
     assert_eq!(window_keys(&shelf), key_range(12..=23), "a duplicate is never shown twice");
     assert_eq!(shelf.items.len(), 12, "the window stays short rather than filling with repeats");
     assert_eq!((shelf.offset, shelf.end), (12, 24 + 8 * 24));
