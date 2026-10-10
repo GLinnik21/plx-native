@@ -401,6 +401,10 @@ impl GridPart {
     /// The first projected key: where a focus with no place falls back to.
     fn first_elem(&self) -> Option<u32> { self.windows.first().and_then(|w| w.elems.first().copied()) }
 
+    /// How many slots hold a projected key.
+    #[cfg(test)]
+    pub(super) fn projected(&self) -> usize { self.windows.iter().map(|w| w.elems.len()).sum() }
+
     #[cfg(test)]
     pub(super) fn swap_for_test(&mut self, a: usize, b: usize) { self.windows[0].elems.swap(a, b); }
 

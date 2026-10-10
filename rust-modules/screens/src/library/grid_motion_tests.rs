@@ -3,11 +3,11 @@
 // key's `FocusMoved`, then the frame's `Tick`.
 use super::*;
 
-fn frame(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: &Fixture, ms: u32) {
+pub(super) fn frame(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: &Fixture, ms: u32) {
     deliver(page, engine, fixture, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
 }
 
-fn settle(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: &Fixture, from: u32) {
+pub(super) fn settle(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: &Fixture, from: u32) {
     for i in 0..120 { frame(page, engine, fixture, from + i * 16); }
 }
 
@@ -198,7 +198,7 @@ fn a_section_switch_restores_its_bookmark_against_the_settled_document() {
 
 /// A movie listing of items `rks`, each identified by its number (an element keeps its identity
 /// across a landing that moves it).
-fn numbered(rks: std::ops::Range<usize>) -> plx_data::stores::browse::ListingSnapshot {
+pub(super) fn numbered(rks: std::ops::Range<usize>) -> plx_data::stores::browse::ListingSnapshot {
     let sid = plx_plex::plex::ServerId::from_raw(0);
     let total = rks.len() as i64;
     plx_data::browse::view::ListingSnapshot::fixture(sid, rks.map(|i|

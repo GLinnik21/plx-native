@@ -1495,6 +1495,7 @@ mod art_admission_tests { include!("art_admission_tests.rs"); }
 mod lookahead_tests { include!("lookahead_tests.rs"); }
 
 mod grid_motion_tests { include!("grid_motion_tests.rs"); }
+mod keys_window_tests { include!("keys_window_tests.rs"); }
 
 #[test]
 fn every_published_shelf_is_on_the_page_and_reachable() {
