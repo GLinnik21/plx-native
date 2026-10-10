@@ -675,6 +675,24 @@ fn registers_json(r: &Registers) -> serde_json::Value {
     serde_json::Value::Object(out)
 }
 
+/// Whether `lr` can be sent as a caller frame: it must lie in an executable mapping the log
+/// recorded (an `at:` line, which [`parse_module`] keeps only for `r-x` mappings) or in the app's
+/// own image (the startup marker's span, for the case where the app's path did not pass the
+/// allowlist). On ARM `lr` is only a return address while the faulting function has not reused it;
+/// a signal raised from a library routine can leave a stack address or a scratch value there (a
+/// SIGABRT from firmware glibc had `lr == sp`), and a frame at a stack address symbolicates to
+/// nothing and reads as a real caller. With no mapping to vouch for it the frame is omitted; the
+/// raw register stays in `registers`.
+fn lr_is_a_caller(f: &Fault) -> bool {
+    let in_module = f.modules.iter().any(|m| (m.lo..m.hi).contains(&f.lr));
+    let in_image = f.image.as_ref().is_some_and(|i| {
+        i.image_addr
+            .checked_add(i.image_size)
+            .is_some_and(|end| (i.image_addr..end).contains(&f.lr))
+    });
+    in_module || in_image
+}
+
 /// The Sentry event body for one fault.
 ///
 /// **`timestamp` is the crash's own time**, from the record's `time:` line, and is absent when the
@@ -704,11 +722,13 @@ pub fn sentry_body(
         .unwrap_or(build_id);
     let registers = registers_json(&f.registers);
     // Oldest first, which is the order Sentry renders bottom-up: lr is the caller, so it goes first
-    // and pc — the faulting instruction — ends up on top.
-    let frames = [
-        serde_json::json!({"instruction_addr": format!("0x{:x}", f.lr), "platform": "native"}),
-        serde_json::json!({"instruction_addr": format!("0x{:x}", f.pc), "platform": "native"}),
-    ];
+    // and pc — the faulting instruction — ends up on top. lr is a caller only if the log vouches
+    // that it points into code ([`lr_is_a_caller`]); otherwise it is left to `registers`.
+    let mut frames = Vec::with_capacity(2);
+    if lr_is_a_caller(f) {
+        frames.push(serde_json::json!({"instruction_addr": format!("0x{:x}", f.lr), "platform": "native"}));
+    }
+    frames.push(serde_json::json!({"instruction_addr": format!("0x{:x}", f.pc), "platform": "native"}));
     let mut body = serde_json::json!({
         "event_id": event_id,
         "platform": "native",
@@ -1796,6 +1816,58 @@ mod tests {
         assert_eq!(reports.len(), 1);
         let Report::Panic(p) = &reports[0] else { panic!("the panic is the report") };
         assert_eq!(p.crash_time, Some(t));
+    }
+
+    // ---- the caller frame is only a caller when lr points into code ----
+
+    fn frame_addrs(v: &serde_json::Value) -> Vec<String> {
+        v["exception"]["values"][0]["stacktrace"]["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["instruction_addr"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn an_lr_that_is_a_stack_address_gets_no_caller_frame() {
+        // The device's SIGABRT: lr == sp, a stack address, and no executable mapping holds it.
+        let log = "\nimg: build_id=11223344556677889900aabbccddeeff00112233 image_addr=0x10000 image_size=0x5f0000\n\
+            *** SIGNAL 6 (SIGABRT) addr=0x4c1b pc=0xb6e1d6a4 lr=0xbe8f1a90\n\
+            reg: sp=0xbe8f1a90 fp=0x0 ip=0x1 cpsr=0x60000010\n\
+            at: b6e00000-b6e90000 r-xp 00000000 fe:01 77 /lib/libpthread-2.24.so\n\
+            at: be8e0000-be901000 rw-p 00000000 00:00 0 [stack]\n";
+        let v = body_json(&only_fault(log));
+        assert_eq!(frame_addrs(&v), vec!["0xb6e1d6a4"], "only the faulting pc");
+        // The register is still reported: it is evidence, just not a caller.
+        assert_eq!(v["exception"]["values"][0]["stacktrace"]["registers"]["lr"], "0xbe8f1a90");
+    }
+
+    #[test]
+    fn an_lr_inside_an_executable_mapping_is_a_caller_frame() {
+        // pc in one library, lr in the app's own text (an `at:` line) …
+        let v = body_json(&only_fault(WAYLAND_REC));
+        assert_eq!(frame_addrs(&v), vec!["0x4bccd0", "0xb6f10123"], "caller first, pc on top");
+        // … and lr in another library's executable mapping.
+        let log = "*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0xb6f10123 lr=0xb6e00456\n\
+            at: b6f00000-b6f21000 r-xp 00000000 fe:01 1234 /usr/lib/libx.so.0\n\
+            at: b6e00000-b6e90000 r-xp 00000000 fe:01 77 /lib/libpthread-2.24.so\n";
+        assert_eq!(frame_addrs(&body_json(&only_fault(log))), vec!["0xb6e00456", "0xb6f10123"]);
+    }
+
+    #[test]
+    fn an_lr_with_no_mapping_in_the_log_gets_no_caller_frame() {
+        // No `at:` line for lr, and it is outside the app's own image: nothing vouches for it.
+        let log = "*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0xb6f10123 lr=0xb7777777\n\
+            at: b6f00000-b6f21000 r-xp 00000000 fe:01 1234 /usr/lib/libx.so.0\n";
+        assert_eq!(frame_addrs(&body_json(&only_fault(log))), vec!["0xb6f10123"]);
+    }
+
+    #[test]
+    fn an_lr_inside_the_apps_own_image_is_a_caller_even_without_an_at_line() {
+        // REC's lr (0x4bccd0) lies in the image the startup marker recorded.
+        let v = body_json(&only_fault(REC));
+        assert_eq!(frame_addrs(&v), vec!["0x4bccd0", "0x88ef8"]);
     }
 
     #[test]
