@@ -267,6 +267,15 @@ def run_surface(name, profile_name, args):
             fails.append(f"{label}: did not reach item {target} (stuck at {focus_now()}) in {bound:.0f}s")
             return False
 
+        if args.reversal:
+            # A legitimate ask is in flight (focus stood at the trailing edge when it was sent) and
+            # the reader turns back: the page must be withdrawn, so no landing takes the focused card
+            # out of the window. `analyse_focus` below grades it like every other walk.
+            if walk(spec["key"], WINDOW - 3, "reversal: approach the edge"):
+                for _ in range(12):
+                    keys.append((sim.key(spec["back"]), spec["back"]))
+                    time.sleep(gap)
+                time.sleep(2)
         walk(spec["key"], len(order) - 1, "forward")
         time.sleep(2)
         walk(spec["back"], 0, "back")
@@ -385,6 +394,8 @@ def main():
     ap.add_argument("--build", action="store_true", help="cargo build the simulator first")
     ap.add_argument("--json", type=pathlib.Path, help="write the full results here")
     ap.add_argument("--dump", type=pathlib.Path, help="append the stamped focus/frame/wire lines here")
+    ap.add_argument("--reversal", action="store_true",
+                    help="walk to the trailing edge, then back 12 cards while the page is in flight")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
