@@ -260,9 +260,10 @@ and `identifier`), but a windowed request does page its hub list on a live serve
 Home reads all rows, in windows of `HUB_WINDOW` hubs (`home_hubs` is the whole-list fallback), with 12 preview cards per row. A row pages
 through its provider's listing `key`, with both `X-Plex-Container-Start` and
 `X-Plex-Container-Size`, when `plx_plex::plex::is_pageable_hub_key` admits the key: `/hubs/…`,
-`/library/sections/…` and `/library/metadata/{id}/similar`. The client preserves the key's type,
-library, and sort parameters. A row behind any other key, such as a collection's
-`/library/collections/{id}/children`, keeps its 12-card preview and logs that once per hub.
+`/library/sections/…`, `/library/metadata/{id}/similar` and `/library/collections/{id}/children`
+(the listing the Collection page pages). The client preserves the key's type,
+library, and sort parameters. A row behind any other key keeps its 12-card preview and logs that
+once per hub; the Home, Library-section and Detail related rows share this one allowlist.
 
 A PMS response observed on 2026-10-09 returned `offset=0`, `size=36`, and `totalSize=50`.
 The next response returned `offset=36`, `size=14`, and `totalSize=50`. This confirms the

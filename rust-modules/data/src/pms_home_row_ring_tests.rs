@@ -18,10 +18,10 @@ fn pageable_shelf(slot: u16, row: usize) -> Shelf {
     sh
 }
 
-/// A row whose key the pager does not read: a collection's children.
+/// A row whose key the pager does not read: a playlist's items.
 fn opaque_shelf(slot: u16, row: usize) -> Shelf {
     let mut sh = pageable_shelf(slot, row);
-    sh.key = format!("/library/collections/{row}/children");
+    sh.key = format!("/playlists/{row}/items");
     sh.end = 0;
     sh.more = false;
     sh
