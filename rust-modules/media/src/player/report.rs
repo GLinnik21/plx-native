@@ -113,6 +113,14 @@ pub struct PlaybackTrace {
     generation: u32,
     started_ms: i64,
     sealed: bool,
+    /// The route a noted change (`DeliveryRequested`) asked the engine to open, until a picture
+    /// from it is on the panel. `None` when no change is pending, in which case the attempt IS the
+    /// session's installed route. Part of the trace so it lives and dies with it: one attempt's
+    /// reset, withdrawal's clear and the consent gate all reach it without a second latch.
+    attempt_delivery: Option<DeliveryClass>,
+    /// Whether the engine open now in flight (or last run) has presented a picture. Cleared when
+    /// an open begins, set by the presented step.
+    attempt_started: bool,
     steps: Vec<TraceStep>,
 }
 
@@ -122,6 +130,8 @@ impl PlaybackTrace {
             generation: 0,
             started_ms: -1,
             sealed: false,
+            attempt_delivery: None,
+            attempt_started: false,
             steps: Vec::new(),
         }
     }
@@ -130,6 +140,7 @@ impl PlaybackTrace {
         self.generation = generation;
         self.started_ms = at_ms;
         self.sealed = false;
+        self.forget_attempt();
         self.steps.clear();
         self.push(at_ms, TraceEvent::Requested { selected });
     }
@@ -140,6 +151,7 @@ impl PlaybackTrace {
         self.generation = generation;
         self.started_ms = -1;
         self.sealed = false;
+        self.forget_attempt();
         self.steps.clear();
     }
 
@@ -163,16 +175,53 @@ impl PlaybackTrace {
         if self.started_ms < 0 {
             self.started_ms = at_ms;
         }
+        match event {
+            // A route change is a new open of that route; whatever was shown before belongs to
+            // the attempt it replaced.
+            TraceEvent::DeliveryRequested { delivery, .. } => {
+                self.attempt_delivery = Some(delivery);
+                self.attempt_started = false;
+            }
+            // The noted route is on screen: from here the session's installed route is the
+            // attempt's, including after a switch nothing noted.
+            TraceEvent::Presented { .. } => {
+                self.attempt_delivery = None;
+                self.attempt_started = true;
+            }
+            _ => {}
+        }
         self.steps.push(TraceStep {
             age: TraceAge::from_ms(at_ms.saturating_sub(self.started_ms)),
             event,
         });
     }
 
+    fn forget_attempt(&mut self) {
+        self.attempt_delivery = None;
+        self.attempt_started = false;
+    }
+
+    /// The route a noted switch asked for that no picture has realised yet.
+    fn attempted_delivery(&self) -> Option<DeliveryClass> {
+        self.attempt_delivery
+    }
+
+    /// Whether the engine open in flight has put a picture on the panel.
+    fn attempt_started(&self) -> bool {
+        self.attempt_started
+    }
+
+    /// An engine open begins (a Load after Resolving or Connecting), so nothing has been shown by
+    /// THIS attempt yet. Not a breadcrumb: the open itself is not an event worth a step.
+    fn engine_opening(&mut self) {
+        self.attempt_started = false;
+    }
+
     fn clear(&mut self) {
         self.generation = 0;
         self.started_ms = -1;
         self.sealed = false;
+        self.forget_attempt();
         self.steps.clear();
     }
 
@@ -249,6 +298,19 @@ fn push_trace_for(generation: u32, event: TraceEvent) {
         return;
     }
     trace.push_for(generation, now_ms(), event);
+}
+
+/// An engine open begins: the attempt that follows has shown nothing yet. Same consent and
+/// generation discipline as the breadcrumbs, but no step is added.
+fn note_engine_opening() {
+    let mut trace = super::SHARED
+        .playback_trace
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if !plx_telemetry::telemetry::consent::allows_errors() || trace.generation == 0 || trace.sealed {
+        return;
+    }
+    trace.engine_opening();
 }
 
 fn push_trace(event: TraceEvent) {
@@ -406,6 +468,15 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
         super::SHARED.dg_transport_age_ms.load(Relaxed),
         super::SHARED.dg_transport_reopen_failed.load(Relaxed),
     );
+    let refusal = refusal_context(ps);
+    let (noted, attempt_started) = {
+        let trace = super::SHARED
+            .playback_trace
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        (trace.attempted_delivery(), trace.attempt_started())
+    };
+    let http_status = super::SHARED.dg_http_status.load(Relaxed);
     PlaybackErrorContext {
         delivery,
         selected,
@@ -414,13 +485,18 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
         media_rate: RateClass::from_kbps(super::SHARED.dg_abr_media_kbps.load(Relaxed)),
         raster: RasterClass::from_height(super::SHARED.video_raster().1),
         pipeline: PipelineClass::from_stage(super::SHARED.dg_stage.load(Relaxed)),
-        http: HttpClass::from_status(super::SHARED.dg_http_status.load(Relaxed)),
+        http: HttpClass::from_status(http_status),
         buffer: BufferClass::from_ms(super::SHARED.dg_abr_buffer_ms.load(Relaxed)),
         transport,
         transfer_age,
         started: SAW_START.load(Relaxed),
+        // A refusal names the route it asked the server for; else the route a noted switch is
+        // opening; else the session's own, which is also the attempt's when nothing was switched.
+        attempted_delivery: refusal.map(|r| r.attempted).or(noted).unwrap_or(delivery),
+        attempt_started,
+        http_status: HttpClass::exact_status(http_status),
         pipeline_error: super::SHARED.dg_cb_err_num.load(Relaxed),
-        refusal: refusal_context(ps),
+        refusal,
     }
 }
 
@@ -647,6 +723,17 @@ pub fn tick(ps: &crate::route::PlaybackSession) {
     // Playing -> Buffering edge is the viewer's own pick working, not a stall.
     if !super::claim_hold::active() {
         note_rebuffer(prev, now, SAW_START.load(Relaxed));
+    }
+    // `Resolving` and `Connecting` are the states of an engine being opened, whether the first or
+    // a reload after a quality switch; a rebuffer or a seek is neither, so an open that never
+    // reaches a picture is told apart from a session that had one.
+    if prev != now
+        && matches!(
+            now,
+            super::shared::PlaybackState::Resolving | super::shared::PlaybackState::Connecting
+        )
+    {
+        note_engine_opening();
     }
     if prev != now && now == super::shared::PlaybackState::Playing {
         // Unlike the usage funnel's once-per-attempt `Started`, every return to actual presented
@@ -1245,6 +1332,135 @@ mod tests {
         super::super::SHARED.retire_native_session(epoch);
         super::super::SHARED.reset_session();
         assert_eq!(error_context(&ps).pipeline_error, 0, "the latch does not outlive its session");
+    }
+
+    /// **Sentry PLX-NATIVE-V.** A playback that was running, then switched quality to Original, and
+    /// whose Original open failed used to report the SESSION: `delivery` the old route, `started`
+    /// true. The report now also names the attempt that failed: the route it was opening, and
+    /// whether that open ever put a picture up. Driven through the real per-frame observer, with
+    /// error reporting consented (the attempt is part of the in-memory trace, which exists only
+    /// then).
+    #[test]
+    fn a_failed_quality_switch_to_original_names_the_attempted_route_and_the_unstarted_attempt() {
+        use plx_telemetry::telemetry::consent::{self, Consent};
+        let _g = plx_base::testlock::serial();
+        let previous = consent::current();
+        let mut enabled = Consent::default();
+        enabled.errors = true;
+        enabled.asked_version = consent::POLICY_VERSION;
+        consent::install(enabled);
+
+        // The route the session had: HLS.
+        let mut ps = crate::route::PlaybackSession::default();
+        crate::route::install_transcode_for_test(&mut ps, false, true);
+        let generation = requested(&ps, plx_plex::plex::ServerId::UNSET);
+        let set = |state: S| {
+            crate::player::SHARED.pb_state.store(state as u8, Relaxed);
+            tick(&ps);
+        };
+        set(S::Connecting);
+        set(S::Playing);
+        assert!(SAW_START.load(Relaxed), "the session played");
+        let playing = error_context(&ps);
+        assert!(playing.started && playing.attempt_started, "a picture is up on this attempt");
+
+        // The viewer picks Original: the new route is requested, and its open begins.
+        note_delivery_requested_for(
+            generation,
+            DeliveryClass::Direct,
+            QualityClass::Original,
+            DeliveryReason::OriginalRecovery,
+        );
+        set(S::Connecting);
+        set(S::Error);
+
+        let ctx = error_context(&ps);
+        assert_eq!(ctx.delivery.code(), "hls", "the session's route is still reported, for continuity");
+        assert!(ctx.started, "the session did play");
+        assert_eq!(ctx.attempted_delivery.code(), "original_direct", "the route that was being opened");
+        assert!(!ctx.attempt_started, "the Original open never showed a picture");
+
+        crate::player::SHARED.pb_state.store(S::Idle as u8, Relaxed);
+        LAST.store(S::Idle as u8, Relaxed);
+        SAW_START.store(false, Relaxed);
+        SAW_FAIL.store(false, Relaxed);
+        clear_error_trace();
+        consent::install(previous.unwrap_or_default());
+    }
+
+    /// The other cases of the same rule, on the pure trace: no route change noted means the attempt
+    /// is the session's own route; a picture on screen consumes the noted route (a later failure is
+    /// of whatever the session now has, which a switch that was never noted may have changed); and
+    /// a late note from a previous Play (stale generation) changes nothing.
+    #[test]
+    fn the_attempt_state_follows_the_trace_and_ignores_a_stale_generation() {
+        let mut trace = PlaybackTrace::new();
+        trace.reset(7, 0, QualityClass::Auto);
+        assert_eq!(trace.attempted_delivery(), None, "no switch noted: the session's route is the attempt's");
+        assert!(!trace.attempt_started(), "a fresh Play has shown nothing yet");
+
+        assert!(!trace.push_for(6, 1, delivery_requested(DeliveryClass::Direct)), "a stale generation is refused");
+        assert_eq!(trace.attempted_delivery(), None);
+
+        trace.push(2, delivery_requested(DeliveryClass::Direct));
+        assert_eq!(trace.attempted_delivery(), Some(DeliveryClass::Direct));
+        assert!(!trace.attempt_started());
+
+        trace.push(3, TraceEvent::Presented {
+            delivery: DeliveryClass::Direct,
+            requested: QualityClass::Original,
+            declared_rate: RateClass::Unknown,
+            raster: RasterClass::Unknown,
+        });
+        assert!(trace.attempt_started(), "a picture shown");
+        assert_eq!(trace.attempted_delivery(), None, "the noted route has been realised");
+
+        trace.engine_opening();
+        assert!(!trace.attempt_started(), "a new engine open starts a new attempt");
+
+        trace.reset(8, 0, QualityClass::Auto);
+        assert!(!trace.attempt_started());
+        assert_eq!(trace.attempted_delivery(), None);
+    }
+
+    fn delivery_requested(delivery: DeliveryClass) -> TraceEvent {
+        TraceEvent::DeliveryRequested {
+            delivery,
+            requested: QualityClass::Original,
+            reason: DeliveryReason::OriginalRecovery,
+        }
+    }
+
+    /// **The exact status beside the class.** The class says "4xx"; the number says whether the
+    /// source refused (403), lost the part (404) or the server asked for a retry (429). Only a real
+    /// HTTP status travels: anything outside 100-599 (an unset latch, a transport code that landed
+    /// in the field) is reported as 0 rather than as itself.
+    #[test]
+    fn the_exact_http_status_rides_beside_the_class_and_only_when_it_is_one() {
+        let _g = plx_base::testlock::serial();
+        let ps = crate::route::PlaybackSession::default();
+        let status = &crate::player::SHARED.dg_http_status;
+        for (raw, want) in [
+            (404, 404u16),
+            (403, 403),
+            (503, 503),
+            (100, 100),
+            (599, 599),
+            (0, 0),
+            (99, 0),
+            (600, 0),
+            (999, 0),
+            (-1, 0),
+            (i32::MIN, 0),
+        ] {
+            status.store(raw, Relaxed);
+            let ctx = error_context(&ps);
+            assert_eq!(ctx.http_status, want, "raw {raw}");
+            assert_eq!(ctx.http, HttpClass::from_status(raw), "the class is unchanged for raw {raw}");
+        }
+        status.store(404, Relaxed);
+        assert_eq!(error_context(&ps).http.code(), "4xx");
+        status.store(0, Relaxed);
     }
 
     /// The other half: a failure on a playback that DID install a route keeps the real tags.

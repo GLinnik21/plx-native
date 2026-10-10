@@ -517,6 +517,16 @@ impl HttpClass {
             _ => Self::Other,
         }
     }
+
+    /// The status itself when it is a real HTTP status (100-599), else 0 for "none recorded". A
+    /// latch that was never set, a transport code or any other stray number is not a status and
+    /// is never reported as one.
+    pub fn exact_status(status: i32) -> u16 {
+        match u16::try_from(status) {
+            Ok(s @ 100..=599) => s,
+            _ => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -685,7 +695,17 @@ pub struct PlaybackErrorContext {
     pub transport: TransportClass,
     /// How long that transfer had lived.
     pub transfer_age: TransferAgeClass,
+    /// Whether the PLAYBACK ever put a picture on the panel (the session's own latch).
     pub started: bool,
+    /// The route the failed attempt was opening, as against `delivery`, which is the route the
+    /// session had installed. They differ after a mid-play switch whose new route never opened.
+    pub attempted_delivery: DeliveryClass,
+    /// Whether THIS attempt (the engine open that failed) put a picture on the panel, as against
+    /// `started`, which is true for a session that played before the switch that failed.
+    pub attempt_started: bool,
+    /// The exact HTTP status the media source answered with, 100-599, or 0 when none was recorded
+    /// or the number is not a valid status. Beside [`HttpClass`], never instead of it.
+    pub http_status: u16,
     /// The TV firmware's own error number for the pipeline's first `type=18` error callback (601 =
     /// resource allocation), or 0 when none was recorded. An integer in the `i32` range and
     /// nothing else: the callback's string is free text that can carry a URI or a path and has no

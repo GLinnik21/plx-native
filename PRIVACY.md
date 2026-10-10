@@ -127,6 +127,17 @@ for a resource-allocation refusal), `0` when it gave none, and otherwise any 32-
 a number and nothing else — the firmware's accompanying text is not sent, because it can name
 addresses or files. It appears as a tag and in the playback context.
 
+A report also tells the attempt that failed apart from the playback it happened in, because a
+playback that switched quality part-way can fail on the new attempt after playing fine before it.
+`delivery` and `started` describe the playback as a whole; three more fields describe the attempt:
+`attempted_delivery`, the way of delivering the video that was being opened when it failed
+(`unknown` / `original_direct` / `original_remux` / `hls` / `progressive_transcode`, the same
+vocabulary as `delivery`); `attempt_started`, `yes` or `no` for whether that attempt had put a
+picture on screen before it failed; and `http_status`, the exact HTTP status number the media server
+answered with (`100` to `599`), or `0` when none was recorded. The status is a number and nothing
+else — the server's accompanying text is not sent. All three appear as a tag and in the playback
+context; `http` keeps its coarse class beside the number.
+
 When the failure is the media server **refusing to play or convert the item** (`decision_refused`),
 that report also carries four closed fields about the refusal — and never the server's own
 explanation, which is free text that can name files, paths and servers and stays on the television:

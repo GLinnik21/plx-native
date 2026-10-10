@@ -152,6 +152,9 @@ pub fn event_body(
             "playback.requested_quality": context.requested.code(),
             "playback.declared_rate": context.declared_rate.code(),
             "playback.started": if context.started { "yes" } else { "no" },
+            "playback.attempted_delivery": context.attempted_delivery.code(),
+            "playback.attempt_started": if context.attempt_started { "yes" } else { "no" },
+            "playback.http_status": context.http_status.to_string(),
             "playback.transport": context.transport.code(),
             "playback.transfer_age": context.transfer_age.code(),
             "playback.pipeline_error": context.pipeline_error.to_string(),
@@ -166,6 +169,9 @@ pub fn event_body(
             "raster": context.raster.code(),
             "pipeline": context.pipeline.code(),
             "http": context.http.code(),
+            "http_status": context.http_status,
+            "attempted_delivery": context.attempted_delivery.code(),
+            "attempt_started": context.attempt_started,
             "buffer": context.buffer.code(),
             "transport": context.transport.code(),
             "transfer_age": context.transfer_age.code(),
@@ -323,6 +329,9 @@ pub fn preview_event() -> Vec<u8> {
             transport: TransportClass::RecvError,
             transfer_age: TransferAgeClass::S30To90,
             started: true,
+            attempted_delivery: DeliveryClass::Direct,
+            attempt_started: false,
+            http_status: 404,
             pipeline_error: 601,
             // Representative of a `decision_refused` report's extra block, shown here so the
             // consent screen's sample carries every key a report can; a real report has it only
@@ -362,7 +371,7 @@ pub fn preview_domains() -> String {
     use FailureClass as F;
     use plx_platform::i18n::msg;
     // The labels are the reader's words; the codes after them are the wire values themselves.
-    let domains: [(&str, String); 20] = [
+    let domains: [(&str, String); 22] = [
         (msg::core_preview_domain_failure_kind(), codes(
             &[
                 F::DecisionRefused,
@@ -378,10 +387,13 @@ pub fn preview_domains() -> String {
             F::code,
         )),
         (msg::core_preview_domain_delivery(), codes(&[D::Unknown, D::Direct, D::Remux, D::Hls, D::Transcode], D::code)),
-        // The four rows below ride a `decision_refused` report only (`PlaybackErrorContext::
+        // The route the failed attempt was opening rides every report (a refusal's own block names
+        // the same value), so its row is the whole delivery domain.
+        (msg::core_preview_domain_attempted_delivery(), codes(&[D::Unknown, D::Direct, D::Remux, D::Hls, D::Transcode], D::code)),
+        (msg::core_preview_domain_attempt_started(), "yes / no".to_owned()),
+        // The three rows below ride a `decision_refused` report only (`PlaybackErrorContext::
         // refusal`); the labels say so, and each list is its enum's own `ALL`/variant set.
         (msg::core_preview_domain_refusal_codes(), codes(&N::ALL, N::code)),
-        (msg::core_preview_domain_attempted_delivery(), codes(&[D::Remux, D::Hls, D::Transcode], D::code)),
         (msg::core_preview_domain_source_video(), codes(&V::ALL, V::code)),
         (msg::core_preview_domain_source_audio(), codes(&Z::ALL, Z::code)),
         (msg::core_preview_domain_quality(), codes(
@@ -432,6 +444,8 @@ pub fn preview_domains() -> String {
             ],
             H::code
         )),
+        // Numeric, so its domain is its range: the exact status beside the class above (0 = none).
+        (msg::core_preview_domain_http_status(), "0 / 100 to 599".to_owned()),
         (msg::core_preview_domain_buffer(), codes(
             &[
                 B::Unknown,
@@ -521,6 +535,9 @@ mod tests {
             transport: TransportClass::None,
             transfer_age: TransferAgeClass::Unknown,
             started: true,
+            attempted_delivery: DeliveryClass::Hls,
+            attempt_started: true,
+            http_status: 0,
             pipeline_error: 0,
             refusal: None,
         }
@@ -764,10 +781,13 @@ mod tests {
         assert_eq!(
             keys(&v["contexts"]["playback"]),
             [
+                "attempt_started",
+                "attempted_delivery",
                 "buffer",
                 "declared_rate",
                 "delivery",
                 "http",
+                "http_status",
                 "media_rate",
                 "pipeline",
                 "pipeline_error",
@@ -783,8 +803,11 @@ mod tests {
         assert_eq!(
             keys(&v["tags"]),
             [
+                "playback.attempt_started",
+                "playback.attempted_delivery",
                 "playback.declared_rate",
                 "playback.delivery",
+                "playback.http_status",
                 "playback.kind",
                 "playback.pipeline_error",
                 "playback.requested_quality",
@@ -877,9 +900,11 @@ mod tests {
         assert_eq!(
             keys(&v["tags"]),
             [
+                "playback.attempt_started",
                 "playback.attempted_delivery",
                 "playback.declared_rate",
                 "playback.delivery",
+                "playback.http_status",
                 "playback.kind",
                 "playback.pipeline_error",
                 "playback.refusal_general",
@@ -1067,6 +1092,76 @@ mod tests {
             "none / partial / recv_error / send_error / got_nothing / timeout / http2 / reopen_failed / other"
         ));
         assert!(legend.contains("unknown / <5s / 5-30s / 30-90s / 90-300s / 300s+"));
+    }
+
+    /// **The attempt that failed, beside the session it failed in.** After a mid-play switch whose
+    /// new route never opened, `delivery` is the route the session had and `started` is true for
+    /// the whole session; the report also says which route was being opened, whether THAT open
+    /// ever put a picture up, and the exact HTTP status the source answered with. Closed values
+    /// and one bounded integer, as a tag to search on and in the playback context.
+    #[test]
+    fn the_failed_attempt_is_tagged_and_in_the_context_beside_the_session_fields() {
+        let mut ctx = context();
+        ctx.delivery = DeliveryClass::Hls;
+        ctx.started = true;
+        ctx.attempted_delivery = DeliveryClass::Direct;
+        ctx.attempt_started = false;
+        ctx.http = HttpClass::ClientError;
+        ctx.http_status = 404;
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            FailureClass::MediaSource,
+            ctx,
+            &[],
+        ))
+        .expect("handled event JSON");
+        assert_eq!(v["tags"]["playback.delivery"], "hls", "the session's route stays for continuity");
+        assert_eq!(v["tags"]["playback.attempted_delivery"], "original_direct");
+        assert_eq!(v["tags"]["playback.started"], "yes");
+        assert_eq!(v["tags"]["playback.attempt_started"], "no");
+        assert_eq!(v["tags"]["playback.http_status"], "404");
+        let c = &v["contexts"]["playback"];
+        assert_eq!(c["attempted_delivery"], "original_direct");
+        assert_eq!(c["attempt_started"], false);
+        assert_eq!(c["started"], true);
+        assert_eq!(c["http"], "4xx");
+        assert_eq!(c["http_status"], 404);
+        assert!(c["http_status"].is_u64(), "an integer, not a string");
+        // Grouping is unchanged: these explain a group, they do not split it.
+        assert_eq!(v["fingerprint"], serde_json::json!(["playback-error", "media_source"]));
+    }
+
+    /// The consent screen shows what a report can carry: the sample event holds every new key, the
+    /// legend names each field with its domain, and PRIVACY.md describes them.
+    #[test]
+    fn the_consent_sample_legend_and_privacy_list_every_attempt_field() {
+        use plx_platform::i18n::msg;
+        let v: Value = serde_json::from_slice(&preview_event()).expect("preview JSON");
+        for key in ["attempted_delivery", "attempt_started", "http_status"] {
+            assert!(v["contexts"]["playback"].get(key).is_some(), "sample context omitted {key}");
+            assert!(v["tags"].get(format!("playback.{key}")).is_some(), "sample tags omitted {key}");
+        }
+        assert!(v["contexts"]["playback"]["http_status"].is_u64());
+        let legend = preview_domains();
+        for label in [
+            msg::core_preview_domain_attempted_delivery(),
+            msg::core_preview_domain_attempt_started(),
+            msg::core_preview_domain_http_status(),
+        ] {
+            assert!(legend.contains(label), "legend omitted the row {label:?}");
+        }
+        assert!(legend.contains("yes / no"), "the attempt_started domain");
+        assert!(legend.contains("100 to 599"), "the http_status domain");
+        // The attempted route rides EVERY report now, so its row lists the whole delivery domain
+        // (including `unknown`), not only the three a refusal can name.
+        let all = "unknown / original_direct / original_remux / hls / progressive_transcode";
+        assert_eq!(legend.matches(all).count(), 2, "delivery and attempted delivery both list it");
+        let privacy = include_str!("../../../../PRIVACY.md");
+        for key in ["attempted_delivery", "attempt_started", "http_status"] {
+            assert!(privacy.contains(key), "PRIVACY.md omitted {key}");
+        }
     }
 
     /// **The firmware's error number.** A `tv_pipeline` report used to say only that the pipeline

@@ -122,8 +122,8 @@
     "description": "Field name in the consent preview's list of possible playback-error values: the numeric verdict codes the media server gave when it refused to play or convert an item. Only reports about a refusal carry it."
   },
   "core.preview_domain_attempted_delivery": {
-    "value": "attempted delivery (refused-plan reports only)",
-    "description": "Field name in the consent preview's list of possible playback-error values: which way of delivering the video the app asked the server for before the server refused. Only reports about a refusal carry it."
+    "value": "attempted delivery",
+    "description": "Field name in the consent preview's list of possible playback-error values: which way of delivering the video the app was opening when the failure happened, which after a mid-playback quality switch can differ from the delivery before the switch. For a refused plan it is the way the app asked the server for before the server refused."
   },
   "core.preview_domain_source_video": {
     "value": "source video codec (refused-plan reports only)",
@@ -152,6 +152,14 @@
   "core.preview_domain_pipeline_error": {
     "value": "TV firmware error number (0 = none recorded)",
     "description": "Field name in the consent preview's list of possible playback-error values: the whole number the television's own video pipeline reported with its first error, or 0 when it reported none. Its possible values are a range of integers rather than a list of codes."
+  },
+  "core.preview_domain_attempt_started": {
+    "value": "picture shown in this attempt",
+    "description": "Field name in the consent preview's list of possible playback-error values: whether the attempt that failed (the latest opening of the video, such as after a quality switch) had put a picture on screen before it failed, as against the playback as a whole. Its possible values are yes and no."
+  },
+  "core.preview_domain_http_status": {
+    "value": "HTTP status number (0 = none)",
+    "description": "Field name in the consent preview's list of possible playback-error values: the exact HTTP status number the media server answered with, from 100 to 599, or 0 when none was recorded. Its possible values are a range of integers rather than a list of codes."
   },
   "core.preview_domain_http": {
     "value": "HTTP",
