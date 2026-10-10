@@ -629,6 +629,15 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   exact binary/debug pair with source context; it requires `SENTRY_AUTH_TOKEN`. The release
   workflow treats a missing token, unusable DIF or failed upload as a release failure, because an
   accepted native event with no matching DIF is not a working crash report.
+  **`make symbols-libs`** does the same for the bundled shared objects (the FFmpeg libraries and
+  libass, which ship stripped): `pkg/symbols/<soname>.debug`, extracted from the unstripped link
+  output (`vendor/ffmpeg-prefix/lib/unstripped/`, `vendor/libass-prefix/lib/`). Their links carry
+  `-Wl,--build-id=sha1` too, and `ci/extract-so-symbols.sh` refuses a library without one, a
+  `.debug` whose id differs, or one with no `.symtab` function symbols; `ci/check-debug-files.py`
+  (used by `sentry-symbols` and the release workflow) then requires `sentry-cli debug-files check`
+  to report `debug` or `symtab` features on each file, because that command exits 0 for a
+  symbol-less object. `sentry-crash` is not uploaded: it never sends a report, so no event frame
+  lands in it. Independent of `SYMBOLS=1`.
 - `make ipk` — repackage the installable `pkg/<app id>_<version>_arm.ipk`. The version
   comes from `pkg/appinfo.json` (the single source; `ci/check-package.py` asserts the control
   file agrees), and the archive is **reproducible** — `ci/mkipk.py` normalises tar identity and

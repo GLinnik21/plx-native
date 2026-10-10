@@ -1774,6 +1774,35 @@ else
 	 echo "symbols: pkg/plxnative.debug  build-id $$bin  ($$(du -h pkg/plxnative.debug | cut -f1))"
 endif
 
+# `make symbols-libs` — the same for every BUNDLED shared object: the FFmpeg libraries and libass.
+#
+# A crash frame inside `libavformat-plx.so.63` is an address in a library that ships stripped, so
+# without this it reaches Sentry as a bare address. The shipped copy is made from a link output that
+# still has `.symtab`; `pkg/symbols/<soname>.debug` is that output through `objcopy
+# --only-keep-debug`, the same treatment `symbols` gives pkg/plxnative. ci/extract-so-symbols.sh
+# refuses a library without a GNU build id (`-Wl,--build-id=sha1` on its link, which ci/build-ffmpeg.sh
+# and ci/build-libass.py now pass) and a `.debug` whose id differs from the shipped copy's or that
+# has no function symbols: `sentry-cli debug-files check` passes a symbol-less object, so the
+# assertion cannot be left to it.
+#
+# NOT `sentry-crash`: it is a separate process that never sends a report, so no frame of an event
+# lands in it; the in-process handler code is libsentry.a, linked into pkg/plxnative and covered by
+# `symbols`. libswscale, which only a non-RELEASE build bundles, is covered because FFMPEG_SONAMES
+# lists it. Independent of SYMBOLS=1 (these libraries carry no DWARF of ours; their `.symtab` is the content).
+SO_SYMBOLS_DIR        = pkg/symbols
+FFMPEG_UNSTRIPPED_DIR = $(FFMPEG_PREFIX)/lib/unstripped
+LIBASS_UNSTRIPPED     = vendor/libass-prefix/lib/libass-plx.so.0
+FFMPEG_SO_SYMBOLS     = $(addprefix $(SO_SYMBOLS_DIR)/,$(addsuffix .debug,$(FFMPEG_SONAMES)))
+LIBASS_SO_SYMBOLS     = $(SO_SYMBOLS_DIR)/libass-plx.so.0.debug
+SO_SYMBOLS            = $(FFMPEG_SO_SYMBOLS) $(LIBASS_SO_SYMBOLS)
+
+$(FFMPEG_SO_SYMBOLS): $(SO_SYMBOLS_DIR)/%.debug: pkg/% ci/extract-so-symbols.sh
+	TOOLPREFIX='$(TOOLPREFIX)' ci/extract-so-symbols.sh pkg/$* $(FFMPEG_UNSTRIPPED_DIR)/$* $@
+$(LIBASS_SO_SYMBOLS): $(LIBASS_STAGED) ci/extract-so-symbols.sh
+	TOOLPREFIX='$(TOOLPREFIX)' ci/extract-so-symbols.sh $< $(LIBASS_UNSTRIPPED) $@
+
+symbols-libs: $(SO_SYMBOLS)
+
 # Validate and upload the exact debug file that matches `pkg/plxnative`. This is a separate target
 # so a development build used for an on-device crash test gets the same fail-closed pairing as CI.
 # `SENTRY_AUTH_TOKEN` is read only from the process environment and is never echoed or written.
@@ -1783,13 +1812,17 @@ SENTRY_ORG     ?= gleb-linnik
 # no telemetry cache keeps that production fallback for deliberate one-off invocations.
 SENTRY_PROJECT ?= $(or $(call telemetry_val,sentry_project),plx-native)
 SENTRY_CLI     ?= npx --yes @sentry/cli@latest
-sentry-symbols: symbols
+sentry-symbols: symbols symbols-libs
 	@test -n "$${SENTRY_AUTH_TOKEN:-}" || { \
 	  echo "sentry-symbols: SENTRY_AUTH_TOKEN is required" >&2; exit 1; }
-	@SENTRY_ORG='$(SENTRY_ORG)' SENTRY_PROJECT='$(SENTRY_PROJECT)' \
-	  $(SENTRY_CLI) debug-files check pkg/plxnative.debug
+	@# `debug-files check` on every file, requiring `debug` or `symtab` features (not merely a zero exit).
+	@SENTRY_ORG='$(SENTRY_ORG)' SENTRY_PROJECT='$(SENTRY_PROJECT)' SENTRY_CLI='$(SENTRY_CLI)' \
+	  python3 ci/check-debug-files.py pkg/plxnative.debug $(SO_SYMBOLS)
 	@SENTRY_ORG='$(SENTRY_ORG)' SENTRY_PROJECT='$(SENTRY_PROJECT)' \
 	  $(SENTRY_CLI) debug-files upload --include-sources pkg/plxnative.debug pkg/plxnative
+	@# No --include-sources for the libraries: their DWARF names third-party source files, not ours.
+	@SENTRY_ORG='$(SENTRY_ORG)' SENTRY_PROJECT='$(SENTRY_PROJECT)' \
+	  $(SENTRY_CLI) debug-files upload $(SO_SYMBOLS)
 
 ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
 	python3 ci/check-link-evidence.py pkg/plxnative pkg/plxnative-storage $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LIBASS_STAGED)
@@ -2286,5 +2319,5 @@ fetch-profile:
 	-$(SCP) tv:$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: libass libass-host screenshots screenshots-sim demo-library disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check check-unlocked check-ffmpeg lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux site-video-sim sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: libass libass-host screenshots screenshots-sim demo-library disk symbols symbols-libs sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check check-unlocked check-ffmpeg lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux site-video-sim sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

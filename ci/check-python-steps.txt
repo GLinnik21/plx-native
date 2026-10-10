@@ -248,3 +248,6 @@ python3 ci/check-list-caps.py
 python3 tests/test_link_conditioner.py
 # The conditioned paging test's analysis on synthetic logs (the run itself needs a window and minutes: not here).
 python3 tests/paging_link.py --selftest
+
+# ci/check-debug-files.py (the Sentry upload step's "debug-files check must show symbols" gate), exercised against a stub CLI.
+python3 ci/test_check_debug_files.py

@@ -239,7 +239,7 @@ jobs:
           PLX_POSTHOG_KEY_DEV: ${{ inputs.telemetry == 'development' && vars.PLX_POSTHOG_KEY_DEV || '' }}
         run: |
           make -j"$(nproc)"
-          make ipk symbols
+          make ipk symbols symbols-libs
           # Prove the flags actually took, rather than trusting that they did: the Makefile records
           # the configuration it built, and a stale/ignored RELEASE= is exactly the silent failure
           # the parse-time stamp exists to prevent.
@@ -253,6 +253,19 @@ jobs:
             || { echo "::error::SYMBOLS=1 did not take — pkg/.build-config says [$(cat pkg/.build-config)]"; exit 1; }
           test -s pkg/plxnative.debug \
             || { echo "::error::pkg/plxnative.debug is missing or empty"; exit 1; }
+          # Every bundled shared object has a symbol file, and nothing else is in the directory.
+          # `make symbols-libs` already refused a library without a build id or symbols; this is the
+          # count, so a library added to the package without being added to the target cannot ship
+          # unsymbolicated unnoticed. The `.link.*` files are link-evidence sidecars, not libraries.
+          for lib in pkg/lib*-plx.so.*; do
+            case "$lib" in *.link.*) continue ;; esac
+            test -s "pkg/symbols/$(basename "$lib").debug" \
+              || { echo "::error::no symbol file for the bundled $lib (make symbols-libs)"; exit 1; }
+          done
+          for dbg in pkg/symbols/*.debug; do
+            test -f "pkg/$(basename "$dbg" .debug)" \
+              || { echo "::error::$dbg is a symbol file for nothing that ships"; exit 1; }
+          done
           # The build id is what pairs the two. Assert it here rather than trusting the upload:
           # `sentry-cli` will happily accept a .debug whose id matches nothing that shipped.
           idof() { readelf -n "$1" | awk '/Build ID/{print $3}'; }
@@ -356,14 +369,23 @@ jobs:
           fi
           # `debug-files check` first: it is the step that says whether Symbolicator can use this
           # object at all, and its answer (`Arch: arm`, `Usable: yes`) is the one thing no vendor
-          # documentation states about armv7.
-          npx --yes @sentry/cli@3.7.0 debug-files check pkg/plxnative.debug
+          # documentation states about armv7. It runs on the app's `.debug` AND on every bundled
+          # library's (pkg/symbols/*.debug, from `make symbols-libs`), and ci/check-debug-files.py
+          # requires each to report `debug` or `symtab` features: the command exits 0 for a stripped
+          # object with nothing in it, and an upload of one is silent until a real crash fails to
+          # symbolicate. That check needs no token, so a pull request's dry run keeps it.
+          SENTRY_CLI="npx --yes @sentry/cli@3.7.0" \
+            python3 ci/check-debug-files.py pkg/plxnative.debug pkg/symbols/*.debug
           if [ "$UPLOAD" != true ]; then
             echo "Skipping the Sentry upload: upload-debug-files is '$UPLOAD' (a pull request's nightly dry run)."
             exit 0
           fi
           npx --yes @sentry/cli@3.7.0 debug-files upload \
               --include-sources pkg/plxnative.debug pkg/plxnative
+          # The bundled libraries: `sentry-crash` is deliberately NOT uploaded (a separate process
+          # that sends nothing, so no event frame lands in it). No `--include-sources`: the
+          # libraries' DWARF names third-party source files, not this repository's.
+          npx --yes @sentry/cli@3.7.0 debug-files upload pkg/symbols
 
       - name: ELF + packaging assertions
         # REQUIRE_PACKAGE: this step runs AFTER `make ipk`, so "nothing staged" here means the build
@@ -598,4 +620,15 @@ jobs:
             pkg/build-config.txt
             pkg/plxnative-source-*.tar.gz*
             pkg/source-rebuild.json
+          if-no-files-found: error
+
+      # The bundled libraries' symbol files, kept as a build artifact of their own: small (~0.1 MB
+      # each), so unlike pkg/plxnative.debug (75 MB, uploaded to Sentry in the step above and
+      # nowhere else) they cost nothing to keep, and a crash inside one can be re-symbolicated by
+      # hand from the build that shipped it. A SEPARATE artifact, because the one above becomes
+      # the release's `dist/` and these are not release assets.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.artifact }}-symbols
+          path: pkg/symbols/*.debug
           if-no-files-found: error

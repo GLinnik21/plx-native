@@ -125,6 +125,8 @@ vendor/vendor/
 # them, so a fresh clone rebuilds FFmpeg either way, and tracking them costs 2.1 MB per version
 # bump forever in a repo whose reproducibility rests on the pinned tarball.
 pkg/lib*-plx.so.*
+# ...and the `.debug` files `make symbols-libs` separates from them (symbols for the Sentry upload).
+pkg/symbols/
 pkg/libass-plx-host.so.0*
 pkg/libass-plx.0.dylib.*.new
 pkg/.ffabi-ok

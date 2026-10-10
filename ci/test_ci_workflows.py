@@ -92,9 +92,65 @@ class SentryUpload(unittest.TestCase):
         self.assertRegex(build, r"upload-debug-files:\n(?:        .*\n)*?        type: boolean\n        default: true\n")
         step = build[build.index("Upload debug files to Sentry"):build.index("ELF + packaging assertions")]
         self.assertIn("UPLOAD: ${{ inputs.upload-debug-files }}", step)
-        self.assertIn("debug-files check", step)
-        self.assertLess(step.index("debug-files check"), step.index('"$UPLOAD" != true'))
+        self.assertIn("ci/check-debug-files.py", step)
+        self.assertLess(step.index("ci/check-debug-files.py"), step.index('"$UPLOAD" != true'))
         self.assertLess(step.index('"$UPLOAD" != true'), step.index("debug-files upload"))
+
+
+class BundledLibrarySymbols(unittest.TestCase):
+    """A frame inside a bundled `.so` symbolicates only if its unstripped symbols were kept, carry the
+    shipped copy's build id, were checked to show symbols, and were uploaded. Every link in that chain
+    fails silently (the upload still succeeds), so each is pinned here."""
+
+    def step(self):
+        build = code("build-package.yml")
+        return build[build.index("Upload debug files to Sentry"):build.index("ELF + packaging assertions")]
+
+    def test_every_symbol_file_is_checked_for_features_before_the_token_guarded_upload(self):
+        step = self.step()
+        self.assertIn("python3 ci/check-debug-files.py pkg/plxnative.debug pkg/symbols/*.debug", step)
+        self.assertLess(step.index("ci/check-debug-files.py"), step.index('"$UPLOAD" != true'))
+        self.assertLess(step.index('"$UPLOAD" != true'), step.index("debug-files upload pkg/symbols"))
+
+    def test_libraries_upload_without_sources_and_sentry_crash_is_not_uploaded(self):
+        step = self.step()
+        self.assertNotIn("sentry-crash", step)
+        self.assertNotRegex(step, r"--include-sources[^\n]*pkg/symbols")
+        self.assertEqual(len(re.findall(r"debug-files upload", step)), 2)
+
+    def test_the_build_makes_them_and_the_build_asserts_one_per_shipped_library(self):
+        build = code("build-package.yml")
+        self.assertIn("make ipk symbols symbols-libs", build)
+        self.assertIn('pkg/symbols/$(basename "$lib").debug', build)
+
+    def test_the_symbol_files_are_kept_as_a_separate_build_artifact(self):
+        build = code("build-package.yml")
+        self.assertIn("name: ${{ inputs.artifact }}-symbols", build)
+        self.assertIn("path: pkg/symbols/*.debug", build)
+        # ...never inside the artifact that becomes the release's dist/.
+        main = build[build.index("name: ${{ inputs.artifact }}\n"):build.index("name: ${{ inputs.artifact }}-symbols")]
+        self.assertNotIn("pkg/symbols", main)
+
+    def test_the_cross_builds_give_the_libraries_a_build_id_and_ffmpeg_keeps_the_unstripped_copy(self):
+        ffmpeg = (ROOT / "ci/build-ffmpeg.sh").read_text()
+        # cross branch only: the HOST build links with Apple's ld, which has no --build-id
+        self.assertEqual(ffmpeg.count("--build-id=sha1"), 2)   # the comment names it once more
+        self.assertIn("--sysroot=\"$SYSROOT\" \\\n    --extra-ldflags='-Wl,--build-id=sha1'", ffmpeg)
+        # the copy is taken BEFORE the strip, from the link output, into a directory no lib glob reaches
+        keep = ffmpeg.index('cp "$elf" "$PREFIX/lib/unstripped/')
+        self.assertLess(keep, ffmpeg.index('"${CROSS}strip" --strip-unneeded "$target"'))
+        libass = (ROOT / "ci/build-libass.py").read_text()
+        self.assertIn("'-Wl,--build-id=sha1'", libass)
+        self.assertIn("if not host:", libass[libass.index("--version-script"):][:400])
+
+    def test_makefile_target_covers_ffmpeg_and_libass_from_their_unstripped_copies(self):
+        make = (ROOT / "Makefile").read_text()
+        self.assertIn("FFMPEG_UNSTRIPPED_DIR = $(FFMPEG_PREFIX)/lib/unstripped", make)
+        self.assertIn("LIBASS_UNSTRIPPED     = vendor/libass-prefix/lib/libass-plx.so.0", make)
+        self.assertIn("symbols-libs: $(SO_SYMBOLS)", make)
+        self.assertIn("sentry-symbols: symbols symbols-libs", make)
+        self.assertRegex(make, r"\.PHONY:[^\n]* symbols-libs ")
+        self.assertIn("pkg/symbols/", (ROOT / ".gitignore").read_text())
 
 
 class NightlyHomebrewRepository(unittest.TestCase):

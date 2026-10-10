@@ -269,6 +269,10 @@ def build_locked(host, darwin, target, prefix, work, sources):
         exports.write_text('{ global: plx_ass_*; local: *; };\n')
         command += ['-shared', '-Wl,-soname,' + name, '-Wl,--no-undefined',
                     '-Wl,--exclude-libs,ALL', '-Wl,--version-script=' + str(exports)]
+        if not host:
+            # A stable identity for the shipped (stripped) library, so the `.debug` that
+            # `make symbols-libs` extracts from the unstripped $prefix/lib copy can be paired with it.
+            command += ['-Wl,--build-id=sha1']
     run([*command, '-o', output], env=env)
     verify_library(output, darwin, shutil.which('readelf') if host else str(cross) + 'readelf')
     staged = ROOT / 'pkg' / name
