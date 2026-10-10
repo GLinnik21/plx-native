@@ -949,3 +949,20 @@ fn a_refused_way_back_read_is_repeated_while_focus_stands_at_the_leading_edge() 
     assert_eq!(d.focus(), Some(key), "and focus never moved");
     plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
+
+/// The focus read-out (`cdg`) names a Related card in head-then-listing order: the head keeps its
+/// index; a tail card sits at the head's length plus the tail position it was read at.
+#[test]
+fn related_cards_are_named_in_head_then_listing_order() {
+    let global = |d: &Detail, which, i| {
+        let keys = std::collections::HashMap::new();
+        plx_ui::cards::CardSource::<TestHost>::global(&cards::Cards::new(which, d, &keys, &keys), i)
+    };
+    let (opening, slid) = (with_tail(0), with_tail(12));
+    assert_eq!(global(&opening, cards::Which::Related, 2), 2, "the last head card");
+    assert_eq!(global(&opening, cards::Which::Related, 3), 3, "the first tail card of the opening window");
+    assert_eq!(global(&slid, cards::Which::Related, 2), 2, "the head does not move with the window");
+    assert_eq!(global(&slid, cards::Which::Related, 3), 15, "tail position 12 follows the 3-card head");
+    assert_eq!(global(&slid, cards::Which::Related, 26), 38);
+    assert_eq!(global(&slid, cards::Which::Cast, 26), 26, "other shelves hold their listing whole");
+}

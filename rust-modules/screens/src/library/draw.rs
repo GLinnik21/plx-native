@@ -297,6 +297,10 @@ impl HubSrc<'_> {
 
 impl<H: Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     fn len(&self) -> usize { self.elems.len() }
+    /// The card's place in the hub's listing (`positions` can skip what the window drops).
+    fn global(&self, i: usize) -> usize {
+        self.shelf.map_or(i, |shelf| shelf.positions.get(i).copied().unwrap_or(shelf.offset + i))
+    }
     fn elem(&self, i: usize) -> u32 { self.elems.get(i).copied().unwrap_or(0) }
     fn index_of(&self, e: &u32) -> Option<usize> { self.elems.iter().position(|elem| elem == e) }
     /// A card whose item the hub has not published draws nothing (its stop still registers).

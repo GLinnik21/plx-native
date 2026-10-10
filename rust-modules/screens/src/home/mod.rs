@@ -3064,6 +3064,11 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
         self.home.rows.get(self.row).map_or(0, |r| r.elems.len())
     }
 
+    /// The window's server offset plus the card's place in it.
+    fn global(&self, i: usize) -> usize {
+        self.home.hub(self.view, self.row).map_or(0, |hub| hub.offset) + i
+    }
+
     fn elem(&self, i: usize) -> u32 {
         self.home.rows.get(self.row).and_then(|r| r.elems.get(i)).copied().unwrap_or_default()
     }

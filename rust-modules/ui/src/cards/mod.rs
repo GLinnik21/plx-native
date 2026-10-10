@@ -152,6 +152,12 @@ pub trait CardSource<H: Host> {
     fn gap_before(&self, _i: usize) -> bool {
         false
     }
+    /// Card `i`'s position in the whole listing this source is a window of, whichever window it
+    /// holds now (a slid shelf's first card is not listing position 0). Only the focus read-out
+    /// (`card_probe`) asks; the default is a source that holds its listing whole.
+    fn global(&self, i: usize) -> usize {
+        i
+    }
     /// Whether a hold on card `i` is a [`CardEvent::Hold`].
     fn holdable(&self, _i: usize) -> bool {
         true

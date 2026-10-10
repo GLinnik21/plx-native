@@ -33,6 +33,7 @@ impl RowCards<'_> {
 
 impl<H: SearchLike> CardSource<H> for RowCards<'_> {
     fn len(&self) -> usize { self.elems.len().min(self.items.len()) }
+    fn global(&self, i: usize) -> usize { self.window.start + i }
     fn elem(&self, i: usize) -> u32 { self.elems[i] }
     fn index_of(&self, e: &u32) -> Option<usize> {
         self.elems.iter().position(|elem| elem == e).filter(|&i| i < self.items.len())
