@@ -76,9 +76,8 @@ pub(super) mod server_id {
     }
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<plx_plex::plex::ServerId, D::Error> {
         let n = u16::deserialize(d)?;
-        if usize::from(n) >= plx_plex::plex::MAX_SERVERS && n != u16::MAX {
-            return Err(serde::de::Error::custom("invalid server slot"));
-        }
+        // No range check: the registry issues every `u16` except the reserved UNSET, which is
+        // itself a valid recorded value (`ServerId::UNSET` round-trips as `u16::MAX`).
         Ok(plx_plex::plex::ServerId::from_raw(n))
     }
 }
@@ -148,11 +147,27 @@ mod tests {
             absent.as_object_mut().unwrap().remove(key);
             assert!(decode(absent, |_| None).is_err(), "missing {key} must not acquire a default");
         }
-        for (key, value) in [("version", json!(2)), ("sid", json!(100)), ("unexpected", json!(1))] {
+        // Every u16 is a slot number or the reserved UNSET, so a bad `sid` is a wrong TYPE, not a
+        // number past some ceiling.
+        for (key, value) in [("version", json!(2)), ("sid", json!("3")), ("unexpected", json!(1))] {
             let mut bad = failed.clone();
             bad[key] = value;
             assert!(decode(bad, |_| None).is_err());
         }
+    }
+
+    #[test]
+    fn a_server_id_past_the_old_sixteen_slot_table_round_trips() {
+        // Slot 40 is a server the registry issues once a household has signed out enough times;
+        // a recorded landing for it must decode, not be refused as an invalid slot.
+        let mut l = landing();
+        l.sid = plx_plex::plex::ServerId::from_raw(40);
+        l.build = None;
+        let encoded = encode(&l);
+        assert_eq!(encoded["sid"], json!(40));
+        let decoded = decode(encoded.clone(), |_| None).unwrap();
+        assert_eq!(decoded.sid.raw(), 40);
+        assert_eq!(encode(&decoded), encoded);
     }
 
     #[test]
