@@ -391,3 +391,27 @@ fn a_session_resolved_for_a_preview_never_reports_a_timeline() {
     reset_player_control_for_test(&ps);
     reset_session(&mut ps);
 }
+
+/// **A film pressed after a trailer is a film from the press on.** `resolved_as_preview` is fixed
+/// at a landing, so a film whose resolve never lands (a refused worker spawn, a superseded
+/// request) left the PREVIOUS trailer's flag standing: the failure read-out of the film was then
+/// reported as a preview, with the preview's origin, fingerprint and flags. The request itself
+/// retires the flag.
+#[test]
+fn a_film_request_retires_the_previous_trailers_preview_mark() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    resolve_as_preview_for_test(&mut ps);
+    assert!(preview_request(&ps), "the trailer's session is marked");
+
+    assert!(request_play(
+        &mut ps, &mut meta, ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "",
+    ));
+    assert!(!preview_request(&ps), "a film request is not a preview, whatever the last landing was");
+
+    cancel_play(&mut ps);
+    let _ = wait_resolve_workers_for_test(std::time::Duration::from_secs(10));
+    reset_player_control_for_test(&ps);
+    reset_session(&mut ps);
+}

@@ -7297,7 +7297,8 @@ pub fn clear_preview(ps: &mut PlaybackSession) {
 
 /// Was the installed session resolved for a hero preview? Unlike [`is_preview`], which the
 /// preview machinery clears as it retires the session, this is fixed at landing and only the next
-/// landing replaces it — so no teardown bookkeeping can turn a trailer into a playback.
+/// landing, or the next FILM request (`request_play_inner`), replaces it — so no teardown
+/// bookkeeping can turn a trailer into a playback, and a film that never lands is never told as one.
 ///
 /// **The one gate on every account write a session makes**: the timeline lease
 /// ([`begin_timeline_reporting`]) and the stop scrobble ([`scrobble_stop`]) both ask it, as do the
@@ -7480,6 +7481,15 @@ fn request_play_inner(
         s.play_verdict = None;
         s.jail_load_blocked = false;
         s.resolve_failed = false;
+        // A film request retires the previous trailer's mark: `resolved_as_preview` is otherwise
+        // replaced only by a LANDING, so a film whose resolve never lands (a refused worker spawn)
+        // would report its failure as that trailer's — its origin, fingerprint and flags. The
+        // trailer's engine is already gone: a Play is held until the preview machine releases it
+        // (`content::hold_feature`), so no preview write gate (`scrobble_stop`,
+        // `begin_timeline_reporting`) is still waiting on the mark. A preview request keeps it.
+        if !request.preview {
+            s.resolved_as_preview = false;
+        }
     } };
     // …and the outgoing item's track/marker/chapter store, for exactly the reason above: it stays
     // the PREVIOUS leaf's until this resolve lands. See `metadata::retire_playing_item`.
