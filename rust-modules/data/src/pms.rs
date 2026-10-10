@@ -460,6 +460,9 @@ struct HubRow {
     offset: usize,
     #[serde(default)]
     more: bool,
+    /// The row's landing count ([`Shelf::epoch`]); not recorded.
+    #[serde(skip)]
+    epoch: u32,
 }
 fn hubs(state: &PmsState) -> &Vec<HubRow> {
     &published_home(state).hubs
@@ -533,6 +536,9 @@ pub struct HubRef<'a> {
     /// Server offset of the current window, used to request an earlier page.
     pub offset: usize,
     pub more: bool,
+    /// Page reads landed on this row, one that changed nothing included: what tells the screen an
+    /// ask was answered when `items` and `more` did not move (`plx_ui::cards::CardSource::page_epoch`).
+    pub epoch: u32,
 }
 
 /// Provider identities are tagged: a listing key cannot collide with an identifier that
@@ -573,7 +579,7 @@ impl<'a> HubsView<'a> {
         Some(HubRef {
             identity: stable_hub_identity(row, &self.data.items),
             title: &row.title, source: &row.source, total: row.total,
-            offset: row.offset, more: row.more,
+            offset: row.offset, more: row.more, epoch: row.epoch,
             items: self.data.items.get(row.start..end)?,
         })
     }
@@ -826,6 +832,10 @@ struct Shelf {
     /// has not paged, so an older recording decodes unchanged.
     #[serde(default, skip_serializing_if = "paging::RowState::is_default")]
     row: paging::RowState,
+    /// How many page reads have landed on this row, a rescan that changed nothing included
+    /// ([`HubRef::epoch`]). Bookkeeping of this run: not recorded, not hashed.
+    #[serde(skip)]
+    epoch: u32,
 }
 
 impl Shelf {
@@ -986,7 +996,7 @@ fn fetch_row(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_e
     let state = current.map(|shelf| shelf.row.clone()).unwrap_or_default();
     let (rows, info, state) = paging::read_row(sid, &ask, current.map(shelf_window), state, minimum_end, list, many)?;
     let (positions, items) = rows.into_iter().unzip();
-    Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf {
+    Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf { epoch: 0,
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
         total: info.total, offset: info.offset, end: info.end, more: info.more, shown: 0, row: state,
     }] })
@@ -998,7 +1008,7 @@ fn fetch_kept(sid: ServerId, page: &PageQuery, shelf: &Shelf,
     many: &mut impl FnMut(&[String]) -> Option<plx_plex::plex::MediaContainer>) -> Option<SourceBuild> {
     let items = paging::kept_cards(sid, &shelf.row.kept, &page.hidden, many)?;
     let positions = (shelf.offset..shelf.offset + items.len()).collect();
-    Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf {
+    Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf { epoch: 0,
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
         total: shelf.total, offset: shelf.offset, end: shelf.end, more: shelf.more, shown: 0,
         row: paging::RowState { kept: Vec::new(), ..shelf.row.clone() },
@@ -1015,7 +1025,7 @@ fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimu
     let (rows, info) = paging::fetch_window(sid, &ask, current.as_ref().map(|(rows, info)| (rows.as_slice(), *info)),
         minimum_end, fetch)?;
     let (positions, items) = rows.into_iter().unzip();
-    Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf {
+    Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf { epoch: 0,
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
         total: info.total, offset: info.offset, end: info.end, more: info.more, shown: 0, row: Default::default(),
     }] })
@@ -1116,6 +1126,8 @@ fn land_page(source: &mut Src, page: &PageQuery, build: SourceBuild) -> bool {
     let Some(current) = source.last.as_mut().and_then(|build| build.shelves.iter_mut()
         .find(|shelf| shelf.is(&page.id, &page.key))) else { return false };
     let Some(mut next) = build.shelves.into_iter().find(|shelf| shelf.is(&page.id, &page.key)) else { return false };
+    // Every landing is an answer, whether or not it moved the window (see `Shelf::epoch`).
+    current.epoch = current.epoch.wrapping_add(1);
     if next.items.is_empty() {
         current.more = false;
         return true;
@@ -1520,7 +1532,7 @@ impl<'a> Projection<'a> {
             if !plx_plex::plex::is_pageable_hub_key(&hub.key) && (hub.more || hub.total() > hub.metadata.len()) {
                 if let Some(line) = paging::unpaged_line(&hub.hub_identifier, &hub.key) { plx_base::eventlog::log(&line); }
             }
-            window.push((Shelf {
+            window.push((Shelf { epoch: 0,
                 title: String::new(),
                 hub_id: hub.hub_identifier.clone(),
                 key: hub.key.clone(),
@@ -1728,7 +1740,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
             total: 0,
             start: 0,
             len: new_cat.len(),
-            offset: deck_offset, more: deck_more,
+            offset: deck_offset, more: deck_more, epoch: 0,
         });
     }
 
@@ -1766,7 +1778,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
                 total: sh.total,
                 start,
                 len: new_cat.len() - start,
-                offset: sh.offset, more: sh.more,
+                offset: sh.offset, more: sh.more, epoch: sh.epoch,
             });
         }
     }
@@ -2986,7 +2998,7 @@ fn build_test(n: usize) -> SourceBuild {
     SourceBuild {
         cw: Vec::new(),
         lane: Default::default(),
-        shelves: vec![Shelf {
+        shelves: vec![Shelf { epoch: 0,
             title: "Continue Watching".into(),
             hub_id: "home.continue".into(),
             key: String::new(),
@@ -3058,7 +3070,7 @@ pub fn seed_two_library_home_for_test(
     source.last = Some(SourceBuild {
         cw: Vec::new(),
         lane: Default::default(),
-        shelves: vec![Shelf {
+        shelves: vec![Shelf { epoch: 0,
             title: "Recent".into(),
             hub_id: "home.movies.recent".into(),
             key: String::new(),

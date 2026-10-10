@@ -77,8 +77,6 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         scroll_target: 0.0, episode_scroll: Spring::at(0.0), tab_scroll: Spring::at(0.0),
         episode_cells: episodes::Cells::new(),
             ep_want: Default::default(),
-            related_before: Default::default(),
-            related_before_out: Default::default(),
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: plx_ui::cards::Shelf::new(entry, &plx_ui::cards::RowStyle::HOME), collection: plx_ui::cards::Shelf::new(entry, &plx_ui::cards::RowStyle::HOME),
@@ -104,7 +102,7 @@ impl Mounter<TestHost> for Mount {
         Box::new(page)
     }
 }
-struct TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec<ContentArg>, asked: Vec<MetadataCmd> }
+struct TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec<ContentArg>, asked: Vec<MetadataCmd>, backs: u32 }
 impl Rig<TestHost> for TestRig {
     fn split(&mut self) -> Split<'_, TestHost> {
         Split { mounter: &mut self.mount, views: (), measure: &self.measure }
@@ -114,6 +112,7 @@ impl Rig<TestHost> for TestRig {
     fn app_fx(&mut self, _: MachineId, effect: AppFx, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {
         match effect {
             AppFx::Content(ContentReq::Push(arg)) => self.opened.push(arg),
+            AppFx::Content(ContentReq::Back) => self.backs += 1,
             AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(cmd)) => self.asked.push(cmd),
             _ => {}
         }
@@ -153,12 +152,22 @@ fn boot() -> (Dispatcher<TestHost>, TestRig) {
     boot_with(item("a", false))
 }
 fn boot_with(detail: Detail) -> (Dispatcher<TestHost>, TestRig) {
+    boot_over(detail, false)
+}
+/// [`boot_with`], the page pushed over a root page `base` when `under` is set (so Back can pop it).
+fn boot_over(detail: Detail, under: bool) -> (Dispatcher<TestHost>, TestRig) {
     test_store().run(MetadataCmd::Clear);
     plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(detail));
     let mut d = Dispatcher::new();
     d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
-    let mut rig = TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec::new(), asked: Vec::new() };
-    d.request(MachineId::Nav, NavOp::Root(Arg("a".into())));
+    let mut rig = TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec::new(), asked: Vec::new(), backs: 0 };
+    if under {
+        d.request(MachineId::Nav, NavOp::Root(Arg("base".into())));
+        frame(&mut d, &mut rig, 0);
+        d.request(MachineId::Nav, NavOp::Push(Arg("a".into())));
+    } else {
+        d.request(MachineId::Nav, NavOp::Root(Arg("a".into())));
+    }
     frame(&mut d, &mut rig, 0);
     d.store_changed(StoreId::Metadata.ord(), 1);
     frame(&mut d, &mut rig, 16);
@@ -583,8 +592,31 @@ fn a_reread_of_the_page_leaves_focus_on_the_same_related_card() {
 /// `answer` is the stand-in store's reply to a window ask (the window it reads, or `None` for a
 /// failed read), after the store's own refusal of an ask that names a window it has replaced.
 /// Returns the dispatcher, the cards focus rested on in order, and the window asks made.
-fn back_from_deep_in_the_related_row(answer: impl Fn(usize) -> Option<Detail>) -> (Dispatcher<TestHost>, Vec<String>, usize) {
-    let (mut d, mut rig) = boot_with(with_tail(72));
+fn back_from_deep_in_the_related_row(answer: impl FnMut(usize) -> Option<Detail>) -> (Dispatcher<TestHost>, Vec<String>, usize) {
+    back_from_deep_pressing(600, None, answer)
+}
+
+/// [`back_from_deep_in_the_related_row`] run for `frames` frames, with `press` (frame, key) pressed
+/// once on the way.
+fn back_from_deep_pressing(
+    frames: u32,
+    press: Option<(u32, plx_machine::machine::Key)>,
+    answer: impl FnMut(usize) -> Option<Detail>,
+) -> (Dispatcher<TestHost>, Vec<String>, usize) {
+    let (d, _, seated, asks) = back_from_deep_over(false, frames, press, answer);
+    (d, seated, asks)
+}
+
+/// [`back_from_deep_pressing`] with the page over a root page when `under` is set, handing back the
+/// rig as well so the run can go on.
+fn back_from_deep_over(
+    under: bool,
+    frames: u32,
+    press: Option<(u32, plx_machine::machine::Key)>,
+    mut answer: impl FnMut(usize) -> Option<Detail>,
+) -> (Dispatcher<TestHost>, TestRig, Vec<String>, usize) {
+    use plx_machine::machine::{Edge, InputEvent, InputKind, Source};
+    let (mut d, mut rig) = boot_over(with_tail(72), under);
     let key = FocusKey { entry: screen(&d).entry, elem: screen(&d).engine_key(related::elem(3 + 8).unwrap()).unwrap() };
     d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
     assert_eq!(related_card(&d, 0).as_deref(), Some("t80"));
@@ -608,9 +640,18 @@ fn back_from_deep_in_the_related_row(answer: impl Fn(usize) -> Option<Detail>) -
     // Pump until settled. Focus is on a card the user left, or on no card, on every frame: it is
     // never seated on a card that then changes under it.
     let (mut seated, mut asks) = (Vec::new(), 0);
-    for i in 0..600u32 {
+    for i in 0..frames {
         let ms = 64 + i * 16;
-        frame(&mut d, &mut rig, ms);
+        match press.filter(|(at, _)| *at == i) {
+            Some((_, key)) => {
+                let down = InputEvent { at: tick(ms), source: Source::Script, kind: InputKind::Key {
+                    key, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false } };
+                d.frame_with(&mut rig, tick(ms), vec![down], vec![], &mut NoTap, false);
+            }
+            None => frame(&mut d, &mut rig, ms),
+        }
+        // the application answers `ContentReq::Back` by popping the page
+        while std::mem::take(&mut rig.backs) > 0 { d.request(MachineId::Nav, NavOp::Pop); }
         for cmd in rig.asked.drain(..) {
             let MetadataCmd::SeekRelated { at, seen } = cmd else { continue };
             asks += 1;
@@ -627,7 +668,7 @@ fn back_from_deep_in_the_related_row(answer: impl Fn(usize) -> Option<Detail>) -
             if seated.last() != Some(&rk) { seated.push(rk); }
         }
     }
-    (d, seated, asks)
+    (d, rig, seated, asks)
 }
 
 /// The Related card `by` places from the one focus rests on, by ratingKey.
@@ -672,15 +713,75 @@ fn back_to_a_row_whose_card_left_the_listing_seats_the_nearest_place() {
     plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
-/// The read never answers: the ask is repeated a bounded number of times, and then the row stands
-/// at its head with focus on its first card, rather than holding focus on nothing for ever.
+/// The read never answers: the ask is repeated on a capped ladder for as long as the page is on
+/// screen, and focus is never moved to a card the user did not leave (not the row's first).
 #[test]
-fn back_to_a_row_whose_window_cannot_be_read_gives_up_on_the_head() {
+fn back_to_a_row_whose_window_cannot_be_read_keeps_asking_and_keeps_the_place() {
     let _guard = plx_base::testlock::serial();
-    let (d, seated, asks) = back_from_deep_in_the_related_row(|_| None);
-    assert_eq!(related_card(&d, 0).as_deref(), Some("h0"), "seated on {seated:?}");
-    assert_eq!(seated, vec!["h0".to_string()]);
-    assert_eq!(asks, usize::from(SEEK_TRIES), "the ask is repeated, then given up");
+    let (d, seated, asks) = back_from_deep_pressing(60 * 120, None, |_| None);
+    assert!(seated.is_empty(), "no card took the focus: {seated:?}");
+    assert!(related_card(&d, 0).is_none(), "focus is still held, not seated on the head");
+    assert!(asks >= 10, "the ask keeps being repeated, {asks} asks in two minutes");
+    assert!(asks <= 14, "on a ladder, not every frame: {asks}");
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}
+
+/// The read fails for a while and then answers: the card the user left is seated, however late.
+#[test]
+fn back_to_a_row_whose_window_lands_after_many_failures_seats_the_card_left() {
+    let _guard = plx_base::testlock::serial();
+    let mut failures = 0;
+    let (d, seated, asks) = back_from_deep_pressing(60 * 60, None, |at| {
+        failures += 1;
+        if failures <= 7 { None } else { a_window_read_at(at) }
+    });
+    assert_eq!(related_card(&d, 0).as_deref(), Some("t80"), "seated on {seated:?}");
+    assert_eq!(seated, vec!["t80".to_string()], "no other card held focus on the way");
+    assert_eq!(asks, 8);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}
+
+/// During the hold the page is not stuck: a direction key leaves the held place for a card and ends
+/// the restore (no further asks).
+#[test]
+fn a_key_during_the_hold_for_an_unreadable_window_ends_the_restore() {
+    use plx_machine::machine::Key;
+    let _guard = plx_base::testlock::serial();
+    for key in [Key::Up, Key::Down, Key::Left, Key::Right] {
+        let (_, seated, asks) = back_from_deep_pressing(600, Some((100, key)), |_| None);
+        let before_press = back_from_deep_pressing(100, None, |_| None).2;
+        assert!(!seated.is_empty(), "{key:?}: the press seated focus somewhere: {seated:?}");
+        assert!(asks <= before_press + 1, "{key:?}: the restore ended with the press, {asks} asks vs {before_press}");
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+    }
+}
+
+/// Back during the hold for a window that never lands leaves the page like Back anywhere: it pops,
+/// nothing is left pending, and the page entered again later opens at its head instead of resuming
+/// a seek for the place the abandoned page was holding.
+#[test]
+fn back_during_the_hold_for_an_unreadable_window_leaves_the_page_and_leaves_no_seek_behind() {
+    use plx_machine::machine::Key;
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _, asks) = back_from_deep_over(true, 300, Some((100, Key::Back)), |_| None);
+    let before_press = back_from_deep_over(true, 100, None, |_| None).3;
+    assert_eq!(d.nav.top_page().unwrap().arg.0, "base", "Back asked to leave and the page went");
+    assert!(asks <= before_press + 1, "and the restore went with it: {asks} asks vs {before_press} by the press");
+    rig.asked.clear();
+    // the same item entered again: a fresh read holds only the head and focus has never been deep
+    let mut fresh = with_tail(0);
+    fresh.related.truncate(3);
+    (fresh.related_tail.positions, fresh.related_tail.offset, fresh.related_tail.end) = (Vec::new(), 0, 0);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(fresh));
+    d.request(MachineId::Nav, NavOp::Push(Arg("a".into())));
+    for i in 0..600 {
+        d.store_changed(StoreId::Metadata.ord(), 5000 + i * 16);
+        frame(&mut d, &mut rig, 5000 + i * 16);
+    }
+    assert_eq!(d.nav.top_page().unwrap().arg.0, "a");
+    let seeks = rig.asked.iter().filter(|cmd| matches!(cmd, MetadataCmd::SeekRelated { .. })).count();
+    assert_eq!(seeks, 0, "no seek for a place the page never held");
+    assert!(related_card(&d, 0).is_none_or(|rk| rk.starts_with('h')), "focus is not held for a tail place");
     plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
@@ -825,5 +926,26 @@ fn a_press_never_crosses_the_cards_between_the_head_and_a_window_that_slid_away(
     land(&mut d, &mut rig, with_tail(0), 400);
     assert!(matches!(step(&d, key_at(&d, 2), Dir::Right), Step::Move(to) if to == key_at(&d, 3)), "h2 is next to t0");
     assert!(matches!(step(&d, key_at(&d, 3), Dir::Left), Step::Move(to) if to == key_at(&d, 2)));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}
+
+/// Walking back toward the head of a slid window after the way-back read failed or was refused is
+/// not a dead end: with no key pressed the ask is repeated on the shelf's ladder while focus stands
+/// at the leading edge, and stops once the window lands (or focus has left).
+#[test]
+fn a_refused_way_back_read_is_repeated_while_focus_stands_at_the_leading_edge() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig) = boot_with(with_tail(12));
+    let key = FocusKey { entry: screen(&d).entry, elem: screen(&d).engine_key(related::elem(3 + 1).unwrap()).unwrap() };
+    d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
+    rig.asked.clear();
+    let mut asks = 0;
+    for i in 0..60 * 60u32 {
+        frame(&mut d, &mut rig, 100 + i * 16);
+        asks += rig.asked.drain(..).filter(|cmd| matches!(cmd, MetadataCmd::WantRelated { before: true, .. })).count();
+    }
+    assert!(asks >= 8, "the unanswered way-back ask is repeated, {asks} asks in a minute");
+    assert!(asks <= 12, "on a ladder, not every frame: {asks}");
+    assert_eq!(d.focus(), Some(key), "and focus never moved");
     plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }

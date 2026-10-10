@@ -120,6 +120,13 @@ pub trait CardSource<H: Host> {
     fn loaded(&self, _i: usize) -> bool {
         true
     }
+    /// Whether card `i`'s content is still to be read: its page has not landed, was evicted or
+    /// failed. A [`Grid`] asks again for a card in view that is (see [`CardEvent::Want`]); it
+    /// differs from `!loaded(i)` only for a source that paints an unread slot as a placeholder
+    /// rather than skipping it.
+    fn unread(&self, i: usize) -> bool {
+        !self.loaded(i)
+    }
     /// The card the ENGINE's focused element `e` is shown on, for the pop, the caption and the
     /// opener redraw: [`index_of`](Self::index_of) unless the screen paints a different focus
     /// than the engine holds (Home's hero dive keeps the card it came from lifted until the
@@ -152,6 +159,15 @@ pub trait CardSource<H: Host> {
     /// Whether the store has more cards beyond `len()`; only then are [`CardEvent::Want`]s emitted.
     fn more(&self) -> bool {
         false
+    }
+    /// How many page reads have LANDED for this row, a failed one not counting. A landing can change
+    /// nothing the shelf sees (a row that rescans its listing for keys it already knew leaves
+    /// `(len, end)` as it was), and the shelf must not read that as an ask nobody answered: when
+    /// this moves, the ask that was out is answered, the repeat ladder starts over and the next ask
+    /// goes out at once. Defaults to a count that never moves (a source whose landings always change
+    /// its length).
+    fn page_epoch(&self) -> u32 {
+        0
     }
 }
 
@@ -273,7 +289,7 @@ const RETRY_LADDER_S: [f32; 8] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 30.0];
 /// own `Tick.ms`, differenced with `wrapping_sub` the way `motion::Phase` does, so it holds no
 /// per-frame delta and reads no clock.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Retry {
+pub struct Retry {
     /// `Tick.ms` of the latest tick.
     now: u32,
     /// `Tick.ms` the latest ask went out at.
@@ -284,31 +300,31 @@ pub(crate) struct Retry {
 }
 
 impl Retry {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self { now: 0, at: 0, n: 0, fresh: false }
     }
 
-    pub(crate) fn tick(&mut self, ms: u32) {
+    pub fn tick(&mut self, ms: u32) {
         self.now = ms;
     }
 
     /// Whether the ask out has gone unanswered for this rung of the ladder.
-    pub(crate) fn due(&self) -> bool {
+    pub fn due(&self) -> bool {
         let rung = RETRY_LADDER_S[usize::from(self.n).min(RETRY_LADDER_S.len() - 1)];
         self.now.wrapping_sub(self.at) as f32 >= rung * 1000.0
     }
 
-    pub(crate) fn mark_fresh(&mut self) {
+    pub fn mark_fresh(&mut self) {
         self.fresh = true;
     }
 
     /// An ask went out: a new one starts the ladder over, a repeat climbs a rung.
-    pub(crate) fn sent(&mut self) {
+    pub fn sent(&mut self) {
         self.n = if std::mem::take(&mut self.fresh) { 0 } else { self.n.saturating_add(1) };
         self.at = self.now;
     }
 
-    pub(crate) fn reset(&mut self) {
+    pub fn reset(&mut self) {
         *self = Self::new();
     }
 }

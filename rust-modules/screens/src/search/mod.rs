@@ -453,10 +453,11 @@ impl SearchScreen {
             if self.page_sent[slot].is_some_and(|(start, _, len)| (start, len) != (offset, held)) { self.page_sent[slot] = None; }
             if let Some(edge) = edge {
                 let ask = (offset, edge == PageEdge::Before, held);
-                if self.page_sent[slot] != Some(ask) {
-                    self.page_sent[slot] = Some(ask);
-                    self.store(SearchCmd::Page { kind: self.rows[row].kind, before: ask.1, seen: (offset, held) }, fx);
-                }
+                // Every ask the shelf emits goes to the store, a repeat of the one before included:
+                // the shelf already pays for each with its ladder, and the store takes an identical
+                // ask idempotently, so one it refused for a reason that passes is taken by the next.
+                self.page_sent[slot] = Some(ask);
+                self.store(SearchCmd::Page { kind: self.rows[row].kind, before: ask.1, seen: (offset, held) }, fx);
             }
         }
     }
@@ -566,7 +567,7 @@ impl SearchScreen {
         let model = self.rows.get(row)?;
         let shelf = view.shelves().get(row)?;
         Some(RowCards { kind: model.kind, elems: &model.elems, items: &shelf.items,
-            sources: view.scope().sources(), window: shelf.window })
+            sources: view.scope().sources(), window: shelf.window, epoch: shelf.epoch })
     }
     fn tick<H: SearchLike>(&mut self, tick: plx_machine::machine::Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         fx.push(Fx::App(AppFx::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery)));

@@ -154,6 +154,48 @@ fn a_rescan_through_more_than_a_window_of_known_keys_does_not_end_the_row() {
     assert!(!hubs.committed[0].more);
 }
 
+/// The shelf's repeat ladder reads a landing that moved nothing it sees as an ask nobody answered
+/// unless the row says a page landed: the count moves on every landing, fruitful or not, and not on
+/// a failure, and the 1000-item row with 600 known keys ends after one ask per landing.
+#[test]
+fn every_landing_on_a_section_row_moves_its_epoch_and_a_failure_does_not_and_the_walk_ends() {
+    let (len, known) = (1000, 600);
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut hubs = published(&one_row(&(0..12).collect::<Vec<_>>(), len));
+    let shelf = &mut Arc::make_mut(&mut hubs.committed)[0];
+    let window: Vec<usize> = (known - 12..known).collect();
+    shelf.items = window.iter().map(|k| PmsMovie { rk: k.to_string(), sid: sid(), ..Default::default() }).collect();
+    shelf.positions = window.clone();
+    (shelf.offset, shelf.end, shelf.more) = (known - 12, known, true);
+    shelf.row.ledger = Some(paging::Ledger { keys: (0..known).map(|k| paging::LedgerKey::new(&k.to_string())).collect(),
+        active: true, next: 0, rescans: 1, ..Default::default() });
+    let epoch = |hubs: &SecHubs| hubs.committed[0].epoch;
+    assert!(hubs.want_page(hubs.revision, ID, KEY, false));
+    let ask = hubs.next_ask().unwrap();
+    let before = epoch(&hubs);
+    step(&mut hubs, &ask, |_, _| None);
+    assert_eq!(epoch(&hubs), before, "a failure is not a landing");
+    let (mut asks, mut fruitless) = (0, 0);
+    // the failed ask stands and the store's backoff gives it back; after that, one ask per landing
+    for _ in 0..100_000 { if hubs.next_ask().is_some() { break; } hubs.tick(); }
+    loop {
+        let ask = match hubs.next_ask() {
+            Some(ask) => ask,
+            None if hubs.want_page(hubs.revision, ID, KEY, false) => hubs.next_ask().unwrap(),
+            None => break,
+        };
+        let (e, items, end) = (epoch(&hubs), keys(&hubs.committed[0]), hubs.committed[0].end);
+        step(&mut hubs, &ask, listing);
+        asks += 1;
+        assert_eq!(epoch(&hubs), e + 1, "every landing moves the count");
+        if keys(&hubs.committed[0]) == items && hubs.committed[0].end == end { fruitless += 1; }
+        assert!(asks < 400, "the walk must end");
+    }
+    assert!(!hubs.committed[0].more, "the row ended at the listing's end");
+    assert!(fruitless > 0, "the rescan has landings that move nothing the shelf sees");
+    assert!(fruitless < 100, "and they are bounded: {fruitless}");
+}
+
 #[test]
 fn a_row_with_a_key_the_pager_does_not_admit_keeps_its_preview() {
     let mc: Container = serde_json::from_value(serde_json::json!({"Hub": [{
@@ -356,6 +398,44 @@ fn a_failed_row_page_is_asked_for_again_without_a_new_ask_from_the_page() {
         assert_ne!(hubs.committed[0].offset, from, "and it lands");
         assert!(hubs.next_ask().is_none(), "a landed page is not asked for again");
     }
+}
+
+/// The shelf repeats an ask nobody answered, so the store sees the same ask again and again: one
+/// the store already holds (waiting, in flight, or backing off after a failure) is neither a second
+/// read nor a restart of its backoff; one it refused for naming a window that has since been
+/// replaced is taken when the shelf sends it again from the window that stands.
+#[test]
+fn a_repeated_ask_is_idempotent_and_one_refused_for_a_replaced_window_is_taken_when_resent() {
+    let len = 500;
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut hubs = published(&one_row(&(0..12).collect::<Vec<_>>(), len));
+    let window = keys(&hubs.committed[0]);
+    let revision = hubs.revision;
+    assert!(hubs.want_page(revision, ID, KEY, false));
+    let ask = hubs.next_ask().unwrap();
+    hubs.inflight = Some((ask.clone(), false));
+    for _ in 0..5 {
+        assert!(!hubs.want_page(revision, ID, KEY, false), "the same ask while its read is out is not a second ask");
+        assert_eq!((hubs.inflight.clone(), hubs.next_ask()), (Some((ask.clone(), false)), Some(ask.clone())));
+    }
+    assert!(step(&mut hubs, &ask, |_, _| None) || hubs.ask.is_some(), "a failed read keeps the ask");
+    let backoff = hubs.ask_retry_left;
+    assert!(backoff > 0, "and arms its backoff");
+    assert!(!hubs.want_page(revision, ID, KEY, false), "a repeat while it backs off is not a new ask");
+    assert_eq!(hubs.ask_retry_left, backoff, "and does not restart the backoff");
+    assert_eq!(keys(&hubs.committed[0]), window, "nothing moved");
+    // the ask was computed from a window a landing has since replaced: refused, nothing held
+    hubs.cancel_page(ID, KEY);
+    hubs.revised();
+    assert!(!hubs.want_page(revision, ID, KEY, false), "the old revision is refused");
+    assert!(hubs.next_ask().is_none(), "and leaves nothing behind");
+    // the publication re-arms the shelf, which sends it again from the window that stands
+    assert!(hubs.want_page(hubs.revision, ID, KEY, false), "the same ask, current this time, is taken");
+    let ask = hubs.next_ask().unwrap();
+    hubs.inflight = Some((ask.clone(), false));
+    assert!(step(&mut hubs, &ask, listing));
+    assert_ne!(keys(&hubs.committed[0]), window);
+    assert!(hubs.next_ask().is_none(), "answered once");
 }
 
 /// Reach survives the guard: when every landing meets a stale ask (the worst frame order), the

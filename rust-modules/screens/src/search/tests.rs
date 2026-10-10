@@ -57,7 +57,7 @@ fn movie(rk: &str) -> Item {
 
 /// A shelf of `n` synthetic items, addressed so two shelves never share a result identity.
 fn shelf(kind: Kind, tag: &str, n: usize) -> Shelf {
-    Shelf { window: Default::default(), kind, items: (0..n).map(|i| movie(&format!("{tag}-{i}"))).collect() }
+    Shelf { epoch: 0, window: Default::default(), kind, items: (0..n).map(|i| movie(&format!("{tag}-{i}"))).collect() }
 }
 
 struct Fixture {
@@ -822,8 +822,8 @@ fn shared_shelf(fixture: &mut Fixture) -> [plx_plex::plex::ServerId; 3] {
     let item = |sid| Item::Media(plx_data::pms::PmsMovie { sid, rk: format!("annotated-{sid:?}"),
         title: "Synthetic result".into(), ..Default::default() });
     fixture.query("annotated").shelves(vec![
-        Shelf { window: Default::default(), kind: Kind::Movie, items: vec![item(own), item(a), item(b)] },
-        Shelf { window: Default::default(), kind: Kind::Show, items: vec![item(own)] }]);
+        Shelf { epoch: 0, window: Default::default(), kind: Kind::Movie, items: vec![item(own), item(a), item(b)] },
+        Shelf { epoch: 0, window: Default::default(), kind: Kind::Show, items: vec![item(own)] }]);
     let handles: Vec<&str> = fixture.search.view().scope().sources().iter()
         .map(|source| source.handle.as_str()).collect();
     assert_eq!(handles, ["", "friend", "other"], "the fixture's own roster projection");
@@ -1333,7 +1333,7 @@ fn the_hold_hint_does_not_stand_on_a_collection_hit() {
             kind: plx_data::pms::KIND_COLLECTION, ..Default::default() },
         tag: i,
     })).collect();
-    fixture.query("hint").shelves(vec![Shelf { window: Default::default(), kind: Kind::Collection, items: hits }]);
+    fixture.query("hint").shelves(vec![Shelf { epoch: 0, window: Default::default(), kind: Kind::Collection, items: hits }]);
     let mut screen = fixture.screen();
     let card = Some(screen.key(screen.rows[0].elems[1]));
     deliver(&mut screen, &fixture, card, ScreenEvent::FocusMoved { from: None, to: card.unwrap(), by: By::Dir });
@@ -1400,16 +1400,44 @@ fn a_row_with_hits_past_its_window_asks_for_the_next_one_and_keeps_the_focused_c
     // near the edge: asked, once
     let focus = screen.key(screen.rows[0].elems[22]);
     deliver(&mut screen, &fixture, Some(focus), ScreenEvent::FocusMoved { from: Some(mid), to: focus, by: By::Dir });
-    let asked: usize = (200..300).map(|at| pages(&deliver(&mut screen, &fixture, Some(focus), ScreenEvent::Tick(tick(at))).1)).sum();
-    assert_eq!(asked, 1, "the trailing edge asks once per window");
+    let asked: usize = (200..210).map(|at| pages(&deliver(&mut screen, &fixture, Some(focus), ScreenEvent::Tick(tick(at))).1)).sum();
+    assert_eq!(asked, 1, "the trailing edge asks once, and repeats only when the ladder says so");
     // the store slides half a window on: the focused card is the same element, seated earlier
-    let mut next = Shelf { window: window(12, true, true), kind: Kind::Movie,
+    let mut next = Shelf { epoch: 1, window: window(12, true, true), kind: Kind::Movie,
         items: (12..36).map(|i| movie(&format!("m-{i}"))).collect() };
     next.window.after = false;
     fixture.shelves(vec![next]);
     deliver(&mut screen, &fixture, Some(focus), ScreenEvent::Tick(tick(400)));
     assert_eq!(screen.rows[0].elems.get(10).copied(), Some(focus.elem), "m-22 keeps its identity at its new place");
     assert_eq!(screen.rows[0].elems.len(), 24);
+}
+
+/// The shelf repeats an ask nobody answered, and the page passes the repeat on to the store (which
+/// takes an identical ask idempotently): an ask the store refused for a reason that passes is
+/// taken by a later one. A slide that committed and left the window as the page saw it still
+/// answers the ask: the next goes out at once, without waiting out a rung.
+#[test]
+fn a_search_row_repeats_an_unanswered_ask_and_asks_again_at_once_after_a_landing() {
+    let _serial = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    let mut first = shelf(Kind::Movie, "m", 24);
+    first.window = plx_data::search::Window { start: 0, before: false, after: true };
+    fixture.query("slide").shelves(vec![first.clone()]);
+    let mut screen = fixture.screen();
+    let pages = |out: &[Stamped<HostFixture>]| out.iter().filter(|e| matches!(&e.fx, Fx::App(AppFx::Store(
+        StoreId::Search, StoreCmd::Search(SearchCmd::Page { kind: Kind::Movie, before: false, .. }))))).count();
+    let mid = screen.key(screen.rows[0].elems[3]);
+    deliver(&mut screen, &fixture, Some(mid), ScreenEvent::FocusMoved { from: None, to: mid, by: By::Dir });
+    let focus = screen.key(screen.rows[0].elems[22]);
+    deliver(&mut screen, &fixture, Some(focus), ScreenEvent::FocusMoved { from: Some(mid), to: focus, by: By::Dir });
+    let ask = |screen: &mut SearchScreen, fixture: &Fixture, from: u32, to: u32|
+        (from..to).map(|at| pages(&deliver(screen, fixture, Some(focus), ScreenEvent::Tick(tick(at))).1)).sum::<usize>();
+    assert_eq!(ask(&mut screen, &fixture, 200, 210), 1, "asked once, then the first rung is not yet due");
+    assert!(ask(&mut screen, &fixture, 210, 300) >= 2, "an ask nobody answered goes out again on the ladder");
+    // a slide committed that left the window where the page saw it: only the epoch moved
+    first.epoch = 1;
+    fixture.shelves(vec![first]);
+    assert_eq!(ask(&mut screen, &fixture, 300, 302), 1, "answered: the next ask goes out at once");
 }
 
 /// The slide a row asked for is withdrawn once focus has left the trailing edge's zone, so the
@@ -1442,7 +1470,7 @@ fn a_row_withdraws_its_slide_when_focus_walks_back_from_the_edge() {
     let (edge, totals) = walk(&mut screen, 22, None);
     assert_eq!(totals, (1, 0), "asked once at the edge");
     let (inside, totals) = walk(&mut screen, 18, Some(edge));
-    assert_eq!(totals, (0, 0), "the zone still holds focus");
+    assert_eq!(totals.1, 0, "the zone still holds focus: nothing is withdrawn");
     let (_, totals) = walk(&mut screen, 17, Some(inside));
     assert_eq!(totals, (0, 1), "the first card out of the zone withdraws the slide");
 }
@@ -1462,6 +1490,7 @@ fn no_landing_on_a_search_row_ever_moves_the_card_under_the_focus() {
     let _serial = plx_base::testlock::serial();
     const TOTAL: usize = 24 + 12 * 8;
     let publication = |lo: usize, held: usize| Shelf {
+        epoch: 0,
         window: plx_data::search::Window { start: lo, before: lo > 0, after: lo + held < TOTAL },
         kind: Kind::Movie,
         items: (lo..lo + held).map(|i| movie(&format!("m-{i}"))).collect(),

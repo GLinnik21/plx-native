@@ -356,3 +356,26 @@ fn a_two_server_deck_reads_through_the_workers_to_its_end_and_back() {
     assert_eq!(hubs(&owner.state)[0].offset, 0);
     plx_plex::plex::reset_servers_for_test();
 }
+
+/// The shelf takes an ask as answered when the store publishes, and Home resets the deck row's
+/// asks on every Hubs notice, so the deck needs no landing count of its own (`HubRef::epoch` stays
+/// 0 for it): every landing of a deck read, and a read that failed and let the deck move without
+/// its server, commits a publication.
+#[test]
+fn every_landing_of_a_deck_read_publishes_so_the_row_needs_no_epoch_of_its_own() {
+    let _guard = plx_base::testlock::serial();
+    let a = Listing::new(0, (0..40).map(|i| 9000 - i * 20));
+    let b = Listing::new(1, (0..30).map(|i| 8990 - i * 20));
+    let listings = [&a, &b];
+    let mut owner = deck_owner(&listings);
+    let mut moves = 0;
+    while hubs(&owner.state)[0].more && moves < 30 {
+        let (gen, fail) = (owner.state.catalog_gen, (moves % 4 == 3).then_some(1));
+        move_deck(&mut owner, &listings, false, fail);
+        assert_ne!(owner.state.catalog_gen, gen, "move {moves} (failed server: {fail:?}) published");
+        assert_eq!(hubs(&owner.state)[0].epoch, 0, "and the deck row counts nothing itself");
+        moves += 1;
+    }
+    assert!(moves >= 4, "the walk took {moves} moves");
+    plx_plex::plex::reset_servers_for_test();
+}

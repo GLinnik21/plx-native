@@ -60,6 +60,11 @@ pub struct Shelf {
     in_flight: Option<PageEdge>,
     /// When the ask out is repeated if nothing answered it ([`Retry`]).
     retry: Retry,
+    /// The source's landing count when the shelf last looked ([`CardSource::page_epoch`]).
+    epoch: u32,
+    /// Cards at the row's start that are not part of the window (a pinned head the window's offset
+    /// does not count): the leading edge's zone starts after them ([`Shelf::set_head`]).
+    head: usize,
     /// The element the last tick had focused (`pool::key`), in the cell the row recorded: what
     /// tells a landing that moved the cards from a focus that moved over them.
     anchor: Option<(usize, u64)>,
@@ -99,7 +104,7 @@ struct WalkKey {
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
-        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, in_flight: None, retry: Retry::new(), anchor: None,
+        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, in_flight: None, retry: Retry::new(), epoch: 0, head: 0, anchor: None,
             margin: 0.0, dormant: false, slept: false, pool: RowPool::new(),
             warm: Warm { last: None, forward: true, walk: None } }
     }
@@ -150,6 +155,7 @@ impl Shelf {
         match ev {
             ScreenEvent::Tick(t) => {
                 self.retry.tick(t.ms);
+                self.observe_landing(src);
                 self.tick(t.dt(), cx, src);
                 self.warm_ahead(cx, src);
                 self.want(cx, src)
@@ -296,12 +302,31 @@ impl Shelf {
         self.retry.reset();
     }
 
+    /// A page landed for the row since the last look, whatever it changed: the ask that was out is
+    /// answered, so the next one goes out at once and the ladder starts over. Without this a landing
+    /// that moved nothing the shelf sees (a rescan of known keys) would wait out a rung of the ladder
+    /// as if the store had ignored it. Each landing admits one ask, so the pace is the store's own.
+    fn observe_landing<H: Host, S: CardSource<H>>(&mut self, src: &S) {
+        let epoch = src.page_epoch();
+        if epoch != self.epoch {
+            self.epoch = epoch;
+            self.asked = None;
+            self.asked_before = None;
+        }
+    }
+
     /// The owner withdrew the ask itself (it left the row): there is nothing for
     /// [`page_cancel`](Self::page_cancel) to withdraw. A landing does not call this: the ask it
     /// answered is simply no longer in the store, and a late cancel for it is a no-op there.
     pub fn drop_page_flight(&mut self) {
         self.in_flight = None;
         self.retry.reset();
+    }
+
+    /// The row leads with `head` cards that no window slides over (Detail's Related head): the leading
+    /// edge's zone is the first [`PAGE_EDGE_CARDS`] cards after them, and focus on them counts too.
+    pub fn set_head(&mut self, head: usize) {
+        self.head = head;
     }
 
     /// Request an earlier window while its leading edge remains active: once per window, and again
@@ -335,12 +360,13 @@ impl Shelf {
         offset: usize,
         active: bool,
     ) -> Option<PageEdge> {
+        self.observe_landing(src);
         let focus = self.engine_focus(cx, src);
-        let before = Self::near(PageEdge::Before, focus, src.len(), offset);
+        let before = self.near(PageEdge::Before, focus, src.len(), offset);
         let edge = if self.want_before(offset, active && before) {
             Some(PageEdge::Before)
         } else {
-            let after = Self::near(PageEdge::After, focus, src.len(), offset);
+            let after = self.near(PageEdge::After, focus, src.len(), offset);
             (active && wanted && after && !before).then_some(PageEdge::After)
         };
         if edge.is_some() {
@@ -357,9 +383,9 @@ impl Shelf {
     }
 
     /// Whether focus index `focus` is inside the zone of `edge` that asks for a page there.
-    fn near(edge: PageEdge, focus: Option<usize>, len: usize, offset: usize) -> bool {
+    fn near(&self, edge: PageEdge, focus: Option<usize>, len: usize, offset: usize) -> bool {
         match edge {
-            PageEdge::Before => offset > 0 && focus.is_some_and(|i| i < PAGE_EDGE_CARDS),
+            PageEdge::Before => offset > 0 && focus.is_some_and(|i| i < self.head.saturating_add(PAGE_EDGE_CARDS)),
             PageEdge::After => focus.is_some_and(|i| i.saturating_add(PAGE_EDGE_CARDS) >= len),
         }
     }
@@ -379,7 +405,7 @@ impl Shelf {
         -> Option<PageEdge> {
         let edge = self.in_flight?;
         let focus = self.engine_focus(cx, src);
-        if active && Self::near(edge, focus, src.len(), offset) { return None; }
+        if active && self.near(edge, focus, src.len(), offset) { return None; }
         self.reset_page_requests();
         self.in_flight = None;
         Some(edge)

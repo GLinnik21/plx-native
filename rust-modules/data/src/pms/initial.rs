@@ -158,7 +158,7 @@ impl Initial {
         movies(items, w);
         w.u64(hubs.len() as u64);
         for h in hubs {
-            let HubRow { title, hub_id, key, source, total, start, len, offset, more } = h;
+            let HubRow { title, hub_id, key, source, total, start, len, offset, more, epoch: _ } = h;
             for text in [title, hub_id, key, source] { w.text(text); }
             w.u64(*total as u64); w.u64(*start as u64); w.u64(*len as u64); w.u64(*offset as u64); w.boolean(*more);
         }
@@ -175,7 +175,7 @@ fn source_build(b: &SourceBuild, w: &mut impl Sink) {
     for shelf in shelves {
         // `row` is paging state a row only has after a user asked for more; a boot capture has none,
         // so the canonical encoding (and every recorded hash) stays what it was.
-        let Shelf { title, hub_id, key, items, positions, total, offset, end, more, shown: _, row: _ } = shelf;
+        let Shelf { title, hub_id, key, items, positions, total, offset, end, more, shown: _, row: _, epoch: _ } = shelf;
         for text in [title, hub_id, key] { w.text(text); }
         movies(items, w);
         w.u64(positions.len() as u64); for position in positions { w.u64(*position as u64); }

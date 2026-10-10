@@ -341,6 +341,10 @@ pub struct Shelf {
     pub kind: Kind,
     pub items: Vec<Item>,
     pub window: Window,
+    /// How many slides of this row have committed, one that left `window` and `items` as they were
+    /// included (`plx_ui::cards::CardSource::page_epoch`): what tells the shelf an ask was
+    /// answered when the window it sees did not move. A failed read does not count.
+    pub epoch: u32,
 }
 
 /// Where a shelf's cards sit in the row's hits, for a screen that pages the row ([`Window`]).
@@ -478,6 +482,8 @@ struct Win {
     /// The first depth of the committed window.
     lo: usize,
     pending: Option<Pending>,
+    /// Slides committed on this row since the query began ([`Shelf::epoch`]).
+    committed: u32,
 }
 
 /// A slide waiting for the sources that must read before the merged row can move.
@@ -1229,7 +1235,8 @@ fn rebuild(state: &mut SearchState) {
     let live = slots();
     let sources = live_sources(state, &live);
     let los: [usize; NKIND] = std::array::from_fn(|k| state.wins[k].lo);
-    let shelves = merge_refs(&sources, &favs(state), &los);
+    let epochs: [u32; NKIND] = std::array::from_fn(|k| state.wins[k].committed);
+    let shelves = merge_refs(&sources, &favs(state), &los, &epochs);
     let items: usize = shelves.iter().map(|s| s.items.len()).sum();
     plx_base::eventlog::log(&format!(
         "search: q[{}ch] shelves={} items={}",
@@ -1258,7 +1265,7 @@ fn rebuild(state: &mut SearchState) {
 /// reached. The window bounds what is DRAWN; it must not bound what is COUNTED.
 fn merge(sources: &[Source], favs: &[(ServerId, i64, bool)]) -> Vec<Shelf> {
     let sources: Vec<&Source> = sources.iter().collect();
-    merge_refs(&sources, favs, &[0; NKIND])
+    merge_refs(&sources, favs, &[0; NKIND], &[0; NKIND])
 }
 
 /// One source's hit at depth `d` of kind `k`: from its lane, or from `items` for a source built
@@ -1289,7 +1296,7 @@ fn window_of<'a>(sources: &[&'a Source], k: usize, lo: usize) -> (std::ops::Rang
     (lo..lo + span_for(n), live)
 }
 
-fn merge_refs(sources: &[&Source], favs: &[(ServerId, i64, bool)], los: &[usize; NKIND]) -> Vec<Shelf> {
+fn merge_refs(sources: &[&Source], favs: &[(ServerId, i64, bool)], los: &[usize; NKIND], epochs: &[u32; NKIND]) -> Vec<Shelf> {
     let mut out = Vec::new();
     for (k, kind) in KINDS.iter().enumerate() {
         let (depths, live) = window_of(sources, k, los[k]);
@@ -1335,7 +1342,7 @@ fn merge_refs(sources: &[&Source], favs: &[(ServerId, i64, bool)], los: &[usize;
             after: live.iter().any(|s| has_past(s, k, depths.end)),
         };
         if !items.is_empty() {
-            out.push(Shelf { kind: *kind, items, window });
+            out.push(Shelf { kind: *kind, items, window, epoch: epochs[k] });
         }
     }
     out
@@ -1629,7 +1636,7 @@ fn commit_window(state: &mut SearchState, k: usize, lo: usize) {
         // any slide from here on
         s.skipped[k] = s.status == Status::Answered && s.tails[k].inited && s.tails[k].needs(&depths);
     }
-    state.wins[k] = Win { lo, pending: None };
+    state.wins[k] = Win { lo, pending: None, committed: state.wins[k].committed.wrapping_add(1) };
 }
 
 /// Slide kind `kind`'s window half a window forward or back. Every hit of the row is reached by

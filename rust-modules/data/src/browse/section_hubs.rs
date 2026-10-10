@@ -116,6 +116,9 @@ pub struct Shelf {
     pub shown: usize,
     /// How the window relates to its listing, and the ledger when the listing would not hold still.
     pub row: RowState,
+    /// How many page reads have landed on this row, one that moved nothing included
+    /// (`plx_ui::cards::CardSource::page_epoch`). Not recorded.
+    pub epoch: u32,
 }
 
 impl Shelf {
@@ -383,6 +386,7 @@ impl SecHubs {
             }
         } else if next.items.is_empty() || (next.more && next.offset == current.offset && next.end <= current.end) {
             let shelf = &mut Arc::make_mut(&mut self.committed)[at];
+            shelf.epoch = shelf.epoch.wrapping_add(1);
             // An ask that moved nothing but advanced the ledger's walk of the listing (every key it
             // read was already known) keeps that walk and the row open; the row ends when the ledger
             // says the listing ended. Any other row that moved nothing has nothing more to read.
@@ -403,6 +407,7 @@ impl SecHubs {
         shelf.total = next.total;
         shelf.row = next.row;
         shelf.shown = 0;
+        shelf.epoch = shelf.epoch.wrapping_add(1);
         self.revised();
         true
     }
@@ -1193,7 +1198,7 @@ fn parse_window(out: &mut Vec<Shelf>, hubs: &[plx_plex::plex::Hub], sid: ServerI
         if !pageable && (hub.more || hub.total() > hub.metadata.len()) {
             if let Some(line) = paging::unpaged_line(&hub.hub_identifier, &hub.key) { plx_base::eventlog::log(&line); }
         }
-        out.push(Shelf {
+        out.push(Shelf { epoch: 0,
             is_continue: shelf_is_continue(&hub.hub_identifier, &hub.key),
             landscape: is_episode_shelf(&items),
             id: hub.hub_identifier.clone(),

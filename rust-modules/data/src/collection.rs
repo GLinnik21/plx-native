@@ -1019,4 +1019,37 @@ mod tests {
         assert_eq!(rk_at(&state, 1200).as_deref(), Some("1200"));
         assert!(loaded(&state) <= crate::stores::page_cache::MAX_LOADED);
     }
+
+    /// A read that fails leaves the same job pending, so the store asks again after its cooldown
+    /// with no new window: it never gives a page up.
+    #[test]
+    fn a_page_read_that_fails_is_the_same_job_again_after_every_failure() {
+        let (mut state, adapter) = opened(300);
+        state.run(&adapter, CollectionCmd::Window { wanted: 60..120, focus: Some(60), restore: None });
+        let job = |s: &CollectionState| match s.job() { Some(Job::Children { start, .. }) => Some(start), _ => None };
+        let first = job(&state);
+        assert_eq!(first, Some(0), "the frontier, in order");
+        for _ in 0..5 {
+            adapter.land(state.generation(), Landing::Transport);
+            state.take_landing_for_test(&adapter);
+            assert_eq!(job(&state), first, "still the page that failed");
+            assert!(state.retry_cd > 0, "after a cooldown");
+        }
+    }
+
+    /// The frontier reads `FRONTIER_ASK` pages per window command and then waits for the next one;
+    /// the screen's grid repeats its ask while cards in view are unread, which is what sends it.
+    #[test]
+    fn the_frontier_waits_for_the_next_window_command_once_its_budget_is_spent() {
+        let total = 5_000;
+        let (mut state, adapter) = opened(total);
+        let ask = |s: &mut CollectionState| s.run(&adapter, CollectionCmd::Window { wanted: 3000..3060, focus: Some(3000), restore: Some(3000) });
+        ask(&mut state);
+        let mut requests = Vec::new();
+        serve(&mut state, &adapter, total, &|_| true, &mut requests);
+        assert_eq!(requests.len(), usize::from(FRONTIER_ASK));
+        assert!(state.job().is_none(), "idle with the target unread");
+        assert!(!ask(&mut state), "the same window changes nothing in the view");
+        assert!(state.job().is_some(), "but is an ask: the budget is back");
+    }
 }
