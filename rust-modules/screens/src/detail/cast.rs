@@ -15,8 +15,8 @@ thread_local! {
     static LABEL_CLOCK: marquee::Clock = const { marquee::Clock::new() };
 }
 
-pub const CAST_ELEM_RANGE_START: u32 = 1152;
-pub const CAST_ELEM_RANGE_END: u32 = 1664;
+pub const CAST_ELEM_RANGE_START: u32 = 3 * super::SECTION_BLOCK;
+pub const CAST_ELEM_RANGE_END: u32 = 4 * super::SECTION_BLOCK;
 pub const CAST_GROUP: GroupId = GroupId(4);
 /// Heading cap top to card top — the SHARED shelf pitch, stated as the sum rather than as the 60
 /// it has always been, so the three detail shelves move together (see [`super::related::LABEL_H`]).

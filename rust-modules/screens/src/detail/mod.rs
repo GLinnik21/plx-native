@@ -59,7 +59,12 @@ use std::cell::Cell;
 
 use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel, DetailRefreshPhase};
 
-const FIRST_ITEM_ELEM: u32 = 2048;
+/// Each section's local element ids are a block of its own, 2^24 wide, so a list can grow to any
+/// length the server sends without running into the next section's ids. Episodes sit alone at the
+/// top of the local space (two ids each, see `episodes.rs`). Engine keys are interned from
+/// `FIRST_ITEM_ELEM`, above every local block, and stay below `dispatch::STRIP_BASE`.
+const SECTION_BLOCK: u32 = 1 << 24;
+const FIRST_ITEM_ELEM: u32 = 1 << 31;
 
 const SECTION_GAP: f32 = theme::space::XL;
 const TAB_EP_GAP: f32 = theme::space::MD;
@@ -88,14 +93,16 @@ const K_STRIP_SCROLL: f32 = 240.0;
 
 pub const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,refresh:u32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;8],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
 
+// The blocks packed end to end: each section starts where the one before it ends, so the chain
+// proves they are disjoint. The episodes come last, at 2^30, and end where the engine keys begin.
 const _: () = assert!(hero::HERO_ELEM_RANGE_END == season::SEASON_ELEM_RANGE_START);
-const _: () = assert!(season::SEASON_ELEM_RANGE_END == episodes::EPISODES_ELEM_RANGE_START);
-const _: () = assert!(episodes::EPISODES_ELEM_RANGE_END == related::RELATED_ELEM_RANGE_START);
+const _: () = assert!(season::SEASON_ELEM_RANGE_END == related::RELATED_ELEM_RANGE_START);
 const _: () = assert!(related::RELATED_ELEM_RANGE_END == cast::CAST_ELEM_RANGE_START);
 const _: () = assert!(cast::CAST_ELEM_RANGE_END == about::ABOUT_ELEM_RANGE_START);
 const _: () = assert!(about::ABOUT_ELEM_RANGE_END == extras::EXTRAS_ELEM_RANGE_START);
 const _: () = assert!(extras::EXTRAS_ELEM_RANGE_END == collection::COLLECTION_ELEM_RANGE_START);
-const _: () = assert!(collection::COLLECTION_ELEM_RANGE_END <= FIRST_ITEM_ELEM);
+const _: () = assert!(collection::COLLECTION_ELEM_RANGE_END <= episodes::EPISODES_ELEM_RANGE_START);
+const _: () = assert!(episodes::EPISODES_ELEM_RANGE_END == FIRST_ITEM_ELEM);
 
 #[derive(Clone)]
 struct RestoreIntent {
@@ -488,11 +495,16 @@ impl DetailScreen {
         self.episode_text_lift.get(i).copied().unwrap_or_default()
     }
 
-    fn engine_key(&self, local: u32) -> Option<u32> {
-        if local < season::SEASON_ELEM_RANGE_START
+    /// A local that is its own engine key: the hero's controls, the About footer and the collection
+    /// heading. Every other local is interned as a key of its rating identity.
+    fn is_identity_local(local: u32) -> bool {
+        local < season::SEASON_ELEM_RANGE_START
             || local >= about::ABOUT_ELEM_RANGE_START && local < about::ABOUT_ELEM_RANGE_END
             || local == collection::HEADING_ELEM
-        {
+    }
+
+    fn engine_key(&self, local: u32) -> Option<u32> {
+        if Self::is_identity_local(local) {
             Some(local)
         } else {
             self.key_by_local.get(&local).copied()
@@ -520,7 +532,7 @@ impl DetailScreen {
                     }
                 }
             }
-            for (i, extra) in d.extras.iter().enumerate().take(extras::EXTRAS_ELEM_RANGE_END.saturating_sub(extras::EXTRAS_ELEM_RANGE_START) as usize) {
+            for (i, extra) in d.extras.iter().enumerate() {
                 if let Some(local) = extras::elem(i) {
                     identities.push((local, DetailIdentity::Extra { sid: d.sid, rk: extra.rk.clone() }));
                 }
@@ -589,10 +601,10 @@ impl DetailScreen {
     fn shelf_recovery(&self, elem: u32, meta: plx_data::metadata::MetadataView<'_>) -> Option<u32> {
         let d = self.detail(meta)?;
         let local = match Self::locate_local(*self.gone.get(&elem)?, false)? {
-            Located::Related(i) => related::elem(ui_cards::clamp_slot(i, d.related.len().min(512))?),
+            Located::Related(i) => related::elem(ui_cards::clamp_slot(i, d.related.len())?),
             Located::Collection(i) => collection::elem(ui_cards::clamp_slot(i, collection::len(d))?),
             Located::Extras(i) => extras::elem(ui_cards::clamp_slot(i, extras::len(d))?),
-            Located::Cast(i) => cast::elem(ui_cards::clamp_slot(i, d.credits_len().min(512))?),
+            Located::Cast(i) => cast::elem(ui_cards::clamp_slot(i, d.credits_len())?),
             _ => None,
         }?;
         self.engine_key(local)
@@ -1036,7 +1048,7 @@ impl DetailScreen {
                 return None;
             }
             *self.local_by_key.get(&elem)?
-        } else if elem < season::SEASON_ELEM_RANGE_START || elem >= about::ABOUT_ELEM_RANGE_START {
+        } else if Self::is_identity_local(elem) {
             elem
         } else {
             return None;
@@ -1209,7 +1221,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                         plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         season::ROW_H,
                     ),
-                    len: d.seasons.len().min(64),
+                    len: d.seasons.len(),
                     elem: ElemKind::Card,
                 }),
                 2 => out.push(GroupSpec {
@@ -1257,7 +1269,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                         plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         self.block_h(3, d, measure),
                     ),
-                    len: d.related.len().min(512),
+                    len: d.related.len(),
                     elem: ElemKind::Card,
                 }),
                 7 => {
@@ -1298,7 +1310,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                         plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         self.block_h(4, d, measure),
                     ),
-                    len: d.credits_len().min(512),
+                    len: d.credits_len(),
                     elem: ElemKind::Card,
                 }),
                 5 => {
@@ -1611,7 +1623,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
             // `from`: `Placed` carries no source group, so this fires from every entry into the
             // strip (episodes below, hero above) alike, which is what a season tab strip means by
             // "current".
-            let n = d.map(|d| d.seasons.len()).unwrap_or(0).min(64);
+            let n = d.map(|d| d.seasons.len()).unwrap_or(0);
             let i = d.map(|d| d.cur_season.min(n.saturating_sub(1)));
             i.and_then(season::elem).unwrap_or(season::SEASON_ELEM_RANGE_START)
         } else if group == episodes::EPISODES_GROUP {
@@ -1680,15 +1692,15 @@ impl DetailScreen {
             Located::Hero(c) => {
                 hero::focusable(c, self.full_trailer()) && hero::index_of(self.hero_set(meta), c).is_some()
             }
-            Located::Season(i) => d.is_some_and(|d| i < d.seasons.len().min(64)),
+            Located::Season(i) => d.is_some_and(|d| i < d.seasons.len()),
             Located::Episode(i, _) => {
                 d.is_some_and(|d| i < d.episodes.len().min(episodes::MAX_ITEMS))
             }
-            Located::Related(i) => d.is_some_and(|d| i < d.related.len().min(512)),
+            Located::Related(i) => d.is_some_and(|d| i < d.related.len()),
             Located::Extras(i) => d.is_some_and(|d| i < extras::len(d)),
             Located::Collection(i) => d.is_some_and(|d| i < collection::len(d)),
             Located::CollectionHeading => d.is_some_and(|d| collection::len(d) > 0),
-            Located::Cast(i) => d.is_some_and(|d| i < d.credits_len().min(512)),
+            Located::Cast(i) => d.is_some_and(|d| i < d.credits_len()),
             Located::About(0) => d.is_some(),
             Located::About(1) => d.is_some() && self.tracks_available(meta),
             Located::About(_) => false,
@@ -2764,8 +2776,12 @@ impl DetailScreen {
             elems.extend(controls[..n].iter().map(|c| (c.elem(), Activate::Press)));
         }
         if let Some(d) = self.detail(meta) {
+            // Only the tabs on the axis register a stop, as the strip paints only those, so the
+            // loop costs what the visible tabs cost and a long season list adds nothing per frame.
             elems.extend(
-                (0..d.seasons.len().min(64))
+                self.season_metrics
+                    .visible(self.tab_scroll.pos)
+                    .filter(|&i| i < d.seasons.len())
                     .filter_map(|i| season::elem(i).map(|e| (e, Activate::Press))),
             );
             for i in 0..d.episodes.len().min(episodes::MAX_ITEMS) {

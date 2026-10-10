@@ -10,9 +10,9 @@ use plx_machine::machine::GroupId;
 use plx_ui::widgets::Art;
 use plx_ui::{theme, Painter};
 
-pub const EXTRAS_ELEM_RANGE_START: u32 = 1728;
-/// Stops before published detail keys (`FIRST_ITEM_ELEM` 2048). 32 tiles is the shelf cap.
-pub const EXTRAS_ELEM_RANGE_END: u32 = 1760;
+pub const EXTRAS_ELEM_RANGE_START: u32 = 5 * super::SECTION_BLOCK;
+/// The shelf's own block; the engine keys for its tiles are interned above every block.
+pub const EXTRAS_ELEM_RANGE_END: u32 = 6 * super::SECTION_BLOCK;
 pub const EXTRAS_GROUP: GroupId = GroupId(6);
 /// Heading cap top to card top — the SHARED shelf pitch, as on [`super::related`].
 pub const LABEL_H: f32 = plx_ui::consts::TITLE_DY + plx_ui::consts::CARD_DY;
@@ -30,7 +30,7 @@ pub fn locate(key: u32) -> Option<usize> {
 }
 
 pub fn len(d: &Detail) -> usize {
-    d.extras.len().min(MAX)
+    d.extras.len()
 }
 
 /// `band` is this shelf's live label-band expansion — see [`super::related::block_h`]. The old
@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn the_extras_range_abuts_about_and_stays_below_published_keys() {
         assert_eq!(super::super::about::ABOUT_ELEM_RANGE_END, EXTRAS_ELEM_RANGE_START);
-        assert!(EXTRAS_ELEM_RANGE_END <= 2048);
+        assert!(EXTRAS_ELEM_RANGE_END <= super::super::FIRST_ITEM_ELEM);
         assert!(EXTRAS_ELEM_RANGE_START < EXTRAS_ELEM_RANGE_END);
     }
 

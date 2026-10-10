@@ -7,8 +7,8 @@ use plx_machine::machine::{GroupId, Measure};
 use plx_ui::widgets::{self, SelMark, StripLay, TabGround, TabStrip};
 use plx_ui::{theme, Painter, Rect};
 
-pub const SEASON_ELEM_RANGE_START: u32 = 64;
-pub const SEASON_ELEM_RANGE_END: u32 = 128;
+pub const SEASON_ELEM_RANGE_START: u32 = super::SECTION_BLOCK;
+pub const SEASON_ELEM_RANGE_END: u32 = 2 * super::SECTION_BLOCK;
 pub const SEASON_GROUP: GroupId = GroupId(1);
 pub const ROW_H: f32 = plx_ui::widgets::StatusOverlay::CTRL_H;
 pub const SETTLE_S: f32 = 0.2;
@@ -142,6 +142,22 @@ impl Metrics {
         })
     }
 
+    /// The tabs whose pill is on the axis at `scroll`, as an index range. The pills are laid out left
+    /// to right, so two binary searches find the range: its cost is the visible count, not the
+    /// strip's length. The test is the one `widgets::draw_strip` culls its paint by.
+    pub fn visible(&self, scroll: f32) -> std::ops::Range<usize> {
+        let left_edge_and_width = |lay: &StripLay| {
+            let r = widgets::strip_pill_rect(lay, 0.0, ROW_H);
+            (r.x - scroll, r.w.max(1.0))
+        };
+        let first = self.lays.partition_point(|lay| {
+            let (x, w) = left_edge_and_width(lay);
+            x + w <= 0.0
+        });
+        let end = self.lays.partition_point(|lay| left_edge_and_width(lay).0 < plx_ui::consts::SCR_W);
+        first..end.max(first)
+    }
+
     pub fn scroll_target(&self, current: f32, index: usize) -> f32 {
         let Some(r) = self.rect(index, 0.0, 0.0) else {
             return current;
@@ -188,10 +204,11 @@ mod tests {
 
     #[test]
     fn all_frozen_season_keys_round_trip() {
-        for i in 0..64 {
+        // a list of any length: every tab in the block has its id, and the block ends at its width
+        for i in 0..200 {
             assert_eq!(locate(elem(i).unwrap()), Some(i));
         }
-        assert_eq!(elem(64), None);
+        assert_eq!(elem(SEASON_ELEM_RANGE_END as usize - SEASON_ELEM_RANGE_START as usize), None);
     }
 
     fn detail() -> Detail {

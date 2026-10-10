@@ -11,8 +11,8 @@ use plx_ui::text_lift::{draw_focused, TextLift, CENTRE};
 use plx_ui::text_view::TextView;
 use plx_ui::{theme, Painter, Rect};
 
-pub const ABOUT_ELEM_RANGE_START: u32 = 1664;
-pub const ABOUT_ELEM_RANGE_END: u32 = 1728;
+pub const ABOUT_ELEM_RANGE_START: u32 = 4 * super::SECTION_BLOCK;
+pub const ABOUT_ELEM_RANGE_END: u32 = 5 * super::SECTION_BLOCK;
 pub const ABOUT_GROUP: GroupId = GroupId(5);
 pub const CARD_ELEM: u32 = ABOUT_ELEM_RANGE_START;
 pub const LANGUAGES_ELEM: u32 = ABOUT_ELEM_RANGE_START + 1;

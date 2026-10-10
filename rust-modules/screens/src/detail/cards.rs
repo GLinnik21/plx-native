@@ -59,10 +59,10 @@ impl<'a> Cards<'a> {
     ) -> Self {
         let mut cards = Self { which, d, key_by_local, local_by_key, len: 0, row_y: 0.0, entry: EntryId(0), press: PressRead::default() };
         let n = match which {
-            Which::Related => d.related.len().min(512),
+            Which::Related => d.related.len(),
             Which::Collection => collection::len(d),
             Which::Extras => extras::len(d),
-            Which::Cast => d.credits_len().min(512),
+            Which::Cast => d.credits_len(),
         };
         // The projections are rebuilt on every landing (`StoreChanged` -> `sync_keys`), but the app
         // pumps the Metadata store and then draws in the same loop turn, one frame before that
