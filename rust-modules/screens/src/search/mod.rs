@@ -105,10 +105,9 @@ pub struct SearchScreen {
     /// mounts this screen unconditionally.
     notices: u32,
     /// The page ask last sent for each row (window start, direction, cards held), by
-    /// [`layout::ordinal`]. Not part of the state hash. A row asks again only once its window has
-    /// moved or filled (going on from the preview fills the window where it stands, so the start
-    /// alone does not say the ask was answered): the edge keeps reporting while the store reads,
-    /// and a second ask on a window that already slid would slide it past the focused card.
+    /// [`layout::ordinal`]. Not part of the state hash. It only records the last ask so a
+    /// `PageCancel` can name its window: every ask the shelf emits is forwarded, a repeat
+    /// included. The shelf paces the repeats and the store takes an identical ask idempotently.
     page_sent: [Option<(usize, bool, usize)>; 5],
 }
 

@@ -559,8 +559,9 @@ impl LibraryScreen {
                     withdrawn.push((shelf.id.clone(), shelf.key.clone()));
                 }
             }
-            // The row asks for its next page at an edge, once per window, as Home's rows do; the
-            // store moves the window and the page follows the card focus is on.
+            // The row asks for its next page at an edge, as Home's rows do; the shelf repeats an
+            // unanswered ask on its ladder (the store takes the same ask idempotently) and
+            // `cancel_page` drops it when focus leaves. The store moves the window and the page follows the card focus is on.
             if ticking && at.is_some() {
                 let wanted = matches!(want, Some(plx_ui::cards::CardEvent::Want(_)));
                 if let (Some(shelf), Some(edge)) = (shelf, row.cards.page_ask(cx, &src, wanted, shelf.map_or(0, |s| s.offset), true)) {

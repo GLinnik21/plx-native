@@ -277,8 +277,9 @@ If those chunks are hidden, it publishes the advanced cursor and keeps the curre
 A refresh scans the previous raw range so that hidden items do not shorten the retained window.
 It requests another window near the visible end and fetches an earlier window when the user
 scrolls back. Requests run outside the drawing loop. Failed page requests retain the current
-cards and stop after three attempts. Leaving the row cancels its paging demand. Returning to
-the row can start another attempt. A normal refresh reloads the current window. A profile change
+cards, and the store drops a page after three failed reads. While focus stays at the edge the
+shelf repeats an unanswered ask on its retry ladder (0.25 s rising to 30 s, with no give-up), so
+the next attempt needs no key press. Leaving the row cancels its paging demand. A normal refresh reloads the current window. A profile change
 starts from the new profile's preview. Both operations reject old results.
 The shared shelf widget draws only visible cards. Paging preserves the banner's current items.
 
