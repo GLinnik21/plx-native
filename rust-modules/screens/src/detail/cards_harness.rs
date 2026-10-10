@@ -355,4 +355,17 @@ mod reach {
         assert_eq!(h.focused(), Some(cards[29]));
         plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     }
+
+    /// Extras are one whole response, and the row shows every one: the hundredth is a card.
+    #[test]
+    fn a_hundred_extras_reach_the_hundredth_on_the_extras_row() {
+        let _serial = plx_base::testlock::serial();
+        let mut h = mount_extras(100);
+        let cards = h.cards();
+        assert_eq!(cards.len(), 100);
+        assert_eq!(h.identity(cards[99]), "r99");
+        h.focus(cards[99], By::Dir);
+        assert_eq!(h.focused(), Some(cards[99]));
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+    }
 }
