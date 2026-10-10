@@ -20,7 +20,7 @@ use plx_data::search::{Item, Kind};
 use crate::registry::{AppFx, HomeTab, PageMemory, SearchLike, SearchReq};
 use plx_data::stores::{StoreCmd, StoreId};
 use plx_data::stores::search::SearchCmd;
-use plx_ui::cards::{CardEvent, SectionFrame, SectionSpec, Shelf, Stack, StackEvent, StackMemory, StackPage};
+use plx_ui::cards::{CardEvent, PageEdge, SectionFrame, SectionSpec, Shelf, Stack, StackEvent, StackMemory, StackPage};
 use cards::RowCards;
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::frame::Budget;
@@ -104,6 +104,11 @@ pub struct SearchScreen {
     /// "did a store notice reach the top screen" probes stay readable now that `Route::Search`
     /// mounts this screen unconditionally.
     notices: u32,
+    /// The page ask last sent for each row (window start, direction), by [`layout::ordinal`]. Not
+    /// part of the state hash. A row asks again only once its window has moved: the edge keeps
+    /// reporting while the store reads, and a second ask on a window that already slid would slide
+    /// it past the focused card.
+    page_sent: [Option<(usize, bool)>; 5],
 }
 
 impl SearchScreen {
@@ -114,7 +119,7 @@ impl SearchScreen {
             recent_clear_pending: false, publication: None, content_dirty: true,
             fade: plx_ui::xfade::Xfade::new(), ground: plx_ui::widgets::PageGround::new(),
             owner_row: None, owner: String::new(), owner_alpha: Spring::at(0.0), restored: None, render: Default::default(),
-            notices: 0 }
+            notices: 0, page_sent: [None; 5] }
     }
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
     fn real_query(&self) -> bool { plx_data::search::terms(self.draft.query()).is_some() }
@@ -170,6 +175,7 @@ impl SearchScreen {
         if !self.rows.is_empty() {
             self.rows.clear();
             self.rows_gen = self.rows_gen.wrapping_add(1);
+            self.page_sent = [None; 5];
         }
     }
 
@@ -423,7 +429,29 @@ impl SearchScreen {
     fn stack_on<H: SearchLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>)
         -> Option<CardEvent<u32>> {
         let got = self.with_stack(|stack, page| stack.on(page, ev, cx, fx));
+        if matches!(ev, ScreenEvent::Tick(_)) { self.page_rows(&got, cx, fx); }
         match got { Some(StackEvent::Card(_, card)) => Some(card), _ => None }
+    }
+    /// Ask the store to slide a row's window when focus is near the edge it can go on past: the
+    /// trailing edge on the row's own `Want`, the leading edge when the window has hits before it.
+    fn page_rows<H: SearchLike>(&mut self, got: &Option<StackEvent<Sec, u32>>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let view = H::search(cx);
+        for row in 0..self.rows.len() {
+            let Some(shelf) = view.shelves().get(row) else { continue };
+            let k = self.section(row);
+            let wanted = matches!(got, Some(StackEvent::Card(key, CardEvent::Want(_))) if *key == k);
+            let offset = shelf.window.start;
+            let edge = self.with_stack(|stack, page| stack.page_ask(page, cx, k, wanted, offset));
+            let slot = layout::ordinal(self.rows[row].kind) as usize;
+            if self.page_sent[slot].is_some_and(|(start, _)| start != offset) { self.page_sent[slot] = None; }
+            if let Some(edge) = edge {
+                let ask = (offset, edge == PageEdge::Before);
+                if self.page_sent[slot] != Some(ask) {
+                    self.page_sent[slot] = Some(ask);
+                    self.store(SearchCmd::Page { kind: self.rows[row].kind, before: ask.1 }, fx);
+                }
+            }
+        }
     }
     /// Run `f` on the stack and the page it lays out (the stack is out of the page meanwhile).
     fn with_stack<R>(&mut self, f: impl FnOnce(&mut Stack<Sec>, &Self) -> R) -> R {
@@ -529,8 +557,9 @@ impl SearchScreen {
     /// Result row `row`'s cards over `view`; `None` when the view has no such shelf.
     fn row_cards<'a>(&'a self, view: plx_data::search::view::SearchView<'a>, row: usize) -> Option<RowCards<'a>> {
         let model = self.rows.get(row)?;
-        Some(RowCards { kind: model.kind, elems: &model.elems, items: &view.shelves().get(row)?.items,
-            sources: view.scope().sources() })
+        let shelf = view.shelves().get(row)?;
+        Some(RowCards { kind: model.kind, elems: &model.elems, items: &shelf.items,
+            sources: view.scope().sources(), window: shelf.window })
     }
     fn tick<H: SearchLike>(&mut self, tick: plx_machine::machine::Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         fx.push(Fx::App(AppFx::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery)));

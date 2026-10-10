@@ -1378,3 +1378,36 @@ fn the_hold_hint_stands_on_a_resting_result_card_once_per_run() {
     rest(&mut screen, card, 4.0);
     assert!(!screen.stack.hint_visible(), "and not a second time on Search this run");
 }
+
+/// A row whose window has hits past it asks for the next window once focus nears its trailing
+/// edge, and when the window then slides the focused card is still the same element.
+#[test]
+fn a_row_with_hits_past_its_window_asks_for_the_next_one_and_keeps_the_focused_card_as_it_slides() {
+    let _serial = plx_base::testlock::serial();
+    let window = |start, before, after| plx_data::search::Window { start, before, after };
+    let mut fixture = Fixture::new();
+    let mut first = shelf(Kind::Movie, "m", 24);
+    first.window = window(0, false, true);
+    fixture.query("slide").shelves(vec![first]);
+    let mut screen = fixture.screen();
+    let pages = |out: &[Stamped<HostFixture>]| out.iter().filter(|e| matches!(&e.fx, Fx::App(AppFx::Store(
+        StoreId::Search, StoreCmd::Search(SearchCmd::Page { kind: Kind::Movie, before: false }))))).count();
+    // mid-row: nothing is asked
+    let mid = screen.key(screen.rows[0].elems[3]);
+    deliver(&mut screen, &fixture, Some(mid), ScreenEvent::FocusMoved { from: None, to: mid, by: By::Dir });
+    let asked: usize = (100..160).map(|at| pages(&deliver(&mut screen, &fixture, Some(mid), ScreenEvent::Tick(tick(at))).1)).sum();
+    assert_eq!(asked, 0, "far from the trailing edge");
+    // near the edge: asked, once
+    let focus = screen.key(screen.rows[0].elems[22]);
+    deliver(&mut screen, &fixture, Some(focus), ScreenEvent::FocusMoved { from: Some(mid), to: focus, by: By::Dir });
+    let asked: usize = (200..300).map(|at| pages(&deliver(&mut screen, &fixture, Some(focus), ScreenEvent::Tick(tick(at))).1)).sum();
+    assert_eq!(asked, 1, "the trailing edge asks once per window");
+    // the store slides half a window on: the focused card is the same element, seated earlier
+    let mut next = Shelf { window: window(12, true, true), kind: Kind::Movie,
+        items: (12..36).map(|i| movie(&format!("m-{i}"))).collect() };
+    next.window.after = false;
+    fixture.shelves(vec![next]);
+    deliver(&mut screen, &fixture, Some(focus), ScreenEvent::Tick(tick(400)));
+    assert_eq!(screen.rows[0].elems.get(10).copied(), Some(focus.elem), "m-22 keeps its identity at its new place");
+    assert_eq!(screen.rows[0].elems.len(), 24);
+}
