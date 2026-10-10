@@ -112,7 +112,7 @@ control POST routes, every path and method is a bare 404.
         "features":["lab-diagnostics","devtools"],"uptime_ms":812433},
  "device":{"webos_release":"10.3.1","codename":"…","api":"…","model":"OLED55C1",
            "board":"k8hpp","panel":"3840x2160","drawable":"1920x1080"},
- "caps":{"video":["h264","hevc","av1"],"audio":["ac3","eac3","aac"]},
+ "caps":{"hevc":true,"hevc_max_w":3840,"hevc_max_h":2176,"vp9":true,"av1":false,"audio":"aac,ac3,eac3"},
  "player":{"vp_mode":"exported window (webOS 5+)","stage":6,"load_v":"H265","load_a":"AC3 PLUS",
            "video_w":3840,"video_h":2160,"pos_ns":…,"dur_ns":…,"feed_state":"BufferFull (sink is full)",
            "fed_v":…,"fed_a":…,"frames":…,"cb_err":0,"http_status":206,"net_rx":…,

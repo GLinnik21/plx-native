@@ -343,7 +343,9 @@ impl PlaybackResources for LivePlaybackResources {
         // `seek_to_ns < 0`, so that stray armed seek blocks feeding forever: no frames, no
         // ACB bind, timeline frozen at the resume point. (Exactly what broke
         // transcode_av1_no_dp_audio. Direct-play never noticed because arm_seek is what the
-        // correct branch does anyway.) Defer it to `pump_play`, after apply_plan.
+        // correct branch does anyway. That item is a transcode only where the codec table lists
+        // no AV1 decoder, which the dev set does not; on a set that does, it direct-streams video.)
+        // Defer it to `pump_play`, after apply_plan.
         let pending = plx_media::route::play_pending();
         // A transcode's rebuild at the saved position is a flight (`begin_resume`): the Load is
         // started by the run loop's drain when it lands, so a pending resume enters the player and

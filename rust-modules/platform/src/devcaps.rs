@@ -91,6 +91,12 @@ pub struct Caps {
     /// whatever the panel decodes (route.rs's decode gate explains why), but a support log that
     /// names a codec the panel decodes and the app still transcodes answers its own question.
     pub vp9: bool,
+    /// The device table lists an AV1 decoder row. False in `assumed()` and on every table without
+    /// the row, which keeps AV1 a server transcode there. Issue #593.
+    pub av1: bool,
+    /// The AV1 row's (max width, max height, ceil max frame rate), MIN-merged across duplicate
+    /// rows; 0 = not stated. Read only when `av1`.
+    pub av1_row: (u32, u32, u32),
     /// The direct-playable AUDIO subset: [`DP_AUDIO_CODECS`] (what the pipeline decodes)
     /// intersected with the table's audio rows, in `DP_AUDIO_CODECS`'s own URL form/order.
     /// Normal routing reads this and the channel ceilings through `plex::is_dp_audio_track`,
@@ -112,6 +118,8 @@ impl Caps {
             h264_row: (0, 0, 0),
             hevc_row: (0, 0, 0),
             vp9: true,
+            av1: false,
+            av1_row: (0, 0, 0),
             audio: "aac,ac3,eac3".to_string(),
             audio_channels: Default::default(),
         }
@@ -236,9 +244,9 @@ fn parse(s: &str) -> Option<Caps> {
         // nothing — fall back whole rather than deriving a client that transcodes everything.
         return None;
     }
-    let (mut h264, mut hevc, mut vp9) = (false, false, false);
-    let (mut hevc_wh, mut h264_wh) = ((0u32, 0u32), (0u32, 0u32));
-    let (mut hevc_fps, mut h264_fps) = (0u32, 0u32);
+    let (mut h264, mut hevc, mut vp9, mut av1) = (false, false, false, false);
+    let (mut hevc_wh, mut h264_wh, mut av1_wh) = ((0u32, 0u32), (0u32, 0u32), (0u32, 0u32));
+    let (mut hevc_fps, mut h264_fps, mut av1_fps) = (0u32, 0u32, 0u32);
     for row in &t.video_codecs {
         let wh = (row.max_width, row.max_height);
         let fps = if row.max_frame_rate.is_finite() && row.max_frame_rate > 0.0 {
@@ -259,6 +267,13 @@ fn parse(s: &str) -> Option<Caps> {
                 h264_fps = min_nz(h264_fps, fps);
             }
             "vp9" => vp9 = true,
+            // AV1 is a capability bit with its own bound. It never feeds `hevc_max`, the H.264
+            // guard or the audio logic: those stay exactly as the table without it computes them.
+            "av1" => {
+                av1 = true;
+                av1_wh = (min_nz(av1_wh.0, wh.0), min_nz(av1_wh.1, wh.1));
+                av1_fps = min_nz(av1_fps, fps);
+            }
             _ => {}
         }
     }
@@ -311,6 +326,8 @@ fn parse(s: &str) -> Option<Caps> {
             (0, 0, 0)
         },
         vp9,
+        av1,
+        av1_row: (av1_wh.0, av1_wh.1, av1_fps),
         audio,
         audio_channels,
     })
@@ -324,12 +341,18 @@ pub fn probe() {
         Ok(s) => match parse(&s) {
             Some(c) => {
                 measured = true;
+                let av1_row = if c.av1 {
+                    format!(" av1={}x{}@{}", c.av1_row.0, c.av1_row.1, c.av1_row.2)
+                } else {
+                    String::new()
+                };
                 plx_base::eventlog::log(&format!(
-                    "devcaps: hevc={} {}x{} vp9={} audio={} rows: h264={}x{}@{} hevc={}x{}@{} (device table)",
+                    "devcaps: hevc={} {}x{} vp9={} av1={} audio={} rows: h264={}x{}@{} hevc={}x{}@{}{av1_row} (device table)",
                     c.hevc,
                     c.hevc_max.0,
                     c.hevc_max.1,
                     c.vp9,
+                    c.av1,
                     c.audio,
                     c.h264_row.0,
                     c.h264_row.1,
@@ -465,6 +488,8 @@ mod tests {
         // to 4096x2176@60 (the 120 on the H.265 row loses to the HEVC row's 60)
         assert_eq!(c.h264_row, (4096, 2304, 60));
         assert_eq!(c.hevc_row, (4096, 2176, 60));
+        // a table with no AV1 row leaves the AV1 capability off, with no bound stated
+        assert!(!c.av1 && c.av1_row == (0, 0, 0));
         // a fractional cap is a CEILING the stream must fit under: 59.94 reads as 60, never 59
         let frac = parse(r#"{"videoCodecs":[{"name":"H.264","maxWidth":1920,"maxHeight":1088,"maxFrameRate":59.94}]}"#).unwrap();
         assert_eq!(frac.h264_row, (1920, 1088, 60));
@@ -619,5 +644,61 @@ mod tests {
         assert!(c.hevc);
         assert_eq!(c.hevc_max, (3840, 2176));
         assert_eq!(c.audio, "aac,ac3,eac3");
+    }
+
+    /// An AV1 row is a capability bit with its own bound, and it does not move the shared
+    /// bound: `hevc_max` is what the table says without the AV1 row. The row's nested
+    /// `restrictions` array and `maxBitRate` are unknown fields to this parser and must parse
+    /// through without touching the row's own dimensions. Synthetic table, not a device file.
+    #[test]
+    fn an_av1_row_sets_the_av1_capability_and_its_bound() {
+        let base = r#"{"videoCodecs":[
+                {"name":"H.264","maxWidth":1920,"maxHeight":1080,"maxFrameRate":60},
+                {"name":"HEVC","maxWidth":3840,"maxHeight":2160,"maxFrameRate":60}
+            ]}"#;
+        let with_av1 = r#"{"videoCodecs":[
+                {"name":"H.264","maxWidth":1920,"maxHeight":1080,"maxFrameRate":60},
+                {"name":"HEVC","maxWidth":3840,"maxHeight":2160,"maxFrameRate":60},
+                {"name":"AV1","maxWidth":3840,"maxHeight":2160,"maxFrameRate":60,
+                 "maxBitRate":50,
+                 "restrictions":[{"mode":"x","maxWidth":1920,"maxHeight":1088,"maxFrameRate":60}]}
+            ]}"#;
+        let c = parse(with_av1).expect("a table with an AV1 row parses");
+        assert!(c.av1);
+        assert_eq!(c.av1_row, (3840, 2160, 60));
+        assert_eq!(c.hevc_max, parse(base).unwrap().hevc_max);
+    }
+
+    /// Duplicate AV1 rows MIN-merge per axis like the other decoders' duplicates do: the
+    /// roomier 8K row cannot win an axis back from the 4K one.
+    #[test]
+    fn duplicate_av1_rows_merge_to_the_minimum() {
+        let c = parse(
+            r#"{"videoCodecs":[
+                {"name":"H.264","maxWidth":1920,"maxHeight":1080},
+                {"name":"AV1","maxWidth":3840,"maxHeight":2160,"maxFrameRate":60},
+                {"name":"AV1","maxWidth":7680,"maxHeight":4320,"maxFrameRate":30}
+            ]}"#,
+        )
+        .unwrap();
+        assert!(c.av1);
+        assert_eq!(c.av1_row, (3840, 2160, 30));
+    }
+
+    /// The AV1 row is not an H.264 row: a table with AV1 and no H.264 is rejected whole, the
+    /// same rule every table without H.264 follows, so AV1 can never be the only thing a
+    /// misread table claims.
+    #[test]
+    fn an_av1_only_table_is_still_rejected() {
+        assert!(parse(r#"{"videoCodecs":[{"name":"AV1","maxWidth":3840,"maxHeight":2160}]}"#).is_none());
+    }
+
+    /// The fallback never claims AV1: an unreadable table, or a table that lacks the row, keeps
+    /// AV1 a server transcode, exactly as before this capability existed.
+    #[test]
+    fn assumed_never_claims_av1() {
+        let c = Caps::assumed();
+        assert!(!c.av1);
+        assert_eq!(c.av1_row, (0, 0, 0));
     }
 }

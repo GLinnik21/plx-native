@@ -1264,6 +1264,17 @@ pub use plx_platform::tv::sink::{VP_ACB, VP_EXPORTED, VP_NONE};
 /// The simulator's clock-sink stop; the television's pipeline has no such control.
 pub use ffi_host::stop_clock_at as stop_sim_clock_at;
 
+/// The video codec a `dg_load_v` code names (video 1 = H264, 2 = H265, 3 = AV1; 0 = not built).
+/// The codes are written from `engine::LoadVideo::diag_code`, the names from its `payload_name`.
+pub fn load_v_name(code: u8) -> &'static str {
+    match code {
+        1 => "H264",
+        2 => "H265",
+        3 => "AV1",
+        _ => "—",
+    }
+}
+
 /// One consistent read of everything the on-screen diagnostics overlay shows (`app::diagnostics`).
 ///
 /// A struct rather than twenty accessors for one reason: the panel must not tell a story that
@@ -1390,11 +1401,7 @@ impl Diag {
     }
     /// What the Load payload named as the video codec, or `—` before one was built.
     pub fn load_v_str(&self) -> &'static str {
-        match self.load_v {
-            1 => "H264",
-            2 => "H265",
-            _ => "—",
-        }
+        load_v_name(self.load_v)
     }
     /// …and the audio codec. `needAudio:false` is its own answer, not an absence.
     pub fn load_a_str(&self) -> &'static str {

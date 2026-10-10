@@ -73,7 +73,8 @@ harness refuses to grade it.
 The player can feed `{h264, hevc}` × `{aac, ac3, eac3, dts}` in `mkv`/`mp4`/`m4v`.
 Automatic direct play intersects those formats with the TV's codec table and channel limits;
 DTS requires an explicit capability row with a channel ceiling. The implemented Load strings
-are `H264`/`H265` and `AAC`/`AC3`/`AC3 PLUS`/`DTS`. DTS-HD packets feed only their core;
+are `H264`/`H265` (and `AV1` only on a set whose codec table lists an AV1 decoder) and
+`AAC`/`AC3`/`AC3 PLUS`/`DTS`. DTS-HD packets feed only their core;
 TrueHD and other unsupported feed formats still require server conversion. This is the
 implemented format set, not the complete vocabulary accepted by LG's firmware.
 
@@ -94,7 +95,9 @@ Still uncovered, and worth knowing before quoting a green run: **HLG, HDR10+, DV
 (the `atmos` declaration field exists and no case sets it), the **4096-wide edge** and any file
 that must be *refused* for exceeding it, a **user-driven** replay (as opposed to the trigger-driven
 one below — a Play control on a detail page is server-tier by construction), and the whole
-**transcode input space** — three server cases on one AV1 item stand in for 17 video codecs. One of
+**transcode input space** — three server cases on one AV1 item stand in for 17 video codecs (the AV1
+item transcodes because the dev set's codec table lists no AV1 decoder; see `transcode_av1_no_dp_audio`
+below for what a set that lists one would do with it). One of
 those is an app gap rather than a test gap: `devcaps` now reads `maxFrameRate` into per-codec rows,
 but only the Starfish Load's `adaptiveStreaming` ceiling clamps against it (`engine::sink_envelope`,
 since 2026-09-03) — the profile sent to PMS still carries no frame-rate limitation at all.
@@ -678,7 +681,7 @@ Base playback (decision + codec + not-stuck), one case each:
 | `dp_mp4_container` | `movie_hevc_aac_mp4` | HEVC + AAC, **mp4 container** direct-play (mov demuxer over HTTP, AAC→ADTS), sidecar subs |
 | `dp_h264_aac_episode` | `episode_h264_aac` | H264 + AAC direct-play, TV episode, no subs |
 | `dp_h264_ac3_many_audio` | `movie_h264_ac3_many_audio` | H264 + AC3 direct-play, 8 audio tracks (TrueHD/vorbis present) |
-| `transcode_av1_no_dp_audio` | `movie_av1_no_dp_audio` | **must-transcode** (AV1 + no DP audio) → **HEVC 4K HDR10**/AC3 on this Plex-Pass server (the target chain ends in h264 since issue #22, so a server that cannot encode HEVC re-encodes to h264 instead of dropping video) |
+| `transcode_av1_no_dp_audio` | `movie_av1_no_dp_audio` | **must-transcode** on the dev set, whose codec table lists no AV1 decoder (AV1 + no DP audio) → **HEVC 4K HDR10**/AC3 on this Plex-Pass server (the target chain ends in h264 since issue #22, so a server that cannot encode HEVC re-encodes to h264 instead of dropping video). On a set whose table lists an AV1 decoder the same file would direct-stream video with converted audio. |
 
 Operation cases (each also re-checks not-stuck / no-error afterward):
 

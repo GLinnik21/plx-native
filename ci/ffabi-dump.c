@@ -134,6 +134,7 @@ DUMP(off_bsf_time_base_in, offsetof(AVBSFContext, time_base_in))
 /* Enum constants ff.rs hardcodes. */
 DUMP(id_h264,   AV_CODEC_ID_H264)
 DUMP(id_hevc,   AV_CODEC_ID_HEVC)
+DUMP(id_av1,    AV_CODEC_ID_AV1)
 DUMP(id_aac,    AV_CODEC_ID_AAC)
 DUMP(id_ac3,    AV_CODEC_ID_AC3)
 DUMP(id_eac3,   AV_CODEC_ID_EAC3)

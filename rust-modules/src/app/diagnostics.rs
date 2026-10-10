@@ -595,20 +595,7 @@ fn device_rows() -> Vec<Field> {
     // panel whose output is a photograph must not print the second as if it were the first.
     let measured = plx_platform::devcaps::measured();
     v.push(
-        Field::new(
-            plx_platform::i18n::msg::browse_diagnostics_field_decoder(),
-            format!(
-                "{} · {} · {}",
-                if c.hevc {
-                    format!("HEVC {}x{}", c.hevc_max.0, c.hevc_max.1)
-                } else {
-                    plx_platform::i18n::msg::browse_diagnostics_no_hevc().to_string()
-                },
-                if c.vp9 { "VP9" } else { plx_platform::i18n::msg::browse_diagnostics_no_vp9() },
-                if measured { plx_platform::i18n::msg::browse_diagnostics_device_table() } else { plx_platform::i18n::msg::browse_diagnostics_assumed() },
-            ),
-        )
-        .fault(!measured),
+        Field::new(plx_platform::i18n::msg::browse_diagnostics_field_decoder(), decoder_summary(&c, measured)).fault(!measured),
     );
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_audio(), c.audio.clone()));
 
@@ -628,6 +615,33 @@ fn device_rows() -> Vec<Field> {
         ),
     ));
     v
+}
+
+/// The Decoder row's value: `HEVC WxH · VP9 · [AV1 [WxH] ·] <device table | ASSUMED>`.
+///
+/// The AV1 segment appears only when the table lists an AV1 decoder row ([`Caps::av1`]), and it
+/// names that row's raster only when the row is stated on both axes and differs from the shared
+/// HEVC bound — otherwise "AV1" alone already says everything the bound says. Pure, so the
+/// one-line fit and both measured states are host-testable without reading the process caps.
+fn decoder_summary(c: &plx_platform::devcaps::Caps, measured: bool) -> String {
+    use plx_platform::i18n::msg;
+    let hevc = if c.hevc {
+        format!("HEVC {}x{}", c.hevc_max.0, c.hevc_max.1)
+    } else {
+        msg::browse_diagnostics_no_hevc().to_string()
+    };
+    let vp9 = if c.vp9 { "VP9".to_string() } else { msg::browse_diagnostics_no_vp9().to_string() };
+    let source = if measured { msg::browse_diagnostics_device_table().to_string() } else { msg::browse_diagnostics_assumed().to_string() };
+    let (aw, ah, _) = c.av1_row;
+    let av1 = match (c.av1, aw != 0 && ah != 0 && (aw, ah) != c.hevc_max) {
+        (false, _) => None,
+        (true, true) => Some(format!("AV1 {aw}x{ah}")),
+        (true, false) => Some("AV1".to_string()),
+    };
+    match av1 {
+        Some(av1) => format!("{hevc} · {vp9} · {av1} · {source}"),
+        None => format!("{hevc} · {vp9} · {source}"),
+    }
 }
 
 /// One fixed instrument, split by responsibility rather than by mode.  The left column follows a
@@ -2423,6 +2437,91 @@ mod tests {
             "Decoder = {}",
             val("Decoder")
         );
+    }
+
+    /// Without AV1 in the table the Decoder value is exactly what it was before the AV1 segment
+    /// existed, in both measured states — the assumed set and the dev set must not change their
+    /// panel at all.
+    #[test]
+    fn decoder_summary_is_unchanged_without_av1() {
+        use plx_platform::i18n::msg;
+        let c = plx_platform::devcaps::Caps::assumed();
+        assert!(!c.av1);
+        assert_eq!(
+            decoder_summary(&c, false),
+            format!("HEVC 3840x2176 · VP9 · {}", msg::browse_diagnostics_assumed())
+        );
+        assert_eq!(
+            decoder_summary(&c, true),
+            format!("HEVC 3840x2176 · VP9 · {}", msg::browse_diagnostics_device_table())
+        );
+        let mut no_codecs = c.clone();
+        no_codecs.hevc = false;
+        no_codecs.vp9 = false;
+        assert_eq!(
+            decoder_summary(&no_codecs, false),
+            format!(
+                "{} · {} · {}",
+                msg::browse_diagnostics_no_hevc(),
+                msg::browse_diagnostics_no_vp9(),
+                msg::browse_diagnostics_assumed()
+            )
+        );
+    }
+
+    /// An AV1 row is named after the codecs it adds. Its raster is printed only when the table
+    /// states it on both axes AND it differs from the shared HEVC bound; a row that matches the
+    /// bound, or states one axis alone, reads as the bare codec name.
+    #[test]
+    fn decoder_summary_names_av1_when_the_table_lists_it() {
+        use plx_platform::i18n::msg;
+        let device = msg::browse_diagnostics_device_table();
+        let mut c = plx_platform::devcaps::Caps::assumed();
+        c.av1 = true;
+        assert_eq!(
+            decoder_summary(&c, true),
+            format!("HEVC 3840x2176 · VP9 · AV1 · {device}"),
+            "an unstated AV1 raster reads as the codec name alone"
+        );
+        c.av1_row = (3840, 2176, 60);
+        assert_eq!(
+            decoder_summary(&c, true),
+            format!("HEVC 3840x2176 · VP9 · AV1 · {device}"),
+            "a row equal to the shared bound adds no raster"
+        );
+        c.av1_row = (4096, 0, 60);
+        assert_eq!(
+            decoder_summary(&c, true),
+            format!("HEVC 3840x2176 · VP9 · AV1 · {device}"),
+            "one axis alone is not a raster"
+        );
+        c.av1_row = (4096, 2176, 60);
+        assert_eq!(
+            decoder_summary(&c, true),
+            format!("HEVC 3840x2176 · VP9 · AV1 4096x2176 · {device}")
+        );
+        c.av1 = false;
+        assert_eq!(
+            decoder_summary(&c, true),
+            format!("HEVC 3840x2176 · VP9 · {device}"),
+            "the row is ignored when the table did not list the decoder"
+        );
+    }
+
+    /// The Decoder value must stay on one row at the widest it can get: an AV1 raster, the longer
+    /// measured-state word, and an HEVC bound above the dev set's. Measured like the device block
+    /// above, against the column the list actually draws.
+    #[test]
+    fn the_av1_decoder_line_still_fits() {
+        for measured in [false, true] {
+            let mut c = plx_platform::devcaps::Caps::assumed();
+            c.hevc_max = (4096, 2304);
+            c.av1 = true;
+            c.av1_row = (4096, 2304, 60);
+            let val = decoder_summary(&c, measured);
+            let lines = plx_ui::widgets::value_lines(&val, FIELD_COL_W);
+            assert_eq!(lines.len(), 1, "`{val}` wraps to {} lines", lines.len());
+        }
     }
 
     /// The device card is SHORTER and has no chart. Both come off one sampled flag, so the measure
