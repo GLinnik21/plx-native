@@ -79,8 +79,10 @@ contract is the `//!` of `cards/mod.rs`; `cards/tests.rs` is its Tier 1 conforma
 reaching around the component: a `SectionFrame`'s `y` (and a `Grid`'s `top`) is SCREEN space and
 `draw` undoes the painter's own translate, so hand it the painter you have, never a pre-offset
 one; a content landing that moves the focused element's index is the component's to absorb (the
-pop and the scroll follow the element, `Shelf::landed` / `Grid::landed` report it) so the screen
-does not re-seat anything; and read a shelf through `heading_lift()` / `under_band()`, not through
+pop and the scroll follow the element, `Shelf::landed` / `Grid::landed` report it, at any distance
+and whether or not a key, a restore or a reconcile moved focus in the same tick: `pool::slid`) so the
+screen does not re-seat anything (a scroll TARGET it sets against content that already landed is held
+in the scroll's own coordinates, `Grid::pending_shift`); and read a shelf through `heading_lift()` / `under_band()`, not through
 the L0 `CardRow`.
 
 `GridSpec::new(top, edge)` is the six-column `cards::GRID_STYLE` grid from `MARGIN_X`;

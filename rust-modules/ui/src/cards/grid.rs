@@ -14,7 +14,7 @@ use super::{CardEvent, CardSource, Landed, Seen, Tile};
 use crate::card_row;
 use crate::consts::{K_SCROLL, MARGIN_X, SCR_H};
 use crate::card_row::RowStyle;
-use super::pool::{Drawn, ShrinkKey};
+use super::pool::{self, Drawn, ShrinkKey};
 use crate::poster_grid::{self, Geom, GridBand, GridBands, GridPop, COLS, STYLE};
 use crate::screen::{
     Activate, At, AxisMask, By, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
@@ -91,6 +91,9 @@ pub struct Grid {
     /// Which element the running let-go belongs to: the element-keyed pool (`pool.rs`).
     shrink: ShrinkKey,
     seen: Seen,
+    /// The element the last tick had focused (`pool::key`): what tells a landing that moved the
+    /// cards from a focus that moved over them, as the shelf's.
+    anchor: Option<(usize, u64)>,
     landed: Option<Landed>,
     /// External mode: the document shift the last tick's landing needs (see [`Grid::landed_shift`]).
     shift: f32,
@@ -111,6 +114,7 @@ impl Grid {
             pop: GridPop::new(),
             shrink: ShrinkKey::new(),
             seen: Seen::Nothing,
+            anchor: None,
             landed: None,
             shift: 0.0,
             reveal: None,
@@ -168,36 +172,41 @@ impl Grid {
         self.landed = None;
         self.shift = 0.0;
         self.shrink.follow(&mut self.pop, src);
-        let prev = self.pop.cell();
-        // where the previously focused cell was on screen, before any band moves
-        let was = prev.map(|p| self.cell(p, &self.bands.geometry()).y);
+        let mut prev = self.pop.cell();
+        // A landing and a focus change between the same two ticks (a key over cards that moved, a
+        // restore or reconcile landing with a page): the change alone would leave the scroll where
+        // the cards WERE. The card focus was on is carried to where the source now shows it first,
+        // pop and scroll, and the change then starts from there (the shelf's rule, `pool::slid`).
+        let slid = focus.filter(|_| self.seen.announced()).and_then(|i| pool::slid(src, self.anchor).map(|s| (i, s)));
+        // where the previously focused cell was on screen, before any band moves (a deliberate move
+        // has already armed the pop on its new cell: the anchor is the cell focus left)
+        let was = slid.map(|(_, (p, _))| p).or(prev).map(|p| self.cell(p, &self.bands.geometry()).y);
         // A focus the reader did not move (a restore, a landing) adopts its band settled.
         self.bands.focus(focus.map(|i| i / self.spec.cols), false);
+        if let Some((i, (p, q))) = slid {
+            self.carry(p, q, was);
+            prev = Some(q);
+            if let Seen::Deliberate(_) = self.seen {
+                // the let-go the move armed follows its card, and the pop stays on the card the
+                // move named, by the index it has in the cards that stand now
+                if self.pop.shrinking() == Some(p) {
+                    self.pop.move_shrink(Some(q));
+                }
+                self.pop.relocate(i);
+                self.seen = Seen::Deliberate(i);
+            }
+        }
         if let Some(i) = focus {
             match (self.seen, prev) {
                 (Seen::Deliberate(a), _) if a == i => {}
-                // no FocusMoved, another index: the same element, moved by a content landing; the
-                // scroll shifts by what its row moved so the tile stays where it was on screen
-                (Seen::Nothing, Some(p)) if p != i => {
-                    self.pop.relocate(i);
-                    match self.spec.scroll {
-                        ScrollMode::Own => if let Some(was) = was {
-                            self.scroll.pos += self.cell(i, &self.bands.geometry()).y - was;
-                        },
-                        // The owner may have opened the new row's band before this tick, so `was`
-                        // would be measured under it: the rows' pitch is the shift, bands aside.
-                        ScrollMode::External => {
-                            let rows = (i / self.spec.cols) as f32 - (p / self.spec.cols) as f32;
-                            self.shift = rows * self.spec.geom().pitch();
-                        }
-                    }
-                    self.landed = Some(Landed { from: p, to: i });
-                }
+                // no FocusMoved, another index: the same element, moved by a content landing
+                (Seen::Nothing, Some(p)) if p != i => self.carry(p, i, was),
                 _ if prev != Some(i) => self.pop.adopt(i, &self.spec.style),
                 _ => {}
             }
         }
         self.seen = Seen::Nothing;
+        self.anchor = pool::anchor_of(src, focus);
         let home = if self.spec.home_when_unfocused { 0.0 } else { self.target };
         let wanted = focus.map(|i| {
             poster_grid::snap_row_in(&self.spec.geom(), self.scroll.pos + self.shift, i / self.spec.cols, src.len(), self.spec.top, self.spec.edge)
@@ -214,6 +223,25 @@ impl Grid {
         if (self.scroll.pos - self.target).abs() > 0.25 || self.scroll.vel.abs() > 0.5 {
             fx.note(PresentEvent::Motion);
         }
+    }
+
+    /// The focused element moved from cell `p` to cell `q` because the CONTENT changed: its pop goes
+    /// with it and the scroll shifts by what its row moved so the tile stays where it was on
+    /// screen (`was`: where cell `p` stood before any band moved).
+    fn carry(&mut self, p: usize, q: usize, was: Option<f32>) {
+        self.pop.relocate(q);
+        match self.spec.scroll {
+            ScrollMode::Own => if let Some(was) = was {
+                self.scroll.pos += self.cell(q, &self.bands.geometry()).y - was;
+            },
+            // The owner may have opened the new row's band before this tick, so `was`
+            // would be measured under it: the rows' pitch is the shift, bands aside.
+            ScrollMode::External => {
+                let rows = (q / self.spec.cols) as f32 - (p / self.spec.cols) as f32;
+                self.shift = rows * self.spec.geom().pitch();
+            }
+        }
+        self.landed = Some(Landed { from: p, to: q });
     }
 
     /// The paging rule: the last row the scroll shows, or the focused card's look-ahead.
@@ -233,6 +261,19 @@ impl Grid {
     /// Zero in [`ScrollMode::Own`], where the grid shifts its own scroll, and when nothing landed.
     pub fn landed_shift(&self) -> f32 {
         self.shift
+    }
+
+    /// External mode: the shift ([`landed_shift`](Self::landed_shift)) the NEXT tick will report for
+    /// the cards as they stand now. An owner that sets its scroll target between two ticks against
+    /// a document that has already landed holds that target in the coordinates its scroll is still
+    /// in: it takes this off, so the tick's rebase of both does not apply the landing twice.
+    pub fn pending_shift<H: Host, S: CardSource<H>>(&self, cx: &Cx<'_, H>, src: &S) -> f32 {
+        if self.spec.scroll != ScrollMode::External || super::focused_index(&cx.focus, self.entry, src).is_none() {
+            return 0.0;
+        }
+        pool::slid(src, self.anchor).map_or(0.0, |(p, q)| {
+            ((q / self.spec.cols) as f32 - (p / self.spec.cols) as f32) * self.spec.geom().pitch()
+        })
     }
 
     /// The scroll the last tick wanted for the focused row (`poster_grid::snap_row_in` against the

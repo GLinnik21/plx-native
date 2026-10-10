@@ -223,6 +223,13 @@ impl GridPart {
         if matches!(ev, ScreenEvent::Tick(_)) { self.grid.landed_shift() } else { 0.0 }
     }
 
+    /// The document shift the grid's next tick will report for the cards as they stand now (see
+    /// [`Grid::pending_shift`]): a scroll target set against a document that already landed is held
+    /// in the coordinates the scroll is still in, so that tick's rebase does not apply it twice.
+    pub(super) fn pending_shift<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> f32 {
+        self.grid.pending_shift(cx, &self.source(cx))
+    }
+
     /// Adopt the focused grid row's caption band settled: a layout built before the next tick (a
     /// restore, a landing) sizes the document from it. A no-op while that row is already focused.
     pub(super) fn settle_band(&mut self, row: Option<usize>) { self.grid.settle_band(row); }
