@@ -152,7 +152,7 @@ fn the_three_sections_left_most_recently_keep_their_last_window_and_the_rest_kee
 
     // Section 0 is the one the viewer scrolls down. Its pages are loaded while it is current.
     state.set_cur(0);
-    state.want(window.start, window.end);
+    state.want(window.start, window.end, None);
     state.states[0].total = TOTAL as i64;
     state.states[0].items.resize(TOTAL);
     for page in 0..10 {
@@ -164,7 +164,7 @@ fn the_three_sections_left_most_recently_keep_their_last_window_and_the_rest_kee
     assert_eq!(loaded(&state.states[0].items), vec![9]);
     assert_eq!(state.states[0].items.len(), TOTAL);
 
-    state.want(0, 1);
+    state.want(0, 1, None);
     state.set_cur(2);
     state.set_cur(3);
     assert_eq!(loaded(&state.states[0].items), vec![9], "still one of the last three left");
@@ -174,6 +174,42 @@ fn the_three_sections_left_most_recently_keep_their_last_window_and_the_rest_kee
     assert!(loaded(&state.states[0].items).is_empty());
     assert_eq!(state.states[0].items.len(), TOTAL, "the total stays, so the section reads holes");
     assert!(state.states[0].items.page_missing(9));
+}
+
+/// The focus the grid sends with its want reaches the keep rule of the page that lands: a page far
+/// from the wanted rows survives its own landing because the focused slot is on it.
+#[test]
+fn the_grids_focus_index_reaches_the_landing_keep_rule() {
+    let _guard = plx_base::testlock::serial();
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("keep-focus", "127.0.0.1", 9, "synthetic", "fixture");
+    let client = plx_plex::plex::client_for(sid).unwrap();
+    let far = 100;
+    let focus = far * PAGE + 3;
+    for (sent, kept) in [(None, false), (Some(focus), true)] {
+        let mut state = BrowseState::default();
+        seed_registered_table_for_owner_test(&mut state, [sid, sid]);
+        prepare_page_for_owner_test(&mut state, sid);
+        let sec = state.cur();
+        state.states[sec].total = TOTAL as i64;
+        state.states[sec].items.resize(TOTAL);
+        for page in 0..MAX_LOADED {
+            state.states[sec].items.set_page_for_test(page);
+        }
+        state.want(0, 12, sent);
+        let adapter = Arc::new(BrowseAdapter::default());
+        adapter.fetching.store(true, Ordering::SeqCst);
+        *adapter.page_result.lock().unwrap() = Some(PageResult {
+            client, token_gen: client.token_gen(), gen: state.query_gen(), sec, start: far * PAGE,
+            items: page_rows(far), total: TOTAL as i64, sorts: None, restored: None, genres: None, genre: None,
+            resolved: Default::default(),
+        });
+        assert!(state.pump_owned(&adapter).changed, "the page landed");
+        let held = loaded(&state.states[sec].items);
+        assert!(!held.is_empty() && held.len() <= MAX_LOADED, "the landing ran and evicted: {held:?}");
+        assert_eq!(held.contains(&far), kept, "focus {sent:?}: the landed page's fate");
+    }
+    plx_plex::plex::reset_servers_for_test();
 }
 
 impl SecItems {

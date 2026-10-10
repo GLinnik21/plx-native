@@ -108,6 +108,7 @@ impl Initial {
             hub_gen: self.generation,
             last_sections_gen: self.sections_generation,
             catalog_gen: self.catalog_generation,
+            fanout: Default::default(),
         };
         let adapter = super::PmsAdapter {
             next_request: AtomicU32::new(self.next_request),
@@ -119,7 +120,7 @@ impl Initial {
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(state: &PmsState, adapter: &PmsAdapter) -> Self {
         let sources = state.srcs.iter().map(|s| {
-            let Src { sid, client, token_gen, handle, state, fetching, seq, retry_s, retry_n, last, page } = s;
+            let Src { sid, client, token_gen, handle, state, fetching, seq, retry_s, retry_n, last, page, deferred: _ } = s;
             Source { sid: *sid, client: client.map(|c| c.instance_gen()), token_gen: *token_gen,
                 handle: handle.clone(), state: match state { HubState::Loading => 0, HubState::Ready => 1, HubState::Failed => 2 },
                 fetching: *fetching, seq: *seq, retry_bits: retry_s.to_bits(), retry_n: *retry_n, last: last.clone(), page: page.clone() }
@@ -170,7 +171,9 @@ fn source_build(b: &SourceBuild, w: &mut impl Sink) {
     for item in cw { let CwItem { last_viewed_at, m } = item; w.u64(*last_viewed_at as u64); movie(m, w); }
     w.u64(shelves.len() as u64);
     for shelf in shelves {
-        let Shelf { title, hub_id, key, items, positions, total, offset, end, more } = shelf;
+        // `row` is paging state a row only has after a user asked for more; a boot capture has none,
+        // so the canonical encoding (and every recorded hash) stays what it was.
+        let Shelf { title, hub_id, key, items, positions, total, offset, end, more, row: _ } = shelf;
         for text in [title, hub_id, key] { w.text(text); }
         movies(items, w);
         w.u64(positions.len() as u64); for position in positions { w.u64(*position as u64); }

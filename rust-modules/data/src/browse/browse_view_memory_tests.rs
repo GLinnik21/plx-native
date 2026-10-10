@@ -88,7 +88,7 @@ fn library_on(pms: &Pms, machine: &str, title: &str, kind: SecKind) -> TestBrows
 #[cfg(feature = "devtriggers")]
 fn pump_until_landed(browse: &mut TestBrowse) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    browse.state.want(0, PAGE);
+    browse.state.want(0, PAGE, None);
     while browse.state.cur_state().is_some_and(|state| state.total < 0)
         && std::time::Instant::now() < deadline {
         let _ = browse.pump();

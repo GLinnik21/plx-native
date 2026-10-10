@@ -317,3 +317,41 @@ fn a_stale_or_superseded_landing_is_dropped_whole() {
     );
     reset(&mut o.state, &o.adapter);
 }
+
+/// **Home over forty servers asks all forty and never has more than four hub fetches out at
+/// once** (`stores::fanout`). A source that is not granted stays wanted and is kicked on a later
+/// tick; an authoritative refetch, which wants every source at once, goes through the same gate.
+#[test]
+fn home_hubs_over_forty_servers_are_fetched_four_at_a_time() {
+    let _g = plx_base::testlock::serial();
+    let mut o = Owner::default();
+    plx_plex::plex::reset_servers_for_test();
+    reset(&mut o.state, &o.adapter);
+    for n in 0..40 {
+        plx_plex::plex::register_for_test(&format!("hub-fan-{n}"), "127.0.0.1", 9, "t", "cid");
+    }
+    let mut asked = std::collections::BTreeSet::new();
+    let mut first = true;
+    for _ in 0..200 {
+        let mut launched = Vec::new();
+        let mut launch = |request: HubRequest| { launched.push(request.sid.raw()); true };
+        if first {
+            first = false;
+            let _ = request_refetch_hubs_with_scope(&mut o.state, &o.adapter, &BrowseScope::standalone(), &mut launch);
+        } else {
+            let _ = step_landings_with(&mut o.state, &o.adapter, Some(0.016), Vec::new, &mut launch);
+        }
+        asked.extend(launched);
+        let out = o.state.srcs.iter().filter(|s| s.fetching).count();
+        assert!(out <= crate::stores::fanout::WIDTH, "{out} hub fetches out at once");
+        // every fetch that is out answers before the next tick
+        for s in o.state.srcs.iter_mut().filter(|s| s.fetching) {
+            s.fetching = false;
+            s.state = HubState::Ready;
+        }
+        if asked.len() == 40 { break; }
+    }
+    assert_eq!(asked.len(), 40, "a wanted source was never asked");
+    reset(&mut o.state, &o.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}

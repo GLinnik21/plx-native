@@ -41,14 +41,21 @@ impl EndpointRefreshSet {
         self.ids.push(request.sid);
         true
     }
+    pub fn is_empty(&self) -> bool { self.ids.is_empty() }
     pub fn merge(&mut self, other: Self) {
         for request in other.iter() { self.insert(request); }
     }
     pub fn iter(&self) -> impl Iterator<Item = EndpointRefresh> + '_ {
         self.ids.iter().map(|&sid| EndpointRefresh { sid })
     }
-    pub fn emit<H: EndpointRefreshHost>(self, fx: &mut plx_machine::machine::Effects<'_, H>) {
+    /// Push as many refreshes as this step has room for and hand back the rest in order, which
+    /// the caller carries into its next step. `MAX_EMIT_PER_STEP` is a work bound on one step, so
+    /// it is the emitter that yields to it: nothing is dropped, and a roster of any size drains.
+    pub fn emit<H: EndpointRefreshHost>(mut self, fx: &mut plx_machine::machine::Effects<'_, H>) -> Self {
+        let room = fx.remaining() as usize;
+        let rest = self.ids.split_off(room.min(self.ids.len()));
         for request in self.iter() { fx.push(plx_machine::machine::Fx::App(H::endpoint_refresh(request))); }
+        Self { ids: rest }
     }
 }
 
@@ -99,5 +106,42 @@ mod tests {
             RETRY_MAX_S,
             "and it never grows past it (nor overflows)"
         );
+    }
+
+    struct EmitHost;
+    impl plx_machine::machine::Host for EmitHost {
+        type Arg = plx_machine::machine::BareArg;
+        type Fx = ServerId;
+        type Msg = ();
+        type Elem = u32;
+        type Views<'a> = ();
+        type Init = ();
+        type Memory = ();
+    }
+    impl EndpointRefreshHost for EmitHost {
+        fn endpoint_refresh(request: EndpointRefresh) -> ServerId { request.sid }
+    }
+
+    /// The work bound on one machine step stays; the emitter, not the bound, yields to it. Forty
+    /// servers failing in one step are all refreshed across steps, none dropped.
+    #[test]
+    fn forty_failing_servers_are_all_refreshed_without_overrunning_one_step() {
+        use plx_machine::machine::{Effects, Fx, MachineId, Stamped, MAX_EMIT_PER_STEP};
+        let mut set = EndpointRefreshSet::default();
+        for id in 0..40 { set.insert(EndpointRefresh { sid: ServerId::from_raw(id) }); }
+        let mut present = plx_machine::present::Present::new();
+        let mut seen = Vec::new();
+        let mut steps = 0;
+        while set.iter().next().is_some() {
+            let mut buf: Vec<Stamped<EmitHost>> = Vec::new();
+            let mut fx = Effects::new(&mut buf, MachineId::Nav, &mut present);
+            set = set.emit(&mut fx);
+            drop(fx);
+            assert!(buf.len() as u32 <= MAX_EMIT_PER_STEP);
+            seen.extend(buf.into_iter().map(|s| match s.fx { Fx::App(sid) => sid.raw(), _ => unreachable!() }));
+            steps += 1;
+            assert!(steps < 100, "the carry never drains");
+        }
+        assert_eq!(seen, (0..40).collect::<Vec<u16>>());
     }
 }

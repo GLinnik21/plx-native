@@ -37,14 +37,14 @@ pub mod initial;
 /// screen indexes into, not a per-server one — see [`allot`] for how the sources divide it.
 ///
 /// A bound exists because the catalog is resident memory on a TV with a few hundred MB for the
-/// whole app, and only the Recently Added listings page (`docs/pms-api.md` §3), so nothing else
-/// limits what a server (or a household of shares) may send. 2,048 is about 170 full rows of 12,
+/// whole app, and the hub rows page through their keys (`docs/pms-api.md` §3) while the hub list
+/// itself does not, so nothing else limits what a server (or a household of shares) may send. 2,048 is about 170 full rows of 12,
 /// an order of magnitude past any Home a person scrolls and measured on the TV (`home-grid-deep`,
 /// issue #395) at 2,040 cards, about 1,343 KB of catalog (about 0.65 KB a card, 170 hubs); the
 /// `hubs: landed` log line reports the live figure. It used to be 256, which cut a Home of more
 /// than about 21 rows off in the middle.
 ///
-/// An ordinary row spends its published card count; a Recently Added row spends at most 12 slots
+/// An ordinary row spends its published card count; a row that pages spends at most 12 slots
 /// ([`shelf_cost`]) while holding a moving window of at most 24 cards, so the published rows hold
 /// at most twice this budget, plus at most eight retained heroes.
 ///
@@ -192,6 +192,8 @@ pub struct PmsState {
     /// Moves every time the published catalog is replaced. See the retired `CATALOG_GEN` static's
     /// doc.
     pub catalog_gen: u32,
+    /// Which sources may have a hub fetch out this tick ([`crate::stores::fanout`]).
+    fanout: crate::stores::fanout::Fanout,
 }
 
 impl Default for PmsState {
@@ -204,6 +206,7 @@ impl Default for PmsState {
             hub_gen: 0,
             last_sections_gen: 0,
             catalog_gen: 0,
+            fanout: Default::default(),
         }
     }
 }
@@ -649,7 +652,10 @@ fn request_refetch_hubs_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapte
     for s in srcs.iter_mut() {
         s.fetching = false;
         s.page = None;
-        if let Some(request) = retry_now_with(gen, adapter, s, scope, launch) { endpoints.insert(request); }
+    }
+    let mut turn = fanout_turn(&mut state.fanout, &srcs, |_| true);
+    for s in srcs.iter_mut() {
+        if let Some(request) = retry_now_gated(&mut turn, gen, adapter, s, scope, launch) { endpoints.insert(request); }
     }
     state.srcs = srcs;
     endpoints
@@ -795,6 +801,10 @@ struct Shelf {
     end: usize,
     #[serde(default)]
     more: bool,
+    /// How the window relates to its listing, and the keys the row has shown. Absent for a row that
+    /// has not paged, so an older recording decodes unchanged.
+    #[serde(default, skip_serializing_if = "paging::RowState::is_default")]
+    row: paging::RowState,
 }
 
 impl Shelf {
@@ -825,14 +835,34 @@ struct PageQuery {
     hidden: Vec<i64>,
 }
 
-fn recent_listing(id: &str, key: &str) -> bool {
-    plx_plex::plex::hub_title::is_recently_added_hub(id)
-        && plx_plex::plex::is_pageable_hub_key(key)
+/// Whether a hub's listing is one the pager reads: every row whose key [`is_pageable_hub_key`]
+/// admits pages, whatever it is called. A row whose key is not admitted keeps its preview.
+fn pages(key: &str) -> bool {
+    plx_plex::plex::is_pageable_hub_key(key)
 }
 
 // Paging must not spend the preview slots of another row. Each window is still bounded to 24.
 fn shelf_cost(shelf: &Shelf, len: usize) -> usize {
-    if recent_listing(&shelf.hub_id, &shelf.key) { len.min(HUB_FETCH_COUNT as usize) } else { len }
+    if pages(&shelf.key) { len.min(HUB_FETCH_COUNT as usize) } else { len }
+}
+
+/// How a fresh preview row starts: a row the pager will read waits for its first forward ask to
+/// compare the preview with its listing; every other row is its preview, and Recently Added rows
+/// are the head of their listing by definition.
+fn preview_row(id: &str, key: &str) -> paging::RowState {
+    if plx_plex::plex::is_pageable_hub_key(key) && !plx_plex::plex::hub_title::is_recently_added_hub(id) {
+        paging::RowState { mode: paging::RowMode::Unprobed, ledger: None }
+    } else {
+        paging::RowState::default()
+    }
+}
+
+/// The event-log line for a hub that holds more than its preview behind a key the pager does not
+/// read, so those rows are findable in a log; `None` after the first time for the same hub and key.
+fn unpaged_line(id: &str, key: &str) -> Option<String> {
+    static SEEN: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(Default::default);
+    let first = SEEN.lock().ok()?.insert(format!("{id} {key}"));
+    first.then(|| format!("hubs: {id} holds more than its preview but its key {key} is not paged; the preview stays"))
 }
 
 fn find_shelf<'a>(shelves: &'a [Shelf], id: &str, key: &str) -> Option<&'a Shelf> {
@@ -845,7 +875,7 @@ fn request_page(state: &mut PmsState, adapter: &PmsAdapter, sid: ServerId,
     if refresh_src_lifecycle(source) { return None; }
     if source.fetching || source.page.is_some() || source.state != HubState::Ready { return None; }
     let Some(shelf) = source.last.as_ref().and_then(|build| find_shelf(&build.shelves, id, key)) else { return None };
-    if !recent_listing(id, key) || (before && shelf.offset == 0) || (!before && !shelf.more) { return None; }
+    if !pages(key) || (before && shelf.offset == 0) || (!before && !shelf.more) { return None; }
     let start = if before { shelf.offset } else { shelf.end.max(shelf.offset + shelf.items.len()) };
     source.retry_n = 0;
     source.page = Some(PageQuery { id: id.into(), key: key.into(), start, before,
@@ -885,23 +915,176 @@ fn hidden_sections(scope: &BrowseScope, sid: ServerId) -> Vec<i64> {
 }
 
 fn fetch_page(client: &plx_plex::plex::Client, sid: ServerId, page: &PageQuery, minimum_end: usize) -> Option<SourceBuild> {
-    fetch_window(sid, page, None, minimum_end, |start, size| client.hub_items_paged(&page.key, start as i64, size as i64))
+    fetch_row(sid, page, None, minimum_end, |start, size| client.hub_items_paged(&page.key, start as i64, size as i64),
+        |keys| many_items(client, keys))
 }
 
+/// The batch read the ledger re-materialises a window through: one row per key, in request order.
+fn many_items(client: &plx_plex::plex::Client, keys: &[String]) -> Option<plx_plex::plex::MediaContainer> {
+    client.metadata_many(&keys.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// The window a shelf holds, in the shape [`paging`] moves.
+fn shelf_window(shelf: &Shelf) -> (Vec<paging::Row>, paging::PageInfo) {
+    let rows = shelf.positions.iter().copied().zip(shelf.items.iter().map(Arc::clone)).collect();
+    (rows, paging::PageInfo { offset: shelf.offset, end: shelf.end, total: shelf.total, more: shelf.more, unstable: false })
+}
+
+/// One ask against a row's window, on the sliding window of [`paging`]; `list(start, size)` is one
+/// page of the row's listing and `many(keys)` a batch read of items by rating key.
+///
+/// A row not yet compared with its listing (`RowMode::Unprobed`) reads the listing from 0 on its
+/// first forward ask. If the listing starts with the preview's rating keys, the row's positions are
+/// listing offsets. If not (a `random` hub shows a sample), the row is the preview followed by the
+/// listing minus the preview's keys, and a position past the preview is a listing offset plus the
+/// preview's length.
+///
+/// A row whose listing does not hold between requests (the edge row is nowhere near where it was),
+/// or whose server ignores paging (a read is answered from another offset), moves onto its ledger
+/// of shown keys instead of stopping, so every item is still reached and none is shown twice.
+fn fetch_row(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_end: usize,
+    mut list: impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>,
+    mut many: impl FnMut(&[String]) -> Option<plx_plex::plex::MediaContainer>) -> Option<SourceBuild> {
+    let mut held = current.map(shelf_window);
+    let mut state = current.map(|shelf| shelf.row.clone()).unwrap_or_default();
+    let ignored = std::cell::Cell::new(false);
+    let mut raw = |start: usize, size: usize| {
+        let mc = list(start, size)?;
+        if mc.offset != start as i64 { ignored.set(true); }
+        Some(mc)
+    };
+    let mut start = page.start;
+    let mut absorbed = false;
+    if matches!(state.mode, paging::RowMode::Unprobed) && !page.before {
+        if let Some((rows, info)) = held.as_mut() {
+            let mc = raw(0, info.end.max(1))?;
+            if ignored.get() {
+                absorbed = true;
+                state.mode = paging::RowMode::Head;
+            } else if rows.iter().all(|(position, item)| mc.metadata.get(*position)
+                .is_some_and(|listed| clean(&listed.rating_key) == item.rk)) {
+                state.mode = paging::RowMode::Head;
+            } else {
+                let preview: Vec<String> = rows.iter().map(|(_, item)| item.rk.clone()).collect();
+                for (i, row) in rows.iter_mut().enumerate() { row.0 = i; }
+                (info.offset, info.end) = (0, preview.len());
+                start = info.end;
+                state.mode = paging::RowMode::Sample(preview);
+            }
+        }
+    }
+    let ask = paging::Ask { start, before: page.before, hidden: &page.hidden };
+    let preview_len = match &state.mode { paging::RowMode::Sample(preview) => preview.len(), _ => 0 };
+    let result;
+    if let Some((rows, info)) = held.as_ref().filter(|_| state.ledger.as_ref().is_some_and(|ledger| ledger.active)) {
+        let mut ledger = state.ledger.clone()?;
+        result = Some(paging::ledger_window(sid, &ask, (rows, *info), &mut ledger, &mut raw, &mut many)?);
+        state.ledger = Some(ledger);
+    } else {
+        let step = if absorbed { None } else {
+            let held_ref = held.as_ref().map(|(rows, info)| (rows.as_slice(), *info));
+            match &state.mode {
+                paging::RowMode::Sample(preview) => {
+                    let total = held_ref.map_or(0, |(_, info)| info.total);
+                    let mut sample = sample_listing(preview, total, &ignored, &mut raw, &mut many);
+                    paging::fetch_window(sid, &ask, held_ref, minimum_end, &mut sample)
+                }
+                _ => paging::fetch_window(sid, &ask, held_ref, minimum_end, &mut raw),
+            }
+        };
+        // A window that came back holding a key the row showed before the rows it kept is a listing
+        // that shifted by more than an edge check can tell: it stands in for an edge that is lost.
+        let switch = absorbed || match &step {
+            Some((rows, info)) => info.unstable
+                || state.ledger.as_ref().is_some_and(|ledger| ledger.contradicts(rows)),
+            None => ignored.get(),
+        };
+        if !switch {
+            let (rows, mut info) = step?;
+            if let Some((held_rows, _)) = &held {
+                let ledger = state.ledger.get_or_insert_with(Default::default);
+                ledger.note(held_rows);
+                ledger.note(&rows);
+            }
+            if info.total > 0 { info.total = info.total.saturating_sub(preview_len); }
+            result = Some((rows, info));
+        } else if let Some((rows, info)) = &held {
+            let mut ledger = state.ledger.take().unwrap_or_default();
+            ledger.note(rows);
+            ledger.active = true;
+            ledger.next = info.end.saturating_sub(preview_len);
+            ledger.done = false;
+            ledger.idle = 0;
+            ledger.added = 0;
+            ledger.rescans = 0;
+            ledger.filtered = 0;
+            result = Some(paging::ledger_window(sid, &ask, (rows, *info), &mut ledger, &mut raw, &mut many)?);
+            state.ledger = Some(ledger);
+        } else {
+            return None;
+        }
+    }
+    let (rows, info) = result?;
+    let (positions, items) = rows.into_iter().unzip();
+    Some(SourceBuild { cw: Vec::new(), shelves: vec![Shelf {
+        title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
+        total: info.total, offset: info.offset, end: info.end, more: info.more, row: state,
+    }] })
+}
+
+/// The row of a `random` hub as one listing: positions below the preview's length are its cards,
+/// read by key; the rest are the listing from its first row, with a row the preview already shows
+/// left blank so positions stay aligned and the card is not shown twice. `total` is the listing's
+/// count when known; the container reports it with the preview's length added.
+fn sample_listing<'a>(preview: &'a [String], total: usize, ignored: &'a std::cell::Cell<bool>,
+    list: &'a mut dyn FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>,
+    many: &'a mut dyn FnMut(&[String]) -> Option<plx_plex::plex::MediaContainer>,
+) -> impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer> + 'a {
+    use plx_plex::plex::{MediaContainer, Metadata};
+    let blank = |key: &str| Metadata { rating_key: key.into(), ..Metadata::default() };
+    move |start, size| {
+        let length = preview.len();
+        let mut metadata = Vec::new();
+        let mut listing_total = (total > 0).then_some(total);
+        if start < length {
+            let keys = &preview[start..(start + size).min(length)];
+            let mut read = many(keys)?.metadata;
+            for key in keys {
+                let found = read.iter().position(|item| clean(&item.rating_key) == *key);
+                metadata.push(found.map_or_else(|| blank(key), |i| read.swap_remove(i)));
+            }
+        }
+        let from = start.max(length);
+        if start + size > from {
+            let want = start + size - from;
+            let mc = list(from - length, want)?;
+            if mc.offset != (from - length) as i64 {
+                ignored.set(true);
+                return Some(MediaContainer { offset: -1, ..MediaContainer::default() });
+            }
+            if mc.total_size > 0 { listing_total = Some(mc.total_size as usize); }
+            metadata.extend(mc.metadata.into_iter().take(want).map(|item| {
+                if preview.contains(&clean(&item.rating_key)) { blank("") } else { item }
+            }));
+        }
+        Some(MediaContainer { offset: start as i64, total_size: listing_total.map_or(0, |n| (n + length) as i64),
+            metadata, ..MediaContainer::default() })
+    }
+}
+
+/// The window of a row on the plain sliding window alone: no ledger, no batch read. What the
+/// characterisation tests of that window run against.
+#[cfg(test)]
 fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_end: usize,
     fetch: impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>) -> Option<SourceBuild> {
     let ask = paging::Ask { start: page.start, before: page.before, hidden: &page.hidden };
-    let current = current.map(|shelf| {
-        let rows = shelf.positions.iter().copied().zip(shelf.items.iter().map(Arc::clone)).collect::<Vec<_>>();
-        (rows, paging::PageInfo { offset: shelf.offset, end: shelf.end, total: shelf.total, more: shelf.more,
-            unstable: false })
-    });
+    let current = current.map(shelf_window);
     let (rows, info) = paging::fetch_window(sid, &ask, current.as_ref().map(|(rows, info)| (rows.as_slice(), *info)),
         minimum_end, fetch)?;
     let (positions, items) = rows.into_iter().unzip();
     Some(SourceBuild { cw: Vec::new(), shelves: vec![Shelf {
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
-        total: info.total, offset: info.offset, end: info.end, more: info.more,
+        total: info.total, offset: info.offset, end: info.end, more: info.more, row: Default::default(),
     }] })
 }
 
@@ -920,6 +1103,7 @@ fn land_page(source: &mut Src, page: &PageQuery, build: SourceBuild) -> bool {
     current.end = next.end;
     current.more = next.more;
     current.total = next.total;
+    current.row = next.row;
     true
 }
 
@@ -1028,6 +1212,9 @@ fn project(
             .unwrap_or("");
         let identifier_is_unique =
             hub_identifier_counts.get(hub.hub_identifier.as_str()).copied().unwrap_or(0) <= 1;
+        if !plx_plex::plex::is_pageable_hub_key(&hub.key) && (hub.more || hub.total() > hub.metadata.len()) {
+            if let Some(line) = unpaged_line(&hub.hub_identifier, &hub.key) { plx_base::eventlog::log(&line); }
+        }
         out.shelves.push(Shelf {
             title: plx_plex::plex::hub_title::localized_hub_title(
                 plx_plex::plex::hub_title::Scope::Home { library, identifier_is_unique },
@@ -1040,8 +1227,9 @@ fn project(
             total: hub.total(),
             offset: 0,
             end: hub.metadata.len(),
-            more: recent_listing(&hub.hub_identifier, &hub.key)
+            more: pages(&hub.key)
                 && (hub.more || hub.total() > hub.metadata.len() || hub.metadata.len() >= HUB_FETCH_COUNT as usize),
+            row: preview_row(&hub.hub_identifier, &hub.key),
         });
     }
     out
@@ -1362,6 +1550,9 @@ struct Src {
     page: Option<PageQuery>,
     retry_s: f32,
     retry_n: u32,
+    /// A fetch was wanted and the fan-out gate had no room for it. Stays set until the fetch starts,
+    /// so the tick asks again; nothing is dropped.
+    deferred: bool,
     /// The projection this source last ANSWERED with, kept across a failure. This is what makes a
     /// failure never blank a populated Home; `None` (never answered) is what makes a dead source
     /// contribute nothing at all — no heading, no empty shelf, no spinner row.
@@ -1385,9 +1576,9 @@ impl Src {
             window: self.page.as_ref().and_then(|page| self.last.as_ref().and_then(|build|
                 find_shelf(&build.shelves, &page.id, &page.key))).cloned(),
             windows: self.last.as_ref().map_or_else(Vec::new, |build| build.shelves.iter()
-                .filter(|shelf| recent_listing(&shelf.hub_id, &shelf.key)
+                .filter(|shelf| pages(&shelf.key)
                     && (shelf.offset > 0 || shelf.end > HUB_FETCH_COUNT as usize))
-                .map(|shelf| (PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(), start: shelf.offset, before: false, hidden: Vec::new() }, shelf.end)).collect()),
+                .map(|shelf| (PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(), start: shelf.offset, before: false, hidden: Vec::new() }, shelf.end, shelf.clone())).collect()),
         };
         self.client = Some(client);
         self.token_gen = request.token_gen;
@@ -1411,6 +1602,7 @@ impl Src {
             page: None,
             retry_s: 0.0,
             retry_n: 0,
+            deferred: false,
             last: None,
         }
     }
@@ -1434,12 +1626,13 @@ fn refresh_src_lifecycle(s: &mut Src) -> bool {
     // Retained cards may still paint during the new profile's fetch, but its request must
     // start at the preview rather than reuse the previous profile's listing positions.
     if let Some(build) = s.last.as_mut() {
-        for shelf in build.shelves.iter_mut().filter(|shelf| recent_listing(&shelf.hub_id, &shelf.key)) {
+        for shelf in build.shelves.iter_mut().filter(|shelf| pages(&shelf.key)) {
             shelf.items.truncate(HUB_FETCH_COUNT as usize);
             shelf.positions.truncate(HUB_FETCH_COUNT as usize);
             shelf.offset = 0;
             shelf.end = 0;
             shelf.more = false;
+            shelf.row = preview_row(&shelf.hub_id, &shelf.key);
         }
     }
     s.state = HubState::Loading;
@@ -1476,7 +1669,9 @@ pub struct HubRequest {
     client: LandingClient,
     token_gen: u32,
     page: Option<PageQuery>,
-    windows: Vec<(PageQuery, usize)>,
+    /// Each row that has moved off its preview: where to reload it, how far it had read, and the row
+    /// itself (a sample or ledger row cannot be re-read at an offset, so the refresh keeps it).
+    windows: Vec<(PageQuery, usize, Shelf)>,
     window: Option<Shelf>,
 }
 
@@ -1489,17 +1684,32 @@ impl HubRequest {
     }
     fn fetch(&self) -> Option<SourceBuild> {
         match &self.page {
-            Some(page) => fetch_window(self.sid, page, self.window.as_ref(), 0, |start, size|
-                self.client.resource.hub_items_paged(&page.key, start as i64, size as i64)),
+            Some(page) => fetch_row(self.sid, page, self.window.as_ref(), 0,
+                |start, size| self.client.resource.hub_items_paged(&page.key, start as i64, size as i64),
+                |keys| many_items(self.client.resource, keys)),
             None => {
                 let mut build = fetch_source(self.client.resource, self.sid)?;
-                for (window, end) in &self.windows {
+                for (window, end, old) in &self.windows {
                     let Some(shelf) = build.shelves.iter_mut().find(|shelf| shelf.is(&window.id, &window.key)) else { continue };
+                    if matches!(old.row.mode, paging::RowMode::Sample(_)) || old.row.ledger.as_ref().is_some_and(|ledger| ledger.active) {
+                        // A random hub's sample is new on every read and a ledger's positions are not
+                        // listing offsets, so neither can be reloaded where it stood. The row keeps
+                        // its window, which is also what keeps the user's card where it is.
+                        let title = shelf.title.clone();
+                        *shelf = old.clone();
+                        shelf.title = title;
+                        continue;
+                    }
                     // `/hubs` itself answered: a failed window reload keeps the first-page shelf.
                     let Some(mut refreshed) = fetch_page(self.client.resource, self.sid, window, *end)
                         .and_then(|page| page.shelves.into_iter().next()) else { continue };
                     if !refreshed.items.is_empty() {
                         refreshed.title = shelf.title.clone();
+                        if let Some(mut ledger) = old.row.ledger.clone() {
+                            let (rows, _) = shelf_window(&refreshed);
+                            ledger.note(&rows);
+                            refreshed.row.ledger = Some(ledger);
+                        }
                         *shelf = refreshed;
                     }
                 }
@@ -1921,7 +2131,7 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, l
     };
     let Some(mut request) = s.begin_request(c, gen,
         || adapter.next_request.fetch_add(1, Ordering::Relaxed)) else { return None };
-    for (window, _) in &mut request.windows { window.hidden = hidden_sections(scope, request.sid); }
+    for (window, _, _) in &mut request.windows { window.hidden = hidden_sections(scope, request.sid); }
     let sid = request.sid;
     let spawned = launch(request);
     if !spawned {
@@ -2017,13 +2227,46 @@ pub fn with_refused_fetches_for_test<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Is this source waiting on a fetch the tick should start (its countdown aside)? Not Ready, a page
+/// request pending, or a fetch the gate had no room for.
+fn source_waiting(s: &Src) -> bool {
+    (s.state != HubState::Ready || s.page.is_some() || s.deferred) && !s.fetching
+}
+
+/// Open a pump of the fan-out gate over `srcs`: the fetches out are the single-flight latches
+/// held, and `wanting` picks the sources that want one now, in display order.
+fn fanout_turn(fanout: &mut crate::stores::fanout::Fanout, srcs: &[Src],
+    wanting: impl Fn(&Src) -> bool) -> crate::stores::fanout::FanoutTurn {
+    let running = srcs.iter().filter(|s| s.fetching).count();
+    let wanting: Vec<usize> = srcs.iter().filter(|s| !s.fetching && wanting(s))
+        .map(|s| s.sid.raw() as usize).collect();
+    fanout.begin(running, &wanting)
+}
+
+/// [`kick_with`] behind the fan-out gate. A source that is out already is not asking; one the gate
+/// has no room for is marked [`Src::deferred`] and kicked by a later tick.
+fn kick_gated(turn: &mut crate::stores::fanout::FanoutTurn, gen: u32, adapter: &PmsAdapter, s: &mut Src,
+    scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+    if s.fetching {
+        return None;
+    }
+    if !turn.admit(s.sid.raw() as usize) {
+        s.deferred = true;
+        return None;
+    }
+    s.deferred = false;
+    kick_with(gen, adapter, s, scope, launch)
+}
+
 /// The Retry control's kick: try every source again NOW, from the bottom of the ladder — a person
 /// who asks for it should never be made to sit out a 30-second automatic wait. A no-op for any
 /// source whose fetch is already in flight; a pending page request is re-sent by the same kick.
-fn retry_now_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+/// Behind the fan-out gate: the sources it has no room for are kicked by the following ticks.
+fn retry_now_gated(turn: &mut crate::stores::fanout::FanoutTurn, gen: u32, adapter: &PmsAdapter, s: &mut Src,
+    scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
     s.retry_n = 0;
     s.retry_s = 0.0;
-    kick_with(gen, adapter, s, scope, launch)
+    kick_gated(turn, gen, adapter, s, scope, launch)
 }
 
 /// Move the worker mailbox into one owned batch. No source or catalog state changes here.
@@ -2185,8 +2428,9 @@ fn controlled_work_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, c
             let gen = state.hub_gen;
             let mut srcs = std::mem::take(&mut state.srcs);
             let mut endpoints = crate::stores::EndpointRefreshSet::default();
+            let mut turn = fanout_turn(&mut state.fanout, &srcs, |_| true);
             for source in srcs.iter_mut() {
-                if let Some(request) = retry_now_with(gen, adapter, source, scope, launch) { endpoints.insert(request); }
+                if let Some(request) = retry_now_gated(&mut turn, gen, adapter, source, scope, launch) { endpoints.insert(request); }
             }
             state.srcs = srcs;
             endpoints
@@ -2266,9 +2510,10 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     // backoff owed) or a Loading whose worker landed stale and was dropped — the latter owes
     // nothing, so it re-kicks on the spot rather than wedging that source on a spinner forever.
     if let Some(dt) = dt {
+        let mut turn = fanout_turn(&mut state.fanout, &srcs, |s| source_waiting(s) && s.retry_s - dt <= 0.0);
         for s in srcs.iter_mut() {
-            if (s.state != HubState::Ready || s.page.is_some()) && !s.fetching && retry_due(s, dt) {
-                if let Some(request) = kick_with(cur, adapter, s, scope, &mut *launch) { endpoints.insert(request); }
+            if source_waiting(s) && retry_due(s, dt) {
+                if let Some(request) = kick_gated(&mut turn, cur, adapter, s, scope, &mut *launch) { endpoints.insert(request); }
             }
         }
     }
@@ -2346,7 +2591,7 @@ fn build_test(n: usize) -> SourceBuild {
                     ..PmsMovie::default()
                 }))
                 .collect(),
-            total: 0, offset: 0, end: 0, more: false, positions: (0..n).collect(),
+            total: 0, offset: 0, end: 0, more: false, positions: (0..n).collect(), row: Default::default(),
         }],
     }
 }
@@ -2409,7 +2654,7 @@ pub fn seed_two_library_home_for_test(
             hub_id: "home.movies.recent".into(),
             key: String::new(),
             items: vec![item(&sections[0], "alpha"), item(&sections[1], "beta")],
-            total: 0, offset: 0, end: 0, more: false, positions: Vec::new(),
+            total: 0, offset: 0, end: 0, more: false, positions: Vec::new(), row: Default::default(),
         }],
     });
     let scope = BrowseScope::retained(directory);
@@ -2674,3 +2919,7 @@ impl plx_base::tile::Tile for PmsMovie {
         self.unwatched
     }
 }
+
+#[cfg(test)]
+#[path = "pms_hub_row_paging_tests.rs"]
+mod hub_row_paging_tests;

@@ -8,7 +8,6 @@ pub(super) const COLS: usize = 6;
 const EPISODE_COLS: usize = 4;
 pub(super) const MAX_LIBRARY_PILLS: usize = 8;
 pub(super) use plx_ui::cards::{GridBand, MAX_GRID_BANDS};
-pub(super) const MAX_LETTERS: usize = 64;
 pub(super) const CONTENT_TOP: f32 = plx_ui::consts::GRID_TOP_Y;
 pub(super) const LIBRARY_ROW_H: f32 = plx_ui::widgets::StatusOverlay::CTRL_H + plx_ui::consts::CARD_DY + plx_ui::consts::TITLE_DY;
 pub(super) const GRID_HEAD_H: f32 = plx_ui::consts::TITLE_DY
@@ -298,7 +297,6 @@ impl Layout {
     /// Grid rows one screenful spans below the content top: a row revealed at the top of the
     /// viewport leaves every row at least this far below it undrawn. The grid head band only
     /// pushes rows further down, so the document's head shows no more than this either.
-    #[cfg(any(test, feature = "devtriggers"))]
     pub(super) fn rows_per_screen(&self) -> usize {
         ((SCR_H - CONTENT_TOP) / self.grid_pitch()).ceil() as usize
     }
