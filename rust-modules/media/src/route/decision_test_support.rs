@@ -113,7 +113,7 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> plx_base::testlock::Se
 /// A `ServerId` naming a slot nothing is registered in — so `client_for` answers `None` and
 /// `build_stream` takes its no-client exit without opening a socket.
 pub(super) fn unregistered_sid() -> ServerId {
-    let id = ServerId::from_raw((plx_plex::plex::MAX_SERVERS - 1) as u16);
+    let id = ServerId::from_raw(40);
     assert!(
         plx_plex::plex::client_for(id).is_none(),
         "the test needs an EMPTY slot"

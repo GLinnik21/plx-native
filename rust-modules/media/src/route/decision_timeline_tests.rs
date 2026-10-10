@@ -13,8 +13,8 @@ use super::test_support::apply_plan;
 fn the_machine_id_cache_is_scoped_to_the_server_that_taught_it() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let a = ServerId::from_raw((plx_plex::plex::MAX_SERVERS - 2) as u16);
-    let b = ServerId::from_raw((plx_plex::plex::MAX_SERVERS - 1) as u16);
+    let a = ServerId::from_raw(40);
+    let b = ServerId::from_raw(41);
     assert!(plx_plex::plex::client_for(a).is_none() && plx_plex::plex::client_for(b).is_none());
 
     apply_plan(&mut ps, 

@@ -55,10 +55,11 @@
 //! **A revoked slot number is never handed out again**, not even to the same `machineIdentifier`.
 //! [`ServerId`]'s whole contract is that it names one server for the life of the process — it sits
 //! in UI state, in routes, in queued jobs — and every per-server store in the app (`search`'s
-//! mailboxes, `serverinfo`, `person`'s per-source records) is a flat array indexed by
-//! [`ServerId::raw`]. Reusing a number would file the previous account's results under the new
+//! mailboxes, `serverinfo`, `person`'s fetches) is a table keyed by [`ServerId::raw`], grown to
+//! the ids that exist. Reusing a number would file the previous account's results under the new
 //! account's server, which is the very leak this exists to close. The cost is that sign-out /
-//! sign-in cycles consume slots: past `SLOT_LIMIT` (every `u16` but the reserved one) registration
+//! sign-in cycles consume slots (a sign-out also removes the revoked slots' rows from
+//! those tables): past `SLOT_LIMIT` (every `u16` but the reserved one) registration
 //! is refused and says so in the log. That is 65,535 registrations in one process, which for a
 //! household of one or two servers is a great many sign-outs; the table itself grows by segments,
 //! so no earlier ceiling sits between a sign-out and that one.
@@ -97,13 +98,6 @@ impl ConnectionFacts {
         Self { tier, ip }
     }
 }
-
-/// The registry's first table size, kept as a DEPRECATED alias for the dependants that still size
-/// their own per-server arrays by it: [`super::serverinfo`], [`super::retry`], `R/data`'s search
-/// scope, person and tape stores, and `R/src/dev.rs`. Those are the places that still carry a
-/// sixteen-server ceiling; converting each to a keyed map is the next lane's work. The registry
-/// itself has no such ceiling: see `SLOT_LIMIT`.
-pub const MAX_SERVERS: usize = 16;
 
 /// Slots per segment. A segment is the unit of allocation: one leaked block of sixteen slots
 /// serves the next sixteen slot numbers, so the registry grows without moving any slot.
@@ -1472,6 +1466,9 @@ pub fn revoke_all() {
         s.on_grant.store(false, Ordering::Release);
     });
     FLOOR.store(n, Ordering::Release);
+    // The per-server rows of the dependant tables go with the slots: the numbers are never
+    // reused, so nothing could read them again. After the floor, so a late writer finds no client.
+    super::serverinfo::forget_below(n);
     ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     if n > floor {
         plx_base::eventlog::log(&format!(
