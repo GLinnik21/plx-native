@@ -87,10 +87,13 @@ pub struct Caps {
     /// codecs into one raster bound for the PMS profile and the direct-play gate, unchanged.
     pub h264_row: (u32, u32, u32),
     pub hevc_row: (u32, u32, u32),
-    /// Diagnostic ONLY — nothing derives from it. The buffer-feed pipeline cannot feed VP9
-    /// whatever the panel decodes (route.rs's decode gate explains why), but a support log that
-    /// names a codec the panel decodes and the app still transcodes answers its own question.
+    /// The device table lists a VP9 decoder row. False in `assumed()` and on every table without
+    /// the row, which keeps VP9 a server job there. Until VP9 direct play this was a diagnostic
+    /// only and `assumed()` claimed it; now it gates the feed, so an unreadable table must not.
     pub vp9: bool,
+    /// The VP9 row's (max width, max height, ceil max frame rate), MIN-merged across duplicate
+    /// rows; 0 = not stated. Read only when `vp9`.
+    pub vp9_row: (u32, u32, u32),
     /// The device table lists an AV1 decoder row. False in `assumed()` and on every table without
     /// the row, which keeps AV1 a server transcode there. Issue #593.
     pub av1: bool,
@@ -117,7 +120,8 @@ impl Caps {
             hevc_max: (3840, 2176),
             h264_row: (0, 0, 0),
             hevc_row: (0, 0, 0),
-            vp9: true,
+            vp9: false,
+            vp9_row: (0, 0, 0),
             av1: false,
             av1_row: (0, 0, 0),
             audio: "aac,ac3,eac3".to_string(),
@@ -245,8 +249,9 @@ fn parse(s: &str) -> Option<Caps> {
         return None;
     }
     let (mut h264, mut hevc, mut vp9, mut av1) = (false, false, false, false);
-    let (mut hevc_wh, mut h264_wh, mut av1_wh) = ((0u32, 0u32), (0u32, 0u32), (0u32, 0u32));
-    let (mut hevc_fps, mut h264_fps, mut av1_fps) = (0u32, 0u32, 0u32);
+    let (mut hevc_wh, mut h264_wh, mut vp9_wh, mut av1_wh) =
+        ((0u32, 0u32), (0u32, 0u32), (0u32, 0u32), (0u32, 0u32));
+    let (mut hevc_fps, mut h264_fps, mut vp9_fps, mut av1_fps) = (0u32, 0u32, 0u32, 0u32);
     for row in &t.video_codecs {
         let wh = (row.max_width, row.max_height);
         let fps = if row.max_frame_rate.is_finite() && row.max_frame_rate > 0.0 {
@@ -266,9 +271,14 @@ fn parse(s: &str) -> Option<Caps> {
                 h264_wh = (min_nz(h264_wh.0, wh.0), min_nz(h264_wh.1, wh.1));
                 h264_fps = min_nz(h264_fps, fps);
             }
-            "vp9" => vp9 = true,
-            // AV1 is a capability bit with its own bound. It never feeds `hevc_max`, the H.264
-            // guard or the audio logic: those stay exactly as the table without it computes them.
+            // VP9 and AV1 are capability bits with their own bounds. Neither feeds `hevc_max`, the
+            // H.264 guard or the audio logic: those stay exactly as the table without them
+            // computes them.
+            "vp9" => {
+                vp9 = true;
+                vp9_wh = (min_nz(vp9_wh.0, wh.0), min_nz(vp9_wh.1, wh.1));
+                vp9_fps = min_nz(vp9_fps, fps);
+            }
             "av1" => {
                 av1 = true;
                 av1_wh = (min_nz(av1_wh.0, wh.0), min_nz(av1_wh.1, wh.1));
@@ -326,6 +336,7 @@ fn parse(s: &str) -> Option<Caps> {
             (0, 0, 0)
         },
         vp9,
+        vp9_row: (vp9_wh.0, vp9_wh.1, vp9_fps),
         av1,
         av1_row: (av1_wh.0, av1_wh.1, av1_fps),
         audio,
@@ -346,8 +357,13 @@ pub fn probe() {
                 } else {
                     String::new()
                 };
+                let vp9_row = if c.vp9 {
+                    format!(" vp9={}x{}@{}", c.vp9_row.0, c.vp9_row.1, c.vp9_row.2)
+                } else {
+                    String::new()
+                };
                 plx_base::eventlog::log(&format!(
-                    "devcaps: hevc={} {}x{} vp9={} av1={} audio={} rows: h264={}x{}@{} hevc={}x{}@{}{av1_row} (device table)",
+                    "devcaps: hevc={} {}x{} vp9={} av1={} audio={} rows: h264={}x{}@{} hevc={}x{}@{}{vp9_row}{av1_row} (device table)",
                     c.hevc,
                     c.hevc_max.0,
                     c.hevc_max.1,
@@ -482,6 +498,8 @@ mod tests {
     fn reads_the_dev_sets_real_table() {
         let c = parse(REAL).expect("the real table parses");
         assert!(c.hevc && c.vp9);
+        // the dev set's VP9 row is its own bound, not folded into the shared one
+        assert_eq!(c.vp9_row, (4096, 2304, 60));
         // H.265 (4096x2304) merged with HEVC (4096x2176) by min — NOT either row verbatim.
         assert_eq!(c.hevc_max, (4096, 2176));
         // the per-codec rows, frame rate included: H.264 is one row; "H.265"+"HEVC" MIN-merge
@@ -700,5 +718,34 @@ mod tests {
         let c = Caps::assumed();
         assert!(!c.av1);
         assert_eq!(c.av1_row, (0, 0, 0));
+    }
+
+    /// A VP9 row is a capability bit with its own bound, like AV1's: duplicate rows MIN-merge per
+    /// axis, and it never moves the shared bound (`hevc_max`) the other codecs derive from.
+    #[test]
+    fn a_vp9_row_sets_the_vp9_capability_and_its_bound() {
+        let base = r#"{"videoCodecs":[
+                {"name":"H.264","maxWidth":1920,"maxHeight":1080,"maxFrameRate":60}
+            ]}"#;
+        let with_vp9 = r#"{"videoCodecs":[
+                {"name":"H.264","maxWidth":1920,"maxHeight":1080,"maxFrameRate":60},
+                {"name":"VP9","maxWidth":3840,"maxHeight":2160,"maxFrameRate":60},
+                {"name":"VP9","maxWidth":4096,"maxHeight":2304,"maxFrameRate":30}
+            ]}"#;
+        let c = parse(with_vp9).expect("a table with a VP9 row parses");
+        assert!(c.vp9);
+        assert_eq!(c.vp9_row, (3840, 2160, 30));
+        assert_eq!(c.hevc_max, parse(base).unwrap().hevc_max);
+        let without = parse(base).unwrap();
+        assert!(!without.vp9 && without.vp9_row == (0, 0, 0));
+    }
+
+    /// The fallback never claims VP9 either: VP9 direct play is gated on the table's own row, so
+    /// an unreadable table keeps VP9 a server job, as it was before the gate existed.
+    #[test]
+    fn assumed_never_claims_vp9() {
+        let c = Caps::assumed();
+        assert!(!c.vp9);
+        assert_eq!(c.vp9_row, (0, 0, 0));
     }
 }

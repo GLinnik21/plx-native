@@ -135,8 +135,8 @@ pub fn link_policy(link: Option<Location>) -> LinkPolicy {
 
 /// Capability profile (X-Plex-Client-Profile-Extra, raw form — the QueryBuilder encodes it),
 /// as a PURE function of the device's decode capabilities: direct-play an MKV or MP4 whose video
-/// the SoC decodes (H264 everywhere; HEVC when its table says so, AV1 when the table lists the AV1
-/// row) and audio is in the caps subset, subs SRT/ASS — plus a transcode target so a source we
+/// the SoC decodes (H264 everywhere; HEVC when its table says so, VP9 / AV1 when the table lists
+/// their rows) and audio is in the caps subset, subs SRT/ASS — plus a transcode target so a source we
 /// can't direct-play is re-encoded at the panel's own bound instead of downscaled H264 1080p. The
 /// container list must agree with `route.rs::part_is_streamable` (the client-side gate): a
 /// container the app streams but the profile omits makes every MDE answer for it a contradiction of
@@ -151,12 +151,13 @@ pub fn link_policy(link: Option<Location>) -> LinkPolicy {
 ///
 /// * **Direct-play `videoCodec`** — h264 unconditionally (every webOS SoC decodes it; a table
 ///   so broken it omits h264 is a misread, and `devcaps::parse` rejects it whole), hevc only
-///   when the device's table lists the decoder, and av1 only when it carries an AV1 row (issue
-///   #593: the AV1 lanes are gated on the table alone, never on firmware or model).
+///   when the device's table lists the decoder, and vp9 / av1 only when it carries their rows
+///   (issue #593: these lanes are gated on the table alone, never on firmware or model).
 /// * **`video.width`/`video.height` upper bounds** — `caps.hevc_max`, the table's own merged
 ///   numbers (the dev set: 4096x2176; the pre-devcaps constants 3840x2176 remain the fallback).
-///   With an AV1 row, an `av1`-scoped limitation tightens each axis the row measures, but only
-///   where the row is strictly tighter than `hevc_max` (see `av1_limits` below).
+///   With a VP9 or AV1 row, a codec-scoped limitation tightens each axis the row measures, but
+///   only where the row is strictly tighter than `hevc_max` (see `row_limits` below). VP9 is also
+///   capped at `video.bitDepth` 8 (Profile 0): Profile 2 is not claimed.
 /// * **`bitDepth=10`** — a CONSTANT, not a derivation: the device table has no bit-depth axis
 ///   anywhere, so it can neither confirm nor deny 10-bit. The claim stays because it is what
 ///   keeps HDR10 through a transcode (HEVC Main10, BT.2020+PQ in-bitstream — the same in-band
@@ -165,7 +166,7 @@ pub fn link_policy(link: Option<Location>) -> LinkPolicy {
 /// The target's codec lists are FALLBACK CHAINS, not single choices, and the order encodes the
 /// whole free-vs-Plex-Pass story (issue #22, found on a reviewer's server):
 ///
-/// * `videoCodec=hevc,h264` (plus a trailing `,av1` with an AV1 row, see below) — HEVC encoding
+/// * `videoCodec=hevc,h264` (plus trailing `,vp9` / `,av1` copy lanes with their rows, see below) — HEVC encoding
 ///   sits behind Plex Pass. When this list held only `hevc`, a free server found no usable video
 ///   target and **dropped the video track**: the transcoder job carried a single audio `-map`, the
 ///   demuxer correctly said `ff: no video stream`, and every MP4 in the library "failed to play" on
@@ -176,9 +177,9 @@ pub fn link_policy(link: Option<Location>) -> LinkPolicy {
 ///   codec to appear in the target list. A Plex Pass server with "Enable HEVC video Encoding =
 ///   Always" still picks hevc — verified live; order expresses preference. On a SoC without HEVC
 ///   the encode chain is `h264` alone: hevc first would have PMS encode a stream the panel cannot
-///   decode — the same wrong-side failure #22 was, pointed the other way. With an AV1 row the chain
-///   also ends in a trailing `av1` copy lane (`hevc,h264,av1`, or `h264,av1` on a SoC without
-///   HEVC): av1 is only ever a copy lane, never the encode head.
+///   decode — the same wrong-side failure #22 was, pointed the other way. With a VP9 or AV1 row the
+///   chain also ends in trailing copy lanes (`hevc,h264,vp9,av1`, or `h264,vp9,av1` on a SoC
+///   without HEVC): vp9 and av1 are only ever copy lanes, never the encode head.
 /// * `audioCodec=ac3,eac3,aac` (the caps subset, ac3-preferred order) — same rule on the audio
 ///   lane: MDE logged "Cannot direct stream audio stream due to codec aac when profile only
 ///   allows ac3" and re-encoded audio that the pipeline decodes natively. The list is exactly
@@ -192,8 +193,15 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
     if caps.hevc {
         dp_video.push_str(",hevc");
     }
-    if caps.av1 {
-        dp_video.push_str(",av1");
+    // The table-gated copy codecs, in list order. Each one is advertised only when the table
+    // carries ITS row, and each brings the row's own bound (see `row_limits`).
+    let copy_codecs: [(&str, bool, (u32, u32, u32)); 2] =
+        [("vp9", caps.vp9, caps.vp9_row), ("av1", caps.av1, caps.av1_row)];
+    for (name, listed, _) in copy_codecs {
+        if listed {
+            dp_video.push(',');
+            dp_video.push_str(name);
+        }
     }
     // The chain's head is the ONE encode-target definition, `Caps::encode_vcodec` — the same
     // accessor route.rs's /decision-unreachable Load-payload guess and retranscode read, so the
@@ -204,35 +212,50 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
         "h264" => "h264".to_string(),
         head => format!("{head},h264"),
     };
-    // av1 sits LAST so PMS can COPY an AV1 source into the ProgressiveMkv remux (a direct stream
-    // needs the source codec in the target list) but never chooses AV1 as the encode target.
-    if caps.av1 {
-        target_video.push_str(",av1");
+    // The copy codecs sit LAST so PMS can COPY a VP9 / AV1 source into the ProgressiveMkv remux (a
+    // direct stream needs the source codec in the target list) but never chooses one as the
+    // encode target.
+    for (name, listed, _) in copy_codecs {
+        if listed {
+            target_video.push(',');
+            target_video.push_str(name);
+        }
     }
     let (w, h) = caps.hevc_max;
-    // The AV1-scoped bounds: the row's own axis, never roomier than the shared bound, and only
+    // The codec-scoped bounds: the row's own axis, never roomier than the shared bound, and only
     // where it is strictly tighter. PMS's way of combining a codec scope with the `*` scope is
-    // unverified, so the av1 scope must never claim more than the client gate enforces, and it is
+    // unverified, so a codec scope must never claim more than the client gate enforces, and it is
     // left out when it adds nothing.
-    let av1_limits = if caps.av1 {
-        let (rw, rh, _) = caps.av1_row;
+    let row_limits = |name: &str, row: (u32, u32, u32)| {
         let bound = |row: u32, shared: u32| if row > 0 { row.min(shared) } else { shared };
-        let (bw, bh) = (bound(rw, w), bound(rh, h));
+        let (bw, bh) = (bound(row.0, w), bound(row.1, h));
         let mut limits = String::new();
         if bw < w {
             limits.push_str(&format!(
-                "+add-limitation(scope=videoCodec&scopeName=av1&type=upperBound&name=video.width&value={bw}&replace=true)"
+                "+add-limitation(scope=videoCodec&scopeName={name}&type=upperBound&name=video.width&value={bw}&replace=true)"
             ));
         }
         if bh < h {
             limits.push_str(&format!(
-                "+add-limitation(scope=videoCodec&scopeName=av1&type=upperBound&name=video.height&value={bh}&replace=true)"
+                "+add-limitation(scope=videoCodec&scopeName={name}&type=upperBound&name=video.height&value={bh}&replace=true)"
             ));
         }
         limits
-    } else {
-        String::new()
     };
+    let mut codec_limits = String::new();
+    for (name, listed, row) in copy_codecs {
+        if listed {
+            codec_limits.push_str(&row_limits(name, row));
+        }
+    }
+    // VP9 Profile 2 (10-bit) is not claimed: this profile's `*` bitDepth bound is 10 for HEVC
+    // Main10, and nothing has shown the VP9 decoder takes the feed at 10 bits, so VP9 is capped at 8
+    // here and a 10-bit VP9 source takes the server route.
+    if caps.vp9 {
+        codec_limits.push_str(
+            "+add-limitation(scope=videoCodec&scopeName=vp9&type=upperBound&name=video.bitDepth&value=8&replace=true)",
+        );
+    }
     let dp_audio = &caps.audio;
     // ac3 first — the preferred ENCODE target — then the rest of the caps subset as copy lanes.
     let target_audio = ["ac3", "eac3", "aac", "dts"]
@@ -272,7 +295,7 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value={w}&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value={h}&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitDepth&value=10&replace=true)\
-         {av1_limits}{audio_limits}+{target}",
+         {codec_limits}{audio_limits}+{target}",
     )
 }
 
@@ -286,10 +309,16 @@ fn profile_extra(delivery: TranscodeDelivery) -> String {
 }
 
 /// The forced-direct-play profile: the engine's own formats, no device limits, no transcode
-/// target. `av1` joins the video list only when the device table lists an AV1 row (issue #593);
-/// a forced start never widens the codec set past what the table says the panel decodes.
+/// target. `vp9` and `av1` join the video list only when the device table lists their rows (issue
+/// #593); a forced start never widens the codec set past what the table says the panel decodes.
 fn forced_direct_profile_for(caps: &plx_platform::devcaps::Caps) -> String {
-    let video = if caps.av1 { "h264,hevc,av1" } else { "h264,hevc" };
+    let mut video = "h264,hevc".to_string();
+    if caps.vp9 {
+        video.push_str(",vp9");
+    }
+    if caps.av1 {
+        video.push_str(",av1");
+    }
     format!("add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec={video}&audioCodec={DP_AUDIO_CODECS}&subtitleCodec={DP_SUBTITLE_CODECS})")
 }
 
@@ -1068,6 +1097,7 @@ mod tests {
                 h264_row: (0, 0, 0),
                 hevc_row: (0, 0, 0),
                 vp9: true,
+                vp9_row: (0, 0, 0),
                 av1: false,
                 av1_row: (0, 0, 0),
                 audio: "aac,ac3,eac3".into(),
@@ -1258,6 +1288,7 @@ mod tests {
             h264_row: (0, 0, 0),
             hevc_row: (0, 0, 0),
             vp9: false,
+            vp9_row: (0, 0, 0),
             av1: false,
             av1_row: (0, 0, 0),
             audio: "aac,ac3,eac3".into(),
@@ -1287,6 +1318,7 @@ mod tests {
                 h264_row: (0, 0, 0),
                 hevc_row: (0, 0, 0),
                 vp9: false,
+                vp9_row: (0, 0, 0),
                 av1: false,
                 av1_row: (0, 0, 0),
                 audio: "aac".into(),
@@ -1313,6 +1345,7 @@ mod tests {
             h264_row: (0, 0, 0),
             hevc_row: (0, 0, 0),
             vp9: true,
+            vp9_row: (0, 0, 0),
             av1: false,
             av1_row: (0, 0, 0),
             audio: "aac".into(),
@@ -1464,6 +1497,88 @@ mod tests {
         let p = super::profile_for(&caps);
         assert!(p.contains("videoCodec=h264,hevc,av1&"), "{p}");
         assert!(!p.contains("scopeName=av1"), "{p}");
+    }
+
+    // ---- VP9 direct play and remux copy -----------------------------------------------------
+
+    /// A VP9 row in the device table advertises vp9 for direct play and as a trailing copy lane
+    /// of the progressive target chain (PMS can copy a VP9 source, never encodes VP9), ahead of
+    /// av1. The row's own bound is emitted only where it is tighter than the shared one, and
+    /// VP9 is capped at 8 bits (Profile 0).
+    #[test]
+    fn a_vp9_table_direct_plays_and_copies_vp9() {
+        let caps = Caps { vp9: true, vp9_row: (1920, 1080, 60), ..Caps::assumed() };
+        let p = super::profile_for(&caps);
+        assert!(p.contains("videoCodec=h264,hevc,vp9&"), "{p}");
+        let chain = match caps.encode_vcodec() {
+            "h264" => "h264".to_string(),
+            head => format!("{head},h264"),
+        };
+        assert!(
+            target_of(&p).contains(&format!("videoCodec={chain},vp9&")),
+            "vp9 must close the target chain after the encode head: {p}"
+        );
+        assert!(p.contains("scopeName=vp9&type=upperBound&name=video.width&value=1920"), "{p}");
+        assert!(p.contains("scopeName=vp9&type=upperBound&name=video.height&value=1080"), "{p}");
+        assert!(p.contains("scopeName=vp9&type=upperBound&name=video.bitDepth&value=8"), "{p}");
+    }
+
+    /// With both rows the copy lanes list vp9 before av1, in the direct-play list and the chain.
+    #[test]
+    fn vp9_and_av1_lanes_list_vp9_first() {
+        let caps = Caps {
+            vp9: true,
+            vp9_row: (4096, 2304, 60),
+            av1: true,
+            av1_row: (3840, 2160, 60),
+            ..Caps::assumed()
+        };
+        let p = super::profile_for(&caps);
+        assert_eq!(list_of(&p, "videoCodec="), ["h264", "hevc", "vp9", "av1"]);
+        assert!(target_of(&p).contains(",vp9,av1&"), "{p}");
+    }
+
+    /// A VP9 row roomier than the shared bound adds no width/height limitation (a codec scope
+    /// must never claim more than the client gate enforces), but the bit-depth cap stays.
+    #[test]
+    fn a_roomier_vp9_row_adds_only_the_bit_depth_cap() {
+        let caps = Caps {
+            vp9: true,
+            vp9_row: (4096, 2304, 60),
+            hevc_max: (3840, 2176),
+            ..Caps::assumed()
+        };
+        let p = super::profile_for(&caps);
+        assert!(!p.contains("scopeName=vp9&type=upperBound&name=video.width"), "{p}");
+        assert!(!p.contains("scopeName=vp9&type=upperBound&name=video.height"), "{p}");
+        assert!(p.contains("scopeName=vp9&type=upperBound&name=video.bitDepth&value=8"), "{p}");
+    }
+
+    /// Without the row, no `vp9` anywhere: the shipped string on every set whose table lists no
+    /// VP9 decoder is byte-identical to before.
+    #[test]
+    fn no_vp9_without_the_row() {
+        let p = super::profile_for(&Caps::assumed());
+        assert!(!p.contains("vp9"), "{p}");
+    }
+
+    /// The fixed HLS rendition is one H.264/AAC wire contract and never names vp9.
+    #[test]
+    fn hls_target_never_names_vp9() {
+        let caps = Caps { vp9: true, vp9_row: (1920, 1080, 60), ..Caps::assumed() };
+        let p = super::profile_for_delivery(
+            &caps,
+            TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+        );
+        assert!(!target_of(&p).contains("vp9"), "{p}");
+    }
+
+    /// Forced mode names vp9 only when the table lists it.
+    #[test]
+    fn forced_profile_names_vp9_only_with_the_row() {
+        let vp9 = Caps { vp9: true, vp9_row: (1920, 1080, 60), ..Caps::assumed() };
+        assert!(super::forced_direct_profile_for(&vp9).contains("videoCodec=h264,hevc,vp9&"));
+        assert!(!super::forced_direct_profile_for(&Caps::assumed()).contains("vp9"));
     }
 
     // ---- Plex Pass audio DSP (issue #266, PR1): boostDialog / normalizeLoudness -----------

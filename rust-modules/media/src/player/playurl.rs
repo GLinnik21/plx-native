@@ -45,8 +45,9 @@ pub struct PlayUrl {
     /// no DNS on this path, so a name is a flat failure to open with nothing to read it by.
     #[serde(default)]
     pub url: String,
-    /// The Load payload's video codec: `"hevc"` selects the H265 payload, `"av1"` the AV1 one (only
-    /// on a set whose table lists AV1; elsewhere the Load is refused), anything else H264.
+    /// The Load payload's video codec: `"hevc"` selects the H265 payload, `"av1"` / `"vp9"` the AV1
+    /// / VP9 ones (only on a set whose table lists that decoder; elsewhere the Load is refused),
+    /// anything else H264.
     #[serde(default)]
     pub vcodec: String,
     /// The Load payload's audio codec, in FFmpeg's spelling (`"eac3"`, not `"AC3 PLUS"`) — the
