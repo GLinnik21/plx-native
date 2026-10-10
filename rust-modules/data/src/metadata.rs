@@ -4769,6 +4769,11 @@ fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdap
     {
         let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
         if rel.inflight { return false; }
+        // A window read from this one has answered and waits for the pump: the edge is already
+        // served, and reading it again would only land on a window that is gone by then.
+        let served = rel.landed.iter().any(|l| l.window.is_some() && l.from == seen
+            && plx_plex::plex::same_item((d.sid, &d.rk), (l.sid, &l.rk)));
+        if served { return false; }
         rel.inflight = true;
     }
     let epoch = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).epoch;
@@ -4813,6 +4818,20 @@ fn cancel_related(adapter: &MetadataAdapter) -> bool {
     rel.inflight = false;
     rel.landed.clear();
     false
+}
+
+/// Test seam: a tail read that started from window `from` of `next`'s item has answered with
+/// `next`'s tail window, and waits for [`pump_related_pages`] exactly as a worker's answer does.
+#[cfg(any(test, feature = "test-support"))]
+pub fn land_related_for_test(adapter: &MetadataAdapter, from: (usize, usize), next: &Detail) {
+    plx_base::testlock::assert_held("the detail store (land_related_for_test)");
+    let t = &next.related_tail;
+    let rows = t.positions.iter().copied()
+        .zip(next.related[t.head..].iter().map(|m| std::sync::Arc::new(m.clone()))).collect();
+    let info = crate::stores::paging::PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };
+    adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).landed.push(RelLanded {
+        sid: next.sid, rk: next.rk.clone(), from, window: Some((rows, info, t.hubs.clone(), t.row.clone())),
+    });
 }
 
 /// Main-thread pump: install a Related window that landed on the page and the window it was read

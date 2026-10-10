@@ -1636,12 +1636,19 @@ fn commit_window(state: &mut SearchState, k: usize, lo: usize) {
 /// repeating this; the sources whose lanes do not already hold the new depths are asked (through
 /// the same fan-out as the first fetch) and the cards move when the last has answered. Returns
 /// whether the window moved at once.
-fn page(state: &mut SearchState, kind: Kind, before: bool, seen: usize) -> bool {
+///
+/// **Going on from a window that is not read to its end fills it where it stands.** The first
+/// paint is the preview, twelve hits of a one-source window of twenty-four, and the row asks to go
+/// on with focus in the preview's second half: half a window further on would hold none of the
+/// preview, so the focused card would leave the row and the card that took its slot would be twelve
+/// hits on. The window only slides once every source has been read through it.
+fn page(state: &mut SearchState, kind: Kind, before: bool, seen: (usize, usize)) -> bool {
     let Some(k) = KINDS.iter().position(|x| *x == kind) else { return false };
-    // The asker read a window that a slide has since replaced: where its focus stood in the old
-    // one says nothing about the new one. The slide's publication carries another start, which
-    // lets the screen ask again from the window that stands.
-    if state.wins[k].lo != seen { return false }
+    // The asker read a window that a slide or a fill has since replaced: where its focus stood in
+    // the old one says nothing about the new one. The new publication carries another start or
+    // another count, which lets the screen ask again from the window that stands.
+    let held = state.shelves().iter().find(|s| s.kind == kind).map_or(0, |s| s.items.len());
+    if (state.wins[k].lo, held) != seen { return false }
     if terms(state.query()).is_none() { return false }
     if state.wins[k].pending.is_some() {
         // going back is the way out of a slide that cannot finish (a source that keeps failing); going
@@ -1654,20 +1661,24 @@ fn page(state: &mut SearchState, kind: Kind, before: bool, seen: usize) -> bool 
     let lo = state.wins[k].lo;
     let (depths, answered) = window_of(&sources, k, lo);
     let step = (depths.len() / 2).max(1);
+    // the sources a window of `range` waits for: a skipped one is asked outside any slide
+    let owing = |state: &SearchState, range: &std::ops::Range<usize>| -> Vec<usize> {
+        live.iter().copied()
+            .filter(|&i| {
+                let s = source(state, i);
+                s.status == Status::Answered && s.tails[k].inited && !s.skipped[k] && s.tails[k].needs(range)
+            })
+            .collect()
+    };
     let new_lo = if before {
         if lo == 0 { return false }
         lo.saturating_sub(step)
     } else {
         if !answered.iter().any(|s| has_past(s, k, depths.end)) { return false }
-        lo + step
+        if owing(state, &depths).is_empty() { lo + step } else { lo }
     };
     let range = new_lo..new_lo + depths.len();
-    let todo: Vec<usize> = live.iter().copied()
-        .filter(|&i| {
-            let s = source(state, i);
-            s.status == Status::Answered && s.tails[k].inited && !s.skipped[k] && s.tails[k].needs(&range)
-        })
-        .collect();
+    let todo = owing(state, &range);
     if todo.is_empty() {
         commit_window(state, k, new_lo);
         rebuild(state);
