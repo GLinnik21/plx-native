@@ -77,8 +77,26 @@ fn note(seen: &mut HashMap<u64, Seen>, id: u64, now: u64, ready: bool) -> Draw {
 
 plx_base::devtrig::latched_flag!(
     /// `/tmp/plxnative-focusx`, resolved once: a per-card `stat` is not affordable.
-    pub fn armed = "focusx";
+    fn trigger_armed = "focusx";
 );
+
+#[cfg(test)]
+thread_local! { static FORCED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+/// Arm the probe for the calling test thread only (the trigger is a process-wide file).
+#[cfg(test)]
+pub(crate) fn arm_for_test() {
+    FORCED.with(|f| f.set(true));
+}
+
+/// Whether the probe records (see [`trigger_armed`]).
+pub fn armed() -> bool {
+    #[cfg(test)]
+    if FORCED.with(|f| f.get()) {
+        return true;
+    }
+    trigger_armed()
+}
 
 /// The focused card of one frame, in screen pixels.
 #[derive(Clone, Debug, PartialEq)]

@@ -115,6 +115,16 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
         self.len
     }
 
+    /// The Related row is its head, then the listing from its tail window: a tail card sits at
+    /// the head's length plus the tail position it was read at.
+    fn global(&self, i: usize) -> usize {
+        let tail = &self.d.related_tail;
+        if self.which != Which::Related || i < tail.head {
+            return i;
+        }
+        tail.head + tail.positions.get(i - tail.head).copied().unwrap_or(tail.offset + i - tail.head)
+    }
+
     fn elem(&self, i: usize) -> u32 {
         let local = self.local(i).unwrap_or_default();
         self.key_by_local.get(&local).copied().unwrap_or(local)

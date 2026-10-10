@@ -4358,3 +4358,22 @@ fn no_landing_ever_leaves_the_focused_card_outside_the_window() {
         assert!(reached.1, "seed {seed}: and so is the first");
     }
 }
+
+/// The focus read-out (`cdg`) names a card by its place in the whole listing: after one slide of
+/// twelve, the window's last card (slot 23 of 24) sits at listing position 35, not 23.
+#[test]
+fn a_slid_row_names_its_cards_by_listing_position() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let snap = plx_data::pms::hubs_snapshot(&state);
+    let s = screen(snap.view());
+    assert_eq!(ui_cards::CardSource::<TestHost>::global(&s.cards(snap.view(), 0), 23), 23);
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let snap = plx_data::pms::hubs_snapshot(&state);
+    let s = screen(snap.view());
+    let cards = s.cards(snap.view(), 0);
+    assert_eq!(ui_cards::CardSource::<TestHost>::global(&cards, 0), 12);
+    assert_eq!(ui_cards::CardSource::<TestHost>::global(&cards, 23), 35);
+}

@@ -1580,3 +1580,14 @@ fn no_landing_on_a_search_row_ever_moves_the_card_under_the_focus() {
         assert!(landings > 20, "seed {seed}: the windows slid under the walk: {landings}");
     }
 }
+
+/// The focus read-out (`cdg`) names a card by its place in the row's hits: a window that starts at
+/// twelve puts its slot 11 at hit 23.
+#[test]
+fn a_slid_row_names_its_cards_by_listing_position() {
+    let window = plx_data::search::Window { start: 12, before: true, after: true };
+    let slid = cards::RowCards { kind: Kind::Movie, elems: &[], items: &[], sources: &[], window, epoch: 1 };
+    assert_eq!(plx_ui::cards::CardSource::<HostFixture>::global(&slid, 11), 23);
+    let opening = cards::RowCards { window: Default::default(), ..slid };
+    assert_eq!(plx_ui::cards::CardSource::<HostFixture>::global(&opening, 11), 11);
+}
