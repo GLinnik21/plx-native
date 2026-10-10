@@ -129,6 +129,38 @@ if ! diff -u ci/expected-dt-needed.txt "$AUDIT_TMP/dt-needed.actual"; then
 fi
 ok "$(wc -l < "$AUDIT_TMP/dt-needed.actual" | tr -d ' ') entries, unchanged"
 
+echo "== storage helper =="
+# pkg/plxnative-storage ships to the TV beside the app and links the same way, through the same stub
+# .so trick: a library it quietly starts needing is a binary that will not start on a firmware
+# without it, which `tools/fwcompat.py` would only say if somebody ran it by hand. It is a separate
+# executable with its own list (libluna-service2 and glib are its, and it needs none of the app's
+# media libraries), so it gets its own expectation file rather than a shared one. Only the identity
+# and DT_NEEDED are graded here: the barrier, interposer, crash-report and host-identity checks
+# above are about the application. The list is the fat-LTO `release` profile's, which is what CI and
+# every shipped package build; a local `tvdev` build links two entries more (ld-linux.so.3 and
+# libdl.so.2) and reads as drift, so grade a local helper after `make ARM_PROFILE=release`.
+#
+# Absent is a failure in CI, where `make ipk` has just built it, and a skip anywhere else, where
+# `./ci/check-elf.sh` is run on a tree that built the application alone.
+STORAGE="${STORAGE_BIN:-$(dirname "$BIN")/plxnative-storage}"
+if [ ! -f "$STORAGE" ]; then
+  [ "${CI:-}" != "true" ] || fail "$STORAGE is missing — the storage helper ships in the package and must be graded"
+  echo "  SKIP — $STORAGE not built"
+else
+  SH=$("$READELF" -h "$STORAGE") || fail "readelf -h failed on the storage helper"
+  grep -q 'Class: *ELF32'      <<<"$SH" || fail "storage helper is not ELF32"
+  grep -q 'Machine: *ARM'      <<<"$SH" || fail "storage helper is not ARM"
+  grep -q 'Flags:.*soft-float' <<<"$SH" || fail "storage helper is not the soft-float ABI (the NDK's softfp convention)"
+  SA=$("$READELF" -A "$STORAGE") || fail "readelf -A failed on the storage helper"
+  grep -q 'Tag_CPU_arch: v7' <<<"$SA" || fail "storage helper is not ARMv7 (Tag_CPU_arch)"
+  SDYNAMIC=$("$READELF" -d "$STORAGE") || fail "readelf -d failed on the storage helper"
+  sed -n 's/.*Shared library: \[\(.*\)\]/\1/p' <<<"$SDYNAMIC" | LC_ALL=C sort > "$AUDIT_TMP/storage-dt-needed.actual"
+  if ! diff -u ci/expected-dt-needed-storage.txt "$AUDIT_TMP/storage-dt-needed.actual"; then
+    fail "storage helper DT_NEEDED drifted. If intended, confirm with tools/fwcompat.py that it exists on every supported release, then update ci/expected-dt-needed-storage.txt"
+  fi
+  ok "storage helper: ELF32 / ARM / soft-float / ARMv7, $(wc -l < "$AUDIT_TMP/storage-dt-needed.actual" | tr -d ' ') DT_NEEDED entries, unchanged"
+fi
+
 echo "== build-host identity =="
 # docs/distribution.md §4: a public build must not carry the developer's LAN or home directory.
 # Those are TWO independent properties and this section used to conflate them, which is how the

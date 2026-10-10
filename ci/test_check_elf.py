@@ -40,7 +40,9 @@ if key == "readelf:-h" and "ELF_TEST_BARRIER" in os.environ:
         time.sleep(0.01)
     scratch = sorted(str(p) for p in Path(os.environ["TMPDIR"]).glob("check-elf.*"))
     (barrier / ("seen-" + os.environ["ELF_TEST_RUN"])).write_text(json.dumps(scratch))
-record = spec[key]
+# A spec entry "<key>:<file name>" answers for that one file; the storage helper is graded beside the
+# main binary and the two must be able to disagree.
+record = spec.get(key + ":" + Path(sys.argv[-1]).name, spec[key])
 data = record["output"].encode()
 while data:
     count = os.write(1, data)
@@ -58,6 +60,7 @@ def defaults():
         "readelf:-l": "  LOAD 0x000000 0x00010000 0x00010000\n",
         "readelf:-n": "Build ID: " + "a" * 40 + "\n",
         "readelf:-d": "Shared library: [libalpha.so]\nShared library: [libbeta.so]\n",
+        "readelf:-d:plxnative-storage": "Shared library: [libgamma.so]\nShared library: [libalpha.so]\n",
         "objdump": "  00: dmb ish\n" * 101,
         "strings": "YOUR_PMS_HOST\n",
     }.items()}
@@ -78,6 +81,8 @@ class ElfGateTests(unittest.TestCase):
         self.script = self.root / "ci/check-elf.sh"
         self.script.write_text(source)
         (self.root / "ci/expected-dt-needed.txt").write_text("libalpha.so\nlibbeta.so\n")
+        (self.root / "ci/expected-dt-needed-storage.txt").write_text("libalpha.so\nlibgamma.so\n")
+        (self.root / "plxnative-storage").write_text("synthetic helper")
         for name in ("readelf", "objdump", "strings"):
             path = self.root / "tools" / name
             path.write_text(FAKE_TOOL)
@@ -185,6 +190,48 @@ class ElfGateTests(unittest.TestCase):
                 spec[key]["output"] = replacement
                 result = self.run_gate(spec)
                 self.assertNotEqual(result.returncode, 0, key)
+
+    def test_storage_helper_dt_needed_is_graded_against_its_own_list(self):
+        for label, output in [("an extra library", "Shared library: [libalpha.so]\nShared library: [libgamma.so]\n"
+                                                   "Shared library: [libdelta.so]\n"),
+                              ("a missing library", "Shared library: [libalpha.so]\n"),
+                              ("the main binary's list", "Shared library: [libalpha.so]\nShared library: [libbeta.so]\n")]:
+            with self.subTest(label=label):
+                spec = defaults()
+                spec["readelf:-d:plxnative-storage"]["output"] = output
+                result = self.run_gate(spec)
+                self.assertNotEqual(result.returncode, 0, "helper drift was allowed: " + result.stdout)
+                self.assertIn("storage helper DT_NEEDED drifted", result.stdout)
+
+    def test_storage_helper_must_be_arm_soft_float_v7(self):
+        for key, replacement, diagnostic in [
+                ("readelf:-h:plxnative-storage", "Class: ELF32\nMachine: x86-64\nFlags: soft-float\n", "not ARM"),
+                ("readelf:-h:plxnative-storage", "Class: ELF32\nMachine: ARM\nFlags: hard-float\n", "soft-float"),
+                ("readelf:-A:plxnative-storage", "Tag_CPU_arch: v6\n", "not ARMv7")]:
+            with self.subTest(key=key, diagnostic=diagnostic):
+                spec = defaults()
+                spec[key] = {"output": replacement}
+                result = self.run_gate(spec)
+                self.assertNotEqual(result.returncode, 0, "wrong helper ELF was allowed: " + result.stdout)
+                self.assertIn(diagnostic, result.stdout)
+
+    def test_absent_storage_helper_fails_in_ci_and_is_skipped_elsewhere(self):
+        (self.root / "plxnative-storage").unlink()
+        result = self.run_gate(defaults())
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("storage helper ships in the package", result.stdout)
+        result = self.run_gate(defaults(), extra_env={"CI": "false"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SKIP", result.stdout)
+
+    def test_storage_helper_path_can_be_named(self):
+        (self.root / "plxnative-storage").unlink()
+        (self.root / "elsewhere").write_text("synthetic helper")
+        spec = defaults()
+        spec["readelf:-d:elsewhere"] = {"output": "Shared library: [libdelta.so]\n"}
+        result = self.run_gate(spec, extra_env={"STORAGE_BIN": "elsewhere"})
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("storage helper DT_NEEDED drifted", result.stdout)
 
     def test_parallel_invocations_have_private_scratch_and_remove_it(self):
         self.spec.write_text(json.dumps(defaults()))
