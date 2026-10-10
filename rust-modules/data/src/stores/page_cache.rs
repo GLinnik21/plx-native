@@ -13,7 +13,9 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-/// Items per page, the same page the browse listings ask the server for.
+/// Items per page, the one size the section listings (`browse`) and the episode list share. Two grid
+/// screens' worth (10 rows x 6): big enough that a full-screen scroll rarely waits, small enough
+/// that a page parse stays invisible on-frame.
 pub const PAGE: usize = 60;
 
 /// Pages of rows kept while more than this many are loaded. Eviction runs only above it.

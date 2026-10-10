@@ -447,7 +447,8 @@ const SETTLE_US_TARGET: u32 = (SETTLE_S * 1_000_000.0) as u32;
 /// buys a full row from a single source and pays for up to ~400 `Metadata` records per settled
 /// keystroke, over `stream.rs`'s blocking socket, on an endpoint whose whole selling point is being
 /// fast enough to call as the user types. Half a row from each of two sources still fills the
-/// merged cap exactly, and a search that needs the 13th hit needs a better query instead.
+/// merged cap exactly. It is only the preview: hits past it are read in windows by `search/tail.rs`
+/// as the row is paged.
 const LIMIT: i64 = 12;
 
 /// Cards a row holds at once, for the same reason `person.rs` carries one: a `CardRow` owns exactly
