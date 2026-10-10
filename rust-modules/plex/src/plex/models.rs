@@ -11,6 +11,16 @@ pub struct Envelope {
     pub media_container: MediaContainer,
 }
 
+/// One hit of `/library/search`: a card (`Metadata`) or a person (`Directory`, a tag row with
+/// `tagKey` and `count`), beside a score the app does not read.
+#[derive(Deserialize, Default)]
+pub struct SearchResult {
+    #[serde(rename = "Metadata", default)]
+    pub metadata: Option<Metadata>,
+    #[serde(rename = "Directory", default)]
+    pub directory: Option<Tag>,
+}
+
 /// One flat container; every list field is optional so the same type deserializes a sections
 /// list (`Directory`), an items/detail list (`Metadata`), or a hub list (`Hub`).
 #[derive(Deserialize, Default)]
@@ -25,6 +35,9 @@ pub struct MediaContainer {
     pub metadata: Vec<Metadata>,
     #[serde(rename = "Hub", default)]
     pub hub: Vec<Hub>,
+    /// `/library/search`: one row per hit, wrapping a card or a person.
+    #[serde(rename = "SearchResult", default, deserialize_with = "de_vec")]
+    pub search_result: Vec<SearchResult>,
     /// Subtitle search only (`docs/pms-api.md` §8): the agent's candidate rows arrive at the
     /// CONTAINER level, not nested inside `Metadata[].Media[].Part[]` the way an item's own
     /// streams do. `de_vec` rather than a bare `default` because an absent array and a present

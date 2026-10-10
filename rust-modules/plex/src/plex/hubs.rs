@@ -166,6 +166,44 @@ impl Client {
     pub fn search(&self, query: &str, limit: i64, section_id: i64) -> Option<MediaContainer> {
         self.get_json(&search_path(query, limit, section_id))
     }
+
+    /// One window of ONE kind's hits: `/library/search?searchTypes=<kind>`, which pages by offset
+    /// where `/hubs/search` cannot (a window there pages the hub list, not a hub's rows;
+    /// `docs/pms-api.md`, "Paging, observed"). Rows are in `SearchResult` (`Metadata` for a card, a
+    /// `Directory` tag row for a person). Measured: `limit` caps `totalSize`, so `limit` is the
+    /// window's end; the end of a listing is a SHORT page, never `totalSize`. An unknown kind
+    /// answers empty with no error, which `search::tail` treats as "unsupported", not "end".
+    pub fn search_typed(&self, query: &str, kind: SearchKind, req: PageReq) -> Option<MediaContainer> {
+        self.get_json(&typed_search_path(query, kind, req))
+    }
+}
+
+/// The kinds `/library/search` answers for (`music` too, which this app does not draw).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchKind {
+    Movies,
+    /// Shows first, then episodes, in one list.
+    Tv,
+    People,
+}
+
+impl SearchKind {
+    pub fn param(self) -> &'static str {
+        match self {
+            SearchKind::Movies => "movies",
+            SearchKind::Tv => "tv",
+            SearchKind::People => "people",
+        }
+    }
+}
+
+fn typed_search_path(query: &str, kind: SearchKind, req: PageReq) -> String {
+    let path = QueryBuilder::new("/library/search")
+        .str("query", query)
+        .str("searchTypes", kind.param())
+        .int("limit", (req.start + req.size) as i64)
+        .build();
+    paged_path(&path, req)
 }
 
 fn continue_watching_page_path(start: i64, size: i64) -> String {
@@ -192,7 +230,37 @@ fn search_path(query: &str, limit: i64, section_id: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::search_path;
+    use super::{search_path, typed_search_path, SearchKind};
+    use super::super::paging::PageReq;
+
+    /// The typed listing is `/library/search` with the kind, the query and a window. `limit` is the
+    /// window's end (`start + size`), which is enough for the slice whichever way the server reads
+    /// the window parameters; the end of a listing is a short page, never `totalSize`.
+    #[test]
+    fn a_typed_search_asks_for_its_kind_and_a_limit_that_covers_the_window() {
+        assert_eq!(
+            typed_search_path("tom & jerry", SearchKind::Movies, PageReq { start: 24, size: 25 }),
+            "/library/search?query=tom%20%26%20jerry&searchTypes=movies&limit=49&X-Plex-Container-Start=24&X-Plex-Container-Size=25"
+        );
+        assert_eq!(
+            typed_search_path("ab", SearchKind::Tv, PageReq { start: 12, size: 1 }),
+            "/library/search?query=ab&searchTypes=tv&limit=13&X-Plex-Container-Start=12&X-Plex-Container-Size=1"
+        );
+        assert_eq!(SearchKind::People.param(), "people");
+    }
+
+    /// A row is `{Metadata}` or `{Directory}` (a person), each beside a score; both land in the
+    /// container's `search_result` rows.
+    #[test]
+    fn a_search_result_row_wraps_a_card_or_a_person() {
+        let mc: super::MediaContainer = serde_json::from_str(r#"{"size":2,"totalSize":9,"offset":4,
+            "SearchResult":[{"Metadata":{"ratingKey":"7","type":"movie","title":"A"},"score":0.9},
+                            {"Directory":{"tag":"P","tagKey":"k1","id":3,"count":2},"score":0.8}]}"#).unwrap();
+        assert_eq!(mc.offset, 4);
+        assert_eq!(mc.search_result.len(), 2);
+        assert_eq!(mc.search_result[0].metadata.as_ref().map(|m| m.rating_key.as_str()), Some("7"));
+        assert_eq!(mc.search_result[1].directory.as_ref().map(|t| t.tag_key.as_str()), Some("k1"));
+    }
 
     /// The query is typed by a user, so it is arbitrary text — and it is the one parameter here
     /// that can carry a `&`, a `?` or a `=`. Un-encoded, "tom & jerry" would split into a bogus
