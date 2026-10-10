@@ -143,6 +143,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         episode_cells: episodes::Cells::new(),
             ep_want: Default::default(),
             related_before: Default::default(),
+            related_before_out: Default::default(),
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::cards::RowStyle::HOME),

@@ -360,3 +360,24 @@ fn an_ask_computed_from_a_window_the_row_has_since_slid_is_refused() {
     }
     assert_eq!(reached.len(), 112 - 12, "every tail item was reached");
 }
+
+/// Focus left the edge a window was asked from while the read was out: the page withdraws the ask,
+/// and the answer that arrives afterwards must not install, whether it lands before or after the
+/// withdrawal. The shelf can ask again at once.
+#[test]
+fn a_withdrawn_read_never_installs_its_window() {
+    let _serial = plx_base::testlock::serial();
+    let server = serve(vec![(1, 112)], plain);
+    let mc = related_response(&[(1, 12, 112, true)], "");
+    open(&server, &mc);
+    let at = || (detail().related_tail.offset, detail().related_tail.end);
+    let was = at();
+    assert!(want_related(test_state(), test_adapter(), false, was), "a request starts");
+    cancel_related(test_adapter());
+    assert!(!test_adapter().rel_pages.lock().unwrap().inflight, "the shelf may ask again at once");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert!(!pump_related_pages(test_state(), test_adapter()), "nothing landed to install");
+    assert_eq!(at(), was);
+    slide(false);
+    assert_ne!(at(), was, "and the next ask slides the window");
+}

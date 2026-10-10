@@ -200,6 +200,10 @@ pub enum MetadataCmd {
     /// the ask can come from a window the store has since slid, and such an ask is refused (the
     /// landing's publication re-arms the shelf, which asks again from the window that stands).
     WantRelated { before: bool, seen: (usize, usize) },
+    /// Withdraw the read `WantRelated` started: focus left the edge it was asked from, and a window
+    /// sliding in now would take the card it stands on out of the row. A read already out is
+    /// discarded when it lands, and one landed but not yet installed is dropped.
+    CancelRelated,
     SetNowPlaying(Option<crate::metadata::NowPlaying>),
     /// The optimistic half of a view-state write on the loaded item, its episodes and Related.
     SetWatchedLocal { sid: ServerId, rk: String, on: bool },
