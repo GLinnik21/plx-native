@@ -300,6 +300,17 @@ impl Ledger {
         self.keys.iter().position(|known| *known == key)
     }
 
+    /// Whether the window holds keys the ledger knows in an order other than its own: the listing
+    /// the window was read from does not agree with what the row has already shown.
+    pub fn contradicts(&self, rows: &[Row]) -> bool {
+        let mut last = None;
+        rows.iter().filter_map(|(_, item)| self.position(&item.rk)).any(|index| {
+            let backwards = last.is_some_and(|last| index <= last);
+            last = Some(index);
+            backwards
+        })
+    }
+
     /// Records the window's keys in the order the window has them. A key already known keeps its
     /// place; one that is new goes beside the known row it sits next to (before the first known
     /// row, after the rest), and a window with nothing known goes at the end.
@@ -490,4 +501,34 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
     let more = if ask.before { info.more || end < ledger.keys.len() || !ledger.done }
         else { end < ledger.keys.len() || !ledger.done };
     Some((rows, PageInfo { offset, end, total, more, unstable: false }))
+}
+
+/// How a row's positions relate to its listing.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RowMode {
+    /// Positions are listing offsets: the preview is the head of the listing, or the row is a
+    /// Recently Added row, which the listing's order defines.
+    #[default]
+    Head,
+    /// A preview not yet compared with its listing; the first forward ask does that.
+    Unprobed,
+    /// The preview is a sample of the listing (a `random` hub). The row is the preview, kept here
+    /// as rating keys in position order, followed by the listing minus those keys; a listing
+    /// offset `n` is the row's position `n + preview.len()`.
+    Sample(Vec<String>),
+}
+
+/// What a row remembers beyond its window.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RowState {
+    #[serde(default)]
+    pub mode: RowMode,
+    #[serde(default)]
+    pub ledger: Option<Ledger>,
+}
+
+impl RowState {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }

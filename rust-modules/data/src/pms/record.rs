@@ -117,7 +117,7 @@ mod tests {
             build: Some(SourceBuild {
                 cw: vec![CwItem { last_viewed_at: i64::MAX, m: Arc::new(m.clone()) }],
                 shelves: vec![Shelf { positions: Vec::new(), title: "Shelf".into(), hub_id: "provider.hub".into(),
-                    key: "/hub/key".into(), items: vec![Arc::new(m)], total: 0, offset: 0, end: 0, more: false }],
+                    key: "/hub/key".into(), items: vec![Arc::new(m)], total: 0, offset: 0, end: 0, more: false, row: Default::default() }],
             }) }
     }
 

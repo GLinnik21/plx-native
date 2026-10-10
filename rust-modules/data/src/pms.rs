@@ -795,6 +795,10 @@ struct Shelf {
     end: usize,
     #[serde(default)]
     more: bool,
+    /// How the window relates to its listing, and the keys the row has shown. Absent for a row that
+    /// has not paged, so an older recording decodes unchanged.
+    #[serde(default, skip_serializing_if = "paging::RowState::is_default")]
+    row: paging::RowState,
 }
 
 impl Shelf {
@@ -885,23 +889,99 @@ fn hidden_sections(scope: &BrowseScope, sid: ServerId) -> Vec<i64> {
 }
 
 fn fetch_page(client: &plx_plex::plex::Client, sid: ServerId, page: &PageQuery, minimum_end: usize) -> Option<SourceBuild> {
-    fetch_window(sid, page, None, minimum_end, |start, size| client.hub_items_paged(&page.key, start as i64, size as i64))
+    fetch_row(sid, page, None, minimum_end, |start, size| client.hub_items_paged(&page.key, start as i64, size as i64),
+        |keys| many_items(client, keys))
 }
 
+/// The batch read the ledger re-materialises a window through: one row per key, in request order.
+fn many_items(client: &plx_plex::plex::Client, keys: &[String]) -> Option<plx_plex::plex::MediaContainer> {
+    client.metadata_many(&keys.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+/// The window a shelf holds, in the shape [`paging`] moves.
+fn shelf_window(shelf: &Shelf) -> (Vec<paging::Row>, paging::PageInfo) {
+    let rows = shelf.positions.iter().copied().zip(shelf.items.iter().map(Arc::clone)).collect();
+    (rows, paging::PageInfo { offset: shelf.offset, end: shelf.end, total: shelf.total, more: shelf.more, unstable: false })
+}
+
+/// One ask against a row's window, on the sliding window of [`paging`]; `list(start, size)` is one
+/// page of the row's listing and `many(keys)` a batch read of items by rating key.
+///
+/// A row whose listing does not hold between requests (the edge row is nowhere near where it was),
+/// or whose server ignores paging (a read is answered from another offset), moves onto its ledger
+/// of shown keys instead of stopping, so every item is still reached and none is shown twice.
+fn fetch_row(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_end: usize,
+    mut list: impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>,
+    mut many: impl FnMut(&[String]) -> Option<plx_plex::plex::MediaContainer>) -> Option<SourceBuild> {
+    let ask = paging::Ask { start: page.start, before: page.before, hidden: &page.hidden };
+    let held = current.map(shelf_window);
+    let mut state = current.map(|shelf| shelf.row.clone()).unwrap_or_default();
+    let ignored = std::cell::Cell::new(false);
+    let result;
+    if let Some((rows, info)) = held.as_ref().filter(|_| state.ledger.as_ref().is_some_and(|ledger| ledger.active)) {
+        let mut ledger = state.ledger.clone()?;
+        result = Some(paging::ledger_window(sid, &ask, (rows, *info), &mut ledger, &mut list, &mut many)?);
+        state.ledger = Some(ledger);
+    } else {
+        let mut watched = |start: usize, size: usize| {
+            let mc = list(start, size)?;
+            if mc.offset != start as i64 { ignored.set(true); }
+            Some(mc)
+        };
+        let step = paging::fetch_window(sid, &ask, held.as_ref().map(|(rows, info)| (rows.as_slice(), *info)),
+            minimum_end, &mut watched);
+        // A window that came back holding a key the row showed before the rows it kept is a listing
+        // that shifted by more than an edge check can tell: it stands in for an edge that is lost.
+        let switch = match &step {
+            Some((rows, info)) => info.unstable
+                || state.ledger.as_ref().is_some_and(|ledger| ledger.contradicts(rows)),
+            None => ignored.get(),
+        };
+        if !switch {
+            let (rows, info) = step?;
+            if let Some((held_rows, _)) = &held {
+                let ledger = state.ledger.get_or_insert_with(Default::default);
+                ledger.note(held_rows);
+                ledger.note(&rows);
+            }
+            result = Some((rows, info));
+        } else if let Some((rows, info)) = &held {
+            let mut ledger = state.ledger.take().unwrap_or_default();
+            ledger.note(rows);
+            ledger.active = true;
+            ledger.next = info.end;
+            ledger.done = false;
+            ledger.idle = 0;
+            ledger.added = 0;
+            ledger.rescans = 0;
+            ledger.filtered = 0;
+            result = Some(paging::ledger_window(sid, &ask, (rows, *info), &mut ledger, &mut list, &mut many)?);
+            state.ledger = Some(ledger);
+        } else {
+            return None;
+        }
+    }
+    let (rows, info) = result?;
+    let (positions, items) = rows.into_iter().unzip();
+    Some(SourceBuild { cw: Vec::new(), shelves: vec![Shelf {
+        title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
+        total: info.total, offset: info.offset, end: info.end, more: info.more, row: state,
+    }] })
+}
+
+/// The window of a row on the plain sliding window alone: no ledger, no batch read. What the
+/// characterisation tests of that window run against.
+#[cfg(test)]
 fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_end: usize,
     fetch: impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>) -> Option<SourceBuild> {
     let ask = paging::Ask { start: page.start, before: page.before, hidden: &page.hidden };
-    let current = current.map(|shelf| {
-        let rows = shelf.positions.iter().copied().zip(shelf.items.iter().map(Arc::clone)).collect::<Vec<_>>();
-        (rows, paging::PageInfo { offset: shelf.offset, end: shelf.end, total: shelf.total, more: shelf.more,
-            unstable: false })
-    });
+    let current = current.map(shelf_window);
     let (rows, info) = paging::fetch_window(sid, &ask, current.as_ref().map(|(rows, info)| (rows.as_slice(), *info)),
         minimum_end, fetch)?;
     let (positions, items) = rows.into_iter().unzip();
     Some(SourceBuild { cw: Vec::new(), shelves: vec![Shelf {
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
-        total: info.total, offset: info.offset, end: info.end, more: info.more,
+        total: info.total, offset: info.offset, end: info.end, more: info.more, row: Default::default(),
     }] })
 }
 
@@ -920,6 +1000,7 @@ fn land_page(source: &mut Src, page: &PageQuery, build: SourceBuild) -> bool {
     current.end = next.end;
     current.more = next.more;
     current.total = next.total;
+    current.row = next.row;
     true
 }
 
@@ -1042,6 +1123,7 @@ fn project(
             end: hub.metadata.len(),
             more: recent_listing(&hub.hub_identifier, &hub.key)
                 && (hub.more || hub.total() > hub.metadata.len() || hub.metadata.len() >= HUB_FETCH_COUNT as usize),
+            row: Default::default(),
         });
     }
     out
@@ -1489,8 +1571,9 @@ impl HubRequest {
     }
     fn fetch(&self) -> Option<SourceBuild> {
         match &self.page {
-            Some(page) => fetch_window(self.sid, page, self.window.as_ref(), 0, |start, size|
-                self.client.resource.hub_items_paged(&page.key, start as i64, size as i64)),
+            Some(page) => fetch_row(self.sid, page, self.window.as_ref(), 0,
+                |start, size| self.client.resource.hub_items_paged(&page.key, start as i64, size as i64),
+                |keys| many_items(self.client.resource, keys)),
             None => {
                 let mut build = fetch_source(self.client.resource, self.sid)?;
                 for (window, end) in &self.windows {
@@ -2346,7 +2429,7 @@ fn build_test(n: usize) -> SourceBuild {
                     ..PmsMovie::default()
                 }))
                 .collect(),
-            total: 0, offset: 0, end: 0, more: false, positions: (0..n).collect(),
+            total: 0, offset: 0, end: 0, more: false, positions: (0..n).collect(), row: Default::default(),
         }],
     }
 }
@@ -2409,7 +2492,7 @@ pub fn seed_two_library_home_for_test(
             hub_id: "home.movies.recent".into(),
             key: String::new(),
             items: vec![item(&sections[0], "alpha"), item(&sections[1], "beta")],
-            total: 0, offset: 0, end: 0, more: false, positions: Vec::new(),
+            total: 0, offset: 0, end: 0, more: false, positions: Vec::new(), row: Default::default(),
         }],
     });
     let scope = BrowseScope::retained(directory);

@@ -175,3 +175,76 @@ fn noting_a_window_keeps_the_ledger_in_row_order() {
     let keys: Vec<String> = ledger.keys.iter().map(paging::LedgerKey::text).collect();
     assert_eq!(keys, (8..16).map(|k| k.to_string()).collect::<Vec<_>>());
 }
+
+// ---- a row asked through the store -------------------------------------------------------------
+
+const RECENT: &str = "/hubs/home/recentlyAdded?type=1";
+
+/// One server whose Home holds a single row, `id` over `key`, showing keys 0..12 of a listing of `len`.
+fn owner_with(id: &str, key: &str, len: usize) -> Owner {
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("rows", "127.0.0.1", 9, "synthetic", "fixture");
+    let keys: Vec<String> = (0..12).map(|k| k.to_string()).collect();
+    let mut shelf = shelf(0, "Row", id, &keys.iter().map(String::as_str).collect::<Vec<_>>());
+    shelf.key = key.into();
+    shelf.end = 12;
+    shelf.total = len;
+    shelf.more = true;
+    let mut owner = Owner::default();
+    seed(&mut owner.state, vec![src(sid.raw(), "", HubState::Ready, Some(built(sid.raw(), &[], vec![shelf])))]);
+    owner
+}
+
+fn ask_row(owner: &mut Owner, id: &str, key: &str, before: bool) -> Option<HubRequest> {
+    let mut held = None;
+    let _ = request_page(&mut owner.state, &owner.adapter, sid(0), id, key, before, &BrowseScope::standalone(),
+        &mut |request| { held = Some(request); true });
+    held
+}
+
+/// Answers a page request from `list`/`many` the way `HubRequest::fetch` would from a server, then
+/// lands it through the same encode/decode the recorder uses.
+fn answer(owner: &mut Owner, request: HubRequest, list: impl FnMut(usize, usize) -> Option<Container>,
+    many: impl FnMut(&[String]) -> Option<Container>) {
+    let page = request.page.clone().unwrap();
+    let build = fetch_row(request.sid, &page, request.window.as_ref(), 0, list, many);
+    let landing = request.complete(build);
+    let landing = record::decode(record::encode(&landing), |_| plx_plex::plex::client_for(sid(0))).unwrap();
+    let _ = super::land(&mut owner.state, &owner.adapter, &landing);
+}
+
+fn shown(owner: &Owner) -> Vec<String> {
+    rks(&owner.state, 0)
+}
+
+#[test]
+fn a_recent_row_whose_listing_stops_holding_moves_to_its_ledger_and_still_reaches_everything() {
+    let _guard = plx_base::testlock::serial();
+    let len = 100;
+    let mut owner = owner_with("home.movies.recent", RECENT, len);
+    let mut requests = 0;
+    // The first two reads see the listing as it was; after that every read is another order.
+    let mut listing = {
+        let mut reshuffled = reshuffling(len);
+        move |start: usize, size: usize| {
+            requests += 1;
+            if requests <= 2 { Some(container(start, len, start..(start + size).min(len))) } else { reshuffled(start, size) }
+        }
+    };
+    let mut ever: std::collections::BTreeSet<String> = shown(&owner).into_iter().collect();
+    let mut previous: std::collections::HashSet<String> = ever.iter().cloned().collect();
+    for _ in 0..200 {
+        let Some(request) = ask_row(&mut owner, "home.movies.recent", RECENT, false) else { break };
+        answer(&mut owner, request, &mut listing, batch(|_| true));
+        let window = shown(&owner);
+        assert!(window.len() <= 24);
+        for key in &window {
+            if !previous.contains(key) { assert!(ever.insert(key.clone()), "{key} appeared a second time"); }
+        }
+        previous = window.into_iter().collect();
+    }
+    assert_eq!(ever.len(), len, "an unstable listing no longer stops the row");
+    assert!(ask_row(&mut owner, "home.movies.recent", RECENT, false).is_none());
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
