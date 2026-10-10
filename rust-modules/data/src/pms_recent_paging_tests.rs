@@ -134,7 +134,7 @@ fn a_page_reads_the_provider_listing_and_counts_raw_results_before_filtering() {
     let registered = plx_plex::plex::register_for_test("page-http", "127.0.0.1", i32::from(port), "synthetic", "fixture");
     let client = plx_plex::plex::client_for(registered).unwrap();
     let page = fetch_page(client, registered, &PageQuery { id: "home.movies.recent".into(),
-        key: "/hubs/home/recentlyAdded?type=1&sectionID=7".into(), start: 12, before: false, hidden: Vec::new() }, 0).unwrap();
+        key: "/hubs/home/recentlyAdded?type=1&sectionID=7".into(), start: 12, before: false, hidden: Vec::new(), reload: false }, 0).unwrap();
     server.join().unwrap();
     assert_eq!(page.shelves[0].items.len(), 1);
     assert_eq!(page.shelves[0].end, 14);
@@ -346,7 +346,7 @@ fn fully_hidden_pages_advance_in_both_directions_without_losing_focus() {
     let _guard = plx_base::testlock::serial();
     let mut current = page(0,12,true).shelves.remove(0);
     for item in &mut current.items { Arc::make_mut(item).sec=7; }
-    let mut query = PageQuery { id:current.hub_id.clone(),key:current.key.clone(),start:12,before:false,hidden:vec![8] };
+    let mut query = PageQuery { id:current.hub_id.clone(),key:current.key.clone(),start:12,before:false,hidden:vec![8],reload:false };
     let mut calls = Vec::new();
     current=fetch_window(sid(0),&query,Some(&current),0,|start,size| {
         calls.push(start);Some(filtered_listing(start,size))
@@ -391,7 +391,7 @@ fn fully_hidden_pages_advance_in_both_directions_without_losing_focus() {
 fn refreshing_a_sparse_window_scans_its_existing_range() {
     let _guard = plx_base::testlock::serial();
     let query=PageQuery { id:"home.movies.recent".into(),key:"/hubs/recent".into(),
-        start:0,before:false,hidden:vec![8] };
+        start:0,before:false,hidden:vec![8],reload:false };
     let result=fetch_window(sid(0),&query,None,312,|start,size| Some(filtered_listing(start,size))).unwrap();
     let shelf=&result.shelves[0];
     assert_eq!(shelf.items.len(),24);
@@ -415,7 +415,7 @@ fn observed_recently_added_response_shape_stops_at_the_short_last_page() {
     assert_eq!(first.metadata.len(),36);
     assert_eq!(first.total_size,50);
     let query = PageQuery { id:"home.movies.recent".into(),key:"/hubs/home/recentlyAdded?type=1".into(),
-        start:36,before:false,hidden:Vec::new() };
+        start:36,before:false,hidden:Vec::new(),reload:false };
     let mut calls = Vec::new();
     let result = fetch_window(sid(0),&query,None,0,|start,size| {
         calls.push((start,size));
@@ -445,7 +445,7 @@ fn check_backward_walk(hidden_middle: bool) {
     let hidden = if hidden_middle { vec![8] } else { Vec::new() };
     let visible = |p: usize| !(hidden_middle && (40..70).contains(&p));
     let mut query = PageQuery { id:"home.movies.recent".into(),key:"/hubs/home/recentlyAdded?type=1".into(),
-        start:0,before:false,hidden };
+        start:0,before:false,hidden,reload:false };
     let mut current = fetch_window(sid(0),&query,None,0,|start,size| Some(walk_listing(start,size,TOTAL,hidden_middle)))
         .unwrap().shelves.remove(0);
     while current.end < TOTAL {
@@ -651,7 +651,7 @@ fn a_gapped_ask_verifies_the_edge_where_it_stands_and_reads_past_the_hidden_rows
 
 fn recent_query(start: usize) -> PageQuery {
     PageQuery { id: "home.movies.recent".into(), key: "/hubs/home/recentlyAdded?type=1".into(), start, before: false,
-        hidden: Vec::new() }
+        hidden: Vec::new(), reload: false }
 }
 
 // A listing of `len` rows whose row at server position `p` has rating key `key_at(p)`. `total` is

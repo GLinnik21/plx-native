@@ -33,26 +33,18 @@ use std::sync::{Arc, LazyLock, Mutex};
 pub mod record;
 pub mod initial;
 
-/// Cards Home holds at most, across EVERY source: a distant ceiling on the one catalog the whole
-/// screen indexes into, not a per-server one — see [`allot`] for how the sources divide it.
+/// Rows of Home that hold cards at once: the rows in view plus a margin. Every other row keeps its
+/// descriptor (identity, title, key, total, window offset, ledger, the count of cards it last
+/// showed) and publishes that many placeholder slots, so every row stays reachable and nothing is
+/// left off.
 ///
-/// A bound exists because the catalog is resident memory on a TV with a few hundred MB for the
-/// whole app, and the hub rows page through their keys (`docs/pms-api.md` §3) while the hub list
-/// itself does not, so nothing else limits what a server (or a household of shares) may send. 2,048 is about 170 full rows of 12,
-/// an order of magnitude past any Home a person scrolls and measured on the TV (`home-grid-deep`,
-/// issue #395) at 2,040 cards, about 1,343 KB of catalog (about 0.65 KB a card, 170 hubs); the
-/// `hubs: landed` log line reports the live figure. It used to be 256, which cut a Home of more
-/// than about 21 rows off in the middle.
-///
-/// An ordinary row spends its published card count; a row that pages spends at most 12 slots
-/// ([`shelf_cost`]) while holding a moving window of at most 24 cards, so the published rows hold
-/// at most twice this budget, plus at most eight retained heroes.
-///
-/// It is applied in exactly one place: [`merge_with_scope`], AFTER the pin filter and the
-/// per-shelf [`MAX_SHELF_ITEMS`] ceiling, through [`allot`] and the whole-shelf rule — so an
-/// unpinned library spends none of it, and what falls past it is whole shelves from the tail of a
-/// source, never a truncated row. [`project`] does not truncate. Rows dropped by the bound are
-/// logged by [`pump`].
+/// Bound on held cards: `HOLD_ROWS` x [`MAX_SHELF_ITEMS`] = 16 x 24 = 384, plus the merged
+/// Continue Watching row (up to 24) and at most [`HERO_MAX`] retained heroes, however many rows
+/// the servers offer. Descriptors are a few hundred bytes each; they are the directory.
+pub(crate) const HOLD_ROWS: usize = 16;
+
+/// The card bound Library section hubs still read until they take the same ring (a later step).
+/// Home does not: it publishes every row.
 pub(crate) const HOME_CARDS_MAX: usize = 2048;
 
 /// Cards one shelf holds at most — the number the grid can address (the owned Home's `MAX_ITEMS`
@@ -196,6 +188,8 @@ pub struct PmsState {
     fanout: crate::stores::fanout::Fanout,
     /// A Continue Watching move waiting for the servers whose lanes it had to read.
     deck_ask: Option<DeckAsk>,
+    /// The rows (catalog order, inclusive) the screen holds cards for; see [`HOLD_ROWS`].
+    hold: (usize, usize),
 }
 
 /// The id of the merged Continue Watching row, which a page ask names instead of one server's hub.
@@ -220,6 +214,7 @@ impl Default for PmsState {
             catalog_gen: 0,
             fanout: Default::default(),
             deck_ask: None,
+            hold: (0, HOLD_ROWS - 1),
         }
     }
 }
@@ -820,6 +815,10 @@ struct Shelf {
     end: usize,
     #[serde(default)]
     more: bool,
+    /// Cards the row showed when it gave them up to the ring; 0 while it holds cards. A row with
+    /// `shown > 0` and no items is a descriptor: Home publishes that many placeholder slots for it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    shown: usize,
     /// How the window relates to its listing, and the keys the row has shown. Absent for a row that
     /// has not paged, so an older recording decodes unchanged.
     #[serde(default, skip_serializing_if = "paging::RowState::is_default")]
@@ -828,6 +827,8 @@ struct Shelf {
 
 impl Shelf {
     fn is(&self, id: &str, key: &str) -> bool { self.hub_id == id && self.key == key }
+    /// A descriptor: the row gave its cards up to the ring and keeps what is needed to ask for them.
+    fn released(&self) -> bool { self.items.is_empty() && self.shown > 0 }
 }
 
 /// ONE source's whole contribution to Home — its Continue Watching items (merged with everyone
@@ -856,17 +857,15 @@ struct PageQuery {
     before: bool,
     #[serde(default)]
     hidden: Vec<i64>,
+    /// Not a move of the window: the row came back into the ring and is read again where it stood.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    reload: bool,
 }
 
 /// Whether a hub's listing is one the pager reads: every row whose key [`is_pageable_hub_key`]
 /// admits pages, whatever it is called. A row whose key is not admitted keeps its preview.
 fn pages(key: &str) -> bool {
     plx_plex::plex::is_pageable_hub_key(key)
-}
-
-// Paging must not spend the preview slots of another row. Each window is still bounded to 24.
-fn shelf_cost(shelf: &Shelf, len: usize) -> usize {
-    if pages(&shelf.key) { len.min(HUB_FETCH_COUNT as usize) } else { len }
 }
 
 /// How a fresh preview row starts: a row the pager will read waits for its first forward ask to
@@ -902,7 +901,7 @@ fn request_page(state: &mut PmsState, adapter: &PmsAdapter, sid: ServerId,
     let start = if before { shelf.offset } else { shelf.end.max(shelf.offset + shelf.items.len()) };
     source.retry_n = 0;
     source.page = Some(PageQuery { id: id.into(), key: key.into(), start, before,
-        hidden: hidden_sections(scope, sid) });
+        hidden: hidden_sections(scope, sid), reload: false });
     kick_with(state.hub_gen, adapter, source, scope, launch)
 }
 
@@ -1060,7 +1059,7 @@ fn fetch_row(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_e
     let (positions, items) = rows.into_iter().unzip();
     Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf {
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
-        total: info.total, offset: info.offset, end: info.end, more: info.more, row: state,
+        total: info.total, offset: info.offset, end: info.end, more: info.more, shown: 0, row: state,
     }] })
 }
 
@@ -1116,7 +1115,7 @@ fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimu
     let (positions, items) = rows.into_iter().unzip();
     Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf {
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
-        total: info.total, offset: info.offset, end: info.end, more: info.more, row: Default::default(),
+        total: info.total, offset: info.offset, end: info.end, more: info.more, shown: 0, row: Default::default(),
     }] })
 }
 
@@ -1174,7 +1173,7 @@ fn request_deck_page(state: &mut PmsState, adapter: &PmsAdapter, before: bool, s
         let s = &mut srcs[i];
         if refresh_src_lifecycle(s) || s.fetching || s.page.is_some() || s.state != HubState::Ready { continue; }
         s.retry_n = 0;
-        s.page = Some(PageQuery { id: DECK_ID.into(), key: String::new(), start: 0, before, hidden: Vec::new() });
+        s.page = Some(PageQuery { id: DECK_ID.into(), key: String::new(), start: 0, before, hidden: Vec::new(), reload: false });
         waiting.push(i);
     }
     if waiting.is_empty() {
@@ -1226,12 +1225,183 @@ fn land_page(source: &mut Src, page: &PageQuery, build: SourceBuild) -> bool {
     true
 }
 
+/// A row back in the ring, read again where its window began. The cards replace the placeholders;
+/// a read that came back empty leaves the row a descriptor and stalls it until the hold moves.
+fn land_reload(source: &mut Src, page: &PageQuery, build: SourceBuild) -> bool {
+    let Some(next) = build.shelves.into_iter().find(|shelf| shelf.is(&page.id, &page.key)) else { return false };
+    if next.items.is_empty() {
+        source.stalled.push((page.id.clone(), page.key.clone()));
+        return false;
+    }
+    let Some(current) = source.last.as_mut().and_then(|build| build.shelves.iter_mut()
+        .find(|shelf| shelf.is(&page.id, &page.key))) else { return false };
+    if !current.released() { return false; }
+    let mut next = next;
+    next.items.truncate(MAX_SHELF_ITEMS);
+    next.positions.truncate(MAX_SHELF_ITEMS);
+    current.items = next.items;
+    current.positions = next.positions;
+    current.offset = next.offset;
+    current.end = next.end;
+    current.more = next.more;
+    current.total = next.total;
+    current.row = next.row;
+    current.shown = 0;
+    true
+}
+
+/// A refresh brings every row's first page. A row that had given its cards up keeps its descriptor
+/// (window offset, ledger, the count it showed) and takes only the fresh total, so it returns where
+/// it was.
+fn carry_descriptors(old: &SourceBuild, new: &mut SourceBuild) {
+    for shelf in &mut new.shelves {
+        let Some(was) = find_shelf(&old.shelves, &shelf.hub_id, &shelf.key).filter(|was| was.released()) else { continue };
+        shelf.items = Vec::new();
+        shelf.positions = Vec::new();
+        shelf.shown = was.shown;
+        shelf.offset = was.offset;
+        shelf.end = was.end;
+        shelf.more = was.more;
+        shelf.row = was.row.clone();
+    }
+}
+
+/// The held range as the store keeps it: at most [`HOLD_ROWS`] rows, centred on what the screen
+/// asked for when it asked for more.
+fn clamp_hold((lo, hi): (usize, usize)) -> (usize, usize) {
+    let hi = hi.max(lo);
+    if hi - lo < HOLD_ROWS { return (lo, hi); }
+    let lo = ((lo + hi) / 2).saturating_sub(HOLD_ROWS / 2);
+    (lo, lo + HOLD_ROWS - 1)
+}
+
+/// The shelves that publish a row, in catalog order after the deck: `(source, shelf)` indices.
+/// The single definition of that order, shared by the merge's output and the ring.
+fn published_order(srcs: &[Src], pins: &[(ServerId, i64, bool)]) -> Vec<(usize, usize)> {
+    let mut order = Vec::new();
+    for (i, source) in srcs.iter().enumerate() {
+        let Some(build) = &source.last else { continue };
+        for (j, shelf) in build.shelves.iter().enumerate() {
+            if shelf.released() || shelf.items.iter().any(|m| item_pinned(pins, m)) { order.push((i, j)); }
+        }
+    }
+    order
+}
+
+/// Gives the cards of every row outside the held range up to its descriptor. `hubs` is the merge
+/// that was just built from `srcs`; returns whether any row changed.
+fn settle_ring(srcs: &mut [Src], pins: &[(ServerId, i64, bool)], hubs: &[HubRow], hold: (usize, usize)) -> bool {
+    let order = published_order(srcs, pins);
+    let deck = hubs.len().saturating_sub(order.len());
+    let (lo, hi) = clamp_hold(hold);
+    let mut changed = false;
+    for (k, &(i, j)) in order.iter().enumerate() {
+        let row = k + deck;
+        if (lo..=hi).contains(&row) { continue; }
+        let Some(shelf) = srcs[i].last.as_mut().and_then(|build| build.shelves.get_mut(j)) else { continue };
+        // a row whose key cannot be read again keeps its cards: it has no way back
+        if shelf.released() || !pages(&shelf.key) { continue; }
+        shelf.shown = hubs[row].len;
+        shelf.items = Vec::new();
+        shelf.positions = Vec::new();
+        changed = true;
+    }
+    changed
+}
+
+/// [`merge_with_scope`] with the ring applied: rows outside the held range give their cards up and
+/// the catalog is built again from descriptors. The hero pool is the full merge's (it is built from
+/// the rows a refresh brought, before they were released); its cards are kept in the catalog.
+fn merge_held(srcs: &mut [Src], scope: &BrowseScope, hold: (usize, usize)) -> (HubBuild, bool) {
+    let mut build = merge_with_scope(srcs, scope);
+    let changed = settle_ring(srcs, &scope.pins, &build.1, hold);
+    if changed {
+        let full = std::mem::replace(&mut build, merge_with_scope(srcs, scope));
+        keep_heroes(&full.0, &full.2, &mut build);
+    }
+    (build, changed)
+}
+
+/// The rows to read again: held, a descriptor, not stalled. Per source, in catalog order.
+fn wanted_reloads(srcs: &[Src], pins: &[(ServerId, i64, bool)], deck: usize, hold: (usize, usize)) -> Vec<Vec<(String, String)>> {
+    let (lo, hi) = clamp_hold(hold);
+    let mut wanted = vec![Vec::new(); srcs.len()];
+    for (k, (i, j)) in published_order(srcs, pins).into_iter().enumerate() {
+        if !(lo..=hi).contains(&(k + deck)) { continue; }
+        let Some(shelf) = srcs[i].last.as_ref().and_then(|build| build.shelves.get(j)) else { continue };
+        if shelf.released() && !srcs[i].stalled.iter().any(|(id, key)| shelf.is(id, key)) {
+            wanted[i].push((shelf.hub_id.clone(), shelf.key.clone()));
+        }
+    }
+    wanted
+}
+
+/// Starts the reads for rows that came back into the ring. One row per source at a time, through
+/// the fan-out gate, chosen on THIS tick from the rows held now: a row that left the ring before
+/// its read started is dropped from the queue, so a key held through hundreds of rows asks for the
+/// rows it stopped on and never for the ones it passed.
+fn pump_reloads(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    let mut endpoints = crate::stores::EndpointRefreshSet::default();
+    let deck = published_home(state).hubs.len().saturating_sub(published_order(&state.srcs, &scope.pins).len());
+    let wanted = wanted_reloads(&state.srcs, &scope.pins, deck, state.hold);
+    let mut srcs = std::mem::take(&mut state.srcs);
+    let mut ask = false;
+    for (source, want) in srcs.iter_mut().zip(&wanted) {
+        if let Some(page) = source.page.as_ref().filter(|page| page.reload && !source.fetching) {
+            if !want.iter().any(|(id, key)| *id == page.id && *key == page.key) {
+                source.page = None;
+                source.deferred = false;
+            }
+        }
+        if source.page.is_some() || source.fetching || source.state != HubState::Ready { continue; }
+        let Some((id, key)) = want.first() else { continue };
+        let start = source.last.as_ref().and_then(|build| find_shelf(&build.shelves, id, key)).map_or(0, |shelf| shelf.offset);
+        source.retry_n = 0;
+        source.page = Some(PageQuery { id: id.clone(), key: key.clone(), start, before: false,
+            hidden: hidden_sections(scope, source.sid), reload: true });
+        ask = true;
+    }
+    if ask || srcs.iter().any(|source| source.deferred && source.page.as_ref().is_some_and(|page| page.reload)) {
+        let gen = state.hub_gen;
+        let mut turn = fanout_turn(&mut state.fanout, &srcs, source_waiting);
+        for source in srcs.iter_mut().filter(|source| source.page.as_ref().is_some_and(|page| page.reload)) {
+            if let Some(request) = kick_gated(&mut turn, gen, adapter, source, scope, &mut *launch) { endpoints.insert(request); }
+        }
+    }
+    state.srcs = srcs;
+    endpoints
+}
+
+/// `HubsCmd::Hold`: the screen holds rows `lo..=hi`. Rows that left the range give their cards up;
+/// rows that entered it without cards are read at their windows.
+fn run_hold(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope, lo: usize, hi: usize,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    if state.hold == (lo, hi) { return Default::default(); }
+    state.hold = (lo, hi);
+    for source in &mut state.srcs { source.stalled.clear(); }
+    let mut srcs = std::mem::take(&mut state.srcs);
+    let (mut build, changed) = merge_held(&mut srcs, scope, state.hold);
+    state.srcs = srcs;
+    if changed {
+        preserve_heroes(state, &mut build);
+        commit(state, build);
+    }
+    pump_reloads(state, adapter, scope, launch)
+}
+
 // Scrolling an old Recently Added page must not change the banner's current selection.
 fn preserve_heroes(state: &PmsState, build: &mut HubBuild) {
     let previous = published_home(state);
+    keep_heroes(&previous.items, &previous.heroes, build);
+}
+
+/// Makes `heroes` (slots into `items`) the pool of `build`, adding to its catalog the cards it does
+/// not hold.
+fn keep_heroes(items: &[Arc<PmsMovie>], heroes: &[HeroSlot], build: &mut HubBuild) {
     build.2.clear();
-    for hero in &previous.heroes {
-        let item = &previous.items[hero.idx];
+    for hero in heroes {
+        let item = &items[hero.idx];
         let idx = build.0.iter().position(|row| plx_plex::plex::same_item((row.sid, &row.rk), (item.sid, &item.rk)))
             .unwrap_or_else(|| { build.0.push(Arc::clone(item)); build.0.len() - 1 });
         build.2.push(HeroSlot { idx, source: hero.source.clone() });
@@ -1368,6 +1538,7 @@ fn project(
             end: hub.metadata.len(),
             more: pages(&hub.key)
                 && (hub.more || hub.total() > hub.metadata.len() || hub.metadata.len() >= HUB_FETCH_COUNT as usize),
+            shown: 0,
             row: preview_row(&hub.hub_identifier, &hub.key),
         });
     }
@@ -1439,9 +1610,9 @@ fn live_sources(srcs: &[Src]) -> Vec<(&str, &SourceBuild)> {
         .collect()
 }
 
-/// What each live source's shelves would publish with an unlimited budget: every pinned card, at
-/// most [`MAX_SHELF_ITEMS`] per shelf. One function so the demand handed to [`allot`], the cards
-/// emitted and the overflow [`bound_overflow`] reports cannot disagree.
+/// What each live source's shelves publish: every pinned card they hold, at most
+/// [`MAX_SHELF_ITEMS`] per shelf. A shelf that gave its cards up to the ring holds none and
+/// publishes placeholder slots instead (see [`Shelf::released`]).
 fn publishable_shelves<'a>(
     live: &[(&str, &'a SourceBuild)],
     pins: &[(ServerId, i64, bool)],
@@ -1460,23 +1631,6 @@ fn publishable_shelves<'a>(
                 .collect()
         })
         .collect()
-}
-
-/// `(shelves, cards)` the sources offered that [`HOME_CARDS_MAX`] left out of `build`: the whole
-/// shelves dropped from the tail of a source. `(0, 0)` on every Home under the bound.
-fn bound_overflow(srcs: &[Src], scope: &BrowseScope, build: &HubBuild) -> (usize, usize) {
-    let live = live_sources(srcs);
-    let (mut offered_shelves, mut offered_cards) = (0, 0);
-    for items in publishable_shelves(&live, &scope.pins).iter().flatten() {
-        if !items.is_empty() {
-            offered_shelves += 1;
-            offered_cards += items.len();
-        }
-    }
-    let deck = build.1.first().filter(|h| h.hub_id == "home.continue");
-    let published_shelves = build.1.len() - usize::from(deck.is_some());
-    let published_cards: usize = build.1.iter().map(|hub| hub.len).sum::<usize>() - deck.map_or(0, |h| h.len);
-    (offered_shelves - published_shelves, offered_cards - published_cards)
 }
 
 /// Approximate resident bytes of a catalog: each card's struct plus the heap its strings own.
@@ -1550,38 +1704,31 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     }
 
     // ---- 2. every other shelf, grouped by source ----
-    // What each shelf would publish with an unlimited budget, computed ONCE so the demand handed to
-    // `allot` and the cards emitted below cannot disagree. Filtered BEFORE the cap, so an unpinned
-    // library cannot spend a pinned one's row budget (nor can items past the cap, which are never
-    // drawn), and a shelf left with nothing contributes no `HubRow` below, which is how an unpinned
-    // library's whole shelf disappears rather than becoming an empty heading.
+    // Every shelf with something to show publishes a row; none is left off. A shelf that holds
+    // cards publishes them (pin-filtered first, so an unpinned library's whole shelf disappears
+    // rather than becoming an empty heading); a shelf that gave them up to the ring publishes as
+    // many placeholder slots as it last showed, which carry its server so the row keeps its identity.
     let publishable = publishable_shelves(&live, pins);
-    let row_want: Vec<usize> = publishable
-        .iter()
-        .zip(&live)
-        .map(|(shelves, (_, build))| shelves.iter().zip(&build.shelves)
-            .map(|(items, shelf)| shelf_cost(shelf, items.len())).sum())
-        .collect();
-    let rows_for = allot(HOME_CARDS_MAX - new_cat.len(), &row_want);
+    let sids: Vec<ServerId> = srcs.iter().filter(|s| s.last.is_some()).map(|s| s.sid).collect();
 
     for (i, (handle, b)) in live.iter().enumerate() {
-        let mut rows_left = rows_for[i];
         for (sh, items) in b.shelves.iter().zip(&publishable[i]) {
-            // A shelf is published whole or not at all, and once one does not fit the source stops:
-            // skipping ahead to a smaller later shelf would reorder the household's Home.
-            let cost = shelf_cost(sh, items.len());
-            if cost > rows_left {
-                break;
-            }
-            if items.is_empty() {
-                continue;
-            }
             let start = new_cat.len();
-            for m in items {
-                new_cat.push(Arc::clone(m));
-                row_handle.push(handle);
+            if sh.released() {
+                let slot = Arc::new(PmsMovie { sid: sids[i], ..PmsMovie::default() });
+                for _ in 0..sh.shown {
+                    new_cat.push(Arc::clone(&slot));
+                    row_handle.push(handle);
+                }
+            } else {
+                if items.is_empty() {
+                    continue;
+                }
+                for m in items {
+                    new_cat.push(Arc::clone(m));
+                    row_handle.push(handle);
+                }
             }
-            rows_left -= cost;
             new_hubs.push(HubRow {
                 title: sh.title.clone(),
                 hub_id: sh.hub_id.clone(),
@@ -1703,6 +1850,9 @@ struct Src {
     /// A fetch was wanted and the fan-out gate had no room for it. Stays set until the fetch starts,
     /// so the tick asks again; nothing is dropped.
     deferred: bool,
+    /// Rows `(hub id, key)` whose reload failed for good while held; asked again only after the
+    /// screen's hold moves.
+    stalled: Vec<(String, String)>,
     /// The projection this source last ANSWERED with, kept across a failure. This is what makes a
     /// failure never blank a populated Home; `None` (never answered) is what makes a dead source
     /// contribute nothing at all — no heading, no empty shelf, no spinner row.
@@ -1725,11 +1875,16 @@ impl Src {
             page: self.page.clone(),
             lane: self.last.as_ref().filter(|build| build.lane.placed).map(|build| (build.lane.clone(), Vec::new())),
             window: self.page.as_ref().and_then(|page| self.last.as_ref().and_then(|build|
-                find_shelf(&build.shelves, &page.id, &page.key))).cloned(),
+                find_shelf(&build.shelves, &page.id, &page.key)).cloned().map(|mut shelf| {
+                    // A row returning to the ring reads forward from where its window began.
+                    if page.reload { shelf.end = shelf.offset; }
+                    shelf
+                })),
             windows: self.last.as_ref().map_or_else(Vec::new, |build| build.shelves.iter()
-                .filter(|shelf| pages(&shelf.key)
+                
+                .filter(|shelf| pages(&shelf.key) && !shelf.released()
                     && (shelf.offset > 0 || shelf.end > HUB_FETCH_COUNT as usize))
-                .map(|shelf| (PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(), start: shelf.offset, before: false, hidden: Vec::new() }, shelf.end, shelf.clone())).collect()),
+                .map(|shelf| (PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(), start: shelf.offset, before: false, hidden: Vec::new(), reload: false }, shelf.end, shelf.clone())).collect()),
         };
         self.client = Some(client);
         self.token_gen = request.token_gen;
@@ -1754,6 +1909,7 @@ impl Src {
             retry_s: 0.0,
             retry_n: 0,
             deferred: false,
+            stalled: Vec::new(),
             last: None,
         }
     }
@@ -2198,7 +2354,7 @@ fn sync_roster_with_scope(state: &mut PmsState, scope: &BrowseScope) {
     let dropped = srcs.iter().any(|x| x.last.is_some());
     state.srcs = out;
     if dropped || restamped || scope_moved {
-        let build = merge_with_scope(&state.srcs, scope);
+        let (build, _) = merge_held(&mut state.srcs, scope, state.hold);
         commit(state, build);
     }
 }
@@ -2243,6 +2399,8 @@ fn landed_ok(s: &mut Src, b: SourceBuild) {
         b.shelves.len(),
         b.cw.len()
     ));
+    let mut b = b;
+    if let Some(old) = s.last.as_ref() { carry_descriptors(old, &mut b); }
     s.last = Some(b);
     s.state = HubState::Ready;
     s.retry_n = 0;
@@ -2254,6 +2412,7 @@ fn landed_fail(s: &mut Src) -> crate::stores::EndpointRefresh {
     s.retry_n = s.retry_n.saturating_add(1);
     s.retry_s = backoff_secs(s.retry_n);
     if s.page.is_some() && s.retry_n >= 3 {
+        if let Some(page) = s.page.take().filter(|page| page.reload) { s.stalled.push((page.id, page.key)); }
         s.page = None;
         s.retry_s = 0.0;
         plx_base::eventlog::log(&format!("hubs: source {} page failed after {} attempts", s.sid.raw(), s.retry_n));
@@ -2563,6 +2722,12 @@ fn run_with_scope(
                 endpoints: request_refetch_hubs_with_scope(state, adapter, scope, &mut launch),
             }
         }
+        HubsCmd::Hold { lo, hi } => {
+            let mut launch = |r| spawn_fetch(adapter, r);
+            let before = state.catalog_gen;
+            let endpoints = run_hold(state, adapter, scope, lo, hi, &mut launch);
+            crate::stores::StoreOutcome { changed: before != state.catalog_gen, endpoints }
+        }
         HubsCmd::Retry => {
             let mut launch = |request| spawn_fetch(adapter, request);
             controlled_work_with_scope(state, adapter, Some(cmd), 0.0, scope, &mut launch)
@@ -2598,6 +2763,7 @@ fn controlled_work_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, c
     let endpoints = match cmd {
         Some(paging) if paging.is_paging() => run_page_cmd(state, adapter, scope, paging, launch),
         Some(HubsCmd::RefetchHubs) => request_refetch_hubs_with_scope(state, adapter, scope, launch),
+        Some(HubsCmd::Hold { lo, hi }) => run_hold(state, adapter, scope, lo, hi, launch),
         Some(HubsCmd::Retry) => {
             let gen = state.hub_gen;
             let mut srcs = std::mem::take(&mut state.srcs);
@@ -2667,7 +2833,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         match l.build {
             Some(b) => {
                 if let Some(page) = s.page.take() {
-                    dirty |= if page.id == DECK_ID { land_lane(s, b) } else { land_page(s, &page, b) };
+                    dirty |= if page.id == DECK_ID { land_lane(s, b) } else if page.reload { land_reload(s, &page, b) } else { land_page(s, &page, b) };
                     paged = true;
                     s.retry_n = 0;
                     s.retry_s = 0.0;
@@ -2712,11 +2878,10 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     if dirty || scope_moved { settle_deck(&mut srcs, refreshed); }
     let build = (dirty || scope_moved).then(|| {
         let t0 = std::time::Instant::now();
-        let mut build = merge_with_scope(&srcs, scope);
+        let (mut build, _) = merge_held(&mut srcs, scope, state.hold);
         if paged && !refreshed && !scope_moved { preserve_heroes(state, &mut build); }
         let took = t0.elapsed();
-        let over = bound_overflow(&srcs, scope, &build);
-        (build, took, over)
+        (build, took)
     });
     state.srcs = srcs;
     if any_landed {
@@ -2725,7 +2890,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         // may have gone idle with nothing else on it to move.
         plx_machine::idle::invalidate();
     }
-    if let Some((build, took, (over_shelves, over_cards))) = build {
+    if let Some((build, took)) = build {
         let bytes = catalog_bytes(&build.0);
         let n = commit(state, build);
         // The harness (`tests/mock_fps.py`) reads the first two numbers; new fields go AFTER them.
@@ -2735,12 +2900,8 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
             took.as_micros(),
             bytes / 1024
         ));
-        if over_shelves > 0 {
-            plx_base::eventlog::log(&format!(
-                "hubs: card bound {HOME_CARDS_MAX} reached — {over_shelves} shelves, {over_cards} cards left off"
-            ));
-        }
     }
+    endpoints.merge(pump_reloads(state, adapter, scope, launch));
     endpoints
 }
 
@@ -2772,7 +2933,7 @@ fn build_test(n: usize) -> SourceBuild {
                     ..PmsMovie::default()
                 }))
                 .collect(),
-            total: 0, offset: 0, end: 0, more: false, positions: (0..n).collect(), row: Default::default(),
+            total: 0, offset: 0, end: 0, more: false, shown: 0, positions: (0..n).collect(), row: Default::default(),
         }],
     }
 }
@@ -2836,7 +2997,7 @@ pub fn seed_two_library_home_for_test(
             hub_id: "home.movies.recent".into(),
             key: String::new(),
             items: vec![item(&sections[0], "alpha"), item(&sections[1], "beta")],
-            total: 0, offset: 0, end: 0, more: false, positions: Vec::new(), row: Default::default(),
+            total: 0, offset: 0, end: 0, more: false, shown: 0, positions: Vec::new(), row: Default::default(),
         }],
     });
     let scope = BrowseScope::retained(directory);
@@ -3134,3 +3295,7 @@ mod hub_row_paging_tests;
 #[cfg(test)]
 #[path = "pms_deck_tests.rs"]
 mod deck_tests;
+
+#[cfg(test)]
+#[path = "pms_home_row_ring_tests.rs"]
+mod home_row_ring_tests;

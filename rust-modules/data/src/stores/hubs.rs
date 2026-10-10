@@ -10,6 +10,9 @@ pub enum HubsCmd {
     RefetchHubs,
     Page { sid: plx_plex::plex::ServerId, id: String, key: String, before: bool },
     CancelPage { sid: plx_plex::plex::ServerId, id: String, key: String },
+    /// The screen holds cards for rows `lo..=hi` (catalog order); every other row keeps only its
+    /// descriptor. Sent when the range changes, from the tick that knows which rows are on screen.
+    Hold { lo: usize, hi: usize },
     /// The read-out's Retry: clear the back-off and ask again.
     Retry,
     /// The profile/account switch.

@@ -269,7 +269,7 @@ fn move_row(shelf: &Shelf, before: bool, list: impl FnMut(usize, usize) -> Optio
     many: impl FnMut(&[String]) -> Option<Container>) -> Shelf {
     let query = PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(),
         start: if before { shelf.offset } else { shelf.end.max(shelf.offset + shelf.items.len()) },
-        before, hidden: Vec::new() };
+        before, hidden: Vec::new(), reload: false };
     let mut next = fetch_row(sid(0), &query, Some(shelf), 0, list, many).unwrap().shelves.remove(0);
     next.title = shelf.title.clone();
     next
