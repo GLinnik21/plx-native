@@ -181,6 +181,8 @@ pub struct LibraryScreen {
     scroll_target: f32,
     restore_scroll: Option<f32>,
     viewports: Vec<LibraryViewport>,
+    /// The grid key an `Enter::Fresh` names to seat, kept projected until the engine has seated it.
+    seat_wanted: Option<u32>,
     pending: PendingTransactions,
     page_fade: Xfade,
     grid_fade: Xfade,
@@ -233,7 +235,7 @@ impl LibraryScreen {
             shelf_publication: None, layout, target_layout: layout,
             run: ShelfRun::default(), target_run: ShelfRun::default(),
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
-            viewports: Vec::new(),
+            viewports: Vec::new(), seat_wanted: None,
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
             readout: Readout::Loading, live: true, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
             library_capsules: plx_ui::widgets::TabStrip::new(),
@@ -470,11 +472,19 @@ impl LibraryScreen {
             }
             self.shelf_publication = publication;
         }
+        self.project_grid(cx);
+        self.relayout(cx.focus.current);
+        // The relayout hands the grid this frame's scroll, and with it the window it will paint:
+        // a cell it can paint or step to must hold a key in the frame, so project again (a
+        // no-op when the window did not move).
+        self.project_grid(cx);
+        self.pair.master.refresh(cx, &mut self.keys);
+    }
+
+    fn project_grid<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
         let (ranges, pins) = self.grid_wanted(cx);
         self.pair.detail.set_pins(pins);
         self.pair.detail.refresh(cx, &mut self.keys, ranges);
-        self.relayout(cx.focus.current);
-        self.pair.master.refresh(cx, &mut self.keys);
     }
 
     /// The slot ranges the grid keeps keys for, and the keys a prune never drops. The data driver's
@@ -489,9 +499,11 @@ impl LibraryScreen {
         let mut ranges = vec![rows(visible(&self.layout, self.scroll.pos)),
             rows(visible(&self.target_layout, self.scroll_target))];
         let group = self.pair.groups_config().detail;
+        let total = H::listing(cx).total().max(0) as usize;
+        ranges.push(self.pair.detail.window_of(total));
         let mut pins = Vec::new();
         let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
-        for elem in [focus, cx.focus.remembered(group)].into_iter().flatten() {
+        for elem in [focus, cx.focus.remembered(group), self.seat_wanted].into_iter().flatten() {
             if region_of_elem(elem) != Some(KeyRegion::Grid) { continue; }
             pins.push(elem);
             if let Some((_, index)) = self.keys.last_place(elem) {
@@ -968,7 +980,15 @@ impl LibraryScreen {
         match ev {
             ScreenEvent::Mount | ScreenEvent::StoreChanged(..) => { self.sync(cx); }
             ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.sync(cx); }
-            ScreenEvent::Enter(_) => { self.live = true; self.sync(cx); }
+            ScreenEvent::Enter(enter) => {
+                self.live = true;
+                // The engine seats the target right after this event, so a key it names must hold
+                // a projected slot by then: pinned and projected until the page's next tick.
+                if let Enter::Fresh { focus: FocusTarget::Elem(key) } = enter {
+                    self.seat_wanted = Some(key.elem).filter(|_| key.entry == self.entry);
+                }
+                self.sync(cx);
+            }
             ScreenEvent::Cover => { self.live = false; }
             ScreenEvent::Uncover => { self.live = true; self.sync(cx); }
             ScreenEvent::WillLeave(_) => { self.save_cursor(cx, fx); self.flush(fx); }
@@ -1036,6 +1056,7 @@ impl LibraryScreen {
                 self.reveal(*to, *by, cx);
             }
             ScreenEvent::Tick(tick) => {
+                self.seat_wanted = None;
                 self.sync(cx);
                 if self.watch_readout(cx) {
                     fx.invalidate(Provenance::Landing(fx.from()));

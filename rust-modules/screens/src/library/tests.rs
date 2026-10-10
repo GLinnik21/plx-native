@@ -238,7 +238,8 @@ fn duplicate_across_pages_keeps_full_projection_recovery_metadata() {
         partial.sync(&fixture.cx(None));
         full.pair.detail.clear_projection();
         full.sync(&fixture.cx(None));
-        assert!(partial.pair.detail.publication_ops().0 <= 60, "a pass visits the wanted window, not the listing");
+        // The pass visits the wanted window (six rows of four), exactly, not the 60-slot listing.
+        assert_eq!(partial.pair.detail.publication_ops().0, 24);
         assert!(partial.pair.detail.publication_ops().1 <= 120);
         canonical.push((grid_hash(&partial), grid_hash(&full)));
         observations.push((partial.keys.last_place(duplicate), full.keys.last_place(duplicate)));

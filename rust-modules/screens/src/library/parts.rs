@@ -450,9 +450,12 @@ impl GridPart {
         self.grid.scale_of(cx, &self.source(cx), &elem)
     }
 
-    /// The cards the scroll can show: what `draw` and `record_stops` touch.
+    /// The cards the scroll can show out of `total`: what `draw` and `record_stops` touch, and so
+    /// the cells that must hold a key in the frame. The grid's own function, not a copy of it.
+    pub(super) fn window_of(&self, total: usize) -> std::ops::Range<usize> { self.grid.window(total) }
+
     #[cfg(test)]
-    pub(super) fn window(&self) -> std::ops::Range<usize> { self.grid.window(self.total) }
+    pub(super) fn window(&self) -> std::ops::Range<usize> { self.window_of(self.total) }
 }
 
 /// The content panel the grid's stops are clipped to.
