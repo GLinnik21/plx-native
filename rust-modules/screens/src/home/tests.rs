@@ -1594,8 +1594,9 @@ fn the_home_census_covers_input_motion_and_current_projection() {
     assert_eq!(plx_ui::cards::MAX_ROW_ITEMS, 24);
 }
 
-/// `person` and `search` cap their shelves at the data layer's `pms::MAX_SHELF_ITEMS`; the card row
-/// that draws them owns `ui::cards::MAX_ROW_ITEMS` springs. The data layer cannot name `ui` and
+/// `search` caps its shelves at the data layer's `pms::MAX_SHELF_ITEMS` (`person` used to, and no
+/// longer does: its shelves hold every credit); the card row that draws them owns
+/// `ui::cards::MAX_ROW_ITEMS` springs. The data layer cannot name `ui` and
 /// `ui` cannot name the data layer, so there are two constants for one number and this is the only
 /// place that sees both.
 #[test]
