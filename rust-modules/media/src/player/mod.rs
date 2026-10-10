@@ -3602,6 +3602,54 @@ mod tests {
         );
     }
 
+    /// **Held bytes are what is really allocated.** A rect whose index buffer has spare capacity
+    /// (a `Vec` that grew by doubling) holds that capacity, so the budget counts it.
+    #[test]
+    fn a_rects_bytes_are_its_allocation_not_its_length() {
+        let tight = rect(0, 0, 100, 10);
+        let mut loose = rect(0, 0, 100, 10);
+        loose.index.reserve_exact(1 << 20);
+        assert_eq!(tight.bytes(), 1000 + 1024);
+        assert!(loose.bytes() >= tight.bytes() + (1 << 20), "spare capacity is held, so it is counted");
+    }
+
+    /// **The bound is on what is held, and the cue on screen is never what pays for it.** A long run
+    /// of large cues keeps the store inside [`SUB_BITMAP_BUDGET`] with the cue under the playhead
+    /// present throughout; a single cue larger than the whole budget is held and shown (the budget
+    /// bounds the OTHER cues). The renderer expands only that one visible set to RGBA, once per cue
+    /// change, so the 4x never multiplies the store.
+    #[test]
+    fn a_run_of_large_cues_stays_bounded_and_the_visible_one_is_never_evicted() {
+        let _g = plx_base::testlock::serial();
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        SHARED.desired_sub_idx.store(0, Relaxed);
+        set_subtitle_offset(0);
+        let mut worst = 0usize;
+        for i in 0..40i64 {
+            SHARED.playpos_ns.store(i * SEC + SEC / 2, Relaxed); // inside cue i, once it is pushed
+            push_subtitle_bitmap(0, i * SEC, 1920, 1080, vec![rect_of(SUB_BITMAP_BUDGET / 5)]);
+            let held: usize = SHARED.sub_bitmaps.lock().unwrap().iter().map(|c| c.bytes()).sum();
+            worst = worst.max(held);
+            assert_eq!(active_bitmap_key(i * SEC + SEC / 2), Some(i * SEC), "cue {i} is on screen");
+        }
+        assert!(worst <= SUB_BITMAP_BUDGET, "held {worst} bytes, budget {SUB_BITMAP_BUDGET}");
+
+        // one cue larger than the whole budget, on an empty store
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        SHARED.playpos_ns.store(SEC / 2, Relaxed);
+        push_subtitle_bitmap(0, 0, 1920, 1080, vec![rect_of(SUB_BITMAP_BUDGET * 2)]);
+        let key = active_bitmap_key(SEC / 2).expect("an oversized cue is still on screen");
+        let (_, _, rects) = bitmap_by_key(key).expect("and fetchable");
+        assert_eq!(rects.len(), 1);
+        // a later cue arriving while it is showing evicts the newcomer's slot, not the visible cue
+        push_subtitle_bitmap(0, 10 * SEC, 1920, 1080, vec![rect_of(SUB_BITMAP_BUDGET / 5)]);
+        assert_eq!(active_bitmap_key(SEC / 2), Some(0), "the visible oversized cue survives a push");
+
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        SHARED.desired_sub_idx.store(-1, Relaxed);
+        SHARED.playpos_ns.store(0, Relaxed);
+    }
+
     /// The renderer uploads what [`SubRect::to_rgba`] expands, so the expansion is the pixels:
     /// each index becomes its palette entry's straight-alpha RGBA, in row order.
     #[test]

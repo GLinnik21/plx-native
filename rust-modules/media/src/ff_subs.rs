@@ -197,8 +197,9 @@ unsafe fn decode_bitmap(
 /// until the next one would take the set past `budget` bytes ([`crate::player::SubRect::bytes`],
 /// the measure the store's ceiling counts). A rect the decoder left unusable is skipped and costs
 /// nothing. The first rect that does not fit ends the set, so the kept rects are always a prefix of
-/// the decoder's order, and a single rect larger than the budget leaves the set empty rather than
-/// over-filling the store.
+/// the decoder's order. The FIRST usable rect is kept whatever it costs, even past the budget: a
+/// cue the viewer should see is never dropped for its size (`MAX_SIDE` in [`rect_to_indexed`]
+/// bounds one rect), and the store evicts OTHER cues to make room for it.
 fn rects_within_budget(
     num_rects: usize,
     mut rect_at: impl FnMut(usize) -> Option<crate::player::SubRect>,
@@ -208,7 +209,7 @@ fn rects_within_budget(
     let mut bytes = 0usize;
     for i in 0..num_rects {
         let Some(r) = rect_at(i) else { continue };
-        if bytes + r.bytes() > budget {
+        if !kept.is_empty() && bytes + r.bytes() > budget {
             break;
         }
         bytes += r.bytes();
@@ -472,11 +473,17 @@ mod tests {
         assert_eq!(kept.last().map(|r| r.x), Some(3), "the kept rects are the first four, in order");
     }
 
-    /// A rect larger than the whole budget leaves the set empty, which is what the decoder path
-    /// turns into no cue at all. It must not panic or hold a partial rect.
+    /// **A cue that alone exceeds the budget is still shown.** The budget bounds the cache of OTHER
+    /// cues, never the one the viewer is meant to read: a set's first usable rect is always kept,
+    /// and only the rects after it are held to what is left.
     #[test]
-    fn a_rect_larger_than_the_budget_is_dropped_without_panicking() {
-        assert!(set_of(3, 5000, 4000).is_empty());
+    fn a_rect_larger_than_the_budget_is_kept_as_the_cue_itself() {
+        let kept = set_of(3, 5000, 4000);
+        assert_eq!(kept.len(), 1, "the oversized first rect is the cue; nothing after it fits");
+        assert_eq!(kept[0].x, 0);
+        // an unusable rect in front does not use up the exemption
+        let kept = rects_within_budget(3, |i| (i != 0).then(|| rect_of_pixels(5000, i as i32)), 4000);
+        assert_eq!(kept.iter().map(|r| r.x).collect::<Vec<_>>(), [1]);
     }
 
     /// A rect the decoder left unusable is skipped and does not stop the set, and does not spend
