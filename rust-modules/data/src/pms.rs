@@ -953,6 +953,19 @@ fn fetch_row(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_e
     }] })
 }
 
+/// A released row read again by the rating keys it showed (`RowState::kept`): the same cards in the
+/// same order, in one batch read, wherever they came from.
+fn fetch_kept(sid: ServerId, page: &PageQuery, shelf: &Shelf,
+    many: &mut impl FnMut(&[String]) -> Option<plx_plex::plex::MediaContainer>) -> Option<SourceBuild> {
+    let items = paging::kept_cards(sid, &shelf.row.kept, &page.hidden, many)?;
+    let positions = (shelf.offset..shelf.offset + items.len()).collect();
+    Some(SourceBuild { cw: Vec::new(), lane: Default::default(), shelves: vec![Shelf {
+        title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
+        total: shelf.total, offset: shelf.offset, end: shelf.end, more: shelf.more, shown: 0,
+        row: paging::RowState { kept: Vec::new(), ..shelf.row.clone() },
+    }] })
+}
+
 /// The window of a row on the plain sliding window alone: no ledger, no batch read. What the
 /// characterisation tests of that window run against.
 #[cfg(test)]
@@ -1106,6 +1119,14 @@ fn land_reload(source: &mut Src, page: &PageQuery, build: SourceBuild) -> bool {
 fn carry_descriptors(old: &SourceBuild, new: &mut SourceBuild) {
     for shelf in &mut new.shelves {
         let Some(was) = find_shelf(&old.shelves, &shelf.hub_id, &shelf.key).filter(|was| was.released()) else { continue };
+        if !pages(&shelf.key) {
+            // nothing but the refresh's own preview says what the row shows now
+            shelf.row.kept = shelf.items.iter().map(|item| item.rk.clone()).collect();
+            shelf.items = Vec::new();
+            shelf.positions = Vec::new();
+            shelf.shown = was.shown;
+            continue;
+        }
         shelf.items = Vec::new();
         shelf.positions = Vec::new();
         shelf.shown = was.shown;
@@ -1138,6 +1159,19 @@ fn published_order(srcs: &[Src], pins: &[(ServerId, i64, bool)]) -> Vec<(usize, 
     order
 }
 
+/// Whether `shelf` can give its cards up, and what it keeps to ask for them again. A row the pager
+/// reads comes back from its listing at its window, except one not yet compared with its listing
+/// (its preview may be a random sample, which a second read would replace): that one, and a row
+/// with no key the pager reads, come back through the rating keys they showed. A row that shows a
+/// card with no rating key has no way back and keeps its cards.
+fn give_up_cards(shelf: &mut Shelf) -> bool {
+    let by_listing = pages(&shelf.key) && !matches!(shelf.row.mode, paging::RowMode::Unprobed);
+    if by_listing { return true; }
+    if shelf.items.iter().any(|item| item.rk.is_empty()) { return false; }
+    shelf.row.kept = shelf.items.iter().map(|item| item.rk.clone()).collect();
+    true
+}
+
 /// Gives the cards of every row outside the held range up to its descriptor. `hubs` is the merge
 /// that was just built from `srcs`; returns whether any row changed.
 fn settle_ring(srcs: &mut [Src], pins: &[(ServerId, i64, bool)], hubs: &[HubRow], hold: (usize, usize)) -> bool {
@@ -1149,8 +1183,8 @@ fn settle_ring(srcs: &mut [Src], pins: &[(ServerId, i64, bool)], hubs: &[HubRow]
         let row = k + deck;
         if (lo..=hi).contains(&row) { continue; }
         let Some(shelf) = srcs[i].last.as_mut().and_then(|build| build.shelves.get_mut(j)) else { continue };
-        // a row whose key cannot be read again keeps its cards: it has no way back
-        if shelf.released() || !pages(&shelf.key) { continue; }
+        if shelf.released() { continue; }
+        if !give_up_cards(shelf) { continue; }
         shelf.shown = hubs[row].len;
         shelf.items = Vec::new();
         shelf.positions = Vec::new();
@@ -1727,7 +1761,7 @@ impl Src {
             window: self.page.as_ref().and_then(|page| self.last.as_ref().and_then(|build|
                 find_shelf(&build.shelves, &page.id, &page.key)).cloned().map(|mut shelf| {
                     // A row returning to the ring reads forward from where its window began.
-                    if page.reload { shelf.end = shelf.offset; }
+                    if page.reload && shelf.row.kept.is_empty() { shelf.end = shelf.offset; }
                     shelf
                 })),
             windows: self.last.as_ref().map_or_else(Vec::new, |build| build.shelves.iter()
@@ -1856,6 +1890,8 @@ impl HubRequest {
                 read.ok()?;
                 Some(SourceBuild { lane, ..SourceBuild::default() })
             }
+            Some(page) if self.window.as_ref().is_some_and(|window| page.reload && !window.row.kept.is_empty()) =>
+                fetch_kept(self.sid, page, self.window.as_ref()?, &mut |keys| many_items(self.client.resource, keys)),
             Some(page) => fetch_row(self.sid, page, self.window.as_ref(), 0,
                 |start, size| self.client.resource.hub_items_paged(&page.key, start as i64, size as i64),
                 |keys| many_items(self.client.resource, keys)),
@@ -2974,6 +3010,35 @@ pub fn seed_grid_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, rows:
         shelf
     }).collect();
     let build = merge(&state.srcs);
+    commit(state, build);
+}
+
+/// [`seed_grid_for_test`] as the ring publishes it: `rows` pageable rows of `items` cards, the rows
+/// outside `hold` given up to descriptors (placeholders in the catalog). `salt(row)` is part of each
+/// card's rating key, so a later call with another salt is a refresh that brought new cards and a
+/// call with the same salt is a row coming back with the cards it showed.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_ring_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, rows: usize, items: usize,
+    salt: &dyn Fn(usize) -> usize, hold: (usize, usize)) {
+    plx_base::testlock::assert_held("the pms hub catalog (seed_ring_for_test)");
+    seed_for_test(state, adapter, items, HubState::Ready);
+    state.hold = hold;
+    let source = state.srcs[0].last.as_mut().unwrap();
+    source.shelves = (0..rows).map(|row| {
+        let mut shelf = build_test(items).shelves.remove(0);
+        shelf.hub_id = format!("test.row.{row}");
+        shelf.key = format!("/hubs/sections/1/{row}");
+        for (c, item) in shelf.items.iter_mut().enumerate() {
+            Arc::make_mut(item).rk = format!("{}-{row}-{c}", salt(row));
+        }
+        shelf.end = items;
+        shelf.more = true;
+        shelf
+    }).collect();
+    let scope = BrowseScope::standalone();
+    let mut srcs = std::mem::take(&mut state.srcs);
+    let (build, _) = merge_held(&mut srcs, &scope, hold);
+    state.srcs = srcs;
     commit(state, build);
 }
 

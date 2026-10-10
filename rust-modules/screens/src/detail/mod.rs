@@ -87,7 +87,6 @@ const HERO_FADE: f32 = 400.0;
 /// travel. Half the hero's own fade: the title is chrome the page has already handed over, so it
 /// should be gone by the time the block above it is properly on its way.
 const COMPACT_TITLE_FADE: f32 = 200.0;
-const EP_SCALE_MAX: usize = 40;
 const K_SCROLL: f32 = plx_ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
 
@@ -110,6 +109,20 @@ struct RestoreIntent {
     episode: Option<String>,
     season_requested: bool,
 }
+
+/// The range of a long season's episodes the strip last asked the store for, so the same range is
+/// not said every frame; said again after [`EP_RETRY_MS`] while a page in it is still a hole
+/// (a failed fetch is retried that way).
+#[derive(Default)]
+struct EpWant {
+    asked: Option<(usize, usize, Option<usize>, Option<usize>)>,
+    /// The list it was said of: a new season's list is a new thing to ask for.
+    list: u64,
+    at: u32,
+}
+
+const EP_RETRY_MS: u32 = 1000;
+
 
 pub struct DetailScreen {
     entry: EntryId,
@@ -219,11 +232,13 @@ pub struct DetailScreen {
     scroll: Spring,
     scroll_target: f32,
     episode_scroll: Spring,
+    /// What the episode strip last asked the store to have loaded, and when.
+    ep_want: EpWant,
     tab_scroll: Spring,
-    episode_scale: [Spring; EP_SCALE_MAX],
-    /// Each episode label block's focus lift, earned by the TEXT stop alone (the plate also shows
-    /// for the still's pop — see `episodes::draw_cell`). Slots past the episode count stay at rest.
-    episode_text_lift: [TextLift; EP_SCALE_MAX],
+    /// The focused episode's pop spring and label-block lift (earned by the TEXT stop alone; the
+    /// plate also shows for the still's pop — see `episodes::draw_cell`), keyed by episode so the
+    /// state does not grow with the season.
+    episode_cells: episodes::Cells,
     /// The About card's and the Languages column's focus lifts (`Located::About(0)` / `(1)`).
     about_card_lift: TextLift,
     about_lang_lift: TextLift,
@@ -336,6 +351,9 @@ thread_local! {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct LayoutStamp {
     episodes: usize,
+    /// The list's `rev` when it is longer than a page (its block height is reserved, so the
+    /// content is not hashed); 0 for a one-page list, whose content hash below stands in.
+    ep_rev: u64,
     n_ep: u32,
     summary: usize,
     hero_ep: usize,
@@ -353,10 +371,13 @@ impl LayoutStamp {
         use std::hash::{Hash, Hasher};
         let hero = hero::hero_episode(d);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for (_, e) in d.episodes.iter_loaded() {
-            e.title.hash(&mut hasher);
-            e.summary.hash(&mut hasher);
-            e.aired.hash(&mut hasher);
+        let paged = d.episodes.len() > plx_data::metadata::EPISODE_PAGE;
+        if !paged {
+            for (_, e) in d.episodes.iter_loaded() {
+                e.title.hash(&mut hasher);
+                e.summary.hash(&mut hasher);
+                e.aired.hash(&mut hasher);
+            }
         }
         d.summary.hash(&mut hasher);
         if let Some(e) = hero {
@@ -365,7 +386,7 @@ impl LayoutStamp {
         }
         let content_hash = hasher.finish();
         #[cfg(test)]
-        STAMPED_EPISODES.with(|n| n.set(n.get() + d.episodes.len()));
+        STAMPED_EPISODES.with(|n| n.set(n.get() + if paged { 0 } else { d.episodes.len() }));
         let mut flags = 0u8;
         if d.is_show {
             flags |= 1;
@@ -375,6 +396,7 @@ impl LayoutStamp {
         }
         Self {
             episodes: d.episodes.id() as usize,
+            ep_rev: if paged { d.episodes.rev() } else { 0 },
             n_ep: d.episodes.len() as u32,
             summary: d.summary.as_ptr() as usize,
             hero_ep: hero.map(|e| std::ptr::from_ref(e) as usize).unwrap_or(0),
@@ -446,8 +468,8 @@ impl DetailScreen {
             scroll_target: 0.0,
             episode_scroll: Spring::at(0.0),
             tab_scroll: Spring::at(0.0),
-            episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
-            episode_text_lift: [TextLift::new(); EP_SCALE_MAX],
+            episode_cells: episodes::Cells::new(),
+            ep_want: EpWant::default(),
             about_card_lift: TextLift::new(),
             about_lang_lift: TextLift::new(),
             related: Shelf::new(entry, cards::Which::Related.style()),
@@ -496,7 +518,7 @@ impl DetailScreen {
 
     /// Episode `i`'s label-block lift; at rest for a slot with no state.
     fn episode_lift(&self, i: usize) -> TextLift {
-        self.episode_text_lift.get(i).copied().unwrap_or_default()
+        self.episode_cells.lift(i)
     }
 
     /// A local that is its own engine key: the hero's controls, the About footer and the collection
@@ -769,7 +791,7 @@ impl DetailScreen {
                 row,
                 self.section_top(2, d, measure) - self.scroll.pos,
                 self.episode_scroll.pos,
-                self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0) * focus.map_or(1.0, |k| f.press.dip_of(&k)),
+                self.episode_cells.scale(i) * focus.map_or(1.0, |k| f.press.dip_of(&k)),
                 &self.episode_lift(i),
                 f.measure,
                 meta,
@@ -1140,6 +1162,23 @@ impl DetailScreen {
         }
     }
 
+    /// The episode a restore seats on, or `None` while its page has not landed. The remembered
+    /// rating key wins when that episode is loaded; otherwise the remembered column is the hint,
+    /// and the restore waits for the page that holds it rather than seating somewhere else.
+    fn episode_to_seat(d: &Detail, intent: &RestoreIntent) -> Option<usize> {
+        let hint = (intent.spot.col.max(0) as usize).min(d.episodes.len().saturating_sub(1));
+        match &intent.episode {
+            Some(rk) => d.episodes.position(rk).or_else(|| {
+                if d.episodes.is_complete() {
+                    Some(0)
+                } else {
+                    d.episodes.get(hint).map(|_| hint)
+                }
+            }),
+            None => d.episodes.get(hint).map(|_| hint),
+        }
+    }
+
     fn restore_focus(&self, meta: plx_data::metadata::MetadataView<'_>) -> Option<u32> {
         if self.return_pending { return None; }
         let intent = self.restore_intent.as_ref()?;
@@ -1162,10 +1201,7 @@ impl DetailScreen {
             }
             1 if !d.seasons.is_empty() => season::elem(d.cur_season.min(d.seasons.len() - 1)),
             2 if !d.episodes.is_empty() => {
-                let index = match &intent.episode {
-                    Some(rk) => d.episodes.position(rk).unwrap_or(0),
-                    None => clamp(intent.spot.col, d.episodes.len()),
-                };
+                let index = Self::episode_to_seat(d, intent)?;
                 episodes::elem(
                     index,
                     if intent.spot.ep_text {
@@ -1257,7 +1293,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                 2 => out.push(GroupSpec {
                     id: episodes::EPISODES_GROUP,
                     kind: GroupKind::Grid {
-                        cols: d.episodes.len().min(episodes::MAX_ITEMS).max(1),
+                        cols: d.episodes.len().max(1),
                         holes: &[],
                     },
                     seat: Seat::Nearest,
@@ -1269,7 +1305,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                         plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         self.block_h(2, d, measure),
                     ),
-                    len: d.episodes.len().min(episodes::MAX_ITEMS) * 2,
+                    len: d.episodes.len() * 2,
                     elem: ElemKind::Card,
                 }),
                 6 => out.push(GroupSpec {
@@ -1399,9 +1435,13 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                 row_move(i, self.detail(meta).map(|d| d.seasons.len()).unwrap_or(0), dir)
                     .and_then(season::elem)
             }
+            // Left/Right stop at a hole: a page that has not landed has no cell to seat on, and the
+            // press that reaches it is answered by the load the strip already asked for.
             Located::Episode(i, row) => match dir {
-                Dir::Left if i > 0 => episodes::elem(i - 1, row),
-                Dir::Right if self.detail(meta).is_some_and(|d| i + 1 < d.episodes.len()) => {
+                Dir::Left if i > 0 && self.detail(meta).is_some_and(|d| d.episodes.get(i - 1).is_some()) => {
+                    episodes::elem(i - 1, row)
+                }
+                Dir::Right if self.detail(meta).is_some_and(|d| d.episodes.get(i + 1).is_some()) => {
                     episodes::elem(i + 1, row)
                 }
                 Dir::Down if row == episodes::Row::Still => episodes::elem(i, episodes::Row::Text),
@@ -1490,7 +1530,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                     }
                 };
                 let drawn = if row == episodes::Row::Still {
-                    base.scaled(self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0))
+                    base.scaled(self.episode_cells.scale(i))
                 } else {
                     // Grows from its top edge, like `episodes::draw_cell`'s block.
                     lifted(base, TOP_CENTRE, self.episode_lift(i).scale())
@@ -1657,10 +1697,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
             let i = d.map(|d| d.cur_season.min(n.saturating_sub(1)));
             i.and_then(season::elem).unwrap_or(season::SEASON_ELEM_RANGE_START)
         } else if group == episodes::EPISODES_GROUP {
-            let n = d
-                .map(|d| d.episodes.len())
-                .unwrap_or(0)
-                .min(episodes::MAX_ITEMS);
+            let n = d.map(|d| d.episodes.len()).unwrap_or(0);
             let i = ui_cards::column_near_x(
                 from.rect.cx(),
                 plx_ui::consts::MARGIN_X,
@@ -1670,6 +1707,8 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                 n,
                 from_i,
             );
+            // column-from-x snaps to the nearest loaded index: a hole has no cell to seat on
+            let i = d.and_then(|d| d.episodes.nearest_loaded(i)).unwrap_or(i);
             let row = if d.is_some_and(|d| {
                 from.rect.cy() > self.section_top_settled(2, d, measure) - self.scroll_target + self.block_h(2, d, measure)
             }) {
@@ -1723,9 +1762,7 @@ impl DetailScreen {
                 hero::focusable(c, self.full_trailer()) && hero::index_of(self.hero_set(meta), c).is_some()
             }
             Located::Season(i) => d.is_some_and(|d| i < d.seasons.len()),
-            Located::Episode(i, _) => {
-                d.is_some_and(|d| i < d.episodes.len().min(episodes::MAX_ITEMS))
-            }
+            Located::Episode(i, _) => d.is_some_and(|d| d.episodes.get(i).is_some()),
             Located::Related(i) => d.is_some_and(|d| i < d.related.len()),
             Located::Extras(i) => d.is_some_and(|d| i < extras::len(d)),
             Located::Collection(i) => d.is_some_and(|d| i < collection::len(d)),
@@ -2200,7 +2237,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                                 Some(Located::Episode(i, row)) => Some((i, row)),
                                 _ => None,
                             },
-                            |i| self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0),
+                            |i| self.episode_cells.scale(i),
                             |i| self.episode_lift(i),
                             f.measure,
                             meta,
@@ -2816,7 +2853,9 @@ impl DetailScreen {
                     .filter(|&i| i < d.seasons.len())
                     .filter_map(|i| season::elem(i).map(|e| (e, Activate::Press))),
             );
-            for i in 0..d.episodes.len().min(episodes::MAX_ITEMS) {
+            // The cells on the axis (and one either side) register stops, as the strip paints only
+            // those: the cost follows the screen, not the season's length.
+            for i in episodes::visible(self.episode_scroll.pos, d.episodes.len(), episodes::LEAD_CELLS) {
                 if let Some(e) = episodes::elem(i, episodes::Row::Still) {
                     elems.push((e, Activate::Press));
                 }
@@ -3243,6 +3282,42 @@ impl DetailScreen {
         }
     }
 
+    /// A long season holds a few pages of its episodes: say which the strip needs (what is on
+    /// screen and on its way to be, plus a page ahead in the direction of travel, the focus and a
+    /// pending restore's target) and the store fetches the holes in it and drops the rest. Said
+    /// when it changes, and again once a second while a page in it is still missing.
+    fn want_episodes<H: ContentLike>(&mut self, d: &Detail, target: f32, focus: Option<usize>, now: u32, fx: &mut Effects<'_, H>) {
+        let len = d.episodes.len();
+        if len <= plx_data::metadata::EPISODE_PAGE {
+            return;
+        }
+        let pos = self.episode_scroll.pos;
+        let (from, to) = if target >= pos { (pos, target) } else { (target, pos) };
+        let (mut lo, mut hi) = (episodes::visible(from, len, 0).start, episodes::visible(to, len, 0).end);
+        if target > pos + 1.0 {
+            hi = (hi + plx_data::metadata::EPISODE_PAGE).min(len);
+        } else if target < pos - 1.0 {
+            lo = lo.saturating_sub(plx_data::metadata::EPISODE_PAGE);
+        }
+        let restore = self
+            .restore_intent
+            .as_ref()
+            .filter(|intent| intent.spot.section == 2)
+            .map(|intent| (intent.spot.col.max(0) as usize).min(len - 1));
+        let want = (lo, hi, focus, restore);
+        let holes = d.episodes.missing(lo, hi).next().is_some()
+            || focus.into_iter().chain(restore).any(|i| d.episodes.get(i).is_none());
+        let changed = self.ep_want.asked != Some(want) || self.ep_want.list != d.episodes.id();
+        if !(changed || holes && now.wrapping_sub(self.ep_want.at) >= EP_RETRY_MS) {
+            return;
+        }
+        self.ep_want = EpWant { asked: Some(want), list: d.episodes.id(), at: now };
+        fx.push(Fx::App(AppFx::Store(
+            StoreId::Metadata,
+            StoreCmd::Metadata(MetadataCmd::WantEpisodes { lo, hi, focus, restore }),
+        )));
+    }
+
     fn tick<H: ContentLike + crate::registry::MetadataLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let meta = H::metadata(cx);
         self.spot_facts = SpotFacts::of(self, meta);
@@ -3281,37 +3356,22 @@ impl DetailScreen {
             );
         }
 
-        let episode_focus = match focused {
-            Some(Located::Episode(i, episodes::Row::Still)) => Some(i),
-            _ => None,
-        };
-        for (i, spring) in self.episode_scale.iter_mut().enumerate() {
-            spring.step(
-                if episode_focus == Some(i) {
-                    plx_ui::theme::EP_CARD_FOCUS_SCALE
-                } else {
-                    1.0
-                },
-                300.0,
-                dt,
-            );
-        }
-        let text_focus = match focused {
-            Some(Located::Episode(i, episodes::Row::Text)) => Some(i),
-            _ => None,
-        };
-        let n_episodes = d.map_or(0, |d| d.episodes.len());
-        for (i, lift) in self.episode_text_lift.iter_mut().enumerate() {
-            if i < n_episodes {
-                lift.step(text_focus == Some(i), dt);
-            } else {
-                lift.reset(); // a slot with no episode holds no lift over from a longer season
-            }
-        }
+        self.episode_cells.step(
+            match focused {
+                Some(Located::Episode(i, episodes::Row::Still)) => Some(i),
+                _ => None,
+            },
+            match focused {
+                Some(Located::Episode(i, episodes::Row::Text)) => Some(i),
+                _ => None,
+            },
+            dt,
+        );
         self.about_card_lift.step(focused == Some(Located::About(0)), dt);
         self.about_lang_lift.step(focused == Some(Located::About(1)), dt);
 
         if let Some(d) = d {
+            let mut strip_target = self.episode_scroll.pos;
             if let Some(i) = match focused {
                 Some(Located::Episode(i, _)) => Some(i),
                 _ => None,
@@ -3324,8 +3384,20 @@ impl DetailScreen {
                     episodes::GAP,
                     plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                 );
+                // A target more than two screens away (a restore onto episode 700) is seated, not
+                // flown to: the spring would sweep every cell between, and the strip would ask for
+                // every page on the way.
+                if (target - self.episode_scroll.pos).abs() > 2.0 * plx_ui::consts::SCR_W {
+                    self.episode_scroll.jump(target);
+                }
                 self.episode_scroll.step(target, K_STRIP_SCROLL, dt);
+                strip_target = target;
             }
+            let focused_episode = match focused {
+                Some(Located::Episode(i, _)) => Some(i),
+                _ => None,
+            };
+            self.want_episodes(d, strip_target, focused_episode, t.ms, fx);
             let tab_focus = match focused {
                 Some(Located::Season(i)) => Some(i),
                 _ => None,

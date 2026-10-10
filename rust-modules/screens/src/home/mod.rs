@@ -142,6 +142,8 @@ struct HubProjection {
     identity: HomeHubIdentity,
     group: GroupId,
     elems: Vec<u32>,
+    /// The row is a descriptor: its `elems` are placeholder slots, minted when the ring released it.
+    placeholders: bool,
     /// Where the row's linked heading leads: the collection a promoted `custom.collection.*` hub
     /// lists, classified once per publication. Every other row is unlinked and keeps its plain
     /// heading.
@@ -708,20 +710,33 @@ impl HomeScreen {
             return;
         }
         let mut rows = Vec::with_capacity(view.hub_count());
+        let old_rows = std::mem::take(&mut self.rows);
+        let old_at: HashMap<&HomeHubIdentity, usize> = old_rows.iter().enumerate().map(|(at, row)| (&row.identity, at)).collect();
         for row in 0..view.hub_count() {
             let Some(hub) = view.hub(row) else { continue };
             let identity = Self::hub_identity(view, row, hub);
             let group = self.group_for(&identity);
-            let mut elems = Vec::with_capacity(hub.items.len().min(MAX_ITEMS));
-            for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate() {
-                let item_ref = if item.rk.is_empty() {
-                    ItemRef::Slot { generation: view.generation, ordinal: col as u32 }
-                } else {
-                    ItemRef::Item { sid: item.sid, rk: &item.rk }
-                };
-                let index = self.item_registration(&identity, item_ref);
-                elems.push(self.place_item(index, row as u32, col as u32));
-            }
+            // A descriptor that is still a descriptor of the same size keeps the slots it has: its
+            // cards are nowhere on screen or near it, so a ring move costs nothing per such row.
+            let placeholders = !hub.items.is_empty() && hub.items.len() <= MAX_ITEMS && hub.items.iter().all(|item| item.rk.is_empty());
+            let reused = placeholders.then(|| old_at.get(&identity).map(|&at| &old_rows[at]))
+                .flatten().filter(|old| old.placeholders && old.elems.len() == hub.items.len()).map(|old| old.elems.clone());
+            let elems = match reused {
+                Some(elems) => elems,
+                None => {
+                    let mut elems = Vec::with_capacity(hub.items.len().min(MAX_ITEMS));
+                    for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate() {
+                        let item_ref = if item.rk.is_empty() {
+                            ItemRef::Slot { generation: view.generation, ordinal: col as u32 }
+                        } else {
+                            ItemRef::Item { sid: item.sid, rk: &item.rk }
+                        };
+                        let index = self.item_registration(&identity, item_ref);
+                        elems.push(self.place_item(index, row as u32, col as u32));
+                    }
+                    elems
+                }
+            };
             // The publishing section, for an identifier whose own section segment does not parse:
             // a hub lists one section's items.
             let link = match hub.identity {
@@ -734,14 +749,14 @@ impl HomeScreen {
                 identity,
                 group,
                 elems,
+                placeholders,
                 link,
             });
         }
         let mut old_shelves: Vec<Option<Shelf>> = std::mem::take(&mut self.grid.shelves).into_iter().map(Some).collect();
         self.grid.shelves = Vec::with_capacity(rows.len());
         for row in &rows {
-            let kept = self.rows.iter().position(|old| old.identity == row.identity)
-                .and_then(|old| old_shelves.get_mut(old)?.take());
+            let kept = old_at.get(&row.identity).and_then(|&old| old_shelves.get_mut(old)?.take());
             let mut shelf = kept.unwrap_or_else(|| Shelf::new(self.entry, &RowStyle::HOME).cull_margin(GLOW_PAD));
             if let Some(&(_, scroll)) = self.restored_scroll.iter().find(|(group, _)| *group == row.group.0) {
                 shelf.restore_scroll(scroll, row.elems.len());
@@ -766,7 +781,7 @@ impl HomeScreen {
                 && !self.rows.iter().any(|row| row.group.0 == *group)
         });
         self.projected_generation = Some(view.generation);
-        self.prune_keys(&was, view.generation, cx.focus.current.map(|key| key.elem));
+        self.prune_keys(&was, view.generation, cx.focus.current.map(|key| key.elem), &cx.focus.remembered);
         self.reconcile_carousel(view);
     }
 
@@ -778,16 +793,24 @@ impl HomeScreen {
     /// An `Ephemeral` group of an older generation is never projected again. A remembered cursor
     /// older than what is retained recovers to the first row (`reconcile`). A Home whose hubs are
     /// stable and whose cards carry rating keys, under the cap, drops nothing.
-    fn prune_keys(&mut self, was: &HashMap<u32, (u32, u32)>, generation: u32, focus: Option<u32>) {
+    ///
+    /// Each row's remembered card (`remembered`, the engine's cursor per group) is kept whether or
+    /// not the row holds cards now: a row the ring released is a row of placeholders, and the card
+    /// the user left in it must still be the card they return to. One key per row.
+    fn prune_keys(&mut self, was: &HashMap<u32, (u32, u32)>, generation: u32, focus: Option<u32>,
+        remembered: &[(GroupId, u32)]) {
         let now = &self.elem_at;
-        let live = |elem: u32| now.contains_key(&elem) || was.contains_key(&elem) || Some(elem) == focus;
+        let pinned: HashSet<u32> = remembered.iter().map(|&(_, elem)| elem).collect();
+        let shown = |elem: u32| now.contains_key(&elem) || was.contains_key(&elem) || Some(elem) == focus;
+        let live = |elem: u32| shown(elem) || pinned.contains(&elem);
         let mut drop: HashSet<u32> = self.items.iter()
             .filter(|key| {
                 let volatile = match &key.identity {
                     HomeItemIdentity::Slot { .. } => true,
                     HomeItemIdentity::Item { hub, .. } => matches!(hub, HomeHubIdentity::Ephemeral { .. }),
                 };
-                volatile && !live(key.elem)
+                // a placeholder's key is a pure function of its publication: never worth keeping
+                volatile && !shown(key.elem)
             })
             .map(|key| key.elem)
             .collect();
@@ -3065,8 +3088,9 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
         self.item(i).and_then(PmsMovie::resume_frac)
     }
 
+    /// A card has landed once it has a rating key; the ring's placeholder slot is an empty movie.
     fn loaded(&self, i: usize) -> bool {
-        self.item(i).is_some()
+        self.item(i).is_some_and(|item| !item.rk.is_empty())
     }
 
     fn hover(&self, _i: usize) -> Hover {

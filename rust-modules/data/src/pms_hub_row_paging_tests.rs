@@ -261,7 +261,7 @@ fn preview_shelf(keys: &[usize], total: usize) -> Shelf {
     shelf.end = keys.len();
     shelf.total = total;
     shelf.more = true;
-    shelf.row = paging::RowState { mode: paging::RowMode::Unprobed, ledger: None };
+    shelf.row = paging::RowState { mode: paging::RowMode::Unprobed, ..Default::default() };
     shelf
 }
 
