@@ -601,13 +601,14 @@ impl super::BrowseState {
         let worker_adapter = Arc::clone(&adapter);
         let hold = self.states().get(sec).map_or((0, HOLD_ROWS - 1), |st| st.hubs.held());
         let spawned = plx_base::task::spawn_small("libhubs", move || {
-            // One whole response: `/hubs/sections/{id}` pages by hub (docs/pms-api.md, Paging,
-            // observed) but this list is read once, so its cost is one response carrying every
-            // hub's 12-card preview. It is parsed into descriptors here, off the main thread, and
-            // only the held rows keep their cards.
+            // `/hubs/sections/{id}` pages by hub (docs/pms-api.md, Paging, observed): the list is read
+            // a window of hubs at a time and parsed into descriptors here, off the main thread, so
+            // only the held rows and one window of 12-card previews are ever held.
             let shelves = catch_unwind(|| {
-                let mc = client.library_hubs(key, HUB_FETCH_COUNT)?;
-                Some(parse_hubs_held(&mc, sid, key, hold))
+                parse_hub_list(sid, key, hold, |req| match req {
+                    Some(req) => client.library_hubs_page(key, HUB_FETCH_COUNT, req),
+                    None => client.library_hubs(key, HUB_FETCH_COUNT),
+                })
             })
             .unwrap_or(None);
             *worker_adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(HubResult {
@@ -1114,7 +1115,31 @@ pub fn parse_hubs_held(
     hold: (usize, usize),
 ) -> Parsed {
     let mut out = Vec::new();
-    for hub in &mc.hub {
+    parse_window(&mut out, &mc.hub, sid, section, hold);
+    Parsed { shelves: out }
+}
+
+/// A section's hub list read in windows of hubs ([`paging::read_hub_list`]), each window parsed into
+/// `out` as it arrives and its rows outside `hold` given up before the next is read: a long list
+/// holds the held rows and one window of previews at once. `read(Some(req))` is one window and
+/// `read(None)` the whole list, for a server that ignores the window.
+pub fn parse_hub_list(
+    sid: ServerId,
+    section: i64,
+    hold: (usize, usize),
+    read: impl FnMut(Option<plx_plex::plex::PageReq>) -> Option<plx_plex::plex::MediaContainer>,
+) -> Option<Parsed> {
+    paging::read_hub_list(read, Vec::new, |out, hubs| parse_window(out, hubs, sid, section, hold))
+        .map(|shelves| Parsed { shelves })
+}
+
+/// One run of the hub list appended to `out`, which holds the rows before it: a row's number is its
+/// place in `out`, so the held range is exact however the list was cut into windows.
+fn parse_window(out: &mut Vec<Shelf>, hubs: &[plx_plex::plex::Hub], sid: ServerId, section: i64, hold: (usize, usize)) {
+    let base = out.len();
+    #[cfg(test)]
+    let before: usize = out.iter().map(|shelf| shelf.items.len()).sum();
+    for hub in hubs {
         let (positions, items): (Vec<usize>, Vec<PmsMovie>) = hub
             .metadata
             .iter()
@@ -1158,9 +1183,14 @@ pub fn parse_hubs_held(
             row: paging::preview_state(&hub.hub_identifier, &hub.key),
         });
     }
-    settle(&mut out, hold);
-    Parsed { shelves: out }
+    #[cfg(test)]
+    PEAK_CARDS.with(|peak| peak.set(peak.get().max(before + out[base..].iter().map(|shelf| shelf.items.len()).sum::<usize>())));
+    settle_from(out, base, hold);
 }
+
+// The most cards a read has held at once, as a test reads it back.
+#[cfg(test)]
+thread_local! { pub(crate) static PEAK_CARDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// The held range as the page asked for it: at most [`HOLD_ROWS`] rows, centred on what was asked
 /// when it asked for more. The single rule, shared with Home.
@@ -1173,10 +1203,14 @@ pub(crate) fn clamp_hold((lo, hi): (usize, usize)) -> (usize, usize) {
 /// ([`paging::release_keys`]), and a row that shows a card with no rating key has no way back and
 /// keeps its cards. Returns whether any row changed.
 fn settle(shelves: &mut [Shelf], hold: (usize, usize)) -> bool {
+    settle_from(shelves, 0, hold)
+}
+
+/// [`settle`] for the rows from `base` on, which are the only ones a window just appended.
+fn settle_from(shelves: &mut [Shelf], base: usize, hold: (usize, usize)) -> bool {
     let (lo, hi) = clamp_hold(hold);
     let mut changed = false;
-    
-    for (row, shelf) in shelves.iter_mut().enumerate() {
+    for (row, shelf) in shelves.iter_mut().enumerate().skip(base) {
         if (lo..=hi).contains(&row) || shelf.released() { continue; }
         let pageable = plx_plex::plex::is_pageable_hub_key(&shelf.key);
         let Some(kept) = paging::release_keys(pageable, &shelf.row, shelf.items.iter().map(|item| item.rk.as_str())) else { continue };

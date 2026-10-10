@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use plx_plex::plex::{MediaContainer, Metadata, ServerId};
+use plx_plex::plex::{MediaContainer, Metadata, PageReq, ServerId};
 
 use crate::pms::{clean, listable, parse_item, PmsMovie, HUB_FETCH_COUNT, MAX_SHELF_ITEMS};
 
@@ -723,3 +723,92 @@ fn sample_listing<'a>(preview: &'a [String], total: usize, ignored: &'a std::cel
     }
 }
 
+
+// ---- a hub list, read in windows of hubs -------------------------------------------------------
+
+/// Hubs per request when a refresh reads a hub list (Home's `/hubs`, a library's
+/// `/hubs/sections/{id}`). Each hub carries a twelve-card preview, so a request carries at most
+/// this many hubs' worth of cards however long the list is.
+pub const HUB_WINDOW: usize = 16;
+
+/// A hub list that would not hold still between windows: the read starts again, once, and then the
+/// list is asked for whole.
+enum HubListRead<S> {
+    Done(S),
+    Moved,
+    Failed,
+}
+
+/// Reads a server's hub list one window of hubs at a time and folds each window into a state `S`
+/// as it arrives, so the caller can drop what it does not keep before the next window is read.
+/// `read(Some(req))` is one window and `read(None)` the whole list; `fresh` makes an empty state
+/// (called again when the read restarts); `take` folds one run of at most [`HUB_WINDOW`] hubs, in
+/// list order. `None` means a request failed.
+///
+/// The list pages BY HUB with a stable order, `totalSize` and an echoed `offset` (docs/pms-api.md,
+/// Paging, observed). Three things make a window untrustworthy, and each restarts the read once: a
+/// `totalSize` that moved, a hub already seen (the list shifted under the offsets), and a read that
+/// ends short of `totalSize`. A server that ignores the window answers the whole list to the first
+/// request; that answer is the list, folded in runs so the caller still drops cards as it goes. A
+/// list that will not hold still after the restart is asked for whole.
+pub fn read_hub_list<S>(
+    mut read: impl FnMut(Option<PageReq>) -> Option<MediaContainer>,
+    mut fresh: impl FnMut() -> S,
+    mut take: impl FnMut(&mut S, &[plx_plex::plex::Hub]),
+) -> Option<S> {
+    for _ in 0..2 {
+        match read_hub_windows(&mut read, &mut fresh, &mut take) {
+            HubListRead::Done(state) => return Some(state),
+            HubListRead::Failed => return None,
+            HubListRead::Moved => {}
+        }
+    }
+    let mc = read(None)?;
+    let mut state = fresh();
+    for run in mc.hub.chunks(HUB_WINDOW) { take(&mut state, run); }
+    Some(state)
+}
+
+fn read_hub_windows<S>(
+    read: &mut impl FnMut(Option<PageReq>) -> Option<MediaContainer>,
+    fresh: &mut impl FnMut() -> S,
+    take: &mut impl FnMut(&mut S, &[plx_plex::plex::Hub]),
+) -> HubListRead<S> {
+    let mut state = fresh();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut total: Option<usize> = None;
+    let mut start = 0usize;
+    loop {
+        let Some(mc) = read(Some(PageReq { start, size: HUB_WINDOW })) else { return HubListRead::Failed };
+        if start == 0 && mc.hub.len() > HUB_WINDOW {
+            // the server ignored the window and sent the whole list
+            for run in mc.hub.chunks(HUB_WINDOW) { take(&mut state, run); }
+            return HubListRead::Done(state);
+        }
+        if start > 0 && mc.offset != start as i64 { return HubListRead::Moved; }
+        let answered = (mc.total_size > 0).then_some(mc.total_size as usize);
+        if let (Some(was), Some(now)) = (total, answered) {
+            if was != now { return HubListRead::Moved; }
+        }
+        total = total.or(answered);
+        if mc.hub.is_empty() {
+            return if total.is_some_and(|total| seen.len() < total) { HubListRead::Moved } else { HubListRead::Done(state) };
+        }
+        for hub in &mc.hub {
+            if !seen.insert((hub.hub_identifier.clone(), hub.key.clone())) { return HubListRead::Moved; }
+        }
+        take(&mut state, &mc.hub);
+        start += mc.hub.len();
+        let finished = match total {
+            Some(total) => start >= total,
+            None => mc.hub.len() < HUB_WINDOW,
+        };
+        if finished {
+            return if total.is_some_and(|total| start != total) { HubListRead::Moved } else { HubListRead::Done(state) };
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "paging_hub_list_tests.rs"]
+pub(crate) mod hub_list_tests;

@@ -45,12 +45,14 @@ impl Client {
     /// only honest one), so we parse and discard them today; and with several sources on Home the
     /// waste is per source per fetch, not once.
     pub fn home_hubs(&self, count: i64) -> Option<MediaContainer> {
-        self.get_json(
-            &QueryBuilder::new("/hubs")
-                .int("count", count)
-                .int("excludeContinueWatching", 1)
-                .build(),
-        )
+        self.get_json(&home_hubs_path(count))
+    }
+
+    /// [`Client::home_hubs`], one window of the hub list: the list pages BY HUB, so `req` names
+    /// hubs, not cards (`docs/pms-api.md`, Paging, observed). The answer carries `totalSize` and
+    /// echoes `offset`.
+    pub fn home_hubs_page(&self, count: i64, req: PageReq) -> Option<MediaContainer> {
+        self.get_json(&paged_path(&home_hubs_path(count), req))
     }
 
     /// GET /hubs/sections/{sectionId}?count=… — **one LIBRARY's own shelves**, in the order the
@@ -76,11 +78,12 @@ impl Client {
     /// set. A refetch legitimately returns a different shelf count and different ids with nothing
     /// changed on the server, which is a fact about this endpoint rather than about any caller.
     pub fn library_hubs(&self, section_key: i64, count: i64) -> Option<MediaContainer> {
-        self.get_json(
-            &QueryBuilder::new(&format!("/hubs/sections/{section_key}"))
-                .int("count", count)
-                .build(),
-        )
+        self.get_json(&library_hubs_path(section_key, count))
+    }
+
+    /// [`Client::library_hubs`], one window of the hub list (by hub, as for [`Client::home_hubs_page`]).
+    pub fn library_hubs_page(&self, section_key: i64, count: i64, req: PageReq) -> Option<MediaContainer> {
+        self.get_json(&paged_path(&library_hubs_path(section_key, count), req))
     }
 
     /// GET /hubs/continueWatching?count=… — the dedicated Continue Watching hub.
@@ -206,6 +209,14 @@ fn typed_search_path(query: &str, kind: SearchKind, req: PageReq) -> String {
     paged_path(&path, req)
 }
 
+fn home_hubs_path(count: i64) -> String {
+    QueryBuilder::new("/hubs").int("count", count).int("excludeContinueWatching", 1).build()
+}
+
+fn library_hubs_path(section_key: i64, count: i64) -> String {
+    QueryBuilder::new(&format!("/hubs/sections/{section_key}")).int("count", count).build()
+}
+
 fn continue_watching_page_path(start: i64, size: i64) -> String {
     paged_path("/hubs/continueWatching/items", PageReq::window(start, size))
 }
@@ -307,6 +318,17 @@ mod tests {
             search_path("wallace", 8, 1),
             "/hubs/search?query=wallace&limit=8&sectionId=1&includeCollections=1"
         );
+    }
+
+    #[test]
+    fn a_hub_list_window_keeps_the_preview_count_and_appends_its_window() {
+        use super::{home_hubs_path, library_hubs_path};
+        use super::super::paging::paged_path;
+        let req = PageReq { start: 32, size: 16 };
+        assert_eq!(paged_path(&home_hubs_path(12), req),
+            "/hubs?count=12&excludeContinueWatching=1&X-Plex-Container-Start=32&X-Plex-Container-Size=16");
+        assert_eq!(paged_path(&library_hubs_path(3, 12), req),
+            "/hubs/sections/3?count=12&X-Plex-Container-Start=32&X-Plex-Container-Size=16");
     }
 
     /// **Collections are asked for as full rows.** Without `includeCollections=1` the server
