@@ -308,6 +308,11 @@ void plx_crash_install(int ev_fd, int cr_fd) {
      * impossible. */
     event_fd = ev_fd;
     crash_fd = cr_fd;
+    /* Bind `time` now. The libc symbols are resolved lazily (the link has no `-z now`), so the
+     * handler's first call would otherwise run the dynamic linker's resolver in the middle of a
+     * crash. One call here resolves it at startup; the handler's own use is unchanged and
+     * `time()` stays async-signal-safe. */
+    (void)time(NULL);
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = crash_handler;
     sa.sa_flags = SA_SIGINFO;
