@@ -23,7 +23,10 @@
 //! clears the trace. The one origin that is NOT decided at an open is `preview`: a detail-page
 //! trailer never passes [`requested`], so [`error_context`] recognises its session
 //! (`route::preview_request`) and [`as_preview`] tells the failure as a preview's, in one place,
-//! with [`REPORT_PREVIEW_FAILURES`] as the switch that drops those reports.
+//! with [`REPORT_PREVIEW_FAILURES`] as the switch that drops those reports. A preview is not an
+//! attempt: [`tick`] hands its session to [`tick_preview`], which has its own failure latch
+//! ([`preview_requested`] resets it) and touches none of the film's latches, usage events or
+//! quality summary.
 //!
 //! # These are TRANSITIONS, not log lines
 //!
@@ -104,6 +107,11 @@ static LAST: AtomicU8 = AtomicU8::new(0);
 static SAW_START: AtomicBool = AtomicBool::new(false);
 static SAW_FAIL: AtomicBool = AtomicBool::new(false);
 static SAW_END: AtomicBool = AtomicBool::new(false);
+/// A detail-page preview's own failure latch. A preview never passes [`requested`], so the film's
+/// `SAW_FAIL` (reset only there) cannot serve it: sharing it let one failed trailer silence every
+/// later one until a film played, and marked the last film failed. Reset per preview request by
+/// [`preview_requested`].
+static PREVIEW_SAW_FAIL: AtomicBool = AtomicBool::new(false);
 /// At most one bounded rebuffer summary, emitted when a started attempt reaches an observable
 /// terminal or replacement path. The app deliberately does not report dropped frames: LG's
 /// position callback is a fixed 5 Hz clock and looks identical on smooth and visibly stuttering
@@ -591,9 +599,10 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
 }
 
 /// **Whether a failed detail-page preview is reported at all.** This is the one switch: `false`
-/// keeps the failure on the television (the trace is still sealed, so withdrawal's eraser has
-/// nothing to miss) and `tick` queues nothing for a preview. Everything else a preview report
-/// differs by is [`as_preview`] and the fingerprint's `preview` segment in
+/// keeps the failure on the television. [`tick_preview`] still seals the trace, so withdrawal's
+/// eraser has nothing to miss, but queues nothing: no handled error report, and no usage event
+/// either (a preview never emits one, whatever this says; it is not an attempt). Everything else a
+/// preview report differs by is [`as_preview`] and the fingerprint's `preview` segment in
 /// `telemetry::playback::event_body`, both keyed on [`AttemptOrigin::Preview`], so dropping preview
 /// reports is this constant alone.
 const REPORT_PREVIEW_FAILURES: bool = true;
@@ -648,6 +657,7 @@ pub fn reset_latches_for_test() {
     LAST.store(super::shared::PlaybackState::Idle as u8, Relaxed);
     SAW_START.store(false, Relaxed);
     SAW_FAIL.store(false, Relaxed);
+    preview_requested();
     clear_error_trace();
 }
 
@@ -875,8 +885,24 @@ fn transition(
 
 /// **Observe the state the HUD is rendering.** Called once a frame from the main loop.
 pub fn tick(ps: &crate::route::PlaybackSession) {
+    tick_with(ps, REPORT_PREVIEW_FAILURES);
+}
+
+/// A detail-page preview is about to be requested: its failure may be reported again. The preview
+/// counterpart of the per-attempt resets in [`requested`], which a preview never reaches.
+pub fn preview_requested() {
+    PREVIEW_SAW_FAIL.store(false, Relaxed);
+}
+
+/// [`tick`] with the preview-reporting switch passed in, so a test can flip it without a second
+/// production switch: [`tick`] is its only caller and always passes [`REPORT_PREVIEW_FAILURES`].
+fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool) {
     let now = super::state(ps);
     let prev = super::shared::PlaybackState::from_u8(LAST.swap(now as u8, Relaxed));
+    if crate::route::preview_request(ps) {
+        tick_preview(ps, prev, now, report_preview_failures);
+        return;
+    }
     // A claim's presentation hold answers Buffering on purpose (`state()`), so its
     // Playing -> Buffering edge is the viewer's own pick working, not a stall.
     if !super::claim_hold::active() {
@@ -918,9 +944,7 @@ pub fn tick(ps: &crate::route::PlaybackSession) {
             let kind = shape.kind.class();
             let trace = finish_trace(TraceEvent::Failed { kind });
             let context = error_context(ps);
-            if context.attempt_origin != AttemptOrigin::Preview || REPORT_PREVIEW_FAILURES {
-                plx_telemetry::telemetry::playback::report_error(kind, context, &trace);
-            }
+            plx_telemetry::telemetry::playback::report_error(kind, context, &trace);
             emit(DiagEvent::PlaybackFailed {
                 playback_id: ATTEMPT.load(Relaxed),
                 mode: mode(ps),
@@ -928,6 +952,30 @@ pub fn tick(ps: &crate::route::PlaybackSession) {
             });
         }
         None => {}
+    }
+}
+
+/// **The per-frame observer for a session resolved as a preview.** A trailer is not a playback the
+/// viewer asked for: it has no attempt id (`ATTEMPT` is the LAST film's), no funnel and no quality
+/// summary, so it must not start, fail, close or rebuffer that film's attempt. Only the failure is
+/// told, once per preview request ([`PREVIEW_SAW_FAIL`]): the trace is sealed whatever
+/// `report_failure` says (so withdrawal's eraser covers it), and `report_failure` alone decides
+/// whether the handled error is queued.
+fn tick_preview(
+    ps: &crate::route::PlaybackSession,
+    prev: super::shared::PlaybackState,
+    now: super::shared::PlaybackState,
+    report_failure: bool,
+) {
+    // `saw_start` is passed as true: a trailer reaching Playing is not `playback.started`.
+    if transition(prev, now, true, PREVIEW_SAW_FAIL.load(Relaxed)) != Some(What::Failed) {
+        return;
+    }
+    PREVIEW_SAW_FAIL.store(true, Relaxed);
+    let kind = super::error_now(ps).kind.class();
+    let trace = finish_trace(TraceEvent::Failed { kind });
+    if report_failure {
+        plx_telemetry::telemetry::playback::report_error(kind, error_context(ps), &trace);
     }
 }
 
@@ -1606,6 +1654,7 @@ mod tests {
             ledger().reopen(7, AttemptOrigin::UserRetry);
             let ps = refused_preview();
             let calls = plx_telemetry::telemetry::playback::report_calls_for_test();
+            preview_requested();
             observe(&ps, S::Error);
 
             let steps = trace_steps();
@@ -1690,6 +1739,128 @@ mod tests {
         });
     }
 
+    /// **A preview's failure latch is its own.** The film's `SAW_FAIL` is reset only by a film
+    /// request, which a preview never makes, so one failed trailer used to silence every later
+    /// trailer failure of the browse session until a film played. Two failed previews, with a
+    /// preview request between them, are two reports.
+    #[test]
+    fn two_failed_previews_in_one_session_both_report() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            crate::player::preview::reset_for_test();
+            clear_error_trace();
+            let ps = refused_preview();
+            let idle = crate::route::PlaybackSession::default();
+            let calls = plx_telemetry::telemetry::playback::report_calls_for_test();
+
+            preview_requested();
+            observe(&ps, S::Error);
+            assert_eq!(plx_telemetry::telemetry::playback::report_calls_for_test() - calls, 1);
+
+            // The viewer browses on; the next trailer's resolve is in flight, then it fails too.
+            observe(&idle, S::Resolving);
+            preview_requested();
+            observe(&ps, S::Error);
+            assert_eq!(
+                plx_telemetry::telemetry::playback::report_calls_for_test() - calls,
+                2,
+                "the second trailer's failure is a report of its own",
+            );
+            assert!(!SAW_FAIL.load(Relaxed), "and neither is the film's latch");
+        });
+    }
+
+    /// **A failed preview is not the last film's failure.** It used to latch the film's `SAW_FAIL`,
+    /// close its quality summary and send `playback.failed` under the film's attempt id, so a
+    /// film that had already ended read as failed in the funnel.
+    #[test]
+    fn a_failed_preview_leaves_the_films_latches_and_usage_events_alone() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            crate::player::preview::reset_for_test();
+            let film = crate::route::PlaybackSession::default();
+            requested(&film, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
+            // The film played and ended; its latches stay up until the next film request.
+            SAW_START.store(true, Relaxed);
+            let attempt = ATTEMPT.load(Relaxed);
+            let ps = refused_preview();
+            let calls = plx_telemetry::telemetry::playback::report_calls_for_test();
+
+            let (_, events) = plx_telemetry::diag::test_events::capture(|| {
+                preview_requested();
+                observe(&ps, S::Error);
+            });
+            assert!(events.is_empty(), "a trailer is no attempt: {events:?}");
+            assert!(!SAW_FAIL.load(Relaxed), "the film did not fail");
+            assert!(SAW_START.load(Relaxed), "the film's start latch is untouched");
+            assert_eq!(ATTEMPT.load(Relaxed), attempt);
+            assert_eq!(
+                plx_telemetry::telemetry::playback::report_calls_for_test() - calls,
+                1,
+                "the handled error still reports",
+            );
+
+            // …and the film's own failure afterwards is still its own.
+            SAW_START.store(false, Relaxed);
+            observe(&film, S::Resolving);
+            let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&film, S::Error));
+            assert!(matches!(events.as_slice(), [DiagEvent::PlaybackFailed { playback_id, .. }] if *playback_id == attempt));
+            assert!(SAW_FAIL.load(Relaxed));
+        });
+    }
+
+    /// A trailer that reaches Playing is not the film's `started` either.
+    #[test]
+    fn a_playing_preview_neither_starts_nor_latches_the_films_attempt() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            crate::player::preview::reset_for_test();
+            let film = crate::route::PlaybackSession::default();
+            requested(&film, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
+            let mut ps = crate::route::PlaybackSession::default();
+            crate::route::resolve_as_preview_for_test(&mut ps);
+            let (_, events) = plx_telemetry::diag::test_events::capture(|| {
+                observe(&ps, S::Connecting);
+                observe(&ps, S::Playing);
+            });
+            assert!(events.is_empty(), "a trailer's first picture is not playback.started: {events:?}");
+            assert!(!SAW_START.load(Relaxed));
+        });
+    }
+
+    /// **With the switch off a preview queues nothing at all** (error report, usage events), while
+    /// the trace is still sealed so withdrawal's eraser has nothing to miss.
+    #[test]
+    fn with_preview_reporting_off_a_failed_preview_queues_nothing_but_seals_its_trace() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            crate::player::preview::reset_for_test();
+            clear_error_trace();
+            let film = crate::route::PlaybackSession::default();
+            requested(&film, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
+            clear_error_trace();
+            let ps = refused_preview();
+            let calls = plx_telemetry::telemetry::playback::report_calls_for_test();
+
+            let (_, events) = plx_telemetry::diag::test_events::capture(|| {
+                preview_requested();
+                crate::player::SHARED.pb_state.store(S::Error as u8, Relaxed);
+                tick_with(&ps, false);
+            });
+            assert!(events.is_empty(), "no usage event: {events:?}");
+            assert_eq!(
+                plx_telemetry::telemetry::playback::report_calls_for_test(),
+                calls,
+                "no error report",
+            );
+            assert!(!SAW_FAIL.load(Relaxed));
+            assert!(
+                matches!(trace_steps().last().map(|s| s.event), Some(TraceEvent::Failed { .. })),
+                "the trace is sealed with its Failed step",
+            );
+        });
+    }
+
     /// Run `body` with error reporting consented, then put every latch back.
     fn consented<T>(body: impl FnOnce() -> T) -> T {
         use plx_telemetry::telemetry::consent::{self, Consent};
@@ -1703,6 +1874,7 @@ mod tests {
         LAST.store(S::Idle as u8, Relaxed);
         SAW_START.store(false, Relaxed);
         SAW_FAIL.store(false, Relaxed);
+        preview_requested();
         clear_error_trace();
         consent::install(previous.unwrap_or_default());
         out

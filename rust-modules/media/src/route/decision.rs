@@ -7442,6 +7442,8 @@ fn request_play_inner(
     // under-counts exactly the failure it exists to measure. It is after the empty-request guard
     // above, so a press that resolves to nothing is not an attempt.
     let trace_generation = if request.preview {
+        // No attempt, but a failure latch of its own, reset here as `requested` resets the film's.
+        crate::player::report::preview_requested();
         0
     } else {
         trace_generation.unwrap_or_else(|| crate::player::report::requested(ps, sid, origin))
