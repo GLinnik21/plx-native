@@ -12,8 +12,10 @@ itself reports:
     (`plx_ui::card_probe`) adds `cdx cdy cdw` (the card's DRAWN screen rect), `cdi cdn` (its slot
     in the run of cards the section holds and that run's length), `cdg` (index in the source),
     `cdk` (the ratingKey in its artwork path: the stable key), `cda` (texture resident), `cdr`
-    (draws of a poster that was showing and went back to its placeholder, running total) and
-    `cdc cdcw` (the caption's left edge and width). From them: reach, one-card-per-key, no focus
+    (posters that were on screen with their picture and went back to the placeholder in place,
+    running total over every card drawn; one per occurrence), `cdb` (cards that left the screen and
+    came back without a picture they once had: reported, not graded, since a 64-slot store cannot
+    hold a 1000-card walk) and `cdc cdcw` (the caption's left edge and width). From them: reach, one-card-per-key, no focus
     change without a key, no slot jump, the window bound, off-canvas frames, art regressions.
   * `plxnative-phcount`: placeholder (skeleton) card draws per second.
   * `plxnative-framedrop`: `FRAMEDROP` lines (one per late frame) and the heartbeat's `frame_*`.
@@ -192,7 +194,7 @@ def analyse_focus(samples, keys, order, stride=1, window_max=None):
     index = {rk: i for i, rk in enumerate(order)}
     last = len(order) - 1
     fails, steps, last_i, last_x, last_y, last_t, last_slot = [], [], None, None, None, None, None
-    max_cdn, max_jump, rebases, regress = 0, 0, 0, 0
+    max_cdn, max_jump, rebases, regress, returned = 0, 0, 0, 0, 0
     off = {"card_partial": 0, "card_off": 0, "caption_partial": 0, "caption_off": 0,
            "min_x": None, "max_right": None, "min_y": None, "max_y": None, "card_off_y": 0, "frames": 0}
     first_key = keys[0][0] if keys else float("inf")
@@ -207,6 +209,8 @@ def analyse_focus(samples, keys, order, stride=1, window_max=None):
             max_cdn = max(max_cdn, int(f["cdn"]))
         if "cdr" in f:
             regress = max(regress, int(f["cdr"]))
+        if "cdb" in f:
+            returned = max(returned, int(f["cdb"]))
         if last_i is not None and i == last_i and last_slot is not None and slot is not None and slot != last_slot:
             rebases += 1  # the window slid under a still focus: same card, new slot
         if last_i is not None and i != last_i:
@@ -263,7 +267,7 @@ def analyse_focus(samples, keys, order, stride=1, window_max=None):
     return {"focus_changes": len(steps), "skips": skips, "coalesced_steps": coalesced, "max_cdn": max_cdn, "max_jump_px": max_jump,
             "rebases": rebases, "first": min(reached) if reached else None,
             "last": max(reached) if reached else None, "tail_row_start": tail,
-            "art_regressions": regress, "off_canvas": off}, fails
+            "art_regressions": regress, "art_returned_bare": returned, "off_canvas": off}, fails
 
 
 def place_late_frames(landings, late, window=(-0.05, 0.25)):
@@ -399,6 +403,9 @@ def run_surface(name, profile_name, args):
     tmp = tempfile.mkdtemp(prefix="plx-paging-")
     triggers = dict(spec["triggers"], **{"plxnative-focus": "", "plxnative-focusx": "",
                                          "plxnative-phcount": "", "plxnative-framedrop": "17"})
+    for extra in args.trigger or []:
+        k, _, v = extra.partition("=")
+        triggers["plxnative-" + k] = v
     sim = SimRun(args.sim, srv.server_address[1], triggers, tmp)
     fails, keys, result = [], [], {}
     order = []
@@ -489,7 +496,7 @@ def run_surface(name, profile_name, args):
         with open(args.dump, "a") as out:
             out.write(f"## {name} / {profile_name}\n")
             out.writelines(f"{t - t0:9.3f} {line}\n" for t, line in lines if t >= t0 and
-                           (line.startswith(("focus", "FRAMEDROP", "phcount", "hubs:")) or "key type=0x300" in line))
+                           (line.startswith(("focus", "FRAMEDROP", "phcount", "hubs:", "imgtrace:")) or "key type=0x300" in line))
             out.writelines(f"{r['t_recv'] - t0:9.3f} WIRE {r['class']} {r['path']} start={r['start']} "
                            f"done=+{(r['t_done'] - r['t_recv']) * 1000:.0f}ms failed={r['failed']}\n" for r in rows)
     finding, f2 = analyse_focus(samples, keys, order, stride, spec["window_max"])
@@ -499,8 +506,9 @@ def run_surface(name, profile_name, args):
     if finding["first"] is None or finding["first"] >= stride:
         fails.append(f"reach: walking back never reached the first row (min {finding['first']})")
     if finding["art_regressions"]:
-        fails.append(f"art: {finding['art_regressions']} draws of a poster that was showing and went back to "
-                     f"its placeholder (cdr)")
+        fails.append(f"art: {finding['art_regressions']} posters that were on screen went back to their "
+                     f"placeholder in place (cdr); {finding['art_returned_bare']} cards came back on screen "
+                     f"without their picture (cdb, not graded)")
     # keys that moved nothing: a press with no focus change before the next press
     change_ts, prev = [], None
     for t, f in samples:
@@ -603,8 +611,9 @@ def selftest():
         and off["caption_off"] == 2 and off["min_x"] == -315 and off["max_right"] == 2274, off
     assert analyse_focus([(1.0, line("100", 0, 100, cdy="-343"))], keys, order, 1)[0]["off_canvas"]["card_off_y"] == 1
     # art regression total comes from the running counter
-    reg = [(1.0, line("100", 0, 100, cdr="0")), (1.1, line("100", 0, 100, cdr="3"))]
-    assert analyse_focus(reg, keys, order, 1)[0]["art_regressions"] == 3
+    reg = [(1.0, line("100", 0, 100, cdr="0", cdb="1")), (1.1, line("100", 0, 100, cdr="3", cdb="7"))]
+    got = analyse_focus(reg, keys, order, 1)[0]
+    assert got["art_regressions"] == 3 and got["art_returned_bare"] == 7, got
     assert place_late_frames([10.0], [10.1, 12.0]) == (1, 1)
     assert parse_focus("focus route=home snapt=1 row=1 col=3 rk=44 fx=-12")["fx"] == "-12"
     # per-page figures: a page's posters are matched by the ratingKey in the transcode url
@@ -638,6 +647,8 @@ def main():
     ap.add_argument("--build", action="store_true", help="cargo build the simulator first")
     ap.add_argument("--json", type=pathlib.Path, help="write the full results here")
     ap.add_argument("--dump", type=pathlib.Path, help="append the stamped focus/frame/wire lines here")
+    ap.add_argument("--trigger", action="append", metavar="NAME[=VALUE]",
+                    help="arm one more dev trigger for the run (imgtrace: its lines join --dump)")
     ap.add_argument("--reversal", action="store_true",
                     help="walk to the trailing edge, then back 12 cards while the page is in flight")
     ap.add_argument("--list", action="store_true")
