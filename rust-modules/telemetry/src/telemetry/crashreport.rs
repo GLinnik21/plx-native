@@ -718,6 +718,11 @@ fn lr_is_a_caller(f: &Fault) -> bool {
 
 /// The Sentry event body for one fault.
 ///
+/// **The title's "address" is not always an address.** `SIGNAL at 0x…` prints `si_addr`, which for
+/// a signal sent by `raise()`/`kill()` (a `SIGABRT` from `abort()`, say) is the SENDER'S PID, not
+/// where anything faulted (`SIGABRT at 0x4c1b`). The title is kept as it is on purpose: Sentry
+/// normalises the hex when it groups, and changing the string would regroup every existing issue.
+///
 /// **`timestamp` is the crash's own time**, from the record's `time:` line, and is absent when the
 /// record has none or [`crash_timestamp`] rejects it, so Sentry never shows the (later) time the
 /// report was imported.
