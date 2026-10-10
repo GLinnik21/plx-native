@@ -108,7 +108,24 @@ struct RestoreIntent {
     spot: Spot,
     episode: Option<String>,
     season_requested: bool,
+    /// The asks made to open the Related window at the spot ([`Spot::tail_position`]). Not hashed:
+    /// it is bookkeeping of one outstanding ask, and the spot it serves is.
+    seek: RelatedSeek,
 }
+
+/// The window asks a restore onto a Related tail card has made. One ask per window identity is
+/// said, again after [`SEEK_RETRY_MS`] while the window has not opened (a failed read is retried
+/// that way), and given up after [`SEEK_TRIES`]: the row then stands at its head with focus on the
+/// first card.
+#[derive(Clone, Default)]
+struct RelatedSeek {
+    asked: Option<(usize, usize)>,
+    at: u32,
+    tries: u8,
+}
+
+const SEEK_RETRY_MS: u32 = 1000;
+const SEEK_TRIES: u8 = 4;
 
 /// The range of a long season's episodes the strip last asked the store for, so the same range is
 /// not said every frame; said again after [`EP_RETRY_MS`] while a page in it is still a hole
@@ -302,24 +319,43 @@ pub struct DetailScreen {
 
 /// Snapshot of every metadata-dependent read [`DetailScreen::spot`] needs, taken while a real
 /// [`plx_data::metadata::MetadataView`] is in hand. See Opus decision D7.
-#[derive(Clone, Copy, Default, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct SpotFacts {
     detail: bool,
     tracks: bool,
     hero: hero::HeroSet,
     season: Option<i64>,
+    /// The Related row's head length and the tail position of each card after it: a card of the
+    /// window is named by where it lies in its listing, which survives the window being gone.
+    related_head: usize,
+    related_positions: Vec<usize>,
 }
 
 impl SpotFacts {
+    #[cfg(test)]
     fn of(screen: &DetailScreen, meta: plx_data::metadata::MetadataView<'_>) -> SpotFacts {
-        SpotFacts {
-            detail: screen.detail(meta).is_some(),
-            tracks: screen.tracks_available(meta),
-            hero: screen.hero_set(meta),
-            season: screen
-                .detail(meta)
-                .and_then(|d| d.seasons.get(d.cur_season))
-                .map(|s| s.index),
+        let mut facts = SpotFacts::default();
+        facts.refresh(screen, meta);
+        facts
+    }
+
+    /// In place, so the per-frame refresh allocates nothing once the position list has its room.
+    fn refresh(&mut self, screen: &DetailScreen, meta: plx_data::metadata::MetadataView<'_>) {
+        let d = screen.detail(meta);
+        self.detail = d.is_some();
+        self.tracks = screen.tracks_available(meta);
+        self.hero = screen.hero_set(meta);
+        self.season = d.and_then(|d| d.seasons.get(d.cur_season)).map(|s| s.index);
+        self.related_head = d.map_or(0, |d| d.related_tail.head);
+        self.related_positions.clear();
+        self.related_positions.extend(d.iter().flat_map(|d| d.related_tail.positions.iter().copied()));
+    }
+
+    /// Related card `i` as a `Spot` column: its index in the head, else its tail position.
+    fn related_col(&self, i: usize) -> i32 {
+        match i.checked_sub(self.related_head).and_then(|k| self.related_positions.get(k)) {
+            Some(&position) => Spot::tail_col(position),
+            None => i as i32,
         }
     }
 }
@@ -500,6 +536,12 @@ impl DetailScreen {
         }
     }
 
+    fn refresh_spot_facts(&mut self, meta: plx_data::metadata::MetadataView<'_>) {
+        let mut facts = std::mem::take(&mut self.spot_facts);
+        facts.refresh(self, meta);
+        self.spot_facts = facts;
+    }
+
     pub fn restore_memory(&mut self, memory: &DetailMemory, meta: plx_data::metadata::MetadataView<'_>) {
         // A covered live body may have interned a landing after the request snapshot. Never
         // rewind its registry/counter: those integers still belong to the identities it minted.
@@ -618,7 +660,7 @@ impl DetailScreen {
             self.pending_season = self.local_by_key.get(&key).and_then(|local| season::locate(*local));
         }
         self.prev_by_key = before;
-        self.spot_facts = SpotFacts::of(self, meta);
+        self.refresh_spot_facts(meta);
     }
 
     /// Bound the key table, modelled on Home's `prune_keys`. A key is needed while its card is on
@@ -684,6 +726,7 @@ impl DetailScreen {
             spot: spot.clone(),
             episode: episode.map(str::to_owned),
             season_requested: false,
+            seek: RelatedSeek::default(),
         });
         self.scroll_target = 0.0;
     }
@@ -697,6 +740,7 @@ impl DetailScreen {
                     Located::Hero(control) => hero::index_of(facts.hero, control).unwrap_or(0) as i32,
                     // The heading shares its section with the cards; -1 is the slot no card has.
                     Located::CollectionHeading => -1,
+                    Located::Related(i) => facts.related_col(i),
                     _ => l.index() as i32,
                 };
                 (
@@ -1186,6 +1230,43 @@ impl DetailScreen {
         }
     }
 
+    /// Whether a restore onto a Related tail card waits for the window to open at its position:
+    /// the page holds a tail, and the window it stands at does not reach the position. A tail the
+    /// page no longer has cannot be waited for; the nearest card stands in ([`Self::related_nearest`]).
+    fn related_pending(d: &Detail, intent: &RestoreIntent) -> bool {
+        let t = &d.related_tail;
+        intent.spot.tail_position().is_some_and(|position| {
+            !t.hubs.is_empty() && !(t.offset <= position && (position < t.end || !t.more))
+        })
+    }
+
+    /// The Related card nearest tail position `position` among those the page holds: the card
+    /// itself when its place is unchanged, the nearest surviving place when the listing shifted
+    /// (the rule `ui::cards::pool` applies to a card that left a row). A window with no cards
+    /// leaves the row's first.
+    fn related_nearest(d: &Detail, position: usize) -> usize {
+        let t = &d.related_tail;
+        t.positions.iter().enumerate()
+            .min_by_key(|(_, at)| at.abs_diff(position))
+            .map_or(0, |(k, _)| t.head + k)
+            .min(d.related.len().saturating_sub(1))
+    }
+
+    /// Whether the restore under way waits for a Related window to open.
+    fn restore_related_pending(&self, meta: plx_data::metadata::MetadataView<'_>) -> bool {
+        self.restore_intent.as_ref().zip(self.detail(meta)).is_some_and(|(intent, d)| Self::related_pending(d, intent))
+    }
+
+    /// The Related card a restore onto the tail seats on once its window is open, for a page whose
+    /// focus the engine still holds on a card the fresh window may not contain.
+    fn related_restore_elem(&self, meta: plx_data::metadata::MetadataView<'_>) -> Option<u32> {
+        let intent = self.restore_intent.as_ref()?;
+        let d = self.detail(meta)?;
+        let position = intent.spot.tail_position()?;
+        if Self::related_pending(d, intent) { return None; }
+        self.engine_key(related::elem(Self::related_nearest(d, position))?)
+    }
+
     fn restore_focus(&self, meta: plx_data::metadata::MetadataView<'_>) -> Option<u32> {
         if self.return_pending { return None; }
         let intent = self.restore_intent.as_ref()?;
@@ -1218,7 +1299,13 @@ impl DetailScreen {
                     },
                 )
             }
-            3 if !d.related.is_empty() => related::elem(clamp(intent.spot.col, d.related.len())),
+            3 if !d.related.is_empty() => match intent.spot.tail_position() {
+                Some(position) => {
+                    if Self::related_pending(d, intent) { return None; }
+                    related::elem(Self::related_nearest(d, position))
+                }
+                None => related::elem(clamp(intent.spot.col, d.related.len())),
+            },
             6 if !d.extras.is_empty() => extras::elem(clamp(intent.spot.col, extras::len(d))),
             7 if collection::len(d) > 0 => {
                 if intent.spot.col < 0 {
@@ -1638,7 +1725,8 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
         if known && (self.return_pending || self.restore_intent.is_some())
             && (self.refresh != DetailRefreshPhase::None
                 || meta.detail_request_status(self.sid, &self.rk) == Some(true)
-                || self.detail(meta).is_some() && (meta.season_loading() || self.return_waiting(meta))) {
+                || self.detail(meta).is_some() && (meta.season_loading() || self.return_waiting(meta)
+                    || self.restore_related_pending(meta))) {
             return want;
         }
         if self.detail(meta).is_some() {
@@ -1678,6 +1766,11 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
             .is_some_and(|located| self.valid(located, meta))
         {
             return want;
+        }
+        // A Back onto a card deep in the Related row: the window the page was left at is open
+        // again, and the card is in it or its nearest place is.
+        if let Some(elem) = self.related_restore_elem(meta) {
+            return FocusKey { entry: want.entry, elem };
         }
         if let Some(elem) = self.shelf_recovery(want.elem, meta) {
             return FocusKey { entry: want.entry, elem };
@@ -2232,7 +2325,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
 
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let meta = H::metadata(f.cx);
-        self.spot_facts = SpotFacts::of(self, meta);
+        self.refresh_spot_facts(meta);
         let measure = f.cx.measure;
         let _layout = self.pin_layout(meta, measure);
         let preview = plx_media::player::preview::view();
@@ -2435,7 +2528,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
         // answers for an arbitrary elem exactly, since every metadata read behind `spot()` is
         // elem-independent.
         PageMemory::Detail(DetailMemory {
-            spot: self.restore_intent.as_ref().filter(|_| self.return_pending).map(|intent| intent.spot.clone()).unwrap_or_else(|| self.spot(focus, self.spot_facts)),
+            spot: self.restore_intent.as_ref().filter(|_| self.return_pending).map(|intent| intent.spot.clone()).unwrap_or_else(|| self.spot(focus, self.spot_facts.clone())),
             keys: self.keys.clone(), next_elem: self.next_elem,
         })
     }
@@ -3279,6 +3372,7 @@ impl DetailScreen {
             self.refresh != DetailRefreshPhase::None || self.detail(meta).is_none()
                 || season::restore_step(self.detail(meta), intent.spot.season,
                 intent.season_requested, meta.season_loading()) != season::RestoreStep::Ready
+                || self.restore_related_pending(meta)
         })
     }
 
@@ -3337,6 +3431,31 @@ impl DetailScreen {
         }
     }
 
+    /// A restore onto a Related tail card asks the store to open the window at its position, once
+    /// per window identity and again after [`SEEK_RETRY_MS`] while it has not opened. After
+    /// [`SEEK_TRIES`] asks the row stands at its head with focus on its first card.
+    fn pump_seek<H: crate::registry::MetadataLike>(&mut self, meta: plx_data::metadata::MetadataView<'_>, now: u32, fx: &mut Effects<'_, H>) {
+        let Some(d) = self.detail(meta) else { return };
+        let Some(intent) = self.restore_intent.as_mut() else { return };
+        if !Self::related_pending(d, intent) { return; }
+        let (Some(at), t) = (intent.spot.tail_position(), &d.related_tail) else { return };
+        let seen = (t.offset, t.end);
+        let seek = &mut intent.seek;
+        if seek.asked == Some(seen) {
+            if now.wrapping_sub(seek.at) < SEEK_RETRY_MS { return; }
+            if seek.tries >= SEEK_TRIES {
+                intent.spot.col = 0;
+                self.return_pending = false;
+                return;
+            }
+            seek.tries += 1;
+        } else {
+            seek.tries = 1;
+        }
+        (seek.asked, seek.at) = (Some(seen), now);
+        fx.push(Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(MetadataCmd::SeekRelated { at, seen }))));
+    }
+
     /// A long season holds a few pages of its episodes: say which the strip needs (what is on
     /// screen and on its way to be, plus a page ahead in the direction of travel, the focus and a
     /// pending restore's target) and the store fetches the holes in it and drops the rest. Said
@@ -3375,10 +3494,11 @@ impl DetailScreen {
 
     fn tick<H: ContentLike + crate::registry::MetadataLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let meta = H::metadata(cx);
-        self.spot_facts = SpotFacts::of(self, meta);
+        self.refresh_spot_facts(meta);
         self.layout.set(None);
         let dt = t.dt();
         self.pump_restore(meta, fx);
+        self.pump_seek(meta, t.ms, fx);
         let d = self.detail(meta);
         let loaded = d.is_some();
         if let Some(d) = d {

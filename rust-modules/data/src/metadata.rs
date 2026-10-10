@@ -276,6 +276,24 @@ pub struct Spot {
     pub season: Option<i64>,
 }
 
+impl Spot {
+    /// The Related section's number in [`Spot::section`].
+    pub const RELATED: c_int = 3;
+
+    /// The place of a Related card read from the tail window, as a `col`. The head's cards keep
+    /// their index (`col >= 0`); a tail card is named by the tail position it was read at, which
+    /// holds whichever way the window has slid and whichever window the page comes back with.
+    /// Negative, so the two never meet and the head's `col` is the one every reader already knows.
+    pub fn tail_col(position: usize) -> c_int {
+        c_int::try_from(position).map_or(c_int::MIN, |p| -2 - p)
+    }
+
+    /// The tail position a Related spot names, or `None` for a head card or another section.
+    pub fn tail_position(&self) -> Option<usize> {
+        (self.section == Self::RELATED && self.col <= -2).then(|| (-2 - i64::from(self.col)) as usize)
+    }
+}
+
 /// Plex's resume rule, in ONE place (home Continue-Watching, the detail Play button, and the
 /// plxnative-play harness all apply it): resume only past 10s and before 95% watched, else start
 /// from the beginning. Both args are MILLISECONDS; the returned position is NANOSECONDS
@@ -3731,6 +3749,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             want_episodes(state, adapter, keep)
         }
         MetadataCmd::WantRelated { before, seen } => want_related(state, adapter, before, seen),
+        MetadataCmd::SeekRelated { at, seen } => ask_related(state, adapter, RelatedAsk::Seek(at), seen),
         MetadataCmd::CancelRelated => cancel_related(adapter),
         MetadataCmd::SetNowPlaying(np) => {
             set_now_playing(state, np);
@@ -4786,9 +4805,25 @@ fn tail_page(
     Some(plx_plex::plex::MediaContainer { offset: start as i64, total_size: total as i64, metadata: out, ..Default::default() })
 }
 
+/// What a Related window read is for.
+#[derive(Clone, Copy)]
+enum RelatedAsk {
+    /// The window slides one step: the previous (`before`) or the next.
+    Edge { before: bool },
+    /// The window is opened where tail position `at` lies, whatever it held before: a page read
+    /// afresh whose focus was last seen deep in the row.
+    Seek(usize),
+}
+
 /// Ask for the previous or next window of the Related tail. False when there is nothing to ask:
 /// no tail, no more in that direction, or a read already out. Main thread only.
 fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, before: bool,
+    seen: (usize, usize)) -> bool {
+    ask_related(state, adapter, RelatedAsk::Edge { before }, seen)
+}
+
+/// [`want_related`], or a window opened at a tail position ([`MetadataCmd::SeekRelated`]).
+fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, ask: RelatedAsk,
     seen: (usize, usize)) -> bool {
     use crate::stores::paging::{PageInfo, Row};
     let Some(d) = state.current.as_ref() else { return false };
@@ -4797,7 +4832,13 @@ fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdap
     // one says nothing about the new one. The landing's publication re-arms the shelf, which asks
     // again from the window that stands.
     if seen != (t.offset, t.end) { return false; }
-    if t.hubs.is_empty() || t.head > d.related.len() || (before && t.offset == 0) || (!before && !t.more) {
+    let before = matches!(ask, RelatedAsk::Edge { before: true });
+    let seek = matches!(ask, RelatedAsk::Seek(_));
+    if t.hubs.is_empty() || t.head > d.related.len() || (before && t.offset == 0)
+        || (matches!(ask, RelatedAsk::Edge { before: false }) && !t.more)
+        // A position past a hub whose length is not yet known cannot be addressed: the hubs'
+        // listings are chained by their lengths, which a slide learns on its way and a seek skips.
+        || (seek && t.hubs.split_last().is_some_and(|(_, earlier)| earlier.iter().any(|h| h.len.is_none()))) {
         return false;
     }
     {
@@ -4813,17 +4854,24 @@ fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdap
     let epoch = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).epoch;
     let (sid, rk) = (d.sid, d.rk.clone());
     let info = PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };
-    let rows: Vec<Row> = t.positions.iter().copied()
-        .zip(d.related[t.head..].iter().map(|m| std::sync::Arc::new(m.clone()))).collect();
+    // A seek opens its window on the listing alone: the window it replaces is not an overlap to
+    // carry, and the page's ledger holds nothing of positions it has not read.
+    let rows: Vec<Row> = if seek { Vec::new() } else { t.positions.iter().copied()
+        .zip(d.related[t.head..].iter().map(|m| std::sync::Arc::new(m.clone()))).collect() };
     let skip: std::collections::HashSet<String> =
         t.exclude.iter().cloned().chain(d.related[..t.head].iter().map(|m| m.rk.clone())).collect();
     let mut hubs = t.hubs.clone();
-    let state = t.row.clone();
+    let state = if seek { Default::default() } else { t.row.clone() };
     let worker = std::sync::Arc::clone(adapter);
     let spawned = plx_base::task::spawn_small("related-tail", move || {
         let window = catch_unwind(std::panic::AssertUnwindSafe(|| {
             let client = plx_plex::plex::client_for(sid)?;
-            let ask = crate::stores::paging::Ask { start: if before { info.offset } else { info.end }, before, hidden: &[] };
+            let start = match ask {
+                RelatedAsk::Seek(at) => related_seek_start(at),
+                RelatedAsk::Edge { before: true } => info.offset,
+                RelatedAsk::Edge { before: false } => info.end,
+            };
+            let ask = crate::stores::paging::Ask { start, before, hidden: &[] };
             let current = (!rows.is_empty()).then_some((rows.as_slice(), info));
             // The shared row reader: a listing that shifts between reads moves the window onto its
             // ledger of shown keys instead of stopping it, so no card repeats and the end is reached.
@@ -4842,6 +4890,12 @@ fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdap
         adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).inflight = false;
     }
     spawned
+}
+
+/// Where a window opened at tail position `at` starts: half a window before it, so the card has the
+/// room to be walked to on both sides and neither edge's ask fires at once.
+fn related_seek_start(at: usize) -> usize {
+    at.saturating_sub(crate::pms::MAX_SHELF_ITEMS / 2)
 }
 
 /// Withdraws the Related read: one out is discarded when it lands, one landed and not yet installed

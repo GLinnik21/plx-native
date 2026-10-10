@@ -1240,6 +1240,7 @@ fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_
         },
         episode: Some("e3".into()),
         season_requested: true,
+        seek: Default::default(),
     });
     pump_restore(&mut screen);
     assert!(
@@ -4283,6 +4284,7 @@ fn a_restore_onto_episode_700_waits_for_its_page_and_then_seats_it() {
         spot: Spot { section: 2, col: 700, ..Default::default() },
         episode: Some("e700".into()),
         season_requested: true,
+        seek: Default::default(),
     });
     screen.sync_keys(test_store().view());
     assert_eq!(screen.restore_focus(test_store().view()), None, "episode 700's page has not landed");

@@ -2225,13 +2225,20 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     let mut out = String::new();
     match &page.arg {
         AppArg::Content(ContentArg::Detail { sid, rk }) => {
+            // The probe's `col=` is the card's index in the Related row; a restore names a card of
+            // the tail window by its listing position instead (`Spot::tail_col`).
+            let listed = cx.views.metadata.current();
+            let col_of = |spot: &plx_data::metadata::Spot| spot.tail_position().zip(listed)
+                .and_then(|(at, d)| d.related_tail.positions.iter().position(|&p| p == at).map(|k| (d.related_tail.head + k) as i32))
+                .unwrap_or(spot.col);
             let mut sp = match instance.screen.memory_at(focus) {
                 PageMemory::Detail(s) => s.spot, _ => Default::default(),
             };
+            sp.col = col_of(&sp);
             for (_, elem) in d.return_state().remembered {
                 if let PageMemory::Detail(saved) = instance.screen.memory_at(Some(FocusKey { entry: owner, elem })) {
                     let saved = saved.spot;
-                    if let Some(col) = sp.saved_col.get_mut(saved.section.max(0) as usize) { *col = saved.col; }
+                    if let Some(col) = sp.saved_col.get_mut(saved.section.max(0) as usize) { *col = col_of(&saved); }
                 }
             }
             let _ = write!(out, " sec={} col={} eptext={}", sp.section, sp.col, sp.ep_text as u8);

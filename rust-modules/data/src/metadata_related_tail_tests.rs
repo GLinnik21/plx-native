@@ -458,3 +458,47 @@ fn a_read_of_another_item_drops_the_window() {
     assert!(land_detail_for_test(test_state(), test_adapter(), sid, "other", gen, Some(next)));
     assert_eq!((detail().related_tail.offset, detail().related.len()), (0, detail().related_tail.head));
 }
+
+/// A page read afresh holds only the head, and its focus was last seen deep in the row: the store
+/// opens the window at that tail position without walking to it, in place of the one it holds, and
+/// the row can slide on from there in both directions.
+#[test]
+fn a_seek_opens_the_window_at_a_tail_position_and_the_row_slides_on_from_it() {
+    let _serial = plx_base::testlock::serial();
+    let server = serve(vec![(1, 312)], plain);
+    let mc = related_response(&[(1, 12, 312, true)], "");
+    open(&server, &mc);
+    let seek = |at: usize, seen: (usize, usize)| ask_related(test_state(), test_adapter(), RelatedAsk::Seek(at), seen);
+    let seen = (detail().related_tail.offset, detail().related_tail.end);
+    // an ask from a window the store has replaced is refused, as an edge's is
+    assert!(!seek(150, (seen.0 + 1, seen.1)));
+    assert!(seek(150, seen), "a seek starts");
+    assert!(!seek(150, seen), "and only one read is out");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while detail().related_tail.offset == 0 && std::time::Instant::now() < until {
+        pump_related_pages(test_state(), test_adapter());
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let t = &detail().related_tail;
+    assert_eq!((t.offset, t.end), (138, 162), "half a window before the position, one window long");
+    assert_eq!(window().iter().find(|(position, _)| *position == 150).map(|(_, rk)| rk.as_str()), Some("1-162"),
+        "tail position 150 is listing item 12 + 150");
+    assert!(detail().related_tail.row.ledger.is_none(), "the window was opened on the listing alone");
+    slide(false);
+    assert!(detail().related_tail.offset > 138);
+    slide(true);
+    slide(true);
+    assert!(detail().related_tail.offset < 138);
+}
+
+/// The place a Related card is named by in a restore survives the encoding.
+#[test]
+fn a_spot_names_a_tail_card_by_its_position_and_a_head_card_by_its_index() {
+    let tail = Spot { section: Spot::RELATED, col: Spot::tail_col(150), ..Default::default() };
+    assert_eq!(tail.tail_position(), Some(150));
+    assert_eq!(Spot { section: Spot::RELATED, col: Spot::tail_col(0), ..Default::default() }.tail_position(), Some(0));
+    assert_eq!(Spot { section: Spot::RELATED, col: 2, ..Default::default() }.tail_position(), None);
+    // another section's negative column (the collection heading) is not a Related position
+    assert_eq!(Spot { section: 7, col: -1, ..Default::default() }.tail_position(), None);
+    assert_eq!(Spot { section: 7, col: Spot::tail_col(3), ..Default::default() }.tail_position(), None);
+}

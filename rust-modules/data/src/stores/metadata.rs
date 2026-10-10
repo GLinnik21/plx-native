@@ -76,6 +76,7 @@
 //!   season the screen needs and evict the ones it does not (`pump_episode_pages` installs them).
 //! - `WantRelated{before, seen}` → `metadata::want_related` — slide the Related row's tail window
 //!   (`pump_related`, at the start of the frame, installs it).
+//! - `SeekRelated{at, seen}` → `metadata::want_related` — the same read, opened at a tail position.
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
 //! - `SetWatchedLocal{sid, rk, on}` → `metadata::set_watched_local` — the optimistic half of a
 //!   view-state write, answers whether it actually changed anything.
@@ -200,6 +201,11 @@ pub enum MetadataCmd {
     /// the ask can come from a window the store has since slid, and such an ask is refused (the
     /// landing's publication re-arms the shelf, which asks again from the window that stands).
     WantRelated { before: bool, seen: (usize, usize) },
+    /// Open the Related row's tail window where tail position `at` lies, replacing the window the
+    /// page holds: a page read afresh (a Back from a card opened deep in the row) names the
+    /// position its focus was last seen at. `seen` is the window the ask was computed from, and is
+    /// refused the same way a `WantRelated`'s is; so is an ask while a read is out.
+    SeekRelated { at: usize, seen: (usize, usize) },
     /// Withdraw the read `WantRelated` started: focus left the edge it was asked from, and a window
     /// sliding in now would take the card it stands on out of the row. A read already out is
     /// discarded when it lands, and one landed but not yet installed is dropped.
