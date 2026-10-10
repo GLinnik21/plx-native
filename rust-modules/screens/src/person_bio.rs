@@ -43,12 +43,12 @@
 //! been the third. The discrete transitions ([`open`]/[`close`]/[`move_focus`]) still call
 //! `idle::invalidate` because a state change is not motion.
 use plx_data::person::Person;
-use plx_ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
+use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::label::{Label, VAlign};
-use plx_ui::text_view::TextView;
 use plx_ui::theme;
 use plx_ui::widgets;
-use plx_ui::{Painter, Rect, Spring};
+use plx_ui::prose_scroll::{self, paging, ProseScroll};
+use plx_ui::{Painter, Rect};
 use std::ffi::CString;
 use std::os::raw::c_uint;
 
@@ -66,27 +66,12 @@ const PANEL_H: f32 = 676.0;
 /// each other — see that token for why a bigger corner would eat this box.
 const PAD: f32 = theme::alert::PAD;
 
-/// Air between paragraphs of the biography. A block gap, one `space` rung — the paragraphs are
-/// separate thoughts, not separate blocks of the page.
-const PARA_GAP: f32 = theme::space::MD;
-/// The design's `trailing 40px spacer` under the last paragraph (§1C; §1B spends the same as its
-/// `padding-bottom:40`). It is air at the END OF THE TRAVEL, not padding: without it the last line
-/// rests flush on the viewport's clip, and the bottom feather is off by then — the block has
-/// stopped scrolling — so the final line of a biography was cut by a hard edge with nothing under
-/// it. That is the one page of this panel a reader always reaches.
-const BODY_TAIL: f32 = theme::space::LG;
 /// The bio's line pitch. `person.rs`'s header bio uses the same 40 at the same rung, so the prose
 /// is paced identically whether it is being previewed or read.
 const BIO_LEAD: f32 = 40.0;
-
-/// One press of UP/DOWN. The design's number, and deliberately NOT a full viewport: a page that
-/// replaces every visible line gives the eye nothing to re-anchor on, so a step leaves several
-/// lines of overlap.
-const STEP: f32 = 200.0;
-/// The dissolve band at each end of the viewport — see [`draw_bio`]'s `TextView::edge_fade` call.
-const FEATHER: f32 = theme::alert::FEATHER;
-/// Air between the prose column and the rail beside it.
-const RAIL_GAP: f32 = theme::space::MD;
+/// One press of UP/DOWN: five lines of the bio's pitch (200), the design's number and deliberately
+/// NOT a full viewport (see [`prose_scroll`]).
+const STEP: f32 = 5.0 * BIO_LEAD;
 
 /// The footer's right-hand hint, as its three runs — assembled by the shared
 /// [`widgets::KeyHint`], which owns the cap, the gaps and the measure. This module used to lay the
@@ -115,19 +100,16 @@ const RISE: f32 = plx_ui::popover::Popover::RISE;
 /// (`registry::ContentPanel::Bio`), dismissed by BACK; UP/DOWN page the prose.
 pub struct PersonBioScreen {
     entry: plx_machine::machine::EntryId,
-    /// The current page, 1-based. The scroll spring chases [`scroll_for_page`] of it, rather than
-    /// the page being derived from the scroll: paging is the input, and a spring still travelling
-    /// must not be read back as a different page half way there.
-    page: usize,
-    scroll: Spring,
+    /// The page cursor and the spring that chases it — the viewport both read-only prose panels
+    /// share ([`prose_scroll`]).
+    scroll: ProseScroll,
 }
 
 impl PersonBioScreen {
     pub fn new(entry: plx_machine::machine::EntryId) -> Self {
         Self {
             entry,
-            page: 1,
-            scroll: Spring::at(0.0),
+            scroll: ProseScroll::new(),
         }
     }
 
@@ -151,25 +133,15 @@ impl PersonBioScreen {
     /// reads it: the tick clamps, then computes the scroll target, and `draw` reads the page after
     /// both. Nothing on screen can observe the overshoot.
     fn step_page(&mut self, sym: c_uint) -> bool {
-        let next = match sym {
-            SDLK_UP => self.page.saturating_sub(1).max(1),
-            SDLK_DOWN => self.page + 1,
-            _ => self.page,
-        };
-        let moved = next != self.page;
-        self.page = next;
-        moved
+        self.scroll.step_page(sym)
     }
 
     fn tick(&mut self, dt: f32, person: Option<&Person>) {
         // Re-clamp before springing: the store can land a longer (or empty) biography while the
         // panel is up — `person::pump` applies a profile whenever it arrives — and a page index
         // past the end would otherwise park the spring beyond the content.
-        let (_, pages) = person.map(page_state).unwrap_or((0.0, 1));
-        self.page = self.page.clamp(1, pages);
-        let want = person.map(|person| scroll_for_page(person, self.page)).unwrap_or(0.0);
-        self.scroll.step(want, plx_ui::consts::K_SCROLL, dt);
-        plx_ui::anim::probe("personbio.scroll", self.scroll.pos, self.scroll.vel, want, dt);
+        let (max_scroll, pages) = person.map(page_state).unwrap_or((0.0, 1));
+        self.scroll.follow(dt, max_scroll, pages, STEP, "personbio.scroll");
         // No per-frame `note_own_damage` here: the container's own-motion scope attributes this
         // spring AND every invalidate this step raises to the panel, and a claim made per frame
         // with no invalidate behind it over-counts — on a frame where a poster landed on the page
@@ -196,7 +168,7 @@ impl PersonBioScreen {
 
         let view = viewport();
         let (max_scroll, pages) = paging(content_h(person), view.h, STEP);
-        let scroll = self.scroll.pos.clamp(0.0, max_scroll);
+        let scroll = self.scroll.offset(max_scroll);
 
         // the two hairlines that bracket the reading block
         let rule = |y: f32| widgets::hairline(p, c.x, y, c.w);
@@ -204,12 +176,7 @@ impl PersonBioScreen {
         rule(view.y + view.h + theme::space::MD);
 
         draw_bio(p, person, view, scroll, max_scroll);
-        widgets::scroll_rail(
-            p,
-            Rect::new(c.x + c.w - widgets::RAIL_W, view.y, widgets::RAIL_W, view.h),
-            self.page,
-            pages,
-        );
+        prose_scroll::draw_rail(p, view, c.x + c.w, self.scroll.page, pages);
 
         draw_foot(p, person, c, measure);
     }
@@ -309,7 +276,7 @@ impl<H: crate::registry::AppLike + crate::registry::PersonLike> plx_ui::screen::
 
 impl plx_machine::machine::LogicalState for PersonBioScreen {
     fn write(&self, c: &mut plx_machine::machine::Canon) {
-        c.u64(self.page as u64).f32(self.scroll.pos).f32(self.scroll.vel);
+        self.scroll.write(c);
     }
     fn probe(&self, out: &mut String) {
         out.push_str("bio");
@@ -413,13 +380,7 @@ fn content_rect() -> Rect {
 /// The prose column's wrap width — the content box less the rail and its air. The rail is part of
 /// the reading block's frame, so the text may not flow under it.
 fn text_w() -> f32 {
-    (content_rect().w - widgets::RAIL_W - RAIL_GAP).max(1.0)
-}
-
-/// One paragraph's view. Built in ONE place so its measure and its draw cannot disagree about the
-/// rung, the ink or the leading — `person.rs::bio_view` carries the same note for the same reason.
-fn para_view(text: &str) -> TextView<'_> {
-    TextView::new(text, theme::size::BODY, theme::TEXT_READING).h(theme::alert::TEXT_ALIGN).leading(BIO_LEAD)
+    prose_scroll::text_w(content_rect().w)
 }
 
 /// The scrolling viewport's rect — what the clip cuts to and what the feather rides.
@@ -468,53 +429,12 @@ fn foot_h() -> f32 {
 
 /// Total flowed height of the biography at the current wrap width, and the viewport's height.
 fn content_h(person: &Person) -> f32 {
-    let w = text_w();
-    let paras = paragraphs(&person.bio);
-    if paras.is_empty() {
-        return 0.0;
-    }
-    let mut h = 0.0;
-    for (i, para) in paras.iter().enumerate() {
-        if i > 0 {
-            h += PARA_GAP;
-        }
-        h += para_view(para).measure_h(w);
-    }
-    h + BODY_TAIL
-}
-
-/// **The paging arithmetic, pure**: how many pages `content_h` of prose makes in a `view_h`
-/// viewport stepping `step` px, and the furthest the block may scroll.
-///
-/// A page is a scroll POSITION, not a screenful — the step (200px) is smaller than the viewport, so
-/// consecutive pages overlap. `pages` is therefore "how many distinct resting places are there",
-/// which is one more than the number of whole steps the travel contains, and the LAST page is
-/// pinned to `max_scroll` rather than to `(pages-1) * step`: the final step is a short one, and a
-/// rail that stopped short of its track's end while the prose had visibly run out would be lying.
-///
-/// Content that fits is one page with no travel, which is what makes the rail and both feather
-/// edges disappear together for a short biography.
-pub fn paging(content_h: f32, view_h: f32, step: f32) -> (f32, usize) {
-    let max_scroll = (content_h - view_h).max(0.0);
-    if max_scroll <= 0.0 || step <= 0.0 {
-        return (0.0, 1);
-    }
-    (max_scroll, (max_scroll / step).ceil() as usize + 1)
-}
-
-/// The scroll offset page `page` rests at — `(page-1)` whole steps, clamped to the travel. Pure.
-pub fn scroll_at(page: usize, max_scroll: f32, step: f32) -> f32 {
-    ((page.max(1) - 1) as f32 * step).min(max_scroll).max(0.0)
+    prose_scroll::content_h(&paragraphs(&person.bio), text_w(), BIO_LEAD)
 }
 
 /// `(max_scroll, pages)` for the open person — the impure wrapper the screen calls.
 fn page_state(person: &Person) -> (f32, usize) {
     paging(content_h(person), viewport().h, STEP)
-}
-
-fn scroll_for_page(person: &Person, page: usize) -> f32 {
-    let (max_scroll, _) = page_state(person);
-    scroll_at(page, max_scroll, STEP)
 }
 
 // ---- the two lines of prose the panel writes itself ---------------------------------------------
@@ -606,42 +526,12 @@ fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::ma
     }
 }
 
-/// The scrolling prose: every paragraph stacked at `-scroll`, inside a hard scissor at the viewport.
-///
-/// **The clip is the hard cut; the DISSOLVE is the text's own glyphs fading, not a shape painted
-/// over the glass.** This used to be `widgets::edge_feather` — an opaque `SURFACE_PANEL`-tinted
-/// gradient laid over the viewport's edge, which read fine over an opaque sheet but produced a
-/// distinct GREY BAND over this panel's frosted glass (the reported bug this replaces). Every
-/// paragraph's [`TextView`] now carries [`TextView::edge_fade`] instead, so `text::draw_text_fade`
-/// dissolves each line's glyph alpha directly against the SURFACE BEHIND it — nothing new is
-/// painted at all. `top`/`bot` are computed ONCE, outside the loop: each edge appears only when
-/// there is prose on the far side of it, exactly as the feather it replaced did, which is what
-/// keeps a short biography free of a permanent dissolve across its first and last lines. Set and
-/// clear of the clip are still paired inside this one function, because the scissor is global GL
-/// state.
-///
-/// Paragraphs off the viewport are CULLED through the shared [`plx_ui::on_axis`] rather than
-/// merely clipped: a `TextView::draw` submits every one of its wrapped lines, so a long biography
-/// would otherwise pay for the whole document on every frame of a page transition.
+/// The scrolling prose — [`prose_scroll::draw`], which owns the clip, the text-glyph dissolve (not
+/// a shape painted over the glass: that was the grey band `widgets::edge_feather` made over this
+/// panel's frost) and the per-paragraph cull. A paragraph is its own view because `TextView` cannot
+/// hold a `\n\n` — see the module doc.
 fn draw_bio(p: Painter, person: &Person, view: Rect, scroll: f32, max_scroll: f32) {
-    let paras = paragraphs(&person.bio);
-    if paras.is_empty() {
-        return;
-    }
-    let w = text_w();
-    let top = (scroll > 0.5).then_some((view.y, view.y + FEATHER));
-    let bot = (scroll < max_scroll - 0.5).then_some((view.y + view.h - FEATHER, view.y + view.h));
-    p.clip(view);
-    let mut y = view.y - scroll;
-    for para in paras {
-        let v = para_view(para).edge_fade(top, bot);
-        let h = v.measure_h(w);
-        if plx_ui::on_axis(y - view.y, h, view.h, 0.0) {
-            v.draw(p, Rect::new(view.x, y, w, 0.0));
-        }
-        y += h + PARA_GAP;
-    }
-    p.clip_clear();
+    prose_scroll::draw(p, &paragraphs(&person.bio), BIO_LEAD, view, scroll, max_scroll);
 }
 
 /// The footer: what the library holds on the left, how to leave on the right, both on one centre
@@ -674,6 +564,8 @@ fn draw_foot(p: Painter, person: &Person, c: Rect, measure: &dyn plx_machine::ma
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plx_ui::prose_scroll::scroll_at;
+    use plx_ui::consts::{SDLK_DOWN, SDLK_UP};
 
     /// **The paging arithmetic, at every boundary that has an off-by-one in it.** The rail is drawn
     /// straight from these two numbers, so a wrong `pages` is a fill of the wrong height sitting in
@@ -999,13 +891,13 @@ mod tests {
     #[test]
     fn up_and_down_move_the_page_and_one_is_the_floor() {
         let mut panel = PersonBioScreen::new(ENTRY);
-        assert_eq!(panel.page, 1);
+        assert_eq!(panel.scroll.page, 1);
         assert!(panel.step_page(SDLK_DOWN), "DOWN moved");
-        assert_eq!(panel.page, 2);
+        assert_eq!(panel.scroll.page, 2);
         assert!(panel.step_page(SDLK_UP));
-        assert_eq!(panel.page, 1);
+        assert_eq!(panel.scroll.page, 1);
         assert!(!panel.step_page(SDLK_UP), "…and page 1 is the floor, reported as no movement");
-        assert_eq!(panel.page, 1);
+        assert_eq!(panel.scroll.page, 1);
     }
 
     /// A click is SWALLOWED and moves nothing — the page under the sheet may not be reached by a
@@ -1054,7 +946,7 @@ mod tests {
         assert!(matches!(outcome, Outcome::Nothing));
 
         // The page cursor itself is unaffected — it only ever moves from `step_page`/`tick`.
-        assert_eq!(panel.page, 1);
+        assert_eq!(panel.scroll.page, 1);
 
         use plx_ui::screen::Screen;
         assert_eq!(

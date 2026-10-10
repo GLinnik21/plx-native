@@ -2159,7 +2159,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // 0xbc1d_d51d_5b11_1273.
 // The Library grid projects keys for its wanted windows only (`LibraryGrid{total,windows,..}`
 // replaces a key per slot); the previous pin was 0xdb39_f424_a0be_5fd2.
-const SCREEN_SHAPES_PIN: u64 = 0x7435_d234_b769_60c2;
+// About panel scroll: `AboutPanelScreen{}` gains the synopsis viewport's cursor and spring
+// (`page:usize,scroll:Spring{pos:f32,vel:f32}`, person_bio's shape); the previous pin was
+// 0x7435_d234_b769_60c2.
+const SCREEN_SHAPES_PIN: u64 = 0x6a55_c53a_d931_3acf;
 
 #[cfg(test)]
 mod arg_tests {

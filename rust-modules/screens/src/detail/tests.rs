@@ -62,6 +62,12 @@ pub(super) fn test_store() -> &'static mut plx_data::stores::metadata::MetadataS
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
+impl crate::registry::CollectionLike for TestHost {
+    fn collection<'a>(_cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> {
+        plx_data::collection::CollectionView::default()
+    }
+}
+
 impl crate::registry::MetadataLike for TestHost {
     fn metadata<'a>(_cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
         test_store().view()
@@ -1829,6 +1835,75 @@ fn episode_text_ok_activates_on_down_without_arming_a_holdable_press() {
         &effect.fx,
         Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Detail { rk, .. }))) if rk == "e2"
     )));
+    clear();
+}
+
+/// **An episode summary is never cut off for good.** The episode card clamps its summary to
+/// `episodes::SUMMARY_MAX_LINES`; this walks the route a viewer takes to the rest: the card's text
+/// block opens the episode's own page, that page's About card (OK, i.e. its MORE) asks for the About
+/// panel, and the panel pages down to the end of a 2,000-character summary.
+///
+/// Covered: each hop's effect against the real `DetailScreen` and the real `AboutPanelScreen`, both
+/// reading the one metadata store. NOT covered here: the container presenting
+/// `ContentPanel::About` as `AboutPanelScreen` (`registry.rs`, one `match` arm) and the drawn
+/// pixels, which need the app and the TV.
+#[test]
+fn a_long_episode_summary_is_readable_to_its_end_through_the_episode_route() {
+    use crate::about_panel::AboutPanelScreen;
+    let sid = ServerId::UNSET;
+    let summary = "word ".repeat(400);
+
+    // 1. the show page: the episode's text block opens the episode's page
+    let mut show = detail(sid, "show");
+    show.episodes = vec![episode("e1", 1), plx_data::metadata::Episode { summary: summary.clone(), ..episode("e2", 2) }].into();
+    let _guard = install(show);
+    let mut screen = bare(&_guard, sid, "show");
+    let ok = ScreenEvent::Input(InputEvent {
+        at: Default::default(),
+        source: plx_machine::machine::Source::Script,
+        kind: InputKind::Key { key: Key::Ok, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+    });
+    let (_, effects) = step(&mut screen, &ok, Some(episodes::elem(1, episodes::Row::Text).unwrap()));
+    assert!(effects.iter().any(|e| matches!(
+        &e.fx,
+        Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Detail { rk, .. }))) if rk == "e2"
+    )));
+
+    // 2. the episode's page (landed with the same summary): the About card asks for the panel
+    plx_data::metadata::set_current_for_test(
+        test_store().state_mut(),
+        Some(Detail { sid, rk: "e2".into(), kind: "episode".into(), summary: summary.clone(), ..Default::default() }),
+    );
+    let mut page = bare(&_guard, sid, "e2");
+    let (_, effects) = step(&mut page, &ScreenEvent::Activate(about::CARD_ELEM), Some(about::CARD_ELEM));
+    assert!(
+        effects.iter().any(|e| matches!(&e.fx, Fx::App(AppFx::Content(ContentReq::Panel(ContentPanel::About))))),
+        "OK on the About card requests the About panel"
+    );
+
+    // 3. the panel over the same store pages to the last line
+    let mut panel = AboutPanelScreen::new(EntryId(8));
+    let measure = plx_ui::fixture::FixtureMeasure;
+    assert!(!panel.last_line_in_view(&cx(&measure, None)), "the panel opens at the top of a long summary");
+    let down = ScreenEvent::Input(InputEvent {
+        at: Default::default(),
+        source: plx_machine::machine::Source::Script,
+        kind: InputKind::Key { key: Key::Down, sym: plx_ui::consts::SDLK_DOWN, wcode: 0, edge: Edge::Down, at_edge: false },
+    });
+    let run = |panel: &mut AboutPanelScreen, ev: &ScreenEvent<TestHost>| {
+        let context = cx(&measure, None);
+        let (mut out, mut present) = (Vec::new(), plx_machine::present::Present::new());
+        let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Nav, &mut present);
+        plx_machine::machine::Machine::step(panel, ev, &context, &mut fx);
+    };
+    for _ in 0..40 {
+        run(&mut panel, &down);
+    }
+    let tick = ScreenEvent::Tick(plx_machine::machine::Tick { ms: 0, dt_us: 16_667 });
+    for _ in 0..600 {
+        run(&mut panel, &tick);
+    }
+    assert!(panel.last_line_in_view(&cx(&measure, None)), "DOWN reaches the end of the episode summary");
     clear();
 }
 
