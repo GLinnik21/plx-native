@@ -236,6 +236,9 @@ pub struct DetailScreen {
     ep_want: EpWant,
     /// The Related tail offset the shelf last asked to page back from: one edge asks once.
     related_before: Option<usize>,
+    /// The way-back read `WantRelated { before: true }` started has not landed: withdrawn when focus
+    /// leaves the start of the tail ([`Shelf::page_cancel`] does the same for the trailing edge).
+    related_before_out: bool,
     tab_scroll: Spring,
     /// The focused episode's pop spring and label-block lift (earned by the TEXT stop alone; the
     /// plate also shows for the still's pop — see `episodes::draw_cell`), keyed by episode so the
@@ -473,6 +476,7 @@ impl DetailScreen {
             episode_cells: episodes::Cells::new(),
             ep_want: EpWant::default(),
             related_before: None,
+            related_before_out: false,
             about_card_lift: TextLift::new(),
             about_lang_lift: TextLift::new(),
             related: Shelf::new(entry, cards::Which::Related.style()),
@@ -1814,8 +1818,15 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 } else {
                     false
                 };
+                // A read whose edge focus has left is withdrawn before its window can slide in.
+                let withdraw_before = self.related_before_out && !near_start;
+                self.related_before_out &= near_start;
+                if self.related.page_cancel(cx, &related, 0, true).is_some() || withdraw_before {
+                    fx.push(Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(MetadataCmd::CancelRelated))));
+                }
                 let after = !before
                     && self.related.page_ask(cx, &related, wanted, 0, true) == Some(ui_cards::PageEdge::After);
+                self.related_before_out |= before;
                 if before || after {
                     fx.push(Fx::App(AppFx::Store(
                         StoreId::Metadata,
@@ -1885,6 +1896,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                     // never answered leaves no landing, so focus moving below lets go as well.
                     self.related.reset_page_requests();
                     self.related_before = None;
+                    self.related_before_out = false;
                     self.sync_keys(meta);
                     self.prune_keys(&Self::held_keys(cx));
                     self.season_metrics.invalidate();

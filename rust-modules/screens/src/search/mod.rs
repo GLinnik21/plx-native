@@ -441,8 +441,14 @@ impl SearchScreen {
             let k = self.section(row);
             let wanted = matches!(got, Some(StackEvent::Card(key, CardEvent::Want(_))) if *key == k);
             let offset = shelf.window.start;
-            let edge = self.with_stack(|stack, page| stack.page_ask(page, cx, k, wanted, offset));
             let slot = layout::ordinal(self.rows[row].kind) as usize;
+            // An ask whose edge focus has left is withdrawn before the slide can commit.
+            if self.with_stack(|stack, page| stack.page_cancel(page, cx, k, offset)).is_some() {
+                if let Some((start, _)) = self.page_sent[slot].take() {
+                    self.store(SearchCmd::PageCancel { kind: self.rows[row].kind, seen: start }, fx);
+                }
+            }
+            let edge = self.with_stack(|stack, page| stack.page_ask(page, cx, k, wanted, offset));
             if self.page_sent[slot].is_some_and(|(start, _)| start != offset) { self.page_sent[slot] = None; }
             if let Some(edge) = edge {
                 let ask = (offset, edge == PageEdge::Before);

@@ -1065,6 +1065,12 @@ impl HomeScreen {
             let want = shelf.on(&ScreenEvent::Tick(t), cx, &src, fx);
             let offset = self.hub(view, row).map_or(0, |hub| hub.offset);
             let wanted = matches!(want, Some(ui_cards::CardEvent::Want(_)));
+            if shelf.page_cancel(cx, &src, offset, visible).is_some() {
+                if let Some(cmd) = self.hub(view, row).and_then(|hub| hub_page_cmd(&hub,
+                    |sid, id, key| HubsCmd::CancelPage { sid, id, key })) {
+                    fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(cmd))));
+                }
+            }
             if let Some(edge) = shelf.page_ask(cx, &src, wanted, offset, visible) {
                 let before = edge == ui_cards::PageEdge::Before;
                 if let Some(cmd) = self.hub(view, row).and_then(|hub| hub_page_cmd(&hub,
@@ -2305,7 +2311,7 @@ impl HomeScreen {
 
     fn cancel_row_page<H: HomeLike>(&mut self, row: usize, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let requested = self.grid.shelves.get(row).is_some_and(ui_cards::Shelf::has_page_request);
-        if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.reset_page_requests(); }
+        if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.reset_page_requests(); shelf.drop_page_flight(); }
         if !requested { return; }
         if let Some(hub) = self.hub(H::hubs(cx), row).filter(|hub| hub.more || hub.offset > 0) {
             if let Some(cmd) = hub_page_cmd(&hub, |sid, id, key| HubsCmd::CancelPage { sid, id, key }) {

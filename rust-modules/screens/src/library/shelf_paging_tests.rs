@@ -71,6 +71,34 @@ fn a_shelf_asks_for_its_next_window_at_its_trailing_edge_once() {
     assert_eq!(asked, vec![("movie.genre".to_string(), false)], "one ask per window at the trailing edge");
 }
 
+fn cancels(works: &[LibraryWork]) -> Vec<String> {
+    works.iter().filter_map(|w| match w { LibraryWork::HubPageCancel { id, .. } => Some(id.clone()), _ => None }).collect()
+}
+
+/// A landing slides the window by half, so an ask is only safe while focus stays in the half the
+/// window keeps: the first card out of the edge's zone withdraws it, and so does moving to another row.
+#[test]
+fn a_shelf_withdraws_its_ask_when_focus_leaves_the_edge_it_was_sent_from() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = genre_and_plain();
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    focus_shelf_card(&mut page, &mut engine, &fixture, 0, 9);
+    let asked: Vec<_> = (0..3).flat_map(|i| pages(&works(&mut page, &engine, &fixture, 9000 + i * 17))).collect();
+    assert_eq!(asked.len(), 1);
+    focus_shelf_card(&mut page, &mut engine, &fixture, 0, 6);
+    assert!(cancels(&works(&mut page, &engine, &fixture, 9100)).is_empty(), "still inside the zone");
+    focus_shelf_card(&mut page, &mut engine, &fixture, 0, 5);
+    assert_eq!(cancels(&works(&mut page, &engine, &fixture, 9117)), vec!["movie.genre".to_string()]);
+    assert!(cancels(&works(&mut page, &engine, &fixture, 9134)).is_empty(), "once");
+    focus_shelf_card(&mut page, &mut engine, &fixture, 0, 9);
+    let again: Vec<_> = (0..3).flat_map(|i| pages(&works(&mut page, &engine, &fixture, 9200 + i * 17))).collect();
+    assert_eq!(again.len(), 1, "the edge asks again on return");
+    focus_shelf_card(&mut page, &mut engine, &fixture, 1, 3);
+    assert_eq!(cancels(&works(&mut page, &engine, &fixture, 9300)), vec!["movie.genre".to_string()], "another row");
+}
+
 #[test]
 fn a_row_with_no_pageable_key_never_asks() {
     let _guard = plx_base::testlock::serial();

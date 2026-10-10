@@ -27,6 +27,10 @@ pub enum SearchCmd {
     /// the ask can come from a window the store has since slid, and such an ask is refused. The
     /// new window's publication differs from `seen`, which lets the screen ask again from it.
     Page { kind: crate::search::Kind, before: bool, seen: usize },
+    /// Withdraw the slide `Page` asked for on a row: focus left the edge it was asked from, and the
+    /// window moving now would take the card it stands on out of it. `seen` is the window start the
+    /// slide was asked from; a slide that has since landed makes this a no-op.
+    PageCancel { kind: crate::search::Kind, seen: usize },
 }
 
 /// One Search owner: logical state, the worker adapter all current fetches capture, and notice.

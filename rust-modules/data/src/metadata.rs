@@ -3731,6 +3731,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             want_episodes(state, adapter, keep)
         }
         MetadataCmd::WantRelated { before, seen } => want_related(state, adapter, before, seen),
+        MetadataCmd::CancelRelated => cancel_related(adapter),
         MetadataCmd::SetNowPlaying(np) => {
             set_now_playing(state, np);
             true
@@ -4691,6 +4692,9 @@ pub fn pump_episode_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
 struct RelPages {
     /// A window read is out; the next edge is asked for once it lands.
     inflight: bool,
+    /// Bumped when the reader withdraws the read: a worker started under an older one discards its
+    /// answer and leaves `inflight` to whoever asks next.
+    epoch: u64,
     landed: Vec<RelLanded>,
 }
 
@@ -4767,6 +4771,7 @@ fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdap
         if rel.inflight { return false; }
         rel.inflight = true;
     }
+    let epoch = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).epoch;
     let (sid, rk) = (d.sid, d.rk.clone());
     let info = PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };
     let rows: Vec<Row> = t.positions.iter().copied()
@@ -4790,6 +4795,7 @@ fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdap
             Some((rows, info, std::mem::take(&mut hubs), state))
         })).unwrap_or(None);
         let mut rel = worker.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+        if rel.epoch != epoch { return; }
         rel.inflight = false;
         rel.landed.push(RelLanded { sid, rk, from: (info.offset, info.end), window });
     });
@@ -4797,6 +4803,16 @@ fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdap
         adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).inflight = false;
     }
     spawned
+}
+
+/// Withdraws the Related read: one out is discarded when it lands, one landed and not yet installed
+/// is dropped, and the next edge may ask again at once. Main thread only.
+fn cancel_related(adapter: &MetadataAdapter) -> bool {
+    let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+    rel.epoch = rel.epoch.wrapping_add(1);
+    rel.inflight = false;
+    rel.landed.clear();
+    false
 }
 
 /// Main-thread pump: install a Related window that landed on the page and the window it was read

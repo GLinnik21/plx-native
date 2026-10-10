@@ -542,6 +542,7 @@ impl LibraryScreen {
         let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
         let ticking = matches!(ev, ScreenEvent::Tick(_));
         let mut asks = Vec::new();
+        let mut withdrawn = Vec::new();
         let seen = hubs.revision().unwrap_or_default();
         for (index, row) in self.shelves.iter_mut().enumerate() {
             let shelf = hubs.shelves().get(index);
@@ -551,6 +552,13 @@ impl LibraryScreen {
             row.cards.dormant(held);
             let want = row.cards.on(ev, cx, &src, fx);
             if !ticking && at.is_none() { row.cards.reset_page_requests(); }
+            // An ask whose edge focus has left is withdrawn before the landing can slide the window
+            // from under it.
+            if ticking {
+                if let (Some(shelf), Some(_)) = (shelf, row.cards.page_cancel(cx, &src, shelf.map_or(0, |s| s.offset), true)) {
+                    withdrawn.push((shelf.id.clone(), shelf.key.clone()));
+                }
+            }
             // The row asks for its next page at an edge, once per window, as Home's rows do; the
             // store moves the window and the page follows the card focus is on.
             if ticking && at.is_some() {
@@ -560,7 +568,8 @@ impl LibraryScreen {
                 }
             }
         }
-        if let Some(target) = self.address(cx).filter(|_| !asks.is_empty()) {
+        if let Some(target) = self.address(cx).filter(|_| !asks.is_empty() || !withdrawn.is_empty()) {
+            for (id, key) in withdrawn { self.store(target, LibraryWork::HubPageCancel { id, key }, fx); }
             for (id, key, before) in asks { self.store(target, LibraryWork::HubPage { id, key, before, seen }, fx); }
         }
     }
