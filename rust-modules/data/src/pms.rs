@@ -37,14 +37,14 @@ pub mod initial;
 /// screen indexes into, not a per-server one — see [`allot`] for how the sources divide it.
 ///
 /// A bound exists because the catalog is resident memory on a TV with a few hundred MB for the
-/// whole app, and only the Recently Added listings page (`docs/pms-api.md` §3), so nothing else
-/// limits what a server (or a household of shares) may send. 2,048 is about 170 full rows of 12,
+/// whole app, and the hub rows page through their keys (`docs/pms-api.md` §3) while the hub list
+/// itself does not, so nothing else limits what a server (or a household of shares) may send. 2,048 is about 170 full rows of 12,
 /// an order of magnitude past any Home a person scrolls and measured on the TV (`home-grid-deep`,
 /// issue #395) at 2,040 cards, about 1,343 KB of catalog (about 0.65 KB a card, 170 hubs); the
 /// `hubs: landed` log line reports the live figure. It used to be 256, which cut a Home of more
 /// than about 21 rows off in the middle.
 ///
-/// An ordinary row spends its published card count; a Recently Added row spends at most 12 slots
+/// An ordinary row spends its published card count; a row that pages spends at most 12 slots
 /// ([`shelf_cost`]) while holding a moving window of at most 24 cards, so the published rows hold
 /// at most twice this budget, plus at most eight retained heroes.
 ///
@@ -829,14 +829,15 @@ struct PageQuery {
     hidden: Vec<i64>,
 }
 
-fn recent_listing(id: &str, key: &str) -> bool {
-    plx_plex::plex::hub_title::is_recently_added_hub(id)
-        && plx_plex::plex::is_pageable_hub_key(key)
+/// Whether a hub's listing is one the pager reads: every row whose key [`is_pageable_hub_key`]
+/// admits pages, whatever it is called. A row whose key is not admitted keeps its preview.
+fn pages(key: &str) -> bool {
+    plx_plex::plex::is_pageable_hub_key(key)
 }
 
 // Paging must not spend the preview slots of another row. Each window is still bounded to 24.
 fn shelf_cost(shelf: &Shelf, len: usize) -> usize {
-    if recent_listing(&shelf.hub_id, &shelf.key) { len.min(HUB_FETCH_COUNT as usize) } else { len }
+    if pages(&shelf.key) { len.min(HUB_FETCH_COUNT as usize) } else { len }
 }
 
 /// How a fresh preview row starts: a row the pager will read waits for its first forward ask to
@@ -868,7 +869,7 @@ fn request_page(state: &mut PmsState, adapter: &PmsAdapter, sid: ServerId,
     if refresh_src_lifecycle(source) { return None; }
     if source.fetching || source.page.is_some() || source.state != HubState::Ready { return None; }
     let Some(shelf) = source.last.as_ref().and_then(|build| find_shelf(&build.shelves, id, key)) else { return None };
-    if !recent_listing(id, key) || (before && shelf.offset == 0) || (!before && !shelf.more) { return None; }
+    if !pages(key) || (before && shelf.offset == 0) || (!before && !shelf.more) { return None; }
     let start = if before { shelf.offset } else { shelf.end.max(shelf.offset + shelf.items.len()) };
     source.retry_n = 0;
     source.page = Some(PageQuery { id: id.into(), key: key.into(), start, before,
@@ -1220,7 +1221,7 @@ fn project(
             total: hub.total(),
             offset: 0,
             end: hub.metadata.len(),
-            more: recent_listing(&hub.hub_identifier, &hub.key)
+            more: pages(&hub.key)
                 && (hub.more || hub.total() > hub.metadata.len() || hub.metadata.len() >= HUB_FETCH_COUNT as usize),
             row: preview_row(&hub.hub_identifier, &hub.key),
         });
@@ -1566,9 +1567,9 @@ impl Src {
             window: self.page.as_ref().and_then(|page| self.last.as_ref().and_then(|build|
                 find_shelf(&build.shelves, &page.id, &page.key))).cloned(),
             windows: self.last.as_ref().map_or_else(Vec::new, |build| build.shelves.iter()
-                .filter(|shelf| recent_listing(&shelf.hub_id, &shelf.key)
+                .filter(|shelf| pages(&shelf.key)
                     && (shelf.offset > 0 || shelf.end > HUB_FETCH_COUNT as usize))
-                .map(|shelf| (PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(), start: shelf.offset, before: false, hidden: Vec::new() }, shelf.end)).collect()),
+                .map(|shelf| (PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(), start: shelf.offset, before: false, hidden: Vec::new() }, shelf.end, shelf.clone())).collect()),
         };
         self.client = Some(client);
         self.token_gen = request.token_gen;
@@ -1615,12 +1616,13 @@ fn refresh_src_lifecycle(s: &mut Src) -> bool {
     // Retained cards may still paint during the new profile's fetch, but its request must
     // start at the preview rather than reuse the previous profile's listing positions.
     if let Some(build) = s.last.as_mut() {
-        for shelf in build.shelves.iter_mut().filter(|shelf| recent_listing(&shelf.hub_id, &shelf.key)) {
+        for shelf in build.shelves.iter_mut().filter(|shelf| pages(&shelf.key)) {
             shelf.items.truncate(HUB_FETCH_COUNT as usize);
             shelf.positions.truncate(HUB_FETCH_COUNT as usize);
             shelf.offset = 0;
             shelf.end = 0;
             shelf.more = false;
+            shelf.row = preview_row(&shelf.hub_id, &shelf.key);
         }
     }
     s.state = HubState::Loading;
@@ -1657,7 +1659,9 @@ pub struct HubRequest {
     client: LandingClient,
     token_gen: u32,
     page: Option<PageQuery>,
-    windows: Vec<(PageQuery, usize)>,
+    /// Each row that has moved off its preview: where to reload it, how far it had read, and the row
+    /// itself (a sample or ledger row cannot be re-read at an offset, so the refresh keeps it).
+    windows: Vec<(PageQuery, usize, Shelf)>,
     window: Option<Shelf>,
 }
 
@@ -1675,13 +1679,27 @@ impl HubRequest {
                 |keys| many_items(self.client.resource, keys)),
             None => {
                 let mut build = fetch_source(self.client.resource, self.sid)?;
-                for (window, end) in &self.windows {
+                for (window, end, old) in &self.windows {
                     let Some(shelf) = build.shelves.iter_mut().find(|shelf| shelf.is(&window.id, &window.key)) else { continue };
+                    if matches!(old.row.mode, paging::RowMode::Sample(_)) || old.row.ledger.as_ref().is_some_and(|ledger| ledger.active) {
+                        // A random hub's sample is new on every read and a ledger's positions are not
+                        // listing offsets, so neither can be reloaded where it stood. The row keeps
+                        // its window, which is also what keeps the user's card where it is.
+                        let title = shelf.title.clone();
+                        *shelf = old.clone();
+                        shelf.title = title;
+                        continue;
+                    }
                     // `/hubs` itself answered: a failed window reload keeps the first-page shelf.
                     let Some(mut refreshed) = fetch_page(self.client.resource, self.sid, window, *end)
                         .and_then(|page| page.shelves.into_iter().next()) else { continue };
                     if !refreshed.items.is_empty() {
                         refreshed.title = shelf.title.clone();
+                        if let Some(mut ledger) = old.row.ledger.clone() {
+                            let (rows, _) = shelf_window(&refreshed);
+                            ledger.note(&rows);
+                            refreshed.row.ledger = Some(ledger);
+                        }
                         *shelf = refreshed;
                     }
                 }
@@ -2103,7 +2121,7 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, l
     };
     let Some(mut request) = s.begin_request(c, gen,
         || adapter.next_request.fetch_add(1, Ordering::Relaxed)) else { return None };
-    for (window, _) in &mut request.windows { window.hidden = hidden_sections(scope, request.sid); }
+    for (window, _, _) in &mut request.windows { window.hidden = hidden_sections(scope, request.sid); }
     let sid = request.sid;
     let spawned = launch(request);
     if !spawned {

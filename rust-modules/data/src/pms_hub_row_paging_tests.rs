@@ -368,3 +368,90 @@ fn a_row_with_a_key_the_pager_does_not_admit_keeps_its_preview_and_says_so_once(
     assert_eq!(built.shelves[0].items.len(), 12, "the preview stays");
     assert!(!built.shelves[0].more, "and it has nothing to ask for");
 }
+
+// ---- every admitted row, through the store -------------------------------------------------------
+
+fn paged_owner(id: &str, preview: &[usize], len: usize) -> Owner {
+    let mut owner = owner_with(id, HUB_KEY, len);
+    seed_preview(&mut owner, id, preview, len);
+    owner
+}
+
+fn seed_preview(owner: &mut Owner, id: &str, preview: &[usize], len: usize) {
+    let mut shelf = preview_shelf(preview, len);
+    shelf.hub_id = id.into();
+    shelf.row = preview_row(id, HUB_KEY);
+    let srcs = vec![src(0, "", HubState::Ready, Some(built(0, &[], vec![shelf])))];
+    seed(&mut owner.state, srcs);
+}
+
+fn walk_through_the_store(owner: &mut Owner, id: &str, mut list: impl FnMut(usize, usize) -> Option<Container>)
+    -> Vec<Vec<String>> {
+    let mut windows = vec![shown(owner)];
+    for _ in 0..400 {
+        let Some(request) = ask_row(owner, id, HUB_KEY, false) else { break };
+        answer(owner, request, &mut list, batch(|_| true));
+        windows.push(shown(owner));
+    }
+    windows
+}
+
+#[test]
+fn a_500_card_hub_row_that_is_not_recently_added_pages_to_its_end_and_back_through_the_store() {
+    let _guard = plx_base::testlock::serial();
+    let len = 500;
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut owner = paged_owner("movie.genre", &(0..12).collect::<Vec<_>>(), len);
+    let windows = walk_through_the_store(&mut owner, "movie.genre", listing);
+    assert_each_once(&windows, len);
+    assert_eq!(shown(&owner).last().unwrap(), "499");
+    assert!(hubs_snapshot(&owner.state).view().hub(0).unwrap().items.len() <= 24);
+    assert!(ask_row(&mut owner, "movie.genre", HUB_KEY, false).is_none(), "the end of the listing ends the row");
+    let mut back = Vec::new();
+    while let Some(request) = ask_row(&mut owner, "movie.genre", HUB_KEY, true) {
+        answer(&mut owner, request, listing, batch(|_| true));
+        back.push(shown(&owner));
+    }
+    assert_eq!(shown(&owner)[0], "0");
+    assert_eq!(back.len(), windows.len() - 2, "every window of the way out is visited on the way back");
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn a_random_hub_row_pages_through_the_store_and_shows_every_item_once() {
+    let _guard = plx_base::testlock::serial();
+    let len = 100;
+    let sample = [37, 5, 88, 61, 2, 99, 14, 70, 23, 46, 80, 9];
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut owner = paged_owner("movie.random", &sample, len);
+    let windows = walk_through_the_store(&mut owner, "movie.random", listing);
+    assert_each_once(&windows, len);
+    assert!(ask_row(&mut owner, "movie.random", HUB_KEY, false).is_none());
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn a_refresh_reloads_a_head_row_where_it_stood_and_keeps_a_sample_row_as_it_is() {
+    let _guard = plx_base::testlock::serial();
+    for sampled in [false, true] {
+        let len = 100;
+        let sample = [37, 5, 88, 61, 2, 99, 14, 70, 23, 46, 80, 9];
+        let preview: Vec<usize> = if sampled { sample.to_vec() } else { (0..12).collect() };
+        let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+        let mut owner = paged_owner("movie.mixed", &preview, len);
+        let _ = walk_through_the_store(&mut owner, "movie.mixed", listing);
+        let mut held = None;
+        let _ = request_refetch_hubs_with_scope(&mut owner.state, &owner.adapter, &BrowseScope::standalone(),
+            &mut |request| { held = Some(request); true });
+        let request = held.unwrap();
+        assert_eq!(request.windows.len(), 1, "the row moved off its preview, so the refresh reloads it");
+        let (query, _, old) = &request.windows[0];
+        assert_eq!(query.start, old.offset);
+        assert_eq!(matches!(old.row.mode, paging::RowMode::Sample(_)), sampled);
+        assert!(old.row.ledger.is_some(), "a moved row has kept the keys it showed");
+        reset(&mut owner.state, &owner.adapter);
+        plx_plex::plex::reset_servers_for_test();
+    }
+}
