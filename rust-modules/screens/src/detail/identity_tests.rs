@@ -576,6 +576,114 @@ fn a_reread_of_the_page_leaves_focus_on_the_same_related_card() {
     plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
+/// The common path: the user walks the Related row well past the head, opens a card (item B's page
+/// replaces the store's item), and presses Back. The store holds B, so A is read again and lands
+/// with only the Related head; the window the user stood in is gone. Focus must still come back to
+/// the card the user left, among its true neighbours, and never rest on another card on the way.
+/// `answer` is the stand-in store's reply to a window ask (the window it reads, or `None` for a
+/// failed read), after the store's own refusal of an ask that names a window it has replaced.
+/// Returns the dispatcher, the cards focus rested on in order, and the window asks made.
+fn back_from_deep_in_the_related_row(answer: impl Fn(usize) -> Option<Detail>) -> (Dispatcher<TestHost>, Vec<String>, usize) {
+    let (mut d, mut rig) = boot_with(with_tail(72));
+    let key = FocusKey { entry: screen(&d).entry, elem: screen(&d).engine_key(related::elem(3 + 8).unwrap()).unwrap() };
+    d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
+    assert_eq!(related_card(&d, 0).as_deref(), Some("t80"));
+    // OK on it: B's page covers A, which the store now replaces with B.
+    d.request(MachineId::Nav, NavOp::Push(Arg("b".into())));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(item("b", false)));
+    frame(&mut d, &mut rig, 32);
+    assert_eq!(d.nav.top_page().unwrap().arg.0, "b");
+    // Back: A is requested afresh and lands as the server would send it, the head and no window.
+    d.request(MachineId::Nav, NavOp::Pop);
+    let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), ServerId::UNSET, "a");
+    frame(&mut d, &mut rig, 48);
+    let mut fresh = with_tail(0);
+    fresh.related.truncate(3);
+    (fresh.related_tail.positions, fresh.related_tail.offset, fresh.related_tail.end) = (Vec::new(), 0, 0);
+    {
+        let (state, adapter) = test_store().split_for_test();
+        assert!(plx_data::metadata::land_detail_for_test(state, adapter, ServerId::UNSET, "a", generation, Some(fresh)));
+    }
+    d.store_changed(StoreId::Metadata.ord(), 64);
+    // Pump until settled. Focus is on a card the user left, or on no card, on every frame: it is
+    // never seated on a card that then changes under it.
+    let (mut seated, mut asks) = (Vec::new(), 0);
+    for i in 0..600u32 {
+        let ms = 64 + i * 16;
+        frame(&mut d, &mut rig, ms);
+        for cmd in rig.asked.drain(..) {
+            let MetadataCmd::SeekRelated { at, seen } = cmd else { continue };
+            asks += 1;
+            let now = test_store().view().current().map(|c| (c.related_tail.offset, c.related_tail.end));
+            if Some(seen) != now { continue }
+            if let Some(window) = answer(at) {
+                let (state, adapter) = test_store().split_for_test();
+                plx_data::metadata::land_related_for_test(adapter, seen, &window);
+                plx_data::metadata::pump_related_pages(state, adapter);
+                d.store_changed(StoreId::Metadata.ord(), ms);
+            }
+        }
+        if let Some(rk) = related_card(&d, 0) {
+            if seated.last() != Some(&rk) { seated.push(rk); }
+        }
+    }
+    (d, seated, asks)
+}
+
+/// The Related card `by` places from the one focus rests on, by ratingKey.
+fn related_card(d: &Dispatcher<TestHost>, by: isize) -> Option<String> {
+    let index = screen(d).locate(d.focus()?.elem, test_store().view())?.index();
+    Some(test_store().view().current()?.related.get(index.checked_add_signed(by)?)?.rk.clone())
+}
+
+/// The window the listing gives when opened for tail position `at`: 24 cards, `at` the thirteenth.
+fn a_window_read_at(at: usize) -> Option<Detail> {
+    Some(with_tail(at.saturating_sub(12).min(76)))
+}
+
+#[test]
+fn back_from_a_card_opened_deep_in_the_related_row_returns_to_that_card() {
+    let _guard = plx_base::testlock::serial();
+    let (d, seated, asks) = back_from_deep_in_the_related_row(a_window_read_at);
+    assert_eq!(related_card(&d, 0).as_deref(), Some("t80"), "the card left is the card returned to (seated on {seated:?})");
+    assert_eq!((related_card(&d, -1).as_deref(), related_card(&d, 1).as_deref()), (Some("t79"), Some("t81")),
+        "and its neighbours are its true neighbours");
+    assert_eq!(seated, vec!["t80".to_string()], "no other card held focus on the way");
+    assert_eq!(asks, 1, "one ask opens the window");
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}
+
+/// The listing changed while the user was away and the card they left is not in the window that
+/// opens at its place: focus goes to the nearest surviving place, and to no other card before.
+#[test]
+fn back_to_a_row_whose_card_left_the_listing_seats_the_nearest_place() {
+    let _guard = plx_base::testlock::serial();
+    let (d, seated, _) = back_from_deep_in_the_related_row(|at| {
+        let mut window = a_window_read_at(at)?;
+        let t = &mut window.related_tail;
+        let k = t.positions.iter().position(|&p| p == 80).unwrap();
+        t.positions.remove(k);
+        let head = t.head;
+        window.related.remove(head + k);
+        Some(window)
+    });
+    assert_eq!(related_card(&d, 0).as_deref(), Some("t79"), "seated on {seated:?}");
+    assert_eq!(seated, vec!["t79".to_string()]);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}
+
+/// The read never answers: the ask is repeated a bounded number of times, and then the row stands
+/// at its head with focus on its first card, rather than holding focus on nothing for ever.
+#[test]
+fn back_to_a_row_whose_window_cannot_be_read_gives_up_on_the_head() {
+    let _guard = plx_base::testlock::serial();
+    let (d, seated, asks) = back_from_deep_in_the_related_row(|_| None);
+    assert_eq!(related_card(&d, 0).as_deref(), Some("h0"), "seated on {seated:?}");
+    assert_eq!(seated, vec!["h0".to_string()]);
+    assert_eq!(asks, usize::from(SEEK_TRIES), "the ask is repeated, then given up");
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}
+
 /// The invariant behind "focus never moves under the user" on the Related row, driven through the
 /// real dispatcher (keys, the focus engine, the page) and a stand-in store that applies the
 /// commands it is sent the way the metadata store does: a `WantRelated` is refused when it names a
