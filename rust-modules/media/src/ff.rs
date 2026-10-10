@@ -2724,10 +2724,6 @@ unsafe fn free_avio(avio: *mut AVIOContext) {
     av_freep(&mut p as *mut *mut AVIOContext as *mut c_void); // frees + NULLs the context
 }
 
-/// The libavformat demuxer thread body (spawned by engine::start_bufferfeed).
-/// Opens the URL through a custom AVIO over stream.rs, reads packets, converts video to
-/// Annex-B via the mp4toannexb BSF (VPS/SPS/PPS prepended at every keyframe), feeds video
-/// (es=1) + raw audio (es=2) to the AuQueue, and seeks via av_seek_frame.
 // -- AV1 framing ------------------------------------------------------------------------
 //
 // The TV pipeline is handed no codec_data for AV1 (libpf's AV1 caps carry none, and the pipeline

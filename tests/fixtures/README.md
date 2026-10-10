@@ -262,7 +262,7 @@ the real one.)
 | `movie_hevc_aac_mp4` | 90 s | HEVC/AAC in mp4 (`hvc1`, faststart) with a **sidecar** `.en.srt`. AAC **stereo**: this case is the mov-demuxer/ADTS path, real-world mp4s are usually 2.0, and Auto checks the device table’s per-codec channel limit. |
 | `episode_h264_aac` | 90 s | H.264/AAC episode with no subtitle tracks at all. |
 | `movie_h264_ac3_many_audio` | 90 s | **Eight** audio tracks, each language-tagged, with **TrueHD English at index 6** — `audio_switch_transcode` picks row 6 and expects the switch to force a transcode. |
-| `movie_av1_no_dp_audio` | 780 s | AV1 4K + Opus: no direct-playable video *and* no direct-playable audio, so the server must transcode. 780 s because `resume_transcode` seeds 600 s. **Its three cases need a Plex Pass server** — see below. |
+| `movie_av1_no_dp_audio` | 780 s | AV1 4K + Opus: on a set whose codec table lists no AV1 decoder (the dev set), no direct-playable video *and* no direct-playable audio, so the server must transcode. 780 s because `resume_transcode` seeds 600 s. **Its three cases need a Plex Pass server** — see below. |
 | `movie_hevc_4k_pgs_subs` | 780 s | HEVC 4K HDR10 + a **PGS bitmap** subtitle track at index 0 (`subtitle_image_pgs` picks row 1; row 0 is *Off*). Seeds 600 s. |
 
 **Track ORDER is part of the spec, not a detail.** `tests/README.md`: the audio tab's row is
@@ -341,11 +341,11 @@ skips both splices; `--quick` never builds them, since a 20 s clip cannot carry 
 intro.
 
 **The three AV1 cases need a Plex Pass server with HEVC encoding enabled.**
-`transcode_av1_no_dp_audio`, `seek_transcode` and `resume_transcode` all assert
-`codec: hevc`, and `transcoder.rs` sends `videoCodec=hevc,h264` precisely because HEVC
-*encoding* sits behind Plex Pass — a free server picks h264 and those three cases go red
-reading `codec=h264 … (want hevc)` while the media is perfectly fine. Enable *Settings →
-Transcoder → Enable HEVC video encoding*, or bracket `movie_av1_no_dp_audio` in
+`transcode_av1_no_dp_audio`, `seek_transcode` and `resume_transcode` all assert `codec: hevc`, and
+`transcoder.rs` sends `videoCodec=hevc,h264` (`,av1` is appended only when the table lists the AV1
+row) precisely because HEVC *encoding* sits behind Plex Pass — a free server picks h264 and those
+three cases go red reading `codec=h264 … (want hevc)` while the media is perfectly fine. Enable
+*Settings → Transcoder → Enable HEVC video encoding*, or bracket `movie_av1_no_dp_audio` in
 `manifest.local.json` and let the three skip by name.
 
 **`movie_cast0_in_both_libraries`** — one of the four fps-scene item keys. It needs a *matched*

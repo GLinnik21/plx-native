@@ -2982,14 +2982,14 @@ pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: plx_plex::plex::L
 /// PURE: the local direct-play VIDEO test — the codec, the source's stated frame size and its
 /// Dolby Vision layering must ALL clear what this device and this pipeline can actually show.
 ///
-/// The codec half: h264 unconditionally (every webOS SoC decodes it), hevc only when the table
-/// lists the decoder — anything else the pipeline cannot feed at all. The resolution half is the
-/// local agreement with the profile's `*`-scoped `video.width`/`video.height` limitation: the
-/// profile makes PMS transcode a 4K source down for a 1080p-bounded SoC, but when `/decision` is
-/// unreachable the fallback never asks PMS, so without this test a 4K file with one
-/// direct-playable audio track was fed verbatim to a decoder whose table says 1920x1088 — the
-/// wrong-side failure devcaps' own doc names (issue #22's over-claim class), invisible on the
-/// dev TV, whose bound is 4096x2176.
+/// The codec half: h264 unconditionally (every webOS SoC decodes it), hevc when the table lists the
+/// decoder, av1 only when the table lists an AV1 row (`Caps::av1`), and anything else the pipeline
+/// cannot feed at all. The resolution half is the local agreement with the profile's `*`-scoped
+/// `video.width`/`video.height` limitation: the profile makes PMS transcode a 4K source down for a
+/// 1080p-bounded SoC, but when `/decision` is unreachable the fallback never asks PMS, so without
+/// this test a 4K file with one direct-playable audio track was fed verbatim to a decoder whose
+/// table says 1920x1088 — the wrong-side failure devcaps' own doc names (issue #22's over-claim
+/// class), invisible on the dev TV, whose bound is 4096x2176.
 ///
 /// **The Dolby Vision half is the same shape of bug, found the same way, and it is NOT about the
 /// decoder.** Every profile's base layer is ordinary HEVC and every one of them decodes here — so

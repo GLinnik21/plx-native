@@ -1856,9 +1856,10 @@ gap — `devcaps` reads the table's `maxFrameRate` only into the per-codec rows 
 envelope clamps against (since 2026-09-03), so the profile sent to PMS still bounds no frame rate
 at all. Three things about it
 are worth knowing before reading a result. **(1)** The declaration is the interesting half and the
-main false-PASS risk: `engine`'s `_ =>` arm maps an unrecognised audio codec to `"AC3"` and a
-non-`hevc` video codec to the H264 payload, so a trigger that was never read produces exactly the
-right payload for the AC-3 baseline case — which is why the matrix carries cases expecting
+main false-PASS risk: `engine`'s `_ =>` arm maps an unrecognised audio codec to `"AC3"` and a video
+codec other than `hevc` and `av1` to the H264 payload, and `av1` to the AV1 payload only where the
+device's codec table lists an AV1 row, so a trigger that was never read produces exactly the right
+payload for the AC-3 baseline case — which is why the matrix carries cases expecting
 `"AC3 PLUS"` and `"AAC"`, and why the engine now logs one `load: v=… a=… fps=… dv=… atmos=…` line
 per streamed playback (the only place an event log says what the app told the television the stream
 WAS, as opposed to what the demuxer found in it). **(2)** `python3 -m http.server` is DISQUALIFIED

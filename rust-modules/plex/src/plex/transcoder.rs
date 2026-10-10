@@ -134,13 +134,13 @@ pub fn link_policy(link: Option<Location>) -> LinkPolicy {
 }
 
 /// Capability profile (X-Plex-Client-Profile-Extra, raw form — the QueryBuilder encodes it),
-/// as a PURE function of the device's decode capabilities: direct-play an MKV or MP4 whose
-/// video the SoC decodes (H264 everywhere; HEVC when its table says so) and audio is in the
-/// caps subset, subs SRT/ASS — plus a transcode target so a source we can't direct-play is
-/// re-encoded at the panel's own bound instead of downscaled H264 1080p. The container list
-/// must agree with `route.rs::part_is_streamable` (the client-side gate): a container the app
-/// streams but the profile omits makes every MDE answer for it a contradiction of what the app
-/// then does.
+/// as a PURE function of the device's decode capabilities: direct-play an MKV or MP4 whose video
+/// the SoC decodes (H264 everywhere; HEVC when its table says so, AV1 when the table lists the AV1
+/// row) and audio is in the caps subset, subs SRT/ASS — plus a transcode target so a source we
+/// can't direct-play is re-encoded at the panel's own bound instead of downscaled H264 1080p. The
+/// container list must agree with `route.rs::part_is_streamable` (the client-side gate): a
+/// container the app streams but the profile omits makes every MDE answer for it a contradiction of
+/// what the app then does.
 ///
 /// Pure over `&Caps` — not a reader of `devcaps::caps()` — so every derivation below is
 /// host-testable against capability sets no development hardware has (the whole point:
@@ -165,18 +165,20 @@ pub fn link_policy(link: Option<Location>) -> LinkPolicy {
 /// The target's codec lists are FALLBACK CHAINS, not single choices, and the order encodes the
 /// whole free-vs-Plex-Pass story (issue #22, found on a reviewer's server):
 ///
-/// * `videoCodec=hevc,h264` — HEVC encoding sits behind Plex Pass. When this list held only
-///   `hevc`, a free server found no usable video target and **dropped the video track**: the
-///   transcoder job carried a single audio `-map`, the demuxer correctly said
-///   `ff: no video stream`, and every MP4 in the library "failed to play" on every firmware.
-///   (`TranscoderHEVCEncoding=1` does not help — the subscription gate sits behind the
-///   preference.) With h264 in the list PMS always has a working encode, and — just as
-///   important — an H.264 source reaching this path for its *container* alone (mp4 → mkv remux)
-///   can now be **direct-streamed** (copied) instead of failing: direct-stream requires the
-///   source codec to appear in the target list. A Plex Pass server with "Enable HEVC video
-///   Encoding = Always" still picks hevc — verified live; order expresses preference. On a SoC
-///   without HEVC the chain is `h264` alone: hevc first would have PMS encode a stream the
-///   panel cannot decode — the same wrong-side failure #22 was, pointed the other way.
+/// * `videoCodec=hevc,h264` (plus a trailing `,av1` with an AV1 row, see below) — HEVC encoding
+///   sits behind Plex Pass. When this list held only `hevc`, a free server found no usable video
+///   target and **dropped the video track**: the transcoder job carried a single audio `-map`, the
+///   demuxer correctly said `ff: no video stream`, and every MP4 in the library "failed to play" on
+///   every firmware. (`TranscoderHEVCEncoding=1` does not help — the subscription gate sits behind
+///   the preference.) With h264 in the list PMS always has a working encode, and — just as
+///   important — an H.264 source reaching this path for its *container* alone (mp4 → mkv remux) can
+///   now be **direct-streamed** (copied) instead of failing: direct-stream requires the source
+///   codec to appear in the target list. A Plex Pass server with "Enable HEVC video Encoding =
+///   Always" still picks hevc — verified live; order expresses preference. On a SoC without HEVC
+///   the encode chain is `h264` alone: hevc first would have PMS encode a stream the panel cannot
+///   decode — the same wrong-side failure #22 was, pointed the other way. With an AV1 row the chain
+///   also ends in a trailing `av1` copy lane (`hevc,h264,av1`, or `h264,av1` on a SoC without
+///   HEVC): av1 is only ever a copy lane, never the encode head.
 /// * `audioCodec=ac3,eac3,aac` (the caps subset, ac3-preferred order) — same rule on the audio
 ///   lane: MDE logged "Cannot direct stream audio stream due to codec aac when profile only
 ///   allows ac3" and re-encoded audio that the pipeline decodes natively. The list is exactly

@@ -523,28 +523,6 @@ const ENVELOPE_FHD60: SinkEnvelope = SinkEnvelope {
     fps: 60,
 };
 
-/// **The sink envelope for this session, and the rule is deliberately narrow.** Until 2026-09-03
-/// the streamed A/V Load declared `ENVELOPE_UHD60` for every codec and every source, and on
-/// webOS 10.3.1 that refuses EVERY H.264 Load — i.e. every server transcode — with `type=18
-/// num=601 Resource Allocation Error` before a frame is decoded. The lab session that found it
-/// also measured the fix for the common shape and nothing beyond it, so:
-///
-/// * **HEVC keeps 4K60.** Dolby Vision P5/P8 and HDR10 are device-verified only under that
-///   declaration, and nothing smaller has ever been declared for HEVC on any set.
-/// * **H.264 declares FHD60 when the session's widest raster fits FHD**, which is what the lab
-///   measured (a 1080p source's transcode), and stays 4K60 otherwise — a real 4K H.264 file, or an
-///   Auto session whose catalog can reach the 4K actuator, keeps today's behaviour and today's
-///   known refusal on 10.3.1. "Fits FHD" is width ≤ 1920 and height ≤ 1088: a 1080p H.264 stream's
-///   CODED height is 1088 (16-aligned), and PMS reports coded sizes, so 1088 has to read as 1080
-///   or every 1080p file would be promoted to the 4K declaration it was meant to escape.
-/// * **Unknown raster (0 on an axis) means 4K60**, today's value: "nobody said" must not
-///   under-declare a file that might be 4K.
-/// * **The device's own table clamps, per codec, only when it was actually READ.** On the dev set
-///   and on 10.3.1 both rows claim ≥4K@60 and nothing changes; a set whose HEVC row says
-///   1920x1088 (a Full HD panel — issue #63's hypothesis) gets FHD60 for HEVC too. The assumed
-///   fallback is never a clamp. A clamped 1088 is normalised to 1080 for the same reason as
-///   above, and `fps` is never raised above 60 by the table (120 is a claim nobody has tested).
-///
 /// The video codec one Load declares: what the payload's `codec.video` names, and what the
 /// `dg_load_v` diagnostic code says. Written once here so the three never disagree.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -590,6 +568,28 @@ pub(crate) fn load_video_refused(lv: LoadVideo, caps: &plx_platform::devcaps::Ca
     lv == LoadVideo::Av1 && !caps.av1
 }
 
+/// **The sink envelope for this session, and the rule is deliberately narrow.** Until 2026-09-03
+/// the streamed A/V Load declared `ENVELOPE_UHD60` for every codec and every source, and on
+/// webOS 10.3.1 that refuses EVERY H.264 Load — i.e. every server transcode — with `type=18
+/// num=601 Resource Allocation Error` before a frame is decoded. The lab session that found it
+/// also measured the fix for the common shape and nothing beyond it, so:
+///
+/// * **HEVC keeps 4K60.** Dolby Vision P5/P8 and HDR10 are device-verified only under that
+///   declaration, and nothing smaller has ever been declared for HEVC on any set.
+/// * **H.264 declares FHD60 when the session's widest raster fits FHD**, which is what the lab
+///   measured (a 1080p source's transcode), and stays 4K60 otherwise — a real 4K H.264 file, or an
+///   Auto session whose catalog can reach the 4K actuator, keeps today's behaviour and today's
+///   known refusal on 10.3.1. "Fits FHD" is width ≤ 1920 and height ≤ 1088: a 1080p H.264 stream's
+///   CODED height is 1088 (16-aligned), and PMS reports coded sizes, so 1088 has to read as 1080
+///   or every 1080p file would be promoted to the 4K declaration it was meant to escape.
+/// * **Unknown raster (0 on an axis) means 4K60**, today's value: "nobody said" must not
+///   under-declare a file that might be 4K.
+/// * **The device's own table clamps, per codec, only when it was actually READ.** On the dev set
+///   and on 10.3.1 both rows claim ≥4K@60 and nothing changes; a set whose HEVC row says
+///   1920x1088 (a Full HD panel — issue #63's hypothesis) gets FHD60 for HEVC too. The assumed
+///   fallback is never a clamp. A clamped 1088 is normalised to 1080 for the same reason as
+///   above, and `fps` is never raised above 60 by the table (120 is a claim nobody has tested).
+///
 /// `maxFrameRate`: **H.264 declares the stream's own rate class** (24/25/30/50/60, never below
 /// the stream; 60 when the rate is unknown) — see the measurement inside; HEVC stays at 60, the
 /// value every Dolby Vision verification was taken under. `/tmp/plxnative-sinkmax=WxH@F`
