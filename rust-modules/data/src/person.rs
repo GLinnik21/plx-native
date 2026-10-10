@@ -321,7 +321,7 @@ pub struct PersonState {
     generation: u32,
     /// The content counter [`PersonView::revision`] reads.
     revision: u64,
-    retry_cd: [u32; NFETCH],
+    retry_cd: Backoffs,
     dev_held: usize,
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
     session_identity: (String, String),
@@ -333,7 +333,7 @@ impl Default for PersonState {
             current: None,
             generation: 0,
             revision: 0,
-            retry_cd: [0; NFETCH],
+            retry_cd: Backoffs::default(),
             dev_held: usize::MAX,
             session_watch: Default::default(),
             session_identity: Default::default(),
@@ -402,38 +402,102 @@ const NKIND: usize = 3;
 /// every credit's tags. Each chunk is a separate request on the same worker, merged before it lands.
 const ROLES_CHUNK: usize = 48;
 
+/// How many servers keep the original numbering. The fetch index is RECORDED into replay tapes
+/// (`take_store_landing`, [`validate_record`]), so the layout recorded when the registry held
+/// sixteen servers can never move: server `n < 16` is `n * 3 + kind`, then the two global fetches.
+const LOW_SERVERS: usize = 16;
+
 /// The two fetches that are not per-server: plex.tv's biography and plex.tv's filmography, both of
-/// which are already global (module doc). They sit past every per-source mailbox, which is what
-/// keeps [`un_fx`] total.
-const F_PROFILE: usize = plx_plex::plex::MAX_SERVERS * NKIND;
+/// which are already global (module doc). They sit directly after the first [`LOW_SERVERS`]
+/// servers' mailboxes, which is where recordings made before the registry outgrew sixteen servers
+/// put them.
+pub(crate) const F_PROFILE: usize = LOW_SERVERS * NKIND;
 /// The FILMOGRAPHY — `{DISCOVER}/library/people/{tagKey}/credits`. Global for [`F_PROFILE`]'s
 /// reason and then some: it is a fact about the person's CAREER, which no server has an opinion
 /// about at all. What the servers contribute is the AVAILABILITY join, and that rides on the
 /// `/media` answers ([`K_MEDIA`]) the page already makes — so this adds one request per person, not
 /// one per source.
-const F_CREDITS: usize = F_PROFILE + 1;
-/// Mailboxes, single-flight claims and retry countdowns, all over this one index space.
-const NFETCH: usize = F_CREDITS + 1;
+pub(crate) const F_CREDITS: usize = F_PROFILE + 1;
+/// First index of the servers past the original sixteen.
+const HIGH_BASE: usize = F_CREDITS + 1;
 
-/// Mailbox index of source `sid`'s fetch of kind `k`, `None` for a `ServerId` that names no slot.
+/// Fetch index of source `sid`'s fetch of kind `k`, `None` for a `ServerId` that names no slot.
+///
+/// **The encoding** (pinned by `the_fetch_index_layout_is_pinned_for_both_ranges`): server
+/// `raw < 16` is `raw * 3 + k` (0..48), [`F_PROFILE`] is 48, [`F_CREDITS`] is 49, and server
+/// `raw >= 16` is `50 + (raw - 16) * 3 + k`. The first two ranges are byte-identical to what
+/// replay tapes recorded when the registry stopped at sixteen servers, and the third continues
+/// past them, so any registry slot has exactly one index and [`un_fx`] inverts every one.
 ///
 /// **Keyed on the registry SLOT, never on a position in [`Person::srcs`].** A slot is stable for
 /// the life of the process, so a worker's landing is applied to the server it asked even if the
 /// source list is rebuilt under it; an index into a `Vec` would silently start meaning a different
-/// machine. [`plx_plex::plex::MAX_SERVERS`] is the registry's own ceiling, imported rather than
-/// restated — a second 16 here would go out of bounds the day that one moves.
+/// machine. The index space is as sparse as the id space, so nothing here is an array over it:
+/// mailboxes and backoffs are maps that hold only the indices ever used.
 fn fx(sid: ServerId, k: usize) -> Option<usize> {
-    let slot = sid
-        .is_set()
-        .then(|| sid.raw() as usize)
-        .filter(|&s| s < plx_plex::plex::MAX_SERVERS)?;
-    Some(slot * NKIND + k)
+    let slot = sid.is_set().then(|| sid.raw() as usize)?;
+    Some(if slot < LOW_SERVERS {
+        slot * NKIND + k
+    } else {
+        HIGH_BASE + (slot - LOW_SERVERS) * NKIND + k
+    })
 }
 
-/// …and back: which source and which kind mailbox `i` belongs to. `None` for [`F_PROFILE`], which
-/// belongs to no server.
+/// …and back: which source and which kind mailbox `i` belongs to. `None` for [`F_PROFILE`] and
+/// [`F_CREDITS`], which belong to no server, and for an index past the last registry slot.
 fn un_fx(i: usize) -> Option<(ServerId, usize)> {
-    (i < F_PROFILE).then(|| (ServerId::from_raw((i / NKIND) as u16), i % NKIND))
+    let (slot, k) = if i < F_PROFILE {
+        (i / NKIND, i % NKIND)
+    } else if i >= HIGH_BASE {
+        let j = i - HIGH_BASE;
+        (LOW_SERVERS + j / NKIND, j % NKIND)
+    } else {
+        return None;
+    };
+    let raw = u16::try_from(slot).ok().filter(|&r| ServerId::from_raw(r).is_set())?;
+    Some((ServerId::from_raw(raw), k))
+}
+
+/// Is `i` one of the two fetches that belong to no server?
+pub(crate) fn fx_is_global(i: usize) -> bool {
+    i == F_PROFILE || i == F_CREDITS
+}
+
+/// Does `i` name a fetch at all — a global one or some server's?
+pub(crate) fn fx_is_valid(i: usize) -> bool {
+    fx_is_global(i) || un_fx(i).is_some()
+}
+
+/// The backoff countdowns, keyed by fetch index. A map rather than an array so the table holds one
+/// entry per fetch that is actually backing off and the frame's work follows that, not the highest
+/// server id. Reading an index that has no entry is `0`.
+#[derive(Default)]
+struct Backoffs(std::collections::BTreeMap<usize, u32>);
+
+impl Backoffs {
+    /// One frame passes: every countdown moves down and a finished one leaves the table.
+    fn tick(&mut self) {
+        self.0.retain(|_, cd| {
+            *cd = cd.saturating_sub(1);
+            *cd > 0
+        });
+    }
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+impl std::ops::Index<usize> for Backoffs {
+    type Output = u32;
+    fn index(&self, i: usize) -> &u32 {
+        self.0.get(&i).unwrap_or(&0)
+    }
+}
+
+impl std::ops::IndexMut<usize> for Backoffs {
+    fn index_mut(&mut self, i: usize) -> &mut u32 {
+        self.0.entry(i).or_insert(0)
+    }
 }
 
 /// Frames left before fetch `i` may spawn again after a FAILED attempt (main-thread; [`PersonState::pump`]
@@ -513,7 +577,7 @@ struct Mail {
     what: Landing,
 }
 pub fn validate_record(slot: u32, value: &serde_json::Value) -> Result<(), &'static str> {
-    if slot as usize >= NFETCH { return Err("invalid person slot"); }
+    if !fx_is_valid(slot as usize) { return Err("invalid person slot"); }
     let mail: Mail = serde_json::from_value(value.clone()).map_err(|_| "invalid person reply")?;
     if serde_json::to_value(&mail).ok().as_ref() != Some(value) {
         return Err("noncanonical person reply");
@@ -541,14 +605,44 @@ type Fetch = crate::stores::Fetch<Mail>;
 /// Cross-thread transport for one physical owner. Every worker captures this exact `Arc`; reset
 /// rotates the store to a fresh adapter, so a detached old worker can only fill retired slots.
 pub struct PersonAdapter {
-    fetch: [Fetch; NFETCH],
+    /// One mailbox per fetch index ever used, created on first use by [`PersonAdapter::mailbox`].
+    /// Behind a lock because the workers share the table, and a mailbox has to exist before its
+    /// first landing can reach it.
+    fetch: std::sync::Mutex<std::collections::BTreeMap<usize, Arc<Fetch>>>,
 }
 
 impl Default for PersonAdapter {
     fn default() -> Self {
-        Self {
-            fetch: [const { Fetch::IDLE }; NFETCH],
+        Self { fetch: Default::default() }
+    }
+}
+
+impl PersonAdapter {
+    fn table(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<usize, Arc<Fetch>>> {
+        self.fetch.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The mailbox for fetch index `i`, created on first use. Handed out as an `Arc` so the lock
+    /// is not held across a claim, a take or a spawn.
+    fn mailbox(&self, i: usize) -> Arc<Fetch> {
+        Arc::clone(self.table().entry(i).or_insert_with(|| Arc::new(Fetch::IDLE)))
+    }
+
+    /// The indices with a worker out or an answer waiting, ascending. These are visited whether or
+    /// not the open page still has the source, so the landing of a server that has since left the
+    /// roster is taken and its claim released rather than left latched.
+    fn outstanding(&self) -> Vec<usize> {
+        self.table().iter().filter(|(_, f)| f.outstanding()).map(|(&i, _)| i).collect()
+    }
+
+    /// Drop every mailbox with its claim. A worker that lands afterwards recreates its entry, which
+    /// [`PersonAdapter::outstanding`] then reports until the pump discards the stale answer.
+    fn clear_all(&self) {
+        let mut table = self.table();
+        for f in table.values() {
+            f.clear();
         }
+        table.clear();
     }
 }
 
@@ -558,7 +652,7 @@ impl Default for PersonAdapter {
 /// cannot reach through [`open`], because reaching it needs two overlapping real fetches.
 impl PersonAdapter {
     fn land(&self, i: usize, generation: u32, what: Landing) {
-        self.fetch[i].post(Mail { gen: generation, what }, |old| old.gen < generation);
+        self.mailbox(i).post(Mail { gen: generation, what }, |old| old.gen < generation);
     }
 }
 
@@ -572,10 +666,8 @@ impl PersonState {
             .generation
             .checked_add(1)
             .expect("person generation exhausted");
-        for fetch in &adapter.fetch {
-            fetch.clear();
-        }
-        self.retry_cd.fill(0);
+        adapter.clear_all();
+        self.retry_cd.clear();
     }
 }
 
@@ -1023,6 +1115,19 @@ pub fn media_resolving(p: &Person, sid: ServerId) -> bool {
 /// Returns true when the store just changed — the screen re-clamps its focus and rebuilds its
 /// cached header strings on it.
 impl PersonState {
+    /// The fetch indices this frame looks at, ascending: the open page's sources (three each) and
+    /// the two global fetches, plus every index with a worker out or an answer waiting.
+    fn visit(&self, adapter: &PersonAdapter) -> Vec<usize> {
+        let mut at = adapter.outstanding();
+        if let Some(p) = &self.current {
+            at.extend([F_PROFILE, F_CREDITS]);
+            at.extend(p.srcs.iter().flat_map(|s| (0..NKIND).filter_map(|k| fx(s.sid, k))));
+        }
+        at.sort_unstable();
+        at.dedup();
+        at
+    }
+
     pub fn pump_with_gate(&mut self, adapter: &Arc<PersonAdapter>, gate: &plx_machine::landgate::Gate) -> bool {
         let mut session_changed = false;
         if !crate::stores::tape::active() && self.session_watch.changed() {
@@ -1040,22 +1145,23 @@ impl PersonState {
             }
         }
         let mut changed = sync_roster(self, adapter) || session_changed;
-        for i in 0..NFETCH {
-            if self.retry_cd[i] > 0 {
-                self.retry_cd[i] -= 1;
-            }
+        self.retry_cd.tick();
+        // Ascending, which is the order replay supplies recorded landings in. The work follows the
+        // open page's sources plus whatever is outstanding, never the highest server id.
+        for i in self.visit(adapter) {
+            let mailbox = adapter.mailbox(i);
             // The take releases the single-flight claim with the mail that answers it; a
             // superseded request's late answer is dropped inside the take and leaves the new
             // claim alone (`Fetch::take_current`). Under replay it happens on the recorded frame; spawning remains outside
             // that gate so the request still leaves on time.
             let reply = crate::stores::tape::take_store_landing(
-                gate, crate::stores::StoreId::Person, "person", i as u32, &adapter.fetch[i], |m| m.gen);
+                gate, crate::stores::StoreId::Person, "person", i as u32, &mailbox, |m| m.gen);
             if let Some(reply) = reply {
                 if reply.gen == self.generation {
                     // a live reply already released through the take; a replay's supplied one
                     // never touched the mailbox. A superseded one must not free the NEW
                     // request's claim.
-                    adapter.fetch[i].release();
+                    mailbox.release();
                 }
                 // Every landing repaints, failures included: a shelf or stopped spinner must not
                 // wait for the next keypress to become visible.
@@ -1472,7 +1578,7 @@ fn address(i: usize, p: &Person) -> Option<Vec<String>> {
 /// (the device's thread ceiling) or a transient network error simply retries after the backoff
 /// instead of latching the page on a spinner forever.
 fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) {
-    if adapter.fetch[i].busy() || state.retry_cd[i] > 0 {
+    if adapter.mailbox(i).busy() || state.retry_cd[i] > 0 {
         return;
     }
     let Some(p) = state.current() else { return };
@@ -1486,7 +1592,7 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
         let session = if controlled { None } else { plx_plex::plex::session::peek_settled() };
         if !controlled && session.as_ref().is_none_or(|s| s.client_id.is_empty()) { return; }
         let profile = i == F_PROFILE;
-        adapter.fetch[i].claim(generation);
+        adapter.mailbox(i).claim(generation);
         let worker_adapter = Arc::clone(adapter);
         let spawned = crate::stores::tape::admit(serde_json::json!({
             "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid}), ||
@@ -1501,7 +1607,7 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
             worker_adapter.land(i, generation, what);
         }));
         if !spawned {
-            adapter.fetch[i].release();
+            adapter.mailbox(i).release();
         }
         return;
     }
@@ -1526,7 +1632,7 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
         .find(|s| s.sid == sid)
         .and_then(|s| s.local.clone())
         .unwrap_or_default();
-    adapter.fetch[i].claim(generation);
+    adapter.mailbox(i).claim(generation);
     let worker_adapter = Arc::clone(adapter);
     let spawned = crate::stores::tape::admit(serde_json::json!({
         "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid,
@@ -1584,7 +1690,7 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
         // nothing will ever fill the mailbox, and the claim is cleared only by a take — release it
         // here or this source never fetches again. `maybe_spawn` runs every frame, so this retries
         // by itself.
-        adapter.fetch[i].release();
+        adapter.mailbox(i).release();
     }
 }
 
@@ -1984,7 +2090,7 @@ pub fn install_source_for_test(&mut self, sid: ServerId, movies: Vec<PmsMovie>, 
 
 pub fn seed_ownership_fixture_for_test(&mut self, adapter: &Arc<PersonAdapter>) {
     self.retry_cd[0] = 17;
-    adapter.fetch[1].claim(self.generation.max(1));
+    adapter.mailbox(1).claim(self.generation.max(1));
     adapter.land(1, self.generation.max(1), Landing::Media(None));
 }
 
@@ -1992,9 +2098,9 @@ pub fn ownership_fixture_for_test(&self, adapter: &Arc<PersonAdapter>) -> Owners
     OwnershipFixture {
         name: self.current().map(|person| person.name.clone()),
         generation: self.generation,
-        retry_cd: self.retry_cd,
-        flights: std::array::from_fn(|i| adapter.fetch[i].busy()),
-        mail: std::array::from_fn(|i| adapter.fetch[i].has_mail()),
+        retry_cd: self.retry_cd.0.clone(),
+        flights: adapter.table().iter().filter(|(_, f)| f.busy()).map(|(&i, _)| i).collect(),
+        mail: adapter.table().iter().filter(|(_, f)| f.has_mail()).map(|(&i, _)| i).collect(),
     }
 }
 
@@ -2020,9 +2126,9 @@ pub fn late_completion_for_test(
 pub struct OwnershipFixture {
     name: Option<String>,
     generation: u32,
-    retry_cd: [u32; NFETCH],
-    flights: [bool; NFETCH],
-    mail: [bool; NFETCH],
+    retry_cd: std::collections::BTreeMap<usize, u32>,
+    flights: Vec<usize>,
+    mail: Vec<usize>,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2068,7 +2174,18 @@ mod tests {
         fn pump(&mut self) -> bool { self.state.pump(&self.adapter) }
         fn sync_roster(&mut self) -> bool { sync_roster(&mut self.state, &self.adapter) }
         fn loading(&self) -> bool { self.state.view().loading() }
-        fn hold_off(&mut self) { self.state.retry_cd = [RETRY_FRAMES; NFETCH]; }
+        /// Park every spawn: a backoff on each index the original layout had and on all three
+        /// kinds of every registered server.
+        fn hold_off(&mut self) {
+            for i in 0..HIGH_BASE {
+                self.state.retry_cd[i] = RETRY_FRAMES;
+            }
+            for sid in plx_plex::plex::server_ids() {
+                for k in 0..NKIND {
+                    self.state.retry_cd[fx(sid, k).unwrap()] = RETRY_FRAMES;
+                }
+            }
+        }
         fn supersede(&mut self) { self.state.supersede(&self.adapter); }
     }
 
@@ -2181,7 +2298,7 @@ mod tests {
             [a, c]
         );
         assert!(
-            !owner.adapter.fetch[fx(b, K_MEDIA).unwrap()].has_mail(),
+            !owner.adapter.mailbox(fx(b, K_MEDIA).unwrap()).has_mail(),
             "old-share mail was superseded"
         );
         assert!(owner.current()
@@ -2645,6 +2762,84 @@ mod tests {
         fx(sid, k).expect("a real slot")
     }
 
+    /// **The recorded fetch numbering, pinned.** Replay tapes carry the index, so the first sixteen
+    /// servers keep `slot * 3 + kind` and the two global fetches keep 48 and 49 for ever; servers
+    /// from sixteen on continue past them, at `50 + (slot - 16) * 3 + kind`.
+    #[test]
+    fn the_fetch_index_layout_is_pinned_for_both_ranges() {
+        for raw in 0..16u16 {
+            for k in 0..NKIND {
+                assert_eq!(fx(ServerId::from_raw(raw), k), Some(raw as usize * 3 + k));
+            }
+        }
+        assert_eq!((F_PROFILE, F_CREDITS), (48, 49));
+        assert_eq!(fx(ServerId::from_raw(16), K_RESOLVE), Some(50));
+        assert_eq!(fx(ServerId::from_raw(16), K_ROLES), Some(52));
+        assert_eq!(fx(ServerId::from_raw(40), K_MEDIA), Some(50 + 24 * 3 + 1));
+        assert_eq!(fx(ServerId::UNSET, K_MEDIA), None);
+        for raw in (0..400u16).chain([65_000, 65_534]) {
+            for k in 0..NKIND {
+                let i = fx(ServerId::from_raw(raw), k).unwrap();
+                assert_eq!(un_fx(i), Some((ServerId::from_raw(raw), k)), "raw {raw} kind {k}");
+            }
+        }
+        assert_eq!(un_fx(F_PROFILE), None);
+        assert_eq!(un_fx(F_CREDITS), None);
+        assert!(fx_is_global(F_PROFILE) && fx_is_global(F_CREDITS) && !fx_is_global(47) && !fx_is_global(50));
+        assert!(fx_is_valid(47) && fx_is_valid(F_CREDITS) && fx_is_valid(50) && fx_is_valid(124));
+    }
+
+    /// **Server 40 is a source with its own mailboxes**, a landing for it applies, and the frame's
+    /// work follows the servers and fetches that exist rather than the highest id.
+    #[test]
+    fn a_server_past_the_old_sixteen_slot_table_is_a_source_and_its_landing_applies() {
+        let mut owner = Owner::default();
+        let _g = fresh_registry();
+        let ids: Vec<ServerId> = (0..41)
+            .map(|i| {
+                plx_plex::plex::register_for_test(
+                    &format!("mach-{i}"), "10.0.0.1", 32400, "tok", "cid-person-test")
+            })
+            .collect();
+        let far = ids[40];
+        assert_eq!(far.raw(), 40);
+        owner.open(ids[0], "161", "5d77682a", "Idina Menzel", "");
+        assert!(owner.current().unwrap().srcs.iter().any(|s| s.sid == far), "server 40 is asked");
+        assert_eq!(
+            address(at(far, K_RESOLVE), owner.current().unwrap()),
+            Some(vec!["Idina Menzel".to_string()])
+        );
+        let gen = owner.gen();
+        owner.land(at(far, K_RESOLVE), gen, Landing::Resolve(Some("918".to_string())));
+        owner.hold_off();
+        assert!(owner.pump());
+        let src = owner.current().unwrap().srcs.iter().find(|s| s.sid == far).unwrap();
+        assert!(src.resolved && src.local.as_deref() == Some("918"));
+        assert!(!owner.adapter.mailbox(at(far, K_RESOLVE)).busy());
+    }
+
+    /// A landing for a server that left the roster is still taken, and its claim released: the
+    /// frame visits every outstanding fetch, not just the open page's sources.
+    #[test]
+    fn a_retired_servers_outstanding_landing_is_consumed() {
+        let mut owner = Owner::default();
+        let _g = fresh_registry();
+        let ids: Vec<ServerId> = (0..2)
+            .map(|i| {
+                plx_plex::plex::register_for_test(
+                    &format!("mach-{i}"), "10.0.0.1", 32400, "tok", "cid-person-test")
+            })
+            .collect();
+        owner.open(ids[0], "161", "5d77682a", "Idina Menzel", "");
+        let gone = ServerId::from_raw(40);
+        let i = at(gone, K_MEDIA);
+        owner.adapter.mailbox(i).claim(owner.gen());
+        owner.land(i, owner.gen(), Landing::Media(None));
+        owner.hold_off();
+        owner.pump();
+        assert!(!owner.adapter.mailbox(i).busy() && !owner.adapter.mailbox(i).has_mail());
+    }
+
     /// The claim and the mailbox are ONE thing, and [`Fetch::take`] is where that is spelled: the
     /// claim goes with whatever it hands back — an answer, a failure, or a generation the pump is
     /// about to discard — while an EMPTY mailbox releases nothing, because the claim it would clear
@@ -2654,7 +2849,7 @@ mod tests {
     fn a_take_releases_the_claim_and_an_empty_mailbox_leaves_it_alone() {
         let owner = Owner::default();
         let _serial = plx_base::testlock::serial();
-        let f = &owner.adapter.fetch[at(S0, K_ROLES)];
+        let f = &owner.adapter.mailbox(at(S0, K_ROLES));
         f.clear();
 
         f.claim(1);
@@ -2691,7 +2886,7 @@ mod tests {
         let stale = owner.gen();
         owner.open(S0, "465", "5d777", "Cynthia Erivo", ""); // supersedes: the fetch above is now obsolete
 
-        owner.adapter.fetch[at(S0, K_MEDIA)].claim(owner.gen());
+        owner.adapter.mailbox(at(S0, K_MEDIA)).claim(owner.gen());
         owner.hold_off();
         owner.land(
             at(S0, K_MEDIA),
@@ -2708,14 +2903,14 @@ mod tests {
         );
         assert!(!p.landed, "a discarded landing must not settle the spinner");
         assert!(
-            owner.adapter.fetch[at(S0, K_MEDIA)].busy(),
+            owner.adapter.mailbox(at(S0, K_MEDIA)).busy(),
             "a dropped stale landing must leave the new request's claim held"
         );
         let current = owner.gen();
         owner.land(at(S0, K_MEDIA), current, media(vec![PmsMovie::default()], Vec::new()));
         assert!(owner.pump(), "the new request's own answer lands");
         assert!(
-            !owner.adapter.fetch[at(S0, K_MEDIA)].busy(),
+            !owner.adapter.mailbox(at(S0, K_MEDIA)).busy(),
             "and its take releases the single-flight"
         );
         owner.close();
@@ -2732,7 +2927,7 @@ mod tests {
         owner.open(S0, "161", "5d776", "Idina Menzel", "");
         let gen = owner.gen();
         owner.hold_off();
-        owner.adapter.fetch[at(S0, K_MEDIA)].claim(gen);
+        owner.adapter.mailbox(at(S0, K_MEDIA)).claim(gen);
         let gate = plx_machine::landgate::Gate::default();
         gate.arm_dump(std::time::Duration::from_secs(20));
         let worker = Arc::clone(&owner.adapter);
@@ -2743,7 +2938,7 @@ mod tests {
         assert!(owner.state.pump_with_gate(&owner.adapter, &gate),
             "the answer the pump owed must be taken by the pump that asked");
         assert_eq!(owner.current().unwrap().shelf(0).len(), 1);
-        assert!(!owner.adapter.fetch[at(S0, K_MEDIA)].busy(), "the TAKE released the claim");
+        assert!(!owner.adapter.mailbox(at(S0, K_MEDIA)).busy(), "the TAKE released the claim");
         join.join().unwrap();
         owner.close();
     }
@@ -2756,12 +2951,12 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         owner.open(S0, "161", "5d776", "Idina Menzel", "");
         let stale = owner.gen();
-        owner.adapter.fetch[at(S0, K_MEDIA)].claim(stale); // request A is out
+        owner.adapter.mailbox(at(S0, K_MEDIA)).claim(stale); // request A is out
         owner.open(S0, "465", "5d777", "Cynthia Erivo", ""); // supersedes A
         let current = owner.gen();
         assert_ne!(stale, current);
         owner.hold_off();
-        owner.adapter.fetch[at(S0, K_MEDIA)].claim(current); // request B is out
+        owner.adapter.mailbox(at(S0, K_MEDIA)).claim(current); // request B is out
         let gate = plx_machine::landgate::Gate::default();
         gate.arm_dump(std::time::Duration::from_secs(20));
         let worker = Arc::clone(&owner.adapter);
@@ -2774,7 +2969,7 @@ mod tests {
         assert!(owner.state.pump_with_gate(&owner.adapter, &gate),
             "B was out when the pump ran, so B's answer must land on this pump");
         assert_eq!(owner.current().unwrap().shelf(0).len(), 1);
-        assert!(!owner.adapter.fetch[at(S0, K_MEDIA)].busy(), "B's own answer released B's claim");
+        assert!(!owner.adapter.mailbox(at(S0, K_MEDIA)).busy(), "B's own answer released B's claim");
         join.join().unwrap();
         owner.close();
     }
@@ -2822,16 +3017,17 @@ mod tests {
         let mut owner = Owner::default();
         let _serial = plx_base::testlock::serial();
         owner.open(S0, "161", "5d776", "Idina Menzel", "");
-        for i in 0..NFETCH {
-            owner.adapter.fetch[i].claim(owner.gen());
+        let all: Vec<usize> = (0..HIGH_BASE).chain([fx(ServerId::from_raw(40), K_ROLES).unwrap()]).collect();
+        for &i in &all {
+            owner.adapter.mailbox(i).claim(owner.gen());
             owner.state.retry_cd[i] = RETRY_FRAMES;
         }
 
         owner.reset();
 
-        for i in 0..NFETCH {
+        for &i in &all {
             assert!(
-                !owner.adapter.fetch[i].busy(),
+                !owner.adapter.mailbox(i).busy(),
                 "fetch {i} stayed latched — the page wedges"
             );
             assert_eq!(owner.state.retry_cd[i], 0);

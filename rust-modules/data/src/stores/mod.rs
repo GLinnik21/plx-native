@@ -476,6 +476,12 @@ impl<M> Fetch<M> {
         self.in_flight.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Is a worker out, or an answer waiting to be taken? What a pump that visits only the
+    /// fetches that can have news asks of the ones it has no other reason to look at.
+    pub fn outstanding(&self) -> bool {
+        self.busy() || self.lock().is_some()
+    }
+
     /// Claim the fetch for generation `gen`, on the way into a spawn. `gen` is the owner's
     /// current generation, the one the worker will stamp its mail with.
     pub fn claim(&self, gen: u32) {
