@@ -1182,6 +1182,12 @@ pub struct RelatedTail {
     /// Hubs with more behind them whose key the pager does not admit; they keep their preview.
     #[serde(default)]
     pub unadmitted: usize,
+    /// What the window remembers beyond itself: the ledger of keys it has shown, which takes over
+    /// when the hubs' listings stop agreeing between reads ([`crate::stores::paging::read_row`]).
+    /// Keys only, so its bound is the listing's length at eight bytes a numeric key; the cards
+    /// held stay the head and one window.
+    #[serde(default, skip_serializing_if = "crate::stores::paging::RowState::is_default")]
+    pub row: crate::stores::paging::RowState,
 }
 
 impl RelatedTail {
@@ -4694,7 +4700,8 @@ struct RelLanded {
     /// The window the read started from. A landing on any other window is stale.
     from: (usize, usize),
     /// `None` = the read failed: nothing installs, and the shelf asks again at its next edge.
-    window: Option<(Vec<crate::stores::paging::Row>, crate::stores::paging::PageInfo, Vec<TailHub>)>,
+    window: Option<(Vec<crate::stores::paging::Row>, crate::stores::paging::PageInfo, Vec<TailHub>,
+        crate::stores::paging::RowState)>,
 }
 
 /// One page of the tail positions `start..start+size`: the hubs' listings past their previews end
@@ -4762,16 +4769,20 @@ fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdap
     let skip: std::collections::HashSet<String> =
         t.exclude.iter().cloned().chain(d.related[..t.head].iter().map(|m| m.rk.clone())).collect();
     let mut hubs = t.hubs.clone();
+    let state = t.row.clone();
     let worker = std::sync::Arc::clone(adapter);
     let spawned = plx_base::task::spawn_small("related-tail", move || {
         let window = catch_unwind(std::panic::AssertUnwindSafe(|| {
             let client = plx_plex::plex::client_for(sid)?;
             let ask = crate::stores::paging::Ask { start: if before { info.offset } else { info.end }, before, hidden: &[] };
             let current = (!rows.is_empty()).then_some((rows.as_slice(), info));
-            let (rows, info) = crate::stores::paging::fetch_window(sid, &ask, current, 0, |start, size| {
+            // The shared row reader: a listing that shifts between reads moves the window onto its
+            // ledger of shown keys instead of stopping it, so no card repeats and the end is reached.
+            let current = current.map(|(rows, info)| (rows.to_vec(), info));
+            let (rows, info, state) = crate::stores::paging::read_row(sid, &ask, current, state, 0, |start, size| {
                 tail_page(&mut hubs, &skip, start, size, &mut |key, at, count| client.hub_items_paged(key, at as i64, count as i64))
-            })?;
-            Some((rows, info, std::mem::take(&mut hubs)))
+            }, |keys| client.metadata_many(&keys.iter().map(String::as_str).collect::<Vec<_>>()))?;
+            Some((rows, info, std::mem::take(&mut hubs), state))
         })).unwrap_or(None);
         let mut rel = worker.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
         rel.inflight = false;
@@ -4798,15 +4809,11 @@ pub fn pump_related_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
         if !plx_plex::plex::same_item((d.sid, &d.rk), (l.sid, &l.rk)) || (t.offset, t.end) != l.from {
             continue;
         }
-        let Some((rows, info, hubs)) = l.window else { continue };
-        if info.unstable {
-            plx_base::eventlog::log(&format!("detail: rk={} related tail window lost its edge; kept as it was", d.rk));
-            continue;
-        }
+        let Some((rows, info, hubs, state)) = l.window else { continue };
         d.related.truncate(t.head);
         t.positions = rows.iter().map(|(position, _)| *position).collect();
         d.related.extend(rows.into_iter().map(|(_, m)| std::sync::Arc::try_unwrap(m).unwrap_or_else(|m| (*m).clone())));
-        (t.offset, t.end, t.total, t.more, t.hubs) = (info.offset, info.end, info.total, info.more, hubs);
+        (t.offset, t.end, t.total, t.more, t.hubs, t.row) = (info.offset, info.end, info.total, info.more, hubs, state);
         changed = true;
     }
     changed

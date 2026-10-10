@@ -114,16 +114,18 @@ fn detail() -> &'static Detail {
     test_state().current.as_ref().unwrap()
 }
 
-/// Ask for the next (or previous) tail window and wait for it to land.
+/// Ask for the next (or previous) tail window and wait for it to land. A read that only advances
+/// the ledger of a listing that would not hold still lands too, with the window where it was.
 fn slide(before: bool) {
-    let was = (detail().related_tail.offset, detail().related_tail.end);
+    let state = || (detail().related_tail.offset, detail().related_tail.end, detail().related_tail.row.clone());
+    let was = state();
     assert!(want_related(test_state(), test_adapter(), before), "a request starts");
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while (detail().related_tail.offset, detail().related_tail.end) == was && std::time::Instant::now() < until {
+    while state() == was && std::time::Instant::now() < until {
         pump_related_pages(test_state(), test_adapter());
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    assert_ne!((detail().related_tail.offset, detail().related_tail.end), was, "the window never moved");
+    assert_ne!(state(), was, "the window never moved");
 }
 
 fn window() -> Vec<(usize, String)> {
@@ -214,4 +216,122 @@ fn a_row_with_no_tail_is_the_plain_encoding() {
     let d = Detail { related: rows.related, related_tail: rows.tail, ..Default::default() };
     let json = serde_json::to_value(&d).unwrap();
     assert!(json.get("related_tail").is_none());
+}
+
+/// A hub whose listing the test edits between reads: `hook(read, listing)` runs before the
+/// `read`th listing page is answered (0-based), and a batch read by rating key answers from the
+/// listing as it then stands, leaving out a key that is gone.
+fn serve_live(listing: Vec<String>, hook: impl Fn(usize, &mut Vec<String>) + Send + 'static) -> Hubs {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port() as i32;
+    let stop = Arc::new(AtomicBool::new(false));
+    let halt = stop.clone();
+    let thread = std::thread::spawn(move || {
+        let (mut listing, mut reads) = (listing, 0usize);
+        let item = |key: &str| format!(r#"{{"ratingKey":"{key}","type":"movie","title":"T{key}","thumb":"/t/{key}"}}"#);
+        while !halt.load(AtomicOrdering::SeqCst) {
+            let Ok((mut conn, _)) = listener.accept() else {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                continue;
+            };
+            conn.set_nonblocking(false).unwrap();
+            let mut buf = [0u8; 4096];
+            let n = conn.read(&mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let path = request.split_whitespace().nth(1).unwrap_or("");
+            let rest = path.strip_prefix("/library/metadata/").unwrap_or("");
+            let body = if rest.contains("/similar") {
+                hook(reads, &mut listing);
+                reads += 1;
+                let total = listing.len();
+                let start = param(&request, "X-Plex-Container-Start").unwrap_or(0);
+                let size = param(&request, "X-Plex-Container-Size").unwrap_or(usize::MAX);
+                let rows: Vec<String> = listing[start.min(total)..start.saturating_add(size).min(total)]
+                    .iter().map(|key| item(key)).collect();
+                format!(r#"{{"MediaContainer":{{"size":{},"totalSize":{total},"offset":{start},"Metadata":[{}]}}}}"#,
+                    rows.len(), rows.join(","))
+            } else {
+                let keys = rest.split('?').next().unwrap_or("");
+                let rows: Vec<String> = keys.split(',').filter(|key| listing.iter().any(|k| k == key))
+                    .map(item).collect();
+                format!(r#"{{"MediaContainer":{{"size":{},"Metadata":[{}]}}}}"#, rows.len(), rows.join(","))
+            };
+            let _ = write!(conn,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len());
+        }
+    });
+    Hubs { port, stop, thread: Some(thread) }
+}
+
+/// Walks the tail forward to its end over a listing that changes under the walk. A card is never
+/// shown again once it has left the window, and at most the head and 24 cards are held (the
+/// ledger behind it is keys only: eight bytes a key for the numeric keys PMS issues, so the
+/// listing's length times eight). Returns what was shown, in order.
+fn walk_live_listing(initial: usize, hook: impl Fn(usize, &mut Vec<String>) + Send + 'static) -> Vec<String> {
+    let listing: Vec<String> = (0..initial).map(|i| plain(1, i)).collect();
+    let server = serve_live(listing, hook);
+    let mc = related_response(&[(1, 12, initial, true)], "");
+    open(&server, &mc);
+    let head: Vec<String> = detail().related.iter().map(|m| m.rk.clone()).collect();
+    let (mut shown, mut before): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
+    for _ in 0..200 {
+        if !detail().related_tail.more { break; }
+        slide(false);
+        assert!(detail().related.len() <= head.len() + 24, "{} cards held", detail().related.len());
+        let now: Vec<String> = window().into_iter().map(|(_, rk)| rk).collect();
+        for rk in &now {
+            assert!(!head.contains(rk), "{rk} is in the head and the tail");
+            if !before.contains(rk) {
+                assert!(!shown.contains(rk), "{rk} was shown again");
+                shown.push(rk.clone());
+            }
+        }
+        assert_eq!(now.iter().collect::<std::collections::HashSet<_>>().len(), now.len(), "a window repeats a card");
+        before = now;
+    }
+    assert!(!detail().related_tail.more, "the walk never reached the end");
+    shown
+}
+
+/// Forty titles arrive ahead of the window mid-walk: the edge is more than a page from where it was
+/// read, so the window can no longer re-anchor on it. The walk still reaches every title. (They land
+/// just past the head's twelve previews: the head is the page's own snapshot, never re-read.)
+#[test]
+fn an_item_inserted_before_the_window_mid_walk_is_reached_once() {
+    let _serial = plx_base::testlock::serial();
+    let shown = walk_live_listing(80, |read, listing| {
+        if read == 3 { for i in 0..40 { listing.insert(12 + i % 5, format!("n-{i}")); } }
+    });
+    let mut expected: Vec<String> = (12..80).map(|i| plain(1, i)).chain((0..40).map(|i| format!("n-{i}"))).collect();
+    let mut got = shown.clone();
+    expected.sort();
+    got.sort();
+    assert_eq!(got, expected, "every item exactly once");
+}
+
+/// Thirty titles the walk has already shown leave the listing: what lies ahead is still reached.
+#[test]
+fn an_item_removed_mid_walk_does_not_stop_the_walk() {
+    let _serial = plx_base::testlock::serial();
+    let shown = walk_live_listing(90, |read, listing| {
+        if read == 3 { listing.drain(14..44); }
+    });
+    for i in (44..90).chain(12..14) {
+        assert!(shown.contains(&plain(1, i)), "{} was never reached", plain(1, i));
+    }
+}
+
+/// The listing is rotated by seven on every read, so no read agrees with the one before it. Every
+/// item is still shown exactly once and the walk ends.
+#[test]
+fn a_hub_that_reshuffles_on_every_read_is_walked_to_the_end() {
+    let _serial = plx_base::testlock::serial();
+    let shown = walk_live_listing(70, |_, listing| listing.rotate_left(7));
+    let mut got = shown.clone();
+    got.sort();
+    let mut expected: Vec<String> = (12..70).map(|i| plain(1, i)).collect();
+    expected.sort();
+    assert_eq!(got, expected, "every tail item exactly once");
 }

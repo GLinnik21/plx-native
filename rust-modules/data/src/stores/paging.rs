@@ -500,7 +500,10 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
             && (mc.metadata.len() < MAX_SHELF_ITEMS || (total > 0 && ledger.next >= total));
         if page_end {
             ledger.idle = if ledger.added == 0 { ledger.idle + 1 } else { 0 };
-            if ledger.keys.len() + ledger.filtered >= total.max(1) || ledger.idle >= IDLE_PASSES {
+            // The count of keys against the listing's total only holds while every key is still in
+            // the listing, so it ends the walk only after a whole pass from 0 found nothing new.
+            let counted = ledger.rescans >= 1 && ledger.idle >= 1 && ledger.keys.len() + ledger.filtered >= total.max(1);
+            if counted || ledger.idle >= IDLE_PASSES {
                 ledger.done = true;
             } else {
                 ledger.next = 0;
