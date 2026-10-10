@@ -529,6 +529,13 @@ pub struct Shared {
     /// see `appkit::player_hud::busy_surface`. Monotone within a session (false→true only), which is
     /// what lets two readers in one frame sample it independently without disagreeing.
     pub seen_frame: AtomicBool,
+    /// **The raw pts of the first audio AU the demuxer pushed since its last open or seek**.
+    /// Written by `ff::demux` BEFORE that push, so the feed thread that pops the AU
+    /// sees it. The audio lane uses it to tell the real start of a late audio track (an MKV
+    /// audio `Delay` of several seconds) from stale pre-seek audio, which looks the same — far
+    /// ahead of the video — but never carries this pts (see `engine::feed_audio_lane`). `i64::MIN`
+    /// before one, since a real pts may be negative.
+    pub first_audio_pts: AtomicI64,
     /// **Why the NEXT rebuild is happening, when the viewer's audio-track pick is the cause**: the
     /// read-out beside the load spinner says "Switching audio…" instead of "Buffering…". A
     /// [`AudioSwitch`] value. `Picked` (set by `route::commit_audio_selection` once its rebuild is
@@ -951,6 +958,7 @@ impl Shared {
             pres_fed: AtomicI64::new(0),
             frames: AtomicI32::new(0),
             seen_frame: AtomicBool::new(false),
+            first_audio_pts: AtomicI64::new(i64::MIN),
             audio_switch: AtomicU8::new(AudioSwitch::None as u8),
             audio_pick_ms: AtomicI64::new(0),
             load_completed: AtomicBool::new(false),
@@ -1542,6 +1550,7 @@ impl Shared {
         // places (declaration, `new`, here): a reload that forgot the bit would silently suppress
         // the centred read-out for the rest of the app's life.
         self.seen_frame.store(false, Ordering::Relaxed);
+        self.first_audio_pts.store(i64::MIN, Ordering::Relaxed);
         // an audio pick's rebuild has begun (a reload keeps the pick's meaning for this session);
         // any other reset ends it
         let next = match AudioSwitch::from_u8(self.audio_switch.load(Ordering::Relaxed)) {

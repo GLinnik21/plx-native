@@ -8300,6 +8300,7 @@ pub fn demux(
                 // first audio AU of this open — and again after every seek — then withdrawn.
                 let mut audio_seen = false;
                 let mut headroom_applied: c_long = 0;
+                SHARED.first_audio_pts.store(i64::MIN, Ordering::Release);
                 // INNER read loop
                 loop {
                     // Direct-play seek (and the armed resume, which is just a seek published before
@@ -8355,6 +8356,7 @@ pub fn demux(
                             seek_ns / 1_000_000_000
                         ));
                         audio_seen = false;
+                        SHARED.first_audio_pts.store(i64::MIN, Ordering::Release);
                     }
                     let r = av_read_frame(fmt, pkt);
                     if frame_read_failed(&mut state, r) {
@@ -8437,6 +8439,11 @@ pub fn demux(
                     } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) {
                         let ast = *streams.add(ai as usize);
                         let pts = pts_ns(pkt, ast);
+                        if !audio_seen {
+                            // Before the push, so the feed thread that pops this AU sees it: the
+                            // audio lane feeds a late-starting track's first AU on this mark.
+                            SHARED.first_audio_pts.store(pts, Ordering::Release);
+                        }
                         let pushed = if let Some((freq_idx, chan_cfg)) = aac_adts {
                             // prepend a 7-byte ADTS header so LG's decoder can frame the raw AAC
                             let plen = (*pkt).size as usize;
