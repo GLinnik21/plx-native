@@ -46,7 +46,7 @@ pub(crate) const SEARCH: usize = 96;
 /// `e`'s identity as a plain number: sections are not generic over the host, so the pool
 /// cannot store an `H::Elem`. `DefaultHasher::new()` is unkeyed, so the number is stable
 /// within a run; a collision could only mis-route one pop spring for a frame.
-fn key<E: Hash>(e: &E) -> u64 {
+pub(crate) fn key<E: Hash>(e: &E) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     e.hash(&mut h);
     h.finish()
@@ -56,6 +56,11 @@ fn key<E: Hash>(e: &E) -> u64 {
 /// showing the element whose [`key`] is `k`.
 fn find<H: Host, S: CardSource<H>>(src: &S, k: u64) -> Option<usize> {
     (0..src.len().min(MAX_ROW_ITEMS)).find(|&j| key(&src.elem(j)) == k)
+}
+
+/// The cell within [`SEARCH`] of `at` showing the element whose [`key`] is `k`.
+pub(crate) fn find_near<H: Host, S: CardSource<H>>(src: &S, k: u64, at: usize) -> Option<usize> {
+    (at.saturating_sub(SEARCH)..src.len().min(at.saturating_add(SEARCH))).find(|&j| key(&src.elem(j)) == k)
 }
 
 /// The elements of one [`CardRow`] whose pop springs are off rest, and the cell each is in.
@@ -76,7 +81,6 @@ impl RowPool {
         self.n
     }
 
-    #[cfg(test)]
     pub(crate) fn holds(&self, cell: usize) -> bool {
         self.at[..self.n].contains(&cell)
     }

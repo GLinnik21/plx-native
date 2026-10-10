@@ -9,7 +9,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 
-use super::pool::{Drawn, RowPool};
+use super::pool::{self, Drawn, RowPool};
 use super::{CardEvent, CardSource, Landed, SectionFrame, Seen, Tile};
 use crate::card_row::{self, CardRow, RowStyle};
 use crate::consts::SCR_W;
@@ -49,6 +49,9 @@ pub struct Shelf {
     left: bool,
     asked: Option<(usize, usize)>,
     asked_before: Option<usize>,
+    /// The element the last tick had focused (`pool::key`), in the cell the row recorded: what
+    /// tells a landing that moved the cards from a focus that moved over them.
+    anchor: Option<u64>,
     /// How far past the screen edge a card still paints and registers a stop (default 0).
     margin: f32,
     /// The page is still dissolving in ([`dormant`](Shelf::dormant)): no card is lifted yet.
@@ -61,7 +64,7 @@ pub struct Shelf {
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
-        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None,
+        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, anchor: None,
             margin: 0.0, dormant: false, slept: false, pool: RowPool::new() }
     }
 
@@ -153,6 +156,7 @@ impl Shelf {
             self.pool.clear();
             self.seen = Seen::Nothing;
             self.left = false;
+            self.anchor = None;
             if !self.row.at_exact_rest() {
                 self.row.update(src.len(), None, self.style, dt);
                 self.row.park();
@@ -168,6 +172,23 @@ impl Shelf {
         }
         // the element-keyed pool: springs follow their elements before anything reads a cell
         let carried = self.pool.follow(&mut self.row, src, focus);
+        // A landing and a deliberate move between the same two ticks (a held key over a paged row,
+        // the window sliding under it): the move alone would leave the scroll where the OLD window
+        // had it, a window away from every card that stayed. The card focus was on is carried to
+        // where the source now shows it, scroll and all, and the move then starts from there.
+        if let (Some(i), Seen::Deliberate(_), Some((p, q))) = (focus, self.seen, self.slid(src)) {
+            let dx = (q as f32 - p as f32) * self.pitch();
+            if self.pool.holds(q) {
+                self.row.shift_scroll(dx);
+            } else {
+                self.row.relocate(p, q, dx);
+            }
+            self.row.clamp_scroll(src.len(), self.style);
+            self.row.refocus(q);
+            self.landed = Some(Landed { from: p, to: q });
+            // the move was announced by the index it had in whichever window stood then
+            self.seen = Seen::Deliberate(i);
+        }
         if let Some(i) = focus {
             let prev = self.prev();
             match (self.seen, prev) {
@@ -208,6 +229,17 @@ impl Shelf {
             }
         }
         self.pool.admit(&self.row, src, focus);
+        self.anchor = focus.filter(|&i| i < src.len()).map(|i| pool::key(&src.elem(i)));
+    }
+
+    /// Where the card the last tick had focused stands now, when it is no longer in its cell and
+    /// still in the source: `(was, is)`.
+    fn slid<H: Host, S: CardSource<H>>(&self, src: &S) -> Option<(usize, usize)> {
+        let (p, k) = self.prev().zip(self.anchor)?;
+        if p < src.len() && pool::key(&src.elem(p)) == k {
+            return None;
+        }
+        pool::find_near::<H, S>(src, k, p).map(|q| (p, q))
     }
 
     /// Is the pop of cell `cell` held in the element-keyed pool?
