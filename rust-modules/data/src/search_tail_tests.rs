@@ -24,6 +24,8 @@ pub(super) struct Fake {
     pub hubs_asked: Vec<usize>,
     /// Typed listing requests left to answer with a failure.
     pub fail_listings: usize,
+    /// When set, only this server's listing requests are failed.
+    pub fail_for: Option<u16>,
     /// The server the store is asking for now ([`Io::serving`]); stamped on the cards of `hubs`.
     pub serving: u16,
     /// The count badge of the n-th row of `people`; a missing entry is zero.
@@ -45,7 +47,7 @@ impl Io for Fake {
     fn serving(&mut self, sid: ServerId) { self.serving = sid.raw(); }
     fn listing(&mut self, kind: SearchKind, req: PageReq) -> Option<MediaContainer> {
         self.log.push((kind, req.start, req.size));
-        if self.fail_listings > 0 {
+        if self.fail_listings > 0 && self.fail_for.is_none_or(|s| s == self.serving) {
             self.fail_listings -= 1;
             return None;
         }

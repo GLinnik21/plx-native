@@ -211,8 +211,64 @@ fn a_lane_read_that_fails_loses_no_hit_and_does_not_move_the_focused_card() {
 fn a_slide_waiting_on_a_source_that_left_the_roster_does_not_wait_for_ever() {
     let mut rig = Rig::new(2, Fake::new().movies(100));
     let lo = rig.owner.state.wins[0].lo;
-    rig.owner.state.wins[0].pending = Some(Pending { lo: lo + 4, hi: lo + 16, todo: vec![57] });
+    rig.owner.state.wins[0].pending = Some(Pending { lo: lo + 4, hi: lo + 16, todo: vec![57], ..Default::default() });
     assert!(prune_pending(&mut rig.owner.state, &slots()), "the slide committed without it");
     assert_eq!(rig.owner.state.wins[0].lo, lo + 4);
     assert!(rig.owner.state.wins[0].pending.is_none());
+}
+
+/// Page `kind` forward to its end with server 2 failing, asserting every slide commits within the
+/// bounded number of tries; returns every (server, key) drawn on the way.
+fn walk_forward_bounded(rig: &mut Rig, kind: Kind) -> std::collections::BTreeSet<(u16, String)> {
+    let bound = (LANDING_TRIES as usize + 1) * RETRY_FRAMES as usize;
+    let mut seen: std::collections::BTreeSet<(u16, String)> = drawn(rig, kind).into_iter().collect();
+    for _ in 0..200 {
+        if !rig.shelf(kind).window.after { break; }
+        assert!(rig.page_settled(kind, bound), "the slide did not wait for a server that keeps failing");
+        seen.extend(drawn(rig, kind));
+    }
+    assert!(!rig.shelf(kind).window.after, "the end of the row was reached");
+    seen
+}
+
+fn hits_of(servers: std::ops::Range<u16>) -> std::collections::BTreeSet<(u16, String)> {
+    servers.flat_map(|s| (0..100).map(move |i| (s, i.to_string()))).collect()
+}
+
+#[test]
+fn a_server_that_never_recovers_does_not_stall_the_others() {
+    let mut rig = Rig::new(3, Fake::new().movies(100));
+    { let mut f = rig.fake.lock().unwrap(); f.fail_for = Some(2); f.fail_listings = usize::MAX; }
+    let seen = walk_forward_bounded(&mut rig, Kind::Movie);
+    let missing: Vec<_> = hits_of(0..2).difference(&seen).cloned().collect();
+    assert!(missing.is_empty(), "{} hits of the healthy servers never drawn, first {:?}", missing.len(), missing.first());
+}
+
+#[test]
+fn a_server_that_fails_fifty_times_then_recovers_is_merged_in_and_loses_no_hit() {
+    let mut rig = Rig::new(3, Fake::new().movies(100));
+    { let mut f = rig.fake.lock().unwrap(); f.fail_for = Some(2); f.fail_listings = 50; }
+    let mut seen = walk_forward_bounded(&mut rig, Kind::Movie);
+    let missing: Vec<_> = hits_of(0..2).difference(&seen).cloned().collect();
+    assert!(missing.is_empty(), "the others were walked to the end without it");
+    // the server comes back: it is asked again on its own and its hits come in at the window it is on
+    for _ in 0..60 * RETRY_FRAMES {
+        if rig.fake.lock().unwrap().fail_listings == 0 && !rig.owner.state.src[2].skipped[0] { break; }
+        rig.drain(1);
+    }
+    assert!(!rig.owner.state.src[2].skipped[0], "the recovered server's hits for the window are in");
+    assert!(drawn(&rig, Kind::Movie).iter().any(|(s, _)| *s == 2), "its cards joined the row");
+    seen.extend(drawn(&rig, Kind::Movie));
+    // and the depths already passed are read back as the row is paged back
+    for _ in 0..100 {
+        if rig.shelf(Kind::Movie).window.start == 0 { break; }
+        rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: true });
+        for _ in 0..4 * RETRY_FRAMES {
+            if rig.owner.state.wins[0].pending.is_none() && !rig.owner.state.src[2].skipped[0] { break; }
+            rig.drain(1);
+        }
+        seen.extend(drawn(&rig, Kind::Movie));
+    }
+    let missing: Vec<_> = hits_of(0..3).difference(&seen).cloned().collect();
+    assert!(missing.is_empty(), "{} hits never drawn, first {:?}", missing.len(), missing.first());
 }
