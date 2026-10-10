@@ -3003,6 +3003,30 @@ pub fn seed_recent_window_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapte
     commit(state, build);
 }
 
+/// A Home whose only row is a Continue Watching deck of `items` cards with `more` behind them.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_continue_window_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, items: usize, more: bool) {
+    let _ = adapter;
+    let sid = ServerId::from_raw(0);
+    let cw: Vec<CwItem> = (0..items).map(|i| CwItem {
+        last_viewed_at: 10_000 - i as i64,
+        m: Arc::new(PmsMovie { sid, rk: i.to_string(), title: i.to_string(), thumb: "/t".into(), art: "/a".into(),
+            ..Default::default() }),
+        position: i,
+    }).collect();
+    let mut source = Src::new(sid, String::new());
+    source.state = HubState::Ready;
+    let lane = deck::Lane::preview("0", &items.saturating_sub(1).to_string(), items, items + usize::from(more), !more);
+    source.last = Some(SourceBuild { cw, lane, shelves: Vec::new() });
+    let mut srcs = vec![source];
+    settle_deck(&mut srcs, false);
+    let build = merge(&srcs);
+    state.srcs = srcs;
+    remember_roster(state, &BrowseScope::standalone());
+    state.seen_facts = facts_key();
+    commit(state, build);
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn reverse_test_hubs(state: &mut PmsState) {
     plx_base::testlock::assert_held("the pms hub catalog (reverse_test_hubs)");

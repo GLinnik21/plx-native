@@ -55,6 +55,10 @@ fn hub_page_cmd(hub: &HubRef<'_>,
     make: impl FnOnce(plx_plex::plex::ServerId, String, String) -> HubsCmd) -> Option<HubsCmd> {
     match hub.identity {
         Some(HubIdentity::Identifier { sid, id, key }) => Some(make(sid, id.into(), key.into())),
+        // The merged deck is every server's lane, so the ask names no server of its own: the store
+        // reads whichever lanes the move needs. Any card's server fills the slot the command has.
+        Some(HubIdentity::ContinueWatching) => hub.items.first()
+            .map(|m| make(m.sid, "home.continue".into(), String::new())),
         _ => None,
     }
 }

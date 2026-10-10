@@ -3821,6 +3821,27 @@ fn recent_rows_request_pages_only_when_the_shelves_are_visible() {
 }
 
 #[test]
+fn the_continue_watching_row_asks_for_a_page_at_its_trailing_edge() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_continue_window_for_test(&mut state, &adapter, 12, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    s.layout_grid();
+    assert_eq!(s.rows[0].identity, HomeHubIdentity::ContinueWatching);
+    let focus = Some(FocusKey { entry: s.entry, elem: s.rows[0].elems[10] });
+    let tick = ScreenEvent::Tick(Tick { ms: 16, dt_us: 0 });
+    let asks: Vec<_> = step(&mut s, snapshot.view(), focus, &tick).1.into_iter().filter_map(|fx| match fx.fx {
+        Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { id, before, .. }))) => Some((id, before)),
+        _ => None,
+    }).collect();
+    assert_eq!(asks, vec![("home.continue".to_string(), false)]);
+}
+
+#[test]
 fn returning_to_a_previous_recent_page_does_not_load_the_next_page_again() {
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
