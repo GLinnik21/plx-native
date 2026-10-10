@@ -59,6 +59,17 @@ impl Rig {
         self.drain(n);
     }
 
+    /// A page that waits out failed reads: pump until the slide has committed or `frames` ran out.
+    fn page_settled(&mut self, kind: Kind, frames: usize) -> bool {
+        let k = KINDS.iter().position(|x| *x == kind).unwrap();
+        self.owner.state.run(&self.owner.adapter, SearchCmd::Page { kind, before: false });
+        for _ in 0..frames {
+            if self.owner.state.wins[k].pending.is_none() { return true; }
+            self.drain(1);
+        }
+        self.owner.state.wins[k].pending.is_none()
+    }
+
     fn shelf(&self, kind: Kind) -> &Shelf {
         self.owner.state.shelves().iter().find(|s| s.kind == kind).expect("the row is there")
     }
@@ -128,8 +139,14 @@ fn a_new_query_releases_every_lane_window_and_pending_ask() {
     let mut rig = Rig::new(1, Fake::new().movies(100));
     rig.page(Kind::Movie, false);
     assert!(rig.owner.state.wins[0].lo > 0);
+    // a slide that cannot finish: its source keeps failing, so the ask stays pending
+    rig.fake.lock().unwrap().fail_listings = usize::MAX;
+    rig.page(Kind::Movie, false);
+    rig.page(Kind::Movie, false);
+    assert!(rig.owner.state.wins[0].pending.is_some(), "the slide is owed");
     rig.owner.set_query("wallace shawn");
-    assert!(rig.owner.state.wins.iter().all(|w| w.lo == 0 && w.pending.is_none()));
+    assert!(rig.owner.state.wins.iter().all(|w| w.lo == 0), "every window is back at the head");
+    assert!(rig.owner.state.wins.iter().all(|w| w.pending.is_none()), "no ask outlives the query");
     assert!(rig.owner.state.src.iter().all(|s| !s.tails[0].inited), "no lane survives the query");
 }
 
@@ -154,4 +171,48 @@ fn favourites_rank_only_within_the_first_twelve_cards() {
     let mut want: Vec<String> = [1, 3, 5, 7, 9, 11, 0, 2, 4, 6, 8, 10].iter().map(|i| i.to_string()).collect();
     want.extend((12..24).map(|i| i.to_string()));
     assert_eq!(got, want.iter().map(String::as_str).collect::<Vec<_>>());
+}
+
+/// Every card of `kind` the row draws now, as (server, key).
+fn drawn(rig: &Rig, kind: Kind) -> Vec<(u16, String)> {
+    rig.shelf(kind).items.iter().map(|it| (it.sid().raw(), tail::key_of(it))).collect()
+}
+
+#[test]
+fn a_lane_read_that_fails_loses_no_hit_and_does_not_move_the_focused_card() {
+    let mut rig = Rig::new(3, Fake::new().movies(100));
+    rig.fake.lock().unwrap().fail_listings = 6;
+    let mut seen: std::collections::BTreeSet<(u16, String)> = drawn(&rig, Kind::Movie).into_iter().collect();
+    for _ in 0..200 {
+        if !rig.shelf(Kind::Movie).window.after { break; }
+        let held = drawn(&rig, Kind::Movie);
+        let before = rig.shelf(Kind::Movie).window.start;
+        rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false });
+        let mut frames = 0;
+        // while a source still owes its read the cards stay where they are
+        while rig.owner.state.wins[0].pending.is_some() && frames < 800 {
+            assert_eq!(drawn(&rig, Kind::Movie), held, "the focused card keeps its place while a read is owed");
+            rig.drain(1);
+            frames += 1;
+        }
+        assert!(rig.owner.state.wins[0].pending.is_none(), "the slide committed");
+        assert!(rig.shelf(Kind::Movie).window.start > before);
+        seen.extend(drawn(&rig, Kind::Movie));
+    }
+    let left = rig.fake.lock().unwrap().fail_listings;
+    assert_eq!(left, 0, "both injected failures were met");
+    let want: std::collections::BTreeSet<(u16, String)> = (0..3u16)
+        .flat_map(|s| (0..100).map(move |i| (s, i.to_string()))).collect();
+    let missing: Vec<_> = want.difference(&seen).collect();
+    assert!(missing.is_empty(), "{} hits never drawn, first {:?}", missing.len(), missing.first());
+}
+
+#[test]
+fn a_slide_waiting_on_a_source_that_left_the_roster_does_not_wait_for_ever() {
+    let mut rig = Rig::new(2, Fake::new().movies(100));
+    let lo = rig.owner.state.wins[0].lo;
+    rig.owner.state.wins[0].pending = Some(Pending { lo: lo + 4, hi: lo + 16, todo: vec![57] });
+    assert!(prune_pending(&mut rig.owner.state, &slots()), "the slide committed without it");
+    assert_eq!(rig.owner.state.wins[0].lo, lo + 4);
+    assert!(rig.owner.state.wins[0].pending.is_none());
 }

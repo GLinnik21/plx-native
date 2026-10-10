@@ -1079,7 +1079,7 @@ fn pump_with_optional_directory(
             }
         }
     }
-    let mut landed = false;
+    let mut landed = prune_pending(state, &live);
     // Which sources may start a request this pump. A source's countdown is stepped inside the sweep
     // below, so it is judged here as it will stand after that step.
     let (running, wanting) = fanout_candidates(state, adapter, &live);
@@ -1473,6 +1473,7 @@ fn spawn_job(job: impl FnOnce() + Send + 'static) -> bool {
 fn open_io(sid: ServerId, q: &str, favs: &[(ServerId, i64, bool)]) -> Box<dyn tail::Io> {
     #[cfg(test)]
     if let Some(io) = TEST_IO.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        io.lock().unwrap_or_else(|e| e.into_inner()).serving(sid);
         return Box::new(SharedIo(io));
     }
     Box::new(LiveIo { sid, q: q.to_string(), favs: favs.to_vec() })
@@ -1489,6 +1490,9 @@ impl tail::Io for SharedIo {
     }
     fn hubs(&mut self, limit: usize) -> Option<Projection> {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).hubs(limit)
+    }
+    fn serving(&mut self, sid: ServerId) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).serving(sid);
     }
 }
 
@@ -1511,18 +1515,28 @@ impl tail::Io for LiveIo {
 }
 
 /// A source's read of one lane landed: keep the lane, and when the last source a slide waited on
-/// has landed, move the window. A failed read is not retried — the slide goes ahead without that
-/// source, whose lane still lacks the depths, and the next page asks it again. Returns whether the
-/// shelves changed.
+/// has covered the slide's depths, move the window. **A source that has not covered them stays owed**
+/// — a failed read, or a bounded job ([`tail::REQUESTS`]) that stopped short — and is asked again by
+/// the same fan-out, after [`RETRY_FRAMES`] when it made no progress: the cards stay where they are
+/// meanwhile, so no hit is skipped and the focused card keeps its place. A source that is gone is
+/// dropped from the slide by [`prune_pending`]. Returns whether the shelves changed.
 fn land_read(state: &mut SearchState, i: usize, t: TailMail) -> bool {
     let k = t.kind;
+    let mut progressed = false;
     match t.read {
         Some((lane, tv)) => {
             let s = source_mut(state, i);
+            progressed = (lane.covered(), lane.end, lane.is_growth()) != (s.tails[k].covered(), s.tails[k].end, s.tails[k].is_growth());
             s.tails[k] = lane;
             s.tv = tv;
         }
-        None => plx_base::eventlog::log(&format!("search: sid={i} lane read failed, sliding without it")),
+        None => plx_base::eventlog::log(&format!("search: sid={i} lane read failed, it stays owed")),
+    }
+    let Some(range) = state.wins[k].pending.as_ref().map(|p| p.lo..p.hi) else { return false };
+    if source(state, i).tails[k].needs(&range) {
+        // still owed: the next pump asks again, at once while reads make headway
+        if !progressed { source_mut(state, i).retry_cd = RETRY_FRAMES; }
+        return false;
     }
     let Some(p) = state.wins[k].pending.as_mut() else { return false };
     p.todo.retain(|&x| x != i);
@@ -1532,6 +1546,23 @@ fn land_read(state: &mut SearchState, i: usize, t: TailMail) -> bool {
     let lo = p.lo;
     commit_window(state, k, lo);
     true
+}
+
+/// Drop the sources that left the roster from every slide's `todo`: a source that is gone can never
+/// deliver its depths, and the row must not wait for it for ever. Commits a slide that was waiting
+/// only on them. Returns whether the shelves changed.
+fn prune_pending(state: &mut SearchState, live: &[usize]) -> bool {
+    let mut changed = false;
+    for k in 0..NKIND {
+        let Some(p) = state.wins[k].pending.as_mut() else { continue };
+        p.todo.retain(|i| live.contains(i));
+        if p.todo.is_empty() {
+            let lo = p.lo;
+            commit_window(state, k, lo);
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// Move kind `k`'s window to start at `lo`: every lane lets go of the depths outside it, and
@@ -1551,8 +1582,12 @@ fn commit_window(state: &mut SearchState, k: usize, lo: usize) {
 /// whether the window moved at once.
 fn page(state: &mut SearchState, kind: Kind, before: bool) -> bool {
     let Some(k) = KINDS.iter().position(|x| *x == kind) else { return false };
-    if state.wins[k].pending.is_some() || terms(state.query()).is_none() {
-        return false;
+    if terms(state.query()).is_none() { return false }
+    if state.wins[k].pending.is_some() {
+        // going back is the way out of a slide that cannot finish (a source that keeps failing); going
+        // on is already asked
+        if !before { return false }
+        state.wins[k].pending = None;
     }
     let live = slots();
     let sources = live_sources(state, &live);
