@@ -6,14 +6,21 @@ use super::ass::{self, Content, Event, Font, Source};
 use std::collections::BTreeMap;
 use std::sync::{Arc, MutexGuard};
 
+// What can be shown is never cut by a count. Every ASS track of the file keeps its header (a
+// copy of bytes FFmpeg already holds, so memory is bounded by the file's own stream headers) and
+// every attached font is admitted until the font byte budget (`ass::FontBudget`) is spent. What
+// is bounded is per-track EVENT memory and the per-push work: a forward window of
+// `MAX_EVENTS` events and `MAX_EVENT_BYTES` bytes, of which the selected track may use a whole
+// script's worth and the others share one pool of the same size.
 pub const MAX_HEADER_BYTES: usize = 1024 * 1024;
-pub const MAX_HEADERS_BYTES: usize = 4 * MAX_HEADER_BYTES;
-pub const MAX_TRACKS: usize = 64;
-pub const MAX_FONTS: usize = 128;
-pub const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PACKET_BYTES: usize = 256 * 1024;
 const MAX_EVENTS: usize = 8192;
 const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
+/// Byte pool the unselected tracks' events share between them (the selected track has its own).
+const OTHER_TRACKS_EVENT_BYTES: usize = 8 * 1024 * 1024;
+/// An event this far ahead of the newest packet read can only be one a backward seek left
+/// behind; the demuxer reads it again on its way forward, so it is retired first.
+const STALE_AHEAD_MS: i64 = 5_000;
 const MAX_MEDIA_KEY_BYTES: usize = 64 * 1024;
 
 #[derive(Default)]
@@ -24,6 +31,10 @@ pub struct Store {
     awaiting_reopen: bool,
     tracks: BTreeMap<i32, Arc<Source>>,
     fonts: Option<Arc<[Font]>>,
+    // Dedup index: the events held per track, so a reread after a seek is an O(1) lookup.
+    seen: BTreeMap<i32, std::collections::HashSet<Event>>,
+    // The track the viewer is watching (mirrors `desired_sub_idx`), which gets the full budget.
+    selected_track: Option<i32>,
 }
 fn store() -> MutexGuard<'static, Store> {
     super::SHARED
@@ -40,6 +51,8 @@ impl Store {
             awaiting_reopen: false,
             tracks: BTreeMap::new(),
             fonts: None,
+            seen: BTreeMap::new(),
+            selected_track: None,
         }
     }
 
@@ -48,6 +61,7 @@ impl Store {
         self.media_key = None;
         self.awaiting_reopen = false;
         self.tracks.clear();
+        self.seen.clear();
         self.fonts = None;
     }
 
@@ -84,29 +98,26 @@ impl Store {
         if !media_key.is_empty() && media_key.len() <= MAX_MEDIA_KEY_BYTES {
             self.media_key = Some(media_key.to_owned());
         }
-        let mut bytes = 0;
+        // A font that does not fit the budget is skipped (a later, smaller one still fits);
+        // text that names it falls back to the app's default face, so nothing is hidden.
+        let mut budget = ass::FontBudget::default();
         let fonts: Arc<[Font]> = fonts
             .into_iter()
-            .take(MAX_FONTS)
-            .filter(|f| {
-                bytes += f.data.len();
-                bytes <= MAX_FONT_BYTES
-            })
+            .filter(|f| budget.admit(f.data.len()))
             .collect::<Vec<_>>()
             .into();
         self.fonts = Some(fonts.clone());
-        let mut header_bytes = 0;
-        for (track, header) in headers.into_iter().take(MAX_TRACKS) {
-            if header.len() > MAX_HEADER_BYTES || header_bytes + header.len() > MAX_HEADERS_BYTES {
+        for (track, header) in headers {
+            if header.len() > MAX_HEADER_BYTES {
                 continue;
             }
-            header_bytes += header.len();
             // An unchanged inventory also preserves the per-track/global byte budgets.
             // A demux reopen seeks to a video cue and may never resend a long sign.
             let events = previous.get(&track).and_then(|source| match &source.content {
                 Content::Embedded { events, .. } => Some(events.clone()),
                 _ => None,
             }).unwrap_or_else(|| Arc::from([]));
+            self.seen.insert(track, events.iter().cloned().collect());
             self.tracks.insert(
                 track,
                 Arc::new(Source {
@@ -143,31 +154,66 @@ impl Store {
         };
         // Copies only small event descriptors and Arc handles. Font/script/payload bytes stay
         // shared, and the render worker never holds this store lock during native work.
-        if events.iter().any(|known| known == &event) {
+        // The copy is bounded by the window (`MAX_EVENTS`); the dedup lookup is O(1).
+        let seen = self.seen.entry(track).or_default();
+        if seen.contains(&event) {
             return; // reread after a backward seek: preserve one source event and its budget
         }
-        let mut events: Vec<_> = events
-            .iter()
-            .filter(|e| e.start_ms.saturating_add(e.duration_ms) >= floor_ms)
-            .cloned()
-            .collect();
-        events.push(event);
-        let mut bytes: usize = events.iter().map(|e| e.payload.len()).sum();
-        // Dense karaoke can carry many events at one timestamp. Bound BYTES as well as count;
-        // retire the earliest-ending events first, retaining the useful forward window.
-        // A file with dozens of subtitle languages shares one 16 MiB packet allowance.
-        // Each individual native source also fits the renderer's 8 MiB script bound.
-        let budget =
-            (MAX_EVENT_BYTES - header.len()).min(16 * 1024 * 1024 / self.tracks.len().max(1));
-        if events.len() > MAX_EVENTS || bytes > budget {
-            events.sort_by_key(|e| e.start_ms.saturating_add(e.duration_ms));
-            let mut n = 0;
-            while events.len() - n > MAX_EVENTS || bytes > budget {
-                bytes -= events[n].payload.len();
-                n += 1;
+        let mut kept: Vec<Event> = Vec::with_capacity(events.len() + 1);
+        for e in events.iter() {
+            if e.start_ms.saturating_add(e.duration_ms) >= floor_ms {
+                kept.push(e.clone());
+            } else {
+                seen.remove(e);
             }
-            events.drain(..n);
         }
+        let frontier = event.start_ms;
+        seen.insert(event.clone());
+        kept.push(event);
+        let mut bytes: usize = kept.iter().map(|e| e.payload.len()).sum();
+        // Dense karaoke can carry many events at one timestamp. Bound BYTES as well as count.
+        // Each individual native source also fits the renderer's 8 MiB script bound.
+        let cap = MAX_EVENT_BYTES.saturating_sub(header.len());
+        let budget = if self.selected_track == Some(track) {
+            cap
+        } else {
+            let others = self.tracks.len() - usize::from(self.selected_track.is_some_and(|t| self.tracks.contains_key(&t)));
+            cap.min(OTHER_TRACKS_EVENT_BYTES / others.max(1))
+        };
+        if kept.len() > MAX_EVENTS || bytes > budget {
+            // Retire, in order: events far AHEAD of the packet just read (left by a backward seek;
+            // the demuxer reads them again, farthest first), then the earliest-ending, which keeps
+            // the useful forward window. Surviving events keep their arrival order.
+            let mut order: Vec<usize> = (0..kept.len()).collect();
+            order.sort_by_key(|&i| {
+                let e = &kept[i];
+                if e.start_ms > frontier.saturating_add(STALE_AHEAD_MS) {
+                    (0u8, -e.start_ms)
+                } else {
+                    (1u8, e.start_ms.saturating_add(e.duration_ms))
+                }
+            });
+            let mut retire = vec![false; kept.len()];
+            let mut left = kept.len();
+            for &i in &order {
+                if left <= MAX_EVENTS && bytes <= budget {
+                    break;
+                }
+                retire[i] = true;
+                bytes -= kept[i].payload.len();
+                left -= 1;
+            }
+            let mut i = 0;
+            kept.retain(|e| {
+                let drop = retire[i];
+                i += 1;
+                if drop {
+                    seen.remove(e);
+                }
+                !drop
+            });
+        }
+        let events = kept;
         let source = Source {
             id: old.id,
             revision: old.revision.wrapping_add(1),
@@ -215,7 +261,9 @@ pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, payload: &[
     if payload.len() > MAX_PACKET_BYTES {
         return;
     }
-    store().push(
+    let mut store = store();
+    store.selected_track = Some(super::desired_sub_idx()).filter(|&t| t >= 0);
+    store.push(
         generation,
         track,
         Event {
@@ -480,6 +528,127 @@ mod tests {
         s.push(g, 0, event("stale", 2000), 0);
         assert!(s.tracks.is_empty());
     }
+    fn embedded(s: &Store, track: i32) -> Vec<Event> {
+        let Content::Embedded { events, .. } = &s.tracks[&track].content else { panic!() };
+        events.to_vec()
+    }
+
+    #[test]
+    fn the_seventieth_track_renders_styled_when_selected() {
+        let mut s = Store::new();
+        let headers = (0..70).map(|t| (t, format!("header {t}").into_bytes())).collect();
+        let g = s.begin("fixture", headers, vec![]);
+        for t in [0, 63, 64, 69] {
+            s.push(g, t, event(&format!("track {t}"), 1000), 0);
+        }
+        let source = s.selected(69).expect("track 70 has a source");
+        let Content::Embedded { header, events, .. } = &source.content else { panic!() };
+        assert_eq!(header.as_ref(), b"header 69");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload.as_ref(), b"track 69");
+        assert_eq!(s.tracks.len(), 70, "headers of every track are kept");
+    }
+
+    #[test]
+    fn two_hundred_fonts_are_all_available_to_the_renderer() {
+        let mut s = Store::new();
+        let fonts = (0..200)
+            .map(|i| Font { name: format!("f{i}.ttf"), data: Arc::from(vec![i as u8; 2048]) })
+            .collect();
+        s.begin("fixture", vec![(0, b"header".to_vec())], fonts);
+        let held = s.fonts.clone().unwrap();
+        assert_eq!(held.len(), 200);
+        assert!(held.iter().any(|f| f.name == "f199.ttf"), "a font late in the list is found");
+    }
+
+    #[test]
+    fn fonts_past_the_byte_budget_are_skipped_not_fatal() {
+        let mut s = Store::new();
+        let big = |name: &str, mib: usize| Font {
+            name: name.into(),
+            data: Arc::from(vec![1u8; mib * 1024 * 1024]),
+        };
+        let fonts = vec![big("a.ttf", 20), big("b.ttf", 20), big("c.ttf", 4), big("d.ttf", 1)];
+        s.begin("fixture", vec![(0, b"header".to_vec())], fonts);
+        let held = s.fonts.clone().unwrap();
+        let names: Vec<_> = held.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["a.ttf", "c.ttf", "d.ttf"], "b does not fit; smaller later fonts still do");
+        let total: usize = held.iter().map(|f| f.data.len()).sum();
+        assert!(total <= ass::MAX_FONT_BYTES);
+        assert!(s.selected(0).is_some(), "the track itself is never refused");
+    }
+
+    fn timed(n: i64) -> Event {
+        Event {
+            start_ms: n * 1000,
+            duration_ms: 2000,
+            payload: format!("{n},0,Default,,0,0,0,,line {n}").into_bytes().into(),
+        }
+    }
+
+    #[test]
+    fn a_backward_seek_after_a_deep_read_keeps_the_events_at_the_target() {
+        let mut s = Store::new();
+        let g = s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
+        // A typeset-heavy file read 30 000 events in; the window holds the latest 8 192.
+        for n in 0..30_000 {
+            s.push(g, 0, timed(n), 0);
+        }
+        // The viewer rewinds to event 10 000 (the floor follows the rebased clock).
+        s.seek(g);
+        let floor_ms = 10_000_000 - 62_000;
+        for n in 10_000..10_100 {
+            s.push(g, 0, timed(n), floor_ms);
+        }
+        let held = embedded(&s, 0);
+        for n in 10_000..10_100 {
+            assert!(held.contains(&timed(n)), "event {n} at the seek target was lost");
+        }
+        assert!(held.len() <= 8192);
+    }
+
+    #[test]
+    fn duplicates_after_a_seek_are_not_doubled_and_the_index_tracks_evictions() {
+        let mut s = Store::new();
+        let g = s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
+        for n in 0..20_000 {
+            s.push(g, 0, timed(n), 0);
+        }
+        s.seek(g);
+        for n in 19_000..20_000 {
+            s.push(g, 0, timed(n), 0);
+        }
+        let held = embedded(&s, 0);
+        let mut unique = held.clone();
+        unique.sort_by_key(|e| e.start_ms);
+        unique.dedup();
+        assert_eq!(unique.len(), held.len(), "a reread must not double an event");
+        assert_eq!(s.seen[&0].len(), held.len(), "the dedup index mirrors the held events");
+    }
+
+    #[test]
+    fn held_event_bytes_stay_within_the_budgets() {
+        let mut s = Store::new();
+        let headers = (0..4).map(|t| (t, b"header".to_vec())).collect();
+        let g = s.begin("fixture", headers, vec![]);
+        let heavy = |n: i64| Event {
+            start_ms: n,
+            duration_ms: 100_000_000,
+            payload: format!("{n},{}", "x".repeat(200_000)).into_bytes().into(),
+        };
+        s.selected_track = Some(2);
+        for n in 0..120 {
+            for t in 0..4 {
+                s.push(g, t, heavy(n), 0);
+            }
+        }
+        let bytes = |t| embedded(&s, t).iter().map(|e| e.payload.len()).sum::<usize>();
+        assert!(bytes(2) <= MAX_EVENT_BYTES - 6, "selected track within the script bound");
+        assert!(bytes(2) > 7 * 1024 * 1024, "the selected track gets the full budget");
+        let others: usize = [0, 1, 3].iter().map(|&t| bytes(t)).sum();
+        assert!(others <= 8 * 1024 * 1024, "unselected tracks share one pool");
+    }
+
     #[test]
     fn callback_jitter_never_rewinds_on_the_following_tick() {
         let mut c = Clock::default();

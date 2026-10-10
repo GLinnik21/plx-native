@@ -546,3 +546,23 @@ fn native_fragmented_script_stays_bounded_without_dropping_signs() {
         );
     }
 }
+
+#[test]
+fn a_track_is_never_refused_for_the_count_or_size_of_its_fonts() {
+    let font = |i: usize, len: usize| Font {
+        name: format!("f{i}.ttf"),
+        data: Arc::from(vec![1u8; len]),
+    };
+    let mut fonts: Vec<Font> = (0..200).map(|i| font(i, 2048)).collect();
+    fonts.push(font(200, MAX_FONT_BYTES + 1));
+    let mut s = source(vec![event(1, 0, 1000)]);
+    let Content::Embedded { fonts: slot, .. } = &mut s.content else { panic!() };
+    *slot = fonts.into();
+    assert_eq!(validate(&s), Ok(()), "the renderer skips unusable fonts, the text still shows");
+}
+
+#[test]
+fn a_dense_track_is_not_refused_for_its_event_count() {
+    let events = (0..30_000).map(|i| event(i, i as i64, 1000)).collect();
+    assert_eq!(validate(&source(events)), Ok(()));
+}
