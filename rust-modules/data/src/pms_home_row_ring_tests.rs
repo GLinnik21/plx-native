@@ -169,3 +169,19 @@ fn hold_that_does_not_move_does_nothing() {
     assert_eq!((ring.o.state.catalog_gen, ring.launched.len()), (gen, asked));
     plx_plex::plex::reset_servers_for_test();
 }
+
+#[test]
+fn a_queued_read_for_a_row_that_left_the_ring_is_dropped_before_it_starts() {
+    let _g = plx_base::testlock::serial();
+    let mut ring = Ring::new(ROWS);
+    // the fan-out gate had no room for row 5's read, so it waits in the queue, deferred
+    let source = &mut ring.o.state.srcs[0];
+    source.page = Some(PageQuery { id: "x.5".into(), key: "/hubs/sections/1/5".into(), start: 0, before: false, hidden: Vec::new(), reload: true });
+    source.deferred = true;
+    ring.hold(100, 104);
+    ring.settle();
+    let asked: Vec<&str> = ring.launched.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert!(!asked.contains(&"x.5"), "row 5 left the ring before its read started: {asked:?}");
+    assert!(asked.iter().any(|id| *id == "x.100"), "the rows the key stopped on were read: {asked:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
