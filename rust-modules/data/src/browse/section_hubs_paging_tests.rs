@@ -154,6 +154,48 @@ fn a_rescan_through_more_than_a_window_of_known_keys_does_not_end_the_row() {
     assert!(!hubs.committed[0].more);
 }
 
+/// The shelf's repeat ladder reads a landing that moved nothing it sees as an ask nobody answered
+/// unless the row says a page landed: the count moves on every landing, fruitful or not, and not on
+/// a failure, and the 1000-item row with 600 known keys ends after one ask per landing.
+#[test]
+fn every_landing_on_a_section_row_moves_its_epoch_and_a_failure_does_not_and_the_walk_ends() {
+    let (len, known) = (1000, 600);
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut hubs = published(&one_row(&(0..12).collect::<Vec<_>>(), len));
+    let shelf = &mut Arc::make_mut(&mut hubs.committed)[0];
+    let window: Vec<usize> = (known - 12..known).collect();
+    shelf.items = window.iter().map(|k| PmsMovie { rk: k.to_string(), sid: sid(), ..Default::default() }).collect();
+    shelf.positions = window.clone();
+    (shelf.offset, shelf.end, shelf.more) = (known - 12, known, true);
+    shelf.row.ledger = Some(paging::Ledger { keys: (0..known).map(|k| paging::LedgerKey::new(&k.to_string())).collect(),
+        active: true, next: 0, rescans: 1, ..Default::default() });
+    let epoch = |hubs: &SecHubs| hubs.committed[0].epoch;
+    assert!(hubs.want_page(hubs.revision, ID, KEY, false));
+    let ask = hubs.next_ask().unwrap();
+    let before = epoch(&hubs);
+    step(&mut hubs, &ask, |_, _| None);
+    assert_eq!(epoch(&hubs), before, "a failure is not a landing");
+    let (mut asks, mut fruitless) = (0, 0);
+    // the failed ask stands and the store's backoff gives it back; after that, one ask per landing
+    for _ in 0..100_000 { if hubs.next_ask().is_some() { break; } hubs.tick(); }
+    loop {
+        let ask = match hubs.next_ask() {
+            Some(ask) => ask,
+            None if hubs.want_page(hubs.revision, ID, KEY, false) => hubs.next_ask().unwrap(),
+            None => break,
+        };
+        let (e, items, end) = (epoch(&hubs), keys(&hubs.committed[0]), hubs.committed[0].end);
+        step(&mut hubs, &ask, listing);
+        asks += 1;
+        assert_eq!(epoch(&hubs), e + 1, "every landing moves the count");
+        if keys(&hubs.committed[0]) == items && hubs.committed[0].end == end { fruitless += 1; }
+        assert!(asks < 400, "the walk must end");
+    }
+    assert!(!hubs.committed[0].more, "the row ended at the listing's end");
+    assert!(fruitless > 0, "the rescan has landings that move nothing the shelf sees");
+    assert!(fruitless < 100, "and they are bounded: {fruitless}");
+}
+
 #[test]
 fn a_row_with_a_key_the_pager_does_not_admit_keeps_its_preview() {
     let mc: Container = serde_json::from_value(serde_json::json!({"Hub": [{
