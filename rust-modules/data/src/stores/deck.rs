@@ -24,8 +24,6 @@
 //! A refresh does not snap a moved deck back to its head: [`reload`] reads a lane again at its own
 //! offsets and seats the window on the cards it showed, by rating key.
 
-#![allow(dead_code)] // TEMP until wired
-
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -148,6 +146,31 @@ impl Lane {
                 if self.scan.is_none() { self.done = false; }
             }
         }
+    }
+
+    /// Takes the row `gone` picks out of the lane (a card the user removed from the deck): the
+    /// positions after it, the window and the anchors close up by one. True if the lane held it.
+    pub fn remove(&mut self, gone: impl Fn(&CwItem) -> bool) -> bool {
+        let Some(at) = self.rows.iter().position(|row| gone(row)) else { return false };
+        let (position, key) = (self.rows[at].position, self.rows[at].m.rk.clone());
+        self.rows.remove(at);
+        for row in self.rows.iter_mut().filter(|row| row.position > position) { row.position -= 1; }
+        if position < self.lo { self.lo -= 1; }
+        if position < self.hi { self.hi -= 1; }
+        if position < self.reach { self.reach -= 1; }
+        self.total = self.total.saturating_sub(1);
+        let close = |anchor: &mut Anchor, rows: &[CwItem], last: bool| {
+            if anchor.key == key {
+                let near = if last { rows.iter().rev().find(|row| row.position <= position) } else { rows.iter().find(|row| row.position >= position) };
+                *anchor = near.map_or(Anchor { position: position.saturating_sub(1), key: String::new() },
+                    |row| Anchor { position: row.position, key: row.m.rk.clone() });
+            } else if anchor.position > position {
+                anchor.position -= 1;
+            }
+        };
+        close(&mut self.head, &self.rows, false);
+        close(&mut self.tail, &self.rows, true);
+        true
     }
 
     /// Moves the lane onto its ledger: the lookahead is let go (the listing no longer holds it where
@@ -322,7 +345,9 @@ pub(crate) fn advance(lanes: &mut [Lane], forward: bool, n: usize) -> usize {
 /// Brings the window back to the bound after lanes were rebuilt: cards past it are let go from the
 /// old end, and a window that lost cards (finished or removed ones) is filled from the lookahead.
 pub(crate) fn fit(lanes: &mut [Lane]) {
-    drop_excess(lanes, true);
+    // A deck at its head keeps its newest cards; one that has moved keeps the cards it was moving to.
+    let at_head = lanes.iter().all(|lane| lane.lo == 0 && !lane.has_before());
+    drop_excess(lanes, !at_head);
     let shown = shown_count(lanes);
     if shown < MAX_SHELF_ITEMS {
         let usable: Vec<bool> = lanes.iter().map(|lane| !short(lane, true, MAX_SHELF_ITEMS - shown)).collect();

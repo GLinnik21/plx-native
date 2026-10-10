@@ -109,6 +109,7 @@ impl Initial {
             last_sections_gen: self.sections_generation,
             catalog_gen: self.catalog_generation,
             fanout: Default::default(),
+            deck_ask: None,
         };
         let adapter = super::PmsAdapter {
             next_request: AtomicU32::new(self.next_request),

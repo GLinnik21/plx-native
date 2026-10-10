@@ -194,6 +194,18 @@ pub struct PmsState {
     pub catalog_gen: u32,
     /// Which sources may have a hub fetch out this tick ([`crate::stores::fanout`]).
     fanout: crate::stores::fanout::Fanout,
+    /// A Continue Watching move waiting for the servers whose lanes it had to read.
+    deck_ask: Option<DeckAsk>,
+}
+
+/// The id of the merged Continue Watching row, which a page ask names instead of one server's hub.
+const DECK_ID: &str = "home.continue";
+
+/// One move of the Continue Watching deck that is waiting on server reads: it runs when every
+/// server it asked has landed or is retrying, so one failing server never holds the others.
+struct DeckAsk {
+    before: bool,
+    waiting: Vec<ServerId>,
 }
 
 impl Default for PmsState {
@@ -207,6 +219,7 @@ impl Default for PmsState {
             last_sections_gen: 0,
             catalog_gen: 0,
             fanout: Default::default(),
+            deck_ask: None,
         }
     }
 }
@@ -724,7 +737,7 @@ fn apply_edit(b: &mut SourceBuild, sid: ServerId, rk: &str, edit: LocalEdit) -> 
     match edit {
         LocalEdit::Watched(on) => {
             let mut hit = false;
-            for c in b.cw.iter_mut() {
+            for c in b.cw.iter_mut().chain(b.lane.rows.iter_mut()) {
                 if mine(&*c.m) {
                     set_watched(Arc::make_mut(&mut c.m), on);
                     hit = true;
@@ -742,7 +755,7 @@ fn apply_edit(b: &mut SourceBuild, sid: ServerId, rk: &str, edit: LocalEdit) -> 
         LocalEdit::LeftTheDeck => {
             let before = b.cw.len();
             b.cw.retain(|c| !mine(&*c.m));
-            b.cw.len() != before
+            b.lane.remove(|row| mine(&*row.m)) || b.cw.len() != before
         }
     }
 }
@@ -909,7 +922,16 @@ fn run_page_cmd(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
     use crate::stores::hubs::HubsCmd;
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     match cmd {
+        HubsCmd::CancelPage { id, .. } if id == DECK_ID => {
+            state.deck_ask = None;
+            let sids: Vec<ServerId> = state.srcs.iter().map(|s| s.sid).collect();
+            for sid in sids { cancel_page(state, sid, DECK_ID, ""); }
+        }
         HubsCmd::CancelPage { sid, id, key } => cancel_page(state, sid, &id, &key),
+        HubsCmd::Page { id, before, .. } if id == DECK_ID => {
+            sync_roster_with_scope(state, scope);
+            endpoints = request_deck_page(state, adapter, before, scope, launch);
+        }
         HubsCmd::Page { sid, id, key, before } => {
             sync_roster_with_scope(state, scope);
             if let Some(endpoint) = request_page(state, adapter, sid, &id, &key, before, scope, launch) { endpoints.insert(endpoint); }
@@ -1098,6 +1120,93 @@ fn fetch_window(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimu
     }] })
 }
 
+/// The live sources' lanes, moved out so the deck can work on them as one slice; `put_lanes` returns
+/// them. The order is the one `live_sources` gives, which is the deck's roster order.
+fn take_lanes(srcs: &mut [Src]) -> (Vec<usize>, Vec<deck::Lane>) {
+    let idx: Vec<usize> = (0..srcs.len()).filter(|&i| srcs[i].last.is_some()).collect();
+    let lanes = idx.iter().filter_map(|&i| srcs[i].last.as_mut().map(|b| std::mem::take(&mut b.lane))).collect();
+    (idx, lanes)
+}
+
+fn put_lanes(srcs: &mut [Src], idx: &[usize], lanes: Vec<deck::Lane>) {
+    for (&i, lane) in idx.iter().zip(lanes) {
+        if let Some(build) = srcs[i].last.as_mut() { build.lane = lane; }
+    }
+}
+
+/// Puts the deck on the lanes that have not got it (a first answer, a server that joined, a lane
+/// whose reload failed) and brings a refreshed window back to its bound.
+fn settle_deck(srcs: &mut [Src], refreshed: bool) {
+    if srcs.iter().filter_map(|s| s.last.as_ref()).all(|b| b.lane.placed) && !refreshed { return; }
+    let previews: Vec<Vec<CwItem>> = srcs.iter().filter_map(|s| s.last.as_ref()).map(|b| b.cw.clone()).collect();
+    let (idx, mut lanes) = take_lanes(srcs);
+    let refs: Vec<&[CwItem]> = previews.iter().map(Vec::as_slice).collect();
+    deck::place(&mut lanes, &refs);
+    if refreshed { deck::fit(&mut lanes); }
+    put_lanes(srcs, &idx, lanes);
+}
+
+/// Moves the deck one page in a direction; a lane that could not be read stays where it is.
+fn advance_deck(srcs: &mut [Src], before: bool) {
+    let (idx, mut lanes) = take_lanes(srcs);
+    deck::advance(&mut lanes, !before, deck::PAGE);
+    put_lanes(srcs, &idx, lanes);
+}
+
+/// A move of the Continue Watching deck. Every lane that holds too few rows to be sure of the next
+/// cards is read through the fan-out gate; when each of those has landed (or is retrying) the deck
+/// moves. With nothing to read, it moves at once.
+fn request_deck_page(state: &mut PmsState, adapter: &PmsAdapter, before: bool, scope: &BrowseScope,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    let mut endpoints = crate::stores::EndpointRefreshSet::default();
+    if state.deck_ask.is_some() { return endpoints; }
+    let gen = state.hub_gen;
+    let mut srcs = std::mem::take(&mut state.srcs);
+    let (idx, lanes) = take_lanes(&mut srcs);
+    let short: Vec<usize> = deck::needs(&lanes, !before, deck::PAGE).into_iter().map(|k| idx[k]).collect();
+    put_lanes(&mut srcs, &idx, lanes);
+    if idx.is_empty() || srcs.iter().any(|s| s.last.as_ref().is_some_and(|b| !b.lane.placed)) {
+        state.srcs = srcs;
+        return endpoints;
+    }
+    let mut waiting = Vec::new();
+    for &i in &short {
+        let s = &mut srcs[i];
+        if refresh_src_lifecycle(s) || s.fetching || s.page.is_some() || s.state != HubState::Ready { continue; }
+        s.retry_n = 0;
+        s.page = Some(PageQuery { id: DECK_ID.into(), key: String::new(), start: 0, before, hidden: Vec::new() });
+        waiting.push(i);
+    }
+    if waiting.is_empty() {
+        advance_deck(&mut srcs, before);
+        let mut build = merge_with_scope(&srcs, scope);
+        state.srcs = srcs;
+        preserve_heroes(state, &mut build);
+        commit(state, build);
+        return endpoints;
+    }
+    let mut turn = fanout_turn(&mut state.fanout, &srcs, source_waiting);
+    for &i in &waiting {
+        if let Some(request) = kick_gated(&mut turn, gen, adapter, &mut srcs[i], scope, &mut *launch) { endpoints.insert(request); }
+    }
+    state.deck_ask = Some(DeckAsk { before, waiting: waiting.iter().map(|&i| srcs[i].sid).collect() });
+    state.srcs = srcs;
+    endpoints
+}
+
+/// The deck's pending move has nothing left to wait for: every server it asked has landed, or
+/// failed and is retrying (or gave the page up).
+fn deck_ready(ask: &DeckAsk, srcs: &[Src]) -> bool {
+    !ask.waiting.iter().any(|sid| srcs.iter().any(|s| s.sid == *sid && s.retry_n == 0
+        && s.page.as_ref().is_some_and(|page| page.id == DECK_ID)))
+}
+
+fn land_lane(source: &mut Src, build: SourceBuild) -> bool {
+    let Some(last) = source.last.as_mut() else { return false };
+    last.lane = build.lane;
+    true
+}
+
 fn land_page(source: &mut Src, page: &PageQuery, build: SourceBuild) -> bool {
     let Some(current) = source.last.as_mut().and_then(|build| build.shelves.iter_mut()
         .find(|shelf| shelf.is(&page.id, &page.key))) else { return false };
@@ -1144,7 +1253,16 @@ fn fetch_source(c: &plx_plex::plex::Client, sid: ServerId) -> Option<SourceBuild
     // THIS SOURCE (`?`) — nothing of it commits and it retries on its own backoff. Losing the most
     // important shelf to a transient error would be worse than briefly showing the previous one.
     let cw = c.continue_watching(HUB_FETCH_COUNT)?;
-    Some(project(&mc, &cw, sid))
+    let mut build = project(&mc, &cw, sid);
+    if !build.cw.is_empty() && !build.lane.done {
+        // The first window is the merge of the servers' previews, which is the deck's order only if
+        // no server holds a newer card past its preview: one more page per server makes it so. A
+        // failed read leaves the preview, and the lane reads on when the user asks.
+        build.lane.rows = build.cw.clone();
+        let _ = deck::read_ahead(sid, &mut build.lane, MAX_SHELF_ITEMS, &[],
+            |start, size| c.continue_watching_page(start as i64, size as i64));
+    }
+    Some(build)
 }
 
 /// Project one source's `/hubs` + `/hubs/continueWatching` responses into its [`SourceBuild`].
@@ -1390,13 +1508,24 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
     let mut row_handle: Vec<&str> = Vec::new();
 
     // ---- 1. the merged deck ----
-    let mut cw: Vec<(&str, &CwItem)> = live
-        .iter()
-        .flat_map(|(h, b)| b.cw.iter().map(move |c| (*h, c)))
-        .filter(|(_, c)| item_pinned(pins, &c.m))
-        .collect();
-    // stable: equal timestamps keep source order, so the owned server wins a tie
-    cw.sort_by(|a, b| b.1.last_viewed_at.cmp(&a.1.last_viewed_at));
+    // Once the deck is placed it is the merge of every server's lane window (`stores::deck`); before
+    // that (a fixture that never settled) it is the previews, sorted.
+    let lanes: Vec<&deck::Lane> = live.iter().map(|(_, b)| &b.lane).collect();
+    let (mut cw, deck_offset, deck_more): (Vec<(&str, &CwItem)>, usize, bool) =
+        if !lanes.is_empty() && lanes.iter().all(|lane| lane.placed) {
+            let (cards, before, after) = deck::merge_deck(&lanes);
+            let offset = if before { lanes.iter().map(|lane| lane.lo).sum::<usize>().max(1) } else { 0 };
+            (cards.into_iter().map(|(i, c)| (live[i].0, c)).filter(|(_, c)| item_pinned(pins, &c.m)).collect(), offset, after)
+        } else {
+            let mut cw: Vec<(&str, &CwItem)> = live
+                .iter()
+                .flat_map(|(h, b)| b.cw.iter().map(move |c| (*h, c)))
+                .filter(|(_, c)| item_pinned(pins, &c.m))
+                .collect();
+            // stable: equal timestamps keep source order, so the owned server wins a tie
+            cw.sort_by(|a, b| b.1.last_viewed_at.cmp(&a.1.last_viewed_at));
+            (cw, 0, false)
+        };
     cw.truncate(MAX_SHELF_ITEMS);
     for (h, c) in &cw {
         new_cat.push(Arc::clone(&c.m));
@@ -1413,7 +1542,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
             total: 0,
             start: 0,
             len: new_cat.len(),
-            offset: 0, more: false,
+            offset: deck_offset, more: deck_more,
         });
     }
 
@@ -1591,6 +1720,7 @@ impl Src {
             gen: generation, seq: mint(), sid: self.sid,
             client: LandingClient::live(client), token_gen: client.token_gen(),
             page: self.page.clone(),
+            lane: self.last.as_ref().filter(|build| build.lane.placed).map(|build| (build.lane.clone(), Vec::new())),
             window: self.page.as_ref().and_then(|page| self.last.as_ref().and_then(|build|
                 find_shelf(&build.shelves, &page.id, &page.key))).cloned(),
             windows: self.last.as_ref().map_or_else(Vec::new, |build| build.shelves.iter()
@@ -1691,6 +1821,9 @@ pub struct HubRequest {
     /// itself (a sample or ledger row cannot be re-read at an offset, so the refresh keeps it).
     windows: Vec<(PageQuery, usize, Shelf)>,
     window: Option<Shelf>,
+    /// The Continue Watching lane this source holds once the deck is placed on it, and the sections
+    /// the user hid: a deck page reads from it, a refresh reloads it at its own offsets.
+    lane: Option<(deck::Lane, Vec<i64>)>,
 }
 
 impl HubRequest {
@@ -1701,12 +1834,30 @@ impl HubRequest {
         self.page.as_ref().map(|page| serde_json::json!({"id":page.id,"key":page.key,"start":page.start,"before":page.before,"hidden":page.hidden}))
     }
     fn fetch(&self) -> Option<SourceBuild> {
+        let client = self.client.resource;
         match &self.page {
+            Some(page) if page.id == DECK_ID => {
+                let (mut lane, hidden) = self.lane.clone()?;
+                let list = |start: usize, size: usize| client.continue_watching_page(start as i64, size as i64);
+                let read = if page.before {
+                    deck::read_behind(self.sid, &mut lane, deck::PAGE, &hidden, list, |keys| many_items(client, keys))
+                } else {
+                    deck::read_ahead(self.sid, &mut lane, deck::PAGE, &hidden, list)
+                };
+                read.ok()?;
+                Some(SourceBuild { lane, ..SourceBuild::default() })
+            }
             Some(page) => fetch_row(self.sid, page, self.window.as_ref(), 0,
                 |start, size| self.client.resource.hub_items_paged(&page.key, start as i64, size as i64),
                 |keys| many_items(self.client.resource, keys)),
             None => {
                 let mut build = fetch_source(self.client.resource, self.sid)?;
+                if let Some((old, hidden)) = &self.lane {
+                    // A deck that has moved stays where it is: the lane is read again at its own
+                    // offsets, which also brings the progress of its cards up to date.
+                    let list = |start: usize, size: usize| client.continue_watching_page(start as i64, size as i64);
+                    if let Ok(lane) = deck::reload(self.sid, old, hidden, list) { build.lane = lane; }
+                }
                 for (window, end, old) in &self.windows {
                     let Some(shelf) = build.shelves.iter_mut().find(|shelf| shelf.is(&window.id, &window.key)) else { continue };
                     if matches!(old.row.mode, paging::RowMode::Sample(_)) || old.row.ledger.as_ref().is_some_and(|ledger| ledger.active) {
@@ -2150,6 +2301,7 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, l
     let Some(mut request) = s.begin_request(c, gen,
         || adapter.next_request.fetch_add(1, Ordering::Relaxed)) else { return None };
     for (window, _, _) in &mut request.windows { window.hidden = hidden_sections(scope, request.sid); }
+    if let Some((_, hidden)) = &mut request.lane { *hidden = hidden_sections(scope, request.sid); }
     let sid = request.sid;
     let spawned = launch(request);
     if !spawned {
@@ -2397,8 +2549,9 @@ fn run_with_scope(
     match cmd {
         paging @ (HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }) => {
             let mut launch = |r| spawn_fetch(adapter, r);
+            let before = state.catalog_gen;
             let endpoints = run_page_cmd(state, adapter, scope, paging, &mut launch);
-            crate::stores::StoreOutcome { changed: false, endpoints }
+            crate::stores::StoreOutcome { changed: before != state.catalog_gen, endpoints }
         }
         HubsCmd::RefetchHubs => {
             let mut launch = |r| spawn_fetch(adapter, r);
@@ -2511,7 +2664,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         match l.build {
             Some(b) => {
                 if let Some(page) = s.page.take() {
-                    dirty |= land_page(s, &page, b);
+                    dirty |= if page.id == DECK_ID { land_lane(s, b) } else { land_page(s, &page, b) };
                     paged = true;
                     s.retry_n = 0;
                     s.retry_s = 0.0;
@@ -2523,6 +2676,11 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
             }
             None => { endpoints.insert(landed_fail(s)); }
         }
+    }
+    if state.deck_ask.as_ref().is_some_and(|ask| deck_ready(ask, &srcs)) {
+        if let Some(ask) = state.deck_ask.take() { advance_deck(&mut srcs, ask.before); }
+        dirty = true;
+        paged = true;
     }
     // Anything but Ready with nothing in flight is a state only a fetch can leave: Failed (with a
     // backoff owed) or a Loading whose worker landed stale and was dropped — the latter owes
@@ -2548,6 +2706,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     // beyond the rebuilt catalog. Cheap enough to run on a generation change rather than to try to
     // predict which changes matter.
     let scope_moved = browse_scope_moved(state, scope);
+    if dirty || scope_moved { settle_deck(&mut srcs, refreshed); }
     let build = (dirty || scope_moved).then(|| {
         let t0 = std::time::Instant::now();
         let mut build = merge_with_scope(&srcs, scope);
@@ -2739,6 +2898,7 @@ fn reset_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, scope: &Bro
     let _ = adapter; // every HubsStore command path rotates before applying `HubsCmd::Reset`
     state.hub_gen = state.hub_gen.wrapping_add(1); // a worker still running belongs to the old identity
     state.srcs = Vec::new();
+    state.deck_ask = None;
     forget_roster(state);
     state.seen_facts = u32::MAX;
     // Adopt the retained pin semantics with the empty commit below: a change from BEFORE this reset
