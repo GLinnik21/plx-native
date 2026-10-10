@@ -152,6 +152,30 @@ fn a_new_query_releases_every_lane_window_and_pending_ask() {
     assert!(rig.owner.state.src.iter().all(|s| !s.tails[0].inited), "no lane survives the query");
 }
 
+/// Focus left the edge a slide was asked from while its sources were still reading: the screen
+/// withdraws the ask, and the reads that answer afterwards must not commit a window the reader has
+/// walked away from. A withdrawal for a window that has since moved is a no-op.
+#[test]
+fn a_withdrawn_slide_is_not_committed_when_its_sources_answer() {
+    let mut rig = Rig::new(1, Fake::new().movies(100));
+    rig.page(Kind::Movie, false);
+    let lo = rig.owner.state.wins[0].lo;
+    assert!(lo > 0);
+    // a slide that cannot finish yet: its source fails, so the ask stays pending
+    rig.fake.lock().unwrap().fail_listings = usize::MAX;
+    rig.page(Kind::Movie, false);
+    assert!(rig.owner.state.wins[0].pending.is_some(), "the slide is owed");
+    rig.owner.state.run(&rig.owner.adapter, SearchCmd::PageCancel { kind: Kind::Movie, seen: lo + 1000 });
+    assert!(rig.owner.state.wins[0].pending.is_some(), "a withdrawal naming another window withdraws nothing");
+    rig.owner.state.run(&rig.owner.adapter, SearchCmd::PageCancel { kind: Kind::Movie, seen: lo });
+    assert!(rig.owner.state.wins[0].pending.is_none(), "the slide is withdrawn");
+    rig.fake.lock().unwrap().fail_listings = 0;
+    rig.drain(60);
+    assert_eq!(rig.owner.state.wins[0].lo, lo, "nothing commits once the sources answer");
+    assert!(rig.page_settled(Kind::Movie, 800), "asking again finishes");
+    assert!(rig.owner.state.wins[0].lo > lo, "and asking again slides the window");
+}
+
 #[test]
 fn forty_servers_never_have_more_than_four_requests_in_flight() {
     let mut rig = Rig::new(40, Fake::new().movies(60));

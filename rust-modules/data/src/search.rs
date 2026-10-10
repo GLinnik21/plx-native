@@ -1677,6 +1677,16 @@ fn page(state: &mut SearchState, kind: Kind, before: bool, seen: usize) -> bool 
     false
 }
 
+/// Withdraws the slide [`page`] asked for. The tails the sources have read stay (asking again
+/// commits at once if they cover it); only the commit of the window is given up. A window that has
+/// moved since (`seen` differs) has already landed what was asked, so there is nothing to withdraw.
+fn cancel_page(state: &mut SearchState, kind: Kind, seen: usize) -> bool {
+    let Some(k) = KINDS.iter().position(|x| *x == kind) else { return false };
+    if state.wins[k].lo != seen || state.wins[k].pending.is_none() { return false; }
+    state.wins[k].pending = None;
+    false
+}
+
 /// WORKER THREAD: one server's `/hubs/search` response, projected into [`KINDS`] order.
 ///
 /// A search response carries EVERY hub type the server knows about — 17 of them on this set, most
@@ -1842,6 +1852,7 @@ fn run_with_optional_directory(
         }
         SearchCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(state, sid, &rk, on),
         SearchCmd::Page { kind, before, seen } => page(state, kind, before, seen),
+        SearchCmd::PageCancel { kind, seen } => cancel_page(state, kind, seen),
     }
 }
 

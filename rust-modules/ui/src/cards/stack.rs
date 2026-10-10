@@ -421,6 +421,22 @@ impl<K: Copy + Eq> Stack<K> {
         }
     }
 
+    /// The edge of shelf `k` whose page ask its owner must withdraw this tick ([`Shelf::page_cancel`]).
+    pub fn page_cancel<H: Host<Elem = u32>, P: StackPage<H, Key = K>>(
+        &mut self,
+        p: &P,
+        cx: &Cx<'_, H>,
+        k: K,
+        offset: usize,
+    ) -> Option<super::PageEdge> {
+        let i = self.index(k)?;
+        let src = p.cards(cx, k)?;
+        match &mut self.bodies[i] {
+            Body::Shelf(s) => s.page_cancel(cx, &src, offset, true),
+            _ => None,
+        }
+    }
+
     /// Where shelf `k`'s tiles sit now.
     pub fn shelf_frame<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, k: K) -> Option<SectionFrame> {
         Some(self.frame(p, cx, self.index(k)?))
