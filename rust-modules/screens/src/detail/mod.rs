@@ -110,6 +110,20 @@ struct RestoreIntent {
     season_requested: bool,
 }
 
+/// The range of a long season's episodes the strip last asked the store for, so the same range is
+/// not said every frame; said again after [`EP_RETRY_MS`] while a page in it is still a hole
+/// (a failed fetch is retried that way).
+#[derive(Default)]
+struct EpWant {
+    asked: Option<(usize, usize, Option<usize>, Option<usize>)>,
+    /// The list it was said of: a new season's list is a new thing to ask for.
+    list: u64,
+    at: u32,
+}
+
+const EP_RETRY_MS: u32 = 1000;
+
+
 pub struct DetailScreen {
     entry: EntryId,
     sid: ServerId,
@@ -218,6 +232,8 @@ pub struct DetailScreen {
     scroll: Spring,
     scroll_target: f32,
     episode_scroll: Spring,
+    /// What the episode strip last asked the store to have loaded, and when.
+    ep_want: EpWant,
     tab_scroll: Spring,
     /// The focused episode's pop spring and label-block lift (earned by the TEXT stop alone; the
     /// plate also shows for the still's pop — see `episodes::draw_cell`), keyed by episode so the
@@ -453,6 +469,7 @@ impl DetailScreen {
             episode_scroll: Spring::at(0.0),
             tab_scroll: Spring::at(0.0),
             episode_cells: episodes::Cells::new(),
+            ep_want: EpWant::default(),
             about_card_lift: TextLift::new(),
             about_lang_lift: TextLift::new(),
             related: Shelf::new(entry, cards::Which::Related.style()),
@@ -3265,6 +3282,42 @@ impl DetailScreen {
         }
     }
 
+    /// A long season holds a few pages of its episodes: say which the strip needs (what is on
+    /// screen and on its way to be, plus a page ahead in the direction of travel, the focus and a
+    /// pending restore's target) and the store fetches the holes in it and drops the rest. Said
+    /// when it changes, and again once a second while a page in it is still missing.
+    fn want_episodes<H: ContentLike>(&mut self, d: &Detail, target: f32, focus: Option<usize>, now: u32, fx: &mut Effects<'_, H>) {
+        let len = d.episodes.len();
+        if len <= plx_data::metadata::EPISODE_PAGE {
+            return;
+        }
+        let pos = self.episode_scroll.pos;
+        let (from, to) = if target >= pos { (pos, target) } else { (target, pos) };
+        let (mut lo, mut hi) = (episodes::visible(from, len, 0).start, episodes::visible(to, len, 0).end);
+        if target > pos + 1.0 {
+            hi = (hi + plx_data::metadata::EPISODE_PAGE).min(len);
+        } else if target < pos - 1.0 {
+            lo = lo.saturating_sub(plx_data::metadata::EPISODE_PAGE);
+        }
+        let restore = self
+            .restore_intent
+            .as_ref()
+            .filter(|intent| intent.spot.section == 2)
+            .map(|intent| (intent.spot.col.max(0) as usize).min(len - 1));
+        let want = (lo, hi, focus, restore);
+        let holes = d.episodes.missing(lo, hi).next().is_some()
+            || focus.into_iter().chain(restore).any(|i| d.episodes.get(i).is_none());
+        let changed = self.ep_want.asked != Some(want) || self.ep_want.list != d.episodes.id();
+        if !(changed || holes && now.wrapping_sub(self.ep_want.at) >= EP_RETRY_MS) {
+            return;
+        }
+        self.ep_want = EpWant { asked: Some(want), list: d.episodes.id(), at: now };
+        fx.push(Fx::App(AppFx::Store(
+            StoreId::Metadata,
+            StoreCmd::Metadata(MetadataCmd::WantEpisodes { lo, hi, focus, restore }),
+        )));
+    }
+
     fn tick<H: ContentLike + crate::registry::MetadataLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let meta = H::metadata(cx);
         self.spot_facts = SpotFacts::of(self, meta);
@@ -3318,6 +3371,7 @@ impl DetailScreen {
         self.about_lang_lift.step(focused == Some(Located::About(1)), dt);
 
         if let Some(d) = d {
+            let mut strip_target = self.episode_scroll.pos;
             if let Some(i) = match focused {
                 Some(Located::Episode(i, _)) => Some(i),
                 _ => None,
@@ -3337,7 +3391,13 @@ impl DetailScreen {
                     self.episode_scroll.jump(target);
                 }
                 self.episode_scroll.step(target, K_STRIP_SCROLL, dt);
+                strip_target = target;
             }
+            let focused_episode = match focused {
+                Some(Located::Episode(i, _)) => Some(i),
+                _ => None,
+            };
+            self.want_episodes(d, strip_target, focused_episode, t.ms, fx);
             let tab_focus = match focused {
                 Some(Located::Season(i)) => Some(i),
                 _ => None,

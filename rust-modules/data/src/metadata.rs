@@ -149,6 +149,8 @@ pub struct MetadataAdapter {
     season_gen: std::sync::atomic::AtomicU32,
     season_done: std::sync::atomic::AtomicU32,
     season_result: std::sync::Mutex<Option<SeasonResult>>,
+    /// The long-season episode pages in flight and landed ([`want_episodes`]).
+    ep_pages: std::sync::Mutex<EpPages>,
     tracker: std::sync::Mutex<record::Tracker>,
     /// TEST ONLY: the detail fetches [`request_detail`] admitted, parked here instead of on a
     /// worker thread — see [`MetadataAdapter::run_held_detail_fetches_for_test`].
@@ -171,6 +173,7 @@ impl Default for MetadataAdapter {
             season_gen: std::sync::atomic::AtomicU32::new(0),
             season_done: std::sync::atomic::AtomicU32::new(0),
             season_result: std::sync::Mutex::new(None),
+            ep_pages: std::sync::Mutex::new(EpPages::default()),
             tracker: std::sync::Mutex::new(record::Tracker::new(false)),
             #[cfg(any(test, feature = "test-support"))]
             held_detail: std::sync::Mutex::new(Vec::new()),
@@ -3021,9 +3024,34 @@ fn fetch_seasons(sid: plx_plex::plex::ServerId, rk: &str) -> Vec<Season> {
 /// NB its siblings `fetch_seasons`/`fetch_related` deliberately KEEP the degrade-to-empty: both are
 /// only ever called from `fetch_full`, which builds a Detail from nothing — there is no previous
 /// list there to protect, and neither is worth failing the whole page over.
-fn fetch_episodes(sid: plx_plex::plex::ServerId, season_rk: &str) -> Option<Vec<Episode>> {
-    let mc = plx_plex::plex::client_for(sid)?.children(season_rk)?;
-    Some(mc.metadata.iter().map(convert_episode).collect())
+///
+/// Page 0 of a season only: a short season is that one request and a complete list (which encodes
+/// as the plain array it always did); a long one lands with its other pages as holes, and
+/// [`MetadataCmd::WantEpisodes`] fetches them as the screen reaches them.
+fn fetch_episodes(sid: plx_plex::plex::ServerId, season_rk: &str) -> Option<EpisodeList> {
+    let mc = plx_plex::plex::client_for(sid)?.children_paged(season_rk, 0, EPISODE_PAGE as i64)?;
+    let rows = episode_window(&mc, 0);
+    let mut list = EpisodeList::with_total((mc.total_size.max(0) as usize).max(rows.len()));
+    list.set_page(0, rows);
+    Some(list)
+}
+
+/// One window of a season, or **None when the GET failed**.
+fn fetch_episode_page(sid: plx_plex::plex::ServerId, season_rk: &str, page: usize) -> Option<Vec<Episode>> {
+    let start = page * EPISODE_PAGE;
+    let mc = plx_plex::plex::client_for(sid)?.children_paged(season_rk, start as i64, EPISODE_PAGE as i64)?;
+    Some(episode_window(&mc, start))
+}
+
+/// The rows of the window asked for at `start`. A server that ignores `X-Plex-Container-Start/Size`
+/// answers with the whole season from index 0: keep the page that was asked for and drop the rest.
+fn episode_window(mc: &plx_plex::plex::MediaContainer, start: usize) -> Vec<Episode> {
+    let rows = mc.metadata.iter().map(convert_episode);
+    if mc.metadata.len() > EPISODE_PAGE {
+        rows.skip(start).take(EPISODE_PAGE).collect()
+    } else {
+        rows.collect()
+    }
 }
 
 /// One `/children` row → an [`Episode`]. Split out of [`fetch_episodes`] so the wire → model
@@ -3322,14 +3350,12 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Detail> {
             // a first-season failure is not worth failing the whole page over — the hero, cast
             // and Related still load, and there is no previous list here to protect. It is still
             // named, because the `eps=` below cannot tell it from a season with no episodes.
-            d.episodes = fetch_episodes(sid, &s0.rk)
-                .unwrap_or_else(|| {
-                    plx_base::eventlog::log(&format!(
-                        "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
-                        s0.rk));
-                    Vec::new()
-                })
-                .into();
+            d.episodes = fetch_episodes(sid, &s0.rk).unwrap_or_else(|| {
+                plx_base::eventlog::log(&format!(
+                    "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
+                    s0.rk));
+                EpisodeList::default()
+            });
         }
         // A show carries no streams itself — backfill from ONE episode: the one the hero is
         // about, which is the one Play starts (`on_deck` when the show has been started, else
@@ -3602,6 +3628,10 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
         MetadataCmd::LoadSeason(i) => {
             load_season(state, adapter, i);
             true
+        }
+        MetadataCmd::WantEpisodes { lo, hi, focus, restore } => {
+            let keep = crate::stores::page_cache::Keep { wanted: lo..hi, focus, restore };
+            want_episodes(state, adapter, keep)
         }
         MetadataCmd::SetNowPlaying(np) => {
             set_now_playing(state, np);
@@ -4358,7 +4388,7 @@ struct SeasonResult {
     rk: String,                // the show the fetch was for
     idx: usize,                // the season it was for
     prev: usize, // the season `cur_season` held before the optimistic flip — restored on failure
-    eps: Option<Vec<Episode>>, // None = the fetch failed or panicked — the row keeps its episodes
+    eps: Option<EpisodeList>, // None = the fetch failed or panicked — the row keeps its episodes
 }
 
 /// Post a finished season fetch to the mailbox. MONOTONE: an older fetch landing late must never
@@ -4373,7 +4403,7 @@ fn land_season(
     rk: String,
     idx: usize,
     prev: usize,
-    eps: Option<Vec<Episode>>,
+    eps: Option<EpisodeList>,
 ) {
     let mut slot = adapter.season_result.lock().unwrap_or_else(|e| e.into_inner());
     if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
@@ -4441,6 +4471,118 @@ fn load_season(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
     }
 }
 
+// ---- long-season episode pages ---------------------------------------------------------------
+// A season lands as page 0 of 60; the screen names the range it needs ([`MetadataCmd::WantEpisodes`])
+// and the other pages are fetched off-thread and installed by [`pump_episode_pages`]. These are
+// background reads of the SAME season, so they do not move `season_gen`/`season_loading` (the tab
+// spinner and the play gate), and a landing is checked against the page's own (server, show,
+// season) before it touches the list.
+
+/// Most pages one request job fetches. The wanted range is the screen's plus a lead, a few pages
+/// at most; this bounds what a job does if it is ever wider.
+const EP_JOB_PAGES: usize = 4;
+
+#[derive(Default)]
+struct EpPages {
+    /// `(server, season rk, page)` asked for and not yet answered. A page is fetched once at a time.
+    inflight: Vec<(plx_plex::plex::ServerId, String, usize)>,
+    landed: Vec<EpLanded>,
+    /// What the screen wants right now; eviction after a landing keeps exactly this.
+    keep: Option<crate::stores::page_cache::Keep>,
+}
+
+struct EpLanded {
+    sid: plx_plex::plex::ServerId,
+    show: String,
+    season: String,
+    page: usize,
+    /// `None` = the GET failed or panicked: nothing installs, and the page is asked for again by
+    /// the next [`want_episodes`].
+    rows: Option<Vec<Episode>>,
+}
+
+/// Record what the screen needs of the selected season's episodes and fetch the pages of it that
+/// are holes. Idempotent: a page already in flight is not asked for twice, so the screen may say
+/// the same range again (that is also how a failed page is retried). Main-thread only.
+fn want_episodes(
+    state: &mut MetadataState,
+    adapter: &std::sync::Arc<MetadataAdapter>,
+    keep: crate::stores::page_cache::Keep,
+) -> bool {
+    let Some(d) = state.current.as_ref() else { return false };
+    let Some(season) = d.seasons.get(d.cur_season).map(|s| s.rk.clone()) else { return false };
+    let (sid, show) = (d.sid, d.rk.clone());
+    // A season switch is in flight: its list replaces this one, so a page of the old list is a
+    // wasted request.
+    if season_loading(adapter) {
+        return false;
+    }
+    // The pages the screen cannot do without first (a restore target, the focus), then the range.
+    let page_of = |i: usize| i / EPISODE_PAGE;
+    let mut order: Vec<usize> = keep.restore.into_iter().chain(keep.focus).map(page_of).collect();
+    order.extend(d.episodes.missing(keep.wanted.start, keep.wanted.end));
+    let mut want = Vec::new();
+    {
+        let mut ep = adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+        for p in order {
+            let hole = d.episodes.missing(p * EPISODE_PAGE, p * EPISODE_PAGE + 1).next() == Some(p);
+            let key = (sid, season.clone(), p);
+            if hole && !want.contains(&p) && !ep.inflight.contains(&key) && want.len() < EP_JOB_PAGES {
+                want.push(p);
+            }
+        }
+        for &p in &want {
+            ep.inflight.push((sid, season.clone(), p));
+        }
+        ep.keep = Some(keep);
+    }
+    if want.is_empty() {
+        return false;
+    }
+    let worker = std::sync::Arc::clone(adapter);
+    let job = want.clone();
+    let season_job = season.clone();
+    let spawned = plx_base::task::spawn_small("episode-pages", move || {
+        for page in job {
+            let rows = catch_unwind(|| fetch_episode_page(sid, &season_job, page)).unwrap_or(None);
+            let mut ep = worker.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+            ep.inflight.retain(|k| *k != (sid, season_job.clone(), page));
+            ep.landed.push(EpLanded { sid, show: show.clone(), season: season_job.clone(), page, rows });
+        }
+    });
+    if !spawned {
+        let mut ep = adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+        ep.inflight.retain(|(s, k, p)| !(*s == sid && *k == season && want.contains(p)));
+    }
+    true
+}
+
+/// Main-thread pump: install the episode pages that landed on the list they were asked for, then
+/// evict what the screen no longer needs. True when the list changed.
+pub fn pump_episode_pages(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
+    let (landed, keep) = {
+        let mut ep = adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+        if ep.landed.is_empty() {
+            return false;
+        }
+        (std::mem::take(&mut ep.landed), ep.keep.clone())
+    };
+    let Some(d) = state.current.as_mut() else { return false };
+    let mut changed = false;
+    for page in landed {
+        let ours = plx_plex::plex::same_item((d.sid, &d.rk), (page.sid, &page.show))
+            && d.seasons.get(d.cur_season).is_some_and(|s| s.rk == page.season);
+        if let (true, Some(rows)) = (ours, page.rows) {
+            d.episodes.set_page(page.page, rows);
+            changed = true;
+        }
+    }
+    if let (true, Some(keep)) = (changed, keep) {
+        d.episodes.evict(&keep);
+    }
+    changed
+}
+
 /// True while a season fetch is in flight — drives the episode row's loading dim + spinner.
 pub fn season_loading(adapter: &MetadataAdapter) -> bool {
     use std::sync::atomic::Ordering;
@@ -4488,7 +4630,9 @@ pub fn pump_season_with_gate(state: &mut MetadataState, adapter: &MetadataAdapte
     }
     match r.eps {
         Some(eps) => {
-            d.episodes = eps.into();
+            d.episodes = eps;
+            // the old list's wanted range means nothing to the new one
+            adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner()).keep = None;
             d.cur_season = r.idx;
             true
         }
@@ -5249,3 +5393,7 @@ mod credits_tests;
 #[cfg(test)]
 #[path = "metadata_demo_fixture_tests.rs"]
 mod demo_fixture_tests;
+
+#[cfg(test)]
+#[path = "metadata_episode_pages_tests.rs"]
+mod episode_pages_tests;

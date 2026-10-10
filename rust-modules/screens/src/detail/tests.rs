@@ -135,6 +135,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         episode_scroll: Spring::at(0.0),
         tab_scroll: Spring::at(0.0),
         episode_cells: episodes::Cells::new(),
+            ep_want: Default::default(),
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: plx_ui::cards::Shelf::new(EntryId(7), &plx_ui::cards::RowStyle::HOME),
@@ -4188,5 +4189,44 @@ fn a_restore_onto_episode_700_waits_for_its_page_and_then_seats_it() {
     land_page(1000, 11);
     screen.sync_keys(test_store().view());
     assert_eq!(screen.restore_focus(test_store().view()), episode_key(&screen, 700, episodes::Row::Still));
+    clear();
+}
+
+/// The strip tells the store which episodes it needs, and says it again only when that changes (or
+/// once a second while a page in it is still a hole), so a long season fetches as the strip moves.
+#[test]
+fn a_long_season_asks_for_the_pages_the_strip_reaches_only_when_the_range_changes() {
+    let _guard = install(long_season(1000, &[0]));
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let context = cx(&measure, None);
+    let mut present = plx_machine::present::Present::new();
+    let mut effects = Vec::new();
+    let mut tick = |screen: &mut DetailScreen, ms: u32, effects: &mut Vec<plx_machine::machine::Stamped<TestHost>>| {
+        let before = effects.len();
+        let mut sink = Effects::new(
+            effects,
+            plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(1)),
+            &mut present,
+        );
+        Machine::<TestHost>::step(screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms, dt_us: 16_667 }), &context, &mut sink);
+        effects.len() - before
+    };
+    let wants = |effects: &[plx_machine::machine::Stamped<TestHost>]| {
+        effects
+            .iter()
+            .filter(|s| matches!(&s.fx, Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(MetadataCmd::WantEpisodes { .. })))))
+            .count()
+    };
+    tick(&mut screen, 0, &mut effects);
+    assert_eq!(wants(&effects), 1, "the first tick says what the strip needs");
+    tick(&mut screen, 16, &mut effects);
+    assert_eq!(wants(&effects), 1, "the same range is not said again at once");
+    screen.episode_scroll.jump(episodes::strip_x(500) - plx_ui::consts::MARGIN_X);
+    tick(&mut screen, 32, &mut effects);
+    assert_eq!(wants(&effects), 2, "a strip somewhere else is a new range");
+    tick(&mut screen, 2_000, &mut effects);
+    assert_eq!(wants(&effects), 3, "a page still missing a second later is asked for again");
     clear();
 }

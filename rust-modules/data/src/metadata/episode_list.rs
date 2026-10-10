@@ -1,12 +1,13 @@
 //! The selected season's episodes as a page directory of 60-row pages.
 //!
-//! A season is still read whole, so a list is normally *complete*: every page loaded, each page
-//! holding exactly the rows its span of the listing covers. A complete list serialises as the plain
-//! array a season has always been recorded as, so recorded sessions do not change. A page that has
-//! not landed is a *hole*: its indices read as `None` and `iter_loaded` skips them, so a later
-//! paged read can fill a long season in without the readers changing shape.
+//! A season lands as page 0; a short one is then *complete* (every page loaded, each holding
+//! exactly the rows its span of the listing covers) and serialises as the plain array a season has
+//! always been recorded as, so recorded sessions do not change. A longer one has *holes*: a page
+//! that has not landed (or was evicted) reads as `None` at its indices and `iter_loaded` skips it,
+//! and `MetadataCmd::WantEpisodes` fetches the pages the screen reaches and evicts the ones it left.
 
 use super::Episode;
+use crate::stores::page_cache::{kept_pages, Keep, MAX_LOADED};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -99,6 +100,29 @@ impl EpisodeList {
         };
         rows.truncate(span);
         *slot = Some(rows);
+        self.rev += 1;
+    }
+
+    /// How many pages have landed.
+    pub fn loaded_pages(&self) -> usize {
+        self.pages.iter().flatten().count()
+    }
+
+    /// Drops the rows of every loaded page the screen no longer needs (`kept_pages`: page 0, the
+    /// wanted range with two pages either side, the focus and a pending restore target). Does
+    /// nothing while `MAX_LOADED` or fewer pages are loaded, so a season that fits stays whole.
+    /// An evicted page reads as a hole again and is fetched when the screen asks for it.
+    pub fn evict(&mut self, keep: &Keep) {
+        if self.loaded_pages() <= MAX_LOADED {
+            return;
+        }
+        let pages = self.pages.len();
+        let kept = kept_pages(pages, keep, |i| (i / PAGE).min(pages));
+        for (slot, kept) in self.pages.iter_mut().zip(kept) {
+            if !kept {
+                *slot = None;
+            }
+        }
         self.rev += 1;
     }
 
