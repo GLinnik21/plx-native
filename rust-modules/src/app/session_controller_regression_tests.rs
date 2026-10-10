@@ -252,7 +252,7 @@ mod tests {
             owned: true, ..Default::default()
         });
         let mut rig = rig(saved);
-        // Legacy admission used 32 slots; the real registry bounds requests to MAX_SERVERS (16).
+        // Legacy admission used 32 slots; the registry has no slot-count ceiling any more.
         let sid = plx_plex::plex::ServerId::from_raw(15);
         rig.session_adapter.fixture_resources().endpoints.insert(
             sid.raw(),

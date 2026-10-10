@@ -1641,6 +1641,28 @@ impl ArtFail {
     }
 }
 
+/// Has this (server, cause) pair been reported before? The first call for a pair answers `true`.
+///
+/// One word of cause bits per server that has FAILED, keyed by its raw id: a server is a registry
+/// slot of any number, and a sign-out never renumbers what registers after it, so a table over the
+/// first sixteen would fold every later server into one word and hide the second of them. Only a
+/// failing server owns an entry, and this path is already one line per pair for the whole process.
+/// A `ServerId::UNSET` (or any id that names nothing) is simply another key, which is what keeps
+/// the lookup total for the store entry points that take a raw key from any caller.
+fn first_failure(srv: ServerId, cause: ArtFail) -> bool {
+    static LOGGED: Mutex<std::collections::BTreeMap<u16, u32>> =
+        Mutex::new(std::collections::BTreeMap::new());
+    let bit = 1u32 << cause as u32;
+    // One lock, not load-then-store: this loop runs on more than one thread (`posters_init` spawns
+    // two), so two workers can reach the same cause for the same server at once and only the one
+    // that flipped the bit may write the line.
+    let mut logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
+    let word = logged.entry(srv.raw()).or_insert(0);
+    let first = *word & bit == 0;
+    *word |= bit;
+    first
+}
+
 /// A fetch that produced no bytes logs ONCE per (cause, server), then goes quiet.
 ///
 /// **Why it is logged at all.** `img::img_decode_rgba` reports a decode that failed (`img:
@@ -1659,8 +1681,8 @@ impl ArtFail {
 /// **Why the SERVER is half the key.** With a friend's share registered beside our own, the
 /// interesting failure is the asymmetric one — ours answers and the share does not, because it is
 /// asleep or its token was revoked — and a cause-only latch would spend its single line on
-/// whichever failed first and hide the other for the rest of the process. [`plx_plex::plex::MAX_SERVERS`]
-/// is 16, so the extra dimension is one `u32` of bits per slot.
+/// whichever failed first and hide the other for the rest of the process. The extra dimension
+/// is one `u32` of bits per failing server ([`first_failure`]).
 ///
 /// **What is deliberately NOT in the line: the key.** It is a `/photo/:/transcode?…` path ending in
 /// `&X-Plex-Token=…` (see [`poster_key`], and the test that pins the token to the end of it), and
@@ -1670,19 +1692,7 @@ impl ArtFail {
 /// else: not the address, not the machine identifier, not the friendly name (which defaults to the
 /// owner's hostname). `app/diagnostics.rs`'s module doc argues the whole rule for the on-screen read-out.
 fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
-    // One word per server slot, one BIT per cause. Indexing by the SERVER (clamped) is what keeps
-    // the index in range by construction rather than by assumption: `ServerId::UNSET` is
-    // `u16::MAX`, and the three store entry points take a raw key from any caller, so a slot's id
-    // is not guaranteed to name a registry entry. Everything that does not name one shares the
-    // last word.
-    const NWORD: usize = plx_plex::plex::MAX_SERVERS + 1;
-    static LOGGED: [AtomicU32; NWORD] = [const { AtomicU32::new(0) }; NWORD];
-    let bit = 1u32 << cause as u32;
-    let word = &LOGGED[(srv.raw() as usize).min(plx_plex::plex::MAX_SERVERS)];
-    // fetch_or, not load-then-store: this loop runs on more than one thread (`posters_init` spawns
-    // two), so two workers can reach the same cause for the same server at once and only
-    // the one that flipped the bit may write the line.
-    if word.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+    if first_failure(srv, cause) {
         plx_base::eventlog::log(&format!(
             "posters: art fetch FAILED on server {} - {} (permanent responses are final; transient failures retry with backoff while the tile is on screen; further ones like this are silent)",
             srv.raw(),
@@ -2035,6 +2045,18 @@ mod tests {
     //! server in the registry, which is a crate global. They still touch no socket and no GL —
     //! `poster_key` only formats a string.
     use super::*;
+
+    /// A failing server owns its own latch whatever its slot number: servers past the first sixteen
+    /// used to share one word, so the second of them never got its line.
+    #[test]
+    fn each_failing_server_is_reported_once_whatever_its_slot() {
+        for raw in [200u16, 201, 4000] {
+            let sid = ServerId::from_raw(raw);
+            assert!(first_failure(sid, ArtFail::NoResponse), "server {raw}'s first failure is reported");
+            assert!(!first_failure(sid, ArtFail::NoResponse), "...once");
+            assert!(first_failure(sid, ArtFail::Empty), "a different cause on the same server is new");
+        }
+    }
 
     #[test]
     fn demand_waits_for_decoded_bytes_in_both_queues_to_drain() {

@@ -42,8 +42,9 @@ state/adapter/notice, `HubsStore`'s `PmsState`/`Arc<PmsAdapter>`/notice, `Search
 state/adapter/notice, `MetadataStore`'s state/`Arc<MetadataAdapter>`/notice and `ViewStateStore`'s
 queue, flight, retry and refresh state, worker adapter and notice are per-instance. The Browse
 adapter holds Browse's page, genre, letter, source-discovery and section-hub mailboxes and
-single-flight flags. Person's adapter retains the exact `MAX_SERVERS * 3 + 2` slot numbering and
-controlled-record schema; Person, Search, Metadata and ViewState all rotate adapters on reset
+single-flight flags. Person's adapter keeps the recorded fetch numbering (`slot * 3 + kind` for
+servers 0..15, the two global fetches at 48 and 49, then `50 + (slot - 16) * 3 + kind`; see
+`person::fx`) and the controlled-record schema; Person, Search, Metadata and ViewState all rotate adapters on reset
 (D3: Metadata's `Clear` is the one exception — see `stores/metadata.rs`'s struct doc). `metadata`'s
 worker is still spawned through `task::spawn_small`, with generation atomics that supersede a late
 landing and a once-a-frame pump in its existing callers — only WHERE its state/adapter/notice live
