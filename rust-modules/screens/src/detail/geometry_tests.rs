@@ -205,10 +205,11 @@ fn populated_detail_geometry_uses_recorded_metrics() {
         ..Default::default()
     }];
     d.summary = "A synopsis with enough separate words to wrap into several measured lines. ".repeat(30);
-    for ep in &mut d.episodes {
-        ep.title = "A measured episode with a longer title".into();
-        ep.summary = "Episode prose must also use the supplied metrics. ".repeat(8);
-    }
+    d.episodes = d.episodes.iter_loaded().map(|(_, ep)| plx_data::metadata::Episode {
+        title: "A measured episode with a longer title".into(),
+        summary: "Episode prose must also use the supplied metrics. ".repeat(8),
+        ..ep.clone()
+    }).collect();
     let _serial = install(d);
     plx_ui::rec::assert_measured_geometry(|measure| {
         let mut s = bare(sid, "show");

@@ -194,7 +194,7 @@ fn detail(sid: ServerId, rk: &str) -> Detail {
         is_show: true,
         kind: "show".into(),
         seasons: vec![season(1), season(2)],
-        episodes: vec![episode("e1", 1), episode("e2", 2)],
+        episodes: vec![episode("e1", 1), episode("e2", 2)].into(),
         ..Default::default()
     }
 }
@@ -752,7 +752,7 @@ fn apply_metadata_effects(effects: &[plx_machine::machine::Stamped<TestHost>]) {
 #[test]
 fn the_episode_text_highlight_fits_the_block_the_flow_already_reserves() {
     let d = detail(ServerId::UNSET, "show");
-    for (i, ep) in d.episodes.iter().enumerate() {
+    for (i, ep) in d.episodes.iter_loaded() {
         let r = episodes::meta_rect(ep, i, 0.0, 0.0, &plx_ui::fixture::FixtureMeasure);
         assert!(r.y + r.h <= episodes::block_h(&d, &plx_ui::fixture::FixtureMeasure) + theme::space::SM);
     }
@@ -1142,7 +1142,7 @@ fn a_watched_toggle_holds_the_filmstrips_place_and_a_stale_latch_never_steers_a_
     let sid = ServerId::UNSET;
     let mut d = detail(sid, "show");
     d.cur_season = 1;
-    d.episodes.push(episode("e3", 3));
+    d.episodes = vec![episode("e1", 1), episode("e2", 2), episode("e3", 3)].into();
     let _guard = install(d);
     let measure = plx_ui::fixture::FixtureMeasure;
     let want = FocusKey {

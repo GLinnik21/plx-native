@@ -4,11 +4,13 @@
 //! CURRENT item. Idiomatic Rust (String/Vec), like the browse catalog (pms.rs) — the fixed C
 //! buffers from the C port are gone.
 use std::os::raw::c_int;
+pub mod episode_list;
 pub mod record;
 pub mod sub_layout;
 pub mod track_label;
 pub mod track_names;
 use std::panic::catch_unwind;
+pub use episode_list::EpisodeList;
 
 /// **Stage B of the store-ownership migration** (`docs/stores-as-machines.md`, D4): a borrowed
 /// handle onto this layer's read surface, shaped like `crate::person::PersonView`. Every method
@@ -1562,7 +1564,7 @@ pub struct Detail {
     pub audio: Vec<Stream>,
     pub subs: Vec<Stream>,
     pub seasons: Vec<Season>,   // shows only
-    pub episodes: Vec<Episode>, // the currently-selected season
+    pub episodes: EpisodeList, // the currently-selected season
     /// SHOWS: the episode the SERVER says is next to watch (`OnDeck`, one request, no extra round
     /// trip). Show-level and therefore **independent of the selected season tab**, which is the whole
     /// reason it is here: `episodes` above holds one season, so a next-episode the client worked out
@@ -1772,12 +1774,13 @@ fn set_watched_local(state: &mut MetadataState, sid: plx_plex::plex::ServerId, r
         if d.sid != sid {
             return hit;
         }
-        let Some(i) = d.episodes.iter().position(|e| e.rk == rk) else {
+        let Some(was) = d.episodes.position(rk).and_then(|i| d.episodes.get(i)).map(|e| e.watched) else {
             return hit;
         };
-        let was = d.episodes[i].watched;
-        d.episodes[i].watched = on;
-        d.episodes[i].resume_ms = 0;
+        d.episodes.edit(rk, |e| {
+            e.watched = on;
+            e.resume_ms = 0;
+        });
         if was != on {
             let cur = d.cur_season;
             if let Some(s) = d.seasons.get_mut(cur) {
@@ -2094,7 +2097,7 @@ fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, Stri
         audio: Vec::new(),
         subs: Vec::new(),
         seasons: Vec::new(),
-        episodes: Vec::new(),
+        episodes: EpisodeList::default(),
         on_deck: it
             .on_deck
             .as_ref()
@@ -3309,12 +3312,14 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Detail> {
             // a first-season failure is not worth failing the whole page over — the hero, cast
             // and Related still load, and there is no previous list here to protect. It is still
             // named, because the `eps=` below cannot tell it from a season with no episodes.
-            d.episodes = fetch_episodes(sid, &s0.rk).unwrap_or_else(|| {
-                plx_base::eventlog::log(&format!(
-                    "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
-                    s0.rk));
-                Vec::new()
-            });
+            d.episodes = fetch_episodes(sid, &s0.rk)
+                .unwrap_or_else(|| {
+                    plx_base::eventlog::log(&format!(
+                        "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
+                        s0.rk));
+                    Vec::new()
+                })
+                .into();
         }
         // A show carries no streams itself — backfill from ONE episode: the one the hero is
         // about, which is the one Play starts (`on_deck` when the show has been started, else
@@ -4473,7 +4478,7 @@ pub fn pump_season_with_gate(state: &mut MetadataState, adapter: &MetadataAdapte
     }
     match r.eps {
         Some(eps) => {
-            d.episodes = eps;
+            d.episodes = eps.into();
             d.cur_season = r.idx;
             true
         }

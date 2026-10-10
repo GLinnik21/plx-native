@@ -141,8 +141,8 @@ pub fn meta_rect(ep: &Episode, i: usize, top: f32, scroll: f32, measure: &dyn pl
 pub fn block_h(d: &Detail, measure: &dyn plx_machine::machine::Measure) -> f32 {
     H + d
         .episodes
-        .iter()
-        .map(|e| meta_layout(e, measure).2)
+        .iter_loaded()
+        .map(|(_, e)| meta_layout(e, measure).2)
         .fold(0.0, f32::max)
         + META_TOP
 }
@@ -230,7 +230,7 @@ pub fn draw(
     };
     let p = p.alpha(stale).translate(-scroll, top);
     let cap_top = kicker_cap_top();
-    for (i, ep) in d.episodes.iter().take(MAX_ITEMS).enumerate() {
+    for (i, ep) in d.episodes.iter_loaded().take(MAX_ITEMS) {
         let x = strip_x(i);
         if !on_axis(x - scroll, W, plx_ui::consts::SCR_W, 0.0) {
             continue;

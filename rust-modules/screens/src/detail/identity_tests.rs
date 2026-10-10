@@ -126,10 +126,11 @@ fn frame(d: &mut Dispatcher<TestHost>, rig: &mut TestRig, ms: u32) {
 fn item(rk: &str, reverse: bool) -> Detail {
     let mut d = Detail { sid: ServerId::UNSET, rk: rk.into(), is_show: true,
         kind: "show".into(), ..Default::default() };
+    let mut episodes = Vec::new();
     for i in 1..=2 {
         d.seasons.push(plx_data::metadata::Season { rk: format!("s{i}"), index: i,
             title: format!("Season {i}"), leaf_count: 2, viewed_leaf_count: 0 });
-        d.episodes.push(plx_data::metadata::Episode { rk: format!("e{i}"), index: i,
+        episodes.push(plx_data::metadata::Episode { rk: format!("e{i}"), index: i,
             season: 1, title: format!("Episode {i}"), ..Default::default() });
         d.related.push(plx_data::pms::PmsMovie { sid: ServerId::UNSET, rk: format!("r{i}"), ..Default::default() });
         d.cast.push(plx_data::metadata::Cast { id: i, tag: format!("Person {i}"),
@@ -137,8 +138,9 @@ fn item(rk: &str, reverse: bool) -> Detail {
     }
     if reverse {
         d.seasons.reverse(); d.cur_season = 1;
-        d.episodes.reverse(); d.related.reverse(); d.cast.reverse();
+        episodes.reverse(); d.related.reverse(); d.cast.reverse();
     }
+    d.episodes = episodes.into();
     d
 }
 fn boot() -> (Dispatcher<TestHost>, TestRig) {
@@ -269,7 +271,7 @@ fn retained_detail_back_hydrates_saved_season_before_episode_focus() {
     let (mut d, mut rig) = boot();
     let mut second = item("a", false);
     second.cur_season = 1;
-    for ep in &mut second.episodes { ep.season = 2; }
+    second.episodes = second.episodes.iter_loaded().map(|(_, ep)| plx_data::metadata::Episode { season: 2, ..ep.clone() }).collect();
     land(&mut d, &mut rig, second, 32);
     let key = first(&d, episodes::EPISODES_GROUP);
     d.set_focus_in(Some(key), Some(episodes::EPISODES_GROUP));
@@ -286,7 +288,7 @@ fn retained_detail_back_hydrates_saved_season_before_episode_focus() {
     assert_eq!(d.focus(), Some(key));
     let mut landed = item("a", true);
     landed.cur_season = 0; // reversed seasons: season 2 is now at index zero
-    for ep in &mut landed.episodes { ep.season = 2; }
+    landed.episodes = landed.episodes.iter_loaded().map(|(_, ep)| plx_data::metadata::Episode { season: 2, ..ep.clone() }).collect();
     assert!({ let (__s, __a) = test_store().split_for_test(); plx_data::metadata::land_detail_for_test(__s, __a, ServerId::UNSET, "a", request, Some(landed)) });
     d.store_changed(StoreId::Metadata.ord(), 80);
     frame(&mut d, &mut rig, 80);
