@@ -19,7 +19,7 @@ HOST NUMBERS. Frame times here are this Mac's GPU, in a debug build, and say not
 television: they are reported to show WHERE late frames fall relative to page landings, never as a
 smoothness result (the simulator's heartbeat carries `sim=1` for the same reason).
 
-    python3 tests/paging_link.py                         # every surface x slow-latency, low-bandwidth
+    python3 tests/paging_link.py                         # every surface x slow-latency, low-bandwidth, remote-wan
     python3 tests/paging_link.py --surface home-row --profile 3g --profile remote-wan
     python3 tests/paging_link.py --build                 # build the simulator first
     python3 tests/paging_link.py --list
@@ -52,8 +52,9 @@ import link_conditioner  # noqa: E402
 SIM = ROOT / "rust-modules" / "target-sim" / "debug" / "plxnative-sim"
 WINDOW = 24            # cards a row holds at once (plx_data::pms RECENT window); read from `col`
 PROFILES = ("3g", "remote-wan", "lossy")  # slow latency, a far server, a flaky one
-# The two the brief names: high latency with a fat pipe, and low bandwidth with low latency.
-DEFAULT_PROFILES = ("slow-latency", "low-bandwidth")
+# High latency with a fat pipe, low bandwidth with low latency, and a far server (the shape the
+# owner saw the defect on; the first two pass on the tip, see the PR notes).
+DEFAULT_PROFILES = ("slow-latency", "low-bandwidth", "remote-wan")
 EXTRA_PROFILES = {
     "slow-latency": link_conditioner.LinkProfile(latency_ms=700, jitter_ms=250, kbit=8000),
     "low-bandwidth": link_conditioner.LinkProfile(latency_ms=40, jitter_ms=10, kbit=250),
