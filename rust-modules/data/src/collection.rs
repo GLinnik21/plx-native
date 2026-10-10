@@ -133,6 +133,13 @@ impl Collection {
         self.focus.into_iter().chain(self.restore).map(|i| i + 1).fold(self.wanted.end, usize::max)
     }
 
+    /// Test support: moves the window and evicts as a landing would.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn evict_for_test(&mut self, wanted: Range<usize>, focus: Option<usize>, restore: Option<usize>) {
+        (self.wanted, self.focus, self.restore) = (wanted.clone(), focus, restore);
+        self.pages.evict(&Keep { wanted, focus, restore });
+    }
+
     /// Test support: every row, read through `edit`, and put back (a hole reads as absent).
     #[cfg(any(test, feature = "test-support"))]
     pub fn edit_items_for_test(&mut self, edit: impl FnOnce(&mut Vec<PmsMovie>)) {

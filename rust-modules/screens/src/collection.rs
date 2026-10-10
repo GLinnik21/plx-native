@@ -1241,6 +1241,103 @@ mod tests {
             &cx(store.view(), Some(from))), Step::Edge), "the last row has nothing below");
     }
 
+    /// 5,000 members walked to the end and back with focus riding along: the key table follows
+    /// the pages the store holds (never the list), and the focused card keeps its element, its
+    /// index and its column through the eviction of its neighbours.
+    #[test]
+    fn a_5000_member_walk_keeps_the_key_table_bounded_and_the_focused_card_keyed() {
+        let (mut store, mut screen) = seeded();
+        let many: Vec<PmsMovie> = (0..5000).map(|i| item(&format!("m{i}"))).collect();
+        let walk: Vec<usize> = (0..5000).step_by(45).chain((0..5000).step_by(45).rev()).collect();
+        let cols = plx_ui::cards::GRID_COLS;
+        let mut ms = 32;
+        let mut peak_keys = 0;
+        for (n, &idx) in walk.iter().enumerate() {
+            // The store's pages as a read of the window around `idx` leaves them.
+            store.edit_for_test(|c| {
+                c.replace_items_for_test(many.clone());
+                c.evict_for_test(idx.saturating_sub(PAGE_SIZE)..idx + 2 * PAGE_SIZE, Some(idx), None);
+            });
+            ms += 16;
+            tick_at(&mut screen, &store, None, ms);
+            let c = store.view().current().unwrap();
+            let key = screen.key_at(c, idx);
+            ms += 16;
+            tick_at(&mut screen, &store, Some(key), ms);
+            // The next stop's eviction, with focus still on `idx`.
+            let next = walk.get(n + 1).copied().unwrap_or(idx);
+            store.edit_for_test(|c| {
+                c.replace_items_for_test(many.clone());
+                c.evict_for_test(next.saturating_sub(PAGE_SIZE)..next + 2 * PAGE_SIZE, Some(idx), None);
+            });
+            ms += 16;
+            tick_at(&mut screen, &store, Some(key), ms);
+            let c = store.view().current().unwrap();
+            let held = c.loaded_rows().count();
+            assert!(held <= 11 * PAGE_SIZE, "{held} rows held");
+            assert!(screen.page.cards.len() <= 2 * held + 256, "{} keys for {held} rows", screen.page.cards.len());
+            peak_keys = peak_keys.max(screen.page.cards.len());
+            assert_eq!(screen.item_index(c, key.elem), Some(idx), "the focused card keeps its index at step {n}");
+            assert_eq!(screen.item_index(c, key.elem).unwrap() % cols, idx % cols, "and its column");
+            assert_eq!(screen.focused_item(Some(key), &cx(store.view(), Some(key))).map(|m| m.rk.clone()),
+                Some(format!("m{idx}")), "and its identity");
+        }
+        assert!(peak_keys < 1500, "peak {peak_keys} keys for a 5000-member list");
+    }
+
+    /// Leaving to Detail deep in the list saves the focused member and the directory of kept
+    /// counts, and the return sends the store the counts so the pages before the member are not
+    /// all read again.
+    #[test]
+    fn a_return_deep_in_the_list_sends_the_saved_counts_with_the_focus() {
+        let (mut store, mut screen) = seeded();
+        let many: Vec<PmsMovie> = (0..5000).map(|i| item(&format!("m{i}"))).collect();
+        store.edit_for_test(|c| {
+            c.replace_items_for_test(many);
+            c.evict_for_test(2900..3100, Some(3000), None);
+        });
+        tick_at(&mut screen, &store, None, 48);
+        let key = screen.key_at(store.view().current().unwrap(), 3000);
+        tick_at(&mut screen, &store, Some(key), 64);
+        let PageMemory::Collection(memory) = Screen::<CollectionHost>::memory_at(&screen, Some(key)) else { panic!() };
+        assert_eq!((memory.total, memory.counts.len(), memory.focus_index), (5000, 5000usize.div_ceil(PAGE_SIZE), Some(3000)));
+
+        let mut back = CollectionScreen::new(EntryId(9), set());
+        let _ = step(&mut back, ScreenEvent::RestoreMemory(PageMemory::Collection(memory)), &cx(store.view(), None));
+        let out = step(&mut back, ScreenEvent::Enter(plx_ui::screen::Enter::Restored), &cx(store.view(), None));
+        let sent = out.iter().find_map(|e| match &e.fx {
+            plx_machine::machine::Fx::App(AppFx::Store(_, plx_data::stores::StoreCmd::Collection(
+                CollectionCmd::Restore { total, counts }))) => Some((*total, counts.len())),
+            _ => None,
+        });
+        assert_eq!(sent, Some((5000, 84)), "the saved directory goes back to the store");
+    }
+
+    /// A slot whose page is not held draws the not-yet-loaded card, and becomes its member's card
+    /// when the page lands.
+    #[test]
+    fn a_hole_in_the_visible_range_draws_the_placeholder_and_fills_when_its_page_lands() {
+        let (mut store, mut screen) = seeded();
+        let many: Vec<PmsMovie> = (0..5000).map(|i| item(&format!("m{i}"))).collect();
+        store.edit_for_test(|c| {
+            c.replace_items_for_test(many.clone());
+            c.evict_for_test(3000..3120, Some(3000), None);
+        });
+        tick_at(&mut screen, &store, None, 48);
+        let c = store.view().current().unwrap();
+        let members = screen.page.members(c);
+        assert!(screen.page.elem_at(c, 100).is_some_and(|e| e >= HOLE_ELEM_BASE), "slot 100 is a hole");
+        assert!(matches!(CardSource::<CollectionHost>::art(&members, 100), Art::Poster(None)));
+        assert_eq!(CardSource::<CollectionHost>::len(&members), 5000, "the grid still spans the known list");
+
+        store.edit_for_test(|c| { c.replace_items_for_test(many.clone()); c.evict_for_test(0..200, Some(100), None); });
+        tick_at(&mut screen, &store, None, 64);
+        let c = store.view().current().unwrap();
+        let members = screen.page.members(c);
+        assert!(screen.page.elem_at(c, 100).is_some_and(|e| e < HOLE_ELEM_BASE), "slot 100 has its member");
+        assert!(matches!(CardSource::<CollectionHost>::art(&members, 100), Art::Poster(Some(_))));
+    }
+
     /// Back onto a page rebuilt from its first page holds the remembered member while the pages
     /// above it load, and the entry asks for every member the page knew.
     #[test]
