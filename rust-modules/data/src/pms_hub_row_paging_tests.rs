@@ -3,6 +3,7 @@
 
 use super::*;
 use super::test_support::*;
+use crate::stores::paging::unpaged_line;
 
 type Container = plx_plex::plex::MediaContainer;
 
@@ -380,7 +381,7 @@ fn paged_owner(id: &str, preview: &[usize], len: usize) -> Owner {
 fn seed_preview(owner: &mut Owner, id: &str, preview: &[usize], len: usize) {
     let mut shelf = preview_shelf(preview, len);
     shelf.hub_id = id.into();
-    shelf.row = preview_row(id, HUB_KEY);
+    shelf.row = crate::stores::paging::preview_state(id, HUB_KEY);
     let srcs = vec![src(0, "", HubState::Ready, Some(built(0, &[], vec![shelf])))];
     seed(&mut owner.state, srcs);
 }

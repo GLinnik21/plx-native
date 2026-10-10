@@ -132,10 +132,10 @@ impl BrowseStore {
 
     pub fn run(&mut self, cmd: BrowseCmd) -> bool {
         let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
-            work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. }, ..
+            work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }, ..
         });
         let quiet = matches!(&cmd, BrowseCmd::Addressed {
-            work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres, ..
+            work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres | LibraryWork::HubPage { .. }, ..
         });
         let roster_changed = if matches!(&cmd, BrowseCmd::RecheckShares) {
             self.sync_roster()
@@ -340,6 +340,16 @@ impl BrowseStore {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn land_held_rows_for_test(&mut self, section: usize) {
+        crate::browse::section_hubs::land_held_rows_for_owner_test(&mut self.state, section);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_paging_for_test(&mut self, section: usize, total: usize) {
+        crate::browse::section_hubs::seed_paging_for_owner_test(&mut self.state, section, total);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn seed_first_shelf_items_for_test(&mut self, section: usize, rks: &[String]) {
         crate::browse::section_hubs::seed_first_shelf_items_for_owner_test(
             &mut self.state,
@@ -469,6 +479,19 @@ pub enum LibraryWork {
     Genres,
     Hubs {
         may_publish: bool,
+    },
+    /// Move one section hub row's window a page toward its end or its start; the row is named by
+    /// its hub identifier and key.
+    HubPage {
+        id: String,
+        key: String,
+        before: bool,
+    },
+    /// The rows (hub order, inclusive) the page holds cards for. The store keeps those and gives
+    /// the cards of the rest up to descriptors; sent when the range changes.
+    HubHold {
+        lo: usize,
+        hi: usize,
     },
     Retry,
 }

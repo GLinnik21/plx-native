@@ -211,6 +211,7 @@ fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
         let shelf = plx_data::browse::section_hubs::Shelf {
             id: "x".into(), key: String::new(), link: None, total: 0, title: "On Deck".into(), is_continue,
             landscape: false, items: vec![PmsMovie { kind: 0, title: "Stardust".into(), ..Default::default() }],
+            ..Default::default()
         };
         shelf_label(&shelf, 0).glyph
     };
@@ -229,6 +230,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         let shelf = plx_data::browse::section_hubs::Shelf {
             id: "x".into(), key: String::new(), link: None, total: 0, title: "Recently Added".into(), is_continue,
             landscape: false, items: vec![item],
+            ..Default::default()
         };
         shelf_label(&shelf, 0).caption.map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
     };
@@ -277,6 +279,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
             is_continue: false,
             landscape: true,
             items,
+            ..Default::default()
         };
 
         // `TileLabel` holds `CString`s for the draw; these read them back as text
