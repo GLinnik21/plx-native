@@ -23,7 +23,7 @@ fn dump_mode_a_request_out_lands_on_the_pump_that_runs_whatever_the_worker() {
     register(&mut owner, 1);
     owner.set_query("wallace");
     let gen = owner.state.gen;
-    owner.adapter.fetch[0].claim(gen);
+    owner.adapter.mailbox(0).claim(gen);
     hold_off(&mut owner);
     let gate = dump_gate();
     let worker = Arc::clone(&owner.adapter);
@@ -35,7 +35,7 @@ fn dump_mode_a_request_out_lands_on_the_pump_that_runs_whatever_the_worker() {
         "the answer the pump owed must be taken by the pump that asked");
     assert_eq!(titles(&owner.state.shelves()[0]), ["A Close Shave"]);
     assert_eq!(owner.state.state(), State::Ready);
-    assert!(!owner.adapter.fetch[0].busy(), "the TAKE released the claim");
+    assert!(!owner.adapter.mailbox(0).busy(), "the TAKE released the claim");
     join.join().unwrap();
 }
 
@@ -50,10 +50,10 @@ fn dump_mode_a_superseded_requests_stale_answer_does_not_release_the_new_claim()
     register(&mut owner, 1);
     owner.set_query("wal");
     let stale = owner.state.gen;
-    owner.adapter.fetch[0].claim(stale); // request A is out
+    owner.adapter.mailbox(0).claim(stale); // request A is out
     owner.set_query("wallace"); // supersedes A: its worker is still running
     let current = owner.state.gen;
-    owner.adapter.fetch[0].claim(current); // request B is out
+    owner.adapter.mailbox(0).claim(current); // request B is out
     hold_off(&mut owner);
     let gate = dump_gate();
     let worker = Arc::clone(&owner.adapter);

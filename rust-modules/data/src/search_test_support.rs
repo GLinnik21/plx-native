@@ -102,8 +102,8 @@ pub(super) fn fresh() -> Fresh {
 /// port belongs to nobody, and a stray background thread also perturbs the process-wide fd
 /// count `stream.rs`'s tests assert on. Call it before every `pump()`.
 pub(super) fn hold_off(owner: &mut Owner) {
-    for s in &mut owner.state.src {
-        s.retry_cd = RETRY_FRAMES;
+    for i in slots() {
+        source_mut(&mut owner.state, i).retry_cd = RETRY_FRAMES;
     }
     owner.state.armed = false;
 }

@@ -238,20 +238,19 @@ pub(crate) fn arm_wayland_debug() {}
 /// server".  Keeping the slot in a separate trigger preserves that wire format for the regression
 /// harness while allowing `tv-session --server N` to name the other half explicitly.
 ///
-/// Bounds are checked here rather than left to `ServerId::from_raw`: that constructor also exists
-/// for compact stores and deliberately accepts any `u16`; a hand-written dev trigger must not turn
-/// an arbitrary number into a plausible identity and then silently fall back elsewhere.
+/// Only a number that can name a slot at all is accepted here: `ServerId::from_raw` also builds the
+/// reserved "no server" value from `u16::MAX`, and a hand-written dev trigger must not turn that
+/// into a plausible identity. Whether the slot is REGISTERED is the caller's check
+/// (`boot::direct_trigger_server` asks the registry), so a slot past the first sixteen works as
+/// soon as that many servers exist and a missing one fails closed there.
 #[cfg(any(feature = "devtriggers", test))]
 fn parse_server_slot(s: &str) -> Result<u16, String> {
     let slot = s
         .trim()
         .parse::<u16>()
         .map_err(|_| format!("{s:?} is not a server slot"))?;
-    if (slot as usize) >= plx_plex::plex::MAX_SERVERS {
-        return Err(format!(
-            "server slot {slot} is outside 0..{}",
-            plx_plex::plex::MAX_SERVERS
-        ));
+    if !plx_plex::plex::ServerId::from_raw(slot).is_set() {
+        return Err(format!("server slot {slot} is the reserved no-server value"));
     }
     Ok(slot)
 }
@@ -826,7 +825,8 @@ mod tests {
     fn server_slot_trigger_accepts_only_a_registry_slot() {
         assert_eq!(super::parse_server_slot("0"), Ok(0));
         assert_eq!(super::parse_server_slot("15"), Ok(15));
-        for invalid in ["", "-1", "16", "1.0", "server-1"] {
+        assert_eq!(super::parse_server_slot("40"), Ok(40));
+        for invalid in ["", "-1", "65535", "65536", "1.0", "server-1"] {
             assert!(
                 super::parse_server_slot(invalid).is_err(),
                 "{invalid:?} must not silently target another server"

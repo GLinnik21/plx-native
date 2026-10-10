@@ -121,7 +121,8 @@ fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_co
                 resume_ms: 60_000,
                 ..Default::default()
             },
-        ],
+        ]
+        .into(),
         ..Default::default()
     }));
 
@@ -130,9 +131,10 @@ fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_co
         "an episode of the loaded season"
     );
     let d = current(test_state()).unwrap();
-    assert!(d.episodes[1].watched);
+    let e2 = d.episodes.get(1).expect("the season has two episodes");
+    assert!(e2.watched);
     assert_eq!(
-        d.episodes[1].resume_ms, 0,
+        e2.resume_ms, 0,
         "…and its still stops drawing a resume bar"
     );
     assert!(!d.watched, "marking one episode does not finish the show");
@@ -210,7 +212,8 @@ fn an_optimistic_watch_flip_reaches_the_related_shelf_the_menu_was_opened_on() {
         episodes: vec![Episode {
             rk: "e1".into(),
             ..Default::default()
-        }],
+        }]
+        .into(),
         related: vec![rel(SRV_A, "r0"), rel(SRV_A, "r1")],
         ..Default::default()
     }));
@@ -232,7 +235,7 @@ fn an_optimistic_watch_flip_reaches_the_related_shelf_the_menu_was_opened_on() {
     );
     assert!(d.related[0].resume_frac().is_some(), "no other tile moved");
     assert!(!d.watched, "the page's own item is not what was pressed");
-    assert!(!d.episodes[0].watched, "…nor is any episode of it");
+    assert!(!d.episodes.get(0).expect("the show has one episode").watched, "…nor is any episode of it");
 
     // the way back, from the second row a part-watched tile offers
     assert!(set_watched_local(test_state(), SRV_A, "r1", false));
