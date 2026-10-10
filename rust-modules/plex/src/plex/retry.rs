@@ -6,7 +6,7 @@
 //! same request set, so a plex module could not name either one without naming upward. They live
 //! here now and `pms` / `stores` re-export them: the data layer's own spelling is unchanged.
 
-use super::{ServerId, MAX_SERVERS};
+use super::ServerId;
 
 /// The backoff ladder's ends. A TV parked on a sleeping server must keep trying — that IS the
 /// feature — without ever becoming a request loop, so the wait doubles from `MIN` to a `MAX`
@@ -25,30 +25,27 @@ pub fn backoff_secs(fails: u32) -> f32 {
 pub struct EndpointRefresh { pub sid: ServerId }
 
 /// Advisory requests in first-observation order. Invalid IDs are rejected, never remapped.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// A `Vec`, not a fixed array: the set holds one entry per server that needs a refresh, and the
+/// registry issues slot numbers past any fixed size. It is bounded by the number of servers, never
+/// by a ceiling of its own.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[must_use]
 pub struct EndpointRefreshSet {
-    ids: [ServerId; MAX_SERVERS],
-    len: usize,
-}
-
-impl Default for EndpointRefreshSet {
-    fn default() -> Self { Self { ids: [ServerId::UNSET; MAX_SERVERS], len: 0 } }
+    ids: Vec<ServerId>,
 }
 
 impl EndpointRefreshSet {
     pub fn insert(&mut self, request: EndpointRefresh) -> bool {
-        if request.sid.raw() as usize >= MAX_SERVERS
-            || self.ids[..self.len].contains(&request.sid) { return false; }
-        self.ids[self.len] = request.sid;
-        self.len += 1;
+        if !request.sid.is_set() || self.ids.contains(&request.sid) { return false; }
+        self.ids.push(request.sid);
         true
     }
     pub fn merge(&mut self, other: Self) {
         for request in other.iter() { self.insert(request); }
     }
     pub fn iter(&self) -> impl Iterator<Item = EndpointRefresh> + '_ {
-        self.ids[..self.len].iter().map(|&sid| EndpointRefresh { sid })
+        self.ids.iter().map(|&sid| EndpointRefresh { sid })
     }
     pub fn emit<H: EndpointRefreshHost>(self, fx: &mut plx_machine::machine::Effects<'_, H>) {
         for request in self.iter() { fx.push(plx_machine::machine::Fx::App(H::endpoint_refresh(request))); }
@@ -72,17 +69,18 @@ mod tests {
         let mut first = EndpointRefreshSet::default();
         assert_eq!(first.iter().count(), 0);
         assert!(!first.insert(request(u16::MAX)));
-        assert!(!first.insert(request(MAX_SERVERS as u16)));
+        // A server past the old sixteen-slot table is a real request, not an invalid id.
+        assert!(first.insert(request(40)));
         first.insert(request(3)); first.insert(request(1)); first.insert(request(3));
         let mut second = EndpointRefreshSet::default();
         second.insert(request(1)); second.insert(request(2)); second.insert(request(0));
         first.merge(second);
-        assert_eq!(first.iter().map(|r| r.sid.raw()).collect::<Vec<_>>(), [3, 1, 2, 0]);
-        for id in 0..MAX_SERVERS { first.insert(request(id as u16)); }
-        assert_eq!(first.iter().count(), MAX_SERVERS);
-        assert!(first.iter().count() <= plx_machine::machine::MAX_EMIT_PER_STEP as usize);
-        first.merge(first);
-        assert_eq!(first.iter().count(), MAX_SERVERS);
+        assert_eq!(first.iter().map(|r| r.sid.raw()).collect::<Vec<_>>(), [40, 3, 1, 2, 0]);
+        for id in 0..16 { first.insert(request(id)); }
+        assert_eq!(first.iter().count(), 17);
+        let copy = first.clone();
+        first.merge(copy);
+        assert_eq!(first.iter().count(), 17);
     }
 
     #[test]
