@@ -93,6 +93,10 @@
 #              `navcommit` when the flash was slow (`fps:modal-ramp`, device-measured 2026-09-09).
 #              Nothing failed: both doors return a `Session` and the difference is invisible at the
 #              call site, which is exactly what a grep gate is for. Count is zero.
+# Plex paging rule:
+#   paging   — `X-Plex-Container-` is spelled in production Rust ONLY by `paged_path`'s file,
+#              rust-modules/plex/src/plex/paging.rs. Every other window is built through it. Zero,
+#              no allowlist; test code and comments are not counted (see the rule's own comment).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 SRC=rust-modules/src
@@ -1178,6 +1182,78 @@ else
   fail "tmppath: $(echo "$tmp_hits" | grep -c . ) line(s) of a literal /tmp/plxnative- path outside dev.rs, not comment or log-message text"
 fi
 
+
+# paging: the two Plex paging parameter names are spelled in ONE non-test file, the `paged_path`
+# primitive (rust-modules/plex/src/plex/paging.rs). Any other production string that spells one is a
+# window built by hand, which skips the `?`/`&` rule and the always-together pairing. Comments are
+# not counted (they cannot build a request), and test code is: whole test files (the `wholly_test`
+# classification above) and `#[cfg(test)]` items, found from tokens so a literal inside a string is
+# never mistaken for a comment. Zero, no allowlist. Scans every crate root, not only plex's.
+paging_hits=$(WHOLLY_TEST="$wholly_test" python3 - "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_APPKIT" "$SRC_SCREENS" <<'PY'
+import os, sys
+sys.path.insert(0, "ci")
+from rust_test_modules import close, lex
+
+needle = "X-Plex-Container-"
+owner = os.path.relpath(os.path.realpath("rust-modules/plex/src/plex/paging.rs"))
+test_files = {os.path.relpath(os.path.realpath(p)) for p in os.environ.get("WHOLLY_TEST", "").split("\n") if p}
+
+def skip_item(tokens, j):
+    """Index just past the item that starts at `j`: its `{…}` body, or up to a `;` at depth 0."""
+    while j < len(tokens):
+        kind, text = tokens[j]
+        if kind == "code":
+            if text == ";":
+                return j + 1
+            if text == "{":
+                return close(tokens, j) + 1
+            if text in ("(", "["):
+                j = close(tokens, j) + 1
+                continue
+        j += 1
+    return j
+
+def production_literals(tokens):
+    found, i = [], 0
+    while i < len(tokens):
+        kind, text = tokens[i]
+        if kind == "code" and text == "#" and i + 1 < len(tokens) and tokens[i + 1] == ("code", "["):
+            end = close(tokens, i + 1)
+            # Exactly `#[cfg(test)]`: a compound predicate counts as production, so it fails closed.
+            if [t[1] for t in tokens[i + 2:end]] == ["cfg", "(", "test", ")"]:
+                i = skip_item(tokens, end + 1)
+                continue
+        if kind == "string" and needle in text:
+            found.append(text)
+        i += 1
+    return found
+
+bad = 0
+for root in sys.argv[1:]:
+    for dirpath, dirnames, files in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith("target")]
+        for fn in sorted(files):
+            if not fn.endswith(".rs"):
+                continue
+            path = os.path.relpath(os.path.realpath(os.path.join(dirpath, fn)))
+            if path == owner or path in test_files:
+                continue
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            if needle not in text:
+                continue
+            for literal in production_literals(lex(text)):
+                print(f"{path}: {literal!r}")
+                bad += 1
+sys.exit(1 if bad else 0)
+PY
+)
+paging_status=$?
+if [ "$paging_status" -eq 0 ] && [ -z "$paging_hits" ]; then ok "paging"
+else
+  echo "$paging_hits" | sed 's/^/    /'
+  fail "paging: $(echo "$paging_hits" | grep -c . ) production literal(s) spell X-Plex-Container- outside rust-modules/plex/src/plex/paging.rs (use paged_path)"
+fi
 
 # every allowlist's declared count equals its entries
 for f in ci/allow/*.txt; do

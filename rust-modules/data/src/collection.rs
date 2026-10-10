@@ -62,7 +62,7 @@ pub struct Collection {
     pub total: usize,
     pub status: CollectionStatus,
     pub more: bool,
-    /// Server rows consumed so far — the next page's `X-Plex-Container-Start`. NOT
+    /// Server rows consumed so far — the next page's window start (`plex::paging`). NOT
     /// `items.len()`: `run_job` drops rows that are not `pms::listable` (a clip, an artist), so
     /// the grid can hold fewer members than the server has handed over, and paging from
     /// `items.len()` would re-request rows already seen and append them twice.

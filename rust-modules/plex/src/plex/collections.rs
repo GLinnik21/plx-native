@@ -4,8 +4,9 @@
 //! use the collection's `index`. The helpers here keep those identities explicit and centralize
 //! the live-observed joins between collection rows, hubs and member `Collection[]` tags.
 
-use super::client::{Client, JsonStatusOutcome, QueryBuilder};
+use super::client::{Client, JsonStatusOutcome};
 use super::models::{MediaContainer, Metadata};
+use super::paging::{paged_path, PageReq};
 use super::ServerId;
 
 /// One collection as a link names it: by `rk` (its ratingKey) when the link carries one, else by
@@ -71,10 +72,10 @@ impl Client {
         start: i64,
         size: i64,
     ) -> CollectionOutcome {
-        let path = QueryBuilder::new(format!("/library/sections/{section}/collections"))
-            .int("X-Plex-Container-Start", start)
-            .int("X-Plex-Container-Size", size)
-            .build();
+        let path = paged_path(
+            &format!("/library/sections/{section}/collections"),
+            PageReq::window(start, size),
+        );
         self.collection_get(&path)
     }
 
@@ -90,10 +91,10 @@ impl Client {
         start: i64,
         size: i64,
     ) -> CollectionOutcome {
-        let path = QueryBuilder::new(format!("/library/collections/{rating_key}/children"))
-            .int("X-Plex-Container-Start", start)
-            .int("X-Plex-Container-Size", size)
-            .build();
+        let path = paged_path(
+            &format!("/library/collections/{rating_key}/children"),
+            PageReq::window(start, size),
+        );
         self.collection_get(&path)
     }
 
