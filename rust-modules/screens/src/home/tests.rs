@@ -3965,3 +3965,35 @@ fn a_row_whose_page_was_given_up_asks_again_on_the_next_focus_move_or_edge_press
     requests += page_requests(&step(&mut s, snapshot.view(), Some(next), &tick(85)).1);
     assert_eq!(requests, 3, "an edge press asks once more");
 }
+
+fn holds(out: &[Stamped<TestHost>]) -> Vec<(usize, usize)> {
+    out.iter().filter_map(|fx| match &fx.fx {
+        Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Hold { lo, hi }))) => Some((*lo, *hi)),
+        _ => None,
+    }).collect()
+}
+
+#[test]
+fn the_screen_holds_the_rows_in_view_and_two_either_side_and_says_so_only_when_that_moves() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 60, 12);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.pos = 1.0;
+    s.snap_target = 1.0;
+    s.layout_grid();
+    let tick = ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 });
+    let first = holds(&step(&mut s, snapshot.view(), None, &tick).1);
+    assert_eq!(first.len(), 1, "the first tick tells the store which rows are held");
+    assert_eq!(first[0].0, 0);
+    assert!(first[0].1 <= 8, "a screenful plus two: {first:?}");
+    assert!(holds(&step(&mut s, snapshot.view(), None, &tick).1).is_empty(), "an unmoved range is not sent again");
+    s.grid.scroll_y.pos = 20_000.0;
+    s.grid.scroll_target = 20_000.0;
+    s.layout_grid();
+    let moved = holds(&step(&mut s, snapshot.view(), None, &tick).1);
+    assert_eq!(moved.len(), 1, "a moved range is sent once");
+    assert!(moved[0].0 > first[0].1, "and it is the rows now in view: {moved:?}");
+}

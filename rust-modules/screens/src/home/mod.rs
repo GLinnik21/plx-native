@@ -51,6 +51,9 @@ use plx_ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 use super::clock_readout::ClockWatch;
 
 /// A paging command for a hub, when the hub has a listing identity to page by.
+/// Rows held beyond the ones in view, each side.
+const HOLD_MARGIN: usize = 2;
+
 fn hub_page_cmd(hub: &HubRef<'_>,
     make: impl FnOnce(plx_plex::plex::ServerId, String, String) -> HubsCmd) -> Option<HubsCmd> {
     match hub.identity {
@@ -435,6 +438,9 @@ pub struct HomeScreen {
     projected_generation: Option<u32>,
     restored_scroll: Vec<(u32, f32)>,
     restore_reveal: bool,
+    /// The rows last sent to the store as held (`HubsCmd::Hold`), so the command goes out only when
+    /// the range changes. Derived from what is on screen; not canon.
+    hold_sent: Option<(usize, usize)>,
 
     /// Selected hero ITEM identity. It is data, not focus.
     carousel: Option<(plx_plex::plex::ServerId, String)>,
@@ -497,6 +503,7 @@ impl HomeScreen {
             projected_generation: None,
             restored_scroll: Vec::new(),
             restore_reveal: false,
+            hold_sent: None,
             carousel: None,
             outgoing: None,
             hero_flip_cd: 0.0,
@@ -1018,11 +1025,15 @@ impl HomeScreen {
         // rest when they wake rather than being adopted whole.
         let dormant = self.snap.pos <= 0.5;
         let mut shelves = std::mem::take(&mut self.grid.shelves);
+        let mut on_screen: Option<(usize, usize)> = focused.map(|(row, _)| (row, row));
         for (row, shelf) in shelves.iter_mut().enumerate() {
             shelf.dormant(dormant);
             let top = heading_y(shelf.base_y(), shelf.heading_lift());
             let bottom = shelf.base_y() + CARD_H + shelf.under_band();
             let visible = !dormant && on_axis(top, bottom - top, SCR_H, 0.0);
+            if visible {
+                on_screen = Some(on_screen.map_or((row, row), |(lo, hi)| (lo.min(row), hi.max(row))));
+            }
             let mut src = self.cards(view, row);
             src.paging = visible && focused.is_some_and(|(r, col)|
                 r == row && col.saturating_add(ui_cards::PAGE_EDGE_CARDS) >= self.rows[row].elems.len());
@@ -1040,6 +1051,15 @@ impl HomeScreen {
             }
         }
         self.grid.shelves = shelves;
+        // The store holds cards for the rows in view and two either side; the rest keep a descriptor.
+        if !self.rows.is_empty() {
+            let (lo, hi) = on_screen.unwrap_or((0, 0));
+            let hold = (lo.saturating_sub(HOLD_MARGIN), (hi + HOLD_MARGIN).min(self.rows.len() - 1));
+            if self.hold_sent != Some(hold) {
+                self.hold_sent = Some(hold);
+                fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Hold { lo: hold.0, hi: hold.1 }))));
+            }
+        }
         let revealed = focused.map(|(row, _)| (row, Some(row)))
             .or_else(|| self.focused_heading(cx.focus.current).map(|row| (row, None)));
         if let Some((row, band_row)) = revealed.filter(|(r, _)| *r < self.rows.len()) {
@@ -1892,7 +1912,7 @@ impl LogicalState for HomeScreen {
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
             // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
-            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, restored_scroll: _, restore_reveal: _, carousel: _,
+            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, restored_scroll: _, restore_reveal: _, hold_sent: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
