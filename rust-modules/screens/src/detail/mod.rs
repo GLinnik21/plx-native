@@ -234,6 +234,8 @@ pub struct DetailScreen {
     episode_scroll: Spring,
     /// What the episode strip last asked the store to have loaded, and when.
     ep_want: EpWant,
+    /// The Related tail offset the shelf last asked to page back from: one edge asks once.
+    related_before: Option<usize>,
     tab_scroll: Spring,
     /// The focused episode's pop spring and label-block lift (earned by the TEXT stop alone; the
     /// plate also shows for the still's pop — see `episodes::draw_cell`), keyed by episode so the
@@ -470,6 +472,7 @@ impl DetailScreen {
             tab_scroll: Spring::at(0.0),
             episode_cells: episodes::Cells::new(),
             ep_want: EpWant::default(),
+            related_before: None,
             about_card_lift: TextLift::new(),
             about_lang_lift: TextLift::new(),
             related: Shelf::new(entry, cards::Which::Related.style()),
@@ -1792,7 +1795,34 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
         // scroll and let-go ride the Tick, its placement the FocusMoved). What a card DOES stays
         // in `activate` below.
         if let Some(d) = self.detail(meta) {
-            self.related.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Related, d), fx);
+            let related = Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Related, d);
+            let wanted = matches!(self.related.on(ev, cx, &related, fx), Some(ui_cards::CardEvent::Want(_)));
+            if matches!(ev, ScreenEvent::Tick(_)) && !d.related_tail.hubs.is_empty() {
+                // The row is the head and a window of the tail. The shelf's own leading edge is the
+                // row's start, which is the head, so the way back is asked from where the tail starts.
+                let t = &d.related_tail;
+                let focus = cx.focus.current.filter(|k| k.entry == self.entry)
+                    .and_then(|k| ui_cards::CardSource::<H>::index_of(&related, &k.elem));
+                let near_start = t.offset > 0
+                    && focus.is_some_and(|i| i >= t.head && i - t.head < ui_cards::PAGE_EDGE_CARDS);
+                let before = if !near_start {
+                    self.related_before = None;
+                    false
+                } else if self.related_before != Some(t.offset) {
+                    self.related_before = Some(t.offset);
+                    true
+                } else {
+                    false
+                };
+                let after = !before
+                    && self.related.page_ask(cx, &related, wanted, 0, true) == Some(ui_cards::PageEdge::After);
+                if before || after {
+                    fx.push(Fx::App(AppFx::Store(
+                        StoreId::Metadata,
+                        StoreCmd::Metadata(MetadataCmd::WantRelated { before }),
+                    )));
+                }
+            }
             self.collection.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Collection, d), fx);
             self.extras.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Extras, d), fx);
             self.cast.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Cast, d), fx);
@@ -1851,6 +1881,10 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
             ScreenEvent::StoreChanged(ord, _) => {
                 self.layout.set(None);
                 if *ord == StoreId::Metadata.ord() {
+                    // A landing is the answer to the page the shelf asked for; a page the store
+                    // never answered leaves no landing, so focus moving below lets go as well.
+                    self.related.reset_page_requests();
+                    self.related_before = None;
                     self.sync_keys(meta);
                     self.prune_keys(&Self::held_keys(cx));
                     self.season_metrics.invalidate();
@@ -1866,6 +1900,8 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
+                self.related.reset_page_requests();
+                self.related_before = None;
                 if matches!(by, By::Dir | By::Pointer) {
                     self.return_pending = false;
                     self.restore_intent = None;

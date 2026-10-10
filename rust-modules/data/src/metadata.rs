@@ -151,6 +151,8 @@ pub struct MetadataAdapter {
     season_result: std::sync::Mutex<Option<SeasonResult>>,
     /// The long-season episode pages in flight and landed ([`want_episodes`]).
     ep_pages: std::sync::Mutex<EpPages>,
+    /// The Related tail window read in flight and landed ([`want_related`]).
+    rel_pages: std::sync::Mutex<RelPages>,
     tracker: std::sync::Mutex<record::Tracker>,
     /// TEST ONLY: the detail fetches [`request_detail`] admitted, parked here instead of on a
     /// worker thread — see [`MetadataAdapter::run_held_detail_fetches_for_test`].
@@ -174,6 +176,7 @@ impl Default for MetadataAdapter {
             season_done: std::sync::atomic::AtomicU32::new(0),
             season_result: std::sync::Mutex::new(None),
             ep_pages: std::sync::Mutex::new(EpPages::default()),
+            rel_pages: std::sync::Mutex::new(RelPages::default()),
             tracker: std::sync::Mutex::new(record::Tracker::new(false)),
             #[cfg(any(test, feature = "test-support"))]
             held_detail: std::sync::Mutex::new(Vec::new()),
@@ -1095,7 +1098,7 @@ pub type Related = crate::pms::PmsMovie;
 
 /// The collection shelf's preview length. Its heading opens the full Collection page, so this is
 /// a shelf length, not a limit on what the collection can show.
-pub const COLLECTION_MAX: usize = 20;
+pub const COLLECTION_PREVIEW: usize = 20;
 
 /// A member movie's collection, split out of `/related`. PMS answers a member with a
 /// `collection.related.*` hub that lists the WHOLE collection in the collection's own order, the
@@ -1111,7 +1114,7 @@ pub struct CollectionShelf {
     pub title: String,
     pub section: i64,
     pub tag: i64,
-    /// Server order, the page's own item included and unmarked, capped at [`COLLECTION_MAX`].
+    /// Server order, the page's own item included and unmarked, capped at [`COLLECTION_PREVIEW`].
     pub members: Vec<Related>,
     /// Every member the collection holds — the heading's "· N" — which `members` may cap.
     #[serde(default)]
@@ -1132,6 +1135,59 @@ impl CollectionShelf {
 pub struct RelatedRows {
     pub collection: Option<CollectionShelf>,
     pub related: Vec<Related>,
+    pub tail: RelatedTail,
+}
+
+/// One related hub with more behind its preview, read by [`RelatedTail`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TailHub {
+    /// The hub's own listing key, one `is_pageable_hub_key` admits.
+    pub key: String,
+    /// The preview's length as the server sent it: the listing offset the tail starts at.
+    pub preview: usize,
+    /// Items the listing holds past the preview. `None` until the server says (a hub flagged `more`
+    /// that sent no total), learned from the first page read of it.
+    pub len: Option<usize>,
+}
+
+/// The Related row beyond the merged `/related` previews: `Detail::related[..head]` is the head,
+/// every preview whole, and the rest is a window of at most [`crate::pms::MAX_SHELF_ITEMS`] cards of
+/// the hubs' own listings, chained in response order. A tail position counts the hubs' listings
+/// past their previews end to end, so a card keeps the position it was read at whichever way the
+/// window moves. Empty (and absent from the encoding) when no hub holds more than its preview.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct RelatedTail {
+    pub hubs: Vec<TailHub>,
+    /// Keys the tail must not show whatever the head holds: the page's own item and its
+    /// collection's members.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// How many of `Detail::related` are the head.
+    #[serde(default)]
+    pub head: usize,
+    /// The tail position of each card after the head.
+    #[serde(default)]
+    pub positions: Vec<usize>,
+    /// The window as the server last reported it, as `stores::paging::PageInfo` says it.
+    #[serde(default)]
+    pub offset: usize,
+    #[serde(default)]
+    pub end: usize,
+    #[serde(default)]
+    pub total: usize,
+    #[serde(default)]
+    pub more: bool,
+    /// Hubs with more behind them whose key the pager does not admit; they keep their preview.
+    #[serde(default)]
+    pub unadmitted: usize,
+}
+
+impl RelatedTail {
+    pub fn is_empty(&self) -> bool {
+        self.hubs.is_empty() && self.unadmitted == 0
+    }
 }
 
 /// Clone because the playing-item store keeps the played leaf's OWN chapters (see [`PlayingItem`]) —
@@ -1576,6 +1632,9 @@ pub struct Detail {
     pub on_deck: Option<Episode>,
     pub cur_season: usize,
     pub related: Vec<Related>,
+    /// What lies past the previews in `related` ([`RelatedTail`]); empty for most pages.
+    #[serde(default, skip_serializing_if = "RelatedTail::is_empty")]
+    pub related_tail: RelatedTail,
     /// The item's collection shelf ([`CollectionShelf`]); `None` for a non-member, a lone member
     /// and every show/episode page.
     #[serde(default)]
@@ -2118,6 +2177,7 @@ fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, Stri
             .map(convert_episode),
         cur_season: 0,
         related: Vec::new(),
+        related_tail: RelatedTail::default(),
         collection: None,
         chapters: convert_chapters(&it.chapter),
         markers: convert_markers(&it.marker, it.duration),
@@ -3257,6 +3317,7 @@ fn related_rows(mc: &plx_plex::plex::MediaContainer, sid: plx_plex::plex::Server
         seen.extend(h.metadata.iter().map(|x| x.rating_key.clone()));
     }
     let collection = own.and_then(|i| collection_shelf(&mc.hub[i], sid, rk));
+    let mut tail = RelatedTail { exclude: seen.iter().cloned().collect(), ..Default::default() };
     let mut out = Vec::new();
     for (i, h) in mc.hub.iter().enumerate() {
         if Some(i) == own {
@@ -3274,13 +3335,41 @@ fn related_rows(mc: &plx_plex::plex::MediaContainer, sid: plx_plex::plex::Server
             // flight and the rows in hand belong to the machine that was asked.
             out.push(crate::pms::parse_item(x, sid));
         }
+        // What lies behind the preview. The preview is the exact head of the listing (probed), so
+        // the tail starts at its length, counted raw: filtering does not move listing offsets.
+        let preview = h.metadata.len();
+        if !(h.more || h.total() > preview) {
+            continue;
+        }
+        if plx_plex::plex::is_pageable_hub_key(&h.key) {
+            let len = (h.total() > preview).then(|| h.total() - preview);
+            tail.hubs.push(TailHub { key: h.key.clone(), preview, len });
+        } else {
+            // A shape the pager does not read: the hub keeps its preview. Logged by shape, so a new
+            // kind of key is noticed.
+            tail.unadmitted += 1;
+            plx_base::eventlog::log(&format!(
+                "detail: related hub key not pageable, keeping its preview: {}", key_shape(&h.key)
+            ));
+        }
     }
-    RelatedRows { collection, related: out }
+    tail.head = out.len();
+    tail.more = !tail.hubs.is_empty();
+    RelatedRows { collection, related: out, tail }
+}
+
+/// A hub key with its ids and query removed, for the log: `/library/metadata/N/extras`.
+fn key_shape(key: &str) -> String {
+    let path = key.split_once('?').map_or(key, |(path, _)| path);
+    path.split('/')
+        .map(|part| if !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()) { "N" } else { part })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// One `collection.related.*` hub → the collection shelf, or `None` when the item is the
 /// collection's only listed member: a shelf of the page's own poster is no way to a collection.
-/// Members keep server order, the item's own tile included, capped at [`COLLECTION_MAX`].
+/// Members keep server order, the item's own tile included, capped at [`COLLECTION_PREVIEW`].
 fn collection_shelf(
     h: &plx_plex::plex::Hub,
     sid: plx_plex::plex::ServerId,
@@ -3300,7 +3389,7 @@ fn collection_shelf(
     // sent one, else every member it listed — both before the shelf's cap.
     let count = h.total().max(listed.len());
     let members: Vec<Related> = listed.into_iter()
-        .take(COLLECTION_MAX)
+        .take(COLLECTION_PREVIEW)
         .map(|x| crate::pms::parse_item(x, sid))
         .collect();
     if members.iter().all(|m| m.rk == rk) {
@@ -3392,6 +3481,7 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Detail> {
             (related, extras)
         });
         d.related = related.related;
+        d.related_tail = related.tail;
         d.collection = related.collection;
         match extras {
             Some(rows) => {
@@ -3416,6 +3506,7 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Detail> {
         extras_src = "skip";
         let related = fetch_related(sid, rk);
         d.related = related.related;
+        d.related_tail = related.tail;
         d.collection = related.collection;
     }
     // The item's IDENTITY and the SHAPE of what came back — never its title. `scrub_local` runs
@@ -3633,6 +3724,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             let keep = crate::stores::page_cache::Keep { wanted: lo..hi, focus, restore };
             want_episodes(state, adapter, keep)
         }
+        MetadataCmd::WantRelated { before } => want_related(state, adapter, before),
         MetadataCmd::SetNowPlaying(np) => {
             set_now_playing(state, np);
             true
@@ -4583,6 +4675,143 @@ pub fn pump_episode_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
     changed
 }
 
+// ---- Related tail window ----------------------------------------------------------------------
+// The Related row is its head (every preview of `/related`) and a window of the hubs' own listings
+// past their previews ([`RelatedTail`]). The screen names an edge ([`MetadataCmd::WantRelated`]),
+// the window moves off-thread through the shared sliding window, and [`pump_related_pages`]
+// installs it on the page it was read for.
+
+#[derive(Default)]
+struct RelPages {
+    /// A window read is out; the next edge is asked for once it lands.
+    inflight: bool,
+    landed: Vec<RelLanded>,
+}
+
+struct RelLanded {
+    sid: plx_plex::plex::ServerId,
+    rk: String,
+    /// The window the read started from. A landing on any other window is stale.
+    from: (usize, usize),
+    /// `None` = the read failed: nothing installs, and the shelf asks again at its next edge.
+    window: Option<(Vec<crate::stores::paging::Row>, crate::stores::paging::PageInfo, Vec<TailHub>)>,
+}
+
+/// One page of the tail positions `start..start+size`: the hubs' listings past their previews end
+/// to end, a page spanning two hubs reading both. `get(key, offset, size)` is one listing page.
+/// What a hub says about its own total is learned into `hubs`. Items in `skip` are returned with no
+/// type, which the window skips while keeping their positions. `None` when a page failed or came
+/// back from another offset.
+fn tail_page(
+    hubs: &mut [TailHub],
+    skip: &std::collections::HashSet<String>,
+    start: usize,
+    size: usize,
+    get: &mut impl FnMut(&str, usize, usize) -> Option<plx_plex::plex::MediaContainer>,
+) -> Option<plx_plex::plex::MediaContainer> {
+    let mut out = Vec::new();
+    let (mut at, mut base, mut k) = (start, 0usize, 0usize);
+    while k < hubs.len() && out.len() < size {
+        if let Some(len) = hubs[k].len.filter(|len| at >= base + len) {
+            base += len;
+            k += 1;
+            continue;
+        }
+        let local = at - base;
+        let want = (size - out.len()).min(hubs[k].len.map_or(usize::MAX, |len| len - local));
+        let listed = hubs[k].preview + local;
+        let mc = get(&hubs[k].key, listed, want)?;
+        if mc.offset != listed as i64 { return None; }
+        if mc.total_size > 0 { hubs[k].len = Some((mc.total_size as usize).saturating_sub(hubs[k].preview)); }
+        let got = mc.metadata.len().min(want);
+        for mut item in mc.metadata.into_iter().take(got) {
+            if skip.contains(crate::pms::clean(&item.rating_key).as_str()) { item.kind.clear(); }
+            out.push(item);
+        }
+        at += got;
+        if got < want {
+            // A short page ends a hub whose length was unknown; a hub that said its length and
+            // answered short has not ended, and the window keeps what arrived.
+            if hubs[k].len.is_none() { hubs[k].len = Some(local + got); }
+            if hubs[k].len.is_some_and(|len| local + got >= len) { base += local + got; k += 1; continue; }
+            break;
+        }
+    }
+    let total = hubs.iter().map(|h| h.len).sum::<Option<usize>>().unwrap_or(0);
+    Some(plx_plex::plex::MediaContainer { offset: start as i64, total_size: total as i64, metadata: out, ..Default::default() })
+}
+
+/// Ask for the previous or next window of the Related tail. False when there is nothing to ask:
+/// no tail, no more in that direction, or a read already out. Main thread only.
+fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, before: bool) -> bool {
+    use crate::stores::paging::{PageInfo, Row};
+    let Some(d) = state.current.as_ref() else { return false };
+    let t = &d.related_tail;
+    if t.hubs.is_empty() || t.head > d.related.len() || (before && t.offset == 0) || (!before && !t.more) {
+        return false;
+    }
+    {
+        let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+        if rel.inflight { return false; }
+        rel.inflight = true;
+    }
+    let (sid, rk) = (d.sid, d.rk.clone());
+    let info = PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };
+    let rows: Vec<Row> = t.positions.iter().copied()
+        .zip(d.related[t.head..].iter().map(|m| std::sync::Arc::new(m.clone()))).collect();
+    let skip: std::collections::HashSet<String> =
+        t.exclude.iter().cloned().chain(d.related[..t.head].iter().map(|m| m.rk.clone())).collect();
+    let mut hubs = t.hubs.clone();
+    let worker = std::sync::Arc::clone(adapter);
+    let spawned = plx_base::task::spawn_small("related-tail", move || {
+        let window = catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let client = plx_plex::plex::client_for(sid)?;
+            let ask = crate::stores::paging::Ask { start: if before { info.offset } else { info.end }, before, hidden: &[] };
+            let current = (!rows.is_empty()).then_some((rows.as_slice(), info));
+            let (rows, info) = crate::stores::paging::fetch_window(sid, &ask, current, 0, |start, size| {
+                tail_page(&mut hubs, &skip, start, size, &mut |key, at, count| client.hub_items_paged(key, at as i64, count as i64))
+            })?;
+            Some((rows, info, std::mem::take(&mut hubs)))
+        })).unwrap_or(None);
+        let mut rel = worker.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+        rel.inflight = false;
+        rel.landed.push(RelLanded { sid, rk, from: (info.offset, info.end), window });
+    });
+    if !spawned {
+        adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).inflight = false;
+    }
+    spawned
+}
+
+/// Main-thread pump: install a Related window that landed on the page and the window it was read
+/// from. True when the row changed.
+pub fn pump_related_pages(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
+    let landed = {
+        let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+        if rel.landed.is_empty() { return false; }
+        std::mem::take(&mut rel.landed)
+    };
+    let Some(d) = state.current.as_mut() else { return false };
+    let mut changed = false;
+    for l in landed {
+        let t = &mut d.related_tail;
+        if !plx_plex::plex::same_item((d.sid, &d.rk), (l.sid, &l.rk)) || (t.offset, t.end) != l.from {
+            continue;
+        }
+        let Some((rows, info, hubs)) = l.window else { continue };
+        if info.unstable {
+            plx_base::eventlog::log(&format!("detail: rk={} related tail window lost its edge; kept as it was", d.rk));
+            continue;
+        }
+        d.related.truncate(t.head);
+        t.positions = rows.iter().map(|(position, _)| *position).collect();
+        d.related.extend(rows.into_iter().map(|(_, m)| std::sync::Arc::try_unwrap(m).unwrap_or_else(|m| (*m).clone())));
+        (t.offset, t.end, t.total, t.more, t.hubs) = (info.offset, info.end, info.total, info.more, hubs);
+        changed = true;
+    }
+    changed
+}
+
 /// True while a season fetch is in flight — drives the episode row's loading dim + spinner.
 pub fn season_loading(adapter: &MetadataAdapter) -> bool {
     use std::sync::atomic::Ordering;
@@ -5397,3 +5626,7 @@ mod demo_fixture_tests;
 #[cfg(test)]
 #[path = "metadata_episode_pages_tests.rs"]
 mod episode_pages_tests;
+
+#[cfg(test)]
+#[path = "metadata_related_tail_tests.rs"]
+mod related_tail_tests;

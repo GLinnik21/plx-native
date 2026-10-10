@@ -199,7 +199,7 @@ fn a_lone_member_gets_no_collection_shelf_and_a_large_one_is_capped() {
     let mc = serde_json::from_str::<plx_plex::plex::Envelope>(&body).expect("parses").media_container;
     let rows = related_rows(&mc, SRV_A, "100");
     let big = rows.collection.expect("a shelf");
-    assert_eq!(big.members.len(), COLLECTION_MAX);
+    assert_eq!(big.members.len(), COLLECTION_PREVIEW);
     assert_eq!(big.count, 30, "the heading counts every listed member, not the capped shelf");
     assert!(rows.related.is_empty(), "the members past the cap do not spill into Related");
 }
