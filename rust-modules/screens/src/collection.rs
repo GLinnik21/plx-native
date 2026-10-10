@@ -293,6 +293,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for Members<'_> {
         widgets::poster_label(p, tile.rect, tile.radius, &persistent, measure);
         if let Some(frac) = self.collection.item(i).and_then(PmsMovie::resume_frac) { ui_cards::resume_bar(p, tile.rect, frac, tile.radius); }
     }
+    fn unread(&self, i: usize) -> bool { self.collection.item(i).is_none() }
     fn more(&self) -> bool { self.collection.more }
 }
 

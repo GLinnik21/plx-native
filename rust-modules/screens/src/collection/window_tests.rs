@@ -303,3 +303,31 @@ fn every_cell_the_grid_paints_holds_a_key_in_the_frame_its_scroll_moved_the_view
         }
     }
 }
+
+/// A page the store lost (a failed read, an eviction) under cards in view is asked for again with
+/// no key pressed: the window goes to the store again on the grid's ladder, which is what resets
+/// the store's frontier budget and re-reads the page, and it stops once the page is back.
+#[test]
+fn a_hole_under_the_visible_cards_is_asked_for_again_without_a_key() {
+    let mut sim = Sim::resident(5000);
+    sim.seat_first();
+    for _ in 0..60 { sim.press(Dir::Down); for _ in 0..2 { sim.frame(); } }
+    for _ in 0..30 { sim.frame(); }
+    let before = sim.sent.len();
+    let all = sim.all.clone();
+    let seen = sim.painted().start;
+    let at = sim.index(sim.focus.unwrap()).unwrap();
+    // the focused card's page stays (as the store keeps it); the other page in view is lost
+    sim.store.edit_for_test(|c| c.evict_for_test(0..60, Some(at), None));
+    assert!(seen > 100, "scrolled: {seen}");
+    assert!((seen..sim.painted().end).any(|i| sim.collection().item(i).is_none()), "a page in view is gone");
+    assert!(sim.collection().item(at).is_some());
+    for _ in 0..60 * 12 { sim.frame(); }
+    let asked = sim.sent.len() - before;
+    assert!(asked >= 4, "the window was sent again {asked} times while the hole stood");
+    sim.store.edit_for_test(|c| c.replace_items_for_test(all));
+    for _ in 0..30 { sim.frame(); }
+    let settled = sim.sent.len();
+    for _ in 0..60 * 40 { sim.frame(); }
+    assert_eq!(sim.sent.len(), settled, "loaded, it asks no more");
+}

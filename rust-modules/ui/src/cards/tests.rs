@@ -53,11 +53,13 @@ struct Cards {
     /// Cards from this index on are not interned yet: `elem` answers the shared header id `0`
     /// (`Members::elem`'s `unwrap_or(HEADER_ELEM)`) and `index_of` knows no such element.
     unindexed_from: usize,
+    /// The cards of a paged listing whose page is not present (`CardSource::loaded`).
+    unloaded: std::ops::Range<usize>,
 }
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, drawn: Default::default(), unindexed_from: usize::MAX }
+        Self { elems, more, epoch: 0, drawn: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0 }
     }
 }
 
@@ -82,6 +84,9 @@ impl CardSource<FixtureHost> for Cards {
     }
     fn page_epoch(&self) -> u32 {
         self.epoch
+    }
+    fn loaded(&self, i: usize) -> bool {
+        !self.unloaded.contains(&i)
     }
     fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, _measure: &dyn plx_machine::machine::Measure) {
         self.drawn.borrow_mut().push((self.elems[i], p.to_screen(tile.rect).1));
@@ -1061,6 +1066,71 @@ fn shelf_wants_more_at_the_tail() {
 #[test]
 fn grid_wants_more_at_the_tail() {
     want_events::<Grid>();
+}
+
+/// The `Want`s a grid reports over `frames` frames at 60 Hz, each with the second it came at.
+fn grid_asks(r: &mut Rig<Grid>, frames: u32) -> Vec<(f32, std::ops::Range<usize>)> {
+    let mut asks = Vec::new();
+    for _ in 0..frames {
+        r.ms += MS;
+        if let (Some(CardEvent::Want(range)), _) = r.feed(ScreenEvent::Tick(Tick { ms: r.ms, dt_us: 16_667 })) {
+            asks.push((r.ms as f32 / 1000.0, range));
+        }
+    }
+    asks
+}
+
+fn gaps(asks: &[(f32, std::ops::Range<usize>)]) -> Vec<f32> {
+    asks.windows(2).map(|w| w[1].0 - w[0].0).collect()
+}
+
+#[test]
+fn a_grid_repeats_an_unanswered_tail_ask_on_the_capped_ladder() {
+    let mut r = settled::<Grid>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Dir);
+    grid_asks(&mut r, 60 * 3); // the scroll settling moves the look-ahead, each a new ask
+    r.src.epoch += 1; // a landing that grew nothing: the next ask is fresh
+    let asks = grid_asks(&mut r, 60 * 150);
+    assert!(asks.len() >= 8, "the ask keeps being repeated with no key: {asks:?}");
+    let g = gaps(&asks);
+    assert!(g.windows(2).take(5).all(|w| w[1] > w[0] * 1.8), "the interval climbs: {g:?}");
+    assert!(g.iter().all(|g| *g < 30.2), "and never passes the 30 s cap: {g:?}");
+    assert!((g[g.len() - 1] - 30.0).abs() < 0.1, "the cap repeats while the user stays: {g:?}");
+    // a landing starts it over, at once
+    r.src.elems.extend(200..230);
+    r.land_focus(229, By::Dir);
+    assert!(!grid_asks(&mut r, 2).is_empty(), "a longer listing is asked at once");
+    // nothing more: it stops
+    r.src.more = false;
+    assert!(grid_asks(&mut r, 60 * 40).is_empty(), "no more cards, no ask");
+}
+
+#[test]
+fn a_grid_repeats_the_ask_for_an_unloaded_card_in_view_until_it_loads() {
+    let mut r = settled::<Grid>(300);
+    r.src.unloaded = 6..12; // a page that failed or was evicted, inside the visible rows
+    let asks = grid_asks(&mut r, 60 * 20);
+    assert!(asks.len() >= 5, "the hole is asked for again and again: {asks:?}");
+    assert!(asks.iter().all(|(_, a)| a.start == 6 && a.end > 6), "the ask names the hole: {asks:?}");
+    assert!(gaps(&asks).iter().all(|g| *g < 30.2));
+    r.src.unloaded = 0..0; // it landed
+    assert!(grid_asks(&mut r, 60 * 40).is_empty(), "loaded, the asking stops");
+    // a hole out of sight is nobody's business until it is scrolled to
+    r.src.unloaded = 250..260;
+    assert!(grid_asks(&mut r, 60 * 20).is_empty(), "off screen, nothing is asked");
+}
+
+#[test]
+fn a_grid_asks_for_the_unloaded_card_a_failed_page_scrolled_back_into_view_left() {
+    let mut r = settled::<Grid>(300);
+    r.src.unloaded = 100..160;
+    r.land_focus(200, By::Dir);
+    let asks = grid_asks(&mut r, 60 * 3);
+    assert!(!asks.is_empty() && asks.iter().all(|(_, a)| a.start >= 96), "focus on the hole asks for it: {asks:?}");
+    r.land_focus(399, By::Dir);
+    r.src.unloaded = 0..0;
+    assert!(grid_asks(&mut r, 60 * 10).is_empty(), "elsewhere and loaded, quiet");
 }
 
 // ---- the page edges (Home's paging rule, lifted) ---------------------------------------------

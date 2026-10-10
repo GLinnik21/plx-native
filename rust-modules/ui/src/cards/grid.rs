@@ -10,7 +10,7 @@
 use plx_machine::machine::{Canon, Cx, Effects, EntryId, FocusKey, GroupId, Host, ScreenEvent};
 use plx_machine::present::{PresentEvent, Provenance};
 
-use super::{CardEvent, CardSource, Landed, Seen, Tile};
+use super::{CardEvent, CardSource, Landed, Retry, Seen, Tile};
 use crate::card_row;
 use crate::consts::{K_SCROLL, MARGIN_X, SCR_H};
 use crate::card_row::RowStyle;
@@ -101,6 +101,13 @@ pub struct Grid {
     reveal: Option<f32>,
     ahead: usize,
     asked: Option<(usize, usize)>,
+    /// The first unloaded card in view the latest hole ask named.
+    hole: Option<usize>,
+    /// An ask is out that nothing has answered: it is repeated on the [`Retry`] ladder.
+    out: bool,
+    retry: Retry,
+    /// The source's [`CardSource::page_epoch`] at the last tick.
+    epoch: u32,
 }
 
 impl Grid {
@@ -120,6 +127,10 @@ impl Grid {
             reveal: None,
             ahead: spec.cols * 2,
             asked: None,
+            hole: None,
+            out: false,
+            retry: Retry::new(),
+            epoch: 0,
         }
     }
 
@@ -133,6 +144,7 @@ impl Grid {
     ) -> Option<CardEvent<H::Elem>> {
         match ev {
             ScreenEvent::Tick(t) => {
+                self.retry.tick(t.ms);
                 self.tick(t.dt(), cx, src, fx);
                 self.want(cx, src)
             }
@@ -244,11 +256,61 @@ impl Grid {
         self.landed = Some(Landed { from: p, to: q });
     }
 
-    /// The paging rule: the last row the scroll shows, or the focused card's look-ahead.
+    /// The paging rule: the last row the scroll shows, or the focused card's look-ahead, asked for
+    /// once per `(len, end)`; and any card in view (or focused) whose page is not present, asked
+    /// for once per first hole. An ask nothing answers is repeated on the [`Retry`] ladder for as
+    /// long as the need stands, so a read that failed, was refused or was withdrawn does not wait
+    /// for a key press; a landing (the length, the first hole or [`CardSource::page_epoch`]
+    /// moving) answers it and the next ask goes at once. The hole scan is the visible cells at
+    /// most, a screenful.
     fn want<H: Host, S: CardSource<H>>(&mut self, cx: &Cx<'_, H>, src: &S) -> Option<CardEvent<H::Elem>> {
-        let window = ((self.scroll.pos + SCR_H - self.spec.top) / self.spec.geom().pitch()).ceil().max(0.0) as usize * self.spec.cols;
-        let focus = super::focused_index(&cx.focus, self.entry, src).map_or(0, |i| i + 1 + self.ahead);
-        super::want(&mut self.asked, src.len(), window.max(focus), src.more(), false).map(CardEvent::Want)
+        let pitch = self.spec.geom().pitch();
+        let cols = self.spec.cols;
+        let window = ((self.scroll.pos + SCR_H - self.spec.top) / pitch).ceil().max(0.0) as usize * cols;
+        let first = ((self.scroll.pos - self.spec.top) / pitch).floor().max(0.0) as usize * cols;
+        let at = super::focused_index(&cx.focus, self.entry, src);
+        let focus = at.map_or(0, |i| i + 1 + self.ahead);
+        let (len, more) = (src.len(), src.more());
+        let end = window.max(focus);
+        let epoch = src.page_epoch();
+        if epoch != self.epoch {
+            self.epoch = epoch;
+            self.asked = None;
+            self.hole = None;
+            self.retry.reset();
+            self.out = false;
+        }
+        let shown = window.min(len);
+        let hole = (first..shown).chain(at).find(|&i| i < len && src.unread(i));
+        if hole.is_none() && !(more && end > len) {
+            self.hole = None;
+            self.out = false;
+            self.retry.reset();
+            return None;
+        }
+        let due = self.out && self.retry.due();
+        let mut fresh = false;
+        let mut ask = None;
+        if let Some(h) = hole {
+            if self.hole != Some(h) || due {
+                fresh = self.hole != Some(h);
+                self.hole = Some(h);
+                ask = Some(h..shown.max(h + 1));
+            }
+        } else {
+            self.hole = None;
+        }
+        if ask.is_none() {
+            let was = self.asked;
+            ask = super::want(&mut self.asked, len, end, more, due);
+            fresh = self.asked != was;
+        }
+        if ask.is_some() {
+            if fresh { self.retry.mark_fresh(); }
+            self.retry.sent();
+            self.out = true;
+        }
+        ask.map(CardEvent::Want)
     }
 
     /// The landing the last tick carried the focused card's pop through (see [`Landed`]).

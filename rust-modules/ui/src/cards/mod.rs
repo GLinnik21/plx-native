@@ -120,6 +120,13 @@ pub trait CardSource<H: Host> {
     fn loaded(&self, _i: usize) -> bool {
         true
     }
+    /// Whether card `i`'s content is still to be read: its page has not landed, was evicted or
+    /// failed. A [`Grid`] asks again for a card in view that is (see [`CardEvent::Want`]); it
+    /// differs from `!loaded(i)` only for a source that paints an unread slot as a placeholder
+    /// rather than skipping it.
+    fn unread(&self, i: usize) -> bool {
+        !self.loaded(i)
+    }
     /// The card the ENGINE's focused element `e` is shown on, for the pop, the caption and the
     /// opener redraw: [`index_of`](Self::index_of) unless the screen paints a different focus
     /// than the engine holds (Home's hero dive keeps the card it came from lifted until the
