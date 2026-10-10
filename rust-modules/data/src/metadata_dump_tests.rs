@@ -98,7 +98,7 @@ fn dump_mode_a_season_request_out_lands_on_the_pump_that_runs_whatever_the_worke
     let worker = Arc::clone(&adapter);
     let join = std::thread::spawn(move || {
         std::thread::sleep(WORKER_DELAY);
-        land_season(&worker, gen, SRV_A, "show-1".to_string(), 1, prev, Some(Vec::new()));
+        land_season(&worker, gen, SRV_A, "show-1".to_string(), 1, prev, Some(Vec::new().into()));
     });
     let gate = dump_gate(std::time::Duration::from_secs(20));
     assert!(pump_season_with_gate(test_state(), &adapter, &gate),
@@ -121,9 +121,9 @@ fn dump_mode_a_superseded_season_requests_stale_answer_does_not_end_the_wait() {
     let worker = Arc::clone(&adapter);
     let join = std::thread::spawn(move || {
         std::thread::sleep(STALE_DELAY);
-        land_season(&worker, stale, SRV_A, "show-1".to_string(), 1, prev, Some(Vec::new()));
+        land_season(&worker, stale, SRV_A, "show-1".to_string(), 1, prev, Some(Vec::new().into()));
         std::thread::sleep(WORKER_DELAY);
-        land_season(&worker, gen, SRV_A, "show-1".to_string(), 0, 1, Some(Vec::new()));
+        land_season(&worker, gen, SRV_A, "show-1".to_string(), 0, 1, Some(Vec::new().into()));
     });
     let gate = dump_gate(std::time::Duration::from_secs(20));
     assert!(pump_season_with_gate(test_state(), &adapter, &gate),

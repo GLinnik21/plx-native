@@ -198,6 +198,17 @@ impl Client {
         self.get_json(&format!("/library/metadata/{rating_key}/children"))
     }
 
+    /// GET /library/metadata/{rating_key}/children as one window: `size` rows from `start`, with
+    /// `totalSize` the whole listing. A season's episodes page through this; `children` stays for
+    /// the season tabs, which need every row.
+    pub fn children_paged(&self, rating_key: &str, start: i64, size: i64) -> Option<MediaContainer> {
+        let path = paged_path(
+            &format!("/library/metadata/{rating_key}/children"),
+            PageReq::window(start, size),
+        );
+        self.get_json(&path)
+    }
+
     /// GET /library/metadata/{rating_key}/related → `.hub[]`.
     pub fn related(&self, rating_key: &str) -> Option<MediaContainer> {
         self.get_json(&format!("/library/metadata/{rating_key}/related"))

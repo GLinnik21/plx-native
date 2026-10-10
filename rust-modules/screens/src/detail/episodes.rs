@@ -17,11 +17,12 @@ pub const EPISODES_ELEM_RANGE_START: u32 = 1 << 30;
 pub const EPISODES_ELEM_RANGE_END: u32 = 1 << 31;
 pub const EPISODES_GROUP: GroupId = GroupId(2);
 
-/// The episodes the strip registers stops for and draws per frame. This is a per-episode work
-/// bound, not an id-range clamp: the id block is 2^30 wide and no longer sizes it. It keeps the
-/// value the old block gave until the episode strip is redone (`EP_SCALE_MAX` is the same kind of
-/// bound), so raising it is that lane's change to make.
-pub const MAX_ITEMS: usize = 256;
+/// Episodes the id block can name: two ids each, so a season of any length the server sends has a
+/// local id per episode and no screen-side count limits what can be reached.
+const ID_SPAN: usize = ((EPISODES_ELEM_RANGE_END - EPISODES_ELEM_RANGE_START) / 2) as usize;
+/// Cells either side of the screen that are keyed and laid out as well, so a press that scrolls the
+/// strip finds its neighbour already seated.
+pub const LEAD_CELLS: usize = 1;
 pub const W: f32 = 420.0;
 pub const H: f32 = 236.0;
 pub const GAP: f32 = 28.0;
@@ -49,7 +50,7 @@ pub enum Row {
 }
 
 pub fn elem(index: usize, row: Row) -> Option<u32> {
-    (index < MAX_ITEMS)
+    (index < ID_SPAN)
         .then_some(EPISODES_ELEM_RANGE_START + index as u32 * 2 + u32::from(row == Row::Text))
 }
 
@@ -138,13 +139,90 @@ pub fn meta_rect(ep: &Episode, i: usize, top: f32, scroll: f32, measure: &dyn pl
     )
 }
 
+/// The tallest label block any episode can have: a two-line title, a summary at its line cap and a
+/// date row. A season longer than a page reserves this for its whole life, so a page landing never
+/// changes the strip's height under the viewer.
+fn reserved_text_h() -> f32 {
+    TITLE_DY + 2.0 * TITLE_LEAD + theme::space::MD + SUMMARY_MAX_LINES as f32 * SUMMARY_LEAD
+        + theme::space::MD + theme::size::MICRO as f32 + META_BOTTOM_PAD
+}
+
 pub fn block_h(d: &Detail, measure: &dyn plx_machine::machine::Measure) -> f32 {
+    if d.episodes.len() > plx_data::metadata::EPISODE_PAGE {
+        return H + reserved_text_h() + META_TOP;
+    }
     H + d
         .episodes
         .iter_loaded()
         .map(|(_, e)| meta_layout(e, measure).2)
         .fold(0.0, f32::max)
         + META_TOP
+}
+
+/// The episode indices whose cells reach the screen at strip scroll `scroll`, widened by `lead`
+/// cells each side and clamped to a season of `len`. Pure index arithmetic, so what is keyed,
+/// laid out and drawn follows the screen and not the season's length.
+pub fn visible(scroll: f32, len: usize, lead: usize) -> std::ops::Range<usize> {
+    let pitch = W + GAP;
+    let first = ((scroll - plx_ui::consts::MARGIN_X - W) / pitch).floor().max(0.0) as usize;
+    let last = ((scroll + plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X) / pitch).ceil().max(0.0) as usize;
+    first.saturating_sub(lead).min(len)..(last + lead).min(len)
+}
+
+/// A few cells' springs, keyed by episode: the focused cell and the one just left are the only
+/// ones with motion, so a season of any length needs no per-episode state. A cell that owns no
+/// slot reads as at rest.
+#[derive(Clone)]
+pub struct Cells {
+    owner: [usize; SLOTS],
+    scale: [plx_ui::Spring; SLOTS],
+    lift: [TextLift; SLOTS],
+}
+
+const SLOTS: usize = 8;
+const NONE: usize = usize::MAX;
+
+impl Cells {
+    pub fn new() -> Self {
+        Self { owner: [NONE; SLOTS], scale: [plx_ui::Spring::at(1.0); SLOTS], lift: [TextLift::new(); SLOTS] }
+    }
+
+    pub fn scale(&self, i: usize) -> f32 {
+        let s = i % SLOTS;
+        if self.owner[s] == i { self.scale[s].pos } else { 1.0 }
+    }
+
+    pub fn lift(&self, i: usize) -> TextLift {
+        let s = i % SLOTS;
+        if self.owner[s] == i { self.lift[s] } else { TextLift::new() }
+    }
+
+    /// Advances every owned cell toward its target. `still` / `text` are the focused cell by stop.
+    pub fn step(&mut self, still: Option<usize>, text: Option<usize>, dt: f32) {
+        for i in [still, text].into_iter().flatten() {
+            let s = i % SLOTS;
+            if self.owner[s] != i {
+                self.owner[s] = i;
+                self.scale[s] = plx_ui::Spring::at(1.0);
+                self.lift[s] = TextLift::new();
+            }
+        }
+        for s in 0..SLOTS {
+            let i = self.owner[s];
+            if i == NONE {
+                continue;
+            }
+            let target = if still == Some(i) { theme::EP_CARD_FOCUS_SCALE } else { 1.0 };
+            self.scale[s].step(target, 300.0, dt);
+            self.lift[s].step(text == Some(i), dt);
+        }
+    }
+}
+
+impl Default for Cells {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -230,11 +308,16 @@ pub fn draw(
     };
     let p = p.alpha(stale).translate(-scroll, top);
     let cap_top = kicker_cap_top();
-    for (i, ep) in d.episodes.iter_loaded().take(MAX_ITEMS) {
+    for i in visible(scroll, d.episodes.len(), 0) {
         let x = strip_x(i);
         if !on_axis(x - scroll, W, plx_ui::consts::SCR_W, 0.0) {
             continue;
         }
+        let Some(ep) = d.episodes.get(i) else {
+            // A page that has not landed: the still's own skeleton, at the cell's own place.
+            plx_ui::placeholder::skeleton(p, plx_ui::placeholder::Reason::CardSkeleton, "", cell_rect(x), CARD_RADIUS);
+            continue;
+        };
         draw_cell(p, d, i, ep, focused, scale(i), &lift(i), cap_top, measure);
         if reloading {
             plx_ui::placeholder::note(p, plx_ui::placeholder::Reason::StaleEpisodes, &ep.rk);
@@ -414,7 +497,7 @@ mod tests {
 
     #[test]
     fn still_and_text_have_distinct_stable_keys() {
-        for i in 0..MAX_ITEMS {
+        for i in (0..2000).chain([ID_SPAN - 1]) {
             let still = elem(i, Row::Still).unwrap();
             let text = elem(i, Row::Text).unwrap();
             assert_ne!(still, text);

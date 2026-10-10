@@ -52,7 +52,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
     // the new one is empty" fix passes the block above and leaves THIS one showing the
     // previous season's episodes under the new season's tab.
     let (gen, prev) = begin_switch(1);
-    land_season(test_adapter(), gen, SRV_A, "show-1".to_string(), 1, prev, Some(Vec::new()));
+    land_season(test_adapter(), gen, SRV_A, "show-1".to_string(), 1, prev, Some(Vec::new().into()));
     assert!(
         pump_season(test_state(), test_adapter()),
         "an empty season is a successful fetch — the row did change"
@@ -75,7 +75,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         "show-1".to_string(),
         0,
         prev,
-        Some(vec![episode("s1e1")]),
+        Some(vec![episode("s1e1")].into()),
     );
     assert!(pump_season(test_state(), test_adapter()));
     assert_eq!(listed_eps(), ["s1e1"]);
@@ -91,7 +91,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         "show-1".to_string(),
         1,
         prev,
-        Some(vec![episode("s2e1")]),
+        Some(vec![episode("s2e1")].into()),
     );
     assert!(
         !pump_season(test_state(), test_adapter()),
@@ -114,7 +114,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         "show-1".to_string(),
         1,
         prev,
-        Some(vec![episode("fresh")]),
+        Some(vec![episode("fresh")].into()),
     );
     land_season(test_adapter(), 
         old,
@@ -122,7 +122,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         "show-1".to_string(),
         1,
         prev,
-        Some(vec![episode("stale")]),
+        Some(vec![episode("stale")].into()),
     );
     assert!(pump_season(test_state(), test_adapter()), "the newest season lands");
     assert_eq!(
@@ -142,7 +142,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         "show-1".to_string(),
         1,
         prev,
-        Some(vec![episode("s2e1")]),
+        Some(vec![episode("s2e1")].into()),
     );
     assert!(
         !pump_season(test_state(), test_adapter()),
@@ -178,7 +178,7 @@ fn a_season_landing_for_another_servers_show_with_the_same_key_is_refused() {
         "42".to_string(),
         1,
         prev,
-        Some(vec![episode("ours-s2e1")]),
+        Some(vec![episode("ours-s2e1")].into()),
     );
 
     assert!(
@@ -204,7 +204,7 @@ fn a_season_landing_for_another_servers_show_with_the_same_key_is_refused() {
         "42".to_string(),
         1,
         prev,
-        Some(vec![episode("ours-s2e1")]),
+        Some(vec![episode("ours-s2e1")].into()),
     );
     assert!(pump_season(test_state(), test_adapter()));
     assert_eq!(listed_eps(), ["ours-s2e1"]);

@@ -72,6 +72,8 @@
 //!   copy) are not covered.
 //! - `LoadSeason(usize)` → `metadata::load_season` — flip the season strip optimistically, fetch
 //!   the episodes off-thread (debounced landing through `pump_season`).
+//! - `WantEpisodes{lo, hi, focus, restore}` → `metadata::want_episodes` — fetch the pages of a long
+//!   season the screen needs and evict the ones it does not (`pump_episode_pages` installs them).
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
 //! - `SetWatchedLocal{sid, rk, on}` → `metadata::set_watched_local` — the optimistic half of a
 //!   view-state write, answers whether it actually changed anything.
@@ -183,6 +185,12 @@ pub enum MetadataCmd {
     Reset,
     /// The season strip: flip optimistically, fetch the episodes off-thread.
     LoadSeason(usize),
+    /// The selected season's episodes the screen needs, as indices `lo..hi` (what is on screen plus
+    /// a lead in the direction of travel), with the focused index and the target of a pending
+    /// restore. Pages of that range that have not landed are fetched; once pages land, the rows of
+    /// pages outside it are evicted, except the focus's and the restore target's. Idempotent: say
+    /// it again to retry a failed page.
+    WantEpisodes { lo: usize, hi: usize, focus: Option<usize>, restore: Option<usize> },
     SetNowPlaying(Option<crate::metadata::NowPlaying>),
     /// The optimistic half of a view-state write on the loaded item, its episodes and Related.
     SetWatchedLocal { sid: ServerId, rk: String, on: bool },
@@ -323,6 +331,8 @@ impl MetadataStore {
     /// The async season landing alone — `app/run.rs`'s own call site, pumped after detail.
     pub fn pump_season_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
         let changed = crate::metadata::pump_season_with_gate(&mut self.state, &self.adapter, gate);
+        let pages = crate::metadata::pump_episode_pages(&mut self.state, &self.adapter);
+        let changed = changed || pages;
         if changed { self.bump(); }
         changed
     }
