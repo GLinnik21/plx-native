@@ -574,7 +574,7 @@ fn no_landing_on_the_related_row_ever_moves_the_card_under_the_focus() {
         if rk.starts_with('h') { n } else { 3 + n }
     };
     for seed in 1..=8u64 {
-        let mut rng = crate::home::tests::Walk(seed);
+        let mut rng = plx_ui::fixture::Walk(seed);
         let mut offset = 0usize;
         let (mut d, mut rig) = boot_with(window(offset));
         let key = FocusKey { entry: screen(&d).entry, elem: screen(&d).engine_key(related::elem(3).unwrap()).unwrap() };

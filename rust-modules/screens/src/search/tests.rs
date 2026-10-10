@@ -1467,7 +1467,7 @@ fn no_landing_on_a_search_row_ever_moves_the_card_under_the_focus() {
         items: (lo..lo + held).map(|i| movie(&format!("m-{i}"))).collect(),
     };
     for seed in 1..=8u64 {
-        let mut rng = crate::home::tests::Walk(seed);
+        let mut rng = plx_ui::fixture::Walk(seed);
         let mut fixture = Fixture::new();
         // what the store holds: the preview, before any page was asked
         let (mut lo, mut held) = (0usize, 12usize);
