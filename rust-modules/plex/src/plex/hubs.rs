@@ -45,12 +45,14 @@ impl Client {
     /// only honest one), so we parse and discard them today; and with several sources on Home the
     /// waste is per source per fetch, not once.
     pub fn home_hubs(&self, count: i64) -> Option<MediaContainer> {
-        self.get_json(
-            &QueryBuilder::new("/hubs")
-                .int("count", count)
-                .int("excludeContinueWatching", 1)
-                .build(),
-        )
+        self.get_json(&home_hubs_path(count))
+    }
+
+    /// [`Client::home_hubs`], one window of the hub list: the list pages BY HUB, so `req` names
+    /// hubs, not cards (`docs/pms-api.md`, Paging, observed). The answer carries `totalSize` and
+    /// echoes `offset`.
+    pub fn home_hubs_page(&self, count: i64, req: PageReq) -> Option<MediaContainer> {
+        self.get_json(&paged_path(&home_hubs_path(count), req))
     }
 
     /// GET /hubs/sections/{sectionId}?count=… — **one LIBRARY's own shelves**, in the order the
@@ -76,11 +78,12 @@ impl Client {
     /// set. A refetch legitimately returns a different shelf count and different ids with nothing
     /// changed on the server, which is a fact about this endpoint rather than about any caller.
     pub fn library_hubs(&self, section_key: i64, count: i64) -> Option<MediaContainer> {
-        self.get_json(
-            &QueryBuilder::new(&format!("/hubs/sections/{section_key}"))
-                .int("count", count)
-                .build(),
-        )
+        self.get_json(&library_hubs_path(section_key, count))
+    }
+
+    /// [`Client::library_hubs`], one window of the hub list (by hub, as for [`Client::home_hubs_page`]).
+    pub fn library_hubs_page(&self, section_key: i64, count: i64, req: PageReq) -> Option<MediaContainer> {
+        self.get_json(&paged_path(&library_hubs_path(section_key, count), req))
     }
 
     /// GET /hubs/continueWatching?count=… — the dedicated Continue Watching hub.
@@ -204,6 +207,14 @@ fn typed_search_path(query: &str, kind: SearchKind, req: PageReq) -> String {
         .int("limit", (req.start + req.size) as i64)
         .build();
     paged_path(&path, req)
+}
+
+fn home_hubs_path(count: i64) -> String {
+    QueryBuilder::new("/hubs").int("count", count).int("excludeContinueWatching", 1).build()
+}
+
+fn library_hubs_path(section_key: i64, count: i64) -> String {
+    QueryBuilder::new(&format!("/hubs/sections/{section_key}")).int("count", count).build()
 }
 
 fn continue_watching_page_path(start: i64, size: i64) -> String {

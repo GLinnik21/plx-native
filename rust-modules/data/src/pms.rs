@@ -1120,8 +1120,9 @@ fn carry_descriptors(old: &SourceBuild, new: &mut SourceBuild) {
     for shelf in &mut new.shelves {
         let Some(was) = find_shelf(&old.shelves, &shelf.hub_id, &shelf.key).filter(|was| was.released()) else { continue };
         if !pages(&shelf.key) {
-            // nothing but the refresh's own preview says what the row shows now
-            shelf.row.kept = shelf.items.iter().map(|item| item.rk.clone()).collect();
+            // nothing but the refresh's own preview says what the row shows now (a row the refresh
+            // already gave up has put those keys in `kept`)
+            if !shelf.items.is_empty() { shelf.row.kept = shelf.items.iter().map(|item| item.rk.clone()).collect(); }
             shelf.items = Vec::new();
             shelf.positions = Vec::new();
             shelf.shown = was.shown;
@@ -1299,13 +1300,20 @@ fn keep_heroes(items: &[Arc<PmsMovie>], heroes: &[HeroSlot], build: &mut HubBuil
 /// otherwise stamp these rows with the other machine's id — the one thing every `(sid, rk)`
 /// comparison downstream then trusts). A `&'static Client` also pins the exact address this fetch
 /// was aimed at even if the registry re-points that slot mid-request.
-fn fetch_source(c: &plx_plex::plex::Client, sid: ServerId) -> Option<SourceBuild> {
-    let mc = c.home_hubs(HUB_FETCH_COUNT)?;
+///
+/// The hub list is read in windows of hubs ([`paging::read_hub_list`]) and each window is projected
+/// as it arrives; `held` names the rows whose cards the source holds now, and the rest are
+/// descriptors from the moment they are parsed (see [`Projection`]).
+fn fetch_source(c: &plx_plex::plex::Client, sid: ServerId, held: &[(String, String)]) -> Option<SourceBuild> {
+    let mut build = project_hubs(sid, held, |req| match req {
+        Some(req) => c.home_hubs_page(HUB_FETCH_COUNT, req),
+        None => c.home_hubs(HUB_FETCH_COUNT),
+    })?;
     // The Continue Watching shelf comes from the DEDICATED hub (see `project`). Its failure fails
     // THIS SOURCE (`?`) — nothing of it commits and it retries on its own backoff. Losing the most
     // important shelf to a transient error would be worse than briefly showing the previous one.
     let cw = c.continue_watching(HUB_FETCH_COUNT)?;
-    let mut build = project(&mc, &cw, sid);
+    project_deck(&mut build, &cw, sid);
     with_lookahead(&mut build, sid, |start, size| c.continue_watching_page(start as i64, size as i64));
     Some(build)
 }
@@ -1322,20 +1330,30 @@ fn with_lookahead(build: &mut SourceBuild, sid: ServerId,
 
 /// Project one source's `/hubs` + `/hubs/continueWatching` responses into its [`SourceBuild`].
 /// Pure — no statics, no I/O, no knowledge of any other source; `sid` is the server the two
-/// containers came from, stamped onto every row it builds.
+/// containers came from, stamped onto every row it builds. Every row keeps its cards: this is the
+/// whole-answer form, the refresh itself reads windows through [`project_hubs`].
+#[cfg(test)]
 fn project(
-    mc: &plx_plex::plex::MediaContainer,
+    mc:&plx_plex::plex::MediaContainer,
     cw: &plx_plex::plex::MediaContainer,
     sid: ServerId,
 ) -> SourceBuild {
-    // need a poster to show it in a shelf
-    let keep = |it: &plx_plex::plex::Metadata| {
-        if !listable(&it.kind) { return None; }
-        let m = parse_item(it, sid);
-        (!m.title.is_empty() && !m.thumb.is_empty()).then_some(m)
-    };
-    let mut out = SourceBuild::default();
+    let mut projection = Projection::new(sid, None);
+    projection.take(&mc.hub);
+    let mut out = projection.finish();
+    project_deck(&mut out, cw, sid);
+    out
+}
 
+/// A card a shelf can show: a type the product lists, with a title and a poster.
+fn shelf_card(it: &plx_plex::plex::Metadata, sid: ServerId) -> Option<PmsMovie> {
+    if !listable(&it.kind) { return None; }
+    let m = parse_item(it, sid);
+    (!m.title.is_empty() && !m.thumb.is_empty()).then_some(m)
+}
+
+/// The Continue Watching deck of `out`, from the dedicated hub.
+fn project_deck(out: &mut SourceBuild, cw: &plx_plex::plex::MediaContainer, sid: ServerId) {
     // Continue Watching comes from the **dedicated** `/hubs/continueWatching` hub, and `/hubs`'s own
     // `home.continue` / `home.ondeck` pair is skipped entirely. It used to merge that pair by hand
     // (in-progress items unified with next-up episodes, deduped by ratingKey) to reproduce the
@@ -1353,7 +1371,7 @@ fn project(
             .iter()
             .enumerate()
             .filter_map(|(position, it)| {
-                keep(it).map(|m| CwItem {
+                shelf_card(it, sid).map(|m| CwItem {
                     last_viewed_at: it.last_viewed_at,
                     m: Arc::new(m),
                     position,
@@ -1370,62 +1388,137 @@ fn project(
             break; // the first hub that has anything in it IS the deck
         }
     }
-
-    // Counted up front (not while looping) because `localized_hub_title`'s per-type "Recently
-    // Added Movies" wording is only right for a `home.<type>.recent` hub that names exactly ONE
-    // library — the moment PMS mints a second hub under the SAME identifier (one household with
-    // two TV libraries: `home_keeps_recently_added_rows_for_two_same_type_libraries`), both need
-    // the per-library "Recently Added in {library}" form to stay distinguishable, and neither
-    // hub can tell that from itself alone.
-    let mut hub_identifier_counts: std::collections::HashMap<&str, usize> =
-        std::collections::HashMap::new();
-    for hub in &mc.hub {
-        *hub_identifier_counts.entry(hub.hub_identifier.as_str()).or_insert(0) += 1;
-    }
-
-    for hub in &mc.hub {
-        if hub.kind != "mixed" && !listable(&hub.kind) {
-            continue;
-        }
-        if hub.hub_identifier == "home.continue" || hub.hub_identifier == "home.ondeck" {
-            continue; // superseded by the dedicated hub above
-        }
-        let (positions, items): (Vec<usize>, Vec<Arc<PmsMovie>>) = hub.metadata.iter().enumerate()
-            .filter_map(|(i, item)| keep(item).map(|item| (i, Arc::new(item)))).unzip();
-        if items.is_empty() {
-            continue;
-        }
-        let library = hub
-            .metadata
-            .iter()
-            .find(|m| !m.library_section_title.is_empty())
-            .map(|m| m.library_section_title.as_str())
-            .unwrap_or("");
-        let identifier_is_unique =
-            hub_identifier_counts.get(hub.hub_identifier.as_str()).copied().unwrap_or(0) <= 1;
-        if !plx_plex::plex::is_pageable_hub_key(&hub.key) && (hub.more || hub.total() > hub.metadata.len()) {
-            if let Some(line) = paging::unpaged_line(&hub.hub_identifier, &hub.key) { plx_base::eventlog::log(&line); }
-        }
-        out.shelves.push(Shelf {
-            title: plx_plex::plex::hub_title::localized_hub_title(
-                plx_plex::plex::hub_title::Scope::Home { library, identifier_is_unique },
-                &hub.hub_identifier,
-                &hub.title,
-            ),
-            hub_id: hub.hub_identifier.clone(),
-            key: hub.key.clone(),
-            items, positions,
-            total: hub.total(),
-            offset: 0,
-            end: hub.metadata.len(),
-            more: pages(&hub.key)
-                && (hub.more || hub.total() > hub.metadata.len() || hub.metadata.len() >= HUB_FETCH_COUNT as usize),
-            shown: 0,
-            row: paging::preview_state(&hub.hub_identifier, &hub.key),
-        });
-    }
-    out
 }
+
+/// The shelves of a source's hub list, read in windows of hubs and projected as each arrives.
+/// `held` names the rows whose cards the source holds now (`(hub id, key)`); the refresh keeps
+/// those rows' cards, and gives every other row up to its descriptor as soon as its window is
+/// parsed, so a long list never holds more than the held rows and one window of previews. The
+/// Continue Watching deck is not part of the list: [`project_deck`] reads it from its own hub.
+fn project_hubs(sid: ServerId, held: &[(String, String)],
+    read: impl FnMut(Option<plx_plex::plex::PageReq>) -> Option<plx_plex::plex::MediaContainer>) -> Option<SourceBuild> {
+    paging::read_hub_list(read, || Projection::new(sid, Some(held)), Projection::take).map(Projection::finish)
+}
+
+/// A refresh's shelves as they are projected, one window of hubs at a time.
+struct Projection<'a> {
+    sid: ServerId,
+    out: SourceBuild,
+    /// Hubs per identifier over the WHOLE list: a heading is worded per library only when two hubs
+    /// share an identifier, which no single window can know. Titles are set in [`Self::finish`].
+    counts: std::collections::HashMap<String, usize>,
+    /// Each shelf's library and the hub's own heading, parallel to `out.shelves`.
+    titled: Vec<(String, String)>,
+    /// The rows that keep their cards, or `None` when every row does.
+    held: Option<&'a [(String, String)]>,
+    /// Rows the source did not hold that may still keep theirs: a cold load shows its first rows,
+    /// and the ring then takes what is outside the hold.
+    fresh_left: usize,
+    /// Cards the hero pool may still take from Recently Added rows the ring would give up; the
+    /// pool is built from the refresh's rows before the ring is applied.
+    hero_left: usize,
+}
+
+impl<'a> Projection<'a> {
+    fn new(sid: ServerId, held: Option<&'a [(String, String)]>) -> Self {
+        Self { sid, out: SourceBuild::default(), counts: Default::default(), titled: Vec::new(), held,
+            fresh_left: HOLD_ROWS.saturating_sub(held.map_or(0, <[_]>::len)), hero_left: HERO_MAX }
+    }
+
+    /// Whether a freshly parsed row keeps its cards.
+    fn keeps(&mut self, shelf: &Shelf) -> bool {
+        let Some(held) = self.held else { return true };
+        if held.iter().any(|(id, key)| shelf.is(id, key)) { return true; }
+        if shelf.hub_id.contains("recent") && self.hero_left > 0 {
+            let eligible = shelf.items.iter().filter(|m| !m.art.is_empty() && m.kind != 2).count();
+            self.hero_left = self.hero_left.saturating_sub(eligible);
+            return true;
+        }
+        if self.fresh_left > 0 {
+            self.fresh_left -= 1;
+            return true;
+        }
+        false
+    }
+
+    /// One run of the hub list, in list order.
+    fn take(&mut self, hubs: &[plx_plex::plex::Hub]) {
+        for hub in hubs { *self.counts.entry(hub.hub_identifier.clone()).or_insert(0) += 1; }
+        let mut window = Vec::new();
+        for hub in hubs {
+            if hub.kind != "mixed" && !listable(&hub.kind) {
+                continue;
+            }
+            if hub.hub_identifier == "home.continue" || hub.hub_identifier == "home.ondeck" {
+                continue; // superseded by the dedicated hub
+            }
+            let (positions, items): (Vec<usize>, Vec<Arc<PmsMovie>>) = hub.metadata.iter().enumerate()
+                .filter_map(|(i, item)| shelf_card(item, self.sid).map(|item| (i, Arc::new(item)))).unzip();
+            if items.is_empty() {
+                continue;
+            }
+            let library = hub
+                .metadata
+                .iter()
+                .find(|m| !m.library_section_title.is_empty())
+                .map(|m| m.library_section_title.clone())
+                .unwrap_or_default();
+            if !plx_plex::plex::is_pageable_hub_key(&hub.key) && (hub.more || hub.total() > hub.metadata.len()) {
+                if let Some(line) = paging::unpaged_line(&hub.hub_identifier, &hub.key) { plx_base::eventlog::log(&line); }
+            }
+            window.push((Shelf {
+                title: String::new(),
+                hub_id: hub.hub_identifier.clone(),
+                key: hub.key.clone(),
+                items, positions,
+                total: hub.total(),
+                offset: 0,
+                end: hub.metadata.len(),
+                more: pages(&hub.key)
+                    && (hub.more || hub.total() > hub.metadata.len() || hub.metadata.len() >= HUB_FETCH_COUNT as usize),
+                shown: 0,
+                row: paging::preview_state(&hub.hub_identifier, &hub.key),
+            }, (library, hub.title.clone())));
+        }
+        #[cfg(test)]
+        {
+            let held: usize = self.out.shelves.iter().map(|shelf| shelf.items.len()).sum();
+            let parsed: usize = window.iter().map(|(shelf, _)| shelf.items.len()).sum();
+            PEAK_CARDS.with(|peak| peak.set(peak.get().max(held + parsed)));
+        }
+        for (mut shelf, titled) in window {
+            if !self.keeps(&shelf) && give_up_cards(&mut shelf) {
+                shelf.shown = shelf.items.len();
+                shelf.items = Vec::new();
+                shelf.positions = Vec::new();
+            }
+            self.out.shelves.push(shelf);
+            self.titled.push(titled);
+        }
+    }
+
+    fn finish(mut self) -> SourceBuild {
+        // Counted over the whole list (not while looping) because `localized_hub_title`'s per-type
+        // "Recently Added Movies" wording is only right for a `home.<type>.recent` hub that names
+        // exactly ONE library — the moment PMS mints a second hub under the SAME identifier (one
+        // household with two TV libraries: `home_keeps_recently_added_rows_for_two_same_type_libraries`),
+        // both need the per-library "Recently Added in {library}" form to stay distinguishable, and
+        // neither hub can tell that from itself alone.
+        for (shelf, (library, heading)) in self.out.shelves.iter_mut().zip(&self.titled) {
+            let identifier_is_unique = self.counts.get(shelf.hub_id.as_str()).copied().unwrap_or(0) <= 1;
+            shelf.title = plx_plex::plex::hub_title::localized_hub_title(
+                plx_plex::plex::hub_title::Scope::Home { library, identifier_is_unique },
+                &shelf.hub_id,
+                heading,
+            );
+        }
+        self.out
+    }
+}
+
+// The most cards a refresh has held at once, as a test reads it back.
+#[cfg(test)]
+thread_local! { pub(crate) static PEAK_CARDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 // ---- the merge: every source, one Home ----------------------------------------------------------
 
@@ -1762,8 +1855,9 @@ impl Src {
                     if page.reload && shelf.row.kept.is_empty() { shelf.end = shelf.offset; }
                     shelf
                 })),
+            held: self.last.as_ref().map_or_else(Vec::new, |build| build.shelves.iter()
+                .filter(|shelf| !shelf.released()).map(|shelf| (shelf.hub_id.clone(), shelf.key.clone())).collect()),
             windows: self.last.as_ref().map_or_else(Vec::new, |build| build.shelves.iter()
-                
                 .filter(|shelf| pages(&shelf.key) && !shelf.released()
                     && (shelf.offset > 0 || shelf.end > HUB_FETCH_COUNT as usize))
                 .map(|shelf| (PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(), start: shelf.offset, before: false, hidden: Vec::new(), reload: false }, shelf.end, shelf.clone())).collect()),
@@ -1861,6 +1955,9 @@ pub struct HubRequest {
     /// Each row that has moved off its preview: where to reload it, how far it had read, and the row
     /// itself (a sample or ledger row cannot be re-read at an offset, so the refresh keeps it).
     windows: Vec<(PageQuery, usize, Shelf)>,
+    /// Every row that holds its cards now (`hub id, key`): a refresh keeps those cards and reads the
+    /// others as descriptors.
+    held: Vec<(String, String)>,
     window: Option<Shelf>,
     /// The Continue Watching lane this source holds once the deck is placed on it, and the sections
     /// the user hid: a deck page reads from it, a refresh reloads it at its own offsets.
@@ -1894,7 +1991,7 @@ impl HubRequest {
                 |start, size| self.client.resource.hub_items_paged(&page.key, start as i64, size as i64),
                 |keys| many_items(self.client.resource, keys)),
             None => {
-                let mut build = fetch_source(self.client.resource, self.sid)?;
+                let mut build = fetch_source(self.client.resource, self.sid, &self.held)?;
                 if let Some((old, hidden)) = &self.lane {
                     // A deck that has moved stays where it is: the lane is read again at its own
                     // offsets, which also brings the progress of its cards up to date.
@@ -3249,3 +3346,7 @@ mod deck_tests;
 #[cfg(test)]
 #[path = "pms_home_row_ring_tests.rs"]
 mod home_row_ring_tests;
+
+#[cfg(test)]
+#[path = "pms_home_hub_windows_tests.rs"]
+mod home_hub_windows_tests;
