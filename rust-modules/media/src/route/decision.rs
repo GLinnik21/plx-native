@@ -5673,6 +5673,17 @@ impl ScrobbleJoin {
         self.changed.notify_all();
     }
 
+    /// Whether no stop report is still on its way to the server: no worker was ever reserved, the
+    /// last one has been joined, or its thread has returned. Never blocks, and never joins - the
+    /// frame loop asks this every frame while it waits to re-read what the stop committed.
+    fn settled(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.completed >= state.generation
+            || (!state.spawn_pending
+                && !state.joining
+                && state.handle.as_ref().is_some_and(|(_, handle)| handle.is_finished()))
+    }
+
     fn drain(&self) {
         loop {
             let (generation, handle) = {
@@ -5797,6 +5808,13 @@ impl Drop for TimelineStopCompletion {
 /// SDL thread.
 pub fn drain_scrobble() {
     SCROBBLE_JOIN.drain();
+}
+
+/// Whether the last [`scrobble_stop`] has finished posting (see [`ScrobbleJoin::settled`]): true
+/// once the server holds the resume point the stop reported, so a re-read of the item sees it.
+/// Non-blocking, unlike [`drain_scrobble`].
+pub fn scrobble_settled() -> bool {
+    SCROBBLE_JOIN.settled()
 }
 
 /// Seek within a LIVE TRANSCODE by restarting it at a time offset — a transcode has no byte-Cues,
