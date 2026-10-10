@@ -312,6 +312,11 @@ impl CardRow {
         }
         self.scroll_x.pos += dx;
     }
+    /// The cell recorded as focused is now `i`: the element it held was moved there by a landing
+    /// the caller has already carried, in a tick that also moves focus on from it.
+    pub(crate) fn refocus(&mut self, i: usize) {
+        self.focus = i as i32;
+    }
     /// Cell `i`'s own pop spring; `None` for a cell past the array (those share one spring).
     pub(crate) fn cell_spring(&self, i: usize) -> Option<Spring> {
         self.scale.get(i).copied()

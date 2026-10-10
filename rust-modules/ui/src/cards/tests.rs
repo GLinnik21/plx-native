@@ -565,6 +565,54 @@ fn grid_landing_carries_the_pop_and_the_scroll() {
     a_landing_carries_the_pop_with_the_focused_elem::<Grid>(poster_grid::COLS);
 }
 
+/// A paged row's window slides (its first `SLIDE` cards go, as many arrive at the end) between the
+/// same two ticks as a key moves focus one card on, in either order. The cards that stay must
+/// stay where they were on screen: the scroll is rebased with them in that tick, and the focused
+/// card is one step from the one focus left, not a window away.
+fn a_slide_under_a_moving_focus_keeps_the_row_in_place(move_first: bool) {
+    const SLIDE: usize = 12;
+    let mut r = settled::<Shelf>(24);
+    r.land_focus(100 + 20, By::Restore);
+    r.run(240);
+    r.land_focus(100 + 21, By::Dir);
+    r.run(3);
+    let x = |r: &Rig<Shelf>, elem: u32| Section::place(&r.sect, &r.cx(), &r.src, elem, At::SpringTarget).unwrap().rect.cx();
+    let pitch = RowStyle::HOME.w + RowStyle::HOME.gap;
+    let (stayed, focused) = (100 + 19, 100 + 22);
+    let before = x(&r, stayed);
+    let slide = |r: &mut Rig<Shelf>| {
+        r.src.elems.drain(..SLIDE);
+        r.src.elems.extend(900..900 + SLIDE as u32);
+    };
+    if move_first {
+        r.land_focus(focused, By::Dir);
+        slide(&mut r);
+    } else {
+        slide(&mut r);
+        r.land_focus(focused, By::Dir);
+    }
+    r.run(1);
+    // one tick of a row already following a key: a fraction of a card, never a window
+    let moved = x(&r, stayed) - before;
+    assert!(moved.abs() < pitch / 2.0, "a card that stayed in the window jumped {moved} px in the landing tick");
+    assert!((x(&r, focused) - x(&r, stayed) - 3.0 * pitch).abs() < 0.5, "the focused card is three cards on from it");
+    // riding the trailing edge as any step of the walk does, the scroll one key behind it
+    assert!(x(&r, focused) > crate::consts::SCR_W / 2.0 && x(&r, focused) < crate::consts::SCR_W + pitch,
+        "and still at the trailing edge: {}", x(&r, focused));
+    assert_eq!(lifted(&r), 2, "the card focus left lets go while the new one grows");
+    assert!(Section::scale_of(&r.sect, &r.cx(), &r.src, 100 + 21).unwrap() > 1.01, "the let-go followed its card");
+    r.run(240);
+    assert_eq!(lifted(&r), 1);
+}
+#[test]
+fn shelf_slide_after_a_move_in_one_tick_keeps_the_row_in_place() {
+    a_slide_under_a_moving_focus_keeps_the_row_in_place(true);
+}
+#[test]
+fn shelf_slide_before_a_move_in_one_tick_keeps_the_row_in_place() {
+    a_slide_under_a_moving_focus_keeps_the_row_in_place(false);
+}
+
 /// The farthest a `n`-card HOME shelf can scroll.
 fn home_max_scroll(n: usize) -> f32 {
     let sty = &RowStyle::HOME;

@@ -4109,3 +4109,80 @@ fn a_released_rows_remembered_card_is_seated_again_when_the_row_returns() {
     assert_eq!(s.elem_at.get(&card), Some(&(3, 7)), "the card the user left is on the card they left it at");
     assert_eq!(Focusable::<TestHost>::reconcile(&s, want, &context), want);
 }
+
+/// Right held for twenty seconds over a paged Recently Added row whose pages land after a latency,
+/// frame by frame. A page landing slides the 24-card window by twelve; a key repeat can fall
+/// between the same two ticks as the landing, before or after it. In every frame the row must be
+/// the row of the frame before: each card that was on screen and is still in the window stands
+/// within one frame's scroll of where it stood, the focused card is the one the keys walked to
+/// and is on screen (so its caption is drawn), and a card that stayed keeps its artwork.
+#[test]
+fn a_held_right_over_a_sliding_window_never_moves_the_row_under_the_focus() {
+    let _guard = plx_base::testlock::serial();
+    const PITCH: f32 = CARD_W + GAP;
+    let mut landings = 0;
+    for (key_ms, page_ms, key_first) in [(100u32, 500u32, true), (100, 500, false), (100, 300, true), (100, 800, true), (130, 500, true), (90, 430, false)] {
+        let mut state = plx_data::pms::PmsState::default();
+        let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+        let mut offset = 0usize;
+        plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, offset, 24, true);
+        let mut snap = plx_data::pms::hubs_snapshot(&state);
+        let mut s = screen(snap.view());
+        s.snap.pos = 1.0;
+        s.snap_target = 1.0;
+        let mut key = FocusKey { entry: s.entry, elem: s.rows[0].elems[0] };
+        pop_card(&mut s, snap.view(), key, 30);
+        let mut landing: Option<u32> = None;
+        let mut walked = 1usize;
+        // rating key -> (drawn x, artwork) of the cards on screen in the frame before
+        let mut shown: HashMap<String, (f32, String)> = HashMap::new();
+        for frame in 1..1200u32 {
+            let ms = frame * 1000 / 60;
+            let key_due = ms / key_ms != (frame - 1) * 1000 / 60 / key_ms;
+            let at = format!("keys {key_ms} ms, page {page_ms} ms, key first {key_first}, frame {frame}");
+            macro_rules! press { () => {
+                if let Step::Move(to) = Focusable::<TestHost>::neighbour(&s, key, Dir::Right, &cx(snap.view(), Some(key))) {
+                    step(&mut s, snap.view(), Some(to), &ScreenEvent::FocusMoved { from: Some(key), to, by: By::Dir });
+                    key = to;
+                    walked += 1;
+                }
+            } }
+            if key_due && key_first { press!(); }
+            if landing.is_some_and(|due| ms >= due) {
+                landing = None;
+                landings += 1;
+                offset += 12;
+                plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, offset, 24, true);
+                snap = plx_data::pms::hubs_snapshot(&state);
+                step(&mut s, snap.view(), Some(key), &ScreenEvent::StoreChanged(StoreId::Hubs.ord(), snap.view().generation));
+            }
+            if key_due && !key_first { press!(); }
+            let (_, out, _) = step(&mut s, snap.view(), Some(key), &ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+            if page_requests(&out) > 0 && landing.is_none() { landing = Some(ms + page_ms); }
+
+            let view = snap.view();
+            let col = s.item_col(0, key.elem).expect("the focused card is in its row");
+            assert_eq!(s.item_at(view, 0, col).unwrap().rk, walked.to_string(), "{at}: focus is on the card the keys walked to");
+            let focused = drawn_rect(&s, view, Some(key), 0, col);
+            assert!(focused.x + focused.w > 0.0 && focused.x < SCR_W + PITCH,
+                "{at}: the focused card and its caption left the screen: x {}", focused.x);
+            let mut now = HashMap::new();
+            for i in 0..s.rows[0].elems.len() {
+                let rect = drawn_rect(&s, view, Some(key), 0, i);
+                if rect.x + rect.w <= 0.0 || rect.x >= SCR_W { continue; }
+                let item = s.item_at(view, 0, i).unwrap();
+                if let Some((x, art)) = shown.get(&item.rk) {
+                    assert!((rect.x - x).abs() < PITCH / 2.0,
+                        "{at}: card {} jumped {} px in one frame (window offset {offset}, cell {i})", item.rk, rect.x - x);
+                    assert_eq!(&item.thumb, art, "{at}: card {} changed its artwork", item.rk);
+                }
+                now.insert(item.rk.clone(), (rect.x, item.thumb.clone()));
+            }
+            let stayed = now.keys().filter(|rk| shown.contains_key(*rk)).count();
+            assert!(stayed + 2 >= shown.len(), "{at}: {} of the {} cards on screen were replaced in one frame", shown.len() - stayed, shown.len());
+            shown = now;
+        }
+        assert!(walked > 100, "the hold walked on through the pages: {walked}");
+    }
+    assert!(landings > 60, "the windows slid under the hold: {landings}");
+}
