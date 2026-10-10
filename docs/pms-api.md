@@ -279,10 +279,10 @@ the row can start another attempt. A normal refresh reloads the current window. 
 starts from the new profile's preview. Both operations reject old results.
 The shared shelf widget draws only visible cards. Paging preserves the banner's current items.
 
-`pms.rs::HOME_CARDS_MAX` is a 2,048-slot preview budget. A Recently Added window spends at most
-12 preview slots. Other rows spend their published card count. Thus published rows hold at most
-4,096 cards, plus at most eight retained banner items. Whole rows beyond the preview budget
-are omitted from the tail of a source and logged as `hubs: card bound 2048 reached`.
+Home holds cards for at most `HOLD_ROWS` (16) rows at a time, each a window of at most
+`MAX_SHELF_ITEMS` (24) cards, plus at most eight retained banner items. Every row keeps a
+descriptor, so none is dropped; a row outside the held range publishes placeholders and is
+read again at its remembered offset when it returns.
 
 Verified Continue Watching item (movie, trimmed):
 
@@ -386,9 +386,9 @@ Measured on this server, and every one of these is a thing the OpenAPI spec does
 * **The spec gives the hub list no paging** (the route's parameters are `count`, `onlyTransient` and
   `identifier`); a windowed request pages it on a live server (see [Paging, observed](#paging-observed)).
   The Library asks for it unwindowed, so a server with many promoted collections answers with all of them at once. The
-  Library takes every hub the server sends, at most `MAX_SHELF_ITEMS` (24) cards each, and bounds
-  only the section's total: `section_hubs::SECTION_CARDS_MAX` = `HOME_CARDS_MAX` = 2,048 cards,
-  whole shelves dropped from the tail and logged as `libhubs: card bound 2048 reached`.
+  Library takes every hub the server sends in this one whole response and keeps a descriptor
+  for each; cards are held for at most `HOLD_ROWS` (16) rows, each a window of at most
+  `MAX_SHELF_ITEMS` (24) cards that pages through the hub's own key.
 * **`onlyTransient` is a no-op on this server** — `0`, `1` and absent all returned the same nine
   hubs. Do not send it and do not rely on it.
 * **`Accept: */*` returns XML here too**, like every other PMS route. The client's explicit

@@ -340,6 +340,11 @@ impl BrowseStore {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_paging_for_test(&mut self, section: usize, total: usize) {
+        crate::browse::section_hubs::seed_paging_for_owner_test(&mut self.state, section, total);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn seed_first_shelf_items_for_test(&mut self, section: usize, rks: &[String]) {
         crate::browse::section_hubs::seed_first_shelf_items_for_owner_test(
             &mut self.state,

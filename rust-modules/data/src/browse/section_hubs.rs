@@ -19,7 +19,7 @@
 //!
 //! The grid and the hubs land independently, and **the shelf count sets the grid's absolute
 //! offset** — a late landing of twelve shelves would move a focused grid row by 6,588px, and a
-//! section has no shelf cap to keep that small (issue #412). "Commit when the
+//! section has no shelf cap to keep that small (issue #412), and still has none: every hub keeps a descriptor. "Commit when the
 //! fetch is terminal" does not work, because [`crate::pms::backoff_secs`] is an INFINITE ladder
 //! (2/4/8/16/30s and then 30s forever): terminal never arrives on a dead server, and an ordinary
 //! fail-then-succeed would still shift the grid under a reader.
@@ -921,6 +921,21 @@ pub fn seed_named_shelves_for_owner_test(
     st.hubs.commit_staged(true);
 }
 
+/// Make a seeded section's pageable rows the first window of a listing of `total` cards, as a hub
+/// the server pages: the rows have more, and a page ask is worth sending.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_paging_for_owner_test(state: &mut super::BrowseState, sec: usize, total: usize) {
+    let Some(st) = state.state_mut(sec) else { return };
+    for shelf in Arc::make_mut(&mut st.hubs.committed).iter_mut()
+        .filter(|shelf| plx_plex::plex::is_pageable_hub_key(&shelf.key)) {
+        shelf.total = total;
+        shelf.more = true;
+        shelf.end = shelf.items.len();
+        shelf.positions = (0..shelf.items.len()).collect();
+    }
+    st.hubs.revised();
+}
+
 /// Replace the items of section `sec`'s first published shelf with one card per `rks` entry, in
 /// that order, and publish the result (the revision moves). The content landing a hub shelf has on
 /// the set (a refetch that reorders, inserts or drops a title) without a worker: the card's rating
@@ -1512,8 +1527,8 @@ mod tests {
     }
 
     /// Issue #412: the Library showed twelve shelves because this module stopped there. A server
-    /// that sends fifteen hubs gets fifteen shelves, in its own order — `/hubs/sections/{id}` has
-    /// no paging, so a hub dropped here is a hub the person can never reach.
+    /// that sends fifteen hubs gets fifteen shelves, in its own order — a hub dropped here is a hub
+    /// the person can never reach.
     #[test]
     fn every_hub_the_server_sends_is_published() {
         let sh = parse_hubs(&many_hubs(15, 3), ServerId::from_raw(0), 1).shelves;
