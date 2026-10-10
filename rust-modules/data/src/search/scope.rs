@@ -6,7 +6,7 @@
 //! the other Search publications. Registry counters are the cheap first gate; the cached exact
 //! Browse projection distinguishes independent owners whose local generations happen to match.
 
-use plx_plex::plex::{ServerId, MAX_SERVERS};
+use plx_plex::plex::ServerId;
 use std::cell::RefCell;
 use std::sync::Arc;
 
@@ -62,17 +62,16 @@ impl SourceScopeSnapshot {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 struct Key {
     /// The generation catches ordinary roster changes; the exact ids catch an equal-sized
     /// replacement even if a test or a future registry path reuses the generation.
     roster_gen: u32,
-    roster_len: usize,
-    roster: [ServerId; MAX_SERVERS],
+    roster: Vec<ServerId>,
     /// `facts_gen` covers authoritative descriptions. The pointer fingerprint also covers the
     /// server's self-description path, which merges a name without advancing that revision.
     facts_gen: u32,
-    facts: [usize; MAX_SERVERS],
+    facts: Vec<usize>,
     /// `sections_gen` covers library title/table landings; `source_list_gen` covers reachability
     /// and other source facts maintained by Browse.
     sections_gen: u32,
@@ -140,25 +139,7 @@ pub struct ScopeCache {
 /// Browse directory generations through [`read_key_with_directory`].
 fn read_key() -> Key {
     let _ = plx_plex::plex::session::peek();
-    let mut roster = [ServerId::UNSET; MAX_SERVERS];
-    let mut facts = [0; MAX_SERVERS];
-    let mut roster_len = 0;
-    for (i, sid) in plx_plex::plex::server_ids().enumerate().take(MAX_SERVERS) {
-        roster[i] = sid;
-        facts[i] = plx_plex::plex::server_facts(sid).map_or(0, |f| std::ptr::from_ref(f) as usize);
-        roster_len += 1;
-    }
-    Key {
-        roster_gen: plx_plex::plex::server_roster_gen(),
-        roster_len,
-        roster,
-        facts_gen: plx_plex::plex::server_facts_gen(),
-        facts,
-        sections_gen: 0,
-        source_list_gen: 0,
-        profile_gen: plx_plex::plex::session::current_gen(),
-        session_gen: plx_plex::plex::session::visible_generation(),
-    }
+    read_registry_key()
 }
 
 fn read_key_with_directory(directory: crate::stores::browse::DirectoryView<'_>) -> Key {
@@ -170,17 +151,15 @@ fn read_key_with_directory(directory: crate::stores::browse::DirectoryView<'_>) 
 }
 
 fn read_registry_key() -> Key {
-    let mut roster = [ServerId::UNSET; MAX_SERVERS];
-    let mut facts = [0; MAX_SERVERS];
-    let mut roster_len = 0;
-    for (i, sid) in plx_plex::plex::server_ids().enumerate().take(MAX_SERVERS) {
-        roster[i] = sid;
-        facts[i] = plx_plex::plex::server_facts(sid).map_or(0, |f| std::ptr::from_ref(f) as usize);
-        roster_len += 1;
-    }
+    // Every live server, however many: the fingerprint must move when ANY of them changes, so it
+    // cannot be a fixed-size prefix of the roster.
+    let roster: Vec<ServerId> = plx_plex::plex::server_ids().collect();
+    let facts = roster
+        .iter()
+        .map(|&sid| plx_plex::plex::server_facts(sid).map_or(0, |f| std::ptr::from_ref(f) as usize))
+        .collect();
     Key {
         roster_gen: plx_plex::plex::server_roster_gen(),
-        roster_len,
         roster,
         facts_gen: plx_plex::plex::server_facts_gen(),
         facts,
@@ -307,6 +286,21 @@ fn build_with_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The scope enumerates every granted server. It used to take the first sixteen, so a server
+    /// registered past that was silently absent from Search's source line and its fan-out.
+    #[test]
+    fn a_published_scope_lists_a_server_past_the_old_sixteen_slot_table() {
+        let _serial = plx_base::testlock::serial();
+        let _reset = Reset;
+        plx_plex::plex::reset_servers_for_test();
+        let sids: Vec<ServerId> = (0..41)
+            .map(|n| plx_plex::plex::register_for_test(&format!("scope-{n}"), "127.0.0.1", 9, "t", "scope"))
+            .collect();
+        let snapshot = ScopeCache::default().snapshot();
+        assert_eq!(snapshot.sources().len(), 41);
+        assert_eq!(snapshot.sources().last().map(|s| s.sid), Some(sids[40]));
+    }
 
     #[test]
     fn session_refresh_rebuilds_search_household_scope() {
@@ -618,8 +612,8 @@ mod tests {
         assert!(!old.same_publication(&described), "a described source is a new sentence");
         assert_eq!(described.sources()[1].handle, "new-friend");
         assert_eq!(
-            (after.roster_gen, after.roster_len, after.roster, after.sections_gen, after.source_list_gen),
-            (before.roster_gen, before.roster_len, before.roster, before.sections_gen, before.source_list_gen),
+            (after.roster_gen, &after.roster, after.sections_gen, after.source_list_gen),
+            (before.roster_gen, &before.roster, before.sections_gen, before.source_list_gen),
             "a pure description moves no roster, section or reachability counter"
         );
         assert_ne!(after.facts, before.facts, "…it moves the facts fingerprint, and that is enough");

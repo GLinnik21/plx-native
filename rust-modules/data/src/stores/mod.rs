@@ -32,7 +32,7 @@ use plx_machine::machine::StoreOrd;
 pub use plx_plex::plex::retry::{EndpointRefresh, EndpointRefreshSet};
 pub use plx_plex::plex::retry::EndpointRefreshHost as StoreEffectHost;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[must_use]
 pub struct StoreOutcome {
     pub changed: bool,
