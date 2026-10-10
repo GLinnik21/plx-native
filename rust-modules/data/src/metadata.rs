@@ -3841,10 +3841,44 @@ fn install_landed_detail(state: &mut MetadataState, adapter: &std::sync::Arc<Met
     if state.played_since_load.as_ref().is_some_and(|(s, r)| plx_plex::plex::same_item((*s, r), (d.sid, &d.rk))) {
         state.played_since_load = None;
     }
+    let mut d = d;
+    if let Some(old) = state.current.as_ref() {
+        carry_related_window(old, &mut d);
+    }
     state.current = Some(d);
     // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
     sync_now_playing(state);
     true
+}
+
+/// A re-read of the page already loaded (a return from the player, a watched toggle) lands with
+/// only the Related head, while the row the user stands in may have slid far past it. The old
+/// window moves onto the fresh page — cards, positions, edge and ledger — so the card under the
+/// focus is still in the row at the place it was. Held only when it is the same item AND the same
+/// hubs at the same preview lengths, the one case where a tail position names the same listing
+/// place; anything else starts at the head, and the screen's focus falls to the nearest surviving
+/// card. The window keeps its size: one window is carried, never added to. The cards carried are
+/// the ones last read; the next slide reads the listing afresh through the ledger as it always does.
+fn carry_related_window(old: &Detail, d: &mut Detail) {
+    if !plx_plex::plex::same_item((old.sid, &old.rk), (d.sid, &d.rk)) { return; }
+    let (was, now) = (&old.related_tail, &d.related_tail);
+    if was.positions.is_empty() || was.head > old.related.len() || now.head > d.related.len()
+        || was.hubs.len() != now.hubs.len()
+        || was.hubs.iter().zip(&now.hubs).any(|(a, b)| a.key != b.key || a.preview != b.preview) {
+        return;
+    }
+    let head: std::collections::HashSet<&str> = d.related[..now.head].iter().map(|m| m.rk.as_str()).collect();
+    let (mut positions, mut cards) = (Vec::new(), Vec::new());
+    for (position, card) in was.positions.iter().zip(&old.related[was.head..]) {
+        // a card the fresh head now shows, or that the page must not show, is not shown twice
+        if head.contains(card.rk.as_str()) || now.exclude.contains(&card.rk) { continue; }
+        positions.push(*position);
+        cards.push(card.clone());
+    }
+    let t = &mut d.related_tail;
+    (t.positions, t.hubs, t.row) = (positions, was.hubs.clone(), was.row.clone());
+    (t.offset, t.end, t.total, t.more) = (was.offset, was.end, was.total, was.more);
+    d.related.extend(cards);
 }
 
 // ---- "Also available": the same film on the OTHER sources ------------------------------------
