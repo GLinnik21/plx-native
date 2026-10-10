@@ -325,6 +325,8 @@ pub struct PersonState {
     dev_held: usize,
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
     session_identity: (String, String),
+    /// Which servers may have a request out this pump ([`crate::stores::fanout`]).
+    fanout: crate::stores::fanout::Fanout,
 }
 
 impl Default for PersonState {
@@ -337,6 +339,7 @@ impl Default for PersonState {
             dev_held: usize::MAX,
             session_watch: Default::default(),
             session_identity: Default::default(),
+            fanout: Default::default(),
         }
     }
 }
@@ -1148,7 +1151,10 @@ impl PersonState {
         self.retry_cd.tick();
         // Ascending, which is the order replay supplies recorded landings in. The work follows the
         // open page's sources plus whatever is outstanding, never the highest server id.
-        for i in self.visit(adapter) {
+        let visit = self.visit(adapter);
+        let (running, wanting) = fanout_candidates(self, adapter, &visit);
+        let mut turn = self.fanout.begin(running, &wanting);
+        for i in visit {
             let mailbox = adapter.mailbox(i);
             // The take releases the single-flight claim with the mail that answers it; a
             // superseded request's late answer is dropped inside the take and leaves the new
@@ -1157,6 +1163,9 @@ impl PersonState {
             let reply = crate::stores::tape::take_store_landing(
                 gate, crate::stores::StoreId::Person, "person", i as u32, &mailbox, |m| m.gen);
             if let Some(reply) = reply {
+                if un_fx(i).is_some() {
+                    turn.finished();
+                }
                 if reply.gen == self.generation {
                     // a live reply already released through the take; a replay's supplied one
                     // never touched the mailbox. A superseded one must not free the NEW
@@ -1172,7 +1181,7 @@ impl PersonState {
                 // A superseded landing is news about neither person. In particular, its failure
                 // must not arm a retry delay for the replacement identity.
             }
-            maybe_spawn(self, adapter, i);
+            maybe_spawn(self, adapter, i, &mut turn);
         }
         // The credits seed runs HERE rather than at `open`, unlike the biography's, and the difference
         // is what it needs: it joins itself against the shelves so the availability column and the
@@ -1573,11 +1582,24 @@ fn address(i: usize, p: &Person) -> Option<Vec<String>> {
     }
 }
 
+/// How many per-server fetches are out among the visited indices, and which of them want a request
+/// now, in visit order. The two plex.tv fetches are not per server and sit outside the gate.
+fn fanout_candidates(state: &PersonState, adapter: &PersonAdapter, visit: &[usize]) -> (usize, Vec<usize>) {
+    let per_server = || visit.iter().copied().filter(|&i| un_fx(i).is_some());
+    let running = per_server().filter(|&i| adapter.mailbox(i).busy()).count();
+    let wanting = per_server()
+        .filter(|&i| !adapter.mailbox(i).busy() && state.retry_cd[i] == 0
+            && state.current().is_some_and(|p| address(i, p).is_some()))
+        .collect();
+    (running, wanting)
+}
+
 /// One fetch per mailbox at a time, and only while the open person still wants it. Re-entered every
 /// frame by [`PersonState::pump`], which is what makes the failure path self-healing: a refused `spawn_small`
 /// (the device's thread ceiling) or a transient network error simply retries after the backoff
 /// instead of latching the page on a spinner forever.
-fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) {
+fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize,
+    turn: &mut crate::stores::fanout::FanoutTurn) {
     if adapter.mailbox(i).busy() || state.retry_cd[i] > 0 {
         return;
     }
@@ -1632,6 +1654,11 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
         .find(|s| s.sid == sid)
         .and_then(|s| s.local.clone())
         .unwrap_or_default();
+    // One request per server is a fan-out: at most a few are out at once and the rest stay wanted
+    // until a later pump (the two plex.tv fetches above are not per server and are not counted).
+    if !turn.admit(i) {
+        return;
+    }
     adapter.mailbox(i).claim(generation);
     let worker_adapter = Arc::clone(adapter);
     let spawned = crate::stores::tape::admit(serde_json::json!({
@@ -2254,6 +2281,36 @@ mod tests {
         assert!(owner.gen() > old_generation, "old credential-bound replies must be retired");
         assert!(!owner.current().unwrap().profiled);
         assert!(!owner.current().unwrap().credited);
+    }
+
+    /// **A person page over forty servers asks all forty and never has more than four out at once.**
+    /// The per-server fetches (resolve, media, roles) share one gate ([`crate::stores::fanout`]);
+    /// the two plex.tv fetches are not per server and are not counted. A claim stays raised until
+    /// the pump takes the answer, so the raised claims after a pump are the requests out.
+    #[test]
+    fn a_person_page_over_forty_servers_asks_them_four_at_a_time() {
+        let mut owner = Owner::default();
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        owner.reset();
+        let ids: Vec<ServerId> = (0..40)
+            .map(|n| plx_plex::plex::register_for_test(&format!("person-fan-{n}"), "127.0.0.1", 1, "t", "cid"))
+            .collect();
+        owner.open(ids[0], "7", "plex://person/7", "Actor", "");
+        let mut asked = std::collections::BTreeSet::new();
+        for _ in 0..2000 {
+            owner.pump();
+            let out: Vec<ServerId> = ids.iter().copied()
+                .filter(|&sid| (0..NKIND).any(|k| owner.adapter.mailbox(fx(sid, k).unwrap()).busy()))
+                .collect();
+            assert!(out.len() <= crate::stores::fanout::WIDTH, "{} requests out at once", out.len());
+            asked.extend(out.iter().map(|s| s.raw()));
+            if asked.len() == 40 { break; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(asked.len(), 40, "a wanted server was never asked");
+        owner.reset();
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]

@@ -44,6 +44,7 @@ impl StoreOutcome {
 }
 
 pub mod browse;
+pub mod fanout;
 mod content_arg;
 pub use content_arg::ContentArg;
 pub mod hubs;

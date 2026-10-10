@@ -100,6 +100,8 @@ pub struct BrowseStore {
     adapter: Arc<crate::browse::BrowseAdapter>,
     notice_gen: AtomicU32,
     notice_dirty: AtomicBool,
+    /// Endpoint refreshes a pump had no room to emit in its step; the next pump sends them first.
+    endpoint_carry: super::EndpointRefreshSet,
 }
 
 impl Default for BrowseStore {
@@ -109,6 +111,7 @@ impl Default for BrowseStore {
             adapter: Arc::new(Default::default()),
             notice_gen: AtomicU32::new(0),
             notice_dirty: AtomicBool::new(false),
+            endpoint_carry: Default::default(),
         }
     }
 }
@@ -478,7 +481,9 @@ impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
                 self.run(c.clone());
             }
             StoreEv::Pump { .. } => {
-                self.pump_with_gate(&plx_machine::landgate::Gate::default()).endpoints.emit(fx);
+                let mut due = std::mem::take(&mut self.endpoint_carry);
+                due.merge(self.pump_with_gate(&plx_machine::landgate::Gate::default()).endpoints);
+                self.endpoint_carry = due.emit(fx);
             }
         }
         Handled::Yes
