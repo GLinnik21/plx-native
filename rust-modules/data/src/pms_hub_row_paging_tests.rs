@@ -248,3 +248,123 @@ fn a_recent_row_whose_listing_stops_holding_moves_to_its_ledger_and_still_reache
     reset(&mut owner.state, &owner.adapter);
     plx_plex::plex::reset_servers_for_test();
 }
+
+// ---- the preview rule ----------------------------------------------------------------------------
+
+const HUB_KEY: &str = "/hubs/sections/1/genre/7";
+
+fn preview_shelf(keys: &[usize], total: usize) -> Shelf {
+    let keys: Vec<String> = keys.iter().map(usize::to_string).collect();
+    let mut shelf = shelf(0, "Row", "movie.genre", &keys.iter().map(String::as_str).collect::<Vec<_>>());
+    shelf.key = HUB_KEY.into();
+    shelf.end = keys.len();
+    shelf.total = total;
+    shelf.more = true;
+    shelf.row = paging::RowState { mode: paging::RowMode::Unprobed, ledger: None };
+    shelf
+}
+
+/// One ask against a shelf, landed the way the store lands it (a stalled ask stops the row).
+fn move_row(shelf: &Shelf, before: bool, list: impl FnMut(usize, usize) -> Option<Container>,
+    many: impl FnMut(&[String]) -> Option<Container>) -> Shelf {
+    let query = PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(),
+        start: if before { shelf.offset } else { shelf.end.max(shelf.offset + shelf.items.len()) },
+        before, hidden: Vec::new() };
+    let mut next = fetch_row(sid(0), &query, Some(shelf), 0, list, many).unwrap().shelves.remove(0);
+    next.title = shelf.title.clone();
+    next
+}
+
+fn walk_forward(mut shelf: Shelf, mut list: impl FnMut(usize, usize) -> Option<Container>) -> (Shelf, Vec<Vec<String>>) {
+    let mut windows = vec![window_keys(&shelf)];
+    for _ in 0..400 {
+        if !shelf.more { break; }
+        let next = move_row(&shelf, false, &mut list, batch(|_| true));
+        assert!(next.items.len() <= 24);
+        if next.more && next.offset == shelf.offset && next.end <= shelf.end { shelf = next; break; }
+        windows.push(window_keys(&next));
+        shelf = next;
+    }
+    (shelf, windows)
+}
+
+fn window_keys(shelf: &Shelf) -> Vec<String> {
+    shelf.items.iter().map(|item| item.rk.clone()).collect()
+}
+
+fn assert_each_once(windows: &[Vec<String>], expected: usize) {
+    let mut seen = std::collections::HashSet::new();
+    let mut previous = std::collections::HashSet::new();
+    for window in windows {
+        for key in window {
+            if !previous.contains(key) { assert!(seen.insert(key.clone()), "{key} was shown twice"); }
+        }
+        previous = window.iter().cloned().collect();
+    }
+    assert_eq!(seen.len(), expected, "every item was reached");
+}
+
+#[test]
+fn a_500_card_row_whose_listing_starts_with_its_preview_walks_to_its_end_and_back() {
+    let _guard = plx_base::testlock::serial();
+    let len = 500;
+    let listing = |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let first = preview_shelf(&(0..12).collect::<Vec<_>>(), len);
+    let (end, windows) = walk_forward(first, listing);
+    assert_eq!(end.row.mode, paging::RowMode::Head, "the listing's head is the preview");
+    assert!(end.row.ledger.as_ref().is_some_and(|ledger| !ledger.active), "a stable listing never needs its ledger");
+    assert_each_once(&windows, len);
+    assert_eq!(window_keys(&end).last().unwrap(), "499");
+    assert!(!end.more);
+    let mut shelf = end;
+    for expected in windows.iter().rev().skip(1) {
+        shelf = move_row(&shelf, true, listing, batch(|_| true));
+        assert_eq!(&window_keys(&shelf), expected);
+    }
+    assert_eq!(shelf.offset, 0);
+    assert_eq!(window_keys(&shelf)[0], "0");
+}
+
+#[test]
+fn a_random_hub_in_sample_mode_shows_every_item_exactly_once() {
+    let _guard = plx_base::testlock::serial();
+    let len = 100;
+    let sample = [37, 5, 88, 61, 2, 99, 14, 70, 23, 46, 80, 9];
+    let listing = |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let first = preview_shelf(&sample, len);
+    let (end, windows) = walk_forward(first, listing);
+    assert_eq!(end.row.mode, paging::RowMode::Sample(sample.iter().map(usize::to_string).collect()),
+        "the preview's keys are kept");
+    assert_each_once(&windows, len);
+    assert_eq!(windows[1][..12], sample.iter().map(usize::to_string).collect::<Vec<_>>()[..],
+        "the preview is the head of the row");
+    assert!(!end.more);
+    assert_eq!(end.total, len, "the count the heading shows is the listing's, not the row's longer one");
+    // And back to the start: the window's first twelve are the preview again, read by key.
+    let mut shelf = end;
+    for _ in 0..windows.len() {
+        if shelf.offset == 0 { break; }
+        shelf = move_row(&shelf, true, listing, batch(|_| true));
+        assert!(shelf.items.len() <= 24);
+    }
+    assert_eq!(shelf.offset, 0);
+    assert_eq!(window_keys(&shelf)[..12], sample.iter().map(usize::to_string).collect::<Vec<_>>()[..]);
+}
+
+#[test]
+fn a_row_with_a_key_the_pager_does_not_admit_keeps_its_preview_and_says_so_once() {
+    let _guard = plx_base::testlock::serial();
+    let kind = "test.unadmitted.hub";
+    let key = "/playlists/9/items";
+    assert!(!plx_plex::plex::is_pageable_hub_key(key));
+    let line = unpaged_line(kind, key).expect("the first sighting is logged");
+    assert!(line.contains(kind) && line.contains(key));
+    assert!(unpaged_line(kind, key).is_none(), "and only the first");
+    let mc: Container = serde_json::from_value(serde_json::json!({"Hub": [{
+        "hubIdentifier": kind, "type": "movie", "title": "Playlist", "key": key, "more": true, "size": 12,
+        "Metadata": (0..12).map(item).collect::<Vec<_>>()}]})).unwrap();
+    let cw: Container = serde_json::from_value(serde_json::json!({"Hub": []})).unwrap();
+    let built = project(&mc, &cw, sid(0));
+    assert_eq!(built.shelves[0].items.len(), 12, "the preview stays");
+    assert!(!built.shelves[0].more, "and it has nothing to ask for");
+}

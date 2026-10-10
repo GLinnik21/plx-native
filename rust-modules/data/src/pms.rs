@@ -839,6 +839,25 @@ fn shelf_cost(shelf: &Shelf, len: usize) -> usize {
     if recent_listing(&shelf.hub_id, &shelf.key) { len.min(HUB_FETCH_COUNT as usize) } else { len }
 }
 
+/// How a fresh preview row starts: a row the pager will read waits for its first forward ask to
+/// compare the preview with its listing; every other row is its preview, and Recently Added rows
+/// are the head of their listing by definition.
+fn preview_row(id: &str, key: &str) -> paging::RowState {
+    if plx_plex::plex::is_pageable_hub_key(key) && !plx_plex::plex::hub_title::is_recently_added_hub(id) {
+        paging::RowState { mode: paging::RowMode::Unprobed, ledger: None }
+    } else {
+        paging::RowState::default()
+    }
+}
+
+/// The event-log line for a hub that holds more than its preview behind a key the pager does not
+/// read, so those rows are findable in a log; `None` after the first time for the same hub and key.
+fn unpaged_line(id: &str, key: &str) -> Option<String> {
+    static SEEN: LazyLock<Mutex<std::collections::HashSet<String>>> = LazyLock::new(Default::default);
+    let first = SEEN.lock().ok()?.insert(format!("{id} {key}"));
+    first.then(|| format!("hubs: {id} holds more than its preview but its key {key} is not paged; the preview stays"))
+}
+
 fn find_shelf<'a>(shelves: &'a [Shelf], id: &str, key: &str) -> Option<&'a Shelf> {
     shelves.iter().find(|shelf| shelf.is(id, key))
 }
@@ -907,55 +926,92 @@ fn shelf_window(shelf: &Shelf) -> (Vec<paging::Row>, paging::PageInfo) {
 /// One ask against a row's window, on the sliding window of [`paging`]; `list(start, size)` is one
 /// page of the row's listing and `many(keys)` a batch read of items by rating key.
 ///
+/// A row not yet compared with its listing (`RowMode::Unprobed`) reads the listing from 0 on its
+/// first forward ask. If the listing starts with the preview's rating keys, the row's positions are
+/// listing offsets. If not (a `random` hub shows a sample), the row is the preview followed by the
+/// listing minus the preview's keys, and a position past the preview is a listing offset plus the
+/// preview's length.
+///
 /// A row whose listing does not hold between requests (the edge row is nowhere near where it was),
 /// or whose server ignores paging (a read is answered from another offset), moves onto its ledger
 /// of shown keys instead of stopping, so every item is still reached and none is shown twice.
 fn fetch_row(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_end: usize,
     mut list: impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>,
     mut many: impl FnMut(&[String]) -> Option<plx_plex::plex::MediaContainer>) -> Option<SourceBuild> {
-    let ask = paging::Ask { start: page.start, before: page.before, hidden: &page.hidden };
-    let held = current.map(shelf_window);
+    let mut held = current.map(shelf_window);
     let mut state = current.map(|shelf| shelf.row.clone()).unwrap_or_default();
     let ignored = std::cell::Cell::new(false);
+    let mut raw = |start: usize, size: usize| {
+        let mc = list(start, size)?;
+        if mc.offset != start as i64 { ignored.set(true); }
+        Some(mc)
+    };
+    let mut start = page.start;
+    let mut absorbed = false;
+    if matches!(state.mode, paging::RowMode::Unprobed) && !page.before {
+        if let Some((rows, info)) = held.as_mut() {
+            let mc = raw(0, info.end.max(1))?;
+            if ignored.get() {
+                absorbed = true;
+                state.mode = paging::RowMode::Head;
+            } else if rows.iter().all(|(position, item)| mc.metadata.get(*position)
+                .is_some_and(|listed| clean(&listed.rating_key) == item.rk)) {
+                state.mode = paging::RowMode::Head;
+            } else {
+                let preview: Vec<String> = rows.iter().map(|(_, item)| item.rk.clone()).collect();
+                for (i, row) in rows.iter_mut().enumerate() { row.0 = i; }
+                (info.offset, info.end) = (0, preview.len());
+                start = info.end;
+                state.mode = paging::RowMode::Sample(preview);
+            }
+        }
+    }
+    let ask = paging::Ask { start, before: page.before, hidden: &page.hidden };
+    let preview_len = match &state.mode { paging::RowMode::Sample(preview) => preview.len(), _ => 0 };
     let result;
     if let Some((rows, info)) = held.as_ref().filter(|_| state.ledger.as_ref().is_some_and(|ledger| ledger.active)) {
         let mut ledger = state.ledger.clone()?;
-        result = Some(paging::ledger_window(sid, &ask, (rows, *info), &mut ledger, &mut list, &mut many)?);
+        result = Some(paging::ledger_window(sid, &ask, (rows, *info), &mut ledger, &mut raw, &mut many)?);
         state.ledger = Some(ledger);
     } else {
-        let mut watched = |start: usize, size: usize| {
-            let mc = list(start, size)?;
-            if mc.offset != start as i64 { ignored.set(true); }
-            Some(mc)
+        let step = if absorbed { None } else {
+            let held_ref = held.as_ref().map(|(rows, info)| (rows.as_slice(), *info));
+            match &state.mode {
+                paging::RowMode::Sample(preview) => {
+                    let total = held_ref.map_or(0, |(_, info)| info.total);
+                    let mut sample = sample_listing(preview, total, &ignored, &mut raw, &mut many);
+                    paging::fetch_window(sid, &ask, held_ref, minimum_end, &mut sample)
+                }
+                _ => paging::fetch_window(sid, &ask, held_ref, minimum_end, &mut raw),
+            }
         };
-        let step = paging::fetch_window(sid, &ask, held.as_ref().map(|(rows, info)| (rows.as_slice(), *info)),
-            minimum_end, &mut watched);
         // A window that came back holding a key the row showed before the rows it kept is a listing
         // that shifted by more than an edge check can tell: it stands in for an edge that is lost.
-        let switch = match &step {
+        let switch = absorbed || match &step {
             Some((rows, info)) => info.unstable
                 || state.ledger.as_ref().is_some_and(|ledger| ledger.contradicts(rows)),
             None => ignored.get(),
         };
         if !switch {
-            let (rows, info) = step?;
+            let (rows, mut info) = step?;
             if let Some((held_rows, _)) = &held {
                 let ledger = state.ledger.get_or_insert_with(Default::default);
                 ledger.note(held_rows);
                 ledger.note(&rows);
             }
+            if info.total > 0 { info.total = info.total.saturating_sub(preview_len); }
             result = Some((rows, info));
         } else if let Some((rows, info)) = &held {
             let mut ledger = state.ledger.take().unwrap_or_default();
             ledger.note(rows);
             ledger.active = true;
-            ledger.next = info.end;
+            ledger.next = info.end.saturating_sub(preview_len);
             ledger.done = false;
             ledger.idle = 0;
             ledger.added = 0;
             ledger.rescans = 0;
             ledger.filtered = 0;
-            result = Some(paging::ledger_window(sid, &ask, (rows, *info), &mut ledger, &mut list, &mut many)?);
+            result = Some(paging::ledger_window(sid, &ask, (rows, *info), &mut ledger, &mut raw, &mut many)?);
             state.ledger = Some(ledger);
         } else {
             return None;
@@ -967,6 +1023,46 @@ fn fetch_row(sid: ServerId, page: &PageQuery, current: Option<&Shelf>, minimum_e
         title: String::new(), hub_id: page.id.clone(), key: page.key.clone(), items, positions,
         total: info.total, offset: info.offset, end: info.end, more: info.more, row: state,
     }] })
+}
+
+/// The row of a `random` hub as one listing: positions below the preview's length are its cards,
+/// read by key; the rest are the listing from its first row, with a row the preview already shows
+/// left blank so positions stay aligned and the card is not shown twice. `total` is the listing's
+/// count when known; the container reports it with the preview's length added.
+fn sample_listing<'a>(preview: &'a [String], total: usize, ignored: &'a std::cell::Cell<bool>,
+    list: &'a mut dyn FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>,
+    many: &'a mut dyn FnMut(&[String]) -> Option<plx_plex::plex::MediaContainer>,
+) -> impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer> + 'a {
+    use plx_plex::plex::{MediaContainer, Metadata};
+    let blank = |key: &str| Metadata { rating_key: key.into(), ..Metadata::default() };
+    move |start, size| {
+        let length = preview.len();
+        let mut metadata = Vec::new();
+        let mut listing_total = (total > 0).then_some(total);
+        if start < length {
+            let keys = &preview[start..(start + size).min(length)];
+            let mut read = many(keys)?.metadata;
+            for key in keys {
+                let found = read.iter().position(|item| clean(&item.rating_key) == *key);
+                metadata.push(found.map_or_else(|| blank(key), |i| read.swap_remove(i)));
+            }
+        }
+        let from = start.max(length);
+        if start + size > from {
+            let want = start + size - from;
+            let mc = list(from - length, want)?;
+            if mc.offset != (from - length) as i64 {
+                ignored.set(true);
+                return Some(MediaContainer { offset: -1, ..MediaContainer::default() });
+            }
+            if mc.total_size > 0 { listing_total = Some(mc.total_size as usize); }
+            metadata.extend(mc.metadata.into_iter().take(want).map(|item| {
+                if preview.contains(&clean(&item.rating_key)) { blank("") } else { item }
+            }));
+        }
+        Some(MediaContainer { offset: start as i64, total_size: listing_total.map_or(0, |n| (n + length) as i64),
+            metadata, ..MediaContainer::default() })
+    }
 }
 
 /// The window of a row on the plain sliding window alone: no ledger, no batch read. What the
@@ -1109,6 +1205,9 @@ fn project(
             .unwrap_or("");
         let identifier_is_unique =
             hub_identifier_counts.get(hub.hub_identifier.as_str()).copied().unwrap_or(0) <= 1;
+        if !plx_plex::plex::is_pageable_hub_key(&hub.key) && (hub.more || hub.total() > hub.metadata.len()) {
+            if let Some(line) = unpaged_line(&hub.hub_identifier, &hub.key) { plx_base::eventlog::log(&line); }
+        }
         out.shelves.push(Shelf {
             title: plx_plex::plex::hub_title::localized_hub_title(
                 plx_plex::plex::hub_title::Scope::Home { library, identifier_is_unique },
@@ -1123,7 +1222,7 @@ fn project(
             end: hub.metadata.len(),
             more: recent_listing(&hub.hub_identifier, &hub.key)
                 && (hub.more || hub.total() > hub.metadata.len() || hub.metadata.len() >= HUB_FETCH_COUNT as usize),
-            row: Default::default(),
+            row: preview_row(&hub.hub_identifier, &hub.key),
         });
     }
     out
