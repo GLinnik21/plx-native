@@ -74,19 +74,10 @@
 //! source, resolved rather than given; [`Person::guid`] is the `tagKey` and is the ONLY thing
 //! plex.tv answers to — the numeric id 404s there (`"Invalid value provided for metadataId!"`).
 //! Keep all three; do not collapse them.
-use plx_plex::plex::{ServerId, Tag};
+use plx_plex::plex::{Hub, ServerId, Tag};
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
 use std::sync::Arc;
-
-/// Per-shelf item cap. A `CardRow` owns exactly `ui::cards::MAX_ROW_ITEMS` focus-scale
-/// springs and `scale(i)` clamps past the end, so an item beyond the cap would draw with the last
-/// cell's pop and — worse — never pop at all when focused (`update`'s loop can't reach its index).
-/// It is also the perf ceiling the A53 budget wants: a shelf is a horizontal strip, not a grid.
-/// The data layer cannot name the UI library's constant, so this is [`crate::pms::MAX_SHELF_ITEMS`],
-/// the data layer's own spelling of the same number; `screens::home`'s
-/// `the_data_shelf_cap_is_the_card_rows_capacity` pins the two equal.
-const SHELF_MAX: usize = crate::pms::MAX_SHELF_ITEMS;
 
 /// How many departments the roles line names before it stops. Plex prints every one; on a couch
 /// that turns a one-line kicker into "Actor, Writer, Producer, Composer, Costume Makeup" for a
@@ -98,6 +89,9 @@ const MAX_ROLES: usize = 3;
 /// defaults to **3** (`docs/plex-openapi.json`), which is too few to rely on: a search for a
 /// surname returns every actor who shares it, and the one we are joining on has to be among them.
 /// It is not a display list — nothing is drawn from this response but one id.
+///
+/// This is the FIRST ask, not the reach: [`resolve_grown`] asks again at a larger limit while a
+/// person hub comes back full, so a name ranked past this many hits is still found.
 const RESOLVE_LIMIT: i64 = 12;
 
 /// One shelf of a person's page. The three fields move together and must never be updated apart:
@@ -106,13 +100,11 @@ const RESOLVE_LIMIT: i64 = 12;
 #[derive(Default)]
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct Shelf {
-    /// the tiles, capped at [`SHELF_MAX`]
+    /// every item of this kind the `/media` response held, in server order
     pub items: Vec<PmsMovie>,
-    /// How many items of this kind the `/media` response REALLY held. Distinct from `items.len()`,
-    /// which is capped at [`SHELF_MAX`] (a `CardRow` spring-array limit): a prolific actor has 60
-    /// movies in the library, and a heading that read "24" would be the cap masquerading as a fact
-    /// about the person. On the MERGED shelf it is the sum across every source, for the same
-    /// reason — the count is a fact about the person, not about the row that fitted.
+    /// How many items of this kind the `/media` response held. Equal to `items.len()` for a single
+    /// source; on the MERGED shelf it is the sum across every source, because the count is a fact
+    /// about the person, not about the row that drew them.
     pub total: usize,
     /// The character each tile is this person's credit for (`"Wallace (voice)"`), PARALLEL to
     /// `items` — index `i` captions tile `i`, `""` where the server named no part. A parallel vector
@@ -156,7 +148,7 @@ struct Src {
 impl Src {
     /// Every key this source's shelves hold, in flow order — and its roles fetch's cache key: empty
     /// until its media lands (so nothing is asked too early) and it CHANGES with them (so a
-    /// re-landing re-asks). At most `NSHELF * SHELF_MAX` keys.
+    /// re-landing re-asks). One key per credit its media response held.
     ///
     /// PER SOURCE, because the batch it addresses is a `/library/metadata/{csv}` of server-local
     /// `ratingKey`s: hand another machine this list and it answers about different items entirely.
@@ -482,10 +474,8 @@ enum Landing {
 ///
 /// The two travel together for [`RolesLanding`]'s reason — they describe the same response, and a
 /// landing that installed one without the other would leave the route claiming a server holds
-/// items it has since replaced. The index is separate from the shelves rather than derived from
-/// them because [`SHELF_MAX`] caps what a `CardRow` can spring: a prolific actor's 60 movies draw
-/// as 24 tiles, and joining a filmography against the 24 would silently un-own 36 films the user
-/// really has.
+/// items it has since replaced. The index is kept separate from the shelves so that it is built
+/// from the whole response, not from the rows a shelf happens to draw.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct MediaLanding {
     shelves: [Shelf; NSHELF],
@@ -639,21 +629,52 @@ fn sources(origin: ServerId, key: &str, name: &str) -> Vec<Src> {
 ///
 /// Hubs are matched on either `hubIdentifier` or `type` because `/hubs/search` sends the same token
 /// in both (`docs/plex-openapi.json`'s own example), and `Hub::directory` is keyed by that word.
+/// The person hubs of a `/hubs/search` answer (`actor`, `director`), in the order they are named.
+fn person_hubs(mc: &plx_plex::plex::MediaContainer) -> impl Iterator<Item = &Hub> {
+    crate::search::Kind::Person.hubs().iter().flat_map(move |h| {
+        mc.hub
+            .iter()
+            .filter(move |x| x.hub_identifier == *h || x.kind == *h)
+    })
+}
+
+/// The cross-server resolve, asked of one server: its id for `name`/`guid`, or `""` for "no record
+/// of them here". `None` when a search fails, which the caller reports as a failure rather than as
+/// an absence.
+///
+/// The search cuts each person hub at `limit` rows, so a name ranked past the cut is missing from
+/// that answer and nothing else. A full hub may have more behind it, so the question is asked again
+/// at four times the limit; a response with no full person hub is the end of the list. This bounds
+/// the work of each request, not how far down the hits a person can be found.
+fn resolve_grown(
+    name: &str,
+    guid: &str,
+    mut search: impl FnMut(i64) -> Option<plx_plex::plex::MediaContainer>,
+) -> Option<String> {
+    let mut limit = RESOLVE_LIMIT;
+    loop {
+        let mc = search(limit)?;
+        if let Some(id) = resolve_local(&mc, name, guid) {
+            return Some(id);
+        }
+        let full = person_hubs(&mc).any(|hub| hub.directory.len() as i64 >= limit);
+        // `checked_mul` is there to keep the loop finite against a server that answers every limit
+        // in full; a real library runs out of people long before four-times overflows an i64.
+        match limit.checked_mul(4) {
+            Some(next) if full => limit = next,
+            _ => return Some(String::new()),
+        }
+    }
+}
+
 pub fn resolve_local(
     mc: &plx_plex::plex::MediaContainer,
     name: &str,
     guid: &str,
 ) -> Option<String> {
-    let mut people: Vec<&Tag> = Vec::new();
-    for h in crate::search::Kind::Person.hubs() {
-        for hub in mc
-            .hub
-            .iter()
-            .filter(|x| x.hub_identifier == *h || x.kind == *h)
-        {
-            people.extend(hub.directory.iter());
-        }
-    }
+    let people: Vec<&Tag> = person_hubs(mc)
+        .flat_map(|hub| hub.directory.iter())
+        .collect();
     // the guid join first, across EVERY person hub — a `director`-hub guid match still beats a
     // name match in `actor`, because a guid is proof and a name is a guess
     people
@@ -700,12 +721,10 @@ fn local_id(t: &Tag) -> String {
 fn merge_shelves(srcs: &[Src]) -> [Shelf; NSHELF] {
     let mut out: [Shelf; NSHELF] = Default::default();
     for (kind, sh_out) in out.iter_mut().enumerate() {
-        let want: Vec<usize> = srcs.iter().map(|s| s.shelves[kind].items.len()).collect();
-        let take = crate::pms::allot(SHELF_MAX, &want);
-        for (i, s) in srcs.iter().enumerate() {
+        for s in srcs {
             let sh = &s.shelves[kind];
             sh_out.total += sh.total;
-            for (j, m) in sh.items.iter().take(take[i]).enumerate() {
+            for (j, m) in sh.items.iter().enumerate() {
                 sh_out.items.push(m.clone());
                 // captions ride WITH their items, so the merged pair stays parallel even while one
                 // source's roles batch is still out — `""` until it lands, exactly as `Person::role`
@@ -1502,9 +1521,8 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
                     // sectionId 0 = every section. `opt_int` omits a zero, and scoping would be
                     // wrong anyway: this asks a server we have never addressed before whether it
                     // knows this person AT ALL, so it must see the whole library.
-                    let mc = c.search(&arg[0], RESOLVE_LIMIT, 0)?;
                     // `""` is the ANSWER "no record of them here" — see `Landing::Resolve`
-                    Some(resolve_local(&mc, &arg[0], &guid).unwrap_or_default())
+                    resolve_grown(&arg[0], &guid, |limit| c.search(&arg[0], limit, 0))
                 })
                 .unwrap_or(None),
             ),
@@ -1604,7 +1622,7 @@ pub fn roles_from(
 }
 
 /// Split a `/library/people/{id}/media` container into the Movies and Shows shelves **by each
-/// row's own `type`**, counting the REAL totals past the [`SHELF_MAX`] tile cap.
+/// row's own `type`**, keeping every row the server sent so the shelf is the whole filmography.
 ///
 /// The container's `viewGroup` cannot be used for this and is the whole reason this function is
 /// named and tested: verified live 2026-07-29, person 6059's response carries `viewGroup:"movie"`
@@ -1623,9 +1641,7 @@ pub fn split_by_type(mc: &plx_plex::plex::MediaContainer, sid: ServerId) -> [She
             _ => continue,
         };
         sh.total += 1;
-        if sh.items.len() < SHELF_MAX {
-            sh.items.push(parse_item(it, sid));
-        }
+        sh.items.push(parse_item(it, sid));
     }
     out
 }
@@ -1633,11 +1649,9 @@ pub fn split_by_type(mc: &plx_plex::plex::MediaContainer, sid: ServerId) -> [She
 /// **The availability index of one `/media` response** — `(guid, ratingKey)` for every `movie` /
 /// `show` row it carried, UNCAPPED.
 ///
-/// Separate from [`split_by_type`] and not derived from its output, which is the whole point: that
-/// function caps at [`SHELF_MAX`] because a `CardRow` owns a fixed number of springs, and the
-/// Filmography route's question — "does anybody hold this credit" — has nothing to do with how many
-/// posters fit on a strip. Rows the shelves dropped are exactly the ones a prolific actor's list is
-/// made of.
+/// Separate from [`split_by_type`] and not derived from its output: the shelves are the page's
+/// tiles, while the Filmography route's question, "does anybody hold this credit", is asked of
+/// the response itself.
 ///
 /// A row with no `guid` contributes nothing: the join key is the metadata provider's global id, and
 /// a server old enough to send none simply cannot be joined. That is an ABSENCE of evidence — the
@@ -2280,24 +2294,25 @@ mod tests {
         );
     }
 
-    /// Neither shelf may exceed a `CardRow`'s spring count: past it `scale(i)` clamps to the last
-    /// cell, so an over-cap tile would wear its neighbour's pop and never animate its own.
-    /// Unknown types (season/episode/clip) are dropped rather than filed under a wrong label.
+    /// A shelf holds every credit the server returned, in the server's order: a prolific actor's
+    /// whole filmography is on the page, not the first two dozen of it. Unknown types
+    /// (season/episode/clip) are still dropped rather than filed under a wrong label.
     #[test]
-    fn shelves_are_capped_at_the_card_rows_spring_count_and_drop_unknown_types() {
+    fn a_shelf_holds_every_credit_the_server_returned_in_server_order() {
         let mut mc = MediaContainer::default();
-        for i in 0..(SHELF_MAX + 5) {
+        for i in 0..300 {
             mc.metadata.push(row("movie", &i.to_string(), "m"));
         }
         mc.metadata.push(row("episode", "e1", "an episode"));
         mc.metadata.push(row("season", "s1", "a season"));
         let s = split_by_type(&mc, S0);
-        assert_eq!(s[0].items.len(), SHELF_MAX);
+        assert_eq!(s[0].items.len(), 300, "no tile cap on the shelf");
         assert_eq!(
-            s[0].total,
-            SHELF_MAX + 5,
-            "the count is the RESPONSE's total, not the tile cap"
+            s[0].items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(),
+            (0..300).map(|i| i.to_string()).collect::<Vec<_>>(),
+            "server order, every row"
         );
+        assert_eq!(s[0].total, 300);
         assert!(
             s[1].items.is_empty(),
             "an episode/season is not a Show shelf tile"
@@ -2489,35 +2504,96 @@ mod tests {
             .all(|s| s.items.is_empty() && s.total == 0));
     }
 
-    /// A greedy source must not spend the whole shelf. Two sources with more films than the row can
-    /// hold split it — the bug this unit exists for, re-created one level down: fill the row from
-    /// the server you arrived through and the share is invisible again.
+    /// Two servers that each hold more than two dozen of the same person's films fold onto one
+    /// shelf with every film of both, each server's in its own order and the second server's behind
+    /// the first. Neither source may be starved out by the other's length.
     #[test]
-    fn one_prolific_source_cannot_starve_another_out_of_the_shelf() {
+    fn two_prolific_sources_both_fill_the_shelf_in_full() {
         let many = |sid: ServerId, n: usize| {
             (0..n)
                 .map(|i| movie_on(sid, &format!("{i}")))
                 .collect::<Vec<_>>()
         };
         let srcs = vec![
-            src_with(S0, many(S0, SHELF_MAX), SHELF_MAX, Vec::new()),
-            src_with(S1, many(S1, SHELF_MAX), SHELF_MAX, Vec::new()),
+            src_with(S0, many(S0, 30), 30, Vec::new()),
+            src_with(S1, many(S1, 30), 30, Vec::new()),
         ];
         let m = merge_shelves(&srcs);
-        assert_eq!(
-            m[0].items.len(),
-            SHELF_MAX,
-            "the row still caps at the spring count"
-        );
+        assert_eq!(m[0].items.len(), 60, "every film of both servers");
         assert!(
-            m[0].items.iter().any(|x| x.sid == S1),
-            "the second source was starved out of the shelf entirely"
+            m[0].items[..30].iter().all(|x| x.sid == S0)
+                && m[0].items[30..].iter().all(|x| x.sid == S1),
+            "each server's films stay together, in its own order"
         );
-        assert_eq!(
-            m[0].total,
-            2 * SHELF_MAX,
-            "…while the heading still counts everything"
-        );
+        assert_eq!(m[0].total, 60, "the heading counts everything");
+    }
+
+    // ---- resolve by name, however far down the hits ------------------------------------------
+
+    /// A `/hubs/search` answer for `names`, cut to `limit` rows the way the server cuts its hub.
+    /// Ids are the 1-based position, so the id read back names the hit it came from.
+    fn hits(names: &[String], limit: i64) -> MediaContainer {
+        let tags = names
+            .iter()
+            .take(limit as usize)
+            .enumerate()
+            .map(|(i, n)| person_tag(n, i as i64 + 1, ""))
+            .collect();
+        search_answer("actor", tags)
+    }
+
+    /// Resolve `target` against a server whose search answers `names` in order, and report what
+    /// the resolve returned together with every limit it asked with.
+    fn resolve_against(names: &[String], target: &str) -> (Option<String>, Vec<i64>) {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let got = resolve_grown(target, "", |limit| {
+            asked.borrow_mut().push(limit);
+            Some(hits(names, limit))
+        });
+        (got, asked.into_inner())
+    }
+
+    fn people(n: usize) -> Vec<String> {
+        (1..=n).map(|i| format!("Person {i}")).collect()
+    }
+
+    /// A name the server ranks 30th is still found: the first ask (12 rows) is full and does not
+    /// settle it, so the resolve asks again with four times the limit and reads it there.
+    #[test]
+    fn a_name_at_hit_thirty_is_found_on_the_second_ask() {
+        let (got, asked) = resolve_against(&people(40), "Person 30");
+        assert_eq!(got.as_deref(), Some("30"));
+        assert_eq!(asked, [RESOLVE_LIMIT, RESOLVE_LIMIT * 4]);
+    }
+
+    /// A short answer is the end of the list. Twenty people fill the 12-row ask, so the resolve
+    /// asks again at 48; that answer holds 20 rows, short of its limit, and the absent name ends
+    /// there.
+    /// A server with five people in all ends after the first ask.
+    #[test]
+    fn an_absent_name_stops_at_the_first_short_answer() {
+        let (got, asked) = resolve_against(&people(20), "Nobody Here");
+        assert_eq!(got.as_deref(), Some(""), "no record of them on this server");
+        assert_eq!(asked, [RESOLVE_LIMIT, RESOLVE_LIMIT * 4]);
+
+        let (got, asked) = resolve_against(&people(5), "Nobody Here");
+        assert_eq!(got.as_deref(), Some(""));
+        assert_eq!(asked, [RESOLVE_LIMIT], "5 rows under a 12 limit ends at once");
+    }
+
+    /// A name inside the first answer is one request, as it always was.
+    #[test]
+    fn a_name_in_the_first_twelve_makes_exactly_one_request() {
+        let (got, asked) = resolve_against(&people(40), "Person 7");
+        assert_eq!(got.as_deref(), Some("7"));
+        assert_eq!(asked, [RESOLVE_LIMIT]);
+    }
+
+    /// A failed ask is a failed resolve, not a silent "not on this server".
+    #[test]
+    fn a_failed_ask_is_a_failed_resolve() {
+        let got = resolve_grown("Person 1", "", |_| None);
+        assert_eq!(got, None);
     }
 
     // ---- the fetch machine -------------------------------------------------------------------
