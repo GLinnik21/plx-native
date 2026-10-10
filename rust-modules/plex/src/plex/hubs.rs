@@ -92,6 +92,12 @@ impl Client {
         )
     }
 
+    /// GET /hubs/continueWatching/items, one page: the listing behind the dedicated hub, by offset,
+    /// last viewed descending. The Continue Watching deck reads each server's listing with this.
+    pub fn continue_watching_page(&self, start: i64, size: i64) -> Option<MediaContainer> {
+        self.get_json(&continue_watching_page_path(start, size))
+    }
+
     /// PUT /actions/removeFromContinueWatching?ratingKey=… — **hide** an item from the deck. Returns
     /// whether the server accepted it.
     ///
@@ -160,6 +166,10 @@ impl Client {
     pub fn search(&self, query: &str, limit: i64, section_id: i64) -> Option<MediaContainer> {
         self.get_json(&search_path(query, limit, section_id))
     }
+}
+
+fn continue_watching_page_path(start: i64, size: i64) -> String {
+    paged_path("/hubs/continueWatching/items", PageReq::window(start, size))
 }
 
 fn hub_page_path(key: &str, start: i64, size: i64) -> String {
@@ -246,7 +256,7 @@ mod tests {
 
 #[cfg(test)]
 mod paging_tests {
-    use super::{hub_page_path, is_pageable_hub_key};
+    use super::{continue_watching_page_path, hub_page_path, is_pageable_hub_key};
 
     #[test]
     fn only_a_similar_list_under_a_metadata_item_is_pageable_from_that_prefix() {
@@ -271,5 +281,11 @@ mod paging_tests {
             "/hubs/home/recentlyAdded?type=2&sectionID=7&X-Plex-Container-Start=12&X-Plex-Container-Size=24");
         assert_eq!(hub_page_path("/library/sections/7/all?sort=addedAt%3Adesc&X-Plex-Container-Size=12&X-Plex-Container-Start=0", 36, 24),
             "/library/sections/7/all?sort=addedAt%3Adesc&X-Plex-Container-Start=36&X-Plex-Container-Size=24");
+    }
+
+    #[test]
+    fn the_continue_watching_listing_is_read_by_offset() {
+        assert_eq!(continue_watching_page_path(11, 13),
+            "/hubs/continueWatching/items?X-Plex-Container-Start=11&X-Plex-Container-Size=13");
     }
 }

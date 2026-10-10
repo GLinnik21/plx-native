@@ -26,14 +26,14 @@ use plx_plex::plex::{MediaContainer, ServerId};
 use crate::pms::{clean, listable, parse_item, CwItem, HUB_FETCH_COUNT, MAX_SHELF_ITEMS};
 
 /// Rows per server request, and the lookahead each lane keeps.
-pub const PAGE: usize = HUB_FETCH_COUNT as usize;
+pub(crate) const PAGE: usize = HUB_FETCH_COUNT as usize;
 
 /// Requests one read may spend on one lane before it publishes what it has.
 const REQUESTS: usize = 8;
 
 /// A raw listing row a lane read: its position and rating key.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Anchor {
+pub(crate) struct Anchor {
     pub position: usize,
     pub key: String,
 }
@@ -41,11 +41,11 @@ pub struct Anchor {
 /// One server's part of the deck.
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Lane {
+pub(crate) struct Lane {
     /// The rows read and kept, ascending by position. Empty until the deck is placed, when the
     /// source's `cw` (its preview) is the lane's rows.
     #[serde(default)]
-    pub rows: Vec<CwItem>,
+    pub(crate) rows: Vec<CwItem>,
     /// The deck shows the rows at positions `lo..hi`.
     #[serde(default)]
     pub lo: usize,
@@ -122,7 +122,7 @@ impl Lane {
 }
 
 /// The deck's order: last viewed descending, then the lane's roster index, then position.
-pub fn order(a: (&CwItem, usize), b: (&CwItem, usize)) -> Ordering {
+pub(crate) fn order(a: (&CwItem, usize), b: (&CwItem, usize)) -> Ordering {
     b.0.last_viewed_at.cmp(&a.0.last_viewed_at).then(a.1.cmp(&b.1)).then(a.0.position.cmp(&b.0.position))
 }
 
@@ -133,13 +133,13 @@ fn short(lane: &Lane, forward: bool, n: usize) -> bool {
 }
 
 /// The lanes a move of `n` cards must read before it can run.
-pub fn needs(lanes: &[Lane], forward: bool, n: usize) -> Vec<usize> {
+pub(crate) fn needs(lanes: &[Lane], forward: bool, n: usize) -> Vec<usize> {
     (0..lanes.len()).filter(|&i| short(&lanes[i], forward, n)).collect()
 }
 
 /// The deck as it stands: the shown rows of every lane in merged order, as `(lane, row)`, with
 /// whether anything lies before the window and whether anything lies after it.
-pub fn merge_deck(lanes: &[Lane]) -> (Vec<(usize, &CwItem)>, bool, bool) {
+pub(crate) fn merge_deck(lanes: &[Lane]) -> (Vec<(usize, &CwItem)>, bool, bool) {
     let mut cards: Vec<(usize, &CwItem)> = lanes.iter().enumerate()
         .flat_map(|(i, lane)| lane.shown().map(move |row| (i, row))).collect();
     cards.sort_by(|a, b| order((a.1, a.0), (b.1, b.0)));
@@ -151,7 +151,7 @@ pub fn merge_deck(lanes: &[Lane]) -> (Vec<(usize, &CwItem)>, bool, bool) {
 /// Puts the deck on every lane that has not got it yet: the preview is the lane's rows, nothing
 /// shown. With `window` set the deck is then the first [`MAX_SHELF_ITEMS`] cards in merged order
 /// (what the merge of the previews showed before any ask).
-pub fn place(lanes: &mut [Lane], previews: &[&[CwItem]]) {
+pub(crate) fn place(lanes: &mut [Lane], previews: &[&[CwItem]]) {
     let mut fresh = false;
     for (lane, preview) in lanes.iter_mut().zip(previews) {
         if lane.placed { continue; }
@@ -223,7 +223,7 @@ fn drop_excess(lanes: &mut [Lane], forward: bool) {
 /// Moves the deck by up to `n` cards. A lane that is still [`short`] of rows is left out of this
 /// move (the server failed to answer, or has nothing more), so the others go on. Returns how many
 /// cards the window gained.
-pub fn advance(lanes: &mut [Lane], forward: bool, n: usize) -> usize {
+pub(crate) fn advance(lanes: &mut [Lane], forward: bool, n: usize) -> usize {
     let usable: Vec<bool> = lanes.iter().map(|lane| !short(lane, forward, n)).collect();
     let taken = take(lanes, forward, n, &usable);
     drop_excess(lanes, forward);
@@ -233,7 +233,7 @@ pub fn advance(lanes: &mut [Lane], forward: bool, n: usize) -> usize {
 
 /// Why a read of one lane stopped.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Fail {
+pub(crate) enum Fail {
     /// The request failed, or the server answered from another offset.
     Server,
     /// The edge row is nowhere near where it was.
@@ -253,7 +253,7 @@ fn row(sid: ServerId, item: &plx_plex::plex::Metadata, position: usize, hidden: 
 }
 
 /// Reads `lane` forward until it holds `n` rows past its shown ones, or its listing ends.
-pub fn read_ahead(sid: ServerId, lane: &mut Lane, n: usize, hidden: &[i64],
+pub(crate) fn read_ahead(sid: ServerId, lane: &mut Lane, n: usize, hidden: &[i64],
     mut list: impl FnMut(usize, usize) -> Option<MediaContainer>) -> Result<(), Fail> {
     let mut requests = 0;
     while lane.ahead() < n && !lane.done && requests < REQUESTS {
@@ -299,7 +299,7 @@ pub fn read_ahead(sid: ServerId, lane: &mut Lane, n: usize, hidden: &[i64],
 }
 
 /// Reads `lane` backward until it holds `n` rows before its shown ones, or reaches its first row.
-pub fn read_behind(sid: ServerId, lane: &mut Lane, n: usize, hidden: &[i64],
+pub(crate) fn read_behind(sid: ServerId, lane: &mut Lane, n: usize, hidden: &[i64],
     mut list: impl FnMut(usize, usize) -> Option<MediaContainer>) -> Result<(), Fail> {
     let mut requests = 0;
     while lane.head.position > 0 && lane.behind() < n && requests < REQUESTS {
