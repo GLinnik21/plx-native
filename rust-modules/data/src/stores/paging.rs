@@ -468,7 +468,13 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
         let mc = list(start, MAX_SHELF_ITEMS)?;
         total = if mc.total_size > 0 { mc.total_size as usize } else { total };
         if mc.offset != start as i64 || mc.metadata.len() > MAX_SHELF_ITEMS {
-            // The server ignored the paging: this one response is the whole listing.
+            // The server ignored the paging: this one response is the whole listing, and it is
+            // taken as such rather than failing the page (which would leave everything past the
+            // window unreachable). MEMORY: the response and one parsed card per listed item are
+            // alive for this one read, on the worker, so the transient bound is the size of that
+            // listing; what the row keeps afterwards is the ledger (16 bytes a key) and its
+            // window of at most `MAX_SHELF_ITEMS` cards. Every later ask reads the window back by
+            // key (`many`) and never asks the listing again.
             let mut keys = Vec::new();
             known.clear();
             for item in &mc.metadata {

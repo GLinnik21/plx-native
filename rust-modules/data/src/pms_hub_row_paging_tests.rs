@@ -646,6 +646,31 @@ fn a_500_card_collection_row_pages_to_its_end_and_back_through_the_store() {
     }
 }
 
+/// A server that ignores the window on a key answers the whole listing from its first row. The
+/// row still reaches every item, on the way out and back, and keeps only its 24-card window.
+#[test]
+fn a_300_card_row_whose_server_ignores_the_window_is_walked_to_its_last_item_and_back() {
+    let _guard = plx_base::testlock::serial();
+    let len = 300;
+    let mut reads = 0;
+    let mut owner = paged_owner("movie.genre", &(0..12).collect::<Vec<_>>(), len);
+    let mut ignoring = |_: usize, _: usize| { reads += 1; Some(container(0, len, 0..len)) };
+    let windows = walk_through_the_store(&mut owner, "movie.genre", &mut ignoring);
+    assert_eq!(shown(&owner).last().unwrap(), "299", "the last item is reached");
+    assert_each_once(&windows, len);
+    assert!(windows.iter().all(|w| w.len() <= 24));
+    let mut back = 0;
+    while let Some(request) = ask_row(&mut owner, "movie.genre", HUB_KEY, true) {
+        answer(&mut owner, request, &mut ignoring, batch(|_| true));
+        assert!(shown(&owner).len() <= 24);
+        back += 1;
+        assert!(back < 400);
+    }
+    assert_eq!(shown(&owner)[0], "0", "and the first item again");
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
 #[test]
 fn a_random_hub_row_pages_through_the_store_and_shows_every_item_once() {
     let _guard = plx_base::testlock::serial();
