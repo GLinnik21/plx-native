@@ -557,6 +557,8 @@ fn focus_on_a_tail_card_survives_the_window_sliding() {
 /// bursts, reversals, 100 ms repeats) meet random landing delays (one frame to five seconds); on
 /// EVERY frame the focused card changes only by a press and by exactly one place in the row, and
 /// is a card the store holds. A held key then reaches the last card and walks back to the first.
+/// Landings slower than the walk are the case that matters on the way back: the hold arrives at
+/// the window's first card before the window before it has landed.
 #[test]
 fn no_landing_on_the_related_row_ever_moves_the_card_under_the_focus() {
     use plx_machine::machine::{Edge, InputEvent, InputKind, Key, Source};
@@ -602,8 +604,6 @@ fn no_landing_on_the_related_row_ever_moves_the_card_under_the_focus() {
                 cadence = [1, 2, 6, 6, 6, 12, 30][rng.below(7) as usize];
             }
             let (right, due) = if tail { (!reached.0, frame % 6 == 0) } else { (dir_right, frame % cadence == 0) };
-            // the window the keys of this frame may still be read against, and the one that stands
-            let was = offset;
             if pending.is_some_and(|(due, _)| frame >= due) {
                 let (_, before) = pending.take().unwrap();
                 let next = if before { offset.saturating_sub(12) } else { (offset + 12).min(TAIL - 24) };
@@ -639,12 +639,11 @@ fn no_landing_on_the_related_row_ever_moves_the_card_under_the_focus() {
                 assert_eq!(now, held, "{at}: the card under the focus changed without a press");
             } else {
                 assert!(due, "{at}: focus moved without a press");
-                // one place along the row: the next tail card, the next head card, or across the
-                // seam between the head and the window's first card
+                // one place along the whole row. The head's last card and the window's first sit
+                // side by side while the window is away from the tail's start; a press there
+                // waits for the way back rather than crossing every card between them.
                 let (a, b) = (place(&held), place(&now));
-                let seam = |head: &str, tail: &str| head == "h2" && [was, offset].iter().any(|o| tail == format!("t{o}"));
-                let one = if right { b == a + 1 || seam(&held, &now) } else { a == b + 1 || seam(&now, &held) };
-                assert!(one, "{at}: one press took focus from {held} to {now}");
+                assert!(if right { b == a + 1 } else { a == b + 1 }, "{at}: one press took focus from {held} to {now}");
                 held = now;
             }
             if held == format!("t{}", TAIL - 1) { reached.0 = true; }
@@ -654,5 +653,40 @@ fn no_landing_on_the_related_row_ever_moves_the_card_under_the_focus() {
         assert!(reached.1, "seed {seed}: and so is the first (stopped on {held})");
         assert!(landings >= 14, "seed {seed}: the window slid there and back under the walk: {landings}");
     }
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}
+
+/// The row is the head and a window of the tail, drawn side by side. While the window is away
+/// from the tail's start, the cards between the head and the window are not in the row: a press
+/// at that seam does not cross them (seen on the simulator on a slow link: a held Left outran the
+/// way-back read and went from the 286th card to the 9th), and focus resting on the head asks
+/// for the way back, so the seam closes instead of staying shut.
+#[test]
+fn a_press_never_crosses_the_cards_between_the_head_and_a_window_that_slid_away() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig) = boot_with(with_tail(12));
+    let key_at = |d: &Dispatcher<TestHost>, index: usize| FocusKey { entry: screen(d).entry,
+        elem: screen(d).engine_key(related::elem(index).unwrap()).unwrap() };
+    let step = |d: &Dispatcher<TestHost>, from: FocusKey<u32>, dir: Dir| {
+        let measure = FixtureMeasure;
+        let cx = Cx::<TestHost> { views: (), tick: tick(16), measure: &measure,
+            press: Default::default(), focus: Default::default(), owner: InputOwner::Entry(from.entry) };
+        Focusable::<TestHost>::neighbour(screen(d), from, dir, &cx)
+    };
+    let (head_last, window_first) = (key_at(&d, 2), key_at(&d, 3));
+    assert!(matches!(step(&d, window_first, Dir::Left), Step::Edge), "t12 is not next to h2");
+    assert!(matches!(step(&d, head_last, Dir::Right), Step::Edge), "h2 is not next to t12");
+    assert!(matches!(step(&d, window_first, Dir::Right), Step::Move(to) if to == key_at(&d, 4)), "inside the window a press steps");
+    assert!(matches!(step(&d, head_last, Dir::Left), Step::Move(to) if to == key_at(&d, 1)), "and inside the head");
+    // resting on the head with the window away: the way back is asked for
+    d.set_focus_in(Some(head_last), Some(related::RELATED_GROUP));
+    rig.asked.clear();
+    for i in 0..4 { frame(&mut d, &mut rig, 100 + i * 16); }
+    assert!(rig.asked.iter().any(|cmd| matches!(cmd, MetadataCmd::WantRelated { before: true, seen: (12, 36) })),
+        "the head asks for the window before this one: {} asked", rig.asked.len());
+    // with the window at the tail's start the row is whole: the same press steps
+    land(&mut d, &mut rig, with_tail(0), 400);
+    assert!(matches!(step(&d, key_at(&d, 2), Dir::Right), Step::Move(to) if to == key_at(&d, 3)), "h2 is next to t0");
+    assert!(matches!(step(&d, key_at(&d, 3), Dir::Left), Step::Move(to) if to == key_at(&d, 2)));
     plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }

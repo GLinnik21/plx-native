@@ -125,6 +125,13 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
         self.locate(local).filter(|&i| i < self.len)
     }
 
+    /// The Related row is its head and a window of its tail: away from the tail's start, the
+    /// window's first card is not the card after the head's last.
+    fn gap_before(&self, i: usize) -> bool {
+        let tail = &self.d.related_tail;
+        self.which == Which::Related && i > 0 && i == tail.head && tail.offset > 0
+    }
+
     fn art(&self, i: usize) -> Art<'_> {
         match self.which {
             Which::Related | Which::Collection => Art::Poster(self.movies().get(i).map(tile_facts::of)),

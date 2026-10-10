@@ -675,8 +675,8 @@ impl Shelf {
     pub fn neighbour<H: Host, S: CardSource<H>>(&self, src: &S, key: FocusKey<H::Elem>, dir: Dir) -> Step<H::Elem> {
         let Some(i) = src.index_of(&key.elem) else { return Step::Edge };
         let to = match dir {
-            Dir::Left => i.checked_sub(1),
-            Dir::Right => Some(i + 1).filter(|&j| j < src.len()),
+            Dir::Left => i.checked_sub(1).filter(|_| !src.gap_before(i)),
+            Dir::Right => Some(i + 1).filter(|&j| j < src.len() && !src.gap_before(j)),
             Dir::Up | Dir::Down => None,
         };
         to.map_or(Step::Edge, |j| Step::Move(FocusKey { entry: self.entry, elem: src.elem(j) }))
