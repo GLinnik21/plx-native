@@ -23,6 +23,8 @@
 //! path is absolute, uses `[A-Za-z0-9._+-]` and no `..`, and its mapping holds the fault's own
 //! `pc` or `lr` and is executable; the path is otherwise used only to open the file for its build
 //! id, and only if it is still the file (device and inode) that was mapped when the process died.
+//! A library with no build id (the firmware's glibc has none) is still named, with its load address
+//! and size, a zero `debug_id` and no `code_id`.
 //!
 //! The same rule kills the obvious shortcut of shipping the record verbatim as the exception
 //! `value`. That would be one line of code, would look identical in the Sentry UI, and would make
@@ -123,7 +125,8 @@ pub struct ModuleImage {
     pub file: String,
     pub image_addr: u64,
     pub image_size: u64,
-    pub code_id: String,
+    /// `None` for a module with no GNU build id: it is still named, with a zero `debug_id`.
+    pub code_id: Option<String>,
     pub debug_id: String,
 }
 
@@ -211,9 +214,20 @@ fn parse_crash_time(s: &str) -> Option<u64> {
         .flatten()
 }
 
+/// The `debug_id` of an image with no build id, spelled as sentry-native spells it (the nil UUID).
+/// Sentry finds no debug file for it and still shows the image's `code_file`.
+const ZERO_DEBUG_ID: &str = "00000000-0000-0000-0000-000000000000";
+
 /// Resolve each mapped module of `f` to an image entry. `read` returns the head of the file the
 /// mapping was made from ([`read_module_head`] refuses a file that is no longer that one); a module
-/// whose build id cannot be read is left out, like the app's own image.
+/// whose file cannot be read, or is not an ELF, is left out, like the app's own image.
+///
+/// **A module with no GNU build id is still named.** The firmware's glibc has none (only
+/// `NT_GNU_ABI_TAG` and a `.gnu_debuglink`), so a crash inside it used to name no module at all.
+/// It gets what a native event lists for such a library: the basename, the load address and the
+/// mapped size, a zero `debug_id` ([`ZERO_DEBUG_ID`]) and no `code_id`. A zero id matches no
+/// uploaded object, so Sentry shows the module's name and nothing symbolicates against it: it is
+/// attributed, not guessed. A module that has an id is exactly as before.
 ///
 /// The app's own mapping is skipped: [`sentry_body`] already describes it from the identity the
 /// startup marker recorded, which is the crashed build's and not whatever is deployed now.
@@ -225,8 +239,17 @@ pub fn module_images(f: &Fault, read: impl Fn(&ModuleMapping) -> Option<Vec<u8>>
         .iter()
         .filter(|m| m.file_name() != CODE_FILE)
         .filter_map(|m| {
-            let code_id = super::sentry::gnu_build_id(&read(m)?)?;
-            let debug_id = super::sentry::debug_id(&code_id)?;
+            let head = read(m)?;
+            let (code_id, debug_id) = match super::sentry::gnu_build_id(&head) {
+                Some(id) => {
+                    let debug_id = super::sentry::debug_id(&id)?;
+                    (Some(id), debug_id)
+                }
+                // Only a file that really is an ELF: the dev+inode check says it is the mapped
+                // file, and this keeps a truncated or foreign file from being listed as a module.
+                None if head.starts_with(b"\x7fELF") => (None, ZERO_DEBUG_ID.to_string()),
+                None => return None,
+            };
             let image_addr = m.lo.checked_sub(m.offset)?;
             Some(ModuleImage {
                 file: m.file_name().to_string(),
@@ -783,14 +806,17 @@ pub fn sentry_body(
     // ([`read_module_head`]) only accepts the file whose device and inode the maps line recorded,
     // so a library replaced since (an app update, or a reboot's fresh /tmp) is left out here.
     for m in &extra.modules {
-        images.push(serde_json::json!({
+        let mut image = serde_json::json!({
             "type": "elf",
             "image_addr": format!("0x{:x}", m.image_addr),
             "image_size": m.image_size,
-            "code_id": m.code_id,
             "debug_id": m.debug_id,
             "code_file": m.file,
-        }));
+        });
+        if let Some(code_id) = &m.code_id {
+            image["code_id"] = serde_json::json!(code_id);
+        }
+        images.push(image);
     }
     if !images.is_empty() {
         body["debug_meta"] = serde_json::json!({ "images": images });
@@ -899,7 +925,7 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
                 file: "<library file name>".to_string(),
                 image_addr: 0x20000,
                 image_size: 0x1000,
-                code_id: "0".repeat(40),
+                code_id: Some("0".repeat(40)),
                 debug_id: "00000000-0000-0000-0000-000000000000".to_string(),
             }],
         },
@@ -1870,6 +1896,93 @@ mod tests {
         assert_eq!(frame_addrs(&v), vec!["0x4bccd0", "0x88ef8"]);
     }
 
+    // ---- a module with no GNU build id is still named ----
+
+    /// A little-endian ELF32 with no program headers at all: no note, so no build id.
+    fn elf_without_build_id() -> Vec<u8> {
+        let mut v = vec![0u8; 52];
+        v[..4].copy_from_slice(b"\x7fELF");
+        v[4] = 1;
+        v[5] = 1;
+        v[6] = 1;
+        v[16..18].copy_from_slice(&3u16.to_le_bytes());
+        v[18..20].copy_from_slice(&40u16.to_le_bytes());
+        v[28..32].copy_from_slice(&52u32.to_le_bytes());
+        v[40..42].copy_from_slice(&52u16.to_le_bytes());
+        v[42..44].copy_from_slice(&32u16.to_le_bytes());
+        v
+    }
+
+    const ZERO_DEBUG_ID: &str = "00000000-0000-0000-0000-000000000000";
+
+    #[test]
+    fn a_module_without_a_build_id_is_named_with_a_zero_debug_id() {
+        let f = only_fault(WAYLAND_REC);
+        let elf = elf_without_build_id();
+        let modules = module_images(&f, |_| Some(elf.clone()));
+        assert_eq!(
+            modules,
+            vec![ModuleImage {
+                file: "libwayland-client.so.0".to_string(),
+                image_addr: 0xb6f00000,
+                image_size: 0x21000,
+                code_id: None,
+                debug_id: ZERO_DEBUG_ID.to_string(),
+            }]
+        );
+        let body = sentry_body(
+            &f, "e", BUILD, super::super::sentry::debug_id(BUILD).as_deref(), None,
+            &FaultExtra { native_path: NativePath::NoEnvelope, modules },
+        );
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let lib = &v["debug_meta"]["images"][1];
+        assert_eq!(lib["code_file"], "libwayland-client.so.0");
+        assert_eq!(lib["debug_id"], ZERO_DEBUG_ID);
+        assert_eq!(lib["image_addr"], "0xb6f00000");
+        assert_eq!(lib["image_size"], 0x21000);
+        assert!(lib.get("code_id").is_none(), "no build id to claim: {lib}");
+    }
+
+    #[test]
+    fn a_module_with_a_build_id_is_unchanged() {
+        let f = only_fault(WAYLAND_REC);
+        let elf = elf_with_build_id(&(0u8..20).collect::<Vec<_>>());
+        let m = module_images(&f, |_| Some(elf.clone()));
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].code_id.as_deref(), Some("000102030405060708090a0b0c0d0e0f10111213"));
+        assert_ne!(m[0].debug_id, ZERO_DEBUG_ID);
+    }
+
+    #[test]
+    fn a_module_that_cannot_be_read_or_is_not_an_elf_is_still_left_out() {
+        let f = only_fault(WAYLAND_REC);
+        assert!(module_images(&f, |_| None).is_empty(), "dev+inode mismatch or unreadable");
+        assert!(module_images(&f, |_| Some(b"not an elf".to_vec())).is_empty());
+        assert!(module_images(&f, |_| Some(Vec::new())).is_empty());
+    }
+
+    #[test]
+    fn a_file_that_is_not_the_one_that_crashed_gets_no_image_even_without_a_build_id() {
+        let (dir, same) = installed_module_with("plain-same", 0, &elf_without_build_id());
+        let f = Fault { modules: vec![same.clone()], ..Fault::default() };
+        let m = module_images(&f, read_module_head);
+        assert_eq!(m.len(), 1);
+        assert_eq!((m[0].code_id.as_deref(), m[0].debug_id.as_str()), (None, ZERO_DEBUG_ID));
+        let (dir2, replaced) = installed_module_with("plain-replaced", 1, &elf_without_build_id());
+        let f = Fault { modules: vec![replaced], ..Fault::default() };
+        assert!(module_images(&f, read_module_head).is_empty());
+        let _ = (std::fs::remove_dir_all(dir), std::fs::remove_dir_all(dir2));
+    }
+
+    #[test]
+    fn a_path_outside_the_allowlist_is_still_dropped_before_any_read() {
+        let log = "*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0xb6f10123 lr=0x4bccd0\n\
+            at: b6f00000-b6f21000 r-xp 00000000 fe:01 1 /usr/lib/lib x.so\n";
+        let f = only_fault(log);
+        assert!(f.modules.is_empty());
+        assert!(module_images(&f, |_| Some(elf_without_build_id())).is_empty());
+    }
+
     #[test]
     fn a_module_without_a_readable_build_id_is_left_out() {
         let f = only_fault(WAYLAND_REC);
@@ -1933,11 +2046,15 @@ mod tests {
     /// A library file in a scratch directory, and the `at:` line a tracer would have written for
     /// it with the recorded inode shifted by `inode_skew` (0 = the file that is on disk).
     fn installed_module(tag: &str, inode_skew: u64) -> (std::path::PathBuf, ModuleMapping) {
+        installed_module_with(tag, inode_skew, &elf_with_build_id(&[9u8; 20]))
+    }
+
+    fn installed_module_with(tag: &str, inode_skew: u64, content: &[u8]) -> (std::path::PathBuf, ModuleMapping) {
         use std::os::unix::fs::MetadataExt;
         let dir = std::env::temp_dir().join(format!("plx-crash-module-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("libx.so.0");
-        std::fs::write(&path, elf_with_build_id(&[9u8; 20])).unwrap();
+        std::fs::write(&path, content).unwrap();
         let meta = std::fs::metadata(&path).unwrap();
         let (major, minor) = split_dev(meta.dev());
         let line = format!(

@@ -92,7 +92,9 @@ signal such as a segmentation fault), PlxNative sends a simpler report built fro
 log instead. It carries the same kernel name and release, webOS and hardware compatibility
 details as a native report, and the file name (never the folder) and build identifier of each
 library (a library of the television's firmware or one bundled with PlxNative) the faulting
-address and the return address were in, with the library's load address and size. It carries the
+address and the return address were in, with the library's load address and size. A library that
+has no build identifier (the television's own C library has none) is still named, with its load
+address and size and an all-zero placeholder identifier, as the native report lists it. It carries the
 time of the crash, to the second, as the television's clock read it when the crash was logged (it
 is left out when that clock reads an implausible time). It also says in
 one fixed word why the primary report is missing: `no_envelope` (no usable report was left:
