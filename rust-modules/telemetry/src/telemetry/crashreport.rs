@@ -20,8 +20,8 @@
 //! library holding `pc` or `lr`, and its file name (never its folder) is sent so an unsymbolicated
 //! crash in `libwayland-client.so.0` says so. [`parse_module`] lets a line through only if its
 //! path is absolute, uses `[A-Za-z0-9._+-]` and no `..`, and its mapping holds the fault's own
-//! `pc` or `lr`; the path is otherwise used only to open the file for its build id, and only if
-//! it is still the file (device and inode) that was mapped when the process died.
+//! `pc` or `lr` and is executable; the path is otherwise used only to open the file for its build
+//! id, and only if it is still the file (device and inode) that was mapped when the process died.
 //!
 //! The same rule kills the obvious shortcut of shipping the record verbatim as the exception
 //! `value`. That would be one line of code, would look identical in the Sentry UI, and would make
@@ -228,7 +228,7 @@ fn split_dev(dev: u64) -> (u32, u32) {
     }
 }
 
-/// One `at:` line as a [`ModuleMapping`], or `None` for anything that is not a plain
+/// One `at:` line as a [`ModuleMapping`], or `None` for anything that is not a plain, executable,
 /// file-backed mapping with a path this module is willing to open and name:
 /// `lo-hi perms offset dev inode path` — the kernel's own `/proc/self/maps` line, which the tracer
 /// copies verbatim (`dev` is `major:minor` in hex, `inode` decimal).
@@ -254,7 +254,12 @@ fn parse_module(line: &str) -> Option<ModuleMapping> {
     if lo >= hi || hi > u64::from(u32::MAX) + 1 || offset > lo {
         return None;
     }
-    let _ = perms;
+    // Executable mappings only: the image base `lo - offset` holds where the text segment's vaddr
+    // equals its file offset, and a data segment of the same library would claim the same
+    // `code_id` with a different, wrong base.
+    if perms.first() != Some(&b'r') || perms.get(2) != Some(&b'x') {
+        return None;
+    }
     Some(ModuleMapping { path: path.to_string(), lo, hi, offset, dev, inode })
 }
 
@@ -1621,6 +1626,23 @@ mod tests {
         let m = module_images(&f, |_| Some(elf.clone()));
         assert_eq!(m.len(), 1);
         assert_eq!((m[0].image_addr, m[0].image_size), (0xb6f00000, 0x21000));
+    }
+
+    #[test]
+    fn only_an_executable_mapping_is_a_module_image() {
+        let with = |perms: &str| {
+            let log = format!(
+                "*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0xb6f10123 lr=0x4bccd0\n\
+                 at: b6f00000-b6f21000 {perms} 00000000 fe:01 1 /usr/lib/libx.so.0\n"
+            );
+            only_fault(&log).modules.len()
+        };
+        assert_eq!(with("r-xp"), 1);
+        assert_eq!(with("r-xs"), 1);
+        assert_eq!(with("rwxp"), 1, "executable is the test, not read-only");
+        assert_eq!(with("rw-p"), 0, "a data segment's offset is not its load base");
+        assert_eq!(with("r--p"), 0, "relro/rodata");
+        assert_eq!(with("---p"), 0, "guard");
     }
 
     #[test]
