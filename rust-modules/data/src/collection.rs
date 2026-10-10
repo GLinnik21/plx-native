@@ -894,6 +894,25 @@ mod tests {
         assert!((3000..3120).all(|i| rk_at(&back, i) == Some(kept[i].to_string())));
     }
 
+    /// The focused card's page and a pending restore's target page survive the eviction a far-away
+    /// window triggers, so the card under focus never becomes a hole.
+    #[test]
+    fn eviction_keeps_the_focused_and_the_restore_target_pages() {
+        let total = 5_000;
+        let (mut state, adapter) = opened(total);
+        for start in (0..=3000).step_by(45) {
+            show(&mut state, &adapter, total, start..start + PAGE_SIZE, Some(start), None, &|_| true);
+        }
+        assert!(rk_at(&state, 3000).is_some() && rk_at(&state, 2700).is_some());
+        // Reading two pages for a window at the top pushes the load over the cap. A kept page is
+        // not read again, so the requests are those two pages and nothing else.
+        let requests = show(&mut state, &adapter, total, 60..180, Some(3000), Some(2700), &|_| true);
+        assert_eq!(requests, vec![60, 120], "no page the screen holds was dropped and re-read");
+        assert!(loaded(&state) <= crate::stores::page_cache::MAX_LOADED);
+        assert_eq!(rk_at(&state, 3000).as_deref(), Some("3000"), "the focused page is kept");
+        assert_eq!(rk_at(&state, 2700).as_deref(), Some("2700"), "the restore target's page is kept");
+    }
+
     #[test]
     fn a_restore_without_kept_counts_reads_forward_eight_requests_per_ask() {
         let total = 5_000;
