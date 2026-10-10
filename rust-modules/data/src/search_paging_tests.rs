@@ -139,8 +139,14 @@ fn a_new_query_releases_every_lane_window_and_pending_ask() {
     let mut rig = Rig::new(1, Fake::new().movies(100));
     rig.page(Kind::Movie, false);
     assert!(rig.owner.state.wins[0].lo > 0);
+    // a slide that cannot finish: its source keeps failing, so the ask stays pending
+    rig.fake.lock().unwrap().fail_listings = usize::MAX;
+    rig.page(Kind::Movie, false);
+    rig.page(Kind::Movie, false);
+    assert!(rig.owner.state.wins[0].pending.is_some(), "the slide is owed");
     rig.owner.set_query("wallace shawn");
-    assert!(rig.owner.state.wins.iter().all(|w| w.lo == 0 && w.pending.is_none()));
+    assert!(rig.owner.state.wins.iter().all(|w| w.lo == 0), "every window is back at the head");
+    assert!(rig.owner.state.wins.iter().all(|w| w.pending.is_none()), "no ask outlives the query");
     assert!(rig.owner.state.src.iter().all(|s| !s.tails[0].inited), "no lane survives the query");
 }
 
