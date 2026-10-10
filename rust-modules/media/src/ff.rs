@@ -16,7 +16,7 @@ use crate::player::threads::SendPtr;
 use crate::player::SHARED;
 use plx_net::stream::HttpStream;
 use std::ffi::CString;
-use std::os::raw::{c_char, c_int, c_uchar, c_uint, c_void};
+use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
@@ -33,6 +33,14 @@ static ABI_OK: AtomicBool = AtomicBool::new(false);
 /// cannot express — and which is the difference between a real end-of-file and the player sitting
 /// on "Buffering…" forever with no error.
 static PUSHED_ANY: AtomicBool = AtomicBool::new(false);
+/// How far the AUDIO lane may grow past its soft cap while the VIDEO lane is empty.
+///
+/// Some muxers write a long run of audio before the first video block (one WEBRip seen in the
+/// wild has 48 s of 768 kbps E-AC3, 4.6 MB, ahead of its first frame). With a 1 MiB audio cap the
+/// demuxer parks on the audio push before it ever reads video, and the pipeline will not drain
+/// audio it has no video to present beside: playback sits at 0 s. 8 MiB covers ~85 s at that rate
+/// and keeps the overrun bounded on a 32-bit set.
+const AUDIO_OVERRUN_CEILING: c_long = 8 * 1024 * 1024;
 /// Did libswscale load? It is the one FFmpeg library that is NOT required: `RELEASE=1` leaves it
 /// out of the package because only the dev capture stream's RGBA->YUV conversion uses it. `venc`
 /// checks this rather than relying on being feature-gated out, so the dependency is enforced
@@ -8010,6 +8018,10 @@ pub fn demux(
                 }
 
                 let mut anchor_taken = false;
+                // Video-starved audio may outgrow its cap (bounded): see AUDIO_OVERRUN_CEILING.
+                let audio_may_overrun = |queued: c_long| {
+                    vi >= 0 && queued < AUDIO_OVERRUN_CEILING && crate::aq::aq_bytes(aq_p) == 0
+                };
                 // INNER read loop
                 loop {
                     // Direct-play seek (and the armed resume, which is just a seek published before
@@ -8129,7 +8141,7 @@ pub fn demux(
                             let mut framed = Vec::with_capacity(7 + plen);
                             framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, plen));
                             framed.extend_from_slice(std::slice::from_raw_parts((*pkt).data, plen));
-                            crate::aq::aq_push_with_drain(
+                            crate::aq::aq_push_with_drain_overrun(
                                 aqa_p,
                                 framed.as_ptr(),
                                 framed.len() as c_int,
@@ -8137,6 +8149,7 @@ pub fn demux(
                                 1,
                                 2,
                                 || state.drain_wire(),
+                                audio_may_overrun,
                             )
                         } else if dts_audio {
                             let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
@@ -8147,12 +8160,13 @@ pub fn demux(
                                 av_packet_unref(pkt);
                                 break;
                             };
-                            crate::aq::aq_push_with_drain(
+                            crate::aq::aq_push_with_drain_overrun(
                                 aqa_p, core.as_ptr(), core.len() as c_int, pts, 1, 2,
                                 || state.drain_wire(),
+                                audio_may_overrun,
                             )
                         } else {
-                            crate::aq::aq_push_with_drain(
+                            crate::aq::aq_push_with_drain_overrun(
                                 aqa_p,
                                 (*pkt).data,
                                 (*pkt).size,
@@ -8160,6 +8174,7 @@ pub fn demux(
                                 1,
                                 2,
                                 || state.drain_wire(),
+                                audio_may_overrun,
                             )
                             // AUDIO lane
                         };
