@@ -3859,6 +3859,44 @@ fn a_tick_on_the_view_from_before_the_frames_landing_does_not_move_the_landed_wi
     assert_eq!(again, 0);
 }
 
+/// The path behind "the focus skipped twelve cards": the engine reseats a focus whose element is no
+/// longer on the page through `reconcile`, which keeps the COLUMN the element last had in its row.
+/// A slide that lands while focus stands where the new window no longer holds its card therefore
+/// moves the focus by the slide width: one slide, with focus inside the cards both windows hold,
+/// follows the element; a second slide landing before the focus has moved on (a chained ask from a
+/// window the first slide replaced, which the stores now refuse) does not.
+#[test]
+fn a_landing_follows_the_focused_element_unless_the_new_window_no_longer_holds_it() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 24, true);
+    let first = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(first.view());
+    let focus = FocusKey { entry: s.entry, elem: s.rows[0].elems[18] };
+    let key = |s: &HomeScreen, focus: FocusKey<u32>| s.rows[0].elems.iter().position(|&e| e == focus.elem);
+    // one slide: the card at column 18 of 0..24 is column 6 of 12..36, and focus follows it
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 12, 24, true);
+    let landed = plx_data::pms::hubs_snapshot(&state);
+    let context = cx(landed.view(), Some(focus));
+    s.sync_catalog(&context);
+    let seated = Focusable::<TestHost>::reconcile(&s, focus, &context);
+    assert_eq!((seated, key(&s, seated)), (focus, Some(6)), "the element followed its card");
+    // a second slide before focus moved on: the card is two windows back and the column is kept
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 24, 24, true);
+    let chained = plx_data::pms::hubs_snapshot(&state);
+    let context = cx(chained.view(), Some(seated));
+    s.sync_catalog(&context);
+    let reseated = Focusable::<TestHost>::reconcile(&s, seated, &context);
+    assert_ne!(reseated, seated, "the card left the window");
+    assert_eq!(key(&s, reseated), Some(6), "the column is kept");
+    let rk = s.items.iter().find(|k| k.elem == reseated.elem).and_then(|k| match &k.identity {
+        HomeItemIdentity::Item { rk, .. } => Some(rk.clone()),
+        _ => None,
+    });
+    assert_eq!(rk.as_deref(), Some("31"), "the card under focus is not the one focus was on (19)");
+}
+
 #[test]
 fn the_continue_watching_row_asks_for_a_page_at_its_trailing_edge() {
     let _guard = plx_base::testlock::serial();
