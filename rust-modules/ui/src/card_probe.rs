@@ -11,9 +11,10 @@
 //! texture was resident. The caption's rect rides along, so a caption drawn off the canvas is
 //! visible too.
 //!
-//! [`art`] runs for EVERY card, not only the focused one, and remembers when each artwork path
-//! last drew with a texture: a draw with none within [`RECENT`] of that is a poster that was
-//! showing and went back to its placeholder ([`regressions`]). `phcount` counts placeholder draws
+//! [`art`] runs for EVERY card, not only the focused one, and remembers the frame each artwork path
+//! last drew with a texture: a draw with none within [`RECENT`] frames of that is a poster that was
+//! showing and went back to its placeholder ([`regressions`]); "recently" is counted in drawn frames, not
+//! wall time, so no clock is read here. `phcount` counts placeholder draws
 //! however they came about, so it cannot tell that from a poster that had not arrived yet; and a
 //! path last resident long ago (the cache evicted it while it was off screen) is not counted.
 //!
@@ -21,10 +22,10 @@
 //! at its first line. The whole module is `devtriggers`, so a release build has none of it.
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
-/// How long after a texture last drew a bare draw of the same path still counts as a regression.
-pub const RECENT: Duration = Duration::from_millis(1500);
+/// How many frames after a texture last drew a bare draw of the same path still counts as a
+/// regression (about 1.5 s at 60 fps).
+pub const RECENT: u64 = 90;
 
 plx_base::devtrig::latched_flag!(
     /// `/tmp/plxnative-focusx`, resolved once: a per-card `stat` is not affordable.
@@ -53,8 +54,10 @@ pub struct Focused {
 
 #[derive(Default)]
 struct State {
-    /// `(server, path)` hash -> when its texture last drew.
-    seen: HashMap<u64, Instant>,
+    /// `(server, path)` hash -> the frame its texture last drew in.
+    seen: HashMap<u64, u64>,
+    /// Frames finished since start ([`clear`] ends one).
+    frame: u64,
     regressions: u64,
     art: Option<(String, bool)>,
     caption: Option<(f32, f32)>,
@@ -82,13 +85,13 @@ pub fn art(srv: u16, path: &str, ready: bool) {
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         let id = hash(srv, path);
-        let now = Instant::now();
+        let now = s.frame;
         if ready {
             s.seen.insert(id, now);
             if s.seen.len() > 4096 {
-                s.seen.retain(|_, t| now.duration_since(*t) < RECENT);
+                s.seen.retain(|_, t| now - *t < RECENT);
             }
-        } else if s.seen.get(&id).is_some_and(|t| now.duration_since(*t) < RECENT) {
+        } else if s.seen.get(&id).is_some_and(|t| now - *t < RECENT) {
             s.regressions += 1;
         }
         s.art = Some((path.to_owned(), ready));
@@ -123,7 +126,7 @@ pub fn peek() -> Option<Focused> {
 /// End of frame: a frame that draws no focused card must not report the previous frame's.
 pub fn clear() {
     if !armed() { return; }
-    STATE.with(|s| s.borrow_mut().last = None);
+    STATE.with(|s| { let mut s = s.borrow_mut(); s.last = None; s.frame += 1; });
 }
 
 /// Draws of a path that had been resident, with no texture.
