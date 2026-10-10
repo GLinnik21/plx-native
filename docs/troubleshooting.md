@@ -184,6 +184,25 @@ and coarse connection and quality details, with no title, address or token. It d
 log files, and it does not replace an issue with your TV details. Turning it on is your choice and
 never needed to get help.
 
+## AV1 files don't play
+
+PlxNative direct plays AV1 only on a television whose own codec table lists an AV1 decoder. On any
+other set the server has to convert an AV1 item, which fails when your server can't transcode or
+transcoding is switched off.
+
+AV1 direct play is new. It was built from LG's firmware and has not yet been watched playing on an
+AV1 set, so it reaches people through the [nightly build](nightly-builds.md) first. If your TV
+decodes AV1 and you want to try it:
+
+1. Install **PlxNative Nightly** by adding `https://plxnative.com/nightly/repo.json` to Homebrew
+   Channel, as the [nightly builds guide](nightly-builds.md) describes. The newest build is always
+   linked from [plxnative.com/nightly/latest.json](https://plxnative.com/nightly/latest.json).
+2. Play the AV1 item.
+3. If it still doesn't play, [collect the event log](#collecting-logs) before you reopen the app
+   and attach it to a [GitHub issue](https://github.com/GLinnik21/plx-native/issues/new/choose).
+   The log's `devcaps:` line says `av1=true` when the TV reports an AV1 decoder, and `av1=false`
+   when it doesn't, which tells us right away whether the TV or the app is at fault.
+
 ## Other playback failures
 
 Try the current release first, then photograph the failure screen and [collect the
