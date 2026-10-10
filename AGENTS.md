@@ -98,6 +98,16 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   short tool timeout — a queued run can wait a long time before it even starts building.
 - While iterating on one crate, `make test-crate C=plx_ui [T=filter] [DEPS=1]` builds and runs only
   that crate's lib tests in `make test-fast`'s incremental tree. It is a loop, not a gate.
+- `make test-crate` does NOT enable `hostsim`: tests under `#[cfg(all(test, feature = "hostsim"))]`
+  (`app/run.rs` `lifecycle_regression_tests`, the player-return rig) run as `cd rust-modules &&
+  CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=/tmp/<dir> PLXNATIVE_RUNTIME_DIR=$(mktemp -d)
+  cargo +nightly test --lib -p plxnative-modules --features hostsim -- <filter>`; a filter that
+  matches nothing reports `0 tests` and still exits 0. Keep that target dir OUTSIDE the checkout
+  and `git add` explicit paths: an untracked `rust-modules/target-*` is not ignored, and
+  `git add -A rust-modules` commits it.
+- `make sim-macos` / `make` fail with `make: cargo: No such file` from a non-login shell: prefix
+  `PATH="$HOME/.cargo/bin:$PATH"`. Test builds deny warnings, so a new `App` field must be read
+  (`dead-code`) and initialised at BOTH construction sites (`app/boot.rs` and the `app/run.rs` tests).
 - A PR that touches `Makefile`, `Cargo.toml`, `Cargo.lock`, `build.rs`, `.cargo/` config,
   `.github/workflows/` or the module layout pastes a before/after `make build-bench` table in its
   body (`docs/agent-reference.md`, build section); the tool takes the `make check` lock exclusively
