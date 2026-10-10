@@ -104,11 +104,11 @@ SURFACES = {
         "order": lambda lib, pms: _recent(lib),
     },
     "library-section-hub-row": {
-        "what": "Library > Movies, the Recently Added shelf of the section hubs (a Shelf, 24-card window)",
-        "mock": {"movies": 300}, "triggers": {"plxnative-library": "0"},
-        "pick": lambda f: f["route"] == "library" and f.get("region") == "shelf",
+        "what": "Library > Movies > a pageable section shelf (a Shelf; the hub's own key serves the listing)",
+        "mock": {"movies": 300, "section_hubs": 3}, "triggers": {"plxnative-library": "0"},
+        "pick": lambda f: f["route"] == "library" and f.get("region") == "shelf" and f.get("row") == "1",
         "seat": "down", "key": "right", "back": "left", "stride": 1, "window_max": 24,
-        "pages": r"^/library/sections/1/recentlyAdded$|^/hubs/",
+        "pages": r"^/hubs/mock/section/1/shelf/",
         "order": lambda lib, pms: _recent(lib),
     },
     "library-grid": {
