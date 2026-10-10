@@ -678,8 +678,13 @@ pieces make that reproducible:
   `plxnative-focusx` armed the focus fingerprint gains, per frame, the focused card's drawn rect
   (`cdx cdy cdw`), its slot in the run of cards the section holds and that run's length (`cdi cdn`),
   its index in the source (`cdg`), the ratingKey in its artwork path (`cdk`, the stable item key),
-  whether its texture was resident (`cda`), the caption's left edge and width (`cdc cdcw`) and a
-  running count of draws of a poster that was showing and went back to its placeholder (`cdr`).
+  whether its texture was resident (`cda`), the caption's left edge and width (`cdc cdcw`) and two
+  running counts over every card drawn: `cdr`, posters that drew with their texture on one frame
+  and with none on the next (a blink in place, counted once per occurrence: the defect, and any is
+  a failure), and `cdb`, cards that left the screen and came back without a picture they once had
+  (reported as `art_returned_bare`, not graded: the poster store holds 64 pictures).
+  `--trigger imgtrace` arms one more dev trigger and puts its lines in `--dump`: each
+  `HIDDEN ... gap=1f cause=...` is one `cdr`, with the store's reason.
   Without `plxnative-focusx` the fingerprint is byte-for-byte what it was (the replay recordings
   do not change). Asserted on every surface: the last item and then the first are focused; one
   key moves one card (one grid row), and keys held while the list could not move may land together

@@ -2072,8 +2072,9 @@ pub(crate) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
 /// screen rect, `cdi`/`cdn` its slot in the run of cards the section holds (a shelf's source, a grid's painted
 /// window) and that run's length, `cdg` its index in the section's source,
 /// `cda` whether its texture was resident, `cdc`/`cdcw` its caption's left edge and width, `cdr`
-/// how many draws so far were of art that had been resident. Off by default, so the fingerprint
-/// grammar the replay recordings pin does not change.
+/// how many posters so far went back to their placeholder while on screen and `cdb` how many cards
+/// came back on screen without a texture they once had (running totals over every card drawn).
+/// Off by default, so the fingerprint grammar the replay recordings pin does not change.
 #[cfg(feature = "devtriggers")]
 fn push_card_probe(out: &mut String) {
     use std::fmt::Write;
@@ -2084,9 +2085,9 @@ fn push_card_probe(out: &mut String) {
         .and_then(|rest| rest.split('/').next())
         .filter(|rk| rk.bytes().all(|b| b.is_ascii_digit()))
         .unwrap_or("");
-    let _ = write!(out, " cdx={} cdy={} cdw={} cdi={} cdn={} cdg={} cda={} cdr={} cdk=", c.x.round() as i64,
+    let _ = write!(out, " cdx={} cdy={} cdw={} cdi={} cdn={} cdg={} cda={} cdr={} cdb={} cdk=", c.x.round() as i64,
         c.y.round() as i64, c.w.round() as i64, c.index, c.len, c.global,
-        c.ready.map_or(-1, i64::from), plx_ui::card_probe::regressions());
+        c.ready.map_or(-1, i64::from), plx_ui::card_probe::regressions(), plx_ui::card_probe::returned_bare());
     crate::focusprobe::push_rk(out, rk);
     if let Some((x, w)) = c.caption {
         let _ = write!(out, " cdc={} cdcw={}", x.round() as i64, w.round() as i64);

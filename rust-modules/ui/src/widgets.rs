@@ -604,8 +604,8 @@ pub fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> (u32, f32, f32
     #[cfg(feature = "devtriggers")]
     {
         crate::card_motion_metrics::draw(image.0 != 0);
-        if let Some((srv, path, ..)) = card_art_request(art) {
-            crate::card_probe::art(srv, path, image.0 != 0);
+        if let Some((srv, path, w, h)) = card_art_request(art) {
+            crate::card_probe::art(srv, path, w, h, image.0 != 0);
         }
     }
     image
