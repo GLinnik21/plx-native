@@ -54,8 +54,8 @@ itself. (In this capture the frame under it was decoded by the simulator.)
 - **Sign in on the TV** with an on-screen QR code and pick a Plex Home profile.
 - **Browse and search your libraries** — on your own servers and on ones shared with you. Your
   servers' libraries, that is, not Plex's catalogue or Watchlist.
-- **Direct play** H.264 and HEVC — 4K, 10-bit, Dolby Vision profiles 5 and 8, E-AC-3 Atmos, and AV1
-  on televisions whose codec table lists an AV1 decoder — decided against your television's own
+- **Direct play** H.264 and HEVC — 4K, 10-bit, Dolby Vision profiles 5 and 8, E-AC-3 Atmos, and AV1 or 8-bit VP9
+  on televisions whose codec table lists that decoder — decided against your television's own
   codec table where it publishes one. Anything else the server transcodes, and you can switch a
   playback to Auto to follow a link whose speed changes.
 - **Everything you expect while watching**: resume, seek and scrub, chapters, audio and subtitle

@@ -155,8 +155,8 @@ pub struct PlaybackSession {
     ///
     /// It answers the one question the word "Original" is a claim about: false means the server
     /// MUST re-encode the pixels, whatever rung is picked and whatever the link does, so the
-    /// quality menu's Original row cannot deliver the original. VP9 and MPEG-2 always, AV1 unless
-    /// the device table lists an AV1 decoder (`devcaps::Caps::av1`) are the cases; see the
+    /// quality menu's Original row cannot deliver the original. MPEG-2 always, AV1 / VP9 unless
+    /// the device table lists that decoder (`devcaps::Caps::av1` / `vp9`) are the cases; see the
     /// `!video_dp` arm's own comment.
     ///
     /// **Carried, because re-deriving it at draw time would be a second copy of the gate.** The
