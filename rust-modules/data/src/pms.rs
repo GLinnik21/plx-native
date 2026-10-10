@@ -709,7 +709,10 @@ fn edit_item_with_scope(
     let mut hit = false;
     for s in state.srcs.iter_mut() {
         if let Some(b) = s.last.as_mut() {
-            hit |= apply_edit(b, sid, rk, edit);
+            let matched = apply_edit(b, sid, rk, edit);
+            // A read in flight will land from before this edit; keep it to be made again there.
+            if matched && s.fetching { s.edits.push((sid, rk.to_string(), edit)); }
+            hit |= matched;
         }
     }
     if !hit {
@@ -1063,8 +1066,11 @@ fn deck_ready(ask: &DeckAsk, srcs: &[Src]) -> bool {
         && s.page.as_ref().is_some_and(|page| page.id == DECK_ID)))
 }
 
-fn land_lane(source: &mut Src, build: SourceBuild) -> bool {
+/// The read describes the server from when it was issued, so the edits made since are made again
+/// on what it brought: a removed card stays out and a marked one stays marked.
+fn land_lane(source: &mut Src, mut build: SourceBuild) -> bool {
     let Some(last) = source.last.as_mut() else { return false };
+    for (sid, rk, edit) in std::mem::take(&mut source.edits) { apply_edit(&mut build, sid, &rk, edit); }
     last.lane = build.lane;
     true
 }
@@ -1167,6 +1173,7 @@ fn published_order(srcs: &[Src], pins: &[(ServerId, i64, bool)]) -> Vec<(usize, 
 fn give_up_cards(shelf: &mut Shelf) -> bool {
     let Some(kept) = paging::release_keys(pages(&shelf.key), &shelf.row, shelf.items.iter().map(|item| item.rk.as_str())) else { return false };
     shelf.row.kept = kept;
+    paging::release_ledger(&mut shelf.row);
     true
 }
 
@@ -1735,6 +1742,11 @@ struct Src {
     /// Rows `(hub id, key)` whose reload failed for good while held; asked again only after the
     /// screen's hold moves.
     stalled: Vec<(String, String)>,
+    /// The optimistic edits made while a read for this source was in flight, in order. That read's
+    /// landing describes the server from before them, so it is given them again (see
+    /// [`land_lane`]); the record ends with the read, and a read issued after an edit carries the
+    /// edit already.
+    edits: Vec<(ServerId, String, LocalEdit)>,
     /// The projection this source last ANSWERED with, kept across a failure. This is what makes a
     /// failure never blank a populated Home; `None` (never answered) is what makes a dead source
     /// contribute nothing at all — no heading, no empty shelf, no spinner row.
@@ -1771,6 +1783,7 @@ impl Src {
         self.client = Some(client);
         self.token_gen = request.token_gen;
         self.fetching = true;
+        self.edits.clear(); // the lane this request carries already has every edit made so far
         if self.page.is_none() { self.state = HubState::Loading; }
         self.retry_s = 0.0;
         self.seq = request.seq;
@@ -1792,6 +1805,7 @@ impl Src {
             retry_n: 0,
             deferred: false,
             stalled: Vec::new(),
+            edits: Vec::new(),
             last: None,
         }
     }

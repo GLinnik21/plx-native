@@ -1181,6 +1181,7 @@ fn settle(shelves: &mut [Shelf], hold: (usize, usize)) -> bool {
         let pageable = plx_plex::plex::is_pageable_hub_key(&shelf.key);
         let Some(kept) = paging::release_keys(pageable, &shelf.row, shelf.items.iter().map(|item| item.rk.as_str())) else { continue };
         shelf.row.kept = kept;
+        paging::release_ledger(&mut shelf.row);
         shelf.shown = shelf.items.len();
         shelf.items = Vec::new();
         shelf.positions = Vec::new();

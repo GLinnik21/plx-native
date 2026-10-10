@@ -256,3 +256,40 @@ fn a_released_random_row_returns_with_the_cards_the_user_saw_not_a_fresh_sample(
     }
     plx_plex::plex::reset_servers_for_test();
 }
+
+/// A pageable row that has walked a long way: its ledger holds `WALKED` keys, and every fifth row
+/// has moved onto it because its listing could not be addressed by offset.
+const WALKED: usize = 200;
+
+fn walked_shelf(slot: u16, row: usize) -> Shelf {
+    let mut sh = pageable_shelf(slot, row);
+    sh.row.mode = paging::RowMode::Head;
+    sh.row.ledger = Some(paging::Ledger {
+        keys: (0..WALKED).map(|k| paging::LedgerKey::new(&(row * 1000 + k).to_string())).collect(),
+        active: row % 5 == 0,
+        ..Default::default()
+    });
+    sh
+}
+
+#[test]
+fn a_released_row_keeps_a_ledger_only_when_its_window_cannot_be_read_without_it() {
+    let _guard = plx_base::testlock::serial();
+    let (o, _) = ring_home(ROWS, walked_shelf);
+    let build = o.state.srcs[0].last.as_ref().unwrap();
+    let (mut released, mut kept) = (0, 0);
+    for (row, shelf) in build.shelves.iter().enumerate().filter(|(_, shelf)| shelf.released()) {
+        released += 1;
+        match &shelf.row.ledger {
+            Some(ledger) => {
+                assert!(ledger.active, "row {row}: an idle ledger was kept on a released row");
+                assert_eq!(ledger.keys.len(), WALKED, "an active ledger is kept whole: positions index into it");
+                kept += 1;
+            }
+            None => assert_ne!(row % 5, 0, "row {row}: the ledger its window is read through was dropped"),
+        }
+    }
+    assert!(released > ROWS / 2, "most rows are outside the held range");
+    assert_eq!(kept, (0..ROWS).filter(|row| row % 5 == 0 && build.shelves[*row].released()).count());
+    plx_plex::plex::reset_servers_for_test();
+}
