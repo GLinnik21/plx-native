@@ -380,3 +380,12 @@ the recorded data state. The state shape changed from 6411129155501563480 to
 9159381185758612433. All three anchors were recorded again against the synthetic server
 and installed with `tools/plxnative-rec rerecord`. Their anchor flags remain set.
 Targets and Resolve both report SAME, with every difference counter at zero.
+
+The unbounded-lists work (windowed hub list, window identities on page requests, the Home row
+ring's `Hold` command, the About-panel prose scroll) moved the state shape from
+9159381185758612433 to 1703904437409982862 (`SCREEN_SHAPES_PIN` `0x6a55_c53a_d931_3acf`). All
+three anchors were refused on load, then recorded again against the synthetic server with
+`tests/focusfp.sh --rec --only 1,6,12` and installed with `tools/plxnative-rec rerecord`, anchors
+retained. The recorder now encodes `HubsCmd::Hold` (`hubs.hold: [lo, hi]`), and the closed alphabet
+admits the Related hub's page key `/library/metadata/<digits>/similar`. Targets and Resolve both
+report SAME with every difference counter at zero.
