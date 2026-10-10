@@ -45,7 +45,7 @@ fn movie(rk: &str) -> Item {
     Item::Media(plx_data::pms::PmsMovie { rk: rk.into(), ..Default::default() })
 }
 fn movies(rks: &[String]) -> Vec<Shelf> {
-    vec![Shelf { window: Default::default(), kind: Kind::Movie, items: rks.iter().map(|rk| movie(rk)).collect() }]
+    vec![Shelf { epoch: 0, window: Default::default(), kind: Kind::Movie, items: rks.iter().map(|rk| movie(rk)).collect() }]
 }
 
 pub(crate) struct Harness {

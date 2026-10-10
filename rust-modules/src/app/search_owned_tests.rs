@@ -277,7 +277,7 @@ fn owned_search_wheel_scrolls_without_moving_focus_and_dpad_reveals_again() {
     let mut rig = Bridge::for_test(|| 0);
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("wheel".into()));
     rig.stores.search.publish_shelves_for_test([plx_data::search::Kind::Movie, plx_data::search::Kind::Show,
-        plx_data::search::Kind::Episode].into_iter().map(|kind| plx_data::search::Shelf { window: Default::default(), kind,
+        plx_data::search::Kind::Episode].into_iter().map(|kind| plx_data::search::Shelf { epoch: 0, window: Default::default(), kind,
             items: vec![plx_data::search::Item::Media(plx_data::pms::PmsMovie {
                 rk: format!("synthetic-{kind:?}"), title: "Synthetic wheel result".into(), ..Default::default()
             })] }).collect());
@@ -395,7 +395,7 @@ fn owned_search_adopts_panel_text_without_restarting_or_losing_the_commit() {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("ab".into()));
-    rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { window: Default::default(), kind: plx_data::search::Kind::Movie,
+    rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { epoch: 0, window: Default::default(), kind: plx_data::search::Kind::Movie,
         items: vec![plx_data::search::Item::Media(plx_data::pms::PmsMovie {
             rk: "adopt-result".into(), title: "Synthetic result".into(), ..Default::default()
         })] }]);
@@ -596,7 +596,7 @@ fn owned_search_result_keys_are_server_scoped_and_survive_same_query_reordering(
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("synthetic".into()));
-    rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { window: Default::default(), kind: plx_data::search::Kind::Movie,
+    rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { epoch: 0, window: Default::default(), kind: plx_data::search::Kind::Movie,
         items: vec![item(a), item(b)] }]);
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Down, tick(1)));
@@ -604,7 +604,7 @@ fn owned_search_result_keys_are_server_scoped_and_survive_same_query_reordering(
     frame(&mut d, &mut rig, AppArg::Search, tick(2), script_key(Key::Right, tick(2)));
     let second = d.focus().unwrap();
     assert_ne!(first, second);
-    rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { window: Default::default(), kind: plx_data::search::Kind::Movie,
+    rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { epoch: 0, window: Default::default(), kind: plx_data::search::Kind::Movie,
         items: vec![item(b), item(a)] }]);
     frame(&mut d, &mut rig, AppArg::Search, tick(3), vec![]);
     assert_eq!(d.focus(), Some(second), "identity survives the changed catalog order");
@@ -670,7 +670,7 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
     let session = plx_plex::plex::session::TempSession::new("owned-search-return");
     session.watching("synthetic-return-profile");
     plx_plex::plex::reset_servers_for_test();
-    let catalog = || vec![plx_data::search::Shelf { window: Default::default(), kind: plx_data::search::Kind::Movie,
+    let catalog = || vec![plx_data::search::Shelf { epoch: 0, window: Default::default(), kind: plx_data::search::Kind::Movie,
         items: (0..8).map(|i| plx_data::search::Item::Media(plx_data::pms::PmsMovie {
             rk: format!("item-{i}"), title: format!("Synthetic {i}"), ..Default::default()
         })).collect() }];
@@ -782,7 +782,7 @@ fn a_seeded_boot_query_survives_the_freshly_mounted_screens_first_sync() {
     let mut rig = Bridge::for_test(|| 0);
     crate::dev::scenarios::apply_search_boot_trigger("dune", &mut d, &mut rig);
     rig.stores.search.publish_shelves_for_test([plx_data::search::Kind::Movie].into_iter()
-        .map(|kind| plx_data::search::Shelf { window: Default::default(), kind, items: vec![plx_data::search::Item::Media(
+        .map(|kind| plx_data::search::Shelf { epoch: 0, window: Default::default(), kind, items: vec![plx_data::search::Item::Media(
             plx_data::pms::PmsMovie { rk: "synthetic-boot-seed".into(), title: "Dune".into(), ..Default::default() })] })
         .collect());
     // Mirror the loop's own next step: the first frame mounts the page the trigger just rooted the
@@ -1011,7 +1011,7 @@ fn owned_search_content_probe_reports_zone_row_col_pill_and_card_as_focus_moves(
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("fingerprint".into()));
-    rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { window: Default::default(), kind: plx_data::search::Kind::Movie,
+    rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { epoch: 0, window: Default::default(), kind: plx_data::search::Kind::Movie,
         items: vec![plx_data::search::Item::Media(plx_data::pms::PmsMovie {
             rk: "fp-result".into(), title: "Fingerprint result".into(), ..Default::default()
         })] }]);
@@ -1076,7 +1076,7 @@ fn owned_search_ok_on_a_collection_requests_its_collection_page() {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.search_run(plx_data::stores::search::SearchCmd::SetQuery("synthetic".into()));
-    rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { window: Default::default(),
+    rig.stores.search.publish_shelves_for_test(vec![plx_data::search::Shelf { epoch: 0, window: Default::default(),
         kind: plx_data::search::Kind::Collection, items: vec![hit] }]);
     frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
     frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Down, tick(1)));

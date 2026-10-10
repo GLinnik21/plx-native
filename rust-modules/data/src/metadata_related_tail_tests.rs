@@ -487,6 +487,25 @@ fn a_read_of_another_item_drops_the_window() {
     assert_eq!((detail().related_tail.offset, detail().related.len()), (0, detail().related_tail.head));
 }
 
+/// The Detail page lets go of the Related row's asks on every Metadata notice, so a landing must
+/// announce itself whether or not it moved the window the page sees: one that installs the window
+/// already standing still reports a change (which bumps the store), and a failed read reports none.
+#[test]
+fn every_installed_related_landing_reports_a_change_even_when_the_window_is_the_same() {
+    let _serial = plx_base::testlock::serial();
+    let server = serve(vec![(1, 112)], plain);
+    let mc = related_response(&[(1, 12, 112, true)], "");
+    open(&server, &mc);
+    let at = (detail().related_tail.offset, detail().related_tail.end);
+    let same = detail().clone();
+    land_related_for_test(test_adapter(), at, &same);
+    assert!(pump_related_pages(test_state(), test_adapter()), "the same window, landed, is still a landing");
+    assert_eq!((detail().related_tail.offset, detail().related_tail.end), at);
+    test_adapter().rel_pages.lock().unwrap().landed.push(RelLanded {
+        sid: detail().sid, rk: detail().rk.clone(), from: at, window: None });
+    assert!(!pump_related_pages(test_state(), test_adapter()), "a failed read changes nothing and is not announced");
+}
+
 /// A page read afresh holds only the head, and its focus was last seen deep in the row: the store
 /// opens the window at that tail position without walking to it, in place of the one it holds, and
 /// the row can slide on from there in both directions.

@@ -353,6 +353,26 @@ fn an_ask_computed_from_a_window_the_row_has_since_slid_is_refused() {
     assert_eq!(rig.shelf(Kind::Movie).window.start, first);
 }
 
+/// What tells the shelf an ask was answered when the window it sees did not move: the row's epoch
+/// moves on every slide that commits and does not on a read that failed, and a new query starts
+/// the count over with the row.
+#[test]
+fn every_committed_slide_moves_the_rows_epoch_and_a_failed_read_does_not() {
+    let mut rig = Rig::new(1, Fake::new().movies(300));
+    let epoch = |rig: &Rig| rig.shelf(Kind::Movie).epoch;
+    let first = epoch(&rig);
+    rig.fake.lock().unwrap().fail_listings = usize::MAX;
+    rig.page(Kind::Movie, false);
+    assert!(rig.owner.state.wins[0].pending.is_some(), "the slide is owed");
+    assert_eq!(epoch(&rig), first, "a read that failed answered nothing");
+    rig.fake.lock().unwrap().fail_listings = 0;
+    assert!(rig.page_settled(Kind::Movie, 800));
+    assert_eq!(epoch(&rig), first + 1, "the slide that committed is one answer");
+    let second = epoch(&rig);
+    rig.page(Kind::Movie, false);
+    assert_eq!(epoch(&rig), second + 1, "and so is the next");
+}
+
 /// Reach survives the guard: every slide's landing is met by a stale ask from the window it
 /// replaced (the worst frame order), and the row still reaches its last card.
 #[test]
