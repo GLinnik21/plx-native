@@ -3997,3 +3997,47 @@ fn the_screen_holds_the_rows_in_view_and_two_either_side_and_says_so_only_when_t
     assert_eq!(moved.len(), 1, "a moved range is sent once");
     assert!(moved[0].0 > first[0].1, "and it is the rows now in view: {moved:?}");
 }
+
+/// `cx` with the engine's remembered cursors, which the key pruning reads.
+fn cx_remembering<'a>(view: HubsView<'a>, remembered: &[(GroupId, u32)]) -> Cx<'a, TestHost> {
+    let mut context = cx(view, None);
+    context.focus.remembered = remembered.into();
+    context
+}
+
+#[test]
+fn a_released_rows_remembered_card_is_seated_again_when_the_row_returns() {
+    let _guard = plx_base::testlock::serial();
+    let (rows, items) = (40, 12);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    let seed = |state: &mut plx_data::pms::PmsState, epoch: usize, hold: (usize, usize)| {
+        let salt = move |row: usize| if row == 3 { 0 } else { epoch };
+        plx_data::pms::seed_ring_for_test(state, &adapter, rows, items, &salt, hold);
+    };
+    seed(&mut state, 0, (0, 8));
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    s.sync_catalog(&cx(snapshot.view(), None));
+    let (group, card) = (s.rows[3].group, s.rows[3].elems[7]);
+    let remembered = [(group, card)];
+    assert_eq!(s.elem_at.get(&card), Some(&(3, 7)));
+    // the user goes Down forty rows, and the content of the rows they pass keeps changing
+    for epoch in 1..=40 {
+        seed(&mut state, epoch, (30, 38));
+        let snapshot = plx_data::pms::hubs_snapshot(&state);
+        s.sync_catalog(&cx_remembering(snapshot.view(), &remembered));
+    }
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let context = cx_remembering(snapshot.view(), &remembered);
+    let want = FocusKey { entry: EntryId(7), elem: card };
+    assert_eq!(Focusable::<TestHost>::reconcile(&s, want, &context).elem, s.rows[3].elems[7],
+        "while the row is a descriptor the remembered card still names its row and column");
+    // and comes back with the cards it showed
+    seed(&mut state, 41, (0, 8));
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let context = cx_remembering(snapshot.view(), &remembered);
+    s.sync_catalog(&context);
+    assert_eq!(s.elem_at.get(&card), Some(&(3, 7)), "the card the user left is on the card they left it at");
+    assert_eq!(Focusable::<TestHost>::reconcile(&s, want, &context), want);
+}

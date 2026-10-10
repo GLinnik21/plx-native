@@ -766,7 +766,7 @@ impl HomeScreen {
                 && !self.rows.iter().any(|row| row.group.0 == *group)
         });
         self.projected_generation = Some(view.generation);
-        self.prune_keys(&was, view.generation, cx.focus.current.map(|key| key.elem));
+        self.prune_keys(&was, view.generation, cx.focus.current.map(|key| key.elem), &cx.focus.remembered);
         self.reconcile_carousel(view);
     }
 
@@ -778,16 +778,24 @@ impl HomeScreen {
     /// An `Ephemeral` group of an older generation is never projected again. A remembered cursor
     /// older than what is retained recovers to the first row (`reconcile`). A Home whose hubs are
     /// stable and whose cards carry rating keys, under the cap, drops nothing.
-    fn prune_keys(&mut self, was: &HashMap<u32, (u32, u32)>, generation: u32, focus: Option<u32>) {
+    ///
+    /// Each row's remembered card (`remembered`, the engine's cursor per group) is kept whether or
+    /// not the row holds cards now: a row the ring released is a row of placeholders, and the card
+    /// the user left in it must still be the card they return to. One key per row.
+    fn prune_keys(&mut self, was: &HashMap<u32, (u32, u32)>, generation: u32, focus: Option<u32>,
+        remembered: &[(GroupId, u32)]) {
         let now = &self.elem_at;
-        let live = |elem: u32| now.contains_key(&elem) || was.contains_key(&elem) || Some(elem) == focus;
+        let pinned: HashSet<u32> = remembered.iter().map(|&(_, elem)| elem).collect();
+        let shown = |elem: u32| now.contains_key(&elem) || was.contains_key(&elem) || Some(elem) == focus;
+        let live = |elem: u32| shown(elem) || pinned.contains(&elem);
         let mut drop: HashSet<u32> = self.items.iter()
             .filter(|key| {
                 let volatile = match &key.identity {
                     HomeItemIdentity::Slot { .. } => true,
                     HomeItemIdentity::Item { hub, .. } => matches!(hub, HomeHubIdentity::Ephemeral { .. }),
                 };
-                volatile && !live(key.elem)
+                // a placeholder's key is a pure function of its publication: never worth keeping
+                volatile && !shown(key.elem)
             })
             .map(|key| key.elem)
             .collect();

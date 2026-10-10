@@ -3127,6 +3127,35 @@ pub fn seed_grid_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, rows:
     commit(state, build);
 }
 
+/// [`seed_grid_for_test`] as the ring publishes it: `rows` pageable rows of `items` cards, the rows
+/// outside `hold` given up to descriptors (placeholders in the catalog). `salt(row)` is part of each
+/// card's rating key, so a later call with another salt is a refresh that brought new cards and a
+/// call with the same salt is a row coming back with the cards it showed.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_ring_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, rows: usize, items: usize,
+    salt: &dyn Fn(usize) -> usize, hold: (usize, usize)) {
+    plx_base::testlock::assert_held("the pms hub catalog (seed_ring_for_test)");
+    seed_for_test(state, adapter, items, HubState::Ready);
+    state.hold = hold;
+    let source = state.srcs[0].last.as_mut().unwrap();
+    source.shelves = (0..rows).map(|row| {
+        let mut shelf = build_test(items).shelves.remove(0);
+        shelf.hub_id = format!("test.row.{row}");
+        shelf.key = format!("/hubs/sections/1/{row}");
+        for (c, item) in shelf.items.iter_mut().enumerate() {
+            Arc::make_mut(item).rk = format!("{}-{row}-{c}", salt(row));
+        }
+        shelf.end = items;
+        shelf.more = true;
+        shelf
+    }).collect();
+    let scope = BrowseScope::standalone();
+    let mut srcs = std::mem::take(&mut state.srcs);
+    let (build, _) = merge_held(&mut srcs, &scope, hold);
+    state.srcs = srcs;
+    commit(state, build);
+}
+
 /// [`seed_grid_for_test`] with each row's provider identity named: `(hubIdentifier, key, title)`.
 /// A linked collection shelf is a `custom.collection.*` row, so its fixtures need both halves.
 #[cfg(any(test, feature = "test-support"))]
