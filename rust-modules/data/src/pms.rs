@@ -1173,6 +1173,7 @@ fn published_order(srcs: &[Src], pins: &[(ServerId, i64, bool)]) -> Vec<(usize, 
 fn give_up_cards(shelf: &mut Shelf) -> bool {
     let Some(kept) = paging::release_keys(pages(&shelf.key), &shelf.row, shelf.items.iter().map(|item| item.rk.as_str())) else { return false };
     shelf.row.kept = kept;
+    paging::release_ledger(&mut shelf.row);
     true
 }
 

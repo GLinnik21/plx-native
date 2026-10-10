@@ -371,6 +371,15 @@ pub fn kept_cards(sid: ServerId, keys: &[String], hidden: &[i64],
     Some(cards.into_iter().filter_map(|fetched| match fetched { Fetched::Card(card) => Some(card), _ => None }).collect())
 }
 
+/// Lets go of a released row's ledger unless its window is read through it. A ledger that is not
+/// active only records what a stable listing showed, and the row comes back from the listing at
+/// its window offset without it; an active one is the only thing that says which keys the window
+/// holds, so it stays, whole. What a released row costs is then its descriptor, plus the keys
+/// (16 bytes each, at most the listing's length) of a row that has had to leave its listing.
+pub fn release_ledger(state: &mut RowState) {
+    if state.ledger.as_ref().is_some_and(|ledger| !ledger.active) { state.ledger = None; }
+}
+
 /// What a row keeps to ask for its cards again when it gives them up: `Some(empty)` when its
 /// listing says them at its window, `Some(keys)` when only the rating keys it showed can (a row
 /// with no key the pager reads, or one not yet compared with its listing, whose preview may be a
