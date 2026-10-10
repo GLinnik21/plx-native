@@ -178,15 +178,11 @@ unsafe fn decode_bitmap(
         avsubtitle_free(&mut sub);
         return Some(SubCue::BitmapClear { track, pts });
     }
-    // A pathological display set cannot be allowed to bloat the 24 MiB store or the renderer's
-    // texture set; DVB regions are the realistic source of many rects, PGS allows at most 2.
-    let n = (sub.num_rects as usize).min(MAX_RECTS);
-    let mut rects = Vec::with_capacity(n);
-    for i in 0..n {
-        if let Some(r) = rect_to_indexed(*sub.rects.add(i)) {
-            rects.push(r);
-        }
-    }
+    let rects = rects_within_budget(
+        sub.num_rects as usize,
+        |i| rect_to_indexed(*sub.rects.add(i)),
+        crate::player::SUB_BITMAP_BUDGET,
+    );
     let cue = if rects.is_empty() {
         None
     } else {
@@ -197,7 +193,29 @@ unsafe fn decode_bitmap(
     cue
 }
 
-const MAX_RECTS: usize = 8;
+/// The rects of one decoded display set that are kept, in the decoder's order: every usable rect
+/// until the next one would take the set past `budget` bytes ([`crate::player::SubRect::bytes`],
+/// the measure the store's ceiling counts). A rect the decoder left unusable is skipped and costs
+/// nothing. The first rect that does not fit ends the set, so the kept rects are always a prefix of
+/// the decoder's order, and a single rect larger than the budget leaves the set empty rather than
+/// over-filling the store.
+fn rects_within_budget(
+    num_rects: usize,
+    mut rect_at: impl FnMut(usize) -> Option<crate::player::SubRect>,
+    budget: usize,
+) -> Vec<crate::player::SubRect> {
+    let mut kept = Vec::new();
+    let mut bytes = 0usize;
+    for i in 0..num_rects {
+        let Some(r) = rect_at(i) else { continue };
+        if bytes + r.bytes() > budget {
+            break;
+        }
+        bytes += r.bytes();
+        kept.push(r);
+    }
+    kept
+}
 
 /// [`decode_bitmap`] then [`SubCue::push`]: the decode-and-store step the demux loop runs for an
 /// image-subtitle packet.
@@ -225,7 +243,8 @@ pub(super) enum SubCue<'a> {
         cw: i32,
         ch: i32,
         rects: Vec<crate::player::SubRect>,
-        /// Rects the decoder produced, before the `MAX_RECTS` cap (for the cap's log line).
+        /// Rects the decoder produced, before the byte budget and the unusable-rect skip (for the
+        /// log line that reports a set the store had to thin).
         total_rects: usize,
     },
     /// An image-subtitle CLEAR: closes the track's open bitmap cue at `pts`.
@@ -277,10 +296,11 @@ impl SubCue<'_> {
                         rects.len()
                     ));
                 }
+                let rects_kept = rects.len();
                 crate::player::push_subtitle_bitmap(track, pts, cw, ch, rects);
-                if total_rects > MAX_RECTS {
+                if rects_kept < total_rects {
                     crate::player::log(&format!(
-                        "ff: image-sub track#{track} {total_rects} rects (capped at {MAX_RECTS})"
+                        "ff: image-sub track#{track} kept {rects_kept} of {total_rects} rects"
                     ));
                 }
             }
@@ -418,6 +438,66 @@ impl SubTracks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rect whose store cost is exactly `pixels + 1024` (its indices plus the palette), so a
+    /// budget can be written as a count of rects.
+    fn rect_of_pixels(pixels: usize, x: i32) -> crate::player::SubRect {
+        crate::player::SubRect { x, y: 0, w: pixels as i32, h: 1, index: vec![0; pixels], palette: Box::new([[0; 4]; 256]) }
+    }
+
+    /// A display set of `n` rects, each `pixels` wide, through the same helper the decoder uses.
+    fn set_of(n: usize, pixels: usize, budget: usize) -> Vec<crate::player::SubRect> {
+        rects_within_budget(n, |i| Some(rect_of_pixels(pixels, i as i32)), budget)
+    }
+
+    /// PGS can carry more than eight objects in one display set, and a dense set (a two-line
+    /// dialogue plus a sign plus a logo, from DVB regions) is authored that way. The eighth-rect
+    /// cap silently left rects 9 onward undrawn, so all twelve must survive, in the decoder's order.
+    #[test]
+    fn a_display_set_of_twelve_rects_keeps_all_twelve() {
+        let kept = set_of(12, 16, crate::player::SUB_BITMAP_BUDGET);
+        assert_eq!(kept.len(), 12, "every rect of the decoded set is kept, not the first eight");
+        let xs: Vec<i32> = kept.iter().map(|r| r.x).collect();
+        assert_eq!(xs, (0..12).collect::<Vec<i32>>(), "decoder order is preserved");
+    }
+
+    /// The store's byte ceiling still bounds one cue's pixels: a rect that does not fit ends the set,
+    /// the rects before it are kept, and nothing panics. Each rect here costs 2024 bytes, so a
+    /// 10_000-byte budget holds four.
+    #[test]
+    fn a_display_set_over_the_byte_budget_keeps_the_prefix_that_fits() {
+        let kept = set_of(12, 1000, 10_000);
+        assert_eq!(kept.len(), 4, "four rects of 2024 bytes fit in 10_000");
+        assert!(kept.iter().map(|r| r.bytes()).sum::<usize>() <= 10_000);
+        assert_eq!(kept.last().map(|r| r.x), Some(3), "the kept rects are the first four, in order");
+    }
+
+    /// A rect larger than the whole budget leaves the set empty, which is what the decoder path
+    /// turns into no cue at all. It must not panic or hold a partial rect.
+    #[test]
+    fn a_rect_larger_than_the_budget_is_dropped_without_panicking() {
+        assert!(set_of(3, 5000, 4000).is_empty());
+    }
+
+    /// A rect the decoder left unusable is skipped and does not stop the set, and does not spend
+    /// budget.
+    #[test]
+    fn an_unusable_rect_is_skipped_and_costs_no_budget() {
+        let kept = rects_within_budget(
+            3,
+            |i| (i != 1).then(|| rect_of_pixels(100, i as i32)),
+            2 * (100 + 1024),
+        );
+        assert_eq!(kept.iter().map(|r| r.x).collect::<Vec<_>>(), [0, 2]);
+    }
+
+    /// A set of one to eight rects is kept exactly as it always was: every rect, under the budget.
+    #[test]
+    fn a_display_set_of_one_to_eight_rects_is_unchanged() {
+        for n in 1..=8 {
+            assert_eq!(set_of(n, 16, crate::player::SUB_BITMAP_BUDGET).len(), n, "{n} rects");
+        }
+    }
 
     #[test]
     fn shifted_moves_every_variant() {
