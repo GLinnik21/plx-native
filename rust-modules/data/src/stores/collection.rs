@@ -7,10 +7,17 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use super::StoreEv;
+use std::ops::Range;
 
 #[derive(Clone, Debug)]
 pub enum CollectionCmd {
     Open { target: CollectionTarget },
+    /// The screen's window: the indices it shows, the focused index and a pending restore target.
+    /// Every landing evicts the pages outside these (see `PageCache::evict`).
+    Window { wanted: Range<usize>, focus: Option<usize>, restore: Option<usize> },
+    /// A restore's saved kept counts, one per page of a `total`-item listing. With them the
+    /// restore reads only its target's pages; without them the listing is read forward to it.
+    Restore { total: usize, counts: Vec<u8> },
     Close,
     Reset,
     /// Optimistic watched-state edit from the view-state fan-out (see `viewstate::fan_out`).

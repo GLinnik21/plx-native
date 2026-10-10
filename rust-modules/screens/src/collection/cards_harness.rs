@@ -82,7 +82,7 @@ impl Harness {
 impl CardHarness for Harness {
     fn cards(&self) -> Vec<u32> {
         let c = self.store.view().current().unwrap();
-        (0..c.items.len()).filter_map(|i| self.screen.elem_at(c, i)).collect()
+        (0..c.shown()).filter_map(|i| self.screen.elem_at(c, i)).collect()
     }
     fn focused(&self) -> Option<u32> { self.focus.map(|k| k.elem) }
     fn focus(&mut self, elem: u32, by: By) {
@@ -127,7 +127,7 @@ impl CardHarness for Harness {
     fn canon(&self) -> u64 { LogicalState::hash(&self.screen) }
     fn identity(&self, elem: u32) -> String {
         let c = self.store.view().current().unwrap();
-        self.index(elem).map(|i| c.items[i].rk.clone()).unwrap_or_default()
+        self.index(elem).map(|i| c.item(i).map(|m| m.rk.clone()).unwrap_or_default()).unwrap_or_default()
     }
     fn scroll(&self) -> Option<f32> { Some(self.screen.stack.scroll()) }
     fn columns(&self) -> Option<usize> { Some(plx_ui::cards::GRID_COLS) }
@@ -135,9 +135,9 @@ impl CardHarness for Harness {
         let focused = self.focus.map(|k| k.elem);
         let at = focused.and_then(|e| self.index(e)).ok_or("nothing focused")?;
         self.store.edit_for_test(|c| match l {
-            Landing::Reorder => c.items.swap(0, 2),
-            Landing::InsertAbove => c.items.insert(0, item("landed")),
-            Landing::RemoveFocused => { c.items.remove(at); }
+            Landing::Reorder => c.edit_items_for_test(|v| v.swap(0, 2)),
+            Landing::InsertAbove => c.edit_items_for_test(|v| v.insert(0, item("landed"))),
+            Landing::RemoveFocused => c.edit_items_for_test(|v| { v.remove(at); }),
         });
         self.step(ScreenEvent::StoreChanged(plx_data::stores::StoreId::Collection.ord(), 1));
         let want = self.focus.unwrap();

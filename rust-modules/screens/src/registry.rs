@@ -605,6 +605,16 @@ impl CardKeys {
 
     pub fn len(&self) -> usize { self.keys.len() }
 
+    /// Drops every key that is not `live` (a row held now), in `previous` (held at the last
+    /// sync) or pinned (the focused member, the member a Back restores to). What remains is at
+    /// most two windows plus the pins, so the table follows the loaded pages and not the list;
+    /// `next` never moves back, so a dropped element is not handed out again.
+    pub fn prune(&mut self, live: &std::collections::HashSet<u32>,
+        previous: &std::collections::HashSet<u32>, pinned: &[Option<u32>]) {
+        self.keys.retain(|key| live.contains(&key.elem) || previous.contains(&key.elem)
+            || pinned.contains(&Some(key.elem)));
+    }
+
     /// This registry's canonical bytes after the page's `next` — `len` then `(sid, rk, elem)` per
     /// key, the order every card page and both [`PageMemory`] arms have always written.
     fn write_keys(&self, c: &mut plx_machine::machine::Canon) {
@@ -618,6 +628,12 @@ impl CardKeys {
 pub struct CardPageMemory {
     pub cards: CardKeys,
     pub header_marked: bool,
+    /// A listing page's directory (Collection): its total, one kept-row count per page read, the
+    /// focused member's index and element. Empty for a page that has none.
+    pub total: usize,
+    pub counts: Vec<u8>,
+    pub focus_index: Option<usize>,
+    pub focus_elem: Option<u32>,
 }
 
 impl CardPageMemory {
@@ -625,6 +641,12 @@ impl CardPageMemory {
     fn write(&self, tag: u32, c: &mut plx_machine::machine::Canon) {
         c.u32(tag).u32(self.cards.next).bool(self.header_marked).seq(self.cards.len());
         self.cards.write_keys(c);
+        if tag == 7 {
+            c.u64(self.total as u64).seq(self.counts.len());
+            for &kept in &self.counts { c.u32(u32::from(kept)); }
+            c.bool(self.focus_index.is_some()).u64(self.focus_index.unwrap_or(0) as u64)
+                .bool(self.focus_elem.is_some()).u32(self.focus_elem.unwrap_or(0));
+        }
     }
 }
 
