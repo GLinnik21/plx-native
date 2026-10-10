@@ -881,9 +881,19 @@ fn logo_failed(srv: ServerId, rk: &str) -> bool {
 }
 
 /// The slot a miss claims, as a PURE function of what the store looks like: the first EMPTY, else
-/// the least-recently-used SETTLED (`P_READY`/`P_EVICTED`/`P_FAILED`/`P_RETRY`) slot the current
-/// frame has not touched, else `None` — "everything is either in flight or on screen; skip this
-/// request".
+/// the least-recently-used SETTLED (`P_READY`/`P_EVICTED`/`P_FAILED`/`P_RETRY`) slot no draw has
+/// touched for [`WANT_STALE_FRAMES`] frames, else the oldest stale request, else `None` —
+/// "everything is either in flight or on screen; skip this request".
+///
+/// **A slot a draw touched LAST frame is a card on screen, exactly as one touched this frame is**
+/// ([`drawn_recently`]). The per-frame stamp alone protects only the cards drawn BEFORE the miss
+/// in the same frame, and a walk back (up a grid, left along a shelf) draws its arriving cards
+/// first. On a slow server the off-screen slots are all queued requests, so the oldest settled
+/// slot was a poster on screen, about to be drawn: it went back to its placeholder while dozens
+/// of dead requests sat beside it (imgtrace `HIDDEN gap=1f cause=recycled`; 23 such recycles in
+/// one Library walk of `tests/paging_link.py`, each with 38 or more stale requests in the store).
+/// With nothing else to take, the miss waits: a new card stays a placeholder a few frames longer
+/// rather than blank one that had its picture.
 ///
 /// Extracted from [`lookup`] because the PREFETCH's entire safety argument is a claim about this
 /// function — that a warmed slot (LRU age 0, no frame stamp) is always a more attractive victim than
@@ -931,22 +941,30 @@ fn victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
     pick
 }
 
-/// How many frames a queued, DRAWN request may go without a draw touching it before [`victim`]
-/// may recycle it for a card that is on screen now. Long enough that a card still on screen (drawn
+/// How many frames a DRAWN slot (a queued request, or a settled picture) may go without a draw
+/// touching it before [`victim`] may recycle it for a card that is on screen now. Long enough that a card still on screen (drawn
 /// every frame) or briefly covered by a menu is never mistaken for a departed one, short enough
 /// that a held scroll's dead requests (about one new card per frame at the fastest) cannot fill
 /// the store's 64 slots.
 const WANT_STALE_FRAMES: c_uint = 8;
 
-/// A settled slot (nothing in flight or queued for it) that was not drawn this frame: the slots
-/// [`victim`] and [`ahead_victim`] may recycle without costing a request.
+/// A settled slot (nothing in flight or queued for it) that is not a card on screen: the slots
+/// [`victim`] and [`ahead_victim`] may recycle without costing a request or a picture in view.
 fn is_settled_victim(s: &Pslot, frame: c_uint) -> bool {
-    matches!(s.state, P_READY | P_FAILED | P_RETRY | P_EVICTED) && s.frame != frame
+    matches!(s.state, P_READY | P_FAILED | P_RETRY | P_EVICTED) && s.frame != frame && !drawn_recently(s, frame)
+}
+
+/// A draw asked for this slot within the last [`WANT_STALE_FRAMES`] frames: its card is on screen
+/// (or left it a moment ago). The one window both rules share, so a slot is either a card in view
+/// (a queued request is live, a picture is kept) or not (both are recyclable). Speculation
+/// (`visible` unset: a warm, a lookahead entry nobody has drawn) never qualifies.
+fn drawn_recently(s: &Pslot, frame: c_uint) -> bool {
+    s.visible && frame.wrapping_sub(s.frame) < WANT_STALE_FRAMES
 }
 
 /// A request a worker has not picked up whose card has not been drawn for [`WANT_STALE_FRAMES`].
 fn want_is_stale(s: &Pslot, frame: c_uint) -> bool {
-    s.state == P_WANT && s.visible && frame.wrapping_sub(s.frame) >= WANT_STALE_FRAMES
+    s.state == P_WANT && s.visible && !drawn_recently(s, frame)
 }
 
 /// **Lookahead** ([`Touch::Ahead`]): the slots a screen's at-rest lookahead may claim, as a PURE
@@ -972,7 +990,7 @@ fn want_is_stale(s: &Pslot, frame: c_uint) -> bool {
 /// so every clause-3 eviction removes an entry older than the set's newest, and the screen runs
 /// out of older strangers after finitely many. A Draw is unaffected by any of this: [`victim`]
 /// still sees a lookahead slot as an ordinary settled one, so a visible miss always finds a slot
-/// unless every slot is in flight or was drawn this frame.
+/// unless every slot is in flight or a card on screen ([`drawn_recently`]).
 fn ahead_victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
     if let Some(i) = (0..PT_CAP).find(|&i| slots[i].state == P_EMPTY) {
         return Some(i);
@@ -1005,9 +1023,10 @@ fn ahead_victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
 
 /// The most recently used ordinary slots a lookahead warm may never recycle: the cards on screen.
 ///
-/// This is the ONLY protection the cards on screen have against a lookahead claim. The claim runs
-/// in `prepare`, before any draw of the frame, so no slot carries the current frame's stamp and
-/// [`ahead_victim`]'s "not drawn this frame" test protects nothing; recency does the work, on the
+/// This is the protection the cards on screen have against a lookahead claim that does not rest
+/// on a frame stamp. The claim runs in `prepare`, before any draw of the frame, so no slot carries
+/// the current frame's stamp, and [`drawn_recently`] covers a card only for the few loop turns
+/// after its last draw, which a screen at rest can outlast; recency does the work, on the
 /// premise that the last frame drew the cards on screen and so left them the newest ordinary
 /// slots. That holds only while the protected count covers every card a screen paints at once:
 /// [`tex::ON_SCREEN_ART_MAX`] (the Library: six columns by five partly visible rows, 30, pinned to
@@ -1239,7 +1258,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         trace::outcome("declined_new");
         return (None, Warm::Full);
     }
-    // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
+    // miss: prefer EMPTY, else LRU-evict a settled slot no card on screen is using
     let chosen = if touch == Touch::Ahead { ahead_victim(&g.slots, g.frame) } else { victim(&g.slots, g.frame) };
     let idx = match chosen {
         Some(i) => i,
@@ -4049,6 +4068,86 @@ mod tests {
         );
         drop(g);
         store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// **A poster that is showing is never the victim.** The shape every held walk on a slow
+    /// server reaches (`tests/paging_link.py`, imgtrace `HIDDEN gap=1f cause=recycled`): the
+    /// requests of rows long gone fill the store, the only settled slots left are the cards on
+    /// screen, and the frame's first miss runs before the draws that would stamp them. A request
+    /// nobody draws goes first; with none, the miss waits ("store full") rather than blank a card.
+    #[test]
+    fn a_miss_recycles_a_dead_request_before_a_poster_drawn_last_frame() {
+        let f: c_uint = 100;
+        let drawn = |use_, frame| Pslot { visible: true, ..ready(use_, frame) };
+        let mut slots: [Pslot; PT_CAP] =
+            std::array::from_fn(|i| want(f - 40, 100 + i as c_uint, true)); // rows that scrolled away
+        for (i, s) in slots.iter_mut().enumerate().take(30) {
+            *s = drawn(1000 + i as c_uint, f - 1); // the screenful the last frame drew
+        }
+        let pick = victim(&slots, f).expect("a dead request is there to recycle");
+        assert_eq!(slots[pick].state, P_WANT, "the miss recycled a poster that was on screen (slot {pick})");
+        assert_eq!(pick, 30, "the request drawn longest ago goes");
+        // Nothing but the screen and the workers' own slots: the newcomer waits a frame.
+        for s in slots.iter_mut().skip(30) {
+            s.state = P_LOADING;
+        }
+        assert_eq!(victim(&slots, f), None, "no picture on screen is given up for a new card");
+        // A card that left the screen is ordinary LRU again once the window has passed.
+        slots[7].frame = f - WANT_STALE_FRAMES;
+        assert_eq!(victim(&slots, f), Some(7));
+        // The lookahead's claim obeys the same rule (it had only recency before).
+        assert_eq!(ahead_victim(&[drawn(5, f - 1); PT_CAP], f), None);
+    }
+
+    /// The same defect through the store itself: a held scroll whose server answers slower than
+    /// the rows pass, walking BACK (up a grid, left along a shelf), so the arriving row is the first
+    /// drawn and its misses run before the rest of the screen is stamped. Whatever arrived and is
+    /// still on screen stays READY on every later frame.
+    #[test]
+    fn a_held_scroll_on_a_slow_server_keeps_every_poster_that_is_showing() {
+        let (_fresh, sid, _) = one_server();
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            g.frame = 1000;
+        }
+        let key = |n: usize| key_for(sid, &format!("/library/metadata/{}/thumb", 9000 + n), 2, 2, 0);
+        let (cols, rows) = (6usize, 5usize);
+        let mut first_row = 60usize;
+        let mut showing: Vec<usize> = Vec::new(); // card numbers READY when the last frame ended
+        let (mut arrived, mut lost) = (0usize, Vec::new());
+        for frame in 0..400usize {
+            store().frame += 1;
+            if frame % 8 == 0 {
+                first_row -= 1;
+            }
+            let on_screen = first_row * cols..(first_row + rows) * cols;
+            for n in on_screen.clone() {
+                lookup(sid, &key(n), Touch::Draw);
+            }
+            let mut g = store();
+            let is_ready = |g: &Store, n: usize| {
+                let k = key(n);
+                g.slots.iter().any(|s| s.state == P_READY && key_bytes(s) == k.as_bytes())
+            };
+            for &n in showing.iter().filter(|n| on_screen.contains(n)) {
+                if !is_ready(&g, n) {
+                    lost.push((frame, n));
+                }
+            }
+            // The slow server: one picture lands every 4 frames, the worker's own choice of which.
+            if frame % 4 == 0 {
+                if let Some(i) = next_wanted(&g.slots) {
+                    g.slots[i].state = P_READY;
+                    arrived += 1;
+                }
+            }
+            showing = on_screen.clone().filter(|&n| is_ready(&g, n)).collect();
+        }
+        store().slots = [Pslot::ZERO; PT_CAP];
+        assert!(arrived > 50, "the scenario delivered {arrived} pictures");
+        assert!(lost.is_empty(), "{} posters that were showing lost their slot, first (frame, card) {:?}",
+            lost.len(), lost.first());
     }
 
     /// The store's rule for a stale request: last resort only, drawn demand only, never in flight.
