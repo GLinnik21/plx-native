@@ -6830,12 +6830,15 @@ def main():
         # Same partition as the playback cases, and for a sharper reason: run_fps_scene's "$rk"
         # substitution reads scene["rk"] directly, and the KeyError landed in the batch's blanket
         # `except` as `[FAIL] ERROR: 'rk'` -- a false FAILURE, indistinguishable from a regression.
-        selected, fps_skipped = partition_skips(selected)
-        # Which scenes THIS server can serve: under --mock only the ones that declare a `mock`
-        # block, and without it never a `mock.only` scene. Before anything reads a token.
+        #
+        # Which scenes THIS server can serve comes first: under --mock only the ones that declare
+        # a `mock` block, and without it never a `mock.only` scene. Before anything reads a token.
+        # `mock_scene` then gives an `item` scene its synthetic `rk` and drops the overlay's
+        # "no such item on this library" skip, which the mock's own library answers.
         selected, mock_skipped = mock_fps.partition_mock(selected, args.mock)
         if args.mock:
             selected = [mock_fps.mock_scene(s) for s in selected]
+        selected, fps_skipped = partition_skips(selected)
         fps_skipped = list(fps_skipped) + mock_skipped
         scenes, _skipped = setup_shared(manifest, cfg, args, selected, "scene")
         # Bail BEFORE read_token() and arm_teardown(): arming commits to driving the television,
