@@ -12,16 +12,22 @@ use super::client::{Client, QueryBuilder};
 use super::models::MediaContainer;
 use super::paging::{paged_path, without_window, PageReq};
 
-/// The keys a hub's pages may be fetched from: the only prefixes a server's listing keys use.
+/// The keys a hub's pages may be fetched from: the only prefixes a server's listing keys use, plus
+/// the two single shapes under `/library/` that are listings (`similar`, a collection's `children`).
 pub fn is_pageable_hub_key(key: &str) -> bool {
-    key.starts_with("/hubs/") || key.starts_with("/library/sections/") || is_similar_key(key)
+    key.starts_with("/hubs/")
+        || key.starts_with("/library/sections/")
+        || is_item_listing_key(key, "/library/metadata/", "/similar")
+        || is_item_listing_key(key, "/library/collections/", "/children")
 }
 
-/// `/library/metadata/{digits}/similar`, with or without a query. Only this one shape under the
-/// metadata prefix: its siblings (`children`, `extras`, …) are not listings a hub points at.
-fn is_similar_key(key: &str) -> bool {
+/// `{prefix}{digits}{suffix}`, with or without a query. Only these exact shapes under the metadata
+/// and collections prefixes: their siblings (`/library/metadata/{id}/children`, `extras`, ...) are not
+/// listings a hub points at. A collection's `children` is the listing the Collection page already
+/// pages (`plex::collections::collection_children`).
+fn is_item_listing_key(key: &str, prefix: &str, suffix: &str) -> bool {
     let path = key.split_once('?').map_or(key, |(path, _)| path);
-    let Some(rating_key) = path.strip_prefix("/library/metadata/").and_then(|rest| rest.strip_suffix("/similar")) else {
+    let Some(rating_key) = path.strip_prefix(prefix).and_then(|rest| rest.strip_suffix(suffix)) else {
         return false;
     };
     !rating_key.is_empty() && rating_key.bytes().all(|b| b.is_ascii_digit())
@@ -347,6 +353,21 @@ mod tests {
 #[cfg(test)]
 mod paging_tests {
     use super::{continue_watching_page_path, hub_page_path, is_pageable_hub_key};
+
+    #[test]
+    fn a_collections_children_listing_is_pageable_and_its_siblings_are_not() {
+        assert!(is_pageable_hub_key("/library/collections/42/children"));
+        assert!(is_pageable_hub_key("/library/collections/42/children?includeGuids=1"));
+        for key in [
+            "/library/collections/42",
+            "/library/collections/42/items",
+            "/library/collections/x/children",
+            "/library/collections//children",
+            "/library/collections/42/children/extra",
+        ] {
+            assert!(!is_pageable_hub_key(key), "{key}");
+        }
+    }
 
     #[test]
     fn only_a_similar_list_under_a_metadata_item_is_pageable_from_that_prefix() {

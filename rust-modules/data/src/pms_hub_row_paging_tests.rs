@@ -420,6 +420,39 @@ fn a_500_card_hub_row_that_is_not_recently_added_pages_to_its_end_and_back_throu
 }
 
 #[test]
+fn a_500_card_collection_row_pages_to_its_end_and_back_through_the_store() {
+    let _guard = plx_base::testlock::serial();
+    let len = 500;
+    let id = "custom.collection.1.42.0";
+    for key in ["/library/collections/42/children", "/library/collections/42/children?includeGuids=1"] {
+        let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+        let mut owner = owner_with(id, key, len);
+        let mut shelf = preview_shelf(&(0..12).collect::<Vec<_>>(), len);
+        shelf.hub_id = id.into();
+        shelf.key = key.into();
+        shelf.row = crate::stores::paging::preview_state(id, key);
+        seed(&mut owner.state, vec![src(0, "", HubState::Ready, Some(built(0, &[], vec![shelf])))]);
+        let mut windows = vec![shown(&owner)];
+        for _ in 0..400 {
+            let Some(request) = ask_row(&mut owner, id, key, false) else { break };
+            answer(&mut owner, request, listing, batch(|_| true));
+            windows.push(shown(&owner));
+        }
+        assert_each_once(&windows, len);
+        assert_eq!(shown(&owner).last().unwrap(), "499", "{key}");
+        let mut back = 0;
+        while let Some(request) = ask_row(&mut owner, id, key, true) {
+            answer(&mut owner, request, listing, batch(|_| true));
+            back += 1;
+        }
+        assert_eq!(shown(&owner)[0], "0");
+        assert_eq!(back, windows.len() - 2);
+        reset(&mut owner.state, &owner.adapter);
+        plx_plex::plex::reset_servers_for_test();
+    }
+}
+
+#[test]
 fn a_random_hub_row_pages_through_the_store_and_shows_every_item_once() {
     let _guard = plx_base::testlock::serial();
     let len = 100;
