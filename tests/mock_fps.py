@@ -53,6 +53,17 @@ Scene fields (tests/manifest.json, `fps_scenes`):
                                 result prints the page landings (`hubs: landed` lines) inside the
                                 window; `min_page_landings` (default 6) of them must fall in the
                                 forward half or the scene FAILS ("paging did not happen")
+  "walk": {"row_down": 3, "cards": 96, "key": "down", "back": "up", "reach": {"route": "library",
+           "region": "grid", "min_global": 120}, ...}
+                                the row walk over any other card section (the `*-paging-held-*`
+                                scenes): `key`/`back` name the pair that walks the list (Down/Up for
+                                a grid, one row per press), and `reach` replaces the `hubs: landed`
+                                grading, which only Home logs: the walk starts once the screen's
+                                first `focus route=<route>` fingerprint is logged, and FAILS when the
+                                deepest `cdg=` (the focused card's index in its source, logged with
+                                `plxnative-focusx`) never reaches `min_global`, i.e. the list never
+                                paged. The detail counts frames the focused card was drawn partly
+                                off the 1920-wide canvas.
   "walk": {"min_landed": 150, ...}
                                 the scene FAILS when fewer shelves (rows) than that landed, so a
                                 cap that shortens the surface cannot pass on the shorter walk
@@ -80,8 +91,9 @@ MOCK_SERVER_VERSION = "1.41.0.0000-synthetic"
 # The only keys a walk may press. Never `ok`/`enter` (a Home card press resumes playback and writes
 # a household's viewing record) and never `back` (on a root screen it leaves the app).
 WALK_KEYS = ("down", "up")
-# A row walk (`walk.cards`) moves ALONG a row: Down to reach it, then Right and Left. Same bans.
-ROW_WALK_KEYS = ("down", "right", "left")
+# A row walk (`walk.cards`) moves ALONG a row: Down to reach it, then Right and Left (`walk.key` and
+# `walk.back` name another pair for a grid: Down and Up, one row per press). Same bans.
+ROW_WALK_KEYS = ("down", "up", "right", "left")
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +356,13 @@ def landed_library_count(lines, section):
 def landed_shelves(scene, lines):
     """The shelf count the scene's walk is sized from: the seated Library section's landing when
     `walk.landed` is `"library"`, otherwise Home's. None before it has landed."""
-    if (scene.get("walk") or {}).get("landed") == "library":
+    walk = scene.get("walk") or {}
+    if walk.get("reach"):
+        # A surface with no landing line of its own (`walk.reach`): it is up once its first
+        # focus fingerprint is logged, and the walk's size is its fixed key plan (one "row").
+        rx = re.compile(rf"^focus route={re.escape(scene['route'])}\b")
+        return 1 if any(rx.match(ln) for ln in lines) else None
+    if walk.get("landed") == "library":
         return landed_library(lines, library_section_index(scene))
     found = landed(lines)
     return found[1] if found else None
@@ -352,6 +370,8 @@ def landed_shelves(scene, lines):
 
 def landed_lands(scene, lines):
     """How many times the scene's walk surface landed (see `landed_shelves`)."""
+    if (scene.get("walk") or {}).get("reach"):
+        return 1 if landed_shelves(scene, lines) else 0
     if (scene.get("walk") or {}).get("landed") == "library":
         return landed_library_count(lines, library_section_index(scene))
     return landed_count(lines)
@@ -458,7 +478,8 @@ def row_walk_plan(walk):
     """The ordered key tokens of a row walk: `row_down` Downs to reach the row, `cards` Rights
     along it, then `cards` Lefts back. Nothing else can be produced."""
     n = int(walk["cards"])
-    plan = ["down"] * int(walk.get("row_down", 0)) + ["right"] * n + ["left"] * n
+    fwd, back = walk.get("key", "right"), walk.get("back", "left")
+    plan = ["down"] * int(walk.get("row_down", 0)) + [fwd] * n + [back] * n
     assert all(k in ROW_WALK_KEYS for k in plan)
     return plan
 
@@ -490,6 +511,40 @@ def describe_paging(window, forward_keys, min_forward):
         return (f"paging did not happen: {fwd} page landing(s) (`hubs: landed`) in the forward half "
                 f"of the walk, fewer than the {min_forward} required ({total} in the whole window)"
                 ), detail
+    return None, detail
+
+
+FOCUS_CD_RE = re.compile(r"\bcdx=(-?\d+) cdy=(-?\d+) cdw=(\d+).*?\bcdg=(\d+)")
+CANVAS_W = 1920  # plx_base::surface::LOGICAL_W: every drawn x in the fingerprint is in these pixels
+
+
+def describe_reach(window, route, reach):
+    """`(failure_or_None, detail)` for a row walk over a surface that logs no `hubs: landed` line
+    per page (`walk.reach`): the deepest source index the focused card had (`cdg=`, the
+    `plxnative-focusx` read-out of `plx_ui::card_probe`) on `focus route=<route>` lines of the
+    walk's window. A walk that never got past the first window measured nothing, so it fails below
+    `min_global`. Also counts the frames the focused card was drawn partly outside the canvas: a
+    finding in the detail, never a failure."""
+    rx = re.compile(rf"^focus route={re.escape(route)}\b")
+    region = reach.get("region")
+    deepest, frames, off = None, 0, 0
+    for ln in window or []:
+        if not rx.match(ln) or (region and f"region={region} " not in ln + " "):
+            continue
+        m = FOCUS_CD_RE.search(ln)
+        if not m:
+            continue
+        x, y, w, g = (int(v) for v in m.groups())
+        deepest = g if deepest is None else max(deepest, g)
+        frames += 1
+        off += x < 0 or x + w > CANVAS_W or y < 0
+    detail = f" | focused card reached item {deepest} ({frames} drawn frames, {off} partly off the canvas)"
+    need = int(reach["min_global"])
+    if deepest is None or deepest < need:
+        return (f"paging did not happen: the focused card reached item "
+                f"{'none' if deepest is None else deepest} on `focus route={route}"
+                f"{' region=' + region if region else ''}`, below the {need} the scene requires "
+                f"(is `plxnative-focus` + `plxnative-focusx` armed?)"), detail
     return None, detail
 
 
@@ -719,7 +774,9 @@ class KeyWalk(threading.Thread):
                 break
             self.cancel.wait(2.0)
         if not found:
-            what = ("the Library never logged `libhubs: section "
+            what = (f"the {self.scene['route']} screen never logged a `focus route={self.scene['route']}` "
+                    "fingerprint (is `plxnative-focus` armed?)" if self.walk.get("reach") else
+                    "the Library never logged `libhubs: section "
                     f"{library_section_index(self.scene)} landed`"
                     if self.walk.get("landed") == "library" else "Home never logged `hubs: landed`")
             self.error = f"{what}, so there were no rows to walk"

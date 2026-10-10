@@ -6204,8 +6204,11 @@ def grade_walk_prelude(scene, lines, walker):
         # The row walk exists to measure frames while pages land under moving focus: a run that
         # never paged measured nothing, so it fails rather than printing a clean number.
         forward_keys = int(walk.get("row_down", 0)) + int(walk["cards"])
-        paging_fail, paging_detail = mock_fps.describe_paging(
-            window, forward_keys, int(walk.get("min_page_landings", 6)))
+        if walk.get("reach"):
+            paging_fail, paging_detail = mock_fps.describe_reach(window, scene["route"], walk["reach"])
+        else:
+            paging_fail, paging_detail = mock_fps.describe_paging(
+                window, forward_keys, int(walk.get("min_page_landings", 6)))
         if paging_fail:
             return paging_fail, lines, ""
         detail += paging_detail

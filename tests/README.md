@@ -657,21 +657,54 @@ pieces make that reproducible:
   change and the `X-Plex-Container-Start/Size` contract (query and header form, `totalSize`, `size`,
   `offset`) on every endpoint `ci/plex-requests.ini` classes `paged`.
 - **`tests/paging_link.py`** drives the real macOS simulator with real keys against that mock:
-  `python3 tests/paging_link.py [--build] [--surface home-row] [--profile 3g] [--dump F]`
-  (about 1 to 3 minutes a run; a window opens; not in `make check`). It arms `plxnative-focus`,
-  `plxnative-focusx` (Home's fingerprint gains `fx=`, the focused card's drawn x, off by default),
-  `plxnative-phcount` and `plxnative-framedrop`, holds a direction key through every window slide
-  and asserts reach (last item, then back to the first), one card per key, no focus change without
-  a key, no slot jump (the focused card moving more than 400 px between two frames), the window bound
-  (`col` < 24) and that placeholders are gone a profile-derived time after the last key; it reports
-  host frames, late frames inside and outside a window around each page landing, keys that moved
-  nothing, and per page ask -> landed. `python3 tests/paging_link.py --list` names the surfaces
-  covered and the ones that are not, with the reason. **Host frame times are this Mac's debug build,
-  not the television's; they place late frames, they prove no smoothness.**
-- **On the TV**: `home-recent-paging-held-3g` and `home-recent-paging-held-remote-wan` are `--fps
-  --mock` scenes (the mock block's `"link": [...]` becomes `--link ...`), graded like
-  `home-recent-paging-held`. Build `make ARM_PROFILE=release deploy` first and follow the `profile-tv`
-  skill; never run them without the TV lock.
+  `python3 tests/paging_link.py [--build] [--surface library-grid] [--profile remote-wan] [--dump F] [--json F]`
+  (1 to 3 minutes a run; a window opens; not in `make check`; `--list` names the surfaces). Each
+  surface boots straight onto its screen with the dev triggers, presses a seat key until the walked
+  list holds focus, then holds the direction key to the end of the list and back to the start:
+
+  | surface | what is walked | boot |
+  |---|---|---|
+  | `home-row` | Home > Recently Added Movies (Shelf, 24-card window) | `plxnative-grid` |
+  | `library-section-hub-row` | Library > a pageable section shelf (`--section-hubs 3`) | `plxnative-library=0` |
+  | `library-grid` | Library > the 1000-movie poster grid (6 columns, row-band window) | `plxnative-library=0` |
+  | `search-row` | Search > the Movies result row of a 2-letter query | `plxnative-search=sf` |
+  | `detail-related-row` | Detail > the related row (head of 8, tail from `/similar`) | `plxnative-detail=1001 plxnative-detailsec=2` |
+  | `collection` | a ~130-member collection (Grid over a paged listing) | `plxnative-collection=50002` |
+  | `long-season` | Detail > the episode strip of a 150-episode season (pages of 60) | `plxnative-detail=2001` |
+
+  The read-out is one shared hook, `plx_ui::card_probe` (cargo feature `devtriggers`, so a release
+  build has none of it), called from the two functions every card section draws through
+  (`Shelf::draw_card`, `Grid::draw_card`) and the episode strip. With `plxnative-focus` and
+  `plxnative-focusx` armed the focus fingerprint gains, per frame, the focused card's drawn rect
+  (`cdx cdy cdw`), its slot in the run of cards the section holds and that run's length (`cdi cdn`),
+  its index in the source (`cdg`), the ratingKey in its artwork path (`cdk`, the stable item key),
+  whether its texture was resident (`cda`), the caption's left edge and width (`cdc cdcw`) and a
+  running count of draws of a poster that was showing and went back to its placeholder (`cdr`).
+  Without `plxnative-focusx` the fingerprint is byte-for-byte what it was (the replay recordings
+  do not change). Asserted on every surface: the last item and then the first are focused; one
+  key moves one card (one grid row), and keys held while the list could not move may land together
+  but never move more than they were pressed for; no focus change without a key; no slot jump (the
+  same card moving more than 400 px between two frames); the window bound; no poster goes back to
+  a placeholder; placeholders are gone a profile-derived time after the last key; and under an error
+  profile a failed listing page is asked for again and answered within 45 s (a profile that failed
+  none of the walked list's pages fails the run, so the assertion is never vacuous). Reported: host
+  frames, late frames inside and outside a window around each page landing, keys that moved
+  nothing, per page ask -> landed and landed -> the last poster of THAT page (matched by ratingKey
+  in the transcode request), and whether the focused card or its caption was ever drawn outside the
+  canvas (1920 wide; `min_x` / `max_right` give the extremes). **Host frame times are this Mac's
+  debug build, not the television's; they place late frames, they prove no smoothness.**
+  Profiles: `none remote-wan slow-latency low-bandwidth lossy` by default, plus `lossy-503` (10 %
+  of reads answer 503) and any `link_conditioner` profile by name.
+- **On the TV**: `home-recent-paging-held-3g` and `-remote-wan` (Home), and a `-3g` / `-remote-wan`
+  pair for each other surface (`library-grid-paging-held-*`, `library-shelf-paging-held-*`,
+  `search-row-paging-held-*`, `related-row-paging-held-*`, `collection-paging-held-*`,
+  `long-season-paging-held-*`) are `--fps --mock` scenes (the mock block's `"link": [...]` becomes
+  `--link ...`). They are the Home scene's row walk with `walk.key` / `walk.back` (Down and Up for a
+  grid) and, where the app logs no `hubs: landed` line per page, `walk.reach`: the deepest source
+  index (`cdg`) the focused card had must reach `min_global`, so a walk that never got past the first
+  window fails instead of printing a clean number. The detail also counts frames the focused card
+  was drawn partly off the canvas. Build `make ARM_PROFILE=release deploy` first and follow the
+  `profile-tv` skill; never run them without the TV lock. They have not been run on a television.
 
 ### What each case does (per case, automatically)
 
