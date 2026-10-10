@@ -1868,7 +1868,12 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 // watched state, progress — instead of showing the stale store entry the item's
                 // identity still matches. The only thing that suppresses it is a fetch for this
                 // item already in flight. Restored enters (and every other case) keep reusing the
-                // cached detail instead of duplicating a request.
+                // cached detail instead of duplicating a request. A return from the PLAYER is the
+                // one restored enter that is re-read from outside this arm:
+                // `app::content::refresh_after_playback` delivers a `DetailRestore` with a
+                // `Requested` obligation once the stop report has been POSTed (#575), so Play
+                // resumes from what the stop committed, not from the `viewOffset` the page
+                // opened with.
                 let fresh_open = matches!(kind, Enter::Fresh { .. });
                 let request = refresh == DetailRefreshPhase::Deferred
                     || refresh == DetailRefreshPhase::Requested && request_status.is_none()

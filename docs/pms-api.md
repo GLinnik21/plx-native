@@ -1101,6 +1101,11 @@ Client behavior expected by PMS (matches official clients):
 - send `state=playing` every ~10 s with current `time`
 - send on every pause (`state=paused`), resume (`playing`), and stop (`stopped`, final `time`)
 - PMS derives `viewOffset` from `time`; when time/duration ≥ ~90% it marks the item watched and advances On Deck
+  - Measured live 2026-10-10 (PMS 1.43.4.10903): a `stopped` position under ~1–2 min is silently NOT
+    stored (60 s dropped, 120 s kept; watched or not). A `playing` report past the watched threshold
+    bumps `viewCount` and clears `viewOffset`. Otherwise `stopped` stores its own `time`, even a lower
+    one and even on an already-watched item. The detail read, `/children`, `allLeaves`, OnDeck and the
+    PlayQueue row all return the same `viewOffset`.
 - simpler alternative (also unverified live): `GET /:/progress?key={ratingKey}&identifier=com.plexapp.plugins.library&time={ms}&state=stopped` — sets progress only; note plexapi warns `time=0` is ignored
 - mark watched/unwatched without a time: `GET /:/scrobble?key={ratingKey}&identifier=com.plexapp.plugins.library` / `/:/unscrobble?...`
 

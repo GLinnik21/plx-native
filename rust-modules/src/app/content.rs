@@ -2334,6 +2334,13 @@ pub(crate) fn restore_played_entry(app: &mut App) {
         .and_then(|_| meta.now_playing())
         .filter(|n| n.is_episode && n.detail_rk == *rk)
         .map(|n| { spot.season = Some(n.season); plx_media::route::cur_rk(&app.player.session) });
+    // The page still holds the resume point it fetched when it opened, and its Play reads that
+    // copy; the session that just ended moved it on the server. Re-read once the stop has landed.
+    app.refresh_detail = Some(plx_data::stores::viewstate::DetailRefresh {
+        sid: *sid,
+        rk: rk.clone(),
+        keep: episode.clone().filter(|rk| !rk.is_empty()),
+    });
     if episode.is_some() {
         app.pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore {
@@ -2341,6 +2348,27 @@ pub(crate) fn restore_played_entry(app: &mut App) {
                 episode,
                 refresh: plx_screens::registry::DetailRefreshPhase::None,
             }))));
+    }
+}
+
+/// Re-read the Detail page a playback returned to, once the stop report has landed.
+///
+/// A Detail page plays from the `viewOffset` it fetched when it opened, and a return from the
+/// player is a restored enter, which reuses that copy (issue #575: the second Play after a stop
+/// started from the first one's position, or from 0:00). The server is the only one that knows
+/// what the stop committed (it ignores a short position, and a position past the watched
+/// threshold counts as a viewing instead), so the page asks it, through the same reconciliation a
+/// watched toggle uses ([`refresh_content`]) - after the stop has been POSTed, or the read would
+/// race the write it is meant to see.
+pub(crate) fn refresh_after_playback(app: &mut App) {
+    if app.refresh_detail.is_none()
+        || bridge::player(&app.pages).is_some()
+        || !plx_media::route::scrobble_settled()
+    {
+        return;
+    }
+    if let Some(target) = app.refresh_detail.take() {
+        refresh_content(&mut app.pages, &mut app.bridge, target);
     }
 }
 
