@@ -814,6 +814,43 @@ fn stored_preferences(transport: &mut dyn client::Transport) -> Value {
     snapshot.state.public.preferences
 }
 
+/// **Issue #582: a preference set back to its default must stay there across a restart.** The
+/// default spelling is omitted from the stored record (`skip_serializing_if`), and the public
+/// rewrite used to copy back every stored key the new record lacked, so the previous non-default
+/// value came back as soon as the pick returned to the default. Through the real helper backend,
+/// reloaded the way the next boot reads it.
+#[test]
+fn a_preference_returned_to_its_default_is_not_resurrected_by_the_public_rewrite() {
+    let mut backend = plx_platform::storage::backend::Backend::new(
+        Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
+    let mut transport = |request: Request| Ok(backend.dispatch(request));
+    let session = Session {
+        subtitle_size: SubtitleSize::Large,
+        subtitle_position: SubtitlePosition::High,
+        skip_interval: SkipInterval::Seconds30,
+        ..fixture()
+    };
+    commit_fresh(&session, &mut transport);
+    let stored = stored_preferences(&mut transport);
+    assert_eq!(stored["subtitle_size"], "large");
+
+    let back = Session {
+        subtitle_size: SubtitleSize::default(),
+        subtitle_position: SubtitlePosition::default(),
+        skip_interval: SkipInterval::default(),
+        ..session
+    };
+    assert!(matches!(
+        persistence::commit_session_with(&back, false, SaveAuthority::PublicOnly, 4, &mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    let persistence::CanonicalRead::Opened { session: opened, .. } = persistence::load_helper_with(&mut transport) else {
+        panic!("the session opens")
+    };
+    assert_eq!(opened.subtitle_size, SubtitleSize::default(), "size stays at the default");
+    assert_eq!(opened.subtitle_position, SubtitlePosition::default(), "position stays at the default");
+    assert_eq!(opened.skip_interval, SkipInterval::default(), "skip interval stays at the default");
+}
+
 /// **Issue #380: a learned server key belongs to the account that learned it.** The key rides in
 /// the PUBLIC preferences (a pin write must stay a public-only edit, no keymanager reseal), and
 /// ClearTenure retains preferences whole, so sign-out has to drop it by name. Through the real
@@ -864,6 +901,49 @@ fn helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_
         panic!("the new account's session opens")
     };
     assert!(opened.server_key_pins.is_empty(), "no key carried over from the previous account");
+}
+
+/// **Issue #385: an answer to "Connect without encryption?" belongs to the account that gave it.**
+/// Same shape as the learned-key test above, same reason: the answer rides in the PUBLIC
+/// preferences, which ClearTenure retains whole, so sign-out has to drop it by name. Through the
+/// real helper backend: an answer is stored, sign-out and "Delete all local data" leave the record
+/// naming no server and no account fingerprint, and the same account signing back in is asked
+/// again rather than handed its earlier answer.
+#[test]
+fn helper_signout_forgets_the_plaintext_answers_and_signing_back_in_asks_again() {
+    let mut backend = plx_platform::storage::backend::Backend::new(
+        Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
+    let mut transport = |request: Request| Ok(backend.dispatch(request));
+    let session = Session { language: plx_platform::i18n::Preference::Be, ..fixture() };
+    commit_fresh(&session, &mut transport);
+
+    // An answer write: public-only, the auth half untouched.
+    let answered = session.with_plaintext_choice("account-fingerprint", "machine", PlaintextChoice::Allowed);
+    let client::Load::Present(before) = client::load_with(&mut transport).unwrap() else { panic!("helper snapshot") };
+    assert!(matches!(
+        persistence::commit_session_with(&answered, false, SaveAuthority::PublicOnly, 4, &mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    let client::Load::Present(after) = client::load_with(&mut transport).unwrap() else { panic!("helper snapshot") };
+    assert_eq!(before.state.auth_envelope, after.state.auth_envelope, "an answer write reseals nothing");
+    assert!(stored_preferences(&mut transport).get("plaintext_consent").is_some(), "the answer is stored");
+
+    // Sign-out.
+    assert!(matches!(persistence::commit_clear_with(&mut transport), persistence::CanonicalCommit::Durable { .. }));
+    let kept = stored_preferences(&mut transport);
+    assert!(kept.get("plaintext_consent").is_none(), "sign-out must forget every plaintext answer: {kept}");
+    assert_eq!(kept["language"], "be", "the install-wide language is still retained");
+
+    // "Delete all local data" follows sign-out and must leave the record just as clean.
+    assert!(matches!(persistence::reset_cleared_language_with(&mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    assert!(stored_preferences(&mut transport).get("plaintext_consent").is_none());
+
+    // The same account signs back in: it is asked again.
+    commit_fresh(&session, &mut transport);
+    let persistence::CanonicalRead::Opened { session: opened, .. } = persistence::load_helper_with(&mut transport) else {
+        panic!("the returning account's session opens")
+    };
+    assert_eq!(opened.plaintext_choice("account-fingerprint", "machine"), PlaintextChoice::Undecided);
 }
 
 #[test]

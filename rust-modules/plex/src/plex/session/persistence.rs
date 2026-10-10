@@ -393,8 +393,17 @@ fn preserve_unknown_preferences(current: &serde_json::Value, next: &mut serde_js
     let (Some(current), Some(next)) = (current.as_object(), next.as_object_mut()) else {
         return;
     };
+    // Only keys this build does not model are "future" keys. A modelled preference that `next`
+    // omits was omitted on purpose (its default spelling is not stored), so copying it back would
+    // resurrect the previous non-default value (issue #582).
+    let unknown: Option<Vec<&String>> = serde_json::from_value::<super::CanonicalSessionPreferences>(
+        serde_json::Value::Object(current.clone()),
+    )
+    .ok()
+    .map(|known| current.keys().filter(|k| known.extensions.contains_key(*k)).collect());
     for (key, value) in current {
-        if key != "playback_quality" && !next.contains_key(key) {
+        let future = unknown.as_ref().is_none_or(|u| u.contains(&key));
+        if future && key != "playback_quality" && !next.contains_key(key) {
             next.insert(key.clone(), value.clone());
         }
     }

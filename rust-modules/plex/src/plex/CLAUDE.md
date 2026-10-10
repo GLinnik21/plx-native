@@ -113,9 +113,10 @@ conservative choice) learn nothing. It lives in `Session::server_key_pins`, one 
 `ProfileCreds`, which are cloned per profile), soft-parsed and skipped while empty.
 **It is in the PUBLIC preferences, so sign-out forgets it by an explicit rule, not with the
 credentials:** `Mutation::ClearTenure` retains `public.preferences` whole except the keys in
-`storage::state::ACCOUNT_BOUND_PREFERENCES` (`server_key_pins`), so sign-out — and "Delete all
+`storage::state::ACCOUNT_BOUND_PREFERENCES` (`server_key_pins` and `plaintext_consent`, issue #385), so sign-out — and "Delete all
 local data", which runs it first — leaves the stored record with no learned key, and the next account to sign in opens with none
-(`migration_tests::helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_none`).
+(`migration_tests::helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_none`;
+for the answers, `helper_signout_forgets_the_plaintext_answers_and_signing_back_in_asks_again`).
 `session::learn_server_key` queues the write only when the pin changed.
 `Session::server_key_pin(machine_id)` is the accessor.
 

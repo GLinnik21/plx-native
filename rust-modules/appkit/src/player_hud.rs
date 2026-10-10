@@ -2116,6 +2116,18 @@ pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 
 #[cfg(test)]
 mod tests {
+    /// #585: a cue of authored line breaks that each wrap again ran past three lines and the tail
+    /// was silently dropped. Every line of an ordinary long cue must survive.
+    #[test]
+    fn a_long_cue_keeps_every_line_past_three() {
+        let cue = "First authored line that is long enough to wrap onto a second row\n\
+                   Second authored line that is long enough to wrap onto a second row\n\
+                   Third authored line that is long enough to wrap onto a second row";
+        let lines = super::caption_wrap(cue, 1.0);
+        assert_eq!(lines.len(), 6, "{lines:?}");
+        assert!(lines.last().unwrap().ends_with("second row"), "{lines:?}");
+    }
+
     #[test]
     fn chapter_panel_retains_selection_without_borrowing_hud_focus() {
         assert_eq!(super::hud_tab_state(false, 2, 1, 1), (false, true));

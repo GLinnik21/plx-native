@@ -28,13 +28,15 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 ## Working rules
 
 - **Trunk-based development, and `main` takes SQUASH merges only.** Work happens on short-lived
-  branches or worktrees cut from `main`; when a piece of work is verified it lands on `main` as ONE
-  commit (`git merge --squash <branch>` on `main`, then a single commit whose message is the
-  change's own account), never as a fast-forward of a working branch's history and never as a
-  merge commit. A fleet of lanes integrates into its integration branch however it likes; what
-  reaches `main` is the squash of the whole. The reason is the history itself: `main` is read by
-  `git log`, by the release audit and by `git bisect`, and a trunk of "fix typo" / "wip" / merge
-  commits pollutes all three. Push `main` only when the user asked for it.
+  branches or worktrees cut from `main`. Commit as often as is useful on a branch — there is no
+  limit on how many commits a branch carries and no need to tidy them. When the work is verified it
+  lands on `main` as ONE squash commit whose message is the change's own account (the PR's squash
+  merge, or `git merge --squash <branch>` on `main` followed by a single commit), never as a
+  fast-forward of a working branch's history and never as a merge commit. A fleet of lanes
+  integrates into its integration branch however it likes; what reaches `main` is the squash of the
+  whole. The reason is the history itself: `main` is read by `git log`, by the release audit and by
+  `git bisect`, and a trunk of "fix typo" / "wip" / merge commits pollutes all three. Push `main`
+  only when the user asked for it.
 - **A squash onto a MOVING `main` silently reverts it.** `git reset --soft origin/main` keeps the
   index, so any commit that landed on `origin/main` after your picks shows up inside your squash as
   a line-for-line reversal — and the reversal compiles, so every gate stays green. PR #156 undid
