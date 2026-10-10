@@ -538,3 +538,152 @@ fn a_failed_window_reload_keeps_the_first_page_instead_of_failing_the_refresh() 
     reset(&mut owner.state,&owner.adapter);
     plx_plex::plex::reset_servers_for_test();
 }
+
+// Characterisation of the window's edge cases, on today's code. Each test feeds `fetch_window` a
+// closure in place of the server, so the response shape is the only thing that varies.
+
+fn recent_query(start: usize) -> PageQuery {
+    PageQuery { id: "home.movies.recent".into(), key: "/hubs/home/recentlyAdded?type=1".into(), start, before: false,
+        hidden: Vec::new() }
+}
+
+// A listing of `len` rows whose row at server position `p` has rating key `key_at(p)`. `total` is
+// the response's `totalSize` (omitted when `None`); `overfill` adds rows beyond the page asked for.
+fn serve(key_at: impl Fn(usize) -> usize, len: usize, total: Option<i64>, overfill: usize)
+    -> impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer> {
+    move |start, size| {
+        let metadata: Vec<_> = (start..(start + size + overfill).min(len)).map(|p| serde_json::json!({
+            "ratingKey": key_at(p).to_string(), "type": "movie", "title": "Movie", "thumb": "/poster"
+        })).collect();
+        let mut container = serde_json::json!({"offset": start, "Metadata": metadata});
+        if let Some(total) = total { container["totalSize"] = total.into(); }
+        Some(serde_json::from_value(container).unwrap())
+    }
+}
+
+fn window_keys(shelf: &Shelf) -> Vec<String> {
+    shelf.items.iter().map(|item| item.rk.clone()).collect()
+}
+
+fn key_range(keys: std::ops::RangeInclusive<usize>) -> Vec<String> {
+    keys.map(|k| k.to_string()).collect()
+}
+
+#[test]
+fn a_paged_response_without_total_size_is_read_from_its_page_size_alone() {
+    let _guard = plx_base::testlock::serial();
+    let mut listing = serve(|p| p, 30, None, 0);
+    let mut query = recent_query(0);
+    let first = fetch_window(sid(0), &query, None, 0, &mut listing).unwrap().shelves.remove(0);
+    // Without a total, a full page is "more" and a short page is the end.
+    assert_eq!(first.items.len(), 24);
+    assert_eq!(first.total, 0);
+    assert_eq!((first.offset, first.end), (0, 24));
+    assert!(first.more);
+    let mut calls = Vec::new();
+    query.start = first.end;
+    let second = fetch_window(sid(0), &query, Some(&first), 0, |start, size| {
+        calls.push((start, size));
+        listing(start, size)
+    }).unwrap().shelves.remove(0);
+    assert_eq!(calls, vec![(24, 24)]);
+    assert_eq!(second.positions, (12..30).collect::<Vec<_>>());
+    assert_eq!(window_keys(&second), key_range(12..=29));
+    assert_eq!((second.offset, second.end), (12, 30));
+    assert!(!second.more);
+}
+
+#[test]
+fn a_server_returning_more_rows_than_asked_keeps_only_the_page_asked_for() {
+    let _guard = plx_base::testlock::serial();
+    let mut listing = serve(|p| p, 200, Some(100), 16);
+    let mut calls = Vec::new();
+    let shelf = fetch_window(sid(0), &recent_query(0), None, 0, |start, size| {
+        calls.push((start, size));
+        listing(start, size)
+    }).unwrap().shelves.remove(0);
+    assert_eq!(calls, vec![(0, 24)], "the surplus rows are not read as a second page");
+    assert_eq!(window_keys(&shelf), key_range(0..=23));
+    assert_eq!(shelf.positions, (0..24).collect::<Vec<_>>());
+    assert_eq!((shelf.offset, shelf.end, shelf.total), (0, 24, 100));
+    assert!(shelf.more);
+}
+
+#[test]
+fn a_response_echoing_a_different_offset_drops_the_whole_page() {
+    let _guard = plx_base::testlock::serial();
+    let mut listing = serve(|p| p, 100, Some(100), 0);
+    let query = recent_query(0);
+    let first = fetch_window(sid(0), &query, None, 0, &mut listing).unwrap().shelves.remove(0);
+    let mut calls = Vec::new();
+    // A server that ignores paging answers every ask from its first row.
+    let ignored = fetch_window(sid(0), &PageQuery { start: first.end, ..recent_query(0) }, Some(&first), 0, |start, size| {
+        calls.push((start, size));
+        serve(|p| p, 100, Some(100), 0)(0, size)
+    });
+    assert!(ignored.is_none(), "an echoed offset other than the request fails the page");
+    assert_eq!(calls, vec![(24, 24)], "the mismatch is not retried inside one page");
+}
+
+// Pins today's behaviour; the shared window's re-anchor rule changes this.
+#[test]
+fn an_item_added_at_the_head_between_asks_shifts_the_window_without_a_duplicate() {
+    let _guard = plx_base::testlock::serial();
+    let first = fetch_window(sid(0), &recent_query(0), None, 0, serve(|p| p, 100, Some(100), 0))
+        .unwrap().shelves.remove(0);
+    // Between the asks the listing gains one row at position 0, so every later position moves by one.
+    let mut shifted = serve(|p| if p == 0 { 999 } else { p - 1 }, 100, Some(100), 0);
+    let second = fetch_window(sid(0), &PageQuery { start: first.end, ..recent_query(0) }, Some(&first), 0, &mut shifted)
+        .unwrap().shelves.remove(0);
+    // The edge is not re-checked: the retained rows keep their old positions, so position 24 is
+    // skipped and the window runs on from key 24 at its new position 25.
+    assert_eq!(window_keys(&second), key_range(12..=35));
+    let unique: std::collections::BTreeSet<_> = window_keys(&second).into_iter().collect();
+    assert_eq!(unique.len(), 24, "no card appears twice");
+    assert!(!unique.contains("999"), "the head item lies before the window and is not read");
+    let mut expected: Vec<usize> = (12..24).collect();
+    expected.extend(25..=36);
+    assert_eq!(second.positions, expected);
+    assert_eq!((second.offset, second.end), (12, 37));
+    assert!(second.more);
+}
+
+// Pins today's behaviour; the shared window's re-anchor rule changes this.
+#[test]
+fn a_held_item_removed_between_asks_loses_the_item_after_it() {
+    let _guard = plx_base::testlock::serial();
+    let first = fetch_window(sid(0), &recent_query(0), None, 0, serve(|p| p, 100, Some(100), 0))
+        .unwrap().shelves.remove(0);
+    // Key 20 is removed from the listing, so every later row moves up by one.
+    let mut shifted = serve(|p| if p < 20 { p } else { p + 1 }, 100, Some(100), 0);
+    let second = fetch_window(sid(0), &PageQuery { start: first.end, ..recent_query(0) }, Some(&first), 0, &mut shifted)
+        .unwrap().shelves.remove(0);
+    let keys = window_keys(&second);
+    assert!(keys.contains(&"20".to_string()), "the window keeps the removed card until it is paged out");
+    assert!(!keys.contains(&"24".to_string()), "key 24, the next row after the window, is skipped");
+    let mut expected = key_range(12..=23);
+    expected.extend(key_range(25..=36));
+    assert_eq!(keys, expected);
+    assert_eq!((second.offset, second.end), (12, 36));
+    assert!(second.more);
+}
+
+// Pins today's behaviour; the shared window's re-anchor rule changes this.
+#[test]
+fn a_page_of_only_held_rows_adds_nothing_and_stops_at_the_request_bound() {
+    let _guard = plx_base::testlock::serial();
+    let first = fetch_window(sid(0), &recent_query(0), None, 0, serve(|p| p, 100, Some(100), 0))
+        .unwrap().shelves.remove(0);
+    // Every page from here on repeats rows 12..=23, which the retained half already holds.
+    let mut calls = Vec::new();
+    let shelf = fetch_window(sid(0), &PageQuery { start: first.end, ..recent_query(0) }, Some(&first), 0, |start, size| {
+        calls.push((start, size));
+        serve(|p| 12 + p % 12, 10_000, Some(10_000), 0)(start, size)
+    }).unwrap().shelves.remove(0);
+    assert_eq!(calls.len(), 8, "the request bound ends the walk");
+    assert_eq!(calls[0], (24, 24));
+    assert_eq!(window_keys(&shelf), key_range(12..=23), "a duplicate is never shown twice");
+    assert_eq!(shelf.items.len(), 12, "the window stays short rather than filling with repeats");
+    assert_eq!((shelf.offset, shelf.end), (12, 24 + 8 * 24));
+    assert!(shelf.more);
+}

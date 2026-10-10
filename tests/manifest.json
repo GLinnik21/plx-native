@@ -158,6 +158,32 @@
       "comment": "Frames while server pages land under MOVING focus (#567): Home's Recently Added Movies row holds a 24-card window and fetches the next 12 when focus nears the end. Run it with `./tests/run.py --fps --mock --filter home-recent-paging` (starts tests/mock_pms.py --movies 300 itself, no Plex account, mock only). `plxnative-grid` seats row 0 (Continue Watching), so the row walk presses Down `row_down` (1) time to reach Recently Added Movies, then Right 96 times at 0.33 s (96 / 12 = 8 page landings expected), rests 4 s, and Left 96 times back. Keys are only ever down/right/left, never ok or back. The result prints the window's heartbeat fps median/min, frame_gt33, the worst frame, p99 and the number of page landings (`hubs: landed` lines) in the window; frame_gt33 is NOT graded yet. The scene FAILS with `paging did not happen` when the forward half saw fewer than 6 landings (min_page_landings). loop_floor and fps_floor are BORROWED from home-grid-deep, not measured for this scene. run_secs covers the walk (tests hold it to walk_secs_needed)."
     },
     {
+      "name": "home-recent-paging-held",
+      "tier": "ui",
+      "route": "home",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-grid": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 300,
+        "only": true
+      },
+      "walk": {
+        "row_down": 1,
+        "cards": 96,
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "min_page_landings": 6
+      },
+      "comment": "home-recent-paging with the Right key HELD instead of pressed once per card: the same row walk, mock, triggers and grading, but Right is pressed every 125 ms (key_gap_s 0.125, the cadence library-hold uses for its held scroll) instead of every 330 ms. The walk harness (tests/mock_fps.py KeyWalk) can only send discrete presses; it does not model key auto-repeat, and burst walks (walk.burst) carry only down/up, so a held Right is approximated by a continuous press cadence. 96 Rights at 125 ms cross eight 12-card page boundaries in about 12 s, so the pages must land while focus is already moving. Run it with `./tests/run.py --fps --mock --filter home-recent-paging-held` (starts tests/mock_pms.py --movies 300 itself, no Plex account, mock only). Keys are only ever down/right/left, never ok or back. frame_gt33, the worst frame and p99 are printed and NOT graded. No loop_floor or fps_floor is declared: the scene is not graded yet (the convention library-burst and library-hold follow), so the run grades only the walk's key count, the paging check (min_page_landings) and the generic guard of at least 5 post-warmup loop samples. run_secs covers the walk's worst case (about 66 s by walk_secs_needed)."
+    },
+    {
       "name": "library-shelves-deep",
       "tier": "ui",
       "route": "library",
