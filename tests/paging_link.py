@@ -591,7 +591,8 @@ def run_surface(name, profile_name, args):
                              f"focus stood at it")
             else:
                 left_behind += 1  # the reader had walked on: nothing waits for this page
-        elif min(x["t_done"] for x in again) - r["t_done"] > RETRY_WITHIN_S:
+        elif min(x["t_done"] for x in again) - r["t_done"] > RETRY_WITHIN_S and \
+                (r["start"] is None or page_wanted(track, r["t_recv"], int(r["start"]), int(r["size"] or 0), t_end)):
             fails.append(f"a failed read of {r['path']} start={r['start']} was retried only "
                          f"{min(x['t_done'] for x in again) - r['t_done']:.0f}s later")
         else:
