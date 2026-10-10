@@ -138,6 +138,13 @@ pub trait CardSource<H: Host> {
     fn sweep(&self) -> f32 {
         1.0
     }
+    /// Whether cards the source does not hold lie between card `i - 1` and card `i`: a row that
+    /// is a fixed head and a sliding window of what follows draws the two side by side while the
+    /// window is away from the head. A press does not step across (it would pass every card
+    /// between in one move); the screen asks its store to bring the window back instead.
+    fn gap_before(&self, _i: usize) -> bool {
+        false
+    }
     /// Whether a hold on card `i` is a [`CardEvent::Hold`].
     fn holdable(&self, _i: usize) -> bool {
         true

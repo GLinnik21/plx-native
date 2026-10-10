@@ -75,7 +75,7 @@
 //! - `WantEpisodes{lo, hi, focus, restore}` → `metadata::want_episodes` — fetch the pages of a long
 //!   season the screen needs and evict the ones it does not (`pump_episode_pages` installs them).
 //! - `WantRelated{before, seen}` → `metadata::want_related` — slide the Related row's tail window
-//!   (`pump_related_pages` installs it).
+//!   (`pump_related`, at the start of the frame, installs it).
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
 //! - `SetWatchedLocal{sid, rk, on}` → `metadata::set_watched_local` — the optimistic half of a
 //!   view-state write, answers whether it actually changed anything.
@@ -324,9 +324,10 @@ impl MetadataStore {
     pub fn pump(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
         let detail = self.pump_detail_with_gate(gate);
         let season = self.pump_season_with_gate(gate);
+        let related = self.pump_related();
         let alt = crate::metadata::pump_alt_sources_with_gate(&mut self.state, &self.adapter, gate);
         if alt { self.bump(); }
-        detail || season || alt
+        detail || season || related || alt
     }
 
     /// The async detail landing alone — `app/run.rs`'s own call site, pumped before season.
@@ -345,8 +346,20 @@ impl MetadataStore {
     pub fn pump_season_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
         let changed = crate::metadata::pump_season_with_gate(&mut self.state, &self.adapter, gate);
         let pages = crate::metadata::pump_episode_pages(&mut self.state, &self.adapter);
-        let related = crate::metadata::pump_related_pages(&mut self.state, &self.adapter);
-        let changed = changed || pages || related;
+        let changed = changed || pages;
+        if changed { self.bump(); }
+        changed
+    }
+
+    /// Install a Related window that landed. **Pumped at the START of the frame, not beside the
+    /// two above**: those run between the frame's step and its draw, so what they install is drawn
+    /// one frame before its notice reaches the page. A Related landing slides a window of cards
+    /// under a focus the Detail page holds by key and resolves to a slot through projections it
+    /// rebuilds on that notice; drawn a frame early, the focused slot showed the card twelve
+    /// places on. Installed before the notices are taken, the page hears of the window in the
+    /// frame that first draws it.
+    pub fn pump_related(&mut self) -> bool {
+        let changed = crate::metadata::pump_related_pages(&mut self.state, &self.adapter);
         if changed { self.bump(); }
         changed
     }

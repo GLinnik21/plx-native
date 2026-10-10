@@ -381,3 +381,25 @@ fn a_withdrawn_read_never_installs_its_window() {
     slide(false);
     assert_ne!(at(), was, "and the next ask slides the window");
 }
+
+/// A read has answered and its window waits for the next pump to install it. An edge asked in
+/// between (a key repeat re-arms the shelf) still names the window on the page, so `seen` passes:
+/// it must not read the same page a second time.
+#[test]
+fn an_edge_asked_while_a_landing_waits_to_install_reads_nothing_twice() {
+    let _serial = plx_base::testlock::serial();
+    let server = serve(vec![(1, 112)], plain);
+    let mc = related_response(&[(1, 12, 112, true)], "");
+    open(&server, &mc);
+    let at = || (detail().related_tail.offset, detail().related_tail.end);
+    let was = at();
+    assert!(want_related(test_state(), test_adapter(), false, was), "a request starts");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while test_adapter().rel_pages.lock().unwrap().landed.is_empty() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(at(), was, "landed, not yet installed");
+    assert!(!want_related(test_state(), test_adapter(), false, was), "the answer to this edge is already here");
+    assert!(pump_related_pages(test_state(), test_adapter()));
+    assert_ne!(at(), was);
+}

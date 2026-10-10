@@ -1807,8 +1807,10 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 let t = &d.related_tail;
                 let focus = cx.focus.current.filter(|k| k.entry == self.entry)
                     .and_then(|k| ui_cards::CardSource::<H>::index_of(&related, &k.elem));
+                // Focus on the head counts too: a press cannot cross from it to a window that is
+                // away from the tail's start (`Cards::gap_before`), so the window comes back to it.
                 let near_start = t.offset > 0
-                    && focus.is_some_and(|i| i >= t.head && i - t.head < ui_cards::PAGE_EDGE_CARDS);
+                    && focus.is_some_and(|i| i < t.head + ui_cards::PAGE_EDGE_CARDS);
                 let before = if !near_start {
                     self.related_before = None;
                     false

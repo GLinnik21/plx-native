@@ -104,11 +104,12 @@ pub struct SearchScreen {
     /// "did a store notice reach the top screen" probes stay readable now that `Route::Search`
     /// mounts this screen unconditionally.
     notices: u32,
-    /// The page ask last sent for each row (window start, direction), by [`layout::ordinal`]. Not
-    /// part of the state hash. A row asks again only once its window has moved: the edge keeps
-    /// reporting while the store reads, and a second ask on a window that already slid would slide
-    /// it past the focused card.
-    page_sent: [Option<(usize, bool)>; 5],
+    /// The page ask last sent for each row (window start, direction, cards held), by
+    /// [`layout::ordinal`]. Not part of the state hash. A row asks again only once its window has
+    /// moved or filled (going on from the preview fills the window where it stands, so the start
+    /// alone does not say the ask was answered): the edge keeps reporting while the store reads,
+    /// and a second ask on a window that already slid would slide it past the focused card.
+    page_sent: [Option<(usize, bool, usize)>; 5],
 }
 
 impl SearchScreen {
@@ -440,21 +441,21 @@ impl SearchScreen {
             let Some(shelf) = view.shelves().get(row) else { continue };
             let k = self.section(row);
             let wanted = matches!(got, Some(StackEvent::Card(key, CardEvent::Want(_))) if *key == k);
-            let offset = shelf.window.start;
+            let (offset, held) = (shelf.window.start, shelf.items.len());
             let slot = layout::ordinal(self.rows[row].kind) as usize;
             // An ask whose edge focus has left is withdrawn before the slide can commit.
             if self.with_stack(|stack, page| stack.page_cancel(page, cx, k, offset)).is_some() {
-                if let Some((start, _)) = self.page_sent[slot].take() {
+                if let Some((start, ..)) = self.page_sent[slot].take() {
                     self.store(SearchCmd::PageCancel { kind: self.rows[row].kind, seen: start }, fx);
                 }
             }
             let edge = self.with_stack(|stack, page| stack.page_ask(page, cx, k, wanted, offset));
-            if self.page_sent[slot].is_some_and(|(start, _)| start != offset) { self.page_sent[slot] = None; }
+            if self.page_sent[slot].is_some_and(|(start, _, len)| (start, len) != (offset, held)) { self.page_sent[slot] = None; }
             if let Some(edge) = edge {
-                let ask = (offset, edge == PageEdge::Before);
+                let ask = (offset, edge == PageEdge::Before, held);
                 if self.page_sent[slot] != Some(ask) {
                     self.page_sent[slot] = Some(ask);
-                    self.store(SearchCmd::Page { kind: self.rows[row].kind, before: ask.1, seen: offset }, fx);
+                    self.store(SearchCmd::Page { kind: self.rows[row].kind, before: ask.1, seen: (offset, held) }, fx);
                 }
             }
         }

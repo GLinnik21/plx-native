@@ -104,7 +104,7 @@ impl Mounter<TestHost> for Mount {
         Box::new(page)
     }
 }
-struct TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec<ContentArg> }
+struct TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec<ContentArg>, asked: Vec<MetadataCmd> }
 impl Rig<TestHost> for TestRig {
     fn split(&mut self) -> Split<'_, TestHost> {
         Split { mounter: &mut self.mount, views: (), measure: &self.measure }
@@ -112,7 +112,11 @@ impl Rig<TestHost> for TestRig {
     fn deliver(&mut self, _: MachineId, _: &AppMsg, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) -> Handled { Handled::No }
     fn timer(&mut self, _: MachineId, _: TimerId, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {}
     fn app_fx(&mut self, _: MachineId, effect: AppFx, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {
-        if let AppFx::Content(ContentReq::Push(arg)) = effect { self.opened.push(arg); }
+        match effect {
+            AppFx::Content(ContentReq::Push(arg)) => self.opened.push(arg),
+            AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(cmd)) => self.asked.push(cmd),
+            _ => {}
+        }
     }
     fn log(&mut self, _: &str) {}
     fn prepare(&mut self, _: &mut Budget, _: &mut Present) {}
@@ -153,7 +157,7 @@ fn boot_with(detail: Detail) -> (Dispatcher<TestHost>, TestRig) {
     plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(detail));
     let mut d = Dispatcher::new();
     d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
-    let mut rig = TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec::new() };
+    let mut rig = TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec::new(), asked: Vec::new() };
     d.request(MachineId::Nav, NavOp::Root(Arg("a".into())));
     frame(&mut d, &mut rig, 0);
     d.store_changed(StoreId::Metadata.ord(), 1);
@@ -542,3 +546,147 @@ fn focus_on_a_tail_card_survives_the_window_sliding() {
     plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
+
+/// The invariant behind "focus never moves under the user" on the Related row, driven through the
+/// real dispatcher (keys, the focus engine, the page) and a stand-in store that applies the
+/// commands it is sent the way the metadata store does: a `WantRelated` is refused when it names a
+/// window the store has since replaced (`seen`), when one is already out, or when there is nothing
+/// that way; it lands after a random delay by sliding the 24-card tail window twelve places; a
+/// `CancelRelated` drops the one out. A landing is installed and announced at the start of a
+/// frame, ahead of that frame's key, as the application does it. Random walks of presses (runs,
+/// bursts, reversals, 100 ms repeats) meet random landing delays (one frame to five seconds); on
+/// EVERY frame the focused card changes only by a press and by exactly one place in the row, and
+/// is a card the store holds. A held key then reaches the last card and walks back to the first.
+/// Landings slower than the walk are the case that matters on the way back: the hold arrives at
+/// the window's first card before the window before it has landed.
+#[test]
+fn no_landing_on_the_related_row_ever_moves_the_card_under_the_focus() {
+    use plx_machine::machine::{Edge, InputEvent, InputKind, Key, Source};
+    let _guard = plx_base::testlock::serial();
+    const TAIL: usize = 100;
+    let window = |from: usize| {
+        let mut d = with_tail(from);
+        d.related_tail.total = TAIL;
+        d.related_tail.more = from + 24 < TAIL;
+        d
+    };
+    // a card's place in the whole row: the head's three, then the tail
+    let place = |rk: &str| -> usize {
+        let n: usize = rk[1..].parse().unwrap();
+        if rk.starts_with('h') { n } else { 3 + n }
+    };
+    for seed in 1..=8u64 {
+        let mut rng = plx_ui::fixture::Walk(seed);
+        let mut offset = 0usize;
+        let (mut d, mut rig) = boot_with(window(offset));
+        let key = FocusKey { entry: screen(&d).entry, elem: screen(&d).engine_key(related::elem(3).unwrap()).unwrap() };
+        d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
+        let card_now = |d: &Dispatcher<TestHost>| -> Option<String> {
+            let key = d.focus()?;
+            let index = screen(d).locate(key.elem, test_store().view())?.index();
+            Some(test_store().view().current()?.related.get(index)?.rk.clone())
+        };
+        let mut pending: Option<(u32, bool)> = None;
+        let (mut dir_right, mut run_left, mut cadence) = (true, 40u64, 6u32);
+        let mut held = card_now(&d).expect("focus starts on the first tail card");
+        assert_eq!(held, "t0");
+        let mut reached = (false, false);
+        let mut landings = 0u32;
+        let frames = 24_000u32;
+        for frame in 1..frames + 6000 {
+            let at = format!("seed {seed}, frame {frame}, offset {offset}");
+            let ms = 100 + frame * 1000 / 60;
+            let tail = frame >= frames;
+            if !tail && run_left == 0 {
+                dir_right = rng.below(3) != 0 && place(&held) + 4 < 3 + TAIL;
+                let longest = if rng.below(4) == 0 { 40 } else { 14 };
+                run_left = 1 + rng.below(longest);
+                cadence = [1, 2, 6, 6, 6, 12, 30][rng.below(7) as usize];
+            }
+            let (right, due) = if tail { (!reached.0, frame % 6 == 0) } else { (dir_right, frame % cadence == 0) };
+            if pending.is_some_and(|(due, _)| frame >= due) {
+                let (_, before) = pending.take().unwrap();
+                let next = if before { offset.saturating_sub(12) } else { (offset + 12).min(TAIL - 24) };
+                if next != offset {
+                    offset = next;
+                    landings += 1;
+                    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(window(offset)));
+                    d.store_changed(StoreId::Metadata.ord(), frame);
+                }
+            }
+            let inputs = if due {
+                run_left = run_left.saturating_sub(1);
+                vec![InputEvent { at: tick(ms), source: Source::Script, kind: InputKind::Key {
+                    key: if right { Key::Right } else { Key::Left }, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false } }]
+            } else { Vec::new() };
+            let focus_before = d.focus();
+            let report = d.frame_with(&mut rig, tick(ms), inputs, vec![], &mut NoTap, false);
+            d.prune(&report.unmounted);
+            for cmd in rig.asked.drain(..) {
+                match cmd {
+                    MetadataCmd::WantRelated { before, seen } => {
+                        let room = if before { offset > 0 } else { offset + 24 < TAIL };
+                        if seen == (offset, offset + 24) && pending.is_none() && room {
+                            pending = Some((frame + 1 + rng.below(300) as u32, before));
+                        }
+                    }
+                    MetadataCmd::CancelRelated => pending = None,
+                    _ => {}
+                }
+            }
+            let now = card_now(&d).unwrap_or_else(|| panic!("{at}: the focused card is not one the store holds"));
+            if d.focus() == focus_before {
+                assert_eq!(now, held, "{at}: the card under the focus changed without a press");
+            } else {
+                assert!(due, "{at}: focus moved without a press");
+                // one place along the whole row. The head's last card and the window's first sit
+                // side by side while the window is away from the tail's start; a press there
+                // waits for the way back rather than crossing every card between them.
+                let (a, b) = (place(&held), place(&now));
+                assert!(if right { b == a + 1 } else { a == b + 1 }, "{at}: one press took focus from {held} to {now}");
+                held = now;
+            }
+            if held == format!("t{}", TAIL - 1) { reached.0 = true; }
+            if reached.0 && held == "h0" { reached.1 = true; }
+        }
+        assert!(reached.0, "seed {seed}: the last card is reachable (stopped on {held})");
+        assert!(reached.1, "seed {seed}: and so is the first (stopped on {held})");
+        assert!(landings >= 14, "seed {seed}: the window slid there and back under the walk: {landings}");
+    }
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}
+
+/// The row is the head and a window of the tail, drawn side by side. While the window is away
+/// from the tail's start, the cards between the head and the window are not in the row: a press
+/// at that seam does not cross them (seen on the simulator on a slow link: a held Left outran the
+/// way-back read and went from the 286th card to the 9th), and focus resting on the head asks
+/// for the way back, so the seam closes instead of staying shut.
+#[test]
+fn a_press_never_crosses_the_cards_between_the_head_and_a_window_that_slid_away() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig) = boot_with(with_tail(12));
+    let key_at = |d: &Dispatcher<TestHost>, index: usize| FocusKey { entry: screen(d).entry,
+        elem: screen(d).engine_key(related::elem(index).unwrap()).unwrap() };
+    let step = |d: &Dispatcher<TestHost>, from: FocusKey<u32>, dir: Dir| {
+        let measure = FixtureMeasure;
+        let cx = Cx::<TestHost> { views: (), tick: tick(16), measure: &measure,
+            press: Default::default(), focus: Default::default(), owner: InputOwner::Entry(from.entry) };
+        Focusable::<TestHost>::neighbour(screen(d), from, dir, &cx)
+    };
+    let (head_last, window_first) = (key_at(&d, 2), key_at(&d, 3));
+    assert!(matches!(step(&d, window_first, Dir::Left), Step::Edge), "t12 is not next to h2");
+    assert!(matches!(step(&d, head_last, Dir::Right), Step::Edge), "h2 is not next to t12");
+    assert!(matches!(step(&d, window_first, Dir::Right), Step::Move(to) if to == key_at(&d, 4)), "inside the window a press steps");
+    assert!(matches!(step(&d, head_last, Dir::Left), Step::Move(to) if to == key_at(&d, 1)), "and inside the head");
+    // resting on the head with the window away: the way back is asked for
+    d.set_focus_in(Some(head_last), Some(related::RELATED_GROUP));
+    rig.asked.clear();
+    for i in 0..4 { frame(&mut d, &mut rig, 100 + i * 16); }
+    assert!(rig.asked.iter().any(|cmd| matches!(cmd, MetadataCmd::WantRelated { before: true, seen: (12, 36) })),
+        "the head asks for the window before this one: {} asked", rig.asked.len());
+    // with the window at the tail's start the row is whole: the same press steps
+    land(&mut d, &mut rig, with_tail(0), 400);
+    assert!(matches!(step(&d, key_at(&d, 2), Dir::Right), Step::Move(to) if to == key_at(&d, 3)), "h2 is next to t0");
+    assert!(matches!(step(&d, key_at(&d, 3), Dir::Left), Step::Move(to) if to == key_at(&d, 2)));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}

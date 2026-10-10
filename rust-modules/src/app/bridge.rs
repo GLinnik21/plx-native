@@ -1945,6 +1945,9 @@ fn frame_ingest(
         let outcome = rig.stores.browse_discover_pump();
         execute_endpoint_outcomes(d, outcome.endpoints);
     }
+    // A Related window that landed is installed here, ahead of the notices below, so the Detail
+    // page is told of it in the frame that first draws it (`MetadataStore::pump_related`).
+    rig.stores.metadata.pump_related();
     let (browse_changed, hubs_changed, search_changed) = rig.capture_views(d);
     rig.capture_chrome(d);
     rig.deliver_home_commands(d);
@@ -3621,6 +3624,10 @@ mod search_owned_tests;
 #[cfg(test)]
 #[path = "detail_panel_tests.rs"]
 mod detail_panel_tests;
+
+#[cfg(test)]
+#[path = "detail_related_landing_tests.rs"]
+mod detail_related_landing_tests;
 
 #[cfg(test)]
 #[path = "surface_navigation_tests.rs"]

@@ -54,7 +54,7 @@ impl Rig {
     }
 
     fn page(&mut self, kind: Kind, before: bool) {
-        let seen = self.shelf(kind).window.start;
+        let seen = self.seen(kind);
         self.owner.state.run(&self.owner.adapter, SearchCmd::Page { kind, before, seen });
         let n = 6 * nsrc() + 12;
         self.drain(n);
@@ -63,13 +63,18 @@ impl Rig {
     /// A page that waits out failed reads: pump until the slide has committed or `frames` ran out.
     fn page_settled(&mut self, kind: Kind, frames: usize) -> bool {
         let k = KINDS.iter().position(|x| *x == kind).unwrap();
-        let seen = self.shelf(kind).window.start;
+        let seen = self.seen(kind);
         self.owner.state.run(&self.owner.adapter, SearchCmd::Page { kind, before: false, seen });
         for _ in 0..frames {
             if self.owner.state.wins[k].pending.is_none() { return true; }
             self.drain(1);
         }
         self.owner.state.wins[k].pending.is_none()
+    }
+
+    /// The row's window as a screen reading this publication names it in an ask.
+    fn seen(&self, kind: Kind) -> (usize, usize) {
+        (self.shelf(kind).window.start, self.shelf(kind).items.len())
     }
 
     fn shelf(&self, kind: Kind) -> &Shelf {
@@ -89,9 +94,11 @@ impl Rig {
             let held: usize = self.owner.state.src.iter().map(|s| s.tails[k].held()).sum();
             assert!(held <= 24 + 2 * tail::PAGE, "{held} rows held");
             if !self.shelf(kind).window.after { break; }
-            let before = self.shelf(kind).window.start;
+            let before = (self.shelf(kind).window.start, self.shelf(kind).items.len());
             self.page(kind, false);
-            assert!(self.shelf(kind).window.start > before, "the window slid");
+            let now = (self.shelf(kind).window.start, self.shelf(kind).items.len());
+            assert!(now.0 > before.0 || (now.0 == before.0 && now.1 > before.1),
+                "the window slid, or filled where it stood: {before:?} -> {now:?}");
             seen.extend(self.keys(kind));
         }
         assert!(!self.shelf(kind).window.after, "the last card was reached");
@@ -117,6 +124,20 @@ fn three_hundred_movies_are_reached_to_the_last_and_back_within_a_window() {
     assert_eq!(rig.keys(Kind::Movie), numbers(0..24), "back at the head, the same cards");
 }
 
+/// The first paint is the preview, half of a one-source window, and the row asks to go on with
+/// focus in the preview's second half. Going on reads the rest of the window that stands: sliding
+/// it instead would drop the whole preview, the focused card with it.
+#[test]
+fn going_on_from_the_preview_fills_the_window_before_it_slides() {
+    let mut rig = Rig::new(1, Fake::new().movies(300));
+    assert_eq!(rig.keys(Kind::Movie), numbers(0..12), "the first paint is the preview");
+    rig.page(Kind::Movie, false);
+    assert_eq!(rig.shelf(Kind::Movie).window.start, 0, "the window stays where the reader is");
+    assert_eq!(rig.keys(Kind::Movie), numbers(0..24), "and every card of the preview keeps its place");
+    rig.page(Kind::Movie, false);
+    assert_eq!(rig.keys(Kind::Movie), numbers(12..36), "a full window slides by half");
+}
+
 #[test]
 fn a_mock_empty_for_every_typed_listing_still_reaches_every_hit_of_every_row() {
     let mut fake = Fake { typed: false, ..Fake::default() }.movies(80).tv(30, 30);
@@ -140,6 +161,7 @@ fn shows_come_first_and_the_episodes_are_split_off_at_the_show_count() {
 fn a_new_query_releases_every_lane_window_and_pending_ask() {
     let mut rig = Rig::new(1, Fake::new().movies(100));
     rig.page(Kind::Movie, false);
+    rig.page(Kind::Movie, false);
     assert!(rig.owner.state.wins[0].lo > 0);
     // a slide that cannot finish: its source keeps failing, so the ask stays pending
     rig.fake.lock().unwrap().fail_listings = usize::MAX;
@@ -158,6 +180,7 @@ fn a_new_query_releases_every_lane_window_and_pending_ask() {
 #[test]
 fn a_withdrawn_slide_is_not_committed_when_its_sources_answer() {
     let mut rig = Rig::new(1, Fake::new().movies(100));
+    rig.page(Kind::Movie, false);
     rig.page(Kind::Movie, false);
     let lo = rig.owner.state.wins[0].lo;
     assert!(lo > 0);
@@ -213,7 +236,8 @@ fn a_lane_read_that_fails_loses_no_hit_and_does_not_move_the_focused_card() {
         if !rig.shelf(Kind::Movie).window.after { break; }
         let held = drawn(&rig, Kind::Movie);
         let before = rig.shelf(Kind::Movie).window.start;
-        rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: before });
+        let asked = rig.seen(Kind::Movie);
+        rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: asked });
         let mut frames = 0;
         // while a source still owes its read the cards stay where they are
         while rig.owner.state.wins[0].pending.is_some() && frames < 800 {
@@ -288,7 +312,7 @@ fn a_server_that_fails_fifty_times_then_recovers_is_merged_in_and_loses_no_hit()
     // and the depths already passed are read back as the row is paged back
     for _ in 0..100 {
         if rig.shelf(Kind::Movie).window.start == 0 { break; }
-        let from = rig.shelf(Kind::Movie).window.start;
+        let from = rig.seen(Kind::Movie);
         rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: true, seen: from });
         for _ in 0..4 * RETRY_FRAMES {
             if rig.owner.state.wins[0].pending.is_none() && !rig.owner.state.src[2].skipped[0] { break; }
@@ -307,12 +331,20 @@ fn a_server_that_fails_fifty_times_then_recovers_is_merged_in_and_loses_no_hit()
 #[test]
 fn an_ask_computed_from_a_window_the_row_has_since_slid_is_refused() {
     let mut rig = Rig::new(1, Fake::new().movies(300));
-    let first = rig.shelf(Kind::Movie).window.start;
+    // the preview fills where it stands: an ask computed from its twelve cards is stale too
+    let preview = rig.seen(Kind::Movie);
+    rig.page(Kind::Movie, false);
+    let filled = rig.seen(Kind::Movie);
+    assert_eq!((preview, filled), ((0, 12), (0, 24)), "the fill landed");
+    rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: preview });
+    rig.drain(6 * nsrc() + 12);
+    assert_eq!(rig.seen(Kind::Movie), filled, "the filled window did not slide");
+    let first = filled.0;
     rig.page(Kind::Movie, false);
     let slid = rig.shelf(Kind::Movie).window.start;
     assert!(slid > first, "the slide landed");
     let keys = rig.keys(Kind::Movie);
-    rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: first });
+    rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: filled });
     rig.drain(6 * nsrc() + 12);
     assert_eq!((rig.shelf(Kind::Movie).window.start, rig.keys(Kind::Movie)), (slid, keys), "the window did not move");
     assert!(rig.owner.state.wins[0].pending.is_none());
@@ -329,7 +361,7 @@ fn a_row_whose_every_landing_meets_a_stale_ask_still_reaches_its_last_card() {
     let mut seen = rig.keys(Kind::Movie);
     for _ in 0..200 {
         if !rig.shelf(Kind::Movie).window.after { break; }
-        let stale = rig.shelf(Kind::Movie).window.start;
+        let stale = rig.seen(Kind::Movie);
         rig.page(Kind::Movie, false);
         rig.owner.state.run(&rig.owner.adapter, SearchCmd::Page { kind: Kind::Movie, before: false, seen: stale });
         rig.drain(6 * nsrc() + 12);

@@ -1446,3 +1446,108 @@ fn a_row_withdraws_its_slide_when_focus_walks_back_from_the_edge() {
     let (_, totals) = walk(&mut screen, 17, Some(inside));
     assert_eq!(totals, (0, 1), "the first card out of the zone withdraws the slide");
 }
+
+/// The invariant behind "focus never moves under the user" on a Search row, driven over the real
+/// screen and focus engine and a stand-in store that applies the commands it is sent the way the
+/// search store does: a `Page` ask is refused when it names a window the store has since replaced
+/// (`seen`, the start and the cards held) or one is already out; it lands after a random delay,
+/// filling the twelve-card preview to a window where it stands and after that sliding the 24-card
+/// window twelve places; a `PageCancel` drops the one out. Random walks of presses (runs, bursts,
+/// reversals, 100 ms repeats) meet random landing delays (one frame to five seconds), and the
+/// frame a landing arrives in is stepped on the view captured before it. On EVERY frame the
+/// focused card changes only by a press and by exactly one place and is inside the window the
+/// store holds. A held key then reaches the last hit and walks back to the first.
+#[test]
+fn no_landing_on_a_search_row_ever_moves_the_card_under_the_focus() {
+    let _serial = plx_base::testlock::serial();
+    const TOTAL: usize = 24 + 12 * 8;
+    let publication = |lo: usize, held: usize| Shelf {
+        window: plx_data::search::Window { start: lo, before: lo > 0, after: lo + held < TOTAL },
+        kind: Kind::Movie,
+        items: (lo..lo + held).map(|i| movie(&format!("m-{i}"))).collect(),
+    };
+    for seed in 1..=8u64 {
+        let mut rng = plx_ui::fixture::Walk(seed);
+        let mut fixture = Fixture::new();
+        // what the store holds: the preview, before any page was asked
+        let (mut lo, mut held) = (0usize, 12usize);
+        fixture.query("walk").shelves(vec![publication(lo, held)]);
+        let mut screen = fixture.screen();
+        let mut engine = seated(&screen, &fixture);
+        let start = screen.key(screen.rows[0].elems[0]);
+        engine.enter(OWNER, &screen, FocusTarget::Elem(start), None, &fixture.cx(None));
+        deliver(&mut screen, &fixture, Some(start), ScreenEvent::FocusMoved { from: None, to: start, by: By::Dir });
+        // the hit under the focus, read from the view a frame draws
+        let hit_now = |screen: &SearchScreen, fixture: &Fixture, key: FocusKey<u32>| -> Option<usize> {
+            let col = screen.rows[0].elems.iter().position(|e| *e == key.elem)?;
+            match fixture.search.view().shelves().first()?.items.get(col)? {
+                Item::Media(m) => m.rk.strip_prefix("m-")?.parse().ok(),
+                _ => None,
+            }
+        };
+        // (frame the page lands on, whether it slides toward the start)
+        let mut pending: Option<(u32, bool)> = None;
+        let (mut dir_right, mut run_left, mut cadence) = (true, 40u64, 6u32);
+        let mut expected = 0usize;
+        let mut reached = (false, false);
+        let mut landings = 0u32;
+        let frames = 24_000u32;
+        for frame in 1..frames + 6000 {
+            let at = format!("seed {seed}, frame {frame}, window {lo}+{held}");
+            let tail = frame >= frames;
+            if !tail && run_left == 0 {
+                dir_right = rng.below(3) != 0 && expected + 4 < TOTAL;
+                let longest = if rng.below(4) == 0 { 40 } else { 14 };
+                run_left = 1 + rng.below(longest);
+                cadence = [1, 2, 6, 6, 6, 12, 30][rng.below(7) as usize];
+            }
+            let (right, due) = if tail { (!reached.0, frame % 6 == 0) } else { (dir_right, frame % cadence == 0) };
+            // the app's frame: the captured view predates this frame's landing
+            let mut landed = None;
+            if pending.is_some_and(|(due, _)| frame >= due) {
+                let (_, before) = pending.take().unwrap();
+                let next = if before { (lo.saturating_sub(12), 24) }
+                    else if held < 24 { (lo, 24.min(TOTAL - lo)) }
+                    else { ((lo + 12).min(TOTAL - 24), 24) };
+                if next != (lo, held) {
+                    (lo, held) = next;
+                    landed = Some(publication(lo, held));
+                    landings += 1;
+                }
+            }
+            if due {
+                let from = engine.current(OWNER);
+                let to = step_dir(&mut screen, &fixture, &mut engine, if right { Dir::Right } else { Dir::Left });
+                if to != from { expected = if right { expected + 1 } else { expected - 1 }; }
+                run_left = run_left.saturating_sub(1);
+            }
+            let key = engine.current(OWNER).expect("focus is on the row");
+            let (_, out, _) = deliver(&mut screen, &fixture, Some(key), ScreenEvent::Tick(tick(frame)));
+            for fx in &out {
+                match &fx.fx {
+                    Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(SearchCmd::Page { before, seen, .. }))) => {
+                        if *seen == (lo, held) && pending.is_none() {
+                            pending = Some((frame + 1 + rng.below(300) as u32, *before));
+                        }
+                    }
+                    Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(SearchCmd::PageCancel { seen, .. }))) => {
+                        if *seen == lo { pending = None; }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(next) = landed {
+                fixture.shelves(vec![next]);
+                deliver(&mut screen, &fixture, Some(key), ScreenEvent::StoreChanged(StoreId::Search.ord(), frame));
+                assert!(screen.rows[0].elems.contains(&key.elem), "{at}: the landing took the focused card out of the row");
+            }
+            assert_eq!(hit_now(&screen, &fixture, key), Some(expected), "{at}: the focused card is the one the keys walked to");
+            assert!((lo..lo + held).contains(&expected), "{at}: focus {expected} outside the window");
+            if expected == TOTAL - 1 { reached.0 = true; }
+            if reached.0 && expected == 0 { reached.1 = true; }
+        }
+        assert!(reached.0, "seed {seed}: the last hit is reachable");
+        assert!(reached.1, "seed {seed}: and so is the first");
+        assert!(landings > 20, "seed {seed}: the windows slid under the walk: {landings}");
+    }
+}
