@@ -11,7 +11,7 @@ itself reports:
     with focusx, per frame the focused card moves. Every page that draws a card section
     (`plx_ui::card_probe`) adds `cdx cdy cdw` (the card's DRAWN screen rect), `cdi cdn` (its slot
     in the run of cards the section holds and that run's length), `cdg` (index in the source),
-    `cdk` (the ratingKey in its artwork path: the stable key), `cda` (texture resident), `cdr`
+    `cdk` (the ratingKey in its artwork path: the stable key; reach is graded on its order), `cda` (texture resident), `cdr`
     (posters that were on screen with their picture and went back to the placeholder in place,
     running total over every card drawn; one per occurrence), `cdb` (cards that left the screen and
     came back without a picture they once had: reported, not graded, since a 64-slot store cannot
@@ -199,6 +199,7 @@ def analyse_focus(samples, keys, order, stride=1, window_max=None):
     last = len(order) - 1
     fails, steps, last_i, last_x, last_y, last_t, last_slot = [], [], None, None, None, None, None
     max_cdn, max_jump, rebases, regress, returned = 0, 0, 0, 0, 0
+    graded_cdg, cdg_ahead = 0, 0  # frames that carry both `cdi` and `cdg`; those where cdg > cdi
     off = {"card_partial": 0, "card_off": 0, "caption_partial": 0, "caption_off": 0,
            "min_x": None, "max_right": None, "min_y": None, "max_y": None, "card_off_y": 0, "frames": 0}
     first_key = keys[0][0] if keys else float("inf")
@@ -211,6 +212,9 @@ def analyse_focus(samples, keys, order, stride=1, window_max=None):
         slot = int(f["cdi"]) if "cdi" in f else (int(f["col"]) if "col" in f else None)
         if "cdn" in f:
             max_cdn = max(max_cdn, int(f["cdn"]))
+        if "cdi" in f and "cdg" in f:
+            graded_cdg += 1
+            cdg_ahead += int(f["cdg"]) > int(f["cdi"])
         if "cdr" in f:
             regress = max(regress, int(f["cdr"]))
         if "cdb" in f:
@@ -276,9 +280,17 @@ def analyse_focus(samples, keys, order, stride=1, window_max=None):
     if window_max is not None and max_cdn > window_max:
         fails.append(f"window bound broken: the section held {max_cdn} cards > {window_max}")
     reached = [index[item_of(f)] for _, f in samples if item_of(f) in index]
+    # `cdg` is the card's place in the whole listing, `cdi` its slot in the window held. They agree
+    # only while the window has not slid, so a walk that went past one window with `cdg == cdi` on
+    # every frame has a faulty read-out (a shelf once passed the slot as the position, which is
+    # what failed six television scenes at "item 23").
+    if graded_cdg and reached and max_cdn and max(reached) >= max_cdn and not cdg_ahead:
+        fails.append(f"probe fault: the walk reached item {max(reached)} past a window of {max_cdn} cards, "
+                     f"yet `cdg` never exceeded `cdi` in {graded_cdg} frames (cdg must be the position in the "
+                     f"whole listing)")
     tail = (last // stride) * stride if order else 0
     return {"focus_changes": len(steps), "skips": skips, "coalesced_steps": coalesced, "max_cdn": max_cdn, "max_jump_px": max_jump,
-            "rebases": rebases, "first": min(reached) if reached else None,
+            "rebases": rebases, "cdg_ahead": cdg_ahead, "first": min(reached) if reached else None,
             "last": max(reached) if reached else None, "tail_row_start": tail,
             "art_regressions": regress, "art_returned_bare": returned, "off_canvas": off}, fails
 
@@ -652,6 +664,16 @@ def selftest():
     found, fails = analyse_focus(good, keys, order, 1, 24)
     assert not fails, fails
     assert found["off_canvas"]["card_partial"] == 0 and found["max_cdn"] == 24 and found["last"] == 29
+    # `cdg` is the listing position, `cdi` the window slot: a walk past one window must show
+    # cdg > cdi at least once. A read-out that repeats the slot as cdg is a probe fault.
+    slid = [(t, dict(f, cdn="24", cdi=str(min(i, 23)), cdg=str(i))) for i, (t, f) in enumerate(good)]
+    slid = [(1.0 + i * 0.1, dict(f, rk=str(100 + i + 24), cdk=str(100 + i + 24))) for i, (_, f) in enumerate(slid)]
+    found, fails = analyse_focus(slid, keys, order, 1, 24)
+    assert not fails and found["cdg_ahead"] > 0, (found, fails)
+    stuck = [(t, dict(f, cdg=f["cdi"])) for t, f in slid]
+    assert any("probe fault" in f for f in analyse_focus(stuck, keys, order, 1, 24)[1]), "cdg == cdi must fail"
+    # a walk that never left the first window has nothing to compare
+    assert not analyse_focus([(t, dict(f, cdg=f["cdi"])) for t, f in good[:10]], keys, order, 1, 24)[1]
     # a teleport: same card, drawn 1200 px away in one frame (x), or 700 px in y
     bad = list(good) + [(5.0, dict(good[-1][1], cdx="-300"))]
     assert any("slot jump" in f and "in x" in f for f in analyse_focus(bad, keys, order, 1, 24)[1])

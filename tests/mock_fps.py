@@ -518,6 +518,7 @@ def describe_paging(window, forward_keys, min_forward):
 
 
 FOCUS_CD_RE = re.compile(r"\bcdx=(-?\d+) cdy=(-?\d+) cdw=(\d+).*?\bcdg=(\d+)")
+FOCUS_CDK_RE = re.compile(r"\bcdk=(\S+)")
 CANVAS_W = 1920  # plx_base::surface::LOGICAL_W: every drawn x in the fingerprint is in these pixels
 
 
@@ -527,10 +528,12 @@ def describe_reach(window, route, reach):
     `plxnative-focusx` read-out of `plx_ui::card_probe`) on `focus route=<route>` lines of the
     walk's window. A walk that never got past the first window measured nothing, so it fails below
     `min_global`. Also counts the frames the focused card was drawn partly outside the canvas: a
-    finding in the detail, never a failure."""
+    finding in the detail, never a failure. The detail and the failure also name how many DISTINCT
+    cards (`cdk=`, the stable key) were focused, which a fault in `cdg` cannot hide: a walk whose
+    `cdg` stalls while the cards keep changing is a probe fault, not a list that never paged."""
     rx = re.compile(rf"^focus route={re.escape(route)}\b")
     region = reach.get("region")
-    deepest, frames, off = None, 0, 0
+    deepest, frames, off, cards = None, 0, 0, set()
     for ln in window or []:
         if not rx.match(ln) or (region and f"region={region} " not in ln + " "):
             continue
@@ -541,13 +544,19 @@ def describe_reach(window, route, reach):
         deepest = g if deepest is None else max(deepest, g)
         frames += 1
         off += x < 0 or x + w > CANVAS_W or y < 0
-    detail = f" | focused card reached item {deepest} ({frames} drawn frames, {off} partly off the canvas)"
+        k = FOCUS_CDK_RE.search(ln)
+        if k:
+            cards.add(k.group(1))
+    detail = (f" | focused card reached item {deepest} ({frames} drawn frames, {off} partly off the canvas, "
+              f"{len(cards)} distinct cards focused)")
     need = int(reach["min_global"])
     if deepest is None or deepest < need:
         return (f"paging did not happen: the focused card reached item "
                 f"{'none' if deepest is None else deepest} on `focus route={route}"
                 f"{' region=' + region if region else ''}`, below the {need} the scene requires "
-                f"(is `plxnative-focus` + `plxnative-focusx` armed?)"), detail
+                f"({len(cards)} distinct cards were focused: far more of them than `cdg` reached "
+                f"means the probe's `cdg` is wrong, not that the list never paged; is "
+                f"`plxnative-focus` + `plxnative-focusx` armed?)"), detail
     return None, detail
 
 

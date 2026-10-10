@@ -6674,24 +6674,40 @@ class FpsMock(unittest.TestCase):
             self.assertEqual(args[args.index("--link") + 1], sc["mock"]["link"][0])
 
     FOCUSX = ("focus route=library pill=-1 card=1 menu=0 region=grid row=4 col=2 sid=0 rk=77 cdx={x} cdy=300 "
-              "cdw=255 cdi=2 cdn=36 cdg={g} cda=1 cdr=0 cdk=77 cdc=100 cdcw=140 press=0")
+              "cdw=255 cdi=2 cdn=36 cdg={g} cda=1 cdr=0 cdk={k} cdc=100 cdcw=140 press=0")
 
     def test_describe_reach_fails_a_walk_that_never_paged_and_counts_frames_off_the_canvas(self):
         reach = {"route": "library", "region": "grid", "min_global": 120}
-        deep = [self.FOCUSX.format(x=90, g=6), self.FOCUSX.format(x=-300, g=130), self.FOCUSX.format(x=1800, g=131),
+        deep = [self.FOCUSX.format(x=90, g=6, k=77), self.FOCUSX.format(x=-300, g=130, k=130), self.FOCUSX.format(x=1800, g=131, k=131),
                 "focus route=detail region=grid cdx=1 cdy=1 cdw=1 cdg=9999"]
         fail, detail = self.mf.describe_reach(deep, "library", reach)
         self.assertIsNone(fail)
-        self.assertIn("reached item 131 (3 drawn frames, 2 partly off the canvas)", detail)
+        self.assertIn("reached item 131 (3 drawn frames, 2 partly off the canvas, 3 distinct cards focused)", detail)
         fail, _ = self.mf.describe_reach(deep[:1], "library", reach)
         self.assertIn("paging did not happen", fail)
         self.assertIn("reached item 6", fail)
         fail, _ = self.mf.describe_reach([], "library", reach)
         self.assertIn("reached item none", fail)
         # a different region's lines do not count towards a region's reach
-        fail, _ = self.mf.describe_reach([self.FOCUSX.format(x=90, g=500).replace("region=grid", "region=shelf")],
+        fail, _ = self.mf.describe_reach([self.FOCUSX.format(x=90, g=500, k=500).replace("region=grid", "region=shelf")],
                                          "library", reach)
         self.assertIn("paging did not happen", fail)
+
+    def test_describe_reach_names_the_distinct_cards_so_a_stalled_cdg_is_visible(self):
+        """A probe that reports the window slot as `cdg` (the defect behind six TV scenes failing
+        at "item 23") stalls `cdg` while the cards keep changing: the failure must say so."""
+        reach = {"route": "library", "region": "shelf", "min_global": 48}
+        stalled = [self.FOCUSX.format(x=90, g=i % 24, k=1000 + i).replace("region=grid", "region=shelf")
+                   for i in range(75)]
+        fail, detail = self.mf.describe_reach(stalled, "library", reach)
+        self.assertIn("reached item 23", fail)
+        self.assertIn("75 distinct cards were focused", fail)
+        self.assertIn("probe's `cdg` is wrong", fail)
+        self.assertIn("75 distinct cards focused", detail)
+        healthy = [self.FOCUSX.format(x=90, g=i, k=1000 + i).replace("region=grid", "region=shelf") for i in range(75)]
+        fail, detail = self.mf.describe_reach(healthy, "library", reach)
+        self.assertIsNone(fail)
+        self.assertIn("reached item 74 (75 drawn frames, 0 partly off the canvas, 75 distinct cards focused)", detail)
 
     def test_a_reach_walk_is_up_once_its_first_fingerprint_is_logged(self):
         sc = self.scenes["search-row-paging-held-3g"]
