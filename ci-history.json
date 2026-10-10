@@ -1,4 +1,4 @@
-{"updated":"2026-10-10T07:52:05Z",
+{"updated":"2026-10-10T08:21:12Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -2159,7 +2159,8 @@
 {"id":38009397837,"at":"2026-10-10T00:31:09Z","sha":"60f99c77e","title":"Subtitles: stop cutting a cue off after three lines","pr":588,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":96,"Linux simulator build + launch":187,"macOS simulator build + launch":187,"Windows launcher syntax":15}},
 {"id":38009923733,"at":"2026-10-10T00:38:36Z","sha":"2aeff46f9","title":"Sign-out forgets the plaintext-connection answers","pr":589,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":98,"Windows launcher syntax":14,"Linux simulator build + launch":215,"macOS simulator build + launch":126}},
 {"id":38010531379,"at":"2026-10-10T00:47:09Z","sha":"15713385c","title":"Sign-out forgets the plaintext-connection answers","pr":589,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":14,"macOS simulator build + launch":129,"Linux simulator build + launch":214,"macOS tests against bundled FFmpeg and ASS":142}},
-{"id":38035595043,"at":"2026-10-10T07:46:48Z","sha":"c8cc6828a","title":"Playback: don't direct-play an undecodable audio codec when tracks aren't loaded","pr":587,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":18,"macOS simulator build + launch":194,"macOS tests against bundled FFmpeg and ASS":87,"Linux simulator build + launch":206}}
+{"id":38035595043,"at":"2026-10-10T07:46:48Z","sha":"c8cc6828a","title":"Playback: don't direct-play an undecodable audio codec when tracks aren't loaded","pr":587,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":18,"macOS simulator build + launch":194,"macOS tests against bundled FFmpeg and ASS":87,"Linux simulator build + launch":206}},
+{"id":38037357421,"at":"2026-10-10T08:17:20Z","sha":"e84b1cd9e","title":"Stop the public rewrite from resurrecting preferences set back to their default (#582)","pr":586,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"Linux simulator build + launch":220,"macOS simulator build + launch":151,"macOS tests against bundled FFmpeg and ASS":97}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
