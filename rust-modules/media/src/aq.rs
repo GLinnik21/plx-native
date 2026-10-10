@@ -134,7 +134,7 @@ pub fn aq_push(
     key: c_int,
     es: c_int,
 ) -> c_int {
-    aq_push_park(q, data, len, pts, key, es, None)
+    aq_push_park(q, data, len, pts, key, es, None, None)
 }
 
 /// [`aq_push`] that runs `drain` whenever the queue is full.
@@ -154,7 +154,29 @@ pub fn aq_push_with_drain(
     es: c_int,
     mut drain: impl FnMut() -> bool,
 ) -> c_int {
-    aq_push_park(q, data, len, pts, key, es, Some(&mut drain))
+    aq_push_park(q, data, len, pts, key, es, Some(&mut drain), None)
+}
+
+/// [`aq_push_with_drain`] whose cap can be overrun while `overrun(queued_bytes)` says so.
+///
+/// For a lane whose consumer cannot make progress until the OTHER lane delivers: a file muxed
+/// with its audio far ahead of its video fills the audio cap before the demuxer has read a single
+/// video packet, and the pipeline will not drain audio it cannot present. Parking there parks the
+/// only thread that could read the video, so playback sits at 0 s forever. The caller's predicate
+/// decides when growing past the soft cap is the lesser evil (and bounds how far); a parked push
+/// re-checks it on the 10 ms timed wait, so a peer that drains is noticed without a signal.
+#[allow(clippy::too_many_arguments)]
+pub fn aq_push_with_drain_overrun(
+    q: *mut AuQueue,
+    data: *const c_uchar,
+    len: c_int,
+    pts: i64,
+    key: c_int,
+    es: c_int,
+    mut drain: impl FnMut() -> bool,
+    overrun: impl Fn(c_long) -> bool,
+) -> c_int {
+    aq_push_park(q, data, len, pts, key, es, Some(&mut drain), Some(&overrun))
 }
 
 /// A `not_full` timed-wait deadline 10 ms out, on the SAME clock `init_not_full_cond` bound the
@@ -202,6 +224,7 @@ fn add_10ms(ts: libc::timespec) -> libc::timespec {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn aq_push_park(
     q: *mut AuQueue,
     data: *const c_uchar,
@@ -210,7 +233,14 @@ fn aq_push_park(
     key: c_int,
     es: c_int,
     mut drain: Option<&mut dyn FnMut() -> bool>,
+    overrun: Option<&dyn Fn(c_long) -> bool>,
 ) -> c_int {
+    // Called with `(*q).m` held; `overrun` may lock OTHER queues, never this one.
+    let full = |q: *mut AuQueue| unsafe {
+        (*q).queued_bytes > (*q).max_bytes
+            && (*q).abort == 0
+            && !overrun.is_some_and(|f| f((*q).queued_bytes))
+    };
     if q.is_null() || len < 0 {
         return -1;
     }
@@ -228,13 +258,15 @@ fn aq_push_park(
             ptr::copy_nonoverlapping(data, node_data(n), len as usize);
         }
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
-        while (*q).queued_bytes > (*q).max_bytes && (*q).abort == 0 {
+        while full(q) {
             if let Some(drain) = drain.as_mut() {
                 libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
                 let keep_polling = drain();
                 libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
-                if (*q).queued_bytes > (*q).max_bytes && (*q).abort == 0 {
-                    if keep_polling {
+                if full(q) {
+                    // An overrun predicate watches state no signal of THIS queue reports, so it
+                    // must keep polling even when the drain has nothing more to do.
+                    if keep_polling || overrun.is_some() {
                         let ts = aq_park_deadline();
                         libc::pthread_cond_timedwait(
                             ptr::addr_of_mut!((*q).not_full),
@@ -451,6 +483,67 @@ mod tests {
         assert!(!n.is_null());
         unsafe { libc::free(n as *mut c_void) };
         assert_eq!(worker.join().unwrap(), 0);
+        aq_destroy(&mut *q);
+    }
+
+    /// The interleave deadlock: audio far ahead of video fills the audio cap before the demuxer
+    /// has read any video. A push whose overrun predicate holds must not park.
+    #[test]
+    fn a_push_over_the_cap_completes_while_overrun_is_allowed() {
+        let mut q = aq_new(8);
+        let data = [1u8; 16];
+        assert_eq!(aq_push(&mut *q, data.as_ptr(), 16, 0, 1, 2), 0);
+        let started = std::time::Instant::now();
+        let r = aq_push_with_drain_overrun(&mut *q, data.as_ptr(), 16, 1, 1, 2, || false, |queued| {
+            queued < 64
+        });
+        assert_eq!(r, 0);
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+        assert_eq!(aq_bytes(&mut *q), 32);
+        aq_abort(&mut *q);
+        aq_destroy(&mut *q);
+    }
+
+    /// The predicate is re-read while parked, even when the drain says there is nothing to poll:
+    /// the peer lane emptying is a fact this queue is never signalled about.
+    #[test]
+    fn a_parked_push_notices_when_overrun_becomes_allowed() {
+        let mut q = aq_new(8);
+        let q_addr = (&mut *q as *mut AuQueue) as usize;
+        let data = [1u8; 16];
+        assert_eq!(aq_push(&mut *q, data.as_ptr(), 16, 0, 1, 2), 0);
+        let peer_empty = Arc::new(AtomicBool::new(false));
+        let peer_worker = Arc::clone(&peer_empty);
+        let worker = std::thread::spawn(move || {
+            aq_push_with_drain_overrun(q_addr as *mut AuQueue, data.as_ptr(), 16, 1, 1, 2, || false, move |_| {
+                peer_worker.load(Ordering::Acquire)
+            })
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!worker.is_finished(), "a full queue parks while overrun is refused");
+        peer_empty.store(true, Ordering::Release);
+        assert_eq!(worker.join().unwrap(), 0);
+        assert_eq!(aq_bytes(&mut *q), 32);
+        aq_abort(&mut *q);
+        aq_destroy(&mut *q);
+    }
+
+    /// The ceiling still holds: once the predicate refuses, the push parks until abort.
+    #[test]
+    fn overrun_stops_at_the_predicates_ceiling() {
+        let mut q = aq_new(8);
+        let q_addr = (&mut *q as *mut AuQueue) as usize;
+        let data = [1u8; 16];
+        assert_eq!(aq_push(&mut *q, data.as_ptr(), 16, 0, 1, 2), 0);
+        let worker = std::thread::spawn(move || {
+            aq_push_with_drain_overrun(q_addr as *mut AuQueue, data.as_ptr(), 16, 1, 1, 2, || false, |queued| {
+                queued < 16
+            })
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!worker.is_finished(), "a push at the ceiling must park");
+        aq_abort(&mut *q);
+        assert_eq!(worker.join().unwrap(), -1);
         aq_destroy(&mut *q);
     }
 
