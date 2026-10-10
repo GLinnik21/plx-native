@@ -1411,3 +1411,38 @@ fn a_row_with_hits_past_its_window_asks_for_the_next_one_and_keeps_the_focused_c
     assert_eq!(screen.rows[0].elems.get(10).copied(), Some(focus.elem), "m-22 keeps its identity at its new place");
     assert_eq!(screen.rows[0].elems.len(), 24);
 }
+
+/// The slide a row asked for is withdrawn once focus has left the trailing edge's zone, so the
+/// sources answering afterwards cannot commit a window that takes the focused card out of the row.
+#[test]
+fn a_row_withdraws_its_slide_when_focus_walks_back_from_the_edge() {
+    let _serial = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    let mut first = shelf(Kind::Movie, "m", 24);
+    first.window = plx_data::search::Window { start: 0, before: false, after: true };
+    fixture.query("slide").shelves(vec![first]);
+    let mut screen = fixture.screen();
+    let count = |out: &[Stamped<HostFixture>], cancel: bool| out.iter().filter(|e| match &e.fx {
+        Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(SearchCmd::PageCancel { kind: Kind::Movie, .. }))) => cancel,
+        Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(SearchCmd::Page { kind: Kind::Movie, .. }))) => !cancel,
+        _ => false,
+    }).count();
+    let mut at = 100;
+    let mut walk = |screen: &mut SearchScreen, col: usize, from: Option<FocusKey<u32>>| {
+        let focus = screen.key(screen.rows[0].elems[col]);
+        deliver(screen, &fixture, Some(focus), ScreenEvent::FocusMoved { from, to: focus, by: By::Dir });
+        let mut totals = (0, 0);
+        for _ in 0..4 {
+            at += 1;
+            let out = deliver(screen, &fixture, Some(focus), ScreenEvent::Tick(tick(at))).1;
+            totals = (totals.0 + count(&out, false), totals.1 + count(&out, true));
+        }
+        (focus, totals)
+    };
+    let (edge, totals) = walk(&mut screen, 22, None);
+    assert_eq!(totals, (1, 0), "asked once at the edge");
+    let (inside, totals) = walk(&mut screen, 18, Some(edge));
+    assert_eq!(totals, (0, 0), "the zone still holds focus");
+    let (_, totals) = walk(&mut screen, 17, Some(inside));
+    assert_eq!(totals, (0, 1), "the first card out of the zone withdraws the slide");
+}
