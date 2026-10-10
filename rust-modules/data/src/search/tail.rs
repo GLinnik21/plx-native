@@ -273,7 +273,25 @@ impl Lane {
             let Some(item) = row_item(row, sid) else { continue };
             if self.sample && self.preview.iter().any(|x| key_of(x) == key_of(&item)) { continue; }
             if let Item::Tag(t) = &item {
-                if self.rows.values().chain(self.preview.iter()).any(|x| matches!(x, Item::Tag(o) if same_tag(o, t))) { continue; }
+                // The same person listed again for another library section: the preview fold SUMS
+                // their counts (`search::project`), so the card still held takes this row's count
+                // rather than the row being dropped. A card that has left the window cannot be
+                // reached from here, and skipping a second sighting of a card already drawn is
+                // right; the preview's own cards are never edited (a sample lane's listing repeats
+                // them by design, and their counts were folded when the preview was).
+                if self.preview.iter().any(|x| matches!(x, Item::Tag(o) if same_tag(o, t))) { continue; }
+                let held = self.rows.iter_mut().find_map(|(d, x)| match x {
+                    Item::Tag(o) if same_tag(o, t) => Some((*d, o)),
+                    _ => None,
+                });
+                if let Some((at, o)) = held {
+                    if at != depth {
+                        o.count += t.count;
+                        o.fav |= t.fav;
+                        if o.thumb.is_empty() { o.thumb = t.thumb.clone(); }
+                    }
+                    continue;
+                }
             }
             self.rows.insert(depth, item);
         }

@@ -26,6 +26,8 @@ pub(super) struct Fake {
     pub fail_listings: usize,
     /// The server the store is asking for now ([`Io::serving`]); stamped on the cards of `hubs`.
     pub serving: u16,
+    /// The count badge of the n-th row of `people`; a missing entry is zero.
+    pub counts: Vec<i64>,
 }
 
 impl Fake {
@@ -52,7 +54,8 @@ impl Io for Fake {
         let rows: Vec<SearchResult> = match kind {
             SearchKind::Movies => self.movies.iter().map(|m| SearchResult { metadata: Some(md(m.0, m.1)), directory: None }).collect(),
             SearchKind::Tv => self.tv.iter().map(|m| SearchResult { metadata: Some(md(m.0, m.1)), directory: None }).collect(),
-            SearchKind::People => self.people.iter().map(|n| SearchResult { metadata: None, directory: Some(person(*n)) }).collect(),
+            SearchKind::People => self.people.iter().enumerate().map(|(i, n)| SearchResult { metadata: None,
+                directory: Some(Tag { count: self.counts.get(i).copied().unwrap_or(0), ..person(*n) }) }).collect(),
         };
         mc.search_result = rows.into_iter().skip(req.start).take(req.size).collect();
         Some(mc)
@@ -236,4 +239,19 @@ fn a_read_that_needs_more_than_one_jobs_requests_says_so_and_a_second_job_closes
         lane.read(Kind::Movie, &mut tv, range.clone(), &mut fake, sid()).unwrap();
     }
     assert!(range.clone().all(|d| lane.get(d).map(key) == Some(d.to_string())), "no hole in the depths");
+}
+
+#[test]
+fn a_person_listed_in_two_sections_is_one_card_with_the_counts_summed() {
+    let mut fake = Fake::new();
+    // the listing holds person 30 twice (two library sections), 14 depths apart
+    fake.people = (0..44).chain([30]).collect();
+    fake.counts = (0..45).map(|i| match i { 30 => 3, 44 => 4, _ => 0 }).collect();
+    let mut lane = Lane::from_preview(Kind::Person, &preview(&fake, Kind::Person));
+    let mut tv = TvMap::default();
+    lane.read(Kind::Person, &mut tv, 0..60, &mut fake, sid()).unwrap();
+    let cards: Vec<&Item> = (0..60).filter_map(|d| lane.get(d)).collect();
+    let thirty: Vec<u32> = cards.iter().filter_map(|it| match it {
+        Item::Tag(t) if t.tag_key == "k30" => Some(t.count as u32), _ => None }).collect();
+    assert_eq!(thirty, vec![7], "one card, the preview fold's sum");
 }
