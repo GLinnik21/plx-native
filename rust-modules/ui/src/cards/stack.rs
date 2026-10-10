@@ -146,6 +146,13 @@ pub trait StackPage<H: Host> {
     fn recover(&self, _cx: &Cx<'_, H>, _want: &H::Elem) -> Option<H::Elem> {
         None
     }
+    /// The element that now stands for `want` when the page re-keyed it without moving it: a card
+    /// whose slot was a placeholder until its content landed, keyed anew in the same cell. Asked
+    /// before anything else, even of an element the page still shows, so the engine's focus moves
+    /// to the new key in the frame of the landing and the cell under it does not change.
+    fn supersede(&self, _cx: &Cx<'_, H>, _want: &H::Elem) -> Option<H::Elem> {
+        None
+    }
     fn sections(&self, cx: &Cx<'_, H>, out: &mut Vec<SectionSpec<Self::Key>>);
     /// The page-level order focus falls back through when its section empties.
     fn fallback(&self, cx: &Cx<'_, H>, out: &mut Vec<Self::Key>);
@@ -412,6 +419,16 @@ impl<K: Copy + Eq> Stack<K> {
 
     fn index(&self, k: K) -> Option<usize> {
         self.specs.iter().position(|s| s.key == k)
+    }
+
+    /// The cards of grid section `k` the scroll can show, out of its `len`: what the grid draws and
+    /// registers stops for this frame, by the grid's own rule. A page that keeps keys for only some
+    /// of its cards projects these (`None` before the first pass has laid the section out, or
+    /// when `k` is not a grid).
+    pub fn grid_window<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, k: K) -> Option<std::ops::Range<usize>> {
+        let i = self.index(k)?;
+        let Body::Grid(g) = &self.bodies[i] else { return None };
+        Some(g.window(self.len_of(p, cx, i)))
     }
 
     pub fn memory(&self) -> StackMemory<K> {
@@ -1005,6 +1022,9 @@ impl<K: Copy + Eq, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> f
     fn reconcile(&self, want: FocusKey<H::Elem>, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         let (s, p) = (self.stack, self.page);
         let at = |elem| FocusKey { entry: s.entry, elem };
+        if let Some(elem) = p.supersede(cx, &want.elem) {
+            return at(elem);
+        }
         if s.owner(p, cx, &want.elem).is_some() {
             return at(want.elem);
         }

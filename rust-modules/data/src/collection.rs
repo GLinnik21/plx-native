@@ -140,6 +140,17 @@ impl Collection {
         self.pages.evict(&Keep { wanted, focus, restore });
     }
 
+    /// Test support: the pages a [`CollectionCmd::Window`](crate::stores::collection::CollectionCmd::Window)
+    /// asks for (the window's, the focus's and the restore target's, if not held) land from `all`,
+    /// as a server that honours paging would answer them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fill_wanted_for_test(&mut self, all: &[PmsMovie]) {
+        for p in self.wanted_pages() {
+            let rows = all.iter().skip(p * PAGE_SIZE).take(PAGE_SIZE).cloned().collect();
+            self.pages.set_page(p, rows);
+        }
+    }
+
     /// Test support: every row, read through `edit`, and put back (a hole reads as absent).
     #[cfg(any(test, feature = "test-support"))]
     pub fn edit_items_for_test(&mut self, edit: impl FnOnce(&mut Vec<PmsMovie>)) {
