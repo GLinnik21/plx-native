@@ -494,9 +494,9 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
             plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius, false, measure);
         }
     }
-    /// Metadata still pages ahead via `LibraryWork::Want`; a slot whose page has not landed draws
-    /// nothing (its stop still registers).
-    fn loaded(&self, i: usize) -> bool { self.view.item(i).is_some() }
+    // Metadata still pages ahead via `LibraryWork::Want`; a slot whose page has not landed draws
+    // the skeleton of a card whose poster has not loaded (`art` is `Poster(None)`), because the
+    // listing's `total` says the item exists: a hole in the grid reads as "nothing there".
 }
 
 fn window_elem(windows: &[Window], index: usize) -> Option<u32> {

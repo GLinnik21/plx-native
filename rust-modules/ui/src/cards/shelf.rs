@@ -17,6 +17,7 @@ use crate::screen::{
     Activate, At, AxisMask, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step,
     Stop,
 };
+use crate::widgets::Art;
 use crate::{Painter, Rect};
 
 /// Cards past the last visible one the source is asked for.
@@ -626,6 +627,36 @@ impl Shelf {
         for i in (0..n).filter(|&i| focus != Some(i) && visible(i)) {
             let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
             self.draw_card(f, pr, src, i, at, s, false);
+        }
+        self.paint_pending(pr, src, at, sx);
+    }
+
+    /// The cells past an edge the list goes on beyond ([`CardSource::more_after`] /
+    /// [`more_before`](CardSource::more_before)) hold the skeleton of a card whose poster has not
+    /// loaded, so a row that is still loading does not look finished. They are cells of the same
+    /// grid the cards sit in: the page that lands takes them over in place. Nothing registers a
+    /// stop for them, so focus cannot land on one, and nothing is requested for them or kept in
+    /// the pool; a screenful of cells at most is drawn, and only the ones on screen.
+    fn paint_pending<H: Host, S: CardSource<H>>(&self, pr: Painter, src: &S, at: SectionFrame, sx: f32) {
+        let (trailing, leading) = (src.more_after(), src.more_before());
+        if !trailing && !leading {
+            return;
+        }
+        let pitch = self.pitch();
+        let cells = (SCR_W / pitch).ceil() as usize + 1;
+        let n = src.len();
+        let y = at.y - pr.dy();
+        let cell = |index: f32| {
+            let rect = Rect::new(self.style.margin_x + index * pitch, y, self.style.w, self.style.h);
+            if crate::on_axis(rect.x - sx, rect.w, SCR_W, self.margin) {
+                card_row::draw_tile(pr, Art::Poster(None), rect, 1.0, self.style, None);
+            }
+        };
+        if trailing {
+            (0..cells).for_each(|k| cell((n + k) as f32));
+        }
+        if leading {
+            (1..=cells).for_each(|k| cell(-(k as f32)));
         }
     }
 

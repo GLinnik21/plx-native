@@ -85,6 +85,13 @@ screen does not re-seat anything (a scroll TARGET it sets against content that a
 in the scroll's own coordinates, `Grid::pending_shift`); and read a shelf through `heading_lift()` / `under_band()`, not through
 the L0 `CardRow`.
 
+A row that goes on past an edge (`CardSource::more_after`, `more()` unless the source overrides it, / `more_before`, `false`
+unless the source says its window slid off the start: Home, Library and Search do) paints the skeleton of an unloaded poster in the cells past that edge, a screenful at
+most, so a row still loading does not look finished (`Shelf::paint_pending`). They are cells of the
+same grid: no stop, no pool entry, no request, no caption, so focus never lands on one and the
+page that lands takes them over in place. Gate `more_after` on nothing focus-dependent (Home's
+`more()` is gated on focus being near the edge, because that is when it asks; its `more_after` is not).
+
 `GridSpec::new(top, edge)` is the six-column `cards::GRID_STYLE` grid from `MARGIN_X`;
 `.columns(cols, style, left)` sets the column count, card style and left edge (a rail-aware or
 episode grid), and `.external()` selects `ScrollMode::External`, for a grid inside a document whose page scroll

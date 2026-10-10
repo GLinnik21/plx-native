@@ -307,6 +307,8 @@ impl<H: Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     fn loaded(&self, i: usize) -> bool { self.item(i).is_some() }
     fn more(&self) -> bool { self.paging && self.shelf.is_some_and(|shelf| shelf.more) }
     fn page_epoch(&self) -> u32 { self.shelf.map_or(0, |shelf| shelf.epoch) }
+    fn more_after(&self) -> bool { self.shelf.is_some_and(|shelf| shelf.more) }
+    fn more_before(&self) -> bool { self.shelf.is_some_and(|shelf| shelf.offset > 0) }
     fn art(&self, i: usize) -> Art<'_> {
         match (self.item(i), self.shelf) {
             (Some(item), Some(shelf)) if shelf.landscape => Art::Still(Some(tile_facts::of(item))),

@@ -3095,6 +3095,14 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
     fn page_epoch(&self) -> u32 {
         self.home.hub(self.view, self.row).map_or(0, |hub| hub.epoch)
     }
+    /// The placeholder rule is not the paging rule: a row that continues shows it whether or not
+    /// focus is near the edge that asks.
+    fn more_after(&self) -> bool {
+        self.home.hub(self.view, self.row).is_some_and(|hub| hub.more)
+    }
+    fn more_before(&self) -> bool {
+        self.home.hub(self.view, self.row).is_some_and(|hub| hub.offset > 0)
+    }
     fn len(&self) -> usize {
         self.home.rows.get(self.row).map_or(0, |r| r.elems.len())
     }

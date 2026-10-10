@@ -184,6 +184,18 @@ pub trait CardSource<H: Host> {
     fn page_epoch(&self) -> u32 {
         0
     }
+    /// Whether the list goes on past the LAST card, for the placeholders a [`Shelf`] draws there
+    /// until the page lands. [`more`](Self::more) unless the source gates that on where focus is
+    /// (Home and the Library ask for a page only near the edge, but a row that continues
+    /// continues whoever is looking).
+    fn more_after(&self) -> bool {
+        self.more()
+    }
+    /// Whether the list goes on before the FIRST card (the window slid off its start): the
+    /// leading edge's counterpart of [`more_after`](Self::more_after).
+    fn more_before(&self) -> bool {
+        false
+    }
 }
 
 /// Where one card was drawn, handed to [`CardSource::overlay`].

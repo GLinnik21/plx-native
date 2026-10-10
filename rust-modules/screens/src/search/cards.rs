@@ -55,6 +55,7 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
     }
     fn more(&self) -> bool { self.window.after }
     fn page_epoch(&self) -> u32 { self.epoch }
+    fn more_before(&self) -> bool { self.window.before }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         if let (Kind::Episode, Some(Item::Media(media))) = (self.kind, self.items.get(i)) {
             plx_ui::widgets::still_overlay(p, &tile_facts::of(media), tile.rect, tile.radius, false, measure);

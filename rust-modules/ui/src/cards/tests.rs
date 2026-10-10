@@ -48,6 +48,8 @@ struct Cards {
     more: bool,
     /// The store's landing count for the row ([`CardSource::page_epoch`]).
     epoch: u32,
+    /// The list goes on before the first card (the window slid off its start).
+    before: bool,
     /// The screen rect each card was really painted at, as the overlay hook saw it.
     drawn: std::cell::RefCell<Vec<(u32, Rect)>>,
     /// Cards from this index on are not interned yet: `elem` answers the shared header id `0`
@@ -61,7 +63,7 @@ struct Cards {
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, drawn: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0 }
+        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0 }
     }
 }
 
@@ -92,6 +94,9 @@ impl CardSource<FixtureHost> for Cards {
     }
     fn loaded(&self, i: usize) -> bool {
         !self.unloaded.contains(&i)
+    }
+    fn more_before(&self) -> bool {
+        self.before
     }
     fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, _measure: &dyn plx_machine::machine::Measure) {
         self.drawn.borrow_mut().push((self.elems[i], p.to_screen(tile.rect).1));
@@ -1316,6 +1321,124 @@ fn a_landing_that_changed_nothing_the_shelf_sees_restarts_the_ladder_and_is_aske
     // and the ladder starts over: the repeat after it is the first rung
     let gaps = repeat_gaps(&mut r, 0, 60 * 3);
     assert!((gaps[0] - 0.25).abs() < 0.05, "{gaps:?}");
+}
+
+// ---- the loading edge: placeholders where the list goes on ------------------------------------
+
+/// How many skeleton cards the shelf paints that are not real cards: every card draws through the
+/// shared tile (all of this source's art is a skeleton), and only real cards reach the overlay hook.
+fn pending_cells(r: &Rig<Shelf>) -> usize {
+    let cx = r.cx();
+    r.src.drawn.borrow_mut().clear();
+    let (_, frame) = crate::placeholder::capture_declared(|| {
+        let f = DrawFrame::new(&cx, Painter::root());
+        let p = f.painter;
+        r.sect.paint(&f, p, &r.src, SHELF_AT);
+    });
+    let real = r.src.drawn.borrow().len();
+    (frame.of(crate::placeholder::Reason::CardSkeleton) as usize).saturating_sub(real)
+}
+
+/// Most placeholders a row can paint past one edge: a screenful of cells, and one for the cell
+/// that straddles the screen's far side.
+fn pending_bound() -> usize {
+    (crate::consts::SCR_W / (RowStyle::HOME.w + RowStyle::HOME.gap)).ceil() as usize + 1
+}
+
+#[test]
+fn a_row_with_more_past_its_tail_paints_placeholders_there_and_one_without_paints_none() {
+    let mut r = settled::<Shelf>(30);
+    r.land_focus(129, By::Restore);
+    r.run(240);
+    assert_eq!(pending_cells(&r), 0, "the list ends here: nothing past the last card");
+    r.src.more = true;
+    let n = pending_cells(&r);
+    assert!(n >= 1 && n <= pending_bound(), "placeholders past the tail, bounded to a screenful: {n}");
+}
+
+#[test]
+fn a_short_row_that_goes_on_fills_the_viewport_with_placeholders() {
+    let mut r = settled::<Shelf>(3);
+    r.src.more = true;
+    r.land_focus(100, By::Restore);
+    r.run(60);
+    let n = pending_cells(&r);
+    // three cards leave 1920 - 96 - 3 * 280 = 984 px: three whole cells and part of a fourth
+    assert!(n >= 4 && n <= pending_bound(), "the empty viewport is filled: {n}");
+}
+
+#[test]
+fn a_row_with_cards_before_its_head_paints_placeholders_there_and_one_without_paints_none() {
+    let mut r = settled::<Shelf>(30);
+    r.land_focus(100, By::Restore);
+    r.run(240);
+    assert_eq!(pending_cells(&r), 0, "nothing before the first card: no placeholder");
+    r.src.before = true;
+    let n = pending_cells(&r);
+    assert!(n >= 1 && n <= pending_bound(), "placeholders before the head, bounded: {n}");
+    // a row too short to fill the screen has room for both edges' cells at once
+    let mut short = settled::<Shelf>(2);
+    short.land_focus(100, By::Restore);
+    short.run(60);
+    short.src.before = true;
+    let one = pending_cells(&short);
+    short.src.more = true;
+    assert!(pending_cells(&short) > one, "and both edges at once paint both");
+}
+
+/// The card a step from `from` goes to, `None` at the row's edge.
+fn step_to(r: &Rig<Shelf>, from: u32, dir: Dir) -> Option<u32> {
+    match r.sect.neighbour(&r.src, r.key(from), dir) {
+        Step::Move(k) => Some(k.elem),
+        Step::Edge => None,
+    }
+}
+
+#[test]
+fn focus_never_lands_on_a_placeholder() {
+    let mut r = settled::<Shelf>(10);
+    r.src.more = true;
+    r.src.before = true;
+    r.land_focus(109, By::Restore);
+    r.run(240);
+    for stop in r.stops(1.0) {
+        assert!(r.src.elems.contains(&stop.key.elem), "a stop for no card: {}", stop.key.elem);
+    }
+    assert_eq!(step_to(&r, 109, Dir::Right), None, "Right at the last real card is the edge");
+    assert_eq!(step_to(&r, 100, Dir::Left), None, "and Left at the first");
+}
+
+#[test]
+fn a_landing_page_takes_the_placeholders_cells_with_the_row_in_place() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Restore);
+    r.run(240);
+    let x = |r: &Rig<Shelf>, e: u32| Section::place(&r.sect, &r.cx(), &r.src, e, At::Drawn).unwrap().rect.x;
+    let before = x(&r, 129);
+    assert_eq!(step_to(&r, 129, Dir::Right), None, "held at the edge until the page lands");
+    r.src.elems.extend(200..212);
+    r.run(1);
+    // (a pixel of the focus pop's spring settling, not a re-seat)
+    assert!((x(&r, 129) - before).abs() < 2.0, "the focused card did not move: {} -> {}", before, x(&r, 129));
+    assert_eq!(step_to(&r, 129, Dir::Right), Some(200),
+        "and the next repeat of the held key steps onto the first card of the page");
+    r.src.more = false;
+    assert_eq!(pending_cells(&r), 0, "the list ended with that page: no placeholders");
+}
+
+#[test]
+fn placeholders_are_not_pooled_and_a_long_row_paints_the_same_few() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Restore);
+    r.run(240);
+    let (pooled, few) = (r.sect.pool_len(), pending_cells(&r));
+    r.src.elems = (100..1100).collect();
+    r.land_focus(1099, By::Restore);
+    r.run(240);
+    assert!(r.sect.pool_len() <= pooled.max(2) + 1, "no element per placeholder: {}", r.sect.pool_len());
+    assert!(pending_cells(&r) <= few.max(pending_bound()), "the count is the screen's, not the list's");
 }
 
 // ---- idle ------------------------------------------------------------------------------------
