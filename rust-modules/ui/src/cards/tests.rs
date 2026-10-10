@@ -1079,6 +1079,42 @@ fn page_ask_asks_once_per_window_at_the_trailing_edge() {
     assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After), "a reset (focus left the row) asks again");
 }
 
+/// What the owner calls each frame before `page_ask`: the edge whose ask to withdraw.
+fn cancel_frame(r: &mut Rig<Shelf>, offset: usize, active: bool) -> Option<PageEdge> {
+    let cx = cx9_pressed(&r.view, r.ms, r.press, r.focus, r.pressed.or(r.focus));
+    r.sect.page_cancel(&cx, &r.src, offset, active)
+}
+
+#[test]
+fn page_cancel_withdraws_an_ask_once_focus_has_left_its_edge() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    assert_eq!(cancel_frame(&mut r, 0, true), None, "nothing was asked");
+    r.land_focus(129, By::Dir);
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After));
+    r.land_focus(124, By::Dir);
+    assert_eq!(cancel_frame(&mut r, 0, true), None, "still inside the zone: the ask stands");
+    r.land_focus(123, By::Dir);
+    assert_eq!(cancel_frame(&mut r, 0, true), Some(PageEdge::After), "the first card out of the zone withdraws it");
+    assert_eq!(cancel_frame(&mut r, 0, true), None, "once");
+    r.land_focus(129, By::Dir);
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After), "and the edge asks again on return");
+}
+
+#[test]
+fn page_cancel_withdraws_the_leading_ask_and_one_for_a_row_no_longer_shown() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(102, By::Dir);
+    assert_eq!(page_frame(&mut r, 24, true), Some(PageEdge::Before));
+    r.land_focus(106, By::Dir);
+    assert_eq!(cancel_frame(&mut r, 24, true), Some(PageEdge::Before));
+    assert_eq!(page_frame(&mut r, 24, true), None);
+    r.land_focus(102, By::Dir);
+    assert_eq!(page_frame(&mut r, 24, true), Some(PageEdge::Before));
+    assert_eq!(cancel_frame(&mut r, 24, false), Some(PageEdge::Before), "the owner stopped showing the row");
+}
+
 #[test]
 fn page_ask_is_silent_in_the_middle_of_the_row() {
     let mut r = settled::<Shelf>(30);
