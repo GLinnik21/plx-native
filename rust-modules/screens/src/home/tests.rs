@@ -4249,11 +4249,12 @@ fn a_held_right_over_a_sliding_window_never_moves_the_row_under_the_focus() {
     assert!(landings > 60, "the windows slid under the hold: {landings}");
 }
 
-/// A tiny deterministic generator for the walks below (splitmix64).
-struct Walk(u64);
+/// A tiny deterministic generator for the walks below and for the same walks on the Detail and
+/// Search pages (splitmix64).
+pub(crate) struct Walk(pub(crate) u64);
 
 impl Walk {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -4261,7 +4262,7 @@ impl Walk {
         z ^ (z >> 31)
     }
 
-    fn below(&mut self, n: u64) -> u64 { self.next() % n }
+    pub(crate) fn below(&mut self, n: u64) -> u64 { self.next() % n }
 }
 
 /// The invariant behind "focus never moves under the user", driven over the real screen and a stand-in
