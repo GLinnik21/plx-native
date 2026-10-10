@@ -443,6 +443,13 @@ impl<'p, H: Host> Effects<'p, H> {
         self.push(Fx::Remember { group, elem });
     }
 
+    /// How many more effects this step may push before it reaches `MAX_EMIT_PER_STEP`. An emitter
+    /// whose output scales with the data (one effect per server) sizes its batch by this and
+    /// carries the rest to a later step.
+    pub fn remaining(&self) -> u32 {
+        MAX_EMIT_PER_STEP.saturating_sub(self.emitted)
+    }
+
     /// How many effects this step has pushed (the dispatcher's per-step count).
     pub fn emitted(&self) -> u32 {
         self.emitted
