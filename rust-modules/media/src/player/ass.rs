@@ -8,13 +8,17 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 const MAX_SCRIPT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 256 * 1024;
-const MAX_EVENTS: usize = 20_000;
-const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
-const MAX_FONTS: usize = 128;
+// No event-count bound here: `ass_source` already holds a track to a window far under the native
+// library's own guard (`plx_ass_chunk` refuses past 20 000), so a second count would only be a
+// way to hide a track that is otherwise showable.
+pub const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
+/// Bookkeeping charged per font on top of its bytes, so a file of countless tiny attachments is
+/// bounded by the same byte budget without a font-count constant.
+const FONT_OVERHEAD_BYTES: usize = 1024;
 const MAX_PIXELS: usize = 3840 * 2160;
 const MAX_REGIONS: usize = 64;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Event {
     pub start_ms: i64,
     pub duration_ms: i64,
@@ -26,6 +30,26 @@ pub struct Event {
 pub struct Font {
     pub name: String,
     pub data: Arc<[u8]>,
+}
+
+/// The memory bound on embedded fonts: fonts are admitted in container order until their bytes
+/// (plus a small per-font overhead) fill `MAX_FONT_BYTES`. A font that does not fit is skipped
+/// and a smaller later one may still fit; text naming a skipped font renders in the app's
+/// default face instead of the track being refused or its text dropped.
+#[derive(Default)]
+pub struct FontBudget {
+    used: usize,
+}
+
+impl FontBudget {
+    pub fn admit(&mut self, len: usize) -> bool {
+        let cost = len.saturating_add(FONT_OVERHEAD_BYTES);
+        if len == 0 || self.used.saturating_add(cost) > MAX_FONT_BYTES {
+            return false;
+        }
+        self.used += cost;
+        true
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -369,13 +393,11 @@ fn validate(source: &Source) -> Result<(), Fault> {
         Content::Embedded {
             header,
             events,
-            fonts,
+            ..
         } => {
             if header.is_empty()
                 || header.len() > MAX_SCRIPT_BYTES
                 || header.contains(&0)
-                || events.len() > MAX_EVENTS
-                || fonts.len() > MAX_FONTS
             {
                 return Err(Fault::InvalidTrack);
             }
@@ -396,25 +418,7 @@ fn validate(source: &Source) -> Result<(), Fault> {
             }
         }
     }
-    let (Content::Embedded { fonts, .. } | Content::Script { fonts, .. }) = &source.content;
-    if fonts.len() > MAX_FONTS {
-        return Err(Fault::TooManyFonts);
-    }
-    let mut bytes = 0;
-    for font in fonts.iter() {
-        if font.name.is_empty()
-            || font.name.len() > 1024
-            || font.name.contains('\0')
-            || font.data.is_empty()
-            || font.data.len() > MAX_FONT_BYTES
-        {
-            return Err(Fault::InvalidFonts);
-        }
-        bytes += font.data.len();
-        if bytes > MAX_FONT_BYTES {
-            return Err(Fault::TooManyFonts);
-        }
-    }
+    // Fonts are never grounds to refuse a track: `Native::open` skips one it cannot use.
     Ok(())
 }
 
@@ -670,8 +674,16 @@ impl Native {
             native.font(name, &bytes)?;
         }
         let (Content::Embedded { fonts, .. } | Content::Script { fonts, .. }) = &source.content;
+        // A font the renderer cannot take (unnamed, over the budget, rejected by the native
+        // side) is skipped: the text still shows, in the default face.
+        let mut budget = FontBudget::default();
         for font in fonts.iter() {
-            native.font(&font.name, &font.data)?;
+            if font.name.is_empty() || font.name.len() > 1024 || font.name.contains('\0')
+                || !budget.admit(font.data.len())
+            {
+                continue;
+            }
+            let _ = native.font(&font.name, &font.data);
         }
         let (data, script) = match &source.content {
             Content::Embedded { header, .. } => (header.as_ref(), 0),
