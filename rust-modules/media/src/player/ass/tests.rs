@@ -562,7 +562,28 @@ fn a_track_is_never_refused_for_the_count_or_size_of_its_fonts() {
 }
 
 #[test]
-fn a_dense_track_is_not_refused_for_its_event_count() {
+fn validation_puts_no_count_on_the_events_of_a_track() {
+    // only `validate`: the native guard (20 000) is not reached because the windows that feed it
+    // (`ass_source`, `ass_script`) stay far under it, which their own tests prove
     let events = (0..30_000).map(|i| event(i, i as i64, 1000)).collect();
     assert_eq!(validate(&source(events)), Ok(()));
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_thirty_thousand_event_sidecar_renders_around_the_playhead_and_after_a_backward_seek() {
+    let t = |ms: i64| format!("{}:{:02}:{:02}.{:02}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000 / 10);
+    let mut lines = String::new();
+    for i in 0..30_000i64 {
+        lines.push_str(&format!(
+            "Dialogue: 0,{},{},Default,,0,0,0,,{{\\an7\\pos(10,10)\\p1}}m 0 0 l 50 0 50 50 0 50\n",
+            t(i * 1000), t(i * 1000 + 900)));
+    }
+    let source = script(&lines);
+    let mut engine = Engine::default();
+    for now in [20_000_100, 5_000_100, 29_999_100] {
+        let frame = render(&mut engine, &source, now);
+        assert_eq!(pixel(&frame, 20, 20)[3], 255, "the sign is up at {now} ms");
+    }
+    assert_eq!(pixel(&render(&mut engine, &source, 20_000_950), 20, 20), [0; 4], "and gone between lines");
 }

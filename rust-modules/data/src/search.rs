@@ -481,11 +481,15 @@ struct Win {
 }
 
 /// A slide waiting for the sources that must read before the merged row can move.
+#[derive(Default)]
 struct Pending {
     lo: usize,
     hi: usize,
     /// Registry slots that still owe a read of `lo..hi`.
     todo: Vec<usize>,
+    /// Reads that made no headway, per source in `todo`; [`LANDING_TRIES`] of them and the slide
+    /// stops waiting for that source.
+    stalls: Vec<(usize, u32)>,
 }
 
 /// Test seam: a fake server for every worker, run on the calling thread.
@@ -558,6 +562,14 @@ impl SearchAdapter {
 /// [`Source::retry_cd`].
 const RETRY_FRAMES: u32 = 120;
 
+/// Reads of a slide's depths that may come back without headway from one source before the slide
+/// commits WITHOUT it ([`land_read`]). Three, spaced by [`RETRY_FRAMES`]: one failure is a hiccup
+/// and two a busy server, so a source gets the second and third chance a transient error deserves
+/// (about 4 s of the row standing still), but a server that is simply down must not hold every other
+/// server's hits back for as long as it stays down, which is the stall this bounds. The source stays
+/// owed ([`Source::skipped`]) and keeps being asked, outside the slide.
+const LANDING_TRIES: u32 = 3;
+
 /// What the current generation's attempt at source `i` has come to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Status {
@@ -586,6 +598,10 @@ struct Source {
     tails: [tail::Lane; NKIND],
     /// What this source's Show and Episode lanes share about its `tv` listing.
     tv: tail::TvMap,
+    /// Per kind: a slide committed without this source's read of the window, so the window holds
+    /// none of its hits yet. It is asked for the window outside any slide ([`owed_read`]), no later
+    /// slide waits on it, and its unread depths do not count as "more to come" ([`has_past`]).
+    skipped: [bool; NKIND],
 }
 
 impl Source {
@@ -595,6 +611,7 @@ impl Source {
         items: [const { Vec::new() }; NKIND],
         tails: [tail::Lane::EMPTY; NKIND],
         tv: tail::TvMap { first_episode: None },
+        skipped: [false; NKIND],
     };
 }
 
@@ -1257,7 +1274,9 @@ fn preview_len(s: &Source, k: usize) -> usize {
 
 /// Is there a hit of kind `k` at depth `d` or past it that the source has not been read to yet?
 fn has_past(s: &Source, k: usize, d: usize) -> bool {
-    s.tails[k].inited && s.tails[k].has_past(d)
+    // a skipped source's end is unknown only because it has not been read: counting it would keep
+    // "more to come" lit for ever past the last hit of the servers that did answer
+    s.tails[k].inited && !s.skipped[k] && s.tails[k].has_past(d)
 }
 
 /// The depths of the window of kind `k` that starts at `lo` over `sources`, and the sources that
@@ -1384,9 +1403,16 @@ fn wants_spawn(state: &SearchState, adapter: &SearchAdapter, i: usize, retry_cd:
 
 /// The first kind whose pending slide waits on source `i`, and the depths it must read.
 fn owed_read(state: &SearchState, i: usize) -> Option<(usize, std::ops::Range<usize>)> {
-    state.wins.iter().enumerate().find_map(|(k, w)| {
+    let waited_on = state.wins.iter().enumerate().find_map(|(k, w)| {
         let p = w.pending.as_ref().filter(|p| p.todo.contains(&i))?;
         Some((k, p.lo..p.hi))
+    });
+    // else a window committed without this source: it is asked for the window on screen, outside
+    // any slide
+    waited_on.or_else(|| {
+        let k = (0..NKIND).find(|&k| source(state, i).skipped[k])?;
+        let (depths, _) = window_of(&live_sources(state, &slots()), k, state.wins[k].lo);
+        Some((k, depths))
     })
 }
 
@@ -1532,17 +1558,43 @@ fn land_read(state: &mut SearchState, i: usize, t: TailMail) -> bool {
         }
         None => plx_base::eventlog::log(&format!("search: sid={i} lane read failed, it stays owed")),
     }
-    let Some(range) = state.wins[k].pending.as_ref().map(|p| p.lo..p.hi) else { return false };
+    let waited_on = state.wins[k].pending.as_ref().filter(|p| p.todo.contains(&i)).map(|p| p.lo..p.hi);
+    let Some(range) = waited_on else {
+        // a source the window was committed without, reading the window on screen
+        if !source(state, i).skipped[k] { return false }
+        let (depths, _) = window_of(&live_sources(state, &slots()), k, state.wins[k].lo);
+        if source(state, i).tails[k].needs(&depths) {
+            if !progressed { source_mut(state, i).retry_cd = RETRY_FRAMES; }
+            return false;
+        }
+        source_mut(state, i).skipped[k] = false;
+        plx_base::eventlog::log(&format!("search: sid={i} caught up, its hits join the window"));
+        return true;
+    };
     if source(state, i).tails[k].needs(&range) {
         // still owed: the next pump asks again, at once while reads make headway
-        if !progressed { source_mut(state, i).retry_cd = RETRY_FRAMES; }
-        return false;
+        if progressed { return false }
+        source_mut(state, i).retry_cd = RETRY_FRAMES;
+        let Some(p) = state.wins[k].pending.as_mut() else { return false };
+        let tries = match p.stalls.iter_mut().find(|(x, _)| *x == i) {
+            Some((_, n)) => { *n += 1; *n }
+            None => { p.stalls.push((i, 1)); 1 }
+        };
+        if tries < LANDING_TRIES { return false }
+        // out of tries: the slide stops waiting for this source and moves on without it
+        plx_base::eventlog::log(&format!("search: sid={i} failed {tries} reads in a row, the window moves without it"));
+        p.todo.retain(|&x| x != i);
+        source_mut(state, i).skipped[k] = true;
+        return commit_if_done(state, k);
     }
     let Some(p) = state.wins[k].pending.as_mut() else { return false };
     p.todo.retain(|&x| x != i);
-    if !p.todo.is_empty() {
-        return false;
-    }
+    commit_if_done(state, k)
+}
+
+/// Commit kind `k`'s slide when nothing is left to wait for. Returns whether the shelves changed.
+fn commit_if_done(state: &mut SearchState, k: usize) -> bool {
+    let Some(p) = state.wins[k].pending.as_ref().filter(|p| p.todo.is_empty()) else { return false };
     let lo = p.lo;
     commit_window(state, k, lo);
     true
@@ -1571,7 +1623,11 @@ fn commit_window(state: &mut SearchState, k: usize, lo: usize) {
     let live = slots();
     let (depths, _) = window_of(&live_sources(state, &live), k, lo);
     for i in live {
-        source_mut(state, i).tails[k].trim(depths.clone());
+        let s = source_mut(state, i);
+        s.tails[k].trim(depths.clone());
+        // whoever still lacks a depth of the new window was left out of it: owed, and asked outside
+        // any slide from here on
+        s.skipped[k] = s.status == Status::Answered && s.tails[k].inited && s.tails[k].needs(&depths);
     }
     state.wins[k] = Win { lo, pending: None };
 }
@@ -1605,7 +1661,7 @@ fn page(state: &mut SearchState, kind: Kind, before: bool) -> bool {
     let todo: Vec<usize> = live.iter().copied()
         .filter(|&i| {
             let s = source(state, i);
-            s.status == Status::Answered && s.tails[k].inited && s.tails[k].needs(&range)
+            s.status == Status::Answered && s.tails[k].inited && !s.skipped[k] && s.tails[k].needs(&range)
         })
         .collect();
     if todo.is_empty() {
@@ -1613,7 +1669,7 @@ fn page(state: &mut SearchState, kind: Kind, before: bool) -> bool {
         rebuild(state);
         return true;
     }
-    state.wins[k].pending = Some(Pending { lo: new_lo, hi: range.end, todo });
+    state.wins[k].pending = Some(Pending { lo: new_lo, hi: range.end, todo, stalls: Vec::new() });
     false
 }
 
