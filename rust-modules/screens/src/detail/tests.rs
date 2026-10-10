@@ -1023,6 +1023,45 @@ fn a_six_hundred_credit_item_addresses_every_cast_card_and_right_reaches_the_las
     clear();
 }
 
+/// The 600th credit is drawn when focus is on it, and the shelf registers stops only for the cards
+/// in reach, so the draw work follows the screen and not the credit count.
+#[test]
+fn a_six_hundred_credit_shelf_draws_its_last_card_with_stops_for_the_visible_range_only() {
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.cast = (0..600)
+        .map(|i| plx_data::metadata::Cast {
+            tag: format!("person {i}"), role: String::new(), thumb: String::new(), id: i, tag_key: format!("p{i}"),
+        })
+        .collect();
+    let _guard = install(d);
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let last = screen.engine_key(cast::elem(599).unwrap()).unwrap();
+    let top = {
+        let d = screen.detail(test_store().view()).unwrap();
+        screen.section_top(4, d, &measure)
+    };
+    screen.scroll.jump(top);
+    screen.scroll_target = top;
+    let first = screen.engine_key(cast::elem(0).unwrap()).unwrap();
+    let to = FocusKey { entry: EntryId(7), elem: last };
+    step(&mut screen, &ScreenEvent::FocusMoved {
+        from: Some(FocusKey { entry: EntryId(7), elem: first }), to, by: By::Dir,
+    }, Some(last));
+    let context = cx(&measure, Some(last));
+    for n in 1..=240u32 {
+        step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 17 * n, dt_us: 16_667 }), Some(last));
+        drawn_stops(&mut screen, &context);
+    }
+    let stops = drawn_stops(&mut screen, &context);
+    let cast_stops: Vec<_> = stops.iter().filter(|stop| screen.locate(stop.key.elem, test_store().view()).is_some_and(|l| matches!(l, Located::Cast(_)))).collect();
+    assert!(cast_stops.iter().any(|stop| stop.key.elem == last), "credit 600 is drawn");
+    assert!(cast_stops.len() < 60, "stops follow the visible range, got {}", cast_stops.len());
+    clear();
+}
+
 /// A 200-season show: Right walks the tab strip to its last tab, and the strip registers stops for
 /// the tabs on the axis only, so the stop count does not grow with the season count.
 #[test]
