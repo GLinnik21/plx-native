@@ -293,6 +293,44 @@ fn a_rescan_through_more_than_a_window_of_known_keys_does_not_end_the_row() {
     plx_plex::plex::reset_servers_for_test();
 }
 
+/// What lets the shelf ask again at once after a landing that moved nothing it sees: the row's
+/// landing count moves on EVERY landing, fruitful or not, and not on a failure. The same rescan then
+/// terminates with an ask per landing, each bounded by the reads of one ask and the row ending after
+/// the listing's end, so "ask again at once" cannot loop.
+#[test]
+fn every_landing_on_a_row_moves_its_epoch_and_a_failure_does_not_and_the_walk_ends() {
+    let _guard = plx_base::testlock::serial();
+    let (len, known) = (1000, 600);
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut owner = ledger_owner("home.movies.recent", known, 0, len);
+    let epoch = |owner: &Owner| owner.state.srcs[0].last.as_ref().unwrap().shelves[0].epoch;
+    let (mut landings, mut fruitless) = (0u32, 0u32);
+    // a failed read lands nothing
+    let request = ask_row(&mut owner, "home.movies.recent", RECENT, false).unwrap();
+    let before = epoch(&owner);
+    let _ = landed_fail(&mut owner.state.srcs[0]);
+    assert_eq!(epoch(&owner), before, "a failure is not a landing");
+    owner.state.srcs[0].fetching = false;
+    answer(&mut owner, request, listing, batch(|_| true));
+    landings += 1;
+    assert_eq!(epoch(&owner), before + 1);
+    loop {
+        let Some(request) = ask_row(&mut owner, "home.movies.recent", RECENT, false) else { break };
+        let (e, shown_before) = (epoch(&owner), shown(&owner));
+        answer(&mut owner, request, listing, batch(|_| true));
+        landings += 1;
+        assert_eq!(epoch(&owner), e + 1, "landing {landings} moved the epoch");
+        if shown(&owner) == shown_before { fruitless += 1; }
+        assert!(landings < 400, "an ask after every landing still ends");
+    }
+    assert!(landings >= 10, "the walk took {landings} asks");
+    // the 600 known keys are crossed by bounded rescans (eight reads of one ask each), not forever
+    assert!((1..=8).contains(&fruitless), "fruitless landings: {fruitless}");
+    assert!(!owner.state.srcs[0].last.as_ref().unwrap().shelves[0].more, "and the row ended at the listing's end");
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
 #[test]
 fn a_1000_item_listing_that_reshuffles_is_walked_to_its_last_item_and_back() {
     let _guard = plx_base::testlock::serial();

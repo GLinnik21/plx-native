@@ -46,6 +46,8 @@ fn cx9_pressed(view: &FixtureView, ms: u32, press: f32, focus: Option<FocusKey<u
 struct Cards {
     elems: Vec<u32>,
     more: bool,
+    /// The store's landing count for the row ([`CardSource::page_epoch`]).
+    epoch: u32,
     /// The screen rect each card was really painted at, as the overlay hook saw it.
     drawn: std::cell::RefCell<Vec<(u32, Rect)>>,
     /// Cards from this index on are not interned yet: `elem` answers the shared header id `0`
@@ -55,7 +57,7 @@ struct Cards {
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, drawn: Default::default(), unindexed_from: usize::MAX }
+        Self { elems, more, epoch: 0, drawn: Default::default(), unindexed_from: usize::MAX }
     }
 }
 
@@ -77,6 +79,9 @@ impl CardSource<FixtureHost> for Cards {
     }
     fn more(&self) -> bool {
         self.more
+    }
+    fn page_epoch(&self) -> u32 {
+        self.epoch
     }
     fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, _measure: &dyn plx_machine::machine::Measure) {
         self.drawn.borrow_mut().push((self.elems[i], p.to_screen(tile.rect).1));
@@ -1216,6 +1221,26 @@ fn no_repeat_is_sent_when_the_source_has_nothing_more_there() {
     assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After));
     r.src.more = false;
     assert!(repeat_gaps(&mut r, 0, 60 * 60).is_empty(), "the end of the listing ends the asking");
+}
+
+#[test]
+fn a_landing_that_changed_nothing_the_shelf_sees_restarts_the_ladder_and_is_asked_at_once() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Dir);
+    repeat_gaps(&mut r, 0, 180);
+    r.sect.reset_page_requests();
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After));
+    // the ask goes unanswered long enough to climb the ladder to 4 s
+    let climbed = repeat_gaps(&mut r, 0, 60 * 9);
+    assert!(climbed.len() >= 4 && climbed[climbed.len() - 1] >= 3.9, "{climbed:?}");
+    // a landing: same len, same more, only the store's count moved
+    r.src.epoch += 1;
+    let mut frames = 0;
+    while page_frame(&mut r, 0, true).is_none() { frames += 1; assert!(frames < 3, "asked at once, not after a rung"); }
+    // and the ladder starts over: the repeat after it is the first rung
+    let gaps = repeat_gaps(&mut r, 0, 60 * 3);
+    assert!((gaps[0] - 0.25).abs() < 0.05, "{gaps:?}");
 }
 
 // ---- idle ------------------------------------------------------------------------------------

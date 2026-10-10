@@ -60,6 +60,8 @@ pub struct Shelf {
     in_flight: Option<PageEdge>,
     /// When the ask out is repeated if nothing answered it ([`Retry`]).
     retry: Retry,
+    /// The source's landing count when the shelf last looked ([`CardSource::page_epoch`]).
+    epoch: u32,
     /// Cards at the row's start that are not part of the window (a pinned head the window's offset
     /// does not count): the leading edge's zone starts after them ([`Shelf::set_head`]).
     head: usize,
@@ -102,7 +104,7 @@ struct WalkKey {
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
-        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, in_flight: None, retry: Retry::new(), head: 0, anchor: None,
+        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, in_flight: None, retry: Retry::new(), epoch: 0, head: 0, anchor: None,
             margin: 0.0, dormant: false, slept: false, pool: RowPool::new(),
             warm: Warm { last: None, forward: true, walk: None } }
     }
@@ -153,6 +155,7 @@ impl Shelf {
         match ev {
             ScreenEvent::Tick(t) => {
                 self.retry.tick(t.ms);
+                self.observe_landing(src);
                 self.tick(t.dt(), cx, src);
                 self.warm_ahead(cx, src);
                 self.want(cx, src)
@@ -299,6 +302,19 @@ impl Shelf {
         self.retry.reset();
     }
 
+    /// A page landed for the row since the last look, whatever it changed: the ask that was out is
+    /// answered, so the next one goes out at once and the ladder starts over. Without this a landing
+    /// that moved nothing the shelf sees (a rescan of known keys) would wait out a rung of the ladder
+    /// as if the store had ignored it. Each landing admits one ask, so the pace is the store's own.
+    fn observe_landing<H: Host, S: CardSource<H>>(&mut self, src: &S) {
+        let epoch = src.page_epoch();
+        if epoch != self.epoch {
+            self.epoch = epoch;
+            self.asked = None;
+            self.asked_before = None;
+        }
+    }
+
     /// The owner withdrew the ask itself (it left the row): there is nothing for
     /// [`page_cancel`](Self::page_cancel) to withdraw. A landing does not call this: the ask it
     /// answered is simply no longer in the store, and a late cancel for it is a no-op there.
@@ -344,6 +360,7 @@ impl Shelf {
         offset: usize,
         active: bool,
     ) -> Option<PageEdge> {
+        self.observe_landing(src);
         let focus = self.engine_focus(cx, src);
         let before = self.near(PageEdge::Before, focus, src.len(), offset);
         let edge = if self.want_before(offset, active && before) {

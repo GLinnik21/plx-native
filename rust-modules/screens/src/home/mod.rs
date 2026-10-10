@@ -3057,6 +3057,9 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
     fn more(&self) -> bool {
         self.paging && self.home.hub(self.view, self.row).is_some_and(|hub| hub.more)
     }
+    fn page_epoch(&self) -> u32 {
+        self.home.hub(self.view, self.row).map_or(0, |hub| hub.epoch)
+    }
     fn len(&self) -> usize {
         self.home.rows.get(self.row).map_or(0, |r| r.elems.len())
     }

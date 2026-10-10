@@ -134,7 +134,7 @@ fn plain_row(slot: u16, rk: &str) -> PmsMovie {
 }
 
 pub(super) fn shelf(slot: u16, title: &str, hub_id: &str, rks: &[&str]) -> Shelf {
-    Shelf {
+    Shelf { epoch: 0,
         title: title.into(),
         hub_id: hub_id.into(),
         key: String::new(),

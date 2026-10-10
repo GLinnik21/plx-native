@@ -153,6 +153,15 @@ pub trait CardSource<H: Host> {
     fn more(&self) -> bool {
         false
     }
+    /// How many page reads have LANDED for this row, a failed one not counting. A landing can change
+    /// nothing the shelf sees (a row that rescans its listing for keys it already knew leaves
+    /// `(len, end)` as it was), and the shelf must not read that as an ask nobody answered: when
+    /// this moves, the ask that was out is answered, the repeat ladder starts over and the next ask
+    /// goes out at once. Defaults to a count that never moves (a source whose landings always change
+    /// its length).
+    fn page_epoch(&self) -> u32 {
+        0
+    }
 }
 
 /// Where one card was drawn, handed to [`CardSource::overlay`].
