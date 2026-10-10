@@ -1418,6 +1418,7 @@ fn down_from_the_first_shelf_chooses_the_next_shelf_not_the_folded_hero() {
         },
         group: GroupId(FIRST_HUB_GROUP + 1),
         elems: vec![second_elem],
+        placeholders: false,
         link: None,
     });
     s.elem_at.insert(second_elem, (1, 0));
@@ -4042,6 +4043,27 @@ fn a_focus_on_a_placeholder_keeps_its_row_column_and_cell_when_the_cards_land() 
     let later = drawn_rect(&s, snapshot.view(), Some(landed), row, col);
     assert!((before.cx() - later.cx()).abs() < 0.5 && (before.cy() - later.cy()).abs() < 0.5,
         "and stays there: {before:?} -> {later:?}");
+}
+
+/// Keys a projection mints when the ring moves one screenful, over a Home of `rows` rows.
+fn keys_minted_by_one_ring_move(rows: usize) -> u32 {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    plx_data::pms::seed_ring_for_test(&mut state, &adapter, rows, 12, &|_| 0, (0, 8));
+    s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+    let before = s.next_elem;
+    plx_data::pms::seed_ring_for_test(&mut state, &adapter, rows, 12, &|_| 0, (10, 18));
+    s.sync_catalog(&cx(plx_data::pms::hubs_snapshot(&state).view(), None));
+    s.next_elem - before
+}
+
+#[test]
+fn a_ring_move_registers_keys_for_the_rows_it_changes_not_for_every_row() {
+    let _guard = plx_base::testlock::serial();
+    let (few, many) = (keys_minted_by_one_ring_move(40), keys_minted_by_one_ring_move(400));
+    assert!(few <= 2 * 9 * 12, "9 rows leave and 9 enter, 12 cards each: {few}");
+    assert_eq!(few, many, "ten times the rows, the same keys");
 }
 
 /// `cx` with the engine's remembered cursors, which the key pruning reads.
