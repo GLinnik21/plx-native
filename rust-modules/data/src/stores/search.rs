@@ -20,6 +20,9 @@ pub enum SearchCmd {
     Reset,
     /// The optimistic half of a view-state write, on the result shelves.
     SetWatchedLocal { sid: plx_plex::plex::ServerId, rk: String, on: bool },
+    /// Slide a row's window half a window on (`before` false) or back. Every hit of the row is
+    /// reached by repeating it; the cards move when the sources that must read have answered.
+    Page { kind: crate::search::Kind, before: bool },
 }
 
 /// One Search owner: logical state, the worker adapter all current fetches capture, and notice.

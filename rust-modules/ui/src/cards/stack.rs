@@ -403,6 +403,24 @@ impl<K: Copy + Eq> Stack<K> {
         }
     }
 
+    /// The page shelf `k`'s owner should ask for this tick ([`Shelf::page_ask`]); `None` for a key
+    /// that is not a shelf of the layout.
+    pub fn page_ask<H: Host<Elem = u32>, P: StackPage<H, Key = K>>(
+        &mut self,
+        p: &P,
+        cx: &Cx<'_, H>,
+        k: K,
+        wanted: bool,
+        offset: usize,
+    ) -> Option<super::PageEdge> {
+        let i = self.index(k)?;
+        let src = p.cards(cx, k)?;
+        match &mut self.bodies[i] {
+            Body::Shelf(s) => s.page_ask(cx, &src, wanted, offset, true),
+            _ => None,
+        }
+    }
+
     /// Where shelf `k`'s tiles sit now.
     pub fn shelf_frame<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, k: K) -> Option<SectionFrame> {
         Some(self.frame(p, cx, self.index(k)?))

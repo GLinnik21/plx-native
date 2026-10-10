@@ -1,0 +1,157 @@
+//! The windows over a result row's hits (`search.rs`, `search/tail.rs`): the store pages each row
+//! through a fake server, and every hit is reachable while the cards held stay a window.
+
+use std::sync::{Arc, Mutex};
+
+use super::tail_tests::Fake;
+use super::test_support::*;
+use super::*;
+use crate::stores::search::SearchCmd;
+
+/// Points every worker at `fake` (and runs it inline, so a pump is deterministic) until dropped.
+struct Hook;
+
+impl Hook {
+    fn set(fake: Fake) -> (Hook, Arc<Mutex<Fake>>) {
+        let fake = Arc::new(Mutex::new(fake));
+        *TEST_IO.lock().unwrap() = Some(fake.clone());
+        (Hook, fake)
+    }
+}
+
+impl Drop for Hook {
+    fn drop(&mut self) {
+        *TEST_IO.lock().unwrap() = None;
+    }
+}
+
+struct Rig {
+    owner: Owner,
+    fake: Arc<Mutex<Fake>>,
+    peak: usize,
+    _hook: Hook,
+    _fresh: Fresh,
+}
+
+impl Rig {
+    fn new(servers: usize, fake: Fake) -> Rig {
+        let fresh = fresh();
+        let mut owner = Owner::default();
+        register(&mut owner, servers);
+        let (hook, fake) = Hook::set(fake);
+        owner.set_query("wallace");
+        let mut rig = Rig { owner, fake, peak: 0, _hook: hook, _fresh: fresh };
+        rig.drain(6 * servers + 6);
+        rig
+    }
+
+    fn drain(&mut self, pumps: usize) {
+        for _ in 0..pumps {
+            self.owner.pump(0.3);
+            let busy = slots().iter().filter(|&&i| self.owner.adapter.mailbox(i).busy()).count();
+            self.peak = self.peak.max(busy);
+        }
+    }
+
+    fn page(&mut self, kind: Kind, before: bool) {
+        self.owner.state.run(&self.owner.adapter, SearchCmd::Page { kind, before });
+        let n = 6 * nsrc() + 12;
+        self.drain(n);
+    }
+
+    fn shelf(&self, kind: Kind) -> &Shelf {
+        self.owner.state.shelves().iter().find(|s| s.kind == kind).expect("the row is there")
+    }
+
+    fn keys(&self, kind: Kind) -> Vec<String> {
+        self.shelf(kind).items.iter().map(tail::key_of).collect()
+    }
+
+    /// Page a row to its last card and collect every key drawn on the way, asserting the window.
+    fn reach(&mut self, kind: Kind) -> Vec<String> {
+        let k = KINDS.iter().position(|x| *x == kind).unwrap();
+        let mut seen = self.keys(kind);
+        for _ in 0..200 {
+            assert!(self.shelf(kind).items.len() <= 24, "a window of one source is at most 24 cards");
+            let held: usize = self.owner.state.src.iter().map(|s| s.tails[k].held()).sum();
+            assert!(held <= 24 + 2 * tail::PAGE, "{held} rows held");
+            if !self.shelf(kind).window.after { break; }
+            let before = self.shelf(kind).window.start;
+            self.page(kind, false);
+            assert!(self.shelf(kind).window.start > before, "the window slid");
+            seen.extend(self.keys(kind));
+        }
+        assert!(!self.shelf(kind).window.after, "the last card was reached");
+        seen.sort_by_key(|k| k.parse::<usize>().unwrap());
+        seen.dedup();
+        seen
+    }
+}
+
+fn numbers(r: std::ops::Range<usize>) -> Vec<String> { r.map(|i| i.to_string()).collect() }
+
+#[test]
+fn three_hundred_movies_are_reached_to_the_last_and_back_within_a_window() {
+    let mut rig = Rig::new(1, Fake::new().movies(300));
+    assert_eq!(rig.keys(Kind::Movie).len(), 12, "the first paint is the preview");
+    assert_eq!(rig.reach(Kind::Movie), numbers(0..300), "every hit of the row");
+    for _ in 0..100 {
+        if rig.shelf(Kind::Movie).window.start == 0 { break; }
+        rig.page(Kind::Movie, true);
+        assert!(rig.shelf(Kind::Movie).items.len() <= 24);
+    }
+    assert!(!rig.shelf(Kind::Movie).window.before);
+    assert_eq!(rig.keys(Kind::Movie), numbers(0..24), "back at the head, the same cards");
+}
+
+#[test]
+fn a_mock_empty_for_every_typed_listing_still_reaches_every_hit_of_every_row() {
+    let mut fake = Fake { typed: false, ..Fake::default() }.movies(80).tv(30, 30);
+    fake.collections = (0..40).map(|i| ("collection", 500 + i)).collect();
+    fake.people = (0..50).collect();
+    let mut rig = Rig::new(1, fake);
+    assert_eq!(rig.reach(Kind::Movie), numbers(0..80));
+    assert_eq!(rig.reach(Kind::Show), numbers(0..30));
+    assert_eq!(rig.reach(Kind::Collection).len(), 40);
+}
+
+#[test]
+fn shows_come_first_and_the_episodes_are_split_off_at_the_show_count() {
+    let mut rig = Rig::new(1, Fake::new().tv(30, 40));
+    assert_eq!(rig.reach(Kind::Show), numbers(0..30));
+    let eps: Vec<String> = (0..40).map(|i| (1000 + i).to_string()).collect();
+    assert_eq!(rig.reach(Kind::Episode), eps);
+}
+
+#[test]
+fn a_new_query_releases_every_lane_window_and_pending_ask() {
+    let mut rig = Rig::new(1, Fake::new().movies(100));
+    rig.page(Kind::Movie, false);
+    assert!(rig.owner.state.wins[0].lo > 0);
+    rig.owner.set_query("wallace shawn");
+    assert!(rig.owner.state.wins.iter().all(|w| w.lo == 0 && w.pending.is_none()));
+    assert!(rig.owner.state.src.iter().all(|s| !s.tails[0].inited), "no lane survives the query");
+}
+
+#[test]
+fn forty_servers_never_have_more_than_four_requests_in_flight() {
+    let mut rig = Rig::new(40, Fake::new().movies(60));
+    for _ in 0..30 { rig.page(Kind::Movie, false); }
+    assert!(rig.owner.state.wins[0].lo >= 12, "the row moved past every preview");
+    assert!(rig.peak <= 4, "peak {}", rig.peak);
+    assert!(rig.peak > 0);
+    assert!(rig.owner.state.src.iter().filter(|s| s.status == Status::Answered).all(|s| s.tails[0].covered() > 12));
+}
+
+#[test]
+fn favourites_rank_only_within_the_first_twelve_cards() {
+    let sid = ServerId::from_raw(0);
+    let item = |i: usize| Item::Media(crate::pms::PmsMovie { sid, rk: i.to_string(), title: i.to_string(),
+        sec: if i % 2 == 0 { 9 } else { 1 }, ..Default::default() });
+    let favs = [(sid, 1i64, true), (sid, 9i64, false)];
+    let sh = merge(&[answered(0, (0..24).map(item).collect())], &favs);
+    let got = titles(&sh[0]);
+    let mut want: Vec<String> = [1, 3, 5, 7, 9, 11, 0, 2, 4, 6, 8, 10].iter().map(|i| i.to_string()).collect();
+    want.extend((12..24).map(|i| i.to_string()));
+    assert_eq!(got, want.iter().map(String::as_str).collect::<Vec<_>>());
+}

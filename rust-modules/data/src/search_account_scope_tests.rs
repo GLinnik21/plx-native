@@ -56,7 +56,7 @@ fn a_profile_hole_searches_exact_live_ids_and_supersedes_the_previous_profiles_a
     hold_off(&mut owner);
     owner.state.query = Some(Arc::from("wallace"));
     source_mut(&mut owner.state, 0).status = Status::Answered;
-    owner.state.shelves = Some(Arc::new(vec![Shelf {
+    owner.state.shelves = Some(Arc::new(vec![Shelf { window: Default::default(),
         kind: Kind::Movie,
         items: vec![media("old-profile")],
     }]));
