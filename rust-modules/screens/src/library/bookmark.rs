@@ -82,7 +82,7 @@ impl LibraryScreen {
         let Some(cursor) = H::listing(cx).cursor() else {
             return true;
         };
-        if self.pair.detail.elems.is_empty() {
+        if self.pair.detail.total() == 0 {
             return self.readout == Readout::Empty;
         }
         let (identity, slot) = match &cursor.at {
@@ -99,9 +99,8 @@ impl LibraryScreen {
         })
         });
         if let Some(elem) = stable.or_else(|| {
-            self.pair
-                .detail
-                .elem_at(slot.min(self.pair.detail.elems.len().saturating_sub(1)))
+            let slot = slot.min(self.pair.detail.total().saturating_sub(1));
+            self.pair.detail.elem_for(cx, &mut self.keys, slot, self.layout.cols())
         }) {
             fx.remember(group, elem);
             let index = self

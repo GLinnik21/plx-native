@@ -949,7 +949,7 @@ mod tests {
             first.states.push(super::super::SecState::default());
         }
         first.set_cur(1);
-        first.want(60, 120);
+        first.want(60, 120, None);
         first.bump_gen();
         first.bump_sections_gen();
         first.src_facts_gen = first.src_facts_gen.wrapping_add(1);
@@ -992,7 +992,7 @@ mod tests {
             ..Default::default()
         }]);
         assert!(second.states[0].hubs.commit_staged(true));
-        second.want(1, 3);
+        second.want(1, 3, None);
 
         let retained_listing = first.listing_snapshot();
         let retained_hubs = first.hubs_snapshot(1);

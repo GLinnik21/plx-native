@@ -9,7 +9,7 @@ use plx_ui::{Painter, Rect};
 use std::os::raw::c_int;
 use plx_data::stores::browse::SecKind;
 use super::draw::shelf_label;
-use super::layout::{self, Layout, ShelfRun, shelf_pitch, COLS, CONTENT_TOP, GRID_RIGHT, MAX_LETTERS,
+use super::layout::{self, Layout, ShelfRun, shelf_pitch, COLS, CONTENT_TOP, GRID_RIGHT,
     RAIL_CAP_PAD, RAIL_TRACK_W};
 
 #[test]
@@ -94,7 +94,7 @@ fn episode_grid_art_and_focus_labels_use_the_landscape_card_contract() {
 #[test]
 fn owned_library_overscan_probe_covers_every_legacy_edge() {
     let measure = FixtureMeasure;
-    let rail = layout::rail_geom(MAX_LETTERS);
+    let rail = layout::rail_geom(64);
     let rail_rect = Rect::new(
         rail.1 - RAIL_TRACK_W * 0.5,
         rail.0 - RAIL_CAP_PAD,

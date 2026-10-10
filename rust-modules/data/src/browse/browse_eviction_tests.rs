@@ -152,7 +152,7 @@ fn the_three_sections_left_most_recently_keep_their_last_window_and_the_rest_kee
 
     // Section 0 is the one the viewer scrolls down. Its pages are loaded while it is current.
     state.set_cur(0);
-    state.want(window.start, window.end);
+    state.want(window.start, window.end, None);
     state.states[0].total = TOTAL as i64;
     state.states[0].items.resize(TOTAL);
     for page in 0..10 {
@@ -164,7 +164,7 @@ fn the_three_sections_left_most_recently_keep_their_last_window_and_the_rest_kee
     assert_eq!(loaded(&state.states[0].items), vec![9]);
     assert_eq!(state.states[0].items.len(), TOTAL);
 
-    state.want(0, 1);
+    state.want(0, 1, None);
     state.set_cur(2);
     state.set_cur(3);
     assert_eq!(loaded(&state.states[0].items), vec![9], "still one of the last three left");

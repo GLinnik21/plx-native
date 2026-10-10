@@ -157,7 +157,7 @@ fn a_section_switch_settles(order: Arrival, items: usize, restore: Option<f32>) 
         page.sync(&fixture.cx(engine.current(OWNER)));
         frame(&mut page, &mut engine, &fixture, ms);
         ms += 16;
-        if page.page_fade.alpha() > 0.0 && page.grid_fade.alpha() > 0.0 && !page.pair.detail.elems.is_empty() {
+        if page.page_fade.alpha() > 0.0 && page.grid_fade.alpha() > 0.0 && page.pair.detail.total() > 0 {
             let r = page.pair.detail.rect_at(&fixture.cx(engine.current(OWNER)), 0);
             drawn.push((i, [r.x, r.y, r.w, r.h]));
         }
@@ -213,7 +213,7 @@ fn seated(before: std::ops::Range<usize>, focus: usize) -> (Fixture, LibraryScre
     let mut page = fixture.screen();
     page.initial = false;
     let mut engine = FocusEngine::new();
-    let elem = page.pair.detail.elem_at(focus - before.start).unwrap();
+    let elem = crate::library::tests::deep(&mut page, &fixture, focus - before.start);
     let key = page.key(elem);
     engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
     deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from: None, to: key, by: By::Restore });

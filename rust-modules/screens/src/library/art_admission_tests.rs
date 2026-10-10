@@ -38,7 +38,9 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
         let mut page = fixture.screen();
         let layout = page.layout;
         let scroll = layout.row_reveal(20);
-        page.pair.detail.set_geometry(layout, scroll, layout, scroll);
+        page.scroll.jump(scroll);
+        page.scroll_target = scroll;
+        page.sync(&fixture.cx(None));
         let window = page.pair.detail.window();
         let (lo, hi) = (window.start, window.end);
         let visible: Vec<_> = (lo..hi).filter(|&i| plx_ui::cards::paint_visible(
