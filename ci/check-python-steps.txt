@@ -242,3 +242,7 @@ python3 ci/check-plex-requests.py
 # land unseen. Pure lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
 python3 ci/test_check_list_caps.py
 python3 ci/check-list-caps.py
+
+# The link conditioner and the mock's paging contract (rate, determinism, per-class, run-time change; the
+# mock's own --selftest rides along): real loopback sockets on port 0, a few seconds.
+python3 tests/test_link_conditioner.py
