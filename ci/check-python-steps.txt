@@ -230,3 +230,9 @@ python3 ci/check-placeholders.py
 # fail if the gate line below is dropped from this file).
 python3 ci/test_check_dump_consumers.py
 python3 ci/check-dump-consumers.py
+# The Plex request registry (ci/plex-requests.ini, rust-modules/plex/src/plex/): every request the plex
+# layer can make is a section that says what it is, its reason and its evidence, and a paged site reaches
+# paged_path or PageReq. This is what stops a new request from landing without a paging decision. Pure
+# lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
+python3 ci/test_check_plex_requests.py
+python3 ci/check-plex-requests.py

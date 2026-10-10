@@ -930,6 +930,122 @@ fn a_vanished_credit_falls_to_the_same_place_in_the_shelf() {
     );
 }
 
+/// Every section's element block is its own, wide, and below the engine keys: no two overlap, and
+/// no section's list can run into its neighbour's ids. A block is 2^24 ids; episodes take two ids
+/// each out of their 2^30 block.
+#[test]
+fn the_element_blocks_are_wide_disjoint_and_below_the_engine_keys() {
+    const BLOCK: u32 = 1 << 24;
+    let blocks: [(&str, u32, u32); 8] = [
+        ("hero", 0, hero::HERO_ELEM_RANGE_END),
+        ("season", season::SEASON_ELEM_RANGE_START, season::SEASON_ELEM_RANGE_END),
+        ("episodes", episodes::EPISODES_ELEM_RANGE_START, episodes::EPISODES_ELEM_RANGE_END),
+        ("related", related::RELATED_ELEM_RANGE_START, related::RELATED_ELEM_RANGE_END),
+        ("cast", cast::CAST_ELEM_RANGE_START, cast::CAST_ELEM_RANGE_END),
+        ("about", about::ABOUT_ELEM_RANGE_START, about::ABOUT_ELEM_RANGE_END),
+        ("extras", extras::EXTRAS_ELEM_RANGE_START, extras::EXTRAS_ELEM_RANGE_END),
+        ("collection", collection::COLLECTION_ELEM_RANGE_START, collection::COLLECTION_ELEM_RANGE_END),
+    ];
+    for (name, start, end) in blocks {
+        assert!(start < end && end <= FIRST_ITEM_ELEM, "{name} sits below the engine keys");
+        if name == "episodes" {
+            assert_eq!(end - start, 1 << 30, "episodes own their 2^30 block");
+        } else {
+            assert_eq!(end - start, BLOCK, "{name} owns a 2^24 block");
+        }
+    }
+    for (i, a) in blocks.iter().enumerate() {
+        for b in &blocks[i + 1..] {
+            assert!(a.2 <= b.1 || b.2 <= a.1, "the {} and {} blocks overlap", a.0, b.0);
+        }
+    }
+    assert_eq!(FIRST_ITEM_ELEM, 1 << 31, "engine keys start above every local block");
+}
+
+/// A list that arrives whole is addressable whole. A 600-credit item has a card for every credit,
+/// and Right walks the shelf to its last one; the old block clamped the shelf at 512.
+#[test]
+fn a_six_hundred_credit_item_addresses_every_cast_card_and_right_reaches_the_last() {
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.cast = (0..600)
+        .map(|i| plx_data::metadata::Cast {
+            tag: format!("person {i}"),
+            role: String::new(),
+            thumb: String::new(),
+            id: i,
+            tag_key: format!("p{i}"),
+        })
+        .collect();
+    let _guard = install(d);
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let context = cx(&measure, None);
+    let key_at = |screen: &DetailScreen, i: usize| {
+        screen.engine_key(cast::elem(i).expect("a local id per credit")).expect("a key per credit")
+    };
+    let mut at = key_at(&screen, 0);
+    for i in 1..600 {
+        let Step::Move(next) = Focusable::<TestHost>::neighbour(
+            &screen,
+            FocusKey { entry: EntryId(7), elem: at },
+            Dir::Right,
+            &context,
+        ) else {
+            panic!("Right stopped at credit {}", i - 1);
+        };
+        assert_eq!(next.elem, key_at(&screen, i), "Right reaches credit {i} in order");
+        at = next.elem;
+    }
+    clear();
+}
+
+/// A 200-season show: Right walks the tab strip to its last tab, and the strip registers stops for
+/// the tabs on the axis only, so the stop count does not grow with the season count.
+#[test]
+fn a_two_hundred_season_show_focuses_its_last_tab_and_stops_only_on_the_axis() {
+    let sid = ServerId::UNSET;
+    let mut d = detail(sid, "show");
+    d.seasons = (1..=200).map(season).collect();
+    let _guard = install(d);
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let context = cx(&measure, None);
+    let key_at = |screen: &DetailScreen, i: usize| {
+        screen.engine_key(season::elem(i).expect("a local id per tab")).expect("a key per tab")
+    };
+    let last = key_at(&screen, 199);
+    let mut at = key_at(&screen, 0);
+    for i in 1..200 {
+        let Step::Move(next) = Focusable::<TestHost>::neighbour(
+            &screen,
+            FocusKey { entry: EntryId(7), elem: at },
+            Dir::Right,
+            &context,
+        ) else {
+            panic!("Right stopped at tab {}", i - 1);
+        };
+        at = next.elem;
+    }
+    assert_eq!(at, last, "Right reaches the 200th tab");
+    let season_keys: std::collections::HashSet<u32> = (0..200).map(|i| key_at(&screen, i)).collect();
+    // the tab strip is drawn (and so registers stops) only while its section is on screen; its
+    // pills are measured on the Tick and the landing, which a live frame has already run
+    let top = {
+        let d = screen.detail(test_store().view()).unwrap();
+        screen.season_metrics.update(d, &measure);
+        screen.section_top(1, d, &measure)
+    };
+    screen.scroll.jump(top);
+    screen.scroll_target = top;
+    let stops = drawn_stops(&mut screen, &cx(&measure, Some(last)));
+    let on_strip = stops.iter().filter(|stop| season_keys.contains(&stop.key.elem)).count();
+    assert!(on_strip > 0 && on_strip < 40, "only the on-axis tabs register stops, not all 200 (got {on_strip})");
+    clear();
+}
+
 #[test]
 fn hero_focus_is_clamped_when_the_control_set_shrinks_under_it() {
     let sid = ServerId::UNSET;

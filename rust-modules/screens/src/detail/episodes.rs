@@ -13,12 +13,15 @@ use plx_ui::text_view::TextView;
 use plx_ui::widgets::{self, PosterMark};
 use plx_ui::{on_axis, theme, Painter, Rect};
 
-pub const EPISODES_ELEM_RANGE_START: u32 = 128;
-pub const EPISODES_ELEM_RANGE_END: u32 = 640;
+pub const EPISODES_ELEM_RANGE_START: u32 = 1 << 30;
+pub const EPISODES_ELEM_RANGE_END: u32 = 1 << 31;
 pub const EPISODES_GROUP: GroupId = GroupId(2);
 
-pub const MAX_ITEMS: usize =
-    ((EPISODES_ELEM_RANGE_END - EPISODES_ELEM_RANGE_START) / 2) as usize;
+/// The episodes the strip registers stops for and draws per frame. This is a per-episode work
+/// bound, not an id-range clamp: the id block is 2^30 wide and no longer sizes it. It keeps the
+/// value the old block gave until the episode strip is redone (`EP_SCALE_MAX` is the same kind of
+/// bound), so raising it is that lane's change to make.
+pub const MAX_ITEMS: usize = 256;
 pub const W: f32 = 420.0;
 pub const H: f32 = 236.0;
 pub const GAP: f32 = 28.0;

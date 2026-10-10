@@ -36,9 +36,10 @@
 //!   container's `viewGroup` is a trap (it read `"movie"` on a response whose only row was a
 //!   `show`). Each row is stamped with the source's `ServerId`, which is what makes a card open on
 //!   the machine it came from.
-//! * **[`K_ROLES`]** — the character names, one batched `GET /library/metadata/{that source's shelf
-//!   keys}` ([`plx_plex::plex::Client::metadata_many`]). It exists because the shelf listing does NOT
-//!   carry them: its rows have a `Role[]` whose entries hold only `tag`. It is the ONE fetch here
+//! * **[`K_ROLES`]** — the character names, `GET /library/metadata/{that source's shelf keys}` in
+//!   [`ROLES_CHUNK`]-key batches ([`plx_plex::plex::Client::metadata_many`]). It exists because
+//!   the shelf listing does NOT carry them: its rows have a `Role[]` whose entries hold only
+//!   `tag`. It is the ONE fetch here
 //!   that DEPENDS on another — it can only be addressed once that source's shelves have landed, and
 //!   [`address`] expresses that by keying it on that source's shelf keys, which are empty until
 //!   then. Per source, because a `ratingKey` csv means nothing on another machine, and filtered on
@@ -395,6 +396,12 @@ const K_MEDIA: usize = 1;
 const K_ROLES: usize = 2;
 const NKIND: usize = 3;
 
+/// How many shelf keys one roles request names. The batch is a `GET /library/metadata/{csv}`, so its
+/// URL grows with the shelf: without a bound a prolific actor's 600 credits would be one path
+/// thousands of characters long, which a server or proxy may refuse, answered with one body holding
+/// every credit's tags. Each chunk is a separate request on the same worker, merged before it lands.
+const ROLES_CHUNK: usize = 48;
+
 /// The two fetches that are not per-server: plex.tv's biography and plex.tv's filmography, both of
 /// which are already global (module doc). They sit past every per-source mailbox, which is what
 /// keeps [`un_fx`] total.
@@ -488,10 +495,16 @@ pub struct MediaLanding {
 /// along because [`apply_landing`] must refuse a landing for a shelf list that has since been replaced
 /// (see there). `pairs` is already filtered to THIS person's credit per item — the worker walks the
 /// batched response so ~30 KB of tag arrays never crosses the mailbox.
+///
+/// `incomplete` is set when a chunk of [`ROLES_CHUNK`] keys failed: the pairs of the chunks that
+/// answered are still applied, and the list is left uncaptioned so the failure backoff re-asks it.
+/// It defaults to `false` on decode because a recorded batch predates chunking and was one request.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct RolesLanding {
     keys: Vec<String>,
     pairs: Vec<(String, String)>,
+    #[serde(default)]
+    incomplete: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -1332,7 +1345,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             p.credited = true;
             true
         }
-        Landing::Roles(Some(RolesLanding { keys, pairs })) => {
+        Landing::Roles(Some(RolesLanding { keys, pairs, incomplete })) => {
             let Some((_, si)) = src_of(p, i) else {
                 return false;
             };
@@ -1363,9 +1376,14 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
                         })
                         .collect();
                 }
-                s.roled = true;
+                s.roled = !incomplete;
             }
             resettle(p);
+            // The failure arm's backoff, for the part that failed: the answered chunks are already
+            // on screen, and the same countdown re-asks the whole list once it runs out.
+            if incomplete {
+                state.retry_cd[i] = RETRY_FRAMES;
+            }
             true
         }
     }
@@ -1538,12 +1556,22 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
             ),
             K_ROLES => Landing::Roles(
                 catch_unwind(|| {
-                    let keys: Vec<&str> = arg.iter().map(String::as_str).collect();
-                    let mc = c.metadata_many(&keys)?;
-                    let pairs = roles_from(&mc, &local, &guid);
+                    // One request per chunk, in shelf order, on this one worker. A chunk that gets
+                    // no answer is skipped rather than ending the batch: the others still caption
+                    // their credits, and `incomplete` tells the store to re-ask the whole list.
+                    let mut pairs = Vec::new();
+                    let mut incomplete = false;
+                    for chunk in arg.chunks(ROLES_CHUNK) {
+                        let keys: Vec<&str> = chunk.iter().map(String::as_str).collect();
+                        match c.metadata_many(&keys) {
+                            Some(mc) => pairs.extend(roles_from(&mc, &local, &guid)),
+                            None => incomplete = true,
+                        }
+                    }
                     Some(RolesLanding {
                         keys: arg.clone(),
                         pairs,
+                        incomplete,
                     })
                 })
                 .unwrap_or(None),
@@ -3040,6 +3068,7 @@ mod tests {
         let stale = RolesLanding {
             keys: vec!["9999".to_string()],
             pairs: vec![("9999".to_string(), "Nobody".to_string())],
+            incomplete: false,
         };
         owner.land(fr, gen, Landing::Roles(Some(stale)));
         owner.hold_off();
@@ -3063,7 +3092,7 @@ mod tests {
             ("2005".to_string(), "Wallace / Hutch (voice)".to_string()),
             ("1971".to_string(), "Wallace (voice)".to_string()),
         ];
-        owner.land(fr, gen, Landing::Roles(Some(RolesLanding { keys, pairs })));
+        owner.land(fr, gen, Landing::Roles(Some(RolesLanding { keys, pairs, incomplete: false })));
         owner.hold_off();
         assert!(owner.pump(), "a caption landing is a change the screen must see");
         let p = owner.current().unwrap();
@@ -3090,6 +3119,208 @@ mod tests {
             address(fr, owner.current().unwrap()).is_some(),
             "the reset is what re-asks for the new list's captions"
         );
+        owner.close();
+    }
+
+    /// The keys a `/library/metadata/{csv}` path names, in the order it names them.
+    fn keys_in(path: &str) -> Vec<String> {
+        path.trim_start_matches("/library/metadata/")
+            .split('?')
+            .next()
+            .unwrap_or("")
+            .split(',')
+            .filter(|k| !k.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A roles batch's answer: one row per key naming the same local person (`"42"`) in a `Role`
+    /// whose character is `Char <key>`, so every credit has a caption that proves which key it was.
+    fn roles_body(path: &str) -> String {
+        let rows: Vec<String> = keys_in(path)
+            .iter()
+            .map(|rk| {
+                format!(
+                    r#"{{"ratingKey":"{rk}","type":"movie","title":"t{rk}","Role":[{{"tag":"Actor","id":42,"role":"Char {rk}"}}]}}"#
+                )
+            })
+            .collect();
+        format!(r#"{{"MediaContainer":{{"Metadata":[{}]}}}}"#, rows.join(","))
+    }
+
+    /// A loopback Plex answering roles batches over real sockets. It records every request path, and
+    /// answers the `fail_nth` one (1-based) with a 500. It returns once it has seen `expect` requests
+    /// and then nothing for a grace period, so a request the code should NOT have made shows up in
+    /// the recorded paths rather than hanging the test.
+    fn roles_server(expect: usize, fail_nth: Option<usize>) -> (u16, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let mut paths: Vec<String> = Vec::new();
+            let mut quiet_since: Option<std::time::Instant> = None;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+            loop {
+                match plx_base::testnet::accept(&listener) {
+                    Ok((mut socket, _)) => {
+                        quiet_since = None;
+                        socket.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+                        let mut request = Vec::new();
+                        let mut buf = [0u8; 1024];
+                        while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                            match socket.read(&mut buf) {
+                                Ok(0) | Err(_) => break,
+                                Ok(n) => request.extend_from_slice(&buf[..n]),
+                            }
+                        }
+                        let request = String::from_utf8_lossy(&request).into_owned();
+                        let path = request.split_whitespace().nth(1).unwrap_or("").to_string();
+                        paths.push(path.clone());
+                        let (status, body) = if fail_nth == Some(paths.len()) {
+                            ("500 Internal Server Error", String::new())
+                        } else {
+                            ("200 OK", roles_body(&path))
+                        };
+                        write!(
+                            socket,
+                            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .unwrap();
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        if paths.len() >= expect {
+                            let since = *quiet_since.get_or_insert_with(std::time::Instant::now);
+                            if since.elapsed() > std::time::Duration::from_millis(300) {
+                                break;
+                            }
+                        }
+                        if std::time::Instant::now() > deadline {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                    Err(e) => panic!("roles fixture accept failed: {e}"),
+                }
+            }
+            paths
+        });
+        (port, handle)
+    }
+
+    /// One person open on one real loopback server, with `n` movies on its shelf and no captions
+    /// yet, so the next [`PersonState::pump`] is the one that asks for roles. Returns the source's
+    /// slot index for [`K_ROLES`].
+    fn roles_fixture(owner: &mut Owner, port: u16, n: usize) -> (ServerId, usize) {
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("roles-http", "127.0.0.1", i32::from(port), "synthetic", "fixture");
+        owner.reset();
+        owner.open(sid, "7", "plex://person/7", "Actor", "");
+        let movies: Vec<PmsMovie> = (0..n).map(|i| movie_on(sid, &i.to_string())).collect();
+        {
+            let p = owner.state.current.as_mut().expect("an open person");
+            p.profiled = true;
+            p.credited = true;
+            let s = p.srcs.iter_mut().find(|s| s.sid == sid).expect("the source");
+            s.local = Some("42".into());
+            s.resolved = true;
+        }
+        owner.state.install_source_for_test(sid, movies, Vec::new());
+        (sid, at(sid, K_ROLES))
+    }
+
+    /// Pump until `done`, bounded, because the roles worker answers on a real thread.
+    fn pump_until(owner: &mut Owner, what: &str, done: impl Fn(&Owner) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !done(owner) {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+            owner.pump();
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// 300 credits are three hundred keys in batches of [`ROLES_CHUNK`]: the request count is the
+    /// ceiling, no URL names more than one chunk, the chunks cover every key once in shelf order, and
+    /// every credit lands with its own character.
+    #[test]
+    fn roles_for_three_hundred_credits_come_in_bounded_batches() {
+        let _g = plx_base::testlock::serial();
+        let mut owner = Owner::default();
+        let (port, server) = roles_server(300usize.div_ceil(ROLES_CHUNK), None);
+        let (_, fr) = roles_fixture(&mut owner, port, 300);
+        pump_until(&mut owner, "every caption", |o| {
+            o.current().is_some_and(|p| p.srcs.iter().all(|s| s.roled))
+        });
+        let paths = server.join().unwrap();
+        plx_plex::plex::reset_servers_for_test();
+
+        assert_eq!(paths.len(), 300usize.div_ceil(ROLES_CHUNK), "one request per chunk");
+        for path in &paths {
+            assert!(keys_in(path).len() <= ROLES_CHUNK, "a batch named more than {ROLES_CHUNK} keys");
+        }
+        let all: Vec<String> = paths.iter().flat_map(|p| keys_in(p)).collect();
+        assert_eq!(all, (0..300).map(|i| i.to_string()).collect::<Vec<_>>(), "chunks cover every key once, in order");
+        let p = owner.current().unwrap();
+        for i in 0..300 {
+            assert_eq!(p.role(0, i), format!("Char {i}"), "credit {i} lost its caption");
+        }
+        assert!(owner.state.retry_cd[fr] == 0, "a complete answer arms no retry");
+        owner.close();
+    }
+
+    /// Ten credits are one request, and it is the request the store made before chunking existed:
+    /// the same single `/library/metadata/{csv}` URL, the same keys in the same order.
+    #[test]
+    fn ten_credits_make_exactly_one_request_as_before() {
+        let _g = plx_base::testlock::serial();
+        let mut owner = Owner::default();
+        let (port, server) = roles_server(1, None);
+        let _ = roles_fixture(&mut owner, port, 10);
+        pump_until(&mut owner, "every caption", |o| {
+            o.current().is_some_and(|p| p.srcs.iter().all(|s| s.roled))
+        });
+        let paths = server.join().unwrap();
+        plx_plex::plex::reset_servers_for_test();
+
+        assert_eq!(paths.len(), 1, "ten keys are one batch");
+        let csv: Vec<String> = (0..10).map(|i| i.to_string()).collect();
+        assert!(
+            paths[0].starts_with(&format!("/library/metadata/{}?", csv.join(","))),
+            "the single request is not today's: {}",
+            paths[0]
+        );
+        let p = owner.current().unwrap();
+        for i in 0..10 {
+            assert_eq!(p.role(0, i), format!("Char {i}"));
+        }
+        owner.close();
+    }
+
+    /// A failed chunk is a failed roles fetch, and the failure path is the one that already exists:
+    /// the captions of the chunks that answered are KEPT, the failed chunk's credits stay blank, the
+    /// list is not marked captioned, and the retry backoff is armed so the whole batch is asked again.
+    #[test]
+    fn one_failing_chunk_leaves_the_others_applied_and_arms_the_retry() {
+        let _g = plx_base::testlock::serial();
+        let mut owner = Owner::default();
+        // 120 credits: chunks of 48, 48 and 24. The middle one fails.
+        let (port, server) = roles_server(3, Some(2));
+        let (_, fr) = roles_fixture(&mut owner, port, 120);
+        pump_until(&mut owner, "the failed batch to back off", |o| o.state.retry_cd[fr] > 0);
+        let paths = server.join().unwrap();
+        plx_plex::plex::reset_servers_for_test();
+
+        assert_eq!(paths.len(), 3, "a failed chunk does not stop the chunks after it");
+        let p = owner.current().unwrap();
+        for i in (0..48).chain(96..120) {
+            assert_eq!(p.role(0, i), format!("Char {i}"), "chunk that answered lost credit {i}");
+        }
+        for i in 48..96 {
+            assert_eq!(p.role(0, i), "", "the failed chunk's credit {i} was captioned");
+        }
+        assert!(!p.srcs.iter().any(|s| s.roled), "a partial answer marked the list captioned");
+        assert_eq!(owner.state.retry_cd[fr], RETRY_FRAMES, "the failure path did not arm the retry");
         owner.close();
     }
 
