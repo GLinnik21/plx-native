@@ -2136,12 +2136,15 @@ pub fn seed_ownership_fixture_for_test(&mut self, adapter: &Arc<PersonAdapter>) 
 }
 
 pub fn ownership_fixture_for_test(&self, adapter: &Arc<PersonAdapter>) -> OwnershipFixture {
+    // One guard for both reads: a guard named in each field initialiser would live to the end of
+    // the literal, and the second `table()` would wait on the first.
+    let table = adapter.table();
     OwnershipFixture {
         name: self.current().map(|person| person.name.clone()),
         generation: self.generation,
         retry_cd: self.retry_cd.0.clone(),
-        flights: adapter.table().iter().filter(|(_, f)| f.busy()).map(|(&i, _)| i).collect(),
-        mail: adapter.table().iter().filter(|(_, f)| f.has_mail()).map(|(&i, _)| i).collect(),
+        flights: table.iter().filter(|(_, f)| f.busy()).map(|(&i, _)| i).collect(),
+        mail: table.iter().filter(|(_, f)| f.has_mail()).map(|(&i, _)| i).collect(),
     }
 }
 
@@ -2193,6 +2196,17 @@ mod tests {
         fn default() -> Self {
             Self { state: Default::default(), adapter: Arc::new(Default::default()) }
         }
+    }
+
+    /// The fixture reads the mailbox table twice (in-flight and answered); it must not hold the
+    /// table's lock across the second read, or the reader waits on itself and the suite hangs.
+    #[test]
+    fn ownership_fixture_reads_the_mailbox_table_without_self_deadlock() {
+        let mut o = Owner::default();
+        o.state.seed_ownership_fixture_for_test(&o.adapter);
+        let fixture = o.state.ownership_fixture_for_test(&o.adapter);
+        assert_eq!(fixture.mail, vec![1]);
+        assert_eq!(fixture.flights, vec![1], "the seeded claim is still out until the pump takes the answer");
     }
 
     impl Owner {
