@@ -187,9 +187,12 @@ impl Lane {
     }
 }
 
-/// The deck's order: last viewed descending, then the lane's roster index, then position.
-pub(crate) fn order(a: (&CwItem, usize), b: (&CwItem, usize)) -> Ordering {
-    b.0.last_viewed_at.cmp(&a.0.last_viewed_at).then(a.1.cmp(&b.1)).then(a.0.position.cmp(&b.0.position))
+/// The deck's order: last viewed descending, then the card's server, then its position in that
+/// server's listing, then its rating key. A tie is never broken by where a lane sits in the live
+/// roster, which changes when a server drops out and returns.
+pub(crate) fn order(a: &CwItem, b: &CwItem) -> Ordering {
+    b.last_viewed_at.cmp(&a.last_viewed_at).then(a.m.sid.raw().cmp(&b.m.sid.raw()))
+        .then(a.position.cmp(&b.position)).then_with(|| a.m.rk.cmp(&b.m.rk))
 }
 
 /// Whether a move in `forward`'s direction would have to read `lane` first to be sure of the next
@@ -208,7 +211,7 @@ pub(crate) fn needs(lanes: &[Lane], forward: bool, n: usize) -> Vec<usize> {
 pub(crate) fn merge_deck<'a>(lanes: &[&'a Lane]) -> (Vec<(usize, &'a CwItem)>, bool, bool) {
     let mut cards: Vec<(usize, &CwItem)> = lanes.iter().enumerate()
         .flat_map(|(i, lane)| lane.shown().map(move |row| (i, row))).collect();
-    cards.sort_by(|a, b| order((a.1, a.0), (b.1, b.0)));
+    cards.sort_by(|a, b| order(a.1, b.1));
     let before = lanes.iter().any(|lane| lane.lo > 0 || lane.has_before());
     let after = lanes.iter().any(|lane| !lane.done || lane.ahead() > 0);
     (cards, before, after)
@@ -264,8 +267,8 @@ pub(crate) fn place(lanes: &mut [Lane], previews: &[&[CwItem]]) {
     };
     for &i in &fresh {
         let lane = &mut lanes[i];
-        let before = lane.rows.iter().filter(|row| order((row, i), (&first.0, first.1)) == Ordering::Less).count();
-        let upto = lane.rows.iter().filter(|row| order((row, i), (&last.0, last.1)) != Ordering::Greater).count();
+        let before = lane.rows.iter().filter(|row| order(row, &first.0) == Ordering::Less).count();
+        let upto = lane.rows.iter().filter(|row| order(row, &last.0) != Ordering::Greater).count();
         let end = lane.tail.position + 1;
         lane.lo = lane.rows.get(before).map_or(end, |row| row.position);
         lane.hi = lane.rows.get(upto.max(before)).map_or(end, |row| row.position);
@@ -288,7 +291,7 @@ fn take(lanes: &mut [Lane], forward: bool, n: usize, usable: &[bool]) -> usize {
                 continue;
             };
             let better = pick.is_none_or(|(j, k)| {
-                let ordering = order((&lane.rows[at], i), (&lanes[j].rows[k], j));
+                let ordering = order(&lane.rows[at], &lanes[j].rows[k]);
                 if forward { ordering == Ordering::Less } else { ordering == Ordering::Greater }
             });
             if better { pick = Some((i, at)); }
@@ -319,7 +322,7 @@ fn drop_excess(lanes: &mut [Lane], forward: bool) {
                 else { lane.rows.iter().rposition(|row| (lane.lo..lane.hi).contains(&row.position)) };
             let Some(at) = at else { continue };
             let better = pick.is_none_or(|(j, k)| {
-                let ordering = order((&lane.rows[at], i), (&lanes[j].rows[k], j));
+                let ordering = order(&lane.rows[at], &lanes[j].rows[k]);
                 if forward { ordering == Ordering::Less } else { ordering == Ordering::Greater }
             });
             if better { pick = Some((i, at)); }
@@ -684,6 +687,15 @@ mod tests {
     }
 
     fn viewed(n: usize, step: i64, base: i64) -> Vec<i64> { (0..n as i64).map(|i| base - i * step).collect() }
+
+    #[test]
+    fn tied_cards_keep_their_order_when_a_server_leaves_and_returns() {
+        let (a, b) = (Server::new(3, &viewed(15, 0, 500)), Server::new(1, &viewed(15, 0, 500)));
+        let both = keys(&deck(&[&a, &b]));
+        // The roster after `b` dropped out and came back lists it on the other side of `a`.
+        let swapped = keys(&deck(&[&b, &a]));
+        assert_eq!(both, swapped, "a tie is broken by the server, not by where it sits in the live list");
+    }
 
     #[test]
     fn the_merged_order_equals_a_full_sort_for_one_two_and_five_servers() {
