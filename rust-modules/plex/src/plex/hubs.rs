@@ -10,10 +10,21 @@
 //! See [`super::Hub::directory`] for the per-type split and [`Client::search`] for the endpoint.
 use super::client::{Client, QueryBuilder};
 use super::models::MediaContainer;
+use super::paging::{paged_path, without_window, PageReq};
 
 /// The keys a hub's pages may be fetched from: the only prefixes a server's listing keys use.
 pub fn is_pageable_hub_key(key: &str) -> bool {
-    key.starts_with("/hubs/") || key.starts_with("/library/sections/")
+    key.starts_with("/hubs/") || key.starts_with("/library/sections/") || is_similar_key(key)
+}
+
+/// `/library/metadata/{digits}/similar`, with or without a query. Only this one shape under the
+/// metadata prefix: its siblings (`children`, `extras`, …) are not listings a hub points at.
+fn is_similar_key(key: &str) -> bool {
+    let path = key.split_once('?').map_or(key, |(path, _)| path);
+    let Some(rating_key) = path.strip_prefix("/library/metadata/").and_then(|rest| rest.strip_suffix("/similar")) else {
+        return false;
+    };
+    !rating_key.is_empty() && rating_key.bytes().all(|b| b.is_ascii_digit())
 }
 
 impl Client {
@@ -104,15 +115,6 @@ impl Client {
         (200..300).contains(&self.put(&path))
     }
 
-    /// GET /hubs/promoted?count=… — the home screen's featured rows.
-    pub fn promoted(&self, count: i64) -> Option<MediaContainer> {
-        self.get_json(
-            &QueryBuilder::new("/hubs/promoted")
-                .int("count", count)
-                .build(),
-        )
-    }
-
     /// GET /hubs/search?query=…[&limit=…][&sectionId=…]&includeCollections=1 — the search screen
     /// → `.hub[]`.
     ///
@@ -161,12 +163,7 @@ impl Client {
 }
 
 fn hub_page_path(key: &str, start: i64, size: i64) -> String {
-    let (path, query) = key.split_once('?').unwrap_or((key, ""));
-    let query = query.split('&').filter(|part| !part.is_empty())
-        .filter(|part| !matches!(part.split('=').next(), Some("X-Plex-Container-Start" | "X-Plex-Container-Size")))
-        .collect::<Vec<_>>().join("&");
-    let key = if query.is_empty() { path.to_owned() } else { format!("{path}?{query}") };
-    QueryBuilder::new(key).int("X-Plex-Container-Start", start).int("X-Plex-Container-Size", size).build()
+    paged_path(&without_window(key), PageReq::window(start, size))
 }
 
 /// The `/hubs/search` path, split out of [`Client::search`] so the query this app puts on the wire
@@ -249,7 +246,24 @@ mod tests {
 
 #[cfg(test)]
 mod paging_tests {
-    use super::hub_page_path;
+    use super::{hub_page_path, is_pageable_hub_key};
+
+    #[test]
+    fn only_a_similar_list_under_a_metadata_item_is_pageable_from_that_prefix() {
+        assert!(is_pageable_hub_key("/library/metadata/5/similar"));
+        assert!(is_pageable_hub_key("/library/metadata/5/similar?sort=titleSort"));
+        // The `/library/metadata/` prefix is NOT admitted: these are the shapes it would let in.
+        for key in [
+            "/library/metadata/5/children",
+            "/library/metadata/5/extras",
+            "/library/metadata/5",
+            "/library/metadata/x/similar",
+            "/library/metadata//similar",
+            "/library/metadata/5/similar/extra",
+        ] {
+            assert!(!is_pageable_hub_key(key), "{key}");
+        }
+    }
 
     #[test]
     fn paging_preserves_the_provider_filter_and_replaces_its_page_parameters() {

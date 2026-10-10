@@ -20,6 +20,7 @@ mod client;
 pub mod identity; // ONE X-Plex-* identity for both transports (plex.tv headers + PMS query)
 mod models;
 mod params;
+mod paging;
 // WHICH servers exist and which one is current. `client()`/`client_opt()` live here now (they
 // mean "the current server"); `client.rs` is just the type. See its module doc for why the hot
 // path is an atomic pointer table rather than a lock.

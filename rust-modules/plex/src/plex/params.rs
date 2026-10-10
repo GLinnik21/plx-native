@@ -266,7 +266,7 @@ impl Ceiling {
 /// store; consumed by `library.rs::section_items_query`. Filters are `(param, value)` pairs
 /// appended verbatim (`("genre","150")`, `("unwatched","1")`, shows: `("unwatchedLeaves","1")`)
 /// — tag-id values come from `section_directory` value lists. Paging: Start AND Size are
-/// always sent together — PMS silently ignores a lone `X-Plex-Container-Size` query param
+/// always sent together — PMS silently ignores a lone size parameter
 /// (verified live on PMS 1.43.2, 2026-07-19).
 pub struct SectionQuery<'a> {
     pub section_key: i64,
