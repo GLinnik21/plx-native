@@ -15,6 +15,7 @@
     "controlled_home": "app/bootstrap.rs: Initial::synthetic_home fixes loopback, emits the complete Seeded contract and a fixed probe; app/bootstrap/effects.rs explicitly encodes input Source/Key/Edge, lifecycle By, Home commands and store request names. auth/owner.rs declares ActivateDevBootstrap and ReadyInstall::AlreadyInstalled; auth.rs Phase::Idle and Picker::Boot, plex/probe.rs Location's lowercase local wire. No general UUID, hostname, token or capitalized-word pattern is permitted.",
     "subtitle_preferences": "rust-modules/plex/src/plex/session.rs: SubtitleTone::White serializes as white and is the captured default in every synthetic session.",
     "session_persistence": "rust-modules/plex/src/plex/session.rs: SaveAuthority::Routine (also PublicOnly, FreshReauthentication — already covered/unused in controlled recordings); rust-modules/plex/src/plex/session/async_persistence.rs: PersistencePurpose::Background; rust-modules/src/auth/owner.rs: CommitAdmission::RegistryOnly. These serialize into every controlled session commit/plan once a store owns its own persistence (cleanup/ownership), so a synthetic recording now always carries them.",
+    "related_hub_key": "rust-modules/plex/src/plex/hubs.rs is_pageable_hub_key: the Related hub of a Detail page is paged through its own key, /library/metadata/{digits}/similar (tests/mock_pms.py serves it); a recorded Detail page names it in its page request.",
     "hold_hint": "ui/src/hold_hint.rs measures the three runs of Home's \"Hold OK for options\" capsule when a recorded Home rests on a shelf tile: locales/en/widgets.json widgets.hint.hold_options (pre and post words, split at the key placeholder) and KEY (the OK cap)."
   },
   "patterns": [
@@ -31,6 +32,7 @@
     "Character [0-9]+ · s[0-9a-f]{8}",
     "(Actor|Appeared|Director|Producer|Composer|Cinematographer|Writer|Other) · [0-9]+",
     "/library/metadata/[0-9]+/(thumb|art)/1",
+    "/library/metadata/[0-9]+/similar",
     "/library/parts/[0-9]+/17[0-9]{8}/file\\.mkv",
     "[0-9]{4}-[0-9]{2}-[0-9]{2}",
     "[0-9]+",
