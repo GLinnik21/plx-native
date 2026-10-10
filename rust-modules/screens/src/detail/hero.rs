@@ -56,7 +56,9 @@ const PW: f32 = 168.0;
 const CGAP: f32 = plx_ui::widgets::CTRL_GAP;
 pub const CD: f32 = plx_ui::widgets::StatusOverlay::CTRL_H;
 const PEOPLE_MAX_LINES: usize = 2;
-const PEOPLE_CAST: usize = 3;
+/// Names on the hero's Starring line: a summary. The whole cast is the Cast row further down the
+/// page, one headshot per credit with nothing cut (`cards::Cards` counts `Detail::credits_len`).
+const PEOPLE_SUMMARY: usize = 3;
 const PEOPLE_LABEL_INK: [f32; 4] = theme::TEXT_TERTIARY;
 const FACTS_SEP_PAD: f32 = theme::space::SM;
 const FACTS_R: f32 = plx_ui::consts::SCR_W
@@ -507,7 +509,7 @@ pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure)
         let names: Vec<&str> = d
             .cast
             .iter()
-            .take(PEOPLE_CAST)
+            .take(PEOPLE_SUMMARY)
             .map(|credit| credit.tag.as_str())
             .collect();
         bottom -= people_line(p, plx_platform::i18n::msg::browse_detail_starring(), &names, x, bottom, measure);
