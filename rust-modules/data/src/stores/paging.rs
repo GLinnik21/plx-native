@@ -371,6 +371,17 @@ pub fn kept_cards(sid: ServerId, keys: &[String], hidden: &[i64],
     Some(cards.into_iter().filter_map(|fetched| match fetched { Fetched::Card(card) => Some(card), _ => None }).collect())
 }
 
+/// What a row keeps to ask for its cards again when it gives them up: `Some(empty)` when its
+/// listing says them at its window, `Some(keys)` when only the rating keys it showed can (a row
+/// with no key the pager reads, or one not yet compared with its listing, whose preview may be a
+/// random sample a second read would replace), and `None` when it cannot give them up because a
+/// card has no rating key and there is no way back.
+pub fn release_keys<'a>(pageable: bool, state: &RowState, shown: impl Iterator<Item = &'a str>) -> Option<Vec<String>> {
+    if pageable && !matches!(state.mode, RowMode::Unprobed) { return Some(Vec::new()); }
+    let keys: Vec<String> = shown.map(str::to_owned).collect();
+    if keys.iter().any(String::is_empty) { None } else { Some(keys) }
+}
+
 /// Moves a window over a ledger by one ask. `current` is the window as it stands, its positions
 /// indices into the ledger. A forward ask keeps the last twelve rows and adds up to twelve: from
 /// the ledger where it already holds the keys (a window that moved back), else from the listing,

@@ -334,7 +334,7 @@ impl SecHubs {
         self.stalled.clear();
         let range = self.held();
         let outside = |shelves: &[Shelf]| shelves.iter().enumerate().any(|(row, shelf)|
-            !(range.0..=range.1).contains(&row) && !shelf.released() && plx_plex::plex::is_pageable_hub_key(&shelf.key));
+            !(range.0..=range.1).contains(&row) && !shelf.released());
         if !outside(&self.committed) { return false; }
         settle(Arc::make_mut(&mut self.committed).as_mut_slice(), range);
         self.revised();
@@ -815,6 +815,10 @@ fn carry_windows(old: &[Shelf], new: &mut [Shelf]) {
                 || was.row != RowState::default() && !matches!(was.row.mode, RowMode::Unprobed)) else { continue };
         let total = shelf.total;
         let (title, link, landscape) = (shelf.title.clone(), shelf.link.clone(), shelf.landscape);
+        if was.released() && !plx_plex::plex::is_pageable_hub_key(&shelf.key) {
+            // nothing but the refresh's own preview says what the row shows now; the ring gives it up again
+            continue;
+        }
         *shelf = was.clone();
         (shelf.title, shelf.link, shelf.landscape, shelf.total) = (title, link, landscape, total);
     }
@@ -1037,11 +1041,17 @@ impl HubResult {
 
 /// A row's window after one ask, on the sliding window the Home rows use ([`paging::read_row`]):
 /// the preview rule, the re-anchor on the edge row, the ledger when the listing will not hold still.
-/// `window` is the row as it stands; a re-read starts from where the window began. `None` is a
-/// failed read.
+/// `window` is the row as it stands; a re-read starts from where the window began, or, for a row that
+/// kept the rating keys it showed, reads exactly those. `None` is a failed read.
 pub(super) fn read_shelf(sid: ServerId, window: &Shelf, ask: &RowAsk,
     list: impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>,
     many: impl FnMut(&[String]) -> Option<plx_plex::plex::MediaContainer>) -> Option<Shelf> {
+    if ask.reload && !window.row.kept.is_empty() {
+        let items = paging::kept_cards(sid, &window.row.kept, &[], &mut { many })?;
+        let items: Vec<PmsMovie> = items.into_iter().map(|item| Arc::try_unwrap(item).unwrap_or_else(|shared| (*shared).clone())).collect();
+        let positions = (window.offset..window.offset + items.len()).collect();
+        return Some(Shelf { items, positions, shown: 0, row: RowState { kept: Vec::new(), ..window.row.clone() }, ..window.clone() });
+    }
     let (rows, mut info) = window.window();
     let start = if ask.reload { info.end = info.offset; window.offset }
         else if ask.before { window.offset } else { window.end.max(window.offset + window.items.len()) };
@@ -1140,14 +1150,19 @@ pub(crate) fn clamp_hold((lo, hi): (usize, usize)) -> (usize, usize) {
     crate::pms::clamp_hold((lo, hi))
 }
 
-/// Gives the cards of every row outside the held range up to its descriptor; a row whose key cannot
-/// be read again keeps its cards (it has no way back). Returns whether any row changed.
+/// Gives the cards of every row outside the held range up to its descriptor. A row the pager reads
+/// comes back from its listing; any other comes back through the rating keys it showed
+/// ([`paging::release_keys`]), and a row that shows a card with no rating key has no way back and
+/// keeps its cards. Returns whether any row changed.
 fn settle(shelves: &mut [Shelf], hold: (usize, usize)) -> bool {
     let (lo, hi) = clamp_hold(hold);
     let mut changed = false;
     
     for (row, shelf) in shelves.iter_mut().enumerate() {
-        if (lo..=hi).contains(&row) || shelf.released() || !plx_plex::plex::is_pageable_hub_key(&shelf.key) { continue; }
+        if (lo..=hi).contains(&row) || shelf.released() { continue; }
+        let pageable = plx_plex::plex::is_pageable_hub_key(&shelf.key);
+        let Some(kept) = paging::release_keys(pageable, &shelf.row, shelf.items.iter().map(|item| item.rk.as_str())) else { continue };
+        shelf.row.kept = kept;
         shelf.shown = shelf.items.len();
         shelf.items = Vec::new();
         shelf.positions = Vec::new();

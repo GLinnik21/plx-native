@@ -140,7 +140,8 @@ fn a_row_with_a_key_the_pager_does_not_admit_keeps_its_preview() {
     assert!(!hubs.committed[0].more, "and there is nothing to ask for");
     assert!(!hubs.want_page("test.section.unadmitted", "/playlists/9/items", false));
     hubs.set_hold(300, 310);
-    assert_eq!(hubs.committed[0].items.len(), 12, "a row that cannot be read again is never released");
+    assert!(hubs.committed[0].released(), "a row with no key to page by gives its cards up all the same");
+    assert_eq!(hubs.committed[0].row.kept.len(), 12, "and keeps the rating keys it showed");
 }
 
 #[test]
@@ -214,4 +215,64 @@ fn a_refresh_keeps_the_window_a_row_was_walked_to() {
     hubs.land_ok(parse_hubs(&hub_list(5), sid(), 1).shelves);
     assert!(hubs.commit_staged(true));
     assert_eq!((hubs.committed[1].offset, keys(&hubs.committed[1])), walked);
+}
+
+/// A hub list of rows whose key the pager does not admit: row `r` card `i` keyed `r * 1000 + i`.
+fn unpaged_hub_list(rows: usize) -> Container {
+    let hubs: Vec<_> = (0..rows).map(|r| serde_json::json!({
+        "hubIdentifier": format!("movie.list{r}"), "title": format!("List {r}"), "type": "movie",
+        "key": format!("/playlists/{r}/items"), "more": false, "size": 12, "totalSize": 12,
+        "Metadata": (0..12).map(|i| item(r * 1000 + i)).collect::<Vec<_>>()})).collect();
+    serde_json::from_value(serde_json::json!({"Hub": hubs})).unwrap()
+}
+
+#[test]
+fn a_400_row_section_of_unpaged_rows_holds_at_most_16_rows_and_each_row_returns_with_its_cards() {
+    let rows = 400;
+    let mut hubs = published(&unpaged_hub_list(rows));
+    assert_eq!(hubs.committed.len(), rows, "no row is left off");
+    let shown: Vec<Vec<String>> = hubs.committed.iter().map(|shelf| (0..12).map(|i| {
+        let row: usize = shelf.id.trim_start_matches("movie.list").parse().unwrap();
+        (row * 1000 + i).to_string()
+    }).collect()).collect();
+    let hold = |hubs: &mut SecHubs, top: usize| {
+        hubs.set_hold(top.saturating_sub(2), (top + 4).min(rows - 1));
+        while let Some(ask) = hubs.next_ask() {
+            assert!(ask.reload, "an unpaged row is only ever read again");
+            step(hubs, &ask, |_, _| panic!("a row with no key to page by never reads a listing"));
+            assert!(held_cards(hubs) <= HOLD_ROWS * MAX_SHELF_ITEMS, "held cards stay within the ring");
+        }
+        assert!(held_cards(hubs) <= HOLD_ROWS * 12, "at most 16 rows of cards are held");
+        let (lo, hi) = hubs.held();
+        for row in lo..=hi.min(rows - 1) {
+            assert_eq!(keys(&hubs.committed[row]), shown[row], "row {row} shows the cards it showed");
+        }
+    };
+    for top in (0..rows).step_by(3) { hold(&mut hubs, top); }
+    for top in (0..rows).step_by(3).rev() { hold(&mut hubs, top); }
+    assert!(hubs.committed.iter().filter(|shelf| shelf.released()).count() >= rows - HOLD_ROWS);
+}
+
+#[test]
+fn a_random_row_the_ring_took_comes_back_with_the_cards_it_showed() {
+    let preview = [41, 7, 63, 2, 88, 19, 50, 33, 71, 5, 26, 80];
+    let mut hubs = published(&one_row(&preview, 90));
+    hubs.set_hold(20, 30);
+    assert!(hubs.committed[0].released(), "an unprobed row gives its cards up");
+    hubs.set_hold(0, 6);
+    let ask = hubs.next_ask().unwrap();
+    step(&mut hubs, &ask, |_, _| panic!("a sample is read by its keys, never by its listing"));
+    assert_eq!(keys(&hubs.committed[0]), preview.iter().map(usize::to_string).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_refresh_gives_an_unpaged_row_the_cards_it_now_shows() {
+    let mut hubs = published(&unpaged_hub_list(30));
+    hubs.set_hold(20, 26);
+    assert!(hubs.committed[0].released());
+    let mut fresh = parse_hubs(&unpaged_hub_list(30), sid(), 1).shelves;
+    fresh[0].items.truncate(5);
+    hubs.land_ok(fresh);
+    assert!(hubs.commit_staged(true));
+    assert_eq!(hubs.committed[0].row.kept.len(), 5, "the refresh's own preview is what the row shows now");
 }

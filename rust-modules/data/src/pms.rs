@@ -1165,10 +1165,8 @@ fn published_order(srcs: &[Src], pins: &[(ServerId, i64, bool)]) -> Vec<(usize, 
 /// with no key the pager reads, come back through the rating keys they showed. A row that shows a
 /// card with no rating key has no way back and keeps its cards.
 fn give_up_cards(shelf: &mut Shelf) -> bool {
-    let by_listing = pages(&shelf.key) && !matches!(shelf.row.mode, paging::RowMode::Unprobed);
-    if by_listing { return true; }
-    if shelf.items.iter().any(|item| item.rk.is_empty()) { return false; }
-    shelf.row.kept = shelf.items.iter().map(|item| item.rk.clone()).collect();
+    let Some(kept) = paging::release_keys(pages(&shelf.key), &shelf.row, shelf.items.iter().map(|item| item.rk.as_str())) else { return false };
+    shelf.row.kept = kept;
     true
 }
 
