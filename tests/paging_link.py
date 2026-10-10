@@ -67,6 +67,7 @@ EXTRA_PROFILES = {
 }
 DEFAULT_PROFILES = ("none", "remote-wan", "slow-latency", "low-bandwidth", "lossy")
 JUMP_PX = 400          # a focused card that moves this far between two frames has teleported
+KEY_APPLY_S = 0.15     # a key sent this long before a sample may still be applied after it (one key period + a frame)
 RETRY_WITHIN_S = 45    # a failed page must be asked for again, and answered, within this
 
 FOCUS_RE = re.compile(r"^focus route=(\w+) (.*)$")
@@ -241,11 +242,20 @@ def analyse_focus(samples, keys, order, stride=1, window_max=None):
             last_slot = slot if slot is not None else last_slot
         elif slot is not None:
             last_slot = slot
-    skips, coalesced, prev_t = 0, 0, first_key
+    skips, coalesced, prev_t, carry = 0, 0, first_key, 0
     for t, d, to in steps:
         # Keys held while the list cannot move are applied together on the frame it can: one step
         # may cover every key pressed since the last one, never more (that would invent moves).
-        pressed = max(1, sum(1 for kt, _ in keys if prev_t < kt <= t))
+        # A step is dated by the frame that DREW the new card, but its key was sent (`keys` is the
+        # send time) up to one key period earlier and applied in a frame that drew no card (the
+        # focused row is outside the window, so the line names no item). That key is not in
+        # `(prev_t, t]` of the step that moved for it: it was pressed before `prev_t`, after the
+        # previous step's sample. `carry` hands such keys on, only the ones the previous step did
+        # not spend and only those sent within `KEY_APPLY_S` before it, so a key is still spent once.
+        fresh = sum(1 for kt, _ in keys if prev_t < kt <= t)
+        pressed = max(1, fresh + carry)
+        late = sum(1 for kt, _ in keys if t - KEY_APPLY_S < kt <= t)
+        carry = min(late, max(0, pressed - -(-abs(d) // stride)))
         prev_t = t
         if pressed > 1 and abs(d) > stride:
             coalesced += 1
@@ -612,6 +622,16 @@ def selftest():
     assert not analyse_focus(grid, [(0.9, "down")] * 4, order, 6)[1]
     skipped = [grid[0], (1.1, line("109", 0, 90))]
     assert any("skipped" in f for f in analyse_focus(skipped, [(0.9, "down")] * 4, order, 6)[1])
+    # a key applied in a frame that drew no card: sent just before the sample that precedes the
+    # step it moves for. Nine rows with nine keys is fine though only eight were sent after the
+    # previous sample; with seven there it is a real skip, and a carried key is spent once.
+    big = [str(1000 + i) for i in range(130)]
+    seq = [(0.5, line("1048", 0, 90, cdi="0")), (1.0, line("1054", 0, 90, cdi="0")),
+           (2.0, line("1108", 0, 90, cdi="0"))]
+    sent = [(0.4, "down"), (0.9, "down"), (0.95, "down")] + [(1.1 + i * 0.1, "down") for i in range(8)]
+    assert not analyse_focus(seq, sent, big, 6)[1], analyse_focus(seq, sent, big, 6)[1]
+    assert any("skipped +54" in f for f in analyse_focus(seq, sent[:-1], big, 6)[1])
+    assert any("skipped" in f for f in analyse_focus(seq, sent[:2] + sent[3:], big, 6)[1])  # key not in the window
     # off the canvas: partly, wholly, and the caption
     edge = [(1.0, line("100", 0, 1800, cdc="1800", cdcw="250")), (1.1, line("100", 0, 2004, cdc="2004", cdcw="100")),
             (1.2, line("100", 0, -315, cdc="-315", cdcw="100"))]
