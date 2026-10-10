@@ -571,6 +571,11 @@ def run_surface(name, profile_name, args):
     retried = redundant = left_behind = 0
     where = {rk: i for i, rk in enumerate(order)}
     track = [(t, where[item_of(f)]) for t, f in samples if item_of(f) in where]
+    if stride > 1:
+        # A grid frame can hold the focus on a row whose card is not drawn (the page is not in): the
+        # line then names no item, only `row` and `col`, and the focus is still walking. Track those.
+        track = [(t, int(f["row"]) * stride + int(f.get("col", 0))) for t, f in samples
+                 if f.get("row", "").lstrip("-").isdigit() and f.get("col", "0").lstrip("-").isdigit()]
     for r in failed_pages:
         again = [x for x in rows if x["path"] == r["path"] and x["start"] == r["start"]
                  and not x["failed"] and x["t_recv"] > r["t_recv"]]
