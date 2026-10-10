@@ -92,7 +92,7 @@
 use plx_plex::plex::ServerId;
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub mod view;
 pub mod recents;
@@ -446,10 +446,6 @@ const LIMIT: i64 = 12;
 /// `the_data_shelf_cap_is_the_card_rows_capacity` pins the two equal).
 const SHELF_MAX: usize = crate::pms::MAX_SHELF_ITEMS;
 
-/// Fetch-slot ceiling — the registry's own `MAX_SERVERS`, named rather than copied, so raising the
-/// ceiling cannot leave this module quietly never asking the extra servers.
-const NSRC: usize = plx_plex::plex::MAX_SERVERS;
-
 /// What one source's finished fetch delivers. `None` means the fetch FAILED (transport, parse, or
 /// a panicking worker) and must be retried — kept distinguishable from a successful answer that
 /// happens to be empty, which is the "one wifi hiccup blanked a populated grid" bug `browse.rs`
@@ -468,17 +464,39 @@ type Projection = [Vec<Item>; NKIND];
 /// which a production `Bridge` holds as one `Arc` per owner.
 type Fetch = crate::stores::Fetch<Mail>;
 
-/// The `Arc`'d worker half of one Search owner: every in-flight claim and landing mailbox, indexed
-/// by [`ServerId::raw`]. A worker captures a clone of the owning `Bridge`'s `Arc<SearchAdapter>`
-/// before it spawns; rotating the store's live `Arc` (on `SearchCmd::Reset`) orphans that clone
-/// harmlessly — the old worker can still land, but only into a mailbox nothing reads any more.
+/// The `Arc`'d worker half of one Search owner: every in-flight claim and landing mailbox, one per
+/// registry slot ([`SearchAdapter::mailbox`], indexed by [`ServerId::raw`]). A worker captures a
+/// clone of the owning `Bridge`'s `Arc<SearchAdapter>` before it spawns; rotating the store's live
+/// `Arc` (on `SearchCmd::Reset`) orphans that clone harmlessly — the old worker can still land, but
+/// only into a mailbox nothing reads any more.
 pub struct SearchAdapter {
-    fetch: [Fetch; NSRC],
+    /// Grown on demand by [`SearchAdapter::mailbox`]. Behind a lock because the table is shared with
+    /// the workers, and a slot's mailbox has to exist before its first landing can reach it.
+    fetch: Mutex<Vec<Arc<Fetch>>>,
 }
 
 impl Default for SearchAdapter {
     fn default() -> Self {
-        Self { fetch: [const { Fetch::IDLE }; NSRC] }
+        Self { fetch: Mutex::new(Vec::new()) }
+    }
+}
+
+impl SearchAdapter {
+    /// The mailbox for registry slot `i`, created on first use. Handed out as an `Arc` so the lock
+    /// is not held across a claim, a take or a spawn.
+    fn mailbox(&self, i: usize) -> Arc<Fetch> {
+        let mut table = self.fetch.lock().unwrap_or_else(|e| e.into_inner());
+        if table.len() <= i {
+            table.resize_with(i + 1, || Arc::new(Fetch::IDLE));
+        }
+        Arc::clone(&table[i])
+    }
+
+    /// Drop every mailbox's contents and claim — [`supersede`]'s half of the reset.
+    fn clear_all(&self) {
+        for mailbox in self.fetch.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            mailbox.clear();
+        }
     }
 }
 
@@ -520,7 +538,7 @@ impl Source {
 }
 
 /// The registry slots this store fans out over — **the one place a raw `ServerId` becomes an index
-/// into `SearchState::src` / [`SearchAdapter`]** (see [`NSRC`]).
+/// into `SearchState::src` / [`SearchAdapter`]** (see [`source_mut`] and [`SearchAdapter::mailbox`]).
 ///
 /// **Exact ids, not a prefix or a range.** Slot
 /// numbers are permanent and a sign-out RETIRES the departing account's slots without renumbering
@@ -528,11 +546,10 @@ impl Source {
 /// the live roster is `2..3` and not `0..1`: a prefix would have asked the revoked slots (which
 /// resolve to no client at all) and never asked the server the user is actually signed in to.
 /// A profile switch can additionally deactivate only the middle slot, so even that post-sign-out
-/// window is not necessarily contiguous. Collecting at most 16 indices is the honest shape.
+/// window is not necessarily contiguous. One index per live server is the honest shape, whatever
+/// the slot numbers have reached.
 fn slots() -> Vec<usize> {
-    plx_plex::plex::server_ids()
-        .filter_map(|id| ((id.raw() as usize) < NSRC).then_some(id.raw() as usize))
-        .collect()
+    plx_plex::plex::server_ids().map(|id| id.raw() as usize).collect()
 }
 
 /// How many sources this store fans out over — the width of [`slots`].
@@ -589,8 +606,9 @@ pub struct SearchState {
     settle_us: u32,
     armed: bool,
 
-    /// One per registry slot; see [`Source`]. The worker's two halves live in [`SearchAdapter`].
-    src: [Source; NSRC],
+    /// One per registry slot, grown by [`source_mut`] on first touch; see [`Source`]. The worker's
+    /// two halves live in [`SearchAdapter`].
+    src: Vec<Source>,
 
     /// This owner's memo of the built [`scope::SourceScopeSnapshot`] (`search/scope.rs`). Interior
     /// mutable because `snapshot`/`snapshot_with_directory` are reached through `&self`.
@@ -609,7 +627,7 @@ impl Default for SearchState {
             fav_gen: 0,
             settle_us: 0,
             armed: false,
-            src: [const { Source::EMPTY }; NSRC],
+            src: Vec::new(),
             scope_cache: scope::ScopeCache::default(),
         }
     }
@@ -834,7 +852,7 @@ fn set_watched_local(state: &mut SearchState, sid: ServerId, rk: &str, on: bool)
 /// reaching it needs two overlapping real fetches.
 fn land(adapter: &SearchAdapter, i: usize, gen: u32, what: Option<Projection>) {
     let fresh = what.is_some();
-    adapter.fetch[i].post(Mail { gen, what }, |old| match old {
+    adapter.mailbox(i).post(Mail { gen, what }, |old| match old {
         // A newer generation always wins — the monotone rule this mailbox exists for.
         m if m.gen != gen => m.gen < gen,
         // …but at the SAME generation an ANSWER beats a failure. The in-flight claim bounds spawns
@@ -878,9 +896,9 @@ fn supersede_with_directory(
         Some(directory) => snapshot_favs_from_directory(state, directory),
         None => snapshot_favs(state),
     }
-    for i in 0..NSRC {
-        adapter.fetch[i].clear();
-        state.src[i] = Source::EMPTY;
+    adapter.clear_all();
+    for s in &mut state.src {
+        *s = Source::EMPTY;
     }
 }
 
@@ -985,8 +1003,9 @@ fn pump_with_optional_directory(
     }
     let mut landed = false;
     for i in live.iter().copied() {
-        if state.src[i].retry_cd > 0 {
-            state.src[i].retry_cd -= 1;
+        let counted = source_mut(state, i);
+        if counted.retry_cd > 0 {
+            counted.retry_cd -= 1;
         }
         // the landing GATE (§3.3 step 3, `plx_machine::landgate`): under a replay a source's answer is
         // taken on the frame the recording took it on. The debounce above and `maybe_spawn` below
@@ -995,7 +1014,7 @@ fn pump_with_optional_directory(
         // generation; a superseded query's late answer is dropped inside it and leaves the new
         // query's claim alone (`Fetch::take_current`)
         let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Search,
-            || adapter.fetch[i].busy(), || adapter.fetch[i].take_current(|m| m.gen));
+            || adapter.mailbox(i).busy(), || adapter.mailbox(i).take_current(|m| m.gen));
         if let Some(m) = taken {
             if m.gen == state.gen {
                 record(state, i, m.what);
@@ -1008,7 +1027,7 @@ fn pump_with_optional_directory(
         maybe_spawn(state, adapter, i);
     }
     // The SHELVES are rebuilt only when something landed, but the STATE is recomputed every frame:
-    // it is a scan of at most NSRC statuses, and making it conditional on a landing left the one
+    // it is a scan of one status per live slot, and making it conditional on a landing left the one
     // case that can never produce one — an EMPTY roster — parked on `Searching` forever, which is
     // precisely the endless spinner `state_from`'s empty arm exists to prevent. Reachable in
     // practice: `/tmp/plxnative-search=<q>` forces the route whether or not a server was installed.
@@ -1047,13 +1066,13 @@ fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
         // the winner's answer, `Status::Answered` would regress to `Failed` — dropping that
         // source's already-drawn results out of the merge for a two-second backoff, over an error
         // about a request whose answer we are holding.
-        None if state.src[i].status == Status::Answered => {
+        None if source(state, i).status == Status::Answered => {
             plx_base::eventlog::log(&format!(
                 "search: q[{qlen}ch] sid={i} late failure ignored — already answered"
             ));
         }
         None => {
-            let s = &mut state.src[i];
+            let s = source_mut(state, i);
             s.status = Status::Failed;
             s.retry_cd = RETRY_FRAMES;
             plx_base::eventlog::log(&format!("search: q[{qlen}ch] sid={i} FAILED, retry in {RETRY_FRAMES}f"));
@@ -1068,16 +1087,33 @@ fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
             // The two fields an answer decides, and `retry_cd` is deliberately not one of them: a
             // source that has answered is refused by `maybe_spawn` on `status` alone, and the next
             // query resets the whole record through `Source::EMPTY`.
-            let s = &mut state.src[i];
+            let s = source_mut(state, i);
             s.status = Status::Answered;
             s.items = items;
         }
     }
 }
 
+/// The record for registry slot `i`, grown to cover it on first touch. A slot the table has not
+/// reached yet is one nobody has asked, which is exactly [`Source::EMPTY`], so growing is the whole
+/// of the initialisation and nothing about a new server needs a separate step.
+fn source_mut(state: &mut SearchState, i: usize) -> &mut Source {
+    if state.src.len() <= i {
+        state.src.resize_with(i + 1, || Source::EMPTY);
+    }
+    &mut state.src[i]
+}
+
+/// Read-only [`source_mut`]: a slot the table has not reached reads as never asked. The static is
+/// what lets a missing slot hand out a reference without growing the table from a `&` path.
+fn source(state: &SearchState, i: usize) -> &Source {
+    static NEVER_ASKED: Source = Source::EMPTY;
+    state.src.get(i).unwrap_or(&NEVER_ASKED)
+}
+
 /// The LIVE registry slots as exact references into the owned per-source store.
 fn live_sources<'a>(state: &'a SearchState, live: &[usize]) -> Vec<&'a Source> {
-    live.iter().map(|&i| &state.src[i]).collect()
+    live.iter().map(|&i| source(state, i)).collect()
 }
 
 /// Recompute the merged shelves from every source's last answer. The [`State`] is NOT set here —
@@ -1221,8 +1257,9 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
     if state.armed {
         return; // still settling — the keystroke burst is not over
     }
-    let src = &state.src[i];
-    if adapter.fetch[i].busy() || src.retry_cd > 0 {
+    let src = source(state, i);
+    let mailbox = adapter.mailbox(i);
+    if mailbox.busy() || src.retry_cd > 0 {
         return;
     }
     if src.status == Status::Answered {
@@ -1239,7 +1276,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
     // `browse` what was current would answer with a table from a different moment than the query it
     // was given. `pump` rejects a landing taken under a snapshot that has since moved.
     let favs = favs(state);
-    adapter.fetch[i].claim(gen);
+    mailbox.claim(gen);
     plx_base::eventlog::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
     let worker_adapter = Arc::clone(adapter);
     let spawned = plx_base::task::spawn_small("search", move || {
@@ -1259,7 +1296,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
         // nothing will ever fill the mailbox, and the claim is cleared only by a take — release it
         // here or this source never searches again. `maybe_spawn` runs every frame, so this retries
         // by itself.
-        adapter.fetch[i].release();
+        mailbox.release();
     }
 }
 

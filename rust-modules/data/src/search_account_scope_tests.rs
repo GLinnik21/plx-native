@@ -55,7 +55,7 @@ fn a_profile_hole_searches_exact_live_ids_and_supersedes_the_previous_profiles_a
     register(&mut owner, 3);
     hold_off(&mut owner);
     owner.state.query = Some(Arc::from("wallace"));
-    owner.state.src[0].status = Status::Answered;
+    source_mut(&mut owner.state, 0).status = Status::Answered;
     owner.state.shelves = Some(Arc::new(vec![Shelf {
         kind: Kind::Movie,
         items: vec![media("old-profile")],
@@ -145,6 +145,34 @@ fn a_favourite_edit_supersedes_a_resident_query_and_re_arms_it() {
     let gen1 = owner.state.gen;
     owner.pump_with_directory(0.016, directory.view());
     assert_eq!(owner.state.gen, gen1, "it settles");
+}
+
+/// **A server past the old sixteen-slot table is asked and merged.** The fetch mailboxes, the
+/// per-source records and the live-id walk were all sized by `MAX_SERVERS`, so slot 40 was never
+/// fanned out to and a landing for it had nowhere to go but off the end of a table.
+#[test]
+fn a_server_past_the_old_sixteen_slot_table_is_asked_and_merged() {
+    let _g = fresh();
+    let mut owner = Owner::default();
+    register(&mut owner, 41);
+    assert_eq!(slots().last(), Some(&40), "slot 40 is in the fan-out");
+    hold_off(&mut owner);
+    owner.state.query = Some(Arc::from("wallace"));
+
+    let mut what: Projection = Default::default();
+    what[0] = vec![media("far-away")];
+    owner.land(40, owner.state.gen, Some(what));
+    owner.pump(0.0);
+
+    assert!(
+        owner
+            .state
+            .shelves()
+            .iter()
+            .flat_map(|s| s.items.iter())
+            .any(|i| i.title() == "far-away"),
+        "the answer from slot 40 reaches the merged shelves"
+    );
 }
 
 /// The other half, and the one that costs nothing to get wrong until a user types: with NO
