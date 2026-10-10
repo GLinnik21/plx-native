@@ -819,7 +819,13 @@ mod tests {
             let wanted = start..(start + PAGE_SIZE).min(total);
             show(state, adapter, total, wanted.clone(), Some(start), None, keep);
             peak = peak.max(loaded(state));
-            assert!(wanted.clone().all(|i| rk_at(state, i).is_some()), "window {wanted:?} reads");
+            // A filtered listing has fewer rows than the server's total, so the last window can
+            // reach past the final row; every index the store counts must read, and it counts to
+            // the window's end unless the listing ended first.
+            let c = state.view().current().unwrap();
+            let known = c.shown();
+            assert!(known >= wanted.end || !c.more, "window {wanted:?} counted to {known}");
+            assert!(wanted.clone().filter(|&i| i < known).all(|i| rk_at(state, i).is_some()), "window {wanted:?} reads");
         }
         peak
     }
@@ -871,10 +877,19 @@ mod tests {
         let counts = state.view().current().unwrap().pages.kept_counts();
         assert!(counts.iter().any(|&k| k < 60), "a filtered listing has short pages");
 
+        // Kept rows per page are short, so index 3000 sits on a later server page than 3000 / 60.
+        let page_of = |index: usize| {
+            let (mut p, mut rest) = (0, index);
+            while rest >= usize::from(counts[p]) { rest -= usize::from(counts[p]); p += 1; }
+            p
+        };
+        let pages: Vec<usize> = (page_of(3000)..=page_of(3119)).map(|p| p * PAGE_SIZE).collect();
+        assert!(pages[0] > 3000, "the window is not where an unfiltered listing would put it");
+
         let (mut back, adapter) = opened(total);
         assert!(back.run(&adapter, CollectionCmd::Restore { total, counts }));
         let requests = show(&mut back, &adapter, total, 3000..3120, Some(3000), Some(3000), &keep);
-        assert_eq!(requests, vec![3000, 3060], "only the two pages the window covers");
+        assert_eq!(requests, pages, "only the pages the window covers");
         let kept: Vec<usize> = (0..total).filter(|&s| keep(s)).collect();
         assert!((3000..3120).all(|i| rk_at(&back, i) == Some(kept[i].to_string())));
     }
