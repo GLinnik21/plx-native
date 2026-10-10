@@ -195,7 +195,7 @@ fn image_addr_of(buf: &[u8]) -> String {
 
 /// The head of a file — enough to hold an ELF header and every program header after it. Bounded
 /// rather than a whole read: this runs at boot on a set with 1.68 GB, and the binary is 7 MB.
-fn read_head(path: &str) -> Option<Vec<u8>> {
+pub(super) fn read_head(path: &str) -> Option<Vec<u8>> {
     use std::io::Read;
     let mut buf = Vec::new();
     std::fs::File::open(path)
@@ -559,6 +559,59 @@ pub fn attach_hardware_context(body: &mut serde_json::Value) {
     });
 }
 
+/// The `os` context a native crash carries, built from the kernel's `uname` fields the way the
+/// SDK's `sentry__get_os_context` does (`sentry_os.c`, Linux branch): the leading digits and at
+/// most two dots of the release are the `version`, whatever follows (minus one separator) the
+/// `build`. `native::OS_FIELDS` is the allowlist the SDK's version of this passes through, and
+/// this is exactly that field set, so a fallback event and a native one read alike in Sentry.
+pub fn os_context_of(sysname: &str, release: &str) -> serde_json::Value {
+    let mut dots = 0;
+    let mut end = release.len();
+    for (i, c) in release.char_indices() {
+        if c == '.' {
+            dots += 1;
+        }
+        if !c.is_ascii_digit() && (c != '.' || dots > 2) {
+            end = i;
+            break;
+        }
+    }
+    let (version, rest) = release.split_at(end);
+    let build = rest.strip_prefix(['-', '.']).unwrap_or(rest);
+    let mut os = serde_json::json!({"type": "os", "name": sysname, "version": version});
+    if !build.is_empty() {
+        os["build"] = serde_json::Value::String(build.to_string());
+    }
+    os
+}
+
+/// Attach this kernel's `os` context to a hand-built event — the one a native crash gets from the
+/// SDK and the fallback events (which the SDK never sees) otherwise lack.
+///
+/// The crash log lives in `/tmp` and is cleared when the television restarts, so the kernel that
+/// reads it is the kernel that wrote it. Nothing is attached when `uname` fails.
+pub fn attach_os_context(body: &mut serde_json::Value) {
+    // SAFETY: `uname` fills the struct it is handed and nothing else.
+    let uts = unsafe {
+        let mut uts: libc::utsname = std::mem::zeroed();
+        if libc::uname(&mut uts) != 0 {
+            return;
+        }
+        uts
+    };
+    let field = |raw: &[libc::c_char]| {
+        let bytes: Vec<u8> = raw.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    let os = os_context_of(&field(&uts.sysname), &field(&uts.release));
+    let contexts = body
+        .as_object_mut()
+        .expect("event body is always a JSON object")
+        .entry("contexts")
+        .or_insert_with(|| serde_json::json!({}));
+    contexts["os"] = os;
+}
+
 /// Frame one item into an envelope: an envelope header line, an item header line, then the payload.
 ///
 /// Newline-delimited, and the item header's `length` is the payload's byte length — the field this
@@ -900,6 +953,22 @@ mod tests {
         let mut far = elf32(&[text], &[], 0);
         far[28..32].copy_from_slice(&0x10_0000u32.to_le_bytes());
         assert_eq!(lowest_load_vaddr(&far), None);
+    }
+
+    /// The fallback events' `os` context is built the way the SDK builds the native one: the
+    /// numeric head of the kernel release is the version, the remainder the build.
+    #[test]
+    fn the_os_context_splits_the_kernel_release_like_the_sdk_does() {
+        assert_eq!(
+            os_context_of("Linux", "4.4.84-169.gld4tv.5"),
+            serde_json::json!({"type": "os", "name": "Linux", "version": "4.4.84", "build": "169.gld4tv.5"})
+        );
+        assert_eq!(
+            os_context_of("Linux", "5.4.0"),
+            serde_json::json!({"type": "os", "name": "Linux", "version": "5.4.0"}),
+            "no remainder, no build"
+        );
+        assert_eq!(os_context_of("Linux", "4.4.84.5-x")["version"], "4.4.84");
     }
 
     /// **The build id is found past a note that precedes it**, which is the padding case above. A

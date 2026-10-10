@@ -280,6 +280,7 @@
   "settings.consent.placeholder.thread_address": "dirección de instrucción del hilo",
   "settings.consent.placeholder.thread_id": "id del hilo",
   "settings.consent.placeholder.thread_label": "etiqueta interna del hilo",
+  "settings.consent.placeholder.system_library": "nombre del archivo de la biblioteca del sistema",
   "settings.consent.placeholder.webos_release": "versión de webOS",
   "settings.consent.placeholder.webos_codename": "nombre en clave de la versión de webOS",
   "settings.consent.placeholder.webos_api": "versión de la API de webOS",

@@ -16,6 +16,12 @@
 //! (`SIGSEGV`) reaches Sentry as a `&'static str` this crate owns, not as bytes that happened to be
 //! in a file. A tracer that one day wrote something unexpected there could not smuggle it out.
 //!
+//! **One exception, narrowed to the point of being a number's label:** the `at:` lines name the
+//! library holding `pc` or `lr`, and its file name (never its folder) is sent so an unsymbolicated
+//! crash in `libwayland-client.so.0` says so. [`parse_module`] lets a line through only if its
+//! path is absolute, uses `[A-Za-z0-9._+-]` and no `..`, and its mapping holds the fault's own
+//! `pc` or `lr`; the path is otherwise used only to open the file for its build id.
+//!
 //! The same rule kills the obvious shortcut of shipping the record verbatim as the exception
 //! `value`. That would be one line of code, would look identical in the Sentry UI, and would make
 //! the whole guarantee a matter of what the tracer happens to write.
@@ -72,6 +78,144 @@ pub struct Fault {
     pub image: Option<ImageIdentity>,
     /// Fixed-name numeric ARM registers. No text from the log is retained.
     pub registers: Registers,
+    /// The mapped modules that contain `pc` or `lr`, from the record's `at:` lines.
+    pub modules: Vec<ModuleMapping>,
+}
+
+/// One `/proc/self/maps` line the tracer kept because it contains the fault's `pc` or `lr`.
+///
+/// **The path is kept to OPEN the file, never to send it.** [`module_images`] reads the build id
+/// from it; the body carries the basename ([`ModuleMapping::file_name`]) and numbers. The path has
+/// passed [`parse_module`]'s allowlist (absolute, a small character set, no `..`, no spaces), so a
+/// corrupted log cannot point the build-id read at anything but a plain absolute path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleMapping {
+    path: String,
+    pub lo: u64,
+    pub hi: u64,
+    /// File offset of the mapping, so the module's load base is `lo - offset`.
+    pub offset: u64,
+}
+
+impl ModuleMapping {
+    /// The last path component. The only part of the path that may leave the device.
+    pub fn file_name(&self) -> &str {
+        self.path.rsplit('/').next().unwrap_or("")
+    }
+}
+
+/// A mapped module identified well enough for Sentry to list it in `debug_meta.images`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleImage {
+    pub file: String,
+    pub image_addr: u64,
+    pub image_size: u64,
+    pub code_id: String,
+    pub debug_id: String,
+}
+
+/// Why a crash was reported from the append-only log and not from the native daemon's envelope.
+///
+/// **Only what [`reconcile`] can tell apart is here.** It sees the pending envelopes and the log's
+/// reports, nothing else, so it can say "the daemon left nothing" versus "it left something that
+/// is not this crash" and cannot say whether the daemon was absent, timed out, or was refused by
+/// consent: none of those leaves a record the importer reads. A rejected envelope is deleted by
+/// `native::read_pending` before reconcile runs, so it is not distinguishable here either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativePath {
+    /// No native envelope was pending at all.
+    NoEnvelope,
+    /// Envelopes were pending, none of them this crash's build and signal.
+    EnvelopeUnmatched,
+}
+
+impl NativePath {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            NativePath::NoEnvelope => "no_envelope",
+            NativePath::EnvelopeUnmatched => "envelope_unmatched",
+        }
+    }
+}
+
+/// What a fallback fault event carries beyond the fault itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FaultExtra {
+    pub native_path: NativePath,
+    pub modules: Vec<ModuleImage>,
+}
+
+/// Resolve each mapped module of `f` to an image entry. `read` returns the head of the file at a
+/// path; a module whose build id cannot be read is left out, like the app's own image.
+///
+/// The app's own mapping is skipped: [`sentry_body`] already describes it from the identity the
+/// startup marker recorded, which is the crashed build's and not whatever is deployed now.
+/// `image_addr` is the mapping start less its file offset — the module's load base when the text
+/// segment's vaddr equals its file offset, which the GNU linkers' output on ARM satisfies — and
+/// the size runs from that base to the end of the mapping that holds the address.
+pub fn module_images(f: &Fault, read: impl Fn(&str) -> Option<Vec<u8>>) -> Vec<ModuleImage> {
+    f.modules
+        .iter()
+        .filter(|m| m.file_name() != CODE_FILE)
+        .filter_map(|m| {
+            let code_id = super::sentry::gnu_build_id(&read(&m.path)?)?;
+            let debug_id = super::sentry::debug_id(&code_id)?;
+            let image_addr = m.lo.checked_sub(m.offset)?;
+            Some(ModuleImage {
+                file: m.file_name().to_string(),
+                image_addr,
+                image_size: m.hi - image_addr,
+                code_id,
+                debug_id,
+            })
+        })
+        .collect()
+}
+
+/// The head of a mapped module's file, for [`module_images`]. A regular file only: the path came
+/// out of a log, and opening a FIFO or a device node on the boot path could block it.
+fn read_module_head(path: &str) -> Option<Vec<u8>> {
+    std::fs::metadata(path).ok()?.is_file().then_some(())?;
+    super::sentry::read_head(path)
+}
+
+/// One `at:` line as a [`ModuleMapping`], or `None` for anything that is not a plain file-backed
+/// mapping with a path this module is willing to open and name: `lo-hi perms offset dev inode path`.
+///
+/// The path is held to an allowlist (absolute, `[A-Za-z0-9._+-]` components, no `..`, no spaces —
+/// which also drops `[stack]`, anonymous mappings and the kernel's ` (deleted)` suffix) because it
+/// is a string out of a file that is about to be opened and whose last component is about to be
+/// sent. Addresses must fit a 32-bit address space, like the app's own `img:` marker.
+fn parse_module(line: &str) -> Option<ModuleMapping> {
+    let mut fields = line.strip_prefix("at: ")?.split_whitespace();
+    let (lo, hi) = fields.next()?.split_once('-')?;
+    let lo = u64::from_str_radix(lo, 16).ok()?;
+    let hi = u64::from_str_radix(hi, 16).ok()?;
+    let _perms = fields.next()?;
+    let offset = u64::from_str_radix(fields.next()?, 16).ok()?;
+    let (_dev, _inode) = (fields.next()?, fields.next()?);
+    let path = fields.next()?;
+    if fields.next().is_some() || !plain_module_path(path) {
+        return None;
+    }
+    if lo >= hi || hi > u64::from(u32::MAX) + 1 || offset > lo {
+        return None;
+    }
+    Some(ModuleMapping { path: path.to_string(), lo, hi, offset })
+}
+
+fn plain_module_path(path: &str) -> bool {
+    const MAX_PATH: usize = 160;
+    const MAX_NAME: usize = 64;
+    let name = path.rsplit('/').next().unwrap_or("");
+    path.starts_with('/')
+        && path.len() <= MAX_PATH
+        && !name.is_empty()
+        && name.len() <= MAX_NAME
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'+' | b'-' | b'/'))
+        && !path.split('/').skip(1).any(|c| c.is_empty() || c == "." || c == "..")
 }
 
 /// The three ELF facts needed to pair an address with its debug file.
@@ -190,7 +334,8 @@ const PANIC_FOLLOWUPS: &[&str] = &[
 /// Faults read fixed-shape identity plus **numbers only**. The `(SIGSEGV)` token in the record is
 /// deliberately ignored — the name is re-derived from [`signal_name`]. `reg:` is parsed through a
 /// fixed register-name allowlist; `img:` accepts exactly a SHA-1 build id and bounded 32-bit ELF
-/// numbers. `at:` and `bin:` remain ignored because they carry local paths.
+/// numbers. `at:` lines that hold the fault's `pc`/`lr` become [`ModuleMapping`]s (see
+/// [`parse_module`] for what a path must look like); `bin:` is ignored because it carries a local path.
 ///
 /// # A panic that crosses FFI is ONE fault, and it writes TWO records
 ///
@@ -229,6 +374,18 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                 continue; // the panic above it is the report — see the doc
             }
             out.push(Report::Fault(f));
+        } else if l.starts_with("at: ") {
+            // Kept only when the mapping holds THIS fault's pc or lr, which also stops a stray
+            // `at:` after a skipped record being credited to the fault before it.
+            if let (Some(Report::Fault(f)), Some(m)) = (out.last_mut(), parse_module(l)) {
+                let holds = |a: u64| (m.lo..m.hi).contains(&a);
+                if (holds(f.pc) || holds(f.lr))
+                    && f.modules.len() < 2
+                    && !f.modules.iter().any(|x| x.lo == m.lo)
+                {
+                    f.modules.push(m);
+                }
+            }
         } else if l.starts_with("reg: ") {
             if let Some(Report::Fault(f)) = out.last_mut() {
                 f.registers = parse_registers(l);
@@ -264,6 +421,7 @@ fn parse_fault(rest: &str, whole: &str, image: Option<ImageIdentity>) -> Option<
             pc: Some(pc),
             ..Registers::default()
         },
+        modules: Vec::new(),
     })
 }
 
@@ -389,6 +547,7 @@ pub fn sentry_body(
     build_id: &str,
     debug_id: Option<&str>,
     errors_id: Option<&str>,
+    extra: &FaultExtra,
 ) -> Vec<u8> {
     let name = signal_name(f.signal);
     let effective_build_id = f
@@ -428,6 +587,7 @@ pub fn sentry_body(
     // object yields `missing_symbol` and NO error — see `sentry::IMAGE_ADDR`'s measured table — so a
     // build whose id could not be read is better off saying nothing than asserting a pairing that
     // does not exist. The addresses are still in the frames, and `code_id` still names the build.
+    let mut images = Vec::new();
     if let (Some(did), false) = (debug_id, effective_build_id.is_empty()) {
         let image_addr = f.image.as_ref().map(|i| i.image_addr).unwrap_or_else(|| {
             u64::from_str_radix(super::sentry::image_addr().trim_start_matches("0x"), 16)
@@ -438,15 +598,39 @@ pub fn sentry_body(
             .as_ref()
             .map(|i| i.image_size)
             .unwrap_or_else(super::sentry::image_size);
-        body["debug_meta"] = serde_json::json!({"images": [{
+        images.push(serde_json::json!({
             "type": "elf",
             "image_addr": format!("0x{image_addr:x}"),
             "image_size": image_size,
             "code_id": effective_build_id,
             "debug_id": did,
             "code_file": CODE_FILE,
-        }]});
+        }));
     }
+    // The libraries holding pc and lr, named by BASENAME only (see [`ModuleMapping`]). Their ids
+    // were read from the files, so unlike the app's own entry they describe what is installed now;
+    // the log is cleared at every restart, which is the only way that could have changed.
+    for m in &extra.modules {
+        images.push(serde_json::json!({
+            "type": "elf",
+            "image_addr": format!("0x{:x}", m.image_addr),
+            "image_size": m.image_size,
+            "code_id": m.code_id,
+            "debug_id": m.debug_id,
+            "code_file": m.file,
+        }));
+    }
+    if !images.is_empty() {
+        body["debug_meta"] = serde_json::json!({ "images": images });
+    }
+    // The contexts a native crash carries, which the SDK's scope gives it and this hand-built body
+    // never sees — plus the one thing only a fallback can say.
+    super::sentry::attach_os_context(&mut body);
+    super::sentry::attach_hardware_context(&mut body);
+    body["contexts"]["crash"] = serde_json::json!({
+        "type": "crash",
+        "native_path": extra.native_path.as_str(),
+    });
     super::sentry::attach_user(&mut body, errors_id);
     serde_json::to_vec(&body).unwrap_or_default()
 }
@@ -523,6 +707,7 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
             pc: all,
             cpsr: all,
         },
+        modules: Vec::new(),
     };
     let mut fault_json: serde_json::Value = serde_json::from_slice(&sentry_body(
         &fault,
@@ -530,8 +715,26 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
         &image.build_id,
         Some("00000000-0000-0000-0000-000000000000"),
         Some(super::native::PREVIEW_USER_ID),
+        &FaultExtra {
+            native_path: NativePath::NoEnvelope,
+            modules: vec![ModuleImage {
+                file: "<system library file name>".to_string(),
+                image_addr: 0x20000,
+                image_size: 0x1000,
+                code_id: "0".repeat(40),
+                debug_id: "00000000-0000-0000-0000-000000000000".to_string(),
+            }],
+        },
     ))
     .unwrap_or_default();
+    // The contexts are the NATIVE preview's own placeholders, so the two shapes cannot disagree and
+    // this host's kernel and model are not shown to a person deciding what to share.
+    let native: serde_json::Value =
+        serde_json::from_slice(&super::native::preview_event()).unwrap_or_default();
+    for key in ["os", "webos", "hardware"] {
+        fault_json["contexts"][key] = native["contexts"][key].clone();
+    }
+
     fault_json["event_id"] = serde_json::json!("<stable id for this crash-log record>");
     fault_json["dist"] = serde_json::json!("<crashed ELF build id>");
     fault_json["exception"]["values"][0]["value"] = serde_json::json!("SIGSEGV at <fault address>");
@@ -559,11 +762,14 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
             });
         }
     }
-    if let Some(image) = fault_json.pointer_mut("/debug_meta/images/0") {
-        image["image_addr"] = serde_json::json!("<load address>");
-        image["image_size"] = serde_json::json!("<mapped bytes>");
-        image["code_id"] = serde_json::json!("<ELF build id>");
-        image["debug_id"] = serde_json::json!("<ELF debug id>");
+    // Entry 0 is the app's own image, entry 1 a system library holding pc or lr.
+    for i in 0..2 {
+        if let Some(image) = fault_json.pointer_mut(&format!("/debug_meta/images/{i}")) {
+            image["image_addr"] = serde_json::json!("<load address>");
+            image["image_size"] = serde_json::json!("<mapped bytes>");
+            image["code_id"] = serde_json::json!("<ELF build id>");
+            image["debug_id"] = serde_json::json!("<ELF debug id>");
+        }
     }
 
     let panic = PanicReport {
@@ -763,14 +969,19 @@ struct Plan {
     report_native: Vec<Option<usize>>,
     /// Per native envelope: `Some(i)` when panic report `i` is sent in its place.
     native_panic: Vec<Option<usize>>,
+    /// Per report: why it is sent from the log, when it is.
+    report_path: Vec<Option<NativePath>>,
 }
 
 fn reconcile(reports: &[Report], natives: &[Option<super::native::CrashKey>], current_build_id: &str) -> Plan {
     let mut plan = Plan {
         report_native: vec![None; reports.len()],
         native_panic: vec![None; natives.len()],
+        report_path: vec![None; reports.len()],
     };
     let mut used = vec![false; natives.len()];
+    // What is on disk is all `reconcile` knows about the native path; see [`NativePath`].
+    let unsent = if natives.is_empty() { NativePath::NoEnvelope } else { NativePath::EnvelopeUnmatched };
     for (i, r) in reports.iter().enumerate() {
         let (image, signal) = match r {
             Report::Fault(f) => (&f.image, f.signal),
@@ -780,6 +991,7 @@ fn reconcile(reports: &[Report], natives: &[Option<super::native::CrashKey>], cu
         let Some(n) = natives.iter().enumerate().position(|(n, key)| {
             !used[n] && key.as_ref().is_some_and(|k| k.build_id == build_id && k.signal == signal)
         }) else {
+            plan.report_path[i] = Some(unsent);
             continue;
         };
         used[n] = true;
@@ -935,6 +1147,7 @@ fn recover_pending_at(path: &std::path::Path) {
 
     struct Io<'a> {
         reports: &'a [Report],
+        native_path: &'a [Option<NativePath>],
         natives: &'a [super::native::PendingNative],
         from: usize,
         mark: Mark,
@@ -957,7 +1170,11 @@ fn recover_pending_at(path: &std::path::Path) {
             let event_id = event_id_for(bid, self.from + i, r);
             let body = match r {
                 Report::Fault(f) => {
-                    sentry_body(f, &event_id, bid, did.as_deref(), self.errors_id.as_deref())
+                    let extra = FaultExtra {
+                        native_path: self.native_path[i].unwrap_or(NativePath::NoEnvelope),
+                        modules: module_images(f, read_module_head),
+                    };
+                    sentry_body(f, &event_id, bid, did.as_deref(), self.errors_id.as_deref(), &extra)
                 }
                 Report::Panic(p) => panic_sentry_body(p, &event_id, self.errors_id.as_deref()),
             };
@@ -982,6 +1199,7 @@ fn recover_pending_at(path: &std::path::Path) {
     }
     let mut io = Io {
         reports: &reports,
+        native_path: &plan.report_path,
         natives: &natives,
         from,
         mark: snapshot.mark(),
@@ -1092,6 +1310,10 @@ mod tests {
                        at: b6f00000-b6f21000 r-xp 00000000 fe:01 1234 /lib/libc.so.6\n\
                        bin: 00010000-00600000 r-xp 00000000 fe:01 99 /media/developer/x/plxnative\n";
 
+    fn extra() -> FaultExtra {
+        FaultExtra { native_path: NativePath::NoEnvelope, modules: Vec::new() }
+    }
+
     /// The one fault a log holds, for the tests that are about a fault rather than about ordering.
     fn only_fault(log: &str) -> Fault {
         match parse(log).into_iter().next().expect("a report") {
@@ -1170,6 +1392,7 @@ mod tests {
             "bid",
             Some("did"),
             None,
+            &extra(),
         ))
         .expect("utf-8");
         for leaked in [
@@ -1213,14 +1436,14 @@ mod tests {
         };
         let id = "0123456789abcdef0123456789abcdef";
         for body in [
-            sentry_body(&f, "e", "bid", Some("did"), Some(id)),
+            sentry_body(&f, "e", "bid", Some("did"), Some(id), &extra()),
             panic_sentry_body(&p, "e", Some(id)),
         ] {
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(v["user"], serde_json::json!({"id": id}));
         }
         for body in [
-            sentry_body(&f, "e", "bid", Some("did"), None),
+            sentry_body(&f, "e", "bid", Some("did"), None, &extra()),
             panic_sentry_body(&p, "e", None),
         ] {
             let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -1229,6 +1452,179 @@ mod tests {
                 "an absent id must leave no user key"
             );
         }
+    }
+
+    // ---- fallback events say which modules faulted and why the daemon's report is absent ----
+
+    /// A fault whose `pc` is inside a system library and whose `lr` is inside the app's own image.
+    const WAYLAND_REC: &str = "\nimg: build_id=11223344556677889900aabbccddeeff00112233 image_addr=0x10000 image_size=0x5f0000\n\
+        *** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0xb6f10123 lr=0x4bccd0\n\
+        reg: sp=0xbe8f1a90 fp=0x0 ip=0x1 cpsr=0x60000010 r0=0x0 r1=0x2a\n\
+        at: b6f00000-b6f21000 r-xp 00000000 fe:01 1234 /usr/lib/libwayland-client.so.0\n\
+        at: 00010000-00600000 r-xp 00000000 fe:01 99 /media/developer/x/plxnative\n\
+        bin: 00010000-00600000 r-xp 00000000 fe:01 99 /media/developer/x/plxnative\n";
+
+    /// A little-endian ELF32 shared object whose only program header is a `PT_NOTE` holding one
+    /// GNU build-id note: all `gnu_build_id` needs, with every offset stated once.
+    fn elf_with_build_id(id: &[u8]) -> Vec<u8> {
+        let mut note = Vec::new();
+        note.extend_from_slice(&4u32.to_le_bytes()); // namesz "GNU\0"
+        note.extend_from_slice(&(id.len() as u32).to_le_bytes());
+        note.extend_from_slice(&3u32.to_le_bytes()); // NT_GNU_BUILD_ID
+        note.extend_from_slice(b"GNU\0");
+        note.extend_from_slice(id);
+        let off = 52 + 32;
+        let mut v = vec![0u8; 52];
+        v[..4].copy_from_slice(b"\x7fELF");
+        v[4] = 1;
+        v[5] = 1;
+        v[6] = 1;
+        v[16..18].copy_from_slice(&3u16.to_le_bytes()); // ET_DYN
+        v[18..20].copy_from_slice(&40u16.to_le_bytes());
+        v[28..32].copy_from_slice(&52u32.to_le_bytes()); // e_phoff
+        v[40..42].copy_from_slice(&52u16.to_le_bytes());
+        v[42..44].copy_from_slice(&32u16.to_le_bytes()); // e_phentsize
+        v[44..46].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
+        for w in [4u32, off, 0, 0, note.len() as u32, 0, 4, 4] {
+            v.extend_from_slice(&w.to_le_bytes());
+        }
+        v.extend_from_slice(&note);
+        v
+    }
+
+    fn strings(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(a) => a.iter().for_each(|x| strings(x, out)),
+            serde_json::Value::Object(o) => o.values().for_each(|x| strings(x, out)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn fallback_body_carries_hardware_contexts() {
+        let body: serde_json::Value = serde_json::from_slice(&sentry_body(
+            &only_fault(REC), "e", BUILD, Some("did"), None, &extra(),
+        ))
+        .unwrap();
+        let mut expected = serde_json::json!({});
+        super::super::sentry::attach_hardware_context(&mut expected);
+        assert_eq!(body["contexts"]["webos"], expected["contexts"]["webos"]);
+        assert_eq!(body["contexts"]["hardware"], expected["contexts"]["hardware"]);
+        let mut os = serde_json::json!({});
+        super::super::sentry::attach_os_context(&mut os);
+        assert!(os["contexts"]["os"]["name"].is_string(), "this host has a kernel to name");
+        assert_eq!(body["contexts"]["os"], os["contexts"]["os"]);
+    }
+
+    #[test]
+    fn fallback_body_identifies_pc_and_lr_modules() {
+        let f = only_fault(WAYLAND_REC);
+        assert_eq!(f.modules.len(), 2, "pc's library and lr's mapping, both from at: lines");
+        let id: Vec<u8> = (0u8..20).collect();
+        let hex = "000102030405060708090a0b0c0d0e0f10111213";
+        let elf = elf_with_build_id(&id);
+        let modules = module_images(&f, |path| {
+            assert_eq!(path, "/usr/lib/libwayland-client.so.0", "the app's own image is read elsewhere");
+            Some(elf.clone())
+        });
+        let body = sentry_body(
+            &f, "e", BUILD, super::super::sentry::debug_id(BUILD).as_deref(), None,
+            &FaultExtra { native_path: NativePath::NoEnvelope, modules },
+        );
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let images = v["debug_meta"]["images"].as_array().unwrap();
+        assert_eq!(images.len(), 2, "the app's image and one library");
+        assert_eq!(images[0]["code_file"], CODE_FILE);
+        let lib = &images[1];
+        assert_eq!(lib["code_file"], "libwayland-client.so.0");
+        assert_eq!(lib["image_addr"], "0xb6f00000");
+        assert_eq!(lib["image_size"], 0x21000);
+        assert_eq!(lib["code_id"], hex);
+        assert_eq!(lib["debug_id"], super::super::sentry::debug_id(hex).unwrap());
+        assert_eq!(v["exception"]["values"][0]["value"], "SIGSEGV at 0x0", "the title groups issues");
+        let mut all = Vec::new();
+        strings(&v, &mut all);
+        let path = all.iter().find(|s| s.starts_with('/'));
+        assert!(path.is_none(), "a path reached the body: {path:?}");
+        let text = String::from_utf8(body).unwrap();
+        assert!(!text.contains("/usr/lib") && !text.contains("/media"));
+    }
+
+    #[test]
+    fn a_module_without_a_readable_build_id_is_left_out() {
+        let f = only_fault(WAYLAND_REC);
+        assert!(module_images(&f, |_| None).is_empty());
+        assert!(module_images(&f, |_| Some(b"not an elf".to_vec())).is_empty());
+    }
+
+    #[test]
+    fn a_modules_base_is_its_mapping_start_minus_the_file_offset() {
+        let log = WAYLAND_REC.replace("b6f00000-b6f21000 r-xp 00000000", "b6f10000-b6f21000 r-xp 00010000");
+        let f = only_fault(&log);
+        let elf = elf_with_build_id(&[7u8; 20]);
+        let m = module_images(&f, |_| Some(elf.clone()));
+        assert_eq!(m.len(), 1);
+        assert_eq!((m[0].image_addr, m[0].image_size), (0xb6f00000, 0x21000));
+    }
+
+    #[test]
+    fn only_a_plain_absolute_module_path_that_holds_the_fault_is_kept() {
+        let with = |line: &str| {
+            let log = format!(
+                "*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0xb6f10123 lr=0x4bccd0\nat: {line}\n"
+            );
+            only_fault(&log).modules.len()
+        };
+        assert_eq!(with("b6f00000-b6f21000 r-xp 00000000 fe:01 1 /usr/lib/libx.so.0"), 1);
+        assert_eq!(with("b6f00000-b6f21000 r-xp 00000000 fe:01 1 libx.so.0"), 0, "relative");
+        assert_eq!(with("b6f00000-b6f21000 r-xp 00000000 fe:01 1 /usr/lib/../x.so"), 0, "dot-dot");
+        assert_eq!(with("b6f00000-b6f21000 r-xp 00000000 fe:01 1 /usr/lib/my lib.so"), 0, "space");
+        assert_eq!(with("b6f00000-b6f21000 r-xp 00000000 fe:01 1 /usr/lib/x.so (deleted)"), 0);
+        assert_eq!(with("b6f00000-b6f21000 rw-p 00000000 00:00 0 [stack]"), 0, "anonymous");
+        assert_eq!(with("b6f00000-b6f21000 r-xp 00000000 fe:01 1"), 0, "no path");
+        assert_eq!(with("a0000000-a0001000 r-xp 00000000 fe:01 1 /usr/lib/other.so"), 0, "holds neither pc nor lr");
+    }
+
+    #[test]
+    fn fallback_body_names_native_path() {
+        let fault = parse(REC).remove(0);
+        // Nothing pending at all.
+        let none = reconcile(&[fault.clone()], &[], BUILD);
+        assert_eq!(none.report_path, vec![Some(NativePath::NoEnvelope)]);
+        // Something pending, but not this crash's signal.
+        let other = reconcile(&[fault.clone()], &[key(6)], BUILD);
+        assert_eq!(other.report_path, vec![Some(NativePath::EnvelopeUnmatched)]);
+        // The native envelope won: the report is not sent, so it has no path to name.
+        let won = reconcile(&[fault.clone()], &[key(11)], BUILD);
+        assert_eq!(won.report_path, vec![None]);
+        // …and the body says it, in the closed vocabulary.
+        let Report::Fault(f) = &fault else { unreachable!() };
+        for (path, name) in [
+            (NativePath::NoEnvelope, "no_envelope"),
+            (NativePath::EnvelopeUnmatched, "envelope_unmatched"),
+        ] {
+            let body: serde_json::Value = serde_json::from_slice(&sentry_body(
+                f, "e", BUILD, Some("did"), None, &FaultExtra { native_path: path, modules: Vec::new() },
+            ))
+            .unwrap();
+            assert_eq!(body["contexts"]["crash"]["native_path"], name);
+        }
+    }
+
+    #[test]
+    fn the_fault_preview_declares_the_new_fields_as_placeholders() {
+        let preview = preview_events();
+        let fault: serde_json::Value = serde_json::from_slice(&preview[0].1).unwrap();
+        assert_eq!(fault["contexts"]["os"]["version"], "<kernel release>", "never this host's kernel");
+        // A closed value, shown as a real one like the signal name: PRIVACY.md lists both.
+        assert_eq!(fault["contexts"]["crash"]["native_path"], "no_envelope");
+        let images = fault["debug_meta"]["images"].as_array().unwrap();
+        assert_eq!(images.len(), 2, "the app's image and a library");
+        assert_eq!(images[1]["code_file"], "<system library file name>");
+        let mut all = Vec::new();
+        strings(&fault, &mut all);
+        assert!(all.iter().all(|s| !s.starts_with('/')));
     }
 
     /// The report belongs to the binary that CRASHED, not to whichever binary happens to read the
@@ -1261,6 +1657,7 @@ mod tests {
             "11223344556677889900aabbccddeeff00112233",
             Some("44332211-6655-8877-9900-aabbccddeeff"),
             Some("0123456789abcdef0123456789abcdef"),
+            &extra(),
         );
         let v: serde_json::Value = serde_json::from_slice(&body).expect("event json");
         assert_eq!(
@@ -1285,7 +1682,7 @@ mod tests {
     #[test]
     fn the_reported_image_path_says_nothing_about_the_install() {
         let body =
-            String::from_utf8(sentry_body(&only_fault(REC), "e", "b", Some("d"), None)).unwrap();
+            String::from_utf8(sentry_body(&only_fault(REC), "e", "b", Some("d"), None, &extra())).unwrap();
         assert!(body.contains("plxnative"));
         assert!(
             !body.contains("/media/"),
@@ -1706,10 +2103,10 @@ mod tests {
     #[test]
     fn no_debug_image_is_better_than_one_that_matches_nothing() {
         let f = only_fault(REC);
-        let with = String::from_utf8(sentry_body(&f, "e", "bid", Some("did"), None)).unwrap();
+        let with = String::from_utf8(sentry_body(&f, "e", "bid", Some("did"), None, &extra())).unwrap();
         assert!(with.contains("debug_meta") && with.contains("\"debug_id\":\"did\""));
 
-        let without = String::from_utf8(sentry_body(&f, "e", "bid", None, None)).unwrap();
+        let without = String::from_utf8(sentry_body(&f, "e", "bid", None, None, &extra())).unwrap();
         assert!(
             !without.contains("debug_meta"),
             "an image was claimed with no id to pair it"
@@ -1719,7 +2116,7 @@ mod tests {
 
         let no_identity = Fault { image: None, ..f };
         let no_build =
-            String::from_utf8(sentry_body(&no_identity, "e", "", Some("did"), None)).unwrap();
+            String::from_utf8(sentry_body(&no_identity, "e", "", Some("did"), None, &extra())).unwrap();
         assert!(!no_build.contains("debug_meta"));
     }
 
