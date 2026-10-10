@@ -31,10 +31,10 @@
 //!
 //! # What it is made of
 //!
-//! One panel ground and a fixed vertical ladder of runs — no list, no focus, no control, and no
-//! state of its own at all. The only key it answers is BACK (and OK, see [`AboutPanelScreen`]),
-//! because §1E states the family rule: *"only 1D carries a control — the read-only panels close on
-//! BACK."* So the closing `Press [BACK] to return` line is not a hint, it is the whole affordance,
+//! One panel ground and a fixed vertical ladder of runs — no list, no focus and no control. It
+//! answers BACK (and OK, see [`AboutPanelScreen`]), plus UP/DOWN only to page a synopsis too long
+//! for the screen (below). The close is BACK because §1E states the family
+//! rule: *"only 1D carries a control — the read-only panels close on BACK."* So the closing `Press [BACK] to return` line is not a hint, it is the whole affordance,
 //! and it is the shared [`plx_ui::widgets::KeyHint`].
 //!
 //! **A `Style::Alert` surface on the container tree** since restructure phase 10 (§6.2) — the

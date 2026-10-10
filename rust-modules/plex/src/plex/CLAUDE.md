@@ -283,7 +283,7 @@ re-discovery, requested by `grant::UpgradeRetry::due`), on a refusal (which also
 a `PlaintextAsk` captured) and on a roster commit that does not install its (machine, origin) —
 a roster commit moves no generation — and a stored `SourceRef` naming a
 plaintext origin registers tokenless until discovery re-mints. Ending a grant re-grades the
-registry (`servers::regrade_credentials` blanks every client a grant was carrying, `ON_GRANT`);
+registry (`servers::regrade_credentials` blanks every client a grant was carrying, and `mark_on_grant` sets the per-slot `on_grant` flag);
 `grant::UpgradeRetry` re-discovers a granted server on the hub-retry backoff and the HTTPS
 registration retires the grant (`auth::retire_grant_on_https`).
 
