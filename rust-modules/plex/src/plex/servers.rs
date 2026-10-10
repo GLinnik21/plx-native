@@ -60,7 +60,7 @@
 //! account's server, which is the very leak this exists to close. The cost is that sign-out /
 //! sign-in cycles consume slots (a sign-out also removes the revoked slots' rows from
 //! those tables): past `SLOT_LIMIT` (every `u16` but the reserved one) registration
-//! is refused and says so in the log. That is 65,535 registrations in one process, which for a
+//! is refused, says so in the log, and is recorded ([`id_space_exhausted`]). That is 65,535 registrations in one process, which for a
 //! household of one or two servers is a great many sign-outs; the table itself grows by segments,
 //! so no earlier ceiling sits between a sign-out and that one.
 
@@ -417,6 +417,9 @@ static SEGMENTS: [AtomicPtr<Segment>; SEGMENT_COUNT] =
 /// slot keeps its number (see the module doc), so this is not the number of servers: that is the
 /// count of [`Slot::active`] flags.
 static COUNT: AtomicUsize = AtomicUsize::new(0);
+/// Set when a registration found the id space spent ([`SLOT_LIMIT`]). Ids are never reused, so
+/// only a new process clears it; the app reads it ([`id_space_exhausted`]) to ask for one.
+static EXHAUSTED: AtomicBool = AtomicBool::new(false);
 /// Monotone epoch of the active roster's identity. It moves when a slot appears/disappears or is
 /// re-pointed, even when the active COUNT stays the same, so cached fan-out stores can distinguish
 /// `{0,1}` from `{0,2}` and can discard work aimed at a superseded origin.
@@ -1244,7 +1247,15 @@ fn register_lazy(
         // The sentinel, not `current()` — see this function's doc for what the old answer did to
         // the caller's `describe_server` one line later. This is the id space's end, the one
         // exhaustion path the registry has.
-        plx_base::eventlog::log("plex: server registry full — this server was NOT registered");
+        EXHAUSTED.store(true, Ordering::Release);
+        // Loud on purpose: nothing but a new process gives this registry room again. The plan's
+        // answer is a SAM `launch` of the app's own id, but the only launch call that exists is the
+        // Home-launcher one (`platform::webos::launch_home`), and its device note says launching the
+        // app's own id FOREGROUNDS the running process rather than restarting it. Until that is
+        // proven on the set this records the need and does not pretend to meet it.
+        plx_base::eventlog::log(
+            "plex: server registry full — this server was NOT registered; the app must be restarted \
+             (id space exhausted, relaunch not yet implemented)");
         return ServerId::UNSET;
     }
     let id = ServerId(n as u16);
@@ -1517,6 +1528,13 @@ pub fn regrade_credentials() {
     }
 }
 
+/// Has a registration been refused because the id space is spent? The decision point for the
+/// relaunch the plan calls for: the only way back to a registry with room is a new process, and a
+/// caller that sees this must not carry on as if the server had registered.
+pub fn id_space_exhausted() -> bool {
+    EXHAUSTED.load(Ordering::Acquire)
+}
+
 /// Empty the table so each test starts from "nothing installed". Leaks whatever was registered
 /// (that is the ordinary lifecycle here, not a test-only wart) and must be called under
 /// [`plx_base::testlock::serial`] — the registry is a crate global.
@@ -1539,6 +1557,7 @@ pub fn reset_for_test() {
         s.on_grant.store(false, Ordering::Release);
     });
     COUNT.store(0, Ordering::Release);
+    EXHAUSTED.store(false, Ordering::Release);
     ROSTER_GEN.store(1, Ordering::Release);
     FACTS_GEN.store(1, Ordering::Release);
     // The floor goes back with the count, or every test after one that signed out would register
@@ -2353,8 +2372,10 @@ mod tests {
         // Exhaust the id space without making 65,535 registrations: a registration consults only
         // the high-water mark, and every number below it is one a new server would be given.
         COUNT.store(SLOT_LIMIT, Ordering::Release);
+        assert!(!id_space_exhausted(), "nothing has been refused yet");
 
         let refused = reg("mach-overflow", "10.0.9.9", "tok-overflow");
+        assert!(id_space_exhausted(), "the refusal is recorded, not only logged");
         assert_eq!(
             refused,
             ServerId::UNSET,

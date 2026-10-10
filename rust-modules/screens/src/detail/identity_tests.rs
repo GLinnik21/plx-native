@@ -56,7 +56,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
     DetailScreen {
         entry, sid: ServerId::UNSET, rk: rk.into(), pending_season: None,
         keys: vec![], next_elem: FIRST_ITEM_ELEM, key_by_local: Default::default(),
-        local_by_key: Default::default(), gone: Default::default(), return_pending: false,
+        local_by_key: Default::default(), prev_by_key: Default::default(), gone: Default::default(), return_pending: false,
         season_settle: 0.0,
         preview_dwell: 0.0,
         preview_promoted: false,

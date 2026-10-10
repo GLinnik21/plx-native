@@ -38,7 +38,9 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
         let mut page = fixture.screen();
         let layout = page.layout;
         let scroll = layout.row_reveal(20);
-        page.pair.detail.set_geometry(layout, scroll, layout, scroll);
+        page.scroll.jump(scroll);
+        page.scroll_target = scroll;
+        page.sync(&fixture.cx(None));
         let window = page.pair.detail.window();
         let (lo, hi) = (window.start, window.end);
         let visible: Vec<_> = (lo..hi).filter(|&i| plx_ui::cards::paint_visible(
@@ -49,7 +51,10 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
             "Grid::painted is the run of cards the draw's own cull keeps (what the lookahead steps beyond)");
         // The focused card can also be outside the viewport (e.g. while a retained page is
         // translated). Exercise its separate paint path, as well as the ordinary grid loop.
-        let hidden_focus = page.key(page.pair.detail.elem_at(0).unwrap());
+        // Slot 0 is far above the wanted rows, so it holds no key until a seat names it.
+        assert!(page.pair.detail.elem_at(0).is_none(), "the far slot is outside the projected windows");
+        let far = page.pair.detail.elem_for(&fixture.cx(None), &mut page.keys, 0, layout.cols()).unwrap();
+        let hidden_focus = page.key(far);
         for focus in [None, Some(hidden_focus)] {
             ART_REQUESTS.with(|calls| *calls.borrow_mut() = Default::default());
             let cx = fixture.cx(focus);

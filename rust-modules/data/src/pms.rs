@@ -192,6 +192,8 @@ pub struct PmsState {
     /// Moves every time the published catalog is replaced. See the retired `CATALOG_GEN` static's
     /// doc.
     pub catalog_gen: u32,
+    /// Which sources may have a hub fetch out this tick ([`crate::stores::fanout`]).
+    fanout: crate::stores::fanout::Fanout,
 }
 
 impl Default for PmsState {
@@ -204,6 +206,7 @@ impl Default for PmsState {
             hub_gen: 0,
             last_sections_gen: 0,
             catalog_gen: 0,
+            fanout: Default::default(),
         }
     }
 }
@@ -649,7 +652,10 @@ fn request_refetch_hubs_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapte
     for s in srcs.iter_mut() {
         s.fetching = false;
         s.page = None;
-        if let Some(request) = retry_now_with(gen, adapter, s, scope, launch) { endpoints.insert(request); }
+    }
+    let mut turn = fanout_turn(&mut state.fanout, &srcs, |_| true);
+    for s in srcs.iter_mut() {
+        if let Some(request) = retry_now_gated(&mut turn, gen, adapter, s, scope, launch) { endpoints.insert(request); }
     }
     state.srcs = srcs;
     endpoints
@@ -1562,6 +1568,9 @@ struct Src {
     page: Option<PageQuery>,
     retry_s: f32,
     retry_n: u32,
+    /// A fetch was wanted and the fan-out gate had no room for it. Stays set until the fetch starts,
+    /// so the tick asks again; nothing is dropped.
+    deferred: bool,
     /// The projection this source last ANSWERED with, kept across a failure. This is what makes a
     /// failure never blank a populated Home; `None` (never answered) is what makes a dead source
     /// contribute nothing at all — no heading, no empty shelf, no spinner row.
@@ -1611,6 +1620,7 @@ impl Src {
             page: None,
             retry_s: 0.0,
             retry_n: 0,
+            deferred: false,
             last: None,
         }
     }
@@ -2235,13 +2245,46 @@ pub fn with_refused_fetches_for_test<R>(f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Is this source waiting on a fetch the tick should start (its countdown aside)? Not Ready, a page
+/// request pending, or a fetch the gate had no room for.
+fn source_waiting(s: &Src) -> bool {
+    (s.state != HubState::Ready || s.page.is_some() || s.deferred) && !s.fetching
+}
+
+/// Open a pump of the fan-out gate over `srcs`: the fetches out are the single-flight latches
+/// held, and `wanting` picks the sources that want one now, in display order.
+fn fanout_turn(fanout: &mut crate::stores::fanout::Fanout, srcs: &[Src],
+    wanting: impl Fn(&Src) -> bool) -> crate::stores::fanout::FanoutTurn {
+    let running = srcs.iter().filter(|s| s.fetching).count();
+    let wanting: Vec<usize> = srcs.iter().filter(|s| !s.fetching && wanting(s))
+        .map(|s| s.sid.raw() as usize).collect();
+    fanout.begin(running, &wanting)
+}
+
+/// [`kick_with`] behind the fan-out gate. A source that is out already is not asking; one the gate
+/// has no room for is marked [`Src::deferred`] and kicked by a later tick.
+fn kick_gated(turn: &mut crate::stores::fanout::FanoutTurn, gen: u32, adapter: &PmsAdapter, s: &mut Src,
+    scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+    if s.fetching {
+        return None;
+    }
+    if !turn.admit(s.sid.raw() as usize) {
+        s.deferred = true;
+        return None;
+    }
+    s.deferred = false;
+    kick_with(gen, adapter, s, scope, launch)
+}
+
 /// The Retry control's kick: try every source again NOW, from the bottom of the ladder — a person
 /// who asks for it should never be made to sit out a 30-second automatic wait. A no-op for any
 /// source whose fetch is already in flight; a pending page request is re-sent by the same kick.
-fn retry_now_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+/// Behind the fan-out gate: the sources it has no room for are kicked by the following ticks.
+fn retry_now_gated(turn: &mut crate::stores::fanout::FanoutTurn, gen: u32, adapter: &PmsAdapter, s: &mut Src,
+    scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
     s.retry_n = 0;
     s.retry_s = 0.0;
-    kick_with(gen, adapter, s, scope, launch)
+    kick_gated(turn, gen, adapter, s, scope, launch)
 }
 
 /// Move the worker mailbox into one owned batch. No source or catalog state changes here.
@@ -2403,8 +2446,9 @@ fn controlled_work_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, c
             let gen = state.hub_gen;
             let mut srcs = std::mem::take(&mut state.srcs);
             let mut endpoints = crate::stores::EndpointRefreshSet::default();
+            let mut turn = fanout_turn(&mut state.fanout, &srcs, |_| true);
             for source in srcs.iter_mut() {
-                if let Some(request) = retry_now_with(gen, adapter, source, scope, launch) { endpoints.insert(request); }
+                if let Some(request) = retry_now_gated(&mut turn, gen, adapter, source, scope, launch) { endpoints.insert(request); }
             }
             state.srcs = srcs;
             endpoints
@@ -2484,9 +2528,10 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     // backoff owed) or a Loading whose worker landed stale and was dropped — the latter owes
     // nothing, so it re-kicks on the spot rather than wedging that source on a spinner forever.
     if let Some(dt) = dt {
+        let mut turn = fanout_turn(&mut state.fanout, &srcs, |s| source_waiting(s) && s.retry_s - dt <= 0.0);
         for s in srcs.iter_mut() {
-            if (s.state != HubState::Ready || s.page.is_some()) && !s.fetching && retry_due(s, dt) {
-                if let Some(request) = kick_with(cur, adapter, s, scope, &mut *launch) { endpoints.insert(request); }
+            if source_waiting(s) && retry_due(s, dt) {
+                if let Some(request) = kick_gated(&mut turn, cur, adapter, s, scope, &mut *launch) { endpoints.insert(request); }
             }
         }
     }

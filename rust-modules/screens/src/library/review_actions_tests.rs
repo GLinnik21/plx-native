@@ -205,7 +205,7 @@ fn fresh_bookmarks_follow_stable_items_then_slots_and_keep_the_returned_card_vis
         );
         assert_eq!(
             engine.current(OWNER),
-            Some(page.key(page.pair.detail.elems[expected])),
+            Some(page.key(page.pair.detail.elem_at(expected).unwrap())),
             "scenario {scenario}"
         );
         let placed = page
@@ -224,7 +224,7 @@ fn leaving_with_a_foreign_frame_snapshot_cannot_bookmark_that_section() {
     let mut fixture = Fixture::new();
     let mut page = fixture.screen();
     let mut engine = FocusEngine::new();
-    let grid = page.key(page.pair.detail.elems[5]);
+    let grid = page.key(page.pair.detail.elem_at(5).unwrap());
     engine.set(
         OWNER,
         grid,
@@ -273,7 +273,7 @@ fn live_engine_memory_wins_over_a_stale_store_bookmark_and_saves_from_toolbar() 
     });
     let mut page = fixture.screen();
     let mut engine = FocusEngine::new();
-    let grid = page.key(page.pair.detail.elems[5]);
+    let grid = page.key(page.pair.detail.elem_at(5).unwrap());
     engine.set(
         OWNER,
         grid,
@@ -376,7 +376,7 @@ fn a_late_listing_keeps_its_bookmark_seed_pending_until_the_card_is_placeable() 
             ),
         );
         assert!(!page.initial);
-        assert!(output.iter().any(|effect| matches!(effect.fx, Fx::Remember { elem, .. } if elem == page.pair.detail.elems[17])));
+        assert!(output.iter().any(|effect| matches!(effect.fx, Fx::Remember { elem, .. } if elem == page.pair.detail.elem_at(17).unwrap())));
     }
 }
 
@@ -445,7 +445,7 @@ fn switch_diagnostic_requests_type_sort_filter_and_rail_actions() {
             ),
         );
         assert!(output.iter().any(
-            |e| matches!(&e.fx, Fx::Remember {elem,..} if *elem == page.pair.detail.elems[index])
+            |e| matches!(&e.fx, Fx::Remember {elem,..} if *elem == page.pair.detail.elem_at(index).unwrap())
         ));
     }
 }
@@ -457,7 +457,7 @@ fn rail_keyboard_ok_and_back_return_the_exact_engine_remembered_item() {
         let fixture = Fixture::new();
         let mut page = fixture.screen();
         let mut engine = FocusEngine::new();
-        let grid = page.key(page.pair.detail.elems[17]);
+        let grid = page.key(page.pair.detail.elem_at(17).unwrap());
         engine.set(
             OWNER,
             grid,

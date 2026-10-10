@@ -81,7 +81,8 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
             let mut page = fixture.screen();
             page.initial = false; // The fixture premise is an already-entered, settled page.
             let mut engine = FocusEngine::new();
-            let grid = page.key(page.pair.detail.elems[52]);
+            let elem = page.pair.detail.elem_for(&fixture.cx(None), &mut page.keys, 52, COLS).unwrap();
+            let grid = page.key(elem);
             let group = page.pair.groups_config().detail;
             engine.set(OWNER, grid, Some(group), By::Restore);
             let toolbar = page.key(if matches!(edit, QueryEdit::Sort { .. }) {
@@ -249,7 +250,7 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
             // entry from the heading projects under the chip instead (`focus::projects_across`).
             assert_eq!(
                 engine.read(OWNER).remembered(group),
-                Some(page.pair.detail.elems[0]),
+                Some(page.pair.detail.elem_at(0).unwrap()),
                 "accepted query must reset the engine's remembered grid target: {edit:?}"
             );
             let mut links = Vec::new();

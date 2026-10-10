@@ -605,6 +605,16 @@ impl CardKeys {
 
     pub fn len(&self) -> usize { self.keys.len() }
 
+    /// Drops every key that is not `live` (a row held now), in `previous` (held at the last
+    /// sync) or pinned (the focused member, the member a Back restores to). What remains is at
+    /// most two windows plus the pins, so the table follows the loaded pages and not the list;
+    /// `next` never moves back, so a dropped element is not handed out again.
+    pub fn prune(&mut self, live: &std::collections::HashSet<u32>,
+        previous: &std::collections::HashSet<u32>, pinned: &[Option<u32>]) {
+        self.keys.retain(|key| live.contains(&key.elem) || previous.contains(&key.elem)
+            || pinned.contains(&Some(key.elem)));
+    }
+
     /// This registry's canonical bytes after the page's `next` — `len` then `(sid, rk, elem)` per
     /// key, the order every card page and both [`PageMemory`] arms have always written.
     fn write_keys(&self, c: &mut plx_machine::machine::Canon) {
@@ -618,6 +628,12 @@ impl CardKeys {
 pub struct CardPageMemory {
     pub cards: CardKeys,
     pub header_marked: bool,
+    /// A listing page's directory (Collection): its total, one kept-row count per page read, the
+    /// focused member's index and element. Empty for a page that has none.
+    pub total: usize,
+    pub counts: Vec<u8>,
+    pub focus_index: Option<usize>,
+    pub focus_elem: Option<u32>,
 }
 
 impl CardPageMemory {
@@ -625,6 +641,12 @@ impl CardPageMemory {
     fn write(&self, tag: u32, c: &mut plx_machine::machine::Canon) {
         c.u32(tag).u32(self.cards.next).bool(self.header_marked).seq(self.cards.len());
         self.cards.write_keys(c);
+        if tag == 7 {
+            c.u64(self.total as u64).seq(self.counts.len());
+            for &kept in &self.counts { c.u32(u32::from(kept)); }
+            c.bool(self.focus_index.is_some()).u64(self.focus_index.unwrap_or(0) as u64)
+                .bool(self.focus_elem.is_some()).u32(self.focus_elem.unwrap_or(0));
+        }
     }
 }
 
@@ -705,6 +727,20 @@ pub enum PageMemory {
     Home(HomeMemory),
     Library(LibraryMemory),
     Search(crate::search::Memory),
+}
+
+impl PageMemory {
+    /// What an entry far below the top keeps (`plx_ui::containers::stack::DEEP`): Detail's key
+    /// table shrinks to the focused card's identity, so the page that reloads on return seats the
+    /// same card by it; `next_elem` stays, so no key minted later reuses a released number. The
+    /// other pages bound their own memory (Home and Library prune theirs, the card pages keep one
+    /// key per card the store holds) and are left as they are.
+    pub fn shed_to_identity(&mut self, focus: Option<u32>) {
+        if let Self::Detail(memory) = self {
+            memory.keys.retain(|key| Some(key.elem) == focus);
+            memory.keys.shrink_to_fit();
+        }
+    }
 }
 
 impl plx_machine::machine::LogicalState for DetailIdentity {
@@ -2087,7 +2123,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Person adopts `cards::Stack` (cards-stack PR 5): its logical state gains the stack's motion canon
 // (`stack:Stack{scroll,target,sections}`), the same as Collection's; the previous pin was
 // 0xbc1d_d51d_5b11_1273.
-const SCREEN_SHAPES_PIN: u64 = 0xdb39_f424_a0be_5fd2;
+// The Library grid projects keys for its wanted windows only (`LibraryGrid{total,windows,..}`
+// replaces a key per slot); the previous pin was 0xdb39_f424_a0be_5fd2.
+const SCREEN_SHAPES_PIN: u64 = 0x7435_d234_b769_60c2;
 
 #[cfg(test)]
 mod arg_tests {
