@@ -577,7 +577,9 @@ class Enhancement266(unittest.TestCase):
         self.assertEqual(ext_sub["codec"], "srt")
         self.assertTrue(ext_sub["key"])
         # invisible to the ordinary section listings/rails/counts
-        self.assertEqual(get(MockPms(lib), "/library/sections/1/all")["totalSize"], 48)
+        # A real server answers a total only to a paged request: the size-0 window is the read.
+        self.assertEqual(get(MockPms(lib), "/library/sections/1/all"
+                             "?X-Plex-Container-Start=0&X-Plex-Container-Size=0")["totalSize"], 48)
 
     def test_decision_enhancement_shapes(self):
         pms = MockPms(Library())
@@ -827,6 +829,213 @@ class DetailFixtures(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(json.loads(body), json.loads((FIXTURES / f"detail-{rk}.json").read_text()),
                                  "regenerate with `python3 tools/demo_library.py fixtures`")
+
+
+def first_of(lib, kind):
+    return next(it for it in lib.items.values() if it["type"] == kind)
+
+
+def window(path, start, size, headers=False):
+    """`path` paged by the container window, as a query parameter or, with `headers`, as headers."""
+    if headers:
+        return path, {"X-Plex-Container-Start": str(start), "X-Plex-Container-Size": str(size)}
+    sep = "&" if "?" in path else "?"
+    return f"{path}{sep}X-Plex-Container-Start={start}&X-Plex-Container-Size={size}", None
+
+
+def fetch(pms, path, headers=None):
+    status, ctype, data = pms.handle("GET", path, headers=headers)
+    assert (status, ctype) == (200, "application/json"), (status, ctype, path)
+    return json.loads(data)["MediaContainer"]
+
+
+class ContainerPaging(unittest.TestCase):
+    """The PMS paging contract (docs/pms-api.md, "Paging, observed"): a request pages only when it
+    carries the container window, as a query parameter or as a header; a paged answer echoes
+    `offset` and carries the listing's `totalSize`; an unpaged answer carries neither."""
+
+    def assertPaged(self, container, start, rows, total):
+        self.assertEqual(container["totalSize"], total)
+        self.assertEqual(container["offset"], start)
+        self.assertEqual(container["size"], len(rows))
+
+    def test_unpaged_answers_carry_no_total_and_no_offset(self):
+        lib = Library()
+        pms = MockPms(lib)
+        show = first_of(lib, "show")
+        season = next(it for it in lib.items.values() if it["type"] == "season")
+        title = first_of(lib, "movie")["title"]
+        for path in ("/library/sections/1/all", f"/library/metadata/{show['ratingKey']}/children",
+                     f"/library/metadata/{season['ratingKey']}/children",
+                     f"/library/metadata/{first_of(lib, 'movie')['ratingKey']}/similar",
+                     "/hubs/continueWatching/items", "/hubs", "/hubs/sections/1",
+                     f"/library/search?query={title}&searchTypes=movies"):
+            with self.subTest(path=path):
+                container = fetch(pms, path)
+                self.assertNotIn("totalSize", container)
+                self.assertNotIn("offset", container)
+
+    def test_a_size_without_a_start_is_ignored(self):
+        """docs/pms-api.md, "Paging gotcha": a query-param Size without Start changes nothing."""
+        pms = MockPms(Library())
+        ignored = fetch(pms, "/library/sections/1/all?X-Plex-Container-Size=5")
+        self.assertEqual(len(ignored["Metadata"]), 48)
+        self.assertNotIn("totalSize", ignored)
+        self.assertNotIn("offset", ignored)
+
+    def test_window_as_query_and_as_header_answer_alike(self):
+        pms = MockPms(Library())
+        by_query = fetch(pms, window("/library/sections/1/all", 10, 5)[0])
+        by_header = fetch(pms, *window("/library/sections/1/all", 10, 5, headers=True))
+        self.assertEqual(by_header, by_query)
+        self.assertPaged(by_query, 10, by_query["Metadata"], 48)
+        self.assertEqual(len(by_query["Metadata"]), 5)
+
+    def test_size_zero_is_a_paged_request_that_reads_the_total(self):
+        pms = MockPms(Library())
+        page = fetch(pms, window("/library/sections/1/all", 0, 0)[0])
+        self.assertEqual(page["Metadata"], [])
+        self.assertPaged(page, 0, [], 48)
+
+    def test_start_past_the_end_is_empty_and_still_echoes_the_offset(self):
+        pms = MockPms(Library())
+        page = fetch(pms, window("/library/sections/1/all", 500, 10)[0])
+        self.assertEqual(page["Metadata"], [])
+        self.assertPaged(page, 500, [], 48)
+
+    def test_children_of_a_show_and_of_a_season_page(self):
+        lib = Library()
+        pms = MockPms(lib)
+        show = first_of(lib, "show")["ratingKey"]
+        season = next(it["ratingKey"] for it in lib.items.values() if it["type"] == "season")
+        for parent in (show, season):
+            with self.subTest(parent=parent):
+                full = fetch(pms, f"/library/metadata/{parent}/children")["Metadata"]
+                self.assertGreaterEqual(len(full), 2)
+                page = fetch(pms, window(f"/library/metadata/{parent}/children", 1, 1)[0])
+                self.assertEqual(page["Metadata"], full[1:2])
+                self.assertPaged(page, 1, full[1:2], len(full))
+
+    def test_extras_page_and_default_library_has_none(self):
+        lib = Library(extras=3)
+        pms = MockPms(lib)
+        movie = first_of(lib, "movie")["ratingKey"]
+        full = fetch(pms, f"/library/metadata/{movie}/extras")["Metadata"]
+        self.assertEqual(len(full), 3)
+        self.assertEqual({row["type"] for row in full}, {"clip"})
+        self.assertEqual(len({row["ratingKey"] for row in full}), 3)
+        self.assertNotIn("totalSize", fetch(pms, f"/library/metadata/{movie}/extras"))
+        page = fetch(pms, window(f"/library/metadata/{movie}/extras", 1, 2)[0])
+        self.assertEqual(page["Metadata"], full[1:3])
+        self.assertPaged(page, 1, full[1:3], 3)
+        default = MockPms(Library())
+        self.assertEqual(fetch(default, f"/library/metadata/{movie}/extras")["Metadata"], [])
+
+    def test_person_media_pages(self):
+        lib = Library()
+        pms = MockPms(lib)
+        pid = max(lib.people, key=lambda p: len(lib.person_media(p)))
+        self.assertGreaterEqual(len(lib.person_media(pid)), 2, "the fixture gives a person two credits")
+        full = fetch(pms, f"/library/people/{pid}/media")["Metadata"]
+        self.assertEqual(full, lib.person_media(pid))
+        page = fetch(pms, window(f"/library/people/{pid}/media", 1, 1)[0])
+        self.assertEqual(page["Metadata"], full[1:2])
+        self.assertPaged(page, 1, full[1:2], len(full))
+
+    def test_similar_pages_over_the_same_type_without_the_item_itself(self):
+        lib = Library()
+        pms = MockPms(lib)
+        movie = first_of(lib, "movie")
+        full = fetch(pms, f"/library/metadata/{movie['ratingKey']}/similar")["Metadata"]
+        self.assertEqual(len(full), sum(1 for it in lib.items.values() if it["type"] == "movie") - 1)
+        self.assertNotIn(movie["ratingKey"], {row["ratingKey"] for row in full})
+        self.assertEqual({row["type"] for row in full}, {"movie"})
+        page = fetch(pms, window(f"/library/metadata/{movie['ratingKey']}/similar", 2, 3)[0])
+        self.assertEqual(page["Metadata"], full[2:5])
+        self.assertPaged(page, 2, full[2:5], len(full))
+
+    def test_continue_watching_items_page_contiguously(self):
+        lib = Library()
+        pms = MockPms(lib)
+        # The default library already has in-progress items; the test sets its own five.
+        for it in lib.items.values():
+            it["viewOffset"] = 0
+        for n, movie in enumerate([it for it in lib.items.values() if it["type"] == "movie"][:5]):
+            movie["viewOffset"] = 1000
+            movie["lastViewedAt"] = 1_700_000_000 + n
+        full = lib.continue_watching()
+        self.assertEqual(len(full), 5)
+        first = fetch(pms, window("/hubs/continueWatching/items", 0, 3)[0])
+        second = fetch(pms, window("/hubs/continueWatching/items", 3, 3)[0])
+        self.assertPaged(first, 0, first["Metadata"], 5)
+        self.assertPaged(second, 3, second["Metadata"], 5)
+        self.assertEqual(first["Metadata"] + second["Metadata"], full)
+
+    def test_hubs_page_by_hub_on_both_hub_listings(self):
+        lib = Library()
+        pms = MockPms(lib)
+        pms.home_hubs = 6
+        full = fetch(pms, "/hubs")["Hub"]
+        self.assertEqual(len(full), 6)
+        page = fetch(pms, window("/hubs", 2, 3)[0])
+        self.assertEqual(page["Hub"], full[2:5])
+        self.assertPaged(page, 2, full[2:5], 6)
+        header_page = fetch(pms, *window("/hubs", 2, 3, headers=True))
+        self.assertEqual(header_page, page)
+        section = fetch(pms, "/hubs/sections/1")["Hub"]
+        self.assertEqual(len(section), 2)
+        section_page = fetch(pms, window("/hubs/sections/1", 1, 1)[0])
+        self.assertEqual(section_page["Hub"], section[1:2])
+        self.assertPaged(section_page, 1, section[1:2], 2)
+
+    def test_library_search_rows_page_by_offset_and_limit_caps_the_total(self):
+        lib = Library()
+        pms = MockPms(lib)
+        prefix = first_of(lib, "movie")["title"][:2]
+        hits = [it for it in lib.items.values() if it["type"] == "movie" and it["title"].startswith(prefix)]
+        self.assertGreaterEqual(len(hits), 2, "the prefix matches at least two movies")
+        path = f"/library/search?query={prefix}&searchTypes=movies"
+        full = fetch(pms, path)["SearchResult"]
+        self.assertEqual(len(full), len(hits))
+        for row in full:
+            self.assertEqual(set(row), {"Metadata", "score"})
+            self.assertTrue(row["Metadata"]["title"].startswith(prefix))
+        page = fetch(pms, window(path, 1, 1)[0])
+        self.assertEqual(page["SearchResult"], full[1:2])
+        self.assertPaged(page, 1, full[1:2], len(full))
+        capped = fetch(pms, window(f"{path}&limit=1", 0, 5)[0])
+        self.assertEqual(len(capped["SearchResult"]), 1)
+        self.assertPaged(capped, 0, capped["SearchResult"], 1)
+
+    def test_library_search_types_order_and_unknown_kinds(self):
+        lib = Library()
+        pms = MockPms(lib)
+        # Known titles under one prefix, so the order each type lists in is what is asserted.
+        movie = first_of(lib, "movie")
+        show = first_of(lib, "show")
+        episode = next(it for it in lib.items.values() if it["type"] == "episode")
+        movie["title"], show["title"], episode["title"] = "s0000abc0", "s0000abc1", "s0000abc2"
+        person = lib.people[1]
+        person["tag"] = "s0000abc9"
+        query = "s0000abc"
+
+        def titles(kinds):
+            rows = fetch(pms, f"/library/search?query={query}&searchTypes={kinds}")["SearchResult"]
+            return [row["Metadata"]["title"] for row in rows]
+
+        self.assertEqual(titles("tv"), ["s0000abc1", "s0000abc2"], "shows first, then episodes")
+        self.assertEqual(titles("movies,tv"), ["s0000abc0", "s0000abc1", "s0000abc2"],
+                         "one mixed list in movies, shows, episodes order")
+        people = fetch(pms, f"/library/search?query={query}&searchTypes=people")["SearchResult"]
+        self.assertEqual(len(people), 1)
+        self.assertEqual(people[0]["Directory"]["tagKey"], person["tagKey"])
+        self.assertEqual(people[0]["Directory"]["count"], len(lib.person_media(person["id"])))
+        self.assertIn("score", people[0])
+        for kinds in ("shows", "bogus", "music"):
+            with self.subTest(searchTypes=kinds):
+                empty = fetch(pms, window(f"/library/search?query={query}&searchTypes={kinds}", 0, 10)[0])
+                self.assertEqual(empty["SearchResult"], [])
+                self.assertPaged(empty, 0, [], 0)
 
 
 if __name__ == "__main__":
