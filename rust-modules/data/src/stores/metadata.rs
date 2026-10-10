@@ -74,6 +74,8 @@
 //!   the episodes off-thread (debounced landing through `pump_season`).
 //! - `WantEpisodes{lo, hi, focus, restore}` → `metadata::want_episodes` — fetch the pages of a long
 //!   season the screen needs and evict the ones it does not (`pump_episode_pages` installs them).
+//! - `WantRelated{before}` → `metadata::want_related` — slide the Related row's tail window
+//!   (`pump_related_pages` installs it).
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
 //! - `SetWatchedLocal{sid, rk, on}` → `metadata::set_watched_local` — the optimistic half of a
 //!   view-state write, answers whether it actually changed anything.
@@ -191,6 +193,10 @@ pub enum MetadataCmd {
     /// pages outside it are evicted, except the focus's and the restore target's. Idempotent: say
     /// it again to retry a failed page.
     WantEpisodes { lo: usize, hi: usize, focus: Option<usize>, restore: Option<usize> },
+    /// The Related row's tail window moves one step: `before` to the previous, else to the next.
+    /// Ignored while a read of it is out or the window has nothing more that way; the shelf says
+    /// it again at its next edge.
+    WantRelated { before: bool },
     SetNowPlaying(Option<crate::metadata::NowPlaying>),
     /// The optimistic half of a view-state write on the loaded item, its episodes and Related.
     SetWatchedLocal { sid: ServerId, rk: String, on: bool },
@@ -332,7 +338,8 @@ impl MetadataStore {
     pub fn pump_season_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
         let changed = crate::metadata::pump_season_with_gate(&mut self.state, &self.adapter, gate);
         let pages = crate::metadata::pump_episode_pages(&mut self.state, &self.adapter);
-        let changed = changed || pages;
+        let related = crate::metadata::pump_related_pages(&mut self.state, &self.adapter);
+        let changed = changed || pages || related;
         if changed { self.bump(); }
         changed
     }
