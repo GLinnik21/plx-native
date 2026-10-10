@@ -21,7 +21,8 @@ pub struct AuQueue {
     head: *mut AuNode,
     tail: *mut AuNode,
     queued_bytes: c_long,
-    max_bytes: c_long, // per-queue backpressure cap; the caller chooses it (see aq_new)
+    max_bytes: c_long, // per-queue backpressure cap: `base_bytes` + any headroom granted
+    base_bytes: c_long, // the cap the caller chose at aq_new; headroom is granted on top of it
     eof: c_int,
     abort: c_int,
     m: libc::pthread_mutex_t,
@@ -81,6 +82,7 @@ fn aq_init_cap(q: *mut AuQueue, cap: c_long) {
     unsafe {
         ptr::write_bytes(q as *mut u8, 0, core::mem::size_of::<AuQueue>());
         (*q).max_bytes = cap;
+        (*q).base_bytes = cap;
         libc::pthread_mutex_init(ptr::addr_of_mut!((*q).m), ptr::null());
         init_not_full_cond(ptr::addr_of_mut!((*q).not_full));
         libc::pthread_cond_init(ptr::addr_of_mut!((*q).not_empty), ptr::null());
@@ -360,6 +362,25 @@ pub fn aq_if_not_aborted<T>(q: *mut AuQueue, f: impl FnOnce() -> T) -> Option<T>
     }
 }
 
+/// Producer: let this queue hold `extra` bytes beyond the cap it was created with, until the next
+/// call (`0` restores the plain cap). A queue that is already over the new cap is not trimmed; the
+/// producer simply blocks until the consumer has drained it below. Raising the cap wakes a producer
+/// parked on `not_full`, so the grant takes effect even for a push already waiting.
+pub fn aq_set_headroom(q: *mut AuQueue, extra: c_long) {
+    if q.is_null() {
+        return;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let prev = (*q).max_bytes;
+        (*q).max_bytes = (*q).base_bytes + extra.max(0);
+        if (*q).max_bytes > prev {
+            libc::pthread_cond_broadcast(ptr::addr_of_mut!((*q).not_full));
+        }
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+    }
+}
+
 pub fn aq_bytes(q: *mut AuQueue) -> c_long {
     if q.is_null() {
         return 0;
@@ -377,6 +398,45 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier};
+
+    /// A full queue parks its producer; headroom granted on top of the base cap lets the same
+    /// push through, and taking the headroom away restores the base cap for the next push. This
+    /// is the video lane's shape when a file's audio starts late (an audio `Delay`): the base cap
+    /// alone parks the demuxer before it ever reaches the first audio packet.
+    #[test]
+    fn headroom_admits_a_push_the_base_cap_parks_and_zero_restores_it() {
+        let mut q = aq_new(100);
+        let qp = &mut *q as *mut AuQueue;
+        let au = [0u8; 120];
+        assert_eq!(aq_push(qp, au.as_ptr(), au.len() as c_int, 0, 1, 1), 0);
+        assert_eq!(aq_bytes(qp), 120, "over the base cap now");
+
+        // Without headroom the next push parks until something drains or aborts.
+        let addr = qp as usize;
+        let parked = std::thread::spawn(move || {
+            let au = [0u8; 10];
+            aq_push(addr as *mut AuQueue, au.as_ptr(), au.len() as c_int, 1, 0, 1)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!parked.is_finished(), "the base cap parks the producer");
+
+        // Granting headroom releases the parked push without anything being popped.
+        aq_set_headroom(qp, 1_000);
+        assert_eq!(parked.join().unwrap(), 0);
+        assert_eq!(aq_bytes(qp), 130);
+
+        // Back to the base cap: the queue is over it again, so a further push would park.
+        aq_set_headroom(qp, 0);
+        let parked = std::thread::spawn(move || {
+            let au = [0u8; 10];
+            aq_push(addr as *mut AuQueue, au.as_ptr(), au.len() as c_int, 2, 0, 1)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!parked.is_finished(), "zero headroom restores the base cap");
+        aq_abort(qp);
+        assert_eq!(parked.join().unwrap(), -1);
+        aq_destroy(qp);
+    }
 
     #[test]
     fn a_preexisting_abort_prevents_the_publication_closure() {

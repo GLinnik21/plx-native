@@ -16,7 +16,7 @@ use crate::player::threads::SendPtr;
 use crate::player::SHARED;
 use plx_net::stream::HttpStream;
 use std::ffi::CString;
-use std::os::raw::{c_char, c_int, c_uchar, c_uint, c_void};
+use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 
@@ -7737,6 +7737,52 @@ fn open_input_failure_note(r: c_int, lane_aborted: bool) -> String {
     }
 }
 
+/// **How much further the VIDEO lane may run ahead while the AUDIO lane has nothing yet.**
+///
+/// The two lanes are filled from ONE read of the file, in file order, and each has its own byte cap
+/// (`player::engine`'s `AQ_VIDEO_BYTES`). A Matroska file whose audio track carries a container
+/// `Delay` has no audio block before that many seconds of video — measured on a WEB-DL with
+/// `Delay: 11.008` on its E-AC-3 track: ~13 MB of 9.5 Mbit/s video precede the first audio packet,
+/// while the video cap is 10 MiB. The demuxer parked on the full video lane, the pipeline (which
+/// will not start its clock without audio) took no more video, and the first audio block was never
+/// read: a start that buffered forever, while a resume past the delay played at once. FFmpeg's own
+/// probe said as much on stderr — no E-AC-3 parameters within its 5 MB `probesize`.
+///
+/// So until the first audio AU of this open/seek has been pushed, the video lane gets this much
+/// headroom on top of its cap; the first audio push takes it away again. 24 MiB covers an 11 s
+/// delay up to ~25 Mbit/s of video. A transient allowance, held only for the pre-audio stretch of a
+/// file that has one, and bounded so a file whose audio never comes cannot grow it without limit.
+const PRE_AUDIO_VIDEO_HEADROOM: c_long = 24 * 1024 * 1024;
+
+/// PURE: the video lane's headroom right now — [`PRE_AUDIO_VIDEO_HEADROOM`] while an audio lane is
+/// being fed and has received nothing since this open or seek, else none.
+fn pre_audio_headroom(audio_lane: bool, audio_seen: bool) -> c_long {
+    if audio_lane && !audio_seen {
+        PRE_AUDIO_VIDEO_HEADROOM
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod pre_audio_headroom_tests {
+    use super::*;
+
+    /// The video lane runs ahead only while an audio lane is being fed and has received nothing:
+    /// a file with no audio lane, or one whose audio has arrived, keeps the plain cap.
+    #[test]
+    fn video_headroom_is_granted_only_before_the_first_audio_au() {
+        assert_eq!(pre_audio_headroom(true, false), PRE_AUDIO_VIDEO_HEADROOM);
+        assert_eq!(pre_audio_headroom(true, true), 0, "audio arrived: back to the plain cap");
+        assert_eq!(pre_audio_headroom(false, false), 0, "no audio lane: nothing to wait for");
+        // the measured case: 11.008 s of 9.5 Mbit/s video ahead of the first audio block must fit
+        // inside the plain 10 MiB cap plus the headroom
+        let ahead = (11.008 * 9_495_770.0 / 8.0) as c_long;
+        assert!(ahead > 10 * 1024 * 1024, "the plain cap alone cannot hold it");
+        assert!(ahead < 10 * 1024 * 1024 + PRE_AUDIO_VIDEO_HEADROOM);
+    }
+}
+
 /// The demux thread body (spawned by `engine::start_bufferfeed`).
 ///
 /// Takes an [`Origin`](plx_plex::plex::Origin) rather than a `(host, port)` pair because **the scheme
@@ -8250,6 +8296,10 @@ pub fn demux(
                 }
 
                 let mut anchor_taken = false;
+                // The video lane's pre-audio headroom (`pre_audio_headroom`): granted until the
+                // first audio AU of this open — and again after every seek — then withdrawn.
+                let mut audio_seen = false;
+                let mut headroom_applied: c_long = 0;
                 // INNER read loop
                 loop {
                     // Direct-play seek (and the armed resume, which is just a seek published before
@@ -8304,6 +8354,7 @@ pub fn demux(
                             "ff: seek {}s rv={sr}",
                             seek_ns / 1_000_000_000
                         ));
+                        audio_seen = false;
                     }
                     let r = av_read_frame(fmt, pkt);
                     if frame_read_failed(&mut state, r) {
@@ -8359,6 +8410,14 @@ pub fn demux(
                                 is_key,
                                 head
                             ));
+                        }
+                        let headroom = pre_audio_headroom(
+                            ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed),
+                            audio_seen,
+                        );
+                        if headroom != headroom_applied {
+                            crate::aq::aq_set_headroom(aq_p, headroom);
+                            headroom_applied = headroom;
                         }
                         let pushed = crate::aq::aq_push_with_drain(
                             aq_p,
@@ -8421,6 +8480,19 @@ pub fn demux(
                         av_packet_unref(pkt);
                         if pushed != 0 {
                             break;
+                        }
+                        if !audio_seen {
+                            audio_seen = true;
+                            if headroom_applied != 0 {
+                                // The late audio arrived: say how far ahead video had to run.
+                                crate::player::log(&format!(
+                                    "ff: first audio at {}ms after {} bytes of video queued ahead of it",
+                                    pts / 1_000_000,
+                                    crate::aq::aq_bytes(aq_p)
+                                ));
+                                crate::aq::aq_set_headroom(aq_p, 0);
+                                headroom_applied = 0;
+                            }
                         }
                         SHARED.hls_audio_tail_ns.store(pts, Ordering::Release);
                     } else if let Some(sub_pos) = sub_tracks.position(si) {
