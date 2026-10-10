@@ -3073,8 +3073,9 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
         self.item(i).and_then(PmsMovie::resume_frac)
     }
 
+    /// A card has landed once it has a rating key; the ring's placeholder slot is an empty movie.
     fn loaded(&self, i: usize) -> bool {
-        self.item(i).is_some()
+        self.item(i).is_some_and(|item| !item.rk.is_empty())
     }
 
     fn hover(&self, _i: usize) -> Hover {

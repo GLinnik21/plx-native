@@ -3998,6 +3998,52 @@ fn the_screen_holds_the_rows_in_view_and_two_either_side_and_says_so_only_when_t
     assert!(moved[0].0 > first[0].1, "and it is the rows now in view: {moved:?}");
 }
 
+#[test]
+fn a_focus_on_a_placeholder_keeps_its_row_column_and_cell_when_the_cards_land() {
+    let _guard = plx_base::testlock::serial();
+    let (rows, items, row, col) = (40, 12, 20, 5);
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    // Held Down faster than the reads land: the key reaches a row the ring has released.
+    plx_data::pms::seed_ring_for_test(&mut state, &adapter, rows, items, &|_| 0, (0, 8));
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    s.sync_catalog(&cx(snapshot.view(), None));
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    let slot = FocusKey { entry: EntryId(7), elem: s.rows[row].elems[col] };
+    assert!(s.items.iter().any(|k| k.elem == slot.elem && matches!(k.identity, HomeItemIdentity::Slot { .. })),
+        "the released row is a row of placeholder slots");
+    assert!(!CardSource::<TestHost>::loaded(&s.cards(snapshot.view(), row), col),
+        "a placeholder is not a loaded card");
+    let settle = |s: &mut HomeScreen, view: HubsView<'_>, key: FocusKey<u32>| {
+        let context = cx(view, Some(key));
+        for _ in 0..60 { s.update_grid_for_test(view, &context, 1.0 / 60.0); }
+    };
+    settle(&mut s, snapshot.view(), slot);
+    let before = drawn_rect(&s, snapshot.view(), Some(slot), row, col);
+    // OK on a placeholder opens nothing
+    let (_, out, _) = step(&mut s, snapshot.view(), Some(slot), &ScreenEvent::Activate(slot.elem));
+    assert!(!has_home(&out, |r| matches!(r, HomeReq::Detail { .. } | HomeReq::Play { .. })), "OK on a placeholder is inert");
+    // the row's cards land (the ring moved onto it); the engine reconciles the slot key in the same frame
+    plx_data::pms::seed_ring_for_test(&mut state, &adapter, rows, items, &|_| 0, (row - 4, row + 4));
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let context = cx(snapshot.view(), Some(slot));
+    s.sync_catalog(&context);
+    let landed = Focusable::<TestHost>::reconcile(&s, slot, &context);
+    assert_ne!(landed.elem, slot.elem, "the slot key becomes the item's");
+    assert_eq!(s.focused_grid(Some(landed)), Some((row, col)), "the same row and column");
+    assert!(CardSource::<TestHost>::loaded(&s.cards(snapshot.view(), row), col));
+    let after = drawn_rect(&s, snapshot.view(), Some(landed), row, col);
+    assert!((before.cx() - after.cx()).abs() < 0.5 && (before.cy() - after.cy()).abs() < 0.5,
+        "the cell under focus did not move: {before:?} -> {after:?}");
+    settle(&mut s, snapshot.view(), landed);
+    let later = drawn_rect(&s, snapshot.view(), Some(landed), row, col);
+    assert!((before.cx() - later.cx()).abs() < 0.5 && (before.cy() - later.cy()).abs() < 0.5,
+        "and stays there: {before:?} -> {later:?}");
+}
+
 /// `cx` with the engine's remembered cursors, which the key pruning reads.
 fn cx_remembering<'a>(view: HubsView<'a>, remembered: &[(GroupId, u32)]) -> Cx<'a, TestHost> {
     let mut context = cx(view, None);
