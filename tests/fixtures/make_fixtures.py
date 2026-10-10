@@ -1551,7 +1551,7 @@ PIPE_MBIT = {
     "pipe_hevc_eac3_4k_dovi_p8": 9.80,  # = movie_hevc_4k_dovi_p8
     "pipe_hevc_aac_mp4": 5.00,          # = movie_hevc_aac_mp4         (hevc 1080p crf 26)
     "pipe_h264_aac_mp4": 6.40,          # measured, from a full 60 s build
-    "pipe_vp9_aac_1080p": 3.50,         # estimate: vp9 1080p crf 33 + 192k AAC
+    "pipe_vp9_aac_1080p": 6.10,         # measured, from a full 60 s build (vp9 1080p crf 33)
     "pipe_h264_1080p5994": 9.48,        # measured; NB 2.5x the frames cost only 1.3x the bits
     "pipe_hevc_4k_60fps": 9.40,         # measured, at crf 32 (crf 30 would be well over 15)
     "pipe_multiaudio_1080p": 8.10,      # = movie_h264_ac3_many_audio, minus five tracks
@@ -2047,7 +2047,7 @@ def _xml_escape(s):
 # PLAYER regressed and the evidence all points at the app. Everything a shape CLAIMS is
 # read back out of the finished file; a mismatch names both sides and is fatal.
 # ---------------------------------------------------------------------------------------
-VCODEC_NAME = {"h264": "h264", "hevc": "hevc", "av1": "av1"}
+VCODEC_NAME = {"h264": "h264", "hevc": "hevc", "av1": "av1", "vp9": "vp9"}
 ACODEC_NAME = {"ac3": "ac3", "eac3": "eac3", "aac": "aac", "truehd": "truehd",
                "dts": "dts", "vorbis": "vorbis", "opus": "opus", "flac": "flac"}
 
@@ -2758,7 +2758,7 @@ BREW = {
 
 def shape_requirements(key, spec):
     encs = set()
-    encs.add({"h264": "libx264", "hevc": "libx265", "av1": "libsvtav1"}[spec["video"]["codec"]])
+    encs.add({"h264": "libx264", "hevc": "libx265", "av1": "libsvtav1", "vp9": "libvpx-vp9"}[spec["video"]["codec"]])
     for a in spec.get("audio", []):
         encs.add(AENC[a["codec"]][0])
     return sorted(encs), list(spec.get("tools", []))
