@@ -313,6 +313,8 @@ fn report_position(pts_ns: i64) {
 struct Clock;
 
 static LOADED: AtomicBool = AtomicBool::new(false);
+#[cfg(any(test, feature = "test-support"))]
+static FORCE_DESTROY_REFUSAL: AtomicBool = AtomicBool::new(false);
 /// A constructed Starfish object survives `Unload` until the separately gated destructor.
 static OBJECT_READY: AtomicBool = AtomicBool::new(false);
 /// Callback context installed by the current host `Load`, mirroring firmware's `void *ctx`.
@@ -349,6 +351,13 @@ pub(super) fn force_callback_intercepts_for_test(value: u32) {
 pub(super) fn lifecycle_blocked_for_test() -> bool {
     LIFECYCLE_BLOCKED.load(Relaxed)
 }
+/// Make the seam's own D1 evidence disagree with Rust's: `sf_destroy` answers 0 and latches the
+/// quarantine even though every proof Rust holds says Destroy. Cleared by
+/// [`reset_native_lifecycle_for_test`].
+#[cfg(test)]
+pub(super) fn force_destroy_refusal_for_test(on: bool) {
+    FORCE_DESTROY_REFUSAL.store(on, Relaxed);
+}
 #[cfg(test)]
 pub(super) fn force_object_ready_for_test(on: bool) {
     OBJECT_READY.store(on, Relaxed);
@@ -363,6 +372,7 @@ pub(super) fn reset_native_lifecycle_for_test() {
     CALLBACK_GATE_RETIRED.store(false, Relaxed);
     NATIVE_UNLOAD_COMPLETED.store(false, Relaxed);
     LIFECYCLE_BLOCKED.store(false, Relaxed);
+    FORCE_DESTROY_REFUSAL.store(false, Relaxed);
     OBJECT_READY.store(false, Relaxed);
     LOADED.store(false, Relaxed);
     LOAD_IN_FLIGHT.store(false, Relaxed);
@@ -698,7 +708,12 @@ unsafe fn sf_callback_intercepts() -> c_uint {
 unsafe fn sf_destroy() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("sf_destroy");
-    let safe = OBJECT_READY.load(Relaxed)
+    #[cfg(any(test, feature = "test-support"))]
+    let refused = FORCE_DESTROY_REFUSAL.load(Relaxed);
+    #[cfg(not(any(test, feature = "test-support")))]
+    let refused = false;
+    let safe = !refused
+        && OBJECT_READY.load(Relaxed)
         && CALLBACK_GATE_RETIRED.load(Relaxed)
         && CALLBACK_INTERCEPTS.load(Relaxed) != 0
         && NATIVE_UNLOAD_COMPLETED.load(Relaxed)

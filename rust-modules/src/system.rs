@@ -69,8 +69,9 @@ pub(crate) fn clear_opaque_region() {
 /// SDL owns these client-side proxies; our references must not outlive an active window.
 /// Background notifications revoke the borrow before any later frame can marshal through it.
 /// This does not destroy SDL's objects. Foreground reacquires them from SDL, and resets the
-/// opaque-region cache so a replacement surface receives its own request.
-pub(crate) fn sys_release_wayland() {
+/// opaque-region cache so a replacement surface receives its own request. Answers whether a
+/// surface was held.
+pub(crate) fn sys_release_wayland() -> bool {
     unsafe {
         let had_surface = !G_WL_SURFACE.is_null();
         G_WL_SURFACE = std::ptr::null_mut();
@@ -82,6 +83,7 @@ pub(crate) fn sys_release_wayland() {
         if had_surface {
             log("wm: released borrowed Wayland handles");
         }
+        had_surface
     }
 }
 
@@ -825,8 +827,8 @@ mod wayland_tests {
             let acquired = (G_WL_DISPLAY, G_WL_SURFACE);
             #[cfg(not(feature = "hostsim"))]
             { G_OPAQUE_SENT = 1; }
-            sys_release_wayland();
-            sys_release_wayland(); // WILL + DID background is idempotent.
+            assert!(sys_release_wayland(), "a held surface answers true");
+            assert!(!sys_release_wayland(), "WILL + DID background is idempotent: nothing left to release");
             #[cfg(not(feature = "hostsim"))]
             { let sent = G_OPAQUE_SENT; assert_eq!(sent, -1); }
             let released = (G_WL_DISPLAY, G_WL_SURFACE);

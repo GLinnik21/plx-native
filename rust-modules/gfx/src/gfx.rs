@@ -2170,10 +2170,23 @@ pub mod tex_ledger {
     thread_local! {
         static LIVE: RefCell<HashMap<c_uint, (u64,u64)>> = RefCell::new(HashMap::new());
         static REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        #[cfg(any(test, feature = "test-support"))]
+        static MUTATIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     }
+
+    /// Test-support: how many times a texture was specified or deleted on this thread, ever. A
+    /// test that must show "no texture work happened across this span" compares two readings; the
+    /// live set alone cannot (a delete paired with a re-specify leaves it unchanged).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn mutations() -> u64 { MUTATIONS.with(|n| n.get()) }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn note_mutation() { MUTATIONS.with(|n| n.set(n.get().wrapping_add(1))); }
 
     /// `tex` was (re)specified at `w`×`h`: a re-spec of a known name replaces its size.
     pub fn specified(tex: c_uint, w: c_int, h: c_int) {
+        #[cfg(any(test, feature = "test-support"))]
+        note_mutation();
         let bytes = w.max(0) as u64 * h.max(0) as u64 * 4;
         LIVE.with(|m| {
             let revision=REVISION.with(|n| { let next=n.get().wrapping_add(1); n.set(next); next });
@@ -2183,6 +2196,8 @@ pub mod tex_ledger {
 
     /// `tex` was deleted. A name this ledger never saw is ignored.
     pub fn deleted(tex: c_uint) {
+        #[cfg(any(test, feature = "test-support"))]
+        note_mutation();
         LIVE.with(|m| {
             m.borrow_mut().remove(&tex);
         });

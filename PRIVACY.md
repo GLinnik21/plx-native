@@ -75,7 +75,9 @@ internal component labels, app and webOS versions, television model and hardware
 details needed to reproduce and symbolicate the failure.
 
 A native crash report may also contain the last 16 window diagnostic steps: entering or leaving
-background, querying the native window, and beginning or completing the first frame after return.
+background, querying the native window, unloading, destroying or retaining the video player's native
+object, creating and destroying the video window, finishing the background or return step, and beginning
+or completing the first frame after return.
 These steps include technical timestamps, fixed labels, whether playback was active, whether display/surface handles were
 available, and SDL's version numbers. They contain no window addresses or viewing content.
 They are collected only while crash reporting is enabled and accompany a crash rather than being

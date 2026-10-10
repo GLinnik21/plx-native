@@ -14,8 +14,9 @@ pub fn grab(win: *mut c_void) {
     (super::port().grab_surface)(win)
 }
 
-/// Let go of the surface, without destroying SDL's objects; foreground takes it again.
-pub fn release() {
+/// Let go of the surface, without destroying SDL's objects; foreground takes it again. Answers
+/// whether a surface was held, so the caller can tell a release from a second, idempotent one.
+pub fn release() -> bool {
     (super::port().release_surface)()
 }
 

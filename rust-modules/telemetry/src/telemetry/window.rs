@@ -1,5 +1,6 @@
 //! Sparse window-lifecycle breadcrumbs attached to native crash events. No standalone usage
-//! events and no per-frame trace: only lifecycle edges, WM queries and the first resumed frame.
+//! events and no per-frame trace: only lifecycle edges, WM queries, the native teardown and
+//! exported-window steps a background/foreground cycle runs, and the first resumed frame.
 //! Collection uses the existing crash-report consent. Values are closed labels and booleans,
 //! plus SDL's three version bytes; no pointers, content, account data or runtime strings.
 
@@ -20,10 +21,19 @@ pub enum Stage {
     WmNoSurface,
     FirstFrame,
     FirstSwapComplete,
+    WaylandReleased,
+    NativeUnload,
+    AcbPlaneUnload,
+    NativeDestroyed,
+    NativeQuarantined,
+    ExportedWindowCreate,
+    ExportedWindowDestroy,
+    BackgroundDone,
+    ForegroundDone,
 }
 
 impl Stage {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 20] = [
         Self::WillBackground,
         Self::DidBackground,
         Self::WillForeground,
@@ -35,6 +45,15 @@ impl Stage {
         Self::WmNoSurface,
         Self::FirstFrame,
         Self::FirstSwapComplete,
+        Self::WaylandReleased,
+        Self::NativeUnload,
+        Self::AcbPlaneUnload,
+        Self::NativeDestroyed,
+        Self::NativeQuarantined,
+        Self::ExportedWindowCreate,
+        Self::ExportedWindowDestroy,
+        Self::BackgroundDone,
+        Self::ForegroundDone,
     ];
 
     pub fn code(self) -> &'static str {
@@ -50,6 +69,15 @@ impl Stage {
             Self::WmNoSurface => "wm_no_surface",
             Self::FirstFrame => "first_frame",
             Self::FirstSwapComplete => "first_swap_complete",
+            Self::WaylandReleased => "wayland_released",
+            Self::NativeUnload => "native_unload",
+            Self::AcbPlaneUnload => "acb_plane_unload",
+            Self::NativeDestroyed => "native_destroyed",
+            Self::NativeQuarantined => "native_quarantined",
+            Self::ExportedWindowCreate => "exported_window_create",
+            Self::ExportedWindowDestroy => "exported_window_destroy",
+            Self::BackgroundDone => "background_done",
+            Self::ForegroundDone => "foreground_done",
         }
     }
 }
@@ -76,7 +104,25 @@ impl Observation {
 }
 
 pub fn record(observation: Observation) {
-    record_if_allowed(observation, super::native::record_window);
+    record_if_allowed(observation, |observation| {
+        #[cfg(any(test, feature = "test-support"))]
+        RECORDED.with(|r| r.borrow_mut().push(observation.stage.code()));
+        super::native::record_window(observation);
+    });
+}
+
+// Host-observable capture of what `record` let through: pushed AFTER the consent check, so a test
+// sees exactly the labels the native backend would be handed. The same thread-local discipline as
+// the other test-support captures; production builds carry none of it.
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static RECORDED: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Drain the labels `record` accepted on this thread since the last call.
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_recorded_for_test() -> Vec<&'static str> {
+    RECORDED.with(|r| std::mem::take(&mut *r.borrow_mut()))
 }
 
 fn record_if_allowed(observation: Observation, emit: impl FnOnce(Observation)) {
@@ -164,6 +210,7 @@ pub(super) fn preview() -> Value {
     serde_json::json!({"values":[
         {"category":"window", "message":"did_foreground", "timestamp":"2000-01-01T00:00:00Z",
             "data":{"playing":true}},
+        {"category":"window", "message":"native_unload", "data":{}},
         {"category":"window", "message":"wm_ready", "data":{"display":true, "surface":true,
             "sdl_major":2, "sdl_minor":0, "sdl_patch":5}},
         {"category":"window", "message":"first_frame", "data":{"playing":true}}
@@ -275,8 +322,65 @@ mod tests {
         }
     }
 
+    /// S12a: the closed label set IS the wire vocabulary. Every `Stage` must come out of the real
+    /// sanitiser as itself, so a label added to the enum but not to `ALL` (or the reverse) cannot
+    /// silently vanish from a crash report, and the count is pinned so the set grows on purpose.
+    #[test]
+    fn every_stage_round_trips_the_sanitiser() {
+        assert_eq!(Stage::ALL.len(), 20, "the closed label set changed: update PRIVACY.md too");
+        let mut seen = std::collections::HashSet::new();
+        for stage in Stage::ALL {
+            assert!(seen.insert(stage.code()), "duplicate wire label {}", stage.code());
+            let crumb = serde_json::json!({"timestamp":"2026-10-01T10:00:00.123456Z", "type":"state",
+                "category":"window", "level":"info", "message":stage.code(), "data":{}});
+            let out = sanitise(&Value::Array(vec![crumb]));
+            let values = out["values"].as_array().unwrap();
+            assert_eq!(values.len(), 1, "{} was dropped by the sanitiser", stage.code());
+            assert_eq!(values[0]["message"], stage.code());
+        }
+    }
+
+    /// The longest background + foreground cycle with playback must fit the 16-slot ring whole
+    /// (PRIVACY.md says "last 16"), so its first step is still there when the cycle's last crashes.
+    /// The webOS 5 exported-window path is the longer one (the ACB path swaps the two window steps
+    /// for `acb_plane_unload`): 8 pre-existing steps plus 7 new ones.
+    #[test]
+    fn the_longest_background_cycle_fits_the_ring() {
+        let cycle = [
+            Stage::WillBackground, Stage::WaylandReleased, Stage::DidBackground,
+            Stage::NativeUnload, Stage::NativeDestroyed, Stage::ExportedWindowDestroy,
+            Stage::BackgroundDone, Stage::WillForeground, Stage::DidForeground, Stage::WmQuery,
+            Stage::WmReady, Stage::ExportedWindowCreate, Stage::FirstFrame,
+            Stage::FirstSwapComplete, Stage::ForegroundDone,
+        ];
+        assert!(cycle.len() <= LIMIT, "{} steps would evict the start of the cycle", cycle.len());
+        assert!(cycle.iter().all(|s| Stage::ALL.iter().any(|a| a.code() == s.code())));
+    }
+
+    /// The test-support capture sits AFTER the consent check, so it shows exactly what the native
+    /// backend would be handed: nothing without consent, the label with it, nothing again after
+    /// withdrawal.
+    #[test]
+    fn the_capture_follows_consent() {
+        let _guard = plx_base::testlock::serial();
+        use crate::telemetry::consent::{self, Consent};
+        let previous = consent::current();
+        take_recorded_for_test();
+        consent::install(Consent::default());
+        record(Observation::step(Stage::NativeUnload, None));
+        let mut enabled = Consent::default();
+        enabled.errors = true;
+        enabled.asked_version = consent::POLICY_VERSION;
+        consent::install(enabled);
+        record(Observation::step(Stage::NativeUnload, None));
+        consent::install(Consent::default());
+        record(Observation::step(Stage::BackgroundDone, Some(true)));
+        consent::install(previous.unwrap_or_default());
+        assert_eq!(take_recorded_for_test(), ["native_unload"]);
+    }
+
     #[test]
     fn preview_survives_the_real_allowlist() {
-        assert_eq!(sanitise(&preview())["values"].as_array().unwrap().len(), 3);
+        assert_eq!(sanitise(&preview())["values"].as_array().unwrap().len(), 4);
     }
 }

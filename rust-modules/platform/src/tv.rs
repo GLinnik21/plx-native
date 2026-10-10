@@ -27,7 +27,8 @@ pub struct Port {
     pub deliver_toast: fn(&str, toast::Identity) -> toast::Sent,
     pub bind_window: fn(*mut c_void),
     pub grab_surface: fn(*mut c_void),
-    pub release_surface: fn(),
+    /// Answers whether a surface was held (and so actually let go of).
+    pub release_surface: fn() -> bool,
     pub arm_opaque_region: fn(),
     pub opaque_route: fn(bool),
     pub clear_opaque_region: fn(),
@@ -61,7 +62,7 @@ static ABSENT: Port = Port {
     deliver_toast: toast::deliver_without_port,
     bind_window: |_| {},
     grab_surface: |_| {},
-    release_surface: nothing,
+    release_surface: || false,
     arm_opaque_region: nothing,
     opaque_route: |_| {},
     clear_opaque_region: nothing,
