@@ -66,7 +66,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 36] = [
+const DIAG: [&str; 37] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -89,6 +89,8 @@ const DIAG: [&str; 36] = [
     // harness has to be able to observe the who's-watching picker, which a non-DIAG trigger would
     // suppress — the observer would remove the screen it was armed to watch.
     "plxnative-focus",
+    // `fx=` on Home's fingerprint (the focused card's drawn x): a pure observer of `focus`.
+    "plxnative-focusx",
     // The two OVERDRAW surfaces and the hero-ground fold ([`plx_gfx::overdraw`],
     // `docs/backdrop-blur-profiling.md` Part 5). All three are measurement knobs whose whole
     // method is an A/B against an unmasked control leg — and a non-DIAG trigger suppresses the

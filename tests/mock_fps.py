@@ -27,6 +27,11 @@ Scene fields (tests/manifest.json, `fps_scenes`):
   "mock": {"rk": 50002}         a scene that names a library `item` on a real server opens THIS
                                 ratingKey of the synthetic library instead (`$rk` in its triggers);
                                 an `item` scene with no `mock.rk` is not runnable under --mock
+  "mock": {"link": ["remote-wan"]}
+                                ... `--link remote-wan` (tests/link_conditioner.py): the mock answers
+                                like a slow remote server; a spec is `[class=]profile[:k=v,...]`, and
+                                `shows`/`seasons`/`episodes` size the TV library (a season over 60
+                                episodes pages)
   "mock": {"triggers": {"plxnative-search": "sb"}}
                                 trigger values that replace the scene's own under --mock (a query
                                 that the synthetic titles, all `s` + hex, can actually match)
@@ -114,6 +119,11 @@ def mock_server_args(scene):
             args += ["--section-hubs-linked", str(linked)]
     elif block.get("section_hubs_linked"):
         raise ValueError(f"{scene.get('name')}: mock.section_hubs_linked needs mock.section_hubs")
+    for spec in block.get("link") or []:
+        args += ["--link", str(spec)]  # tests/link_conditioner.py; mock_pms validates it at start
+    for key in ("shows", "seasons", "episodes"):
+        if block.get(key) is not None:
+            args += [f"--{key}", str(int(block[key]))]
     return args
 
 

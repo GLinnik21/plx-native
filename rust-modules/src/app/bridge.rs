@@ -2126,6 +2126,17 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let mut out = format!(" snapt={} snapp={} hf={hf} row={row} col={col}", grid as u8,
             (!<plx_screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home)) as u8);
         crate::focusprobe::push_item(&mut out, if grid { home.focused_item::<AppHost>(focus, &cx) } else { home.hero_item::<AppHost>(&cx) });
+        // `plxnative-focusx`: where the focused card is DRAWN, in whole canvas pixels. It moves
+        // every frame a row scrolls, so an armed run logs a line per frame: that is the point.
+        // `tests/paging_link.py` reads a row that jumps under the focus (the trailing-edge to
+        // leading-edge teleport a window slide once caused) from it. Off by default, so the
+        // fingerprint grammar the replay recordings pin does not change.
+        #[cfg(feature = "devtriggers")]
+        if plx_base::devtrig::flag("focusx") {
+            let at = At::Drawn;
+            let _ = write!(out, " fx={}", home.focused_rect::<AppHost>(focus, &cx, at)
+                .map_or(-99999, |r| r.x.round() as i64));
+        }
         return out;
     }
     if matches!(page.arg, AppArg::Library) {

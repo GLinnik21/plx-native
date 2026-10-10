@@ -6404,7 +6404,8 @@ class FpsMock(unittest.TestCase):
     def test_under_mock_only_scenes_with_a_mock_block_run(self):
         runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), True)
         names = {s["name"] for s in runnable}
-        self.assertEqual(names, {"home-grid", "home-grid-deep", "home-recent-paging", "home-recent-paging-held", "home-hint",
+        self.assertEqual(names, {"home-grid", "home-grid-deep", "home-recent-paging", "home-recent-paging-held", "home-recent-paging-held-3g",
+                                 "home-recent-paging-held-remote-wan", "home-hint",
                                  "library-shelves-deep", "library-burst", "library-hold",
                                  "hero-pong", "grid-pong", "home-idle", "item-menu", "library-scroll",
                                  "library-idle", "collection-page", "person-page", "search-type",
@@ -6418,11 +6419,13 @@ class FpsMock(unittest.TestCase):
         runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), False)
         self.assertEqual([n for n, _ in skipped], ["home-grid-deep", "home-recent-paging",
                                                    "home-recent-paging-held",
+                                                   "home-recent-paging-held-3g",
+                                                   "home-recent-paging-held-remote-wan",
                                                    "library-shelves-deep", "library-burst",
                                                    "library-hold"])
         self.assertIn("--mock", skipped[0][1])
         self.assertIn("home-grid", {s["name"] for s in runnable})
-        self.assertEqual(len(runnable), len(self.scenes) - 6)
+        self.assertEqual(len(runnable), len(self.scenes) - 8)
 
     def test_a_mock_scene_naming_a_library_item_carries_its_own_rating_key(self):
         # the overlay's ratingKey is the real server's; under --mock the scene opens `mock.rk`

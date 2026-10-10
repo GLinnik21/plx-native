@@ -634,6 +634,45 @@ marks pacing invalid if a render-profiler trigger is armed.
   `manifest.json → fps_scenes` and point their `item` keys at your own library from
   `manifest.local.json`; the harness stays library-agnostic.
 
+### Paging under a conditioned link (`tests/paging_link.py`, host; `home-recent-paging-held-*`, TV)
+
+Every list pages through a sliding 24-card window, and the bugs live where a page landing and a
+key repeat coincide, which a loopback mock (a page lands before the next key) never produces. Two
+pieces make that reproducible:
+
+- **`tests/link_conditioner.py`**, wired into `tests/mock_pms.py`: a macOS-Network-Link-Conditioner
+  style link. A profile is latency, jitter, downlink kbit/s (the response BODY is written at that
+  rate, so a 24-item listing and a poster JPEG take realistically different times) and an error
+  rate (`reset` = connection reset, or `503`). Classes are `listing` and `image`
+  (`/photo/:/transcode`, `.../thumb`); the control surface and media bytes are never touched.
+  `--link 3g` (profiles `dsl 3g edge lossy very-bad remote-wan none`), `--link image=edge:error=0.1`,
+  or `--link-latency-ms/--link-jitter-ms/--link-kbit/--link-error-rate/--link-error-kind`.
+  Jitter and failures are hashes of (`--seed`, class, request, nth time seen), so one seed fails
+  the same requests whatever the thread order. At run time: `POST /_mock/link`
+  `{"spec": "listing=3g"}` or `{"class": "image", "profile": "none"}` (loopback only), so one run
+  goes fast, slow, fast; `GET /_mock/wire` is the per-request arrival/finish log.
+  `--shows/--seasons/--episodes` size the TV library (a season over 60 episodes pages; rows page
+  over `--movies`, up to 1000). `python3 tests/test_link_conditioner.py` (in `make check`) and
+  `python3 tests/mock_pms.py --selftest` prove the rate, determinism, per-class overrides, run-time
+  change and the `X-Plex-Container-Start/Size` contract (query and header form, `totalSize`, `size`,
+  `offset`) on every endpoint `ci/plex-requests.ini` classes `paged`.
+- **`tests/paging_link.py`** drives the real macOS simulator with real keys against that mock:
+  `python3 tests/paging_link.py [--build] [--surface home-row] [--profile 3g] [--dump F]`
+  (about 1 to 3 minutes a run; a window opens; not in `make check`). It arms `plxnative-focus`,
+  `plxnative-focusx` (Home's fingerprint gains `fx=`, the focused card's drawn x, off by default),
+  `plxnative-phcount` and `plxnative-framedrop`, holds a direction key through every window slide
+  and asserts reach (last item, then back to the first), one card per key, no focus change without
+  a key, no slot jump (the focused card moving more than 400 px between two frames), the window bound
+  (`col` < 24) and that placeholders are gone a profile-derived time after the last key; it reports
+  host frames, late frames inside and outside a window around each page landing, keys that moved
+  nothing, and per page ask -> landed. `python3 tests/paging_link.py --list` names the surfaces
+  covered and the ones that are not, with the reason. **Host frame times are this Mac's debug build,
+  not the television's; they place late frames, they prove no smoothness.**
+- **On the TV**: `home-recent-paging-held-3g` and `home-recent-paging-held-remote-wan` are `--fps
+  --mock` scenes (the mock block's `"link": [...]` becomes `--link ...`), graded like
+  `home-recent-paging-held`. Build `make ARM_PROFILE=release deploy` first and follow the `profile-tv`
+  skill; never run them without the TV lock.
+
 ### What each case does (per case, automatically)
 
 1. `make kill` — close the app (luna-send `closeByAppId` + `fuser -k`) **first**.

@@ -246,3 +246,5 @@ python3 ci/check-list-caps.py
 # The link conditioner and the mock's paging contract (rate, determinism, per-class, run-time change; the
 # mock's own --selftest rides along): real loopback sockets on port 0, a few seconds.
 python3 tests/test_link_conditioner.py
+# The conditioned paging test's analysis on synthetic logs (the run itself needs a window and minutes: not here).
+python3 tests/paging_link.py --selftest
