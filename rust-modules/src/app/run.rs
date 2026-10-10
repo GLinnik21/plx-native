@@ -4423,12 +4423,19 @@ mod lifecycle_regression_tests {
         let back = back_key(t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         settle(&mut rig.app, &mut t);
-        for _ in 0..8 { step(&mut rig.app, &mut t, vec![]); }
+        assert!(super::super::bridge::player(&rig.app.pages).is_none(), "premise: BACK left the player");
+        // The re-read waits for the stop report, which a worker thread posts. These frames take no
+        // wall time, so counting them races that thread (a loaded host lost the race and the page
+        // had re-read nothing "yet"). Wait for the report itself, then give the loop the one frame
+        // in which `refresh_after_playback` finds it settled.
+        plx_media::route::drain_scrobble();
+        step(&mut rig.app, &mut t, vec![]);
         let reads_after = plx_data::metadata::detail_generation_for_test(rig.app.bridge.metadata_mut().adapter_ref());
         assert!(
             reads_after > reads_before,
             "returning to the page re-read nothing: its resume point is still the one it opened with",
         );
+        assert!(rig.app.refresh_detail.is_none(), "the re-read is asked for once, not left owed");
     }
 
     /// The same session drained to its end with nothing queued after it: `finish_playback` leaves
