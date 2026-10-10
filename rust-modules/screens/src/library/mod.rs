@@ -31,6 +31,7 @@ mod foreign_replacement_tests;
 #[cfg(test)]
 mod selector_matrix_tests;
 
+use std::collections::HashSet;
 use std::ops::Range;
 use std::borrow::Cow;
 use plx_data::browse::{SecFetch, SecKind};
@@ -436,6 +437,7 @@ impl LibraryScreen {
         let publication = hubs.id().zip(hubs.revision());
         if self.shelf_publication != publication {
             let mut old = std::mem::take(&mut self.shelves);
+            let previous: HashSet<u32> = old.iter().flat_map(|row| row.elems.iter().copied()).collect();
             if let Some(section) = &identity {
                 for (index, shelf) in hubs.shelves().iter().enumerate() {
                     let group = GroupId(self.keys.register(
@@ -471,6 +473,13 @@ impl LibraryScreen {
                 }
             }
             self.shelf_publication = publication;
+            // Rotating refetches mint a key per new item: keep the current shelves, the previous
+            // publication's (a focus on one recovers through it) and the focus; above twice that
+            // plus 256 the oldest others go.
+            let current: HashSet<u32> = self.shelves.iter().flat_map(|row| row.elems.iter().copied()).collect();
+            let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
+            let cap = 2 * (current.len() + previous.len()) + 256;
+            self.keys.prune(KeyRegion::Shelf, cap, |elem| current.contains(&elem) || previous.contains(&elem) || Some(elem) == focus);
         }
         self.project_grid(cx);
         self.relayout(cx.focus.current);
