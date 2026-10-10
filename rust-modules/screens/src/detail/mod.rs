@@ -350,7 +350,7 @@ impl LayoutStamp {
         use std::hash::{Hash, Hasher};
         let hero = hero::hero_episode(d);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for e in &d.episodes {
+        for (_, e) in d.episodes.iter_loaded() {
             e.title.hash(&mut hasher);
             e.summary.hash(&mut hasher);
             e.aired.hash(&mut hasher);
@@ -371,7 +371,7 @@ impl LayoutStamp {
             flags |= 2;
         }
         Self {
-            episodes: d.episodes.as_ptr() as usize,
+            episodes: d.episodes.id() as usize,
             n_ep: d.episodes.len() as u32,
             summary: d.summary.as_ptr() as usize,
             hero_ep: hero.map(|e| std::ptr::from_ref(e) as usize).unwrap_or(0),
@@ -525,7 +525,7 @@ impl DetailScreen {
                     identities.push((local, DetailIdentity::Season { sid: d.sid, show: d.rk.clone(), rk: season.rk.clone() }));
                 }
             }
-            for (i, episode) in d.episodes.iter().enumerate() {
+            for (i, episode) in d.episodes.iter_loaded() {
                 for row in [episodes::Row::Still, episodes::Row::Text] {
                     if let Some(local) = episodes::elem(i, row) {
                         identities.push((local, DetailIdentity::Episode { sid: d.sid, rk: episode.rk.clone(), text: row == episodes::Row::Text }));
@@ -1129,11 +1129,7 @@ impl DetailScreen {
             1 if !d.seasons.is_empty() => season::elem(d.cur_season.min(d.seasons.len() - 1)),
             2 if !d.episodes.is_empty() => {
                 let index = match &intent.episode {
-                    Some(rk) => d
-                        .episodes
-                        .iter()
-                        .position(|episode| &episode.rk == rk)
-                        .unwrap_or(0),
+                    Some(rk) => d.episodes.position(rk).unwrap_or(0),
                     None => clamp(intent.spot.col, d.episodes.len()),
                 };
                 episodes::elem(
@@ -3909,11 +3905,7 @@ impl DetailScreen {
     fn play_hero<H: ContentLike>(&mut self, from_start: bool, fx: &mut Effects<'_, H>, meta: plx_data::metadata::MetadataView<'_>) -> bool {
         let Some(d) = self.detail(meta) else { return false };
         if d.is_show {
-            let i = hero::hero_episode(d).and_then(|ep| {
-                d.episodes
-                    .iter()
-                    .position(|candidate| candidate.rk == ep.rk)
-            });
+            let i = hero::hero_episode(d).and_then(|ep| d.episodes.position(&ep.rk));
             match i {
                 Some(i) => self.play_episode_at(i, from_start, fx, meta),
                 None => self.play_episode_value(

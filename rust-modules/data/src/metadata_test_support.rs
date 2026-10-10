@@ -116,7 +116,7 @@ pub(super) fn episode(rk: &str) -> Episode {
 
 pub(super) fn listed_eps() -> Vec<String> {
     current(test_state())
-        .map(|d| d.episodes.iter().map(|e| e.rk.clone()).collect())
+        .map(|d| d.episodes.iter_loaded().map(|(_, e)| e.rk.clone()).collect())
         .unwrap_or_default()
 }
 
