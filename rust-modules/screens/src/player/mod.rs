@@ -84,6 +84,8 @@ pub struct PlayerRender {
     /// The decoded image-subtitle display set and its cache key (`player_hud`'s `SET`/`KEY`/`SEL`).
     pub subs: SubtitleBitmaps,
     pub ass: ass_subtitles::AssSubtitles,
+    /// The text cue on screen, wrapped and fitted once, and which page of it is showing.
+    pub captions: player_hud::CaptionPager,
 }
 
 /// **What the surfaces over the player page do to the transport this frame** — one value
@@ -379,6 +381,12 @@ impl PlayerScreen {
         // HUD, which is exactly why a cue appearing had to become a report.
         mix(self.render.ass.fingerprint());
         mix(plx_media::player::subtitle_cue_id(pos) as u64);
+        // a cue too tall for one screen turns pages within its own span: the page is a change
+        mix(u64::from(plx_appkit::player_hud::caption_page(
+            &self.render.captions,
+            self.subs_lift(ps, now),
+            plx_media::route::subtitles_burned(ps),
+        )));
         mix(plx_media::player::active_bitmap_key(pos).unwrap_or(0) as u64);
         mix(u64::from(hud_up));
         mix(u64::from(
@@ -1334,7 +1342,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
             plx_appkit::player_hud::draw_subtitle_message(message, subs_lift);
         }
         self.draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
-        plx_appkit::player_hud::draw_subtitles(subs_lift, plx_media::route::subtitles_burned(ps));
+        plx_appkit::player_hud::draw_subtitles(&self.render.captions, subs_lift, plx_media::route::subtitles_burned(ps));
         // What a pointer can hit is registered AFTER the paint, by `record_stops`, from this
         // screen's own `Focusable` — the rects D-pad focus uses, in the z-order `groups` states.
         // `Hover::Ignore` on the transport's stops: the old pointer path never followed the mouse
