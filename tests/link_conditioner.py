@@ -29,11 +29,20 @@ request's path and query, how many times that same request has been seen), taken
 not from a shared RNG. Two runs with one seed therefore make the same request fail the same way
 regardless of how the app's threads interleave, which a shared `random.Random` would not give.
 
+TARGETED FAULTS. A random rate fails a given page only by luck, so a short list may be walked
+without one failing and a retry assertion over it proves nothing. A `Fault` is the deterministic
+counterpart: it fails the first `attempts` requests for EACH page (same path and same
+`X-Plex-Container-Start`) of every endpoint whose path matches `path`, then lets that page through.
+`min_start` leaves the head page (start 0) alone so the screen can open. `Conditioner.set_faults()`
+replaces the rule set and forgets the attempts counted so far, so a test re-arms it between two
+walks; `POST /_mock/link {"faults": [...]}` does the same at run time and `--link-fault` at start.
+
 RUN TIME. `Conditioner.set()` replaces the profile of one class (or all) under a lock, so one test
 can go fast -> slow -> fast. `tests/mock_pms.py` exposes it as `POST /_mock/link` (loopback only).
 """
 import dataclasses
 import hashlib
+import re
 import threading
 import time
 
@@ -127,6 +136,48 @@ def parse_spec(spec):
     return klass, make_profile(head or "none", **overrides)
 
 
+@dataclasses.dataclass(frozen=True)
+class Fault:
+    path: str                 # regex, searched against the request path
+    attempts: int = 1         # how many requests for one page fail before it is let through
+    kind: str = "reset"       # "reset" | "503"
+    min_start: int = 1        # pages starting below this are never faulted (the head page)
+
+    def validate(self):
+        try:
+            re.compile(self.path)
+        except re.error as e:
+            raise ValueError(f"fault path is not a regex: {e}")
+        if self.attempts < 1 or self.min_start < 0:
+            raise ValueError("fault attempts must be at least 1 and min_start not negative")
+        if self.kind not in ("reset", "503"):
+            raise ValueError("fault kind must be reset or 503")
+        return self
+
+    def to_json(self):
+        return dataclasses.asdict(self)
+
+
+def make_fault(path, **overrides):
+    types = {"attempts": int, "kind": str, "min_start": int}
+    for key in overrides:
+        if key not in types:
+            raise ValueError(f"unknown fault parameter {key!r}")
+    return Fault(path=str(path), **{k: types[k](v) for k, v in overrides.items()}).validate()
+
+
+def parse_fault(spec):
+    """`REGEX[@k=v,k=v]` -> Fault, e.g. `^/library/sections/1/all$@attempts=2,kind=503`."""
+    path, _, tail = spec.rpartition("@") if "@" in spec else (spec, "", "")
+    overrides = {}
+    for part in filter(None, tail.split(",")):
+        key, eq, value = part.partition("=")
+        if not eq:
+            raise ValueError(f"fault override {part!r} is not key=value")
+        overrides[key.strip()] = value.strip()
+    return make_fault(path, **overrides)
+
+
 class Plan:
     """What to do to ONE request: sleep `delay_s`, then either fail (`fail` = "reset" or "503")
     or write the body at `kbit` (0 = unthrottled)."""
@@ -145,6 +196,8 @@ class Conditioner:
         self._lock = threading.Lock()
         self._profiles = {c: PROFILES["none"] for c in CLASSES}
         self._seen = {}
+        self._faults = ()
+        self._fault_seen = {}
         for klass, profile in (profiles or {}).items():
             self._apply(klass, profile)
 
@@ -159,6 +212,17 @@ class Conditioner:
         with self._lock:
             self._apply(klass, profile)
 
+    def set_faults(self, faults):
+        """Replace the targeted faults and zero their per-page attempt counts."""
+        faults = tuple(f.validate() for f in faults)
+        with self._lock:
+            self._faults = faults
+            self._fault_seen = {}
+
+    def faults(self):
+        with self._lock:
+            return list(self._faults)
+
     def profiles(self):
         with self._lock:
             return dict(self._profiles)
@@ -170,21 +234,44 @@ class Conditioner:
         digest = hashlib.sha256(f"{self.seed}|{klass}|{request}|{nth}|{salt}".encode()).digest()
         return int.from_bytes(digest[:8], "big") / float(1 << 64)
 
-    def plan(self, path, query=""):
-        """The Plan for one request; None for a class that is never conditioned."""
+    def _targeted(self, path, start):
+        """The kind of the first Fault that fails this request, counting it; None if none does.
+        Caller holds the lock."""
+        try:
+            start = int(start or 0)
+        except ValueError:
+            start = 0
+        for i, fault in enumerate(self._faults):
+            if start < fault.min_start or not re.search(fault.path, path):
+                continue
+            key = (i, path, start)
+            seen = self._fault_seen.get(key, 0)
+            self._fault_seen[key] = seen + 1
+            if seen < fault.attempts:
+                return fault.kind
+        return None
+
+    def plan(self, path, query="", start=None):
+        """The Plan for one request; None for a class that is never conditioned. `start` is the
+        page's `X-Plex-Container-Start` when it came as a header rather than in the query."""
         klass = request_class(path)
         if klass is None:
             return None
         request = f"{path}?{query}"
+        if start is None:
+            for part in query.split("&"):
+                if part.startswith("X-Plex-Container-Start="):
+                    start = part.partition("=")[2]
         with self._lock:
             profile = self._profiles[klass]
             nth = self._seen.get(request, 0)
             self._seen[request] = nth + 1
+            targeted = self._targeted(path, start)
         if profile == PROFILES["none"]:
-            return Plan(klass, 0.0, 0.0, None)
+            return Plan(klass, 0.0, 0.0, targeted)
         delay_ms = profile.latency_ms + profile.jitter_ms * self._unit(klass, request, "jitter", nth)
-        fail = profile.error_kind if profile.error_rate and \
-            self._unit(klass, request, "fail", nth) < profile.error_rate else None
+        fail = targeted or (profile.error_kind if profile.error_rate and
+                            self._unit(klass, request, "fail", nth) < profile.error_rate else None)
         return Plan(klass, delay_ms / 1000.0, profile.kbit, fail)
 
 

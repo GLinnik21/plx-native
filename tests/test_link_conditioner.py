@@ -164,6 +164,102 @@ class OnTheMock(unittest.TestCase):
         self.assertEqual(self.post({"class": "image", "profile": "none"}), before)
 
 
+class Faults(unittest.TestCase):
+    PAGE = "/library/sections/1/all"
+
+    def fails(self, c, path, start, n=1):
+        return [bool(c.plan(path, f"X-Plex-Container-Start={start}").fail) for _ in range(n)]
+
+    def test_each_page_fails_its_first_attempts_then_passes(self):
+        c = lc.Conditioner()
+        c.set_faults([lc.make_fault("^/library/sections/1/all$", attempts=2, kind="503")])
+        self.assertEqual(self.fails(c, self.PAGE, 24, 4), [True, True, False, False])
+        self.assertEqual(self.fails(c, self.PAGE, 48, 3), [True, True, False])  # another page: its own count
+        self.assertEqual(c.plan(self.PAGE, "X-Plex-Container-Start=72").fail, "503")
+
+    def test_the_head_page_and_other_endpoints_are_left_alone(self):
+        c = lc.Conditioner()
+        c.set_faults([lc.make_fault("^/library/sections/1/all$")])
+        self.assertEqual(self.fails(c, self.PAGE, 0, 2), [False, False])
+        self.assertEqual(c.plan(self.PAGE, "").fail, None)  # no start at all is the head
+        self.assertEqual(self.fails(c, "/library/search", 24), [False])
+        self.assertEqual(c.plan("/_mock/wire", "X-Plex-Container-Start=24"), None)
+
+    def test_the_start_may_come_as_a_header_value(self):
+        c = lc.Conditioner()
+        c.set_faults([lc.make_fault("all$", kind="reset")])
+        self.assertEqual(c.plan(self.PAGE, "type=1", start="24").fail, "reset")
+        self.assertEqual(c.plan(self.PAGE, "type=1", start="24").fail, None)
+
+    def test_rearming_forgets_the_counts_and_clearing_disarms(self):
+        c = lc.Conditioner()
+        fault = lc.make_fault("all$")
+        c.set_faults([fault])
+        self.assertEqual(self.fails(c, self.PAGE, 24, 2), [True, False])
+        c.set_faults([fault])
+        self.assertEqual(self.fails(c, self.PAGE, 24, 2), [True, False])
+        c.set_faults([])
+        self.assertEqual(self.fails(c, self.PAGE, 48, 1), [False])
+
+    def test_a_fault_fails_even_on_an_unconditioned_link_and_beats_the_rate(self):
+        c = lc.Conditioner(profiles={"all": lc.make_profile("none", error=0, kind="reset")})
+        c.set_faults([lc.make_fault("all$", kind="503")])
+        plan = c.plan(self.PAGE, "X-Plex-Container-Start=24")
+        self.assertEqual((plan.fail, plan.delay_s), ("503", 0.0))
+
+    def test_specs_parse_and_bad_ones_are_refused(self):
+        f = lc.parse_fault("^/a$@attempts=3,kind=503,min_start=0")
+        self.assertEqual((f.path, f.attempts, f.kind, f.min_start), ("^/a$", 3, "503", 0))
+        self.assertEqual(lc.parse_fault("x").attempts, 1)
+        for bad in ("x@attempts=0", "x@kind=slow", "x@nope=1", "(", "x@attempts"):
+            with self.assertRaises(ValueError, msg=bad):
+                lc.parse_fault(bad)
+
+
+class FaultsOnTheWire(unittest.TestCase):
+    def setUp(self):
+        self.srv, self.pms = serve(0, seed=3, movies=60, link_faults=["^/library/sections/1/all$@kind=503"])
+        self.base = f"http://127.0.0.1:{self.srv.server_address[1]}"
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+    def get(self, query, headers=None):
+        req = urllib.request.Request(self.base + "/library/sections/1/all?" + query, headers=headers or {})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code
+
+    def post(self, obj):
+        req = urllib.request.Request(self.base + "/_mock/link", data=json.dumps(obj).encode(), method="POST")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return json.loads(r.read())
+
+    def test_a_page_fails_once_by_query_and_by_header_then_lands(self):
+        q = "type=1&X-Plex-Container-Start=24&X-Plex-Container-Size=24"
+        self.assertEqual([self.get(q), self.get(q)], [503, 200])
+        h = {"X-Plex-Container-Start": "48", "X-Plex-Container-Size": "24"}
+        self.assertEqual([self.get("type=1", h), self.get("type=1", h)], [503, 200])
+        self.assertEqual(self.get("type=1&X-Plex-Container-Start=0&X-Plex-Container-Size=24"), 200)
+
+    def test_post_rearms_and_the_state_is_readable(self):
+        q = "type=1&X-Plex-Container-Start=24&X-Plex-Container-Size=24"
+        self.assertEqual([self.get(q), self.get(q)], [503, 200])
+        got = self.post({"faults": [{"path": "all$", "attempts": 2, "kind": "503"}]})
+        self.assertEqual(got["faults"][0]["attempts"], 2)
+        self.assertEqual([self.get(q) for _ in range(3)], [503, 503, 200])
+        self.assertEqual(self.post({"faults": []})["faults"], [])
+        self.assertEqual(self.get(q), 200)
+
+    def test_a_bad_fault_is_a_400(self):
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            self.post({"faults": [{"path": "x", "kind": "slow"}]})
+        self.assertEqual(e.exception.code, 400)
+
+
 class MockSelftest(unittest.TestCase):
     def test_the_mock_selftest_passes(self):
         import contextlib

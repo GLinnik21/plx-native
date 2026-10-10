@@ -647,7 +647,10 @@ pieces make that reproducible:
   (`/photo/:/transcode`, `.../thumb`); the control surface and media bytes are never touched.
   `--link 3g` (profiles `dsl 3g edge lossy very-bad remote-wan none`), `--link image=edge:error=0.1`,
   or `--link-latency-ms/--link-jitter-ms/--link-kbit/--link-error-rate/--link-error-kind`.
-  Jitter and failures are hashes of (`--seed`, class, request, nth time seen), so one seed fails
+  A targeted fault is the deterministic counterpart of the error rate: `--link-fault 'REGEX[@attempts=N,kind=503,min_start=1]'`
+  fails the first N reads of each page (same path and `X-Plex-Container-Start`, the head page spared) of every
+  endpoint whose path matches, and `POST /_mock/link {"faults": [{"path": REGEX, "kind": "503"}]}` re-arms it
+  live (an empty list disarms it). Jitter and failures are hashes of (`--seed`, class, request, nth time seen), so one seed fails
   the same requests whatever the thread order. At run time: `POST /_mock/link`
   `{"spec": "listing=3g"}` or `{"class": "image", "profile": "none"}` (loopback only), so one run
   goes fast, slow, fast; `GET /_mock/wire` is the per-request arrival/finish log.
@@ -691,8 +694,12 @@ pieces make that reproducible:
   but never move more than they were pressed for; no focus change without a key; no slot jump (the
   same card moving more than 400 px between two frames); the window bound; no poster goes back to
   a placeholder; placeholders are gone a profile-derived time after the last key; and under an error
-  profile a failed listing page is asked for again and answered within 45 s (a profile that failed
-  none of the walked list's pages fails the run, so the assertion is never vacuous). Reported: host
+  profile a failed listing page is asked for again and answered within 45 s when the focus still
+  stands at it five seconds after it failed (a held-key walk is past a page in about a second, so a
+  page it left behind is only counted). The random error rate is joined by a TARGETED fault: the
+  first read of every page of the walked list's endpoint fails, armed for the walk forward and again
+  for the walk back, so a run that failed no page in a direction fails the run, except a back walk
+  that reads no page at all (a short list is still fully held; reported as `back_walk_read_no_page`). Reported: host
   frames, late frames inside and outside a window around each page landing, keys that moved
   nothing, per page ask -> landed and landed -> the last poster of THAT page (matched by ratingKey
   in the transcode request), and whether the focused card or its caption was ever drawn outside the

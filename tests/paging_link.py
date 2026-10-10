@@ -69,6 +69,10 @@ EXTRA_PROFILES = {
 }
 DEFAULT_PROFILES = ("none", "remote-wan", "slow-latency", "low-bandwidth", "lossy")
 JUMP_PX = 400          # a focused card that moves this far between two frames has teleported
+KEY_APPLY_S = 0.15     # a key sent this long before a sample may still be applied after it (one key period + a frame)
+WANTED_AFTER_S = 5     # a failed page the focus still stands at this long after the failure is still wanted
+WANTED_MARGIN = 24     # items either side of a page that count as "at it" (the lookahead the lists read)
+RETRY_PER_PAGE_S = 6   # one failed read costs the store's retry backoff (about 2 s), twice over when the random rate adds one
 RETRY_WITHIN_S = 45    # a failed page must be asked for again, and answered, within this
 
 FOCUS_RE = re.compile(r"^focus route=(\w+) (.*)$")
@@ -245,11 +249,20 @@ def analyse_focus(samples, keys, order, stride=1, window_max=None):
             last_slot = slot if slot is not None else last_slot
         elif slot is not None:
             last_slot = slot
-    skips, coalesced, prev_t = 0, 0, first_key
+    skips, coalesced, prev_t, carry = 0, 0, first_key, 0
     for t, d, to in steps:
         # Keys held while the list cannot move are applied together on the frame it can: one step
         # may cover every key pressed since the last one, never more (that would invent moves).
-        pressed = max(1, sum(1 for kt, _ in keys if prev_t < kt <= t))
+        # A step is dated by the frame that DREW the new card, but its key was sent (`keys` is the
+        # send time) up to one key period earlier and applied in a frame that drew no card (the
+        # focused row is outside the window, so the line names no item). That key is not in
+        # `(prev_t, t]` of the step that moved for it: it was pressed before `prev_t`, after the
+        # previous step's sample. `carry` hands such keys on, only the ones the previous step did
+        # not spend and only those sent within `KEY_APPLY_S` before it, so a key is still spent once.
+        fresh = sum(1 for kt, _ in keys if prev_t < kt <= t)
+        pressed = max(1, fresh + carry)
+        late = sum(1 for kt, _ in keys if t - KEY_APPLY_S < kt <= t)
+        carry = min(late, max(0, pressed - -(-abs(d) // stride)))
         prev_t = t
         if pressed > 1 and abs(d) > stride:
             coalesced += 1
@@ -268,6 +281,26 @@ def analyse_focus(samples, keys, order, stride=1, window_max=None):
             "rebases": rebases, "first": min(reached) if reached else None,
             "last": max(reached) if reached else None, "tail_row_start": tail,
             "art_regressions": regress, "art_returned_bare": returned, "off_canvas": off}, fails
+
+
+def focus_at(track, t):
+    """The index the focus held at time `t`: `track` is [(t, index)] in time order, and a focus line
+    is only logged on a change, so the newest one at or before `t` is where it still stands."""
+    at = None
+    for ts, i in track:
+        if ts > t:
+            break
+        at = i
+    return at
+
+
+def page_wanted(track, t_fail, start, size, t_end):
+    """Was the focus at (or within WANTED_MARGIN items of) the page `start..start+size` a
+    WANTED_AFTER_S after it failed? A held-key walk is 50+ items a second past a page, so a page
+    that failed behind it is not wanted and need not be asked for again; one the reader is standing
+    at is, and a retry that never comes there is a stuck list."""
+    i = focus_at(track, min(t_fail + WANTED_AFTER_S, t_end))
+    return i is not None and start - WANTED_MARGIN <= i < start + size + WANTED_MARGIN
 
 
 def place_late_frames(landings, late, window=(-0.05, 0.25)):
@@ -445,6 +478,15 @@ def run_surface(name, profile_name, args):
             fails.append(f"seated at item {first_seen}, not on the first row: the order model may be wrong")
         time.sleep(1.0)
         pms.link.set("all", link_conditioner.make_profile(profile))
+
+        def arm():
+            """An error profile also fails the first read of EVERY page of the walked list (not the
+            head page), so a short list cannot be walked past a random rate that happened to spare
+            it. Called again before the walk back, which zeroes the counts: each direction fails."""
+            if profile.error_rate:
+                pms.link.set_faults([link_conditioner.make_fault(spec["pages"], attempts=1,
+                                                                 kind=profile.error_kind)])
+        arm()
         t0 = time.monotonic()
         gap = args.gap_ms / 1000
         stride = spec["stride"]
@@ -455,6 +497,8 @@ def run_surface(name, profile_name, args):
             profile (every key, plus every page its worst round trip, times three)."""
             pages = len(order) / 12
             bound = len(order) / stride * gap * 1.5 + pages * (profile.latency_ms + profile.jitter_ms) / 1000 * 3 + 60
+            if profile.error_rate:
+                bound += pages * RETRY_PER_PAGE_S  # every page's first read fails: one store backoff each
             end = time.monotonic() + bound
             while time.monotonic() < end:
                 cur = focus_now()
@@ -477,6 +521,8 @@ def run_surface(name, profile_name, args):
                 time.sleep(2)
         walk(spec["key"], lambda cur: cur >= tail, "forward")
         time.sleep(2)
+        t_back = time.monotonic()
+        arm()
         walk(spec["back"], lambda cur: cur < stride, "back")
         # at rest: every placeholder must resolve within a bound derived from the profile
         rest_bound = 3 + 2 * (profile.latency_ms + profile.jitter_ms) / 1000 + \
@@ -533,7 +579,14 @@ def run_surface(name, profile_name, args):
     pages_rx = re.compile(spec["pages"])
     failed_pages = [r for r in rows if r["failed"] and r["class"] == "listing"]
     failed_reads = [r for r in rows if r["failed"]]
-    retried = redundant = 0
+    retried = redundant = left_behind = 0
+    where = {rk: i for i, rk in enumerate(order)}
+    track = [(t, where[item_of(f)]) for t, f in samples if item_of(f) in where]
+    if stride > 1:
+        # A grid frame can hold the focus on a row whose card is not drawn (the page is not in): the
+        # line then names no item, only `row` and `col`, and the focus is still walking. Track those.
+        track = [(t, int(f["row"]) * stride + int(f.get("col", 0))) for t, f in samples
+                 if f.get("row", "").lstrip("-").isdigit() and f.get("col", "0").lstrip("-").isdigit()]
     for r in failed_pages:
         again = [x for x in rows if x["path"] == r["path"] and x["start"] == r["start"]
                  and not x["failed"] and x["t_recv"] > r["t_recv"]]
@@ -541,16 +594,33 @@ def run_surface(name, profile_name, args):
         if not again and ever:
             redundant += 1  # a refetch of a page that had already landed; the at-rest placeholder check covers it
         elif not again:
-            fails.append(f"a failed read of {r['path']} start={r['start']} was never retried")
-        elif min(x["t_done"] for x in again) - r["t_done"] > RETRY_WITHIN_S:
+            if r["start"] is not None and page_wanted(track, r["t_recv"], int(r["start"]), int(r["size"] or 0), t_end):
+                fails.append(f"a failed read of {r['path']} start={r['start']} was never retried while the "
+                             f"focus stood at it")
+            else:
+                left_behind += 1  # the reader had walked on: nothing waits for this page
+        elif min(x["t_done"] for x in again) - r["t_done"] > RETRY_WITHIN_S and \
+                (r["start"] is None or page_wanted(track, r["t_recv"], int(r["start"]), int(r["size"] or 0), t_end)):
             fails.append(f"a failed read of {r['path']} start={r['start']} was retried only "
                          f"{min(x['t_done'] for x in again) - r['t_done']:.0f}s later")
         else:
             retried += 1
     walked_failed = [r for r in failed_pages if pages_rx.search(r["path"]) and r["start"] not in (None, "0")]
-    if profile.error_rate and not walked_failed:
-        fails.append("the error profile failed none of this list's pages, so its retry/reach assertion is "
-                     f"vacuous ({len(failed_reads)} reads failed in all, {len(failed_pages)} listings)")
+    back_from_cache = False
+    if profile.error_rate:
+        # `arm()` fails a page of the walked list in each direction by construction; none failing
+        # means the page endpoint was never asked for (or the pattern is wrong), not a pass.
+        for label, there in (("forward", [r for r in walked_failed if r["t_recv"] < t_back]),
+                             ("back", [r for r in walked_failed if r["t_recv"] >= t_back])):
+            asked_back = [r for r in rows if pages_rx.search(r["path"]) and r["t_recv"] >= t_back]
+            if label == "back" and not there and not asked_back:
+                # every page of a short list is still held when the walk turns round, so nothing is
+                # read (and nothing can fail) on the way back: the forward walk carried the assertion
+                back_from_cache = True
+            elif not there:
+                fails.append(f"the {label} walk failed none of this list's pages, so its retry/reach "
+                             f"assertion is vacuous ({len(failed_reads)} reads failed in all, "
+                             f"{len(failed_pages)} listings)")
     ph = [int(m.group(2)) for t, line in lines if t >= t0 for m in [PH_RE.match(line)] if m]
     ph_at_rest = [int(m.group(2)) for t, line in lines if t >= t_end - rest_bound + 1 for m in [PH_RE.match(line)] if m]
     if ph_at_rest and ph_at_rest[-1] > 0:
@@ -561,7 +631,7 @@ def run_surface(name, profile_name, args):
                               "late_frames_logged": len(late), "late_within_-50..+250ms_of_a_landing": near,
                               "late_elsewhere": away},
               "pages_landed": len(timeline), "failed_reads": len(failed_reads),
-              "failed_pages": len(failed_pages), "failed_pages_retried_ok": retried, "failed_refetches_not_retried": redundant,
+              "failed_pages": len(failed_pages), "walked_pages_failed": len(walked_failed), "back_walk_read_no_page": back_from_cache, "failed_pages_retried_ok": retried, "failed_refetches_not_retried": redundant, "failed_pages_left_behind": left_behind,
               "max_ask_to_landed_ms": max([p["ask_to_landed_ms"] for p in timeline] or [0]),
               "placeholder_frames_per_second_max": max(ph or [0]),
               "placeholder_seconds": sum(1 for p in ph if p), "page_timeline": timeline[:12]}
@@ -603,6 +673,22 @@ def selftest():
     assert not analyse_focus(grid, [(0.9, "down")] * 4, order, 6)[1]
     skipped = [grid[0], (1.1, line("109", 0, 90))]
     assert any("skipped" in f for f in analyse_focus(skipped, [(0.9, "down")] * 4, order, 6)[1])
+    # a key applied in a frame that drew no card: sent just before the sample that precedes the
+    # step it moves for. Nine rows with nine keys is fine though only eight were sent after the
+    # previous sample; with seven there it is a real skip, and a carried key is spent once.
+    big = [str(1000 + i) for i in range(130)]
+    seq = [(0.5, line("1048", 0, 90, cdi="0")), (1.0, line("1054", 0, 90, cdi="0")),
+           (2.0, line("1108", 0, 90, cdi="0"))]
+    sent = [(0.4, "down"), (0.9, "down"), (0.95, "down")] + [(1.1 + i * 0.1, "down") for i in range(8)]
+    assert not analyse_focus(seq, sent, big, 6)[1], analyse_focus(seq, sent, big, 6)[1]
+    assert any("skipped +54" in f for f in analyse_focus(seq, sent[:-1], big, 6)[1])
+    assert any("skipped" in f for f in analyse_focus(seq, sent[:2] + sent[3:], big, 6)[1])  # key not in the window
+    # a failed page is wanted when the focus still stands at it WANTED_AFTER_S later, not when it was walked past
+    track = [(0.0, 10), (1.0, 130), (2.0, 250)]
+    assert focus_at(track, 1.5) == 130 and focus_at(track, -1) is None and focus_at(track, 9) == 250
+    assert not page_wanted(track, 0.5, 60, 60, 99.0)          # long gone from 60..120 by 5.5 s
+    assert page_wanted(track, 0.5, 240, 60, 99.0)             # standing at 240..300
+    assert page_wanted(track, 0.5, 240, 60, 1.0) is False     # the clock stops at the run's end (focus 130)
     # off the canvas: partly, wholly, and the caption
     edge = [(1.0, line("100", 0, 1800, cdc="1800", cdcw="250")), (1.1, line("100", 0, 2004, cdc="2004", cdcw="100")),
             (1.2, line("100", 0, -315, cdc="-315", cdcw="100"))]
