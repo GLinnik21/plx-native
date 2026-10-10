@@ -925,6 +925,24 @@ pub fn seed_named_shelves_for_owner_test(
     st.hubs.commit_staged(true);
 }
 
+/// The reads a moved hold is owed, landed: every row in the held range that is a descriptor gets
+/// back the cards it showed, keyed as [`seed_named_shelves_for_owner_test`] keys them, and the
+/// result is published (the revision moves). What the worker does for a ring that moved onto rows
+/// whose cards had been given up.
+#[cfg(any(test, feature = "test-support"))]
+pub fn land_held_rows_for_owner_test(state: &mut super::BrowseState, sec: usize) {
+    let Some(st) = state.state_mut(sec) else { return };
+    let (lo, hi) = st.hubs.held();
+    for shelf in Arc::make_mut(&mut st.hubs.committed).iter_mut().skip(lo).take(hi + 1 - lo).filter(|shelf| shelf.released()) {
+        shelf.items = (0..shelf.shown)
+            .map(|index| PmsMovie { rk: format!("{}-{index}", shelf.id), title: format!("{} {index}", shelf.title), ..Default::default() })
+            .collect();
+        shelf.positions = (0..shelf.shown).collect();
+        shelf.shown = 0;
+    }
+    st.hubs.revised();
+}
+
 /// Make a seeded section's pageable rows the first window of a listing of `total` cards, as a hub
 /// the server pages: the rows have more, and a page ask is worth sending.
 #[cfg(any(test, feature = "test-support"))]

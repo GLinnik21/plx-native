@@ -128,3 +128,60 @@ fn a_row_the_store_gave_its_cards_up_is_laid_out_as_placeholders_and_keeps_its_l
     let src = draw::HubSrc { elems: &page.shelves[0].elems, shelf: fixture.hubs.view().shelves().first(), paging: false };
     assert!(!<draw::HubSrc as plx_ui::cards::CardSource<HostFixture>>::loaded(&src, 0), "a slot draws nothing");
 }
+
+/// The shelf and column a key sits at.
+fn shelf_cell(page: &LibraryScreen, elem: u32) -> Option<(usize, usize)> {
+    page.shelves.iter().enumerate().find_map(|(row, shelf)| shelf.elems.iter().position(|e| *e == elem).map(|col| (row, col)))
+}
+
+#[test]
+fn holding_down_onto_a_row_whose_cards_have_not_landed_keeps_row_and_column_when_they_land() {
+    let _guard = plx_base::testlock::serial();
+    let rows: Vec<_> = (0..30).map(|i| (format!("movie.row{i}"), format!("/hubs/sections/1/row{i}"), format!("Row {i}"))).collect();
+    let mut fixture = fixture_with(&rows, 12);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let col = 5;
+    focus_shelf_card(&mut page, &mut engine, &fixture, 0, col);
+    // Down faster than the reads land: the key walks onto rows the ring has given up.
+    let target = 18; // past the sixteen rows the ring holds
+    for _ in 0..target { direction(&mut page, &mut engine, &fixture, Dir::Down); }
+    let slot = engine.current(OWNER).unwrap();
+    assert_eq!(shelf_cell(&page, slot.elem), Some((target, col)), "the key reached the row and kept its column");
+    assert!(fixture.hubs.view().shelves()[target].released(), "its cards have not landed");
+    let src = draw::HubSrc { elems: &page.shelves[target].elems, shelf: fixture.hubs.view().shelves().get(target), paging: false };
+    assert!(!<draw::HubSrc as plx_ui::cards::CardSource<HostFixture>>::loaded(&src, col), "the card is a placeholder");
+    // OK on a placeholder opens nothing
+    let mut out = Vec::new();
+    let mut present = plx_machine::present::Present::new();
+    page.step(&ScreenEvent::Activate(slot.elem), &fixture.cx(Some(slot)),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    assert!(out.is_empty(), "OK on a placeholder is inert");
+    // the ring moves onto the row and its cards land
+    let id = fixture.listing.view().id().unwrap();
+    let stores = fixture.stores.take().unwrap();
+    stores.browse_run(BrowseCmd::Addressed {
+        target: plx_data::stores::browse::SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section },
+        work: LibraryWork::HubHold { lo: target - 3, hi: target + 3 },
+    });
+    stores.browse.borrow_mut().land_held_rows_for_test(0);
+    let publication = stores.capture_browse(&mut fixture.directory);
+    fixture.listing = publication.listing;
+    fixture.hubs = publication.section_hubs;
+    fixture.stores = Some(stores);
+    assert!(!fixture.hubs.view().shelves()[target].released(), "the cards landed");
+    deliver(&mut page, &mut engine, &fixture, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
+    let outcome = engine.reconcile(OWNER, &page, &fixture.cx(engine.current(OWNER)));
+    if let Outcome::Moved { from, to, by } = outcome {
+        deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from, to, by });
+    }
+    let landed = engine.current(OWNER).unwrap();
+    assert_ne!(landed.elem, slot.elem, "the slot key became the card's");
+    assert_eq!(shelf_cell(&page, landed.elem), Some((target, col)), "the same row and column");
+    let mut out = Vec::new();
+    let mut present = plx_machine::present::Present::new();
+    page.step(&ScreenEvent::Activate(landed.elem), &fixture.cx(Some(landed)),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    assert!(!out.is_empty(), "and OK on the landed card does something, so the inert press above proves something");
+}
