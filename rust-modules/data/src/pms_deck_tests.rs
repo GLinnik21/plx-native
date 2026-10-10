@@ -151,3 +151,64 @@ fn a_card_removed_from_the_deck_leaves_the_window_and_the_next_page_repeats_noth
     assert_eq!(shown.len(), 59 - 12, "everything past the first page, once");
     plx_plex::plex::reset_servers_for_test();
 }
+
+/// Moves forward until a move has to read, and returns that read's requests with their worker
+/// answers, not yet landed. The moves before it are answered and landed in full.
+fn read_in_flight(owner: &mut Owner, listings: &[&Listing]) -> Vec<(HubRequest, Option<SourceBuild>)> {
+    let mut held = Vec::new();
+    for _ in 0..10 {
+        let _ = request_deck_page(&mut owner.state, &owner.adapter, false, &BrowseScope::standalone(),
+            &mut |request| { held.push(request); true });
+        if !held.is_empty() { break; }
+    }
+    assert!(!held.is_empty(), "no move needed a read");
+    held.into_iter().map(|request| {
+        let at = owner.state.srcs.iter().position(|s| s.sid == request.sid).unwrap();
+        let (mut lane, hidden) = request.lane.clone().unwrap();
+        let listing = listings[at];
+        deck::read_ahead(request.sid, &mut lane, deck::PAGE, &hidden, |s, n| listing.page(s, n)).unwrap();
+        (request, Some(SourceBuild { lane, ..SourceBuild::default() }))
+    }).collect()
+}
+
+fn land_all(owner: &mut Owner, answers: Vec<(HubRequest, Option<SourceBuild>)>) {
+    for (request, build) in answers {
+        let _ = super::land(&mut owner.state, &owner.adapter, &request.complete(build));
+    }
+}
+
+#[test]
+fn a_card_removed_while_a_deck_page_is_in_flight_does_not_come_back_when_it_lands() {
+    let _guard = plx_base::testlock::serial();
+    let a = Listing::new(0, (0..60).map(|i| 9000 - i * 20));
+    let listings = [&a];
+    let mut owner = deck_owner(&listings);
+    let answers = read_in_flight(&mut owner, &listings);
+    let gone = rks(&owner.state, 0).pop().unwrap();
+    let sid0 = owner.state.srcs[0].sid;
+    assert!(edit_item(&mut owner.state, sid0, &gone, LocalEdit::LeftTheDeck));
+    assert!(answers[0].1.as_ref().unwrap().lane.rows.iter().any(|row| row.m.rk == gone), "the read holds the card");
+    land_all(&mut owner, answers);
+    let lane = &owner.state.srcs[0].last.as_ref().unwrap().lane;
+    assert!(lane.rows.iter().all(|row| row.m.rk != gone), "the landing put the removed card back in the lane");
+    assert!(!rks(&owner.state, 0).contains(&gone), "the removed card is back in the row");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn a_card_marked_watched_while_a_deck_page_is_in_flight_stays_watched_when_it_lands() {
+    let _guard = plx_base::testlock::serial();
+    let a = Listing::new(0, (0..60).map(|i| 9000 - i * 20));
+    let listings = [&a];
+    let mut owner = deck_owner(&listings);
+    let answers = read_in_flight(&mut owner, &listings);
+    let marked = rks(&owner.state, 0).pop().unwrap();
+    let sid0 = owner.state.srcs[0].sid;
+    assert!(edit_item(&mut owner.state, sid0, &marked, LocalEdit::Watched(true)));
+    land_all(&mut owner, answers);
+    let lane = &owner.state.srcs[0].last.as_ref().unwrap().lane;
+    assert!(lane.rows.iter().any(|row| row.m.rk == marked), "the landed lane holds the card");
+    assert!(lane.rows.iter().filter(|row| row.m.rk == marked).all(|row| row.m.watched), "the landing undid the mark");
+    assert!(owner.state.srcs[0].edits.is_empty(), "the record of edits ends with the read it covered");
+    plx_plex::plex::reset_servers_for_test();
+}
