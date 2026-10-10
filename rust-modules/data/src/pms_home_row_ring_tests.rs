@@ -18,12 +18,28 @@ fn pageable_shelf(slot: u16, row: usize) -> Shelf {
     sh
 }
 
+/// A row whose key the pager does not read: a collection's children.
+fn opaque_shelf(slot: u16, row: usize) -> Shelf {
+    let mut sh = pageable_shelf(slot, row);
+    sh.key = format!("/library/collections/{row}/children");
+    sh.end = 0;
+    sh.more = false;
+    sh
+}
+
+/// A pageable row that has not been compared with its listing: its preview may be a random sample.
+fn unprobed_shelf(slot: u16, row: usize) -> Shelf {
+    let mut sh = pageable_shelf(slot, row);
+    sh.row.mode = paging::RowMode::Unprobed;
+    sh
+}
+
 /// A Home of `rows` pageable rows from one registered server, with the ring applied as a landing
 /// would apply it.
-fn ring_home(rows: usize) -> (Owner, ServerId) {
+fn ring_home(rows: usize, make: fn(u16, usize) -> Shelf) -> (Owner, ServerId) {
     plx_plex::plex::reset_servers_for_test();
     let id = plx_plex::plex::register_for_test("ring", "127.0.0.1", 9, "synthetic", "cid");
-    let shelves = (0..rows).map(|r| pageable_shelf(id.raw(), r)).collect();
+    let shelves = (0..rows).map(|r| make(id.raw(), r)).collect();
     let mut o = Owner::default();
     let mut source = src(id.raw(), "", HubState::Ready, Some(built(id.raw(), &[], shelves)));
     source.client = plx_plex::plex::client_for(id);
@@ -53,7 +69,18 @@ fn serve(request: HubRequest) -> Landing {
     let page = request.page.clone().expect("a reload is a page request");
     assert!(page.reload, "only reloads are asked in these tests");
     let row: usize = page.id.trim_start_matches("x.").parse().unwrap();
-    let keys: Vec<String> = (page.start..page.start + CARDS).map(|c| format!("{row}-{c}")).collect();
+    if let Some(window) = request.window.as_ref().filter(|window| !window.row.kept.is_empty()) {
+        // the batch read: every card asked for, in the reverse of the order asked
+        let mut many = |keys: &[String]| {
+            let items: Vec<serde_json::Value> = keys.iter().rev().map(|key| serde_json::json!({
+                "ratingKey": key, "type": "movie", "title": "Movie", "thumb": "/poster"})).collect();
+            Some(serde_json::from_value(serde_json::json!({"Metadata": items})).unwrap())
+        };
+        let build = fetch_kept(request.sid, &page, window, &mut many);
+        return request.complete(build);
+    }
+    // a listing that is a different sample every time it is read
+    let keys: Vec<String> = (page.start..page.start + CARDS).map(|c| format!("fresh-{row}-{c}")).collect();
     let mut answer = shelf(request.sid.raw(), "", &page.id, &keys.iter().map(String::as_str).collect::<Vec<_>>());
     answer.key = page.key.clone();
     answer.positions = (page.start..page.start + CARDS).collect();
@@ -68,8 +95,9 @@ fn serve(request: HubRequest) -> Landing {
 struct Ring { o: Owner, launched: Vec<(String, usize, usize)>, pending: Vec<Landing> }
 
 impl Ring {
-    fn new(rows: usize) -> Self {
-        let (o, _) = ring_home(rows);
+    fn new(rows: usize) -> Self { Self::of(rows, pageable_shelf) }
+    fn of(rows: usize, make: fn(u16, usize) -> Shelf) -> Self {
+        let (o, _) = ring_home(rows, make);
         Self { o, launched: Vec::new(), pending: Vec::new() }
     }
     fn hold(&mut self, lo: usize, hi: usize) {
@@ -141,7 +169,7 @@ fn a_row_that_left_the_ring_returns_at_its_window_offset() {
     let hub = hubs_snapshot(&ring.o.state);
     let row = hub.view().hub(5).unwrap();
     assert_eq!(row.offset, 12);
-    assert_eq!(row.items[0].rk, "5-12", "the first card is the one at the window offset");
+    assert_eq!(row.items[0].rk, "fresh-5-12", "the first card is the one at the window offset");
     plx_plex::plex::reset_servers_for_test();
 }
 
@@ -183,5 +211,48 @@ fn a_queued_read_for_a_row_that_left_the_ring_is_dropped_before_it_starts() {
     let asked: Vec<&str> = ring.launched.iter().map(|(id, _, _)| id.as_str()).collect();
     assert!(!asked.contains(&"x.5"), "row 5 left the ring before its read started: {asked:?}");
     assert!(asked.iter().any(|id| *id == "x.100"), "the rows the key stopped on were read: {asked:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// The cards of a row, by rating key, as the catalog holds them.
+fn card_keys(state: &PmsState, row: usize) -> Vec<String> {
+    let h = &hubs(state)[row];
+    (h.start..h.start + h.len).map(|i| catalog(state)[i].rk.clone()).collect()
+}
+
+fn the_cards_every_row_showed(rows: usize) -> impl Fn(usize) -> Vec<String> {
+    move |row| { assert!(row < rows); (0..CARDS).map(|c| format!("{row}-{c}")).collect() }
+}
+
+#[test]
+fn rows_with_no_pageable_key_are_released_and_return_with_the_same_cards_in_order() {
+    let _g = plx_base::testlock::serial();
+    let mut ring = Ring::of(ROWS, opaque_shelf);
+    assert!(held_cards(&ring.o.state) <= HELD_CARDS_MAX, "{} cards held by the first publication", held_cards(&ring.o.state));
+    let showed = the_cards_every_row_showed(ROWS);
+    let walk: Vec<usize> = (0..ROWS).chain((0..ROWS).rev()).collect();
+    for &row in &walk {
+        ring.hold(row.saturating_sub(2), (row + 2).min(ROWS - 1));
+        assert!(held_cards(&ring.o.state) <= HELD_CARDS_MAX, "row {row}: {} cards held", held_cards(&ring.o.state));
+        ring.settle();
+        assert!(held_cards(&ring.o.state) <= HELD_CARDS_MAX, "row {row} after landings: {} cards held", held_cards(&ring.o.state));
+        assert_eq!(card_keys(&ring.o.state, row), showed(row), "row {row} came back with the cards it showed, in order");
+    }
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn a_released_random_row_returns_with_the_cards_the_user_saw_not_a_fresh_sample() {
+    let _g = plx_base::testlock::serial();
+    let mut ring = Ring::of(ROWS, unprobed_shelf);
+    let showed = the_cards_every_row_showed(ROWS);
+    ring.hold(100, 104);
+    ring.settle();
+    assert!(held_cards(&ring.o.state) <= HELD_CARDS_MAX);
+    ring.hold(1, 5);
+    ring.settle();
+    for row in 1..=5 {
+        assert_eq!(card_keys(&ring.o.state, row), showed(row), "row {row}");
+    }
     plx_plex::plex::reset_servers_for_test();
 }
