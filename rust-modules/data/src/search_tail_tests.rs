@@ -192,3 +192,23 @@ fn collections_have_no_typed_listing_and_grow_to_the_end() {
     assert!(fake.log.is_empty(), "no typed request is made for collections");
     assert_eq!(lane.end, Some(50));
 }
+
+#[test]
+fn a_listing_that_will_not_hold_still_is_still_reached_by_growing_the_limit() {
+    let mut fake = Fake::new().movies(100);
+    let mut lane = Lane::from_preview(Kind::Movie, &preview(&fake, Kind::Movie));
+    let mut tv = TvMap::default();
+    lane.read(Kind::Movie, &mut tv, 0..30, &mut fake, sid()).unwrap();
+    assert!(lane.get(29).is_some(), "the typed listing served the first window");
+    // every row is replaced, and one of the new rows is listed twice: the edge row is nowhere
+    fake.movies = (0..100).map(|i| ("movie", 5000 + i)).collect();
+    fake.movies[40] = ("movie", 5039);
+    lane.read(Kind::Movie, &mut tv, 0..48, &mut fake, sid()).unwrap();
+    assert!(!fake.hubs_asked.is_empty(), "the lane fell back to growth");
+    lane.read(Kind::Movie, &mut tv, 12..101, &mut fake, sid()).unwrap();
+    let got: Vec<String> = (12..100).filter_map(|d| lane.get(d).map(key)).collect();
+    let mut want: Vec<String> = (12..100).map(|i| (5000 + i).to_string()).collect();
+    want.remove(40 - 12); // the repeat of 5039 is not drawn twice
+    assert_eq!(got, want, "every hit past the preview, once, in the new order");
+    assert_eq!(lane.end, Some(100));
+}

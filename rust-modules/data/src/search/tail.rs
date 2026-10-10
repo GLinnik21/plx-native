@@ -24,8 +24,9 @@
 //! **A read overlaps the lane's edge row by one** and expects that row's key at the offset it was
 //! read from. Found elsewhere in the page, `origin` (or `S`) moves by the difference and the read is
 //! made again: a show added while the query is open moves every offset by one and nothing is read
-//! twice or skipped. Not found at all is `unstable`: the lane keeps what it holds and stops reading
-//! (a ledger would be the next step; there is none here).
+//! twice or skipped. Not found at all is a listing that will not hold still: the lane lets go of what
+//! it read past the preview and is read by LIMIT GROWTH from then on, which every hit is reachable by
+//! whatever the typed listing does.
 //!
 //! **`S`** (the first episode's offset in `tv`) is learned in this order: a preview show hub shorter
 //! than the limit; the Show lane reaching the first episode row; else [`learn_first_episode`] gallops
@@ -71,13 +72,12 @@ pub(super) struct Lane {
     cov: (usize, usize),
     /// Depths from here on hold nothing.
     pub end: Option<usize>,
-    pub unstable: bool,
     origin: usize,
 }
 
 impl Lane {
     pub const EMPTY: Lane = Lane { inited: false, growth: false, sample: false, probed: false, preview: Vec::new(),
-        rows: BTreeMap::new(), cov: (0, 0), end: None, unstable: false, origin: 0 };
+        rows: BTreeMap::new(), cov: (0, 0), end: None, origin: 0 };
 
     pub fn from_preview(kind: Kind, preview: &[Item]) -> Lane {
         let p = preview.len();
@@ -99,9 +99,9 @@ impl Lane {
     }
 
     /// Does the lane have a depth at or past `d`? (`false` once its end is known to be at `d` or
-    /// before; an unstable lane is treated as ended.)
+    /// before.)
     pub fn has_past(&self, d: usize) -> bool {
-        !self.unstable && self.end.is_none_or(|e| e > d)
+        self.end.is_none_or(|e| e > d)
     }
 
     /// The highest depth read so far, plus one.
@@ -109,7 +109,6 @@ impl Lane {
 
     /// Does reading `range` need a request?
     pub fn needs(&self, range: &Range<usize>) -> bool {
-        if self.unstable { return false; }
         let hi = self.end.map_or(range.end, |e| range.end.min(e));
         let lo = range.start.max(self.preview.len());
         (hi > self.cov.1 && hi > self.preview.len()) || (lo < self.cov.0 && lo < hi)
@@ -145,12 +144,27 @@ impl Lane {
         let k = super::KINDS.iter().position(|x| *x == kind)?;
         let got = &proj[k];
         for d in range.start.max(self.preview.len())..range.end {
-            if let Some(item) = got.get(d) { self.rows.insert(d, item.clone()); }
+            let Some(item) = got.get(d) else { continue };
+            // a list that shifted between two asks may repeat a card it already gave
+            let k = key_of(item);
+            if self.preview.iter().chain(self.rows.values()).any(|x| key_of(x) == k) { continue; }
+            self.rows.insert(d, item.clone());
         }
         let p = self.preview.len();
         self.cov = (self.cov.0.min(range.start.max(p)), self.cov.1.max(range.end.min(got.len())));
         if got.len() < limit { self.end = Some(got.len()); }
         Some(())
+    }
+
+    /// Read this lane by limit growth from now on, starting again from its preview: the typed
+    /// listing's offsets no longer mean anything, and the hub list is one list in one order.
+    fn into_growth(&mut self) {
+        plx_base::eventlog::log("search: a typed listing moved under its lane, growing the limit");
+        let p = self.preview.len();
+        self.growth = true;
+        self.rows.clear();
+        self.cov = (p, p);
+        self.end = (!self.sample && p < super::LIMIT as usize).then_some(p);
     }
 
     /// The offset of depth `d` (`d` at or past the preview), or `None` while `S` is unknown.
@@ -227,7 +241,7 @@ impl Lane {
                         return Some(());
                     }
                     None if forward && self.relocate_back(kind, tv, start, edge, sk, io)? => return Some(()),
-                    None => { self.unstable = true; return Some(()); }
+                    None => { self.into_growth(); return Some(()); }
                 }
             }
             if forward { at = 1; }
