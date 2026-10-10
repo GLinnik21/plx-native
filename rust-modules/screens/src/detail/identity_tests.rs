@@ -77,8 +77,6 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         scroll_target: 0.0, episode_scroll: Spring::at(0.0), tab_scroll: Spring::at(0.0),
         episode_cells: episodes::Cells::new(),
             ep_want: Default::default(),
-            related_before: Default::default(),
-            related_before_out: Default::default(),
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: plx_ui::cards::Shelf::new(entry, &plx_ui::cards::RowStyle::HOME), collection: plx_ui::cards::Shelf::new(entry, &plx_ui::cards::RowStyle::HOME),
@@ -583,7 +581,18 @@ fn a_reread_of_the_page_leaves_focus_on_the_same_related_card() {
 /// `answer` is the stand-in store's reply to a window ask (the window it reads, or `None` for a
 /// failed read), after the store's own refusal of an ask that names a window it has replaced.
 /// Returns the dispatcher, the cards focus rested on in order, and the window asks made.
-fn back_from_deep_in_the_related_row(answer: impl Fn(usize) -> Option<Detail>) -> (Dispatcher<TestHost>, Vec<String>, usize) {
+fn back_from_deep_in_the_related_row(answer: impl FnMut(usize) -> Option<Detail>) -> (Dispatcher<TestHost>, Vec<String>, usize) {
+    back_from_deep_pressing(600, None, answer)
+}
+
+/// [`back_from_deep_in_the_related_row`] run for `frames` frames, with `press` (frame, key) pressed
+/// once on the way.
+fn back_from_deep_pressing(
+    frames: u32,
+    press: Option<(u32, plx_machine::machine::Key)>,
+    mut answer: impl FnMut(usize) -> Option<Detail>,
+) -> (Dispatcher<TestHost>, Vec<String>, usize) {
+    use plx_machine::machine::{Edge, InputEvent, InputKind, Source};
     let (mut d, mut rig) = boot_with(with_tail(72));
     let key = FocusKey { entry: screen(&d).entry, elem: screen(&d).engine_key(related::elem(3 + 8).unwrap()).unwrap() };
     d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
@@ -608,9 +617,16 @@ fn back_from_deep_in_the_related_row(answer: impl Fn(usize) -> Option<Detail>) -
     // Pump until settled. Focus is on a card the user left, or on no card, on every frame: it is
     // never seated on a card that then changes under it.
     let (mut seated, mut asks) = (Vec::new(), 0);
-    for i in 0..600u32 {
+    for i in 0..frames {
         let ms = 64 + i * 16;
-        frame(&mut d, &mut rig, ms);
+        match press.filter(|(at, _)| *at == i) {
+            Some((_, key)) => {
+                let down = InputEvent { at: tick(ms), source: Source::Script, kind: InputKind::Key {
+                    key, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false } };
+                d.frame_with(&mut rig, tick(ms), vec![down], vec![], &mut NoTap, false);
+            }
+            None => frame(&mut d, &mut rig, ms),
+        }
         for cmd in rig.asked.drain(..) {
             let MetadataCmd::SeekRelated { at, seen } = cmd else { continue };
             asks += 1;
@@ -672,16 +688,47 @@ fn back_to_a_row_whose_card_left_the_listing_seats_the_nearest_place() {
     plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
-/// The read never answers: the ask is repeated a bounded number of times, and then the row stands
-/// at its head with focus on its first card, rather than holding focus on nothing for ever.
+/// The read never answers: the ask is repeated on a capped ladder for as long as the page is on
+/// screen, and focus is never moved to a card the user did not leave (not the row's first).
 #[test]
-fn back_to_a_row_whose_window_cannot_be_read_gives_up_on_the_head() {
+fn back_to_a_row_whose_window_cannot_be_read_keeps_asking_and_keeps_the_place() {
     let _guard = plx_base::testlock::serial();
-    let (d, seated, asks) = back_from_deep_in_the_related_row(|_| None);
-    assert_eq!(related_card(&d, 0).as_deref(), Some("h0"), "seated on {seated:?}");
-    assert_eq!(seated, vec!["h0".to_string()]);
-    assert_eq!(asks, usize::from(SEEK_TRIES), "the ask is repeated, then given up");
+    let (d, seated, asks) = back_from_deep_pressing(60 * 120, None, |_| None);
+    assert!(seated.is_empty(), "no card took the focus: {seated:?}");
+    assert!(related_card(&d, 0).is_none(), "focus is still held, not seated on the head");
+    assert!(asks >= 10, "the ask keeps being repeated, {asks} asks in two minutes");
+    assert!(asks <= 14, "on a ladder, not every frame: {asks}");
     plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}
+
+/// The read fails for a while and then answers: the card the user left is seated, however late.
+#[test]
+fn back_to_a_row_whose_window_lands_after_many_failures_seats_the_card_left() {
+    let _guard = plx_base::testlock::serial();
+    let mut failures = 0;
+    let (d, seated, asks) = back_from_deep_pressing(60 * 60, None, |at| {
+        failures += 1;
+        if failures <= 7 { None } else { a_window_read_at(at) }
+    });
+    assert_eq!(related_card(&d, 0).as_deref(), Some("t80"), "seated on {seated:?}");
+    assert_eq!(seated, vec!["t80".to_string()], "no other card held focus on the way");
+    assert_eq!(asks, 8);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}
+
+/// During the hold the page is not stuck: a direction key leaves the held place for a card and ends
+/// the restore (no further asks).
+#[test]
+fn a_key_during_the_hold_for_an_unreadable_window_ends_the_restore() {
+    use plx_machine::machine::Key;
+    let _guard = plx_base::testlock::serial();
+    for key in [Key::Up, Key::Down, Key::Left, Key::Right] {
+        let (_, seated, asks) = back_from_deep_pressing(600, Some((100, key)), |_| None);
+        let before_press = back_from_deep_pressing(100, None, |_| None).2;
+        assert!(!seated.is_empty(), "{key:?}: the press seated focus somewhere: {seated:?}");
+        assert!(asks <= before_press + 1, "{key:?}: the restore ended with the press, {asks} asks vs {before_press}");
+        plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+    }
 }
 
 /// The invariant behind "focus never moves under the user" on the Related row, driven through the
@@ -825,5 +872,26 @@ fn a_press_never_crosses_the_cards_between_the_head_and_a_window_that_slid_away(
     land(&mut d, &mut rig, with_tail(0), 400);
     assert!(matches!(step(&d, key_at(&d, 2), Dir::Right), Step::Move(to) if to == key_at(&d, 3)), "h2 is next to t0");
     assert!(matches!(step(&d, key_at(&d, 3), Dir::Left), Step::Move(to) if to == key_at(&d, 2)));
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+}
+
+/// Walking back toward the head of a slid window after the way-back read failed or was refused is
+/// not a dead end: with no key pressed the ask is repeated on the shelf's ladder while focus stands
+/// at the leading edge, and stops once the window lands (or focus has left).
+#[test]
+fn a_refused_way_back_read_is_repeated_while_focus_stands_at_the_leading_edge() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig) = boot_with(with_tail(12));
+    let key = FocusKey { entry: screen(&d).entry, elem: screen(&d).engine_key(related::elem(3 + 1).unwrap()).unwrap() };
+    d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
+    rig.asked.clear();
+    let mut asks = 0;
+    for i in 0..60 * 60u32 {
+        frame(&mut d, &mut rig, 100 + i * 16);
+        asks += rig.asked.drain(..).filter(|cmd| matches!(cmd, MetadataCmd::WantRelated { before: true, .. })).count();
+    }
+    assert!(asks >= 8, "the unanswered way-back ask is repeated, {asks} asks in a minute");
+    assert!(asks <= 12, "on a ladder, not every frame: {asks}");
+    assert_eq!(d.focus(), Some(key), "and focus never moved");
     plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }

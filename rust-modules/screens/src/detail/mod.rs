@@ -114,18 +114,21 @@ struct RestoreIntent {
 }
 
 /// The window asks a restore onto a Related tail card has made. One ask per window identity is
-/// said, again after [`SEEK_RETRY_MS`] while the window has not opened (a failed read is retried
-/// that way), and given up after [`SEEK_TRIES`]: the row then stands at its head with focus on the
-/// first card.
-#[derive(Clone, Default)]
+/// said, and said again on the shelf's own ladder ([`ui_cards::Retry`]) for as long as the page is on
+/// screen and the window has not opened: a read that fails or is refused is not a reason to move
+/// focus to a card the user did not leave. Only a definitive answer ends the wait (the hub is gone,
+/// or the listing is shorter than the position: `related_pending` is then false).
+#[derive(Clone)]
 struct RelatedSeek {
     asked: Option<(usize, usize)>,
-    at: u32,
-    tries: u8,
+    retry: ui_cards::Retry,
 }
 
-const SEEK_RETRY_MS: u32 = 1000;
-const SEEK_TRIES: u8 = 4;
+impl Default for RelatedSeek {
+    fn default() -> Self {
+        Self { asked: None, retry: ui_cards::Retry::new() }
+    }
+}
 
 /// The range of a long season's episodes the strip last asked the store for, so the same range is
 /// not said every frame; said again after [`EP_RETRY_MS`] while a page in it is still a hole
@@ -251,11 +254,6 @@ pub struct DetailScreen {
     episode_scroll: Spring,
     /// What the episode strip last asked the store to have loaded, and when.
     ep_want: EpWant,
-    /// The Related tail offset the shelf last asked to page back from: one edge asks once.
-    related_before: Option<usize>,
-    /// The way-back read `WantRelated { before: true }` started has not landed: withdrawn when focus
-    /// leaves the start of the tail ([`Shelf::page_cancel`] does the same for the trailing edge).
-    related_before_out: bool,
     tab_scroll: Spring,
     /// The focused episode's pop spring and label-block lift (earned by the TEXT stop alone; the
     /// plate also shows for the still's pop — see `episodes::draw_cell`), keyed by episode so the
@@ -511,8 +509,6 @@ impl DetailScreen {
             tab_scroll: Spring::at(0.0),
             episode_cells: episodes::Cells::new(),
             ep_want: EpWant::default(),
-            related_before: None,
-            related_before_out: false,
             about_card_lift: TextLift::new(),
             about_lang_lift: TextLift::new(),
             related: Shelf::new(entry, cards::Which::Related.style()),
@@ -1895,37 +1891,21 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
             let related = Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Related, d);
             let wanted = matches!(self.related.on(ev, cx, &related, fx), Some(ui_cards::CardEvent::Want(_)));
             if matches!(ev, ScreenEvent::Tick(_)) && !d.related_tail.hubs.is_empty() {
-                // The row is the head and a window of the tail. The shelf's own leading edge is the
-                // row's start, which is the head, so the way back is asked from where the tail starts.
+                // The row is the head and a window of the tail. The shelf's leading edge is the
+                // window's start, which the row's head precedes: focus on the head counts too, since
+                // a press cannot cross from it to a window that is away from the tail's start
+                // (`Cards::gap_before`), so the window comes back to it. Both edges ride the shelf's
+                // liveness (an ask nobody answered is repeated while focus stands there), and a read
+                // whose edge focus has left is withdrawn before its window can slide in.
                 let t = &d.related_tail;
-                let focus = cx.focus.current.filter(|k| k.entry == self.entry)
-                    .and_then(|k| ui_cards::CardSource::<H>::index_of(&related, &k.elem));
-                // Focus on the head counts too: a press cannot cross from it to a window that is
-                // away from the tail's start (`Cards::gap_before`), so the window comes back to it.
-                let near_start = t.offset > 0
-                    && focus.is_some_and(|i| i < t.head + ui_cards::PAGE_EDGE_CARDS);
-                let before = if !near_start {
-                    self.related_before = None;
-                    false
-                } else if self.related_before != Some(t.offset) {
-                    self.related_before = Some(t.offset);
-                    true
-                } else {
-                    false
-                };
-                // A read whose edge focus has left is withdrawn before its window can slide in.
-                let withdraw_before = self.related_before_out && !near_start;
-                self.related_before_out &= near_start;
-                if self.related.page_cancel(cx, &related, 0, true).is_some() || withdraw_before {
+                self.related.set_head(t.head);
+                if self.related.page_cancel(cx, &related, t.offset, true).is_some() {
                     fx.push(Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(MetadataCmd::CancelRelated))));
                 }
-                let after = !before
-                    && self.related.page_ask(cx, &related, wanted, 0, true) == Some(ui_cards::PageEdge::After);
-                self.related_before_out |= before;
-                if before || after {
+                if let Some(edge) = self.related.page_ask(cx, &related, wanted, t.offset, true) {
                     fx.push(Fx::App(AppFx::Store(
                         StoreId::Metadata,
-                        StoreCmd::Metadata(MetadataCmd::WantRelated { before, seen: (t.offset, t.end) }),
+                        StoreCmd::Metadata(MetadataCmd::WantRelated { before: edge == ui_cards::PageEdge::Before, seen: (t.offset, t.end) }),
                     )));
                 }
             }
@@ -1995,8 +1975,6 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                     // A landing is the answer to the page the shelf asked for; a page the store
                     // never answered leaves no landing, so focus moving below lets go as well.
                     self.related.reset_page_requests();
-                    self.related_before = None;
-                    self.related_before_out = false;
                     self.sync_keys(meta);
                     self.prune_keys(&Self::held_keys(cx));
                     self.season_metrics.invalidate();
@@ -2013,7 +1991,6 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
                 self.related.reset_page_requests();
-                self.related_before = None;
                 if matches!(by, By::Dir | By::Pointer) {
                     self.return_pending = false;
                     self.restore_intent = None;
@@ -3432,8 +3409,9 @@ impl DetailScreen {
     }
 
     /// A restore onto a Related tail card asks the store to open the window at its position, once
-    /// per window identity and again after [`SEEK_RETRY_MS`] while it has not opened. After
-    /// [`SEEK_TRIES`] asks the row stands at its head with focus on its first card.
+    /// per window identity and again on the [`ui_cards::Retry`] ladder while it has not opened. The
+    /// ask never gives up and focus stays held on the saved card's place meanwhile; a key press ends
+    /// the restore (`FocusMoved`), and the answer that the position is gone ends the wait.
     fn pump_seek<H: crate::registry::MetadataLike>(&mut self, meta: plx_data::metadata::MetadataView<'_>, now: u32, fx: &mut Effects<'_, H>) {
         let Some(d) = self.detail(meta) else { return };
         let Some(intent) = self.restore_intent.as_mut() else { return };
@@ -3441,18 +3419,14 @@ impl DetailScreen {
         let (Some(at), t) = (intent.spot.tail_position(), &d.related_tail) else { return };
         let seen = (t.offset, t.end);
         let seek = &mut intent.seek;
+        seek.retry.tick(now);
         if seek.asked == Some(seen) {
-            if now.wrapping_sub(seek.at) < SEEK_RETRY_MS { return; }
-            if seek.tries >= SEEK_TRIES {
-                intent.spot.col = 0;
-                self.return_pending = false;
-                return;
-            }
-            seek.tries += 1;
+            if !seek.retry.due() { return; }
         } else {
-            seek.tries = 1;
+            seek.retry.mark_fresh();
         }
-        (seek.asked, seek.at) = (Some(seen), now);
+        seek.asked = Some(seen);
+        seek.retry.sent();
         fx.push(Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(MetadataCmd::SeekRelated { at, seen }))));
     }
 

@@ -273,7 +273,7 @@ const RETRY_LADDER_S: [f32; 8] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 30.0];
 /// own `Tick.ms`, differenced with `wrapping_sub` the way `motion::Phase` does, so it holds no
 /// per-frame delta and reads no clock.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Retry {
+pub struct Retry {
     /// `Tick.ms` of the latest tick.
     now: u32,
     /// `Tick.ms` the latest ask went out at.
@@ -284,31 +284,31 @@ pub(crate) struct Retry {
 }
 
 impl Retry {
-    pub(crate) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self { now: 0, at: 0, n: 0, fresh: false }
     }
 
-    pub(crate) fn tick(&mut self, ms: u32) {
+    pub fn tick(&mut self, ms: u32) {
         self.now = ms;
     }
 
     /// Whether the ask out has gone unanswered for this rung of the ladder.
-    pub(crate) fn due(&self) -> bool {
+    pub fn due(&self) -> bool {
         let rung = RETRY_LADDER_S[usize::from(self.n).min(RETRY_LADDER_S.len() - 1)];
         self.now.wrapping_sub(self.at) as f32 >= rung * 1000.0
     }
 
-    pub(crate) fn mark_fresh(&mut self) {
+    pub fn mark_fresh(&mut self) {
         self.fresh = true;
     }
 
     /// An ask went out: a new one starts the ladder over, a repeat climbs a rung.
-    pub(crate) fn sent(&mut self) {
+    pub fn sent(&mut self) {
         self.n = if std::mem::take(&mut self.fresh) { 0 } else { self.n.saturating_add(1) };
         self.at = self.now;
     }
 
-    pub(crate) fn reset(&mut self) {
+    pub fn reset(&mut self) {
         *self = Self::new();
     }
 }
