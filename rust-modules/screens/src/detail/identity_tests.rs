@@ -102,7 +102,7 @@ impl Mounter<TestHost> for Mount {
         Box::new(page)
     }
 }
-struct TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec<ContentArg>, asked: Vec<MetadataCmd> }
+struct TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec<ContentArg>, asked: Vec<MetadataCmd>, backs: u32 }
 impl Rig<TestHost> for TestRig {
     fn split(&mut self) -> Split<'_, TestHost> {
         Split { mounter: &mut self.mount, views: (), measure: &self.measure }
@@ -112,6 +112,7 @@ impl Rig<TestHost> for TestRig {
     fn app_fx(&mut self, _: MachineId, effect: AppFx, _: &CxParts<u32>, _: &mut Effects<'_, TestHost>) {
         match effect {
             AppFx::Content(ContentReq::Push(arg)) => self.opened.push(arg),
+            AppFx::Content(ContentReq::Back) => self.backs += 1,
             AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(cmd)) => self.asked.push(cmd),
             _ => {}
         }
@@ -151,12 +152,22 @@ fn boot() -> (Dispatcher<TestHost>, TestRig) {
     boot_with(item("a", false))
 }
 fn boot_with(detail: Detail) -> (Dispatcher<TestHost>, TestRig) {
+    boot_over(detail, false)
+}
+/// [`boot_with`], the page pushed over a root page `base` when `under` is set (so Back can pop it).
+fn boot_over(detail: Detail, under: bool) -> (Dispatcher<TestHost>, TestRig) {
     test_store().run(MetadataCmd::Clear);
     plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(detail));
     let mut d = Dispatcher::new();
     d.nav.tabs.stack.transition = Box::new(plx_ui::containers::transition::Immediate);
-    let mut rig = TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec::new(), asked: Vec::new() };
-    d.request(MachineId::Nav, NavOp::Root(Arg("a".into())));
+    let mut rig = TestRig { mount: Mount, measure: FixtureMeasure, opened: Vec::new(), asked: Vec::new(), backs: 0 };
+    if under {
+        d.request(MachineId::Nav, NavOp::Root(Arg("base".into())));
+        frame(&mut d, &mut rig, 0);
+        d.request(MachineId::Nav, NavOp::Push(Arg("a".into())));
+    } else {
+        d.request(MachineId::Nav, NavOp::Root(Arg("a".into())));
+    }
     frame(&mut d, &mut rig, 0);
     d.store_changed(StoreId::Metadata.ord(), 1);
     frame(&mut d, &mut rig, 16);
@@ -590,10 +601,22 @@ fn back_from_deep_in_the_related_row(answer: impl FnMut(usize) -> Option<Detail>
 fn back_from_deep_pressing(
     frames: u32,
     press: Option<(u32, plx_machine::machine::Key)>,
-    mut answer: impl FnMut(usize) -> Option<Detail>,
+    answer: impl FnMut(usize) -> Option<Detail>,
 ) -> (Dispatcher<TestHost>, Vec<String>, usize) {
+    let (d, _, seated, asks) = back_from_deep_over(false, frames, press, answer);
+    (d, seated, asks)
+}
+
+/// [`back_from_deep_pressing`] with the page over a root page when `under` is set, handing back the
+/// rig as well so the run can go on.
+fn back_from_deep_over(
+    under: bool,
+    frames: u32,
+    press: Option<(u32, plx_machine::machine::Key)>,
+    mut answer: impl FnMut(usize) -> Option<Detail>,
+) -> (Dispatcher<TestHost>, TestRig, Vec<String>, usize) {
     use plx_machine::machine::{Edge, InputEvent, InputKind, Source};
-    let (mut d, mut rig) = boot_with(with_tail(72));
+    let (mut d, mut rig) = boot_over(with_tail(72), under);
     let key = FocusKey { entry: screen(&d).entry, elem: screen(&d).engine_key(related::elem(3 + 8).unwrap()).unwrap() };
     d.set_focus_in(Some(key), Some(related::RELATED_GROUP));
     assert_eq!(related_card(&d, 0).as_deref(), Some("t80"));
@@ -627,6 +650,8 @@ fn back_from_deep_pressing(
             }
             None => frame(&mut d, &mut rig, ms),
         }
+        // the application answers `ContentReq::Back` by popping the page
+        while std::mem::take(&mut rig.backs) > 0 { d.request(MachineId::Nav, NavOp::Pop); }
         for cmd in rig.asked.drain(..) {
             let MetadataCmd::SeekRelated { at, seen } = cmd else { continue };
             asks += 1;
@@ -643,7 +668,7 @@ fn back_from_deep_pressing(
             if seated.last() != Some(&rk) { seated.push(rk); }
         }
     }
-    (d, seated, asks)
+    (d, rig, seated, asks)
 }
 
 /// The Related card `by` places from the one focus rests on, by ratingKey.
@@ -729,6 +754,35 @@ fn a_key_during_the_hold_for_an_unreadable_window_ends_the_restore() {
         assert!(asks <= before_press + 1, "{key:?}: the restore ended with the press, {asks} asks vs {before_press}");
         plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     }
+}
+
+/// Back during the hold for a window that never lands leaves the page like Back anywhere: it pops,
+/// nothing is left pending, and the page entered again later opens at its head instead of resuming
+/// a seek for the place the abandoned page was holding.
+#[test]
+fn back_during_the_hold_for_an_unreadable_window_leaves_the_page_and_leaves_no_seek_behind() {
+    use plx_machine::machine::Key;
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _, asks) = back_from_deep_over(true, 300, Some((100, Key::Back)), |_| None);
+    let before_press = back_from_deep_over(true, 100, None, |_| None).3;
+    assert_eq!(d.nav.top_page().unwrap().arg.0, "base", "Back asked to leave and the page went");
+    assert!(asks <= before_press + 1, "and the restore went with it: {asks} asks vs {before_press} by the press");
+    rig.asked.clear();
+    // the same item entered again: a fresh read holds only the head and focus has never been deep
+    let mut fresh = with_tail(0);
+    fresh.related.truncate(3);
+    (fresh.related_tail.positions, fresh.related_tail.offset, fresh.related_tail.end) = (Vec::new(), 0, 0);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(fresh));
+    d.request(MachineId::Nav, NavOp::Push(Arg("a".into())));
+    for i in 0..600 {
+        d.store_changed(StoreId::Metadata.ord(), 5000 + i * 16);
+        frame(&mut d, &mut rig, 5000 + i * 16);
+    }
+    assert_eq!(d.nav.top_page().unwrap().arg.0, "a");
+    let seeks = rig.asked.iter().filter(|cmd| matches!(cmd, MetadataCmd::SeekRelated { .. })).count();
+    assert_eq!(seeks, 0, "no seek for a place the page never held");
+    assert!(related_card(&d, 0).is_none_or(|rk| rk.starts_with('h')), "focus is not held for a tail place");
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 /// The invariant behind "focus never moves under the user" on the Related row, driven through the
