@@ -314,9 +314,10 @@ fn paging_a_sparse_pinned_row_retains_its_selected_visible_card() {
     seed(&mut owner.state,vec![src(registered.raw(),"",HubState::Ready,Some(build))]);
     let scope=BrowseScope { sections_gen:1,pins:vec![(registered,7,true),(registered,8,false)] };
     let mut held=None;
+    let seen=owner.state.catalog_gen;
     let _=controlled_work_with_scope(&mut owner.state,&owner.adapter,
         Some(crate::stores::hubs::HubsCmd::Page { sid:registered,id:"home.movies.recent".into(),
-            key:"/hubs/home/recentlyAdded?type=1".into(),before:false }),0.0,&scope,
+            key:"/hubs/home/recentlyAdded?type=1".into(),before:false,seen }),0.0,&scope,
         &mut |request| { held=Some(request);true });
     let request=held.unwrap();
     let result=request.fetch();
@@ -788,4 +789,32 @@ fn a_page_of_only_held_rows_adds_nothing_and_stops_at_the_request_bound() {
     assert_eq!(shelf.items.len(), 12, "the window stays short rather than filling with repeats");
     assert_eq!((shelf.offset, shelf.end), (12, 24 + 8 * 24));
     assert!(shelf.more);
+}
+
+/// A frame captures its views before that frame's landings are delivered, so the tick that follows
+/// a landing still reads the window from before it. A held key re-arms the row's ask every step: on
+/// the frame a page lands, that tick asks from the 12-card window (focus at its trailing edge)
+/// while the store already holds 24, with focus in the middle of them. Honoured, the window slid
+/// from under a card that had no room to stay where it was drawn.
+#[test]
+fn an_ask_computed_from_a_window_the_store_has_since_moved_is_refused() {
+    let _guard = plx_base::testlock::serial();
+    let mut owner = owner();
+    let cmd = |seen: u32| Some(crate::stores::hubs::HubsCmd::Page { sid: sid(0), id: "home.movies.recent".into(),
+        key: "/hubs/home/recentlyAdded?type=1".into(), before: false, seen });
+    let seen = hubs_snapshot(&owner.state).view().generation;
+    let request = ask(&mut owner, false).unwrap();
+    deliver(&mut owner, request, Some(page(0, 24, true)));
+    let now = hubs_snapshot(&owner.state).view().generation;
+    assert_ne!(seen, now, "the landing published a new window");
+    let mut launched = 0;
+    let _ = controlled_work(&mut owner.state, &owner.adapter, cmd(seen), 0.0, &mut |_| { launched += 1; true });
+    assert_eq!(launched, 0, "the ask names a window the store no longer holds");
+    assert!(owner.state.srcs[0].page.is_none());
+    assert_eq!(hubs_snapshot(&owner.state).view().hub(0).unwrap().offset, 0);
+    // the same ask from the window the store holds does move it
+    let _ = controlled_work(&mut owner.state, &owner.adapter, cmd(now), 0.0, &mut |_| { launched += 1; true });
+    assert_eq!(launched, 1);
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
 }

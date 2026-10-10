@@ -8,7 +8,12 @@ use std::sync::Arc;
 pub enum HubsCmd {
     /// A refetch is owed (a view-state write landed, a profile settled).
     RefetchHubs,
-    Page { sid: plx_plex::plex::ServerId, id: String, key: String, before: bool },
+    /// Move one row's window a page. `seen` is the catalog generation of the view the ask was
+    /// computed from (`HubsView::generation`): a frame captures its views before that frame's
+    /// landings are delivered, so a tick can ask from a window the store has already moved, and
+    /// such an ask is refused. The publication it missed re-arms the row, which asks again from
+    /// the window that stands if the ask is still due.
+    Page { sid: plx_plex::plex::ServerId, id: String, key: String, before: bool, seen: u32 },
     CancelPage { sid: plx_plex::plex::ServerId, id: String, key: String },
     /// The screen holds cards for rows `lo..=hi` (catalog order); every other row keeps only its
     /// descriptor. Sent when the range changes, from the tick that knows which rows are on screen.
