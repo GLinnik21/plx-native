@@ -97,6 +97,7 @@ use std::sync::{Arc, Mutex};
 pub mod view;
 pub mod recents;
 pub mod scope;
+mod tail;
 
 /// Below this many characters the server answers with nothing, so asking is pure latency.
 /// Measured, not guessed — see the module doc.
@@ -1552,6 +1553,10 @@ mod merge_ranking_tests;
 #[cfg(test)]
 #[path = "search_publication_tests.rs"]
 mod publication_tests;
+
+#[cfg(test)]
+#[path = "search_tail_tests.rs"]
+mod tail_tests;
 
 #[cfg(test)]
 #[path = "search_dump_tests.rs"]
