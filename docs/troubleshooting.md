@@ -191,8 +191,9 @@ PlxNative direct plays AV1 only on a television whose own codec table lists an A
 VP9 file, the server has to convert the item, which fails when your server can't transcode or
 transcoding is switched off.
 
-AV1 and VP9 direct play are new. It was built from LG's firmware and has not yet been watched playing on an
-AV1 set, so it reaches people through the [nightly build](nightly-builds.md) first. If your TV
+AV1 and VP9 direct play are new. AV1 was built from LG's firmware and has not yet been watched playing on an
+AV1 set; VP9 has been played on a real set, but only 8-bit and 10-bit SDR files on one model. Both reach
+people through the [nightly build](nightly-builds.md) first. If your TV
 decodes AV1 or VP9 and you want to try it:
 
 1. Install **PlxNative Nightly** by adding `https://plxnative.com/nightly/repo.json` to Homebrew
