@@ -134,6 +134,11 @@ impl HubsStore {
         crate::pms::queue_test_landing(&self.state, &self.adapter, items)
     }
 
+    /// Test hook: land the cards of every held row that waits for them — see
+    /// `crate::pms::land_kept_rows_for_test`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn land_kept_rows_for_test(&mut self) -> bool { crate::pms::land_kept_rows_for_test(&mut self.state) }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn reverse_test_shelves(&mut self) { crate::pms::reverse_test_shelves(&mut self.state); }
 

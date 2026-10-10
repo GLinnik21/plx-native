@@ -3192,6 +3192,43 @@ pub fn seed_ring_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, rows:
     commit(state, build);
 }
 
+/// Test hook: the answer a server would give every held row that waits for the cards it showed
+/// (`RowState::kept`), landed as a reload lands. A fixture seeded without a server has no one to
+/// answer those reads, so a row the ring released would stay placeholders for good; a real Home
+/// has its cards back within a few frames of holding the row again. Returns whether a row landed.
+#[cfg(any(test, feature = "test-support"))]
+pub fn land_kept_rows_for_test(state: &mut PmsState) -> bool {
+    plx_base::testlock::assert_held("the pms hub catalog (land_kept_rows_for_test)");
+    let scope = BrowseScope::standalone();
+    let deck = published_home(state).hubs.len().saturating_sub(published_order(&state.srcs, &scope.pins).len());
+    let wanted = wanted_reloads(&state.srcs, &scope.pins, deck, state.hold);
+    let mut srcs = std::mem::take(&mut state.srcs);
+    let mut landed = false;
+    for (source, want) in srcs.iter_mut().zip(wanted) {
+        for (id, key) in want {
+            let Some(shelf) = source.last.as_ref().and_then(|build| find_shelf(&build.shelves, &id, &key))
+                .filter(|shelf| !shelf.row.kept.is_empty()).cloned() else { continue };
+            let page = PageQuery { id, key, start: shelf.offset, before: false, hidden: Vec::new(), reload: true };
+            let mut many = |keys: &[String]| {
+                let items: Vec<serde_json::Value> = keys.iter().map(|key| serde_json::json!({
+                    "ratingKey": key, "type": "movie", "title": "Movie", "thumb": "/poster"})).collect();
+                serde_json::from_value(serde_json::json!({"Metadata": items})).ok()
+            };
+            let Some(build) = fetch_kept(source.sid, &page, &shelf, &mut many) else { continue };
+            landed |= land_reload(source, &page, build);
+        }
+    }
+    if landed {
+        let (mut build, _) = merge_held(&mut srcs, &scope, state.hold);
+        state.srcs = srcs;
+        preserve_heroes(state, &mut build);
+        commit(state, build);
+    } else {
+        state.srcs = srcs;
+    }
+    landed
+}
+
 /// [`seed_grid_for_test`] with each row's provider identity named: `(hubIdentifier, key, title)`.
 /// A linked collection shelf is a `custom.collection.*` row, so its fixtures need both halves.
 #[cfg(any(test, feature = "test-support"))]
