@@ -39,18 +39,20 @@ pub mod initial;
 /// left off.
 ///
 /// Bound on held cards: `HOLD_ROWS` x [`MAX_SHELF_ITEMS`] = 16 x 24 = 384, plus the merged
-/// Continue Watching row (up to 24) and at most [`HERO_MAX`] retained heroes, however many rows
-/// the servers offer. Descriptors are a few hundred bytes each; they are the directory.
+/// Continue Watching row (one window of the deck, at most [`MAX_SHELF_ITEMS`]) and at most
+/// [`HERO_MAX`] retained heroes, however many rows the servers offer. Descriptors are a few hundred
+/// bytes each; they are the directory.
 pub(crate) const HOLD_ROWS: usize = 16;
 
-/// Cards one shelf holds at most — the number the grid can address (the owned Home's `MAX_ITEMS`
-/// is this constant).
+/// Cards one shelf holds at once: the size of a WINDOW over the row's listing, which the grid can
+/// address (the owned Home's `MAX_ITEMS` is this constant). It is not a limit on the row: past it
+/// the rest is reached by sliding the window (`land_page`, the merged deck's `stores::deck`).
 ///
-/// The MERGED deck reaches it: three sources' Continue Watching is up to 36 cards, and a Recently
-/// Added window reaches 24 from one server as the user scrolls (the window replaces its
+/// The MERGED deck's window reaches it: three sources' Continue Watching is up to 36 cards, and a
+/// Recently Added window reaches 24 from one server as the user scrolls (the window replaces its
 /// overlapping pages). The home grid's focus ring and its OK dispatch clamp differently past this
 /// number — the ring stops at the last addressable card while the press opens whatever column the
-/// raw index names. Cap the data and the two can never disagree.
+/// raw index names. Holding the window to this size keeps the two from ever disagreeing.
 pub const MAX_SHELF_ITEMS: usize = 24;
 
 pub const KIND_COLLECTION: c_int = 4;

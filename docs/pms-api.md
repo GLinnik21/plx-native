@@ -257,7 +257,7 @@ Verified hub list (`MediaContainer.Hub[]`), each hub has
 
 **The spec gives `/hubs` no paging** (`docs/plex-openapi.json`: its only parameters are `count`, `onlyTransient`
 and `identifier`), but a windowed request does page its hub list on a live server (see [Paging, observed](#paging-observed)).
-Home requests all rows, with 12 preview cards per row. Recently Added rows
+Home reads all rows, in windows of `HUB_WINDOW` hubs (`home_hubs` is the whole-list fallback), with 12 preview cards per row. Recently Added rows
 load more items through their provider's listing `key`, with both `X-Plex-Container-Start` and
 `X-Plex-Container-Size`. The client preserves the key's type, library, and sort parameters.
 Other Home rows, including collections, keep their 12-card preview.
@@ -385,9 +385,10 @@ Measured on this server, and every one of these is a thing the OpenAPI spec does
   changes how many hubs come back.
 * **The spec gives the hub list no paging** (the route's parameters are `count`, `onlyTransient` and
   `identifier`); a windowed request pages it on a live server (see [Paging, observed](#paging-observed)).
-  The Library asks for it unwindowed, so a server with many promoted collections answers with all of them at once. The
-  Library takes every hub the server sends in this one whole response and keeps a descriptor
-  for each; cards are held for at most `HOLD_ROWS` (16) rows, each a window of at most
+  The Library reads it in windows of `HUB_WINDOW` hubs (`paging::read_hub_list`; `library_hubs` remains the
+  whole-list fallback for a server that ignores the window), so a server with many promoted collections never
+  answers with all of them at once. The Library keeps a descriptor for every hub the windows
+  bring; cards are held for at most `HOLD_ROWS` (16) rows, each a window of at most
   `MAX_SHELF_ITEMS` (24) cards that pages through the hub's own key.
 * **`onlyTransient` is a no-op on this server** — `0`, `1` and absent all returned the same nine
   hubs. Do not send it and do not rely on it.
