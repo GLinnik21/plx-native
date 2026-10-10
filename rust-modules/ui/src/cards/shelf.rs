@@ -22,6 +22,17 @@ use crate::{Painter, Rect};
 /// Cards past the last visible one the source is asked for.
 const LOOK_AHEAD: usize = 6;
 
+/// Cards from either end of a row inside which focus counts as near that edge, for
+/// [`Shelf::page_ask`].
+pub const PAGE_EDGE_CARDS: usize = 6;
+
+/// The edge of a row focus is near, when the owner should ask for the neighbouring page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageEdge {
+    Before,
+    After,
+}
+
 pub struct Shelf {
     entry: EntryId,
     style: &'static RowStyle,
@@ -233,6 +244,31 @@ impl Shelf {
         }
         self.asked_before = Some(offset);
         true
+    }
+
+    /// The page the owner should ask for this tick, if focus is near one edge of the row: at most one
+    /// per window per edge. `wanted` is whether this tick's [`on`](Self::on) returned a
+    /// [`CardEvent::Want`](super::CardEvent::Want) (the trailing edge's latch lives there), `offset`
+    /// is the window the source shows (`0` when it has nothing before it), and `active` is whether the
+    /// owner shows the row at all. The owner maps the edge to its own store command, and asks
+    /// [`reset_page_requests`](Self::reset_page_requests) when focus leaves the row.
+    pub fn page_ask<H: Host, S: CardSource<H>>(
+        &mut self,
+        cx: &Cx<'_, H>,
+        src: &S,
+        wanted: bool,
+        offset: usize,
+        active: bool,
+    ) -> Option<PageEdge> {
+        // The engine's focus, not the picture's: a hero dive keeps the card it came from lifted, and
+        // the paging follows the card the engine holds.
+        let focus = cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem));
+        let before = offset > 0 && focus.is_some_and(|i| i < PAGE_EDGE_CARDS);
+        if self.want_before(offset, active && before) {
+            return Some(PageEdge::Before);
+        }
+        let after = focus.is_some_and(|i| i.saturating_add(PAGE_EDGE_CARDS) >= src.len());
+        (active && wanted && after && !before).then_some(PageEdge::After)
     }
 
     /// The paging rule: the window's last card plus look-ahead (or the focused card's, if further).

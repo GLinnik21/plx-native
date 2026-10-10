@@ -50,9 +50,6 @@ use plx_ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 
 use super::clock_readout::ClockWatch;
 
-/// Cards from either end of a Recently Added row at which Home asks for the neighbouring page.
-const PAGE_EDGE_CARDS: usize = 6;
-
 /// A paging command for a hub, when the hub has a listing identity to page by.
 fn hub_page_cmd(hub: &HubRef<'_>,
     make: impl FnOnce(plx_plex::plex::ServerId, String, String) -> HubsCmd) -> Option<HubsCmd> {
@@ -1024,16 +1021,14 @@ impl HomeScreen {
             let visible = !dormant && on_axis(top, bottom - top, SCR_H, 0.0);
             let mut src = self.cards(view, row);
             src.paging = visible && focused.is_some_and(|(r, col)|
-                r == row && col.saturating_add(PAGE_EDGE_CARDS) >= self.rows[row].elems.len());
+                r == row && col.saturating_add(ui_cards::PAGE_EDGE_CARDS) >= self.rows[row].elems.len());
             // The shelf skips a row at exact rest with nothing focused, and parks one that has
             // settled once focus left it.
             let want = shelf.on(&ScreenEvent::Tick(t), cx, &src, fx);
-            let before = focused.is_some_and(|(r, col)| r == row && col < PAGE_EDGE_CARDS)
-                && self.hub(view, row).is_some_and(|hub| hub.offset > 0);
-            let backward = shelf.want_before(
-                self.hub(view, row).map_or(0, |hub| hub.offset), visible && before);
-            if visible
-                && (backward || (!before && matches!(want, Some(ui_cards::CardEvent::Want(_))))) {
+            let offset = self.hub(view, row).map_or(0, |hub| hub.offset);
+            let wanted = matches!(want, Some(ui_cards::CardEvent::Want(_)));
+            if let Some(edge) = shelf.page_ask(cx, &src, wanted, offset, visible) {
+                let before = edge == ui_cards::PageEdge::Before;
                 if let Some(cmd) = self.hub(view, row).and_then(|hub| hub_page_cmd(&hub,
                     |sid, id, key| HubsCmd::Page { sid, id, key, before })) {
                     fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(cmd))));
