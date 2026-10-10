@@ -20,7 +20,8 @@
 //! library holding `pc` or `lr`, and its file name (never its folder) is sent so an unsymbolicated
 //! crash in `libwayland-client.so.0` says so. [`parse_module`] lets a line through only if its
 //! path is absolute, uses `[A-Za-z0-9._+-]` and no `..`, and its mapping holds the fault's own
-//! `pc` or `lr`; the path is otherwise used only to open the file for its build id.
+//! `pc` or `lr`; the path is otherwise used only to open the file for its build id, and only if
+//! it is still the file (device and inode) that was mapped when the process died.
 //!
 //! The same rule kills the obvious shortcut of shipping the record verbatim as the exception
 //! `value`. That would be one line of code, would look identical in the Sentry UI, and would make
@@ -95,6 +96,12 @@ pub struct ModuleMapping {
     pub hi: u64,
     /// File offset of the mapping, so the module's load base is `lo - offset`.
     pub offset: u64,
+    /// The `major:minor` of the filesystem the kernel mapped the file from, as the maps line
+    /// printed it (both hexadecimal).
+    dev: (u32, u32),
+    /// The mapped file's inode (decimal in the maps line). Together with `dev` this names the
+    /// file that CRASHED, which is not necessarily the one at `path` by the time of the next launch.
+    inode: u64,
 }
 
 impl ModuleMapping {
@@ -145,20 +152,21 @@ pub struct FaultExtra {
     pub modules: Vec<ModuleImage>,
 }
 
-/// Resolve each mapped module of `f` to an image entry. `read` returns the head of the file at a
-/// path; a module whose build id cannot be read is left out, like the app's own image.
+/// Resolve each mapped module of `f` to an image entry. `read` returns the head of the file the
+/// mapping was made from ([`read_module_head`] refuses a file that is no longer that one); a module
+/// whose build id cannot be read is left out, like the app's own image.
 ///
 /// The app's own mapping is skipped: [`sentry_body`] already describes it from the identity the
 /// startup marker recorded, which is the crashed build's and not whatever is deployed now.
 /// `image_addr` is the mapping start less its file offset — the module's load base when the text
 /// segment's vaddr equals its file offset, which the GNU linkers' output on ARM satisfies — and
 /// the size runs from that base to the end of the mapping that holds the address.
-pub fn module_images(f: &Fault, read: impl Fn(&str) -> Option<Vec<u8>>) -> Vec<ModuleImage> {
+pub fn module_images(f: &Fault, read: impl Fn(&ModuleMapping) -> Option<Vec<u8>>) -> Vec<ModuleImage> {
     f.modules
         .iter()
         .filter(|m| m.file_name() != CODE_FILE)
         .filter_map(|m| {
-            let code_id = super::sentry::gnu_build_id(&read(&m.path)?)?;
+            let code_id = super::sentry::gnu_build_id(&read(m)?)?;
             let debug_id = super::sentry::debug_id(&code_id)?;
             let image_addr = m.lo.checked_sub(m.offset)?;
             Some(ModuleImage {
@@ -174,13 +182,56 @@ pub fn module_images(f: &Fault, read: impl Fn(&str) -> Option<Vec<u8>>) -> Vec<M
 
 /// The head of a mapped module's file, for [`module_images`]. A regular file only: the path came
 /// out of a log, and opening a FIFO or a device node on the boot path could block it.
-fn read_module_head(path: &str) -> Option<Vec<u8>> {
-    std::fs::metadata(path).ok()?.is_file().then_some(())?;
-    super::sentry::read_head(path)
+///
+/// **Only the file that was mapped when the process died.** The build id read here is paired with
+/// the addresses the crash recorded, so a file replaced since — an app update that landed before
+/// the next launch rewrites the bundled `libav*-plx.so.*` and `libass-plx.so.0` — would give
+/// Sentry another build's id for this build's addresses, and it would symbolicate them to
+/// confident, wrong functions. The mapping's `dev` and `inode` are compared with the handle that
+/// is read (opened once, so there is no window between the check and the read); a mismatch reads
+/// nothing and the module is left out, which costs a name and never invents one. Firmware
+/// libraries survive until a reboot, which also clears the log, so they still match.
+///
+/// Opened `O_NONBLOCK` so a FIFO put in the path's place cannot hold the boot path.
+fn read_module_head(m: &ModuleMapping) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&m.path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || split_dev(meta.dev()) != m.dev || meta.ino() != m.inode {
+        return None;
+    }
+    let mut buf = Vec::new();
+    file.take(64 * 1024).read_to_end(&mut buf).ok()?;
+    Some(buf)
 }
 
-/// One `at:` line as a [`ModuleMapping`], or `None` for anything that is not a plain file-backed
-/// mapping with a path this module is willing to open and name: `lo-hi perms offset dev inode path`.
+/// `st_dev` as the `(major, minor)` pair `/proc/<pid>/maps` prints for the same filesystem. The
+/// kernel prints its internal `MAJOR(dev):MINOR(dev)`; `stat` hands out the glibc encoding of it,
+/// which spreads a 12-bit major and a 20-bit minor over 64 bits.
+fn split_dev(dev: u64) -> (u32, u32) {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let major = ((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff);
+        let minor = (dev & 0xff) | ((dev >> 12) & !0xff);
+        (major as u32, minor as u32)
+    }
+    // Hosts that cannot be a target (the macOS simulator): there is no maps file there, so this
+    // arm only has to be self-consistent for the tests.
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        ((dev >> 24) as u32, (dev & 0xff_ffff) as u32)
+    }
+}
+
+/// One `at:` line as a [`ModuleMapping`], or `None` for anything that is not a plain
+/// file-backed mapping with a path this module is willing to open and name:
+/// `lo-hi perms offset dev inode path` — the kernel's own `/proc/self/maps` line, which the tracer
+/// copies verbatim (`dev` is `major:minor` in hex, `inode` decimal).
 ///
 /// The path is held to an allowlist (absolute, `[A-Za-z0-9._+-]` components, no `..`, no spaces —
 /// which also drops `[stack]`, anonymous mappings and the kernel's ` (deleted)` suffix) because it
@@ -191,9 +242,11 @@ fn parse_module(line: &str) -> Option<ModuleMapping> {
     let (lo, hi) = fields.next()?.split_once('-')?;
     let lo = u64::from_str_radix(lo, 16).ok()?;
     let hi = u64::from_str_radix(hi, 16).ok()?;
-    let _perms = fields.next()?;
+    let perms = fields.next()?.as_bytes();
     let offset = u64::from_str_radix(fields.next()?, 16).ok()?;
-    let (_dev, _inode) = (fields.next()?, fields.next()?);
+    let (major, minor) = fields.next()?.split_once(':')?;
+    let dev = (u32::from_str_radix(major, 16).ok()?, u32::from_str_radix(minor, 16).ok()?);
+    let inode: u64 = fields.next()?.parse().ok()?;
     let path = fields.next()?;
     if fields.next().is_some() || !plain_module_path(path) {
         return None;
@@ -201,7 +254,8 @@ fn parse_module(line: &str) -> Option<ModuleMapping> {
     if lo >= hi || hi > u64::from(u32::MAX) + 1 || offset > lo {
         return None;
     }
-    Some(ModuleMapping { path: path.to_string(), lo, hi, offset })
+    let _ = perms;
+    Some(ModuleMapping { path: path.to_string(), lo, hi, offset, dev, inode })
 }
 
 fn plain_module_path(path: &str) -> bool {
@@ -608,8 +662,9 @@ pub fn sentry_body(
         }));
     }
     // The libraries holding pc and lr, named by BASENAME only (see [`ModuleMapping`]). Their ids
-    // were read from the files, so unlike the app's own entry they describe what is installed now;
-    // the log is cleared at every restart, which is the only way that could have changed.
+    // were read from the files, not recorded at crash time like the app's own entry; the read
+    // ([`read_module_head`]) only accepts the file whose device and inode the maps line recorded,
+    // so a library replaced since (an app update, or a reboot's fresh /tmp) is left out here.
     for m in &extra.modules {
         images.push(serde_json::json!({
             "type": "elf",
@@ -1524,8 +1579,8 @@ mod tests {
         let id: Vec<u8> = (0u8..20).collect();
         let hex = "000102030405060708090a0b0c0d0e0f10111213";
         let elf = elf_with_build_id(&id);
-        let modules = module_images(&f, |path| {
-            assert_eq!(path, "/usr/lib/libwayland-client.so.0", "the app's own image is read elsewhere");
+        let modules = module_images(&f, |m| {
+            assert_eq!(m.path,"/usr/lib/libwayland-client.so.0", "the app's own image is read elsewhere");
             Some(elf.clone())
         });
         let body = sentry_body(
@@ -1569,6 +1624,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn st_dev_is_split_the_way_the_kernel_prints_maps() {
+        // glibc makedev(0xfe, 0x01), and a minor wider than 8 bits (makedev(8, 0x1_0001)).
+        assert_eq!(split_dev(0xfe01), (0xfe, 0x01));
+        assert_eq!(split_dev((0x1_0000u64 << 12) | 0x01 | (8 << 8)), (8, 0x1_0001));
+    }
+
+    #[test]
     fn only_a_plain_absolute_module_path_that_holds_the_fault_is_kept() {
         let with = |line: &str| {
             let log = format!(
@@ -1584,6 +1647,66 @@ mod tests {
         assert_eq!(with("b6f00000-b6f21000 rw-p 00000000 00:00 0 [stack]"), 0, "anonymous");
         assert_eq!(with("b6f00000-b6f21000 r-xp 00000000 fe:01 1"), 0, "no path");
         assert_eq!(with("a0000000-a0001000 r-xp 00000000 fe:01 1 /usr/lib/other.so"), 0, "holds neither pc nor lr");
+    }
+
+    /// A library file in a scratch directory, and the `at:` line a tracer would have written for
+    /// it with the recorded inode shifted by `inode_skew` (0 = the file that is on disk).
+    fn installed_module(tag: &str, inode_skew: u64) -> (std::path::PathBuf, ModuleMapping) {
+        use std::os::unix::fs::MetadataExt;
+        let dir = std::env::temp_dir().join(format!("plx-crash-module-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("libx.so.0");
+        std::fs::write(&path, elf_with_build_id(&[9u8; 20])).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        let (major, minor) = split_dev(meta.dev());
+        let line = format!(
+            "at: b6f00000-b6f21000 r-xp 00000000 {major:x}:{minor:x} {} {}",
+            meta.ino() + inode_skew,
+            path.display(),
+        );
+        let m = parse_module(&line).unwrap_or_else(|| panic!("fixture line not accepted: {line}"));
+        (dir, m)
+    }
+
+    #[test]
+    fn a_module_file_that_is_not_the_one_that_crashed_gets_no_image() {
+        let (dir, same) = installed_module("same", 0);
+        assert!(read_module_head(&same).is_some(), "the file the tracer saw is read");
+        let (dir2, replaced) = installed_module("replaced", 1);
+        assert!(
+            read_module_head(&replaced).is_none(),
+            "the mapped inode is not the installed file's: its build id belongs to another build"
+        );
+        let _ = (std::fs::remove_dir_all(dir), std::fs::remove_dir_all(dir2));
+    }
+
+    #[test]
+    fn a_module_on_another_device_than_the_one_that_crashed_gets_no_image() {
+        let (dir, mut other) = installed_module("device", 0);
+        other.dev.1 ^= 0x5a;
+        assert!(read_module_head(&other).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_fifo_in_the_place_of_a_module_is_not_opened_blockingly() {
+        let (dir, mut m) = installed_module("fifo", 0);
+        let fifo = dir.join("pipe");
+        let c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        m.path = fifo.to_str().unwrap().to_string();
+        assert!(read_module_head(&m).is_none(), "returns at all, and with nothing");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn dev_and_inode_are_parsed_from_the_maps_line() {
+        let m = parse_module("at: b6f00000-b6f21000 r-xp 00000000 fe:0a 1234 /usr/lib/libx.so.0").unwrap();
+        assert_eq!((m.dev, m.inode), ((0xfe, 0x0a), 1234));
+        for bad in ["fe0a 1234", "fe:0a x", "zz:0a 1", "fe: 1"] {
+            let line = format!("at: b6f00000-b6f21000 r-xp 00000000 {bad} /usr/lib/libx.so.0");
+            assert!(parse_module(&line).is_none(), "{bad}");
+        }
     }
 
     #[test]
