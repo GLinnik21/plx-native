@@ -60,7 +60,7 @@ fn step(hubs: &mut SecHubs, ask: &RowAsk, list: impl FnMut(usize, usize) -> Opti
 fn walk(hubs: &mut SecHubs, before: bool, mut list: impl FnMut(usize, usize) -> Option<Container>) -> Vec<Vec<String>> {
     let mut windows = vec![keys(&hubs.committed[0])];
     for _ in 0..400 {
-        if !hubs.want_page(ID, KEY, before) { break; }
+        if !hubs.want_page(hubs.revision, ID, KEY, before) { break; }
         let ask = hubs.next_ask().unwrap();
         step(hubs, &ask, &mut list);
         assert!(hubs.committed[0].items.len() <= MAX_SHELF_ITEMS, "the window is at most 24 cards");
@@ -80,7 +80,7 @@ fn a_500_card_section_row_that_is_not_recently_added_pages_to_its_end_and_back()
     let seen: std::collections::BTreeSet<usize> = out.iter().flatten().map(|key| key.parse().unwrap()).collect();
     assert_eq!(seen.len(), len, "every card of the row was reached");
     assert_eq!(hubs.committed[0].items.last().unwrap().rk, "499");
-    assert!(!hubs.want_page(ID, KEY, false), "the end of the listing ends the row");
+    assert!(!hubs.want_page(hubs.revision, ID, KEY, false), "the end of the listing ends the row");
     let back = walk(&mut hubs, true, listing);
     assert_eq!(hubs.committed[0].offset, 0);
     assert_eq!(keys(&hubs.committed[0])[0], "0", "and the way back reaches the head");
@@ -138,7 +138,7 @@ fn a_row_with_a_key_the_pager_does_not_admit_keeps_its_preview() {
     let mut hubs = published(&mc);
     assert_eq!(hubs.committed[0].items.len(), 12, "the preview stays");
     assert!(!hubs.committed[0].more, "and there is nothing to ask for");
-    assert!(!hubs.want_page("test.section.unadmitted", "/playlists/9/items", false));
+    assert!(!hubs.want_page(hubs.revision, "test.section.unadmitted", "/playlists/9/items", false));
     hubs.set_hold(300, 310);
     assert!(hubs.committed[0].released(), "a row with no key to page by gives its cards up all the same");
     assert_eq!(hubs.committed[0].row.kept.len(), 12, "and keeps the rating keys it showed");
@@ -184,7 +184,7 @@ fn a_row_the_ring_took_comes_back_at_the_offset_it_left() {
     };
     let key = "/hubs/sections/1/row2";
     for _ in 0..4 {
-        assert!(hubs.want_page("movie.row2", key, false));
+        assert!(hubs.want_page(hubs.revision, "movie.row2", key, false));
         let ask = hubs.next_ask().unwrap();
         step(&mut hubs, &ask, |start, size| listing(key, start, size));
     }
@@ -208,7 +208,7 @@ fn a_refresh_keeps_the_window_a_row_was_walked_to() {
     let mut hubs = published(&hub_list(5));
     let key = "/hubs/sections/1/row1";
     let listing = |start: usize, size: usize| Some(container(start, 500, (start..(start + size).min(500)).map(|i| 1000 + i)));
-    assert!(hubs.want_page("movie.row1", key, false));
+    assert!(hubs.want_page(hubs.revision, "movie.row1", key, false));
     let ask = hubs.next_ask().unwrap();
     step(&mut hubs, &ask, listing);
     let walked = (hubs.committed[1].offset, keys(&hubs.committed[1]));
@@ -275,6 +275,62 @@ fn a_refresh_gives_an_unpaged_row_the_cards_it_now_shows() {
     hubs.land_ok(fresh);
     assert!(hubs.commit_staged(true));
     assert_eq!(hubs.committed[0].row.kept.len(), 5, "the refresh's own preview is what the row shows now");
+}
+
+/// A frame captures its views before its landings are delivered, so the tick that follows a
+/// landing can ask from the window the landing replaced. The store has just cleared the row's
+/// in-flight ask, so without the revision the asker read it would accept this one and slide the
+/// NEW window, with focus in the middle of it.
+#[test]
+fn an_ask_computed_from_a_revision_the_row_has_since_left_is_refused() {
+    let len = 500;
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut hubs = published(&one_row(&(0..12).collect::<Vec<_>>(), len));
+    let seen = hubs.revision;
+    assert!(hubs.want_page(seen, ID, KEY, false));
+    let ask = hubs.next_ask().unwrap();
+    step(&mut hubs, &ask, listing);
+    assert_ne!(seen, hubs.revision, "the landing published a new window");
+    let window = keys(&hubs.committed[0]);
+    assert!(!hubs.want_page(seen, ID, KEY, false), "the ask names a window the row no longer holds");
+    assert!(hubs.next_ask().is_none());
+    assert_eq!(keys(&hubs.committed[0]), window);
+    assert!(hubs.want_page(hubs.revision, ID, KEY, false), "from the window that stands it is due again");
+}
+
+/// Reach survives the guard: when every landing meets a stale ask (the worst frame order), the
+/// ask the missed publication re-arms comes from the window that stands, and the row still
+/// reaches its last card.
+#[test]
+fn a_row_whose_every_landing_meets_a_stale_ask_still_reaches_its_last_card() {
+    let len = 500;
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let mut hubs = published(&one_row(&(0..12).collect::<Vec<_>>(), len));
+    let mut reached = std::collections::BTreeSet::new();
+    for _ in 0..400 {
+        reached.extend(keys(&hubs.committed[0]));
+        let seen = hubs.revision;
+        if !hubs.want_page(seen, ID, KEY, false) { break; }
+        let ask = hubs.next_ask().unwrap();
+        step(&mut hubs, &ask, listing);
+        assert!(!hubs.want_page(seen, ID, KEY, false), "the stale ask of the landing's own frame");
+    }
+    assert_eq!(reached.len(), len);
+    assert_eq!(hubs.committed[0].items.last().unwrap().rk, "499");
+}
+
+/// `HubHold` names rows `lo..=hi` of a catalog that a page ask does not reorder, so unlike a page
+/// ask it is absolute: the last one said stands, and saying it again changes nothing. A hold read
+/// from a view the frame's landing has since replaced is overwritten by the next tick's.
+#[test]
+fn a_hold_ask_is_absolute_so_a_stale_one_is_simply_overwritten() {
+    let mut hubs = published(&hub_list(40));
+    hubs.set_hold(20, 26);
+    hubs.set_hold(0, 6);
+    assert_eq!(hubs.held(), (0, 6), "the last ask stands whatever came before it");
+    let revision = hubs.revision;
+    assert!(!hubs.set_hold(0, 6), "saying it again changes nothing");
+    assert_eq!(revision, hubs.revision);
 }
 
 // ---- the hub list read in windows of hubs ----------------------------------------------------

@@ -954,6 +954,26 @@ mod tests {
         assert_eq!(rk_at(&state, 2700).as_deref(), Some("2700"), "the restore target's page is kept");
     }
 
+    /// `Window` names indices of a listing that does not move, so unlike a relative page ask it
+    /// needs no identity guard: it is a plain assignment. One computed from a view that the frame's
+    /// landing has since replaced is overwritten by the next tick's (the screen sends on change),
+    /// and saying a window again changes and requests nothing.
+    #[test]
+    fn a_window_ask_is_absolute_and_idempotent_so_a_stale_one_is_simply_overwritten() {
+        let total = 5_000;
+        let (mut state, adapter) = opened(total);
+        show(&mut state, &adapter, total, 300..360, Some(300), None, &|_| true);
+        show(&mut state, &adapter, total, 0..60, Some(0), None, &|_| true);
+        let wanted = |state: &CollectionState| state.current.as_ref().map(|c| (c.wanted.clone(), c.focus, c.restore));
+        let after_stale = wanted(&state);
+        assert_eq!(after_stale, Some((0..60, Some(0), None)), "the last ask stands whatever came before it");
+        assert!(!state.run(&adapter, CollectionCmd::Window { wanted: 0..60, focus: Some(0), restore: None }),
+            "saying it again changes nothing");
+        assert_eq!(show(&mut state, &adapter, total, 0..60, Some(0), None, &|_| true), Vec::<usize>::new(),
+            "and asks for no page twice");
+        assert_eq!(wanted(&state), after_stale);
+    }
+
     #[test]
     fn a_restore_without_kept_counts_reads_forward_eight_requests_per_ask() {
         let total = 5_000;

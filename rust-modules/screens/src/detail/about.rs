@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(rows.audio_list.split(", ").count(), AUDIO_SUMMARY);
         assert!(rows.audio_list.contains("Lang7") && !rows.audio_list.contains("Lang8"));
         assert_eq!(locate(LANGUAGES_ELEM, d.has_own_file()), Some(1), "the column opens the tracks panel");
-        let panel = crate::tracks_panel::audio_rows(&d.audio);
+        let panel = crate::registry::tracks_panel_audio_rows(&d.audio);
         assert_eq!(panel.len(), 12, "the panel lists every track");
         assert_eq!(panel[11].name, "Lang11");
     }

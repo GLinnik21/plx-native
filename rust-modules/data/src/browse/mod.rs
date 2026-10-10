@@ -1547,7 +1547,7 @@ impl BrowseState {
                 self.hubs_kick(index, adapter);
                 self.hubs_commit_staged(index, may_publish)
             }
-            LibraryWork::HubPage { id, key, before } => self.hubs_page(index, &id, &key, before, adapter),
+            LibraryWork::HubPage { id, key, before, seen } => self.hubs_page(index, seen, &id, &key, before, adapter),
             LibraryWork::HubHold { lo, hi } => self.hubs_hold(index, lo, hi, adapter),
             work => {
                 if self.cur() != index {

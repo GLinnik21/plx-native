@@ -1819,7 +1819,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 if before || after {
                     fx.push(Fx::App(AppFx::Store(
                         StoreId::Metadata,
-                        StoreCmd::Metadata(MetadataCmd::WantRelated { before }),
+                        StoreCmd::Metadata(MetadataCmd::WantRelated { before, seen: (t.offset, t.end) }),
                     )));
                 }
             }

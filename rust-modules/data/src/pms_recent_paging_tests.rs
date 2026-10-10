@@ -818,3 +818,27 @@ fn an_ask_computed_from_a_window_the_store_has_since_moved_is_refused() {
     reset(&mut owner.state, &owner.adapter);
     plx_plex::plex::reset_servers_for_test();
 }
+
+/// Reach survives the guard: every landing is met by an ask from the window it replaced (the worst
+/// frame order), the store refuses it, and the ask from the window that stands moves the row on, so
+/// the row still walks window by window to its end.
+#[test]
+fn a_row_whose_every_landing_meets_a_stale_ask_still_reaches_its_last_window() {
+    let _guard = plx_base::testlock::serial();
+    let mut owner = owner();
+    let cmd = |seen: u32| Some(crate::stores::hubs::HubsCmd::Page { sid: sid(0), id: "home.movies.recent".into(),
+        key: "/hubs/home/recentlyAdded?type=1".into(), before: false, seen });
+    for start in (0..600).step_by(12) {
+        let seen = hubs_snapshot(&owner.state).view().generation;
+        let mut held = None;
+        let _ = controlled_work(&mut owner.state, &owner.adapter, cmd(seen), 0.0, &mut |request| { held = Some(request); true });
+        let request = held.expect("the ask from the window that stands is honoured");
+        deliver(&mut owner, request, Some(page(start, 24, true)));
+        let mut launched = 0;
+        let _ = controlled_work(&mut owner.state, &owner.adapter, cmd(seen), 0.0, &mut |_| { launched += 1; true });
+        assert_eq!(launched, 0, "the ask of the landing's own frame names the window it replaced");
+        assert_eq!(hubs_snapshot(&owner.state).view().hub(0).unwrap().offset, start);
+    }
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}

@@ -96,6 +96,11 @@ pub enum PreferenceCmd {
 /// app declines a menu with and the card screens' hold hint is gated by. The screens reach it
 /// here, never by naming the sibling `item_menu`.
 pub use crate::item_menu::has_actions as item_has_menu;
+/// The panels a sibling screen's host test reads through the shared vocabulary (the `sibling` gate
+/// admits only `crate::registry`): the Detail page's tests drive the real About panel and compare
+/// the audio summary against the tracks panel's full list.
+#[cfg(test)]
+pub(crate) use crate::{about_panel::AboutPanelScreen, tracks_panel::audio_rows as tracks_panel_audio_rows};
 
 /// **What the item context menu asks of the loop**, once its own `step` has resolved the pressed
 /// row to an [`crate::item_menu::Action`].

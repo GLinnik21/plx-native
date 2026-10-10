@@ -481,11 +481,16 @@ pub enum LibraryWork {
         may_publish: bool,
     },
     /// Move one section hub row's window a page toward its end or its start; the row is named by
-    /// its hub identifier and key.
+    /// its hub identifier and key. `seen` is the revision of the hub view the ask was computed
+    /// from (`HubsView::revision`): a frame captures its views before its landings are delivered,
+    /// so the ask can come from a window the store has since replaced, and such an ask is refused
+    /// (the publication it missed rebuilds the shelves and re-arms the row, which asks again from
+    /// the window that stands if the ask is still due).
     HubPage {
         id: String,
         key: String,
         before: bool,
+        seen: u64,
     },
     /// The rows (hub order, inclusive) the page holds cards for. The store keeps those and gives
     /// the cards of the rest up to descriptors; sent when the range changes.

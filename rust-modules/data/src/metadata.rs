@@ -3730,7 +3730,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             let keep = crate::stores::page_cache::Keep { wanted: lo..hi, focus, restore };
             want_episodes(state, adapter, keep)
         }
-        MetadataCmd::WantRelated { before } => want_related(state, adapter, before),
+        MetadataCmd::WantRelated { before, seen } => want_related(state, adapter, before, seen),
         MetadataCmd::SetNowPlaying(np) => {
             set_now_playing(state, np);
             true
@@ -4750,10 +4750,15 @@ fn tail_page(
 
 /// Ask for the previous or next window of the Related tail. False when there is nothing to ask:
 /// no tail, no more in that direction, or a read already out. Main thread only.
-fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, before: bool) -> bool {
+fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, before: bool,
+    seen: (usize, usize)) -> bool {
     use crate::stores::paging::{PageInfo, Row};
     let Some(d) = state.current.as_ref() else { return false };
     let t = &d.related_tail;
+    // The asker read a window that a landing has since replaced: where its focus stood in the old
+    // one says nothing about the new one. The landing's publication re-arms the shelf, which asks
+    // again from the window that stands.
+    if seen != (t.offset, t.end) { return false; }
     if t.hubs.is_empty() || t.head > d.related.len() || (before && t.offset == 0) || (!before && !t.more) {
         return false;
     }

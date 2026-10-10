@@ -22,7 +22,11 @@ pub enum SearchCmd {
     SetWatchedLocal { sid: plx_plex::plex::ServerId, rk: String, on: bool },
     /// Slide a row's window half a window on (`before` false) or back. Every hit of the row is
     /// reached by repeating it; the cards move when the sources that must read have answered.
-    Page { kind: crate::search::Kind, before: bool },
+    /// `seen` is the start of the row's window in the view the ask was computed from
+    /// (`Shelf::window.start`): a frame captures its views before its landings are delivered, so
+    /// the ask can come from a window the store has since slid, and such an ask is refused. The
+    /// new window's publication differs from `seen`, which lets the screen ask again from it.
+    Page { kind: crate::search::Kind, before: bool, seen: usize },
 }
 
 /// One Search owner: logical state, the worker adapter all current fetches capture, and notice.
