@@ -60,8 +60,32 @@ fn a_dv_refusal_still_refuses_av1() {
 }
 
 #[test]
-fn vp9_never_direct_plays() {
+fn vp9_never_direct_plays_without_the_row() {
     let dp = plx_data::metadata::DvPresentation::NotDv;
+    // the AV1 row says nothing about VP9
     assert!(!video_direct_plays("vp9", 1920, 1080, dp, &caps_on()));
     assert!(!video_feed_supported("vp9", dp, &caps_on()));
+    let assumed = plx_platform::devcaps::Caps::assumed();
+    assert!(!video_direct_plays("vp9", 1920, 1080, dp, &assumed));
+    assert!(!video_feed_supported("vp9", dp, &assumed));
+}
+
+/// The VP9 twin of the AV1 rules: the table's row switches the codec on and bounds it.
+#[test]
+fn vp9_direct_plays_with_the_row_and_is_bounded_by_it() {
+    let dp = plx_data::metadata::DvPresentation::NotDv;
+    let caps = plx_platform::devcaps::Caps {
+        vp9: true,
+        vp9_row: (3840, 2160, 60),
+        ..plx_platform::devcaps::Caps::assumed()
+    };
+    assert!(video_direct_plays("vp9", 3840, 2160, dp, &caps));
+    assert!(video_feed_supported("vp9", dp, &caps));
+    assert!(!video_direct_plays("vp9", 4096, 2160, dp, &caps), "above the VP9 row");
+    let unstated = plx_platform::devcaps::Caps { vp9_row: (0, 0, 0), ..caps.clone() };
+    assert!(video_direct_plays("vp9", 3840, 2160, dp, &unstated), "an unstated row bounds nothing");
+    let roomy_row = plx_platform::devcaps::Caps { vp9_row: (7680, 4320, 60), hevc_max: (3840, 2176), ..caps };
+    assert!(!video_direct_plays("vp9", 7680, 4320, dp, &roomy_row), "the shared bound still applies");
+    // and VP9 never loosens another codec's gate
+    assert!(!video_direct_plays("av1", 1920, 1080, dp, &roomy_row));
 }

@@ -524,3 +524,34 @@ fn from_trigger_ignores_unknown_tokens() {
         Av1Framing { td: false, seq: true, raw: false }
     );
 }
+
+// -- VP9: pass-through -----------------------------------------------------------------
+
+#[test]
+fn a_vp9_packet_is_handed_over_byte_for_byte_and_the_key_flag_survives() {
+    // A keyframe's first byte: frame marker 0b10, profile 0, show_existing_frame 0, frame_type 0.
+    let key = [0x82, 0x49, 0x83, 0x42, 0x00, 0x01];
+    let mut out = vec![0xFF; 3]; // stale bytes from the previous packet must not leak through
+    assert!(vp9_packet_to_frame(&key, true, &mut out));
+    assert_eq!(out, key);
+    let inter = [0x86, 0x00, 0x40];
+    assert!(!vp9_packet_to_frame(&inter, false, &mut out));
+    assert_eq!(out, inter);
+}
+
+#[test]
+fn a_vp9_superframe_is_not_split_or_trimmed() {
+    // Two frames under a superframe index: marker 0b110 | (size_bytes-1)<<3 | (frames-1) = 0xc1,
+    // sizes 3 and 2 as one byte each, then the same marker byte again.
+    let sf = [0x82, 0x00, 0x01, 0x86, 0x02, 0xc1, 0x03, 0x02, 0xc1];
+    let mut out = Vec::new();
+    assert!(!vp9_packet_to_frame(&sf, false, &mut out));
+    assert_eq!(out, sf);
+}
+
+#[test]
+fn an_empty_vp9_packet_stays_empty() {
+    let mut out = vec![1, 2, 3];
+    assert!(!vp9_packet_to_frame(&[], false, &mut out));
+    assert!(out.is_empty());
+}

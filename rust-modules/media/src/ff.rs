@@ -497,7 +497,7 @@ pub const AVMEDIA_TYPE_AUDIO: c_int = 1;
 pub const AVMEDIA_TYPE_SUBTITLE: c_int = 3;
 // Proven against the bundled headers by ci/ffabi-assert.c.
 const AVMEDIA_TYPE_ATTACHMENT: c_int = 4;
-// The codec ids the app compares against are AAC, H264, HEVC and AV1. Their values shift between
+// The codec ids the app compares against are AAC, H264, HEVC, VP9 and AV1. Their values shift between
 // FFmpeg majors, so each is asserted against the bundled headers in ci/ffabi-assert.c.
 // AV1 needs no FFmpeg parser or bsf: matroska (V_AV1) and mov (av01) demux it without one, and
 // with the av1 parser absent the packets arrive raw. `av1_packet_to_tu` frames the OBUs itself.
@@ -507,6 +507,7 @@ pub const AV_CODEC_ID_H264: c_int = 27;
 // FF_API_XVMC and FF_API_VOXWARE both died before FFmpeg 6, which is why these differ from the
 // values the n3.3 televisions use (28 / 174 / 0x15029).
 pub const AV_CODEC_ID_HEVC: c_int = 172;
+pub const AV_CODEC_ID_VP9: c_int = 166;
 pub const AV_CODEC_ID_AV1: c_int = 222;
 pub const AV_PKT_FLAG_KEY: c_int = 1;
 pub const AVSEEK_FLAG_BACKWARD: c_int = 1;
@@ -2933,6 +2934,20 @@ fn av1_packet_to_tu(pkt: &[u8], key: bool, cfg: &[u8], f: Av1Framing, out: &mut 
         }
         push_obu_sized(pkt, last, out);
     }
+    key
+}
+
+/// Hand one demuxed VP9 packet to the decoder as it came, returning `key` unchanged.
+///
+/// A VP9 frame is self-describing: every keyframe carries its profile, size and colour config in
+/// its own uncompressed header, and libpf's `video/x-vp9` appsrc caps have no `codec_data` to
+/// fill, so there is nothing to prepend (compare `av1_packet_to_tu`, where the sequence header
+/// has to be put back in-band). A Matroska/MP4 packet may be a SUPERFRAME, a shown frame and its
+/// hidden reference frames under one trailing index; it is passed whole, the way a WebM-aware
+/// hardware decoder is fed.
+fn vp9_packet_to_frame(pkt: &[u8], key: bool, out: &mut Vec<u8>) -> bool {
+    out.clear();
+    out.extend_from_slice(pkt);
     key
 }
 
@@ -8202,7 +8217,8 @@ pub fn demux(
                 // in-band on keyframes, because the TV pipeline is given no codec_data for AV1.
                 let is_hevc = (*vcp).codec_id == AV_CODEC_ID_HEVC;
                 let is_av1 = (*vcp).codec_id == AV_CODEC_ID_AV1;
-                let (param_blob, nal_len_size) = if is_av1 {
+                let is_vp9 = (*vcp).codec_id == AV_CODEC_ID_VP9;
+                let (param_blob, nal_len_size) = if is_av1 || is_vp9 {
                     (Vec::new(), 0)
                 } else {
                     parse_extradata(
@@ -8232,11 +8248,12 @@ pub fn demux(
                     }
                 }
                 crate::player::log(&format!(
-                    "ff: param_sets={} bytes nal_len={} is_hevc={} is_av1={} av1_cfg={}B",
+                    "ff: param_sets={} bytes nal_len={} is_hevc={} is_av1={} is_vp9={} av1_cfg={}B",
                     param_blob.len(),
                     nal_len_size,
                     is_hevc,
                     is_av1,
+                    is_vp9,
                     av1_cfg.len()
                 ));
                 let mut aubuf: Vec<u8> = Vec::with_capacity(4 * 1024 * 1024);
@@ -8335,6 +8352,13 @@ pub fn demux(
                                 av1_framing,
                                 &mut aubuf,
                             )
+                        } else if is_vp9 {
+                            let pkt_bytes: &[u8] = if (*pkt).data.is_null() {
+                                &[]
+                            } else {
+                                std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize)
+                            };
+                            vp9_packet_to_frame(pkt_bytes, (*pkt).flags & AV_PKT_FLAG_KEY != 0, &mut aubuf)
                         } else {
                             packet_to_annexb(
                                 (*pkt).data,

@@ -617,7 +617,7 @@ fn device_rows() -> Vec<Field> {
     v
 }
 
-/// The Decoder row's value: `HEVC WxH · VP9 · [AV1 [WxH] ·] <device table | ASSUMED>`.
+/// The Decoder row's value: `HEVC WxH · VP9 | no VP9 · [AV1 [WxH] ·] <device table | ASSUMED>`.
 ///
 /// The AV1 segment appears only when the table lists an AV1 decoder row ([`Caps::av1`]), and it
 /// names that row's raster only when the row is stated on both axes and differs from the shared
@@ -2440,12 +2440,18 @@ mod tests {
     }
 
     /// Without AV1 in the table the Decoder value is exactly what it was before the AV1 segment
-    /// existed, in both measured states — the assumed set and the dev set must not change their
-    /// panel at all.
+    /// existed, in both measured states. VP9 is a table row too now (the fallback claims none), so
+    /// the baseline here is a table that lists it, and the fallback reads "no VP9".
     #[test]
     fn decoder_summary_is_unchanged_without_av1() {
         use plx_platform::i18n::msg;
-        let c = plx_platform::devcaps::Caps::assumed();
+        let mut c = plx_platform::devcaps::Caps::assumed();
+        assert_eq!(
+            decoder_summary(&c, false),
+            format!("HEVC 3840x2176 · {} · {}", msg::browse_diagnostics_no_vp9(), msg::browse_diagnostics_assumed()),
+            "the fallback never claims VP9"
+        );
+        c.vp9 = true;
         assert!(!c.av1);
         assert_eq!(
             decoder_summary(&c, false),
@@ -2477,6 +2483,7 @@ mod tests {
         use plx_platform::i18n::msg;
         let device = msg::browse_diagnostics_device_table();
         let mut c = plx_platform::devcaps::Caps::assumed();
+        c.vp9 = true;
         c.av1 = true;
         assert_eq!(
             decoder_summary(&c, true),
@@ -2516,6 +2523,7 @@ mod tests {
         for measured in [false, true] {
             let mut c = plx_platform::devcaps::Caps::assumed();
             c.hevc_max = (4096, 2304);
+            c.vp9 = true;
             c.av1 = true;
             c.av1_row = (4096, 2304, 60);
             let val = decoder_summary(&c, measured);
