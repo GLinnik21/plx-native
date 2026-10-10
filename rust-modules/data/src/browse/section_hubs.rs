@@ -361,14 +361,16 @@ impl SecHubs {
     }
 
     /// A row read has landed. `None` is a failed read. A page replaces the row's window (a page that
-    /// brought nothing new ends the row there); a re-read replaces the placeholders and restores
+    /// brought nothing new ends the row there, unless the ledger's walk advanced, which is kept
+    /// with the row left open); a re-read replaces the placeholders and restores
     /// the card count. Applied to the committed rows in place: the rows keep their number and their
     /// height, so nothing the page is looking at moves.
     fn land_row(&mut self, ask: &RowAsk, read: Option<Shelf>) -> bool {
         if self.inflight.take().is_some_and(|(out, withdrawn)| withdrawn && out == *ask) { return false; }
-        // A failed page stays asked for: the backoff below re-spawns it. The page does not re-ask
-        // while focus stays on the edge it asked from, and `cancel_page` drops the ask when focus
-        // leaves, so keeping it cannot read a page nobody waits for.
+        // A failed page stays asked for: the backoff below re-spawns it. While focus stays on the
+        // edge the shelf repeats the ask on its ladder (the same ask, which the store takes
+        // idempotently), and `cancel_page` drops it when focus leaves, so keeping it cannot read a
+        // page nobody waits for.
         let Some(next) = read else {
             self.ask_fails = self.ask_fails.saturating_add(1);
             self.ask_retry_left = backoff_frames(self.ask_fails);

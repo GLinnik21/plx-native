@@ -346,8 +346,9 @@ impl Shelf {
         true
     }
 
-    /// The page the owner should ask for this tick, if focus is near one edge of the row: at most one
-    /// per window per edge. `wanted` is whether this tick's [`on`](Self::on) returned a
+    /// The page the owner should ask for this tick, if focus is near one edge of the row: one per
+    /// window per edge, and the same one again each time it has stood unanswered for a rung of the
+    /// [`Retry`](super::Retry) ladder. `wanted` is whether this tick's [`on`](Self::on) returned a
     /// [`CardEvent::Want`](super::CardEvent::Want) (the trailing edge's latch lives there), `offset`
     /// is the window the source shows (`0` when it has nothing before it), and `active` is whether the
     /// owner shows the row at all. The owner maps the edge to its own store command, and asks

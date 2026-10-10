@@ -76,7 +76,7 @@
 //!   season the screen needs and evict the ones it does not (`pump_episode_pages` installs them).
 //! - `WantRelated{before, seen}` → `metadata::want_related` — slide the Related row's tail window
 //!   (`pump_related`, at the start of the frame, installs it).
-//! - `SeekRelated{at, seen}` → `metadata::want_related` — the same read, opened at a tail position.
+//! - `SeekRelated{at, seen}` → `metadata::ask_related` with `RelatedAsk::Seek` — the same read, opened at a tail position.
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
 //! - `SetWatchedLocal{sid, rk, on}` → `metadata::set_watched_local` — the optimistic half of a
 //!   view-state write, answers whether it actually changed anything.

@@ -188,8 +188,10 @@ pub enum CardEvent<E> {
     Activate(E),
     /// A hold on the focused card, which [`CardSource::holdable`] allows.
     Hold(E),
-    /// The visible window (plus look-ahead) reaches past `len`: the source needs cards up to
-    /// `range.end`. Emitted from Tick, once per `(len, end)`.
+    /// The source needs the cards in `range`: the visible window (plus look-ahead) reaches past
+    /// `len`, or (in a grid) a card in view is still unread, a range inside `len`. Emitted from
+    /// Tick, and again whenever the retry ladder is due while the need stands; an owner forwards
+    /// every one.
     Want(Range<usize>),
 }
 

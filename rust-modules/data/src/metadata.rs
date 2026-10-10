@@ -4760,7 +4760,8 @@ struct RelLanded {
     rk: String,
     /// The window the read started from. A landing on any other window is stale.
     from: (usize, usize),
-    /// `None` = the read failed: nothing installs, and the shelf asks again at its next edge.
+    /// `None` = the read failed: nothing installs, and the asker repeats it on its ladder while the need
+    /// stands (the shelf at either edge; `pump_seek` in the detail screen for a restore).
     window: Option<(Vec<crate::stores::paging::Row>, crate::stores::paging::PageInfo, Vec<TailHub>,
         crate::stores::paging::RowState)>,
 }
