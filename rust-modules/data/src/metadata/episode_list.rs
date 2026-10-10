@@ -7,12 +7,11 @@
 //! and `MetadataCmd::WantEpisodes` fetches the pages the screen reaches and evicts the ones it left.
 
 use super::Episode;
+/// Episodes per page, the shared page size: index `i` lives on page `i / PAGE`, row `i % PAGE`.
+pub use crate::stores::page_cache::PAGE;
 use crate::stores::page_cache::{kept_pages, Keep, MAX_LOADED};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Episodes per page. Index `i` lives on page `i / PAGE`, row `i % PAGE`.
-pub const PAGE: usize = 60;
 
 /// Source of [`EpisodeList::id`]. Process-wide, so no two lists ever share an id.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);

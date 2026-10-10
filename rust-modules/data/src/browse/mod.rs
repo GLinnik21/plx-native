@@ -59,16 +59,12 @@
 use plx_plex::plex::{SectionQuery, ServerId};
 use saved_view::ViewField;
 use crate::pms::{parse_item, PmsMovie};
-use crate::stores::page_cache::{kept_pages, Keep, MAX_LOADED};
+use crate::stores::page_cache::{kept_pages, Keep, MAX_LOADED, PAGE};
 use std::panic::catch_unwind;
 #[cfg(test)]
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-
-/// Page size for section listings. Two grid screens' worth (10 rows × 6) — big enough that a
-/// full-screen scroll rarely waits, small enough that a page parse stays invisible on-frame.
-const PAGE: usize = 60;
 
 /// The sections left most recently that keep the pages of the window they last showed. Every
 /// other section keeps its total and no pages, so a library a viewer has moved on from costs
