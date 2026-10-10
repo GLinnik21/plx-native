@@ -3929,7 +3929,7 @@ fn returning_to_a_previous_recent_page_does_not_load_the_next_page_again() {
 }
 
 #[test]
-fn a_pending_backward_page_is_requested_once_across_many_ticks() {
+fn a_pending_backward_page_is_repeated_on_a_ladder_not_every_tick() {
     let _guard = plx_base::testlock::serial();
     let mut state = plx_data::pms::PmsState::default();
     let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
@@ -3939,14 +3939,17 @@ fn a_pending_backward_page_is_requested_once_across_many_ticks() {
     s.snap.pos = 1.0;
     s.snap_target = 1.0;
     let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[5] };
-    let mut requests = 0;
+    let mut frames = Vec::new();
     for frame in 0..90 {
         let (_, out, _) = step(&mut s, snapshot.view(), Some(key),
             &ScreenEvent::Tick(Tick { ms: frame * 17, dt_us: 16_667 }));
-        requests += out.iter().filter(|fx| matches!(fx.fx,
-            Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { before: true, .. }))))).count();
+        if out.iter().any(|fx| matches!(fx.fx,
+            Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Page { before: true, .. }))))) { frames.push(frame); }
     }
-    assert_eq!(requests, 1);
+    // unanswered for 1.5 s: asked at once, then repeated at 0.25 s and 0.75 s, never every tick
+    assert_eq!(frames.first(), Some(&0));
+    assert!(frames.len() <= 3, "{frames:?}");
+    assert!(frames.windows(2).all(|w| w[1] - w[0] >= 14), "{frames:?}");
 }
 
 #[test]

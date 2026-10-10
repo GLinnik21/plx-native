@@ -402,6 +402,48 @@ fn a_launch_the_system_refused_is_not_a_failed_page() {
     plx_plex::plex::reset_servers_for_test();
 }
 
+// ---- an ask the store could not take is taken when the shelf repeats it ---------------------------
+//
+// The shelf repeats an unanswered ask on a ladder while focus stands in the edge zone
+// (`plx_ui::cards::Shelf::page_ask`); these pin that the store side of each dead end accepts the
+// repeat once what stopped it is over, with no other input between.
+
+#[test]
+fn a_page_given_up_after_three_failed_reads_is_read_again_by_the_next_ask() {
+    let _guard = plx_base::testlock::serial();
+    let mut owner = owner_with(RECENT_ID, RECENT, 100);
+    assert!(ask_row(&mut owner, RECENT_ID, RECENT, false).is_some());
+    for _ in 0..3 {
+        owner.state.srcs[0].fetching = false;
+        let _ = landed_fail(&mut owner.state.srcs[0]);
+    }
+    let source = &owner.state.srcs[0];
+    assert!(source.page.is_none(), "after three failures the page is dropped");
+    assert!(find_shelf(&source.last.as_ref().unwrap().shelves, RECENT_ID, RECENT).unwrap().more,
+        "and the row still says there is more");
+    assert!(ask_row(&mut owner, RECENT_ID, RECENT, false).is_some(), "the repeat of the ask starts a fresh read");
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
+#[test]
+fn an_ask_refused_for_a_withdrawn_read_is_taken_once_that_read_has_landed() {
+    let _guard = plx_base::testlock::serial();
+    let len = 100;
+    let mut owner = owner_with(RECENT_ID, RECENT, len);
+    let listing = move |start: usize, size: usize| Some(container(start, len, start..(start + size).min(len)));
+    let ghost = ask_row(&mut owner, RECENT_ID, RECENT, false).unwrap();
+    withdraw(&mut owner);
+    // something else was asked of the source since, so the ghost can no longer be taken back
+    owner.state.srcs[0].adoptable = false;
+    assert!(ask_row(&mut owner, RECENT_ID, RECENT, false).is_none(), "refused while the ghost is out");
+    assert!(ask_row(&mut owner, RECENT_ID, RECENT, false).is_none(), "and still refused: repeating does not stack reads");
+    answer(&mut owner, ghost, listing, batch(|_| true));
+    assert!(ask_row(&mut owner, RECENT_ID, RECENT, false).is_some(), "the next repeat is taken");
+    reset(&mut owner.state, &owner.adapter);
+    plx_plex::plex::reset_servers_for_test();
+}
+
 // ---- the preview rule ----------------------------------------------------------------------------
 
 const HUB_KEY: &str = "/hubs/sections/1/genre/7";

@@ -10,7 +10,7 @@ use plx_machine::machine::{
 use plx_machine::present::Provenance;
 
 use super::pool::{self, Drawn, RowPool};
-use super::{CardEvent, CardSource, Landed, SectionFrame, Seen, Tile};
+use super::{CardEvent, CardSource, Landed, Retry, SectionFrame, Seen, Tile};
 use crate::card_row::{self, CardRow, RowStyle};
 use crate::consts::SCR_W;
 use crate::screen::{
@@ -58,6 +58,8 @@ pub struct Shelf {
     /// The edge a page ask handed to the owner is out for, until it lands or is cancelled
     /// ([`Shelf::page_cancel`]).
     in_flight: Option<PageEdge>,
+    /// When the ask out is repeated if nothing answered it ([`Retry`]).
+    retry: Retry,
     /// The element the last tick had focused (`pool::key`), in the cell the row recorded: what
     /// tells a landing that moved the cards from a focus that moved over them.
     anchor: Option<(usize, u64)>,
@@ -97,7 +99,7 @@ struct WalkKey {
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
-        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, in_flight: None, anchor: None,
+        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, in_flight: None, retry: Retry::new(), anchor: None,
             margin: 0.0, dormant: false, slept: false, pool: RowPool::new(),
             warm: Warm { last: None, forward: true, walk: None } }
     }
@@ -147,6 +149,7 @@ impl Shelf {
     ) -> Option<CardEvent<H::Elem>> {
         match ev {
             ScreenEvent::Tick(t) => {
+                self.retry.tick(t.ms);
                 self.tick(t.dt(), cx, src);
                 self.warm_ahead(cx, src);
                 self.want(cx, src)
@@ -290,6 +293,7 @@ impl Shelf {
     pub fn reset_page_requests(&mut self) {
         self.asked = None;
         self.asked_before = None;
+        self.retry.reset();
     }
 
     /// The owner withdrew the ask itself (it left the row): there is nothing for
@@ -297,19 +301,23 @@ impl Shelf {
     /// answered is simply no longer in the store, and a late cancel for it is a no-op there.
     pub fn drop_page_flight(&mut self) {
         self.in_flight = None;
+        self.retry.reset();
     }
 
-    /// Request an earlier window once while its leading edge remains active.
-    /// Leaving the edge or landing another offset admits a new request.
+    /// Request an earlier window while its leading edge remains active: once per window, and again
+    /// when the ask has stood unanswered for a rung of the [`Retry`] ladder (the store may have
+    /// refused it for a reason that has passed, or given the page up). Leaving the edge or landing
+    /// another offset admits a new request.
     pub fn want_before(&mut self, offset: usize, active: bool) -> bool {
         if !active {
             self.asked_before = None;
             return false;
         }
         if self.asked_before == Some(offset) {
-            return false;
+            return self.in_flight == Some(PageEdge::Before) && self.retry.due();
         }
         self.asked_before = Some(offset);
+        self.retry.mark_fresh();
         true
     }
 
@@ -335,7 +343,10 @@ impl Shelf {
             let after = Self::near(PageEdge::After, focus, src.len(), offset);
             (active && wanted && after && !before).then_some(PageEdge::After)
         };
-        if edge.is_some() { self.in_flight = edge; }
+        if edge.is_some() {
+            self.in_flight = edge;
+            self.retry.sent();
+        }
         edge
     }
 
@@ -380,7 +391,11 @@ impl Shelf {
         let window = ((self.row.scroll_x() + SCR_W - self.style.margin_x) / pitch).ceil().max(0.0) as usize;
         let focus = super::focused_index(&cx.focus, self.entry, src).map_or(0, |i| i + 1);
         let end = window.max(focus).saturating_add(LOOK_AHEAD);
-        super::want(&mut self.asked, src.len(), end, src.more()).map(CardEvent::Want)
+        let retry = self.in_flight == Some(PageEdge::After) && self.retry.due();
+        let was = self.asked;
+        let ask = super::want(&mut self.asked, src.len(), end, src.more(), retry);
+        if ask.is_some() && self.asked != was { self.retry.mark_fresh(); }
+        ask.map(CardEvent::Want)
     }
 
     /// Request the artwork of the cards the focus is travelling toward, before they scroll in.
