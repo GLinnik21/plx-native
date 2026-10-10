@@ -2,7 +2,7 @@
 //! [`Grid`] on `FixtureHost`, plus focused tests for the pop rule, the geometry, the events and
 //! idle. No expected-failure list: every case passes on both components.
 use super::conformance::{self, CardHarness, Landing, Mount, Nb, Outcome};
-use super::{CardEvent, CardSource, Grid, GridSpec, ScrollMode, SectionFrame, Shelf};
+use super::{CardEvent, CardSource, Grid, GridSpec, PageEdge, ScrollMode, SectionFrame, Shelf};
 use crate::card_row::{RowStyle, TileLabel};
 use crate::fixture::{FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
 use crate::poster_grid;
@@ -924,6 +924,72 @@ fn shelf_wants_more_at_the_tail() {
 #[test]
 fn grid_wants_more_at_the_tail() {
     want_events::<Grid>();
+}
+
+// ---- the page edges (Home's paging rule, lifted) ---------------------------------------------
+
+/// One frame of an owner's loop for its row: the tick, then `page_ask` on what the tick asked for.
+fn page_frame(r: &mut Rig<Shelf>, offset: usize, active: bool) -> Option<PageEdge> {
+    r.ms += MS;
+    let (want, _) = r.feed(ScreenEvent::Tick(Tick { ms: r.ms, dt_us: 16_667 }));
+    let cx = cx9_pressed(&r.view, r.ms, r.press, r.focus, r.pressed.or(r.focus));
+    r.sect.page_ask(&cx, &r.src, matches!(want, Some(CardEvent::Want(_))), offset, active)
+}
+
+#[test]
+fn page_ask_asks_once_per_window_at_the_trailing_edge() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Dir);
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After), "the first tick near the tail asks");
+    assert_eq!(page_frame(&mut r, 0, true), None, "the same window is asked once");
+    r.sect.reset_page_requests();
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After), "a reset (focus left the row) asks again");
+}
+
+#[test]
+fn page_ask_is_silent_in_the_middle_of_the_row() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(110, By::Dir);
+    for _ in 0..5 {
+        assert_eq!(page_frame(&mut r, 24, true), None, "neither edge is near at card 10");
+    }
+}
+
+#[test]
+fn page_ask_asks_the_leading_edge_only_when_the_source_has_cards_before() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(102, By::Dir);
+    assert_eq!(page_frame(&mut r, 0, true), None, "nothing before the window: no leading ask");
+    assert_eq!(page_frame(&mut r, 24, true), Some(PageEdge::Before), "cards before: ask once");
+    assert_eq!(page_frame(&mut r, 24, true), None, "the same leading window is asked once");
+    r.land_focus(112, By::Dir);
+    assert_eq!(page_frame(&mut r, 24, true), None, "leaving the edge admits a new request");
+    r.land_focus(102, By::Dir);
+    assert_eq!(page_frame(&mut r, 24, true), Some(PageEdge::Before), "returning to the edge asks again");
+}
+
+#[test]
+fn page_ask_asks_nothing_while_the_row_is_not_shown() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Dir);
+    assert_eq!(page_frame(&mut r, 0, false), None, "an inactive row asks for no page");
+}
+
+#[test]
+fn page_ask_yields_at_most_one_edge_a_frame() {
+    // ten cards, focus on the sixth: near both edges. The leading ask wins, and the trailing one is
+    // held while the row shows cards before it (Home's rule: `before` suppresses the forward ask).
+    let mut r = settled::<Shelf>(10);
+    r.src.more = true;
+    r.land_focus(105, By::Dir);
+    assert_eq!(page_frame(&mut r, 24, true), Some(PageEdge::Before));
+    // one more card lands: the tail now wants a page too, and the leading latch still holds the frame
+    r.src.elems.push(110);
+    assert_eq!(page_frame(&mut r, 24, true), None, "the trailing ask waits behind the leading one");
 }
 
 // ---- idle ------------------------------------------------------------------------------------

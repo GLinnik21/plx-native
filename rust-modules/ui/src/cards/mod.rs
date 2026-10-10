@@ -80,7 +80,7 @@ pub use crate::poster_grid::{
     STYLE as GRID_STYLE,
 };
 pub use grid::{Grid, GridSpec, ScrollMode};
-pub use shelf::Shelf;
+pub use shelf::{PageEdge, Shelf, PAGE_EDGE_CARDS};
 pub use stack::{Kind, SectionSpec, Stack, StackEvent, StackMemory, StackPage, StackView};
 
 #[cfg(any(test, feature = "test-support"))]
