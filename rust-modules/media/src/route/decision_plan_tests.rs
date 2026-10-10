@@ -1618,3 +1618,50 @@ fn selected_dvd_subtitle_names_subtitle_stream_id_on_mde() {
     );
     plx_plex::plex::reset_servers_for_test();
 }
+
+/// #584: a file whose only audio is DTS-HD MA must never direct-play on a television whose codec
+/// table has no DTS decoder, even though the server's MDE (which judged the profile, not the
+/// track the TV can feed) answers `directplay`. The server converts the audio on a video-copy
+/// remux instead; a direct play would build an audio sink for a stream the pipeline cannot decode
+/// and never start. Covers the codec spellings PMS uses, and an item whose tracks are not loaded
+/// yet (the Media-level audio codec alone names the audio).
+#[test]
+#[cfg(feature = "devtriggers")]
+fn an_undecodable_dts_only_file_does_not_direct_play_when_mde_says_it_may() {
+    use std::time::Duration;
+    for (codec, with_tracks) in [("dca", true), ("dts", true), ("dca", false), ("dts", false)] {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        assert!(plx_net::net::global_init());
+        let (port, rx, server) = plan_pms_within(3, MDE_DIRECTPLAY, Duration::from_secs(3), false);
+        let sid = plx_plex::plex::register_for_test("dts-only", "127.0.0.1", port, "token", "dts-only-client");
+        let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
+        let tracks = if with_tracks {
+            vec![plx_data::metadata::Stream {
+                id: 29381,
+                index: 1,
+                lang_code: "eng".into(),
+                codec: codec.into(),
+                channels: 6,
+                default: true,
+                selected: true,
+                profile: "dts-hd ma".into(),
+                ..Default::default()
+            }]
+        } else {
+            Vec::new()
+        };
+        env.cached_item = Some(fourk_item(sid, tracks));
+        let plan = build_stream(
+            &plx_base::task::OffFrame::for_test(), "rk-4k", "/library/parts/36013/1/file.mkv", "hevc", codec, &env,
+        );
+        let requests = rx.recv_timeout(Duration::from_secs(15)).expect("PMS never saw the resolve");
+        server.join().unwrap();
+        assert!(
+            !plan.url.contains("/library/parts/"),
+            "{codec} (tracks loaded: {with_tracks}) must not direct-play: {} / {requests:?}",
+            plan.url
+        );
+        plx_plex::plex::reset_servers_for_test();
+    }
+}

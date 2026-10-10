@@ -1730,8 +1730,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         else { server_decision(client, rk, &session, carry_audio_id, subtitle_id) }
     };
     // A direct play needs a track to play: with none the server converts the intended one, which
-    // is not Original whatever MDE said about the (omitted) audio.
-    let mut directplay = (audio_sel.is_some() || tracks.is_empty())
+    // is not Original whatever MDE said about the (omitted) audio. With no track list yet, the
+    // Media-level audio codec stands in: one the TV cannot decode (DTS-HD MA on a set with no DTS
+    // row, #584) is the same case, since MDE judged the profile and not what the pipeline feeds.
+    let mut directplay = (audio_sel.is_some()
+        || (tracks.is_empty() && (acodec.is_empty() || audio_direct_plays(env.direct_play_mode, acodec, 0))))
         && mde.as_ref().is_some_and(|v| v.original && (!forced || !v.video_forbids_copy));
     if forced {
         let failure = if part.is_empty() { Some(ForcedFailure::NoOriginal) }
