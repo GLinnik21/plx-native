@@ -320,6 +320,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_hub_list_window_keeps_the_preview_count_and_appends_its_window() {
+        use super::{home_hubs_path, library_hubs_path};
+        use super::super::paging::paged_path;
+        let req = PageReq { start: 32, size: 16 };
+        assert_eq!(paged_path(&home_hubs_path(12), req),
+            "/hubs?count=12&excludeContinueWatching=1&X-Plex-Container-Start=32&X-Plex-Container-Size=16");
+        assert_eq!(paged_path(&library_hubs_path(3, 12), req),
+            "/hubs/sections/3?count=12&X-Plex-Container-Start=32&X-Plex-Container-Size=16");
+    }
+
     /// **Collections are asked for as full rows.** Without `includeCollections=1` the server
     /// files its `collection` hub as tag-shaped `Directory[]` rows with no `ratingKey` and no
     /// `thumb` (measured, docs/pms-api.md §2b), and the search shelf can neither draw the

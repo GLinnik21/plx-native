@@ -276,3 +276,99 @@ fn a_refresh_gives_an_unpaged_row_the_cards_it_now_shows() {
     assert!(hubs.commit_staged(true));
     assert_eq!(hubs.committed[0].row.kept.len(), 5, "the refresh's own preview is what the row shows now");
 }
+
+// ---- the hub list read in windows of hubs ----------------------------------------------------
+
+mod windows {
+    use super::*;
+    use crate::stores::paging::hub_list_tests::HubServer;
+    use crate::stores::paging::HUB_WINDOW;
+
+    /// The held rows and one window of previews: what a read may hold at once, however long the list.
+    const PEAK_MAX: usize = (HOLD_ROWS + HUB_WINDOW) * 12;
+
+    fn read(server: &mut HubServer, hold: (usize, usize)) -> Vec<Shelf> {
+        PEAK_CARDS.with(|peak| peak.set(0));
+        parse_hub_list(sid(), 1, hold, |req| server.answer(req)).expect("the list reads").shelves
+    }
+
+    fn peak() -> usize { PEAK_CARDS.with(|peak| peak.get()) }
+
+    fn cards_of(shelves: &[Shelf]) -> usize { shelves.iter().map(|shelf| shelf.items.len()).sum() }
+
+    #[test]
+    fn a_400_row_section_is_read_in_windows_and_holds_only_the_ring_and_one_window() {
+        let mut server = HubServer::new(400);
+        let shelves = read(&mut server, (0, HOLD_ROWS - 1));
+        assert!(server.widest <= HUB_WINDOW, "no response carries more than one window of hubs");
+        assert_eq!(server.requests, 400usize.div_ceil(HUB_WINDOW));
+        assert!(peak() <= PEAK_MAX, "peak held cards {} stay within {PEAK_MAX}", peak());
+        assert_eq!(shelves.len(), 400);
+        assert_eq!(cards_of(&shelves), HOLD_ROWS * 12);
+    }
+
+    #[test]
+    fn every_row_is_reachable_and_a_released_row_keeps_what_it_needs_to_come_back() {
+        let mut server = HubServer::new(400);
+        let shelves = read(&mut server, (0, HOLD_ROWS - 1));
+        for (row, shelf) in shelves.iter().enumerate() {
+            assert_eq!(shelf.id, format!("movie.row{row}"));
+            assert_eq!(shelf.key, format!("/hubs/sections/1/row{row}"));
+            assert_eq!(shelf.released(), row >= HOLD_ROWS, "row {row}");
+        }
+        let last = &shelves[399];
+        assert_eq!((last.shown, last.total, last.more), (12, 500, true), "a descriptor keeps what it showed and its listing");
+    }
+
+    #[test]
+    fn a_refresh_while_the_user_is_on_row_200_keeps_that_rows_slot_window_and_cards() {
+        let mut server = HubServer::new(400);
+        let mut hubs = SecHubs { armed: true, ..Default::default() };
+        hubs.land_ok(read(&mut server, (192, 208)));
+        hubs.set_hold(192, 208);
+        assert!(hubs.commit_staged(true));
+        // the user has paged row 200 forward
+        Arc::make_mut(&mut hubs.committed)[200].offset = 24;
+        Arc::make_mut(&mut hubs.committed)[200].end = 48;
+        hubs.land_ok(read(&mut server, (192, 208)));
+        assert!(hubs.commit_staged(true));
+        assert_eq!(hubs.committed[200].id, "movie.row200");
+        assert_eq!((hubs.committed[200].offset, hubs.committed[200].end), (24, 48), "the window stays where it was");
+        assert!(!hubs.committed[200].released());
+        assert!(hubs.committed[0].released());
+        assert!(held_cards(&hubs) <= HOLD_ROWS * MAX_SHELF_ITEMS);
+    }
+
+    #[test]
+    fn a_server_that_ignores_paging_still_yields_every_row() {
+        let mut server = HubServer::new(400);
+        server.honours = false;
+        server.reports = false;
+        let shelves = read(&mut server, (0, HOLD_ROWS - 1));
+        assert_eq!((server.requests, shelves.len()), (1, 400));
+        assert_eq!(cards_of(&shelves), HOLD_ROWS * 12);
+        assert!(peak() <= PEAK_MAX);
+    }
+
+    #[test]
+    fn a_list_that_changes_between_windows_ends_complete_with_no_row_twice() {
+        let mut server = HubServer::new(100);
+        let mut calls = 0;
+        let shelves = parse_hub_list(sid(), 1, (0, HOLD_ROWS - 1), |req| {
+            calls += 1;
+            if calls == 3 { server.rows.insert(5, 900); }
+            server.answer(req)
+        }).unwrap().shelves;
+        let ids: Vec<String> = shelves.iter().map(|shelf| shelf.id.clone()).collect();
+        let want: Vec<String> = server.rows.iter().map(|r| format!("movie.row{r}")).collect();
+        assert_eq!(ids, want);
+        assert_eq!(cards_of(&shelves), HOLD_ROWS * 12, "and the restart left no cards from the first read");
+    }
+
+    #[test]
+    fn a_short_section_list_is_one_request() {
+        let mut server = HubServer::new(7);
+        let shelves = read(&mut server, (0, HOLD_ROWS - 1));
+        assert_eq!((server.requests, shelves.len()), (1, 7));
+    }
+}
