@@ -127,6 +127,28 @@ impl KeyRegistry {
         elem
     }
 
+    /// Drop the oldest keys of `region` that `live` does not hold until at most `cap` remain;
+    /// true when any went. Ordinals only grow, so a dropped number is never minted again.
+    pub(super) fn prune(&mut self, region: KeyRegion, cap: usize, live: impl Fn(u32) -> bool) -> bool {
+        let count = self.keys.iter().filter(|key| identity_region(&key.identity) == region).count();
+        if count <= cap { return false; }
+        let mut old: Vec<u32> = self.keys.iter()
+            .filter(|key| identity_region(&key.identity) == region && !live(key.elem))
+            .map(|key| key.elem).collect();
+        old.sort_unstable();
+        old.truncate(count - cap);
+        if old.is_empty() { return false; }
+        let drop: std::collections::HashSet<u32> = old.into_iter().collect();
+        Arc::make_mut(&mut self.keys).retain(|key| !drop.contains(&key.elem));
+        self.identity_index.clear();
+        self.elem_index.clear();
+        for (at, key) in self.keys.iter().enumerate() {
+            self.identity_index.entry(key.identity.clone()).or_insert(at);
+            self.elem_index.entry(key.elem).or_insert(at);
+        }
+        true
+    }
+
     pub(super) fn key(&self, elem: u32) -> Option<&LibraryKey> {
         self.keys.get(*self.elem_index.get(&elem)?)
     }
@@ -148,6 +170,7 @@ impl KeyRegistry {
         Some((GroupId(key.last_group), key.last_index as usize))
     }
 
+    #[cfg(test)]
     pub(super) fn update_last_place(&mut self, elem: u32, group: GroupId, index: usize) {
         let at = self.elem_index[&elem];
         if self.keys[at].last_group != group.0 || self.keys[at].last_index != index as u32 {

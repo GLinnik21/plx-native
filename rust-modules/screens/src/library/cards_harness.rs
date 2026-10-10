@@ -143,7 +143,7 @@ impl Harness {
 impl CardHarness for Harness {
     fn cards(&self) -> Vec<u32> {
         match self.set {
-            Set::Grid => self.screen.pair.detail.elems.clone(),
+            Set::Grid => (0..self.screen.pair.detail.total()).filter_map(|i| self.screen.pair.detail.elem_at(i)).collect(),
             Set::Shelf => self.screen.shelves.first().map(|s| s.elems.clone()).unwrap_or_default(),
         }
     }

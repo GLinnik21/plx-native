@@ -203,7 +203,7 @@ fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_
         assert_eq!(page.kind, SecKind::Show);
         assert_eq!(page.wanted_kind, Some(SecKind::Show));
         assert_eq!(page.readout, Readout::Loading);
-        assert!(page.pair.detail.elems.is_empty());
+        assert!(page.pair.detail.total() == 0);
         assert!(!effects.iter().any(|effect| matches!(
             effect,
             AppFx::Store(_, StoreCmd::Browse(BrowseCmd::Addressed { .. }))
@@ -241,7 +241,7 @@ fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_
             work: LibraryWork::Commit { select: true, .. } })) if target.section == 2)));
     assert!(!effects.iter().any(|effect| matches!(effect,
         AppFx::Store(_, StoreCmd::Browse(BrowseCmd::Addressed { target, .. })) if target.section == 1)));
-    assert!(page.pair.detail.elems.is_empty());
+    assert!(page.pair.detail.total() == 0);
     fixture.publish(1, 12);
     fixture.step(
         &mut page,
@@ -251,7 +251,7 @@ fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_
     assert_eq!(page.kind, SecKind::Show);
     assert_eq!(page.wanted_kind, None);
     assert_eq!(page.readout, Readout::Grid);
-    assert_eq!(page.pair.detail.elems.len(), 12);
+    assert_eq!(page.pair.detail.total(), 12);
     assert!((0..12).all(|i| fixture.listing.view().item(i).unwrap().kind == 1));
 }
 

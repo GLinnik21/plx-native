@@ -1,7 +1,7 @@
 //! Fixed-band rail owned by MasterDetail. Only Input owns its focused/remembered letter.
 use std::ffi::CString;
 use super::identity::{KeyRegistry, KeyRegion, region_of_elem};
-use super::layout::{rail_geom, rail_scroll_target, MAX_LETTERS, RAIL_CAP_PAD, RAIL_PITCH, RAIL_TRACK_W};
+use super::layout::{rail_geom, rail_scroll_target, RAIL_CAP_PAD, RAIL_PITCH, RAIL_TRACK_W};
 use crate::registry::{LibraryIdentity, LibraryLike, LibrarySectionIdentity};
 use plx_ui::consts::K_SCROLL;
 use plx_ui::frame::Budget;
@@ -54,7 +54,7 @@ impl RailPart {
         self.elems.clear(); self.labels.clear(); self.starts.clear();
         if view.total() <= 0 || !view.rail_available() { self.clear_projection(); return; }
         let section = LibrarySectionIdentity { sid: id.sid, key: id.section };
-        for (index, (label, _)) in view.letters().iter().take(MAX_LETTERS).enumerate() {
+        for (index, (label, _)) in view.letters().iter().enumerate() {
             self.starts.push(view.letter_start(index));
             self.elems.push(keys.register(LibraryIdentity::Rail { section: section.clone(), label: label.clone() }, self.group, index));
             self.labels.push(CString::new(label.as_str()).unwrap_or_default());

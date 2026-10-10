@@ -31,6 +31,8 @@ mod foreign_replacement_tests;
 #[cfg(test)]
 mod selector_matrix_tests;
 
+use std::collections::HashSet;
+use std::ops::Range;
 use std::borrow::Cow;
 use plx_data::browse::{SecFetch, SecKind};
 use crate::registry::{
@@ -180,6 +182,8 @@ pub struct LibraryScreen {
     scroll_target: f32,
     restore_scroll: Option<f32>,
     viewports: Vec<LibraryViewport>,
+    /// The grid key an `Enter::Fresh` names to seat, kept projected until the engine has seated it.
+    seat_wanted: Option<u32>,
     pending: PendingTransactions,
     page_fade: Xfade,
     grid_fade: Xfade,
@@ -232,7 +236,7 @@ impl LibraryScreen {
             shelf_publication: None, layout, target_layout: layout,
             run: ShelfRun::default(), target_run: ShelfRun::default(),
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
-            viewports: Vec::new(),
+            viewports: Vec::new(), seat_wanted: None,
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
             readout: Readout::Loading, live: true, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
             library_capsules: plx_ui::widgets::TabStrip::new(),
@@ -290,7 +294,7 @@ impl LibraryScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_content(&self) -> (f32, f32, bool, i64, usize) {
         (self.page_fade.alpha(), self.grid_fade.alpha(), self.readout == Readout::Loading,
-            self.section.as_ref().map_or(-1, |section| section.key), self.pair.detail.elems.len())
+            self.section.as_ref().map_or(-1, |section| section.key), self.pair.detail.total())
     }
 
     fn reseat<H: LibraryLike>(&self, focus: FocusTarget<u32>, fx: &mut Effects<'_, H>) {
@@ -359,6 +363,8 @@ impl LibraryScreen {
                 self.viewports.retain(|old| old.epoch != viewport.epoch || old.section != viewport.section);
                 self.viewports.push(viewport);
             }
+            // Viewports of an epoch that is no longer current can never be looked up again.
+            if self.epoch != epoch { self.viewports.retain(|old| Some(old.epoch) == epoch); }
             self.ground_seeded = false;
             self.shelves.clear();
             self.shelf_publication = None;
@@ -431,6 +437,7 @@ impl LibraryScreen {
         let publication = hubs.id().zip(hubs.revision());
         if self.shelf_publication != publication {
             let mut old = std::mem::take(&mut self.shelves);
+            let previous: HashSet<u32> = old.iter().flat_map(|row| row.elems.iter().copied()).collect();
             if let Some(section) = &identity {
                 for (index, shelf) in hubs.shelves().iter().enumerate() {
                     let group = GroupId(self.keys.register(
@@ -466,10 +473,53 @@ impl LibraryScreen {
                 }
             }
             self.shelf_publication = publication;
+            // Rotating refetches mint a key per new item: keep the current shelves, the previous
+            // publication's (a focus on one recovers through it) and the focus; above twice that
+            // plus 256 the oldest others go.
+            let current: HashSet<u32> = self.shelves.iter().flat_map(|row| row.elems.iter().copied()).collect();
+            let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
+            let cap = 2 * (current.len() + previous.len()) + 256;
+            self.keys.prune(KeyRegion::Shelf, cap, |elem| current.contains(&elem) || previous.contains(&elem) || Some(elem) == focus);
         }
-        self.pair.detail.refresh(cx, &mut self.keys);
+        self.project_grid(cx);
         self.relayout(cx.focus.current);
+        // The relayout hands the grid this frame's scroll, and with it the window it will paint:
+        // a cell it can paint or step to must hold a key in the frame, so project again (a
+        // no-op when the window did not move).
+        self.project_grid(cx);
         self.pair.master.refresh(cx, &mut self.keys);
+    }
+
+    fn project_grid<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+        let (ranges, pins) = self.grid_wanted(cx);
+        self.pair.detail.set_pins(pins);
+        self.pair.detail.refresh(cx, &mut self.keys, ranges);
+    }
+
+    /// The slot ranges the grid keeps keys for, and the keys a prune never drops. The data driver's
+    /// window (`Want`) is the visible rows with a row of look-ahead each side; the same rows at
+    /// the scroll TARGET (a jump to a letter is far from where the scroll is now), and around the
+    /// focused and the remembered slot, so a seat is always on a projected key.
+    fn grid_wanted<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> (Vec<Range<usize>>, Vec<u32>) {
+        let cols = self.layout.cols();
+        let rows = |(lo, hi): (usize, usize)| lo.saturating_sub(1) * cols..(hi + 1) * cols;
+        let visible = |layout: &Layout, scroll: f32| if layout.rows == 0 { (0, layout.rows_per_screen()) }
+            else { layout.visible_rows(scroll) };
+        let mut ranges = vec![rows(visible(&self.layout, self.scroll.pos)),
+            rows(visible(&self.target_layout, self.scroll_target))];
+        let group = self.pair.groups_config().detail;
+        let total = H::listing(cx).total().max(0) as usize;
+        ranges.push(self.pair.detail.window_of(total));
+        let mut pins = Vec::new();
+        let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
+        for elem in [focus, cx.focus.remembered(group), self.seat_wanted].into_iter().flatten() {
+            if region_of_elem(elem) != Some(KeyRegion::Grid) { continue; }
+            pins.push(elem);
+            if let Some((_, index)) = self.keys.last_place(elem) {
+                ranges.push(rows((index / cols, index / cols + 1)));
+            }
+        }
+        (ranges, pins)
     }
 
     /// Feed an event to every hub shelf's card section: focus moves and the tick that steps them.
@@ -493,7 +543,7 @@ impl LibraryScreen {
         self.run.set(self.shelves.iter().map(|row| layout::shelf_pitch(row.landscape, row.cards.band_expand())));
         self.target_run.set(self.shelves.iter().map(|row| layout::shelf_pitch(row.landscape,
             f32::from(focus.is_some_and(|key| row.elems.contains(&key.elem))))));
-        let rows = self.pair.detail.elems.len().div_ceil(self.layout.cols());
+        let rows = self.pair.detail.total().div_ceil(self.layout.cols());
         // A grid transaction's commit empties the store (`browse::requery`) while the grid is
         // dark and its answer is in flight. The shelves, heading and TYPE chip around it are
         // NOT dark: sizing the document from the empty interim would shrink `max_scroll` and
@@ -570,6 +620,13 @@ impl LibraryScreen {
     }
 
     fn reveal<H: LibraryLike>(&mut self, key: FocusKey<u32>, by: By, cx: &Cx<'_, H>) {
+        // A seat on a grid cell the projection has not reached (a jump or a restore) projects the
+        // cell's neighbourhood before the page reads its row.
+        if region_of_elem(key.elem) == Some(KeyRegion::Grid) && self.pair.detail.index_of(key.elem).is_none() {
+            if let Some((_, index)) = self.keys.last_place(key.elem) {
+                self.pair.detail.elem_for(cx, &mut self.keys, index, self.layout.cols());
+            }
+        }
         self.relayout(Some(key));
         let want = if let Some(index) = self.pair.detail.index_of(key.elem) {
             Some(self.target_layout.row_reveal(index / self.layout.cols()))
@@ -599,9 +656,9 @@ impl LibraryScreen {
         self.pair.master.refresh(cx, &mut self.keys);
     }
 
-    fn follow<H: LibraryLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
+    fn follow<H: LibraryLike>(&mut self, elem: u32, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let Some(index) = self.pair.master.start_for_elem(elem) else { return };
-        let Some(target) = self.pair.detail.elem_at(index) else { return };
+        let Some(target) = self.pair.detail.elem_for(cx, &mut self.keys, index, self.layout.cols()) else { return };
         fx.remember(self.pair.groups_config().detail, target);
         self.scroll_target = self.target_layout.with_grid_focus(None).row_reveal(index / self.layout.cols());
         fx.invalidate(Provenance::Input);
@@ -721,7 +778,7 @@ impl LibraryScreen {
             }
             return Handled::Yes;
         }
-        if region_of_elem(elem) == Some(KeyRegion::Rail) { self.follow(elem, fx); return Handled::Yes; }
+        if region_of_elem(elem) == Some(KeyRegion::Rail) { self.follow(elem, cx, fx); return Handled::Yes; }
         if let Some(index) = self.shelves.iter().position(|row| row.heading_elem() == Some(elem)) {
             // OK on a linked heading opens the collection its shelf lists.
             let hubs = H::section_hubs(cx);
@@ -812,7 +869,7 @@ impl LibraryScreen {
             LibraryCmd::FocusGrid { row, col } => {
                 if col >= self.layout.cols() { return Handled::No; }
                 let Some(index) = row.checked_mul(self.layout.cols()).and_then(|i| i.checked_add(col)) else { return Handled::No };
-                let Some(elem) = self.pair.detail.elem_at(index) else { return Handled::No };
+                let Some(elem) = self.pair.detail.elem_for(cx, &mut self.keys, index, self.layout.cols()) else { return Handled::No };
                 self.initial = false; // An explicit owned command supersedes the pending boot seat.
                 self.provisional = None;
                 self.reseat(FocusTarget::Elem(self.key(elem)), fx);
@@ -844,9 +901,11 @@ impl LibraryScreen {
             }
             LibraryCmd::Page(direction) => {
                 let Some((row, col)) = self.grid_position(cx.focus.current) else { return Handled::No };
-                let rows = self.pair.detail.elems.len().div_ceil(self.layout.cols());
+                let total = self.pair.detail.total();
+                let rows = total.div_ceil(self.layout.cols());
                 let next = row.saturating_add_signed(direction.signum() as isize * 2).min(rows.saturating_sub(1));
-                if let Some(elem) = self.pair.detail.elem_at((next * self.layout.cols() + col).min(self.pair.detail.elems.len().saturating_sub(1))) {
+                if let Some(elem) = self.pair.detail.elem_for(cx, &mut self.keys,
+                    (next * self.layout.cols() + col).min(total.saturating_sub(1)), self.layout.cols()) {
                     self.reseat(FocusTarget::Elem(self.key(elem)), fx);
                 }
             }
@@ -854,7 +913,7 @@ impl LibraryScreen {
                 let current = cx.focus.current.filter(|key| key.entry == self.entry);
                 let group = current.and_then(|key| <Self as Focusable<H>>::group_of(self, &key.elem, cx));
                 if self.sweep_down && self.grid_position(current).is_some_and(|(row, _)|
-                    row + 1 >= self.pair.detail.elems.len().div_ceil(self.layout.cols())) {
+                    row + 1 >= self.pair.detail.total().div_ceil(self.layout.cols())) {
                     self.sweep_down = false;
                 } else if !self.sweep_down && group == Some(self.first_group()) {
                     self.sweep_down = true;
@@ -887,7 +946,7 @@ impl LibraryScreen {
                     7 => return self.activate(FILTER, false, cx, fx),
                     12 | 13 => {
                         let letter = if step % 14 == 12 { self.pair.master.elems.last() } else { self.pair.master.elems.first() };
-                        if let Some(elem) = letter { self.follow(*elem, fx); }
+                        if let Some(elem) = letter { self.follow(*elem, cx, fx); }
                     }
                     // Menu steps are delivered to their actual input-owning entry by the bridge.
                     _ => {}
@@ -930,7 +989,15 @@ impl LibraryScreen {
         match ev {
             ScreenEvent::Mount | ScreenEvent::StoreChanged(..) => { self.sync(cx); }
             ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.sync(cx); }
-            ScreenEvent::Enter(_) => { self.live = true; self.sync(cx); }
+            ScreenEvent::Enter(enter) => {
+                self.live = true;
+                // The engine seats the target right after this event, so a key it names must hold
+                // a projected slot by then: pinned and projected until the page's next tick.
+                if let Enter::Fresh { focus: FocusTarget::Elem(key) } = enter {
+                    self.seat_wanted = Some(key.elem).filter(|_| key.entry == self.entry);
+                }
+                self.sync(cx);
+            }
             ScreenEvent::Cover => { self.live = false; }
             ScreenEvent::Uncover => { self.live = true; self.sync(cx); }
             ScreenEvent::WillLeave(_) => { self.save_cursor(cx, fx); self.flush(fx); }
@@ -993,18 +1060,19 @@ impl LibraryScreen {
                 // Only a move within the rail (or direct pointer entry) jumps to its first title.
                 if matches!(outcome, MasterOutcome::Follow(_))
                     && (from_group == Some(self.pair.groups_config().master) || *by == By::Pointer) {
-                    self.follow(to.elem, fx);
+                    self.follow(to.elem, cx, fx);
                 }
                 self.reveal(*to, *by, cx);
             }
             ScreenEvent::Tick(tick) => {
+                self.seat_wanted = None;
                 self.sync(cx);
                 if self.watch_readout(cx) {
                     fx.invalidate(Provenance::Landing(fx.from()));
                 }
                 self.plaintext_alert.update(tick.dt());
                 if self.grid_reset_pending {
-                    if let Some(elem) = self.pair.detail.elem_at(0) {
+                    if let Some(elem) = self.pair.detail.elem_for(cx, &mut self.keys, 0, self.layout.cols()) {
                         fx.remember(self.pair.groups_config().detail, elem);
                         self.grid_reset_pending = false;
                         if cx.focus.current.is_some_and(|key| key.entry == self.entry && region_of_elem(key.elem) == Some(KeyRegion::Grid)) {
@@ -1075,6 +1143,9 @@ impl LibraryScreen {
                         self.scroll_target = (self.scroll_target + shift).clamp(0.0, max);
                     }
                     self.relayout(focused);
+                    // The scroll stepped and the grid was handed it: the cells it paints this
+                    // frame (its window moved with the step) must hold keys before it draws.
+                    if self.wanted_kind.is_none() { self.project_grid(cx); }
                     let hint = self.hint_input(cx);
                     self.hold_hint.step(hint, tick.ms, dt, &mut |ev| fx.note(ev));
                     // A first seat that applies a bookmarked scroll clamps it to the document, so
@@ -1115,7 +1186,9 @@ impl LibraryScreen {
                 // Cover pauses its control motion; it must not stop the query just committed above.
                 if let Some(target) = self.address(cx).filter(|_| self.wanted_kind.is_none()) {
                     let (lo, hi) = self.layout.visible_rows(self.scroll.pos);
-                    self.store(target, LibraryWork::Want { lo: lo.saturating_sub(1) * self.layout.cols(), hi: (hi + 1) * self.layout.cols() }, fx);
+                    let focus = cx.focus.current.filter(|key| key.entry == self.entry)
+                        .and_then(|key| self.pair.detail.index_of(key.elem));
+                    self.store(target, LibraryWork::Want { lo: lo.saturating_sub(1) * self.layout.cols(), hi: (hi + 1) * self.layout.cols(), focus }, fx);
                     self.store(target, LibraryWork::Letters, fx);
                     let at_head = self.scroll.pos.abs() < 1.0 && self.scroll.vel.abs() < 1.0 && self.scroll_target.abs() < 0.5;
                     fx.push(Fx::App(AppFx::Library(LibraryReq::PublishShelves {
@@ -1207,7 +1280,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
                     ..row_group(STATUS_GROUP, 1, rect, ElemKind::Control) });
             }
         }
-        if !self.pair.detail.elems.is_empty() && self.pair.master.eligible(cx) {
+        if self.pair.detail.total() > 0 && self.pair.master.eligible(cx) {
             self.pair.groups(cx, out);
         } else {
             self.pair.detail.groups(cx, out);
@@ -1402,7 +1475,7 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
         }
         if self.layout.grid_head { document.push(self.toolbar); }
         if self.readout == Readout::Failed { document.push(STATUS_GROUP); }
-        if !self.pair.detail.elems.is_empty() { document.push(self.pair.groups_config().detail); }
+        if self.pair.detail.total() > 0 { document.push(self.pair.groups_config().detail); }
         for pair in document.windows(2) {
             out.push(Link { from: pair[0], dir: Dir::Down, to: pair[1] });
             out.push(Link { from: pair[1], dir: Dir::Up, to: pair[0] });

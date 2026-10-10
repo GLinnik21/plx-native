@@ -458,6 +458,9 @@ pub enum LibraryWork {
     Want {
         lo: usize,
         hi: usize,
+        /// The focused slot, when focus is on the grid: its page stays loaded (`Keep::focus`)
+        /// however far the wanted window has moved from it.
+        focus: Option<usize>,
     },
     Letters,
     Genres,

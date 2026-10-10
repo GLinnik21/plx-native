@@ -781,6 +781,8 @@ pub struct BrowseState {
     /// Wanted item-index range (inclusive lo, exclusive hi) — set by the grid each frame from its
     /// visible rows + lookahead; [`pump`] fetches the first missing page inside it.
     want: (usize, usize),
+    /// The grid's focused slot, sent with [`Self::want`]; the landing keeps its page.
+    focus: Option<usize>,
     /// The sections left most recently, newest first, each with the window it last showed (see
     /// [`RECENT_SECTIONS`]).
     left: Vec<(usize, (usize, usize))>,
@@ -877,6 +879,7 @@ impl Default for BrowseState {
             states: Vec::new(),
             cur: 0,
             want: (0, 0),
+            focus: None,
             left: Vec::new(),
             gen: 0,
             sections_gen: 0,
@@ -1058,8 +1061,9 @@ impl BrowseState {
             }
         }
     }
-    fn want(&mut self, lo: usize, hi: usize) {
+    fn want(&mut self, lo: usize, hi: usize, focus: Option<usize>) {
         self.want = (lo, hi);
+        self.focus = focus;
     }
     pub fn resolve_section(&self, epoch: u32, sid: ServerId, key: i64) -> Option<usize> {
         if epoch != self.table_epoch() {
@@ -1552,7 +1556,7 @@ impl BrowseState {
                     return false;
                 }
                 match work {
-                    LibraryWork::Want { lo, hi } => self.want(lo, hi),
+                    LibraryWork::Want { lo, hi, focus } => self.want(lo, hi, focus),
                     LibraryWork::Letters => self.kick_letters(adapter),
                     LibraryWork::Genres => self.kick_genres(adapter),
                     LibraryWork::Retry => self.retry_cur_source(),
@@ -2535,9 +2539,9 @@ impl BrowseState {
             });
         // DUMP MODE: owed while the listing page's claim (`fetching`) is held.
         // The wanted window, read before the landing borrows the section table: the grid's
-        // visible rows, the page a restore lands on, and nothing else (no focus index reaches
-        // the store, see `Keep`).
+        // visible rows, the focused slot's page and the page a restore lands on.
         let wanted = self.want;
+        let focus = self.focus;
         let page = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
             || adapter.fetching.load(Ordering::SeqCst), || {
             adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -2611,7 +2615,7 @@ impl BrowseState {
                                 // loaded until the restore seats (see `Keep::restore`).
                                 let keep = Keep {
                                     wanted: wanted.0..wanted.1,
-                                    focus: None,
+                                    focus,
                                     restore: state.cursor.as_deref().map(Cursor::slot),
                                 };
                                 state.items.land(result.start, result.items, &keep);

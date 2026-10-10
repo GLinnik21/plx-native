@@ -65,11 +65,11 @@ fn episode_navigation_and_page_jumps_follow_four_columns() {
     page.initial = false;
     assert_eq!(page.layout.cols(), 4);
     let mut engine = FocusEngine::new();
-    let first = page.key(page.pair.detail.elems[0]);
+    let first = page.key(page.pair.detail.elem_at(0).unwrap());
     engine.set(OWNER, first, Some(page.pair.groups_config().detail), By::Restore);
     direction(&mut page, &mut engine, &fixture, Dir::Down);
     assert_eq!(page.grid_position(engine.current(OWNER)), Some((1, 0)));
-    assert_eq!(engine.current(OWNER).unwrap().elem, page.pair.detail.elems[4]);
+    assert_eq!(engine.current(OWNER).unwrap().elem, page.pair.detail.elem_at(4).unwrap());
     let focused = engine.current(OWNER).unwrap();
     let rect = <LibraryScreen as Focusable<HostFixture>>::place(&page, &focused.elem, &fixture.cx(Some(focused)), At::SpringTarget).unwrap().rect;
     assert!((rect.w / rect.h - 16.0 / 9.0).abs() < 0.01);
@@ -79,7 +79,7 @@ fn episode_navigation_and_page_jumps_follow_four_columns() {
         &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present));
     assert!(output.iter().any(|effect| matches!(&effect.fx,
         Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::Elem(key) })))
-            if key.elem == page.pair.detail.elems[12])));
+            if key.elem == page.pair.detail.elem_at(12).unwrap())));
 }
 
 #[test]
@@ -170,7 +170,7 @@ fn ok_on_a_collection_card_requests_its_page() {
     let fixture = collections_fixture(36);
     let mut page = fixture.screen();
     page.initial = false;
-    let elem = page.pair.detail.elems[1];
+    let elem = page.pair.detail.elem_at(1).unwrap();
     let mut output = Vec::new();
     let mut present = plx_machine::present::Present::new();
     assert_eq!(page.activate(elem, false, &fixture.cx(Some(page.key(elem))),
@@ -193,7 +193,7 @@ fn the_hold_hint_does_not_stand_on_a_collection_card() {
     page.initial = false;
     page.live = true;
     page.page_fade.mount();
-    let key = page.key(page.pair.detail.elems[1]);
+    let key = page.key(page.pair.detail.elem_at(1).unwrap());
     let mut ms = 0;
     for _ in 0..(6.0 * 60.0) as u32 {
         ms += 17;
