@@ -68,6 +68,8 @@ EXTRA_PROFILES = {
 DEFAULT_PROFILES = ("none", "remote-wan", "slow-latency", "low-bandwidth", "lossy")
 JUMP_PX = 400          # a focused card that moves this far between two frames has teleported
 KEY_APPLY_S = 0.15     # a key sent this long before a sample may still be applied after it (one key period + a frame)
+WANTED_AFTER_S = 5     # a failed page the focus still stands at this long after the failure is still wanted
+WANTED_MARGIN = 24     # items either side of a page that count as "at it" (the lookahead the lists read)
 RETRY_WITHIN_S = 45    # a failed page must be asked for again, and answered, within this
 
 FOCUS_RE = re.compile(r"^focus route=(\w+) (.*)$")
@@ -274,6 +276,26 @@ def analyse_focus(samples, keys, order, stride=1, window_max=None):
             "rebases": rebases, "first": min(reached) if reached else None,
             "last": max(reached) if reached else None, "tail_row_start": tail,
             "art_regressions": regress, "off_canvas": off}, fails
+
+
+def focus_at(track, t):
+    """The index the focus held at time `t`: `track` is [(t, index)] in time order, and a focus line
+    is only logged on a change, so the newest one at or before `t` is where it still stands."""
+    at = None
+    for ts, i in track:
+        if ts > t:
+            break
+        at = i
+    return at
+
+
+def page_wanted(track, t_fail, start, size, t_end):
+    """Was the focus at (or within WANTED_MARGIN items of) the page `start..start+size` a
+    WANTED_AFTER_S after it failed? A held-key walk is 50+ items a second past a page, so a page
+    that failed behind it is not wanted and need not be asked for again; one the reader is standing
+    at is, and a retry that never comes there is a stuck list."""
+    i = focus_at(track, min(t_fail + WANTED_AFTER_S, t_end))
+    return i is not None and start - WANTED_MARGIN <= i < start + size + WANTED_MARGIN
 
 
 def place_late_frames(landings, late, window=(-0.05, 0.25)):
@@ -546,7 +568,9 @@ def run_surface(name, profile_name, args):
     pages_rx = re.compile(spec["pages"])
     failed_pages = [r for r in rows if r["failed"] and r["class"] == "listing"]
     failed_reads = [r for r in rows if r["failed"]]
-    retried = redundant = 0
+    retried = redundant = left_behind = 0
+    where = {rk: i for i, rk in enumerate(order)}
+    track = [(t, where[item_of(f)]) for t, f in samples if item_of(f) in where]
     for r in failed_pages:
         again = [x for x in rows if x["path"] == r["path"] and x["start"] == r["start"]
                  and not x["failed"] and x["t_recv"] > r["t_recv"]]
@@ -554,19 +578,29 @@ def run_surface(name, profile_name, args):
         if not again and ever:
             redundant += 1  # a refetch of a page that had already landed; the at-rest placeholder check covers it
         elif not again:
-            fails.append(f"a failed read of {r['path']} start={r['start']} was never retried")
+            if r["start"] is not None and page_wanted(track, r["t_recv"], int(r["start"]), int(r["size"] or 0), t_end):
+                fails.append(f"a failed read of {r['path']} start={r['start']} was never retried while the "
+                             f"focus stood at it")
+            else:
+                left_behind += 1  # the reader had walked on: nothing waits for this page
         elif min(x["t_done"] for x in again) - r["t_done"] > RETRY_WITHIN_S:
             fails.append(f"a failed read of {r['path']} start={r['start']} was retried only "
                          f"{min(x['t_done'] for x in again) - r['t_done']:.0f}s later")
         else:
             retried += 1
     walked_failed = [r for r in failed_pages if pages_rx.search(r["path"]) and r["start"] not in (None, "0")]
+    back_from_cache = False
     if profile.error_rate:
         # `arm()` fails a page of the walked list in each direction by construction; none failing
         # means the page endpoint was never asked for (or the pattern is wrong), not a pass.
         for label, there in (("forward", [r for r in walked_failed if r["t_recv"] < t_back]),
                              ("back", [r for r in walked_failed if r["t_recv"] >= t_back])):
-            if not there:
+            asked_back = [r for r in rows if pages_rx.search(r["path"]) and r["t_recv"] >= t_back]
+            if label == "back" and not there and not asked_back:
+                # every page of a short list is still held when the walk turns round, so nothing is
+                # read (and nothing can fail) on the way back: the forward walk carried the assertion
+                back_from_cache = True
+            elif not there:
                 fails.append(f"the {label} walk failed none of this list's pages, so its retry/reach "
                              f"assertion is vacuous ({len(failed_reads)} reads failed in all, "
                              f"{len(failed_pages)} listings)")
@@ -580,7 +614,7 @@ def run_surface(name, profile_name, args):
                               "late_frames_logged": len(late), "late_within_-50..+250ms_of_a_landing": near,
                               "late_elsewhere": away},
               "pages_landed": len(timeline), "failed_reads": len(failed_reads),
-              "failed_pages": len(failed_pages), "walked_pages_failed": len(walked_failed), "failed_pages_retried_ok": retried, "failed_refetches_not_retried": redundant,
+              "failed_pages": len(failed_pages), "walked_pages_failed": len(walked_failed), "back_walk_read_no_page": back_from_cache, "failed_pages_retried_ok": retried, "failed_refetches_not_retried": redundant, "failed_pages_left_behind": left_behind,
               "max_ask_to_landed_ms": max([p["ask_to_landed_ms"] for p in timeline] or [0]),
               "placeholder_frames_per_second_max": max(ph or [0]),
               "placeholder_seconds": sum(1 for p in ph if p), "page_timeline": timeline[:12]}
@@ -632,6 +666,12 @@ def selftest():
     assert not analyse_focus(seq, sent, big, 6)[1], analyse_focus(seq, sent, big, 6)[1]
     assert any("skipped +54" in f for f in analyse_focus(seq, sent[:-1], big, 6)[1])
     assert any("skipped" in f for f in analyse_focus(seq, sent[:2] + sent[3:], big, 6)[1])  # key not in the window
+    # a failed page is wanted when the focus still stands at it WANTED_AFTER_S later, not when it was walked past
+    track = [(0.0, 10), (1.0, 130), (2.0, 250)]
+    assert focus_at(track, 1.5) == 130 and focus_at(track, -1) is None and focus_at(track, 9) == 250
+    assert not page_wanted(track, 0.5, 60, 60, 99.0)          # long gone from 60..120 by 5.5 s
+    assert page_wanted(track, 0.5, 240, 60, 99.0)             # standing at 240..300
+    assert page_wanted(track, 0.5, 240, 60, 1.0) is False     # the clock stops at the run's end (focus 130)
     # off the canvas: partly, wholly, and the caption
     edge = [(1.0, line("100", 0, 1800, cdc="1800", cdcw="250")), (1.1, line("100", 0, 2004, cdc="2004", cdcw="100")),
             (1.2, line("100", 0, -315, cdc="-315", cdcw="100"))]
