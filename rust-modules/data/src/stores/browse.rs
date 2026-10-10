@@ -132,10 +132,10 @@ impl BrowseStore {
 
     pub fn run(&mut self, cmd: BrowseCmd) -> bool {
         let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
-            work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. }, ..
+            work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }, ..
         });
         let quiet = matches!(&cmd, BrowseCmd::Addressed {
-            work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres, ..
+            work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres | LibraryWork::HubPage { .. }, ..
         });
         let roster_changed = if matches!(&cmd, BrowseCmd::RecheckShares) {
             self.sync_roster()
@@ -469,6 +469,19 @@ pub enum LibraryWork {
     Genres,
     Hubs {
         may_publish: bool,
+    },
+    /// Move one section hub row's window a page toward its end or its start; the row is named by
+    /// its hub identifier and key.
+    HubPage {
+        id: String,
+        key: String,
+        before: bool,
+    },
+    /// The rows (hub order, inclusive) the page holds cards for. The store keeps those and gives
+    /// the cards of the rest up to descriptors; sent when the range changes.
+    HubHold {
+        lo: usize,
+        hi: usize,
     },
     Retry,
 }

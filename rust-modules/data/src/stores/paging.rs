@@ -532,3 +532,161 @@ impl RowState {
         *self == Self::default()
     }
 }
+
+
+/// How a fresh preview row starts: a row the pager will read waits for its first forward ask to
+/// compare the preview with its listing; every other row is its preview, and Recently Added rows
+/// are the head of their listing by definition.
+pub fn preview_state(id: &str, key: &str) -> RowState {
+    if plx_plex::plex::is_pageable_hub_key(key) && !plx_plex::plex::hub_title::is_recently_added_hub(id) {
+        RowState { mode: RowMode::Unprobed, ledger: None }
+    } else {
+        RowState::default()
+    }
+}
+
+/// The event-log line for a hub that holds more than its preview behind a key the pager does not
+/// read, so those rows are findable in a log; `None` after the first time for the same hub and key.
+pub fn unpaged_line(id: &str, key: &str) -> Option<String> {
+    static SEEN: std::sync::LazyLock<std::sync::Mutex<HashSet<String>>> = std::sync::LazyLock::new(Default::default);
+    let first = SEEN.lock().ok()?.insert(format!("{id} {key}"));
+    first.then(|| format!("hubs: {id} holds more than its preview but its key {key} is not paged; the preview stays"))
+}
+
+/// One ask against a row's window, on the sliding window of the sliding window above; `list(start, size)` is one
+/// page of the row's listing and `many(keys)` a batch read of items by rating key.
+///
+/// A row not yet compared with its listing (`RowMode::Unprobed`) reads the listing from 0 on its
+/// first forward ask. If the listing starts with the preview's rating keys, the row's positions are
+/// listing offsets. If not (a `random` hub shows a sample), the row is the preview followed by the
+/// listing minus the preview's keys, and a position past the preview is a listing offset plus the
+/// preview's length.
+///
+/// A row whose listing does not hold between requests (the edge row is nowhere near where it was),
+/// or whose server ignores paging (a read is answered from another offset), moves onto its ledger
+/// of shown keys instead of stopping, so every item is still reached and none is shown twice.
+pub fn read_row(sid: ServerId, ask: &Ask, current: Option<(Vec<Row>, PageInfo)>, mut state: RowState, minimum_end: usize,
+    mut list: impl FnMut(usize, usize) -> Option<MediaContainer>,
+    mut many: impl FnMut(&[String]) -> Option<MediaContainer>) -> Option<(Vec<Row>, PageInfo, RowState)> {
+    let mut held = current;
+    let ignored = std::cell::Cell::new(false);
+    let mut raw = |start: usize, size: usize| {
+        let mc = list(start, size)?;
+        if mc.offset != start as i64 { ignored.set(true); }
+        Some(mc)
+    };
+    let mut start = ask.start;
+    let mut absorbed = false;
+    if matches!(state.mode, RowMode::Unprobed) && !ask.before {
+        if let Some((rows, info)) = held.as_mut() {
+            let mc = raw(0, info.end.max(1))?;
+            if ignored.get() {
+                absorbed = true;
+                state.mode = RowMode::Head;
+            } else if rows.iter().all(|(position, item)| mc.metadata.get(*position)
+                .is_some_and(|listed| clean(&listed.rating_key) == item.rk)) {
+                state.mode = RowMode::Head;
+            } else {
+                let preview: Vec<String> = rows.iter().map(|(_, item)| item.rk.clone()).collect();
+                for (i, row) in rows.iter_mut().enumerate() { row.0 = i; }
+                (info.offset, info.end) = (0, preview.len());
+                start = info.end;
+                state.mode = RowMode::Sample(preview);
+            }
+        }
+    }
+    let ask = Ask { start, before: ask.before, hidden: ask.hidden };
+    let preview_len = match &state.mode { RowMode::Sample(preview) => preview.len(), _ => 0 };
+    let result;
+    if let Some((rows, info)) = held.as_ref().filter(|_| state.ledger.as_ref().is_some_and(|ledger| ledger.active)) {
+        let mut ledger = state.ledger.clone()?;
+        result = Some(ledger_window(sid, &ask, (rows, *info), &mut ledger, &mut raw, &mut many)?);
+        state.ledger = Some(ledger);
+    } else {
+        let step = if absorbed { None } else {
+            let held_ref = held.as_ref().map(|(rows, info)| (rows.as_slice(), *info));
+            match &state.mode {
+                RowMode::Sample(preview) => {
+                    let total = held_ref.map_or(0, |(_, info)| info.total);
+                    let mut sample = sample_listing(preview, total, &ignored, &mut raw, &mut many);
+                    fetch_window(sid, &ask, held_ref, minimum_end, &mut sample)
+                }
+                _ => fetch_window(sid, &ask, held_ref, minimum_end, &mut raw),
+            }
+        };
+        // A window that came back holding a key the row showed before the rows it kept is a listing
+        // that shifted by more than an edge check can tell: it stands in for an edge that is lost.
+        let switch = absorbed || match &step {
+            Some((rows, info)) => info.unstable
+                || state.ledger.as_ref().is_some_and(|ledger| ledger.contradicts(rows)),
+            None => ignored.get(),
+        };
+        if !switch {
+            let (rows, mut info) = step?;
+            if let Some((held_rows, _)) = &held {
+                let ledger = state.ledger.get_or_insert_with(Default::default);
+                ledger.note(held_rows);
+                ledger.note(&rows);
+            }
+            if info.total > 0 { info.total = info.total.saturating_sub(preview_len); }
+            result = Some((rows, info));
+        } else if let Some((rows, info)) = &held {
+            let mut ledger = state.ledger.take().unwrap_or_default();
+            ledger.note(rows);
+            ledger.active = true;
+            ledger.next = info.end.saturating_sub(preview_len);
+            ledger.done = false;
+            ledger.idle = 0;
+            ledger.added = 0;
+            ledger.rescans = 0;
+            ledger.filtered = 0;
+            result = Some(ledger_window(sid, &ask, (rows, *info), &mut ledger, &mut raw, &mut many)?);
+            state.ledger = Some(ledger);
+        } else {
+            return None;
+        }
+    }
+    let (rows, info) = result?;
+    Some((rows, info, state))
+}
+
+/// The row of a `random` hub as one listing: positions below the preview's length are its cards,
+/// read by key; the rest are the listing from its first row, with a row the preview already shows
+/// left blank so positions stay aligned and the card is not shown twice. `total` is the listing's
+/// count when known; the container reports it with the preview's length added.
+fn sample_listing<'a>(preview: &'a [String], total: usize, ignored: &'a std::cell::Cell<bool>,
+    list: &'a mut dyn FnMut(usize, usize) -> Option<MediaContainer>,
+    many: &'a mut dyn FnMut(&[String]) -> Option<MediaContainer>,
+) -> impl FnMut(usize, usize) -> Option<MediaContainer> + 'a {
+    use plx_plex::plex::{MediaContainer, Metadata};
+    let blank = |key: &str| Metadata { rating_key: key.into(), ..Metadata::default() };
+    move |start, size| {
+        let length = preview.len();
+        let mut metadata = Vec::new();
+        let mut listing_total = (total > 0).then_some(total);
+        if start < length {
+            let keys = &preview[start..(start + size).min(length)];
+            let mut read = many(keys)?.metadata;
+            for key in keys {
+                let found = read.iter().position(|item| clean(&item.rating_key) == *key);
+                metadata.push(found.map_or_else(|| blank(key), |i| read.swap_remove(i)));
+            }
+        }
+        let from = start.max(length);
+        if start + size > from {
+            let want = start + size - from;
+            let mc = list(from - length, want)?;
+            if mc.offset != (from - length) as i64 {
+                ignored.set(true);
+                return Some(MediaContainer { offset: -1, ..MediaContainer::default() });
+            }
+            if mc.total_size > 0 { listing_total = Some(mc.total_size as usize); }
+            metadata.extend(mc.metadata.into_iter().take(want).map(|item| {
+                if preview.contains(&clean(&item.rating_key)) { blank("") } else { item }
+            }));
+        }
+        Some(MediaContainer { offset: start as i64, total_size: listing_total.map_or(0, |n| (n + length) as i64),
+            metadata, ..MediaContainer::default() })
+    }
+}
+

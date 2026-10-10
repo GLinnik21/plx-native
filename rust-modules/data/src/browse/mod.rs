@@ -1551,6 +1551,8 @@ impl BrowseState {
                 self.hubs_kick(index, adapter);
                 self.hubs_commit_staged(index, may_publish)
             }
+            LibraryWork::HubPage { id, key, before } => self.hubs_page(index, &id, &key, before, adapter),
+            LibraryWork::HubHold { lo, hi } => self.hubs_hold(index, lo, hi, adapter),
             work => {
                 if self.cur() != index {
                     return false;
@@ -1562,6 +1564,8 @@ impl BrowseState {
                     LibraryWork::Retry => self.retry_cur_source(),
                     LibraryWork::Commit { .. }
                     | LibraryWork::Hubs { .. }
+                    | LibraryWork::HubPage { .. }
+                    | LibraryWork::HubHold { .. }
                     | LibraryWork::SaveCursor { .. } => unreachable!(),
                 }
                 true
