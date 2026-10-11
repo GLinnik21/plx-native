@@ -5617,6 +5617,11 @@ pub mod async_persistence;
 mod install_preferences;
 
 #[cfg(test)]
+mod v0;
+#[cfg(test)]
+mod tier1_characterisation_tests;
+
+#[cfg(test)]
 mod direct_play_mode_tests {
     use super::*;
     #[test]
