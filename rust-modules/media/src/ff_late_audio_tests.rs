@@ -24,6 +24,8 @@
 //! without them, so the audio lane must receive that much audio SPAN while the video lane stays
 //! full and undrained. A third test pins the bound: video past the pre-audio headroom with no audio
 //! fails the open instead of parking.
+//! A fourth pins the other side of the grant: an ORDINARY interleaved file, whose video lane never
+//! fills before its first audio packet, never has its cap raised at all.
 //!
 //! **The fixture.** H.264 from a noise source at 12 Mbit/s: noise is how ~13 MB of video is made
 //! to precede the first audio packet in a few seconds of encoding (the real film got there with
@@ -598,6 +600,6 @@ fn an_ordinary_file_never_raises_the_video_lane_cap() {
         max_cap.load(Ordering::Acquire),
         base,
         "a file whose video never fills the lane must keep the lane's base cap throughout \
-         (the pre-audio headroom was granted at the first video push)"
+         (a grant was taken although no push ever parked)"
     );
 }

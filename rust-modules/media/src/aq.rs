@@ -24,6 +24,7 @@ pub struct AuQueue {
     max_bytes: c_long, // per-queue backpressure cap: `base_bytes` + any headroom granted
     base_bytes: c_long, // the cap the caller chose at aq_new; headroom is granted on top of it
     releasing: c_int, // headroom released but not yet drained: `aq_pop` walks `max_bytes` down
+    pops: u64, // AUs the consumer has popped, ever: a producer's evidence that the lane is draining
     eof: c_int,
     abort: c_int,
     m: libc::pthread_mutex_t,
@@ -291,6 +292,7 @@ pub fn aq_pop(q: *mut AuQueue, eof_out: *mut c_int) -> *mut AuNode {
                 (*q).tail = ptr::null_mut();
             }
             (*q).queued_bytes -= (*n).len as c_long;
+            (*q).pops += 1;
             if (*q).releasing != 0 {
                 settle_released_cap(q);
             }
@@ -457,6 +459,22 @@ pub fn aq_would_park(q: *mut AuQueue) -> bool {
     }
 }
 
+/// How many AUs the consumer has popped from this queue since it was created. Monotonic, so a
+/// producer that records it at one moment and reads it at a later one learns whether the consumer
+/// popped anything in between: the difference between a lane that is full because nobody drains it
+/// and one that is full because the producer is faster than the drain.
+pub fn aq_pops(q: *mut AuQueue) -> u64 {
+    if q.is_null() {
+        return 0;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let n = (*q).pops;
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        n
+    }
+}
+
 pub fn aq_bytes(q: *mut AuQueue) -> c_long {
     if q.is_null() {
         return 0;
@@ -614,6 +632,24 @@ mod tests {
         pop_one(qp);
         pop_one(qp);
         assert_eq!(aq_cap(qp), 1_100, "pops leave a granted headroom alone");
+        aq_destroy(qp);
+    }
+
+    /// The pop counter is monotonic and counts only real pops: an empty pop is not one.
+    #[test]
+    fn the_pop_counter_counts_aus_the_consumer_took() {
+        let mut q = aq_new(1_000);
+        let qp = &mut *q as *mut AuQueue;
+        assert_eq!(aq_pops(qp), 0);
+        push_n(qp, 3, 10);
+        assert_eq!(aq_pops(qp), 0, "pushing is not draining");
+        pop_one(qp);
+        pop_one(qp);
+        assert_eq!(aq_pops(qp), 2);
+        pop_one(qp);
+        assert!(aq_pop(qp, std::ptr::null_mut()).is_null(), "empty");
+        assert_eq!(aq_pops(qp), 3, "an empty pop is not a pop");
+        assert_eq!(aq_pops(std::ptr::null_mut()), 0);
         aq_destroy(qp);
     }
 

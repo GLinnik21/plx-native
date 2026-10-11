@@ -93,11 +93,13 @@ pub fn fed_totals() -> (i64, i64) {
 /// can see backpressure (a video lane pinned at its cap is the demuxer outrunning the decoder;
 /// both lanes empty while Stage is Playing is the opposite).
 ///
-/// **Base, not the cap in force.** For the first seconds of a file whose audio starts late, the
-/// demuxer lifts the video lane's cap by `ff::PRE_AUDIO_VIDEO_HEADROOM` (24 MiB) and then walks it
-/// back down as the consumer drains, so the read-out can show a video lane ABOVE this number then.
-/// That is the headroom doing its job, not an accounting error. The reachable-reserve model
-/// (`abr::plant::b_max_est_ms`) wants exactly this steady-state number: the headroom is a
+/// **Base, not the cap in force.** For the first seconds of a file whose audio starts so late that
+/// the video lane fills to this cap before the first audio packet, the demuxer lifts the video
+/// lane's cap by `ff::PRE_AUDIO_VIDEO_HEADROOM` (24 MiB) and then walks it back down as the
+/// consumer drains, so the read-out can show a video lane ABOVE this number then. That is the
+/// headroom doing its job, not an accounting error. An ordinary file never sees it: the grant is
+/// taken only when a video push would park at this cap with no audio yet. The reachable-reserve
+/// model (`abr::plant::b_max_est_ms`) wants exactly this steady-state number: the headroom is a
 /// transient of the start of one kind of file, gone before the buffer-driven controller acts.
 pub const fn aq_caps() -> (i64, i64) {
     (AQ_VIDEO_BYTES as i64, AQ_AUDIO_BYTES as i64)
