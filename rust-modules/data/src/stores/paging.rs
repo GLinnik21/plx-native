@@ -289,10 +289,19 @@ impl Keys {
 
     /// Appends a key the ledger does not hold.
     pub fn push(&mut self, key: LedgerKey) {
+        if self.index.contains_key(&key) { return; }
         let at = self.list.len();
-        if Arc::make_mut(&mut self.index).insert(key.clone(), at).is_none() {
-            Arc::make_mut(&mut self.list).push(key);
-        }
+        Arc::make_mut(&mut self.index).insert(key.clone(), at);
+        Arc::make_mut(&mut self.list).push(key);
+    }
+
+    /// Inserts a key the ledger does not hold at `at`, fixing up the index of the keys it shifts.
+    pub fn insert_at(&mut self, at: usize, key: LedgerKey) {
+        if self.index.contains_key(&key) { return; }
+        let list = Arc::make_mut(&mut self.list);
+        list.insert(at, key);
+        let index = Arc::make_mut(&mut self.index);
+        for (shifted, key) in list.iter().enumerate().skip(at) { index.insert(key.clone(), shifted); }
     }
 
     /// Changes the order or the set in place; the index is rebuilt once afterwards.
@@ -415,23 +424,24 @@ impl Ledger {
     /// Records the window's keys in the order the window has them. A key already known keeps its
     /// place; one that is new goes beside the known row it sits next to (before the first known
     /// row, after the rest), and a window with nothing known goes at the end.
+    /// A key the window repeats is recorded once.
     pub fn note(&mut self, rows: &[Row]) {
         let keys: Vec<LedgerKey> = rows.iter().map(|(_, item)| LedgerKey::new(&item.rk)).collect();
+        // A window of keys the ledger already holds changes nothing, whatever their order.
+        if keys.iter().all(|key| self.keys.contains(key)) { return; }
         let Some(anchor) = keys.iter().position(|key| self.keys.contains(key)) else {
             for key in keys { self.keys.push(key); }
             return;
         };
-        self.keys.edit(|ledger| {
-            let at = ledger.iter().position(|k| *k == keys[anchor]).unwrap_or(0);
-            for key in keys[..anchor].iter().rev() { ledger.insert(at, key.clone()); }
-            let mut cursor = at + anchor;
-            for key in &keys[anchor..] {
-                match ledger.iter().position(|k| k == key) {
-                    Some(index) => cursor = index + 1,
-                    None => { ledger.insert(cursor, key.clone()); cursor += 1; }
-                }
+        let at = self.keys.position_of(&keys[anchor]).unwrap_or(0);
+        for key in keys[..anchor].iter().rev() { self.keys.insert_at(at, key.clone()); }
+        let mut cursor = at + anchor;
+        for key in &keys[anchor..] {
+            match self.keys.position_of(key) {
+                Some(index) => cursor = index + 1,
+                None => { self.keys.insert_at(cursor, key.clone()); cursor += 1; }
             }
-        });
+        }
     }
 }
 
@@ -494,6 +504,17 @@ pub fn release_keys<'a>(pageable: bool, state: &RowState, shown: impl Iterator<I
     if keys.iter().any(String::is_empty) { None } else { Some(keys) }
 }
 
+/// Gives a row's cards up to a descriptor: records what it keeps to ask for them again
+/// ([`release_keys`]) and lets go of an inactive ledger ([`release_ledger`]). `false`, with the row
+/// untouched, when it cannot give them up. The caller clears its own items and positions and sets
+/// the count of slots it publishes for the descriptor.
+pub fn release_row<'a>(pageable: bool, row: &mut RowState, shown: impl Iterator<Item = &'a str>) -> bool {
+    let Some(kept) = release_keys(pageable, row, shown) else { return false };
+    row.kept = kept;
+    release_ledger(row);
+    true
+}
+
 /// Moves a window over a ledger by one ask. `current` is the window as it stands, its positions
 /// indices into the ledger. A forward ask keeps the last twelve rows and adds up to twelve: from
 /// the ledger where it already holds the keys (a window that moved back), else from the listing,
@@ -529,16 +550,15 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
             let lo = first.saturating_sub(MAX_SHELF_ITEMS - rows.len());
             let keys: Vec<String> = ledger.keys[lo..first].iter().map(LedgerKey::text).collect();
             let mut fresh = Vec::new();
+            let mut gone = HashSet::new();
             for (key, fetched) in keys.iter().zip(materialise(sid, &keys, ask.hidden, &cache, &mut many)?) {
                 match fetched {
                     Fetched::Card(item) => fresh.push((0, item)),
                     Fetched::Skip => {}
-                    Fetched::Gone => {
-                        let gone = LedgerKey::new(key);
-                        ledger.keys.retain(|k| *k != gone);
-                    }
+                    Fetched::Gone => { gone.insert(LedgerKey::new(key)); }
                 }
             }
+            if !gone.is_empty() { ledger.keys.retain(|k| !gone.contains(k)); }
             fresh.extend(rows);
             rows = fresh;
             first = lo;
@@ -549,16 +569,15 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
             let upto = (cursor + MAX_SHELF_ITEMS - rows.len()).min(ledger.keys.len());
             let keys: Vec<String> = ledger.keys[cursor..upto].iter().map(LedgerKey::text).collect();
             let mut kept = 0;
+            let mut gone = HashSet::new();
             for (key, fetched) in keys.iter().zip(materialise(sid, &keys, ask.hidden, &cache, &mut many)?) {
                 match fetched {
                     Fetched::Card(item) => { kept += 1; rows.push((0, item)); }
                     Fetched::Skip => kept += 1,
-                    Fetched::Gone => {
-                        let gone = LedgerKey::new(key);
-                        ledger.keys.retain(|k| *k != gone);
-                    }
+                    Fetched::Gone => { gone.insert(LedgerKey::new(key)); }
                 }
             }
+            if !gone.is_empty() { ledger.keys.retain(|k| !gone.contains(k)); }
             cursor += kept;
             continue;
         }
@@ -920,3 +939,7 @@ fn read_hub_windows<S>(
 #[cfg(test)]
 #[path = "paging_hub_list_tests.rs"]
 pub(crate) mod hub_list_tests;
+
+#[cfg(test)]
+#[path = "paging_ledger_note_tests.rs"]
+mod ledger_note_tests;

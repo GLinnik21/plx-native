@@ -51,9 +51,6 @@ use plx_ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 use super::clock_readout::ClockWatch;
 
 /// A paging command for a hub, when the hub has a listing identity to page by.
-/// Rows held beyond the ones in view, each side.
-const HOLD_MARGIN: usize = 2;
-
 fn hub_page_cmd(hub: &HubRef<'_>,
     make: impl FnOnce(plx_plex::plex::ServerId, String, String) -> HubsCmd) -> Option<HubsCmd> {
     match hub.identity {
@@ -67,7 +64,7 @@ fn hub_page_cmd(hub: &HubRef<'_>,
 }
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
-    tile_facts, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
+    key_cap, tile_facts, unlive_excess, EvictOrder, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
     HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory,
 };
 
@@ -814,15 +811,16 @@ impl HomeScreen {
             })
             .map(|key| key.elem)
             .collect();
-        let cap = 2 * now.len() + 256;
+        let cap = key_cap(now.len());
         let kept = self.items.len() - drop.len();
         if kept > cap {
-            let mut oldest: Vec<u32> = self.items.iter()
-                .map(|key| key.elem)
-                .filter(|&elem| !live(elem) && !drop.contains(&elem))
-                .collect();
-            oldest.sort_unstable();
-            drop.extend(oldest.into_iter().take(kept - cap));
+            let held = unlive_excess(
+                self.items.iter().map(|key| key.elem),
+                |elem| live(elem) || drop.contains(&elem),
+                kept - cap,
+                EvictOrder::Elem,
+            );
+            drop.extend(held);
         }
         let groups_before = self.groups.len();
         self.groups.retain(|key| !matches!(key.identity, HomeHubIdentity::Ephemeral { generation: g, .. } if g != generation));
@@ -1083,7 +1081,7 @@ impl HomeScreen {
         // The store holds cards for the rows in view and two either side; the rest keep a descriptor.
         if !self.rows.is_empty() {
             let (lo, hi) = on_screen.unwrap_or((0, 0));
-            let hold = (lo.saturating_sub(HOLD_MARGIN), (hi + HOLD_MARGIN).min(self.rows.len() - 1));
+            let hold = ui_cards::hold_band((lo, hi), self.rows.len());
             if self.hold_sent != Some(hold) {
                 self.hold_sent = Some(hold);
                 fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Hold { lo: hold.0, hi: hold.1 }))));

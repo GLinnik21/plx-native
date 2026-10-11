@@ -83,8 +83,6 @@ const PLAINTEXT_CANCEL: u32 = 5;
 const PLAINTEXT_CONNECT: u32 = 6;
 const TYPE: u32 = 7;
 const STRIP: GroupId = plx_ui::containers::tabs::STRIP;
-/// Shelf rows held beyond the ones in view, each side.
-const HOLD_MARGIN: usize = 2;
 
 // The shelves' `motion` bytes are `cards::Shelf::write`, the L0 row's write unchanged; the type's name
 // is split in the text only so the `cards` gate does not read a shape string as a use of the primitive.
@@ -488,7 +486,7 @@ impl LibraryScreen {
             // plus 256 the oldest others go.
             let current: HashSet<u32> = self.shelves.iter().flat_map(|row| row.elems.iter().copied()).collect();
             let focus = cx.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
-            let cap = 2 * (current.len() + previous.len()) + 256;
+            let cap = crate::registry::key_cap(current.len() + previous.len());
             self.keys.prune(KeyRegion::Shelf, cap, |elem| current.contains(&elem) || previous.contains(&elem) || Some(elem) == focus);
         }
         self.project_grid(cx);
@@ -585,7 +583,7 @@ impl LibraryScreen {
             .and_then(|key| self.shelves.iter().position(|row| row.elems.contains(&key.elem)));
         let (mut lo, mut hi) = (seen.start, seen.end.saturating_sub(1).max(seen.start));
         if let Some(row) = focused { (lo, hi) = (lo.min(row), hi.max(row)); }
-        let hold = (lo.saturating_sub(HOLD_MARGIN), (hi + HOLD_MARGIN).min(self.shelves.len() - 1));
+        let hold = plx_ui::cards::hold_band((lo, hi), self.shelves.len());
         if self.hold_sent != Some((target, hold)) {
             self.hold_sent = Some((target, hold));
             self.store(target, LibraryWork::HubHold { lo: hold.0, hi: hold.1 }, fx);

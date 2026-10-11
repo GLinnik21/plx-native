@@ -31,7 +31,10 @@ signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 tool = Path(sys.argv[0]).name
 key = tool + (":" + sys.argv[1] if tool == "readelf" else "")
 spec = json.loads(Path(os.environ["ELF_TEST_SPEC"]).read_text())
-if key == "readelf:-h" and "ELF_TEST_BARRIER" in os.environ:
+# Only the main binary's header read is the synchronised observation: the gate also reads the storage
+# helper's header later, after the other run may already have exited and removed its scratch, and that
+# call must not overwrite the snapshot.
+if key == "readelf:-h" and Path(sys.argv[-1]).name == "synthetic.elf" and "ELF_TEST_BARRIER" in os.environ:
     barrier = Path(os.environ["ELF_TEST_BARRIER"])
     (barrier / ("ready-" + os.environ["ELF_TEST_RUN"])).touch()
     until = time.monotonic() + RENDEZVOUS_HANG_GUARD

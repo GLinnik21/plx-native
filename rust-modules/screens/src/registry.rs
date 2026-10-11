@@ -556,6 +556,13 @@ pub(crate) fn merged_ranges(mut ranges: Vec<std::ops::Range<usize>>, total: usiz
     out
 }
 
+/// The slots of the grid row holding `index` and the row either side, for a grid `cols` wide: the
+/// neighbourhood a focus or a restore keeps keys for.
+pub(crate) fn row_neighbourhood(index: usize, cols: usize) -> std::ops::Range<usize> {
+    let row = index / cols.max(1);
+    row.saturating_sub(1) * cols..(row + 2) * cols
+}
+
 /// A card page's stable item-key interning: which engine element each `(sid, rk)` card owns, and
 /// the next element to hand out. It maps identities to elements and never stores which one is
 /// focused. The Person and Collection pages share it; each page picks its own first element.
@@ -631,13 +638,10 @@ impl CardKeys {
     /// dropped, so the table may stand over the bound only by those. `next` never moves back, so a
     /// dropped element is not handed out again.
     pub fn prune(&mut self, window: usize, keep: impl Fn(u32) -> bool) {
-        let mut excess = self.keys.len().saturating_sub(2 * window + 256);
+        let excess = self.keys.len().saturating_sub(key_cap(window));
         if excess == 0 { return; }
-        self.keys.retain(|key| {
-            if excess == 0 || keep(key.elem) { return true; }
-            excess -= 1;
-            false
-        });
+        let drop = unlive_excess(self.keys.iter().map(|key| key.elem), keep, excess, EvictOrder::Table);
+        self.keys.retain(|key| !drop.contains(&key.elem));
     }
 
     /// This registry's canonical bytes after the page's `next` — `len` then `(sid, rk, elem)` per
@@ -645,6 +649,35 @@ impl CardKeys {
     fn write_keys(&self, c: &mut plx_machine::machine::Canon) {
         for key in &self.keys { c.u32(u32::from(key.sid.raw())).str(&key.rk).u32(key.elem); }
     }
+}
+
+/// The slack every key table keeps above twice its live cells before it evicts.
+const KEY_SLACK: usize = 256;
+
+/// The size a key table may reach before the oldest unlive keys go: twice `live` plus [`KEY_SLACK`].
+pub(crate) fn key_cap(live: usize) -> usize { 2 * live + KEY_SLACK }
+
+/// Which keys of a table go first when it stands over its bound.
+#[derive(Clone, Copy)]
+pub(crate) enum EvictOrder {
+    /// Lowest element number first (elements are minted in order, so the oldest-interned).
+    Elem,
+    /// Table order, as the keys were stored.
+    Table,
+}
+
+/// The `excess` keys to drop from a table that stands over its bound: those of `elems` that `live`
+/// does not hold, in `order`. Fewer come back when too few are unlive.
+pub(crate) fn unlive_excess(
+    elems: impl Iterator<Item = u32>,
+    live: impl Fn(u32) -> bool,
+    excess: usize,
+    order: EvictOrder,
+) -> std::collections::HashSet<u32> {
+    let mut unlive: Vec<u32> = elems.filter(|&elem| !live(elem)).collect();
+    if matches!(order, EvictOrder::Elem) { unlive.sort_unstable(); }
+    unlive.truncate(excess);
+    unlive.into_iter().collect()
 }
 
 /// What a card page (Person, Collection) leaves behind on a push: its [`CardKeys`] and whether an

@@ -1154,8 +1154,9 @@ impl PersonState {
         // Ascending, which is the order replay supplies recorded landings in. The work follows the
         // open page's sources plus whatever is outstanding, never the highest server id.
         let visit = self.visit(adapter);
-        let (running, wanting) = fanout_candidates(self, adapter, &visit);
-        let mut turn = self.fanout.begin(running, &wanting);
+        let standings = visit.iter().copied().filter(|&i| un_fx(i).is_some())
+            .map(|i| (i, fanout_standing(self, adapter, i))).collect::<Vec<_>>();
+        let mut turn = self.fanout.turn(standings.into_iter());
         for i in visit {
             let mailbox = adapter.mailbox(i);
             // The take releases the single-flight claim with the mail that answers it; a
@@ -1584,16 +1585,13 @@ fn address(i: usize, p: &Person) -> Option<Vec<String>> {
     }
 }
 
-/// How many per-server fetches are out among the visited indices, and which of them want a request
-/// now, in visit order. The two plex.tv fetches are not per server and sit outside the gate.
-fn fanout_candidates(state: &PersonState, adapter: &PersonAdapter, visit: &[usize]) -> (usize, Vec<usize>) {
-    let per_server = || visit.iter().copied().filter(|&i| un_fx(i).is_some());
-    let running = per_server().filter(|&i| adapter.mailbox(i).busy()).count();
-    let wanting = per_server()
-        .filter(|&i| !adapter.mailbox(i).busy() && state.retry_cd[i] == 0
-            && state.current().is_some_and(|p| address(i, p).is_some()))
-        .collect();
-    (running, wanting)
+/// Whether per-server fetch `i` is out, wants a request now, or neither. The two plex.tv fetches
+/// are not per server and sit outside the gate.
+fn fanout_standing(state: &PersonState, adapter: &PersonAdapter, i: usize) -> crate::stores::fanout::Standing {
+    use crate::stores::fanout::Standing;
+    if adapter.mailbox(i).busy() { Standing::Running }
+    else if state.retry_cd[i] == 0 && state.current().is_some_and(|p| address(i, p).is_some()) { Standing::Wanting }
+    else { Standing::Idle }
 }
 
 /// One fetch per mailbox at a time, and only while the open person still wants it. Re-entered every

@@ -90,6 +90,15 @@ mod tests;
 #[cfg(test)]
 mod warm_tests;
 
+/// Rows a screen's store holds cards for beyond the ones in view, each side.
+pub const HOLD_MARGIN: usize = 2;
+
+/// The rows `seen` (the first and last row in view, the focused row folded in) widen to once the
+/// [`HOLD_MARGIN`] is added each side, clamped to the `len` rows there are (`len` is at least 1).
+pub fn hold_band((lo, hi): (usize, usize), len: usize) -> (usize, usize) {
+    (lo.saturating_sub(HOLD_MARGIN), (hi + HOLD_MARGIN).min(len - 1))
+}
+
 /// The one recovery position every card screen uses when the focused card is gone from its
 /// section: the slot it held, clamped to the section's new length. `None` when the section is
 /// empty, which is the page's cue to use its fallback.

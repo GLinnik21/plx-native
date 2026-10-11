@@ -1231,10 +1231,7 @@ fn published_order(srcs: &[Src], pins: &[(ServerId, i64, bool)]) -> Vec<(usize, 
 /// with no key the pager reads, come back through the rating keys they showed. A row that shows a
 /// card with no rating key has no way back and keeps its cards.
 fn give_up_cards(shelf: &mut Shelf) -> bool {
-    let Some(kept) = paging::release_keys(pages(&shelf.key), &shelf.row, shelf.items.iter().map(|item| item.rk.as_str())) else { return false };
-    shelf.row.kept = kept;
-    paging::release_ledger(&mut shelf.row);
-    true
+    paging::release_row(pages(&shelf.key), &mut shelf.row, shelf.items.iter().map(|item| item.rk.as_str()))
 }
 
 /// Gives the cards of every row outside the held range up to its descriptor. `hubs` is the merge
@@ -2642,10 +2639,11 @@ fn source_waiting(s: &Src) -> bool {
 /// held, and `wanting` picks the sources that want one now, in display order.
 fn fanout_turn(fanout: &mut crate::stores::fanout::Fanout, srcs: &[Src],
     wanting: impl Fn(&Src) -> bool) -> crate::stores::fanout::FanoutTurn {
-    let running = srcs.iter().filter(|s| s.fetching).count();
-    let wanting: Vec<usize> = srcs.iter().filter(|s| !s.fetching && wanting(s))
-        .map(|s| s.sid.raw() as usize).collect();
-    fanout.begin(running, &wanting)
+    use crate::stores::fanout::Standing;
+    fanout.turn(srcs.iter().map(|s| {
+        let standing = if s.fetching { Standing::Running } else if wanting(s) { Standing::Wanting } else { Standing::Idle };
+        (s.sid.raw() as usize, standing)
+    }))
 }
 
 /// [`kick_with`] behind the fan-out gate. A source that is out already is not asking; one the gate

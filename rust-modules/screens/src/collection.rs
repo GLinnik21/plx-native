@@ -28,7 +28,7 @@ use plx_ui::theme;
 use plx_ui::widgets::{self, Art, PageGround, StatusKind, StatusOverlay};
 use plx_ui::{Env, Painter, Rect};
 
-use super::registry::{merged_ranges, tile_facts, AppFx, CardKeys, CardPageMemory, CollectionLike, ContentArg,
+use super::registry::{merged_ranges, row_neighbourhood, tile_facts, AppFx, CardKeys, CardPageMemory, CollectionLike, ContentArg,
     ContentLike, ContentPanel, ContentReq, PageMemory};
 
 #[cfg(test)]
@@ -706,7 +706,6 @@ impl CollectionScreen {
     fn plan<H: ContentLike + CollectionLike>(&mut self, cx: &Cx<'_, H>) {
         let Some(collection) = self.collection(cx) else { return };
         let cols = ui_cards::GRID_COLS;
-        let row = |index: usize| (index / cols).saturating_sub(1) * cols..(index / cols + 2) * cols;
         let mut ranges = match self.painted(cx) {
             Some(painted) => vec![painted.start.saturating_sub(cols)..painted.end + cols],
             None => vec![0..4 * cols],
@@ -717,10 +716,10 @@ impl CollectionScreen {
         for elem in [focus, self.page.restore_elem, cx.focus.remembered(GRID_GROUP)].into_iter().flatten() {
             if elem == HEADER_ELEM || elem == RETRY_ELEM { continue; }
             if elem < HOLE_ELEM_BASE { pins.push(elem); }
-            if let Some(index) = self.page.slot_of(collection, elem) { ranges.push(row(index)); }
+            if let Some(index) = self.page.slot_of(collection, elem) { ranges.push(row_neighbourhood(index, cols)); }
         }
         if let Some(index) = self.page.return_pending.then_some(self.page.restore_index).flatten() {
-            ranges.push(row(index));
+            ranges.push(row_neighbourhood(index, cols));
         }
         self.page.want = (ranges, pins);
     }

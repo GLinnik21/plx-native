@@ -10,7 +10,7 @@ pub(super) use super::rail::RailPart;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use crate::registry::{merged_ranges, tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
+use crate::registry::{merged_ranges, row_neighbourhood, tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
 use plx_ui::cards as ui_cards;
 use plx_ui::cards::{CardSource, Grid, GridSpec, Tile};
 use plx_ui::consts::{MARGIN_X, SCR_H};
@@ -330,9 +330,8 @@ impl GridPart {
         index: usize, cols: usize) -> Option<u32> {
         if let Some(elem) = self.elem_at(index) { return Some(elem); }
         if index >= self.total { return None; }
-        let row = index / cols.max(1);
         let mut ranges = self.applied.clone();
-        ranges.push(row.saturating_sub(1) * cols..(row + 2) * cols);
+        ranges.push(row_neighbourhood(index, cols));
         let ranges = merged_ranges(ranges, self.total);
         self.project(H::listing(cx), keys, ranges);
         self.elem_at(index)
