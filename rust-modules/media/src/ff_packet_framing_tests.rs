@@ -555,3 +555,42 @@ fn an_empty_vp9_packet_stays_empty() {
     assert!(!vp9_packet_to_frame(&[], false, &mut out));
     assert!(out.is_empty());
 }
+
+// -- video framing dispatch -------------------------------------------------------------
+
+#[test]
+fn every_fed_codec_has_a_framing_and_nothing_else_does() {
+    assert_eq!(VideoFraming::of_codec_id(AV_CODEC_ID_H264), Some(VideoFraming::AnnexB { hevc: false }));
+    assert_eq!(VideoFraming::of_codec_id(AV_CODEC_ID_HEVC), Some(VideoFraming::AnnexB { hevc: true }));
+    assert_eq!(VideoFraming::of_codec_id(AV_CODEC_ID_AV1), Some(VideoFraming::Av1));
+    assert_eq!(VideoFraming::of_codec_id(AV_CODEC_ID_VP9), Some(VideoFraming::Vp9));
+    // any other id (0 = none, 139 = VP8, 2 = MPEG-2, 0x15002 = AAC) is refused, never Annex-B
+    for id in [0, 2, 139, 1, 0x15002, -1] {
+        assert_eq!(VideoFraming::of_codec_id(id), None, "{id}");
+    }
+}
+
+/// The demuxer's framing and the Load's declaration are one table: every framing maps to the
+/// `LoadVideo` whose diag code the agreement check compares, and that is the same enum the Load is
+/// built from, so the two cannot be edited apart.
+#[test]
+fn a_framing_names_the_load_declaration_it_goes_with() {
+    use crate::player::engine::LoadVideo;
+    for (id, lv) in [
+        (AV_CODEC_ID_H264, LoadVideo::H264),
+        (AV_CODEC_ID_HEVC, LoadVideo::H265),
+        (AV_CODEC_ID_AV1, LoadVideo::Av1),
+        (AV_CODEC_ID_VP9, LoadVideo::Vp9),
+    ] {
+        let f = VideoFraming::of_codec_id(id).unwrap();
+        assert_eq!(f.load_video(), lv, "{id}");
+        // and the route's own spelling of that codec round-trips to the same declaration
+        let spelling = match lv {
+            LoadVideo::H264 => "h264",
+            LoadVideo::H265 => "hevc",
+            LoadVideo::Av1 => "av1",
+            LoadVideo::Vp9 => "vp9",
+        };
+        assert_eq!(LoadVideo::of_stream(spelling), Some(lv));
+    }
+}

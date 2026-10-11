@@ -534,14 +534,20 @@ pub(crate) enum LoadVideo {
 }
 
 impl LoadVideo {
-    /// The route's stream vcodec -> what the Load declares. Everything but `"hevc"`, `"av1"` and
-    /// `"vp9"` stays H.264, as it always has.
-    pub(crate) fn of_stream(vcodec: &str) -> Self {
-        match vcodec {
-            "hevc" => Self::H265,
-            "av1" => Self::Av1,
-            "vp9" => Self::Vp9,
-            _ => Self::H264,
+    /// The route's stream vcodec -> what the Load declares, case-insensitively (PMS emits lowercase;
+    /// the route's own comparisons elsewhere are case-insensitive too). **An unknown codec is `None`,
+    /// not H.264**: the old catch-all declared an H.264 Load for whatever the route held, so a codec
+    /// the pipeline cannot feed arrived as an H.264 declaration over a bitstream it could not parse,
+    /// i.e. a black screen with nothing in the log naming the cause. The empty string is the one
+    /// deliberate H.264: the route holds it until a decision installs a codec, which is the pipeline
+    /// tier's and the local-sample feeds' baseline.
+    pub(crate) fn of_stream(vcodec: &str) -> Option<Self> {
+        match vcodec.to_ascii_lowercase().as_str() {
+            "" | "h264" => Some(Self::H264),
+            "hevc" | "h265" => Some(Self::H265),
+            "av1" => Some(Self::Av1),
+            "vp9" => Some(Self::Vp9),
+            _ => None,
         }
     }
     /// The payload's `codec.video` string. libpf selects its AV1 caps for `"AV1"`; the pipeline
@@ -1215,7 +1221,14 @@ fn start_bufferfeed_inner(
     // re-derive it.
     let mut video_declared: &str = "-";
     let payload_str: &str = if stream {
-        let lv = LoadVideo::of_stream(&crate::route::stream_vcodec(ps));
+        let stream_vcodec = crate::route::stream_vcodec(ps);
+        let Some(lv) = LoadVideo::of_stream(&stream_vcodec) else {
+            log(&format!(
+                "start_bufferfeed: the pipeline cannot feed video codec {stream_vcodec:?}; refusing the Load instead of declaring it H.264"
+            ));
+            SHARED.demux_failed.store(true, Ordering::Release);
+            return Err(crate::route::RouteStartResult::StartFailed);
+        };
         if load_video_refused(lv, plx_platform::devcaps::caps()) {
             log(&format!(
                 "start_bufferfeed: {} stream but the device table lists no such decoder; refusing the Load",
@@ -5157,9 +5170,15 @@ mod sink_envelope_tests {
             ("av1", LoadVideo::Av1),
             ("vp9", LoadVideo::Vp9),
             ("", LoadVideo::H264),
-            ("HEVC", LoadVideo::H264),
+            ("HEVC", LoadVideo::H265),
+            ("H264", LoadVideo::H264),
+            ("h265", LoadVideo::H265),
         ] {
-            assert_eq!(LoadVideo::of_stream(vcodec), want, "{vcodec:?}");
+            assert_eq!(LoadVideo::of_stream(vcodec), Some(want), "{vcodec:?}");
+        }
+        // an unknown codec is refused, never declared as H.264
+        for vcodec in ["mpeg2video", "vc1", "vp8", "theora", "mpeg4", "avc", "x"] {
+            assert_eq!(LoadVideo::of_stream(vcodec), None, "{vcodec:?}");
         }
         let all = [LoadVideo::H264, LoadVideo::H265, LoadVideo::Av1, LoadVideo::Vp9];
         assert_eq!(all.map(LoadVideo::payload_name), ["H264", "H265", "AV1", "VP9"]);

@@ -2973,6 +2973,46 @@ fn av1_packet_to_tu(pkt: &[u8], key: bool, cfg: &[u8], f: Av1Framing, out: &mut 
     key
 }
 
+/// How a demuxed video packet is turned into the access unit the television's pipeline is fed:
+/// the one place a codec id is mapped to a framing, so a codec with no arm is REFUSED instead of
+/// falling into the Annex-B path (which on a bitstream that is not H.264/HEVC produces garbage the
+/// decoder rejects with nothing in the log naming the cause).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum VideoFraming {
+    /// Length-prefixed NAL units rewritten to Annex-B with the parameter sets prepended at each
+    /// keyframe (`packet_to_annexb`).
+    AnnexB { hevc: bool },
+    /// Section-5 temporal units with the av1C configuration in-band (`av1_packet_to_tu`).
+    Av1,
+    /// The packet unchanged (`vp9_packet_to_frame`).
+    Vp9,
+}
+
+impl VideoFraming {
+    pub(crate) fn of_codec_id(id: c_int) -> Option<Self> {
+        match id {
+            AV_CODEC_ID_H264 => Some(Self::AnnexB { hevc: false }),
+            AV_CODEC_ID_HEVC => Some(Self::AnnexB { hevc: true }),
+            AV_CODEC_ID_AV1 => Some(Self::Av1),
+            AV_CODEC_ID_VP9 => Some(Self::Vp9),
+            _ => None,
+        }
+    }
+
+    /// The Load declaration this framing belongs with. The Load is sent before the demuxer opens the
+    /// file, so a disagreement can only abort and say so afterwards; that still beats the black
+    /// screen it would otherwise be.
+    pub(crate) fn load_video(self) -> crate::player::engine::LoadVideo {
+        use crate::player::engine::LoadVideo;
+        match self {
+            Self::AnnexB { hevc: false } => LoadVideo::H264,
+            Self::AnnexB { hevc: true } => LoadVideo::H265,
+            Self::Av1 => LoadVideo::Av1,
+            Self::Vp9 => LoadVideo::Vp9,
+        }
+    }
+}
+
 /// Hand one demuxed VP9 packet to the decoder as it came, returning `key` unchanged.
 ///
 /// A VP9 frame is self-describing: every keyframe carries its profile, size and colour config in
@@ -8251,9 +8291,33 @@ pub fn demux(
                 // build the AU from the codecpar extradata; libavformat still owns demux + seeking.
                 // AV1 is framed by av1_packet_to_tu as Section-5 temporal units with the av1C config
                 // in-band on keyframes, because the TV pipeline is given no codec_data for AV1.
-                let is_hevc = (*vcp).codec_id == AV_CODEC_ID_HEVC;
-                let is_av1 = (*vcp).codec_id == AV_CODEC_ID_AV1;
-                let is_vp9 = (*vcp).codec_id == AV_CODEC_ID_VP9;
+                let Some(framing) = VideoFraming::of_codec_id((*vcp).codec_id) else {
+                    crate::player::log(&format!(
+                        "ff: no framing for video codec {cname} (codec_id={}); refusing the stream",
+                        (*vcp).codec_id
+                    ));
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                };
+                // What the Load declared (`dg_load_v`, 0 when this start sent a static payload) must
+                // be what the file is: a Load that says one codec over another codec's bitstream is a
+                // black screen, so stop and name both.
+                let declared = SHARED.dg_load_v.load(Ordering::Relaxed);
+                if declared != 0 && declared != framing.load_video().diag_code() {
+                    crate::player::log(&format!(
+                        "ff: the Load declared {} but the file is {cname}; refusing the stream",
+                        crate::player::load_v_name(declared)
+                    ));
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                }
+                let is_hevc = framing == VideoFraming::AnnexB { hevc: true };
+                let is_av1 = framing == VideoFraming::Av1;
+                let is_vp9 = framing == VideoFraming::Vp9;
                 let (param_blob, nal_len_size) = if is_av1 || is_vp9 {
                     (Vec::new(), 0)
                 } else {

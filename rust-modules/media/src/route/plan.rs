@@ -3298,3 +3298,7 @@ mod mde_decision_tests;
 #[cfg(test)]
 #[path = "plan_av1_tests.rs"]
 mod av1_tests;
+
+#[cfg(test)]
+#[path = "plan_codec_agreement_tests.rs"]
+mod codec_agreement_tests;

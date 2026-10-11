@@ -188,21 +188,31 @@ pub fn link_policy(link: Option<Location>) -> LinkPolicy {
 ///
 /// The Load payload cannot drift whatever PMS chooses: `route.rs` reads the OUTPUT codecs off
 /// the /decision response (`decision_codecs`) and describes those, not the profile's wish.
-fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeDelivery) -> String {
-    let mut dp_video = "h264".to_string();
+/// The video codecs the profile lists for direct play, in list order: h264 always, hevc when the
+/// table lists it, then the table-gated copy codecs (vp9, av1). **The one definition**: the profile
+/// string is built from it, and `route::plan::video_direct_plays` (the local gate that stands in for
+/// `/decision` when it is unreachable) is held to it by a test over every capability combination,
+/// so the two can no longer drift apart silently.
+pub fn direct_play_video_codecs(caps: &plx_platform::devcaps::Caps) -> Vec<&'static str> {
+    let mut v = vec!["h264"];
     if caps.hevc {
-        dp_video.push_str(",hevc");
+        v.push("hevc");
     }
+    if caps.vp9 {
+        v.push("vp9");
+    }
+    if caps.av1 {
+        v.push("av1");
+    }
+    v
+}
+
+fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeDelivery) -> String {
+    let dp_video = direct_play_video_codecs(caps).join(",");
     // The table-gated copy codecs, in list order. Each one is advertised only when the table
     // carries ITS row, and each brings the row's own bound (see `row_limits`).
     let copy_codecs: [(&str, bool, (u32, u32, u32)); 2] =
         [("vp9", caps.vp9, caps.vp9_row), ("av1", caps.av1, caps.av1_row)];
-    for (name, listed, _) in copy_codecs {
-        if listed {
-            dp_video.push(',');
-            dp_video.push_str(name);
-        }
-    }
     // The chain's head is the ONE encode-target definition, `Caps::encode_vcodec` — the same
     // accessor route.rs's /decision-unreachable Load-payload guess and retranscode read, so the
     // payload can never name a codec this profile did not ask the server to produce — with h264

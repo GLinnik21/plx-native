@@ -237,5 +237,6 @@ pub use timeline::{queue_index_of, QueueRow};
 // the connection. Forced mode retains software feed limits and uses a separate PMS profile.
 #[allow(unused_imports)]
 pub use transcoder::{
-    DP_AUDIO_CODECS, DP_SUBTITLE_CODECS, LinkPolicy, is_dp_audio, is_dp_audio_track, is_dp_subtitle, link_policy,
+    DP_AUDIO_CODECS, DP_SUBTITLE_CODECS, LinkPolicy, direct_play_video_codecs, is_dp_audio, is_dp_audio_track,
+    is_dp_subtitle, link_policy,
 };
