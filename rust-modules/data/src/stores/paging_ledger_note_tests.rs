@@ -71,3 +71,23 @@ fn note_inserted_in_the_middle_and_removed_keys() {
     noted.note(&window(&[2, 3, 4]));
     assert_eq!(names(&noted), noted_by_scan(&[1, 2, 4, 5, 6], &[2, 3, 4]));
 }
+
+#[test]
+fn note_records_a_repeated_key_once_and_keeps_the_index_true() {
+    for (held, rows) in [
+        (&[10u32, 11, 12][..], &[7u32, 7, 11, 12][..]),
+        (&[10, 11, 12][..], &[7, 8, 7, 11][..]),
+        (&[10, 11, 12][..], &[7, 7, 8][..]),
+        (&[10, 11, 12][..], &[11, 20, 20, 12][..]),
+    ] {
+        let mut noted = ledger(held);
+        noted.note(&window(rows));
+        let list = names(&noted);
+        let unique: HashSet<_> = list.iter().cloned().collect();
+        assert_eq!(unique.len(), list.len(), "a key twice in the ledger after {rows:?}");
+        for (at, key) in list.iter().enumerate() {
+            assert_eq!(noted.keys.position_of(key), Some(at), "index after {rows:?}");
+        }
+        assert_eq!(noted.keys.index_len(), list.len());
+    }
+}

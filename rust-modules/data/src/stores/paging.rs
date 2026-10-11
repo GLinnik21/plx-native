@@ -289,10 +289,10 @@ impl Keys {
 
     /// Appends a key the ledger does not hold.
     pub fn push(&mut self, key: LedgerKey) {
+        if self.index.contains_key(&key) { return; }
         let at = self.list.len();
-        if Arc::make_mut(&mut self.index).insert(key.clone(), at).is_none() {
-            Arc::make_mut(&mut self.list).push(key);
-        }
+        Arc::make_mut(&mut self.index).insert(key.clone(), at);
+        Arc::make_mut(&mut self.list).push(key);
     }
 
     /// Inserts a key the ledger does not hold at `at`, fixing up the index of the keys it shifts.
@@ -424,6 +424,7 @@ impl Ledger {
     /// Records the window's keys in the order the window has them. A key already known keeps its
     /// place; one that is new goes beside the known row it sits next to (before the first known
     /// row, after the rest), and a window with nothing known goes at the end.
+    /// A key the window repeats is recorded once.
     pub fn note(&mut self, rows: &[Row]) {
         let keys: Vec<LedgerKey> = rows.iter().map(|(_, item)| LedgerKey::new(&item.rk)).collect();
         // A window of keys the ledger already holds changes nothing, whatever their order.
