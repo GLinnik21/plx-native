@@ -606,6 +606,11 @@ pub(crate) unsafe fn boot(
     // The Up Next still prefetch `route::pump_play` asks for is `ui`'s, which `route` may not name,
     // so it is handed over here, before any playback can land. Replay boots take it too.
     plx_media::route::install_up_next_still_warm(super::playback::warm_up_next_still);
+    // The dev frame probe's clock is `platform`'s, which `gfx` does not depend on.
+    plx_gfx::gfx::install_clear_probe(
+        plx_platform::tv::window::frame_probe_waiting,
+        plx_platform::tv::window::frame_probe_acquired,
+    );
     let initial = match &preflight {
         super::bootstrap::Preflight::Live => None,
         super::bootstrap::Preflight::Record => {

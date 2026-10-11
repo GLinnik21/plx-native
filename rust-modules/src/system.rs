@@ -465,7 +465,7 @@ pub(crate) fn opaque_route(_player: bool) {}
 // stamp of the repaint that picked the commit up. Printed beside the frame's `FRAMEDROP` line
 // with our own monotonic clock, the two tell those cases apart.
 //
-// It also prices the frame thread over the three stretches of a player frame's present: `w` (the
+// It also prices the frame thread over the three stretches of a frame's present: `w` (the
 // first framebuffer command, where the driver waits for a back buffer), `d` (the draw after it)
 // and `s` (the swap). Each prints `<p>=<wall>/<cpu>/<runq>` in ms and `<p>sw=<slept>/<preempted>`
 // context switches: wall time that is neither CPU nor run-queue wait was spent BLOCKED, run-queue

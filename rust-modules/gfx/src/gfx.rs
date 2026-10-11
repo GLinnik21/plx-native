@@ -463,10 +463,51 @@ fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
     if !frame_clear_allowed() {
         return;
     }
-    plx_base::diag::spans::span("clear", || unsafe {
-        glClearColor(r, g, b, a);
-        glClear(GL_COLOR_BUFFER_BIT);
+    probed_clear(|| {
+        plx_base::diag::spans::span("clear", || unsafe {
+            glClearColor(r, g, b, a);
+            glClear(GL_COLOR_BUFFER_BIT);
+        })
     });
+}
+
+/// Run `clear`, bracketed by the installed probe when [`arm_clear_probe`] offered it this frame.
+fn probed_clear(clear: impl FnOnce()) {
+    let probe = CLEAR_PROBE.with(|p| p.armed.replace(false).then(|| p.hooks.get())).flatten();
+    if let Some((waiting, _)) = probe {
+        waiting();
+    }
+    clear();
+    if let Some((_, acquired)) = probe {
+        acquired();
+    }
+}
+
+/// The frame's first framebuffer-0 command is where this driver parks the wait for a free back
+/// buffer, and on every route but the player it is the page's [`frame_clear`]. The dev frame
+/// probe (`/tmp/plxnative-framecb`) prices that wait, but its clock is `platform`'s and this
+/// crate does not depend on `platform`, so the application hands the two edges down once at boot:
+/// `waiting` runs just before the clear, `acquired` just after it returns.
+pub fn install_clear_probe(waiting: fn(), acquired: fn()) {
+    CLEAR_PROBE.with(|p| p.hooks.set(Some((waiting, acquired))));
+}
+
+/// Offer the installed probe the next clear, and only the next one: the first clear that actually
+/// reaches the framebuffer after this call brackets the wait, later clears of the same frame (a
+/// popover's, a second pass) do not, so one frame yields one waiting/acquired pair. The loop calls
+/// this once per non-player frame; the player clears from the loop and brackets that itself.
+pub fn arm_clear_probe() {
+    CLEAR_PROBE.with(|p| p.armed.set(p.hooks.get().is_some()));
+}
+
+#[derive(Default)]
+struct ClearProbe {
+    hooks: std::cell::Cell<Option<(fn(), fn())>>,
+    armed: std::cell::Cell<bool>,
+}
+
+thread_local! {
+    static CLEAR_PROBE: ClearProbe = ClearProbe::default();
 }
 
 /// Block until the GPU has finished all queued commands. Used as a completion boundary by the draw
@@ -7869,6 +7910,34 @@ mod tests {
             uv[3] < 0.0,
             blur_is_bottom_up(),
             "the v span runs backwards iff stored bottom-up"
+        );
+    }
+}
+
+#[cfg(test)]
+mod clear_probe_tests {
+    use std::cell::RefCell;
+
+    thread_local! { static LOG: RefCell<Vec<&'static str>> = const { RefCell::new(Vec::new()) }; }
+
+    #[test]
+    fn a_frame_brackets_its_first_clear_once() {
+        super::install_clear_probe(
+            || LOG.with(|l| l.borrow_mut().push("waiting")),
+            || LOG.with(|l| l.borrow_mut().push("acquired")),
+        );
+        let clear = || LOG.with(|l| l.borrow_mut().push("clear"));
+        super::probed_clear(clear);
+        super::arm_clear_probe();
+        super::probed_clear(clear);
+        super::probed_clear(clear);
+        super::arm_clear_probe();
+        super::probed_clear(clear);
+        let log = LOG.with(|l| std::mem::take(&mut *l.borrow_mut()));
+        assert_eq!(
+            log,
+            ["clear", "waiting", "clear", "acquired", "clear", "waiting", "clear", "acquired"],
+            "an unarmed clear is bare; an armed frame gets one pair, and its second clear none"
         );
     }
 }

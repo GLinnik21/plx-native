@@ -2457,6 +2457,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             app.diagnostics.draw();
                         }
                     } else {
+                        // dev (`/tmp/plxnative-framecb`): the page's first clear is this route's
+                        // first framebuffer command, so `gfx` brackets the back-buffer wait there.
+                        plx_gfx::gfx::arm_clear_probe();
                         // Open the shared popover frame FIRST: it takes this frame's page damage
                         // and decides whether the frozen-host snapshot still describes the page. Route-agnostic by construction —
                         // see `ui::popover::host::begin_frame`.
