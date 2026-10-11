@@ -2639,10 +2639,11 @@ fn source_waiting(s: &Src) -> bool {
 /// held, and `wanting` picks the sources that want one now, in display order.
 fn fanout_turn(fanout: &mut crate::stores::fanout::Fanout, srcs: &[Src],
     wanting: impl Fn(&Src) -> bool) -> crate::stores::fanout::FanoutTurn {
-    let running = srcs.iter().filter(|s| s.fetching).count();
-    let wanting: Vec<usize> = srcs.iter().filter(|s| !s.fetching && wanting(s))
-        .map(|s| s.sid.raw() as usize).collect();
-    fanout.begin(running, &wanting)
+    use crate::stores::fanout::Standing;
+    fanout.turn(srcs.iter().map(|s| {
+        let standing = if s.fetching { Standing::Running } else if wanting(s) { Standing::Wanting } else { Standing::Idle };
+        (s.sid.raw() as usize, standing)
+    }))
 }
 
 /// [`kick_with`] behind the fan-out gate. A source that is out already is not asking; one the gate

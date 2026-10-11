@@ -26,6 +26,17 @@ pub struct Fanout {
     started: bool,
 }
 
+/// Where one server stands when a pump opens.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Standing {
+    /// A request is out: it counts against [`WIDTH`].
+    Running,
+    /// No request is out and one would start now.
+    Wanting,
+    /// Neither: nothing out, and nothing due (a countdown, no address, already answered).
+    Idle,
+}
+
 /// One pump's grants. Built by [`Fanout::begin`]; the store asks [`FanoutTurn::admit`] at the point
 /// it would start a request.
 pub struct FanoutTurn {
@@ -34,6 +45,19 @@ pub struct FanoutTurn {
 }
 
 impl Fanout {
+    /// [`Fanout::begin`] over `servers`, each an id (in the store's order) and where it [`Standing`]s.
+    pub fn turn(&mut self, servers: impl Iterator<Item = (usize, Standing)>) -> FanoutTurn {
+        let (mut running, mut wanting) = (0, Vec::new());
+        for (id, standing) in servers {
+            match standing {
+                Standing::Running => running += 1,
+                Standing::Wanting => wanting.push(id),
+                Standing::Idle => {}
+            }
+        }
+        self.begin(running, &wanting)
+    }
+
     /// Open a pump. `running` counts requests already out; `wanting` lists, in the store's order,
     /// the ids that would start one now. Up to the room left, the ones after the cursor are
     /// reserved first, wrapping to the front.
@@ -106,6 +130,15 @@ mod tests {
         }
         assert!(done.iter().all(|&d| d), "a wanted server was never granted");
         (peak, order)
+    }
+
+    #[test]
+    fn turn_counts_running_and_reserves_wanting_in_order() {
+        let mut gate = Fanout::default();
+        let standings = [Standing::Running, Standing::Idle, Standing::Wanting, Standing::Running, Standing::Wanting];
+        let mut turn = gate.turn(standings.iter().copied().enumerate());
+        assert!(turn.admit(2) && turn.admit(4));
+        assert!(!turn.admit(1), "two running and two granted fill the width");
     }
 
     #[test]

@@ -1105,8 +1105,8 @@ fn pump_with_optional_directory(
     let mut landed = prune_pending(state, &live);
     // Which sources may start a request this pump. A source's countdown is stepped inside the sweep
     // below, so it is judged here as it will stand after that step.
-    let (running, wanting) = fanout_candidates(state, adapter, &live);
-    let mut turn = state.fanout.begin(running, &wanting);
+    let standings: Vec<_> = live.iter().map(|&i| (i, fanout_standing(state, adapter, i))).collect();
+    let mut turn = state.fanout.turn(standings.into_iter());
     for i in live.iter().copied() {
         let counted = source_mut(state, i);
         if counted.retry_cd > 0 {
@@ -1397,7 +1397,7 @@ fn state_from_refs(sources: &[&Source], asking: bool) -> State {
 /// device's thread ceiling) or a transient network error simply retries after the backoff instead
 /// of latching the screen on a spinner forever.
 /// Would a request for source `i` leave now, given its countdown `retry_cd`? The one statement of
-/// the preconditions, read both when the pump opens ([`fanout_candidates`]) and at the spawn.
+/// the preconditions, read both when the pump opens ([`fanout_standing`]) and at the spawn.
 fn wants_spawn(state: &SearchState, adapter: &SearchAdapter, i: usize, retry_cd: u32) -> bool {
     if state.armed {
         return false; // still settling: the keystroke burst is not over
@@ -1423,13 +1423,12 @@ fn owed_read(state: &SearchState, i: usize) -> Option<(usize, std::ops::Range<us
     })
 }
 
-/// How many sources have a request out, and which of `live` want one now, in roster order.
-fn fanout_candidates(state: &SearchState, adapter: &SearchAdapter, live: &[usize]) -> (usize, Vec<usize>) {
-    let running = live.iter().filter(|&&i| adapter.mailbox(i).busy()).count();
-    let wanting = live.iter().copied()
-        .filter(|&i| wants_spawn(state, adapter, i, source(state, i).retry_cd.saturating_sub(1)))
-        .collect();
-    (running, wanting)
+/// Whether source `i` has a request out, wants one now, or neither when the pump opens.
+fn fanout_standing(state: &SearchState, adapter: &SearchAdapter, i: usize) -> crate::stores::fanout::Standing {
+    use crate::stores::fanout::Standing;
+    if adapter.mailbox(i).busy() { Standing::Running }
+    else if wants_spawn(state, adapter, i, source(state, i).retry_cd.saturating_sub(1)) { Standing::Wanting }
+    else { Standing::Idle }
 }
 
 fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize,
