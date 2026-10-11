@@ -536,3 +536,46 @@ fn a_clip_scope_clips_the_discovery_walk_and_restores_it() {
         commit(&sources);
     }
 }
+
+/// A draw in the band between `BLUR_REACH` and `BLUR_MARGIN` of a glass that never rises cannot
+/// reach a pixel of that glass, so it must not invalidate it; a glass that rises keeps the wider
+/// grab. Home's chrome glass ends at y=130 and the focused card's top edge is at y=211: 130 + 68
+/// is 198 (clear), 130 + 88 is 218 (inside).
+#[test]
+fn a_draw_in_the_rise_margin_band_invalidates_only_a_glass_that_can_rise() {
+    let _guard = plx_base::testlock::serial();
+    let glass = Rect::new(96.0, 54.0, 1130.0, 76.0);
+    for rises in [false, true] {
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        let mut verdicts = Vec::new();
+        for (step, (x, y)) in [(300.0, 213.0), (340.0, 213.0), (380.0, 213.0), (380.0, 190.0)]
+            .into_iter()
+            .enumerate()
+        {
+            sources.borrow_mut().begin(vec![]);
+            {
+                let _walk = discover(sources.clone());
+                let p = crate::Painter::root();
+                p.rect(Rect::new(x, y, 270.0, 400.0), 0.0, [0.3; 4], [0.3; 4], 0.0);
+                let drew = if rises {
+                    crate::widgets::Glass::DYNAMIC_BACKDROP.backdrop_rising(
+                        p, glass, 0.0, 2.0, [1.0; 4], plx_gfx::gfx::GlassRim::Standing,
+                        plx_gfx::gfx::GlassFace::NONE, crate::theme::Material::UltraThin)
+                } else {
+                    crate::widgets::Glass::DYNAMIC_BACKDROP.backdrop(
+                        p, glass, 0.0, 2.0, [1.0; 4], plx_gfx::gfx::GlassRim::Standing,
+                        plx_gfx::gfx::GlassFace::NONE, crate::theme::Material::UltraThin)
+                };
+                assert!(drew);
+            }
+            sources.borrow_mut().resolve();
+            if step > 0 {
+                verdicts.push(!sources.borrow().entries[&Z(1)].valid);
+            }
+            commit(&sources);
+        }
+        // steps 1,2: the card slides at y=213; step 3: it moves up to y=190, inside the reach
+        let want = if rises { vec![true, true, true] } else { vec![false, false, true] };
+        assert_eq!(verdicts, want, "rises={rises}");
+    }
+}

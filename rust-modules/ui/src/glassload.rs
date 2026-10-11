@@ -539,6 +539,7 @@ impl Dial {
                         plx_gfx::gfx::GlassRim::Bevelled,
                         plx_gfx::gfx::GlassFace::NONE,
                         theme::Material::Regular.deep(),
+                        true,
                     ) {
                         crate::profile::phase("glass.frost", || {
                             p.rect(
@@ -667,6 +668,7 @@ impl Dial {
             plx_gfx::gfx::GlassRim::Bevelled,
             plx_gfx::gfx::GlassFace::NONE,
             theme::Material::Regular.deep(),
+            true,
         );
         // Mode 2: a PRIVATE cache for the surface above. There is one snapshot chain in this renderer,
         // so the only way to give the capsule a backdrop that includes the slab beneath it is to take
@@ -683,6 +685,7 @@ impl Dial {
             plx_gfx::gfx::GlassRim::Standing,
             plx_gfx::gfx::GlassFace::NONE,
             theme::Material::Regular.deep(),
+            true,
         ) {
             p.alpha(amount).rect_sheened(
                 cap,

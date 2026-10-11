@@ -433,7 +433,7 @@ impl HoldHint {
         let opacity = self.opacity();
         // One call into the live-backdrop walk; `false` is its refusal and the flat track material
         // is the answer. The face is faded by hand: only the tint rides the painter's cascade.
-        let glass = widgets::Glass::DYNAMIC_BACKDROP.backdrop(
+        let glass = widgets::Glass::DYNAMIC_BACKDROP.backdrop_rising(
             p,
             r,
             lift,

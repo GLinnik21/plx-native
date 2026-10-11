@@ -162,6 +162,7 @@ impl Paint {
 fn signature(
     prefix: &[Rc<Paint>],
     members: &[Rect],
+    rises: bool,
     layers: &[Layer],
     ceiling: Z,
 ) -> Vec<Rc<Paint>> {
@@ -169,7 +170,7 @@ fn signature(
         .iter()
         .filter(|p| {
             members.iter().any(|&r| {
-                let r = crate::gfx::blur_region(r.x, r.y, r.w, r.h);
+                let r = crate::gfx::blur_region_for(rises, r.x, r.y, r.w, r.h);
                 let Some(cut) = intersection(p.rect(), Rect::new(r[0], r[1], r[2], r[3])) else {
                     return false;
                 };
@@ -593,6 +594,10 @@ pub struct Entry {
     pub valid: bool,
     wanted: Vec<Rect>,
     members: Vec<Rect>,
+    /// Does any member of this source RISE (slide from its rest rect)? Sets the margin its region
+    /// is grown by: [`crate::gfx::blur_region_for`]. Latched from `wanted_rises` with `members`.
+    rises: bool,
+    wanted_rises: bool,
     pub underlay: Vec<std::rc::Rc<Paint>>,
     prefix: Vec<Rc<Paint>>,
     captured_prefix: Vec<Rc<Paint>>,
@@ -629,6 +634,7 @@ impl Sources {
         }
         for (&z, e) in &mut self.entries {
             e.wanted.clear();
+            e.wanted_rises = false;
             if e.members.iter().any(|&rect| {
                 decide(
                     Request {
@@ -669,9 +675,11 @@ impl Sources {
         });
         self.paints.sort_by_key(|p| p.z);
         let mut prefixes: BTreeMap<Z, Vec<Rc<Paint>>> = BTreeMap::new();
+        let mut rises: BTreeMap<Z, bool> = BTreeMap::new();
         for (&z, e) in &mut self.entries {
             if !e.wanted.is_empty() {
                 e.members = e.wanted.clone();
+                e.rises = e.wanted_rises;
                 if let Some(rect) = e.members.iter().copied().reduce(union) {
                     e.rect = rect;
                 }
@@ -687,15 +695,16 @@ impl Sources {
                         let mut p = (**p).clone();
                         // Dependencies are local to THIS lower glass, not the entire shared band.
                         // A change under its sibling must not invalidate an upper sampler here.
-                        p.source = signature(underlay, &[p.rect()], layers, lower);
+                        let lower_rises = rises.get(&lower).copied().unwrap_or(true);
+                        p.source = signature(underlay, &[p.rect()], lower_rises, layers, lower);
                         Rc::new(p)
                     } else {
                         p.clone()
                     }
                 })
                 .collect();
-            let current = signature(&prefix, &e.members, layers, z);
-            let captured = signature(&e.captured_prefix, &e.members, &e.captured_layers, z);
+            let current = signature(&prefix, &e.members, e.rises, layers, z);
+            let captured = signature(&e.captured_prefix, &e.members, e.rises, &e.captured_layers, z);
             // Query the scene that produced the retained image at the CURRENT sampling rects.
             // Growing into an unchanged part of its captured union is not underlay damage.
             if current != captured {
@@ -703,7 +712,7 @@ impl Sources {
                 // unequal. Unarmed this is one relaxed load and nothing else.
                 if e.valid && plx_base::diag::spans::armed() {
                     let region = e.members.iter().copied().reduce(union).map_or([0.0; 4], |r| {
-                        crate::gfx::blur_region(r.x, r.y, r.w, r.h)
+                        crate::gfx::blur_region_for(e.rises, r.x, r.y, r.w, r.h)
                     });
                     self.diffs.push(format_diff(frame, z, region, &captured, &current));
                 }
@@ -720,6 +729,7 @@ impl Sources {
                 .find(|layer| layer.z < z && layer.composite_alpha.is_some())
                 .and_then(|layer| layer.composite_alpha);
             prefixes.insert(z, e.prefix.clone());
+            rises.insert(z, e.rises);
         }
     }
     pub fn jobs(&self) -> Vec<(Z, Rect)> {
@@ -747,7 +757,7 @@ impl Sources {
                 let capture = visible.into_iter().reduce(union).unwrap_or(e.rect);
                 // If a lower glass contributes, capture at the visible prefix instead of replaying
                 // it with a different sharp-rim source. That prefix contains its EXACT composite.
-                let r = crate::gfx::blur_region(capture.x, capture.y, capture.w, capture.h);
+                let r = crate::gfx::blur_region_for(e.rises, capture.x, capture.y, capture.w, capture.h);
                 let footprint = Rect::new(r[0], r[1], r[2], r[3]);
                 let composite = self.entries.range(..z).any(|(&lower_z, lower)| {
                     lower.members.iter().any(|r| {
@@ -774,7 +784,7 @@ impl Sources {
             })
             .collect()
     }
-    fn request(&mut self, z: Z, rect: Rect) -> Decision {
+    fn request(&mut self, z: Z, rect: Rect, rises: bool) -> Decision {
         let frame = self.frame;
         let e = self.entries.entry(z).or_insert(Entry {
             rect,
@@ -783,6 +793,8 @@ impl Sources {
             valid: false,
             wanted: Vec::new(),
             members: Vec::new(),
+            rises: false,
+            wanted_rises: false,
             underlay: Vec::new(),
             prefix: Vec::new(),
             captured_prefix: Vec::new(),
@@ -802,6 +814,7 @@ impl Sources {
             }
         }
         e.seen = frame;
+        e.wanted_rises |= rises;
         if !e
             .wanted
             .iter()
@@ -976,6 +989,11 @@ pub struct Surface {
     pub refresh: bool,
 }
 pub fn surface(rect: Rect) -> Option<Surface> {
+    surface_with(rect, true)
+}
+/// [`surface`] for a glass that says whether it RISES (slides from its rest rect, as the hold hint
+/// does). `false` sizes its region with [`BLUR_REACH`] alone — see [`crate::gfx::blur_region_for`].
+pub fn surface_with(rect: Rect, rises: bool) -> Option<Surface> {
     WALK.with(|slot| {
         let mut slot = slot.borrow_mut();
         let w = slot.as_mut()?;
@@ -986,7 +1004,7 @@ pub fn surface(rect: Rect) -> Option<Surface> {
         );
         let key = (w.layer, w.next);
         let z = if w.discovery {
-            let r = crate::gfx::blur_region(rect.x, rect.y, rect.w, rect.h);
+            let r = crate::gfx::blur_region_for(rises, rect.x, rect.y, rect.w, rect.h);
             let footprint = Rect::new(r[0], r[1], r[2], r[3]);
             let overlaps = w.glasses.iter().any(|&old| {
                 intersects(
@@ -1042,7 +1060,7 @@ pub fn surface(rect: Rect) -> Option<Surface> {
                 refresh: false,
             });
         }
-        let d = w.sources.borrow_mut().request(z, rect);
+        let d = w.sources.borrow_mut().request(z, rect, rises);
         Some(Surface {
             z,
             rect,
@@ -1061,6 +1079,15 @@ pub fn image(z: Z) -> Option<Rc<crate::gfx::BackdropImage>> {
             .get(&z)?
             .image
             .clone()
+    })
+}
+/// Does the source at `z` have a rising member — the margin its region is grown by.
+pub fn rises(z: Z) -> bool {
+    WALK.with(|w| {
+        w.borrow()
+            .as_ref()
+            .and_then(|w| w.sources.borrow().entries.get(&z).map(|e| e.rises))
+            .unwrap_or(true)
     })
 }
 pub fn region(z: Z) -> Option<Rect> {
@@ -1114,8 +1141,9 @@ pub fn captured(z: Z, image: crate::gfx::BackdropImage) {
                     // Includes recovery from a failed capture whose visible fallback was flat.
                     // Overlapping upper bands have not captured yet: they use the visible prefix.
                     for (_, upper) in sources.entries.range_mut(Z(z.0 + 1)..) {
+                        let upper_rises = upper.rises;
                         if upper.members.iter().any(|upper| {
-                            let r = crate::gfx::blur_region(upper.x, upper.y, upper.w, upper.h);
+                            let r = crate::gfx::blur_region_for(upper_rises, upper.x, upper.y, upper.w, upper.h);
                             members
                                 .iter()
                                 .any(|&rect| intersects(rect, Rect::new(r[0], r[1], r[2], r[3])))
@@ -1402,11 +1430,11 @@ mod tests {
         let _guard = plx_base::testlock::serial();
         let mut sources = Sources::default();
         sources.begin(vec![]);
-        sources.request(Z::CHROME, rect(0.0));
-        sources.request(Z::CHROME, rect(1000.0));
+        sources.request(Z::CHROME, rect(0.0), true);
+        sources.request(Z::CHROME, rect(1000.0), true);
         sources.resolve();
         sources.entries.get_mut(&Z::CHROME).unwrap().valid = true; // fake successful GPU capture
-        sources.request(Z::OPENER, rect(500.0));
+        sources.request(Z::OPENER, rect(500.0), true);
         sources.resolve();
         assert!(
             sources.jobs().iter().any(|(z, _)| *z == Z::OPENER),
@@ -1549,7 +1577,7 @@ mod glassdiff_tests {
         let mut s = Sources::default();
         s.begin(Vec::new());
         let member = Rect::new(0.0, 10.0, 100.0, 50.0);
-        s.request(Z::CHROME, member);
+        s.request(Z::CHROME, member, true);
         s.paints.push(draw(5.0, 1.0));
         let e = s.entries.get_mut(&Z::CHROME).unwrap();
         e.valid = true;

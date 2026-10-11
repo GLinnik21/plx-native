@@ -3759,10 +3759,25 @@ pub const GLASS_REGION_BUDGET: f32 = 300_000.0;
 /// existed. The graded expression is now this one.
 #[inline]
 pub fn blur_region(x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
-    let x0 = (x - BLUR_MARGIN).max(0.0);
-    let y0 = (y - BLUR_MARGIN).max(0.0);
-    let x1 = (x + w + BLUR_MARGIN).min(SCR_W);
-    let y1 = (y + h + BLUR_MARGIN).min(SCR_H);
+    blur_region_for(true, x, y, w, h)
+}
+
+/// [`blur_region`] for a glass that is KNOWN not to rise (`rises == false`): the panel plus
+/// [`BLUR_REACH`] and nothing more.
+///
+/// [`POPOVER_MAX_RISE`] exists for one reason: a rising glass's first draw sits a full `rise` away
+/// from where it settles, and the region is grabbed around the rest rect, so the slide has to stay
+/// inside the grab (see [`BLUR_MARGIN`]). A glass that never moves from its rest rect has no slide
+/// to carry, so those 20 px would only widen what the retained source depends on: any draw in the
+/// band between `BLUR_REACH` and `BLUR_MARGIN` of the panel is outside everything the lens and the
+/// kernel can read for a pixel of the panel, yet it would still invalidate the source.
+#[inline]
+pub fn blur_region_for(rises: bool, x: f32, y: f32, w: f32, h: f32) -> [f32; 4] {
+    let m = if rises { BLUR_MARGIN } else { BLUR_REACH };
+    let x0 = (x - m).max(0.0);
+    let y0 = (y - m).max(0.0);
+    let x1 = (x + w + m).min(SCR_W);
+    let y1 = (y + h + m).min(SCR_H);
     [x0, y0, (x1 - x0).max(1.0), (y1 - y0).max(1.0)]
 }
 
@@ -5492,8 +5507,9 @@ pub fn draw_blur_backdrop(
     rim: GlassRim,
     face: GlassFace,
     deep: f32,
+    rises: bool,
 ) -> bool {
-    let live = backdrop::surface(Rect::new(x,y,w,h));
+    let live = backdrop::surface_with(Rect::new(x,y,w,h), rises);
     if live.is_some_and(|r| !r.draw) { return true; }
     unsafe {
         // Direct jobs never intersect a lower glass: those bands capture the visible prefix
@@ -5525,7 +5541,7 @@ pub fn draw_blur_backdrop(
         if masked(Class::Glass) {
             return false;
         }
-        let need = blur_region(rest[0], rest[1], rest[2], rest[3]);
+        let need = blur_region_for(rises, rest[0], rest[1], rest[2], rest[3]);
         let retained;
         let c = if let Some(request) = live {
             if !BLUR_IN_PASS && (request.refresh || backdrop::image(request.z).is_none_or(|image| !image.covers(request.rect))) {
@@ -5534,7 +5550,7 @@ pub fn draw_blur_backdrop(
                 if !backdrop::begin_inline_capture(request.z) { return false; }
                 BLUR_VALID=false;
                 let r = backdrop::region(request.z).unwrap_or(Rect::new(x,y,w,h));
-                blur_snapshot(blur_region(r.x,r.y,r.w,r.h));
+                blur_snapshot(blur_region_for(backdrop::rises(request.z), r.x,r.y,r.w,r.h));
                 if !retain_backdrop(request.z) {
                     backdrop::capture_failed(request.z);
                     return false;
@@ -7557,6 +7573,37 @@ mod tests {
         // a panel somewhere else entirely is NOT covered — containment must still be a real test,
         // or a second panel would silently reuse the first one's backdrop
         assert!(!blur_region_covers(reg, 40.0, 40.0, w, h));
+    }
+
+    /// A glass that never rises is grabbed `BLUR_REACH` out and no further, and `BLUR_REACH` is
+    /// what the lens and the kernel can read: [`GLASS_LENS`] plus the chain's own spread.
+    ///
+    /// Why the blurred pixels of the panel cannot change with the band between `BLUR_REACH` and
+    /// `BLUR_MARGIN`: an output pixel inside the panel samples the snapshot at most `GLASS_LENS`
+    /// (38) outward of itself (the lens displaces along the outward normal) and then the blur taps
+    /// spread about 10 px around that sample (0.35 and 0.75 texels at quarter res, the up pass, the
+    /// reductions' box), 48 px from the panel in all. `BLUR_REACH` (68) is that plus ~20 of slack,
+    /// and it is the figure `blur_region_covers` has always accepted a cached grab on. A draw
+    /// farther out than 68 therefore feeds no tap of any panel pixel.
+    #[test]
+    fn j_a_glass_that_never_rises_is_grabbed_reach_out_and_no_further() {
+        // The tab track on Home: bottom edge 130, so the rising grab ends at 218 and the
+        // non-rising one at 198 — above the focused card's top edge at 211.
+        let (x, y, w, h) = (96.0f32, 54.0f32, 1130.0f32, 76.0f32);
+        let still = blur_region_for(false, x, y, w, h);
+        let rising = blur_region_for(true, x, y, w, h);
+        assert_eq!(still[1] + still[3], y + h + BLUR_REACH);
+        assert_eq!(rising[1] + rising[3], y + h + BLUR_MARGIN);
+        assert_eq!(still[0], x - BLUR_REACH);
+        assert_eq!(still[0] + still[2], x + w + BLUR_REACH);
+        assert!(still[1] + still[3] < 211.0 && rising[1] + rising[3] > 211.0);
+        // it still holds everything a pixel of the panel can read...
+        assert!(BLUR_REACH >= GLASS_LENS + 10.0);
+        assert!(blur_region_covers(still, x, y, w, h));
+        // ...and the rising default is exactly the old `blur_region`
+        assert_eq!(rising, blur_region(x, y, w, h));
+        // a still glass hands the rim exactly the margin a cached grab is later tested against
+        assert!(still[2] * still[3] < rising[2] * rising[3]);
     }
 
     /// Two glass surfaces in one frame must converge to ONE grab, and it must SHRINK again when one

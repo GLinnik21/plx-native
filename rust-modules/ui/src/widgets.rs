@@ -57,6 +57,10 @@ impl Glass {
 
     /// Draw the captured backdrop only. The caller owns the material layered over it, which is
     /// what lets the same policy serve a frosted panel and the sheened tab-track capsule.
+    ///
+    /// For a glass that STAYS at its rest rect (`rest_dy` is 0 on every frame): its blurred region is
+    /// the panel plus the blur reach and nothing more. A glass that slides in from its rest rect
+    /// calls [`backdrop_rising`](Self::backdrop_rising).
     #[must_use]
     pub fn backdrop(
         self,
@@ -69,10 +73,44 @@ impl Glass {
         face: plx_gfx::gfx::GlassFace,
         mat: theme::Material,
     ) -> bool {
+        debug_assert!(rest_dy == 0.0, "a glass that slides must use `backdrop_rising`");
+        self.backdrop_with(p, r, rest_dy, radius, tint, rim, face, mat, false)
+    }
+
+    /// [`backdrop`](Self::backdrop) for a glass that slides in from its rest rect (`rest_dy` != 0
+    /// while it does): its region keeps the extra margin that holds the whole slide
+    /// ([`plx_gfx::gfx::BLUR_MARGIN`]).
+    #[must_use]
+    pub fn backdrop_rising(
+        self,
+        p: Painter,
+        r: Rect,
+        rest_dy: f32,
+        radius: f32,
+        tint: [f32; 4],
+        rim: plx_gfx::gfx::GlassRim,
+        face: plx_gfx::gfx::GlassFace,
+        mat: theme::Material,
+    ) -> bool {
+        self.backdrop_with(p, r, rest_dy, radius, tint, rim, face, mat, true)
+    }
+
+    fn backdrop_with(
+        self,
+        p: Painter,
+        r: Rect,
+        rest_dy: f32,
+        radius: f32,
+        tint: [f32; 4],
+        rim: plx_gfx::gfx::GlassRim,
+        face: plx_gfx::gfx::GlassFace,
+        mat: theme::Material,
+        rises: bool,
+    ) -> bool {
         // A bare painter outside a frame cannot name an underlay. Never silently fall through
         // to the synthetic load dial's independent scratch-cache policy.
         if !crate::frame::backdrop::active() || !plx_gfx::gfx::live_blur_available() { return false; }
-        p.backdrop_blur(r, rest_dy, radius, tint, rim, face, mat.deep())
+        p.backdrop_blur(r, rest_dy, radius, tint, rim, face, mat.deep(), rises)
     }
 }
 
