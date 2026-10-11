@@ -2144,7 +2144,7 @@ const PRIME_VIDEO_MAX_NS: i64 = 2_500_000_000;
 // ~1.6s (was ~10-20s: aq 6MB + the pipeline's own ~8MB) makes seeks flush far less, keeps the
 // clock from running ahead, and cuts latency. AUDIO gets a looser bound so it can ride slightly
 // ahead (audio buffer is cheap and it's the master clock) without unbounded race on odd muxes.
-const MAX_FEED_AHEAD_NS: i64 = 1_600_000_000;
+pub(crate) const MAX_FEED_AHEAD_NS: i64 = 1_600_000_000;
 const AUDIO_SLACK_NS: i64 = 2_000_000_000;
 // A fed pts this far below a lane's high-water is a stale pre-seek AU (past the B-frame reorder
 // distance) → drop it rather than feed a backward jump.
@@ -2175,7 +2175,7 @@ const AUDIO_STALE_AHEAD_NS: i64 = 5_000_000_000;
 /// pre-seek audio (that was pushed before the mark), so it and the next 2 s are fed regardless.
 /// 2 s is under the throttle's own audio lead ([`MAX_FEED_AHEAD_NS`] + [`AUDIO_SLACK_NS`]), so a
 /// track that starts on time is fed exactly as before.
-const AUDIO_LEAD_IN_NS: i64 = 2_000_000_000;
+pub(crate) const AUDIO_LEAD_IN_NS: i64 = 2_000_000_000;
 // Sentinel for SHARED.pres_fed meaning "no post-seek frame has presented yet" — the feed-ahead
 // throttle treats it as feed-freely (don't compare the new fed pts against a stale pre-seek
 // presented position). Set on a seek; the first presented frame overwrites it with a real pts.

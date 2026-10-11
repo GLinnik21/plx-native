@@ -40,11 +40,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// How long the first audio AU gets to reach the audio lane. Healthy, it takes well under a
+/// How long the audio lane gets to deliver the first AU AND the engine's whole lead-in after it
+/// ([`AUDIO_LEAD_IN_NS`](crate::player::engine::AUDIO_LEAD_IN_NS)). Healthy, it takes well under a
 /// second (a loopback read of ~20 MB); broken, it never comes, and this is how long the failing
 /// run waits before it says so. Long enough that a loaded CI host cannot flake it, short enough
 /// that red is seconds, not a hung test binary.
 const FIRST_AUDIO_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The fixture's video bitrate, bits per second (the `-b:v` of [`generate`]).
+const FIXTURE_VIDEO_BPS: i64 = 12_000_000;
 
 /// The delay the reported film carried on its E-AC-3 track, in seconds.
 const LATE_AUDIO_DELAY_S: f64 = 11.008;
@@ -224,6 +228,11 @@ fn serve(s: &mut std::net::TcpStream, body: &[u8], stop: &AtomicBool) {
 struct Observed {
     /// pts (ns) of the first AU popped from the AUDIO lane, if one arrived in time.
     first_audio_pts_ns: Option<i64>,
+    /// pts (ns) of the last AU popped from the AUDIO lane by the deadline; minus the first, the
+    /// span of audio the demuxer managed to push.
+    last_audio_pts_ns: Option<i64>,
+    /// How many audio AUs were popped.
+    audio_aus: usize,
     /// Bytes sitting in the video lane at that moment — the demuxer's read-ahead of video.
     video_lane_bytes: i64,
 }
@@ -258,23 +267,35 @@ impl DemuxRun {
         DemuxRun { video, audio, thread: Some(thread), hs }
     }
 
-    /// Pop the audio lane until its first AU or the deadline.
-    fn observe(&mut self, deadline: Duration) -> Observed {
+    /// Pop the audio lane until it has delivered `want_span_ns` of audio (last AU's pts minus the
+    /// first's) or the deadline passes. **The video lane is never popped**, exactly as on the
+    /// television before the clock starts: the engine feeds video only up to `MAX_FEED_AHEAD_NS`
+    /// past a presented position that cannot move until audio has been fed.
+    fn observe(&mut self, deadline: Duration, want_span_ns: i64) -> Observed {
         let until = Instant::now() + deadline;
         let mut first_audio_pts_ns = None;
+        let mut last_audio_pts_ns = None;
+        let mut audio_aus = 0;
         while Instant::now() < until {
             let node = crate::aq::aq_pop(&mut *self.audio, std::ptr::null_mut());
             if !node.is_null() {
                 let (es, _key, pts, _len, _data) = unsafe { crate::aq::au_fields(node) };
                 unsafe { libc::free(node as *mut c_void) };
                 assert_eq!(es, 2, "the audio lane carries es=2 AUs");
-                first_audio_pts_ns = Some(pts);
-                break;
+                first_audio_pts_ns.get_or_insert(pts);
+                last_audio_pts_ns = Some(pts);
+                audio_aus += 1;
+                if pts - first_audio_pts_ns.unwrap_or(pts) >= want_span_ns {
+                    break;
+                }
+                continue;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
         Observed {
             first_audio_pts_ns,
+            last_audio_pts_ns,
+            audio_aus,
             video_lane_bytes: i64::from(crate::aq::aq_bytes(&mut *self.video)),
         }
     }
@@ -322,7 +343,7 @@ fn demux_fixture(tag: &str, audio_delay_s: f64) -> Option<(Observed, f64, u64)> 
     );
     let server = FileServer::start(&file);
     let mut run = DemuxRun::start(server.port);
-    let seen = run.observe(FIRST_AUDIO_DEADLINE);
+    let seen = run.observe(FIRST_AUDIO_DEADLINE, crate::player::engine::AUDIO_LEAD_IN_NS);
     Some((seen, first_audio_s, video_before))
 }
 
@@ -345,10 +366,15 @@ fn a_late_audio_track_is_reached_although_the_video_lane_fills_first() {
         (first_audio_s - LATE_AUDIO_DELAY_S).abs() < 0.1,
         "fixture: the first audio packet must be at ~{LATE_AUDIO_DELAY_S} s, got {first_audio_s}"
     );
+    // Above the base cap by MORE than the pump could have popped: on the television the pump feeds
+    // video up to MAX_FEED_AHEAD_NS (1.6 s) before the clock, which at this fixture's rate is
+    // ~2.4 MB leaving the lane. The fixture must park the demuxer even after that much has gone.
+    let throttle_pop = FIXTURE_VIDEO_BPS / 8 * crate::player::engine::MAX_FEED_AHEAD_NS / 1_000_000_000;
     assert!(
-        video_before as i64 > video_cap,
+        video_before as i64 > video_cap + throttle_pop,
         "fixture: {video_before} bytes of video before the audio must exceed the video lane's \
-         {video_cap}-byte cap, or this file cannot park the demuxer"
+         {video_cap}-byte cap plus the {throttle_pop} bytes the pump's feed-ahead throttle could \
+         pop, or this file cannot park the demuxer"
     );
 
     let pts = seen.first_audio_pts_ns.unwrap_or_else(|| {
@@ -363,6 +389,29 @@ fn a_late_audio_track_is_reached_although_the_video_lane_fills_first() {
     assert!(
         (at_ms as f64 - LATE_AUDIO_DELAY_S * 1000.0).abs() < 100.0,
         "the first audio AU is the one at ~{LATE_AUDIO_DELAY_S} s, got {at_ms} ms"
+    );
+    assert_lead_in_reached(&seen, pts, video_cap);
+}
+
+/// **The first audio AU is not enough: the engine feeds a late track's first AU and the next
+/// [`AUDIO_LEAD_IN_NS`](crate::player::engine::AUDIO_LEAD_IN_NS) of audio ahead of a clock that
+/// cannot start without them.** So the demuxer must keep reading, and pushing both lanes, until
+/// that much audio is on the audio lane — with the video lane, already past its base cap, still
+/// not drained by anyone. Releasing the headroom the instant the first audio AU lands drops the
+/// video cap BELOW what the lane holds; the next video push parks and the audio lane starves after
+/// one or two packets (device log: `feed a#1`, `feed a#2`, nothing more, no clock, no position).
+fn assert_lead_in_reached(seen: &Observed, first_pts: i64, video_cap: i64) {
+    let last = seen.last_audio_pts_ns.unwrap_or(first_pts);
+    let span = last - first_pts;
+    assert!(
+        span >= crate::player::engine::AUDIO_LEAD_IN_NS,
+        "only {} audio AU(s) spanning {} ms reached the audio lane within {FIRST_AUDIO_DEADLINE:?}; \
+         the engine needs {} ms of lead-in before its clock can start. The demuxer is parked behind \
+         the video lane (holds {} bytes, base cap {video_cap}) and cannot read the rest of the audio",
+        seen.audio_aus,
+        span / 1_000_000,
+        crate::player::engine::AUDIO_LEAD_IN_NS / 1_000_000,
+        seen.video_lane_bytes
     );
 }
 
@@ -389,4 +438,6 @@ fn an_on_time_audio_track_reaches_the_audio_lane_at_once() {
         )
     });
     assert!(pts / 1_000_000 < 100, "the control's first audio AU is at ~0 ms, got {} ms", pts / 1_000_000);
+    // The same bounded wait for the lead-in: an on-time track has all of it long before any lane fills.
+    assert_lead_in_reached(&seen, pts, crate::player::engine::aq_caps().0);
 }
