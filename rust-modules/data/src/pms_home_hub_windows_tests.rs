@@ -105,6 +105,22 @@ fn a_list_that_changes_between_windows_ends_complete() {
 }
 
 #[test]
+fn a_hub_preview_that_repeats_a_key_shows_the_card_once_and_ends_where_the_listing_does() {
+    let card = |key: u32| serde_json::json!({
+        "ratingKey": key.to_string(), "type": "movie", "title": "Movie", "thumb": "/poster"});
+    let hub = serde_json::json!({"hubIdentifier": "movie.row0", "title": "Row 0", "type": "movie",
+        "key": "/hubs/sections/1/row0", "more": true, "size": 5, "totalSize": 500,
+        "Metadata": [card(1), card(2), card(1), card(3), card(2)]});
+    let page = serde_json::json!({"Hub": [hub], "totalSize": 1, "offset": 0});
+    let build = project_hubs(sid(), &[], |_| serde_json::from_value(page.clone()).ok()).unwrap();
+    let shelf = &build.shelves[0];
+    let keys: Vec<&str> = shelf.items.iter().map(|item| item.rk.as_str()).collect();
+    assert_eq!(keys, ["1", "2", "3"], "first occurrence, listing order");
+    assert_eq!(shelf.positions, [0, 1, 3], "positions stay the listing's");
+    assert_eq!((shelf.offset, shelf.end), (0, 5), "the next ask continues from the listing's own end");
+}
+
+#[test]
 fn a_short_list_is_one_request_that_keeps_every_card() {
     let mut server = HubServer::new(HOLD_ROWS);
     let build = project_from(&mut server, &[]);

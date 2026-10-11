@@ -163,7 +163,7 @@ pub fn fetch_window(sid: ServerId, ask: &Ask, current: Option<(&[Row], PageInfo)
             if !listable(&item.kind) { continue; }
             let item = parse_item(item, sid);
             if item.title.is_empty() || item.thumb.is_empty() || ask.hidden.contains(&item.sec)
-                || rows.iter().any(|(_, row)| row.rk == item.rk) { continue; }
+                || rows.iter().chain(&fresh).any(|(_, row)| row.rk == item.rk) { continue; }
             if ask.before { fresh.push((position, Arc::new(item))); }
             else {
                 rows.push((position, Arc::new(item)));
@@ -943,3 +943,7 @@ pub(crate) mod hub_list_tests;
 #[cfg(test)]
 #[path = "paging_ledger_note_tests.rs"]
 mod ledger_note_tests;
+
+#[cfg(test)]
+#[path = "paging_repeated_key_tests.rs"]
+mod repeated_key_tests;

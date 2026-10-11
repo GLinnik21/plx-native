@@ -1515,8 +1515,12 @@ impl<'a> Projection<'a> {
             if hub.hub_identifier == "home.continue" || hub.hub_identifier == "home.ondeck" {
                 continue; // superseded by the dedicated hub
             }
+            // A key the preview lists twice is one card, at its first position; `end` below stays the
+            // listing's own, so the next page is asked for from where the listing ends.
+            let mut seen = std::collections::HashSet::new();
             let (positions, items): (Vec<usize>, Vec<Arc<PmsMovie>>) = hub.metadata.iter().enumerate()
-                .filter_map(|(i, item)| shelf_card(item, self.sid).map(|item| (i, Arc::new(item)))).unzip();
+                .filter_map(|(i, item)| shelf_card(item, self.sid).map(|item| (i, Arc::new(item))))
+                .filter(|(_, item)| seen.insert(item.rk.clone())).unzip();
             if items.is_empty() {
                 continue;
             }
