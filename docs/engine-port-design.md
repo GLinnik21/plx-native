@@ -503,7 +503,7 @@ plus `pub(crate)` on `AuNode`/`AuQueue` visibility already present, and `aq_is_a
 
 ## 9. Correctness properties preserved (the hard-won ones)
 
-- **VERBATIM sourceInfo** — captured as raw bytes in `sf_on_event`, handed to `acb_send_video_data` unmodified (§4/§5). No JSON round-trip anywhere.
+- **VERBATIM sourceInfo** — captured as raw bytes in `sf_on_event`, handed to `acb_send_video_data` unmodified (§4/§5), except the PQ-VP9 rewrite in `pump.rs` (`player/vp9_hdr.rs`), the one deliberate parse-and-rebuild.
 - **ACB bind order** — `acb_bind` → wait `frames>=2` → `acb_send_video_data` → `acb_start`, unchanged; all four still in the C seam, driven by the `Stage` machine.
 - **Seek/rebase timing** — publish `seek_byte` (Release) *before* `http_close`; `rebase_pending` zero-bases `pts_shift` on the first post-seek keyframe in the feed loop; `frames` reset so the resume re-pause gate counts only post-seek frames — byte-identical to the C pump.
 - **Backpressure** — `pending: Option<AuBox>` holds the un-accepted AU across `BufferFull` ticks; `AuBox::drop` frees exactly where C called `free(bf_pending)`; the `AQ_MAX_BYTES` producer block is unchanged in `aq.rs`.

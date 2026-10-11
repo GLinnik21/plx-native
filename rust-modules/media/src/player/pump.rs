@@ -1762,7 +1762,8 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         }
     }
 
-    // ---------- send the WHOLE sourceInfo envelope VERBATIM, once frames flow, then
+    // ---------- send the WHOLE sourceInfo envelope once frames flow (verbatim, except a
+    // container-PQ VP9 stream, see below), then
     // window + PLAYING (setMediaVideoData -> setDisplayWindow -> setState PLAYING) ----------
     if eng.stage == Stage::Bound && !eng.video_info_sent && SHARED.frames.load(Relaxed) >= 2 {
         let bytes = SHARED.source_info.lock().unwrap().clone();
