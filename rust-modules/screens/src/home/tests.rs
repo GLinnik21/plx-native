@@ -4554,12 +4554,7 @@ fn chrome_source_stale(rig: &mut WashRig, view: HubsView<'_>, sources: &std::rc:
         let mut f = DrawFrame::new(&context, Painter::root());
         plx_gfx::gfx::without_frame_clear(|| Screen::<TestHost>::draw(&mut rig.s, &mut f));
         let _band = layer(Z::CHROME, true);
-        for r in chrome_glasses() {
-            assert!(plx_ui::widgets::Glass::DYNAMIC_BACKDROP.backdrop(
-                Painter::root(), r, 0.0, r.h * 0.5, [1.0; 4],
-                plx_gfx::gfx::GlassRim::Standing, plx_gfx::gfx::GlassFace::NONE,
-                plx_ui::theme::Material::UltraThin));
-        }
+        plx_ui::widgets::declare_chrome_glass_for_test(Painter::root(), &chrome_glasses());
     }
     sources.borrow_mut().resolve();
     let stale = !sources.borrow().entries[&Z::CHROME].valid;
@@ -4612,7 +4607,6 @@ fn a_held_right_along_the_first_row_re_renders_the_chrome_glass_source_only_for_
     }
     assert!(moves >= 12);
     let stale = frames.iter().filter(|f| f.0).count();
-    eprintln!("STALE {stale} of {}", frames.len()); // TMPDIAG
     assert!(frames.iter().all(|&(stale, moved)| !stale || moved),
         "a stale frame the heading did not cause: {frames:?}");
     assert!(stale <= 17, "{stale} stale frames of {}", frames.len());

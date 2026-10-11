@@ -2506,7 +2506,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // A band intersecting lower glass captures that composite in visible order.
                         for (ceiling, rect) in jobs {
                             let _source_walk = plx_ui::frame::backdrop::enter(sources.clone(), ceiling);
-                            let reg = plx_gfx::gfx::blur_region(rect.x, rect.y, rect.w, rect.h);
+                            let reg = plx_gfx::gfx::blur_region_for(plx_ui::frame::backdrop::rises(ceiling), rect.x, rect.y, rect.w, rect.h);
                             // `src`: one blur source job, its replay of the page prefix included.
                             plx_base::diag::spans::span("src", || {
                                 if plx_gfx::gfx::blur_snapshot_direct(reg, &mut || page(ceiling)) {

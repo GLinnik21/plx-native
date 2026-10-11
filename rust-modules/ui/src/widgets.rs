@@ -114,6 +114,24 @@ impl Glass {
     }
 }
 
+/// Declare the chrome band's glass surfaces (`rects`, the profile chip's capsule and the tab track)
+/// the way the band does, for a screen test that grades what invalidates their shared blur source.
+#[cfg(any(test, feature = "test-support"))]
+pub fn declare_chrome_glass_for_test(p: Painter, rects: &[Rect]) {
+    for &r in rects {
+        assert!(Glass::DYNAMIC_BACKDROP.backdrop(
+            p,
+            r,
+            0.0,
+            r.h * 0.5,
+            [1.0, 1.0, 1.0, 1.0],
+            plx_gfx::gfx::GlassRim::Standing,
+            plx_gfx::gfx::GlassFace::NONE,
+            theme::Material::UltraThin,
+        ));
+    }
+}
+
 /// **A popover panel's GROUND — the page under it, carried into it, WHERE it is.**
 ///
 /// Every popover in the app stands on this: the menus, the alert panels, the person bio, the
@@ -6308,7 +6326,12 @@ const GLASS_TRACK_MAX: f32 = if GLASS_TRACK_TOUCH_MAX < GLASS_TRACK_BUDGET_MAX {
 /// The widest track that still leaves [`BAND_AIR`] between the unfurled chip and the centred strip.
 const GLASS_TRACK_TOUCH_MAX: f32 = crate::consts::SCR_W - 2.0 * (CHIP_CAP_MAX_R + BAND_AIR);
 
-/// The track's blurred region HEIGHT, in authored px.
+/// The track's blurred region HEIGHT, in authored px — priced at [`plx_gfx::gfx::BLUR_MARGIN`], the
+/// margin of a glass that RISES. The band's glass never rises, so its real region is grown
+/// [`plx_gfx::gfx::blur_region_for`]'s `BLUR_REACH` (68) only: 20 px less each side. This constant,
+/// [`GLASS_TRACK_BUDGET_MAX`] and the budget tests stay on the wider figure on purpose — an upper
+/// bound, so a width that fits it fits the real region with room to spare, and the track the owner
+/// sees is unchanged.
 ///
 /// The top clamps to 0 — the track's own top edge (`TOP_BAR_Y - TAB_TRACK_PAD` = 54) is inside
 /// [`plx_gfx::gfx::BLUR_MARGIN`] 88 of the panel edge — so the whole region is

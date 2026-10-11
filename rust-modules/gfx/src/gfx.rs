@@ -3733,6 +3733,10 @@ const POPOVER_MAX_RISE: f32 = 20.0;
 /// comes to rest; every later frame moves it back INTO that region. Cache hits are therefore
 /// containment tests — key on equality, or grab only `BLUR_REACH`, and even a cached popover would
 /// recapture on every frame of its appear.
+///
+/// **Only for a glass that RISES.** A glass that stays at its rest rect is grabbed [`BLUR_REACH`] out
+/// and no more ([`blur_region_for`]); `BLUR_MARGIN` is the figure for the ones that slide
+/// (`ui::hold_hint`) and the conservative upper bound the band budget is priced at.
 pub const BLUR_MARGIN: f32 = BLUR_REACH + POPOVER_MAX_RISE;
 
 /// The region area a MOVING host can carry at 60 fps, in authored px² — the design system's
