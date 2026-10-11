@@ -3033,7 +3033,9 @@ pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: plx_plex::plex::L
 /// shared bound and applies to every codec. AV1 and VP9 additionally have to clear `caps.av1_row` /
 /// `caps.vp9_row` on each non-zero axis, because the row is the decoder's own statement of its
 /// size; a set whose table lists no such decoder refuses the codec at any size. Bit depth is not
-/// tested here (no codec's is): the profile's `*` bound and the server's `/decision` carry it.
+/// tested here (no codec's is): the profile's `*` bound (and, for VP9 on a set not measured at 10-bit,
+/// its VP9-scoped bound) and the server's `/decision` carry it, so with `/decision` unreachable a 10-bit
+/// VP9 file is direct-played locally even on a set whose profile caps it.
 pub(super) fn video_direct_plays(
     vcodec: &str,
     src_w: i64,

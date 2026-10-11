@@ -739,8 +739,9 @@ def venc_args(v):
     if c == "av1":
         return ["-c:v", "libsvtav1", "-preset", "12", "-crf", str(v["crf"]), "-g", "48"]
     if c == "vp9":
-        # Constant-quality (-b:v 0 + -crf), Profile 0 (8-bit 4:2:0): the only VP9 shape the profile
-        # advertises. One-pass libvpx emits no hidden alt-ref frames, so no superframes here.
+        # Constant-quality (-b:v 0 + -crf), Profile 0 (8-bit 4:2:0): the shape every set's profile
+        # advertises (the webOS 4 family also advertises Profile 2, which this recipe does not make).
+        # One-pass libvpx emits no hidden alt-ref frames, so no superframes here.
         return ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(v["crf"]), "-deadline", "good",
                 "-cpu-used", "5", "-row-mt", "1", "-g", "48", "-pix_fmt", "yuv420p"]
     raise Fail("no encoder recipe for video codec %r" % c)
