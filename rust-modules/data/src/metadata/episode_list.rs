@@ -20,6 +20,13 @@ fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// The page of index `i` in a list of `pages` pages. Episodes are never filtered, so an index in
+/// the last page's slack past the total still belongs to that page; only `pages * PAGE` and
+/// beyond is past the end.
+fn page_of(pages: usize) -> impl Fn(usize) -> usize {
+    move |i| (i / PAGE).min(pages)
+}
+
 pub struct EpisodeList {
     /// The page directory. Episodes are never filtered, so every page keeps its full count and an
     /// index is plain division; a landed page is clipped to the season, not to a filter.
@@ -82,7 +89,7 @@ impl EpisodeList {
 
     /// The pages covering the index range `lo..hi` that have not landed.
     pub fn missing(&self, lo: usize, hi: usize) -> impl Iterator<Item = usize> + '_ {
-        self.cache.missing(lo, hi)
+        self.cache.missing_by(lo, hi, page_of(self.cache.page_count()))
     }
 
     /// Lands `rows` as page `page`. A page past the directory is ignored, and rows past the
@@ -104,7 +111,7 @@ impl EpisodeList {
     /// nothing while `MAX_LOADED` or fewer pages are loaded, so a season that fits stays whole.
     /// An evicted page reads as a hole again and is fetched when the screen asks for it.
     pub fn evict(&mut self, keep: &Keep) {
-        if self.cache.evict(keep) {
+        if self.cache.evict_by(keep, page_of(self.cache.page_count())) {
             self.rev += 1;
         }
     }
@@ -315,6 +322,29 @@ mod tests {
         assert_eq!(list.rev(), rev + 1);
         assert!(!list.edit("nope", |e| e.watched = true));
         assert_eq!(list.rev(), rev + 1, "a miss writes nothing and bumps nothing");
+    }
+
+    #[test]
+    fn a_range_in_the_last_pages_slack_still_asks_for_that_page() {
+        // 121 episodes: pages 0..3, page 2 holds one row. A range computed against a longer list
+        // can start past the total yet inside page 2's span.
+        let list = EpisodeList::with_total(121);
+        assert_eq!(list.missing(125, 140).collect::<Vec<_>>(), vec![2]);
+        assert_eq!(list.missing(180, 200).count(), 0, "at or past pages * PAGE is past the end");
+    }
+
+    #[test]
+    fn a_focus_in_the_last_pages_slack_keeps_that_page_on_eviction() {
+        let mut big = EpisodeList::with_total(20_000);
+        for p in 0..9 {
+            big.set_page(p * 30, rows(p * 30 * PAGE, p * 30 * PAGE + PAGE));
+        }
+        // Nine pages loaded, over the budget; the focus sits in the slack of the last page.
+        let total = 20_000usize;
+        let last = total.div_ceil(PAGE) - 1;
+        big.set_page(last, rows(last * PAGE, total));
+        big.evict(&Keep { wanted: 0..60, focus: Some(total + 5), restore: None });
+        assert!(big.get(last * PAGE).is_some(), "the focus' page is the last page and stays");
     }
 
     #[test]

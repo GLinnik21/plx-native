@@ -143,9 +143,16 @@ impl<T> PageCache<T> {
 
     /// Page numbers covering the index range `lo..hi` that are not loaded.
     pub fn missing(&self, lo: usize, hi: usize) -> impl Iterator<Item = usize> + '_ {
+        self.missing_by(lo, hi, |i| self.page_of(i))
+    }
+
+    /// [`missing`](Self::missing) with the caller's index-to-page rule (past the directory maps to
+    /// `page_count()` or beyond), for a listing whose slack past the total still belongs to its
+    /// last page.
+    pub fn missing_by(&self, lo: usize, hi: usize, page_of: impl Fn(usize) -> usize) -> impl Iterator<Item = usize> + '_ {
         let end = self.pages.len();
-        let first = self.page_of(lo).min(end);
-        let last = if hi > lo { (self.page_of(hi - 1) + 1).min(end) } else { first };
+        let first = page_of(lo).min(end);
+        let last = if hi > lo { (page_of(hi - 1) + 1).min(end) } else { first };
         (first..last.max(first)).filter(move |&p| !self.is_loaded(p))
     }
 
@@ -233,9 +240,18 @@ impl<T> PageCache<T> {
     /// Drops the rows of every loaded page the screen no longer needs. Does nothing while
     /// `MAX_LOADED` or fewer pages are loaded, and then returns `false`.
     pub fn evict(&mut self, keep: &Keep) -> bool {
-        let Some(kept) = kept_when_over_budget(self.loaded_pages(), self.pages.len(), keep, |i| self.page_of(i)) else {
-            return false;
-        };
+        let kept = kept_when_over_budget(self.loaded_pages(), self.pages.len(), keep, |i| self.page_of(i));
+        self.drop_unkept(kept)
+    }
+
+    /// [`evict`](Self::evict) with the caller's index-to-page rule (`kept_pages`' `page_of`).
+    pub fn evict_by(&mut self, keep: &Keep, page_of: impl Fn(usize) -> usize) -> bool {
+        let kept = kept_when_over_budget(self.loaded_pages(), self.pages.len(), keep, page_of);
+        self.drop_unkept(kept)
+    }
+
+    fn drop_unkept(&mut self, kept: Option<Vec<bool>>) -> bool {
+        let Some(kept) = kept else { return false };
         for (page, keep) in self.pages.iter_mut().zip(kept) {
             if !keep {
                 page.rows = None;
