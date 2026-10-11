@@ -32,6 +32,8 @@ static PORT: plx_platform::tv::Port = plx_platform::tv::Port {
     clear_opaque_region: crate::system::clear_opaque_region,
     pump_bus: crate::system::ls2_pump,
     frame_probe_request: crate::system::frame_probe_request,
+    frame_probe_prepare_begin: crate::system::frame_probe_prepare_begin,
+    frame_probe_prepare_end: crate::system::frame_probe_prepare_end,
     frame_probe_waiting: crate::system::frame_probe_waiting,
     frame_probe_acquired: crate::system::frame_probe_acquired,
     frame_probe_fields: crate::system::frame_probe_fields,

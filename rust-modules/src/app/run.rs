@@ -280,7 +280,9 @@ pub(crate) unsafe fn run(app: &mut App) {
         update(app, fr);
         app.rec.content_results();
         app.instr.mark(plx_base::diag::heartbeat::Phase::TickDrain); // tick_drain
+        plx_platform::tv::window::frame_probe_prepare_begin();
         prepare_window(app, fr);
+        plx_platform::tv::window::frame_probe_prepare_end();
         present_and_swap(
             app,
             fr,

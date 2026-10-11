@@ -8,7 +8,9 @@
 Inputs
   APP.log   the app's event log with `--arm framecb` FRAMEDROP lines:
             `... seq=N mono=<ms> wait_at=<ms> w=<wall>/<cpu>/<runq> wsw=<slept>/<preempted>
-             d=... dsw=... s=... ssw=... cb=...`
+             d=... dsw=... s=... ssw=... p=... psw=... cb=...`
+            (`p=` is the frame loop's `prepare_window`, same units as `w=`; it precedes the wait,
+            may appear without `wait_at=`, and is not read here)
             mono= is CLOCK_MONOTONIC ms after the swap; wait_at= the same clock when the frame's
             first framebuffer command (the back-buffer wait) began.
   TRACE     ftrace text with trace_clock=mono, as tools/tv-sched-trace.sh captures it: sched_switch,
@@ -146,7 +148,8 @@ def analyze(log, trace, tid, sm, vsync_irq, slow, offset_ms):
 # One slow frame (seq 5, wait 1002..1012 ms): the frame thread (tid 100) blocks in futex at
 # 1004 ms, kworker runs on its CPU, surface-manager wakes it at 1009 ms and it runs again at 1010.
 SELF_TEST_LOG = ("FRAMEDROP total=30.0 ingest=0.1 up=0 seq=5 mono=1015.0 wait_at=1002.00 "
-                 "w=10.00/1.00/0.00 wsw=1/0 d=1.0/1.0/0.0 dsw=0/0 s=1.0/1.0/0.0 ssw=0/0 cb=\n")
+                 "w=10.00/1.00/0.00 wsw=1/0 d=1.0/1.0/0.0 dsw=0/0 s=1.0/1.0/0.0 ssw=0/0 "
+                 "p=2.00/1.50/0.10 psw=0/1 cb=\n")
 SELF_TEST_TRACE = """\
  app-100 [000] d..2 1.001000: sched_wakeup: comm=app pid=100 prio=120 target_cpu=000
  app-100 [000] .... 1.003500: sys_enter: NR 240 (0, 80, 0, 0, 0, 0)

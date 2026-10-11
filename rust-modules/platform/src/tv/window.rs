@@ -45,6 +45,16 @@ pub fn frame_probe_request() {
     (super::port().frame_probe_request)()
 }
 
+/// `prepare_window` is next: starts the frame's `p` stretch.
+pub fn frame_probe_prepare_begin() {
+    (super::port().frame_probe_prepare_begin)()
+}
+
+/// `prepare_window` has returned: closes the frame's `p` stretch.
+pub fn frame_probe_prepare_end() {
+    (super::port().frame_probe_prepare_end)()
+}
+
 /// The frame's first framebuffer command is next: the wait for a back buffer starts here.
 pub fn frame_probe_waiting() {
     (super::port().frame_probe_waiting)()

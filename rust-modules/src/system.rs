@@ -472,6 +472,12 @@ pub(crate) fn opaque_route(_player: bool) {}
 // wait is a thread that wanted to run and was not given a CPU, and CPU is work. `wait_at=` is the
 // monotonic ms at which the wait began, for lining a frame up with a kernel trace.
 //
+// A fourth stretch, `p`, prices the frame loop's `prepare_window` (the `prepare=` stage): it runs
+// BEFORE the back-buffer wait, on every frame, presenting or not, so it has its own pair of marks
+// (`frame_probe_prepare_begin`/`_end`) apart from the wait/commit slots. Each frame's begin
+// overwrites the pair, so a value is never carried into a later frame's line; it prints only when
+// both marks of the frame that is being reported were taken.
+//
 // Same linkage rule as the opaque experiment above: every libwayland entry point is resolved
 // from the process's own scope, ONCE (`frame_syms`, on the first armed present, before the swap
 // stretch is marked), so the probe adds no symbol to the link and its lookups are not charged to
@@ -583,6 +589,33 @@ fn frame_probe_mark(slot: usize) {
     }
 }
 
+/// `prepare_window`'s boundaries: `[before, after]`. Independent of [`FRAME_COST`]: it is marked on
+/// frames that never reach the wait. Frame-thread only.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+static PREPARE_COST: std::sync::Mutex<[Option<ThreadCost>; 2]> = std::sync::Mutex::new([None; 2]);
+
+/// `prepare_window` is next. Starts the frame's `p` stretch, dropping any earlier frame's marks.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+pub(crate) fn frame_probe_prepare_begin() {
+    if !frame_probe_armed() {
+        return;
+    }
+    if let Ok(mut cost) = PREPARE_COST.lock() {
+        *cost = [Some(ThreadCost::now()), None];
+    }
+}
+
+/// `prepare_window` has returned: closes the frame's `p` stretch.
+#[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
+pub(crate) fn frame_probe_prepare_end() {
+    if !frame_probe_armed() {
+        return;
+    }
+    if let Ok(mut cost) = PREPARE_COST.lock() {
+        cost[1] = Some(ThreadCost::now());
+    }
+}
+
 /// The frame's first framebuffer command is next: the wait for a back buffer starts here.
 #[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 pub(crate) fn frame_probe_waiting() {
@@ -671,8 +704,9 @@ pub(crate) fn frame_probe_request() {
 }
 
 /// The probe's trailing `FRAMEDROP` fields for the frame just presented: `seq=` (the request this
-/// frame made), `mono=` (our monotonic clock, ms, now), the three stretches described in the
-/// section comment, then `cb=<seq>:<compositor ms>:<our ms at dispatch>` for each callback that
+/// frame made), `mono=` (our monotonic clock, ms, now), the three present stretches described in
+/// the section comment, then `p=`/`psw=` for the frame's `prepare_window` (independent of them: it
+/// prints whenever that frame took both of its marks, wait or no wait), then `cb=<seq>:<compositor ms>:<our ms at dispatch>` for each callback that
 /// arrived since the previous line. `""` unarmed.
 #[cfg(all(not(feature = "hostsim"), feature = "devtriggers"))]
 pub(crate) fn frame_probe_fields() -> String {
@@ -695,6 +729,11 @@ pub(crate) fn frame_probe_fields() -> String {
         }
         out.push_str(&ThreadCost::now().since(&before_swap, "s"));
     }
+    if let Ok(mut prepare) = PREPARE_COST.lock() {
+        if let [Some(begin), Some(end)] = std::mem::take(&mut *prepare) {
+            out.push_str(&end.since(&begin, "p"));
+        }
+    }
     out.push_str(" cb=");
     for (i, (seq, stamp, at)) in done.iter().enumerate() {
         if i > 0 {
@@ -707,6 +746,10 @@ pub(crate) fn frame_probe_fields() -> String {
 
 #[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
 pub(crate) fn frame_probe_request() {}
+#[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
+pub(crate) fn frame_probe_prepare_begin() {}
+#[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
+pub(crate) fn frame_probe_prepare_end() {}
 #[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
 pub(crate) fn frame_probe_waiting() {}
 #[cfg(any(feature = "hostsim", not(feature = "devtriggers")))]
