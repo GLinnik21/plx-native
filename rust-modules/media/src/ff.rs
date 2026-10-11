@@ -8849,3 +8849,7 @@ mod image_subtitle_tests;
 #[cfg(test)]
 #[path = "ff_redirect_tests.rs"]
 mod redirect_tests;
+
+#[cfg(test)]
+#[path = "ff_late_audio_tests.rs"]
+mod late_audio_tests;
