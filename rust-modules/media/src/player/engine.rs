@@ -89,9 +89,16 @@ pub fn fed_totals() -> (i64, i64) {
     (VTOT.load(Ordering::Relaxed), ATOT.load(Ordering::Relaxed))
 }
 
-/// The AU queues' byte caps — the denominators the read-out shows `dg_aq_*` against, so a viewer
+/// The AU queues' BASE byte caps — the denominators the read-out shows `dg_aq_*` against, so a viewer
 /// can see backpressure (a video lane pinned at its cap is the demuxer outrunning the decoder;
 /// both lanes empty while Stage is Playing is the opposite).
+///
+/// **Base, not the cap in force.** For the first seconds of a file whose audio starts late, the
+/// demuxer lifts the video lane's cap by `ff::PRE_AUDIO_VIDEO_HEADROOM` (24 MiB) and then walks it
+/// back down as the consumer drains, so the read-out can show a video lane ABOVE this number then.
+/// That is the headroom doing its job, not an accounting error. The reachable-reserve model
+/// (`abr::plant::b_max_est_ms`) wants exactly this steady-state number: the headroom is a
+/// transient of the start of one kind of file, gone before the buffer-driven controller acts.
 pub const fn aq_caps() -> (i64, i64) {
     (AQ_VIDEO_BYTES as i64, AQ_AUDIO_BYTES as i64)
 }
@@ -2175,7 +2182,17 @@ const AUDIO_STALE_AHEAD_NS: i64 = 5_000_000_000;
 /// pre-seek audio (that was pushed before the mark), so it and the next 2 s are fed regardless.
 /// 2 s is under the throttle's own audio lead ([`MAX_FEED_AHEAD_NS`] + [`AUDIO_SLACK_NS`]), so a
 /// track that starts on time is fed exactly as before.
+///
+/// **The demuxer has to be able to READ that much audio**, which for a late track means with the
+/// video lane already past its base cap and nobody draining it (no clock yet): `ff::demux` keeps
+/// the video lane's pre-audio headroom until the audio lane has been pushed this much plus a
+/// margin (`ff::LEAD_IN_MARGIN_NS`), and only then releases it as the consumer drains.
 pub(crate) const AUDIO_LEAD_IN_NS: i64 = 2_000_000_000;
+// The lead-in is only sound between these two: under the throttle's own audio lead (a track that
+// starts on time is fed exactly as before), and over the audio the clock is primed with (else
+// "ahead of the clock" would not be enough audio to start it).
+const _: () = assert!(AUDIO_LEAD_IN_NS < MAX_FEED_AHEAD_NS + AUDIO_SLACK_NS);
+const _: () = assert!(AUDIO_LEAD_IN_NS > PRIME_AUDIO_NS);
 // Sentinel for SHARED.pres_fed meaning "no post-seek frame has presented yet" — the feed-ahead
 // throttle treats it as feed-freely (don't compare the new fed pts against a stale pre-seek
 // presented position). Set on a seek; the first presented frame overwrites it with a real pts.

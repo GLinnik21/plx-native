@@ -19,6 +19,12 @@
 //! stale) lives in the pump, which needs a Starfish sink and a clock, and is not reachable from a
 //! file; the PR's `feed_both_lanes` tests cover it.
 //!
+//! **What is asserted.** Not only that the first audio AU arrives: the engine feeds a late
+//! track's first AU and the next `AUDIO_LEAD_IN_NS` of audio ahead of a clock that cannot start
+//! without them, so the audio lane must receive that much audio SPAN while the video lane stays
+//! full and undrained. A third test pins the bound: video past the pre-audio headroom with no audio
+//! fails the open instead of parking.
+//!
 //! **The fixture.** H.264 from a noise source at 12 Mbit/s: noise is how ~13 MB of video is made
 //! to precede the first audio packet in a few seconds of encoding (the real film got there with
 //! 9.5 Mbit/s of near-black frames over 11 s; black would need the same bitrate to be forced, and
@@ -81,15 +87,15 @@ impl Drop for Scratch {
     }
 }
 
-/// Write an MKV: 640x360 H.264 noise at 12 Mbit/s for 14 s, plus 3 s of E-AC-3 whose first packet
-/// lands `audio_delay_s` into the file. Returns its path.
-fn generate(dir: &Path, audio_delay_s: f64) -> PathBuf {
+/// Write an MKV: 640x360 H.264 noise at 12 Mbit/s for `video_s` seconds, plus 3 s of E-AC-3 whose
+/// first packet lands `audio_delay_s` into the file. Returns its path.
+fn generate(dir: &Path, audio_delay_s: f64, video_s: u32) -> PathBuf {
     let out = dir.join("late_audio.mkv");
     let status = Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y"])
         // Grey frames with temporal + uniform noise on every frame: incompressible, so the
         // encoder spends the whole 12 Mbit/s budget on every picture.
-        .args(["-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25:d=14,noise=alls=100:allf=t+u"])
+        .args(["-f", "lavfi", "-i", &format!("color=c=gray:s=640x360:r=25:d={video_s},noise=alls=100:allf=t+u")])
         // The container delay: `-itsoffset` shifts the next input's timestamps, so the muxer
         // writes this track's first block at that time — what mkvmerge's `Delay` does.
         .args(["-itsoffset", &format!("{audio_delay_s}")])
@@ -320,8 +326,19 @@ impl Drop for DemuxRun {
     }
 }
 
-/// Build the fixture, prove its shape, serve it, demux it, and report what reached the audio lane.
-fn demux_fixture(tag: &str, audio_delay_s: f64) -> Option<(Observed, f64, u64)> {
+/// A fixture on disk, served, with a demuxer running over it. Field order is drop order: the
+/// demuxer is stopped before its server and its files go.
+struct Prepared {
+    run: DemuxRun,
+    first_audio_s: f64,
+    video_before: u64,
+    _server: FileServer,
+    _scratch: Scratch,
+}
+
+/// Build the fixture, prove its shape, serve it and start demuxing it. `None` when the tools are
+/// missing (a skip).
+fn prepare(tag: &str, audio_delay_s: f64, video_s: u32) -> Option<Prepared> {
     if !tool_present("ffmpeg") || !tool_present("ffprobe") {
         eprintln!("SKIP {tag}: the ffmpeg / ffprobe command line tools are not installed");
         return None;
@@ -333,18 +350,25 @@ fn demux_fixture(tag: &str, audio_delay_s: f64) -> Option<(Observed, f64, u64)> 
     SHARED.dg_load_v.store(0, Ordering::Relaxed);
     SHARED.side_subs_owner.store(false, Ordering::Relaxed);
     SHARED.demux_failed.store(false, Ordering::Relaxed);
+    SHARED.demux_io_failed.store(false, Ordering::Relaxed);
     FEED_AUDIO.store(true, Ordering::Relaxed);
 
     let scratch = Scratch::new(tag);
-    let file = generate(&scratch.0, audio_delay_s);
+    let file = generate(&scratch.0, audio_delay_s, video_s);
     let (first_audio_s, video_before) = first_audio_and_video_bytes_before_it(&file);
     eprintln!(
         "{tag}: fixture first audio packet at {first_audio_s:.3} s, {video_before} bytes of video before it"
     );
     let server = FileServer::start(&file);
-    let mut run = DemuxRun::start(server.port);
-    let seen = run.observe(FIRST_AUDIO_DEADLINE, crate::player::engine::AUDIO_LEAD_IN_NS);
-    Some((seen, first_audio_s, video_before))
+    let run = DemuxRun::start(server.port);
+    Some(Prepared { run, first_audio_s, video_before, _server: server, _scratch: scratch })
+}
+
+/// [`prepare`], then report what reached the audio lane within the deadline.
+fn demux_fixture(tag: &str, audio_delay_s: f64) -> Option<(Observed, f64, u64)> {
+    let mut p = prepare(tag, audio_delay_s, 14)?;
+    let seen = p.run.observe(FIRST_AUDIO_DEADLINE, crate::player::engine::AUDIO_LEAD_IN_NS);
+    Some((seen, p.first_audio_s, p.video_before))
 }
 
 /// **The regression.** Audio 11 s late, and ~13 MB of video ahead of it — more than the video
@@ -440,4 +464,43 @@ fn an_on_time_audio_track_reaches_the_audio_lane_at_once() {
     assert!(pts / 1_000_000 < 100, "the control's first audio AU is at ~0 ms, got {} ms", pts / 1_000_000);
     // The same bounded wait for the lead-in: an on-time track has all of it long before any lane fills.
     assert_lead_in_reached(&seen, pts, crate::player::engine::aq_caps().0);
+}
+
+/// **The bound.** Audio so late that the video ahead of it (~36 MB at 12 Mbit/s) outruns even the
+/// pre-audio headroom (the base cap plus `PRE_AUDIO_VIDEO_HEADROOM`, 34 MiB). Nothing pops the video
+/// lane and no audio will ever be read, so parking would be a spinner nobody can leave: the demuxer
+/// must fail the open (`demux_io_failed`, which the pump turns into a route recovery or the failure
+/// read-out) instead, with the audio lane still empty.
+#[test]
+#[ignore = "needs the host build of the bundled FFmpeg and the ffmpeg CLI — see the module doc"]
+fn a_video_lane_filled_to_the_headroom_with_no_audio_fails_the_open() {
+    let _g = plx_base::testlock::serial();
+    // 30 s of delay at 12 Mbit/s is ~45 MB of video before the first audio packet; 32 s of video
+    // so the file does not end before the bound is reached.
+    let Some(mut p) = prepare("exhausted", 30.0, 32) else {
+        return;
+    };
+    let cap = crate::player::engine::aq_caps().0 + PRE_AUDIO_VIDEO_HEADROOM as i64;
+    assert!(
+        p.video_before as i64 > cap,
+        "fixture: {} bytes of video before the audio must exceed the {cap}-byte bound",
+        p.video_before
+    );
+    let until = Instant::now() + FIRST_AUDIO_DEADLINE;
+    while !SHARED.demux_io_failed.load(Ordering::Acquire) && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let seen = p.run.observe(Duration::from_millis(50), i64::MAX);
+    assert!(
+        SHARED.demux_io_failed.load(Ordering::Acquire) && SHARED.demux_failed.load(Ordering::Acquire),
+        "the demuxer must report the exhausted headroom within {FIRST_AUDIO_DEADLINE:?} (video lane holds {} bytes, \
+         cap {cap}), not park on the full video lane for good",
+        seen.video_lane_bytes
+    );
+    assert_eq!(seen.audio_aus, 0, "no audio was ever read");
+    assert!(
+        seen.video_lane_bytes <= cap + 1024 * 1024 && seen.video_lane_bytes > crate::player::engine::aq_caps().0,
+        "the lane filled past its base cap into the headroom: {} bytes",
+        seen.video_lane_bytes
+    );
 }

@@ -23,6 +23,7 @@ pub struct AuQueue {
     queued_bytes: c_long,
     max_bytes: c_long, // per-queue backpressure cap: `base_bytes` + any headroom granted
     base_bytes: c_long, // the cap the caller chose at aq_new; headroom is granted on top of it
+    releasing: c_int, // headroom released but not yet drained: `aq_pop` walks `max_bytes` down
     eof: c_int,
     abort: c_int,
     m: libc::pthread_mutex_t,
@@ -290,6 +291,9 @@ pub fn aq_pop(q: *mut AuQueue, eof_out: *mut c_int) -> *mut AuNode {
                 (*q).tail = ptr::null_mut();
             }
             (*q).queued_bytes -= (*n).len as c_long;
+            if (*q).releasing != 0 {
+                settle_released_cap(q);
+            }
             libc::pthread_cond_signal(ptr::addr_of_mut!((*q).not_full));
         }
         if !eof_out.is_null() {
@@ -363,9 +367,14 @@ pub fn aq_if_not_aborted<T>(q: *mut AuQueue, f: impl FnOnce() -> T) -> Option<T>
 }
 
 /// Producer: let this queue hold `extra` bytes beyond the cap it was created with, until the next
-/// call (`0` restores the plain cap). A queue that is already over the new cap is not trimmed; the
-/// producer simply blocks until the consumer has drained it below. Raising the cap wakes a producer
-/// parked on `not_full`, so the grant takes effect even for a push already waiting.
+/// call. Raising the cap wakes a producer parked on `not_full`, so the grant takes effect even for a
+/// push already waiting. Granting (re)starts a headroom: it cancels a pending
+/// [`aq_release_headroom`], which is how a seek or reopen begins again.
+///
+/// `extra == 0` snaps the cap straight back to the base, which can leave it BELOW what the queue
+/// holds: the next push then parks until the consumer has drained under it. That is right for a
+/// queue nobody was relying on the headroom for; a producer that needs the other lane to keep
+/// being read while this one is over its base cap wants [`aq_release_headroom`] instead.
 pub fn aq_set_headroom(q: *mut AuQueue, extra: c_long) {
     if q.is_null() {
         return;
@@ -374,10 +383,77 @@ pub fn aq_set_headroom(q: *mut AuQueue, extra: c_long) {
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
         let prev = (*q).max_bytes;
         (*q).max_bytes = (*q).base_bytes + extra.max(0);
+        (*q).releasing = 0;
         if (*q).max_bytes > prev {
             libc::pthread_cond_broadcast(ptr::addr_of_mut!((*q).not_full));
         }
         libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+    }
+}
+
+/// Producer: take the headroom away **as the consumer drains the queue, never below what it holds**.
+///
+/// The cap becomes the queue's current occupancy (at least the base) and then follows `aq_pop`
+/// downward until it is the base again, after which this is a plain queue. Contrast
+/// `aq_set_headroom(q, 0)`, which drops the cap to the base at once: with the queue already past
+/// the base that parks the producer on its very next push, and a demuxer that feeds two lanes
+/// from one sequential read then cannot read the OTHER lane's next packets until this lane has
+/// drained, which it cannot do before the packets it is blocking arrive. Here the producer may
+/// still finish the push it is on (occupancy is not over the cap), and parks from the one after
+/// until the consumer pops — the same lock-step a queue that sits AT its cap always shows.
+/// The cap only ever falls here, so nobody needs waking: a producer already parked stays parked until a pop
+/// takes the queue under the cap it parked on.
+///
+/// A queue at or under its base cap is simply restored to the base. A later
+/// `aq_set_headroom(q, extra)` (a seek or reopen) cancels the release and grants afresh.
+pub fn aq_release_headroom(q: *mut AuQueue) {
+    if q.is_null() {
+        return;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        (*q).releasing = 1;
+        settle_released_cap(q);
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+    }
+}
+
+/// With `m` held and a release pending: pull the cap down to the occupancy (never under the base,
+/// never up), and end the release once it has reached the base.
+unsafe fn settle_released_cap(q: *mut AuQueue) {
+    unsafe {
+        let floor = (*q).base_bytes;
+        (*q).max_bytes = (*q).max_bytes.min((*q).queued_bytes).max(floor);
+        if (*q).max_bytes <= floor {
+            (*q).releasing = 0;
+        }
+    }
+}
+
+/// The cap in force right now: the base, plus any headroom granted and not yet drained away.
+pub fn aq_cap(q: *mut AuQueue) -> c_long {
+    if q.is_null() {
+        return 0;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let cap = (*q).max_bytes;
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        cap
+    }
+}
+
+/// Would a push made now park? Producer-side, advisory: the consumer can only make the answer
+/// "no" (a pop) between this call and the push. Same predicate `aq_push` waits on.
+pub fn aq_would_park(q: *mut AuQueue) -> bool {
+    if q.is_null() {
+        return false;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let parks = (*q).queued_bytes > (*q).max_bytes && (*q).abort == 0;
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        parks
     }
 }
 
@@ -433,6 +509,165 @@ mod tests {
         });
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(!parked.is_finished(), "zero headroom restores the base cap");
+        aq_abort(qp);
+        assert_eq!(parked.join().unwrap(), -1);
+        aq_destroy(qp);
+    }
+
+    fn push_n(q: *mut AuQueue, n: usize, len: usize) {
+        let au = vec![0u8; len];
+        for i in 0..n {
+            assert_eq!(aq_push(q, au.as_ptr(), len as c_int, i as i64, 0, 1), 0);
+        }
+    }
+
+    fn pop_one(q: *mut AuQueue) {
+        let n = aq_pop(q, ptr::null_mut());
+        assert!(!n.is_null(), "the queue had an AU to pop");
+        unsafe { libc::free(n as *mut c_void) };
+    }
+
+    /// **The demuxer's shape.** The video lane holds far more than its base cap (headroom was
+    /// granted while the audio had not arrived) and the first audio AU has just been pushed. Taking
+    /// the headroom away with `aq_set_headroom(0)` drops the cap under what the lane holds, so the
+    /// next video push parks - and the demuxer, which reads both lanes from one sequential read,
+    /// never reads the audio that follows. Releasing keeps the cap at the occupancy: the push the
+    /// demuxer is on is admitted, and the queue parks the producer only from the one after.
+    #[test]
+    fn release_never_drops_the_cap_below_what_the_queue_holds_but_zero_does() {
+        let addr = |q: &mut Box<AuQueue>| &mut **q as *mut AuQueue as usize;
+
+        // Snapping to zero: over the base cap, so the very next push parks.
+        let mut hard = aq_new(100);
+        let hp = addr(&mut hard);
+        aq_set_headroom(hp as *mut AuQueue, 10_000);
+        push_n(hp as *mut AuQueue, 6, 100);
+        aq_set_headroom(hp as *mut AuQueue, 0);
+        assert_eq!(aq_cap(hp as *mut AuQueue), 100);
+        let parked = std::thread::spawn(move || {
+            let au = [0u8; 10];
+            aq_push(hp as *mut AuQueue, au.as_ptr(), 10, 9, 0, 1)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!parked.is_finished(), "a hard zero parks a queue that is over its base cap");
+        aq_abort(hp as *mut AuQueue);
+        assert_eq!(parked.join().unwrap(), -1);
+        aq_destroy(hp as *mut AuQueue);
+
+        // Releasing: the same queue admits the next push, then parks the one after.
+        let mut soft = aq_new(100);
+        let sp = addr(&mut soft);
+        aq_set_headroom(sp as *mut AuQueue, 10_000);
+        push_n(sp as *mut AuQueue, 6, 100);
+        aq_release_headroom(sp as *mut AuQueue);
+        assert_eq!(aq_cap(sp as *mut AuQueue), 600, "the cap stands at the occupancy");
+        let admitted = std::thread::spawn(move || {
+            let au = [0u8; 10];
+            aq_push(sp as *mut AuQueue, au.as_ptr(), 10, 9, 0, 1)
+        });
+        assert_eq!(admitted.join().unwrap(), 0, "the push in flight is not parked by the release");
+        assert_eq!(aq_bytes(sp as *mut AuQueue), 610);
+        let parked = std::thread::spawn(move || {
+            let au = [0u8; 10];
+            aq_push(sp as *mut AuQueue, au.as_ptr(), 10, 10, 0, 1)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!parked.is_finished(), "from the next push on, the queue is at its cap");
+        // One pop takes it under the cap and the parked push goes through.
+        pop_one(sp as *mut AuQueue);
+        assert_eq!(parked.join().unwrap(), 0);
+        aq_abort(sp as *mut AuQueue);
+        aq_destroy(sp as *mut AuQueue);
+    }
+
+    /// After a release the cap follows the occupancy down on every pop and ends at the base, at
+    /// which point the queue is an ordinary one again.
+    #[test]
+    fn a_released_cap_tracks_the_drain_down_to_the_base() {
+        let mut q = aq_new(200);
+        let qp = &mut *q as *mut AuQueue;
+        aq_set_headroom(qp, 10_000);
+        push_n(qp, 8, 100); // 800 bytes held, base 200
+        aq_release_headroom(qp);
+        assert_eq!(aq_cap(qp), 800);
+        for expect in [700, 600, 500, 400, 300, 200] {
+            pop_one(qp);
+            assert_eq!(aq_cap(qp), expect, "cap = occupancy while above the base");
+        }
+        pop_one(qp); // 100 bytes held, under the base
+        assert_eq!(aq_cap(qp), 200, "never below the base");
+        // Settled: pushes are back to the plain base-cap behaviour (a push is admitted while the
+        // queue holds no more than 200 bytes, so 100 + 2 x 100 goes through and a third would park).
+        push_n(qp, 2, 100);
+        assert_eq!(aq_cap(qp), 200, "a push does not raise a settled cap");
+        assert_eq!(unsafe { (*qp).releasing }, 0, "the release ended at the base");
+        aq_destroy(qp);
+    }
+
+    /// A standing grant is not released by pops: only [`aq_release_headroom`] starts that.
+    #[test]
+    fn a_standing_grant_is_not_walked_down_by_pops() {
+        let mut q = aq_new(100);
+        let qp = &mut *q as *mut AuQueue;
+        aq_set_headroom(qp, 1_000);
+        push_n(qp, 5, 100);
+        pop_one(qp);
+        pop_one(qp);
+        assert_eq!(aq_cap(qp), 1_100, "pops leave a granted headroom alone");
+        aq_destroy(qp);
+    }
+
+    /// A seek or reopen grants afresh while a release is still draining: the grant wins, the pops no
+    /// longer walk it down, and a release of THAT grant begins from the new occupancy.
+    #[test]
+    fn a_new_grant_cancels_a_release_that_has_not_finished_draining() {
+        let mut q = aq_new(100);
+        let qp = &mut *q as *mut AuQueue;
+        aq_set_headroom(qp, 1_000);
+        push_n(qp, 6, 100);
+        aq_release_headroom(qp);
+        pop_one(qp);
+        assert_eq!(aq_cap(qp), 500, "draining");
+        aq_set_headroom(qp, 1_000);
+        assert_eq!(aq_cap(qp), 1_100);
+        pop_one(qp);
+        assert_eq!(aq_cap(qp), 1_100, "the release was cancelled by the grant");
+        aq_release_headroom(qp);
+        assert_eq!(aq_cap(qp), 400, "a later release starts from the occupancy then");
+        aq_destroy(qp);
+    }
+
+    /// Releasing a queue that holds no more than its base cap is a plain restore to the base, and
+    /// leaves nothing pending.
+    #[test]
+    fn releasing_an_under_full_queue_restores_the_base_at_once() {
+        let mut q = aq_new(100);
+        let qp = &mut *q as *mut AuQueue;
+        aq_set_headroom(qp, 1_000);
+        push_n(qp, 1, 50);
+        aq_release_headroom(qp);
+        assert_eq!(aq_cap(qp), 100);
+        assert_eq!(unsafe { (*qp).releasing }, 0);
+        aq_destroy(qp);
+    }
+
+    /// Teardown still reaches a producer parked after a release.
+    #[test]
+    fn abort_wakes_a_producer_parked_behind_a_released_cap() {
+        let mut q = aq_new(100);
+        let qp = &mut *q as *mut AuQueue;
+        aq_set_headroom(qp, 1_000);
+        push_n(qp, 4, 100);
+        aq_release_headroom(qp);
+        push_n(qp, 1, 100); // the one push the release admits
+        let addr = qp as usize;
+        let parked = std::thread::spawn(move || {
+            let au = [0u8; 10];
+            aq_push(addr as *mut AuQueue, au.as_ptr(), 10, 0, 0, 1)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        assert!(!parked.is_finished());
+        assert!(aq_would_park(qp));
         aq_abort(qp);
         assert_eq!(parked.join().unwrap(), -1);
         aq_destroy(qp);
