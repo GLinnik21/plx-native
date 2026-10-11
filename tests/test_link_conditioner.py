@@ -5,6 +5,7 @@ cases take a second or two."""
 import json
 import sys
 import pathlib
+import shutil
 import unittest
 import urllib.error
 import urllib.request
@@ -261,6 +262,10 @@ class FaultsOnTheWire(unittest.TestCase):
 
 
 class MockSelftest(unittest.TestCase):
+    @unittest.skipUnless(
+        shutil.which("ffmpeg"),
+        "needs ffmpeg: mock_pms.selftest() muxes real media; the host CI runner has none",
+    )
     def test_the_mock_selftest_passes(self):
         import contextlib
         import io
