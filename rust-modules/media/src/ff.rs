@@ -7986,6 +7986,57 @@ mod pre_audio_headroom_tests {
         assert_eq!(h.before_video(true), Some(PRE_AUDIO_VIDEO_HEADROOM));
     }
 
+    /// **F1 (red at the unit level against d746af95).** A lane whose consumer IS draining is not
+    /// the hang `exhausted` guards: after a seek into an audioless stretch the pump pops video
+    /// while the demuxer reads at LAN speed, and main parks that lane (and plays through the
+    /// engine's video-only prime escape) instead of failing the open.
+    #[test]
+    fn a_lane_that_is_draining_is_not_exhausted() {
+        let mut q = crate::aq::aq_new(100);
+        let qp = &mut *q as *mut AuQueue;
+        let au = [0u8; 100];
+        let mut h = PreAudioHeadroom::default();
+        assert_eq!(h.before_video(true), Some(PRE_AUDIO_VIDEO_HEADROOM));
+        crate::aq::aq_set_headroom(qp, 1_000);
+        // Fill past the standing cap (1,100): the next push would park.
+        for _ in 0..12 {
+            assert_eq!(crate::aq::aq_push(qp, au.as_ptr(), au.len() as c_int, 0, 1, 1), 0);
+        }
+        assert!(crate::aq::aq_would_park(qp), "full to the granted cap");
+        // The consumer pops, then the lane fills again.
+        for _ in 0..3 {
+            let n = crate::aq::aq_pop(qp, std::ptr::null_mut());
+            assert!(!n.is_null());
+            unsafe { libc::free(n as *mut c_void) };
+        }
+        for _ in 0..3 {
+            assert_eq!(crate::aq::aq_push(qp, au.as_ptr(), au.len() as c_int, 0, 1, 1), 0);
+        }
+        assert!(crate::aq::aq_would_park(qp), "full again");
+        assert!(
+            !h.exhausted(crate::aq::aq_would_park(qp)),
+            "pops happened since the grant: the consumer is draining, so this is not the hang"
+        );
+    }
+
+    /// **F3 (red against d746af95).** The seek reset must take the lane's grant away. The old reset
+    /// restarts the STRUCT only, so a seek that lands while the grant is unreleased leaves the video
+    /// lane at base + 24 MiB for the rest of the session (the next epoch may be audio-first, or
+    /// carry audio whose pts never span the lead-in).
+    #[test]
+    fn a_seek_with_the_grant_outstanding_returns_the_lane_to_its_base_cap() {
+        let mut q = crate::aq::aq_new(100);
+        let qp = &mut *q as *mut AuQueue;
+        let mut h = PreAudioHeadroom::default();
+        let extra = h.before_video(true).expect("granted");
+        crate::aq::aq_set_headroom(qp, extra);
+        assert_eq!(crate::aq::aq_cap(qp), 100 + extra as i64);
+        // The seek reset, as `demux` does it.
+        h = PreAudioHeadroom::default();
+        assert_eq!(h.before_video(false), None);
+        assert_eq!(crate::aq::aq_cap(qp), 100, "the lane is back at its base cap after the seek reset");
+    }
+
     /// The geometry the constants claim, pinned: the cap is the base plus the headroom, an 11 s delay
     /// at the measured rates fits, and the fixture-sized read-ahead plus the engine's lead-in still
     /// fits, while a delay at ~35 Mbit/s does not (the bound is real).

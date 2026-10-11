@@ -111,6 +111,29 @@ fn generate(dir: &Path, audio_delay_s: f64, video_s: u32) -> PathBuf {
     out
 }
 
+/// Write an ORDINARY interleaved MKV: 640x360 H.264 noise at 1 Mbit/s for 4 s, plus 2 s of E-AC-3
+/// whose first packet lands 0.2 s in — a handful of video packets (25 fps: five) precede the first
+/// audio packet, as in any MP4 with B-frames or a muxer that leads with video. The whole file is a
+/// few hundred KB, far under the video lane's base cap, and the audio is shorter than the engine's
+/// lead-in so a grant taken at the first video push would still be standing at the end.
+fn generate_ordinary(dir: &Path) -> PathBuf {
+    let out = dir.join("ordinary.mkv");
+    let status = Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error", "-y"])
+        .args(["-f", "lavfi", "-i", "color=c=gray:s=640x360:r=25:d=4,noise=alls=100:allf=t+u"])
+        .args(["-itsoffset", "0.2"])
+        .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2"])
+        .args(["-map", "0:v", "-map", "1:a"])
+        .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "25"])
+        .args(["-b:v", "1M", "-maxrate", "1M", "-bufsize", "1M"])
+        .args(["-c:a", "eac3", "-b:a", "192k"])
+        .arg(&out)
+        .status()
+        .expect("run ffmpeg");
+    assert!(status.success(), "ffmpeg could not write the ordinary fixture");
+    out
+}
+
 /// Read the fixture back: `(first audio packet's time in seconds, video bytes in packets that
 /// precede it)`. The test is only meaningful if this says the file has the claimed shape, so the
 /// shape is MEASURED from the file rather than trusted from the command line that made it.
@@ -273,6 +296,16 @@ impl DemuxRun {
         DemuxRun { video, audio, thread: Some(thread), hs }
     }
 
+    /// Whether the demux thread has returned (end of file, a failure, or a stop).
+    fn finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(|t| t.is_finished())
+    }
+
+    /// The video lane, for a probe that watches it from another thread.
+    fn video_lane(&mut self) -> *mut AuQueue {
+        &mut *self.video as *mut AuQueue
+    }
+
     /// Pop the audio lane until it has delivered `want_span_ns` of audio (last AU's pts minus the
     /// first's) or the deadline passes. **The video lane is never popped**, exactly as on the
     /// television before the clock starts: the engine feeds video only up to `MAX_FEED_AHEAD_NS`
@@ -339,6 +372,11 @@ struct Prepared {
 /// Build the fixture, prove its shape, serve it and start demuxing it. `None` when the tools are
 /// missing (a skip).
 fn prepare(tag: &str, audio_delay_s: f64, video_s: u32) -> Option<Prepared> {
+    prepare_with(tag, |dir| generate(dir, audio_delay_s, video_s))
+}
+
+/// [`prepare`] over a fixture `make` writes into the scratch directory.
+fn prepare_with(tag: &str, make: impl FnOnce(&Path) -> PathBuf) -> Option<Prepared> {
     if !tool_present("ffmpeg") || !tool_present("ffprobe") {
         eprintln!("SKIP {tag}: the ffmpeg / ffprobe command line tools are not installed");
         return None;
@@ -354,7 +392,7 @@ fn prepare(tag: &str, audio_delay_s: f64, video_s: u32) -> Option<Prepared> {
     FEED_AUDIO.store(true, Ordering::Relaxed);
 
     let scratch = Scratch::new(tag);
-    let file = generate(&scratch.0, audio_delay_s, video_s);
+    let file = make(&scratch.0);
     let (first_audio_s, video_before) = first_audio_and_video_bytes_before_it(&file);
     eprintln!(
         "{tag}: fixture first audio packet at {first_audio_s:.3} s, {video_before} bytes of video before it"
@@ -502,5 +540,64 @@ fn a_video_lane_filled_to_the_headroom_with_no_audio_fails_the_open() {
         seen.video_lane_bytes <= cap + 1024 * 1024 && seen.video_lane_bytes > crate::player::engine::aq_caps().0,
         "the lane filled past its base cap into the headroom: {} bytes",
         seen.video_lane_bytes
+    );
+}
+
+/// **F2: an ordinary file never sees the headroom.** Video leads the first audio packet by five
+/// packets (any MP4 with B-frames, many MKVs), the whole file is a few hundred KB, and nothing ever
+/// parks the video lane. The pre-audio headroom exists for the file whose video lane FILLS before
+/// its first audio packet; granting it at the first video push of every open charged every such
+/// file 24 MiB of cap (18-30 MiB of real queue on a 60-100 Mbit/s UHD stream) on a RAM-tight
+/// 32-bit set. The lane's cap must never leave its base, sampled continuously while the demuxer
+/// runs to the end of the file.
+#[test]
+#[ignore = "needs the host build of the bundled FFmpeg and the ffmpeg CLI — see the module doc"]
+fn an_ordinary_file_never_raises_the_video_lane_cap() {
+    let _g = plx_base::testlock::serial();
+    let Some(mut p) = prepare_with("ordinary", generate_ordinary) else {
+        return;
+    };
+    let base = crate::player::engine::aq_caps().0;
+    assert!(
+        p.first_audio_s > 0.15 && p.first_audio_s < 0.3,
+        "fixture: the first audio packet must be at ~0.2 s, got {}",
+        p.first_audio_s
+    );
+    assert!(
+        p.video_before > 0 && (p.video_before as i64) < base / 4,
+        "fixture: video must lead the audio, by far less than the base cap, got {} bytes",
+        p.video_before
+    );
+
+    // Watch the cap from outside while the demuxer runs.
+    let lane = p.run.video_lane() as usize;
+    let max_cap = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0));
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let sampler = {
+        let (max_cap, stop) = (max_cap.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Acquire) {
+                let cap = i64::from(crate::aq::aq_cap(lane as *mut AuQueue));
+                max_cap.fetch_max(cap, Ordering::AcqRel);
+                std::thread::yield_now();
+            }
+        })
+    };
+    let until = Instant::now() + FIRST_AUDIO_DEADLINE;
+    while !p.run.finished() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    stop.store(true, Ordering::Release);
+    sampler.join().expect("sampler");
+
+    assert!(p.run.finished(), "the demuxer must reach the end of a four second file");
+    assert!(!SHARED.demux_failed.load(Ordering::Acquire), "the open must not fail");
+    let held = i64::from(crate::aq::aq_bytes(&mut *p.run.video));
+    assert!(held > 0 && held < base, "the whole file sits in the video lane: {held} bytes");
+    assert_eq!(
+        max_cap.load(Ordering::Acquire),
+        base,
+        "a file whose video never fills the lane must keep the lane's base cap throughout \
+         (the pre-audio headroom was granted at the first video push)"
     );
 }
