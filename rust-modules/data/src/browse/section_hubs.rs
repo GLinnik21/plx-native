@@ -57,7 +57,7 @@
 #![allow(dead_code)] // the accessors are Landing 3's; see the Dormant note above
 
 use plx_plex::plex::ServerId;
-use crate::pms::{listable, parse_item, PmsMovie, HOLD_ROWS, MAX_SHELF_ITEMS};
+use crate::pms::{clamp_hold, listable, parse_item, PmsMovie, HOLD_ROWS, MAX_SHELF_ITEMS};
 use crate::stores::paging::{self, Ask, PageInfo, Row, RowMode, RowState};
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1233,15 +1233,9 @@ fn parse_window(out: &mut Vec<Shelf>, hubs: &[plx_plex::plex::Hub], sid: ServerI
 #[cfg(test)]
 thread_local! { pub(crate) static PEAK_CARDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
-/// The held range as the page asked for it: at most [`HOLD_ROWS`] rows, centred on what was asked
-/// when it asked for more. The single rule, shared with Home.
-pub(crate) fn clamp_hold((lo, hi): (usize, usize)) -> (usize, usize) {
-    crate::pms::clamp_hold((lo, hi))
-}
-
 /// Gives the cards of every row outside the held range up to its descriptor. A row the pager reads
 /// comes back from its listing; any other comes back through the rating keys it showed
-/// ([`paging::release_keys`]), and a row that shows a card with no rating key has no way back and
+/// ([`paging::release_row`]), and a row that shows a card with no rating key has no way back and
 /// keeps its cards. Returns whether any row changed.
 fn settle(shelves: &mut [Shelf], hold: (usize, usize)) -> bool {
     settle_from(shelves, 0, hold)
@@ -1254,9 +1248,7 @@ fn settle_from(shelves: &mut [Shelf], base: usize, hold: (usize, usize)) -> bool
     for (row, shelf) in shelves.iter_mut().enumerate().skip(base) {
         if (lo..=hi).contains(&row) || shelf.released() { continue; }
         let pageable = plx_plex::plex::is_pageable_hub_key(&shelf.key);
-        let Some(kept) = paging::release_keys(pageable, &shelf.row, shelf.items.iter().map(|item| item.rk.as_str())) else { continue };
-        shelf.row.kept = kept;
-        paging::release_ledger(&mut shelf.row);
+        if !paging::release_row(pageable, &mut shelf.row, shelf.items.iter().map(|item| item.rk.as_str())) { continue; }
         shelf.shown = shelf.items.len();
         shelf.items = Vec::new();
         shelf.positions = Vec::new();

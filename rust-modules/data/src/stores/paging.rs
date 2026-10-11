@@ -503,6 +503,17 @@ pub fn release_keys<'a>(pageable: bool, state: &RowState, shown: impl Iterator<I
     if keys.iter().any(String::is_empty) { None } else { Some(keys) }
 }
 
+/// Gives a row's cards up to a descriptor: records what it keeps to ask for them again
+/// ([`release_keys`]) and lets go of an inactive ledger ([`release_ledger`]). `false`, with the row
+/// untouched, when it cannot give them up. The caller clears its own items and positions and sets
+/// the count of slots it publishes for the descriptor.
+pub fn release_row<'a>(pageable: bool, row: &mut RowState, shown: impl Iterator<Item = &'a str>) -> bool {
+    let Some(kept) = release_keys(pageable, row, shown) else { return false };
+    row.kept = kept;
+    release_ledger(row);
+    true
+}
+
 /// Moves a window over a ledger by one ask. `current` is the window as it stands, its positions
 /// indices into the ledger. A forward ask keeps the last twelve rows and adds up to twelve: from
 /// the ledger where it already holds the keys (a window that moved back), else from the listing,
