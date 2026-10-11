@@ -283,7 +283,7 @@ re-discovery, requested by `grant::UpgradeRetry::due`), on a refusal (which also
 a `PlaintextAsk` captured) and on a roster commit that does not install its (machine, origin) —
 a roster commit moves no generation — and a stored `SourceRef` naming a
 plaintext origin registers tokenless until discovery re-mints. Ending a grant re-grades the
-registry (`servers::regrade_credentials` blanks every client a grant was carrying, `ON_GRANT`);
+registry (`servers::regrade_credentials` blanks every client a grant was carrying, and `mark_on_grant` sets the per-slot `on_grant` flag);
 `grant::UpgradeRetry` re-discovers a granted server on the hub-retry backoff and the HTTPS
 registration retires the grant (`auth::retire_grant_on_https`).
 
@@ -325,8 +325,10 @@ Three design choices carry the weight, and each is a prevented bug rather than a
   re-point lands at frame N+1 with that worker mid-request. Re-pointing publishes a NEW leaked
   `Client` over the pointer, so the worst case for the old reference is **one request sent to where
   that server used to be** — never a dangling pointer, which is the failure that has no debugger on
-  this device. The leak is bounded: a handful of small structs, written on login / profile switch /
-  server switch, never per frame.
+  this device. The leak is one small struct per registration ever made, written on login / profile switch /
+  server switch, never per frame; ids are never reused and the table grows by segments, with no
+  server-count ceiling short of the `u16` id space. A sign-out removes the revoked slots' rows from
+  the keyed per-server tables (`serverinfo`).
 - **Token generations come from a process-global sequence, so no two clients ever share one.**
   `token_gen` was a single process-wide counter, which cannot express "server B's token changed".
   Its only reader is `app::adapters::poster::built_key`'s memo and that memo compares **one number** — so two

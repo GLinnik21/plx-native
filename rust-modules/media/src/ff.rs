@@ -1176,20 +1176,16 @@ unsafe fn begin_ass_sources(
 ) -> u64 {
     use crate::player::{ass::Font, ass_source};
     let mut headers = Vec::new();
-    let mut header_bytes = 0;
     for (track, (si, kind, _)) in subs.iter().enumerate() {
         if *kind != SubKind::Ass { continue; }
         let cp = stream_codecpar(*streams.add(*si as usize));
         let len = (*cp).extradata_size.max(0) as usize;
-        if len > 0 && len <= ass_source::MAX_HEADER_BYTES
-            && headers.len() < ass_source::MAX_TRACKS
-            && header_bytes + len <= ass_source::MAX_HEADERS_BYTES
-            && !(*cp).extradata.is_null() {
-            header_bytes += len;
+        if len > 0 && len <= ass_source::MAX_HEADER_BYTES && !(*cp).extradata.is_null() {
             headers.push((track as i32, std::slice::from_raw_parts((*cp).extradata, len).to_vec()));
         }
     }
     let mut fonts = Vec::new();
+    let mut font_budget = crate::player::ass::FontBudget::default();
     let mut font_bytes = 0;
     {
         // External ASS may refer to these attachments even when the container carries no
@@ -1198,9 +1194,8 @@ unsafe fn begin_ass_sources(
             let st = *streams.add(i as usize);
             let cp = stream_codecpar(st);
             let len = (*cp).extradata_size.max(0) as usize;
-            if fonts.len() >= ass_source::MAX_FONTS { break; }
             if (*cp).codec_type != AVMEDIA_TYPE_ATTACHMENT || len < 4
-                || len > ass_source::MAX_FONT_BYTES - font_bytes || (*cp).extradata.is_null() { continue; }
+                || (*cp).extradata.is_null() { continue; }
             let data = std::slice::from_raw_parts((*cp).extradata, len);
             // Accept sfnt/OpenType/TrueType collection signatures, not arbitrary attachments.
             if !matches!(&data[..4], b"\x00\x01\x00\x00" | b"OTTO" | b"ttcf" | b"true") { continue; }
@@ -1210,6 +1205,9 @@ unsafe fn begin_ass_sources(
             let name = if !entry.is_null() && !(*entry).value.is_null() {
                 std::ffi::CStr::from_ptr((*entry).value).to_string_lossy().into_owned()
             } else { format!("attachment-{i}.ttf") };
+            // Over the budget: skipped before the copy; text naming it falls back to the
+            // default face. Charged after the magic check so non-fonts spend nothing.
+            if !font_budget.admit(len) { continue; }
             font_bytes += len;
             fonts.push(Font { name, data: data.into() });
         }

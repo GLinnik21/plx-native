@@ -602,7 +602,12 @@ pub fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> (u32, f32, f32
         .map(|id| crate::card_motion::Scope::card(id, p.to_screen(rect).0));
     let image = card_art_request(art).map_or((0, 0.0, 0.0), |(srv, path, w, h)| resolve_tex_wh_on(srv, path, w, h, 0));
     #[cfg(feature = "devtriggers")]
-    crate::card_motion_metrics::draw(image.0 != 0);
+    {
+        crate::card_motion_metrics::draw(image.0 != 0);
+        if let Some((srv, path, w, h)) = card_art_request(art) {
+            crate::card_probe::art(srv, path, w, h, image.0 != 0);
+        }
+    }
     image
 }
 

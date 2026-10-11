@@ -11,11 +11,16 @@ use plx_ui::text_lift::{draw_focused, TextLift, CENTRE};
 use plx_ui::text_view::TextView;
 use plx_ui::{theme, Painter, Rect};
 
-pub const ABOUT_ELEM_RANGE_START: u32 = 1664;
-pub const ABOUT_ELEM_RANGE_END: u32 = 1728;
+pub const ABOUT_ELEM_RANGE_START: u32 = 4 * super::SECTION_BLOCK;
+pub const ABOUT_ELEM_RANGE_END: u32 = 5 * super::SECTION_BLOCK;
 pub const ABOUT_GROUP: GroupId = GroupId(5);
 pub const CARD_ELEM: u32 = ABOUT_ELEM_RANGE_START;
 pub const LANGUAGES_ELEM: u32 = ABOUT_ELEM_RANGE_START + 1;
+
+/// How many audio tracks the Languages column names. A summary, not the whole list: the column is
+/// a control (see [`locate`]) whose MORE opens the tracks panel, which lists EVERY audio track in
+/// the server's order (`tracks_panel::audio_rows`), so a track past the summary is one press away.
+const AUDIO_SUMMARY: usize = 8;
 
 const CARD_W: f32 = 640.0;
 const CARD_Y: f32 = 50.0;
@@ -138,7 +143,7 @@ impl Rows {
         self.audio_list = d
             .audio
             .iter()
-            .take(8)
+            .take(AUDIO_SUMMARY)
             .map(|a| {
                 let lang = if a.lang.is_empty() {
                     plx_platform::i18n::msg::browse_detail_unknown()
@@ -430,6 +435,25 @@ fn text_at(p: Painter, x: f32, y: f32, size: i32, color: [f32; 4], bold: i32, te
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file with twelve audio tracks: the column names the first eight and is a control, and the
+    /// tracks panel it opens has a row for each of the twelve, the last one last.
+    #[test]
+    fn the_audio_summary_stops_at_eight_and_the_tracks_panel_lists_all_twelve() {
+        use plx_data::metadata::Stream;
+        let audio: Vec<Stream> = (0..12)
+            .map(|i| Stream { lang: format!("Lang{i}"), codec: "ac3".into(), ..Default::default() })
+            .collect();
+        let d = Detail { part: "/library/parts/1/file.mkv".into(), audio, ..Default::default() };
+        let mut rows = Rows::new();
+        rows.update(&d);
+        assert_eq!(rows.audio_list.split(", ").count(), AUDIO_SUMMARY);
+        assert!(rows.audio_list.contains("Lang7") && !rows.audio_list.contains("Lang8"));
+        assert_eq!(locate(LANGUAGES_ELEM, d.has_own_file()), Some(1), "the column opens the tracks panel");
+        let panel = crate::registry::tracks_panel_audio_rows(&d.audio);
+        assert_eq!(panel.len(), 12, "the panel lists every track");
+        assert_eq!(panel[11].name, "Lang11");
+    }
 
     /// Issue 15: the About card's MORE is pinned on the synopsis' last line whether or not the
     /// text was truncated, so a synopsis that fits in exactly its five lines with a long last

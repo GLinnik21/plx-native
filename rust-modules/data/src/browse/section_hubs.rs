@@ -19,7 +19,7 @@
 //!
 //! The grid and the hubs land independently, and **the shelf count sets the grid's absolute
 //! offset** — a late landing of twelve shelves would move a focused grid row by 6,588px, and a
-//! section has no shelf cap to keep that small (issue #412). "Commit when the
+//! section has no shelf cap to keep that small (issue #412), and still has none: every hub keeps a descriptor. "Commit when the
 //! fetch is terminal" does not work, because [`crate::pms::backoff_secs`] is an INFINITE ladder
 //! (2/4/8/16/30s and then 30s forever): terminal never arrives on a dead server, and an ordinary
 //! fail-then-succeed would still shift the grid under a reader.
@@ -57,7 +57,8 @@
 #![allow(dead_code)] // the accessors are Landing 3's; see the Dormant note above
 
 use plx_plex::plex::ServerId;
-use crate::pms::{listable, parse_item, PmsMovie, MAX_SHELF_ITEMS};
+use crate::pms::{listable, parse_item, PmsMovie, HOLD_ROWS, MAX_SHELF_ITEMS};
+use crate::stores::paging::{self, Ask, PageInfo, Row, RowMode, RowState};
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -65,14 +66,6 @@ use std::sync::{Arc, Mutex};
 /// Items asked for per hub. The server defaults to 6 and honours at least 24 (§3a); it is
 /// items-per-hub and never changes how many hubs come back.
 const HUB_FETCH_COUNT: i64 = 12;
-
-/// Cards one section publishes at most, across all its shelves: a distant memory ceiling and not
-/// a design. There is no shelf count (issue #412): `/hubs/sections/{id}` has no paging, so every
-/// hub the server sends is published, each at most [`MAX_SHELF_ITEMS`] cards, and only a total
-/// past this drops anything — whole shelves from the tail, never a truncated row
-/// ([`parse_hubs_within`]). The coupling to Home's bound is intended: the same ~0.65 KB a card
-/// on the same TV, about 1.3 MB per visited section at the bound.
-const SECTION_CARDS_MAX: usize = crate::pms::HOME_CARDS_MAX;
 
 /// Frames the page waits for the FIRST answer before committing zero shelves and becoming usable
 /// — ~4 s at 60 fps. Deliberately not derived from the retry ladder (module doc), and counted in
@@ -110,7 +103,37 @@ pub struct Shelf {
     /// **This row is EPISODES, so it is drawn as landscape stills** rather than portrait posters —
     /// see [`is_episode_shelf`] for why that is decided from the items and not from the hub.
     pub landscape: bool,
+    /// The window of the hub's listing the row holds: at most [`MAX_SHELF_ITEMS`] cards. Empty for a
+    /// row the ring has given up (`shown > 0`), which the page draws as that many placeholders.
     pub items: Vec<PmsMovie>,
+    /// Where each item sits in the hub's listing (see [`paging`]).
+    pub positions: Vec<usize>,
+    /// The listing positions the window covers, and whether more lies beyond its end.
+    pub offset: usize,
+    pub end: usize,
+    pub more: bool,
+    /// Cards the row showed when the ring took them; 0 while it holds cards.
+    pub shown: usize,
+    /// How the window relates to its listing, and the ledger when the listing would not hold still.
+    pub row: RowState,
+    /// How many page reads have landed on this row, one that moved nothing included
+    /// (`plx_ui::cards::CardSource::page_epoch`). Not recorded.
+    pub epoch: u32,
+}
+
+impl Shelf {
+    fn is(&self, id: &str, key: &str) -> bool { self.id == id && self.key == key }
+
+    /// A descriptor: the row gave its cards up to the ring and keeps what is needed to read them again.
+    pub fn released(&self) -> bool { self.items.is_empty() && self.shown > 0 }
+
+    /// Cards the page lays out for the row: the window, or the placeholders of a released row.
+    pub fn slots(&self) -> usize { if self.released() { self.shown } else { self.items.len() } }
+
+    fn window(&self) -> (Vec<Row>, PageInfo) {
+        let rows = self.positions.iter().copied().zip(self.items.iter().map(|item| Arc::new(item.clone()))).collect();
+        (rows, PageInfo { offset: self.offset, end: self.end, total: self.total, more: self.more, unstable: false })
+    }
 }
 
 /// Where a section's shelves are in the publication axis. The fetch axis is separate and runs
@@ -229,6 +252,30 @@ pub struct SecHubs {
     fails: u32,
     /// Frames left before another attempt may spawn.
     retry_left: u32,
+    /// The rows the page holds cards for (`LibraryWork::HubHold`); `None` until it says, which is
+    /// the head of the page.
+    hold: Option<(usize, usize)>,
+    /// A page of one row the user asked for, waiting for the claim.
+    ask: Option<RowAsk>,
+    /// Rows whose re-read came back empty while held; asked again only after the hold moves.
+    stalled: Vec<(String, String)>,
+    /// The row reads' own backoff, apart from the list's: a row that will not read must not delay
+    /// the list's refresh, nor the other way round.
+    ask_fails: u32,
+    ask_retry_left: u32,
+    /// The row read a worker is out on, and whether the page withdrew it since: a withdrawn read is
+    /// discarded when it lands, so its slide never reaches a window the reader has left.
+    inflight: Option<(RowAsk, bool)>,
+}
+
+/// One read of a row's listing: a page the user walked to, or the row's window re-read because it
+/// came back into the held range.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct RowAsk {
+    id: String,
+    key: String,
+    before: bool,
+    reload: bool,
 }
 
 pub(super) struct HubAdapter {
@@ -245,7 +292,126 @@ impl Default for HubAdapter {
 impl SecHubs {
     pub(super) fn needs_tick(&self) -> bool {
         self.armed && (self.retry_left > 0 || (!self.published && self.first_paint_left > 0)
-            || (self.owed && self.retry_left == 0))
+            || (self.owed && self.retry_left == 0) || self.ask_retry_left > 0 || self.row_wanted())
+    }
+
+    /// The range of rows the page holds cards for, as the store keeps it.
+    fn held(&self) -> (usize, usize) {
+        clamp_hold(self.hold.unwrap_or((0, HOLD_ROWS - 1)))
+    }
+
+    /// Whether a row read is due: a page the user asked for, or a held row without its cards.
+    fn row_wanted(&self) -> bool {
+        self.published && (self.ask.is_some() || self.wanted_reload().is_some())
+    }
+
+    /// The first held row that is a descriptor and has not stalled: its window is read again.
+    fn wanted_reload(&self) -> Option<RowAsk> {
+        let (lo, hi) = self.held();
+        self.committed.iter().enumerate().skip(lo).take(hi.saturating_add(1).saturating_sub(lo))
+            .find(|(_, shelf)| shelf.released() && !self.stalled.iter().any(|(id, key)| shelf.is(id, key)))
+            .map(|(_, shelf)| RowAsk { id: shelf.id.clone(), key: shelf.key.clone(), before: false, reload: true })
+    }
+
+    /// What the next row read is: the user's page before any re-read.
+    fn next_ask(&self) -> Option<RowAsk> {
+        if self.ask_retry_left > 0 { return None; }
+        self.ask.clone().or_else(|| self.wanted_reload())
+    }
+
+    /// The page asks to move row `id`'s window; refused when the row cannot move that way.
+    fn want_page(&mut self, seen: u64, id: &str, key: &str, before: bool) -> bool {
+        // The asker read a window that a landing has since replaced: where its focus stood in the
+        // old one says nothing about the new one. The landing's publication rebuilds the shelves,
+        // which re-arms the row to ask again from the window that stands.
+        if seen != self.revision { return false; }
+        let Some(shelf) = self.committed.iter().find(|shelf| shelf.is(id, key)) else { return false };
+        if !plx_plex::plex::is_pageable_hub_key(key) || shelf.released()
+            || (before && shelf.offset == 0) || (!before && !shelf.more) { return false; }
+        let ask = RowAsk { id: id.into(), key: key.into(), before, reload: false };
+        if self.ask.as_ref() == Some(&ask) { return false; }
+        self.ask = Some(ask);
+        self.ask_fails = 0;
+        self.ask_retry_left = 0;
+        true
+    }
+
+    /// The page withdraws its ask for row `id`: focus left the edge it was sent from. The ask not yet
+    /// claimed is dropped; one a worker is out on is marked, and its landing discarded.
+    fn cancel_page(&mut self, id: &str, key: &str) {
+        if self.ask.as_ref().is_some_and(|ask| !ask.reload && ask.id == id && ask.key == key) { self.ask = None; }
+        if let Some((ask, withdrawn)) = self.inflight.as_mut() {
+            if !ask.reload && ask.id == id && ask.key == key { *withdrawn = true; }
+        }
+    }
+
+    /// The page holds rows `lo..=hi`: rows that left the range give their cards up, rows that
+    /// entered it are read again. Returns whether anything the page can see changed.
+    fn set_hold(&mut self, lo: usize, hi: usize) -> bool {
+        if self.hold == Some((lo, hi)) { return false; }
+        self.hold = Some((lo, hi));
+        self.stalled.clear();
+        let range = self.held();
+        let outside = |shelves: &[Shelf]| shelves.iter().enumerate().any(|(row, shelf)|
+            !(range.0..=range.1).contains(&row) && !shelf.released());
+        if !outside(&self.committed) { return false; }
+        settle(Arc::make_mut(&mut self.committed).as_mut_slice(), range);
+        self.revised();
+        true
+    }
+
+    /// A row read has landed. `None` is a failed read. A page replaces the row's window (a page that
+    /// brought nothing new ends the row there, unless the ledger's walk advanced, which is kept
+    /// with the row left open); a re-read replaces the placeholders and restores
+    /// the card count. Applied to the committed rows in place: the rows keep their number and their
+    /// height, so nothing the page is looking at moves.
+    fn land_row(&mut self, ask: &RowAsk, read: Option<Shelf>) -> bool {
+        if self.inflight.take().is_some_and(|(out, withdrawn)| withdrawn && out == *ask) { return false; }
+        // A failed page stays asked for: the backoff below re-spawns it. While focus stays on the
+        // edge the shelf repeats the ask on its ladder (the same ask, which the store takes
+        // idempotently), and `cancel_page` drops it when focus leaves, so keeping it cannot read a
+        // page nobody waits for.
+        let Some(next) = read else {
+            self.ask_fails = self.ask_fails.saturating_add(1);
+            self.ask_retry_left = backoff_frames(self.ask_fails);
+            return false;
+        };
+        if !ask.reload && self.ask.as_ref() == Some(ask) { self.ask = None; }
+        self.ask_fails = 0;
+        let Some(at) = self.committed.iter().position(|shelf| shelf.is(&ask.id, &ask.key)) else { return false };
+        let current = &self.committed[at];
+        if ask.reload {
+            if !current.released() { return false; }
+            if next.items.is_empty() {
+                self.stalled.push((ask.id.clone(), ask.key.clone()));
+                return false;
+            }
+        } else if next.items.is_empty() || (next.more && next.offset == current.offset && next.end <= current.end) {
+            let shelf = &mut Arc::make_mut(&mut self.committed)[at];
+            shelf.epoch = shelf.epoch.wrapping_add(1);
+            // An ask that moved nothing but advanced the ledger's walk of the listing (every key it
+            // read was already known) keeps that walk and the row open; the row ends when the ledger
+            // says the listing ended. Any other row that moved nothing has nothing more to read.
+            if !next.items.is_empty() && next.row != shelf.row { shelf.row = next.row; shelf.total = next.total; }
+            else { shelf.more = false; }
+            self.revised();
+            return true;
+        }
+        let shelf = &mut Arc::make_mut(&mut self.committed)[at];
+        let mut next = next;
+        next.items.truncate(MAX_SHELF_ITEMS);
+        next.positions.truncate(MAX_SHELF_ITEMS);
+        shelf.items = next.items;
+        shelf.positions = next.positions;
+        shelf.offset = next.offset;
+        shelf.end = next.end;
+        shelf.more = next.more;
+        shelf.total = next.total;
+        shelf.row = next.row;
+        shelf.shown = 0;
+        shelf.epoch = shelf.epoch.wrapping_add(1);
+        self.revised();
+        true
     }
     fn revised(&mut self) {
         self.revision = self
@@ -279,6 +445,7 @@ impl SecHubs {
             return false;
         }
         self.retry_left = self.retry_left.saturating_sub(1);
+        self.ask_retry_left = self.ask_retry_left.saturating_sub(1);
         if self.published {
             return false;
         }
@@ -356,7 +523,12 @@ impl SecHubs {
             return false;
         }
         match self.staged.take() {
-            Some(s) => {
+            Some(mut s) => {
+                // A refresh brings every row's preview. A row the reader had walked, or whose cards
+                // the ring had taken, keeps its window and descriptor and takes only the fresh total,
+                // so it comes back where it was.
+                carry_windows(&self.committed, Arc::make_mut(&mut s).as_mut_slice());
+                settle(Arc::make_mut(&mut s).as_mut_slice(), self.held());
                 self.committed = s;
                 self.published = true;
                 self.revised();
@@ -397,6 +569,50 @@ impl super::BrowseState {
             .position(|st| st.hubs.armed && st.hubs.owed && st.hubs.retry_left == 0);
         if let Some(sec) = want {
             self.hubs_spawn(sec, adapter);
+            return;
+        }
+        // The one claim every section's worker shares is the gate: a row read waits for the list
+        // and for any other read, one at a time, whatever the number of rows.
+        let row = self.states().iter().position(|st| st.hubs.armed && st.hubs.published && st.hubs.next_ask().is_some());
+        if let Some(sec) = row {
+            self.hubs_spawn_row(sec, adapter);
+        }
+    }
+
+    /// Reads one row's window: a page the reader walked to, or the cards of a row that came back
+    /// into the held range, at the offset it left.
+    fn hubs_spawn_row(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>) {
+        let Some(sid) = self.section_sid(sec) else { return };
+        let Some(client) = plx_plex::plex::client_for(sid) else { return };
+        let Some(ask) = self.state_mut(sec).and_then(|st| st.hubs.next_ask()) else { return };
+        let window = self.states().get(sec).and_then(|st| st.hubs.committed.iter()
+            .find(|shelf| shelf.is(&ask.id, &ask.key)).cloned());
+        let token_gen = client.token_gen();
+        if adapter.hubs.fetching.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let epoch = self.table_epoch();
+        let worker_adapter = Arc::clone(adapter);
+        let worker_ask = ask.clone();
+        if let Some(st) = self.state_mut(sec) { st.hubs.inflight = Some((ask.clone(), false)); }
+        let spawned = plx_base::task::spawn_small("libhubs", move || {
+            let shelf = catch_unwind(|| {
+                read_shelf(sid, window.as_ref()?, &worker_ask,
+                    |start, size| client.hub_items_paged(&worker_ask.key, start as i64, size as i64),
+                    |keys| client.metadata_many(&keys.iter().map(String::as_str).collect::<Vec<_>>()))
+            })
+            .unwrap_or(None);
+            *worker_adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(HubResult {
+                epoch,
+                sec,
+                client,
+                token_gen,
+                outcome: Outcome::Row { ask: worker_ask, shelf },
+            });
+        });
+        if !spawned {
+            adapter.hubs.fetching.store(false, Ordering::SeqCst);
+            if let Some(st) = self.state_mut(sec) { st.hubs.inflight = None; }
         }
     }
 
@@ -416,10 +632,16 @@ impl super::BrowseState {
         }
         let epoch = self.table_epoch();
         let worker_adapter = Arc::clone(&adapter);
+        let hold = self.states().get(sec).map_or((0, HOLD_ROWS - 1), |st| st.hubs.held());
         let spawned = plx_base::task::spawn_small("libhubs", move || {
+            // `/hubs/sections/{id}` pages by hub (docs/pms-api.md, Paging, observed): the list is read
+            // a window of hubs at a time and parsed into descriptors here, off the main thread, so
+            // only the held rows and one window of 12-card previews are ever held.
             let shelves = catch_unwind(|| {
-                let mc = client.library_hubs(key, HUB_FETCH_COUNT)?;
-                Some(parse_hubs(&mc, sid, key))
+                parse_hub_list(sid, key, hold, |req| match req {
+                    Some(req) => client.library_hubs_page(key, HUB_FETCH_COUNT, req),
+                    None => client.library_hubs(key, HUB_FETCH_COUNT),
+                })
             })
             .unwrap_or(None);
             *worker_adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(HubResult {
@@ -427,7 +649,7 @@ impl super::BrowseState {
                 sec,
                 client,
                 token_gen,
-                shelves,
+                outcome: Outcome::List(shelves),
             });
         });
         if spawned {
@@ -469,9 +691,18 @@ impl super::BrowseState {
         let Some(state) = self.state_mut(result.sec) else {
             return false;
         };
-        match result.shelves {
-            Some(parsed) => {
-                let Parsed { shelves, left_off_shelves, left_off_cards } = parsed;
+        match result.outcome {
+            Outcome::Row { ask, shelf } => {
+                let failed = shelf.is_none();
+                if failed {
+                    plx_base::eventlog::log(&format!("libhubs: section {} row {} read failed", result.sec, ask.id));
+                }
+                let moved = state.hubs.land_row(&ask, shelf);
+                plx_machine::idle::invalidate();
+                return moved || failed;
+            }
+            Outcome::List(Some(parsed)) => {
+                let shelves = parsed.shelves;
                 // The harness (`tests/mock_fps.py`, `LIBHUBS_RE`) reads the section and the shelf
                 // count; new fields go AFTER them.
                 plx_base::eventlog::log(&format!(
@@ -480,14 +711,9 @@ impl super::BrowseState {
                     shelves.len(),
                     shelves.iter().map(|s| s.items.len()).sum::<usize>()
                 ));
-                if left_off_shelves > 0 {
-                    plx_base::eventlog::log(&format!(
-                        "libhubs: card bound {SECTION_CARDS_MAX} reached — {left_off_shelves} shelves, {left_off_cards} cards left off"
-                    ));
-                }
                 state.hubs.land_ok(shelves);
             }
-            None => {
+            Outcome::List(None) => {
                 plx_base::eventlog::log(&format!(
                     "libhubs: section {} failed ({} in a row)",
                     result.sec,
@@ -557,6 +783,30 @@ impl super::BrowseState {
         }
     }
 
+    /// The page asks to move row `id`'s window. Returns whether a read was queued.
+    pub(super) fn hubs_page(&mut self, sec: usize, seen: u64, id: &str, key: &str, before: bool,
+        adapter: &Arc<super::BrowseAdapter>) -> bool {
+        let asked = self.state_mut(sec).is_some_and(|st| st.hubs.want_page(seen, id, key, before));
+        self.hubs_pump_spawns(adapter);
+        asked
+    }
+
+    /// The page withdraws its ask for row `id`. Nothing the page shows changes.
+    pub(super) fn hubs_cancel_page(&mut self, sec: usize, id: &str, key: &str,
+        adapter: &Arc<super::BrowseAdapter>) -> bool {
+        if let Some(st) = self.state_mut(sec) { st.hubs.cancel_page(id, key); }
+        self.hubs_pump_spawns(adapter);
+        false
+    }
+
+    /// The page holds rows `lo..=hi`. Returns whether the published rows changed.
+    pub(super) fn hubs_hold(&mut self, sec: usize, lo: usize, hi: usize,
+        adapter: &Arc<super::BrowseAdapter>) -> bool {
+        let changed = self.state_mut(sec).is_some_and(|st| st.hubs.set_hold(lo, hi));
+        self.hubs_pump_spawns(adapter);
+        changed
+    }
+
     pub(super) fn hubs_commit_staged(&mut self, sec: usize, may_move: bool) -> bool {
         self.state_mut(sec)
             .map(|s| s.hubs.commit_staged(may_move))
@@ -596,6 +846,23 @@ impl super::BrowseState {
             self.hubs_invalidate(sec, adapter);
         }
         self.hubs_pump_spawns(adapter);
+    }
+}
+
+/// A refresh's rows, with the windows the old rows had walked to or given up carried over them.
+fn carry_windows(old: &[Shelf], new: &mut [Shelf]) {
+    for shelf in new {
+        let Some(was) = old.iter().find(|was| was.is(&shelf.id, &shelf.key))
+            .filter(|was| was.released() || was.offset > 0 || was.end > HUB_FETCH_COUNT as usize
+                || was.row != RowState::default() && !matches!(was.row.mode, RowMode::Unprobed)) else { continue };
+        let total = shelf.total;
+        let (title, link, landscape) = (shelf.title.clone(), shelf.link.clone(), shelf.landscape);
+        if was.released() && !plx_plex::plex::is_pageable_hub_key(&shelf.key) {
+            // nothing but the refresh's own preview says what the row shows now; the ring gives it up again
+            continue;
+        }
+        *shelf = was.clone();
+        (shelf.title, shelf.link, shelf.landscape, shelf.total) = (title, link, landscape, total);
     }
 }
 
@@ -691,10 +958,46 @@ pub fn seed_named_shelves_for_owner_test(
                         ..Default::default()
                     })
                     .collect(),
+                positions: (0..per_row).collect(),
+                end: per_row,
+                ..Default::default()
             })
             .collect(),
     );
     st.hubs.commit_staged(true);
+}
+
+/// The reads a moved hold is owed, landed: every row in the held range that is a descriptor gets
+/// back the cards it showed, keyed as [`seed_named_shelves_for_owner_test`] keys them, and the
+/// result is published (the revision moves). What the worker does for a ring that moved onto rows
+/// whose cards had been given up.
+#[cfg(any(test, feature = "test-support"))]
+pub fn land_held_rows_for_owner_test(state: &mut super::BrowseState, sec: usize) {
+    let Some(st) = state.state_mut(sec) else { return };
+    let (lo, hi) = st.hubs.held();
+    for shelf in Arc::make_mut(&mut st.hubs.committed).iter_mut().skip(lo).take(hi + 1 - lo).filter(|shelf| shelf.released()) {
+        shelf.items = (0..shelf.shown)
+            .map(|index| PmsMovie { rk: format!("{}-{index}", shelf.id), title: format!("{} {index}", shelf.title), ..Default::default() })
+            .collect();
+        shelf.positions = (0..shelf.shown).collect();
+        shelf.shown = 0;
+    }
+    st.hubs.revised();
+}
+
+/// Make a seeded section's pageable rows the first window of a listing of `total` cards, as a hub
+/// the server pages: the rows have more, and a page ask is worth sending.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_paging_for_owner_test(state: &mut super::BrowseState, sec: usize, total: usize) {
+    let Some(st) = state.state_mut(sec) else { return };
+    for shelf in Arc::make_mut(&mut st.hubs.committed).iter_mut()
+        .filter(|shelf| plx_plex::plex::is_pageable_hub_key(&shelf.key)) {
+        shelf.total = total;
+        shelf.more = true;
+        shelf.end = shelf.items.len();
+        shelf.positions = (0..shelf.items.len()).collect();
+    }
+    st.hubs.revised();
 }
 
 /// Replace the items of section `sec`'s first published shelf with one card per `rks` entry, in
@@ -775,9 +1078,16 @@ pub(super) struct HubResult {
     sec: usize,
     client: &'static plx_plex::plex::Client,
     token_gen: u32,
-    /// `None` is a FAILED fetch — kept distinguishable from a successful answer that happens to be
-    /// empty, which on this endpoint is a common and legitimate reply.
-    shelves: Option<Parsed>,
+    outcome: Outcome,
+}
+
+/// What a worker brought back. `None` inside is a FAILED fetch — kept distinguishable from a
+/// successful answer that happens to be empty, which on this endpoint is a common and legitimate reply.
+pub(super) enum Outcome {
+    /// The section's whole hub list.
+    List(Option<Parsed>),
+    /// One row's window, moved by a page or re-read after the ring gave its cards up.
+    Row { ask: RowAsk, shelf: Option<Shelf> },
 }
 
 #[cfg(test)]
@@ -785,8 +1095,32 @@ impl HubResult {
     /// A FAILED fetch for `sec` on `client`, as a worker posts it.
     pub(super) fn failed_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
         token_gen: u32) -> Self {
-        Self { epoch, sec, client, token_gen, shelves: None }
+        Self { epoch, sec, client, token_gen, outcome: Outcome::List(None) }
     }
+}
+
+/// A row's window after one ask, on the sliding window the Home rows use ([`paging::read_row`]):
+/// the preview rule, the re-anchor on the edge row, the ledger when the listing will not hold still.
+/// `window` is the row as it stands; a re-read starts from where the window began, or, for a row that
+/// kept the rating keys it showed, reads exactly those. `None` is a failed read.
+pub(super) fn read_shelf(sid: ServerId, window: &Shelf, ask: &RowAsk,
+    list: impl FnMut(usize, usize) -> Option<plx_plex::plex::MediaContainer>,
+    many: impl FnMut(&[String]) -> Option<plx_plex::plex::MediaContainer>) -> Option<Shelf> {
+    if ask.reload && !window.row.kept.is_empty() {
+        let items = paging::kept_cards(sid, &window.row.kept, &[], &mut { many })?;
+        let items: Vec<PmsMovie> = items.into_iter().map(|item| Arc::try_unwrap(item).unwrap_or_else(|shared| (*shared).clone())).collect();
+        let positions = (window.offset..window.offset + items.len()).collect();
+        return Some(Shelf { items, positions, shown: 0, row: RowState { kept: Vec::new(), ..window.row.clone() }, ..window.clone() });
+    }
+    let (rows, mut info) = window.window();
+    let start = if ask.reload { info.end = info.offset; window.offset }
+        else if ask.before { window.offset } else { window.end.max(window.offset + window.items.len()) };
+    let query = Ask { start, before: ask.before, hidden: &[] };
+    let (rows, info, row) = paging::read_row(sid, &query, Some((rows, info)), window.row.clone(), 0, list, many)?;
+    let (positions, items): (Vec<usize>, Vec<Arc<PmsMovie>>) = rows.into_iter().unzip();
+    let items = items.into_iter().map(|item| Arc::try_unwrap(item).unwrap_or_else(|shared| (*shared).clone())).collect();
+    Some(Shelf { items, positions, offset: info.offset, end: info.end, more: info.more, total: info.total, row,
+        shown: 0, ..window.clone() })
 }
 
 // ---- the pure half --------------------------------------------------------------------------
@@ -800,61 +1134,73 @@ impl HubResult {
 /// answered with 6 hubs of which 5 were empty), so this is required rather than tidy: a client
 /// that draws what it is given draws five headings over nothing.
 ///
-/// There is no shelf count: every hub the server sends is published, because `/hubs/sections/{id}`
-/// has no paging and a hub dropped here is a hub the person cannot reach. The one ceiling is
-/// [`SECTION_CARDS_MAX`] on the total, applied by the whole-shelf rule — see [`parse_hubs_within`].
+/// Every hub the server sends is published, each as a descriptor (heading, key, total, the count of
+/// cards it showed) and, for the rows in `hold`, its preview cards; the ring ([`settle`]) gives the
+/// others' cards up here so a 400-row library never holds 4,800 of them. Each row is its preview
+/// and then its listing: a row whose key the pager reads starts `Unprobed` and its first forward
+/// ask compares the preview with the listing ([`paging::read_row`]).
 pub fn parse_hubs(mc: &plx_plex::plex::MediaContainer, sid: ServerId, section: i64) -> Parsed {
-    parse_hubs_within(mc, sid, section, SECTION_CARDS_MAX)
+    parse_hubs_held(mc, sid, section, (0, HOLD_ROWS - 1))
 }
 
-/// One response's shelves, and what [`SECTION_CARDS_MAX`] left off the tail.
+/// One response's shelves.
 pub struct Parsed {
     pub shelves: Vec<Shelf>,
-    /// Shelves that passed the filter but did not fit under the bound, and their cards (each
-    /// shelf's item-capped count). `(0, 0)` for every section under the bound.
-    pub left_off_shelves: usize,
-    pub left_off_cards: usize,
 }
 
-/// [`parse_hubs`] against an explicit card bound, so the whole-shelf rule is testable without
-/// building thousands of cards.
-///
-/// A shelf is published only if all its (item-capped) cards fit under `bound`, and publishing
-/// stops at the first that does not: no later, smaller shelf jumps the queue and no row is cut
-/// short. The filter keeps running past that point (empty and untitled hubs are still dropped,
-/// items still capped) so the counts of what was left off are of shelves that would have drawn.
-fn parse_hubs_within(
+/// [`parse_hubs`] with the rows the page holds cards for named.
+pub fn parse_hubs_held(
     mc: &plx_plex::plex::MediaContainer,
     sid: ServerId,
     section: i64,
-    bound: usize,
+    hold: (usize, usize),
 ) -> Parsed {
     let mut out = Vec::new();
-    let (mut cards, mut full) = (0usize, false);
-    let (mut left_off_shelves, mut left_off_cards) = (0usize, 0usize);
-    for hub in &mc.hub {
-        let items: Vec<PmsMovie> = hub
+    parse_window(&mut out, &mc.hub, sid, section, hold);
+    Parsed { shelves: out }
+}
+
+/// A section's hub list read in windows of hubs ([`paging::read_hub_list`]), each window parsed into
+/// `out` as it arrives and its rows outside `hold` given up before the next is read: a long list
+/// holds the held rows and one window of previews at once. `read(Some(req))` is one window and
+/// `read(None)` the whole list, for a server that ignores the window.
+pub fn parse_hub_list(
+    sid: ServerId,
+    section: i64,
+    hold: (usize, usize),
+    read: impl FnMut(Option<plx_plex::plex::PageReq>) -> Option<plx_plex::plex::MediaContainer>,
+) -> Option<Parsed> {
+    paging::read_hub_list(read, Vec::new, |out, hubs| parse_window(out, hubs, sid, section, hold))
+        .map(|shelves| Parsed { shelves })
+}
+
+/// One run of the hub list appended to `out`, which holds the rows before it: a row's number is its
+/// place in `out`, so the held range is exact however the list was cut into windows.
+fn parse_window(out: &mut Vec<Shelf>, hubs: &[plx_plex::plex::Hub], sid: ServerId, section: i64, hold: (usize, usize)) {
+    let base = out.len();
+    #[cfg(test)]
+    let before: usize = out.iter().map(|shelf| shelf.items.len()).sum();
+    for hub in hubs {
+        let (positions, items): (Vec<usize>, Vec<PmsMovie>) = hub
             .metadata
             .iter()
-            .filter(|m| listable(&m.kind))
-            .map(|m| parse_item(m, sid))
-            .filter(|m| !m.title.is_empty() && !m.thumb.is_empty())
+            .enumerate()
+            .filter(|(_, m)| listable(&m.kind))
+            .map(|(i, m)| (i, parse_item(m, sid)))
+            .filter(|(_, m)| !m.title.is_empty() && !m.thumb.is_empty())
             .take(MAX_SHELF_ITEMS)
-            .collect();
+            .unzip();
         if items.is_empty() {
             continue;
         }
         if hub.title.is_empty() {
             continue; // a row with no heading has nothing to say about what is in it
         }
-        if full || cards + items.len() > bound {
-            full = true;
-            left_off_shelves += 1;
-            left_off_cards += items.len();
-            continue;
+        let pageable = plx_plex::plex::is_pageable_hub_key(&hub.key);
+        if !pageable && (hub.more || hub.total() > hub.metadata.len()) {
+            if let Some(line) = paging::unpaged_line(&hub.hub_identifier, &hub.key) { plx_base::eventlog::log(&line); }
         }
-        cards += items.len();
-        out.push(Shelf {
+        out.push(Shelf { epoch: 0,
             is_continue: shelf_is_continue(&hub.hub_identifier, &hub.key),
             landscape: is_episode_shelf(&items),
             id: hub.hub_identifier.clone(),
@@ -869,9 +1215,54 @@ fn parse_hubs_within(
                 &hub.title,
             ),
             items,
+            positions,
+            offset: 0,
+            end: hub.metadata.len(),
+            more: pageable
+                && (hub.more || hub.total() > hub.metadata.len() || hub.metadata.len() >= HUB_FETCH_COUNT as usize),
+            shown: 0,
+            row: paging::preview_state(&hub.hub_identifier, &hub.key),
         });
     }
-    Parsed { shelves: out, left_off_shelves, left_off_cards }
+    #[cfg(test)]
+    PEAK_CARDS.with(|peak| peak.set(peak.get().max(before + out[base..].iter().map(|shelf| shelf.items.len()).sum::<usize>())));
+    settle_from(out, base, hold);
+}
+
+// The most cards a read has held at once, as a test reads it back.
+#[cfg(test)]
+thread_local! { pub(crate) static PEAK_CARDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+/// The held range as the page asked for it: at most [`HOLD_ROWS`] rows, centred on what was asked
+/// when it asked for more. The single rule, shared with Home.
+pub(crate) fn clamp_hold((lo, hi): (usize, usize)) -> (usize, usize) {
+    crate::pms::clamp_hold((lo, hi))
+}
+
+/// Gives the cards of every row outside the held range up to its descriptor. A row the pager reads
+/// comes back from its listing; any other comes back through the rating keys it showed
+/// ([`paging::release_keys`]), and a row that shows a card with no rating key has no way back and
+/// keeps its cards. Returns whether any row changed.
+fn settle(shelves: &mut [Shelf], hold: (usize, usize)) -> bool {
+    settle_from(shelves, 0, hold)
+}
+
+/// [`settle`] for the rows from `base` on, which are the only ones a window just appended.
+fn settle_from(shelves: &mut [Shelf], base: usize, hold: (usize, usize)) -> bool {
+    let (lo, hi) = clamp_hold(hold);
+    let mut changed = false;
+    for (row, shelf) in shelves.iter_mut().enumerate().skip(base) {
+        if (lo..=hi).contains(&row) || shelf.released() { continue; }
+        let pageable = plx_plex::plex::is_pageable_hub_key(&shelf.key);
+        let Some(kept) = paging::release_keys(pageable, &shelf.row, shelf.items.iter().map(|item| item.rk.as_str())) else { continue };
+        shelf.row.kept = kept;
+        paging::release_ledger(&mut shelf.row);
+        shelf.shown = shelf.items.len();
+        shelf.items = Vec::new();
+        shelf.positions = Vec::new();
+        changed = true;
+    }
+    changed
 }
 
 /// Prints the shelf's identity and how many items it holds — `PmsMovie` has no `Debug` and a
@@ -926,6 +1317,10 @@ pub fn shelf_is_continue(id: &str, key: &str) -> bool {
 
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
+#[path = "section_hubs_paging_tests.rs"]
+mod paging_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -949,7 +1344,7 @@ mod tests {
             first.states.push(super::super::SecState::default());
         }
         first.set_cur(1);
-        first.want(60, 120);
+        first.want(60, 120, None);
         first.bump_gen();
         first.bump_sections_gen();
         first.src_facts_gen = first.src_facts_gen.wrapping_add(1);
@@ -992,7 +1387,7 @@ mod tests {
             ..Default::default()
         }]);
         assert!(second.states[0].hubs.commit_staged(true));
-        second.want(1, 3);
+        second.want(1, 3, None);
 
         let retained_listing = first.listing_snapshot();
         let retained_hubs = first.hubs_snapshot(1);
@@ -1241,8 +1636,8 @@ mod tests {
     }
 
     /// Issue #412: the Library showed twelve shelves because this module stopped there. A server
-    /// that sends fifteen hubs gets fifteen shelves, in its own order — `/hubs/sections/{id}` has
-    /// no paging, so a hub dropped here is a hub the person can never reach.
+    /// that sends fifteen hubs gets fifteen shelves, in its own order — a hub dropped here is a hub
+    /// the person can never reach.
     #[test]
     fn every_hub_the_server_sends_is_published() {
         let sh = parse_hubs(&many_hubs(15, 3), ServerId::from_raw(0), 1).shelves;
@@ -1259,56 +1654,6 @@ mod tests {
         let sh = parse_hubs(&many_hubs(3, MAX_SHELF_ITEMS + 5), ServerId::from_raw(0), 1).shelves;
         assert_eq!(sh.len(), 3);
         assert!(sh.iter().all(|s| s.items.len() == MAX_SHELF_ITEMS), "every row is capped");
-    }
-
-    /// The card bound publishes whole shelves from the head and stops at the first that does not
-    /// fit: a later, smaller shelf must not jump the queue, and no row is cut short. The left-off
-    /// counts are of hubs that would have drawn, so an empty or untitled one is not among them.
-    #[test]
-    fn the_card_bound_drops_whole_shelves_from_the_tail() {
-        // 10, 10, 10 (30 cards), then 8 (overflows a bound of 35), then 2 (would fit, and must
-        // NOT be published), then an empty hub and an untitled one, which were never shelves
-        let hub = |h: usize, n: usize, title: &str| {
-            let items: Vec<String> = (0..n)
-                .map(|i| {
-                    format!(r#"{{"ratingKey":"{h}-{i}","type":"movie","title":"T","thumb":"/t"}}"#)
-                })
-                .collect();
-            format!(
-                r#"{{"hubIdentifier":"h{h}","title":"{title}","Metadata":[{}]}}"#,
-                items.join(",")
-            )
-        };
-        let hubs = [
-            hub(0, 10, "A"), hub(1, 10, "B"), hub(2, 10, "C"), hub(3, 8, "D"), hub(4, 2, "E"),
-            hub(5, 0, "F"), hub(6, 5, ""),
-        ];
-        let mc = container(&format!(r#"{{"MediaContainer":{{"Hub":[{}]}}}}"#, hubs.join(",")));
-        let sid = ServerId::from_raw(0);
-
-        let cut = parse_hubs_within(&mc, sid, 1, 35);
-        let lens: Vec<usize> = cut.shelves.iter().map(|s| s.items.len()).collect();
-        assert_eq!(lens, vec![10, 10, 10], "neither the 8-card shelf nor the 2-card one after it");
-        assert_eq!((cut.left_off_shelves, cut.left_off_cards), (2, 10));
-
-        // exactly at the bound publishes; one card over does not
-        let at = parse_hubs_within(&mc, sid, 1, 38);
-        assert_eq!(at.shelves.len(), 4);
-        assert_eq!((at.left_off_shelves, at.left_off_cards), (1, 2));
-        let over = parse_hubs_within(&mc, sid, 1, 37);
-        assert_eq!(over.shelves.len(), 3);
-        assert_eq!((over.left_off_shelves, over.left_off_cards), (2, 10));
-
-        let all = parse_hubs_within(&mc, sid, 1, 40);
-        assert_eq!((all.shelves.len(), all.left_off_shelves, all.left_off_cards), (5, 0, 0));
-    }
-
-    /// Far under the real bound: 170 hubs of 12 (the `library-shelves-deep` mock) all publish.
-    #[test]
-    fn a_large_library_is_under_the_real_bound() {
-        let parsed = parse_hubs(&many_hubs(170, 12), ServerId::from_raw(0), 1);
-        assert_eq!(parsed.shelves.len(), 170);
-        assert_eq!((parsed.left_off_shelves, parsed.left_off_cards), (0, 0));
     }
 
     /// **A row of episodes is a LANDSCAPE row, and it is decided from the items.** The case this

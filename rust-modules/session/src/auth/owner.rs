@@ -1917,12 +1917,13 @@ impl SessionMachine {
     }
 
     fn request_endpoint(&mut self, sid: plx_plex::plex::ServerId, emit: &mut impl FnMut(SessionFx)) -> bool {
-        let sid = sid.raw();
-        if usize::from(sid) >= plx_plex::plex::MAX_SERVERS
+        // The registry's own validity rule: every id but the reserved UNSET names a slot.
+        if !sid.is_set()
             || self.state.persisted.account_token.is_empty()
-            || self.state.pending.values().any(|pending| pending.key.op == SessionOp::Endpoint(sid)) {
+            || self.state.pending.values().any(|pending| pending.key.op == SessionOp::Endpoint(sid.raw())) {
             return false;
         }
+        let sid = sid.raw();
         let Some(req) = self.allocate(SessionOp::Endpoint(sid), None) else { return false };
         self.state.pending.get_mut(&req).unwrap().capture = Some(CaptureIntent::Endpoint { sid });
         emit(SessionFx::Capture { req, epoch: self.state.epoch, request: SessionReadRequest::Endpoint { sid } });
@@ -3855,6 +3856,23 @@ mod tests {
         assert_eq!(owner.snapshot_init().pending.values()
             .filter(|p| p.key.op == SessionOp::Endpoint(sid)).count(), 1,
             "still exactly one outstanding attempt for this sid — one per backoff step, not per fire");
+    }
+
+    #[test]
+    fn request_endpoint_admits_a_server_past_the_old_sixteen_slot_table() {
+        let mut init = captured_session();
+        init.persisted.account_token = "synthetic-account".into();
+        let mut owner = SessionMachine::from_init(init);
+        let sid: u16 = 40;
+        let fx = step(&mut owner, SessionEvent::Command(Command::RequestEndpoint {
+            sid: plx_plex::plex::ServerId::from_raw(sid) }));
+        assert!(fx.iter().any(|f| matches!(f,
+            SessionFx::Capture { request: SessionReadRequest::Endpoint { sid: s }, .. } if *s == sid)),
+            "a server the registry issued past slot 15 must reach its endpoint probe");
+        // The reserved UNSET id names no server, so it is still refused.
+        let fx = step(&mut owner, SessionEvent::Command(Command::RequestEndpoint {
+            sid: plx_plex::plex::ServerId::UNSET }));
+        assert!(fx.is_empty());
     }
 
     #[test]

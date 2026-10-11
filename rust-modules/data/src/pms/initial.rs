@@ -108,6 +108,9 @@ impl Initial {
             hub_gen: self.generation,
             last_sections_gen: self.sections_generation,
             catalog_gen: self.catalog_generation,
+            fanout: Default::default(),
+            deck_ask: None,
+            hold: (0, super::HOLD_ROWS - 1),
         };
         let adapter = super::PmsAdapter {
             next_request: AtomicU32::new(self.next_request),
@@ -119,7 +122,7 @@ impl Initial {
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(state: &PmsState, adapter: &PmsAdapter) -> Self {
         let sources = state.srcs.iter().map(|s| {
-            let Src { sid, client, token_gen, handle, state, fetching, seq, retry_s, retry_n, last, page } = s;
+            let Src { sid, client, token_gen, handle, state, fetching, seq, retry_s, retry_n, last, page, deferred: _, abandoned: _, adoptable: _, stalled: _, edits: _ } = s;
             Source { sid: *sid, client: client.map(|c| c.instance_gen()), token_gen: *token_gen,
                 handle: handle.clone(), state: match state { HubState::Loading => 0, HubState::Ready => 1, HubState::Failed => 2 },
                 fetching: *fetching, seq: *seq, retry_bits: retry_s.to_bits(), retry_n: *retry_n, last: last.clone(), page: page.clone() }
@@ -155,7 +158,7 @@ impl Initial {
         movies(items, w);
         w.u64(hubs.len() as u64);
         for h in hubs {
-            let HubRow { title, hub_id, key, source, total, start, len, offset, more } = h;
+            let HubRow { title, hub_id, key, source, total, start, len, offset, more, epoch: _ } = h;
             for text in [title, hub_id, key, source] { w.text(text); }
             w.u64(*total as u64); w.u64(*start as u64); w.u64(*len as u64); w.u64(*offset as u64); w.boolean(*more);
         }
@@ -165,12 +168,14 @@ impl Initial {
 }
 
 fn source_build(b: &SourceBuild, w: &mut impl Sink) {
-    let SourceBuild { cw, shelves } = b;
+    let SourceBuild { cw, shelves, .. } = b;
     w.u64(cw.len() as u64);
-    for item in cw { let CwItem { last_viewed_at, m } = item; w.u64(*last_viewed_at as u64); movie(m, w); }
+    for item in cw { let CwItem { last_viewed_at, m, .. } = item; w.u64(*last_viewed_at as u64); movie(m, w); }
     w.u64(shelves.len() as u64);
     for shelf in shelves {
-        let Shelf { title, hub_id, key, items, positions, total, offset, end, more } = shelf;
+        // `row` is paging state a row only has after a user asked for more; a boot capture has none,
+        // so the canonical encoding (and every recorded hash) stays what it was.
+        let Shelf { title, hub_id, key, items, positions, total, offset, end, more, shown: _, row: _, epoch: _ } = shelf;
         for text in [title, hub_id, key] { w.text(text); }
         movies(items, w);
         w.u64(positions.len() as u64); for position in positions { w.u64(*position as u64); }

@@ -105,7 +105,7 @@ fn retained_home_publication_survives_commit_and_reset_without_copying_items() {
 fn home_group_falls_back_to_provider_key_not_label_or_position() {
     let items = vec![row(0, "a"), row(1, "b")];
     let mut hub = HubRow { title: "Display title".into(), hub_id: String::new(),
-        key: "/library/collections/7/children".into(), source: String::new(), total: 0, offset: 0, more: false, start: 0, len: 1 };
+        key: "/library/collections/7/children".into(), source: String::new(), total: 0, offset: 0, more: false, start: 0, len: 1, epoch: 0 };
     let key = "/library/collections/7/children";
     assert_eq!(stable_hub_identity(&hub, &items), Some(HubIdentity::Key { sid: sid(0), key }));
     hub.title = "Other locale".into();
@@ -208,7 +208,7 @@ fn a_catalog_row_is_found_by_its_server_and_key_never_by_the_key_alone() {
         mk(a, "2", "ours too"),
         mk(b, "1", "the friend's"),
     ];
-    let hubs = vec![HubRow {
+    let hubs = vec![HubRow { epoch: 0,
         title: "Continue Watching".into(),
         hub_id: "home.continue".into(),
         key: String::new(),
@@ -252,4 +252,25 @@ fn reset_wipes_the_catalog_and_re_arms_the_fetch() {
     assert_eq!(hero_pool_len(&o.state), 0);
     assert_eq!(hub_state(&o.state), HubState::Loading);
     assert!(o.state.srcs.is_empty());
+}
+
+/// The Home hub list of a real PMS carries a hub whose key is `/playlists/all` (it honours the
+/// window: measured, see docs/pms-api.md, "Paging, observed"). It never reaches a shelf: the hub's
+/// type is `playlist`, and a playlist is not a type a card shows (`listable`), whether the hub says
+/// `playlist` or `mixed`. So `is_pageable_hub_key` admits nothing for it, and a row that cannot
+/// exist has no preview to keep.
+#[test]
+fn a_playlists_hub_reaches_no_shelf_so_its_key_is_not_admitted() {
+    let body = r#"{"MediaContainer":{"Hub":[
+      {"hubIdentifier":"home.playlists","key":"/playlists/all","type":"playlist","title":"Playlists","size":2,"more":true,
+       "Metadata":[{"ratingKey":"7","type":"playlist","title":"Mix","thumb":"/p","playlistType":"video"},
+                   {"ratingKey":"8","type":"playlist","title":"Mix 2","thumb":"/p","playlistType":"video"}]},
+      {"hubIdentifier":"home.mixed.playlists","key":"/playlists/all","type":"mixed","title":"Mixed","size":1,"more":true,
+       "Metadata":[{"ratingKey":"9","type":"playlist","title":"Mix 3","thumb":"/p"}]}
+    ]}}"#;
+    let mc = serde_json::from_str::<plx_plex::plex::Envelope>(body).unwrap().media_container;
+    let build = project(&mc, &plx_plex::plex::MediaContainer::default(), sid(0));
+    assert!(build.shelves.is_empty(), "no playlist card reaches a shelf");
+    assert!(!plx_plex::plex::is_pageable_hub_key("/playlists/all"));
+    assert!(!plx_plex::plex::is_pageable_hub_key("/playlists/all?playlistType=video"));
 }

@@ -287,6 +287,8 @@ pub(super) struct HubSrc<'a> {
     /// `None` while the page still names a shelf the store has not published (a frame between a
     /// store change and the next `sync`): its cards draw nothing.
     pub(super) shelf: Option<&'a plx_data::browse::section_hubs::Shelf>,
+    /// Focus is near the row's trailing edge on a visible row: only then does the row ask for more.
+    pub(super) paging: bool,
 }
 
 impl HubSrc<'_> {
@@ -295,10 +297,16 @@ impl HubSrc<'_> {
 
 impl<H: Host<Elem = u32>> CardSource<H> for HubSrc<'_> {
     fn len(&self) -> usize { self.elems.len() }
+    /// The card's place in the hub's listing (`positions` can skip what the window drops).
+    fn global(&self, i: usize) -> usize {
+        self.shelf.map_or(i, |shelf| shelf.positions.get(i).copied().unwrap_or(shelf.offset + i))
+    }
     fn elem(&self, i: usize) -> u32 { self.elems.get(i).copied().unwrap_or(0) }
     fn index_of(&self, e: &u32) -> Option<usize> { self.elems.iter().position(|elem| elem == e) }
     /// A card whose item the hub has not published draws nothing (its stop still registers).
     fn loaded(&self, i: usize) -> bool { self.item(i).is_some() }
+    fn more(&self) -> bool { self.paging && self.shelf.is_some_and(|shelf| shelf.more) }
+    fn page_epoch(&self) -> u32 { self.shelf.map_or(0, |shelf| shelf.epoch) }
     fn art(&self, i: usize) -> Art<'_> {
         match (self.item(i), self.shelf) {
             (Some(item), Some(shelf)) if shelf.landscape => Art::Still(Some(tile_facts::of(item))),

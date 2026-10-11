@@ -183,7 +183,9 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
             outgoing.frame(&mut page, &mut engine, n);
         }
         let old_grid = page.pair.groups_config().detail;
-        let deep = page.key(page.pair.detail.elem_at(9 * COLS + 3).unwrap());
+        let elem = page.pair.detail.elem_for(&outgoing.cx(&engine), &mut page.keys, 9 * COLS + 3, COLS)
+            .expect("a slot of the listing");
+        let deep = page.key(elem);
         outgoing.deliver(
             &mut page,
             &mut engine,

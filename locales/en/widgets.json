@@ -795,14 +795,6 @@
     "value": "This styled subtitle track is too large",
     "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
   },
-  "widgets.ass.too_many_fonts": {
-    "value": "This styled subtitle track contains too many fonts",
-    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
-  },
-  "widgets.ass.invalid_fonts": {
-    "value": "This styled subtitle track contains invalid fonts",
-    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
-  },
   "widgets.ass.render_failed": {
     "value": "Couldn’t render this styled subtitle",
     "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."

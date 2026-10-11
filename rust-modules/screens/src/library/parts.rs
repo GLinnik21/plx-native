@@ -79,31 +79,10 @@ impl GridIndexes {
         }
     }
 
-    fn remove_elem(&mut self, elem: u32, index: usize) {
-        let mut remove = false;
-        if let Some(positions) = self.elems.get_mut(&elem) {
-            match positions {
-                ElemPositions::One(at) => remove = *at == index,
-                ElemPositions::Many(at) => {
-                    if let Ok(found) = at.binary_search(&index) { at.remove(found); }
-                    if at.len() == 1 { *positions = ElemPositions::One(at[0]); }
-                }
-            }
-        }
-        if remove { self.elems.remove(&elem); }
-    }
-
     fn index_of(&self, elem: u32) -> Option<usize> {
         match self.elems.get(&elem)? {
             ElemPositions::One(index) => Some(*index),
             ElemPositions::Many(indices) => indices.first().copied(),
-        }
-    }
-
-    fn last_index_of(&self, elem: u32) -> Option<usize> {
-        match self.elems.get(&elem)? {
-            ElemPositions::One(index) => Some(*index),
-            ElemPositions::Many(indices) => indices.last().copied(),
         }
     }
 }
@@ -115,10 +94,40 @@ struct PublicationOps {
     known_probes: usize,
 }
 
+/// One run of consecutive slots with a key projected: slot `first + n` is `elems[n]`.
+#[derive(Default)]
+struct Window {
+    first: usize,
+    elems: Vec<u32>,
+}
+
+/// The slot ranges to project, sorted and merged, clamped to `total`.
+fn merged(mut ranges: Vec<Range<usize>>, total: usize) -> Vec<Range<usize>> {
+    ranges.retain_mut(|r| { r.end = r.end.min(total); r.start < r.end });
+    ranges.sort_by_key(|r| r.start);
+    let mut out: Vec<Range<usize>> = Vec::new();
+    for r in ranges {
+        match out.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
 pub(super) struct GridPart {
     entry: EntryId,
     group: GroupId,
-    pub(super) elems: Vec<u32>,
+    /// The listing's length: the engine group's length and the document's rows. Navigation is by
+    /// index, so this is the TOTAL however few slots hold a key.
+    total: usize,
+    /// Keys exist only for the wanted ranges (visible rows, the look-ahead, the focus, the
+    /// remembered seat): a few runs, never the whole listing.
+    windows: Vec<Window>,
+    /// The ranges `windows` was projected for, to skip a projection nothing asked to change.
+    applied: Vec<Range<usize>>,
+    /// The focused and remembered grid keys, which a prune never drops.
+    pins: Vec<u32>,
     known: Vec<(u32, usize)>,
     identity: Option<(u32, plx_plex::plex::ServerId, i64, u32)>,
     layout: Layout,
@@ -142,21 +151,26 @@ pub(super) struct GridPart {
 
 impl GridPart {
     pub(super) fn clear_projection(&mut self) {
-        self.elems.clear();
+        self.total = 0;
+        self.windows.clear();
+        self.applied.clear();
         self.indexes.elems.clear();
         self.identity = None;
         self.snapshot = None;
     }
 
-    pub(super) const SHAPE: &'static str = "LibraryGrid{group:u32,elems:[u32],known:[(elem:u32,index:u32)],identity:Option<(epoch:u32,sid:u32,section:u64,query:u32)>,layout:LibraryLayout,scroll:f32,target_layout:LibraryLayout,scroll_target:f32,pop:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),shrink:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),bands:{focus:Option<u32>,slots:[(row:u32,sp:Spring{pos:f32,vel:f32})]}}";
+    pub(super) const SHAPE: &'static str = "LibraryGrid{group:u32,total:u32,windows:[(first:u32,elems:[u32])],known:[(elem:u32,index:u32)],identity:Option<(epoch:u32,sid:u32,section:u64,query:u32)>,layout:LibraryLayout,scroll:f32,target_layout:LibraryLayout,scroll_target:f32,pop:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),shrink:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),bands:{focus:Option<u32>,slots:[(row:u32,sp:Spring{pos:f32,vel:f32})]}}";
 
     pub(super) fn write(&self, c: &mut plx_machine::machine::Canon) {
         // The retained snapshot is a read-publication cache, not another cursor. Its placement
         // projection and identity are traversed below; its Arc address never enters logical state.
-        let Self { entry: _, group, elems, known, identity, layout, scroll, target_layout,
+        let Self { entry: _, group, total, windows, applied: _, pins: _, known, identity, layout, scroll, target_layout,
             scroll_target, grid, snapshot: _, indexes: _, rest: _, #[cfg(test)] test_ops: _ } = self;
-        c.u32(group.0).seq(elems.len());
-        for elem in elems { c.u32(*elem); }
+        c.u32(group.0).u32(*total as u32).seq(windows.len());
+        for w in windows {
+            c.u32(w.first as u32).seq(w.elems.len());
+            for elem in &w.elems { c.u32(*elem); }
+        }
         c.seq(known.len());
         for (elem, index) in known { c.u32(*elem).u32(*index as u32); }
         c.option(*identity, |c, (epoch, sid, section, query)| {
@@ -174,7 +188,10 @@ impl GridPart {
         let layout = Layout::new(false, &[], 0, false);
         Self {
             entry, group,
-            elems: Vec::new(),
+            total: 0,
+            windows: Vec::new(),
+            applied: Vec::new(),
+            pins: Vec::new(),
             known: Vec::new(),
             identity: None,
             layout,
@@ -201,9 +218,16 @@ impl GridPart {
     pub(super) fn on<H: LibraryLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>, scroll: f32) -> f32 {
         self.grid.set_page(CONTENT_TOP + self.layout.grid_top(), scroll);
-        let src = GridSrc { elems: &self.elems, indexes: &self.indexes, view: H::listing(cx) };
+        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx) };
         let _ = self.grid.on(ev, cx, &src, fx);
         if matches!(ev, ScreenEvent::Tick(_)) { self.grid.landed_shift() } else { 0.0 }
+    }
+
+    /// The document shift the grid's next tick will report for the cards as they stand now (see
+    /// [`Grid::pending_shift`]): a scroll target set against a document that already landed is held
+    /// in the coordinates the scroll is still in, so that tick's rebase does not apply it twice.
+    pub(super) fn pending_shift<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> f32 {
+        self.grid.pending_shift(cx, &self.source(cx))
     }
 
     /// Adopt the focused grid row's caption band settled: a layout built before the next tick (a
@@ -231,85 +255,107 @@ impl GridPart {
         for (at, (elem, _)) in self.known.iter().enumerate() {
             self.indexes.known.entry(*elem).or_insert(at);
         }
-        self.elems.clear();
+        self.total = 0;
+        self.windows.clear();
+        self.applied.clear();
         self.indexes.elems.clear();
         self.identity = None;
         self.snapshot = None;
     }
 
-    pub(super) fn refresh<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, keys: &mut KeyRegistry) {
+    /// The listing's length.
+    pub(super) fn total(&self) -> usize { self.total }
+
+    /// The focused and remembered grid keys: the prune keeps them, and the screen widens the
+    /// projection to their rows.
+    pub(super) fn set_pins(&mut self, pins: Vec<u32>) { self.pins = pins; }
+
+    /// Project keys for `ranges` (slot indices; clamped to the listing) and publish them. The
+    /// work is the size of the ranges, never the listing's; a projection nothing changed is
+    /// skipped.
+    pub(super) fn refresh<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, keys: &mut KeyRegistry,
+        ranges: Vec<Range<usize>>) {
         let view = H::listing(cx);
-        if self.snapshot.as_ref().is_some_and(|old| view.same_items(old.view())) { return; }
-        let changed = self.snapshot.as_ref().and_then(|old|
-            view.changed_page_ranges(old.view()).map(|ranges| ranges.collect::<Vec<_>>()));
+        let ranges = merged(ranges, view.total().max(0) as usize);
+        if self.snapshot.as_ref().is_some_and(|old| view.same_items(old.view())) && ranges == self.applied {
+            return;
+        }
         self.snapshot = Some(view.retain());
+        self.project(view, keys, ranges);
+    }
+
+    fn project(&mut self, view: plx_data::stores::browse::ListingView<'_>, keys: &mut KeyRegistry,
+        ranges: Vec<Range<usize>>) {
         let Some(id) = view.id() else {
             if self.identity.is_some() { self.grid.forget_pop(); }
-            self.elems.clear();
+            self.total = 0;
+            self.windows.clear();
+            self.applied.clear();
             self.indexes.elems.clear();
             self.identity = None;
             return;
         };
         let section = LibrarySectionIdentity { sid: id.sid, key: id.section };
-        let total = view.total().max(0) as usize;
         let stamp = (id.epoch, id.sid, id.section, id.query);
         // A new stamp is a new content set; a covered page's grid never ticked across the swap,
         // so its pop would otherwise read the same element at a new index as a landing.
         if self.identity.is_some_and(|old| old != stamp) { self.grid.forget_pop(); }
-        if self.identity != Some(stamp) || self.elems.len() != total || changed.is_none() {
-            self.elems.clear();
-            self.elems.reserve(total);
-            self.indexes.elems.clear();
-            self.indexes.elems.reserve(total);
-            for index in 0..total {
+        let before: HashSet<u32> = self.windows.iter().flat_map(|w| w.elems.iter().copied()).collect();
+        self.total = view.total().max(0) as usize;
+        self.windows.clear();
+        self.indexes.elems.clear();
+        for range in &ranges {
+            let mut window = Window { first: range.start, elems: Vec::with_capacity(range.len()) };
+            for index in range.clone() {
                 let elem = self.publish_slot(view, &section, id.query, index, keys);
-                self.elems.push(elem);
+                window.elems.push(elem);
                 self.indexes.add_elem(elem, index);
                 self.remember(elem, index);
             }
-            self.identity = Some(stamp);
-        } else {
-            let mut affected = HashSet::new();
-            for range in changed.unwrap_or_default() {
-                affected.extend(self.elems[range.clone()].iter().copied());
-                self.replace_range(view, &section, id.query, range.clone(), keys);
-                affected.extend(self.elems[range].iter().copied());
-            }
-            // Full projection visits every occurrence in order: first is the active position,
-            // last is recovery metadata. An unchanged page may contain that last occurrence.
-            // Finalize only affected identities after ALL pages, including identities whose
-            // highest occurrence was removed. Absent identities retain their prior tombstone.
-            // These writes touch existing entries only; set iteration cannot alter vector order.
-            for elem in affected {
-                if let Some(index) = self.indexes.last_index_of(elem) {
-                    if keys.last_place(elem) != Some((self.group, index)) {
-                        keys.update_last_place(elem, self.group, index);
-                        self.remember(elem, index);
-                    }
-                }
+            self.windows.push(window);
+        }
+        self.identity = Some(stamp);
+        self.applied = ranges;
+        self.prune(keys, &before);
+    }
+
+    /// Bound the key table. A key is needed while its card is projected, was projected a pass
+    /// ago (a focus whose slot just changed identity recovers through it), or is pinned (the
+    /// focus, the remembered seat); above twice the window plus 256 the oldest others go. The
+    /// element numbers are minted in order and never reused.
+    fn prune(&mut self, keys: &mut KeyRegistry, before: &HashSet<u32>) {
+        let size: usize = self.windows.iter().map(|w| w.elems.len()).sum();
+        let now = &self.indexes.elems;
+        let pinned = &self.pins;
+        let dropped = keys.prune(super::identity::KeyRegion::Grid, 2 * size + 256,
+            |elem| now.contains_key(&elem) || before.contains(&elem) || pinned.contains(&elem));
+        if dropped {
+            self.known.retain(|(elem, _)| keys.key(*elem).is_some());
+            self.indexes.known.clear();
+            for (at, (elem, _)) in self.known.iter().enumerate() {
+                self.indexes.known.entry(*elem).or_insert(at);
             }
         }
+    }
+
+    /// The key at `index`, projecting its neighbourhood first when it lies outside the windows:
+    /// a far seat (jump to a letter, a restore) names the cell BEFORE the scroll reaches it.
+    pub(super) fn elem_for<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, keys: &mut KeyRegistry,
+        index: usize, cols: usize) -> Option<u32> {
+        if let Some(elem) = self.elem_at(index) { return Some(elem); }
+        if index >= self.total { return None; }
+        let row = index / cols.max(1);
+        let mut ranges = self.applied.clone();
+        ranges.push(row.saturating_sub(1) * cols..(row + 2) * cols);
+        let ranges = merged(ranges, self.total);
+        self.project(H::listing(cx), keys, ranges);
+        self.elem_at(index)
     }
 
     fn publish_slot(&mut self, view: plx_data::stores::browse::ListingView<'_>,
         section: &LibrarySectionIdentity, query: u32, index: usize, keys: &mut KeyRegistry) -> u32 {
         #[cfg(test)] { self.test_ops.slot_visits += 1; }
         keys.register(item_identity(view, section, query, index), self.group, index)
-    }
-
-    fn replace_range(&mut self, view: plx_data::stores::browse::ListingView<'_>,
-        section: &LibrarySectionIdentity, query: u32, range: Range<usize>, keys: &mut KeyRegistry) {
-        // Remove the whole old page first so a reorder within it cannot temporarily make a moved
-        // identity resolve to the wrong occurrence.
-        for index in range.clone() {
-            self.indexes.remove_elem(self.elems[index], index);
-        }
-        for index in range {
-            let elem = self.publish_slot(view, section, query, index, keys);
-            self.elems[index] = elem;
-            self.indexes.add_elem(elem, index);
-            self.remember(elem, index);
-        }
     }
 
     fn remember(&mut self, elem: u32, index: usize) {
@@ -335,9 +381,9 @@ impl GridPart {
         use plx_ui::tex::Warm;
         if ahead == 0 { return; }
         let resting = self.rest.observe(self.scroll, self.scroll_target);
-        if !resting || self.elems.is_empty() || !plx_ui::tex::source_idle() { return; }
+        if !resting || self.total == 0 || !plx_ui::tex::source_idle() { return; }
         let view = H::listing(cx);
-        let (len, cols) = (self.elems.len(), self.layout.cols());
+        let (len, cols) = (self.total, self.layout.cols());
         let painted = self.painted();
         let rows = len.div_ceil(cols).min(self.layout.rows);
         for index in super::lookahead::candidates(painted, cols, rows, len, ahead, self.rest.forward()) {
@@ -348,16 +394,26 @@ impl GridPart {
     }
 
     /// The run of cards the grid paints now (`Grid::painted`): the rest of the window is buffered.
-    pub(super) fn painted(&self) -> std::ops::Range<usize> { self.grid.painted(Painter::root(), self.elems.len()) }
+    pub(super) fn painted(&self) -> std::ops::Range<usize> { self.grid.painted(Painter::root(), self.total) }
 
     pub(super) fn elem_at(&self, index: usize) -> Option<u32> {
-        self.elems.get(index).copied()
+        window_elem(&self.windows, index)
     }
 
     pub(super) fn fallback_for(&self, elem: u32) -> Option<u32> {
         let index = self.known.get(*self.indexes.known.get(&elem)?)?.1;
-        self.elems.get(index.min(self.elems.len().saturating_sub(1))).copied()
+        self.elem_at(index.min(self.total.saturating_sub(1)))
     }
+
+    /// The first projected key: where a focus with no place falls back to.
+    fn first_elem(&self) -> Option<u32> { self.windows.first().and_then(|w| w.elems.first().copied()) }
+
+    /// How many slots hold a projected key.
+    #[cfg(test)]
+    pub(super) fn projected(&self) -> usize { self.windows.iter().map(|w| w.elems.len()).sum() }
+
+    #[cfg(test)]
+    pub(super) fn swap_for_test(&mut self, a: usize, b: usize) { self.windows[0].elems.swap(a, b); }
 
     #[cfg(test)]
     pub(super) fn publication_ops(&self) -> (usize, usize) {
@@ -369,7 +425,7 @@ impl GridPart {
 
     /// The grid's content, read off the published items. O(1) to build: borrows, no copy.
     fn source<'a, 'v, H: LibraryLike>(&'a self, cx: &Cx<'v, H>) -> GridSrc<'a, 'v> {
-        GridSrc { elems: &self.elems, indexes: &self.indexes, view: H::listing(cx) }
+        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx) }
     }
 
     /// The painter the grid draws and registers stops through: the page's alpha, and the stops
@@ -395,7 +451,7 @@ impl GridPart {
     /// Card `index`'s drawn rect for the engine focus in `cx` (pop and press folded in).
     #[cfg(test)]
     pub(super) fn rect_at<H: LibraryLike>(&self, cx: &Cx<'_, H>, index: usize) -> Rect {
-        let elem = self.elems[index];
+        let elem = self.elem_at(index).expect("a projected card");
         <Self as Focusable<H>>::place(self, &elem, cx, At::Drawn).expect("a published card places").rect
     }
 
@@ -405,9 +461,12 @@ impl GridPart {
         self.grid.scale_of(cx, &self.source(cx), &elem)
     }
 
-    /// The cards the scroll can show: what `draw` and `record_stops` touch.
+    /// The cards the scroll can show out of `total`: what `draw` and `record_stops` touch, and so
+    /// the cells that must hold a key in the frame. The grid's own function, not a copy of it.
+    pub(super) fn window_of(&self, total: usize) -> std::ops::Range<usize> { self.grid.window(total) }
+
     #[cfg(test)]
-    pub(super) fn window(&self) -> std::ops::Range<usize> { self.grid.window(self.elems.len()) }
+    pub(super) fn window(&self) -> std::ops::Range<usize> { self.window_of(self.total) }
 }
 
 /// The content panel the grid's stops are clipped to.
@@ -425,14 +484,15 @@ thread_local! {
 /// The grid's `CardSource`: the published items read through the part's element index. Built from
 /// the part's FIELDS (borrows only), so a call can hold it while the grid is borrowed mutably.
 struct GridSrc<'a, 'v> {
-    elems: &'a [u32],
+    total: usize,
+    windows: &'a [Window],
     indexes: &'a GridIndexes,
     view: plx_data::stores::browse::ListingView<'v>,
 }
 
 impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
-    fn len(&self) -> usize { self.elems.len() }
-    fn elem(&self, i: usize) -> u32 { self.elems.get(i).copied().unwrap_or(0) }
+    fn len(&self) -> usize { self.total }
+    fn elem(&self, i: usize) -> u32 { window_elem(self.windows, i).unwrap_or(0) }
     fn index_of(&self, e: &u32) -> Option<usize> { self.indexes.index_of(*e) }
     fn art(&self, i: usize) -> Art<'_> {
         self.view.item(i).map_or(Art::Poster(None), grid_art)
@@ -452,6 +512,11 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     /// Metadata still pages ahead via `LibraryWork::Want`; a slot whose page has not landed draws
     /// nothing (its stop still registers).
     fn loaded(&self, i: usize) -> bool { self.view.item(i).is_some() }
+}
+
+fn window_elem(windows: &[Window], index: usize) -> Option<u32> {
+    windows.iter().find(|w| index >= w.first && index < w.first + w.elems.len())
+        .map(|w| w.elems[index - w.first])
 }
 
 fn item_identity(
@@ -476,7 +541,7 @@ fn item_identity(
 
 impl<H: LibraryLike> Focusable<H> for GridPart {
     fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
-        if self.elems.is_empty() { return; }
+        if self.total == 0 { return; }
         out.push(GroupSpec {
             id: self.group,
             kind: GroupKind::Grid { cols: self.target_layout.cols(), holes: NO_HOLES },
@@ -484,7 +549,7 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Geometric; 4],
             extent: Rect::new(MARGIN_X, self.target_layout.row_y(0, self.scroll_target), GRID_RIGHT - MARGIN_X, self.target_layout.card_h()),
-            len: self.elems.len(),
+            len: self.total,
             elem: ElemKind::Card,
         });
     }
@@ -519,7 +584,7 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
     fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, H>) -> FocusKey<u32> {
         if self.index_of(want.elem).is_some() { return want; }
         self.fallback_for(want.elem)
-            .or_else(|| self.elems.first().copied())
+            .or_else(|| self.first_elem())
             .map(|elem| FocusKey { entry: want.entry, elem })
             .unwrap_or(want)
     }
@@ -531,7 +596,7 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
     fn seat(&self, _group: GroupId, from: Placed, _cx: &Cx<'_, H>) -> FocusKey<u32> {
         let layout = self.target_layout;
         let cols = layout.cols();
-        let rows = self.elems.len().div_ceil(cols).max(1);
+        let rows = self.total.div_ceil(cols).max(1);
         let half_w = layout.card_w() / 2.0;
         let col = (0..cols)
             .min_by(|&a, &b| {
@@ -548,8 +613,8 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
             .map(|row| row.min(rows - 1))
             .min_by(|&a, &b| (centre(a) - from.rect.cy()).abs().total_cmp(&(centre(b) - from.rect.cy()).abs()))
             .unwrap_or(0);
-        let index = (row * cols + col).min(self.elems.len().saturating_sub(1));
-        FocusKey { entry: self.entry, elem: self.elems.get(index).copied().unwrap_or(0) }
+        let index = (row * cols + col).min(self.total.saturating_sub(1));
+        FocusKey { entry: self.entry, elem: self.elem_at(index).unwrap_or(0) }
     }
 }
 

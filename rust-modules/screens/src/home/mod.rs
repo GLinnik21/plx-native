@@ -50,14 +50,18 @@ use plx_ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 
 use super::clock_readout::ClockWatch;
 
-/// Cards from either end of a Recently Added row at which Home asks for the neighbouring page.
-const PAGE_EDGE_CARDS: usize = 6;
-
 /// A paging command for a hub, when the hub has a listing identity to page by.
+/// Rows held beyond the ones in view, each side.
+const HOLD_MARGIN: usize = 2;
+
 fn hub_page_cmd(hub: &HubRef<'_>,
     make: impl FnOnce(plx_plex::plex::ServerId, String, String) -> HubsCmd) -> Option<HubsCmd> {
     match hub.identity {
         Some(HubIdentity::Identifier { sid, id, key }) => Some(make(sid, id.into(), key.into())),
+        // The merged deck is every server's lane, so the ask names no server of its own: the store
+        // reads whichever lanes the move needs. Any card's server fills the slot the command has.
+        Some(HubIdentity::ContinueWatching) => hub.items.first()
+            .map(|m| make(m.sid, "home.continue".into(), String::new())),
         _ => None,
     }
 }
@@ -138,6 +142,8 @@ struct HubProjection {
     identity: HomeHubIdentity,
     group: GroupId,
     elems: Vec<u32>,
+    /// The row is a descriptor: its `elems` are placeholder slots, minted when the ring released it.
+    placeholders: bool,
     /// Where the row's linked heading leads: the collection a promoted `custom.collection.*` hub
     /// lists, classified once per publication. Every other row is unlinked and keeps its plain
     /// heading.
@@ -434,6 +440,9 @@ pub struct HomeScreen {
     projected_generation: Option<u32>,
     restored_scroll: Vec<(u32, f32)>,
     restore_reveal: bool,
+    /// The rows last sent to the store as held (`HubsCmd::Hold`), so the command goes out only when
+    /// the range changes. Derived from what is on screen; not canon.
+    hold_sent: Option<(usize, usize)>,
 
     /// Selected hero ITEM identity. It is data, not focus.
     carousel: Option<(plx_plex::plex::ServerId, String)>,
@@ -496,6 +505,7 @@ impl HomeScreen {
             projected_generation: None,
             restored_scroll: Vec::new(),
             restore_reveal: false,
+            hold_sent: None,
             carousel: None,
             outgoing: None,
             hero_flip_cd: 0.0,
@@ -700,20 +710,33 @@ impl HomeScreen {
             return;
         }
         let mut rows = Vec::with_capacity(view.hub_count());
+        let old_rows = std::mem::take(&mut self.rows);
+        let old_at: HashMap<&HomeHubIdentity, usize> = old_rows.iter().enumerate().map(|(at, row)| (&row.identity, at)).collect();
         for row in 0..view.hub_count() {
             let Some(hub) = view.hub(row) else { continue };
             let identity = Self::hub_identity(view, row, hub);
             let group = self.group_for(&identity);
-            let mut elems = Vec::with_capacity(hub.items.len().min(MAX_ITEMS));
-            for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate() {
-                let item_ref = if item.rk.is_empty() {
-                    ItemRef::Slot { generation: view.generation, ordinal: col as u32 }
-                } else {
-                    ItemRef::Item { sid: item.sid, rk: &item.rk }
-                };
-                let index = self.item_registration(&identity, item_ref);
-                elems.push(self.place_item(index, row as u32, col as u32));
-            }
+            // A descriptor that is still a descriptor of the same size keeps the slots it has: its
+            // cards are nowhere on screen or near it, so a ring move costs nothing per such row.
+            let placeholders = !hub.items.is_empty() && hub.items.len() <= MAX_ITEMS && hub.items.iter().all(|item| item.rk.is_empty());
+            let reused = placeholders.then(|| old_at.get(&identity).map(|&at| &old_rows[at]))
+                .flatten().filter(|old| old.placeholders && old.elems.len() == hub.items.len()).map(|old| old.elems.clone());
+            let elems = match reused {
+                Some(elems) => elems,
+                None => {
+                    let mut elems = Vec::with_capacity(hub.items.len().min(MAX_ITEMS));
+                    for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate() {
+                        let item_ref = if item.rk.is_empty() {
+                            ItemRef::Slot { generation: view.generation, ordinal: col as u32 }
+                        } else {
+                            ItemRef::Item { sid: item.sid, rk: &item.rk }
+                        };
+                        let index = self.item_registration(&identity, item_ref);
+                        elems.push(self.place_item(index, row as u32, col as u32));
+                    }
+                    elems
+                }
+            };
             // The publishing section, for an identifier whose own section segment does not parse:
             // a hub lists one section's items.
             let link = match hub.identity {
@@ -726,14 +749,14 @@ impl HomeScreen {
                 identity,
                 group,
                 elems,
+                placeholders,
                 link,
             });
         }
         let mut old_shelves: Vec<Option<Shelf>> = std::mem::take(&mut self.grid.shelves).into_iter().map(Some).collect();
         self.grid.shelves = Vec::with_capacity(rows.len());
         for row in &rows {
-            let kept = self.rows.iter().position(|old| old.identity == row.identity)
-                .and_then(|old| old_shelves.get_mut(old)?.take());
+            let kept = old_at.get(&row.identity).and_then(|&old| old_shelves.get_mut(old)?.take());
             let mut shelf = kept.unwrap_or_else(|| Shelf::new(self.entry, &RowStyle::HOME).cull_margin(GLOW_PAD));
             if let Some(&(_, scroll)) = self.restored_scroll.iter().find(|(group, _)| *group == row.group.0) {
                 shelf.restore_scroll(scroll, row.elems.len());
@@ -758,7 +781,7 @@ impl HomeScreen {
                 && !self.rows.iter().any(|row| row.group.0 == *group)
         });
         self.projected_generation = Some(view.generation);
-        self.prune_keys(&was, view.generation, cx.focus.current.map(|key| key.elem));
+        self.prune_keys(&was, view.generation, cx.focus.current.map(|key| key.elem), &cx.focus.remembered);
         self.reconcile_carousel(view);
     }
 
@@ -770,16 +793,24 @@ impl HomeScreen {
     /// An `Ephemeral` group of an older generation is never projected again. A remembered cursor
     /// older than what is retained recovers to the first row (`reconcile`). A Home whose hubs are
     /// stable and whose cards carry rating keys, under the cap, drops nothing.
-    fn prune_keys(&mut self, was: &HashMap<u32, (u32, u32)>, generation: u32, focus: Option<u32>) {
+    ///
+    /// Each row's remembered card (`remembered`, the engine's cursor per group) is kept whether or
+    /// not the row holds cards now: a row the ring released is a row of placeholders, and the card
+    /// the user left in it must still be the card they return to. One key per row.
+    fn prune_keys(&mut self, was: &HashMap<u32, (u32, u32)>, generation: u32, focus: Option<u32>,
+        remembered: &[(GroupId, u32)]) {
         let now = &self.elem_at;
-        let live = |elem: u32| now.contains_key(&elem) || was.contains_key(&elem) || Some(elem) == focus;
+        let pinned: HashSet<u32> = remembered.iter().map(|&(_, elem)| elem).collect();
+        let shown = |elem: u32| now.contains_key(&elem) || was.contains_key(&elem) || Some(elem) == focus;
+        let live = |elem: u32| shown(elem) || pinned.contains(&elem);
         let mut drop: HashSet<u32> = self.items.iter()
             .filter(|key| {
                 let volatile = match &key.identity {
                     HomeItemIdentity::Slot { .. } => true,
                     HomeItemIdentity::Item { hub, .. } => matches!(hub, HomeHubIdentity::Ephemeral { .. }),
                 };
-                volatile && !live(key.elem)
+                // a placeholder's key is a pure function of its publication: never worth keeping
+                volatile && !shown(key.elem)
             })
             .map(|key| key.elem)
             .collect();
@@ -1017,30 +1048,47 @@ impl HomeScreen {
         // rest when they wake rather than being adopted whole.
         let dormant = self.snap.pos <= 0.5;
         let mut shelves = std::mem::take(&mut self.grid.shelves);
+        let mut on_screen: Option<(usize, usize)> = focused.map(|(row, _)| (row, row));
         for (row, shelf) in shelves.iter_mut().enumerate() {
             shelf.dormant(dormant);
             let top = heading_y(shelf.base_y(), shelf.heading_lift());
             let bottom = shelf.base_y() + CARD_H + shelf.under_band();
             let visible = !dormant && on_axis(top, bottom - top, SCR_H, 0.0);
+            if visible {
+                on_screen = Some(on_screen.map_or((row, row), |(lo, hi)| (lo.min(row), hi.max(row))));
+            }
             let mut src = self.cards(view, row);
             src.paging = visible && focused.is_some_and(|(r, col)|
-                r == row && col.saturating_add(PAGE_EDGE_CARDS) >= self.rows[row].elems.len());
+                r == row && col.saturating_add(ui_cards::PAGE_EDGE_CARDS) >= self.rows[row].elems.len());
             // The shelf skips a row at exact rest with nothing focused, and parks one that has
             // settled once focus left it.
             let want = shelf.on(&ScreenEvent::Tick(t), cx, &src, fx);
-            let before = focused.is_some_and(|(r, col)| r == row && col < PAGE_EDGE_CARDS)
-                && self.hub(view, row).is_some_and(|hub| hub.offset > 0);
-            let backward = shelf.want_before(
-                self.hub(view, row).map_or(0, |hub| hub.offset), visible && before);
-            if visible
-                && (backward || (!before && matches!(want, Some(ui_cards::CardEvent::Want(_))))) {
+            let offset = self.hub(view, row).map_or(0, |hub| hub.offset);
+            let wanted = matches!(want, Some(ui_cards::CardEvent::Want(_)));
+            if shelf.page_cancel(cx, &src, offset, visible).is_some() {
                 if let Some(cmd) = self.hub(view, row).and_then(|hub| hub_page_cmd(&hub,
-                    |sid, id, key| HubsCmd::Page { sid, id, key, before })) {
+                    |sid, id, key| HubsCmd::CancelPage { sid, id, key })) {
+                    fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(cmd))));
+                }
+            }
+            if let Some(edge) = shelf.page_ask(cx, &src, wanted, offset, visible) {
+                let before = edge == ui_cards::PageEdge::Before;
+                if let Some(cmd) = self.hub(view, row).and_then(|hub| hub_page_cmd(&hub,
+                    |sid, id, key| HubsCmd::Page { sid, id, key, before, seen: view.generation })) {
                     fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(cmd))));
                 }
             }
         }
         self.grid.shelves = shelves;
+        // The store holds cards for the rows in view and two either side; the rest keep a descriptor.
+        if !self.rows.is_empty() {
+            let (lo, hi) = on_screen.unwrap_or((0, 0));
+            let hold = (lo.saturating_sub(HOLD_MARGIN), (hi + HOLD_MARGIN).min(self.rows.len() - 1));
+            if self.hold_sent != Some(hold) {
+                self.hold_sent = Some(hold);
+                fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Hold { lo: hold.0, hi: hold.1 }))));
+            }
+        }
         let revealed = focused.map(|(row, _)| (row, Some(row)))
             .or_else(|| self.focused_heading(cx.focus.current).map(|row| (row, None)));
         if let Some((row, band_row)) = revealed.filter(|(r, _)| *r < self.rows.len()) {
@@ -1893,7 +1941,7 @@ impl LogicalState for HomeScreen {
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
             // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
-            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, restored_scroll: _, restore_reveal: _, carousel: _,
+            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, restored_scroll: _, restore_reveal: _, hold_sent: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
@@ -2263,7 +2311,7 @@ impl HomeScreen {
 
     fn cancel_row_page<H: HomeLike>(&mut self, row: usize, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let requested = self.grid.shelves.get(row).is_some_and(ui_cards::Shelf::has_page_request);
-        if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.reset_page_requests(); }
+        if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.reset_page_requests(); shelf.drop_page_flight(); }
         if !requested { return; }
         if let Some(hub) = self.hub(H::hubs(cx), row).filter(|hub| hub.more || hub.offset > 0) {
             if let Some(cmd) = hub_page_cmd(&hub, |sid, id, key| HubsCmd::CancelPage { sid, id, key }) {
@@ -3009,8 +3057,16 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
     fn more(&self) -> bool {
         self.paging && self.home.hub(self.view, self.row).is_some_and(|hub| hub.more)
     }
+    fn page_epoch(&self) -> u32 {
+        self.home.hub(self.view, self.row).map_or(0, |hub| hub.epoch)
+    }
     fn len(&self) -> usize {
         self.home.rows.get(self.row).map_or(0, |r| r.elems.len())
+    }
+
+    /// The window's server offset plus the card's place in it.
+    fn global(&self, i: usize) -> usize {
+        self.home.hub(self.view, self.row).map_or(0, |hub| hub.offset) + i
     }
 
     fn elem(&self, i: usize) -> u32 {
@@ -3046,8 +3102,9 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
         self.item(i).and_then(PmsMovie::resume_frac)
     }
 
+    /// A card has landed once it has a rating key; the ring's placeholder slot is an empty movie.
     fn loaded(&self, i: usize) -> bool {
-        self.item(i).is_some()
+        self.item(i).is_some_and(|item| !item.rk.is_empty())
     }
 
     fn hover(&self, _i: usize) -> Hover {

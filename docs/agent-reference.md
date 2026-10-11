@@ -191,7 +191,12 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   and `ci/test_ci_split.py` fails on a test file that no gate runs. Because steps overlap, a step
   must write only to a directory it made, bind port 0 and not touch the checkout
   (`ci/test_check_collisions.py` runs a mix of them together and scans for fixed ports); the manifest's
-  header lists the rules. CI runs the three cargo targets plus those two as five parallel jobs
+  header lists the rules. Two of those gates are registries rather than tests: `ci/check-plex-requests.py` makes every
+  request the plex layer can make say whether it pages, and `ci/check-list-caps.py` (registry `ci/list-caps.ini`) makes every
+  cap-shaped bound on a collection (`.take(N)`, `.truncate`, a length `.min(N)`, a `MAX`/`CAP`/`LIMIT` constant, a `[..N]` cut) say
+  whether it bounds work, previews a list that is reached some other way (the `route`), is a format limit, or is an open `reach` cap on
+  what the user can reach, which is the only class that is tracked rather than accepted; `--sites` lists every hit with its class.
+  CI runs the three cargo targets plus those two as five parallel jobs
   (`host-lint`, `host-unit-default`, `host-unit-hostsim`, `host-python`, `host-python-harness`) behind an aggregator named
   `host checks (NOT a device gate)`; `ci/test_ci_split.py` pins that no gate falls between them. The cargo half runs `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens`
   **twice: once on the default feature set and once with `--features hostsim`**, which is not a

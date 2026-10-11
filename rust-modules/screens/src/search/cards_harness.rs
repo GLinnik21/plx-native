@@ -45,7 +45,7 @@ fn movie(rk: &str) -> Item {
     Item::Media(plx_data::pms::PmsMovie { rk: rk.into(), ..Default::default() })
 }
 fn movies(rks: &[String]) -> Vec<Shelf> {
-    vec![Shelf { kind: Kind::Movie, items: rks.iter().map(|rk| movie(rk)).collect() }]
+    vec![Shelf { epoch: 0, window: Default::default(), kind: Kind::Movie, items: rks.iter().map(|rk| movie(rk)).collect() }]
 }
 
 pub(crate) struct Harness {
@@ -169,6 +169,11 @@ impl CardHarness for Harness {
         let want = self.focus.unwrap();
         let now = Focusable::<SearchHost>::reconcile(&self.screen, want, &self.cx());
         if now != want { self.focus(now.elem, By::Reconcile); }
+        Ok(())
+    }
+    fn shift(&mut self, by: usize) -> Result<(), &'static str> {
+        for k in 0..by { self.rks.insert(0, format!("arrived{k}")); }
+        self.republish();
         Ok(())
     }
     fn memory_roundtrip(&mut self) -> Result<Box<dyn CardHarness>, &'static str> {

@@ -2,7 +2,7 @@
 //! [`Grid`] on `FixtureHost`, plus focused tests for the pop rule, the geometry, the events and
 //! idle. No expected-failure list: every case passes on both components.
 use super::conformance::{self, CardHarness, Landing, Mount, Nb, Outcome};
-use super::{CardEvent, CardSource, Grid, GridSpec, ScrollMode, SectionFrame, Shelf};
+use super::{CardEvent, CardSource, Grid, GridSpec, PageEdge, ScrollMode, SectionFrame, Shelf};
 use crate::card_row::{RowStyle, TileLabel};
 use crate::fixture::{FixtureHost, FixtureMeasure, FixtureView, FixtureViews};
 use crate::poster_grid;
@@ -46,22 +46,31 @@ fn cx9_pressed(view: &FixtureView, ms: u32, press: f32, focus: Option<FocusKey<u
 struct Cards {
     elems: Vec<u32>,
     more: bool,
+    /// The store's landing count for the row ([`CardSource::page_epoch`]).
+    epoch: u32,
     /// The screen rect each card was really painted at, as the overlay hook saw it.
     drawn: std::cell::RefCell<Vec<(u32, Rect)>>,
     /// Cards from this index on are not interned yet: `elem` answers the shared header id `0`
     /// (`Members::elem`'s `unwrap_or(HEADER_ELEM)`) and `index_of` knows no such element.
     unindexed_from: usize,
+    /// The cards of a paged listing whose page is not present (`CardSource::loaded`).
+    unloaded: std::ops::Range<usize>,
+    /// Where the held window starts in the listing it is a window of ([`CardSource::global`]).
+    first: usize,
 }
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, drawn: Default::default(), unindexed_from: usize::MAX }
+        Self { elems, more, epoch: 0, drawn: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0 }
     }
 }
 
 impl CardSource<FixtureHost> for Cards {
     fn len(&self) -> usize {
         self.elems.len()
+    }
+    fn global(&self, i: usize) -> usize {
+        self.first + i
     }
     fn elem(&self, i: usize) -> u32 {
         if i >= self.unindexed_from { 0 } else { self.elems[i] }
@@ -77,6 +86,12 @@ impl CardSource<FixtureHost> for Cards {
     }
     fn more(&self) -> bool {
         self.more
+    }
+    fn page_epoch(&self) -> u32 {
+        self.epoch
+    }
+    fn loaded(&self, i: usize) -> bool {
+        !self.unloaded.contains(&i)
     }
     fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, _measure: &dyn plx_machine::machine::Measure) {
         self.drawn.borrow_mut().push((self.elems[i], p.to_screen(tile.rect).1));
@@ -565,6 +580,138 @@ fn grid_landing_carries_the_pop_and_the_scroll() {
     a_landing_carries_the_pop_with_the_focused_elem::<Grid>(poster_grid::COLS);
 }
 
+/// A paged row's window slides (its first `SLIDE` cards go, as many arrive at the end) between the
+/// same two ticks as a key moves focus one card on, in either order. The cards that stay must
+/// stay where they were on screen: the scroll is rebased with them in that tick, and the focused
+/// card is one step from the one focus left, not a window away.
+fn a_slide_under_a_moving_focus_keeps_the_row_in_place(move_first: bool) {
+    const SLIDE: usize = 12;
+    let mut r = settled::<Shelf>(24);
+    r.land_focus(100 + 20, By::Restore);
+    r.run(240);
+    r.land_focus(100 + 21, By::Dir);
+    r.run(3);
+    let x = |r: &Rig<Shelf>, elem: u32| Section::place(&r.sect, &r.cx(), &r.src, elem, At::SpringTarget).unwrap().rect.cx();
+    let pitch = RowStyle::HOME.w + RowStyle::HOME.gap;
+    let (stayed, focused) = (100 + 19, 100 + 22);
+    let before = x(&r, stayed);
+    let slide = |r: &mut Rig<Shelf>| {
+        r.src.elems.drain(..SLIDE);
+        r.src.elems.extend(900..900 + SLIDE as u32);
+    };
+    if move_first {
+        r.land_focus(focused, By::Dir);
+        slide(&mut r);
+    } else {
+        slide(&mut r);
+        r.land_focus(focused, By::Dir);
+    }
+    r.run(1);
+    // one tick of a row already following a key: a fraction of a card, never a window
+    let moved = x(&r, stayed) - before;
+    assert!(moved.abs() < pitch / 2.0, "a card that stayed in the window jumped {moved} px in the landing tick");
+    assert!((x(&r, focused) - x(&r, stayed) - 3.0 * pitch).abs() < 0.5, "the focused card is three cards on from it");
+    // riding the trailing edge as any step of the walk does, the scroll one key behind it
+    assert!(x(&r, focused) > crate::consts::SCR_W / 2.0 && x(&r, focused) < crate::consts::SCR_W + pitch,
+        "and still at the trailing edge: {}", x(&r, focused));
+    assert_eq!(lifted(&r), 2, "the card focus left lets go while the new one grows");
+    assert!(Section::scale_of(&r.sect, &r.cx(), &r.src, 100 + 21).unwrap() > 1.01, "the let-go followed its card");
+    r.run(240);
+    assert_eq!(lifted(&r), 1);
+}
+#[test]
+fn shelf_slide_after_a_move_in_one_tick_keeps_the_row_in_place() {
+    a_slide_under_a_moving_focus_keeps_the_row_in_place(true);
+}
+#[test]
+fn shelf_slide_before_a_move_in_one_tick_keeps_the_row_in_place() {
+    a_slide_under_a_moving_focus_keeps_the_row_in_place(false);
+}
+
+/// The requirement under every landing rule: focus never moves under the user, whatever the order
+/// of the events and however far the cards moved. `insert` cards arrive before the focused one
+/// (a whole number of rows for a grid) between the same two ticks as the engine hands focus on, by
+/// every cause that can: a key, the pointer, a restore, a reconcile naming another card, a
+/// reconcile naming the same card again. A card that stayed must stay where it is drawn, and the
+/// focused one must end on the screen. `far` is more than any search distance a section once had.
+fn a_shift_under_a_focus_change_keeps_the_view_in_place<S: Section>(n: usize, insert_rows: usize) {
+    let cols = S::columns().unwrap_or(1);
+    let at = if cols > 1 { 2 * cols + 1 } else { 20 };
+    let insert = insert_rows * cols;
+    let causes = [(By::Dir, false), (By::Pointer, false), (By::Restore, false), (By::Reconcile, false), (By::Reconcile, true)];
+    for (by, same) in causes {
+        for move_first in [true, false] {
+            let mut r = settled::<S>(n);
+            r.land_focus(100 + at as u32, By::Restore);
+            r.run(240);
+            let stayed = 100 + at as u32 - 1;
+            let target = if same { 100 + at as u32 } else { 100 + at as u32 + 1 };
+            let before = r.sect.place(&r.cx(), &r.src, stayed, At::Drawn).unwrap().rect;
+            let slide = |r: &mut Rig<S>| {
+                for k in 0..insert {
+                    r.src.elems.insert(0, 900 + k as u32);
+                }
+            };
+            if move_first {
+                r.land_focus(target, by);
+                slide(&mut r);
+            } else {
+                slide(&mut r);
+                r.land_focus(target, by);
+            }
+            let why = format!("{by:?} same={same} move_first={move_first} insert={insert}");
+            r.run(1);
+            // an owner that scrolls a page around the section (the external grid) hears of it
+            assert_eq!(r.sect.landed(), Some(super::Landed { from: at, to: at + insert }), "{why}: the landing is reported");
+            let now = r.sect.place(&r.cx(), &r.src, stayed, At::Drawn).unwrap().rect;
+            assert!((now.x - before.x).abs() < 100.0 && (now.y - before.y).abs() < 100.0,
+                "{why}: a card that stayed jumped from {before:?} to {now:?} in the landing tick");
+            // the pop followed the cards too: a key lets the card it left go while the new one
+            // grows; a restore or reconcile adopts its card whole and nothing else is lifted
+            let scale = |r: &Rig<S>, e: u32| r.sect.scale_of(&r.cx(), &r.src, e).unwrap();
+            // (cells past the shelf's spring array share one spring: no let-go to follow there)
+            let own_cells = cols > 1 || at + insert + 1 < crate::card_row::MAX_ROW_ITEMS;
+            if matches!(by, By::Dir | By::Pointer) && own_cells {
+                assert!(scale(&r, 100 + at as u32) > 1.01, "{why}: the let-go followed its card");
+                assert!(scale(&r, target) > 1.0 && scale(&r, target) < S::focus_scale() - 0.005, "{why}: the new card grows from rest");
+                assert_eq!(r.src.elems.iter().filter(|&&e| scale(&r, e) > 1.0005).count(), 2, "{why}: only those two");
+            } else if !matches!(by, By::Dir | By::Pointer) {
+                assert_eq!(lifted(&r), 1, "{why}: one card is lifted");
+                assert!((scale(&r, target) - S::focus_scale()).abs() < 0.002, "{why}: the adopted card is whole");
+            }
+            r.run(240);
+            let on = r.sect.place(&r.cx(), &r.src, target, At::Drawn).unwrap().rect;
+            assert!(on.cx() > 0.0 && on.cx() < crate::consts::SCR_W && on.cy() > 0.0 && on.cy() < crate::consts::SCR_H,
+                "{why}: the focused card ended off screen at {on:?}");
+            assert_eq!(lifted(&r), 1, "{why}: one card is lifted once everything settles");
+        }
+    }
+}
+#[test]
+fn shelf_keeps_its_view_when_cards_arrive_under_any_focus_change() {
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<Shelf>(40, 12);
+}
+#[test]
+fn shelf_carries_its_let_go_when_cards_arrive_under_a_key() {
+    // two cards in: the focused pair stays inside the shelf's spring array
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<Shelf>(40, 2);
+}
+#[test]
+fn shelf_keeps_its_view_when_cards_arrive_far_under_any_focus_change() {
+    // 150 cards before it: farther than the search distance the first fix gave up at
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<Shelf>(400, 150);
+}
+#[test]
+fn grid_keeps_its_view_when_cards_arrive_under_any_focus_change() {
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<Grid>(120, 3);
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<Grid>(900, 30);
+}
+#[test]
+fn external_grid_keeps_its_view_when_cards_arrive_under_any_focus_change() {
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<ExtGrid>(120, 3);
+    a_shift_under_a_focus_change_keeps_the_view_in_place::<ExtGrid>(900, 30);
+}
+
 /// The farthest a `n`-card HOME shelf can scroll.
 fn home_max_scroll(n: usize) -> f32 {
     let sty = &RowStyle::HOME;
@@ -924,6 +1071,251 @@ fn shelf_wants_more_at_the_tail() {
 #[test]
 fn grid_wants_more_at_the_tail() {
     want_events::<Grid>();
+}
+
+/// The `Want`s a grid reports over `frames` frames at 60 Hz, each with the second it came at.
+fn grid_asks(r: &mut Rig<Grid>, frames: u32) -> Vec<(f32, std::ops::Range<usize>)> {
+    let mut asks = Vec::new();
+    for _ in 0..frames {
+        r.ms += MS;
+        if let (Some(CardEvent::Want(range)), _) = r.feed(ScreenEvent::Tick(Tick { ms: r.ms, dt_us: 16_667 })) {
+            asks.push((r.ms as f32 / 1000.0, range));
+        }
+    }
+    asks
+}
+
+fn gaps(asks: &[(f32, std::ops::Range<usize>)]) -> Vec<f32> {
+    asks.windows(2).map(|w| w[1].0 - w[0].0).collect()
+}
+
+#[test]
+fn a_grid_repeats_an_unanswered_tail_ask_on_the_capped_ladder() {
+    let mut r = settled::<Grid>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Dir);
+    grid_asks(&mut r, 60 * 3); // the scroll settling moves the look-ahead, each a new ask
+    r.src.epoch += 1; // a landing that grew nothing: the next ask is fresh
+    let asks = grid_asks(&mut r, 60 * 150);
+    assert!(asks.len() >= 8, "the ask keeps being repeated with no key: {asks:?}");
+    let g = gaps(&asks);
+    assert!(g.windows(2).take(5).all(|w| w[1] > w[0] * 1.8), "the interval climbs: {g:?}");
+    assert!(g.iter().all(|g| *g < 30.2), "and never passes the 30 s cap: {g:?}");
+    assert!((g[g.len() - 1] - 30.0).abs() < 0.1, "the cap repeats while the user stays: {g:?}");
+    // a landing starts it over, at once
+    r.src.elems.extend(200..230);
+    r.land_focus(229, By::Dir);
+    assert!(!grid_asks(&mut r, 2).is_empty(), "a longer listing is asked at once");
+    // nothing more: it stops
+    r.src.more = false;
+    assert!(grid_asks(&mut r, 60 * 40).is_empty(), "no more cards, no ask");
+}
+
+#[test]
+fn a_grid_repeats_the_ask_for_an_unloaded_card_in_view_until_it_loads() {
+    let mut r = settled::<Grid>(300);
+    r.src.unloaded = 6..12; // a page that failed or was evicted, inside the visible rows
+    let asks = grid_asks(&mut r, 60 * 20);
+    assert!(asks.len() >= 5, "the hole is asked for again and again: {asks:?}");
+    assert!(asks.iter().all(|(_, a)| a.start == 6 && a.end > 6), "the ask names the hole: {asks:?}");
+    assert!(gaps(&asks).iter().all(|g| *g < 30.2));
+    r.src.unloaded = 0..0; // it landed
+    assert!(grid_asks(&mut r, 60 * 40).is_empty(), "loaded, the asking stops");
+    // a hole out of sight is nobody's business until it is scrolled to
+    r.src.unloaded = 250..260;
+    assert!(grid_asks(&mut r, 60 * 20).is_empty(), "off screen, nothing is asked");
+}
+
+#[test]
+fn a_grid_asks_for_the_unloaded_card_a_failed_page_scrolled_back_into_view_left() {
+    let mut r = settled::<Grid>(300);
+    r.src.unloaded = 100..160;
+    r.land_focus(200, By::Dir);
+    let asks = grid_asks(&mut r, 60 * 3);
+    assert!(!asks.is_empty() && asks.iter().all(|(_, a)| a.start >= 96), "focus on the hole asks for it: {asks:?}");
+    r.land_focus(399, By::Dir);
+    r.src.unloaded = 0..0;
+    assert!(grid_asks(&mut r, 60 * 10).is_empty(), "elsewhere and loaded, quiet");
+}
+
+// ---- the page edges (Home's paging rule, lifted) ---------------------------------------------
+
+/// One frame of an owner's loop for its row: the tick, then `page_ask` on what the tick asked for.
+fn page_frame(r: &mut Rig<Shelf>, offset: usize, active: bool) -> Option<PageEdge> {
+    r.ms += MS;
+    let (want, _) = r.feed(ScreenEvent::Tick(Tick { ms: r.ms, dt_us: 16_667 }));
+    let cx = cx9_pressed(&r.view, r.ms, r.press, r.focus, r.pressed.or(r.focus));
+    r.sect.page_ask(&cx, &r.src, matches!(want, Some(CardEvent::Want(_))), offset, active)
+}
+
+#[test]
+fn page_ask_asks_once_per_window_at_the_trailing_edge() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Dir);
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After), "the first tick near the tail asks");
+    assert_eq!(page_frame(&mut r, 0, true), None, "the same window is asked once");
+    r.sect.reset_page_requests();
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After), "a reset (focus left the row) asks again");
+}
+
+/// What the owner calls each frame before `page_ask`: the edge whose ask to withdraw.
+fn cancel_frame(r: &mut Rig<Shelf>, offset: usize, active: bool) -> Option<PageEdge> {
+    let cx = cx9_pressed(&r.view, r.ms, r.press, r.focus, r.pressed.or(r.focus));
+    r.sect.page_cancel(&cx, &r.src, offset, active)
+}
+
+#[test]
+fn page_cancel_withdraws_an_ask_once_focus_has_left_its_edge() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    assert_eq!(cancel_frame(&mut r, 0, true), None, "nothing was asked");
+    r.land_focus(129, By::Dir);
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After));
+    r.land_focus(124, By::Dir);
+    assert_eq!(cancel_frame(&mut r, 0, true), None, "still inside the zone: the ask stands");
+    r.land_focus(123, By::Dir);
+    assert_eq!(cancel_frame(&mut r, 0, true), Some(PageEdge::After), "the first card out of the zone withdraws it");
+    assert_eq!(cancel_frame(&mut r, 0, true), None, "once");
+    r.land_focus(129, By::Dir);
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After), "and the edge asks again on return");
+}
+
+#[test]
+fn page_cancel_withdraws_the_leading_ask_and_one_for_a_row_no_longer_shown() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(102, By::Dir);
+    assert_eq!(page_frame(&mut r, 24, true), Some(PageEdge::Before));
+    r.land_focus(106, By::Dir);
+    assert_eq!(cancel_frame(&mut r, 24, true), Some(PageEdge::Before));
+    assert_eq!(page_frame(&mut r, 24, true), None);
+    r.land_focus(102, By::Dir);
+    assert_eq!(page_frame(&mut r, 24, true), Some(PageEdge::Before));
+    assert_eq!(cancel_frame(&mut r, 24, false), Some(PageEdge::Before), "the owner stopped showing the row");
+}
+
+#[test]
+fn page_ask_is_silent_in_the_middle_of_the_row() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(110, By::Dir);
+    for _ in 0..5 {
+        assert_eq!(page_frame(&mut r, 24, true), None, "neither edge is near at card 10");
+    }
+}
+
+#[test]
+fn page_ask_asks_the_leading_edge_only_when_the_source_has_cards_before() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(102, By::Dir);
+    assert_eq!(page_frame(&mut r, 0, true), None, "nothing before the window: no leading ask");
+    assert_eq!(page_frame(&mut r, 24, true), Some(PageEdge::Before), "cards before: ask once");
+    assert_eq!(page_frame(&mut r, 24, true), None, "the same leading window is asked once");
+    r.land_focus(112, By::Dir);
+    assert_eq!(page_frame(&mut r, 24, true), None, "leaving the edge admits a new request");
+    r.land_focus(102, By::Dir);
+    assert_eq!(page_frame(&mut r, 24, true), Some(PageEdge::Before), "returning to the edge asks again");
+}
+
+#[test]
+fn page_ask_asks_nothing_while_the_row_is_not_shown() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Dir);
+    assert_eq!(page_frame(&mut r, 0, false), None, "an inactive row asks for no page");
+}
+
+#[test]
+fn page_ask_yields_at_most_one_edge_a_frame() {
+    // ten cards, focus on the sixth: near both edges. The leading ask wins, and the trailing one is
+    // held while the row shows cards before it (Home's rule: `before` suppresses the forward ask).
+    let mut r = settled::<Shelf>(10);
+    r.src.more = true;
+    r.land_focus(105, By::Dir);
+    assert_eq!(page_frame(&mut r, 24, true), Some(PageEdge::Before));
+    // one more card lands: the tail now wants a page too, and the leading latch still holds the frame
+    r.src.elems.push(110);
+    assert_eq!(page_frame(&mut r, 24, true), None, "the trailing ask waits behind the leading one");
+}
+
+/// Seconds between the repeats of an ask that nothing answered, frame by frame at 60 Hz.
+fn repeat_gaps(r: &mut Rig<Shelf>, offset: usize, frames: usize) -> Vec<f32> {
+    let (mut gaps, mut since) = (Vec::new(), r.ms);
+    for _ in 0..frames {
+        if page_frame(r, offset, true).is_some() {
+            gaps.push((r.ms - since) as f32 / 1000.0);
+            since = r.ms;
+        }
+    }
+    gaps
+}
+
+#[test]
+fn an_unanswered_trailing_ask_is_repeated_on_a_ladder_that_caps_while_focus_stands_there() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Dir);
+    // the scroll settling moves the look-ahead `end`, which is a new ask each time: let it settle
+    repeat_gaps(&mut r, 0, 180);
+    r.sect.reset_page_requests();
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After));
+    // two minutes standing at the edge, no key, nothing landing
+    let gaps = repeat_gaps(&mut r, 0, 120 * 60);
+    assert!(gaps.len() >= 8, "the ask keeps being repeated: {gaps:?}");
+    assert!((gaps[0] - 0.25).abs() < 0.05, "the first repeat is quick: {gaps:?}");
+    assert!(gaps.windows(2).take(6).all(|w| w[1] > w[0] * 1.8), "the interval climbs a rung each time: {gaps:?}");
+    assert!(gaps.iter().all(|g| *g < 30.2), "and never passes the 30 s cap: {gaps:?}");
+    assert!((gaps[gaps.len() - 1] - 30.0).abs() < 0.1, "the cap repeats for as long as the user stays: {gaps:?}");
+    // leaving the zone withdraws it and ends the repeats
+    r.land_focus(110, By::Dir);
+    assert_eq!(cancel_frame(&mut r, 0, true), Some(PageEdge::After));
+    assert!(repeat_gaps(&mut r, 0, 60 * 40).is_empty(), "no repeats once focus has left the edge");
+}
+
+#[test]
+fn an_unanswered_leading_ask_is_repeated_and_a_fresh_window_starts_the_ladder_over() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(102, By::Dir);
+    assert_eq!(page_frame(&mut r, 24, true), Some(PageEdge::Before));
+    let gaps = repeat_gaps(&mut r, 24, 60 * 10);
+    assert!(gaps.len() >= 4 && (gaps[0] - 0.25).abs() < 0.05, "{gaps:?}");
+    // a landing that moves the window (another offset) is a new ask, quick again
+    assert_eq!(page_frame(&mut r, 12, true), Some(PageEdge::Before));
+    let gaps = repeat_gaps(&mut r, 12, 60);
+    assert!((gaps[0] - 0.25).abs() < 0.05, "a new window starts at the first rung: {gaps:?}");
+}
+
+#[test]
+fn no_repeat_is_sent_when_the_source_has_nothing_more_there() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Dir);
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After));
+    r.src.more = false;
+    assert!(repeat_gaps(&mut r, 0, 60 * 60).is_empty(), "the end of the listing ends the asking");
+}
+
+#[test]
+fn a_landing_that_changed_nothing_the_shelf_sees_restarts_the_ladder_and_is_asked_at_once() {
+    let mut r = settled::<Shelf>(30);
+    r.src.more = true;
+    r.land_focus(129, By::Dir);
+    repeat_gaps(&mut r, 0, 180);
+    r.sect.reset_page_requests();
+    assert_eq!(page_frame(&mut r, 0, true), Some(PageEdge::After));
+    // the ask goes unanswered long enough to climb the ladder to 4 s
+    let climbed = repeat_gaps(&mut r, 0, 60 * 9);
+    assert!(climbed.len() >= 4 && climbed[climbed.len() - 1] >= 3.9, "{climbed:?}");
+    // a landing: same len, same more, only the store's count moved
+    r.src.epoch += 1;
+    let mut frames = 0;
+    while page_frame(&mut r, 0, true).is_none() { frames += 1; assert!(frames < 3, "asked at once, not after a rung"); }
+    // and the ladder starts over: the repeat after it is the first rung
+    let gaps = repeat_gaps(&mut r, 0, 60 * 3);
+    assert!((gaps[0] - 0.25).abs() < 0.05, "{gaps:?}");
 }
 
 // ---- idle ------------------------------------------------------------------------------------
@@ -2459,4 +2851,21 @@ fn shelf_header_press_dips_no_unindexed_member() {
 #[test]
 fn grid_header_press_dips_no_unindexed_member() {
     a_header_press_dips_no_unindexed_member::<Grid>();
+}
+
+/// The focus read-out of a shelf that holds a slid window names the card by its place in the
+/// whole listing (`cdg`), not by its slot in the window (`cdi`): the two were the same number
+/// on every shelf once, and a reach graded on it could never pass the window length.
+#[cfg(feature = "devtriggers")]
+#[test]
+fn a_shelfs_probe_reports_the_listing_position_apart_from_the_window_slot() {
+    crate::card_probe::arm_for_test();
+    let mut src = Cards::new((100..112).collect(), true);
+    for (first, want) in [(0, 11), (12, 23)] {
+        src.first = first;
+        crate::card_probe::clear();
+        super::shelf::note_focused(Painter::root(), Rect::new(10.0, 20.0, 200.0, 300.0), 11, &src);
+        let seen = crate::card_probe::peek().expect("the focused card was noted");
+        assert_eq!((seen.index, seen.len, seen.global), (11, 12, want), "window starting at {first}");
+    }
 }

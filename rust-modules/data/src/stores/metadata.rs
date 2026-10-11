@@ -72,6 +72,11 @@
 //!   copy) are not covered.
 //! - `LoadSeason(usize)` → `metadata::load_season` — flip the season strip optimistically, fetch
 //!   the episodes off-thread (debounced landing through `pump_season`).
+//! - `WantEpisodes{lo, hi, focus, restore}` → `metadata::want_episodes` — fetch the pages of a long
+//!   season the screen needs and evict the ones it does not (`pump_episode_pages` installs them).
+//! - `WantRelated{before, seen}` → `metadata::want_related` — slide the Related row's tail window
+//!   (`pump_related`, at the start of the frame, installs it).
+//! - `SeekRelated{at, seen}` → `metadata::ask_related` with `RelatedAsk::Seek` — the same read, opened at a tail position.
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
 //! - `SetWatchedLocal{sid, rk, on}` → `metadata::set_watched_local` — the optimistic half of a
 //!   view-state write, answers whether it actually changed anything.
@@ -183,6 +188,28 @@ pub enum MetadataCmd {
     Reset,
     /// The season strip: flip optimistically, fetch the episodes off-thread.
     LoadSeason(usize),
+    /// The selected season's episodes the screen needs, as indices `lo..hi` (what is on screen plus
+    /// a lead in the direction of travel), with the focused index and the target of a pending
+    /// restore. Pages of that range that have not landed are fetched; once pages land, the rows of
+    /// pages outside it are evicted, except the focus's and the restore target's. Idempotent: say
+    /// it again to retry a failed page.
+    WantEpisodes { lo: usize, hi: usize, focus: Option<usize>, restore: Option<usize> },
+    /// The Related row's tail window moves one step: `before` to the previous, else to the next.
+    /// Ignored while a read of it is out or the window has nothing more that way; the shelf says
+    /// it again at its next edge. `seen` is the `(offset, end)` of the tail window in the view the
+    /// ask was computed from: a frame captures its views before its landings are delivered, so
+    /// the ask can come from a window the store has since slid, and such an ask is refused (the
+    /// landing's publication re-arms the shelf, which asks again from the window that stands).
+    WantRelated { before: bool, seen: (usize, usize) },
+    /// Open the Related row's tail window where tail position `at` lies, replacing the window the
+    /// page holds: a page read afresh (a Back from a card opened deep in the row) names the
+    /// position its focus was last seen at. `seen` is the window the ask was computed from, and is
+    /// refused the same way a `WantRelated`'s is; so is an ask while a read is out.
+    SeekRelated { at: usize, seen: (usize, usize) },
+    /// Withdraw the read `WantRelated` started: focus left the edge it was asked from, and a window
+    /// sliding in now would take the card it stands on out of the row. A read already out is
+    /// discarded when it lands, and one landed but not yet installed is dropped.
+    CancelRelated,
     SetNowPlaying(Option<crate::metadata::NowPlaying>),
     /// The optimistic half of a view-state write on the loaded item, its episodes and Related.
     SetWatchedLocal { sid: ServerId, rk: String, on: bool },
@@ -303,9 +330,10 @@ impl MetadataStore {
     pub fn pump(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
         let detail = self.pump_detail_with_gate(gate);
         let season = self.pump_season_with_gate(gate);
+        let related = self.pump_related();
         let alt = crate::metadata::pump_alt_sources_with_gate(&mut self.state, &self.adapter, gate);
         if alt { self.bump(); }
-        detail || season || alt
+        detail || season || related || alt
     }
 
     /// The async detail landing alone — `app/run.rs`'s own call site, pumped before season.
@@ -323,6 +351,21 @@ impl MetadataStore {
     /// The async season landing alone — `app/run.rs`'s own call site, pumped after detail.
     pub fn pump_season_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
         let changed = crate::metadata::pump_season_with_gate(&mut self.state, &self.adapter, gate);
+        let pages = crate::metadata::pump_episode_pages(&mut self.state, &self.adapter);
+        let changed = changed || pages;
+        if changed { self.bump(); }
+        changed
+    }
+
+    /// Install a Related window that landed. **Pumped at the START of the frame, not beside the
+    /// two above**: those run between the frame's step and its draw, so what they install is drawn
+    /// one frame before its notice reaches the page. A Related landing slides a window of cards
+    /// under a focus the Detail page holds by key and resolves to a slot through projections it
+    /// rebuilds on that notice; drawn a frame early, the focused slot showed the card twelve
+    /// places on. Installed before the notices are taken, the page hears of the window in the
+    /// frame that first draws it.
+    pub fn pump_related(&mut self) -> bool {
+        let changed = crate::metadata::pump_related_pages(&mut self.state, &self.adapter);
         if changed { self.bump(); }
         changed
     }

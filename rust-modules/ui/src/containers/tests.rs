@@ -2339,3 +2339,42 @@ fn held_page_image_is_none_while_the_page_draws_live() {
     d.draw(&mut rig, true);
     assert_eq!(d.held_page_image(), None);
 }
+
+/// Depth has no cap, what an entry far below holds does: past `DEEP` levels under the top an entry
+/// keeps its route and its focus key, and its group cursors are gone. Popping back to it reseats
+/// the same control.
+#[test]
+fn an_entry_far_below_the_top_keeps_only_its_route_and_focus_and_returns_seated() {
+    use super::stack::DEEP;
+    let (mut d, mut rig, _) = booted();
+    rig.store.view.items.resize(6, 0);
+    d.store_changed(plx_machine::machine::StoreOrd(0), 1);
+    d.frame(&mut rig, tick(1), vec![], vec![], &mut NoTap);
+    let home = d.nav.top_page().unwrap().id;
+    d.set_focus_in(Some(FocusKey { entry: home, elem: 2 }), Some(plx_machine::machine::GroupId(71)));
+    d.set_focus_in(Some(FocusKey { entry: home, elem: 5 }), Some(plx_machine::machine::GroupId(1)));
+    assert!(!d.return_state().remembered.is_empty());
+    let mut ms = 16;
+    for n in 0..40u32 {
+        d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(300 + n)));
+        let r = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        d.prune(&r.unmounted);
+        ms += 16;
+    }
+    let depth = d.nav.tabs.stack.depth();
+    assert!(depth > DEEP + 1, "the stack is deeper than the shed line");
+    let kept = d.nav.entry(home).unwrap();
+    assert!(kept.ret.remembered.is_empty(), "group cursors are shed below DEEP");
+    assert_eq!(kept.ret.focus, Some(FocusKey { entry: home, elem: 5 }), "the focus key stays");
+    let mut guard = 0;
+    while d.nav.tabs.stack.depth() > 1 {
+        let r = d.frame(&mut rig, tick(ms), vec![key(Key::Back, tick(ms))], vec![], &mut NoTap);
+        d.prune(&r.unmounted);
+        ms += 16;
+        guard += 1;
+        assert!(guard < 200, "BACK stopped popping");
+    }
+    let e = d.nav.top_page().unwrap();
+    assert_eq!(e.id, home);
+    assert_eq!(e.ret.focus, Some(FocusKey { entry: home, elem: 5 }));
+}

@@ -312,6 +312,11 @@ impl CardRow {
         }
         self.scroll_x.pos += dx;
     }
+    /// The cell recorded as focused is now `i`: the element it held was moved there by a landing
+    /// the caller has already carried, in a tick that also moves focus on from it.
+    pub(crate) fn refocus(&mut self, i: usize) {
+        self.focus = i as i32;
+    }
     /// Cell `i`'s own pop spring; `None` for a cell past the array (those share one spring).
     pub(crate) fn cell_spring(&self, i: usize) -> Option<Spring> {
         self.scale.get(i).copied()
@@ -1399,6 +1404,11 @@ fn draw_label_block(
     // ([`anchor_label`]).
     let want = title_w_val.map_or(0.0, |w| lead + w).max(caption_w);
     let at = place_label_wide(p, rect, sty, title_run.max(caption_w.min(full)), want, label.settle_lag);
+    #[cfg(feature = "devtriggers")]
+    {
+        let placed = p.to_screen(Rect::new(at.x, 0.0, at.w, 1.0)).0;
+        crate::card_probe::caption(placed.x, placed.w);
+    }
 
     // Which lines of the block do not fit it? They glide together on ONE clock and ONE cycle (the
     // longest's); when none does, the clock is released so an overflowing block focused again

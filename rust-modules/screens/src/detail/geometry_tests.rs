@@ -79,7 +79,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         keys: Vec::new(),
         next_elem: FIRST_ITEM_ELEM,
         key_by_local: Default::default(),
-        local_by_key: Default::default(),
+        local_by_key: Default::default(), prev_by_key: Default::default(),
         gone: Default::default(),
         return_pending: false,
         pending_season: None,
@@ -106,8 +106,8 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         scroll_target: 0.0,
         episode_scroll: Spring::at(0.0),
         tab_scroll: Spring::at(0.0),
-        episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
-        episode_text_lift: [plx_ui::text_lift::TextLift::new(); EP_SCALE_MAX],
+        episode_cells: episodes::Cells::new(),
+            ep_want: Default::default(),
         about_card_lift: plx_ui::text_lift::TextLift::new(),
         about_lang_lift: plx_ui::text_lift::TextLift::new(),
         related: plx_ui::cards::Shelf::new(EntryId(8), &plx_ui::cards::RowStyle::HOME),
@@ -205,10 +205,11 @@ fn populated_detail_geometry_uses_recorded_metrics() {
         ..Default::default()
     }];
     d.summary = "A synopsis with enough separate words to wrap into several measured lines. ".repeat(30);
-    for ep in &mut d.episodes {
-        ep.title = "A measured episode with a longer title".into();
-        ep.summary = "Episode prose must also use the supplied metrics. ".repeat(8);
-    }
+    d.episodes = d.episodes.iter_loaded().map(|(_, ep)| plx_data::metadata::Episode {
+        title: "A measured episode with a longer title".into(),
+        summary: "Episode prose must also use the supplied metrics. ".repeat(8),
+        ..ep.clone()
+    }).collect();
     let _serial = install(d);
     plx_ui::rec::assert_measured_geometry(|measure| {
         let mut s = bare(sid, "show");

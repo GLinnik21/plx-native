@@ -32,7 +32,7 @@ use plx_machine::machine::StoreOrd;
 pub use plx_plex::plex::retry::{EndpointRefresh, EndpointRefreshSet};
 pub use plx_plex::plex::retry::EndpointRefreshHost as StoreEffectHost;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[must_use]
 pub struct StoreOutcome {
     pub changed: bool,
@@ -44,12 +44,16 @@ impl StoreOutcome {
 }
 
 pub mod browse;
+pub mod fanout;
 mod content_arg;
 pub use content_arg::ContentArg;
 pub mod hubs;
 pub mod metadata;
 pub mod person;
 pub mod collection;
+pub(crate) mod deck;
+pub mod page_cache;
+pub mod paging;
 pub mod search;
 pub mod subsearch;
 pub mod tape;
@@ -472,6 +476,12 @@ impl<M> Fetch<M> {
     /// Is the claim held? A spawn's first gate.
     pub fn busy(&self) -> bool {
         self.in_flight.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Is a worker out, or an answer waiting to be taken? What a pump that visits only the
+    /// fetches that can have news asks of the ones it has no other reason to look at.
+    pub fn outstanding(&self) -> bool {
+        self.busy() || self.lock().is_some()
     }
 
     /// Claim the fetch for generation `gen`, on the way into a spawn. `gen` is the owner's

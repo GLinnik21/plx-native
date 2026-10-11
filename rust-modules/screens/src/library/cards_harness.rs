@@ -131,6 +131,21 @@ impl Harness {
 
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: ENTRY, elem } }
 
+    /// Publish `rks` as the cards and deliver the store-changed event: the way a refetch lands.
+    fn republish(&mut self) -> Result<(), &'static str> {
+        match self.set {
+            Set::Grid => self.listing = listing_of(&self.rks),
+            // The hub shelf's items are republished the way a refetch would land them.
+            Set::Shelf => {
+                let stores = self._stores.as_ref().ok_or("the shelf set has no store")?;
+                stores.browse.borrow_mut().seed_first_shelf_items_for_test(0, &self.rks);
+                self.hubs = stores.capture_browse(&mut self.directory).section_hubs;
+            }
+        }
+        self.step(ScreenEvent::StoreChanged(plx_data::stores::StoreId::Browse.ord(), 1));
+        Ok(())
+    }
+
     fn cell(&self, elem: u32) -> Option<(usize, usize)> {
         match self.set {
             Set::Grid => self.screen.pair.detail.index_of(elem).map(|i| (0, i)),
@@ -143,7 +158,7 @@ impl Harness {
 impl CardHarness for Harness {
     fn cards(&self) -> Vec<u32> {
         match self.set {
-            Set::Grid => self.screen.pair.detail.elems.clone(),
+            Set::Grid => (0..self.screen.pair.detail.total()).filter_map(|i| self.screen.pair.detail.elem_at(i)).collect(),
             Set::Shelf => self.screen.shelves.first().map(|s| s.elems.clone()).unwrap_or_default(),
         }
     }
@@ -230,20 +245,15 @@ impl CardHarness for Harness {
             Landing::InsertAbove => self.rks.insert(0, "landed".into()),
             Landing::RemoveFocused => { self.rks.remove(at); }
         }
-        match self.set {
-            Set::Grid => self.listing = listing_of(&self.rks),
-            // The hub shelf's items are republished the way a refetch would land them.
-            Set::Shelf => {
-                let stores = self._stores.as_ref().ok_or("the shelf set has no store")?;
-                stores.browse.borrow_mut().seed_first_shelf_items_for_test(0, &self.rks);
-                self.hubs = stores.capture_browse(&mut self.directory).section_hubs;
-            }
-        }
-        self.step(ScreenEvent::StoreChanged(plx_data::stores::StoreId::Browse.ord(), 1));
+        self.republish()?;
         let want = self.focus.unwrap();
         let now = Focusable::<LibHost>::reconcile(&self.screen, want, &self.cx());
         if now != want { self.focus(now.elem, By::Reconcile); }
         Ok(())
+    }
+    fn shift(&mut self, by: usize) -> Result<(), &'static str> {
+        for k in 0..by { self.rks.insert(0, format!("arrived{k}")); }
+        self.republish()
     }
     fn memory_roundtrip(&mut self) -> Result<Box<dyn CardHarness>, &'static str> {
         let PageMemory::Library(mem) = Screen::<LibHost>::memory_at(&self.screen, self.focus) else {

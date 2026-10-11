@@ -158,6 +158,548 @@
       "comment": "Frames while server pages land under MOVING focus (#567): Home's Recently Added Movies row holds a 24-card window and fetches the next 12 when focus nears the end. Run it with `./tests/run.py --fps --mock --filter home-recent-paging` (starts tests/mock_pms.py --movies 300 itself, no Plex account, mock only). `plxnative-grid` seats row 0 (Continue Watching), so the row walk presses Down `row_down` (1) time to reach Recently Added Movies, then Right 96 times at 0.33 s (96 / 12 = 8 page landings expected), rests 4 s, and Left 96 times back. Keys are only ever down/right/left, never ok or back. The result prints the window's heartbeat fps median/min, frame_gt33, the worst frame, p99 and the number of page landings (`hubs: landed` lines) in the window; frame_gt33 is NOT graded yet. The scene FAILS with `paging did not happen` when the forward half saw fewer than 6 landings (min_page_landings). loop_floor and fps_floor are BORROWED from home-grid-deep, not measured for this scene. run_secs covers the walk (tests hold it to walk_secs_needed)."
     },
     {
+      "name": "home-recent-paging-held",
+      "tier": "ui",
+      "route": "home",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-grid": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 300,
+        "only": true
+      },
+      "walk": {
+        "row_down": 1,
+        "cards": 96,
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "min_page_landings": 6
+      },
+      "comment": "home-recent-paging with the Right key HELD instead of pressed once per card: the same row walk, mock, triggers and grading, but Right is pressed every 125 ms (key_gap_s 0.125, the cadence library-hold uses for its held scroll) instead of every 330 ms. The walk harness (tests/mock_fps.py KeyWalk) can only send discrete presses; it does not model key auto-repeat, and burst walks (walk.burst) carry only down/up, so a held Right is approximated by a continuous press cadence. 96 Rights at 125 ms cross eight 12-card page boundaries in about 12 s, so the pages must land while focus is already moving. Run it with `./tests/run.py --fps --mock --filter home-recent-paging-held` (starts tests/mock_pms.py --movies 300 itself, no Plex account, mock only). Keys are only ever down/right/left, never ok or back. frame_gt33, the worst frame and p99 are printed and NOT graded. No loop_floor or fps_floor is declared: the scene is not graded yet (the convention library-burst and library-hold follow), so the run grades only the walk's key count, the paging check (min_page_landings) and the generic guard of at least 5 post-warmup loop samples. run_secs covers the walk's worst case (about 66 s by walk_secs_needed)."
+    },
+    {
+      "name": "home-recent-paging-held-3g",
+      "tier": "ui",
+      "route": "home",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-grid": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 300,
+        "only": true,
+        "link": [
+          "3g"
+        ]
+      },
+      "walk": {
+        "row_down": 1,
+        "cards": 96,
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "min_page_landings": 6
+      },
+      "comment": "home-recent-paging-held against a 3G link (200 ms + 50 ms jitter, 780 kbit/s): tests/mock_pms.py --movies 300 --link 3g, started by --mock. The same held-Right row walk, grading and guards as the unconditioned scene; the page landings arrive while focus is moving, which the unconditioned loopback mock never does and which put the focused card on the wrong edge. Run it with `tools/tv-lock.sh with --why \"fps paging link\" -- ./tests/run.py --fps --mock --filter home-recent-paging-held-3g` on a `make ARM_PROFILE=release deploy` build (guest boot, synthetic mock, panel and sound off, per the profile-tv skill). frame_gt33, the worst frame and p99 are printed, NOT graded. The host counterpart, with focus/slot/reach assertions, is `python3 tests/paging_link.py`. NOT yet run on a device."
+    },
+    {
+      "name": "home-recent-paging-held-remote-wan",
+      "tier": "ui",
+      "route": "home",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-grid": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 300,
+        "only": true,
+        "link": [
+          "remote-wan"
+        ]
+      },
+      "walk": {
+        "row_down": 1,
+        "cards": 96,
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "min_page_landings": 6
+      },
+      "comment": "home-recent-paging-held against a far server (250 ms + 120 ms jitter, 4 Mbit/s): tests/mock_pms.py --movies 300 --link remote-wan, started by --mock. The same held-Right row walk, grading and guards as the unconditioned scene; the page landings arrive while focus is moving, which the unconditioned loopback mock never does and which put the focused card on the wrong edge. Run it with `tools/tv-lock.sh with --why \"fps paging link\" -- ./tests/run.py --fps --mock --filter home-recent-paging-held-remote-wan` on a `make ARM_PROFILE=release deploy` build (guest boot, synthetic mock, panel and sound off, per the profile-tv skill). frame_gt33, the worst frame and p99 are printed, NOT graded. The host counterpart, with focus/slot/reach assertions, is `python3 tests/paging_link.py`. NOT yet run on a device."
+    },
+    {
+      "name": "library-grid-paging-held-3g",
+      "tier": "ui",
+      "route": "library",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-library": "0",
+        "plxnative-focus": true,
+        "plxnative-focusx": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 1000,
+        "only": true,
+        "link": [
+          "3g"
+        ]
+      },
+      "walk": {
+        "row_down": 3,
+        "cards": 60,
+        "key": "down",
+        "back": "up",
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "reach": {
+          "route": "library",
+          "region": "grid",
+          "min_global": 120
+        }
+      },
+      "comment": "home-recent-paging-held's walk over the Library's poster grid (6 columns, a row-band window over the 1000-movie section listing, pages of 60); Down is held, one row per press, three Downs seat the grid from the first shelf, against a 3G link (200 ms + 50 ms jitter, 780 kbit/s): tests/mock_pms.py --link 3g, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 120 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter library-grid-paging-held-3g` under the TV lock, after `make ARM_PROFILE=release deploy`."
+    },
+    {
+      "name": "library-grid-paging-held-remote-wan",
+      "tier": "ui",
+      "route": "library",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-library": "0",
+        "plxnative-focus": true,
+        "plxnative-focusx": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 1000,
+        "only": true,
+        "link": [
+          "remote-wan"
+        ]
+      },
+      "walk": {
+        "row_down": 3,
+        "cards": 60,
+        "key": "down",
+        "back": "up",
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "reach": {
+          "route": "library",
+          "region": "grid",
+          "min_global": 120
+        }
+      },
+      "comment": "home-recent-paging-held's walk over the Library's poster grid (6 columns, a row-band window over the 1000-movie section listing, pages of 60); Down is held, one row per press, three Downs seat the grid from the first shelf, against a far server (250 ms + 120 ms jitter, 4 Mbit/s): tests/mock_pms.py --link remote-wan, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 120 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter library-grid-paging-held-remote-wan` under the TV lock, after `make ARM_PROFILE=release deploy`."
+    },
+    {
+      "name": "library-shelf-paging-held-3g",
+      "tier": "ui",
+      "route": "library",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-library": "0",
+        "plxnative-focus": true,
+        "plxnative-focusx": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 300,
+        "section_hubs": 3,
+        "only": true,
+        "link": [
+          "3g"
+        ]
+      },
+      "walk": {
+        "row_down": 2,
+        "cards": 96,
+        "key": "right",
+        "back": "left",
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "reach": {
+          "route": "library",
+          "region": "shelf",
+          "min_global": 48
+        }
+      },
+      "comment": "home-recent-paging-held's walk over a pageable Library section shelf (`--section-hubs 3`: the third shelf, whose hub key serves the 300-movie listing; the Recently Added shelf above it is the head of its listing and does not page), against a 3G link (200 ms + 50 ms jitter, 780 kbit/s): tests/mock_pms.py --link 3g, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 48 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter library-shelf-paging-held-3g` under the TV lock, after `make ARM_PROFILE=release deploy`."
+    },
+    {
+      "name": "library-shelf-paging-held-remote-wan",
+      "tier": "ui",
+      "route": "library",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-library": "0",
+        "plxnative-focus": true,
+        "plxnative-focusx": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 300,
+        "section_hubs": 3,
+        "only": true,
+        "link": [
+          "remote-wan"
+        ]
+      },
+      "walk": {
+        "row_down": 2,
+        "cards": 96,
+        "key": "right",
+        "back": "left",
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "reach": {
+          "route": "library",
+          "region": "shelf",
+          "min_global": 48
+        }
+      },
+      "comment": "home-recent-paging-held's walk over a pageable Library section shelf (`--section-hubs 3`: the third shelf, whose hub key serves the 300-movie listing; the Recently Added shelf above it is the head of its listing and does not page), against a far server (250 ms + 120 ms jitter, 4 Mbit/s): tests/mock_pms.py --link remote-wan, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 48 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter library-shelf-paging-held-remote-wan` under the TV lock, after `make ARM_PROFILE=release deploy`."
+    },
+    {
+      "name": "search-row-paging-held-3g",
+      "tier": "ui",
+      "route": "search",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-search": "sf",
+        "plxnative-focus": true,
+        "plxnative-focusx": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 1000,
+        "only": true,
+        "link": [
+          "3g"
+        ]
+      },
+      "walk": {
+        "row_down": 1,
+        "cards": 96,
+        "key": "right",
+        "back": "left",
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "reach": {
+          "route": "search",
+          "min_global": 48
+        }
+      },
+      "comment": "home-recent-paging-held's walk over the Movies result row of the query `sf` (a 12-card preview, then the typed listing, 76 matches), against a 3G link (200 ms + 50 ms jitter, 780 kbit/s): tests/mock_pms.py --link 3g, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 48 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter search-row-paging-held-3g` under the TV lock, after `make ARM_PROFILE=release deploy`."
+    },
+    {
+      "name": "search-row-paging-held-remote-wan",
+      "tier": "ui",
+      "route": "search",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "triggers": {
+        "plxnative-search": "sf",
+        "plxnative-focus": true,
+        "plxnative-focusx": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "movies": 1000,
+        "only": true,
+        "link": [
+          "remote-wan"
+        ]
+      },
+      "walk": {
+        "row_down": 1,
+        "cards": 96,
+        "key": "right",
+        "back": "left",
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "reach": {
+          "route": "search",
+          "min_global": 48
+        }
+      },
+      "comment": "home-recent-paging-held's walk over the Movies result row of the query `sf` (a 12-card preview, then the typed listing, 76 matches), against a far server (250 ms + 120 ms jitter, 4 Mbit/s): tests/mock_pms.py --link remote-wan, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 48 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter search-row-paging-held-remote-wan` under the TV lock, after `make ARM_PROFILE=release deploy`."
+    },
+    {
+      "name": "related-row-paging-held-3g",
+      "tier": "ui",
+      "route": "detail",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "item": "movie_with_related",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-detailsec": "2",
+        "plxnative-focus": true,
+        "plxnative-focusx": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "rk": 1001,
+        "movies": 300,
+        "only": true,
+        "link": [
+          "3g"
+        ]
+      },
+      "walk": {
+        "row_down": 0,
+        "cards": 96,
+        "key": "right",
+        "back": "left",
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "reach": {
+          "route": "detail",
+          "min_global": 40
+        }
+      },
+      "comment": "home-recent-paging-held's walk over a movie's related row (a head of 8, then the tail from `/library/metadata/1001/similar`), against a 3G link (200 ms + 50 ms jitter, 780 kbit/s): tests/mock_pms.py --link 3g, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 40 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter related-row-paging-held-3g` under the TV lock, after `make ARM_PROFILE=release deploy`."
+    },
+    {
+      "name": "related-row-paging-held-remote-wan",
+      "tier": "ui",
+      "route": "detail",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "item": "movie_with_related",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-detailsec": "2",
+        "plxnative-focus": true,
+        "plxnative-focusx": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "rk": 1001,
+        "movies": 300,
+        "only": true,
+        "link": [
+          "remote-wan"
+        ]
+      },
+      "walk": {
+        "row_down": 0,
+        "cards": 96,
+        "key": "right",
+        "back": "left",
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "reach": {
+          "route": "detail",
+          "min_global": 40
+        }
+      },
+      "comment": "home-recent-paging-held's walk over a movie's related row (a head of 8, then the tail from `/library/metadata/1001/similar`), against a far server (250 ms + 120 ms jitter, 4 Mbit/s): tests/mock_pms.py --link remote-wan, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 40 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter related-row-paging-held-remote-wan` under the TV lock, after `make ARM_PROFILE=release deploy`."
+    },
+    {
+      "name": "collection-paging-held-3g",
+      "tier": "ui",
+      "route": "collection",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "item": "collection",
+      "triggers": {
+        "plxnative-collection": "$rk",
+        "plxnative-focus": true,
+        "plxnative-focusx": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "rk": 50002,
+        "movies": 1000,
+        "only": true,
+        "link": [
+          "3g"
+        ]
+      },
+      "walk": {
+        "row_down": 1,
+        "cards": 20,
+        "key": "down",
+        "back": "up",
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "reach": {
+          "route": "collection",
+          "min_global": 60
+        }
+      },
+      "comment": "home-recent-paging-held's walk over a collection page of about 127 members (a 6-column Grid over a paged listing); Down is held, one row per press, against a 3G link (200 ms + 50 ms jitter, 780 kbit/s): tests/mock_pms.py --link 3g, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 60 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter collection-paging-held-3g` under the TV lock, after `make ARM_PROFILE=release deploy`."
+    },
+    {
+      "name": "collection-paging-held-remote-wan",
+      "tier": "ui",
+      "route": "collection",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "item": "collection",
+      "triggers": {
+        "plxnative-collection": "$rk",
+        "plxnative-focus": true,
+        "plxnative-focusx": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "rk": 50002,
+        "movies": 1000,
+        "only": true,
+        "link": [
+          "remote-wan"
+        ]
+      },
+      "walk": {
+        "row_down": 1,
+        "cards": 20,
+        "key": "down",
+        "back": "up",
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "reach": {
+          "route": "collection",
+          "min_global": 60
+        }
+      },
+      "comment": "home-recent-paging-held's walk over a collection page of about 127 members (a 6-column Grid over a paged listing); Down is held, one row per press, against a far server (250 ms + 120 ms jitter, 4 Mbit/s): tests/mock_pms.py --link remote-wan, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 60 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter collection-paging-held-remote-wan` under the TV lock, after `make ARM_PROFILE=release deploy`."
+    },
+    {
+      "name": "long-season-paging-held-3g",
+      "tier": "ui",
+      "route": "detail",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "item": "show_long_season",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-focus": true,
+        "plxnative-focusx": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "rk": 2001,
+        "movies": 10,
+        "shows": 2,
+        "seasons": 2,
+        "episodes": 150,
+        "only": true,
+        "link": [
+          "3g"
+        ]
+      },
+      "walk": {
+        "row_down": 2,
+        "cards": 100,
+        "key": "right",
+        "back": "left",
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "reach": {
+          "route": "detail",
+          "min_global": 70
+        }
+      },
+      "comment": "home-recent-paging-held's walk over the episode strip of a 150-episode season (pages of 60), against a 3G link (200 ms + 50 ms jitter, 780 kbit/s): tests/mock_pms.py --link 3g, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 70 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter long-season-paging-held-3g` under the TV lock, after `make ARM_PROFILE=release deploy`."
+    },
+    {
+      "name": "long-season-paging-held-remote-wan",
+      "tier": "ui",
+      "route": "detail",
+      "run_secs": 70,
+      "warmup_s": 5,
+      "item": "show_long_season",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-focus": true,
+        "plxnative-focusx": true,
+        "plxnative-framedrop": 25
+      },
+      "mock": {
+        "rk": 2001,
+        "movies": 10,
+        "shows": 2,
+        "seasons": 2,
+        "episodes": 150,
+        "only": true,
+        "link": [
+          "remote-wan"
+        ]
+      },
+      "walk": {
+        "row_down": 2,
+        "cards": 100,
+        "key": "right",
+        "back": "left",
+        "key_gap_s": 0.125,
+        "land_wait_s": 15,
+        "settle_s": 3,
+        "rest_s": 4,
+        "tail_s": 5,
+        "reach": {
+          "route": "detail",
+          "min_global": 70
+        }
+      },
+      "comment": "home-recent-paging-held's walk over the episode strip of a 150-episode season (pages of 60), against a far server (250 ms + 120 ms jitter, 4 Mbit/s): tests/mock_pms.py --link remote-wan, started by --mock. A held key (125 ms) is pressed through the list's window slides while pages arrive late, and `plxnative-focusx` logs the focused card's source index (`cdg`) and drawn rect: the scene FAILS when the card never reaches item 70 (the list never paged), and reports the frames the focused card was drawn partly off the 1920-wide canvas. The host counterpart is `tests/paging_link.py`. Not run on a television yet; run it with `./tests/run.py --fps --mock --filter long-season-paging-held-remote-wan` under the TV lock, after `make ARM_PROFILE=release deploy`."
+    },
+    {
       "name": "library-shelves-deep",
       "tier": "ui",
       "route": "library",

@@ -167,6 +167,10 @@ impl Host for AppHost {
     // screen bundle; current focus and group cursors remain the input engine's state.
     type Memory = PageMemory;
 
+    fn shed_memory(memory: &mut PageMemory, focus: Option<u32>) {
+        memory.shed_to_identity(focus);
+    }
+
     fn app_fx_needs_return(fx: &AppFx) -> bool {
         !matches!(fx, AppFx::Store(..) | AppFx::StoreWork(_)
             | AppFx::Library(LibraryReq::PublishShelves { .. }))
@@ -301,6 +305,8 @@ impl ConsentMachine {
 
 /// What the bridge lends the dispatcher, and what it collects for the loop.
 pub(crate) struct Bridge {
+    /// Endpoint refreshes a store step had no room to emit (`EndpointRefreshSet::emit`).
+    endpoint_carry: plx_data::stores::EndpointRefreshSet,
     session_cache_generation: u64,
     home_io: Option<super::bootstrap::HomeIo>,
     recorded_clients: std::collections::BTreeMap<u32, &'static plx_plex::plex::Client>,
@@ -531,6 +537,7 @@ impl Bridge {
         reads: StorePublications, stores: plx_data::stores::Stores) -> Self {
         Self {
             session_cache_generation: plx_plex::plex::session::visible_generation(),
+            endpoint_carry: Default::default(),
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
             initial_subhash: 0,
@@ -1343,53 +1350,8 @@ impl Bridge {
     }
 }
 
-impl Rig<AppHost> for Bridge {
-    fn draw_chrome(&mut self, arg: &AppArg, _parts: &CxParts<u32>,
-        nav: plx_ui::screen::NavPresentation,
-        glass: Option<&mut plx_ui::frame::glass::GlassPlan>) {
-        if !Self::draws_chrome_for(arg) { return; }
-        let Some(glass) = glass else { return };
-        let p = plx_ui::Painter::root().alpha(nav.chrome_alpha);
-        let chrome = self.chrome.read(self.strip.chip_expand_pos());
-        self.strip.draw(chrome.labels, p, glass.tab_band_mut());
-        plx_ui::widgets::profile_chip_with(
-            p,
-            chrome.profile,
-            chrome.chip_expand,
-            glass.tab_face(),
-        );
-    }
-    /// See [`plx_ui::dispatch::Rig::scrim_chrome_read`] — the account menu's chip lift borrows
-    /// the SAME captured profile, labels and unfurl [`Bridge::draw_chrome`] used. The dispatcher
-    /// adds this frame's material from `GlassPlan`; neither value crosses through a static.
-    fn scrim_chrome_read(&self) -> Option<plx_ui::widgets::ChromeRead<'_>> {
-        Some(self.chrome.read(self.strip.chip_expand_pos()))
-    }
-    fn page_alpha(&self) -> f32 { plx_ui::nav::page_alpha() }
-    fn navigation_presentation(&self) -> plx_ui::screen::NavPresentation {
-        plx_ui::screen::NavPresentation {
-            page_alpha: plx_ui::nav::page_alpha(),
-            chrome_alpha: plx_ui::nav::chrome_alpha(),
-            view_tab: u32::try_from(plx_ui::nav::view_tab(-1)).ok(),
-            blur_amount: plx_ui::nav::blur_amount(),
-        }
-    }
-    fn surface_scope(&mut self) -> Option<plx_ui::popover::host::Live> {
-        Some(plx_ui::popover::host::live())
-    }
-    fn split(&mut self) -> Split<'_, AppHost> {
-        Split {
-            mounter: &mut self.mounter,
-            views: AppViews { auth: self.session.read(),
-                hubs: self.hubs.view(),
-                listing: self.listing.view(),
-                directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
-            },
-            measure: &self.measure,
-        }
-    }
-    fn deliver(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
+impl Bridge {
+    fn deliver_inner(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
         if let AppMsg::Consent(command) = msg {
             if to != MachineId::Consent { return Handled::No; }
             match command {
@@ -1446,8 +1408,8 @@ impl Rig<AppHost> for Bridge {
             match msg {
                 AppMsg::Store(StoreCmd::Hubs(cmd)) => {
                     let directory = self.directory.view();
-                    io.hubs_with_directory(&mut self.stores.hubs, Some(cmd.clone()), 0.0, directory)
-                        .endpoints.emit(fx);
+                    let due = io.hubs_with_directory(&mut self.stores.hubs, Some(cmd.clone()), 0.0, directory).endpoints;
+                    self.endpoint_carry.merge(due);
                     return Handled::Yes;
                 }
                 AppMsg::Store(StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Discovery(result))) => {
@@ -1461,13 +1423,13 @@ impl Rig<AppHost> for Bridge {
                     if outcome.changed {
                         self.stores.browse.borrow_mut().capture_directory(&mut self.directory);
                     }
-                    endpoints.emit(fx);
+                    self.endpoint_carry.merge(endpoints);
                     return Handled::Yes;
                 }
                 AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs) => {
                     let directory = self.directory.view();
-                    io.hubs_with_directory(&mut self.stores.hubs, None, parts.tick.dt(), directory)
-                        .endpoints.emit(fx);
+                    let due = io.hubs_with_directory(&mut self.stores.hubs, None, parts.tick.dt(), directory).endpoints;
+                    self.endpoint_carry.merge(due);
                     return Handled::Yes;
                 }
                 AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
@@ -1511,29 +1473,31 @@ impl Rig<AppHost> for Bridge {
             }
             AppMsg::Store(StoreCmd::Hubs(c)) => {
                 let directory = self.directory.view();
-                self.stores.hubs.run_with_directory(c.clone(), directory)
-                    .endpoints.emit(fx);
+                let due = self.stores.hubs.run_with_directory(c.clone(), directory).endpoints;
+                self.endpoint_carry.merge(due);
                 Handled::Yes
             }
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
             AppMsg::HubsResult(result) => {
                 let directory = self.directory.view();
-                self.stores.hubs.land_with_directory(result, directory)
-                    .endpoints.emit(fx);
+                let due = self.stores.hubs.land_with_directory(result, directory).endpoints;
+                self.endpoint_carry.merge(due);
                 Handled::Yes
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs) => {
                 let directory = self.directory.view();
-                self.stores.hubs.tick_with_directory(parts.tick.dt(), directory)
-                    .endpoints.emit(fx);
+                let due = self.stores.hubs.tick_with_directory(parts.tick.dt(), directory).endpoints;
+                self.endpoint_carry.merge(due);
                 Handled::Yes
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
-                self.stores.browse.borrow_mut().discover_pump_with_gate(&self.stores.landgate).endpoints.emit(fx);
+                let due = self.stores.browse.borrow_mut().discover_pump_with_gate(&self.stores.landgate).endpoints;
+                self.endpoint_carry.merge(due);
                 Handled::Yes
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Browse) => {
-                self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate).endpoints.emit(fx);
+                let due = self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate).endpoints;
+                self.endpoint_carry.merge(due);
                 Handled::Yes
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Search { dt_us }) => {
@@ -1547,6 +1511,65 @@ impl Rig<AppHost> for Bridge {
             _ => Handled::No,
         }
     }
+}
+
+impl Rig<AppHost> for Bridge {
+    fn draw_chrome(&mut self, arg: &AppArg, _parts: &CxParts<u32>,
+        nav: plx_ui::screen::NavPresentation,
+        glass: Option<&mut plx_ui::frame::glass::GlassPlan>) {
+        if !Self::draws_chrome_for(arg) { return; }
+        let Some(glass) = glass else { return };
+        let p = plx_ui::Painter::root().alpha(nav.chrome_alpha);
+        let chrome = self.chrome.read(self.strip.chip_expand_pos());
+        self.strip.draw(chrome.labels, p, glass.tab_band_mut());
+        plx_ui::widgets::profile_chip_with(
+            p,
+            chrome.profile,
+            chrome.chip_expand,
+            glass.tab_face(),
+        );
+    }
+    /// See [`plx_ui::dispatch::Rig::scrim_chrome_read`] — the account menu's chip lift borrows
+    /// the SAME captured profile, labels and unfurl [`Bridge::draw_chrome`] used. The dispatcher
+    /// adds this frame's material from `GlassPlan`; neither value crosses through a static.
+    fn scrim_chrome_read(&self) -> Option<plx_ui::widgets::ChromeRead<'_>> {
+        Some(self.chrome.read(self.strip.chip_expand_pos()))
+    }
+    fn page_alpha(&self) -> f32 { plx_ui::nav::page_alpha() }
+    fn navigation_presentation(&self) -> plx_ui::screen::NavPresentation {
+        plx_ui::screen::NavPresentation {
+            page_alpha: plx_ui::nav::page_alpha(),
+            chrome_alpha: plx_ui::nav::chrome_alpha(),
+            view_tab: u32::try_from(plx_ui::nav::view_tab(-1)).ok(),
+            blur_amount: plx_ui::nav::blur_amount(),
+        }
+    }
+    fn surface_scope(&mut self) -> Option<plx_ui::popover::host::Live> {
+        Some(plx_ui::popover::host::live())
+    }
+    fn split(&mut self) -> Split<'_, AppHost> {
+        Split {
+            mounter: &mut self.mounter,
+            views: AppViews { auth: self.session.read(),
+                hubs: self.hubs.view(),
+                listing: self.listing.view(),
+                directory: self.directory.view(),
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
+            },
+            measure: &self.measure,
+        }
+    }
+    fn deliver(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
+        let handled = self.deliver_inner(to, msg, parts, fx);
+        // A store step queues the endpoint refreshes it owes; they leave here, as many as the step
+        // has room for, and the rest wait for the next store step (the sixteen-server table is gone,
+        // so a roster can owe more than one step may emit).
+        if matches!(to, MachineId::Store(_)) && !self.endpoint_carry.is_empty() {
+            self.endpoint_carry = std::mem::take(&mut self.endpoint_carry).emit(fx);
+        }
+        handled
+    }
+
     fn timer(&mut self, _owner: MachineId, _id: TimerId, _parts: &CxParts<u32>, _fx: &mut Effects<'_, AppHost>) {}
     fn app_return(&mut self, _from: MachineId, ret: ReturnState<u32, PageMemory>) {
         self.effect_return = ret;
@@ -1922,6 +1945,9 @@ fn frame_ingest(
         let outcome = rig.stores.browse_discover_pump();
         execute_endpoint_outcomes(d, outcome.endpoints);
     }
+    // A Related window that landed is installed here, ahead of the notices below, so the Detail
+    // page is told of it in the frame that first draws it (`MetadataStore::pump_related`).
+    rig.stores.metadata.pump_related();
     let (browse_changed, hubs_changed, search_changed) = rig.capture_views(d);
     rig.capture_chrome(d);
     rig.deliver_home_commands(d);
@@ -2038,7 +2064,37 @@ pub(crate) fn content_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             out.push('-');
         }
     }
+    #[cfg(feature = "devtriggers")]
+    push_card_probe(&mut out);
     out
+}
+
+/// `plxnative-focusx` for every card section (`plx_ui::card_probe`): the focused card of the frame
+/// just drawn, on whichever page drew it. `cdk` is the ratingKey inside the card's artwork path
+/// (`push_rk`'s filter, so a path or a token cannot reach the log), `cdx`/`cdy`/`cdw` its drawn
+/// screen rect, `cdi`/`cdn` its slot in the run of cards the section holds (a shelf's source, a grid's painted
+/// window) and that run's length, `cdg` its index in the section's source,
+/// `cda` whether its texture was resident, `cdc`/`cdcw` its caption's left edge and width, `cdr`
+/// how many posters so far went back to their placeholder while on screen and `cdb` how many cards
+/// came back on screen without a texture they once had (running totals over every card drawn).
+/// Off by default, so the fingerprint grammar the replay recordings pin does not change.
+#[cfg(feature = "devtriggers")]
+fn push_card_probe(out: &mut String) {
+    use std::fmt::Write;
+    if !plx_ui::card_probe::armed() { return; }
+    let Some(c) = plx_ui::card_probe::peek() else { return };
+    let rk = ["/library/metadata/", "/library/collections/"].iter()
+        .find_map(|root| c.key.strip_prefix(root))
+        .and_then(|rest| rest.split('/').next())
+        .filter(|rk| rk.bytes().all(|b| b.is_ascii_digit()))
+        .unwrap_or("");
+    let _ = write!(out, " cdx={} cdy={} cdw={} cdi={} cdn={} cdg={} cda={} cdr={} cdb={} cdk=", c.x.round() as i64,
+        c.y.round() as i64, c.w.round() as i64, c.index, c.len, c.global,
+        c.ready.map_or(-1, i64::from), plx_ui::card_probe::regressions(), plx_ui::card_probe::returned_bare());
+    crate::focusprobe::push_rk(out, rk);
+    if let Some((x, w)) = c.caption {
+        let _ = write!(out, " cdc={} cdcw={}", x.round() as i64, w.round() as i64);
+    }
 }
 
 fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
@@ -2103,6 +2159,17 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let mut out = format!(" snapt={} snapp={} hf={hf} row={row} col={col}", grid as u8,
             (!<plx_screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home)) as u8);
         crate::focusprobe::push_item(&mut out, if grid { home.focused_item::<AppHost>(focus, &cx) } else { home.hero_item::<AppHost>(&cx) });
+        // `plxnative-focusx`: where the focused card is DRAWN, in whole canvas pixels. It moves
+        // every frame a row scrolls, so an armed run logs a line per frame: that is the point.
+        // `tests/paging_link.py` reads a row that jumps under the focus (the trailing-edge to
+        // leading-edge teleport a window slide once caused) from it. Off by default, so the
+        // fingerprint grammar the replay recordings pin does not change.
+        #[cfg(feature = "devtriggers")]
+        if plx_base::devtrig::flag("focusx") {
+            let at = At::Drawn;
+            let _ = write!(out, " fx={}", home.focused_rect::<AppHost>(focus, &cx, at)
+                .map_or(-99999, |r| r.x.round() as i64));
+        }
         return out;
     }
     if matches!(page.arg, AppArg::Library) {
@@ -2158,13 +2225,20 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     let mut out = String::new();
     match &page.arg {
         AppArg::Content(ContentArg::Detail { sid, rk }) => {
+            // The probe's `col=` is the card's index in the Related row; a restore names a card of
+            // the tail window by its listing position instead (`Spot::tail_col`).
+            let listed = cx.views.metadata.current();
+            let col_of = |spot: &plx_data::metadata::Spot| spot.tail_position().zip(listed)
+                .and_then(|(at, d)| d.related_tail.positions.iter().position(|&p| p == at).map(|k| (d.related_tail.head + k) as i32))
+                .unwrap_or(spot.col);
             let mut sp = match instance.screen.memory_at(focus) {
                 PageMemory::Detail(s) => s.spot, _ => Default::default(),
             };
+            sp.col = col_of(&sp);
             for (_, elem) in d.return_state().remembered {
                 if let PageMemory::Detail(saved) = instance.screen.memory_at(Some(FocusKey { entry: owner, elem })) {
                     let saved = saved.spot;
-                    if let Some(col) = sp.saved_col.get_mut(saved.section.max(0) as usize) { *col = saved.col; }
+                    if let Some(col) = sp.saved_col.get_mut(saved.section.max(0) as usize) { *col = col_of(&saved); }
                 }
             }
             let _ = write!(out, " sec={} col={} eptext={}", sp.section, sp.col, sp.ep_text as u8);
@@ -3557,6 +3631,10 @@ mod search_owned_tests;
 #[cfg(test)]
 #[path = "detail_panel_tests.rs"]
 mod detail_panel_tests;
+
+#[cfg(test)]
+#[path = "detail_related_landing_tests.rs"]
+mod detail_related_landing_tests;
 
 #[cfg(test)]
 #[path = "surface_navigation_tests.rs"]

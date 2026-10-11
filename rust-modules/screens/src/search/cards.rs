@@ -17,6 +17,10 @@ pub struct RowCards<'a> {
     pub(super) elems: &'a [u32],
     pub(super) items: &'a [Item],
     pub(super) sources: &'a [ScopeSource],
+    /// Where these cards sit in the row's hits ([`plx_data::search::Window`]).
+    pub(super) window: plx_data::search::Window,
+    /// The row's committed slides ([`plx_data::search::Shelf::epoch`]).
+    pub(super) epoch: u32,
 }
 
 impl RowCards<'_> {
@@ -29,6 +33,7 @@ impl RowCards<'_> {
 
 impl<H: SearchLike> CardSource<H> for RowCards<'_> {
     fn len(&self) -> usize { self.elems.len().min(self.items.len()) }
+    fn global(&self, i: usize) -> usize { self.window.start + i }
     fn elem(&self, i: usize) -> u32 { self.elems[i] }
     fn index_of(&self, e: &u32) -> Option<usize> {
         self.elems.iter().position(|elem| elem == e).filter(|&i| i < self.items.len())
@@ -48,6 +53,8 @@ impl<H: SearchLike> CardSource<H> for RowCards<'_> {
             _ => None,
         }
     }
+    fn more(&self) -> bool { self.window.after }
+    fn page_epoch(&self) -> u32 { self.epoch }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         if let (Kind::Episode, Some(Item::Media(media))) = (self.kind, self.items.get(i)) {
             plx_ui::widgets::still_overlay(p, &tile_facts::of(media), tile.rect, tile.radius, false, measure);

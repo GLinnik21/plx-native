@@ -744,7 +744,7 @@ mod tests {
 
     #[test]
     fn a_count_sits_under_its_own_kind_when_an_earlier_kind_found_nothing() {
-        let shelf = |kind, n| plx_data::search::Shelf {
+        let shelf = |kind, n| plx_data::search::Shelf { epoch: 0, window: Default::default(),
             kind,
             items: (0..n).map(|_| Item::Media(Default::default())).collect(),
         };

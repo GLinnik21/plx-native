@@ -57,7 +57,7 @@ fn movie(rk: &str) -> Item {
 
 /// A shelf of `n` synthetic items, addressed so two shelves never share a result identity.
 fn shelf(kind: Kind, tag: &str, n: usize) -> Shelf {
-    Shelf { kind, items: (0..n).map(|i| movie(&format!("{tag}-{i}"))).collect() }
+    Shelf { epoch: 0, window: Default::default(), kind, items: (0..n).map(|i| movie(&format!("{tag}-{i}"))).collect() }
 }
 
 struct Fixture {
@@ -822,8 +822,8 @@ fn shared_shelf(fixture: &mut Fixture) -> [plx_plex::plex::ServerId; 3] {
     let item = |sid| Item::Media(plx_data::pms::PmsMovie { sid, rk: format!("annotated-{sid:?}"),
         title: "Synthetic result".into(), ..Default::default() });
     fixture.query("annotated").shelves(vec![
-        Shelf { kind: Kind::Movie, items: vec![item(own), item(a), item(b)] },
-        Shelf { kind: Kind::Show, items: vec![item(own)] }]);
+        Shelf { epoch: 0, window: Default::default(), kind: Kind::Movie, items: vec![item(own), item(a), item(b)] },
+        Shelf { epoch: 0, window: Default::default(), kind: Kind::Show, items: vec![item(own)] }]);
     let handles: Vec<&str> = fixture.search.view().scope().sources().iter()
         .map(|source| source.handle.as_str()).collect();
     assert_eq!(handles, ["", "friend", "other"], "the fixture's own roster projection");
@@ -1333,7 +1333,7 @@ fn the_hold_hint_does_not_stand_on_a_collection_hit() {
             kind: plx_data::pms::KIND_COLLECTION, ..Default::default() },
         tag: i,
     })).collect();
-    fixture.query("hint").shelves(vec![Shelf { kind: Kind::Collection, items: hits }]);
+    fixture.query("hint").shelves(vec![Shelf { epoch: 0, window: Default::default(), kind: Kind::Collection, items: hits }]);
     let mut screen = fixture.screen();
     let card = Some(screen.key(screen.rows[0].elems[1]));
     deliver(&mut screen, &fixture, card, ScreenEvent::FocusMoved { from: None, to: card.unwrap(), by: By::Dir });
@@ -1377,4 +1377,217 @@ fn the_hold_hint_stands_on_a_resting_result_card_once_per_run() {
     assert!(!screen.stack.hint_visible(), "a menu taking focus hides it");
     rest(&mut screen, card, 4.0);
     assert!(!screen.stack.hint_visible(), "and not a second time on Search this run");
+}
+
+/// A row whose window has hits past it asks for the next window once focus nears its trailing
+/// edge, and when the window then slides the focused card is still the same element.
+#[test]
+fn a_row_with_hits_past_its_window_asks_for_the_next_one_and_keeps_the_focused_card_as_it_slides() {
+    let _serial = plx_base::testlock::serial();
+    let window = |start, before, after| plx_data::search::Window { start, before, after };
+    let mut fixture = Fixture::new();
+    let mut first = shelf(Kind::Movie, "m", 24);
+    first.window = window(0, false, true);
+    fixture.query("slide").shelves(vec![first]);
+    let mut screen = fixture.screen();
+    let pages = |out: &[Stamped<HostFixture>]| out.iter().filter(|e| matches!(&e.fx, Fx::App(AppFx::Store(
+        StoreId::Search, StoreCmd::Search(SearchCmd::Page { kind: Kind::Movie, before: false, .. }))))).count();
+    // mid-row: nothing is asked
+    let mid = screen.key(screen.rows[0].elems[3]);
+    deliver(&mut screen, &fixture, Some(mid), ScreenEvent::FocusMoved { from: None, to: mid, by: By::Dir });
+    let asked: usize = (100..160).map(|at| pages(&deliver(&mut screen, &fixture, Some(mid), ScreenEvent::Tick(tick(at))).1)).sum();
+    assert_eq!(asked, 0, "far from the trailing edge");
+    // near the edge: asked, once
+    let focus = screen.key(screen.rows[0].elems[22]);
+    deliver(&mut screen, &fixture, Some(focus), ScreenEvent::FocusMoved { from: Some(mid), to: focus, by: By::Dir });
+    let asked: usize = (200..210).map(|at| pages(&deliver(&mut screen, &fixture, Some(focus), ScreenEvent::Tick(tick(at))).1)).sum();
+    assert_eq!(asked, 1, "the trailing edge asks once, and repeats only when the ladder says so");
+    // the store slides half a window on: the focused card is the same element, seated earlier
+    let mut next = Shelf { epoch: 1, window: window(12, true, true), kind: Kind::Movie,
+        items: (12..36).map(|i| movie(&format!("m-{i}"))).collect() };
+    next.window.after = false;
+    fixture.shelves(vec![next]);
+    deliver(&mut screen, &fixture, Some(focus), ScreenEvent::Tick(tick(400)));
+    assert_eq!(screen.rows[0].elems.get(10).copied(), Some(focus.elem), "m-22 keeps its identity at its new place");
+    assert_eq!(screen.rows[0].elems.len(), 24);
+}
+
+/// The shelf repeats an ask nobody answered, and the page passes the repeat on to the store (which
+/// takes an identical ask idempotently): an ask the store refused for a reason that passes is
+/// taken by a later one. A slide that committed and left the window as the page saw it still
+/// answers the ask: the next goes out at once, without waiting out a rung.
+#[test]
+fn a_search_row_repeats_an_unanswered_ask_and_asks_again_at_once_after_a_landing() {
+    let _serial = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    let mut first = shelf(Kind::Movie, "m", 24);
+    first.window = plx_data::search::Window { start: 0, before: false, after: true };
+    fixture.query("slide").shelves(vec![first.clone()]);
+    let mut screen = fixture.screen();
+    let pages = |out: &[Stamped<HostFixture>]| out.iter().filter(|e| matches!(&e.fx, Fx::App(AppFx::Store(
+        StoreId::Search, StoreCmd::Search(SearchCmd::Page { kind: Kind::Movie, before: false, .. }))))).count();
+    let mid = screen.key(screen.rows[0].elems[3]);
+    deliver(&mut screen, &fixture, Some(mid), ScreenEvent::FocusMoved { from: None, to: mid, by: By::Dir });
+    let focus = screen.key(screen.rows[0].elems[22]);
+    deliver(&mut screen, &fixture, Some(focus), ScreenEvent::FocusMoved { from: Some(mid), to: focus, by: By::Dir });
+    let ask = |screen: &mut SearchScreen, fixture: &Fixture, from: u32, to: u32|
+        (from..to).map(|at| pages(&deliver(screen, fixture, Some(focus), ScreenEvent::Tick(tick(at))).1)).sum::<usize>();
+    assert_eq!(ask(&mut screen, &fixture, 200, 210), 1, "asked once, then the first rung is not yet due");
+    assert!(ask(&mut screen, &fixture, 210, 300) >= 2, "an ask nobody answered goes out again on the ladder");
+    // a slide committed that left the window where the page saw it: only the epoch moved
+    first.epoch = 1;
+    fixture.shelves(vec![first]);
+    assert_eq!(ask(&mut screen, &fixture, 300, 302), 1, "answered: the next ask goes out at once");
+}
+
+/// The slide a row asked for is withdrawn once focus has left the trailing edge's zone, so the
+/// sources answering afterwards cannot commit a window that takes the focused card out of the row.
+#[test]
+fn a_row_withdraws_its_slide_when_focus_walks_back_from_the_edge() {
+    let _serial = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    let mut first = shelf(Kind::Movie, "m", 24);
+    first.window = plx_data::search::Window { start: 0, before: false, after: true };
+    fixture.query("slide").shelves(vec![first]);
+    let mut screen = fixture.screen();
+    let count = |out: &[Stamped<HostFixture>], cancel: bool| out.iter().filter(|e| match &e.fx {
+        Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(SearchCmd::PageCancel { kind: Kind::Movie, .. }))) => cancel,
+        Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(SearchCmd::Page { kind: Kind::Movie, .. }))) => !cancel,
+        _ => false,
+    }).count();
+    let mut at = 100;
+    let mut walk = |screen: &mut SearchScreen, col: usize, from: Option<FocusKey<u32>>| {
+        let focus = screen.key(screen.rows[0].elems[col]);
+        deliver(screen, &fixture, Some(focus), ScreenEvent::FocusMoved { from, to: focus, by: By::Dir });
+        let mut totals = (0, 0);
+        for _ in 0..4 {
+            at += 1;
+            let out = deliver(screen, &fixture, Some(focus), ScreenEvent::Tick(tick(at))).1;
+            totals = (totals.0 + count(&out, false), totals.1 + count(&out, true));
+        }
+        (focus, totals)
+    };
+    let (edge, totals) = walk(&mut screen, 22, None);
+    assert_eq!(totals, (1, 0), "asked once at the edge");
+    let (inside, totals) = walk(&mut screen, 18, Some(edge));
+    assert_eq!(totals.1, 0, "the zone still holds focus: nothing is withdrawn");
+    let (_, totals) = walk(&mut screen, 17, Some(inside));
+    assert_eq!(totals, (0, 1), "the first card out of the zone withdraws the slide");
+}
+
+/// The invariant behind "focus never moves under the user" on a Search row, driven over the real
+/// screen and focus engine and a stand-in store that applies the commands it is sent the way the
+/// search store does: a `Page` ask is refused when it names a window the store has since replaced
+/// (`seen`, the start and the cards held) or one is already out; it lands after a random delay,
+/// filling the twelve-card preview to a window where it stands and after that sliding the 24-card
+/// window twelve places; a `PageCancel` drops the one out. Random walks of presses (runs, bursts,
+/// reversals, 100 ms repeats) meet random landing delays (one frame to five seconds), and the
+/// frame a landing arrives in is stepped on the view captured before it. On EVERY frame the
+/// focused card changes only by a press and by exactly one place and is inside the window the
+/// store holds. A held key then reaches the last hit and walks back to the first.
+#[test]
+fn no_landing_on_a_search_row_ever_moves_the_card_under_the_focus() {
+    let _serial = plx_base::testlock::serial();
+    const TOTAL: usize = 24 + 12 * 8;
+    let publication = |lo: usize, held: usize| Shelf {
+        epoch: 0,
+        window: plx_data::search::Window { start: lo, before: lo > 0, after: lo + held < TOTAL },
+        kind: Kind::Movie,
+        items: (lo..lo + held).map(|i| movie(&format!("m-{i}"))).collect(),
+    };
+    for seed in 1..=8u64 {
+        let mut rng = plx_ui::fixture::Walk(seed);
+        let mut fixture = Fixture::new();
+        // what the store holds: the preview, before any page was asked
+        let (mut lo, mut held) = (0usize, 12usize);
+        fixture.query("walk").shelves(vec![publication(lo, held)]);
+        let mut screen = fixture.screen();
+        let mut engine = seated(&screen, &fixture);
+        let start = screen.key(screen.rows[0].elems[0]);
+        engine.enter(OWNER, &screen, FocusTarget::Elem(start), None, &fixture.cx(None));
+        deliver(&mut screen, &fixture, Some(start), ScreenEvent::FocusMoved { from: None, to: start, by: By::Dir });
+        // the hit under the focus, read from the view a frame draws
+        let hit_now = |screen: &SearchScreen, fixture: &Fixture, key: FocusKey<u32>| -> Option<usize> {
+            let col = screen.rows[0].elems.iter().position(|e| *e == key.elem)?;
+            match fixture.search.view().shelves().first()?.items.get(col)? {
+                Item::Media(m) => m.rk.strip_prefix("m-")?.parse().ok(),
+                _ => None,
+            }
+        };
+        // (frame the page lands on, whether it slides toward the start)
+        let mut pending: Option<(u32, bool)> = None;
+        let (mut dir_right, mut run_left, mut cadence) = (true, 40u64, 6u32);
+        let mut expected = 0usize;
+        let mut reached = (false, false);
+        let mut landings = 0u32;
+        let frames = 24_000u32;
+        for frame in 1..frames + 6000 {
+            let at = format!("seed {seed}, frame {frame}, window {lo}+{held}");
+            let tail = frame >= frames;
+            if !tail && run_left == 0 {
+                dir_right = rng.below(3) != 0 && expected + 4 < TOTAL;
+                let longest = if rng.below(4) == 0 { 40 } else { 14 };
+                run_left = 1 + rng.below(longest);
+                cadence = [1, 2, 6, 6, 6, 12, 30][rng.below(7) as usize];
+            }
+            let (right, due) = if tail { (!reached.0, frame % 6 == 0) } else { (dir_right, frame % cadence == 0) };
+            // the app's frame: the captured view predates this frame's landing
+            let mut landed = None;
+            if pending.is_some_and(|(due, _)| frame >= due) {
+                let (_, before) = pending.take().unwrap();
+                let next = if before { (lo.saturating_sub(12), 24) }
+                    else if held < 24 { (lo, 24.min(TOTAL - lo)) }
+                    else { ((lo + 12).min(TOTAL - 24), 24) };
+                if next != (lo, held) {
+                    (lo, held) = next;
+                    landed = Some(publication(lo, held));
+                    landings += 1;
+                }
+            }
+            if due {
+                let from = engine.current(OWNER);
+                let to = step_dir(&mut screen, &fixture, &mut engine, if right { Dir::Right } else { Dir::Left });
+                if to != from { expected = if right { expected + 1 } else { expected - 1 }; }
+                run_left = run_left.saturating_sub(1);
+            }
+            let key = engine.current(OWNER).expect("focus is on the row");
+            let (_, out, _) = deliver(&mut screen, &fixture, Some(key), ScreenEvent::Tick(tick(frame)));
+            for fx in &out {
+                match &fx.fx {
+                    Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(SearchCmd::Page { before, seen, .. }))) => {
+                        if *seen == (lo, held) && pending.is_none() {
+                            pending = Some((frame + 1 + rng.below(300) as u32, *before));
+                        }
+                    }
+                    Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(SearchCmd::PageCancel { seen, .. }))) => {
+                        if *seen == lo { pending = None; }
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(next) = landed {
+                fixture.shelves(vec![next]);
+                deliver(&mut screen, &fixture, Some(key), ScreenEvent::StoreChanged(StoreId::Search.ord(), frame));
+                assert!(screen.rows[0].elems.contains(&key.elem), "{at}: the landing took the focused card out of the row");
+            }
+            assert_eq!(hit_now(&screen, &fixture, key), Some(expected), "{at}: the focused card is the one the keys walked to");
+            assert!((lo..lo + held).contains(&expected), "{at}: focus {expected} outside the window");
+            if expected == TOTAL - 1 { reached.0 = true; }
+            if reached.0 && expected == 0 { reached.1 = true; }
+        }
+        assert!(reached.0, "seed {seed}: the last hit is reachable");
+        assert!(reached.1, "seed {seed}: and so is the first");
+        assert!(landings > 20, "seed {seed}: the windows slid under the walk: {landings}");
+    }
+}
+
+/// The focus read-out (`cdg`) names a card by its place in the row's hits: a window that starts at
+/// twelve puts its slot 11 at hit 23.
+#[test]
+fn a_slid_row_names_its_cards_by_listing_position() {
+    let window = plx_data::search::Window { start: 12, before: true, after: true };
+    let slid = cards::RowCards { kind: Kind::Movie, elems: &[], items: &[], sources: &[], window, epoch: 1 };
+    assert_eq!(plx_ui::cards::CardSource::<HostFixture>::global(&slid, 11), 23);
+    let opening = cards::RowCards { window: Default::default(), ..slid };
+    assert_eq!(plx_ui::cards::CardSource::<HostFixture>::global(&opening, 11), 11);
 }

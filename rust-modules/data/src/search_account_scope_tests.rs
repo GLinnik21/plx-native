@@ -55,8 +55,8 @@ fn a_profile_hole_searches_exact_live_ids_and_supersedes_the_previous_profiles_a
     register(&mut owner, 3);
     hold_off(&mut owner);
     owner.state.query = Some(Arc::from("wallace"));
-    owner.state.src[0].status = Status::Answered;
-    owner.state.shelves = Some(Arc::new(vec![Shelf {
+    source_mut(&mut owner.state, 0).status = Status::Answered;
+    owner.state.shelves = Some(Arc::new(vec![Shelf { epoch: 0, window: Default::default(),
         kind: Kind::Movie,
         items: vec![media("old-profile")],
     }]));
@@ -147,6 +147,60 @@ fn a_favourite_edit_supersedes_a_resident_query_and_re_arms_it() {
     assert_eq!(owner.state.gen, gen1, "it settles");
 }
 
+/// **A server past the old sixteen-slot table is asked and merged.** The fetch mailboxes, the
+/// per-source records and the live-id walk were all sized by the registry's old sixteen-server constant, so slot 40 was never
+/// fanned out to and a landing for it had nowhere to go but off the end of a table.
+#[test]
+fn a_server_past_the_old_sixteen_slot_table_is_asked_and_merged() {
+    let _g = fresh();
+    let mut owner = Owner::default();
+    register(&mut owner, 41);
+    assert_eq!(slots().last(), Some(&40), "slot 40 is in the fan-out");
+    hold_off(&mut owner);
+    owner.state.query = Some(Arc::from("wallace"));
+
+    let mut what: Projection = Default::default();
+    what[0] = vec![media("far-away")];
+    owner.land(40, owner.state.gen, Some(what));
+    owner.pump(0.0);
+
+    assert!(
+        owner
+            .state
+            .shelves()
+            .iter()
+            .flat_map(|s| s.items.iter())
+            .any(|i| i.title() == "far-away"),
+        "the answer from slot 40 reaches the merged shelves"
+    );
+}
+
+/// **End to end, one registry of forty-one servers**: the search fan-out reaches the last of them
+/// AND the person page asks it too, with its own mailboxes, from the same registry.
+#[test]
+fn forty_one_servers_are_asked_by_search_and_by_a_person_page() {
+    let _g = fresh();
+    let mut owner = Owner::default();
+    register(&mut owner, 41);
+    let far = plx_plex::plex::ServerId::from_raw(40);
+    assert!(slots().contains(&40), "search fans out to server 40");
+    hold_off(&mut owner);
+    owner.state.query = Some(Arc::from("wallace"));
+    let mut what: Projection = Default::default();
+    what[0] = vec![media("far-away")];
+    owner.land(40, owner.state.gen, Some(what));
+    owner.pump(0.0);
+    assert!(
+        owner.state.shelves().iter().flat_map(|s| s.items.iter()).any(|i| i.title() == "far-away"),
+        "search merges server 40's answer"
+    );
+
+    let mut person = crate::person::PersonState::default();
+    let adapter = crate::person::PersonAdapter::default();
+    person.open_for_test(&adapter, plx_plex::plex::ServerId::from_raw(0), "161", "5d77682a", "Idina Menzel");
+    assert!(person.asks_server_for_test(far), "the person page asks server 40 as well");
+}
+
 /// The other half, and the one that costs nothing to get wrong until a user types: with NO
 /// query resident there is nothing to invalidate, so the snapshot is merely brought up to date.
 /// Superseding here would mean the first query after any library landing opened by discarding
@@ -179,4 +233,27 @@ fn a_favourite_edit_with_no_query_resident_only_refreshes_the_snapshot() {
         directory.view().sections_gen(),
         "…but the snapshot is current, so the next query does not open by re-arming"
     );
+}
+
+/// **A search over forty servers asks all forty and never has more than four out at once.** The
+/// registry no longer stops at sixteen, so what bounded the fan-out was the old table; now it is the
+/// store's own gate (`stores::fanout`). A claim stays raised until the pump takes its answer, so the
+/// claims counted after a pump are exactly the requests out.
+#[test]
+fn a_search_over_forty_servers_asks_them_four_at_a_time() {
+    let _g = fresh();
+    let mut owner = Owner::default();
+    register(&mut owner, 40);
+    owner.state.query = Some(Arc::from("wallace"));
+    owner.state.armed = false;
+    let mut asked = std::collections::BTreeSet::new();
+    for _ in 0..2000 {
+        owner.pump(0.016);
+        let out: Vec<usize> = slots().into_iter().filter(|&i| owner.adapter.mailbox(i).busy()).collect();
+        assert!(out.len() <= crate::stores::fanout::WIDTH, "{} requests out at once", out.len());
+        asked.extend(out);
+        if asked.len() == 40 { break; }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(asked.len(), 40, "a wanted server was never asked");
 }

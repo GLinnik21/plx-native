@@ -194,8 +194,6 @@
   "widgets.ass.invalid_track": "Esta pista de subtítulos con estilo no es válida o es demasiado grande",
   "widgets.ass.invalid_events": "Esta pista de subtítulos con estilo contiene eventos no válidos",
   "widgets.ass.track_too_large": "Esta pista de subtítulos con estilo es demasiado grande",
-  "widgets.ass.too_many_fonts": "Esta pista de subtítulos con estilo contiene demasiadas fuentes",
-  "widgets.ass.invalid_fonts": "Esta pista de subtítulos con estilo contiene fuentes no válidas",
   "widgets.ass.render_failed": "No se pudo mostrar este subtítulo con estilo",
   "widgets.ass.unavailable": "Los subtítulos con estilo no están disponibles en esta instalación",
   "widgets.ass.fonts_unavailable": "No se pudieron cargar las fuentes de los subtítulos",

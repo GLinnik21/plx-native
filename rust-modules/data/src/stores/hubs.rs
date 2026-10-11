@@ -8,8 +8,16 @@ use std::sync::Arc;
 pub enum HubsCmd {
     /// A refetch is owed (a view-state write landed, a profile settled).
     RefetchHubs,
-    Page { sid: plx_plex::plex::ServerId, id: String, key: String, before: bool },
+    /// Move one row's window a page. `seen` is the catalog generation of the view the ask was
+    /// computed from (`HubsView::generation`): a frame captures its views before that frame's
+    /// landings are delivered, so a tick can ask from a window the store has already moved, and
+    /// such an ask is refused. The publication it missed re-arms the row, which asks again from
+    /// the window that stands if the ask is still due.
+    Page { sid: plx_plex::plex::ServerId, id: String, key: String, before: bool, seen: u32 },
     CancelPage { sid: plx_plex::plex::ServerId, id: String, key: String },
+    /// The screen holds cards for rows `lo..=hi` (catalog order); every other row keeps only its
+    /// descriptor. Sent when the range changes, from the tick that knows which rows are on screen.
+    Hold { lo: usize, hi: usize },
     /// The read-out's Retry: clear the back-off and ask again.
     Retry,
     /// The profile/account switch.
@@ -130,6 +138,11 @@ impl HubsStore {
     pub fn queue_test_landing(&self, items: Option<usize>) -> u32 {
         crate::pms::queue_test_landing(&self.state, &self.adapter, items)
     }
+
+    /// Test hook: land the cards of every held row that waits for them — see
+    /// `crate::pms::land_kept_rows_for_test`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn land_kept_rows_for_test(&mut self) -> bool { crate::pms::land_kept_rows_for_test(&mut self.state) }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn reverse_test_shelves(&mut self) { crate::pms::reverse_test_shelves(&mut self.state); }

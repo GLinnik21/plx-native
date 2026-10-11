@@ -519,6 +519,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **No 'see all' on a shelf and no hub paging** — `minor` / `medium`
   Official shelves end in a 'see all' affordance that opens the hub's full listing, and hubs page beyond their inline items. We render only the inline Metadata[] each hub arrives with and drop the hub's own key/more/size, so a shelf can never be expanded or extended.
+  **Hub paging fixed:** a row whose key `is_pageable_hub_key` admits now slides a 24-card window over the hub's own listing (`stores/paging.rs`). The trailing "see all" tile is still absent.
   *Where:* rust-modules/src/plex/models.rs (Hub.key/more/size), rust-modules/src/pms.rs (carry them on HubRow), rust-modules/src/ui/home.rs (trailing see-all tile + activation) reusing the Library grid; endpoint GET {hub.key} with X-Plex-Container-Start/Size.
   *Verified:* Confirmed: models.rs:101-111 Hub carries only type/hubIdentifier/title/Metadata — no key, no more, no size; HubRow (pms.rs:158-166) keeps title/hub_id/start/len; Grid::draw iterates 0..pms::hub_len(r) (home.rs:542) and nothing renders a trailing affordance (zero hits for 'see all'/see_all in the tree). One fact that sharpens the gap: the inline item count is capped by our own REQUEST, not by the server — pms.rs:234 calls client().home_hubs(12), so each shelf receives at most 12 items and the UI's MAX_ITEMS=24 never binds. Everything past item 12 of every hub is unreachable today, which makes '
 
@@ -551,9 +552,9 @@ player, transport and tracks auditors, and is counted once in the themes above.
   OS foreground, and elapsed staleness do not yet request a refresh.
 
 - **Home shelf/item caps silently drop server content** — `minor` / `medium`
-  **Fixed (issue #395):** Home's grid is a `Vec<CardRow>` sized to the published rows and the 16-shelf cap is gone, so every hub the server returns reaches Home; a shelf is published whole or not at all. The catalog's ceiling is now `HOME_CARDS_MAX` = 2,048 cards across all sources (about 170 full rows of 12, measured on the TV with `home-grid-deep`); past it whole shelves are dropped from the tail and the event log says how many. Each shelf is still capped at 24 cards, and `/hubs?count=12` returns 12 per hub, as the endpoint has no paging. The official home scrolls every hub the server returns; the remaining bound is a memory guard no real household reaches. The Library page's own 12-shelf cap went the same way (issue #412); see the per-section Recommended entry.
+  **Fixed (issue #395):** Home's grid is a `Vec<CardRow>` sized to the published rows and the 16-shelf cap is gone, so every hub the server returns reaches Home; a shelf is published whole or not at all. The total-card ceiling was later removed: every hub keeps a descriptor and cards are held for a ring of rows, each a 24-card sliding window. The Library page's own 12-shelf cap went the same way (issue #412); see the per-section Recommended entry.
   *Audit as first written (the fixed `[CardRow; 16]` since replaced):* the grid was a fixed [CardRow; 16] with a 24-cell spring array.
-  *Where:* rust-modules/src/ui/home.rs (Vec<CardRow> instead of the fixed array, or virtualize rows by visibility) and rust-modules/src/pms.rs (drop or raise the card cap, now `HOME_CARDS_MAX`). No endpoint change; /hubs already returns them.
+  *Where:* rust-modules/src/ui/home.rs (Vec<CardRow> instead of the fixed array, or virtualize rows by visibility) and rust-modules/src/pms.rs (the card cap is gone; see the row ring). No endpoint change; /hubs already returns them.
   *Verified:* Confirmed: home.rs:102-103 MAX_HUBS=16 / MAX_ITEMS=24 with n_hubs_of clamping the uncapped pms::hub_count (home.rs:106-114) and a host test asserting the clamp at home.rs:924-933; card_row.rs:21 MAX_ROW_ITEMS=24 with scale(i.min(MAX_ROW_ITEMS-1)) at card_row.rs:142-144; pms.rs:8 PMS_MAX_MOVIES=256 with the break at pms.rs:284-287. Three corrections to the priority. (1) MAX_ITEMS=24 never binds today — pms.rs:234 requests home_hubs(12), so the server only ever sends 12 items per hub; the real per-shelf ceiling is our own count param (this is the same root cause as the missing 'see all', gap #10
 
 - **No watched checkmark badge on posters** — `polish` / `small`
@@ -823,9 +824,8 @@ player, transport and tracks auditors, and is counted once in the themes above.
   scroll positions and two BACK meanings for one library. What remains open is Plex's
   Recommended/Library/Collections/Categories VIEW-MODE axis and the category browsing under it.
   A section used to stop at twelve shelves; since issue #412 it publishes every hub the server sends
-  (`/hubs/sections/{id}` has no paging), each shelf whole or not at all, bounded only by a
-  per-section total of `SECTION_CARDS_MAX` (= Home's 2,048 cards) that drops whole shelves from the
-  tail and logs `libhubs: card bound 2048 reached`.
+  (the hub list is read in windows of `HUB_WINDOW` hubs, whole only for a server that ignores the window), keeping a descriptor for each; cards are held for 16 rows at a
+  time and every row pages through a 24-card window, so nothing is dropped.
   *Where (still):* the categories half — `browse` generalising its single genre facet, and a
   value-tile level in `ui/library.rs`.
   *Verified as of 2026-09-05:* `plex/hubs.rs` has five ops, the fifth being `library_hubs`;
@@ -1653,6 +1653,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **Long subtitle cues are silently truncated: a 42-CHARACTER wrap and a hard 3-line cap that DROPS the rest** — `minor` / `small`
   The plain-text subtitle renderer word-wraps by character count (42) rather than by pixels, then keeps only the first three lines and discards the remainder without an ellipsis. 42 characters at 36px is roughly 750px — under 40% of the panel width — so ordinary long sentences (SDH captions, Cyrillic dubs) wrap to four or more lines and the tail of the sentence is simply never shown. The codebase already owns a pixel word-wrapping primitive that the HUD does not use here.
+  **Fixed:** the 3-line cap is gone. `rust-modules/appkit/src/player_hud.rs` keeps every wrapped line (`CaptionPlan`) and `CaptionPager` pages a caption taller than the panel.
   *Where:* rust-modules/src/ui/player_hud.rs:38-102 — either widen/measure with crate::text::text_width or move the caption onto ui/text_view.rs's TextView (noting the renderer is a documented immediate-mode carve-out, ui/CLAUDE.md).
   *Device:* none known — main-thread GLES text drawing that already runs every frame; TTF_SizeUTF8 measurement is memoised elsewhere in the same file (player_hud.rs:171-191) if per-frame measuring is a concern on the Mali budget.
   *Verified:* CONFIRMED. rust-modules/src/ui/player_hud.rs:38-57 `fn wrap(s: &str, max: usize)` counts `chars()`, called at :73 as `wrap(seg, 42)`; :73-77 `for l in wrap(seg, 42) { if lines.len() < 3 { lines.push(l); } }` — the 4th line and beyond are dropped with no ellipsis and no marker. The pixel-accurate alternative exists and is used elsewhere in the same screen family: rust-modules/src/ui/text_view.rs (greedy pixel word-wrap at :132-157, `max_lines` with an ellipsized last line at :83-85/:142-158, `measure_h`), consumed by info_panel.rs and detail.rs:1512/1582. minor/small is right. device_risk 'none

@@ -80,13 +80,15 @@ pub use crate::poster_grid::{
     STYLE as GRID_STYLE,
 };
 pub use grid::{Grid, GridSpec, ScrollMode};
-pub use shelf::Shelf;
+pub use shelf::{PageEdge, Shelf, PAGE_EDGE_CARDS};
 pub use stack::{Kind, SectionSpec, Stack, StackEvent, StackMemory, StackPage, StackView};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod conformance;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod warm_tests;
 
 /// The one recovery position every card screen uses when the focused card is gone from its
 /// section: the slot it held, clamped to the section's new length. `None` when the section is
@@ -118,6 +120,13 @@ pub trait CardSource<H: Host> {
     fn loaded(&self, _i: usize) -> bool {
         true
     }
+    /// Whether card `i`'s content is still to be read: its page has not landed, was evicted or
+    /// failed. A [`Grid`] asks again for a card in view that is (see [`CardEvent::Want`]); it
+    /// differs from `!loaded(i)` only for a source that paints an unread slot as a placeholder
+    /// rather than skipping it.
+    fn unread(&self, i: usize) -> bool {
+        !self.loaded(i)
+    }
     /// The card the ENGINE's focused element `e` is shown on, for the pop, the caption and the
     /// opener redraw: [`index_of`](Self::index_of) unless the screen paints a different focus
     /// than the engine holds (Home's hero dive keeps the card it came from lifted until the
@@ -136,6 +145,19 @@ pub trait CardSource<H: Host> {
     fn sweep(&self) -> f32 {
         1.0
     }
+    /// Whether cards the source does not hold lie between card `i - 1` and card `i`: a row that
+    /// is a fixed head and a sliding window of what follows draws the two side by side while the
+    /// window is away from the head. A press does not step across (it would pass every card
+    /// between in one move); the screen asks its store to bring the window back instead.
+    fn gap_before(&self, _i: usize) -> bool {
+        false
+    }
+    /// Card `i`'s position in the whole listing this source is a window of, whichever window it
+    /// holds now (a slid shelf's first card is not listing position 0). Only the focus read-out
+    /// (`card_probe`) asks; the default is a source that holds its listing whole.
+    fn global(&self, i: usize) -> usize {
+        i
+    }
     /// Whether a hold on card `i` is a [`CardEvent::Hold`].
     fn holdable(&self, _i: usize) -> bool {
         true
@@ -143,6 +165,15 @@ pub trait CardSource<H: Host> {
     /// Whether the store has more cards beyond `len()`; only then are [`CardEvent::Want`]s emitted.
     fn more(&self) -> bool {
         false
+    }
+    /// How many page reads have LANDED for this row, a failed one not counting. A landing can change
+    /// nothing the shelf sees (a row that rescans its listing for keys it already knew leaves
+    /// `(len, end)` as it was), and the shelf must not read that as an ask nobody answered: when
+    /// this moves, the ask that was out is answered, the repeat ladder starts over and the next ask
+    /// goes out at once. Defaults to a count that never moves (a source whose landings always change
+    /// its length).
+    fn page_epoch(&self) -> u32 {
+        0
     }
 }
 
@@ -163,8 +194,10 @@ pub enum CardEvent<E> {
     Activate(E),
     /// A hold on the focused card, which [`CardSource::holdable`] allows.
     Hold(E),
-    /// The visible window (plus look-ahead) reaches past `len`: the source needs cards up to
-    /// `range.end`. Emitted from Tick, once per `(len, end)`.
+    /// The source needs the cards in `range`: the visible window (plus look-ahead) reaches past
+    /// `len`, or (in a grid) a card in view is still unread, a range inside `len`. Emitted from
+    /// Tick, and again whenever the retry ladder is due while the need stands; an owner forwards
+    /// every one.
     Want(Range<usize>),
 }
 
@@ -192,6 +225,11 @@ pub(crate) enum Seen {
 }
 
 impl Seen {
+    /// A focus change was announced since the last tick (anything but [`Seen::Nothing`]).
+    pub(crate) fn announced(self) -> bool {
+        self != Seen::Nothing
+    }
+
     pub(crate) fn of(by: &crate::screen::By, arrived: usize) -> Self {
         if matches!(by, crate::screen::By::Dir | crate::screen::By::Pointer) { Seen::Deliberate(arrived) } else { Seen::Other }
     }
@@ -237,13 +275,66 @@ pub(crate) fn lifted_out<H: Host, S: CardSource<H>>(
     out
 }
 
-/// The paging rule shared by both sections: ask for cards up to `end` once per `(len, end)`.
-pub(crate) fn want(asked: &mut Option<(usize, usize)>, len: usize, end: usize, more: bool) -> Option<Range<usize>> {
-    if !more || end <= len || *asked == Some((len, end)) {
+/// The paging rule shared by both sections: ask for cards up to `end` once per `(len, end)`, and
+/// again when `retry` says the ask has stood unanswered long enough ([`Retry`]).
+pub(crate) fn want(asked: &mut Option<(usize, usize)>, len: usize, end: usize, more: bool, retry: bool) -> Option<Range<usize>> {
+    if !more || end <= len || (*asked == Some((len, end)) && !retry) {
         return None;
     }
     *asked = Some((len, end));
     Some(len..end)
+}
+
+/// Seconds an ask that nobody answered waits before the section asks again, per ask already
+/// repeated; the last step repeats for as long as the user stays at the edge. A store may refuse
+/// an ask for reasons that pass (a read it withdrew is still out, a thread it could not spawn) or
+/// give a page up after its own retries, and no key press follows to ask again: so an ask that has
+/// not been answered is repeated, on a ladder that never gives up while the user stands there and
+/// never spins (the cap is the stores' own `RETRY_MAX_S`).
+const RETRY_LADDER_S: [f32; 8] = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 30.0];
+
+/// The repeat timer of a section's page ask. Runs only while an ask is out. Time is the frames'
+/// own `Tick.ms`, differenced with `wrapping_sub` the way `motion::Phase` does, so it holds no
+/// per-frame delta and reads no clock.
+#[derive(Clone, Copy, Debug)]
+pub struct Retry {
+    /// `Tick.ms` of the latest tick.
+    now: u32,
+    /// `Tick.ms` the latest ask went out at.
+    at: u32,
+    n: u8,
+    /// The ask the next [`sent`](Self::sent) records is a new one, not a repeat.
+    fresh: bool,
+}
+
+impl Retry {
+    pub const fn new() -> Self {
+        Self { now: 0, at: 0, n: 0, fresh: false }
+    }
+
+    pub fn tick(&mut self, ms: u32) {
+        self.now = ms;
+    }
+
+    /// Whether the ask out has gone unanswered for this rung of the ladder.
+    pub fn due(&self) -> bool {
+        let rung = RETRY_LADDER_S[usize::from(self.n).min(RETRY_LADDER_S.len() - 1)];
+        self.now.wrapping_sub(self.at) as f32 >= rung * 1000.0
+    }
+
+    pub fn mark_fresh(&mut self) {
+        self.fresh = true;
+    }
+
+    /// An ask went out: a new one starts the ladder over, a repeat climbs a rung.
+    pub fn sent(&mut self) {
+        self.n = if std::mem::take(&mut self.fresh) { 0 } else { self.n.saturating_add(1) };
+        self.at = self.now;
+    }
+
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
 }
 
 /// The index of the card the press owns in section `entry`, resolved ONCE per pass the way focus is

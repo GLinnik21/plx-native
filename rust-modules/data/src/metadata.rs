@@ -4,11 +4,13 @@
 //! CURRENT item. Idiomatic Rust (String/Vec), like the browse catalog (pms.rs) — the fixed C
 //! buffers from the C port are gone.
 use std::os::raw::c_int;
+pub mod episode_list;
 pub mod record;
 pub mod sub_layout;
 pub mod track_label;
 pub mod track_names;
 use std::panic::catch_unwind;
+pub use episode_list::{EpisodeList, PAGE as EPISODE_PAGE};
 
 /// **Stage B of the store-ownership migration** (`docs/stores-as-machines.md`, D4): a borrowed
 /// handle onto this layer's read surface, shaped like `crate::person::PersonView`. Every method
@@ -147,6 +149,10 @@ pub struct MetadataAdapter {
     season_gen: std::sync::atomic::AtomicU32,
     season_done: std::sync::atomic::AtomicU32,
     season_result: std::sync::Mutex<Option<SeasonResult>>,
+    /// The long-season episode pages in flight and landed ([`want_episodes`]).
+    ep_pages: std::sync::Mutex<EpPages>,
+    /// The Related tail window read in flight and landed ([`want_related`]).
+    rel_pages: std::sync::Mutex<RelPages>,
     tracker: std::sync::Mutex<record::Tracker>,
     /// TEST ONLY: the detail fetches [`request_detail`] admitted, parked here instead of on a
     /// worker thread — see [`MetadataAdapter::run_held_detail_fetches_for_test`].
@@ -169,6 +175,8 @@ impl Default for MetadataAdapter {
             season_gen: std::sync::atomic::AtomicU32::new(0),
             season_done: std::sync::atomic::AtomicU32::new(0),
             season_result: std::sync::Mutex::new(None),
+            ep_pages: std::sync::Mutex::new(EpPages::default()),
+            rel_pages: std::sync::Mutex::new(RelPages::default()),
             tracker: std::sync::Mutex::new(record::Tracker::new(false)),
             #[cfg(any(test, feature = "test-support"))]
             held_detail: std::sync::Mutex::new(Vec::new()),
@@ -266,6 +274,24 @@ pub struct Spot {
     pub saved_col: [c_int; SPOT_SECTION_SLOTS],
     /// the selected season's NUMBER, or `None` for an item with no seasons
     pub season: Option<i64>,
+}
+
+impl Spot {
+    /// The Related section's number in [`Spot::section`].
+    pub const RELATED: c_int = 3;
+
+    /// The place of a Related card read from the tail window, as a `col`. The head's cards keep
+    /// their index (`col >= 0`); a tail card is named by the tail position it was read at, which
+    /// holds whichever way the window has slid and whichever window the page comes back with.
+    /// Negative, so the two never meet and the head's `col` is the one every reader already knows.
+    pub fn tail_col(position: usize) -> c_int {
+        c_int::try_from(position).map_or(c_int::MIN, |p| -2 - p)
+    }
+
+    /// The tail position a Related spot names, or `None` for a head card or another section.
+    pub fn tail_position(&self) -> Option<usize> {
+        (self.section == Self::RELATED && self.col <= -2).then(|| (-2 - i64::from(self.col)) as usize)
+    }
 }
 
 /// Plex's resume rule, in ONE place (home Continue-Watching, the detail Play button, and the
@@ -1088,8 +1114,9 @@ impl Season {
 /// asking the next caller to remember `plex::current_server()` is the wrong answer here.
 pub type Related = crate::pms::PmsMovie;
 
-/// The collection shelf holds at most this many members — the Related shelf's own bound.
-pub const COLLECTION_MAX: usize = RELATED_MAX;
+/// The collection shelf's preview length. Its heading opens the full Collection page, so this is
+/// a shelf length, not a limit on what the collection can show.
+pub const COLLECTION_PREVIEW: usize = 20;
 
 /// A member movie's collection, split out of `/related`. PMS answers a member with a
 /// `collection.related.*` hub that lists the WHOLE collection in the collection's own order, the
@@ -1105,7 +1132,7 @@ pub struct CollectionShelf {
     pub title: String,
     pub section: i64,
     pub tag: i64,
-    /// Server order, the page's own item included and unmarked, capped at [`COLLECTION_MAX`].
+    /// Server order, the page's own item included and unmarked, capped at [`COLLECTION_PREVIEW`].
     pub members: Vec<Related>,
     /// Every member the collection holds — the heading's "· N" — which `members` may cap.
     #[serde(default)]
@@ -1126,6 +1153,65 @@ impl CollectionShelf {
 pub struct RelatedRows {
     pub collection: Option<CollectionShelf>,
     pub related: Vec<Related>,
+    pub tail: RelatedTail,
+}
+
+/// One related hub with more behind its preview, read by [`RelatedTail`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TailHub {
+    /// The hub's own listing key, one `is_pageable_hub_key` admits.
+    pub key: String,
+    /// The preview's length as the server sent it: the listing offset the tail starts at.
+    pub preview: usize,
+    /// Items the listing holds past the preview. `None` until the server says (a hub flagged `more`
+    /// that sent no total), learned from the first page read of it.
+    pub len: Option<usize>,
+}
+
+/// The Related row beyond the merged `/related` previews: `Detail::related[..head]` is the head,
+/// every preview whole, and the rest is a window of at most [`crate::pms::MAX_SHELF_ITEMS`] cards of
+/// the hubs' own listings, chained in response order. A tail position counts the hubs' listings
+/// past their previews end to end, so a card keeps the position it was read at whichever way the
+/// window moves. Empty (and absent from the encoding) when no hub holds more than its preview.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct RelatedTail {
+    pub hubs: Vec<TailHub>,
+    /// Keys the tail must not show whatever the head holds: the page's own item and its
+    /// collection's members.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    /// How many of `Detail::related` are the head.
+    #[serde(default)]
+    pub head: usize,
+    /// The tail position of each card after the head.
+    #[serde(default)]
+    pub positions: Vec<usize>,
+    /// The window as the server last reported it, as `stores::paging::PageInfo` says it.
+    #[serde(default)]
+    pub offset: usize,
+    #[serde(default)]
+    pub end: usize,
+    #[serde(default)]
+    pub total: usize,
+    #[serde(default)]
+    pub more: bool,
+    /// Hubs with more behind them whose key the pager does not admit; they keep their preview.
+    #[serde(default)]
+    pub unadmitted: usize,
+    /// What the window remembers beyond itself: the ledger of keys it has shown, which takes over
+    /// when the hubs' listings stop agreeing between reads ([`crate::stores::paging::read_row`]).
+    /// Keys only, so its bound is the listing's length at eight bytes a numeric key; the cards
+    /// held stay the head and one window.
+    #[serde(default, skip_serializing_if = "crate::stores::paging::RowState::is_default")]
+    pub row: crate::stores::paging::RowState,
+}
+
+impl RelatedTail {
+    pub fn is_empty(&self) -> bool {
+        self.hubs.is_empty() && self.unadmitted == 0
+    }
 }
 
 /// Clone because the playing-item store keeps the played leaf's OWN chapters (see [`PlayingItem`]) —
@@ -1561,7 +1647,7 @@ pub struct Detail {
     pub audio: Vec<Stream>,
     pub subs: Vec<Stream>,
     pub seasons: Vec<Season>,   // shows only
-    pub episodes: Vec<Episode>, // the currently-selected season
+    pub episodes: EpisodeList, // the currently-selected season
     /// SHOWS: the episode the SERVER says is next to watch (`OnDeck`, one request, no extra round
     /// trip). Show-level and therefore **independent of the selected season tab**, which is the whole
     /// reason it is here: `episodes` above holds one season, so a next-episode the client worked out
@@ -1570,6 +1656,9 @@ pub struct Detail {
     pub on_deck: Option<Episode>,
     pub cur_season: usize,
     pub related: Vec<Related>,
+    /// What lies past the previews in `related` ([`RelatedTail`]); empty for most pages.
+    #[serde(default, skip_serializing_if = "RelatedTail::is_empty")]
+    pub related_tail: RelatedTail,
     /// The item's collection shelf ([`CollectionShelf`]); `None` for a non-member, a lone member
     /// and every show/episode page.
     #[serde(default)]
@@ -1771,12 +1860,13 @@ fn set_watched_local(state: &mut MetadataState, sid: plx_plex::plex::ServerId, r
         if d.sid != sid {
             return hit;
         }
-        let Some(i) = d.episodes.iter().position(|e| e.rk == rk) else {
+        let Some(was) = d.episodes.position(rk).and_then(|i| d.episodes.get(i)).map(|e| e.watched) else {
             return hit;
         };
-        let was = d.episodes[i].watched;
-        d.episodes[i].watched = on;
-        d.episodes[i].resume_ms = 0;
+        d.episodes.edit(rk, |e| {
+            e.watched = on;
+            e.resume_ms = 0;
+        });
         if was != on {
             let cur = d.cur_season;
             if let Some(s) = d.seasons.get_mut(cur) {
@@ -1871,6 +1961,16 @@ fn reset(state: &mut MetadataState, adapter: &MetadataAdapter) {
 pub fn set_current_for_test(state: &mut MetadataState, d: Option<Detail>) {
     plx_base::testlock::assert_held("the detail store (set_current_for_test)");
     state.current = d;
+}
+
+/// TEST-ONLY in-place edit of the loaded item, for a test that lands an episode page or drops one
+/// the way the pump does, without replacing the whole `Detail`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn edit_current_for_test(state: &mut MetadataState, f: impl FnOnce(&mut Detail)) {
+    plx_base::testlock::assert_held("the detail store (edit_current_for_test)");
+    if let Some(d) = state.current.as_mut() {
+        f(d);
+    }
 }
 
 /// TEST-ONLY installer for the playing item's markers: lets a rig put a segment under the playhead
@@ -2093,7 +2193,7 @@ fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, Stri
         audio: Vec::new(),
         subs: Vec::new(),
         seasons: Vec::new(),
-        episodes: Vec::new(),
+        episodes: EpisodeList::default(),
         on_deck: it
             .on_deck
             .as_ref()
@@ -2101,6 +2201,7 @@ fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, Stri
             .map(convert_episode),
         cur_season: 0,
         related: Vec::new(),
+        related_tail: RelatedTail::default(),
         collection: None,
         chapters: convert_chapters(&it.chapter),
         markers: convert_markers(&it.marker, it.duration),
@@ -3007,9 +3108,34 @@ fn fetch_seasons(sid: plx_plex::plex::ServerId, rk: &str) -> Vec<Season> {
 /// NB its siblings `fetch_seasons`/`fetch_related` deliberately KEEP the degrade-to-empty: both are
 /// only ever called from `fetch_full`, which builds a Detail from nothing — there is no previous
 /// list there to protect, and neither is worth failing the whole page over.
-fn fetch_episodes(sid: plx_plex::plex::ServerId, season_rk: &str) -> Option<Vec<Episode>> {
-    let mc = plx_plex::plex::client_for(sid)?.children(season_rk)?;
-    Some(mc.metadata.iter().map(convert_episode).collect())
+///
+/// Page 0 of a season only: a short season is that one request and a complete list (which encodes
+/// as the plain array it always did); a long one lands with its other pages as holes, and
+/// [`MetadataCmd::WantEpisodes`] fetches them as the screen reaches them.
+fn fetch_episodes(sid: plx_plex::plex::ServerId, season_rk: &str) -> Option<EpisodeList> {
+    let mc = plx_plex::plex::client_for(sid)?.children_paged(season_rk, 0, EPISODE_PAGE as i64)?;
+    let rows = episode_window(&mc, 0);
+    let mut list = EpisodeList::with_total((mc.total_size.max(0) as usize).max(rows.len()));
+    list.set_page(0, rows);
+    Some(list)
+}
+
+/// One window of a season, or **None when the GET failed**.
+fn fetch_episode_page(sid: plx_plex::plex::ServerId, season_rk: &str, page: usize) -> Option<Vec<Episode>> {
+    let start = page * EPISODE_PAGE;
+    let mc = plx_plex::plex::client_for(sid)?.children_paged(season_rk, start as i64, EPISODE_PAGE as i64)?;
+    Some(episode_window(&mc, start))
+}
+
+/// The rows of the window asked for at `start`. A server that ignores `X-Plex-Container-Start/Size`
+/// answers with the whole season from index 0: keep the page that was asked for and drop the rest.
+fn episode_window(mc: &plx_plex::plex::MediaContainer, start: usize) -> Vec<Episode> {
+    let rows = mc.metadata.iter().map(convert_episode);
+    if mc.metadata.len() > EPISODE_PAGE {
+        rows.skip(start).take(EPISODE_PAGE).collect()
+    } else {
+        rows.collect()
+    }
 }
 
 /// One `/children` row → an [`Episode`]. Split out of [`fetch_episodes`] so the wire → model
@@ -3143,14 +3269,11 @@ fn resolve_trailer(
     e.playable().then_some(e)
 }
 
-/// Shelf cap. The extras element range is the same number, so a dropped tail is never a tile
-/// the page promised and then could not focus.
-const EXTRAS_MAX: usize = 32;
-
+/// Every extras row with a key, in server order. The shelf is the whole list: a tile the server
+/// sent is a tile the page shows, and the trailer picker reads the same list.
 fn extras_from_rows(rows: &[plx_plex::plex::Metadata]) -> Vec<Extra> {
     rows.iter()
         .filter(|x| !x.rating_key.is_empty())
-        .take(EXTRAS_MAX)
         .map(convert_extra)
         .collect()
 }
@@ -3172,16 +3295,10 @@ fn project_extras(
         if !slot.playable() {
             *slot = winner.clone();
         }
-    } else if d.extras.len() < EXTRAS_MAX {
-        d.extras.insert(0, winner.clone());
     } else {
-        // The winner can be ANY row in server order — `extras_from_rows` already capped the
-        // shelf to `EXTRAS_MAX` before this ran, so a `primaryExtraKey` past that cut would
-        // otherwise leave `trailer_rk` naming a key `d.extras` never carries. `Detail::trailer()`
-        // would then silently fall back to the first playable trailer among the 32 KEPT rows
-        // (or find none), which is not the server's own answer. The winner earns a guaranteed
-        // slot; the shelf's own last tile pays for it instead of the picker's contract.
-        d.extras.pop();
+        // The winner is one of `rows`, so it is normally on the shelf already. Only a row the
+        // shelf filters out (an empty key) can be missing, and `trailer_rk` must still name a
+        // key `d.extras` carries, or `Detail::trailer()` falls back to another trailer.
         d.extras.insert(0, winner.clone());
     }
     d.trailer_rk = winner.rk;
@@ -3201,11 +3318,6 @@ fn fetch_related(sid: plx_plex::plex::ServerId, rk: &str) -> RelatedRows {
     };
     related_rows(&mc, sid, rk)
 }
-
-/// Related tiles this shelf holds at most. PMS answers `/related` with several titled hubs and we
-/// concatenate them, so without a cap a well-connected film can carry a hundred rows into a strip
-/// that shows six.
-const RELATED_MAX: usize = 20;
 
 /// `/related`'s response for item `rk` → the page's collection shelf and Related row. **PURE**,
 /// split out of [`fetch_related`] so the things that can be wrong here are host-testable: which
@@ -3229,6 +3341,7 @@ fn related_rows(mc: &plx_plex::plex::MediaContainer, sid: plx_plex::plex::Server
         seen.extend(h.metadata.iter().map(|x| x.rating_key.clone()));
     }
     let collection = own.and_then(|i| collection_shelf(&mc.hub[i], sid, rk));
+    let mut tail = RelatedTail { exclude: seen.iter().cloned().collect(), ..Default::default() };
     let mut out = Vec::new();
     for (i, h) in mc.hub.iter().enumerate() {
         if Some(i) == own {
@@ -3245,17 +3358,42 @@ fn related_rows(mc: &plx_plex::plex::MediaContainer, sid: plx_plex::plex::Server
             // worker reads no statics, because "the current server" can change while a fetch is in
             // flight and the rows in hand belong to the machine that was asked.
             out.push(crate::pms::parse_item(x, sid));
-            if out.len() >= RELATED_MAX {
-                return RelatedRows { collection, related: out };
-            }
+        }
+        // What lies behind the preview. The preview is the exact head of the listing (probed), so
+        // the tail starts at its length, counted raw: filtering does not move listing offsets.
+        let preview = h.metadata.len();
+        if !(h.more || h.total() > preview) {
+            continue;
+        }
+        if plx_plex::plex::is_pageable_hub_key(&h.key) {
+            let len = (h.total() > preview).then(|| h.total() - preview);
+            tail.hubs.push(TailHub { key: h.key.clone(), preview, len });
+        } else {
+            // A shape the pager does not read: the hub keeps its preview. Logged by shape, so a new
+            // kind of key is noticed.
+            tail.unadmitted += 1;
+            plx_base::eventlog::log(&format!(
+                "detail: related hub key not pageable, keeping its preview: {}", key_shape(&h.key)
+            ));
         }
     }
-    RelatedRows { collection, related: out }
+    tail.head = out.len();
+    tail.more = !tail.hubs.is_empty();
+    RelatedRows { collection, related: out, tail }
+}
+
+/// A hub key with its ids and query removed, for the log: `/library/metadata/N/extras`.
+fn key_shape(key: &str) -> String {
+    let path = key.split_once('?').map_or(key, |(path, _)| path);
+    path.split('/')
+        .map(|part| if !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()) { "N" } else { part })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// One `collection.related.*` hub → the collection shelf, or `None` when the item is the
 /// collection's only listed member: a shelf of the page's own poster is no way to a collection.
-/// Members keep server order, the item's own tile included, capped at [`COLLECTION_MAX`].
+/// Members keep server order, the item's own tile included, capped at [`COLLECTION_PREVIEW`].
 fn collection_shelf(
     h: &plx_plex::plex::Hub,
     sid: plx_plex::plex::ServerId,
@@ -3275,7 +3413,7 @@ fn collection_shelf(
     // sent one, else every member it listed — both before the shelf's cap.
     let count = h.total().max(listed.len());
     let members: Vec<Related> = listed.into_iter()
-        .take(COLLECTION_MAX)
+        .take(COLLECTION_PREVIEW)
         .map(|x| crate::pms::parse_item(x, sid))
         .collect();
     if members.iter().all(|m| m.rk == rk) {
@@ -3329,7 +3467,7 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Detail> {
                 plx_base::eventlog::log(&format!(
                     "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
                     s0.rk));
-                Vec::new()
+                EpisodeList::default()
             });
         }
         // A show carries no streams itself — backfill from ONE episode: the one the hero is
@@ -3367,6 +3505,7 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Detail> {
             (related, extras)
         });
         d.related = related.related;
+        d.related_tail = related.tail;
         d.collection = related.collection;
         match extras {
             Some(rows) => {
@@ -3391,6 +3530,7 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Detail> {
         extras_src = "skip";
         let related = fetch_related(sid, rk);
         d.related = related.related;
+        d.related_tail = related.tail;
         d.collection = related.collection;
     }
     // The item's IDENTITY and the SHAPE of what came back — never its title. `scrub_local` runs
@@ -3604,6 +3744,13 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             load_season(state, adapter, i);
             true
         }
+        MetadataCmd::WantEpisodes { lo, hi, focus, restore } => {
+            let keep = crate::stores::page_cache::Keep { wanted: lo..hi, focus, restore };
+            want_episodes(state, adapter, keep)
+        }
+        MetadataCmd::WantRelated { before, seen } => want_related(state, adapter, before, seen),
+        MetadataCmd::SeekRelated { at, seen } => ask_related(state, adapter, RelatedAsk::Seek(at), seen),
+        MetadataCmd::CancelRelated => cancel_related(adapter),
         MetadataCmd::SetNowPlaying(np) => {
             set_now_playing(state, np);
             true
@@ -3713,10 +3860,44 @@ fn install_landed_detail(state: &mut MetadataState, adapter: &std::sync::Arc<Met
     if state.played_since_load.as_ref().is_some_and(|(s, r)| plx_plex::plex::same_item((*s, r), (d.sid, &d.rk))) {
         state.played_since_load = None;
     }
+    let mut d = d;
+    if let Some(old) = state.current.as_ref() {
+        carry_related_window(old, &mut d);
+    }
     state.current = Some(d);
     // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
     sync_now_playing(state);
     true
+}
+
+/// A re-read of the page already loaded (a return from the player, a watched toggle) lands with
+/// only the Related head, while the row the user stands in may have slid far past it. The old
+/// window moves onto the fresh page — cards, positions, edge and ledger — so the card under the
+/// focus is still in the row at the place it was. Held only when it is the same item AND the same
+/// hubs at the same preview lengths, the one case where a tail position names the same listing
+/// place; anything else starts at the head, and the screen's focus falls to the nearest surviving
+/// card. The window keeps its size: one window is carried, never added to. The cards carried are
+/// the ones last read; the next slide reads the listing afresh through the ledger as it always does.
+fn carry_related_window(old: &Detail, d: &mut Detail) {
+    if !plx_plex::plex::same_item((old.sid, &old.rk), (d.sid, &d.rk)) { return; }
+    let (was, now) = (&old.related_tail, &d.related_tail);
+    if was.positions.is_empty() || was.head > old.related.len() || now.head > d.related.len()
+        || was.hubs.len() != now.hubs.len()
+        || was.hubs.iter().zip(&now.hubs).any(|(a, b)| a.key != b.key || a.preview != b.preview) {
+        return;
+    }
+    let head: std::collections::HashSet<&str> = d.related[..now.head].iter().map(|m| m.rk.as_str()).collect();
+    let (mut positions, mut cards) = (Vec::new(), Vec::new());
+    for (position, card) in was.positions.iter().zip(&old.related[was.head..]) {
+        // a card the fresh head now shows, or that the page must not show, is not shown twice
+        if head.contains(card.rk.as_str()) || now.exclude.contains(&card.rk) { continue; }
+        positions.push(*position);
+        cards.push(card.clone());
+    }
+    let t = &mut d.related_tail;
+    (t.positions, t.hubs, t.row) = (positions, was.hubs.clone(), was.row.clone());
+    (t.offset, t.end, t.total, t.more) = (was.offset, was.end, was.total, was.more);
+    d.related.extend(cards);
 }
 
 // ---- "Also available": the same film on the OTHER sources ------------------------------------
@@ -4359,7 +4540,7 @@ struct SeasonResult {
     rk: String,                // the show the fetch was for
     idx: usize,                // the season it was for
     prev: usize, // the season `cur_season` held before the optimistic flip — restored on failure
-    eps: Option<Vec<Episode>>, // None = the fetch failed or panicked — the row keeps its episodes
+    eps: Option<EpisodeList>, // None = the fetch failed or panicked — the row keeps its episodes
 }
 
 /// Post a finished season fetch to the mailbox. MONOTONE: an older fetch landing late must never
@@ -4374,7 +4555,7 @@ fn land_season(
     rk: String,
     idx: usize,
     prev: usize,
-    eps: Option<Vec<Episode>>,
+    eps: Option<EpisodeList>,
 ) {
     let mut slot = adapter.season_result.lock().unwrap_or_else(|e| e.into_inner());
     if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
@@ -4442,6 +4623,348 @@ fn load_season(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
     }
 }
 
+// ---- long-season episode pages ---------------------------------------------------------------
+// A season lands as page 0 of 60; the screen names the range it needs ([`MetadataCmd::WantEpisodes`])
+// and the other pages are fetched off-thread and installed by [`pump_episode_pages`]. These are
+// background reads of the SAME season, so they do not move `season_gen`/`season_loading` (the tab
+// spinner and the play gate), and a landing is checked against the page's own (server, show,
+// season) before it touches the list.
+
+/// Most pages one request job fetches. The wanted range is the screen's plus a lead, a few pages
+/// at most; this bounds what a job does if it is ever wider.
+const EP_JOB_PAGES: usize = 4;
+
+#[derive(Default)]
+struct EpPages {
+    /// `(server, season rk, page)` asked for and not yet answered. A page is fetched once at a time.
+    inflight: Vec<(plx_plex::plex::ServerId, String, usize)>,
+    landed: Vec<EpLanded>,
+    /// What the screen wants right now; eviction after a landing keeps exactly this.
+    keep: Option<crate::stores::page_cache::Keep>,
+}
+
+struct EpLanded {
+    sid: plx_plex::plex::ServerId,
+    show: String,
+    season: String,
+    page: usize,
+    /// `None` = the GET failed or panicked: nothing installs, and the page is asked for again by
+    /// the next [`want_episodes`].
+    rows: Option<Vec<Episode>>,
+}
+
+/// Record what the screen needs of the selected season's episodes and fetch the pages of it that
+/// are holes. Idempotent: a page already in flight is not asked for twice, so the screen may say
+/// the same range again (that is also how a failed page is retried). Main-thread only.
+fn want_episodes(
+    state: &mut MetadataState,
+    adapter: &std::sync::Arc<MetadataAdapter>,
+    keep: crate::stores::page_cache::Keep,
+) -> bool {
+    let Some(d) = state.current.as_ref() else { return false };
+    let Some(season) = d.seasons.get(d.cur_season).map(|s| s.rk.clone()) else { return false };
+    let (sid, show) = (d.sid, d.rk.clone());
+    // A season switch is in flight: its list replaces this one, so a page of the old list is a
+    // wasted request.
+    if season_loading(adapter) {
+        return false;
+    }
+    // The pages the screen cannot do without first (a restore target, the focus), then the range.
+    let page_of = |i: usize| i / EPISODE_PAGE;
+    let mut order: Vec<usize> = keep.restore.into_iter().chain(keep.focus).map(page_of).collect();
+    order.extend(d.episodes.missing(keep.wanted.start, keep.wanted.end));
+    let mut want = Vec::new();
+    {
+        let mut ep = adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+        for p in order {
+            let hole = d.episodes.missing(p * EPISODE_PAGE, p * EPISODE_PAGE + 1).next() == Some(p);
+            let key = (sid, season.clone(), p);
+            if hole && !want.contains(&p) && !ep.inflight.contains(&key) && want.len() < EP_JOB_PAGES {
+                want.push(p);
+            }
+        }
+        for &p in &want {
+            ep.inflight.push((sid, season.clone(), p));
+        }
+        ep.keep = Some(keep);
+    }
+    if want.is_empty() {
+        return false;
+    }
+    let worker = std::sync::Arc::clone(adapter);
+    let job = want.clone();
+    let season_job = season.clone();
+    let spawned = plx_base::task::spawn_small("episode-pages", move || {
+        for page in job {
+            let rows = catch_unwind(|| fetch_episode_page(sid, &season_job, page)).unwrap_or(None);
+            let mut ep = worker.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+            ep.inflight.retain(|k| *k != (sid, season_job.clone(), page));
+            ep.landed.push(EpLanded { sid, show: show.clone(), season: season_job.clone(), page, rows });
+        }
+    });
+    if !spawned {
+        let mut ep = adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+        ep.inflight.retain(|(s, k, p)| !(*s == sid && *k == season && want.contains(p)));
+    }
+    true
+}
+
+/// Main-thread pump: install the episode pages that landed on the list they were asked for, then
+/// evict what the screen no longer needs. True when the list changed.
+pub fn pump_episode_pages(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
+    let (landed, keep) = {
+        let mut ep = adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+        if ep.landed.is_empty() {
+            return false;
+        }
+        (std::mem::take(&mut ep.landed), ep.keep.clone())
+    };
+    let Some(d) = state.current.as_mut() else { return false };
+    let mut changed = false;
+    for page in landed {
+        let ours = plx_plex::plex::same_item((d.sid, &d.rk), (page.sid, &page.show))
+            && d.seasons.get(d.cur_season).is_some_and(|s| s.rk == page.season);
+        if let (true, Some(rows)) = (ours, page.rows) {
+            d.episodes.set_page(page.page, rows);
+            changed = true;
+        }
+    }
+    if let (true, Some(keep)) = (changed, keep) {
+        d.episodes.evict(&keep);
+    }
+    changed
+}
+
+// ---- Related tail window ----------------------------------------------------------------------
+// The Related row is its head (every preview of `/related`) and a window of the hubs' own listings
+// past their previews ([`RelatedTail`]). The screen names an edge ([`MetadataCmd::WantRelated`]),
+// the window moves off-thread through the shared sliding window, and [`pump_related_pages`]
+// installs it on the page it was read for.
+
+#[derive(Default)]
+struct RelPages {
+    /// A window read is out; the next edge is asked for once it lands. Held until the worker is
+    /// finished, withdrawn or not: a read cannot be stopped, and a second one beside it would read
+    /// the same hubs twice for a reader rocking across the edge.
+    inflight: bool,
+    /// The reader withdrew the read that is out: its answer is discarded when it lands.
+    withdrawn: bool,
+    /// What the read out is for (item, window it starts from, direction, and the tail position a
+    /// seek opens at), so an ask for the same thing meanwhile adopts it and no other does.
+    out: Option<(plx_plex::plex::ServerId, String, (usize, usize), bool, Option<usize>)>,
+    landed: Vec<RelLanded>,
+}
+
+struct RelLanded {
+    sid: plx_plex::plex::ServerId,
+    rk: String,
+    /// The window the read started from. A landing on any other window is stale.
+    from: (usize, usize),
+    /// `None` = the read failed: nothing installs, and the asker repeats it on its ladder while the need
+    /// stands (the shelf at either edge; `pump_seek` in the detail screen for a restore).
+    window: Option<(Vec<crate::stores::paging::Row>, crate::stores::paging::PageInfo, Vec<TailHub>,
+        crate::stores::paging::RowState)>,
+}
+
+/// One page of the tail positions `start..start+size`: the hubs' listings past their previews end
+/// to end, a page spanning two hubs reading both. `get(key, offset, size)` is one listing page.
+/// What a hub says about its own total is learned into `hubs`. Items in `skip` are returned with no
+/// type, which the window skips while keeping their positions. `None` when a page failed or came
+/// back from another offset.
+fn tail_page(
+    hubs: &mut [TailHub],
+    skip: &std::collections::HashSet<String>,
+    start: usize,
+    size: usize,
+    get: &mut impl FnMut(&str, usize, usize) -> Option<plx_plex::plex::MediaContainer>,
+) -> Option<plx_plex::plex::MediaContainer> {
+    let mut out = Vec::new();
+    let (mut at, mut base, mut k) = (start, 0usize, 0usize);
+    while k < hubs.len() && out.len() < size {
+        if let Some(len) = hubs[k].len.filter(|len| at >= base + len) {
+            base += len;
+            k += 1;
+            continue;
+        }
+        let local = at - base;
+        let want = (size - out.len()).min(hubs[k].len.map_or(usize::MAX, |len| len - local));
+        let listed = hubs[k].preview + local;
+        let mc = get(&hubs[k].key, listed, want)?;
+        if mc.offset != listed as i64 { return None; }
+        if mc.total_size > 0 { hubs[k].len = Some((mc.total_size as usize).saturating_sub(hubs[k].preview)); }
+        let got = mc.metadata.len().min(want);
+        for mut item in mc.metadata.into_iter().take(got) {
+            if skip.contains(crate::pms::clean(&item.rating_key).as_str()) { item.kind.clear(); }
+            out.push(item);
+        }
+        at += got;
+        if got < want {
+            // A short page ends a hub whose length was unknown; a hub that said its length and
+            // answered short has not ended, and the window keeps what arrived.
+            if hubs[k].len.is_none() { hubs[k].len = Some(local + got); }
+            if hubs[k].len.is_some_and(|len| local + got >= len) { base += local + got; k += 1; continue; }
+            break;
+        }
+    }
+    let total = hubs.iter().map(|h| h.len).sum::<Option<usize>>().unwrap_or(0);
+    Some(plx_plex::plex::MediaContainer { offset: start as i64, total_size: total as i64, metadata: out, ..Default::default() })
+}
+
+/// What a Related window read is for.
+#[derive(Clone, Copy)]
+enum RelatedAsk {
+    /// The window slides one step: the previous (`before`) or the next.
+    Edge { before: bool },
+    /// The window is opened where tail position `at` lies, whatever it held before: a page read
+    /// afresh whose focus was last seen deep in the row.
+    Seek(usize),
+}
+
+/// Ask for the previous or next window of the Related tail. False when there is nothing to ask:
+/// no tail, no more in that direction, or a read already out. Main thread only.
+fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, before: bool,
+    seen: (usize, usize)) -> bool {
+    ask_related(state, adapter, RelatedAsk::Edge { before }, seen)
+}
+
+/// [`want_related`], or a window opened at a tail position ([`MetadataCmd::SeekRelated`]).
+fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, ask: RelatedAsk,
+    seen: (usize, usize)) -> bool {
+    use crate::stores::paging::{PageInfo, Row};
+    let Some(d) = state.current.as_ref() else { return false };
+    let t = &d.related_tail;
+    // The asker read a window that a landing has since replaced: where its focus stood in the old
+    // one says nothing about the new one. The landing's publication re-arms the shelf, which asks
+    // again from the window that stands.
+    if seen != (t.offset, t.end) { return false; }
+    let before = matches!(ask, RelatedAsk::Edge { before: true });
+    let seek = matches!(ask, RelatedAsk::Seek(_));
+    let seek_at = if let RelatedAsk::Seek(at) = ask { Some(at) } else { None };
+    if t.hubs.is_empty() || t.head > d.related.len() || (before && t.offset == 0)
+        || (matches!(ask, RelatedAsk::Edge { before: false }) && !t.more)
+        // A position past a hub whose length is not yet known cannot be addressed: the hubs'
+        // listings are chained by their lengths, which a slide learns on its way and a seek skips.
+        || (seek && t.hubs.split_last().is_some_and(|(_, earlier)| earlier.iter().any(|h| h.len.is_none()))) {
+        return false;
+    }
+    {
+        let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+        if rel.inflight {
+            if rel.withdrawn && rel.out.as_ref().is_some_and(|(sid, rk, from, was_before, was_seek)|
+                *from == seen && *was_before == before && *was_seek == seek_at && plx_plex::plex::same_item((d.sid, &d.rk), (*sid, rk))) {
+                // The read the reader walked away from is the one asked for again, from the window
+                // that still stands, so it answers this ask too.
+                rel.withdrawn = false;
+            }
+            return false;
+        }
+        // A window read from this one has answered and waits for the pump: the edge is already
+        // served, and reading it again would only land on a window that is gone by then.
+        let served = rel.landed.iter().any(|l| l.window.is_some() && l.from == seen
+            && plx_plex::plex::same_item((d.sid, &d.rk), (l.sid, &l.rk)));
+        if served { return false; }
+        rel.inflight = true;
+        rel.withdrawn = false;
+        rel.out = Some((d.sid, d.rk.clone(), seen, before, seek_at));
+    }
+    let (sid, rk) = (d.sid, d.rk.clone());
+    let info = PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };
+    // A seek opens its window on the listing alone: the window it replaces is not an overlap to
+    // carry, and the page's ledger holds nothing of positions it has not read.
+    let rows: Vec<Row> = if seek { Vec::new() } else { t.positions.iter().copied()
+        .zip(d.related[t.head..].iter().map(|m| std::sync::Arc::new(m.clone()))).collect() };
+    let skip: std::collections::HashSet<String> =
+        t.exclude.iter().cloned().chain(d.related[..t.head].iter().map(|m| m.rk.clone())).collect();
+    let mut hubs = t.hubs.clone();
+    let state = if seek { Default::default() } else { t.row.clone() };
+    let worker = std::sync::Arc::clone(adapter);
+    let spawned = plx_base::task::spawn_small("related-tail", move || {
+        let window = catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let client = plx_plex::plex::client_for(sid)?;
+            let start = match ask {
+                RelatedAsk::Seek(at) => related_seek_start(at),
+                RelatedAsk::Edge { before: true } => info.offset,
+                RelatedAsk::Edge { before: false } => info.end,
+            };
+            let ask = crate::stores::paging::Ask { start, before, hidden: &[] };
+            let current = (!rows.is_empty()).then_some((rows.as_slice(), info));
+            // The shared row reader: a listing that shifts between reads moves the window onto its
+            // ledger of shown keys instead of stopping it, so no card repeats and the end is reached.
+            let current = current.map(|(rows, info)| (rows.to_vec(), info));
+            let (rows, info, state) = crate::stores::paging::read_row(sid, &ask, current, state, 0, |start, size| {
+                tail_page(&mut hubs, &skip, start, size, &mut |key, at, count| client.hub_items_paged(key, at as i64, count as i64))
+            }, |keys| client.metadata_many(&keys.iter().map(String::as_str).collect::<Vec<_>>()))?;
+            Some((rows, info, std::mem::take(&mut hubs), state))
+        })).unwrap_or(None);
+        let mut rel = worker.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+        rel.inflight = false;
+        rel.out = None;
+        if std::mem::take(&mut rel.withdrawn) { return; }
+        rel.landed.push(RelLanded { sid, rk, from: (info.offset, info.end), window });
+    });
+    if !spawned {
+        let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+        rel.inflight = false;
+        rel.out = None;
+    }
+    spawned
+}
+
+/// Where a window opened at tail position `at` starts: half a window before it, so the card has the
+/// room to be walked to on both sides and neither edge's ask fires at once.
+fn related_seek_start(at: usize) -> usize {
+    at.saturating_sub(crate::pms::MAX_SHELF_ITEMS / 2)
+}
+
+/// Withdraws the Related read: one out is discarded when it lands, one landed and not yet installed
+/// is dropped. The read out keeps its single-flight latch until it has finished, so the next edge
+/// asks again only after it (or adopts it, for the same window). Main thread only.
+fn cancel_related(adapter: &MetadataAdapter) -> bool {
+    let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+    if rel.inflight { rel.withdrawn = true; }
+    rel.landed.clear();
+    false
+}
+
+/// Test seam: a tail read that started from window `from` of `next`'s item has answered with
+/// `next`'s tail window, and waits for [`pump_related_pages`] exactly as a worker's answer does.
+#[cfg(any(test, feature = "test-support"))]
+pub fn land_related_for_test(adapter: &MetadataAdapter, from: (usize, usize), next: &Detail) {
+    plx_base::testlock::assert_held("the detail store (land_related_for_test)");
+    let t = &next.related_tail;
+    let rows = t.positions.iter().copied()
+        .zip(next.related[t.head..].iter().map(|m| std::sync::Arc::new(m.clone()))).collect();
+    let info = crate::stores::paging::PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };
+    adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).landed.push(RelLanded {
+        sid: next.sid, rk: next.rk.clone(), from, window: Some((rows, info, t.hubs.clone(), t.row.clone())),
+    });
+}
+
+/// Main-thread pump: install a Related window that landed on the page and the window it was read
+/// from. True when the row changed.
+pub fn pump_related_pages(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
+    let landed = {
+        let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
+        if rel.landed.is_empty() { return false; }
+        std::mem::take(&mut rel.landed)
+    };
+    let Some(d) = state.current.as_mut() else { return false };
+    let mut changed = false;
+    for l in landed {
+        let t = &mut d.related_tail;
+        if !plx_plex::plex::same_item((d.sid, &d.rk), (l.sid, &l.rk)) || (t.offset, t.end) != l.from {
+            continue;
+        }
+        let Some((rows, info, hubs, state)) = l.window else { continue };
+        d.related.truncate(t.head);
+        t.positions = rows.iter().map(|(position, _)| *position).collect();
+        d.related.extend(rows.into_iter().map(|(_, m)| std::sync::Arc::try_unwrap(m).unwrap_or_else(|m| (*m).clone())));
+        (t.offset, t.end, t.total, t.more, t.hubs, t.row) = (info.offset, info.end, info.total, info.more, hubs, state);
+        changed = true;
+    }
+    changed
+}
+
 /// True while a season fetch is in flight — drives the episode row's loading dim + spinner.
 pub fn season_loading(adapter: &MetadataAdapter) -> bool {
     use std::sync::atomic::Ordering;
@@ -4490,6 +5013,8 @@ pub fn pump_season_with_gate(state: &mut MetadataState, adapter: &MetadataAdapte
     match r.eps {
         Some(eps) => {
             d.episodes = eps;
+            // the old list's wanted range means nothing to the new one
+            adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner()).keep = None;
             d.cur_season = r.idx;
             true
         }
@@ -5107,6 +5632,14 @@ mod trailer_tests {
         project_extras(&mut d, plx_plex::plex::ServerId::UNSET, &rows, "");
         assert_eq!(d.trailer().unwrap().rk, "9");
         assert_eq!(d.extras.len(), 2, "the shelf keeps the featurette");
+        // every row reaches the shelf, however many there are, and the picker still names the
+        // same trailer: the one that sits past the old 32-row cut
+        let mut many: Vec<_> = (0..100).map(|i| bts(&format!("{}", 1000 + i))).collect();
+        many.push(trailer("9000", "/library/parts/9000"));
+        let mut d = Detail::default();
+        project_extras(&mut d, plx_plex::plex::ServerId::UNSET, &many, "");
+        assert_eq!(d.extras.len(), 101, "every extras row is on the shelf");
+        assert_eq!(d.trailer().expect("a trailer").rk, "9000");
         let bare = Extra {
             title: "No still".into(),
             subtype: "featurette".into(),
@@ -5242,3 +5775,11 @@ mod credits_tests;
 #[cfg(test)]
 #[path = "metadata_demo_fixture_tests.rs"]
 mod demo_fixture_tests;
+
+#[cfg(test)]
+#[path = "metadata_episode_pages_tests.rs"]
+mod episode_pages_tests;
+
+#[cfg(test)]
+#[path = "metadata_related_tail_tests.rs"]
+mod related_tail_tests;

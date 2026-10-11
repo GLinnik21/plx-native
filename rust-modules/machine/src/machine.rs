@@ -49,6 +49,12 @@ pub trait Host: 'static {
     /// Whether this effect needs the emitting page's frozen navigation bookmark. Hosts may
     /// exempt housekeeping which never navigates; unknown effects retain the safe default.
     fn app_fx_needs_return(_fx: &Self::Fx) -> bool { true }
+
+    /// Cut an entry's saved page memory down to what a cold restore needs, once the entry sits
+    /// more than the stack's `DEEP` levels below the top: the route (kept by the entry) and the
+    /// focused identity, `focus` being the entry's saved focus key. The default keeps everything,
+    /// which is right for a host whose memory is already small.
+    fn shed_memory(_memory: &mut Self::Memory, _focus: Option<Self::Elem>) {}
 }
 
 macro_rules! newtype {
@@ -441,6 +447,13 @@ impl<'p, H: Host> Effects<'p, H> {
     /// The dispatcher validates the group and scopes this to the active emitting screen's entry.
     pub fn remember(&mut self, group: GroupId, elem: H::Elem) {
         self.push(Fx::Remember { group, elem });
+    }
+
+    /// How many more effects this step may push before it reaches `MAX_EMIT_PER_STEP`. An emitter
+    /// whose output scales with the data (one effect per server) sizes its batch by this and
+    /// carries the rest to a later step.
+    pub fn remaining(&self) -> u32 {
+        MAX_EMIT_PER_STEP.saturating_sub(self.emitted)
     }
 
     /// How many effects this step has pushed (the dispatcher's per-step count).

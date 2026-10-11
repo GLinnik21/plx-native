@@ -80,7 +80,8 @@ fn page_memory(memory: &plx_screens::registry::PageMemory) -> Result<Value, &'st
         PageMemory::Person(m) => json!({"person":{"next_card_elem":m.cards.next,
             "header_marked":m.header_marked,"card_keys":card_keys(&m.cards)}}),
         PageMemory::Collection(m) => json!({"collection":{"next_elem":m.cards.next,
-            "header_marked":m.header_marked,"card_keys":card_keys(&m.cards)}}),
+            "header_marked":m.header_marked,"card_keys":card_keys(&m.cards),
+            "total":m.total,"counts":m.counts,"focus_index":m.focus_index,"focus_elem":m.focus_elem}}),
         PageMemory::Filmography(m) => json!({"filmography":{"next_elem":m.next_elem,
             "department":m.department,"preview":m.preview,"keys":m.keys.iter()
                 .map(|k| json!([k.department,k.catalog_id,k.elem])).collect::<Vec<_>>()}}),
@@ -216,10 +217,12 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
     Ok(match command {
         StoreCmd::Hubs(HubsCmd::Reset) => json!({"hubs":"reset"}),
         StoreCmd::Hubs(HubsCmd::RefetchHubs) => json!({"hubs":"refetch"}),
-        StoreCmd::Hubs(HubsCmd::Page { sid, id, key, before }) =>
+        // `seen` is the generation of the frame's own view, which the recording already fixes.
+        StoreCmd::Hubs(HubsCmd::Page { sid, id, key, before, seen: _ }) =>
             json!({"hubs":{"page":[sid.raw(),id,key,before]}}),
         StoreCmd::Hubs(HubsCmd::CancelPage { sid, id, key }) =>
             json!({"hubs":{"cancel_page":[sid.raw(),id,key]}}),
+        StoreCmd::Hubs(HubsCmd::Hold { lo, hi }) => json!({"hubs":{"hold":[lo,hi]}}),
         StoreCmd::Hubs(HubsCmd::Retry) => json!({"hubs":"retry"}),
         StoreCmd::Browse(BrowseCmd::Reset) => json!({"browse":"reset"}),
         StoreCmd::Browse(BrowseCmd::Discovery(result)) => plx_data::browse::record::encode(result),
@@ -246,6 +249,9 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
             use plx_data::stores::collection::CollectionCmd;
             json!({"collection":match cmd {
                 CollectionCmd::Open { target } => json!({"open":[target.id.sid.raw(),target.id.rk,target.id.sec,target.id.tag,target.id.name,target.want]}),
+                CollectionCmd::Window { wanted, focus, restore } =>
+                    json!({"window":[wanted.start,wanted.end,focus,restore]}),
+                CollectionCmd::Restore { total, counts } => json!({"restore":[total,counts]}),
                 CollectionCmd::Close => json!("close"),
                 CollectionCmd::Reset => json!("reset"),
                 CollectionCmd::SetWatchedLocal { .. } => return Err("unsupported controlled collection command"),

@@ -6,11 +6,16 @@
 use plx_plex::plex::collections::{resolve_tag, CollectionOutcome, CollectionRef};
 use plx_plex::plex::ServerId;
 use crate::pms::{parse_item, PmsMovie};
+use crate::stores::page_cache::{Keep, PageCache, PAGE};
+use std::ops::Range;
 use std::panic::catch_unwind;
 use std::sync::Arc;
 
-pub const PAGE_SIZE: usize = 60;
+pub const PAGE_SIZE: usize = PAGE;
 const RETRY_FRAMES: u32 = 120;
+/// Frontier requests one ask may cause. A restore without kept counts reads forward this many pages
+/// at a time, so a deep restore never fires a burst of requests the screen did not wait for.
+const FRONTIER_ASK: u8 = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CollectionTarget {
@@ -58,16 +63,22 @@ pub struct Collection {
     pub child_count: usize,
     /// The member order the header stated, if it stated one.
     pub order: Option<CollectionOrder>,
-    pub items: Vec<PmsMovie>,
+    /// The rows by absolute index. A hole (a page not read, or evicted) reads as `None`.
+    pages: PageCache<PmsMovie>,
+    /// Pages read in order so far, which is the server's page frontier. Their kept counts are
+    /// known; a page at or past it is read only as the frontier.
+    read: usize,
     pub total: usize,
     pub status: CollectionStatus,
     pub more: bool,
-    /// Server rows consumed so far — the next page's `X-Plex-Container-Start`. NOT
-    /// `items.len()`: `run_job` drops rows that are not `pms::listable` (a clip, an artist), so
-    /// the grid can hold fewer members than the server has handed over, and paging from
-    /// `items.len()` would re-request rows already seen and append them twice.
-    offset: usize,
-    want: usize,
+    /// The indices the screen shows or is about to show, from the last [`CollectionCmd::Window`]
+    /// (or the `want` of an `Open`).
+    wanted: Range<usize>,
+    focus: Option<usize>,
+    restore: Option<usize>,
+    /// Frontier requests left before the next ask. An ask ([`CollectionCmd::Window`] or `Open`)
+    /// refills it, so a restore without kept counts reads forward a bounded stretch at a time.
+    budget: u8,
     header_ready: bool,
     client_key: Option<(u32, u32)>,
 }
@@ -77,13 +88,94 @@ impl Collection {
     /// until the header replaces it.
     fn loading(id: CollectionRef, want: usize, client_key: Option<(u32, u32)>) -> Self {
         Self { title: id.name.clone(), id, summary: String::new(), thumb: String::new(),
-            child_count: 0, order: None, items: Vec::new(), total: 0, status: CollectionStatus::Loading,
-            more: true, offset: 0, want, header_ready: false, client_key }
+            child_count: 0, order: None, pages: PageCache::default(), read: 0, total: 0,
+            status: CollectionStatus::Loading, more: true, wanted: 0..want, focus: None, restore: None,
+            budget: FRONTIER_ASK, header_ready: false, client_key }
     }
 
     /// Whether the header (title, art, summary) has landed — before it, an empty `thumb` is not
     /// yet an answer.
     pub fn header_ready(&self) -> bool { self.header_ready }
+
+    /// The member at absolute index `i`, or `None` for a hole.
+    pub fn item(&self, i: usize) -> Option<&PmsMovie> { self.pages.get(i) }
+
+    /// How many indices are known: the kept rows of every page read so far. An evicted row still
+    /// counts, so the index of every row the user has reached stays the same.
+    pub fn shown(&self) -> usize { self.pages.first_index_of(self.read).min(self.total) }
+
+    /// The index of the loaded row that is `(sid, rk)`, if its page is held. An evicted row has no
+    /// index to give until its page is read again.
+    pub fn position_of(&self, sid: ServerId, rk: &str) -> Option<usize> {
+        self.pages.loaded_rows().find(|(_, m)| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk))).map(|(i, _)| i)
+    }
+
+    /// Every row held, with its absolute index.
+    pub fn loaded_rows(&self) -> impl Iterator<Item = (usize, &PmsMovie)> + '_ { self.pages.loaded_rows() }
+
+    /// One kept-row count per page read, for a screen to save with its position and send back as
+    /// [`CollectionCmd::Restore`](crate::stores::collection::CollectionCmd::Restore).
+    pub fn kept_counts(&self) -> Vec<u8> { self.pages.kept_counts() }
+
+    /// Pages the screen shows or is restoring to whose rows are not held, below the frontier.
+    fn wanted_pages(&self) -> Vec<usize> {
+        let mut pages: Vec<usize> = self.pages.missing(self.wanted.start, self.wanted.end).collect();
+        for i in [self.focus, self.restore].into_iter().flatten() {
+            if let Some((p, _)) = self.pages.locate(i) {
+                if !self.pages.is_loaded(p) { pages.push(p); }
+            }
+        }
+        pages
+    }
+
+    /// The count of leading indices the screen needs known.
+    fn need(&self) -> usize {
+        self.focus.into_iter().chain(self.restore).map(|i| i + 1).fold(self.wanted.end, usize::max)
+    }
+
+    /// Test support: moves the window and evicts as a landing would.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn evict_for_test(&mut self, wanted: Range<usize>, focus: Option<usize>, restore: Option<usize>) {
+        (self.wanted, self.focus, self.restore) = (wanted.clone(), focus, restore);
+        self.pages.evict(&Keep { wanted, focus, restore });
+    }
+
+    /// Test support: the pages a [`CollectionCmd::Window`](crate::stores::collection::CollectionCmd::Window)
+    /// asks for (the window's, the focus's and the restore target's, if not held) land from `all`,
+    /// as a server that honours paging would answer them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fill_wanted_for_test(&mut self, all: &[PmsMovie]) {
+        for p in self.wanted_pages() {
+            let rows = all.iter().skip(p * PAGE_SIZE).take(PAGE_SIZE).cloned().collect();
+            self.pages.set_page(p, rows);
+        }
+    }
+
+    /// Test support: every row, read through `edit`, and put back (a hole reads as absent).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn edit_items_for_test(&mut self, edit: impl FnOnce(&mut Vec<PmsMovie>)) {
+        let mut items: Vec<PmsMovie> = (0..self.shown()).filter_map(|i| self.item(i).cloned()).collect();
+        edit(&mut items);
+        let more = self.more;
+        self.replace_items_for_test(items);
+        self.more = more;
+    }
+
+    /// Test support: replaces the listing with `items`, all of them read, as a server that honours
+    /// paging would have returned them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn replace_items_for_test(&mut self, items: Vec<PmsMovie>) {
+        self.total = items.len();
+        self.pages = PageCache::default();
+        self.pages.set_total(self.total);
+        self.read = 0;
+        let mut rows = items.into_iter();
+        for p in 0..self.total.div_ceil(PAGE_SIZE) {
+            self.pages.set_page(p, rows.by_ref().take(PAGE_SIZE).collect());
+            self.read = p + 1;
+        }
+        self.more = false;
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -132,18 +224,39 @@ impl CollectionState {
         match cmd {
             CollectionCmd::Open { target } => {
                 if let Some(current) = self.current.as_mut().filter(|c| c.id.same_collection(&target.id)) {
-                    let old = current.want;
-                    current.want = current.want.max(target.want);
+                    let old = current.wanted.end;
+                    current.wanted.end = current.wanted.end.max(target.want);
+                    current.budget = FRONTIER_ASK;
                     let retry = current.status == CollectionStatus::Failed;
                     if retry {
                         current.status = CollectionStatus::Loading;
                         self.retry_cd = 0;
                     }
-                    return current.want != old || retry;
+                    return current.wanted.end != old || retry;
                 }
                 self.supersede(adapter);
                 let client_key = plx_plex::plex::client_for(target.id.sid).map(|c| (c.instance_gen(), c.token_gen()));
                 self.current = Some(Collection::loading(target.id, target.want.max(PAGE_SIZE), client_key));
+                true
+            }
+            CollectionCmd::Window { wanted, focus, restore } => {
+                let Some(c) = self.current.as_mut() else { return false };
+                let changed = c.wanted != wanted || c.focus != focus || c.restore != restore;
+                (c.wanted, c.focus, c.restore) = (wanted, focus, restore);
+                c.budget = FRONTIER_ASK;
+                changed
+            }
+            CollectionCmd::Restore { total, counts } => {
+                // The counts describe a listing of `total` items, one entry per page; any other
+                // shape is not this listing's directory and is not guessed at.
+                let Some(c) = self.current.as_mut() else { return false };
+                if counts.len() != total.div_ceil(PAGE_SIZE) { return false; }
+                c.total = total;
+                c.pages.set_total(total);
+                c.pages.restore_kept_counts(&counts);
+                c.read = counts.len();
+                c.more = false;
+                c.status = if c.shown() > 0 { CollectionStatus::Ready } else { c.status };
                 true
             }
             CollectionCmd::Close | CollectionCmd::Reset => {
@@ -156,10 +269,13 @@ impl CollectionState {
             CollectionCmd::SetWatchedLocal { sid, rk, on } => {
                 let Some(c) = self.current.as_mut() else { return false };
                 let mut hit = false;
-                for item in c.items.iter_mut()
-                    .filter(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, &rk))) {
-                    crate::pms::set_watched(item, on);
-                    hit = true;
+                for i in 0..c.shown() {
+                    c.pages.edit(i, |item| {
+                        if plx_plex::plex::same_item((item.sid, &item.rk), (sid, &rk)) {
+                            crate::pms::set_watched(item, on);
+                            hit = true;
+                        }
+                    });
                 }
                 hit
             }
@@ -170,9 +286,12 @@ impl CollectionState {
         let Some(c) = self.current.as_ref() else { return false };
         let now = plx_plex::plex::client_for(c.id.sid).map(|x| (x.instance_gen(), x.token_gen()));
         if now == c.client_key { return false; }
-        let (id, want) = (c.id.clone(), c.want);
+        let (id, want) = (c.id.clone(), c.wanted.end);
+        let (window, focus, restore) = (c.wanted.clone(), c.focus, c.restore);
         self.supersede(adapter);
-        self.current = Some(Collection::loading(id, want, now));
+        let mut fresh = Collection::loading(id, want, now);
+        (fresh.wanted, fresh.focus, fresh.restore) = (window, focus, restore);
+        self.current = Some(fresh);
         self.revision += 1;
         true
     }
@@ -199,8 +318,14 @@ impl CollectionState {
             });
         }
         if !c.header_ready { return Some(Job::Header { rk: c.id.rk.clone() }); }
-        if c.more && c.items.len() < c.want {
-            return Some(Job::Children { rk: c.id.rk.clone(), start: c.offset });
+        // A page the screen shows or restores to, read earlier and since evicted: a re-read at its
+        // own offset, which the directory's known count makes safe.
+        if let Some(page) = c.wanted_pages().into_iter().find(|&p| p < c.read) {
+            return Some(Job::Children { rk: c.id.rk.clone(), start: page * PAGE_SIZE });
+        }
+        // Otherwise the frontier, in order, while the window needs indices it has not counted.
+        if c.more && c.budget > 0 && c.need() > c.shown() {
+            return Some(Job::Children { rk: c.id.rk.clone(), start: c.read * PAGE_SIZE });
         }
         None
     }
@@ -211,7 +336,7 @@ impl CollectionState {
         let Some(c) = self.current.as_ref() else { return };
         let Some(client) = plx_plex::plex::client_for(c.id.sid) else {
             self.retry_cd = RETRY_FRAMES;
-            if c.items.is_empty() {
+            if c.shown() == 0 {
                 self.current.as_mut().unwrap().status = CollectionStatus::Failed;
                 self.revision += 1;
             }
@@ -252,15 +377,35 @@ impl CollectionState {
                 c.status = CollectionStatus::Loading;
                 true
             }
-            Landing::Page { start, got, items, total } => {
-                if start != c.offset { return false; }
-                c.offset = start + got;
-                c.total = total.max(c.offset);
-                c.items.extend(items);
-                // A page of zero rows ends the listing whatever `totalSize` claimed, or a server
-                // that over-reports would be asked for the same empty offset forever.
-                c.more = got > 0 && c.offset < c.total;
-                c.status = if !c.items.is_empty() { CollectionStatus::Ready }
+            Landing::Page { start, got, pages, total } => {
+                // A page is read at its own offset: the frontier, or a re-read of a page whose
+                // count is known. Anything past the frontier was never asked for in order.
+                if start % PAGE_SIZE != 0 { return false; }
+                // A server that ignores paging answers the whole listing from its first row, so
+                // its chunks start at 0 whatever offset was asked (see `run_job`).
+                let base = if got > PAGE_SIZE { 0 } else { start / PAGE_SIZE };
+                if base > c.read { return false; }
+                // A re-read is asked only for a hole, so an answer for a page that still holds its
+                // rows is stale. A whole-listing answer is not one page and always lands.
+                if got <= PAGE_SIZE && base < c.read && c.pages.is_loaded(base) { return false; }
+                let before = c.read;
+                c.total = total.max(base * PAGE_SIZE + got);
+                c.pages.set_total(c.total);
+                let chunks = pages.len();
+                for (k, rows) in pages.into_iter().enumerate() {
+                    c.pages.set_page(base + k, rows);
+                }
+                c.read = c.read.max(base + chunks).min(c.pages.page_count());
+                if c.read > before {
+                    c.budget = c.budget.saturating_sub(1);
+                }
+                if base >= before {
+                    // A page of zero rows ends the listing whatever `totalSize` claimed, or a server
+                    // that over-reports would be asked for the same empty offset forever.
+                    c.more = got > 0 && c.read * PAGE_SIZE < c.total;
+                }
+                c.pages.evict(&Keep { wanted: c.wanted.clone(), focus: c.focus, restore: c.restore });
+                c.status = if c.shown() > 0 { CollectionStatus::Ready }
                     else if c.more { CollectionStatus::Loading }
                     else { CollectionStatus::Empty };
                 true
@@ -272,7 +417,7 @@ impl CollectionState {
             }
             Landing::Transport => {
                 self.retry_cd = RETRY_FRAMES;
-                if c.items.is_empty() { c.status = CollectionStatus::Failed; }
+                if c.shown() == 0 { c.status = CollectionStatus::Failed; }
                 true
             }
         }
@@ -288,9 +433,7 @@ impl CollectionState {
         c.title = if c.id.name.is_empty() { "Collection".into() } else { c.id.name.clone() };
         c.summary = "A collection summary long enough for screen layout tests.".into();
         c.child_count = items.len();
-        c.total = items.len();
-        c.offset = items.len();
-        c.items = items;
+        c.replace_items_for_test(items);
         c.header_ready = true;
         c.more = false;
         c.status = status;
@@ -337,8 +480,10 @@ impl Header {
 enum Landing {
     /// The collection's header; `rk` is `Some` when it answers a tag route's resolution.
     Header { rk: Option<String>, head: Header },
-    /// `got` is the server rows this page consumed; `items` only the listable ones among them.
-    Page { start: usize, got: usize, items: Vec<PmsMovie>, total: usize },
+    /// `got` is the server rows the response consumed. `pages[k]` holds the listable rows of server
+    /// page `k` of the response (the first `PAGE_SIZE` rows, the next, and so on), so an answer
+    /// that ignores paging lands as every page it covers.
+    Page { start: usize, got: usize, pages: Vec<Vec<PmsMovie>>, total: usize },
     Denied,
     Missing,
     Transport,
@@ -390,9 +535,10 @@ fn run_job(client: &'static plx_plex::plex::Client, sid: ServerId, job: Job) -> 
                 let page = answered(client.collection_children(&rk, start as i64, PAGE_SIZE as i64))?;
                 let total = page.total_size.max(page.size).max(0) as usize;
                 let got = page.metadata.len();
-                let items = page.metadata.iter().filter(|row| crate::pms::listable(&row.kind))
-                    .map(|row| member(row, sid)).collect();
-                Landing::Page { start, got, items, total }
+                let pages = page.metadata.chunks(PAGE_SIZE).map(|rows| rows.iter()
+                    .filter(|row| crate::pms::listable(&row.kind)).map(|row| member(row, sid)).collect())
+                    .collect();
+                Landing::Page { start, got, pages, total }
             }
         })
     };
@@ -426,7 +572,7 @@ impl CollectionAdapter {
     #[cfg(any(test, feature = "test-support"))]
     pub fn land_status_for_test(&self, generation: u32, status: CollectionStatus) {
         let what = match status {
-            CollectionStatus::Empty => Landing::Page { start: 0, got: 0, items: Vec::new(), total: 0 },
+            CollectionStatus::Empty => Landing::Page { start: 0, got: 0, pages: vec![], total: 0 },
             CollectionStatus::Unavailable => Landing::Denied,
             CollectionStatus::Failed => Landing::Transport,
             _ => Landing::Missing,
@@ -504,12 +650,12 @@ mod tests {
         let header_rev = state.view().revision();
         assert!(header_rev > opened, "a header landing is a content change");
         let page = (0..PAGE_SIZE).map(|i| PmsMovie { rk: i.to_string(), ..Default::default() }).collect();
-        adapter.land(generation, Landing::Page { start: 0, got: PAGE_SIZE, items: page, total: 130 });
+        adapter.land(generation, Landing::Page { start: 0, got: PAGE_SIZE, pages: vec![page], total: 130 });
         assert!(state.take_landing_for_test(&adapter));
         let paged_rev = state.view().revision();
         assert!(paged_rev > header_rev, "a page landing is a content change");
         assert_eq!(state.generation(), generation, "…while paging leaves the request epoch alone");
-        adapter.land(generation, Landing::Page { start: 0, got: 0, items: Vec::new(), total: 130 });
+        adapter.land(generation, Landing::Page { start: 0, got: 0, pages: vec![], total: 130 });
         assert!(!state.take_landing_for_test(&adapter));
         assert_eq!(state.view().revision(), paged_rev, "a dropped landing changes nothing");
     }
@@ -583,10 +729,10 @@ mod tests {
         assert!(state.take_landing_for_test(&adapter));
         assert!(matches!(state.job(), Some(Job::Children { start: 0, .. })));
         let page = (0..PAGE_SIZE).map(|i| PmsMovie { rk: i.to_string(), ..Default::default() }).collect();
-        adapter.land(generation, Landing::Page { start: 0, got: PAGE_SIZE, items: page, total: 130 });
+        adapter.land(generation, Landing::Page { start: 0, got: PAGE_SIZE, pages: vec![page], total: 130 });
         assert!(state.take_landing_for_test(&adapter));
         let c = state.view().current().unwrap();
-        assert_eq!((c.items.len(), c.more, c.status), (PAGE_SIZE, true, CollectionStatus::Ready));
+        assert_eq!((c.shown(), c.more, c.status), (PAGE_SIZE, true, CollectionStatus::Ready));
         assert!(state.job().is_none(), "the grid has not asked for more yet");
 
         let mut more = target;
@@ -595,8 +741,8 @@ mod tests {
             "a larger want on the same identity is a change, not a reopen");
         assert_eq!(state.generation(), generation, "paging does not supersede the collection");
         assert!(matches!(state.job(), Some(Job::Children { start, .. }) if start == PAGE_SIZE));
-        adapter.land(generation, Landing::Page { start: 0, got: 0, items: Vec::new(), total: 130 });
-        assert!(!state.take_landing_for_test(&adapter), "a page for the wrong offset is dropped");
+        adapter.land(generation, Landing::Page { start: 5 * PAGE_SIZE, got: 0, pages: vec![], total: 130 });
+        assert!(!state.take_landing_for_test(&adapter), "a page past the frontier is dropped");
     }
 
     /// Regression: paging used `items.len()` as the next server offset, so a page whose rows were
@@ -611,7 +757,7 @@ mod tests {
         adapter.land(generation, Landing::Header { rk: None, head: header("Set", 130) });
         assert!(state.take_landing_for_test(&adapter));
         let listed = (0..PAGE_SIZE - 5).map(|i| PmsMovie { rk: i.to_string(), ..Default::default() }).collect();
-        adapter.land(generation, Landing::Page { start: 0, got: PAGE_SIZE, items: listed, total: 130 });
+        adapter.land(generation, Landing::Page { start: 0, got: PAGE_SIZE, pages: vec![listed], total: 130 });
         assert!(state.take_landing_for_test(&adapter));
         state.run(&adapter, CollectionCmd::Open { target: CollectionTarget {
             want: 2 * PAGE_SIZE, ..set_target("50001", 7, "Set") } });
@@ -624,7 +770,7 @@ mod tests {
         let generation = state.generation();
         adapter.land(generation, Landing::Header { rk: None, head: header("Clips", 3) });
         assert!(state.take_landing_for_test(&adapter));
-        adapter.land(generation, Landing::Page { start: 0, got: 3, items: Vec::new(), total: 3 });
+        adapter.land(generation, Landing::Page { start: 0, got: 3, pages: vec![vec![]], total: 3 });
         assert!(state.take_landing_for_test(&adapter));
         let c = state.view().current().unwrap();
         assert_eq!((c.status, c.more), (CollectionStatus::Empty, false));
@@ -658,7 +804,252 @@ mod tests {
             rk: "b".into(), on: true }), "an item not on the page changes nothing");
         assert!(state.run(&adapter, CollectionCmd::SetWatchedLocal { sid: ServerId::UNSET,
             rk: "a".into(), on: true }));
-        let item = &state.view().current().unwrap().items[0];
+        let item = &state.view().current().unwrap().item(0).unwrap();
         assert!(item.watched && !item.unwatched);
+    }
+
+    /// A collection opened and its header landed, reading nothing yet.
+    fn opened(total: usize) -> (CollectionState, Arc<CollectionAdapter>) {
+        let adapter = Arc::new(CollectionAdapter::default());
+        let mut state = CollectionState::default();
+        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        adapter.land(state.generation(), Landing::Header { rk: None, head: header("Set", total) });
+        assert!(state.take_landing_for_test(&adapter));
+        (state, adapter)
+    }
+
+    fn movie(rk: usize) -> PmsMovie {
+        PmsMovie { rk: rk.to_string(), ..Default::default() }
+    }
+
+    /// Answers every request the store makes, as a server that honours paging: server row `s` is
+    /// `rk` `s`, and a row `keep` rejects is filtered out of its page. Records each request's start.
+    fn serve(state: &mut CollectionState, adapter: &Arc<CollectionAdapter>, total: usize,
+             keep: &dyn Fn(usize) -> bool, requests: &mut Vec<usize>) {
+        while let Some(Job::Children { start, .. }) = state.job() {
+            requests.push(start);
+            let got = PAGE_SIZE.min(total - start);
+            let rows = (start..start + got).filter(|&s| keep(s)).map(movie).collect();
+            adapter.land(state.generation(), Landing::Page { start, got, pages: vec![rows], total });
+            assert!(state.take_landing_for_test(adapter));
+        }
+    }
+
+    /// Moves the window to `wanted`, asks for what it needs, and returns the requests made.
+    fn show(state: &mut CollectionState, adapter: &Arc<CollectionAdapter>, total: usize,
+            wanted: Range<usize>, focus: Option<usize>, restore: Option<usize>, keep: &dyn Fn(usize) -> bool) -> Vec<usize> {
+        state.run(adapter, CollectionCmd::Window { wanted, focus, restore });
+        let mut requests = Vec::new();
+        serve(state, adapter, total, keep, &mut requests);
+        requests
+    }
+
+    fn rk_at(state: &CollectionState, i: usize) -> Option<String> {
+        state.view().current().unwrap().item(i).map(|m| m.rk.clone())
+    }
+
+    fn loaded(state: &CollectionState) -> usize {
+        state.view().current().unwrap().pages.loaded_pages()
+    }
+
+    /// Walks a `total`-item listing from the top to its end one 60-row window at a time.
+    fn walk_down(state: &mut CollectionState, adapter: &Arc<CollectionAdapter>, total: usize,
+                 keep: &dyn Fn(usize) -> bool) -> usize {
+        let mut peak = 0;
+        for start in (0..total).step_by(45) {
+            let wanted = start..(start + PAGE_SIZE).min(total);
+            show(state, adapter, total, wanted.clone(), Some(start), None, keep);
+            peak = peak.max(loaded(state));
+            // A filtered listing has fewer rows than the server's total, so the last window can
+            // reach past the final row; every index the store counts must read, and it counts to
+            // the window's end unless the listing ended first.
+            let c = state.view().current().unwrap();
+            let known = c.shown();
+            assert!(known >= wanted.end || !c.more, "window {wanted:?} counted to {known}");
+            assert!(wanted.clone().filter(|&i| i < known).all(|i| rk_at(state, i).is_some()), "window {wanted:?} reads");
+        }
+        peak
+    }
+
+    #[test]
+    fn a_5000_item_collection_walked_to_the_end_holds_at_most_eight_pages() {
+        let total = 5_000;
+        let (mut state, adapter) = opened(total);
+        let peak = walk_down(&mut state, &adapter, total, &|_| true);
+        assert!(peak <= crate::stores::page_cache::MAX_LOADED, "peak {peak} pages loaded");
+        let c = state.view().current().unwrap();
+        assert_eq!((c.shown(), c.more), (total, false), "every index is counted");
+    }
+
+    #[test]
+    fn scrolling_back_up_re_reads_evicted_pages_and_every_index_returns_the_same_item() {
+        let total = 5_000;
+        let (mut state, adapter) = opened(total);
+        walk_down(&mut state, &adapter, total, &|_| true);
+        let mut re_reads = 0;
+        for start in (0..total).step_by(45).rev() {
+            let wanted = start..(start + PAGE_SIZE).min(total);
+            re_reads += show(&mut state, &adapter, total, wanted.clone(), Some(start), None, &|_| true).len();
+            assert!(wanted.clone().all(|i| rk_at(&state, i) == Some(i.to_string())), "window {wanted:?} reads");
+        }
+        assert!(re_reads > 0, "evicted pages were read again");
+        assert!(loaded(&state) <= crate::stores::page_cache::MAX_LOADED);
+    }
+
+    /// Page 1 keeps 57 rows (its last three are filtered out), so every index from 117 on moves by
+    /// three, and no index at or before the focus does.
+    #[test]
+    fn a_filtered_page_shifts_later_indices_by_three_and_never_one_at_or_before_the_focus() {
+        let total = 300;
+        let (mut state, adapter) = opened(total);
+        let keep = |s: usize| !(117..=119).contains(&s);
+        show(&mut state, &adapter, total, 0..200, Some(30), None, &keep);
+        assert!((0..117).all(|i| rk_at(&state, i) == Some(i.to_string())), "indices before the shift read as before");
+        assert_eq!(rk_at(&state, 117).as_deref(), Some("120"), "unfiltered this was row 117");
+        assert_eq!(state.view().current().unwrap().shown(), 237);
+    }
+
+    #[test]
+    fn a_restore_with_saved_counts_reads_only_the_target_pages() {
+        let total = 5_000;
+        let keep = |s: usize| s % 7 != 3;
+        let (mut state, adapter) = opened(total);
+        walk_down(&mut state, &adapter, total, &keep);
+        let counts = state.view().current().unwrap().pages.kept_counts();
+        assert!(counts.iter().any(|&k| k < 60), "a filtered listing has short pages");
+
+        // Kept rows per page are short, so index 3000 sits on a later server page than 3000 / 60.
+        let page_of = |index: usize| {
+            let (mut p, mut rest) = (0, index);
+            while rest >= usize::from(counts[p]) { rest -= usize::from(counts[p]); p += 1; }
+            p
+        };
+        let pages: Vec<usize> = (page_of(3000)..=page_of(3119)).map(|p| p * PAGE_SIZE).collect();
+        assert!(pages[0] > 3000, "the window is not where an unfiltered listing would put it");
+
+        let (mut back, adapter) = opened(total);
+        assert!(back.run(&adapter, CollectionCmd::Restore { total, counts }));
+        let requests = show(&mut back, &adapter, total, 3000..3120, Some(3000), Some(3000), &keep);
+        assert_eq!(requests, pages, "only the pages the window covers");
+        let kept: Vec<usize> = (0..total).filter(|&s| keep(s)).collect();
+        assert!((3000..3120).all(|i| rk_at(&back, i) == Some(kept[i].to_string())));
+    }
+
+    /// The focused card's page and a pending restore's target page survive the eviction a far-away
+    /// window triggers, so the card under focus never becomes a hole.
+    #[test]
+    fn eviction_keeps_the_focused_and_the_restore_target_pages() {
+        let total = 5_000;
+        let (mut state, adapter) = opened(total);
+        for start in (0..=3000).step_by(45) {
+            show(&mut state, &adapter, total, start..start + PAGE_SIZE, Some(start), None, &|_| true);
+        }
+        assert!(rk_at(&state, 3000).is_some() && rk_at(&state, 2700).is_some());
+        // Reading two pages for a window at the top pushes the load over the cap. A kept page is
+        // not read again, so the requests are those two pages and nothing else.
+        let requests = show(&mut state, &adapter, total, 60..180, Some(3000), Some(2700), &|_| true);
+        assert_eq!(requests, vec![60, 120], "no page the screen holds was dropped and re-read");
+        assert!(loaded(&state) <= crate::stores::page_cache::MAX_LOADED);
+        assert_eq!(rk_at(&state, 3000).as_deref(), Some("3000"), "the focused page is kept");
+        assert_eq!(rk_at(&state, 2700).as_deref(), Some("2700"), "the restore target's page is kept");
+    }
+
+    /// `Window` names indices of a listing that does not move, so unlike a relative page ask it
+    /// needs no identity guard: it is a plain assignment. One computed from a view that the frame's
+    /// landing has since replaced is overwritten by the next tick's (the screen sends on change),
+    /// and saying a window again changes and requests nothing.
+    #[test]
+    fn a_window_ask_is_absolute_and_idempotent_so_a_stale_one_is_simply_overwritten() {
+        let total = 5_000;
+        let (mut state, adapter) = opened(total);
+        show(&mut state, &adapter, total, 300..360, Some(300), None, &|_| true);
+        show(&mut state, &adapter, total, 0..60, Some(0), None, &|_| true);
+        let wanted = |state: &CollectionState| state.current.as_ref().map(|c| (c.wanted.clone(), c.focus, c.restore));
+        let after_stale = wanted(&state);
+        assert_eq!(after_stale, Some((0..60, Some(0), None)), "the last ask stands whatever came before it");
+        assert!(!state.run(&adapter, CollectionCmd::Window { wanted: 0..60, focus: Some(0), restore: None }),
+            "saying it again changes nothing");
+        assert_eq!(show(&mut state, &adapter, total, 0..60, Some(0), None, &|_| true), Vec::<usize>::new(),
+            "and asks for no page twice");
+        assert_eq!(wanted(&state), after_stale);
+    }
+
+    #[test]
+    fn a_restore_without_kept_counts_reads_forward_eight_requests_per_ask() {
+        let total = 5_000;
+        let (mut state, adapter) = opened(total);
+        let first = show(&mut state, &adapter, total, 3000..3060, Some(3000), Some(3000), &|_| true);
+        assert_eq!(first, (0..8).map(|p| p * PAGE_SIZE).collect::<Vec<_>>(),
+            "the frontier, in order, up to the budget");
+        let mut asks = 1;
+        while rk_at(&state, 3000).is_none() {
+            let more = show(&mut state, &adapter, total, 3000..3060, Some(3000), Some(3000), &|_| true);
+            assert!(more.len() <= 8, "{} requests on one ask", more.len());
+            asks += 1;
+            assert!(asks < 20, "the restore never arrived");
+        }
+        assert_eq!(asks, 7, "51 pages at 8 per ask");
+        assert_eq!(rk_at(&state, 3000).as_deref(), Some("3000"));
+    }
+
+    #[test]
+    fn a_server_that_ignores_paging_keeps_the_wanted_pages_and_drops_the_rest() {
+        let total = 5_000;
+        let (mut state, adapter) = opened(total);
+        let whole = |state: &mut CollectionState| -> usize {
+            let mut answers = 0;
+            while let Some(Job::Children { start, .. }) = state.job() {
+                let rows: Vec<Vec<PmsMovie>> = (0..total).map(movie).collect::<Vec<_>>()
+                    .chunks(PAGE_SIZE).map(|page| page.to_vec()).collect();
+                adapter.land(state.generation(), Landing::Page { start, got: total, pages: rows, total });
+                assert!(state.take_landing_for_test(&adapter));
+                answers += 1;
+                assert!(answers < 20);
+            }
+            answers
+        };
+        state.run(&adapter, CollectionCmd::Window { wanted: 300..360, focus: Some(300), restore: None });
+        assert_eq!(whole(&mut state), 1, "one answer carries the whole listing");
+        assert_eq!(rk_at(&state, 300).as_deref(), Some("300"));
+        assert!(loaded(&state) <= crate::stores::page_cache::MAX_LOADED, "the rest is dropped");
+        assert_eq!(rk_at(&state, 1200), None, "page 20 was not wanted");
+
+        state.run(&adapter, CollectionCmd::Window { wanted: 1200..1260, focus: Some(1200), restore: None });
+        assert_eq!(whole(&mut state), 1, "a re-read is asked for and answered whole again");
+        assert_eq!(rk_at(&state, 1200).as_deref(), Some("1200"));
+        assert!(loaded(&state) <= crate::stores::page_cache::MAX_LOADED);
+    }
+
+    /// A read that fails leaves the same job pending, so the store asks again after its cooldown
+    /// with no new window: it never gives a page up.
+    #[test]
+    fn a_page_read_that_fails_is_the_same_job_again_after_every_failure() {
+        let (mut state, adapter) = opened(300);
+        state.run(&adapter, CollectionCmd::Window { wanted: 60..120, focus: Some(60), restore: None });
+        let job = |s: &CollectionState| match s.job() { Some(Job::Children { start, .. }) => Some(start), _ => None };
+        let first = job(&state);
+        assert_eq!(first, Some(0), "the frontier, in order");
+        for _ in 0..5 {
+            adapter.land(state.generation(), Landing::Transport);
+            state.take_landing_for_test(&adapter);
+            assert_eq!(job(&state), first, "still the page that failed");
+            assert!(state.retry_cd > 0, "after a cooldown");
+        }
+    }
+
+    /// The frontier reads `FRONTIER_ASK` pages per window command and then waits for the next one;
+    /// the screen's grid repeats its ask while cards in view are unread, which is what sends it.
+    #[test]
+    fn the_frontier_waits_for_the_next_window_command_once_its_budget_is_spent() {
+        let total = 5_000;
+        let (mut state, adapter) = opened(total);
+        let ask = |s: &mut CollectionState| s.run(&adapter, CollectionCmd::Window { wanted: 3000..3060, focus: Some(3000), restore: Some(3000) });
+        ask(&mut state);
+        let mut requests = Vec::new();
+        serve(&mut state, &adapter, total, &|_| true, &mut requests);
+        assert_eq!(requests.len(), usize::from(FRONTIER_ASK));
+        assert!(state.job().is_none(), "idle with the target unread");
+        assert!(!ask(&mut state), "the same window changes nothing in the view");
+        assert!(state.job().is_some(), "but is an ask: the budget is back");
     }
 }

@@ -32,8 +32,8 @@
 //! the transport and no token can appear here or in the log line.
 
 use super::client::Client;
-use super::servers::{ServerId, MAX_SERVERS};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::Relaxed};
+use super::servers::ServerId;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 /// Does the server's owner hold a Plex Pass? A TRISTATE, not a bool with a default: `Unknown`
@@ -49,13 +49,6 @@ pub enum Subscription {
 }
 
 impl Subscription {
-    fn from_u8(v: u8) -> Self {
-        match v {
-            1 => Self::No,
-            2 => Self::Yes,
-            _ => Self::Unknown,
-        }
-    }
     /// The wire field → the tristate. `None` is a server that never said (the field predates
     /// nothing we can date, so absence is only ever "unknown", never "free"); the lenient adapter
     /// has already folded `true`/`"1"`/`1` to nonzero and `false`/`"0"` to 0.
@@ -68,27 +61,36 @@ impl Subscription {
     }
 }
 
-/// `Subscription` as u8 (the enum's own discriminants), PER SERVER. 0 = Unknown is the boot
-/// state, and also what every slot no server has been registered into permanently reads.
-static SUBSCRIPTION: [AtomicU8; MAX_SERVERS] = [const { AtomicU8::new(0) }; MAX_SERVERS];
-/// Each server's full build string ("1.43.3.10861-cd85035e7"), "" until its fetch lands. ONE
-/// Mutex over the whole array rather than one per slot: it is read at 2 Hz by the stats panel's
-/// sample step and written once per registration — never in a per-frame path, and never held
-/// across a round trip (the fetch happens first, the store second).
-static VERSION: Mutex<[String; MAX_SERVERS]> = Mutex::new([const { String::new() }; MAX_SERVERS]);
-/// Single-flight, PER SERVER: boot registers a server and a profile pick re-registers it moments
-/// later; two live workers would answer the same question twice and double the log line. Per
-/// server rather than global because two servers' fetches are different questions — a shared
-/// server registered while our own is mid-fetch must not be silently skipped.
-static INFLIGHT: [AtomicBool; MAX_SERVERS] = [const { AtomicBool::new(false) }; MAX_SERVERS];
+/// What this module keeps about one server. A server with no entry reads as the boot state:
+/// `Unknown`, no build string, no fetch in flight.
+#[derive(Default)]
+struct Entry {
+    /// The owner's Plex Pass answer, `Unknown` until a fetch lands.
+    sub: Subscription,
+    /// The server's full build string ("1.43.3.10861-cd85035e7"), "" until its fetch lands.
+    version: String,
+    /// Single-flight: boot registers a server and a profile pick re-registers it moments later;
+    /// two live workers would answer the same question twice and double the log line. Per server
+    /// rather than global because two servers' fetches are different questions — a shared server
+    /// registered while our own is mid-fetch must not be silently skipped.
+    inflight: bool,
+}
 
-/// The array index for a server, `None` for [`ServerId::UNSET`] and for any id the registry
-/// cannot have issued. The registry's own ceiling is the bound (see [`MAX_SERVERS`]), so this
-/// cannot silently disagree with it — and an unknown id reads as "nothing known", never as
-/// another server's answer or a panic.
-fn slot(id: ServerId) -> Option<usize> {
-    let i = id.raw() as usize;
-    (id.is_set() && i < MAX_SERVERS).then_some(i)
+/// Every server's [`Entry`], keyed by its registry slot number. A map, not an array indexed by the
+/// slot: the registry issues slot numbers past any fixed size (a sign-out consumes one per
+/// registration), and a server that a fixed table cannot hold must still answer for itself.
+///
+/// One `Mutex` for all three fields, because they are always read and written together and every
+/// critical section is a few field moves — never a round trip (the fetch happens first, the store
+/// second). The readers are the detail hero's per-frame subscription read and the stats panel's
+/// 2 Hz sample; an uncontended lock is an atomic compare-exchange, the same cost the three
+/// atomics it replaces paid per read.
+static SERVERS: Mutex<BTreeMap<u16, Entry>> = Mutex::new(BTreeMap::new());
+
+/// Run `f` on the table, recovering from a poisoned lock: a panic in another reader must not turn
+/// every later answer into "nothing known".
+fn with_table<R>(f: impl FnOnce(&mut BTreeMap<u16, Entry>) -> R) -> R {
+    f(&mut SERVERS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// [`subscription`] for a NAMED server — what a caller uses once it knows which server the item,
@@ -98,9 +100,7 @@ pub fn subscription_of(id: ServerId) -> Subscription {
     if super::client_for(id).is_none() {
         return Subscription::Unknown;
     }
-    slot(id)
-        .map(|i| Subscription::from_u8(SUBSCRIPTION[i].load(Relaxed)))
-        .unwrap_or(Subscription::Unknown)
+    with_table(|t| t.get(&id.raw()).map_or(Subscription::Unknown, |e| e.sub))
 }
 
 /// [`version`] for a NAMED server; "" while unknown.
@@ -108,10 +108,7 @@ pub fn version_of(id: ServerId) -> String {
     if super::client_for(id).is_none() {
         return String::new();
     }
-    let Some(i) = slot(id) else {
-        return String::new();
-    };
-    VERSION.lock().map(|g| g[i].clone()).unwrap_or_default()
+    with_table(|t| t.get(&id.raw()).map(|e| e.version.clone()).unwrap_or_default())
 }
 
 /// The CURRENT server owner's Plex Pass state, for DIAGNOSTICS — the stats panel and the playback
@@ -160,20 +157,46 @@ pub fn version() -> String {
 /// clients are leaked (see `servers.rs`) — a re-point mid-fetch costs one round trip to where
 /// that server used to be, never a dangling reference.
 pub(super) fn refresh(id: ServerId) {
-    let Some(i) = slot(id) else { return };
+    if !id.is_set() {
+        return;
+    }
     let Some(c) = super::client_for(id) else {
         return;
     }; // nothing registered there to ask
-    if INFLIGHT[i].swap(true, Relaxed) {
-        return; // a fetch for THIS server is already in flight; it answers for this one too
+    let claimed = with_table(|t| {
+        let e = t.entry(id.raw()).or_default();
+        // a fetch for THIS server is already in flight; it answers for this one too
+        !std::mem::replace(&mut e.inflight, true)
+    });
+    if !claimed {
+        return;
     }
     let spawned = plx_base::task::spawn_small("serverinfo", move || {
         fetch_once(id, c);
-        INFLIGHT[i].store(false, Relaxed);
+        set_inflight(id, false);
     });
     if !spawned {
-        INFLIGHT[i].store(false, Relaxed);
+        set_inflight(id, false);
     }
+}
+
+/// Move the single-flight flag of a server that has an entry. Never CREATES one: the worker that
+/// clears the flag may finish after a sign-out dropped the entry ([`forget_below`]), and a flag
+/// write that re-created it would leave the revoked server's row behind.
+fn set_inflight(id: ServerId, on: bool) {
+    with_table(|t| {
+        if let Some(e) = t.get_mut(&id.raw()) {
+            e.inflight = on;
+        }
+    });
+}
+
+/// A sign-out raised the registry floor to `floor`: drop the entry of every slot below it. Slot
+/// numbers are never reused, so those rows could never be read again (every reader resolves the
+/// client first) and would only accumulate, one per registration ever made in the process. Called
+/// AFTER the floor moved, so a [`store`] still in flight finds its server gone and writes nothing.
+pub(super) fn forget_below(floor: usize) {
+    with_table(|t| t.retain(|&slot, _| slot as usize >= floor));
 }
 
 /// One round trip, one log line, for the server whose client was captured at the spawn site.
@@ -185,7 +208,10 @@ pub(super) fn refresh(id: ServerId) {
 /// so a stale answer still describes the server it is filed under, while wiping would let one
 /// wifi hiccup blank a fact we already knew.
 fn fetch_once(id: ServerId, c: &Client) {
-    let Some(i) = slot(id) else { return };
+    if !id.is_set() {
+        return;
+    }
+    let i = id.raw();
     let Some(mc) = c.server_root() else {
         plx_base::eventlog::log(&format!(
             "pms: server {i} info unavailable (GET / failed) — subscription stays unknown"
@@ -240,11 +266,18 @@ fn fetch_once(id: ServerId, c: &Client) {
 /// re-registration that stores the same answer costs one frame, and a guard here would be a second
 /// place that has to agree with what the readers draw.
 fn store(id: ServerId, sub: Subscription, version: &str) {
-    let Some(i) = slot(id) else { return };
-    SUBSCRIPTION[i].store(sub as u8, Relaxed);
-    if let Ok(mut g) = VERSION.lock() {
-        g[i] = version.to_owned();
+    if !id.is_set() {
+        return;
     }
+    with_table(|t| {
+        // a fetch that outlived its server's sign-out must not file the answer of a revoked slot
+        if super::client_for(id).is_none() {
+            return;
+        }
+        let e = t.entry(id.raw()).or_default();
+        e.sub = sub;
+        e.version = version.to_owned();
+    });
     plx_machine::idle::invalidate();
 }
 
@@ -253,7 +286,7 @@ fn store(id: ServerId, sub: Subscription, version: &str) {
 /// [`store`] is this module's private seam, and the suites that need it are the ones grading its
 /// READERS — `player::playing_subscription` and `screens::detail::hero::item_subscription`, both of which
 /// answer "whose server is this item on" and neither of which can reach a real PMS. Callers must
-/// hold `plx_base::testlock::serial()`: the slot arrays are crate globals, and they deliberately
+/// hold `plx_base::testlock::serial()`: the per-server table is a crate global, and it deliberately
 /// outlive `servers::reset_for_test` (they are keyed on the SLOT, not on the client), so a test
 /// must seed every slot it reads rather than assume a boot state.
 #[cfg(any(test, feature = "test-support"))]
@@ -277,17 +310,12 @@ mod tests {
 
     /// The tristate mapping is the module's contract: absence is UNKNOWN (an old server that
     /// never says must not read as free), zero is a real "no", anything else a real "yes" — and
-    /// the u8 round trip through the atomic must not invent a state.
+    /// the state round trip through the table must not invent a state.
     #[test]
     fn the_wire_field_maps_to_the_tristate_without_inventing_knowledge() {
         assert_eq!(Subscription::from_wire(None), Subscription::Unknown);
         assert_eq!(Subscription::from_wire(Some(0)), Subscription::No);
         assert_eq!(Subscription::from_wire(Some(1)), Subscription::Yes);
-        for s in [Subscription::Unknown, Subscription::No, Subscription::Yes] {
-            assert_eq!(Subscription::from_u8(s as u8), s, "u8 round trip");
-        }
-        // an unmapped u8 (a torn write could not produce one, but the match must still be total)
-        assert_eq!(Subscription::from_u8(7), Subscription::Unknown);
     }
 
     /// The plex/CLAUDE.md lenient-number rule, applied to the root envelope: PMS sends
@@ -345,6 +373,29 @@ mod tests {
     /// seeded source table alive on exactly that, and which test inherited the leak depended on
     /// parallel completion order — the worst shape a flake can take.
     #[test]
+    fn a_sign_out_removes_the_revoked_servers_rows_and_a_late_answer_does_not_return_them() {
+        use super::super::servers;
+        let _g = plx_base::testlock::serial();
+        servers::reset_for_test();
+        // past the old sixteen-slot table, so the rows are keyed on a slot the array never held
+        let ids: Vec<ServerId> = (0..18)
+            .map(|i| servers::register_with_client_id(&format!("mach-so-{i}"), "10.0.0.1", 32400, "tok", "cid"))
+            .collect();
+        let far = *ids.last().unwrap();
+        assert!(far.raw() >= 16);
+        store(far, Subscription::Yes, "1.43.3.10861-cd85035e7");
+        assert!(with_table(|t| t.contains_key(&far.raw())));
+
+        servers::revoke_all();
+        assert!(!with_table(|t| t.contains_key(&far.raw())), "the signed-out server's row is gone");
+        // and the worker that was still out cannot bring it back
+        store(far, Subscription::Yes, "late");
+        set_inflight(far, false);
+        assert!(!with_table(|t| t.contains_key(&far.raw())));
+        servers::reset_for_test();
+    }
+
+    #[test]
     fn one_servers_plex_pass_is_never_read_as_the_others() {
         use super::super::servers;
         struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
@@ -358,7 +409,7 @@ mod tests {
         let reg =
             |m: &str, host: &str| servers::register_with_client_id(m, host, 32400, "tok", "cid");
         let (a, b) = (reg("mach-A", "10.0.0.1"), reg("mach-B", "10.0.0.2"));
-        // the slot arrays outlive `reset_for_test` (they are keyed on the slot, not the client),
+        // the per-server table outlives `reset_for_test` (it is keyed on the slot, not the client),
         // so start from the boot state explicitly rather than from what an earlier test left
         store(a, Subscription::Unknown, "");
         store(b, Subscription::Unknown, "");
@@ -395,13 +446,13 @@ mod tests {
         assert_eq!(version(), "1.32.0.6918-free");
 
         // an id that names no server is "nothing known" — never slot 0's answer, never a panic,
-        // and a write through one must not reach the array at all
+        // and a write through one must not reach a real server's entry
         assert_eq!(subscription_of(ServerId::UNSET), Subscription::Unknown);
         assert_eq!(version_of(ServerId::UNSET), "");
-        let past_end = ServerId::from_raw(MAX_SERVERS as u16);
-        assert_eq!(subscription_of(past_end), Subscription::Unknown);
+        let unregistered = ServerId::from_raw(u16::MAX - 1);
+        assert_eq!(subscription_of(unregistered), Subscription::Unknown);
         store(ServerId::UNSET, Subscription::Yes, "nowhere");
-        store(past_end, Subscription::Yes, "nowhere");
+        store(unregistered, Subscription::Yes, "nowhere");
         assert_eq!(subscription_of(a), Subscription::Yes);
         assert_eq!(
             subscription_of(b),
@@ -422,6 +473,34 @@ mod tests {
             "an inactive sparse slot exposes no old subscription"
         );
         assert_eq!(version_of(b), "", "nor its old build string");
+    }
+
+    /// A registration past the old sixteen-slot table must keep its own facts: the per-server
+    /// state is keyed by slot number and grows, so slot 40 is as real as slot 0.
+    #[test]
+    fn a_server_past_the_old_sixteen_slot_table_keeps_its_own_facts() {
+        use super::super::servers;
+        struct Fresh(#[allow(dead_code)] plx_base::testlock::Serial);
+        impl Drop for Fresh {
+            fn drop(&mut self) {
+                servers::reset_for_test();
+            }
+        }
+        let _g = Fresh(plx_base::testlock::serial());
+        servers::reset_for_test();
+        let ids: Vec<ServerId> = (0..41)
+            .map(|n| {
+                servers::register_with_client_id(&format!("mach-{n}"), &format!("10.0.2.{n}"), 32400, "tok", "cid")
+            })
+            .collect();
+        let far = ids[40];
+        assert_eq!(far.raw(), 40);
+        store(far, Subscription::Yes, "1.43.3.10861-far");
+        assert_eq!(subscription_of(far), Subscription::Yes);
+        assert_eq!(version_of(far), "1.43.3.10861-far");
+        assert_eq!(subscription_of(ids[3]), Subscription::Unknown, "slot 3 did not answer");
+        assert_eq!(version_of(ids[3]), "");
+        assert!(servers::ids().any(|id| id == far), "the far server is in the roster the readers walk");
     }
 
     /// **This is an async LANDING, so it owes the frame gate a poke.** The answer arrives on a

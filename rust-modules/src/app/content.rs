@@ -1056,7 +1056,7 @@ mod library_publication_tests {
                 season: 2,
                 title: "Episode A".into(),
                 ..Default::default()
-            }],
+            }].into(),
             ..Default::default()
         }
     }
@@ -1492,7 +1492,7 @@ mod library_publication_tests {
             };
             if show {
                 d = detail_with_episode(sid, x_rk, "X", false);
-                d.episodes[0].title = "Pilot".into();
+                d.episodes.edit("episode-a", |e| e.title = "Pilot".into());
             }
             d
         };

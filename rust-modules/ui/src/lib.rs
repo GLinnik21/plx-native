@@ -28,6 +28,8 @@ pub mod marquee; // the focused run's looping glide: a tile's title and caption 
 pub mod card_motion;
 #[cfg(feature = "devtriggers")]
 pub mod card_motion_metrics;
+#[cfg(feature = "devtriggers")]
+pub mod card_probe; // `plxnative-focusx`: the focused card's drawn rect/index/art of every Shelf and Grid
 pub mod value_chip; // shared label/value/owner capsule used by menu-opening controls
 pub mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
 pub mod collection_tile; // the neutral tile a thumb-less collection draws on every surface
@@ -40,6 +42,7 @@ pub mod adapters; // RESTRUCTURE (spec §2.2): the one door out of the machine w
 pub mod geom; // RESTRUCTURE (spec §7.1): `Focusable` for the widgets — geometry IS `place`
 pub mod tile; // RESTRUCTURE (spec §10): the library's item abstraction for a shelf tile
 pub mod document_reader;
+pub mod prose_scroll; // the paged prose viewport `person_bio` and `about_panel` share
 pub mod fit; // one declared-priority primitive for a line with two competing runs (`two_runs`)
 pub mod fixture; // RESTRUCTURE spike: `FixtureHost` — the bundle the generic library is tested against
 pub mod focus; // RESTRUCTURE (spec §7.3): the focus ENGINE — one owner of focus, the golden tables

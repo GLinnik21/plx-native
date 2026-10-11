@@ -100,6 +100,8 @@ pub struct BrowseStore {
     adapter: Arc<crate::browse::BrowseAdapter>,
     notice_gen: AtomicU32,
     notice_dirty: AtomicBool,
+    /// Endpoint refreshes a pump had no room to emit in its step; the next pump sends them first.
+    endpoint_carry: super::EndpointRefreshSet,
 }
 
 impl Default for BrowseStore {
@@ -109,6 +111,7 @@ impl Default for BrowseStore {
             adapter: Arc::new(Default::default()),
             notice_gen: AtomicU32::new(0),
             notice_dirty: AtomicBool::new(false),
+            endpoint_carry: Default::default(),
         }
     }
 }
@@ -129,10 +132,10 @@ impl BrowseStore {
 
     pub fn run(&mut self, cmd: BrowseCmd) -> bool {
         let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
-            work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. }, ..
+            work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }, ..
         });
         let quiet = matches!(&cmd, BrowseCmd::Addressed {
-            work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres, ..
+            work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres | LibraryWork::HubPage { .. } | LibraryWork::HubPageCancel { .. }, ..
         });
         let roster_changed = if matches!(&cmd, BrowseCmd::RecheckShares) {
             self.sync_roster()
@@ -337,6 +340,16 @@ impl BrowseStore {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn land_held_rows_for_test(&mut self, section: usize) {
+        crate::browse::section_hubs::land_held_rows_for_owner_test(&mut self.state, section);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_paging_for_test(&mut self, section: usize, total: usize) {
+        crate::browse::section_hubs::seed_paging_for_owner_test(&mut self.state, section, total);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn seed_first_shelf_items_for_test(&mut self, section: usize, rks: &[String]) {
         crate::browse::section_hubs::seed_first_shelf_items_for_owner_test(
             &mut self.state,
@@ -458,11 +471,39 @@ pub enum LibraryWork {
     Want {
         lo: usize,
         hi: usize,
+        /// The focused slot, when focus is on the grid: its page stays loaded (`Keep::focus`)
+        /// however far the wanted window has moved from it.
+        focus: Option<usize>,
     },
     Letters,
     Genres,
     Hubs {
         may_publish: bool,
+    },
+    /// Move one section hub row's window a page toward its end or its start; the row is named by
+    /// its hub identifier and key. `seen` is the revision of the hub view the ask was computed
+    /// from (`HubsView::revision`): a frame captures its views before its landings are delivered,
+    /// so the ask can come from a window the store has since replaced, and such an ask is refused
+    /// (the publication it missed rebuilds the shelves and re-arms the row, which asks again from
+    /// the window that stands if the ask is still due).
+    HubPage {
+        id: String,
+        key: String,
+        before: bool,
+        seen: u64,
+    },
+    /// Withdraw the page ask for row `id`: focus left the edge it was sent from, and a landing now
+    /// would slide the window from under it. A read already out is discarded when it lands; an ask
+    /// that has landed, or never was, makes this a no-op.
+    HubPageCancel {
+        id: String,
+        key: String,
+    },
+    /// The rows (hub order, inclusive) the page holds cards for. The store keeps those and gives
+    /// the cards of the rest up to descriptors; sent when the range changes.
+    HubHold {
+        lo: usize,
+        hi: usize,
     },
     Retry,
 }
@@ -475,7 +516,9 @@ impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
                 self.run(c.clone());
             }
             StoreEv::Pump { .. } => {
-                self.pump_with_gate(&plx_machine::landgate::Gate::default()).endpoints.emit(fx);
+                let mut due = std::mem::take(&mut self.endpoint_carry);
+                due.merge(self.pump_with_gate(&plx_machine::landgate::Gate::default()).endpoints);
+                self.endpoint_carry = due.emit(fx);
             }
         }
         Handled::Yes

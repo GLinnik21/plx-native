@@ -52,3 +52,25 @@ fn card_screens_match_the_expected_failure_list() {
     let complaints = check_expected(&matrix, EXPECTED);
     assert!(complaints.is_empty(), "\n{}", complaints.join("\n"));
 }
+
+/// Focus never moves under the user, in any interleaving: cards arriving before every card shown in
+/// the same tick as a focus change keep the view in place, on every screen whose harness can stage
+/// the arrival (`CardHarness::shift`). The Search result row, the Library section hubs and the
+/// Library All grid must; the rest report `Unsupported` until their harness can shift.
+#[test]
+fn cards_arriving_in_the_tick_of_a_focus_change_keep_the_view_in_place() {
+    use plx_ui::cards::conformance::shifted_under_a_focus_change;
+    let _guard = plx_base::testlock::serial();
+    let mut bad = Vec::new();
+    for (screen, mount) in table() {
+        let outcome = shifted_under_a_focus_change(mount);
+        eprintln!("{screen:18} {outcome:?}");
+        let must = ["search", "library_shelves", "library_grid"].contains(&screen);
+        match outcome {
+            Outcome::Pass => {}
+            Outcome::Unsupported(_) if !must => {}
+            other => bad.push(format!("{screen}: {other:?}")),
+        }
+    }
+    assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+}

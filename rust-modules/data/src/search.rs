@@ -92,11 +92,12 @@
 use plx_plex::plex::ServerId;
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub mod view;
 pub mod recents;
 pub mod scope;
+mod tail;
 
 /// Below this many characters the server answers with nothing, so asking is pure latency.
 /// Measured, not guessed — see the module doc.
@@ -339,6 +340,21 @@ pub fn section_is_fav(favs: &[(ServerId, i64, bool)], sid: ServerId, key: i64) -
 pub struct Shelf {
     pub kind: Kind,
     pub items: Vec<Item>,
+    pub window: Window,
+    /// How many slides of this row have committed, one that left `window` and `items` as they were
+    /// included (`plx_ui::cards::CardSource::page_epoch`): what tells the shelf an ask was
+    /// answered when the window it sees did not move. A failed read does not count.
+    pub epoch: u32,
+}
+
+/// Where a shelf's cards sit in the row's hits, for a screen that pages the row ([`Window`]).
+/// `start` is the depth of the window's first round of cards (the merged row is round robin by
+/// depth), so a window that slides moves it; `before` / `after` say whether a move can go on.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct Window {
+    pub start: usize,
+    pub before: bool,
+    pub after: bool,
 }
 
 /// What the screen should be saying, which is not the same question as "are there items".
@@ -429,26 +445,62 @@ const SETTLE_US_TARGET: u32 = (SETTLE_S * 1_000_000.0) as u32;
 /// Items asked for **per hub** — `plex-openapi.json`: "The number of items to return per hub. 3 if
 /// not specified", which is why the parameter is always sent at all.
 ///
-/// **Per HUB is the word that decides the number, and it is not [`SHELF_MAX`].** A search response
+/// **Per HUB is the word that decides the number, and it is not [`WINDOW`].** A search response
 /// carries every hub type the server knows about — 17 on this set — so `limit` is multiplied by
 /// however many of them the query happens to touch, not by the five this screen draws. Asking 24
 /// buys a full row from a single source and pays for up to ~400 `Metadata` records per settled
 /// keystroke, over `stream.rs`'s blocking socket, on an endpoint whose whole selling point is being
 /// fast enough to call as the user types. Half a row from each of two sources still fills the
-/// merged cap exactly, and a search that needs the 13th hit needs a better query instead.
+/// merged cap exactly. It is only the preview: hits past it are read in windows by `search/tail.rs`
+/// as the row is paged.
 const LIMIT: i64 = 12;
 
-/// Per-shelf item cap, for the same reason `person.rs` carries one: a `CardRow` owns exactly
+/// Cards a row holds at once, for the same reason `person.rs` carries one: a `CardRow` owns exactly
 /// `ui::cards::MAX_ROW_ITEMS` focus-scale springs and `scale(i)` clamps past the end,
-/// so an item beyond the cap would draw with the last cell's pop and never pop at all when focused.
+/// so an item beyond the window would draw with the last cell's pop and never pop at all when focused.
 /// The data layer cannot name the UI library's constant, so this is [`crate::pms::MAX_SHELF_ITEMS`],
 /// the data layer's own spelling of the same number (`screens::home`'s
-/// `the_data_shelf_cap_is_the_card_rows_capacity` pins the two equal).
-const SHELF_MAX: usize = crate::pms::MAX_SHELF_ITEMS;
+/// `the_data_shelf_cap_is_the_card_rows_capacity` pins the two equal). It is the size of a WINDOW
+/// over the row's hits, not a limit on them: the rest are reached by sliding it ([`page`]).
+///
+/// The window is `WINDOW / n` depths (at least two) for `n` sources with something to say, so
+/// more than twelve sources hold more than `WINDOW` cards: a bound on memory that grows with the
+/// roster, not on how much of the row can be reached.
+const WINDOW: usize = crate::pms::MAX_SHELF_ITEMS;
 
-/// Fetch-slot ceiling — the registry's own `MAX_SERVERS`, named rather than copied, so raising the
-/// ceiling cannot leave this module quietly never asking the extra servers.
-const NSRC: usize = plx_plex::plex::MAX_SERVERS;
+/// Depths in a row's window when `n` sources contribute to it.
+fn span_for(n: usize) -> usize {
+    (WINDOW / n.max(1)).max(2)
+}
+
+/// Cards the first-twelve favourites ordering covers: what is on screen before anything is paged.
+const RANKED: usize = 12;
+
+/// One kind's window over its hits and the slide being prepared (main thread only).
+#[derive(Default)]
+struct Win {
+    /// The first depth of the committed window.
+    lo: usize,
+    pending: Option<Pending>,
+    /// Slides committed on this row since the query began ([`Shelf::epoch`]).
+    committed: u32,
+}
+
+/// A slide waiting for the sources that must read before the merged row can move.
+#[derive(Default)]
+struct Pending {
+    lo: usize,
+    hi: usize,
+    /// Registry slots that still owe a read of `lo..hi`.
+    todo: Vec<usize>,
+    /// Reads that made no headway, per source in `todo`; [`LANDING_TRIES`] of them and the slide
+    /// stops waiting for that source.
+    stalls: Vec<(usize, u32)>,
+}
+
+/// Test seam: a fake server for every worker, run on the calling thread.
+#[cfg(test)]
+static TEST_IO: Mutex<Option<Arc<Mutex<dyn tail::Io + Send>>>> = Mutex::new(None);
 
 /// What one source's finished fetch delivers. `None` means the fetch FAILED (transport, parse, or
 /// a panicking worker) and must be retried — kept distinguishable from a successful answer that
@@ -457,6 +509,14 @@ const NSRC: usize = plx_plex::plex::MAX_SERVERS;
 struct Mail {
     gen: u32,
     what: Option<Projection>,
+    /// Set when this is a lane read ([`page`]) rather than a source's first answer; `what` is then
+    /// unused, and a failed read must not be taken for a failed source.
+    tail: Option<TailMail>,
+}
+
+struct TailMail {
+    kind: usize,
+    read: Option<(tail::Lane, tail::TvMap)>,
 }
 
 /// One source's results, keyed by [`KINDS`] index. The worker builds this, so no wire DTO ever
@@ -468,23 +528,53 @@ type Projection = [Vec<Item>; NKIND];
 /// which a production `Bridge` holds as one `Arc` per owner.
 type Fetch = crate::stores::Fetch<Mail>;
 
-/// The `Arc`'d worker half of one Search owner: every in-flight claim and landing mailbox, indexed
-/// by [`ServerId::raw`]. A worker captures a clone of the owning `Bridge`'s `Arc<SearchAdapter>`
-/// before it spawns; rotating the store's live `Arc` (on `SearchCmd::Reset`) orphans that clone
-/// harmlessly — the old worker can still land, but only into a mailbox nothing reads any more.
+/// The `Arc`'d worker half of one Search owner: every in-flight claim and landing mailbox, one per
+/// registry slot ([`SearchAdapter::mailbox`], indexed by [`ServerId::raw`]). A worker captures a
+/// clone of the owning `Bridge`'s `Arc<SearchAdapter>` before it spawns; rotating the store's live
+/// `Arc` (on `SearchCmd::Reset`) orphans that clone harmlessly — the old worker can still land, but
+/// only into a mailbox nothing reads any more.
 pub struct SearchAdapter {
-    fetch: [Fetch; NSRC],
+    /// Grown on demand by [`SearchAdapter::mailbox`]. Behind a lock because the table is shared with
+    /// the workers, and a slot's mailbox has to exist before its first landing can reach it.
+    fetch: Mutex<Vec<Arc<Fetch>>>,
 }
 
 impl Default for SearchAdapter {
     fn default() -> Self {
-        Self { fetch: [const { Fetch::IDLE }; NSRC] }
+        Self { fetch: Mutex::new(Vec::new()) }
+    }
+}
+
+impl SearchAdapter {
+    /// The mailbox for registry slot `i`, created on first use. Handed out as an `Arc` so the lock
+    /// is not held across a claim, a take or a spawn.
+    fn mailbox(&self, i: usize) -> Arc<Fetch> {
+        let mut table = self.fetch.lock().unwrap_or_else(|e| e.into_inner());
+        if table.len() <= i {
+            table.resize_with(i + 1, || Arc::new(Fetch::IDLE));
+        }
+        Arc::clone(&table[i])
+    }
+
+    /// Drop every mailbox's contents and claim — [`supersede`]'s half of the reset.
+    fn clear_all(&self) {
+        for mailbox in self.fetch.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            mailbox.clear();
+        }
     }
 }
 
 /// ~2 s at 60 fps — the same backoff `person.rs`/`browse.rs` use for a failed fetch. Counted down in
 /// [`Source::retry_cd`].
 const RETRY_FRAMES: u32 = 120;
+
+/// Reads of a slide's depths that may come back without headway from one source before the slide
+/// commits WITHOUT it ([`land_read`]). Three, spaced by [`RETRY_FRAMES`]: one failure is a hiccup
+/// and two a busy server, so a source gets the second and third chance a transient error deserves
+/// (about 4 s of the row standing still), but a server that is simply down must not hold every other
+/// server's hits back for as long as it stays down, which is the stall this bounds. The source stays
+/// owed ([`Source::skipped`]) and keeps being asked, outside the slide.
+const LANDING_TRIES: u32 = 3;
 
 /// What the current generation's attempt at source `i` has come to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -509,6 +599,15 @@ struct Source {
     /// The last successful answer for the CURRENT generation. Meaningful only while `status` is
     /// [`Status::Answered`], which is what [`merge`] filters on.
     items: Projection,
+    /// Each kind's preview and what has been read past it ([`tail`]); built from `items` by
+    /// [`record`]. A source built without it (`inited` false) is merged from `items` alone.
+    tails: [tail::Lane; NKIND],
+    /// What this source's Show and Episode lanes share about its `tv` listing.
+    tv: tail::TvMap,
+    /// Per kind: a slide committed without this source's read of the window, so the window holds
+    /// none of its hits yet. It is asked for the window outside any slide ([`owed_read`]), no later
+    /// slide waits on it, and its unread depths do not count as "more to come" ([`has_past`]).
+    skipped: [bool; NKIND],
 }
 
 impl Source {
@@ -516,11 +615,14 @@ impl Source {
         status: Status::Pending,
         retry_cd: 0,
         items: [const { Vec::new() }; NKIND],
+        tails: [tail::Lane::EMPTY; NKIND],
+        tv: tail::TvMap { first_episode: None },
+        skipped: [false; NKIND],
     };
 }
 
 /// The registry slots this store fans out over — **the one place a raw `ServerId` becomes an index
-/// into `SearchState::src` / [`SearchAdapter`]** (see [`NSRC`]).
+/// into `SearchState::src` / [`SearchAdapter`]** (see [`source_mut`] and [`SearchAdapter::mailbox`]).
 ///
 /// **Exact ids, not a prefix or a range.** Slot
 /// numbers are permanent and a sign-out RETIRES the departing account's slots without renumbering
@@ -528,11 +630,10 @@ impl Source {
 /// the live roster is `2..3` and not `0..1`: a prefix would have asked the revoked slots (which
 /// resolve to no client at all) and never asked the server the user is actually signed in to.
 /// A profile switch can additionally deactivate only the middle slot, so even that post-sign-out
-/// window is not necessarily contiguous. Collecting at most 16 indices is the honest shape.
+/// window is not necessarily contiguous. One index per live server is the honest shape, whatever
+/// the slot numbers have reached.
 fn slots() -> Vec<usize> {
-    plx_plex::plex::server_ids()
-        .filter_map(|id| ((id.raw() as usize) < NSRC).then_some(id.raw() as usize))
-        .collect()
+    plx_plex::plex::server_ids().map(|id| id.raw() as usize).collect()
 }
 
 /// How many sources this store fans out over — the width of [`slots`].
@@ -589,12 +690,18 @@ pub struct SearchState {
     settle_us: u32,
     armed: bool,
 
-    /// One per registry slot; see [`Source`]. The worker's two halves live in [`SearchAdapter`].
-    src: [Source; NSRC],
+    /// One per registry slot, grown by [`source_mut`] on first touch; see [`Source`]. The worker's
+    /// two halves live in [`SearchAdapter`].
+    src: Vec<Source>,
+
+    /// One window per kind over that kind's hits; see [`page`]. Released by [`supersede`].
+    wins: [Win; NKIND],
 
     /// This owner's memo of the built [`scope::SourceScopeSnapshot`] (`search/scope.rs`). Interior
     /// mutable because `snapshot`/`snapshot_with_directory` are reached through `&self`.
     scope_cache: scope::ScopeCache,
+    /// Which servers may have a request out this pump ([`crate::stores::fanout`]).
+    fanout: crate::stores::fanout::Fanout,
 }
 
 impl Default for SearchState {
@@ -609,8 +716,10 @@ impl Default for SearchState {
             fav_gen: 0,
             settle_us: 0,
             armed: false,
-            src: [const { Source::EMPTY }; NSRC],
+            src: Vec::new(),
+            wins: Default::default(),
             scope_cache: scope::ScopeCache::default(),
+            fanout: Default::default(),
         }
     }
 }
@@ -817,9 +926,12 @@ fn set_watched_local(state: &mut SearchState, sid: ServerId, rk: &str, on: bool)
     for it in state.src.iter_mut().flat_map(|s| s.items.iter_mut()).flatten() {
         flip(it);
     }
+    for it in state.src.iter_mut().flat_map(|s| s.tails.iter_mut()).flat_map(|l| l.items_mut()) {
+        flip(it);
+    }
     if let Some(shelves) = &mut state.shelves {
         // A write outside the visible result cap must not clone a retained catalog it cannot
-        // change. The catalog itself is bounded by KINDS × SHELF_MAX, never library-sized.
+        // change. The catalog itself is bounded by KINDS × WINDOW, never library-sized.
         if shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it,
             Item::Media(m) if plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)))) {
             for it in Arc::make_mut(shelves).iter_mut().flat_map(|s| &mut s.items) { flip(it); }
@@ -834,7 +946,7 @@ fn set_watched_local(state: &mut SearchState, sid: ServerId, rk: &str, on: bool)
 /// reaching it needs two overlapping real fetches.
 fn land(adapter: &SearchAdapter, i: usize, gen: u32, what: Option<Projection>) {
     let fresh = what.is_some();
-    adapter.fetch[i].post(Mail { gen, what }, |old| match old {
+    adapter.mailbox(i).post(Mail { gen, what, tail: None }, |old| match old {
         // A newer generation always wins — the monotone rule this mailbox exists for.
         m if m.gen != gen => m.gen < gen,
         // …but at the SAME generation an ANSWER beats a failure. The in-flight claim bounds spawns
@@ -845,6 +957,12 @@ fn land(adapter: &SearchAdapter, i: usize, gen: u32, what: Option<Projection>) {
         // decides which mail survives to be read at all.
         m => m.what.is_none() && fresh,
     });
+}
+
+/// Post a finished lane read. A source has one request out at a time, so this never meets another
+/// mail of its own generation; a newer generation replaces an older one, as in [`land`].
+fn land_tail(adapter: &SearchAdapter, i: usize, gen: u32, kind: usize, read: Option<(tail::Lane, tail::TvMap)>) {
+    adapter.mailbox(i).post(Mail { gen, what: None, tail: Some(TailMail { kind, read }) }, |old| old.gen < gen);
 }
 
 /// Invalidate everything in flight: bump the generation (a late landing is discarded), drop every
@@ -878,10 +996,11 @@ fn supersede_with_directory(
         Some(directory) => snapshot_favs_from_directory(state, directory),
         None => snapshot_favs(state),
     }
-    for i in 0..NSRC {
-        adapter.fetch[i].clear();
-        state.src[i] = Source::EMPTY;
+    adapter.clear_all();
+    for s in &mut state.src {
+        *s = Source::EMPTY;
     }
+    state.wins = Default::default();
 }
 
 /// Standalone fixture scope. Production always supplies the owning Bridge's retained directory;
@@ -983,10 +1102,15 @@ fn pump_with_optional_directory(
             }
         }
     }
-    let mut landed = false;
+    let mut landed = prune_pending(state, &live);
+    // Which sources may start a request this pump. A source's countdown is stepped inside the sweep
+    // below, so it is judged here as it will stand after that step.
+    let (running, wanting) = fanout_candidates(state, adapter, &live);
+    let mut turn = state.fanout.begin(running, &wanting);
     for i in live.iter().copied() {
-        if state.src[i].retry_cd > 0 {
-            state.src[i].retry_cd -= 1;
+        let counted = source_mut(state, i);
+        if counted.retry_cd > 0 {
+            counted.retry_cd -= 1;
         }
         // the landing GATE (§3.3 step 3, `plx_machine::landgate`): under a replay a source's answer is
         // taken on the frame the recording took it on. The debounce above and `maybe_spawn` below
@@ -995,20 +1119,26 @@ fn pump_with_optional_directory(
         // generation; a superseded query's late answer is dropped inside it and leaves the new
         // query's claim alone (`Fetch::take_current`)
         let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Search,
-            || adapter.fetch[i].busy(), || adapter.fetch[i].take_current(|m| m.gen));
+            || adapter.mailbox(i).busy(), || adapter.mailbox(i).take_current(|m| m.gen));
         if let Some(m) = taken {
+            turn.finished();
             if m.gen == state.gen {
-                record(state, i, m.what);
-                landed = true;
+                match m.tail {
+                    Some(t) => landed |= land_read(state, i, t),
+                    None => {
+                        record(state, i, m.what);
+                        landed = true;
+                    }
+                }
             }
             // else superseded: this is news about a query that is no longer on screen. The FAILURE
             // arm is skipped with it on purpose — a stale failure that armed the backoff would
             // delay the current query's first answer by ~2 s for an error that was never about it.
         }
-        maybe_spawn(state, adapter, i);
+        maybe_spawn(state, adapter, i, &mut turn);
     }
     // The SHELVES are rebuilt only when something landed, but the STATE is recomputed every frame:
-    // it is a scan of at most NSRC statuses, and making it conditional on a landing left the one
+    // it is a scan of one status per live slot, and making it conditional on a landing left the one
     // case that can never produce one — an EMPTY roster — parked on `Searching` forever, which is
     // precisely the endless spinner `state_from`'s empty arm exists to prevent. Reachable in
     // practice: `/tmp/plxnative-search=<q>` forces the route whether or not a server was installed.
@@ -1047,13 +1177,13 @@ fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
         // the winner's answer, `Status::Answered` would regress to `Failed` — dropping that
         // source's already-drawn results out of the merge for a two-second backoff, over an error
         // about a request whose answer we are holding.
-        None if state.src[i].status == Status::Answered => {
+        None if source(state, i).status == Status::Answered => {
             plx_base::eventlog::log(&format!(
                 "search: q[{qlen}ch] sid={i} late failure ignored — already answered"
             ));
         }
         None => {
-            let s = &mut state.src[i];
+            let s = source_mut(state, i);
             s.status = Status::Failed;
             s.retry_cd = RETRY_FRAMES;
             plx_base::eventlog::log(&format!("search: q[{qlen}ch] sid={i} FAILED, retry in {RETRY_FRAMES}f"));
@@ -1068,16 +1198,35 @@ fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
             // The two fields an answer decides, and `retry_cd` is deliberately not one of them: a
             // source that has answered is refused by `maybe_spawn` on `status` alone, and the next
             // query resets the whole record through `Source::EMPTY`.
-            let s = &mut state.src[i];
+            let s = source_mut(state, i);
             s.status = Status::Answered;
+            s.tails = std::array::from_fn(|k| tail::Lane::from_preview(KINDS[k], &items[k]));
+            s.tv = tail::TvMap::from_previews(items[1].len());
             s.items = items;
         }
     }
 }
 
+/// The record for registry slot `i`, grown to cover it on first touch. A slot the table has not
+/// reached yet is one nobody has asked, which is exactly [`Source::EMPTY`], so growing is the whole
+/// of the initialisation and nothing about a new server needs a separate step.
+fn source_mut(state: &mut SearchState, i: usize) -> &mut Source {
+    if state.src.len() <= i {
+        state.src.resize_with(i + 1, || Source::EMPTY);
+    }
+    &mut state.src[i]
+}
+
+/// Read-only [`source_mut`]: a slot the table has not reached reads as never asked. The static is
+/// what lets a missing slot hand out a reference without growing the table from a `&` path.
+fn source(state: &SearchState, i: usize) -> &Source {
+    static NEVER_ASKED: Source = Source::EMPTY;
+    state.src.get(i).unwrap_or(&NEVER_ASKED)
+}
+
 /// The LIVE registry slots as exact references into the owned per-source store.
 fn live_sources<'a>(state: &'a SearchState, live: &[usize]) -> Vec<&'a Source> {
-    live.iter().map(|&i| &state.src[i]).collect()
+    live.iter().map(|&i| source(state, i)).collect()
 }
 
 /// Recompute the merged shelves from every source's last answer. The [`State`] is NOT set here —
@@ -1085,7 +1234,9 @@ fn live_sources<'a>(state: &'a SearchState, live: &[usize]) -> Vec<&'a Source> {
 fn rebuild(state: &mut SearchState) {
     let live = slots();
     let sources = live_sources(state, &live);
-    let shelves = merge_refs(&sources, &favs(state));
+    let los: [usize; NKIND] = std::array::from_fn(|k| state.wins[k].lo);
+    let epochs: [u32; NKIND] = std::array::from_fn(|k| state.wins[k].committed);
+    let shelves = merge_refs(&sources, &favs(state), &los, &epochs);
     let items: usize = shelves.iter().map(|s| s.items.len()).sum();
     plx_base::eventlog::log(&format!(
         "search: q[{}ch] shelves={} items={}",
@@ -1107,31 +1258,52 @@ fn rebuild(state: &mut SearchState) {
 /// The pass is STABLE, so each server's own ranking survives inside it: the only ranking any server
 /// hands over is the order of its own list, and re-sorting within a pass would throw that away.
 ///
-/// **The fold runs to completion BEFORE the cap, and that ordering is load-bearing.** This used to
-/// `break` out of the fill the moment the shelf was full, which meant a later duplicate of an
-/// ALREADY DISPLAYED tag could no longer augment its count — so a person's "12 films" silently
-/// became however many the servers happened to report before the cap was reached. The cap bounds
-/// what is DRAWN; it must not bound what is COUNTED.
+/// **The fold runs over the whole window before anything is drawn, and that ordering is
+/// load-bearing.** This used to `break` out of the fill the moment the shelf was full, which meant
+/// a later duplicate of an ALREADY DISPLAYED tag could no longer augment its count — so a person's
+/// "12 films" silently became however many the servers happened to report before the cap was
+/// reached. The window bounds what is DRAWN; it must not bound what is COUNTED.
 fn merge(sources: &[Source], favs: &[(ServerId, i64, bool)]) -> Vec<Shelf> {
     let sources: Vec<&Source> = sources.iter().collect();
-    merge_refs(&sources, favs)
+    merge_refs(&sources, favs, &[0; NKIND], &[0; NKIND])
 }
 
-fn merge_refs(sources: &[&Source], favs: &[(ServerId, i64, bool)]) -> Vec<Shelf> {
+/// One source's hit at depth `d` of kind `k`: from its lane, or from `items` for a source built
+/// without lanes.
+fn hit_at(s: &Source, k: usize, d: usize) -> Option<&Item> {
+    if s.tails[k].inited { s.tails[k].get(d) } else { s.items[k].get(d) }
+}
+
+/// How many hits of kind `k` the source's first answer held.
+fn preview_len(s: &Source, k: usize) -> usize {
+    if s.tails[k].inited { s.tails[k].preview_len() } else { s.items[k].len() }
+}
+
+/// Is there a hit of kind `k` at depth `d` or past it that the source has not been read to yet?
+fn has_past(s: &Source, k: usize, d: usize) -> bool {
+    // a skipped source's end is unknown only because it has not been read: counting it would keep
+    // "more to come" lit for ever past the last hit of the servers that did answer
+    s.tails[k].inited && !s.skipped[k] && s.tails[k].has_past(d)
+}
+
+/// The depths of the window of kind `k` that starts at `lo` over `sources`, and the sources that
+/// speak for it.
+fn window_of<'a>(sources: &[&'a Source], k: usize, lo: usize) -> (std::ops::Range<usize>, Vec<&'a Source>) {
+    // only a source that ANSWERED contributes: one still pending has nothing to say yet, and
+    // one that failed has nothing to say at all
+    let live: Vec<&Source> = sources.iter().copied().filter(|s| s.status == Status::Answered).collect();
+    let n = live.iter().filter(|s| preview_len(s, k) > 0).count();
+    (lo..lo + span_for(n), live)
+}
+
+fn merge_refs(sources: &[&Source], favs: &[(ServerId, i64, bool)], los: &[usize; NKIND], epochs: &[u32; NKIND]) -> Vec<Shelf> {
     let mut out = Vec::new();
     for (k, kind) in KINDS.iter().enumerate() {
-        // only a source that ANSWERED contributes: one still pending has nothing to say yet, and
-        // one that failed has nothing to say at all
-        let live: Vec<&Vec<Item>> = sources
-            .iter()
-            .filter(|s| s.status == Status::Answered)
-            .map(|s| &s.items[k])
-            .collect();
-        let deepest = live.iter().map(|v| v.len()).max().unwrap_or(0);
+        let (depths, live) = window_of(sources, k, los[k]);
         let mut items: Vec<Item> = Vec::new();
-        for d in 0..deepest {
-            for v in &live {
-                let Some(it) = v.get(d) else { continue };
+        for d in depths.clone() {
+            for s in &live {
+                let Some(it) = hit_at(s, k, d) else { continue };
                 // **The same person on two servers is one person.** `project` folds per RESPONSE,
                 // so it cannot see across sources — and this is the only place both are in hand.
                 // `same_tag`'s doc already claimed the round-robin merge brought them together;
@@ -1158,12 +1330,19 @@ fn merge_refs(sources: &[&Source], favs: &[(ServerId, i64, bool)]) -> Vec<Shelf>
         }
         // Favourites first, and `sort_by_key` is STABLE, so this is the two round-robin passes the
         // design asks for expressed once rather than as two loops that would have to agree about
-        // folding. Truncation comes last: the favourite pass fills the shelf, and every fold above
-        // has already happened, so a tag that IS displayed carries its whole grant-wide count.
-        items.sort_by_key(|it| !it.is_fav(favs));
-        items.truncate(SHELF_MAX);
+        // folding. Only the first [`RANKED`] cards of the first window: what is on screen before
+        // anything is paged, so a slide never reorders a card the user already has.
+        if depths.start == 0 {
+            let head = items.len().min(RANKED);
+            items[..head].sort_by_key(|it| !it.is_fav(favs));
+        }
+        let window = Window {
+            start: depths.start,
+            before: depths.start > 0,
+            after: live.iter().any(|s| has_past(s, k, depths.end)),
+        };
         if !items.is_empty() {
-            out.push(Shelf { kind: *kind, items });
+            out.push(Shelf { kind: *kind, items, window, epoch: epochs[k] });
         }
     }
     out
@@ -1217,17 +1396,48 @@ fn state_from_refs(sources: &[&Source], asking: bool) -> State {
 /// `pump`, which is what makes the failure path self-healing: a refused `spawn_small` (the
 /// device's thread ceiling) or a transient network error simply retries after the backoff instead
 /// of latching the screen on a spinner forever.
-fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) {
+/// Would a request for source `i` leave now, given its countdown `retry_cd`? The one statement of
+/// the preconditions, read both when the pump opens ([`fanout_candidates`]) and at the spawn.
+fn wants_spawn(state: &SearchState, adapter: &SearchAdapter, i: usize, retry_cd: u32) -> bool {
     if state.armed {
-        return; // still settling — the keystroke burst is not over
+        return false; // still settling: the keystroke burst is not over
     }
-    let src = &state.src[i];
-    if adapter.fetch[i].busy() || src.retry_cd > 0 {
-        return;
+    // a source that has answered has had its say about this query, unless a slide is waiting on a
+    // read of one of its lanes
+    !adapter.mailbox(i).busy() && retry_cd == 0 && terms(state.query()).is_some()
+        && (source(state, i).status != Status::Answered || owed_read(state, i).is_some())
+}
+
+/// The first kind whose pending slide waits on source `i`, and the depths it must read.
+fn owed_read(state: &SearchState, i: usize) -> Option<(usize, std::ops::Range<usize>)> {
+    let waited_on = state.wins.iter().enumerate().find_map(|(k, w)| {
+        let p = w.pending.as_ref().filter(|p| p.todo.contains(&i))?;
+        Some((k, p.lo..p.hi))
+    });
+    // else a window committed without this source: it is asked for the window on screen, outside
+    // any slide
+    waited_on.or_else(|| {
+        let k = (0..NKIND).find(|&k| source(state, i).skipped[k])?;
+        let (depths, _) = window_of(&live_sources(state, &slots()), k, state.wins[k].lo);
+        Some((k, depths))
+    })
+}
+
+/// How many sources have a request out, and which of `live` want one now, in roster order.
+fn fanout_candidates(state: &SearchState, adapter: &SearchAdapter, live: &[usize]) -> (usize, Vec<usize>) {
+    let running = live.iter().filter(|&&i| adapter.mailbox(i).busy()).count();
+    let wanting = live.iter().copied()
+        .filter(|&i| wants_spawn(state, adapter, i, source(state, i).retry_cd.saturating_sub(1)))
+        .collect();
+    (running, wanting)
+}
+
+fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize,
+    turn: &mut crate::stores::fanout::FanoutTurn) {
+    if !wants_spawn(state, adapter, i, source(state, i).retry_cd) || !turn.admit(i) {
+        return; // not due, or ungranted: it stays wanted and the next pump asks again
     }
-    if src.status == Status::Answered {
-        return; // this source has had its say about this query
-    }
+    let mailbox = adapter.mailbox(i);
     let Some(q) = terms(state.query()) else { return };
     let q = q.to_string();
     // `sid` is captured HERE, on the main thread, and resolved through `client_for` on the worker.
@@ -1239,28 +1449,260 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
     // `browse` what was current would answer with a table from a different moment than the query it
     // was given. `pump` rejects a landing taken under a snapshot that has since moved.
     let favs = favs(state);
-    adapter.fetch[i].claim(gen);
-    plx_base::eventlog::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
     let worker_adapter = Arc::clone(adapter);
-    let spawned = plx_base::task::spawn_small("search", move || {
-        // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
-        // (None), not as an answer of "this server has nothing"
-        let what = catch_unwind(|| {
+    mailbox.claim(gen);
+    // an answered source is here for a read of one lane: the worker takes a copy, so a failed or
+    // superseded read leaves the lane as it was
+    let spawned = if source(state, i).status == Status::Answered {
+        let Some((k, range)) = owed_read(state, i) else { mailbox.release(); return };
+        let (mut lane, mut tv) = (source(state, i).tails[k].clone(), source(state, i).tv);
+        plx_base::eventlog::log(&format!("search: q[{}ch] sid={i} reading {} depths {}..{}",
+            q.chars().count(), KINDS[k].hubs()[0], range.start, range.end));
+        spawn_job(move || {
+            let read = catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut io = open_io(sid, &q, &favs);
+                lane.read(KINDS[k], &mut tv, range, &mut *io, sid)?;
+                Some((lane, tv))
+            }))
+            .unwrap_or(None);
+            land_tail(&worker_adapter, i, gen, k, read);
+        })
+    } else {
+        plx_base::eventlog::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
+        spawn_job(move || {
+            // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE
+            // (None), not as an answer of "this server has nothing"
+            //
             // sectionId 0 = every section, which `opt_int` sends by omitting it. The Search screen
             // is deliberately account-wide: `sectionId` only RANKS (measured — every other
             // section's rows still come back), so it could not scope this even if we wanted it to.
-            let mc = plx_plex::plex::client_for(sid)?.search(&q, LIMIT, 0)?;
-            Some(project(&mc, sid, &favs))
+            let what = catch_unwind(std::panic::AssertUnwindSafe(|| {
+                open_io(sid, &q, &favs).hubs(LIMIT as usize)
+            }))
+            .unwrap_or(None);
+            land(&worker_adapter, i, gen, what);
         })
-        .unwrap_or(None);
-        land(&worker_adapter, i, gen, what);
-    });
+    };
     if !spawned {
         // nothing will ever fill the mailbox, and the claim is cleared only by a take — release it
         // here or this source never searches again. `maybe_spawn` runs every frame, so this retries
         // by itself.
-        adapter.fetch[i].release();
+        mailbox.release();
     }
+}
+
+/// Run a worker job on a small thread. A test with a fake server runs it right here instead, so a
+/// pump is deterministic.
+fn spawn_job(job: impl FnOnce() + Send + 'static) -> bool {
+    #[cfg(test)]
+    if TEST_IO.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        job();
+        return true;
+    }
+    plx_base::task::spawn_small("search", job)
+}
+
+/// WORKER THREAD: what a worker asks a server with.
+fn open_io(sid: ServerId, q: &str, favs: &[(ServerId, i64, bool)]) -> Box<dyn tail::Io> {
+    #[cfg(test)]
+    if let Some(io) = TEST_IO.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        io.lock().unwrap_or_else(|e| e.into_inner()).serving(sid);
+        return Box::new(SharedIo(io));
+    }
+    Box::new(LiveIo { sid, q: q.to_string(), favs: favs.to_vec() })
+}
+
+#[cfg(test)]
+struct SharedIo(Arc<Mutex<dyn tail::Io + Send>>);
+
+#[cfg(test)]
+impl tail::Io for SharedIo {
+    fn listing(&mut self, kind: plx_plex::plex::SearchKind, req: plx_plex::plex::PageReq)
+        -> Option<plx_plex::plex::MediaContainer> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).listing(kind, req)
+    }
+    fn hubs(&mut self, limit: usize) -> Option<Projection> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).hubs(limit)
+    }
+    fn serving(&mut self, sid: ServerId) {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).serving(sid);
+    }
+}
+
+/// One server, resolved through `client_for` at the moment of the request.
+struct LiveIo {
+    sid: ServerId,
+    q: String,
+    favs: Vec<(ServerId, i64, bool)>,
+}
+
+impl tail::Io for LiveIo {
+    fn listing(&mut self, kind: plx_plex::plex::SearchKind, req: plx_plex::plex::PageReq)
+        -> Option<plx_plex::plex::MediaContainer> {
+        plx_plex::plex::client_for(self.sid)?.search_typed(&self.q, kind, req)
+    }
+    fn hubs(&mut self, limit: usize) -> Option<Projection> {
+        let mc = plx_plex::plex::client_for(self.sid)?.search(&self.q, limit as i64, 0)?;
+        Some(project(&mc, self.sid, &self.favs))
+    }
+}
+
+/// A source's read of one lane landed: keep the lane, and when the last source a slide waited on
+/// has covered the slide's depths, move the window. **A source that has not covered them stays owed**
+/// — a failed read, or a bounded job ([`tail::REQUESTS`]) that stopped short — and is asked again by
+/// the same fan-out, after [`RETRY_FRAMES`] when it made no progress: the cards stay where they are
+/// meanwhile, so no hit is skipped and the focused card keeps its place. A source that is gone is
+/// dropped from the slide by [`prune_pending`]. Returns whether the shelves changed.
+fn land_read(state: &mut SearchState, i: usize, t: TailMail) -> bool {
+    let k = t.kind;
+    let mut progressed = false;
+    match t.read {
+        Some((lane, tv)) => {
+            let s = source_mut(state, i);
+            progressed = (lane.covered(), lane.end, lane.is_growth()) != (s.tails[k].covered(), s.tails[k].end, s.tails[k].is_growth());
+            s.tails[k] = lane;
+            s.tv = tv;
+        }
+        None => plx_base::eventlog::log(&format!("search: sid={i} lane read failed, it stays owed")),
+    }
+    let waited_on = state.wins[k].pending.as_ref().filter(|p| p.todo.contains(&i)).map(|p| p.lo..p.hi);
+    let Some(range) = waited_on else {
+        // a source the window was committed without, reading the window on screen
+        if !source(state, i).skipped[k] { return false }
+        let (depths, _) = window_of(&live_sources(state, &slots()), k, state.wins[k].lo);
+        if source(state, i).tails[k].needs(&depths) {
+            if !progressed { source_mut(state, i).retry_cd = RETRY_FRAMES; }
+            return false;
+        }
+        source_mut(state, i).skipped[k] = false;
+        plx_base::eventlog::log(&format!("search: sid={i} caught up, its hits join the window"));
+        return true;
+    };
+    if source(state, i).tails[k].needs(&range) {
+        // still owed: the next pump asks again, at once while reads make headway
+        if progressed { return false }
+        source_mut(state, i).retry_cd = RETRY_FRAMES;
+        let Some(p) = state.wins[k].pending.as_mut() else { return false };
+        let tries = match p.stalls.iter_mut().find(|(x, _)| *x == i) {
+            Some((_, n)) => { *n += 1; *n }
+            None => { p.stalls.push((i, 1)); 1 }
+        };
+        if tries < LANDING_TRIES { return false }
+        // out of tries: the slide stops waiting for this source and moves on without it
+        plx_base::eventlog::log(&format!("search: sid={i} failed {tries} reads in a row, the window moves without it"));
+        p.todo.retain(|&x| x != i);
+        source_mut(state, i).skipped[k] = true;
+        return commit_if_done(state, k);
+    }
+    let Some(p) = state.wins[k].pending.as_mut() else { return false };
+    p.todo.retain(|&x| x != i);
+    commit_if_done(state, k)
+}
+
+/// Commit kind `k`'s slide when nothing is left to wait for. Returns whether the shelves changed.
+fn commit_if_done(state: &mut SearchState, k: usize) -> bool {
+    let Some(p) = state.wins[k].pending.as_ref().filter(|p| p.todo.is_empty()) else { return false };
+    let lo = p.lo;
+    commit_window(state, k, lo);
+    true
+}
+
+/// Drop the sources that left the roster from every slide's `todo`: a source that is gone can never
+/// deliver its depths, and the row must not wait for it for ever. Commits a slide that was waiting
+/// only on them. Returns whether the shelves changed.
+fn prune_pending(state: &mut SearchState, live: &[usize]) -> bool {
+    let mut changed = false;
+    for k in 0..NKIND {
+        let Some(p) = state.wins[k].pending.as_mut() else { continue };
+        p.todo.retain(|i| live.contains(i));
+        if p.todo.is_empty() {
+            let lo = p.lo;
+            commit_window(state, k, lo);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Move kind `k`'s window to start at `lo`: every lane lets go of the depths outside it, and
+/// [`rebuild`] (the caller's) draws the new cards.
+fn commit_window(state: &mut SearchState, k: usize, lo: usize) {
+    let live = slots();
+    let (depths, _) = window_of(&live_sources(state, &live), k, lo);
+    for i in live {
+        let s = source_mut(state, i);
+        s.tails[k].trim(depths.clone());
+        // whoever still lacks a depth of the new window was left out of it: owed, and asked outside
+        // any slide from here on
+        s.skipped[k] = s.status == Status::Answered && s.tails[k].inited && s.tails[k].needs(&depths);
+    }
+    state.wins[k] = Win { lo, pending: None, committed: state.wins[k].committed.wrapping_add(1) };
+}
+
+/// Slide kind `kind`'s window half a window forward or back. Every hit of the row is reached by
+/// repeating this; the sources whose lanes do not already hold the new depths are asked (through
+/// the same fan-out as the first fetch) and the cards move when the last has answered. Returns
+/// whether the window moved at once.
+///
+/// **Going on from a window that is not read to its end fills it where it stands.** The first
+/// paint is the preview, twelve hits of a one-source window of twenty-four, and the row asks to go
+/// on with focus in the preview's second half: half a window further on would hold none of the
+/// preview, so the focused card would leave the row and the card that took its slot would be twelve
+/// hits on. The window only slides once every source has been read through it.
+fn page(state: &mut SearchState, kind: Kind, before: bool, seen: (usize, usize)) -> bool {
+    let Some(k) = KINDS.iter().position(|x| *x == kind) else { return false };
+    // The asker read a window that a slide or a fill has since replaced: where its focus stood in
+    // the old one says nothing about the new one. The new publication carries another start or
+    // another count, which lets the screen ask again from the window that stands.
+    let held = state.shelves().iter().find(|s| s.kind == kind).map_or(0, |s| s.items.len());
+    if (state.wins[k].lo, held) != seen { return false }
+    if terms(state.query()).is_none() { return false }
+    if state.wins[k].pending.is_some() {
+        // going back is the way out of a slide that cannot finish (a source that keeps failing); going
+        // on is already asked
+        if !before { return false }
+        state.wins[k].pending = None;
+    }
+    let live = slots();
+    let sources = live_sources(state, &live);
+    let lo = state.wins[k].lo;
+    let (depths, answered) = window_of(&sources, k, lo);
+    let step = (depths.len() / 2).max(1);
+    // the sources a window of `range` waits for: a skipped one is asked outside any slide
+    let owing = |state: &SearchState, range: &std::ops::Range<usize>| -> Vec<usize> {
+        live.iter().copied()
+            .filter(|&i| {
+                let s = source(state, i);
+                s.status == Status::Answered && s.tails[k].inited && !s.skipped[k] && s.tails[k].needs(range)
+            })
+            .collect()
+    };
+    let new_lo = if before {
+        if lo == 0 { return false }
+        lo.saturating_sub(step)
+    } else {
+        if !answered.iter().any(|s| has_past(s, k, depths.end)) { return false }
+        if owing(state, &depths).is_empty() { lo + step } else { lo }
+    };
+    let range = new_lo..new_lo + depths.len();
+    let todo = owing(state, &range);
+    if todo.is_empty() {
+        commit_window(state, k, new_lo);
+        rebuild(state);
+        return true;
+    }
+    state.wins[k].pending = Some(Pending { lo: new_lo, hi: range.end, todo, stalls: Vec::new() });
+    false
+}
+
+/// Withdraws the slide [`page`] asked for. The tails the sources have read stay (asking again
+/// commits at once if they cover it); only the commit of the window is given up. A window that has
+/// moved since (`seen` differs) has already landed what was asked, so there is nothing to withdraw.
+fn cancel_page(state: &mut SearchState, kind: Kind, seen: usize) -> bool {
+    let Some(k) = KINDS.iter().position(|x| *x == kind) else { return false };
+    if state.wins[k].lo != seen || state.wins[k].pending.is_none() { return false; }
+    state.wins[k].pending = None;
+    false
 }
 
 /// WORKER THREAD: one server's `/hubs/search` response, projected into [`KINDS`] order.
@@ -1427,6 +1869,8 @@ fn run_with_optional_directory(
             true
         }
         SearchCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(state, sid, &rk, on),
+        SearchCmd::Page { kind, before, seen } => page(state, kind, before, seen),
+        SearchCmd::PageCancel { kind, seen } => cancel_page(state, kind, seen),
     }
 }
 
@@ -1493,6 +1937,14 @@ mod merge_ranking_tests;
 #[cfg(test)]
 #[path = "search_publication_tests.rs"]
 mod publication_tests;
+
+#[cfg(test)]
+#[path = "search_tail_tests.rs"]
+mod tail_tests;
+
+#[cfg(test)]
+#[path = "search_paging_tests.rs"]
+mod paging_tests;
 
 #[cfg(test)]
 #[path = "search_dump_tests.rs"]

@@ -59,7 +59,12 @@ use std::cell::Cell;
 
 use super::registry::{AppFx, AppMsg, ContentArg, ContentLike, ContentReq, PageMemory, DetailIdentity, DetailKey, DetailMemory, ContentPanel, DetailRefreshPhase};
 
-const FIRST_ITEM_ELEM: u32 = 2048;
+/// Each section's local element ids are a block of its own, 2^24 wide, so a list can grow to any
+/// length the server sends without running into the next section's ids. Episodes sit alone at the
+/// top of the local space (two ids each, see `episodes.rs`). Engine keys are interned from
+/// `FIRST_ITEM_ELEM`, above every local block, and stay below `dispatch::STRIP_BASE`.
+const SECTION_BLOCK: u32 = 1 << 24;
+const FIRST_ITEM_ELEM: u32 = 1 << 31;
 
 const SECTION_GAP: f32 = theme::space::XL;
 const TAB_EP_GAP: f32 = theme::space::MD;
@@ -82,27 +87,62 @@ const HERO_FADE: f32 = 400.0;
 /// travel. Half the hero's own fade: the title is chrome the page has already handed over, so it
 /// should be gone by the time the block above it is properly on its way.
 const COMPACT_TITLE_FADE: f32 = 200.0;
-const EP_SCALE_MAX: usize = 40;
 const K_SCROLL: f32 = plx_ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
 
 pub const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,refresh:u32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;8],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
 
+// The blocks packed end to end: each section starts where the one before it ends, so the chain
+// proves they are disjoint. The episodes come last, at 2^30, and end where the engine keys begin.
 const _: () = assert!(hero::HERO_ELEM_RANGE_END == season::SEASON_ELEM_RANGE_START);
-const _: () = assert!(season::SEASON_ELEM_RANGE_END == episodes::EPISODES_ELEM_RANGE_START);
-const _: () = assert!(episodes::EPISODES_ELEM_RANGE_END == related::RELATED_ELEM_RANGE_START);
+const _: () = assert!(season::SEASON_ELEM_RANGE_END == related::RELATED_ELEM_RANGE_START);
 const _: () = assert!(related::RELATED_ELEM_RANGE_END == cast::CAST_ELEM_RANGE_START);
 const _: () = assert!(cast::CAST_ELEM_RANGE_END == about::ABOUT_ELEM_RANGE_START);
 const _: () = assert!(about::ABOUT_ELEM_RANGE_END == extras::EXTRAS_ELEM_RANGE_START);
 const _: () = assert!(extras::EXTRAS_ELEM_RANGE_END == collection::COLLECTION_ELEM_RANGE_START);
-const _: () = assert!(collection::COLLECTION_ELEM_RANGE_END <= FIRST_ITEM_ELEM);
+const _: () = assert!(collection::COLLECTION_ELEM_RANGE_END <= episodes::EPISODES_ELEM_RANGE_START);
+const _: () = assert!(episodes::EPISODES_ELEM_RANGE_END == FIRST_ITEM_ELEM);
 
 #[derive(Clone)]
 struct RestoreIntent {
     spot: Spot,
     episode: Option<String>,
     season_requested: bool,
+    /// The asks made to open the Related window at the spot ([`Spot::tail_position`]). Not hashed:
+    /// it is bookkeeping of one outstanding ask, and the spot it serves is.
+    seek: RelatedSeek,
 }
+
+/// The window asks a restore onto a Related tail card has made. One ask per window identity is
+/// said, and said again on the shelf's own ladder ([`ui_cards::Retry`]) for as long as the page is on
+/// screen and the window has not opened: a read that fails or is refused is not a reason to move
+/// focus to a card the user did not leave. Only a definitive answer ends the wait (the hub is gone,
+/// or the listing is shorter than the position: `related_pending` is then false).
+#[derive(Clone)]
+struct RelatedSeek {
+    asked: Option<(usize, usize)>,
+    retry: ui_cards::Retry,
+}
+
+impl Default for RelatedSeek {
+    fn default() -> Self {
+        Self { asked: None, retry: ui_cards::Retry::new() }
+    }
+}
+
+/// The range of a long season's episodes the strip last asked the store for, so the same range is
+/// not said every frame; said again after [`EP_RETRY_MS`] while a page in it is still a hole
+/// (a failed fetch is retried that way).
+#[derive(Default)]
+struct EpWant {
+    asked: Option<(usize, usize, Option<usize>, Option<usize>)>,
+    /// The list it was said of: a new season's list is a new thing to ask for.
+    list: u64,
+    at: u32,
+}
+
+const EP_RETRY_MS: u32 = 1000;
+
 
 pub struct DetailScreen {
     entry: EntryId,
@@ -113,6 +153,9 @@ pub struct DetailScreen {
     // Published identity projections, rebuilt only at mount/landings, never while drawing.
     key_by_local: std::collections::HashMap<u32, u32>,
     local_by_key: std::collections::HashMap<u32, u32>,
+    /// `local_by_key` as the pass before the current one saw it: those keys are kept by
+    /// [`Self::prune_keys`] so a season switch and straight back keeps every identity's key.
+    prev_by_key: std::collections::HashMap<u32, u32>,
     /// Where each card-shelf card that left the page last stood (engine key to local key), kept so
     /// `reconcile` can put focus on the same position in that shelf; dropped if the card returns.
     /// Not logical state: it is a projection of past publications, like the two maps above.
@@ -209,11 +252,13 @@ pub struct DetailScreen {
     scroll: Spring,
     scroll_target: f32,
     episode_scroll: Spring,
+    /// What the episode strip last asked the store to have loaded, and when.
+    ep_want: EpWant,
     tab_scroll: Spring,
-    episode_scale: [Spring; EP_SCALE_MAX],
-    /// Each episode label block's focus lift, earned by the TEXT stop alone (the plate also shows
-    /// for the still's pop — see `episodes::draw_cell`). Slots past the episode count stay at rest.
-    episode_text_lift: [TextLift; EP_SCALE_MAX],
+    /// The focused episode's pop spring and label-block lift (earned by the TEXT stop alone; the
+    /// plate also shows for the still's pop — see `episodes::draw_cell`), keyed by episode so the
+    /// state does not grow with the season.
+    episode_cells: episodes::Cells,
     /// The About card's and the Languages column's focus lifts (`Located::About(0)` / `(1)`).
     about_card_lift: TextLift,
     about_lang_lift: TextLift,
@@ -272,24 +317,43 @@ pub struct DetailScreen {
 
 /// Snapshot of every metadata-dependent read [`DetailScreen::spot`] needs, taken while a real
 /// [`plx_data::metadata::MetadataView`] is in hand. See Opus decision D7.
-#[derive(Clone, Copy, Default, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct SpotFacts {
     detail: bool,
     tracks: bool,
     hero: hero::HeroSet,
     season: Option<i64>,
+    /// The Related row's head length and the tail position of each card after it: a card of the
+    /// window is named by where it lies in its listing, which survives the window being gone.
+    related_head: usize,
+    related_positions: Vec<usize>,
 }
 
 impl SpotFacts {
+    #[cfg(test)]
     fn of(screen: &DetailScreen, meta: plx_data::metadata::MetadataView<'_>) -> SpotFacts {
-        SpotFacts {
-            detail: screen.detail(meta).is_some(),
-            tracks: screen.tracks_available(meta),
-            hero: screen.hero_set(meta),
-            season: screen
-                .detail(meta)
-                .and_then(|d| d.seasons.get(d.cur_season))
-                .map(|s| s.index),
+        let mut facts = SpotFacts::default();
+        facts.refresh(screen, meta);
+        facts
+    }
+
+    /// In place, so the per-frame refresh allocates nothing once the position list has its room.
+    fn refresh(&mut self, screen: &DetailScreen, meta: plx_data::metadata::MetadataView<'_>) {
+        let d = screen.detail(meta);
+        self.detail = d.is_some();
+        self.tracks = screen.tracks_available(meta);
+        self.hero = screen.hero_set(meta);
+        self.season = d.and_then(|d| d.seasons.get(d.cur_season)).map(|s| s.index);
+        self.related_head = d.map_or(0, |d| d.related_tail.head);
+        self.related_positions.clear();
+        self.related_positions.extend(d.iter().flat_map(|d| d.related_tail.positions.iter().copied()));
+    }
+
+    /// Related card `i` as a `Spot` column: its index in the head, else its tail position.
+    fn related_col(&self, i: usize) -> i32 {
+        match i.checked_sub(self.related_head).and_then(|k| self.related_positions.get(k)) {
+            Some(&position) => Spot::tail_col(position),
+            None => i as i32,
         }
     }
 }
@@ -326,6 +390,9 @@ thread_local! {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct LayoutStamp {
     episodes: usize,
+    /// The list's `rev` when it is longer than a page (its block height is reserved, so the
+    /// content is not hashed); 0 for a one-page list, whose content hash below stands in.
+    ep_rev: u64,
     n_ep: u32,
     summary: usize,
     hero_ep: usize,
@@ -343,10 +410,13 @@ impl LayoutStamp {
         use std::hash::{Hash, Hasher};
         let hero = hero::hero_episode(d);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for e in &d.episodes {
-            e.title.hash(&mut hasher);
-            e.summary.hash(&mut hasher);
-            e.aired.hash(&mut hasher);
+        let paged = d.episodes.len() > plx_data::metadata::EPISODE_PAGE;
+        if !paged {
+            for (_, e) in d.episodes.iter_loaded() {
+                e.title.hash(&mut hasher);
+                e.summary.hash(&mut hasher);
+                e.aired.hash(&mut hasher);
+            }
         }
         d.summary.hash(&mut hasher);
         if let Some(e) = hero {
@@ -355,7 +425,7 @@ impl LayoutStamp {
         }
         let content_hash = hasher.finish();
         #[cfg(test)]
-        STAMPED_EPISODES.with(|n| n.set(n.get() + d.episodes.len()));
+        STAMPED_EPISODES.with(|n| n.set(n.get() + if paged { 0 } else { d.episodes.len() }));
         let mut flags = 0u8;
         if d.is_show {
             flags |= 1;
@@ -364,7 +434,8 @@ impl LayoutStamp {
             flags |= 2;
         }
         Self {
-            episodes: d.episodes.as_ptr() as usize,
+            episodes: d.episodes.id() as usize,
+            ep_rev: if paged { d.episodes.rev() } else { 0 },
             n_ep: d.episodes.len() as u32,
             summary: d.summary.as_ptr() as usize,
             hero_ep: hero.map(|e| std::ptr::from_ref(e) as usize).unwrap_or(0),
@@ -409,6 +480,7 @@ impl DetailScreen {
             next_elem: FIRST_ITEM_ELEM,
             key_by_local: Default::default(),
             local_by_key: Default::default(),
+            prev_by_key: Default::default(),
             gone: Default::default(),
             return_pending: false,
             pending_season: None,
@@ -435,8 +507,8 @@ impl DetailScreen {
             scroll_target: 0.0,
             episode_scroll: Spring::at(0.0),
             tab_scroll: Spring::at(0.0),
-            episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
-            episode_text_lift: [TextLift::new(); EP_SCALE_MAX],
+            episode_cells: episodes::Cells::new(),
+            ep_want: EpWant::default(),
             about_card_lift: TextLift::new(),
             about_lang_lift: TextLift::new(),
             related: Shelf::new(entry, cards::Which::Related.style()),
@@ -458,6 +530,12 @@ impl DetailScreen {
             spot_facts: SpotFacts::default(),
             hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Detail),
         }
+    }
+
+    fn refresh_spot_facts(&mut self, meta: plx_data::metadata::MetadataView<'_>) {
+        let mut facts = std::mem::take(&mut self.spot_facts);
+        facts.refresh(self, meta);
+        self.spot_facts = facts;
     }
 
     pub fn restore_memory(&mut self, memory: &DetailMemory, meta: plx_data::metadata::MetadataView<'_>) {
@@ -485,14 +563,19 @@ impl DetailScreen {
 
     /// Episode `i`'s label-block lift; at rest for a slot with no state.
     fn episode_lift(&self, i: usize) -> TextLift {
-        self.episode_text_lift.get(i).copied().unwrap_or_default()
+        self.episode_cells.lift(i)
+    }
+
+    /// A local that is its own engine key: the hero's controls, the About footer and the collection
+    /// heading. Every other local is interned as a key of its rating identity.
+    fn is_identity_local(local: u32) -> bool {
+        local < season::SEASON_ELEM_RANGE_START
+            || local >= about::ABOUT_ELEM_RANGE_START && local < about::ABOUT_ELEM_RANGE_END
+            || local == collection::HEADING_ELEM
     }
 
     fn engine_key(&self, local: u32) -> Option<u32> {
-        if local < season::SEASON_ELEM_RANGE_START
-            || local >= about::ABOUT_ELEM_RANGE_START && local < about::ABOUT_ELEM_RANGE_END
-            || local == collection::HEADING_ELEM
-        {
+        if Self::is_identity_local(local) {
             Some(local)
         } else {
             self.key_by_local.get(&local).copied()
@@ -513,14 +596,14 @@ impl DetailScreen {
                     identities.push((local, DetailIdentity::Season { sid: d.sid, show: d.rk.clone(), rk: season.rk.clone() }));
                 }
             }
-            for (i, episode) in d.episodes.iter().enumerate() {
+            for (i, episode) in d.episodes.iter_loaded() {
                 for row in [episodes::Row::Still, episodes::Row::Text] {
                     if let Some(local) = episodes::elem(i, row) {
                         identities.push((local, DetailIdentity::Episode { sid: d.sid, rk: episode.rk.clone(), text: row == episodes::Row::Text }));
                     }
                 }
             }
-            for (i, extra) in d.extras.iter().enumerate().take(extras::EXTRAS_ELEM_RANGE_END.saturating_sub(extras::EXTRAS_ELEM_RANGE_START) as usize) {
+            for (i, extra) in d.extras.iter().enumerate() {
                 if let Some(local) = extras::elem(i) {
                     identities.push((local, DetailIdentity::Extra { sid: d.sid, rk: extra.rk.clone() }));
                 }
@@ -562,7 +645,7 @@ impl DetailScreen {
             self.key_by_local.insert(local, elem);
             self.local_by_key.insert(elem, local);
         }
-        for (elem, local) in before {
+        for (&elem, &local) in &before {
             if !self.local_by_key.contains_key(&elem) && Self::card_shelf_of(local) {
                 self.gone.insert(elem, local);
             }
@@ -572,7 +655,37 @@ impl DetailScreen {
         if let Some(key) = pending_key {
             self.pending_season = self.local_by_key.get(&key).and_then(|local| season::locate(*local));
         }
-        self.spot_facts = SpotFacts::of(self, meta);
+        self.prev_by_key = before;
+        self.refresh_spot_facts(meta);
+    }
+
+    /// Bound the key table, modelled on Home's `prune_keys`. A key is needed while its card is on
+    /// the page, was on it one pass ago (a season switched away and straight back keeps its keys),
+    /// or is one the input engine holds: the focus, the pending season, a group's remembered
+    /// cursor. Above twice one pass plus 256 the oldest of the rest go (elems are minted in
+    /// order). `held` is the engine's keys; the focus is never pruned and never moves.
+    fn prune_keys(&mut self, held: &[u32]) {
+        let live = |elem: u32| self.local_by_key.contains_key(&elem) || self.prev_by_key.contains_key(&elem) || held.contains(&elem);
+        let pending = self.pending_season.and_then(season::elem).and_then(|local| self.engine_key(local));
+        let cap = 2 * self.local_by_key.len() + 256;
+        if self.keys.len() <= cap {
+            return;
+        }
+        let mut oldest: Vec<u32> = self.keys.iter().map(|key| key.elem)
+            .filter(|&elem| !live(elem) && Some(elem) != pending)
+            .collect();
+        oldest.sort_unstable();
+        let drop: std::collections::HashSet<u32> = oldest.into_iter().take(self.keys.len() - cap).collect();
+        if drop.is_empty() {
+            return;
+        }
+        self.keys.retain(|key| !drop.contains(&key.elem));
+        self.gone.retain(|elem, _| !drop.contains(elem));
+    }
+
+    /// The keys the input engine holds for this entry: its focus and every group's remembered one.
+    fn held_keys<H: plx_machine::machine::Host<Elem = u32>>(cx: &Cx<'_, H>) -> Vec<u32> {
+        cx.focus.current.iter().map(|key| key.elem).chain(cx.focus.remembered.iter().map(|(_, elem)| *elem)).collect()
     }
 
     /// Whether `local` is a card on one of the four card shelves (Related, Collection, Extras, Cast).
@@ -589,10 +702,10 @@ impl DetailScreen {
     fn shelf_recovery(&self, elem: u32, meta: plx_data::metadata::MetadataView<'_>) -> Option<u32> {
         let d = self.detail(meta)?;
         let local = match Self::locate_local(*self.gone.get(&elem)?, false)? {
-            Located::Related(i) => related::elem(ui_cards::clamp_slot(i, d.related.len().min(512))?),
+            Located::Related(i) => related::elem(ui_cards::clamp_slot(i, d.related.len())?),
             Located::Collection(i) => collection::elem(ui_cards::clamp_slot(i, collection::len(d))?),
             Located::Extras(i) => extras::elem(ui_cards::clamp_slot(i, extras::len(d))?),
-            Located::Cast(i) => cast::elem(ui_cards::clamp_slot(i, d.credits_len().min(512))?),
+            Located::Cast(i) => cast::elem(ui_cards::clamp_slot(i, d.credits_len())?),
             _ => None,
         }?;
         self.engine_key(local)
@@ -609,6 +722,7 @@ impl DetailScreen {
             spot: spot.clone(),
             episode: episode.map(str::to_owned),
             season_requested: false,
+            seek: RelatedSeek::default(),
         });
         self.scroll_target = 0.0;
     }
@@ -622,6 +736,7 @@ impl DetailScreen {
                     Located::Hero(control) => hero::index_of(facts.hero, control).unwrap_or(0) as i32,
                     // The heading shares its section with the cards; -1 is the slot no card has.
                     Located::CollectionHeading => -1,
+                    Located::Related(i) => facts.related_col(i),
                     _ => l.index() as i32,
                 };
                 (
@@ -723,7 +838,7 @@ impl DetailScreen {
                 row,
                 self.section_top(2, d, measure) - self.scroll.pos,
                 self.episode_scroll.pos,
-                self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0) * focus.map_or(1.0, |k| f.press.dip_of(&k)),
+                self.episode_cells.scale(i) * focus.map_or(1.0, |k| f.press.dip_of(&k)),
                 &self.episode_lift(i),
                 f.measure,
                 meta,
@@ -1036,7 +1151,7 @@ impl DetailScreen {
                 return None;
             }
             *self.local_by_key.get(&elem)?
-        } else if elem < season::SEASON_ELEM_RANGE_START || elem >= about::ABOUT_ELEM_RANGE_START {
+        } else if Self::is_identity_local(elem) {
             elem
         } else {
             return None;
@@ -1094,6 +1209,60 @@ impl DetailScreen {
         }
     }
 
+    /// The episode a restore seats on, or `None` while its page has not landed. The remembered
+    /// rating key wins when that episode is loaded; otherwise the remembered column is the hint,
+    /// and the restore waits for the page that holds it rather than seating somewhere else.
+    fn episode_to_seat(d: &Detail, intent: &RestoreIntent) -> Option<usize> {
+        let hint = (intent.spot.col.max(0) as usize).min(d.episodes.len().saturating_sub(1));
+        match &intent.episode {
+            Some(rk) => d.episodes.position(rk).or_else(|| {
+                if d.episodes.is_complete() {
+                    Some(0)
+                } else {
+                    d.episodes.get(hint).map(|_| hint)
+                }
+            }),
+            None => d.episodes.get(hint).map(|_| hint),
+        }
+    }
+
+    /// Whether a restore onto a Related tail card waits for the window to open at its position:
+    /// the page holds a tail, and the window it stands at does not reach the position. A tail the
+    /// page no longer has cannot be waited for; the nearest card stands in ([`Self::related_nearest`]).
+    fn related_pending(d: &Detail, intent: &RestoreIntent) -> bool {
+        let t = &d.related_tail;
+        intent.spot.tail_position().is_some_and(|position| {
+            !t.hubs.is_empty() && !(t.offset <= position && (position < t.end || !t.more))
+        })
+    }
+
+    /// The Related card nearest tail position `position` among those the page holds: the card
+    /// itself when its place is unchanged, the nearest surviving place when the listing shifted
+    /// (the rule `ui::cards::pool` applies to a card that left a row). A window with no cards
+    /// leaves the row's first.
+    fn related_nearest(d: &Detail, position: usize) -> usize {
+        let t = &d.related_tail;
+        t.positions.iter().enumerate()
+            .min_by_key(|(_, at)| at.abs_diff(position))
+            .map_or(0, |(k, _)| t.head + k)
+            .min(d.related.len().saturating_sub(1))
+    }
+
+    /// Whether the restore under way waits for a Related window to open.
+    fn restore_related_pending(&self, meta: plx_data::metadata::MetadataView<'_>) -> bool {
+        self.restore_intent.as_ref().zip(self.detail(meta)).is_some_and(|(intent, d)| Self::related_pending(d, intent))
+    }
+
+    /// The Related card a restore onto the tail seats on once its window is open, for a page whose
+    /// focus the engine still holds on a card the fresh window may not contain.
+    fn related_restore_elem(&self, meta: plx_data::metadata::MetadataView<'_>) -> Option<u32> {
+        let intent = self.restore_intent.as_ref()?;
+        let d = self.detail(meta)?;
+        let position = intent.spot.tail_position()?;
+        if Self::related_pending(d, intent) { return None; }
+        self.engine_key(related::elem(Self::related_nearest(d, position))?)
+    }
+
     fn restore_focus(&self, meta: plx_data::metadata::MetadataView<'_>) -> Option<u32> {
         if self.return_pending { return None; }
         let intent = self.restore_intent.as_ref()?;
@@ -1116,14 +1285,7 @@ impl DetailScreen {
             }
             1 if !d.seasons.is_empty() => season::elem(d.cur_season.min(d.seasons.len() - 1)),
             2 if !d.episodes.is_empty() => {
-                let index = match &intent.episode {
-                    Some(rk) => d
-                        .episodes
-                        .iter()
-                        .position(|episode| &episode.rk == rk)
-                        .unwrap_or(0),
-                    None => clamp(intent.spot.col, d.episodes.len()),
-                };
+                let index = Self::episode_to_seat(d, intent)?;
                 episodes::elem(
                     index,
                     if intent.spot.ep_text {
@@ -1133,7 +1295,13 @@ impl DetailScreen {
                     },
                 )
             }
-            3 if !d.related.is_empty() => related::elem(clamp(intent.spot.col, d.related.len())),
+            3 if !d.related.is_empty() => match intent.spot.tail_position() {
+                Some(position) => {
+                    if Self::related_pending(d, intent) { return None; }
+                    related::elem(Self::related_nearest(d, position))
+                }
+                None => related::elem(clamp(intent.spot.col, d.related.len())),
+            },
             6 if !d.extras.is_empty() => extras::elem(clamp(intent.spot.col, extras::len(d))),
             7 if collection::len(d) > 0 => {
                 if intent.spot.col < 0 {
@@ -1209,13 +1377,13 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                         plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         season::ROW_H,
                     ),
-                    len: d.seasons.len().min(64),
+                    len: d.seasons.len(),
                     elem: ElemKind::Card,
                 }),
                 2 => out.push(GroupSpec {
                     id: episodes::EPISODES_GROUP,
                     kind: GroupKind::Grid {
-                        cols: d.episodes.len().min(episodes::MAX_ITEMS).max(1),
+                        cols: d.episodes.len().max(1),
                         holes: &[],
                     },
                     seat: Seat::Nearest,
@@ -1227,7 +1395,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                         plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         self.block_h(2, d, measure),
                     ),
-                    len: d.episodes.len().min(episodes::MAX_ITEMS) * 2,
+                    len: d.episodes.len() * 2,
                     elem: ElemKind::Card,
                 }),
                 6 => out.push(GroupSpec {
@@ -1257,7 +1425,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                         plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         self.block_h(3, d, measure),
                     ),
-                    len: d.related.len().min(512),
+                    len: d.related.len(),
                     elem: ElemKind::Card,
                 }),
                 7 => {
@@ -1298,7 +1466,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                         plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                         self.block_h(4, d, measure),
                     ),
-                    len: d.credits_len().min(512),
+                    len: d.credits_len(),
                     elem: ElemKind::Card,
                 }),
                 5 => {
@@ -1357,9 +1525,13 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                 row_move(i, self.detail(meta).map(|d| d.seasons.len()).unwrap_or(0), dir)
                     .and_then(season::elem)
             }
+            // Left/Right stop at a hole: a page that has not landed has no cell to seat on, and the
+            // press that reaches it is answered by the load the strip already asked for.
             Located::Episode(i, row) => match dir {
-                Dir::Left if i > 0 => episodes::elem(i - 1, row),
-                Dir::Right if self.detail(meta).is_some_and(|d| i + 1 < d.episodes.len()) => {
+                Dir::Left if i > 0 && self.detail(meta).is_some_and(|d| d.episodes.get(i - 1).is_some()) => {
+                    episodes::elem(i - 1, row)
+                }
+                Dir::Right if self.detail(meta).is_some_and(|d| d.episodes.get(i + 1).is_some()) => {
                     episodes::elem(i + 1, row)
                 }
                 Dir::Down if row == episodes::Row::Still => episodes::elem(i, episodes::Row::Text),
@@ -1448,7 +1620,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                     }
                 };
                 let drawn = if row == episodes::Row::Still {
-                    base.scaled(self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0))
+                    base.scaled(self.episode_cells.scale(i))
                 } else {
                     // Grows from its top edge, like `episodes::draw_cell`'s block.
                     lifted(base, TOP_CENTRE, self.episode_lift(i).scale())
@@ -1549,7 +1721,8 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
         if known && (self.return_pending || self.restore_intent.is_some())
             && (self.refresh != DetailRefreshPhase::None
                 || meta.detail_request_status(self.sid, &self.rk) == Some(true)
-                || self.detail(meta).is_some() && (meta.season_loading() || self.return_waiting(meta))) {
+                || self.detail(meta).is_some() && (meta.season_loading() || self.return_waiting(meta)
+                    || self.restore_related_pending(meta))) {
             return want;
         }
         if self.detail(meta).is_some() {
@@ -1590,6 +1763,11 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
         {
             return want;
         }
+        // A Back onto a card deep in the Related row: the window the page was left at is open
+        // again, and the card is in it or its nearest place is.
+        if let Some(elem) = self.related_restore_elem(meta) {
+            return FocusKey { entry: want.entry, elem };
+        }
         if let Some(elem) = self.shelf_recovery(want.elem, meta) {
             return FocusKey { entry: want.entry, elem };
         }
@@ -1611,14 +1789,11 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
             // `from`: `Placed` carries no source group, so this fires from every entry into the
             // strip (episodes below, hero above) alike, which is what a season tab strip means by
             // "current".
-            let n = d.map(|d| d.seasons.len()).unwrap_or(0).min(64);
+            let n = d.map(|d| d.seasons.len()).unwrap_or(0);
             let i = d.map(|d| d.cur_season.min(n.saturating_sub(1)));
             i.and_then(season::elem).unwrap_or(season::SEASON_ELEM_RANGE_START)
         } else if group == episodes::EPISODES_GROUP {
-            let n = d
-                .map(|d| d.episodes.len())
-                .unwrap_or(0)
-                .min(episodes::MAX_ITEMS);
+            let n = d.map(|d| d.episodes.len()).unwrap_or(0);
             let i = ui_cards::column_near_x(
                 from.rect.cx(),
                 plx_ui::consts::MARGIN_X,
@@ -1628,6 +1803,8 @@ impl<H: ContentLike + crate::registry::MetadataLike> Focusable<H> for DetailScre
                 n,
                 from_i,
             );
+            // column-from-x snaps to the nearest loaded index: a hole has no cell to seat on
+            let i = d.and_then(|d| d.episodes.nearest_loaded(i)).unwrap_or(i);
             let row = if d.is_some_and(|d| {
                 from.rect.cy() > self.section_top_settled(2, d, measure) - self.scroll_target + self.block_h(2, d, measure)
             }) {
@@ -1680,15 +1857,13 @@ impl DetailScreen {
             Located::Hero(c) => {
                 hero::focusable(c, self.full_trailer()) && hero::index_of(self.hero_set(meta), c).is_some()
             }
-            Located::Season(i) => d.is_some_and(|d| i < d.seasons.len().min(64)),
-            Located::Episode(i, _) => {
-                d.is_some_and(|d| i < d.episodes.len().min(episodes::MAX_ITEMS))
-            }
-            Located::Related(i) => d.is_some_and(|d| i < d.related.len().min(512)),
+            Located::Season(i) => d.is_some_and(|d| i < d.seasons.len()),
+            Located::Episode(i, _) => d.is_some_and(|d| d.episodes.get(i).is_some()),
+            Located::Related(i) => d.is_some_and(|d| i < d.related.len()),
             Located::Extras(i) => d.is_some_and(|d| i < extras::len(d)),
             Located::Collection(i) => d.is_some_and(|d| i < collection::len(d)),
             Located::CollectionHeading => d.is_some_and(|d| collection::len(d) > 0),
-            Located::Cast(i) => d.is_some_and(|d| i < d.credits_len().min(512)),
+            Located::Cast(i) => d.is_some_and(|d| i < d.credits_len()),
             Located::About(0) => d.is_some(),
             Located::About(1) => d.is_some() && self.tracks_available(meta),
             Located::About(_) => false,
@@ -1713,7 +1888,27 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
         // scroll and let-go ride the Tick, its placement the FocusMoved). What a card DOES stays
         // in `activate` below.
         if let Some(d) = self.detail(meta) {
-            self.related.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Related, d), fx);
+            let related = Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Related, d);
+            let wanted = matches!(self.related.on(ev, cx, &related, fx), Some(ui_cards::CardEvent::Want(_)));
+            if matches!(ev, ScreenEvent::Tick(_)) && !d.related_tail.hubs.is_empty() {
+                // The row is the head and a window of the tail. The shelf's leading edge is the
+                // window's start, which the row's head precedes: focus on the head counts too, since
+                // a press cannot cross from it to a window that is away from the tail's start
+                // (`Cards::gap_before`), so the window comes back to it. Both edges ride the shelf's
+                // liveness (an ask nobody answered is repeated while focus stands there), and a read
+                // whose edge focus has left is withdrawn before its window can slide in.
+                let t = &d.related_tail;
+                self.related.set_head(t.head);
+                if self.related.page_cancel(cx, &related, t.offset, true).is_some() {
+                    fx.push(Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(MetadataCmd::CancelRelated))));
+                }
+                if let Some(edge) = self.related.page_ask(cx, &related, wanted, t.offset, true) {
+                    fx.push(Fx::App(AppFx::Store(
+                        StoreId::Metadata,
+                        StoreCmd::Metadata(MetadataCmd::WantRelated { before: edge == ui_cards::PageEdge::Before, seen: (t.offset, t.end) }),
+                    )));
+                }
+            }
             self.collection.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Collection, d), fx);
             self.extras.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Extras, d), fx);
             self.cast.on(ev, cx, &Self::cards_of(&self.key_by_local, &self.local_by_key, cards::Which::Cast, d), fx);
@@ -1721,6 +1916,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
         match ev {
             ScreenEvent::Mount => {
                 self.sync_keys(meta);
+                self.prune_keys(&Self::held_keys(cx));
                 Handled::Yes
             }
             ScreenEvent::RestoreMemory(PageMemory::Detail(memory)) => {
@@ -1776,7 +1972,11 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
             ScreenEvent::StoreChanged(ord, _) => {
                 self.layout.set(None);
                 if *ord == StoreId::Metadata.ord() {
+                    // A landing is the answer to the page the shelf asked for; a page the store
+                    // never answered leaves no landing, so focus moving below lets go as well.
+                    self.related.reset_page_requests();
                     self.sync_keys(meta);
+                    self.prune_keys(&Self::held_keys(cx));
                     self.season_metrics.invalidate();
                     self.about_rows.invalidate();
                     if let Some(detail) = self.detail(meta) {
@@ -1790,6 +1990,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 Handled::Yes
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
+                self.related.reset_page_requests();
                 if matches!(by, By::Dir | By::Pointer) {
                     self.return_pending = false;
                     self.restore_intent = None;
@@ -2101,7 +2302,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
 
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let meta = H::metadata(f.cx);
-        self.spot_facts = SpotFacts::of(self, meta);
+        self.refresh_spot_facts(meta);
         let measure = f.cx.measure;
         let _layout = self.pin_layout(meta, measure);
         let preview = plx_media::player::preview::view();
@@ -2161,7 +2362,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
                                 Some(Located::Episode(i, row)) => Some((i, row)),
                                 _ => None,
                             },
-                            |i| self.episode_scale.get(i).map(|s| s.pos).unwrap_or(1.0),
+                            |i| self.episode_cells.scale(i),
                             |i| self.episode_lift(i),
                             f.measure,
                             meta,
@@ -2304,7 +2505,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Screen<H> for DetailScreen 
         // answers for an arbitrary elem exactly, since every metadata read behind `spot()` is
         // elem-independent.
         PageMemory::Detail(DetailMemory {
-            spot: self.restore_intent.as_ref().filter(|_| self.return_pending).map(|intent| intent.spot.clone()).unwrap_or_else(|| self.spot(focus, self.spot_facts)),
+            spot: self.restore_intent.as_ref().filter(|_| self.return_pending).map(|intent| intent.spot.clone()).unwrap_or_else(|| self.spot(focus, self.spot_facts.clone())),
             keys: self.keys.clone(), next_elem: self.next_elem,
         })
     }
@@ -2769,11 +2970,17 @@ impl DetailScreen {
             elems.extend(controls[..n].iter().map(|c| (c.elem(), Activate::Press)));
         }
         if let Some(d) = self.detail(meta) {
+            // Only the tabs on the axis register a stop, as the strip paints only those, so the
+            // loop costs what the visible tabs cost and a long season list adds nothing per frame.
             elems.extend(
-                (0..d.seasons.len().min(64))
+                self.season_metrics
+                    .visible(self.tab_scroll.pos)
+                    .filter(|&i| i < d.seasons.len())
                     .filter_map(|i| season::elem(i).map(|e| (e, Activate::Press))),
             );
-            for i in 0..d.episodes.len().min(episodes::MAX_ITEMS) {
+            // The cells on the axis (and one either side) register stops, as the strip paints only
+            // those: the cost follows the screen, not the season's length.
+            for i in episodes::visible(self.episode_scroll.pos, d.episodes.len(), episodes::LEAD_CELLS) {
                 if let Some(e) = episodes::elem(i, episodes::Row::Still) {
                     elems.push((e, Activate::Press));
                 }
@@ -3142,6 +3349,7 @@ impl DetailScreen {
             self.refresh != DetailRefreshPhase::None || self.detail(meta).is_none()
                 || season::restore_step(self.detail(meta), intent.spot.season,
                 intent.season_requested, meta.season_loading()) != season::RestoreStep::Ready
+                || self.restore_related_pending(meta)
         })
     }
 
@@ -3200,12 +3408,71 @@ impl DetailScreen {
         }
     }
 
+    /// A restore onto a Related tail card asks the store to open the window at its position, once
+    /// per window identity and again on the [`ui_cards::Retry`] ladder while it has not opened. The
+    /// ask never gives up and focus stays held on the saved card's place meanwhile; a key press ends
+    /// the restore (`FocusMoved`), and the answer that the position is gone ends the wait.
+    fn pump_seek<H: crate::registry::MetadataLike>(&mut self, meta: plx_data::metadata::MetadataView<'_>, now: u32, fx: &mut Effects<'_, H>) {
+        let Some(d) = self.detail(meta) else { return };
+        let Some(intent) = self.restore_intent.as_mut() else { return };
+        if !Self::related_pending(d, intent) { return; }
+        let (Some(at), t) = (intent.spot.tail_position(), &d.related_tail) else { return };
+        let seen = (t.offset, t.end);
+        let seek = &mut intent.seek;
+        seek.retry.tick(now);
+        if seek.asked == Some(seen) {
+            if !seek.retry.due() { return; }
+        } else {
+            seek.retry.mark_fresh();
+        }
+        seek.asked = Some(seen);
+        seek.retry.sent();
+        fx.push(Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(MetadataCmd::SeekRelated { at, seen }))));
+    }
+
+    /// A long season holds a few pages of its episodes: say which the strip needs (what is on
+    /// screen and on its way to be, plus a page ahead in the direction of travel, the focus and a
+    /// pending restore's target) and the store fetches the holes in it and drops the rest. Said
+    /// when it changes, and again once a second while a page in it is still missing.
+    fn want_episodes<H: ContentLike>(&mut self, d: &Detail, target: f32, focus: Option<usize>, now: u32, fx: &mut Effects<'_, H>) {
+        let len = d.episodes.len();
+        if len <= plx_data::metadata::EPISODE_PAGE {
+            return;
+        }
+        let pos = self.episode_scroll.pos;
+        let (from, to) = if target >= pos { (pos, target) } else { (target, pos) };
+        let (mut lo, mut hi) = (episodes::visible(from, len, 0).start, episodes::visible(to, len, 0).end);
+        if target > pos + 1.0 {
+            hi = (hi + plx_data::metadata::EPISODE_PAGE).min(len);
+        } else if target < pos - 1.0 {
+            lo = lo.saturating_sub(plx_data::metadata::EPISODE_PAGE);
+        }
+        let restore = self
+            .restore_intent
+            .as_ref()
+            .filter(|intent| intent.spot.section == 2)
+            .map(|intent| (intent.spot.col.max(0) as usize).min(len - 1));
+        let want = (lo, hi, focus, restore);
+        let holes = d.episodes.missing(lo, hi).next().is_some()
+            || focus.into_iter().chain(restore).any(|i| d.episodes.get(i).is_none());
+        let changed = self.ep_want.asked != Some(want) || self.ep_want.list != d.episodes.id();
+        if !(changed || holes && now.wrapping_sub(self.ep_want.at) >= EP_RETRY_MS) {
+            return;
+        }
+        self.ep_want = EpWant { asked: Some(want), list: d.episodes.id(), at: now };
+        fx.push(Fx::App(AppFx::Store(
+            StoreId::Metadata,
+            StoreCmd::Metadata(MetadataCmd::WantEpisodes { lo, hi, focus, restore }),
+        )));
+    }
+
     fn tick<H: ContentLike + crate::registry::MetadataLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let meta = H::metadata(cx);
-        self.spot_facts = SpotFacts::of(self, meta);
+        self.refresh_spot_facts(meta);
         self.layout.set(None);
         let dt = t.dt();
         self.pump_restore(meta, fx);
+        self.pump_seek(meta, t.ms, fx);
         let d = self.detail(meta);
         let loaded = d.is_some();
         if let Some(d) = d {
@@ -3238,37 +3505,22 @@ impl DetailScreen {
             );
         }
 
-        let episode_focus = match focused {
-            Some(Located::Episode(i, episodes::Row::Still)) => Some(i),
-            _ => None,
-        };
-        for (i, spring) in self.episode_scale.iter_mut().enumerate() {
-            spring.step(
-                if episode_focus == Some(i) {
-                    plx_ui::theme::EP_CARD_FOCUS_SCALE
-                } else {
-                    1.0
-                },
-                300.0,
-                dt,
-            );
-        }
-        let text_focus = match focused {
-            Some(Located::Episode(i, episodes::Row::Text)) => Some(i),
-            _ => None,
-        };
-        let n_episodes = d.map_or(0, |d| d.episodes.len());
-        for (i, lift) in self.episode_text_lift.iter_mut().enumerate() {
-            if i < n_episodes {
-                lift.step(text_focus == Some(i), dt);
-            } else {
-                lift.reset(); // a slot with no episode holds no lift over from a longer season
-            }
-        }
+        self.episode_cells.step(
+            match focused {
+                Some(Located::Episode(i, episodes::Row::Still)) => Some(i),
+                _ => None,
+            },
+            match focused {
+                Some(Located::Episode(i, episodes::Row::Text)) => Some(i),
+                _ => None,
+            },
+            dt,
+        );
         self.about_card_lift.step(focused == Some(Located::About(0)), dt);
         self.about_lang_lift.step(focused == Some(Located::About(1)), dt);
 
         if let Some(d) = d {
+            let mut strip_target = self.episode_scroll.pos;
             if let Some(i) = match focused {
                 Some(Located::Episode(i, _)) => Some(i),
                 _ => None,
@@ -3281,8 +3533,20 @@ impl DetailScreen {
                     episodes::GAP,
                     plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X,
                 );
+                // A target more than two screens away (a restore onto episode 700) is seated, not
+                // flown to: the spring would sweep every cell between, and the strip would ask for
+                // every page on the way.
+                if (target - self.episode_scroll.pos).abs() > 2.0 * plx_ui::consts::SCR_W {
+                    self.episode_scroll.jump(target);
+                }
                 self.episode_scroll.step(target, K_STRIP_SCROLL, dt);
+                strip_target = target;
             }
+            let focused_episode = match focused {
+                Some(Located::Episode(i, _)) => Some(i),
+                _ => None,
+            };
+            self.want_episodes(d, strip_target, focused_episode, t.ms, fx);
             let tab_focus = match focused {
                 Some(Located::Season(i)) => Some(i),
                 _ => None,
@@ -3898,11 +4162,7 @@ impl DetailScreen {
     fn play_hero<H: ContentLike>(&mut self, from_start: bool, fx: &mut Effects<'_, H>, meta: plx_data::metadata::MetadataView<'_>) -> bool {
         let Some(d) = self.detail(meta) else { return false };
         if d.is_show {
-            let i = hero::hero_episode(d).and_then(|ep| {
-                d.episodes
-                    .iter()
-                    .position(|candidate| candidate.rk == ep.rk)
-            });
+            let i = hero::hero_episode(d).and_then(|ep| d.episodes.position(&ep.rk));
             match i {
                 Some(i) => self.play_episode_at(i, from_start, fx, meta),
                 None => self.play_episode_value(

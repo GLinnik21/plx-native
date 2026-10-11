@@ -141,7 +141,7 @@ fn set_query_gates_on_min_query_and_drops_the_previous_answer() {
     assert_eq!(owner.state.query(), "wa");
 
     // seed an answer the honest way, then type on: it must not survive into the next query
-    owner.state.src[0] = answered(0, vec![media("A Close Shave")]);
+    *source_mut(&mut owner.state, 0) = answered(0, vec![media("A Close Shave")]);
     owner.rebuild();
     assert_eq!(owner.state.shelves().len(), 1);
     owner.set_query("wal");
@@ -151,7 +151,7 @@ fn set_query_gates_on_min_query_and_drops_the_previous_answer() {
     );
     assert_eq!(owner.state.state(), State::Searching);
     assert_eq!(
-        owner.state.src[0].status,
+        source(&owner.state, 0).status,
         Status::Pending,
         "every source is asked again"
     );
@@ -171,7 +171,7 @@ fn a_trailing_space_repaints_but_does_not_re_ask() {
     let mut owner = Owner::default();
     register(&mut owner, 1); // slot 0 has to be in the live window for the seeded answer below to be read
     owner.set_query("wallace");
-    owner.state.src[0] = answered(0, vec![media("A Close Shave")]);
+    *source_mut(&mut owner.state, 0) = answered(0, vec![media("A Close Shave")]);
     owner.rebuild();
     let gen = owner.state.gen;
 
@@ -234,7 +234,7 @@ fn a_landing_from_the_previous_query_is_discarded_and_leaves_the_new_claim_held(
     let stale = owner.state.gen;
     owner.set_query("wallace"); // supersedes: the fetch above is now about a string nobody typed
 
-    owner.adapter.fetch[0].claim(owner.state.gen);
+    owner.adapter.mailbox(0).claim(owner.state.gen);
     hold_off(&mut owner);
     owner.land(0, stale, Some(answered(0, vec![media("Wallander")]).items));
     assert!(!owner.pump(0.0), "a superseded landing must not publish");
@@ -248,12 +248,12 @@ fn a_landing_from_the_previous_query_is_discarded_and_leaves_the_new_claim_held(
         "a discarded landing must not settle the spinner"
     );
     assert!(
-        owner.adapter.fetch[0].busy(),
+        owner.adapter.mailbox(0).busy(),
         "a dropped stale landing must leave the new request's claim held"
     );
     // …and it must not arm a backoff either, which would delay the CURRENT query's first answer
     assert_eq!(
-        owner.state.src[0].retry_cd,
+        source(&owner.state, 0).retry_cd,
         RETRY_FRAMES - 1,
         "only the sentinel ticked"
     );
@@ -271,7 +271,7 @@ fn a_landing_from_the_previous_query_is_discarded_and_leaves_the_new_claim_held(
     );
     assert_eq!(titles(&owner.state.shelves()[0]), ["A Close Shave"]);
     assert_eq!(owner.state.state(), State::Ready);
-    assert!(!owner.adapter.fetch[0].busy(), "the new request's own answer released its claim");
+    assert!(!owner.adapter.mailbox(0).busy(), "the new request's own answer released its claim");
     plx_plex::plex::reset_servers_for_test();
 }
 
@@ -306,23 +306,25 @@ fn reset_clears_every_claim_backoff_and_answer() {
     let _g = fresh();
     let mut owner = Owner::default();
     owner.set_query("wallace");
-    for i in 0..NSRC {
-        owner.adapter.fetch[i].claim(owner.state.gen);
-        let s = &mut owner.state.src[i];
+    // Sixteen is the old table's width and well past any single slot: a reset has to clear every
+    // slot it has ever been asked about, not only the first few.
+    for i in 0..16 {
+        owner.adapter.mailbox(i).claim(owner.state.gen);
+        let s = source_mut(&mut owner.state, i);
         *s = answered(0, vec![media("A Close Shave")]);
         s.retry_cd = RETRY_FRAMES;
     }
 
     owner.reset();
 
-    for i in 0..NSRC {
+    for i in 0..16 {
         assert!(
-            !owner.adapter.fetch[i].busy(),
+            !owner.adapter.mailbox(i).busy(),
             "source {i} stayed latched — the screen wedges"
         );
-        assert_eq!(owner.state.src[i].retry_cd, 0);
+        assert_eq!(source(&owner.state, i).retry_cd, 0);
         assert_eq!(
-            owner.state.src[i].status,
+            source(&owner.state, i).status,
             Status::Pending,
             "source {i} kept the last account's answer"
         );

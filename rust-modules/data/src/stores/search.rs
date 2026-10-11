@@ -20,6 +20,19 @@ pub enum SearchCmd {
     Reset,
     /// The optimistic half of a view-state write, on the result shelves.
     SetWatchedLocal { sid: plx_plex::plex::ServerId, rk: String, on: bool },
+    /// Slide a row's window half a window on (`before` false) or back. Every hit of the row is
+    /// reached by repeating it; the cards move when the sources that must read have answered.
+    /// `seen` is the row's window in the view the ask was computed from, its start
+    /// (`Shelf::window.start`) and the cards it held: a frame captures its views before its
+    /// landings are delivered, so the ask can come from a window the store has since slid or
+    /// filled, and such an ask is refused (where focus stood among the preview's twelve cards says
+    /// nothing about the twenty-four that replaced them). The new window's publication differs
+    /// from `seen`, which lets the screen ask again from it.
+    Page { kind: crate::search::Kind, before: bool, seen: (usize, usize) },
+    /// Withdraw the slide `Page` asked for on a row: focus left the edge it was asked from, and the
+    /// window moving now would take the card it stands on out of it. `seen` is the window start the
+    /// slide was asked from; a slide that has since landed makes this a no-op.
+    PageCancel { kind: crate::search::Kind, seen: usize },
 }
 
 /// One Search owner: logical state, the worker adapter all current fetches capture, and notice.

@@ -12,17 +12,17 @@ use plx_ui::{Painter, Rect};
 
 use super::related;
 
-pub const COLLECTION_ELEM_RANGE_START: u32 = 1760;
+pub const COLLECTION_ELEM_RANGE_START: u32 = 6 * super::SECTION_BLOCK;
 /// The heading's element. It names a slot, not a server item, so it needs no interned identity:
 /// it is the same key whichever collection the page is showing.
 pub const HEADING_ELEM: u32 = COLLECTION_ELEM_RANGE_START;
 const MEMBERS_START: u32 = COLLECTION_ELEM_RANGE_START + 1;
-pub const COLLECTION_ELEM_RANGE_END: u32 = 1792;
+pub const COLLECTION_ELEM_RANGE_END: u32 = 7 * super::SECTION_BLOCK;
 pub const COLLECTION_GROUP: GroupId = GroupId(7);
 pub const HEADING_GROUP: GroupId = GroupId(8);
 
 const _: () = assert!(
-    (COLLECTION_ELEM_RANGE_END - MEMBERS_START) as usize >= plx_data::metadata::COLLECTION_MAX
+    (COLLECTION_ELEM_RANGE_END - MEMBERS_START) as usize >= plx_data::metadata::COLLECTION_PREVIEW
 );
 
 pub fn elem(index: usize) -> Option<u32> {
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn every_member_key_round_trips_and_never_names_the_heading() {
-        for i in 0..plx_data::metadata::COLLECTION_MAX {
+        for i in 0..plx_data::metadata::COLLECTION_PREVIEW {
             assert_eq!(locate(elem(i).unwrap()), Some(i));
         }
         assert_eq!(locate(HEADING_ELEM), None);

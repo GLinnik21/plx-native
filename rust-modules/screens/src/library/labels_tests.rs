@@ -9,7 +9,7 @@ use plx_ui::{Painter, Rect};
 use std::os::raw::c_int;
 use plx_data::stores::browse::SecKind;
 use super::draw::shelf_label;
-use super::layout::{self, Layout, ShelfRun, shelf_pitch, COLS, CONTENT_TOP, GRID_RIGHT, MAX_LETTERS,
+use super::layout::{self, Layout, ShelfRun, shelf_pitch, COLS, CONTENT_TOP, GRID_RIGHT,
     RAIL_CAP_PAD, RAIL_TRACK_W};
 
 #[test]
@@ -94,7 +94,7 @@ fn episode_grid_art_and_focus_labels_use_the_landscape_card_contract() {
 #[test]
 fn owned_library_overscan_probe_covers_every_legacy_edge() {
     let measure = FixtureMeasure;
-    let rail = layout::rail_geom(MAX_LETTERS);
+    let rail = layout::rail_geom(64);
     let rail_rect = Rect::new(
         rail.1 - RAIL_TRACK_W * 0.5,
         rail.0 - RAIL_CAP_PAD,
@@ -211,6 +211,7 @@ fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
         let shelf = plx_data::browse::section_hubs::Shelf {
             id: "x".into(), key: String::new(), link: None, total: 0, title: "On Deck".into(), is_continue,
             landscape: false, items: vec![PmsMovie { kind: 0, title: "Stardust".into(), ..Default::default() }],
+            ..Default::default()
         };
         shelf_label(&shelf, 0).glyph
     };
@@ -229,6 +230,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         let shelf = plx_data::browse::section_hubs::Shelf {
             id: "x".into(), key: String::new(), link: None, total: 0, title: "Recently Added".into(), is_continue,
             landscape: false, items: vec![item],
+            ..Default::default()
         };
         shelf_label(&shelf, 0).caption.map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
     };
@@ -277,6 +279,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
             is_continue: false,
             landscape: true,
             items,
+            ..Default::default()
         };
 
         // `TileLabel` holds `CString`s for the draw; these read them back as text

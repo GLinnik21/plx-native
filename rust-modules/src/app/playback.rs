@@ -447,7 +447,7 @@ pub(crate) fn request_loaded_hero(ps: &mut plx_media::route::PlaybackSession, me
 
 pub(crate) fn request_loaded_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool {
     let Some(d) = meta.view().current().cloned() else { return false };
-    let Some(ep) = d.episodes.iter().find(|e| e.rk == rk).cloned() else { return false };
+    let Some(ep) = d.episodes.position(rk).and_then(|i| d.episodes.get(i)).cloned() else { return false };
     request_episode(ps, meta, &d, &ep)
 }
 

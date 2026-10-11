@@ -17,7 +17,7 @@ All endpoints below were verified live on 2026-07-03 with read-only GETs, **exce
 
 **JSON instead of XML:** send `Accept: application/json`. Every response is wrapped in a top-level `MediaContainer` object.
 
-**Paging:** either headers `X-Plex-Container-Start` / `X-Plex-Container-Size` or same-named query params. Response carries `size`, `totalSize`, `offset`.
+**Paging:** either headers `X-Plex-Container-Start` / `X-Plex-Container-Size` or same-named query params. A paged response carries `size`, `totalSize`, `offset`; an unpaged one carries neither total nor offset (see [Paging, observed](#paging-observed)).
 
 ---
 
@@ -255,33 +255,38 @@ Verified hub list (`MediaContainer.Hub[]`), each hub has
 | `movie.recentlyadded.1` (promoted) | Recently Added in Movies | `/library/sections/1/all?sort=addedAt:desc` |
 | `custom.collection.*` | collection shelves | `/library/collections/{id}/children` |
 
-**`/hubs` has no paging** (`docs/plex-openapi.json`: its only parameters are `count`, `onlyTransient`
-and `identifier`). Home requests all rows, with 12 preview cards per row. Recently Added rows
-load more items through their provider's listing `key`, with both `X-Plex-Container-Start` and
-`X-Plex-Container-Size`. The client preserves the key's type, library, and sort parameters.
-Other Home rows, including collections, keep their 12-card preview.
+**The spec gives `/hubs` no paging** (`docs/plex-openapi.json`: its only parameters are `count`, `onlyTransient`
+and `identifier`), but a windowed request does page its hub list on a live server (see [Paging, observed](#paging-observed)).
+Home reads all rows, in windows of `HUB_WINDOW` hubs (`home_hubs` is the whole-list fallback), with 12 preview cards per row. A row pages
+through its provider's listing `key`, with both `X-Plex-Container-Start` and
+`X-Plex-Container-Size`, when `plx_plex::plex::is_pageable_hub_key` admits the key: `/hubs/…`,
+`/library/sections/…`, `/library/metadata/{id}/similar` and `/library/collections/{id}/children`
+(the listing the Collection page pages). The client preserves the key's type,
+library, and sort parameters. A row behind any other key keeps its 12-card preview and logs that
+once per hub; the Home, Library-section and Detail related rows share this one allowlist.
 
 A PMS response observed on 2026-10-09 returned `offset=0`, `size=36`, and `totalSize=50`.
 The next response returned `offset=36`, `size=14`, and `totalSize=50`. This confirms the
 required offset fields on that server. Other server versions remain unverified. The client
 rejects a response whose offset differs from the requested start.
 
-Home keeps a moving window of at most 24 cards per Recently Added row, with an overlap of up to 12 eligible cards.
+Home keeps a moving window of at most 24 cards per pageable row, with an overlap of up to 12 eligible cards.
 Server offsets are kept separately from visible card positions. A page retains the overlap
 and skips items from hidden libraries. One paging worker scans at most eight server chunks.
 If those chunks are hidden, it publishes the advanced cursor and keeps the current cards.
 A refresh scans the previous raw range so that hidden items do not shorten the retained window.
 It requests another window near the visible end and fetches an earlier window when the user
 scrolls back. Requests run outside the drawing loop. Failed page requests retain the current
-cards and stop after three attempts. Leaving the row cancels its paging demand. Returning to
-the row can start another attempt. A normal refresh reloads the current window. A profile change
+cards, and the store drops a page after three failed reads. While focus stays at the edge the
+shelf repeats an unanswered ask on its retry ladder (0.25 s rising to 30 s, with no give-up), so
+the next attempt needs no key press. Leaving the row cancels its paging demand. A normal refresh reloads the current window. A profile change
 starts from the new profile's preview. Both operations reject old results.
 The shared shelf widget draws only visible cards. Paging preserves the banner's current items.
 
-`pms.rs::HOME_CARDS_MAX` is a 2,048-slot preview budget. A Recently Added window spends at most
-12 preview slots. Other rows spend their published card count. Thus published rows hold at most
-4,096 cards, plus at most eight retained banner items. Whole rows beyond the preview budget
-are omitted from the tail of a source and logged as `hubs: card bound 2048 reached`.
+Home holds cards for at most `HOLD_ROWS` (16) rows at a time, each a window of at most
+`MAX_SHELF_ITEMS` (24) cards, plus at most eight retained banner items. Every row keeps a
+descriptor, so none is dropped; a row outside the held range publishes placeholders and is
+read again at its remembered offset when it returns.
 
 Verified Continue Watching item (movie, trimmed):
 
@@ -382,11 +387,13 @@ Measured on this server, and every one of these is a thing the OpenAPI spec does
   hub is required, not a nicety.
 * **`count` defaults to 6** and is honoured up to at least 24. It is items-per-hub; it never
   changes how many hubs come back.
-* **There is no paging of hubs** (the route's parameters are `count`, `onlyTransient` and
-  `identifier`), so a server with many promoted collections answers with all of them at once. The
-  Library takes every hub the server sends, at most `MAX_SHELF_ITEMS` (24) cards each, and bounds
-  only the section's total: `section_hubs::SECTION_CARDS_MAX` = `HOME_CARDS_MAX` = 2,048 cards,
-  whole shelves dropped from the tail and logged as `libhubs: card bound 2048 reached`.
+* **The spec gives the hub list no paging** (the route's parameters are `count`, `onlyTransient` and
+  `identifier`); a windowed request pages it on a live server (see [Paging, observed](#paging-observed)).
+  The Library reads it in windows of `HUB_WINDOW` hubs (`paging::read_hub_list`; `library_hubs` remains the
+  whole-list fallback for a server that ignores the window), so a server with many promoted collections never
+  answers with all of them at once. The Library keeps a descriptor for every hub the windows
+  bring; cards are held for at most `HOLD_ROWS` (16) rows, each a window of at most
+  `MAX_SHELF_ITEMS` (24) cards that pages through the hub's own key.
 * **`onlyTransient` is a no-op on this server** — `0`, `1` and absent all returned the same nine
   hubs. Do not send it and do not rely on it.
 * **`Accept: */*` returns XML here too**, like every other PMS route. The client's explicit
@@ -1232,9 +1239,35 @@ it is a 400).
 
 ---
 
+## Paging, observed
+
+Observed on PMS 1.43.4 with a small library, by read-only GETs. Only the endpoints in the table were
+probed; the other listings this file describes are not covered by this section.
+
+A request pages when it carries the window's start (`X-Plex-Container-Start`, as a query parameter or
+a header; see the paging gotcha in §2b). A paged answer echoes `offset`, carries the listing's
+`totalSize`, and `size` is the number of rows returned. An unpaged answer carries no `totalSize` and
+no `offset`: a `similar` listing without a window has none, and a library search without one carries
+only `size`.
+
+| Endpoint | Pages? | Carries `totalSize` and `offset` when paged | Notes |
+|---|---|---|---|
+| `/hubs/continueWatching/items` (the key of the Continue Watching hub) | yes | yes | Windows (0,3) and (3,3) are contiguous; rows are sorted by `lastViewedAt`, descending. The library held six items, so nothing past twelve was seen. |
+| `/library/metadata/{id}/similar` (the key of `movie.similar`) | yes | yes | `totalSize` 24 to 26 across calls; windows are contiguous; the related hub's preview is the exact head of the listing; order is stable. |
+| `/library/sections/{id}/all` with a `title=` filter | yes | yes | Pages as an unfiltered section listing does. |
+| `/library/sections/{id}/collections?title=`, `/library/sections/{id}/all?type=18&title=`, `/library/all?type=18&title=` | yes | yes | Matches collections by title. For the same three-letter prefix, the collection hub of `/hubs/search` returned no rows, so the two match sets are not known to be equal. |
+| `/library/search?searchTypes=movies`, `tv`, `people`, `music` | yes | yes | Each row is `{Metadata, score}`; a people row is `{Directory, score}`, with `tagKey` and `count`. `totalSize` is capped by `limit` (`tv` gave 30 at `limit=30`). `searchTypes=movies,tv` returns one mixed list, movies first, then shows, then episodes. |
+| `/library/search` with a kind the server does not know (`shows`, `episodes`, `actors`, `bogus`) | not applicable | `totalSize=0` | Empty, with no error: an unsupported kind looks like no hits. |
+| `/hubs?count=…` (the hub list) | yes, by hub | yes | A window of three over ten hubs returned three hubs, `totalSize=10`, `offset` echoed. |
+| `/hubs/sections/{id}?count=…` (one library's hub list) | yes, by hub | yes | Windows (0,3) and (3,3) over nine hubs; order is stable across two calls. |
+| `/hubs/search` with a window | no | not per hub | Not a per-hub offset: seven hubs shrank to one hub with two rows, with `size=7`, `totalSize=17`, `offset=10`. Search hubs carry no key, and `more` is false even on a hub cut at its limit. |
+| Key of `movie.topunwatched` and `movie.by.actor.or.director` (random hubs) | yes | not recorded | The listing came back in the same order on two calls; the windows (0,6) and (6,50) together equal the whole listing; every preview card is in it. The library held only 13 items, so large lists are not covered. |
+| `/playlists/all` (the key of the playlists hub in the Home hub list, `/hubs` and `/hubs/promoted`) | yes | yes | Measured on PMS 1.43: `X-Plex-Container-Start=2&X-Plex-Container-Size=2` answered `size` 2, `totalSize` 5, `offset` 2, items of type `playlist`. The app does not page it and no row shows it: a hub of type `playlist` is not listed (`pms::listable`), so it never reaches a shelf, and `is_pageable_hub_key` does not admit the key. |
+
+
 ## App data-layer summary
 
-- 3 startup requests: `/library/sections` (find movie/show keys), `/hubs/promoted` (home shelves, items include Media for instant resume), then lazy `/library/sections/{key}/all` pages of 50.
+- 3 startup requests: `/library/sections` (find movie/show keys), `/hubs/promoted` (home shelves, items include Media for instant resume), then lazy `/library/sections/{key}/all` pages of `stores::page_cache::PAGE` (60).
 - One JSON shape covers movie/show/season/episode; parse the field table in §2 with all-optional semantics.
 - Every image through `/photo/:/transcode` at exact card size; never raw `thumb`.
 - Direct play = `Media[].Part[].key` + token; server supports byte ranges.

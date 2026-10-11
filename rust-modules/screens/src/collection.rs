@@ -33,10 +33,26 @@ use super::registry::{tile_facts, AppFx, CardKeys, CardPageMemory, CollectionLik
 
 #[cfg(test)]
 pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
+#[cfg(test)]
+mod window_tests; // the bounded projection, the window sent to the store, a hole's landing
 
 const HEADER_ELEM: u32 = 0;
 const RETRY_ELEM: u32 = 1;
 const FIRST_CARD_ELEM: u32 = 0x1000;
+/// Elements at and above this belong to grid slots whose member is not held (a page not read yet,
+/// or evicted): slot `i` is `HOLE_ELEM_BASE + i`. Real member keys are interned below it.
+///
+/// The range is `HOLE_ELEM_BASE..HOLE_ELEM_BASE + 0x3fff_ffff`: above `geom::NAMESPACE_FLOOR`
+/// (a hole is not an index into any index-keyed widget, and none here treats it as one), clear of
+/// the route-family band (`registry::BAND`, `ALERT`) that a different screen carves from
+/// `0x4000_0000`, and below the container's strip (`dispatch::STRIP_BASE`). Member keys count up
+/// from `FIRST_CARD_ELEM`; `Page::project` fails loudly before they could reach the base.
+const HOLE_ELEM_BASE: u32 = 0x5000_0000;
+const _: () = assert!(HOLE_ELEM_BASE >= plx_ui::geom::NAMESPACE_FLOOR);
+const _: () = assert!(HOLE_ELEM_BASE as u64 + 0x3fff_ffff < plx_ui::dispatch::STRIP_BASE as u64);
+const _: () = assert!(HOLE_ELEM_BASE > super::registry::ALERT + 0x100);
+
+fn hole_elem(index: usize) -> u32 { HOLE_ELEM_BASE + index.min(0x3fff_ffff) as u32 }
 
 /// The page's sections, in document order. Each has the focus group the page names it by
 /// ([`GRID_GROUP`], [`HEADER_GROUP`], [`STATUS_GROUP`]) and `groups()` lists them in that order:
@@ -153,62 +169,131 @@ pub fn member_caption(item: &PmsMovie) -> TileLabel {
     ui_cards::poster_label(&tile_facts::of(item))
 }
 
-/// The grid's content (`CardSource`): the store's members read through the screen's derived index.
+/// One run of consecutive slots with a key and a label projected: slot `first + n` is `elems[n]`.
+#[derive(Default)]
+struct Run {
+    first: usize,
+    elems: Vec<u32>,
+    labels: Vec<String>,
+}
+
+/// The keys and labels of the slots the page can paint or step to, as of one store revision: a few
+/// runs, never the list. The listing's length stays the store's known count (navigation is by
+/// index), so a slot outside every run is read through the store's rows and the key table instead.
+/// Derived, not logical state.
+#[derive(Default)]
+struct Projection {
+    /// The listing's known count when this was projected.
+    total: usize,
+    runs: Vec<Run>,
+    /// The slot of every member element projected (a hole is its own slot).
+    index: std::collections::HashMap<u32, usize>,
+    /// The ranges `runs` was projected for, and the store revision they were read at.
+    applied: Vec<std::ops::Range<usize>>,
+    revision: Option<u64>,
+}
+
+impl Projection {
+    fn run_of(&self, index: usize) -> Option<(&Run, usize)> {
+        let at = self.runs.partition_point(|run| run.first <= index).checked_sub(1)?;
+        let run = &self.runs[at];
+        let offset = index - run.first;
+        (offset < run.elems.len()).then_some((run, offset))
+    }
+
+    fn elem(&self, index: usize) -> Option<u32> {
+        self.run_of(index).map(|(run, offset)| run.elems[offset])
+    }
+
+    fn label(&self, index: usize) -> Option<&str> {
+        self.run_of(index).map(|(run, offset)| run.labels[offset].as_str())
+    }
+
+    /// The slots held, which is what a projection costs.
+    fn cells(&self) -> usize { self.runs.iter().map(|run| run.elems.len()).sum() }
+}
+
+/// The slot ranges to project, sorted and merged, clamped to `total`.
+fn merged(mut ranges: Vec<std::ops::Range<usize>>, total: usize) -> Vec<std::ops::Range<usize>> {
+    ranges.retain_mut(|r| { r.end = r.end.min(total); r.start < r.end });
+    ranges.sort_by_key(|r| r.start);
+    let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+    for r in ranges {
+        match out.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
+/// The grid's content (`CardSource`): the store's members read through the screen's projection.
 /// Built from the screen's FIELDS, not `&CollectionScreen`, so a call can hold it while the grid
 /// itself is borrowed mutably.
 struct Members<'a> {
     collection: &'a Collection,
     cards: &'a CardKeys,
-    /// [`CollectionScreen::elems`] / [`CollectionScreen::labels`], derived by `sync`.
-    elems: &'a [u32],
-    labels: &'a [String],
+    /// [`Page::proj`], projected by `project` for the cells the page paints or steps to.
+    proj: &'a Projection,
 }
 
 impl<'a> Members<'a> {
-    /// Is [`Self::elems`] the index of `collection` as it stands? Items only append between
+    /// Is [`Self::proj`] the listing of `collection` as it stands? Items only append between
     /// syncs, so a length match is the check; a landing the page has not synced yet falls back to
-    /// the identity scan.
-    fn indexed(&self) -> bool {
-        self.elems.len() == self.collection.items.len()
+    /// reading the rows against the key table.
+    fn fresh(&self) -> bool {
+        self.proj.total == self.collection.shown()
+    }
+
+    /// The element projected for `index`, if the projection is current and holds the slot.
+    fn projected(&self, index: usize) -> Option<u32> {
+        self.proj.elem(index).filter(|_| self.fresh())
     }
 
     fn elem_at(&self, index: usize) -> Option<u32> {
-        if self.indexed() { return self.elems.get(index).copied(); }
-        self.collection.items.get(index).and_then(|item| self.cards.elem_for(item.sid, &item.rk))
+        if index >= self.collection.shown() { return None; }
+        if let Some(elem) = self.projected(index) { return Some(elem); }
+        Some(self.collection.item(index).and_then(|item| self.cards.elem_for(item.sid, &item.rk))
+            .unwrap_or_else(|| hole_elem(index)))
     }
 
     fn index(&self, elem: u32) -> Option<usize> {
-        if self.indexed() { return self.elems.iter().position(|&e| e == elem); }
+        if elem >= HOLE_ELEM_BASE {
+            return Some((elem - HOLE_ELEM_BASE) as usize).filter(|&i| i < self.collection.shown());
+        }
+        if self.fresh() {
+            if let Some(&index) = self.proj.index.get(&elem) { return Some(index); }
+        }
         let identity = self.cards.get(elem)?;
-        self.collection.items.iter().position(|item| plx_plex::plex::same_item(
-            (identity.sid, identity.rk.as_str()), (item.sid, item.rk.as_str())))
+        self.collection.position_of(identity.sid, &identity.rk)
     }
 
-    /// Card `index`'s persistent label: the one `sync` built, or — for a landing the page has not
-    /// synced yet — formatted now.
+    /// Card `index`'s persistent label: the one `project` built, or — for a slot outside the
+    /// projection, or a landing the page has not synced yet — formatted now.
     fn label_at(&self, index: usize) -> std::borrow::Cow<'a, str> {
-        match self.labels.get(index).filter(|_| self.indexed()) {
-            Some(label) => std::borrow::Cow::Borrowed(label.as_str()),
-            None => std::borrow::Cow::Owned(self.collection.items.get(index).map(member_label).unwrap_or_default()),
+        match self.proj.label(index).filter(|_| self.fresh()) {
+            Some(label) => std::borrow::Cow::Borrowed(label),
+            None => std::borrow::Cow::Owned(self.collection.item(index).map(member_label).unwrap_or_default()),
         }
     }
 }
 
 impl<H: Host<Elem = u32>> CardSource<H> for Members<'_> {
-    fn len(&self) -> usize { self.collection.items.len() }
+    fn len(&self) -> usize { self.collection.shown() }
     fn elem(&self, i: usize) -> u32 { self.elem_at(i).unwrap_or(HEADER_ELEM) }
     fn index_of(&self, e: &u32) -> Option<usize> { self.index(*e) }
-    fn art(&self, i: usize) -> Art<'_> { Art::Poster(self.collection.items.get(i).map(tile_facts::of)) }
+    fn art(&self, i: usize) -> Art<'_> { Art::Poster(self.collection.item(i).map(tile_facts::of)) }
     fn label(&self, i: usize) -> TileLabel {
-        self.collection.items.get(i).map(member_caption).unwrap_or_default()
+        self.collection.item(i).map(member_caption).unwrap_or_default()
     }
-    fn progress(&self, i: usize) -> Option<f32> { self.collection.items.get(i)?.resume_frac() }
+    fn progress(&self, i: usize) -> Option<f32> { self.collection.item(i)?.resume_frac() }
     fn overlay(&self, p: Painter, i: usize, tile: &Tile, measure: &dyn Measure) {
         let persistent = self.label_at(i);
         if persistent.is_empty() { return; }
         widgets::poster_label(p, tile.rect, tile.radius, &persistent, measure);
-        if let Some(frac) = self.collection.items.get(i).and_then(PmsMovie::resume_frac) { ui_cards::resume_bar(p, tile.rect, frac, tile.radius); }
+        if let Some(frac) = self.collection.item(i).and_then(PmsMovie::resume_frac) { ui_cards::resume_bar(p, tile.rect, frac, tile.radius); }
     }
+    fn unread(&self, i: usize) -> bool { self.collection.item(i).is_none() }
     fn more(&self) -> bool { self.collection.more }
 }
 
@@ -220,17 +305,37 @@ struct Page {
     id: CollectionRef,
     header_marked: bool,
     cards: CardKeys,
-    /// `elems[i]` is the engine element of the synced collection's `items[i]`, rebuilt by
-    /// [`Self::sync`] so a frame finds a card's element or index without scanning identities.
-    /// Derived, not logical state.
-    elems: Vec<u32>,
-    /// `labels[i]` is `items[i]`'s persistent poster label ([`member_label`]), built beside
-    /// [`Self::elems`] so a frame formats none. Derived, not logical state.
-    labels: Vec<String>,
+    /// The keys and labels of the cells the page can paint or step to ([`Self::project`]), so a
+    /// frame finds a card's element or index without scanning identities. Derived, not logical
+    /// state.
+    proj: Projection,
+    /// The ranges and pinned keys [`CollectionScreen::plan`] last asked [`Self::project`] to keep:
+    /// the grid's painted cells with a row either side, the first row, and the rows around the
+    /// focus, the restore target and the group's remembered key.
+    want: (Vec<std::ops::Range<usize>>, Vec<u32>),
+    /// Where each pinned key was last seen, so its row is projected again after the key leaves
+    /// the projection (an element is not an index; this is how a pin finds its slot).
+    pin_index: Vec<(u32, usize)>,
     /// The header's meta line and the `(count, kind-only)` it was built for ([`meta_line`]).
     /// Derived, not logical state.
     meta: ((i64, bool), CString),
     return_pending: bool,
+    /// The focused member's element, and the remembered one a Back is waiting for: neither key is
+    /// ever pruned.
+    focus_elem: Option<u32>,
+    restore_elem: Option<u32>,
+    /// The focused member's index when last seen, saved with the page so a return can wait for it.
+    focus_index: Option<usize>,
+    /// The index a Back is restoring to, from the saved memory.
+    restore_index: Option<usize>,
+    /// Saved kept counts a return sends the store once it is open.
+    restore_counts: Option<(usize, Vec<u8>)>,
+    /// The total and kept counts as of the last sync, saved with the page.
+    counts: (usize, Vec<u8>),
+    /// The window last sent to the store.
+    sent_window: Option<(std::ops::Range<usize>, Option<usize>, Option<usize>)>,
+    /// The end of the last range the grid asked for.
+    want_end: usize,
     summary_more: bool,
     links_c: Vec<Link>,
     /// The store's content revision (`CollectionView::revision`) the last [`Self::sync_to`] saw —
@@ -278,25 +383,83 @@ impl Page {
     fn sync_to(&mut self, collection: &Collection, revision: u64, measure: &dyn plx_machine::machine::Measure) {
         self.synced = Some(revision);
         self.sync(collection, measure);
+        self.proj.revision = Some(revision);
     }
 
     fn sync(&mut self, collection: &Collection, measure: &dyn plx_machine::machine::Measure) {
         if self.id.rk.is_empty() && !collection.id.rk.is_empty() { self.id.rk = collection.id.rk.clone(); }
-        self.elems = self.cards.intern_all(
-            collection.items.iter().map(|item| (item.sid, item.rk.as_str())), "collection");
-        self.labels = collection.items.iter().map(member_label).collect();
+        self.project(collection, None);
+        self.counts = (collection.total, collection.kept_counts());
         self.meta = (meta_key(collection), meta_line(collection));
         self.summary_more = !collection.summary.is_empty() && summary_view(&collection.summary, measure).truncates(TEXT_W);
         self.links_c.clear();
-        if self.summary_more && !collection.items.is_empty() {
+        if self.summary_more && collection.shown() > 0 {
             self.links_c.push(Link { from: HEADER_GROUP, dir: Dir::Down, to: GRID_GROUP });
             self.links_c.push(Link { from: GRID_GROUP, dir: Dir::Up, to: HEADER_GROUP });
         }
     }
 
-    /// The grid's content: `collection` read through this page's derived index.
+    /// Project keys and labels for [`Self::want`] and bound the key table. Only the rows held
+    /// inside the wanted ranges get a key; a slot whose member is not held is a hole element, so
+    /// the work and the memory follow the window and not the length of the list. `revision` names
+    /// the store content the projection is current for (`None` forces it): a projection already
+    /// made for that revision and these ranges is left as it is.
+    fn project(&mut self, collection: &Collection, revision: Option<u64>) {
+        let shown = collection.shown();
+        let default = [0..4 * ui_cards::GRID_COLS];
+        let ranges = merged(if self.want.0.is_empty() { default.to_vec() } else { self.want.0.clone() }, shown);
+        if revision.is_some() && self.proj.revision == revision && self.proj.total == shown && self.proj.applied == ranges {
+            return;
+        }
+        let rows: Vec<(usize, &PmsMovie)> = ranges.iter().flat_map(|r| r.clone())
+            .filter_map(|i| collection.item(i).map(|item| (i, item))).collect();
+        let keys = self.cards.intern_all(rows.iter().map(|(_, item)| (item.sid, item.rk.as_str())), "collection");
+        // A member key must never reach the hole range; 0x4000_0000 minted keys is far beyond any
+        // session, so this is the loud failure of an impossible state, not a limit.
+        assert!(self.cards.next <= HOLE_ELEM_BASE, "collection element-key space reached the hole range");
+        let before: std::collections::HashSet<u32> = self.proj.index.keys().copied().collect();
+        let mut proj = Projection { total: shown, revision, ..Default::default() };
+        let mut held = rows.iter().zip(keys).peekable();
+        for range in &ranges {
+            let mut run = Run { first: range.start, elems: Vec::with_capacity(range.len()), labels: Vec::with_capacity(range.len()) };
+            for i in range.clone() {
+                match held.next_if(|((at, _), _)| *at == i) {
+                    Some(((_, item), key)) => {
+                        proj.index.entry(key).or_insert(i);
+                        run.elems.push(key);
+                        run.labels.push(member_label(item));
+                    }
+                    None => { run.elems.push(hole_elem(i)); run.labels.push(String::new()); }
+                }
+            }
+            proj.runs.push(run);
+        }
+        proj.applied = ranges;
+        self.proj = proj;
+        let pins = &self.want.1;
+        self.pin_index.retain(|(elem, _)| pins.contains(elem));
+        for &elem in pins {
+            if let Some(&index) = self.proj.index.get(&elem) {
+                match self.pin_index.iter_mut().find(|(e, _)| *e == elem) {
+                    Some(seen) => seen.1 = index,
+                    None => self.pin_index.push((elem, index)),
+                }
+            }
+        }
+        let (now, pins) = (&self.proj.index, &self.want.1);
+        self.cards.prune(self.proj.cells(), |elem| now.contains_key(&elem) || before.contains(&elem) || pins.contains(&elem));
+    }
+
+    /// The grid's content: `collection` read through this page's projection.
     fn members<'a>(&'a self, collection: &'a Collection) -> Members<'a> {
-        Members { collection, cards: &self.cards, elems: &self.elems, labels: &self.labels }
+        Members { collection, cards: &self.cards, proj: &self.proj }
+    }
+
+    /// Where member element `elem` sits: its slot in the listing, else the last slot a pinned key
+    /// was seen at (a focus whose page the store has not read back yet).
+    fn slot_of(&self, collection: &Collection, elem: u32) -> Option<usize> {
+        self.members(collection).index(elem)
+            .or_else(|| self.pin_index.iter().find(|(e, _)| *e == elem).map(|&(_, index)| index))
     }
 
     #[cfg(test)]
@@ -308,6 +471,25 @@ impl Page {
         self.members(collection).index(elem)
     }
 
+    /// Test support: how many cells the page holds an element and a label for.
+    #[cfg(test)]
+    fn cells(&self) -> usize { self.proj.cells() }
+
+    /// Test support: the element projected for cell `index`, if any.
+    #[cfg(test)]
+    fn cell_elem(&self, index: usize) -> Option<u32> { self.proj.elem(index) }
+
+    /// Test support: the label projected for cell `index`, if any.
+    #[cfg(test)]
+    fn cell_label(&self, index: usize) -> Option<&str> { self.proj.label(index) }
+
+    /// Test support: also keep the rows around `index`, as navigating to it would have.
+    #[cfg(test)]
+    fn reach(&mut self, collection: &Collection, index: usize) {
+        self.want.0.push(index.saturating_sub(ui_cards::GRID_COLS)..index + 2 * ui_cards::GRID_COLS);
+        self.project(collection, None);
+    }
+
     /// **A Back whose member has not landed yet.** The remembered member may sit past the pages
     /// loaded so far (a page rebuilt after its store was superseded reloads from the first page),
     /// so focus is held on it while the model is still loading or still has pages below the
@@ -315,9 +497,9 @@ impl Page {
     /// is the member's index when the page was left.
     fn awaiting_restore(&self, collection: &Collection, elem: u32) -> bool {
         if !self.return_pending || self.item_index(collection, elem).is_some() { return false; }
-        let Some(position) = self.cards.position(elem) else { return false };
+        let Some(position) = self.restore_index.or_else(|| self.cards.position(elem)) else { return false };
         matches!(collection.status, CollectionStatus::Loading | CollectionStatus::Failed)
-            || (collection.more && collection.items.len() <= position)
+            || collection.item(position).is_none() && (collection.more || position < collection.shown())
     }
 
     /// The header summary earns its marked/lifted treatment when the header holds focus, is
@@ -404,6 +586,16 @@ impl<H: ContentLike + CollectionLike> StackPage<H> for Page {
         H::collection(cx).revision() << 4 | status << 1 | u64::from(self.summary_more)
     }
 
+    /// A hole whose page has landed: the slot now holds its member under that member's own key.
+    /// Focus on the hole moves to it in the frame of the landing, in the same slot, so the
+    /// column and the cell under it stay.
+    fn supersede(&self, cx: &Cx<'_, H>, want: &u32) -> Option<u32> {
+        let slot = want.checked_sub(HOLE_ELEM_BASE)? as usize;
+        let collection = self.collection(cx)?;
+        let now = self.members(collection).projected(slot)?;
+        (now != *want && now < HOLE_ELEM_BASE).then_some(now)
+    }
+
     /// The remembered member of a Back has not landed yet (or the whole collection has not).
     fn pending(&self, cx: &Cx<'_, H>, want: &u32) -> bool {
         match self.collection(cx) {
@@ -443,7 +635,7 @@ impl<H: ContentLike + CollectionLike> StackPage<H> for Page {
     fn card_has_menu(&self, cx: &Cx<'_, H>, _k: Sec, elem: &u32) -> bool {
         let Some(collection) = self.collection(cx) else { return false };
         self.item_index(collection, *elem)
-            .and_then(|index| collection.items.get(index))
+            .and_then(|index| collection.item(index))
             .is_some_and(crate::registry::item_has_menu)
     }
 
@@ -487,8 +679,10 @@ impl CollectionScreen {
     pub fn new(entry: EntryId, id: CollectionRef) -> Self {
         Self {
             page: Page { entry, id, header_marked: false, cards: CardKeys::new(FIRST_CARD_ELEM),
-                elems: Vec::new(), labels: Vec::new(), meta: ((0, true), CString::default()),
-                return_pending: false, summary_more: false, links_c: Vec::new(), synced: None,
+                proj: Projection::default(), want: Default::default(), pin_index: Vec::new(), meta: ((0, true), CString::default()),
+                return_pending: false, focus_elem: None, restore_elem: None,
+                focus_index: None, restore_index: None, restore_counts: None, counts: (0, Vec::new()),
+                sent_window: None, want_end: 0, summary_more: false, links_c: Vec::new(), synced: None,
                 summary_lift: plx_ui::text_lift::TextLift::new() },
             // A page that leaves focus (a menu over it, a pointer gone) rests at the top.
             stack: Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Collection).home_when_unfocused(true),
@@ -518,19 +712,101 @@ impl CollectionScreen {
         self.page.collection(cx)
     }
 
+    /// What the page keeps keys for: the cells the grid can paint or step to (its own window, a row
+    /// more each side as look-ahead), the first row (where a vertical move into the grid seats),
+    /// and the rows around the focus, the restore target and the group's remembered key, which are
+    /// also pinned against the key table's bound. Derived each frame from the grid's painted
+    /// range, so a scroll that moves the view without moving focus moves what is kept.
+    fn plan<H: ContentLike + CollectionLike>(&mut self, cx: &Cx<'_, H>) {
+        let Some(collection) = self.collection(cx) else { return };
+        let cols = ui_cards::GRID_COLS;
+        let row = |index: usize| (index / cols).saturating_sub(1) * cols..(index / cols + 2) * cols;
+        let mut ranges = match self.painted(cx) {
+            Some(painted) => vec![painted.start.saturating_sub(cols)..painted.end + cols],
+            None => vec![0..4 * cols],
+        };
+        ranges.push(0..cols);
+        let focus = cx.focus.current.filter(|key| key.entry == self.entry()).map(|key| key.elem);
+        let mut pins = Vec::new();
+        for elem in [focus, self.page.restore_elem, cx.focus.remembered(GRID_GROUP)].into_iter().flatten() {
+            if elem == HEADER_ELEM || elem == RETRY_ELEM { continue; }
+            if elem < HOLE_ELEM_BASE { pins.push(elem); }
+            if let Some(index) = self.page.slot_of(collection, elem) { ranges.push(row(index)); }
+        }
+        if let Some(index) = self.page.return_pending.then_some(self.page.restore_index).flatten() {
+            ranges.push(row(index));
+        }
+        self.page.want = (ranges, pins);
+    }
+
+    /// The cells the grid paints this frame, by the grid's own rule (`None` before its first
+    /// layout).
+    fn painted<H: ContentLike + CollectionLike>(&self, cx: &Cx<'_, H>) -> Option<std::ops::Range<usize>> {
+        self.stack.grid_window(&self.page, cx, Sec::Items)
+    }
+
+    /// Project again for the window the grid has NOW: a scroll step moves what it can paint after
+    /// the frame's first projection, and every cell it paints or steps to needs a key in the frame.
+    /// A no-op when neither the ranges nor the store's content moved.
+    fn reproject<H: ContentLike + CollectionLike>(&mut self, cx: &Cx<'_, H>) {
+        let Some(collection) = self.collection(cx) else { return };
+        self.plan(cx);
+        self.page.project(collection, Some(H::collection(cx).revision()));
+    }
+
+    /// Tells the store which indices the screen shows or is about to show, which member holds
+    /// focus and where a Back is restoring to, so it keeps those pages and drops the rest. The
+    /// window is anchored on the focus while it is among the cells the grid paints, else on the
+    /// restore target, else on the top of what the grid paints: one page above, two below. The
+    /// anchor follows the grid's painted range (the one function the grid draws by), so a scroll
+    /// that does not move focus still moves the window. It is sent only when it moves.
+    fn send_window<H: ContentLike + CollectionLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let Some(collection) = self.collection(cx) else { return };
+        let painted = self.painted(cx).unwrap_or(0..0);
+        let focus = cx.focus.current.filter(|key| key.entry == self.entry())
+            .and_then(|key| self.item_index(collection, key.elem));
+        let restore = self.page.return_pending.then_some(self.page.restore_index).flatten();
+        let anchor = focus.filter(|at| painted.contains(at)).or(restore).unwrap_or(painted.start);
+        let wanted = anchor.saturating_sub(PAGE_SIZE)..(anchor + 2 * PAGE_SIZE).max(self.page.want_end.min(anchor + 3 * PAGE_SIZE));
+        let window = (wanted, focus, restore);
+        if self.page.sent_window.as_ref() == Some(&window) { return; }
+        let (wanted, focus, restore) = window.clone();
+        self.page.sent_window = Some(window);
+        fx.push(plx_machine::machine::Fx::App(AppFx::Store(
+            plx_data::stores::StoreId::Collection,
+            plx_data::stores::StoreCmd::Collection(CollectionCmd::Window { wanted, focus, restore }),
+        )));
+    }
+
     pub fn restore(&mut self, memory: &CardPageMemory) {
         self.page.cards.merge(&memory.cards, FIRST_CARD_ELEM, "collection");
         self.page.header_marked |= memory.header_marked;
+        self.page.restore_index = memory.focus_index;
+        // The counts are sent to the store once it is open (see `Enter`).
+        self.page.restore_counts = Some((memory.total, memory.counts.clone())).filter(|(_, c)| !c.is_empty());
+        self.page.restore_elem = memory.focus_elem;
     }
 
-    fn memory(&self) -> CardPageMemory {
-        CardPageMemory { cards: self.page.cards.clone(), header_marked: self.page.header_marked }
+    fn memory(&self, focus: Option<plx_machine::machine::FocusKey<u32>>) -> CardPageMemory {
+        // The member holding focus when the page is left: its key and index are saved, so a return
+        // can wait for it and the keys prune never drops it.
+        let elem = focus.filter(|key| key.entry == self.entry()).map(|key| key.elem)
+            .filter(|&e| e != HEADER_ELEM && e != RETRY_ELEM).or(self.page.focus_elem);
+        let index = elem.and_then(|e| self.page.proj.index.get(&e).copied()).or(self.page.focus_index);
+        CardPageMemory { cards: self.page.cards.clone(), header_marked: self.page.header_marked,
+            total: self.page.counts.0, counts: self.page.counts.1.clone(),
+            focus_index: index, focus_elem: elem }
     }
 
-    /// The member count a page entry asks the store for: one page, or — returning to a page
-    /// that remembers members — every member it knew, so the remembered one can be reached.
+    /// The member count a page entry asks the store for: one page, or — returning to a page whose
+    /// remembered member sits within the second — through that member, so the first ask reads it.
+    /// A deeper target is named by the `Window` that follows every tick (and the saved counts), not
+    /// by this first ask, so the key table's size is not what says how far the page had read.
     fn entry_want(&self) -> usize {
-        if self.page.return_pending { PAGE_SIZE.max(self.page.cards.len()) } else { PAGE_SIZE }
+        match self.page.restore_index.filter(|_| self.page.return_pending) {
+            Some(index) => (index + 1).clamp(PAGE_SIZE, 2 * PAGE_SIZE),
+            None => PAGE_SIZE,
+        }
     }
 
     #[cfg(test)]
@@ -618,6 +894,7 @@ impl CollectionScreen {
         let Some(collection) = self.collection(cx) else { return };
         let revision = H::collection(cx).revision();
         if self.page.synced != Some(revision) {
+            self.plan(cx);
             self.page.sync_to(collection, revision, cx.measure);
         }
     }
@@ -626,13 +903,18 @@ impl CollectionScreen {
         let Some(collection) = self.collection(cx) else { return };
         let header_focused = cx.focus.current
             .is_some_and(|key| key.entry == self.entry() && key.elem == HEADER_ELEM);
+        let focus = cx.focus.current.filter(|key| key.entry == self.entry());
+        self.page.focus_elem = focus.map(|key| key.elem).filter(|&e| e != HEADER_ELEM && e != RETRY_ELEM);
+        if let Some(index) = self.page.focus_elem.and_then(|e| self.item_index(collection, e)) {
+            self.page.focus_index = Some(index);
+        }
         let marked = self.page.summary_marked(header_focused);
         self.page.summary_lift.step(marked, t.dt());
         let focused = cx.focus.current.filter(|key| key.entry == self.entry())
             .and_then(|key| self.item_index(collection, key.elem))
-            .and_then(|index| collection.items.get(index));
+            .and_then(|index| collection.item(index));
         let target = PageGround::page_target(
-            focused.or_else(|| collection.items.first()).map(tile_facts::of));
+            focused.or_else(|| collection.item(0)).map(tile_facts::of));
         if self.ground_seeded { self.ground.key_target(target, t.dt()); }
         else { self.ground.jump_target(target); self.ground_seeded = true; }
     }
@@ -642,7 +924,7 @@ impl CollectionScreen {
         let collection = self.collection(cx)?;
         let index = focus.filter(|key| key.entry == self.entry())
             .and_then(|key| self.item_index(collection, key.elem))?;
-        collection.items.get(index)
+        collection.item(index)
     }
 }
 
@@ -654,6 +936,7 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
             ScreenEvent::Tick(_) => self.resync(cx),
             ScreenEvent::StoreChanged(ord, _) if *ord == plx_data::stores::StoreId::Collection.ord() => {
                 if let Some(collection) = self.collection(cx) {
+                    self.plan(cx);
                     self.page.sync_to(collection, H::collection(cx).revision(), cx.measure);
                 }
             }
@@ -663,6 +946,10 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
             Some(StackEvent::Card(_, card)) => Some(card),
             _ => None,
         };
+        // The stack stepped the scroll: the cells the grid paints now hold keys before the frame
+        // is drawn or any key is stepped from. (Not before a restored page has merged its saved
+        // keys: a projection's fresh keys would take the elements those name.)
+        if !matches!(ev, ScreenEvent::RestoreMemory(_)) { self.reproject(cx); }
         match ev {
             ScreenEvent::RestoreMemory(PageMemory::Collection(memory)) => {
                 self.restore(memory); self.page.return_pending = true; Handled::Yes
@@ -670,13 +957,22 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
             ScreenEvent::Tick(t) => {
                 self.tick(*t, cx);
                 if let Some(CardEvent::Want(range)) = card {
-                    let loaded = self.collection(cx).map_or(0, |c| c.items.len());
-                    self.request_store(range.end.max(loaded.saturating_add(PAGE_SIZE)), fx);
+                    let loaded = self.collection(cx).map_or(0, |c| c.shown());
+                    self.page.want_end = range.end.max(loaded.saturating_add(PAGE_SIZE));
+                    self.page.sent_window = None;
                 }
+                self.send_window(cx, fx);
                 Handled::Yes
             }
             ScreenEvent::Enter(_) | ScreenEvent::Uncover => {
-                self.request_store(self.entry_want(), fx); fx.invalidate(Provenance::Nav); Handled::Yes
+                self.request_store(self.entry_want(), fx);
+                if let Some((total, counts)) = self.page.restore_counts.take() {
+                    fx.push(plx_machine::machine::Fx::App(AppFx::Store(
+                        plx_data::stores::StoreId::Collection,
+                        plx_data::stores::StoreCmd::Collection(CollectionCmd::Restore { total, counts }),
+                    )));
+                }
+                fx.invalidate(Provenance::Nav); Handled::Yes
             }
             ScreenEvent::FocusMoved { to, by, .. } => {
                 if matches!(by, By::Dir | By::Pointer) { self.page.return_pending = false; }
@@ -760,8 +1056,8 @@ impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
     fn focus_source(&self) -> FocusSource { FocusSource::Engine }
     fn hit_source(&self) -> HitSource { HitSource::Engine }
     fn links(&self, out: &mut Vec<Link>) { out.extend(self.page.links_c.iter().copied()); }
-    fn memory_at(&self, _focus: Option<plx_machine::machine::FocusKey<u32>>) -> PageMemory {
-        PageMemory::Collection(self.memory())
+    fn memory_at(&self, focus: Option<plx_machine::machine::FocusKey<u32>>) -> PageMemory {
+        PageMemory::Collection(self.memory(focus))
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { Some(self) }
@@ -774,7 +1070,7 @@ mod tests {
     use plx_ui::screen::Step;
     use plx_machine::machine::{FocusRead, Host, InputOwner, PressRead};
 
-    struct CollectionHost;
+    pub(super) struct CollectionHost;
     impl Host for CollectionHost {
         type Arg = super::super::family::SettingsPage;
         type Fx = AppFx;
@@ -788,8 +1084,8 @@ mod tests {
         fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> { cx.views }
     }
 
-    fn item(rk: &str) -> PmsMovie { PmsMovie { rk: rk.into(), title: rk.into(), ..Default::default() } }
-    fn set() -> CollectionRef {
+    pub(super) fn item(rk: &str) -> PmsMovie { PmsMovie { rk: rk.into(), title: rk.into(), ..Default::default() } }
+    pub(super) fn set() -> CollectionRef {
         CollectionRef { sid: plx_plex::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 7, name: "Set".into() }
     }
     fn seeded() -> (plx_data::stores::collection::CollectionStore, CollectionScreen) {
@@ -801,7 +1097,7 @@ mod tests {
         step(&mut screen, ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }), &cx(store.view(), None));
         (store, screen)
     }
-    fn cx<'a>(view: plx_data::collection::CollectionView<'a>, focus: Option<plx_machine::machine::FocusKey<u32>>) -> Cx<'a, CollectionHost> {
+    pub(super) fn cx<'a>(view: plx_data::collection::CollectionView<'a>, focus: Option<plx_machine::machine::FocusKey<u32>>) -> Cx<'a, CollectionHost> {
         Cx { views: view, tick: Tick::default(), measure: &FixtureMeasure,
             press: PressRead::default(), focus: FocusRead { current: focus, ..Default::default() },
             owner: InputOwner::Entry(EntryId(9)) }
@@ -819,7 +1115,7 @@ mod tests {
         assert_eq!(caption.caption.unwrap().to_str().unwrap(), "Example Show · S3 · E4");
     }
 
-    fn step(screen: &mut CollectionScreen, ev: ScreenEvent<CollectionHost>,
+    pub(super) fn step(screen: &mut CollectionScreen, ev: ScreenEvent<CollectionHost>,
         cx: &Cx<'_, CollectionHost>) -> Vec<plx_machine::machine::Stamped<CollectionHost>> {
         let mut present = plx_machine::present::Present::new();
         let mut out = Vec::new();
@@ -855,12 +1151,12 @@ mod tests {
     #[test]
     fn a_same_length_content_change_is_synced_by_the_frame_tick() {
         let (mut store, mut screen) = seeded();
-        let (before_elems, before_labels) = (screen.page.elems.clone(), screen.page.labels.clone());
-        store.edit_for_test(|c| c.items[1] = PmsMovie { kind: 2, season_index: 4, ..item("z") });
+        let (before_elem, before_label) = (screen.page.cell_elem(1), screen.page.cell_label(1).map(str::to_owned));
+        store.edit_for_test(|c| c.edit_items_for_test(|v| v[1] = PmsMovie { kind: 2, season_index: 4, ..item("z") }));
         tick_at(&mut screen, &store, None, 16);
-        assert_ne!(screen.page.elems[1], before_elems[1], "the replaced member has its own element");
-        assert_ne!(screen.page.labels[1], before_labels[1], "and its own label");
-        assert_eq!(screen.page.elems.len(), 3);
+        assert_ne!(screen.page.cell_elem(1), before_elem, "the replaced member has its own element");
+        assert_ne!(screen.page.cell_label(1).map(str::to_owned), before_label, "and its own label");
+        assert_eq!(screen.page.cells(), 3);
     }
 
     #[test]
@@ -875,17 +1171,19 @@ mod tests {
         let out = ticking(&mut screen, &store);
         let want = out.iter().find_map(|e| match &e.fx {
             plx_machine::machine::Fx::App(AppFx::Store(_, plx_data::stores::StoreCmd::Collection(
-                CollectionCmd::Open { target, .. }))) => Some(target.want),
+                CollectionCmd::Window { wanted, focus, .. }))) => Some((wanted.end, *focus)),
             _ => None,
         });
-        assert_eq!(want, Some(3 + PAGE_SIZE), "the next page is requested ahead of the last row");
+        assert_eq!(want, Some((2 + 2 * PAGE_SIZE, Some(2))),
+            "the window reaches two pages past the focus, well beyond the last row, so the store reads on");
 
         store.edit_for_test(|c| c.more = false);
         let mut done = CollectionScreen::new(EntryId(9), set());
         done.page.sync(store.view().current().unwrap(), &FixtureMeasure);
         let out = ticking(&mut done, &store);
-        assert!(!out.iter().any(|e| matches!(e.fx, plx_machine::machine::Fx::App(AppFx::Store(..)))),
-            "a fully loaded collection asks for nothing");
+        assert!(!out.iter().any(|e| matches!(e.fx, plx_machine::machine::Fx::App(AppFx::Store(
+            _, plx_data::stores::StoreCmd::Collection(CollectionCmd::Open { .. }))))),
+            "a fully loaded collection asks to open nothing further");
     }
 
     #[test]
@@ -1044,7 +1342,7 @@ mod tests {
     #[test]
     fn a_failed_page_reads_out_with_the_shared_glyph_below_the_header() {
         let (mut store, _) = seeded();
-        store.edit_for_test(|c| { c.items.clear(); c.summary.clear(); c.status = CollectionStatus::Failed; });
+        store.edit_for_test(|c| { c.replace_items_for_test(vec![]); c.summary.clear(); c.status = CollectionStatus::Failed; });
         let c = store.view().current().unwrap();
         let overlay = CollectionScreen::status_overlay(Some(c), 0, &FixtureMeasure);
         assert_eq!(overlay.glyph, Some(plx_ui::icons::Icon::ServerBadgeMinus));
@@ -1071,7 +1369,7 @@ mod tests {
     #[test]
     fn an_empty_collection_reads_out_quietly_in_the_grids_region() {
         let (mut store, _) = seeded();
-        store.edit_for_test(|c| { c.items.clear(); c.child_count = 0; c.total = 0; c.status = CollectionStatus::Empty; });
+        store.edit_for_test(|c| { c.replace_items_for_test(vec![]); c.child_count = 0; c.total = 0; c.status = CollectionStatus::Empty; });
         let c = store.view().current().unwrap();
         assert_eq!(meta_key(c), (0, true), "the meta line is the kind alone");
         assert!(CollectionScreen::shows_head(c));
@@ -1086,7 +1384,7 @@ mod tests {
     #[test]
     fn an_unavailable_collection_fills_the_page_with_its_verdict_and_no_header() {
         let (mut store, _) = seeded();
-        store.edit_for_test(|c| { c.items.clear(); c.status = CollectionStatus::Unavailable; });
+        store.edit_for_test(|c| { c.replace_items_for_test(vec![]); c.status = CollectionStatus::Unavailable; });
         let c = store.view().current().unwrap();
         assert!(!CollectionScreen::shows_head(c));
         let overlay = CollectionScreen::status_overlay(Some(c), 0, &FixtureMeasure);
@@ -1117,7 +1415,7 @@ mod tests {
     #[test]
     fn a_scrolled_page_rests_a_row_on_the_content_edge() {
         let (mut store, mut screen) = seeded();
-        store.edit_for_test(|c| c.items = (0..30).map(|i| item(&format!("m{i}"))).collect());
+        store.edit_for_test(|c| c.replace_items_for_test((0..30).map(|i| item(&format!("m{i}"))).collect()));
         screen.page.sync(store.view().current().unwrap(), &FixtureMeasure);
         let cols = plx_ui::cards::GRID_COLS;
         let key = screen.key_at(store.view().current().unwrap(), 2 * cols);
@@ -1139,7 +1437,7 @@ mod tests {
     #[test]
     fn down_onto_a_short_last_row_lands_on_its_last_member() {
         let (mut store, mut screen) = seeded();
-        store.edit_for_test(|c| c.items = (0..8).map(|i| item(&format!("m{i}"))).collect());
+        store.edit_for_test(|c| c.replace_items_for_test((0..8).map(|i| item(&format!("m{i}"))).collect()));
         screen.page.sync(store.view().current().unwrap(), &FixtureMeasure);
         let c = store.view().current().unwrap();
         let from = screen.key_at(c, 4);
@@ -1150,19 +1448,120 @@ mod tests {
             &cx(store.view(), Some(from))), Step::Edge), "the last row has nothing below");
     }
 
+    /// 5,000 members walked to the end and back with focus riding along: the key table follows
+    /// the pages the store holds (never the list), and the focused card keeps its element, its
+    /// index and its column through the eviction of its neighbours.
+    #[test]
+    fn a_5000_member_walk_keeps_the_key_table_bounded_and_the_focused_card_keyed() {
+        let (mut store, mut screen) = seeded();
+        let many: Vec<PmsMovie> = (0..5000).map(|i| item(&format!("m{i}"))).collect();
+        let walk: Vec<usize> = (0..5000).step_by(45).chain((0..5000).step_by(45).rev()).collect();
+        let cols = plx_ui::cards::GRID_COLS;
+        let mut ms = 32;
+        let mut peak_keys = 0;
+        for (n, &idx) in walk.iter().enumerate() {
+            // The store's pages as a read of the window around `idx` leaves them.
+            store.edit_for_test(|c| {
+                c.replace_items_for_test(many.clone());
+                c.evict_for_test(idx.saturating_sub(PAGE_SIZE)..idx + 2 * PAGE_SIZE, Some(idx), None);
+            });
+            ms += 16;
+            tick_at(&mut screen, &store, None, ms);
+            let c = store.view().current().unwrap();
+            screen.page.reach(c, idx); // navigation would have projected the row it arrives on
+            let key = screen.key_at(c, idx);
+            ms += 16;
+            tick_at(&mut screen, &store, Some(key), ms);
+            // The next stop's eviction, with focus still on `idx`.
+            let next = walk.get(n + 1).copied().unwrap_or(idx);
+            store.edit_for_test(|c| {
+                c.replace_items_for_test(many.clone());
+                c.evict_for_test(next.saturating_sub(PAGE_SIZE)..next + 2 * PAGE_SIZE, Some(idx), None);
+            });
+            ms += 16;
+            tick_at(&mut screen, &store, Some(key), ms);
+            let c = store.view().current().unwrap();
+            let held = c.loaded_rows().count();
+            assert!(held <= 11 * PAGE_SIZE, "{held} rows held");
+            assert!(screen.page.cards.len() <= 2 * held + 256, "{} keys for {held} rows", screen.page.cards.len());
+            peak_keys = peak_keys.max(screen.page.cards.len());
+            assert_eq!(screen.item_index(c, key.elem), Some(idx), "the focused card keeps its index at step {n}");
+            assert_eq!(screen.item_index(c, key.elem).unwrap() % cols, idx % cols, "and its column");
+            assert_eq!(screen.focused_item(Some(key), &cx(store.view(), Some(key))).map(|m| m.rk.clone()),
+                Some(format!("m{idx}")), "and its identity");
+        }
+        assert!(peak_keys < 1500, "peak {peak_keys} keys for a 5000-member list");
+    }
+
+    /// Leaving to Detail deep in the list saves the focused member and the directory of kept
+    /// counts, and the return sends the store the counts so the pages before the member are not
+    /// all read again.
+    #[test]
+    fn a_return_deep_in_the_list_sends_the_saved_counts_with_the_focus() {
+        let (mut store, mut screen) = seeded();
+        let many: Vec<PmsMovie> = (0..5000).map(|i| item(&format!("m{i}"))).collect();
+        store.edit_for_test(|c| {
+            c.replace_items_for_test(many);
+            c.evict_for_test(2900..3100, Some(3000), None);
+        });
+        tick_at(&mut screen, &store, None, 48);
+        screen.page.reach(store.view().current().unwrap(), 3000);
+        let key = screen.key_at(store.view().current().unwrap(), 3000);
+        tick_at(&mut screen, &store, Some(key), 64);
+        let PageMemory::Collection(memory) = Screen::<CollectionHost>::memory_at(&screen, Some(key)) else { panic!() };
+        assert_eq!((memory.total, memory.counts.len(), memory.focus_index), (5000, 5000usize.div_ceil(PAGE_SIZE), Some(3000)));
+
+        let mut back = CollectionScreen::new(EntryId(9), set());
+        let _ = step(&mut back, ScreenEvent::RestoreMemory(PageMemory::Collection(memory)), &cx(store.view(), None));
+        let out = step(&mut back, ScreenEvent::Enter(plx_ui::screen::Enter::Restored), &cx(store.view(), None));
+        let sent = out.iter().find_map(|e| match &e.fx {
+            plx_machine::machine::Fx::App(AppFx::Store(_, plx_data::stores::StoreCmd::Collection(
+                CollectionCmd::Restore { total, counts }))) => Some((*total, counts.len())),
+            _ => None,
+        });
+        assert_eq!(sent, Some((5000, 84)), "the saved directory goes back to the store");
+    }
+
+    /// A slot whose page is not held draws the not-yet-loaded card, and becomes its member's card
+    /// when the page lands.
+    #[test]
+    fn a_hole_in_the_visible_range_draws_the_placeholder_and_fills_when_its_page_lands() {
+        let (mut store, mut screen) = seeded();
+        let many: Vec<PmsMovie> = (0..5000).map(|i| item(&format!("m{i}"))).collect();
+        store.edit_for_test(|c| {
+            c.replace_items_for_test(many.clone());
+            c.evict_for_test(3000..3120, Some(3000), None);
+        });
+        tick_at(&mut screen, &store, None, 48);
+        let c = store.view().current().unwrap();
+        let members = screen.page.members(c);
+        assert!(screen.page.elem_at(c, 100).is_some_and(|e| e >= HOLE_ELEM_BASE), "slot 100 is a hole");
+        assert!(matches!(CardSource::<CollectionHost>::art(&members, 100), Art::Poster(None)));
+        assert_eq!(CardSource::<CollectionHost>::len(&members), 5000, "the grid still spans the known list");
+
+        store.edit_for_test(|c| { c.replace_items_for_test(many.clone()); c.evict_for_test(0..200, Some(100), None); });
+        tick_at(&mut screen, &store, None, 64);
+        let c = store.view().current().unwrap();
+        screen.page.reach(c, 100); // slot 100 is not painted from the top; scrolling to it projects it
+        let members = screen.page.members(c);
+        assert!(screen.page.elem_at(c, 100).is_some_and(|e| e < HOLE_ELEM_BASE), "slot 100 has its member");
+        assert!(matches!(CardSource::<CollectionHost>::art(&members, 100), Art::Poster(Some(_))));
+    }
+
     /// Back onto a page rebuilt from its first page holds the remembered member while the pages
     /// above it load, and the entry asks for every member the page knew.
     #[test]
     fn a_restore_past_the_first_page_waits_for_its_member() {
         let (mut store, original) = seeded();
         let many: Vec<PmsMovie> = (0..PAGE_SIZE + 10).map(|i| item(&format!("m{i}"))).collect();
-        store.edit_for_test(|c| c.items = many.clone());
+        store.edit_for_test(|c| c.replace_items_for_test(many.clone()));
         let mut original = original;
         original.page.sync(store.view().current().unwrap(), &FixtureMeasure);
+        original.page.reach(store.view().current().unwrap(), PAGE_SIZE + 5);
         let focus = original.key_at(store.view().current().unwrap(), PAGE_SIZE + 5);
         let PageMemory::Collection(memory) = Screen::<CollectionHost>::memory_at(&original, Some(focus)) else { panic!() };
 
-        store.edit_for_test(|c| { c.items = many[..PAGE_SIZE].to_vec(); c.more = true; });
+        store.edit_for_test(|c| { c.replace_items_for_test(many[..PAGE_SIZE].to_vec()); c.more = true; });
         let mut restored = CollectionScreen::new(EntryId(9), set());
         let _ = step(&mut restored, ScreenEvent::RestoreMemory(PageMemory::Collection(memory)), &cx(store.view(), None));
         let out = step(&mut restored, ScreenEvent::Enter(plx_ui::screen::Enter::Restored), &cx(store.view(), None));
@@ -1176,7 +1575,7 @@ mod tests {
         let got = Focusable::<CollectionHost>::reconcile(&restored, focus, &cx(store.view(), Some(focus)));
         assert_eq!(got, focus, "focus waits on the member rather than falling to the first card");
 
-        store.edit_for_test(|c| { c.items = many.clone(); c.more = false; });
+        store.edit_for_test(|c| { c.replace_items_for_test(many.clone()); c.more = false; });
         restored.page.sync(store.view().current().unwrap(), &FixtureMeasure);
         let got = Focusable::<CollectionHost>::reconcile(&restored, focus, &cx(store.view(), Some(focus)));
         assert_eq!(restored.focused_item(Some(got), &cx(store.view(), Some(got))).unwrap().rk,
@@ -1192,7 +1591,7 @@ mod tests {
         let c = store.view().current().unwrap();
         let (b, last) = (screen.key_at(c, 1), screen.key_at(c, 2));
         tick_at(&mut screen, &store, Some(b), 32);
-        store.edit_for_test(|c| { c.items.remove(1); });
+        store.edit_for_test(|c| { c.edit_items_for_test(|v| { v.remove(1); }); });
         tick_at(&mut screen, &store, Some(b), 48);
         let c = store.view().current().unwrap();
         let got = Focusable::<CollectionHost>::reconcile(&screen, b, &cx(store.view(), Some(b)));
@@ -1200,7 +1599,7 @@ mod tests {
         assert_eq!(got, last);
 
         tick_at(&mut screen, &store, Some(got), 64);
-        store.edit_for_test(|c| { c.items.remove(1); });
+        store.edit_for_test(|c| { c.edit_items_for_test(|v| { v.remove(1); }); });
         tick_at(&mut screen, &store, Some(got), 80);
         let c = store.view().current().unwrap();
         let got = Focusable::<CollectionHost>::reconcile(&screen, got, &cx(store.view(), Some(got)));
@@ -1314,10 +1713,10 @@ mod tests {
             let (mut store, mut screen) = seeded();
             store.edit_for_test(|c| {
                 c.summary = "Qwerty".into();
-                c.items.push(season.clone());
-                c.child_count = c.items.len();
+                c.edit_items_for_test(|v| v.push(season.clone()));
+                c.child_count = c.shown();
                 c.status = status;
-                if status != CollectionStatus::Ready { c.items.clear(); c.child_count = 0; }
+                if status != CollectionStatus::Ready { c.replace_items_for_test(vec![]); c.child_count = 0; }
             });
             screen.page.sync(store.view().current().unwrap(), &FixtureMeasure);
             let context = cx(store.view(), None);

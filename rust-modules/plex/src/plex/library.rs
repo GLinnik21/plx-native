@@ -1,7 +1,8 @@
-//! Library operations (impl Client): sections, section items, metadata, children/leaves,
-//! related — plus the two part-level playback ops (stream selection, direct-play target).
+//! Library operations (impl Client): sections, section items (`section_items_query`), metadata,
+//! children (`children`, `children_paged`), related (`related`) — plus the two part-level playback ops (stream selection, direct-play target).
 use super::client::{Client, QueryBuilder, StreamUrl};
 use super::models::{MediaContainer, Metadata};
+use super::paging::{paged_path, PageReq};
 use super::params::{SectionQuery, StreamSelection};
 
 fn sidecar_key_allowed(key: &str) -> bool {
@@ -70,27 +71,8 @@ impl Client {
         self.get_json(&q.build())
     }
 
-    /// GET /library/sections/{section_key}/all → `.metadata[]`
-    pub fn section_items(&self, section_key: i64) -> Option<MediaContainer> {
-        self.get_json(&format!("/library/sections/{section_key}/all"))
-    }
-
-    /// Paged variant (X-Plex-Container-Start/Size) for large libraries.
-    pub fn section_items_paged(
-        &self,
-        section_key: i64,
-        start: i64,
-        size: i64,
-    ) -> Option<MediaContainer> {
-        let path = QueryBuilder::new(format!("/library/sections/{section_key}/all"))
-            .int("X-Plex-Container-Start", start)
-            .int("X-Plex-Container-Size", size)
-            .build();
-        self.get_json(&path)
-    }
-
     /// Sorted/filtered/paged section listing — the Library browse grid's one fetch.
-    /// `GET /library/sections/{k}/all?includeMeta=1&sort=…&genre=…&X-Plex-Container-Start&Size`
+    /// `GET /library/sections/{k}/all?includeMeta=1&sort=…&genre=…` plus the paging window
     /// → `.metadata[]` + `total_size` (+ `.meta` when `include_meta`).
     pub fn section_items_query(&self, q: &SectionQuery) -> Option<MediaContainer> {
         let mut b = QueryBuilder::new(format!("/library/sections/{}/all", q.section_key));
@@ -101,10 +83,7 @@ impl Client {
         for (k, v) in q.filters {
             b = b.str(k, v);
         }
-        let path = b
-            .int("X-Plex-Container-Start", q.start)
-            .int("X-Plex-Container-Size", q.size)
-            .build();
+        let path = paged_path(&b.build(), PageReq::window(q.start, q.size));
         self.get_json(&path)
     }
 
@@ -219,10 +198,15 @@ impl Client {
         self.get_json(&format!("/library/metadata/{rating_key}/children"))
     }
 
-    /// GET /library/metadata/{rating_key}/allLeaves — all episodes in one call. Group
-    /// client-side by `parent_index`.
-    pub fn all_leaves(&self, rating_key: &str) -> Option<MediaContainer> {
-        self.get_json(&format!("/library/metadata/{rating_key}/allLeaves"))
+    /// GET /library/metadata/{rating_key}/children as one window: `size` rows from `start`, with
+    /// `totalSize` the whole listing. A season's episodes page through this; `children` stays for
+    /// the season tabs, which need every row.
+    pub fn children_paged(&self, rating_key: &str, start: i64, size: i64) -> Option<MediaContainer> {
+        let path = paged_path(
+            &format!("/library/metadata/{rating_key}/children"),
+            PageReq::window(start, size),
+        );
+        self.get_json(&path)
     }
 
     /// GET /library/metadata/{rating_key}/related → `.hub[]`.

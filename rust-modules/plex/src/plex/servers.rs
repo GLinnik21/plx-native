@@ -36,8 +36,8 @@
 //! lands at frame N+1 while a worker thread is mid-request with it. Re-pointing publishes a
 //! NEW leaked `Client` and stores its pointer over the old one, so the worst case for a caller
 //! holding the previous reference is one request to the address that server used to be at —
-//! never a use-after-free. The leak is bounded by [`MAX_SERVERS`] pointers' worth of small
-//! structs for the life of the process (a household has a handful of servers, and registration
+//! never a use-after-free. The leak is one small struct per registration ever made, for the life
+//! of the process (a household has a handful of servers, and registration
 //! happens on login / profile switch / server switch, never per frame), so "bounded and never
 //! freed" is cheaper than the refcount it replaces.
 //!
@@ -55,18 +55,20 @@
 //! **A revoked slot number is never handed out again**, not even to the same `machineIdentifier`.
 //! [`ServerId`]'s whole contract is that it names one server for the life of the process — it sits
 //! in UI state, in routes, in queued jobs — and every per-server store in the app (`search`'s
-//! mailboxes, `serverinfo`, `person`'s per-source records) is a flat array indexed by
-//! [`ServerId::raw`]. Reusing a number would file the previous account's results under the new
+//! mailboxes, `serverinfo`, `person`'s fetches) is a table keyed by [`ServerId::raw`], grown to
+//! the ids that exist. Reusing a number would file the previous account's results under the new
 //! account's server, which is the very leak this exists to close. The cost is that sign-out /
-//! sign-in cycles consume slots: past [`MAX_SERVERS`] registration is refused and says so in the
-//! log, which for a table of 16 and a household of one or two servers is a great many sign-outs
-//! inside one process.
+//! sign-in cycles consume slots (a sign-out also removes the revoked slots' rows from
+//! those tables): past `SLOT_LIMIT` (every `u16` but the reserved one) registration
+//! is refused, says so in the log, and is recorded ([`id_space_exhausted`]). That is 65,535 registrations in one process, which for a
+//! household of one or two servers is a great many sign-outs; the table itself grows by segments,
+//! so no earlier ceiling sits between a sign-out and that one.
 
 use super::client::Client;
 use super::origin::{CredentialPolicy, Origin, ResolvePin};
 use super::probe::{Location, Outcome};
 use super::IpVersion;
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// #95 step 8 / A1: connection facts to apply to a `Client` AT REGISTRATION, atomically with
@@ -97,16 +99,15 @@ impl ConnectionFacts {
     }
 }
 
-/// Slot ceiling. A Plex account's server list is a handful (own + shared); past this, a
-/// registration is refused and logged rather than growing a table the hot path indexes.
-///
-/// `pub` because [`super::serverinfo`] holds one entry PER SERVER in a flat array indexed
-/// by [`ServerId::raw`], and a second, independent ceiling there is a silent out-of-bounds
-/// waiting to happen: this is the number that decides which ids can ever exist. `crate::person`
-/// keys its per-source mailboxes the same way and is OUTSIDE this module tree, which is what
-/// moved this from `pub(super)` — a store that guessed its own 16 would go out of bounds the day
-/// this number moved.
-pub const MAX_SERVERS: usize = 16;
+/// Slots per segment. A segment is the unit of allocation: one leaked block of sixteen slots
+/// serves the next sixteen slot numbers, so the registry grows without moving any slot.
+const SEGMENT_SLOTS: usize = 16;
+/// Usable slot numbers: every `u16` except [`ServerId::UNSET`]'s, which is reserved and never
+/// names a slot. This is the id space the code has always allowed, and it is the whole ceiling —
+/// past it a registration is refused and logged, the one exhaustion path left.
+const SLOT_LIMIT: usize = u16::MAX as usize;
+/// Segment-pointer table length: enough for every number below [`SLOT_LIMIT`].
+const SEGMENT_COUNT: usize = SLOT_LIMIT.div_ceil(SEGMENT_SLOTS);
 
 /// A registry slot — a small `Copy` handle that names a server without borrowing it. Stable for
 /// the life of the process, so it can sit in UI state, a route, or a queued job.
@@ -365,35 +366,60 @@ pub fn owner_credit<'a>(g: Grant<'a>, household: &[i64]) -> &'a str {
     }
 }
 
-/// The table. A null slot is unpopulated; a non-null one is a leaked `Client` that is never
-/// freed (see the module doc), which is what makes the `unsafe` deref in [`client_for`] sound.
-static SLOTS: [AtomicPtr<Client>; MAX_SERVERS] =
-    [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
-/// [`ServerFacts`] per slot, published and leaked exactly as `SLOTS` is. A null slot is a server
-/// nobody has described yet — which is the honest state on a boot that never reached plex.tv.
-static FACTS: [AtomicPtr<ServerFacts>; MAX_SERVERS] =
-    [const { AtomicPtr::new(std::ptr::null_mut()) }; MAX_SERVERS];
-/// The last aggregate identity-probe result for each live server. Zero means this origin has not
-/// been probed in the current identity/address lifecycle. Unlike [`FACTS`], this is replaced rather
-/// than merged: a fresh successful probe is current evidence, as is a later timeout or 401.
-static PROBES: [AtomicU8; MAX_SERVERS] = [const { AtomicU8::new(PROBE_UNKNOWN) }; MAX_SERVERS];
+/// One registry slot: every field an atomic, so a reader takes no lock, and the slot's address
+/// never moves (its segment is leaked), so a `&Slot` is as good as `&'static` for the process.
+struct Slot {
+    /// The current `Client`. Null until published; a non-null one is leaked and never freed (see
+    /// the module doc), which is what makes the `unsafe` deref in [`client_for`] sound.
+    client: AtomicPtr<Client>,
+    /// [`ServerFacts`], published and leaked exactly as `client` is. Null is a server nobody has
+    /// described yet — the honest state on a boot that never reached plex.tv.
+    facts: AtomicPtr<ServerFacts>,
+    /// The last aggregate identity-probe result. Zero means this origin has not been probed in the
+    /// current identity/address lifecycle. Unlike [`ServerFacts`], this is replaced rather than
+    /// merged: a fresh successful probe is current evidence, as is a later timeout or 401.
+    probe: AtomicU8,
+    /// Granted to the active profile — the bit [`client_for`] and [`ids`] read. A profile switch
+    /// can remove one share without retiring every slot number above it; an inactive client stays
+    /// leaked but resolves to nothing, and its token is blanked before this flag is cleared.
+    active: AtomicBool,
+    /// May carry its credential under the policy that admitted its current origin. An ineligible
+    /// stored origin remains active as recovery metadata (so Sources and the endpoint rediscovery
+    /// loop retain it), but never becomes CURRENT and its `Client` carries an empty token. A later
+    /// eligible re-point flips this in the same registry write.
+    credential_eligible: AtomicBool,
+    /// Whether eligibility rests on a plaintext grant (`super::grant`) rather than the policy
+    /// alone — what [`regrade_credentials`] re-asks when a grant ends. Written with
+    /// `credential_eligible`, in the same registry write.
+    on_grant: AtomicBool,
+}
+
+const EMPTY_SLOT: Slot = Slot {
+    client: AtomicPtr::new(std::ptr::null_mut()),
+    facts: AtomicPtr::new(std::ptr::null_mut()),
+    probe: AtomicU8::new(PROBE_UNKNOWN),
+    active: AtomicBool::new(false),
+    credential_eligible: AtomicBool::new(false),
+    on_grant: AtomicBool::new(false),
+};
+
+/// [`SEGMENT_SLOTS`] consecutive slots, allocated and leaked on first use exactly as a `Client` is.
+struct Segment {
+    slots: [Slot; SEGMENT_SLOTS],
+}
+
+/// The segment-pointer table. A null entry is a segment nothing has registered into, so every
+/// number in it is unregistered. Only [`slot_for_write`] publishes a non-null pointer, under
+/// [`WRITE`]; readers only load.
+static SEGMENTS: [AtomicPtr<Segment>; SEGMENT_COUNT] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; SEGMENT_COUNT];
 /// Slots populated so far — the high-water mark, MONOTONE for the life of the process. A revoked
 /// slot keeps its number (see the module doc), so this is not the number of servers: that is the
-/// population count of [`ACTIVE`].
+/// count of [`Slot::active`] flags.
 static COUNT: AtomicUsize = AtomicUsize::new(0);
-/// Which slots in the current account window are granted to the active profile. A profile switch
-/// can remove one share without retiring every slot number above it; inactive clients stay leaked
-/// but resolve to nothing, and their token is blanked before this bit is cleared.
-static ACTIVE: AtomicU32 = AtomicU32::new(0);
-/// Which active roster slots may carry their credential under the policy that admitted their
-/// current origin. An ineligible stored origin remains ACTIVE as recovery metadata (so Sources
-/// and the endpoint rediscovery loop retain it), but never becomes CURRENT and its `Client`
-/// carries an empty token. A later eligible re-point flips this bit in the same registry write.
-static CREDENTIAL_ELIGIBLE: AtomicU32 = AtomicU32::new(0);
-/// The subset of [`CREDENTIAL_ELIGIBLE`] whose eligibility rests on a plaintext grant
-/// (`super::grant`) rather than the policy alone — the slots [`regrade_credentials`] re-asks when
-/// a grant ends. Written with the eligibility bit, in the same registry write.
-static ON_GRANT: AtomicU32 = AtomicU32::new(0);
+/// Set when a registration found the id space spent ([`SLOT_LIMIT`]). Ids are never reused, so
+/// only a new process clears it; the app reads it ([`id_space_exhausted`]) to ask for one.
+static EXHAUSTED: AtomicBool = AtomicBool::new(false);
 /// Monotone epoch of the active roster's identity. It moves when a slot appears/disappears or is
 /// re-pointed, even when the active COUNT stays the same, so cached fan-out stores can distinguish
 /// `{0,1}` from `{0,2}` and can discard work aimed at a superseded origin.
@@ -422,7 +448,7 @@ static FACTS_GEN: AtomicU32 = AtomicU32::new(1);
 /// [`revoke_all`]; everything below it is a credential of an account that has left.
 ///
 /// A sign-out raises this past the whole account window. Profile visibility is separate in
-/// [`ACTIVE`], because a managed user may be granted only a subset of the owner's servers.
+/// [`Slot::active`], because a managed user may be granted only a subset of the owner's servers.
 static FLOOR: AtomicUsize = AtomicUsize::new(0);
 /// The current/primary server as a raw `ServerId` — what `client()` answers with.
 static CURRENT: AtomicU32 = AtomicU32::new(ServerId::UNSET.0 as u32);
@@ -465,14 +491,65 @@ fn probe_of_code(code: u8) -> Option<Outcome> {
 /// microsecond earlier anyway.
 pub fn client_for(id: ServerId) -> Option<&'static Client> {
     let i = id.index()?;
-    if i < FLOOR.load(Ordering::Relaxed) || ACTIVE.load(Ordering::Acquire) & (1u32 << i) == 0 {
+    if i < FLOOR.load(Ordering::Relaxed) {
         return None;
     }
-    let p = SLOTS.get(i)?.load(Ordering::Acquire);
+    let s = slot(i)?;
+    if !s.active.load(Ordering::Acquire) {
+        return None;
+    }
+    let p = s.client.load(Ordering::Acquire);
     // SAFETY: a slot holds either null or a pointer from `Box::into_raw` that is NEVER freed
     // (see the module doc on the deliberate leak), published with a Release store paired to this
     // Acquire load. So a non-null read is always a fully-initialised, permanently-live `Client`.
     (!p.is_null()).then(|| unsafe { &*p })
+}
+
+/// The slot numbered `i`, `None` when its segment has never been allocated, which is what an
+/// unregistered number looks like. One Acquire load of the segment pointer, then a plain index.
+fn slot(i: usize) -> Option<&'static Slot> {
+    let seg = SEGMENTS.get(i / SEGMENT_SLOTS)?.load(Ordering::Acquire);
+    // SAFETY: a segment pointer is null or a `Box::into_raw` that is NEVER freed (the same leak as
+    // the clients), published with a Release store paired to this Acquire load. So a non-null read
+    // is a fully-initialised segment that lives for the process, and `i % SEGMENT_SLOTS` is in
+    // bounds by construction.
+    (!seg.is_null()).then(|| unsafe { &(*seg).slots[i % SEGMENT_SLOTS] })
+}
+
+/// The slot a [`ServerId`] names: `None` for [`ServerId::UNSET`] and for a number never allocated.
+fn slot_of(id: ServerId) -> Option<&'static Slot> {
+    slot(id.index()?)
+}
+
+/// The slot numbered `i`, allocating and leaking its segment on first use. Writers only: the caller
+/// holds [`WRITE`], so two registrations cannot race to allocate one segment, and a reader never
+/// allocates — it sees a segment only after its pointer was published.
+fn slot_for_write(i: usize) -> &'static Slot {
+    let cell = &SEGMENTS[i / SEGMENT_SLOTS];
+    if cell.load(Ordering::Acquire).is_null() {
+        let seg = Box::into_raw(Box::new(Segment {
+            slots: [const { EMPTY_SLOT }; SEGMENT_SLOTS],
+        }));
+        cell.store(seg, Ordering::Release);
+    }
+    slot(i).expect("the segment was published just above")
+}
+
+/// Walk every slot numbered below [`COUNT`] — retired slots included, since a sign-out keeps their
+/// numbers — with its [`ServerId`]. Unallocated segments hold no number below `COUNT`, so skipping
+/// them is never a skipped server.
+fn for_each_slot(mut f: impl FnMut(ServerId, &'static Slot)) {
+    let hi = COUNT.load(Ordering::Acquire);
+    for i in 0..hi {
+        if let Some(s) = slot(i) {
+            f(ServerId(i as u16), s);
+        }
+    }
+}
+
+/// Whether a slot may carry its credential right now (see [`Slot::credential_eligible`]).
+fn may_carry_credential(id: ServerId) -> bool {
+    slot_of(id).is_some_and(|s| s.credential_eligible.load(Ordering::Acquire))
 }
 
 /// Which server `client()` answers with. `UNSET` before the first install.
@@ -496,9 +573,7 @@ pub fn set_current(id: ServerId) -> bool {
     // in the middle of some other module's test — see `lib.rs::testlock`.
     #[cfg(any(test, feature = "test-support"))]
     plx_base::testlock::assert_held("the plex server registry (set_current)");
-    let ok = id.index().is_some_and(|i| {
-        client_for(id).is_some() && CREDENTIAL_ELIGIBLE.load(Ordering::Acquire) & (1u32 << i) != 0
-    });
+    let ok = client_for(id).is_some() && may_carry_credential(id);
     if ok {
         // Release, pairing with `current()`'s Acquire: publishes the slot store that
         // `client_for` above just proved visible TO US, so it is visible to every later reader.
@@ -527,7 +602,7 @@ pub fn client_opt() -> Option<&'static Client> {
 /// that wants slot NUMBERS wants [`ids`]; reading this as `0..count()` can hit an inactive share or
 /// miss a live slot above it.
 pub fn count() -> usize {
-    ACTIVE.load(Ordering::Acquire).count_ones() as usize
+    ids().count()
 }
 
 pub fn roster_gen() -> u32 {
@@ -558,9 +633,8 @@ pub fn facts_gen() -> u32 {
 /// renumbering anything registered after (the module doc says why numbers are never reused).
 pub fn ids() -> impl Iterator<Item = ServerId> {
     let hi = COUNT.load(Ordering::Acquire);
-    let active = ACTIVE.load(Ordering::Acquire);
     (FLOOR.load(Ordering::Acquire).min(hi)..hi)
-        .filter(move |&i| active & (1u32 << i) != 0)
+        .filter(|&i| slot(i).is_some_and(|s| s.active.load(Ordering::Acquire)))
         .map(|i| ServerId(i as u16))
 }
 
@@ -577,9 +651,8 @@ pub fn id_of_machine(machine_id: &str) -> Option<ServerId> {
 /// to answer alike or a stale `ServerId` held past a sign-out would still put the previous account's
 /// machine name and the person who shared it on screen, off a slot nothing can dial.
 pub fn facts(id: ServerId) -> Option<&'static ServerFacts> {
-    let i = id.index()?;
     client_for(id)?;
-    let p = FACTS.get(i)?.load(Ordering::Acquire);
+    let p = slot_of(id)?.facts.load(Ordering::Acquire);
     // SAFETY: identical to `client_for`'s — a slot holds null or a `Box::into_raw` pointer that is
     // never freed, published Release and read Acquire.
     (!p.is_null()).then(|| unsafe { &*p })
@@ -590,9 +663,8 @@ pub fn facts(id: ServerId) -> Option<&'static ServerFacts> {
 /// into [`Outcome::Unreachable`] by the coordinator; the full enum is encoded so this boundary
 /// remains total if another prober publishes its raw answer in the future.
 pub fn probe_result(id: ServerId) -> Option<Outcome> {
-    let i = id.index()?;
     client_for(id)?;
-    probe_of_code(PROBES.get(i)?.load(Ordering::Acquire))
+    probe_of_code(slot_of(id)?.probe.load(Ordering::Acquire))
 }
 
 /// Publish what the completed server race proved. The winning tier is the neighbouring
@@ -600,10 +672,10 @@ pub fn probe_result(id: ServerId) -> Option<Outcome> {
 /// A no-op for an inactive/unknown slot, so a late auth worker cannot resurrect a revoked source.
 pub fn publish_probe_result(id: ServerId, outcome: Outcome) {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(i) = id.index().filter(|_| client_for(id).is_some()) else {
+    let Some(s) = slot_of(id).filter(|_| client_for(id).is_some()) else {
         return;
     };
-    PROBES[i].store(probe_code(outcome), Ordering::Release);
+    s.probe.store(probe_code(outcome), Ordering::Release);
     // The Sources list follows this atomic from `browse::sync_roster`; wake an idle frame so the
     // new word/tier is visible immediately rather than at the two-second keepalive.
     plx_machine::idle::invalidate();
@@ -627,7 +699,7 @@ pub fn commit_reachability_if_current<R>(
     commit: impl FnOnce(Outcome) -> R,
 ) -> Option<R> {
     let w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let i = current_lifecycle_index(id, expected, token_gen)?;
+    let s = current_lifecycle_slot(id, expected, token_gen)?;
     let outcome = if ok {
         Outcome::Reachable
     } else {
@@ -635,13 +707,13 @@ pub fn commit_reachability_if_current<R>(
         // must not overwrite the more specific identity-probe verdict with a plain Unreachable —
         // true of Unauthorized already, and equally true of InsecureOnly (issue #95): the server
         // IS answering, just not over a transport this build can put a credential on.
-        match probe_of_code(PROBES[i].load(Ordering::Acquire)) {
+        match probe_of_code(s.probe.load(Ordering::Acquire)) {
             Some(Outcome::Unauthorized) => Outcome::Unauthorized,
             Some(Outcome::InsecureOnly) => Outcome::InsecureOnly,
             _ => Outcome::Unreachable,
         }
     };
-    PROBES[i].store(probe_code(outcome), Ordering::Release);
+    s.probe.store(probe_code(outcome), Ordering::Release);
     if let Some(name) = name.filter(|name| !name.is_empty()) {
         let old = facts(id);
         let merged = ServerFacts {
@@ -656,7 +728,7 @@ pub fn commit_reachability_if_current<R>(
             home: old.map(|f| f.home).unwrap_or(false),
             owner_id: old.map(|f| f.owner_id).unwrap_or(0),
         };
-        FACTS[i].store(Box::into_raw(Box::new(merged)), Ordering::Release);
+        s.facts.store(Box::into_raw(Box::new(merged)), Ordering::Release);
     }
     // The callback is deliberately inside WRITE: registration/revocation cannot move the client
     // between this validation and the caller's local rows/state commit. It must not re-enter the
@@ -677,20 +749,21 @@ pub fn commit_if_current<R>(
     commit: impl FnOnce() -> R,
 ) -> Option<R> {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    current_lifecycle_index(id, expected, token_gen)?;
+    current_lifecycle_slot(id, expected, token_gen)?;
     Some(commit())
 }
 
-/// Resolve one exact lifecycle. Caller holds [`WRITE`], so pointer and generation cannot move
-/// between this check and its critical-section commit.
-fn current_lifecycle_index(
+/// Resolve one exact lifecycle, to its slot. Caller holds [`WRITE`], so pointer and generation
+/// cannot move between this check and its critical-section commit.
+fn current_lifecycle_slot(
     id: ServerId,
     expected: &'static Client,
     token_gen: u32,
-) -> Option<usize> {
-    let i = id.index()?;
+) -> Option<&'static Slot> {
     let current = client_for(id)?;
-    (std::ptr::eq(current, expected) && current.token_gen() == token_gen).then_some(i)
+    (std::ptr::eq(current, expected) && current.token_gen() == token_gen)
+        .then(|| slot_of(id))
+        .flatten()
 }
 
 /// Record what the roster says about a server.
@@ -739,7 +812,7 @@ pub fn describe(id: ServerId, name: &str, handle: &str, grant: GrantEvidence) {
 /// reads `facts` and writes back a value derived from it, and an authoritative describe landing
 /// between the two would be overwritten by the stale credit it had just replaced.
 fn describe_locked(id: ServerId, name: &str, credit: Option<&str>, grant: GrantEvidence) {
-    let Some(i) = id.index().filter(|_| client_for(id).is_some()) else {
+    let Some(s) = slot_of(id).filter(|_| client_for(id).is_some()) else {
         return;
     };
     let old = facts(id);
@@ -759,7 +832,7 @@ fn describe_locked(id: ServerId, name: &str, credit: Option<&str>, grant: GrantE
         home: grant.home,
         owner_id: grant.owner_id,
     };
-    FACTS[i].store(Box::into_raw(Box::new(merged)), Ordering::Release);
+    s.facts.store(Box::into_raw(Box::new(merged)), Ordering::Release);
     // The PUBLISHED FACTS moved, which every cached projection of them has to be able to notice —
     // see [`FACTS_GEN`], and note the ordering hazard it closes.
     FACTS_GEN.fetch_add(1, Ordering::AcqRel);
@@ -831,7 +904,7 @@ fn same_server(c: &Client, machine_id: &str, origin: &Origin) -> bool {
 /// with [`client_for`]'s Acquire load.
 fn publish(id: ServerId, c: Client) {
     let p = Box::into_raw(Box::new(c));
-    SLOTS[id.0 as usize].store(p, Ordering::Release);
+    slot_for_write(id.0 as usize).client.store(p, Ordering::Release);
 }
 
 /// Read a populated slot without applying profile visibility. Writers use this only while holding
@@ -839,46 +912,49 @@ fn publish(id: ServerId, c: Client) {
 /// its old token was blanked. Slots below [`FLOOR`] are never searched: those belong to an account
 /// that signed out and must never be adopted by the next one.
 fn populated(id: ServerId) -> Option<&'static Client> {
-    let i = id.index()?;
-    let p = SLOTS.get(i)?.load(Ordering::Acquire);
+    let p = slot_of(id)?.client.load(Ordering::Acquire);
+    // SAFETY: the same invariant as [`client_for`]: a slot holds null or a `Box::into_raw` pointer
+    // that is never freed, published Release and read here Acquire.
     (!p.is_null()).then(|| unsafe { &*p })
 }
 
-/// Record whether `id`'s credential rests on a plaintext grant — see [`ON_GRANT`].
+/// Record whether `id`'s credential rests on a plaintext grant — see [`Slot::on_grant`].
 fn mark_on_grant(id: ServerId, on_grant: bool) {
-    let Some(i) = id.index() else { return };
-    let bit = 1u32 << i;
-    if on_grant {
-        ON_GRANT.fetch_or(bit, Ordering::Release);
-    } else {
-        ON_GRANT.fetch_and(!bit, Ordering::Release);
+    if let Some(s) = slot_of(id) {
+        s.on_grant.store(on_grant, Ordering::Release);
     }
 }
 
 /// Publish one populated slot into the active profile's roster. Pointer/token writes happen first;
-/// the Release bit is what makes them reachable through [`client_for`].
+/// the Release store of the active flag is what makes them reachable through [`client_for`].
 fn activate(id: ServerId, credential_eligible: bool) {
-    let Some(i) = id.index() else { return };
-    let bit = 1u32 << i;
-    if credential_eligible {
-        CREDENTIAL_ELIGIBLE.fetch_or(bit, Ordering::Release);
-    } else {
-        CREDENTIAL_ELIGIBLE.fetch_and(!bit, Ordering::Release);
-    }
-    if ACTIVE.fetch_or(bit, Ordering::Release) & bit == 0 {
+    let Some(s) = slot_of(id) else { return };
+    s.credential_eligible.store(credential_eligible, Ordering::Release);
+    if !s.active.swap(true, Ordering::Release) {
         ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     }
     if credential_eligible && !current().is_set() {
         CURRENT.store(id.0 as u32, Ordering::Release);
     } else if !credential_eligible && current() == id {
-        let usable = ACTIVE.load(Ordering::Acquire) & CREDENTIAL_ELIGIBLE.load(Ordering::Acquire);
-        let next = if usable == 0 {
-            ServerId::UNSET
-        } else {
-            ServerId(usable.trailing_zeros() as u16)
-        };
+        let next = ids()
+            .find(|&id| may_carry_credential(id))
+            .unwrap_or(ServerId::UNSET);
         CURRENT.store(next.0 as u32, Ordering::Release);
     }
+}
+
+/// Set the active flag of every slot to whether it is in `keep`, and report whether any flag
+/// moved. This is the per-slot form of the one-word store the active set used to be: a sign-out
+/// or a profile switch now clears or sets the flags one slot at a time, so a reader may see a
+/// transition part-way through — which is safe, because every slot it hides already had its token
+/// blanked and every slot it keeps was already published. Caller holds [`WRITE`].
+fn set_active_only(keep: &[ServerId]) -> bool {
+    let mut changed = false;
+    for_each_slot(|id, s| {
+        let want = keep.contains(&id);
+        changed |= s.active.swap(want, Ordering::Release) != want;
+    });
+    changed
 }
 
 /// Register (or update) a server, returning its stable id — or [`ServerId::UNSET`] when the table
@@ -1046,7 +1122,7 @@ fn register_lazy(
     policy: CredentialPolicy,
     client_id: &dyn Fn() -> String,
 ) -> ServerId {
-    // The registry's SLOTS/COUNT/ACTIVE/CURRENT tables are crate globals — a test reaching this
+    // The registry's segments/COUNT/CURRENT tables are crate globals — a test reaching this
     // through `register_with_client_id`/`register_pinned_with_client_id` without
     // `plx_base::testlock::serial()` writes them outside the lock, exactly what `lib.rs::testlock`
     // exists to catch.
@@ -1072,8 +1148,8 @@ fn register_lazy(
     let n = COUNT.load(Ordering::Acquire);
     let floor = FLOOR.load(Ordering::Acquire).min(n);
     // Search every populated slot in THIS account's window, including one deactivated by a profile
-    // switch. Reusing that machine's stable id is how repeated profile changes avoid consuming the
-    // 16-slot table; a sign-out raises FLOOR, so a previous account's slot is never considered.
+    // switch. Reusing that machine's stable id is how repeated profile changes avoid consuming a
+    // new slot number; a sign-out raises FLOOR, so a previous account's slot is never considered.
     let found = (floor..n)
         .map(|i| ServerId(i as u16))
         .find(|&id| populated(id).is_some_and(|c| same_server(c, machine_id, origin)));
@@ -1098,8 +1174,8 @@ fn register_lazy(
 
     if let Some(id) = found {
         let c = populated(id).expect("the matched slot is populated");
-        let bit = 1u32 << id.index().expect("a populated slot has an index");
-        let was_eligible = CREDENTIAL_ELIGIBLE.load(Ordering::Acquire) & bit != 0;
+        let s = slot_of(id).expect("a populated slot is allocated");
+        let was_eligible = s.credential_eligible.load(Ordering::Acquire);
         // Keep an id we already know: a legacy address-keyed call must not blank it.
         let mid = if machine_id.is_empty() {
             c.machine_id()
@@ -1133,7 +1209,7 @@ fn register_lazy(
             c.set_token("");
             // The old origin's answer says nothing about the replacement. The activation that
             // proved this address writes its result after `register_origin` returns.
-            PROBES[id.0 as usize].store(PROBE_UNKNOWN, Ordering::Release);
+            s.probe.store(PROBE_UNKNOWN, Ordering::Release);
             publish(
                 id,
                 Client::new(id, mid, origin.clone(), admitted_token, &client_id)
@@ -1159,22 +1235,32 @@ fn register_lazy(
         mark_on_grant(id, on_grant);
         if credential_eligible {
             if !was_eligible {
-                PROBES[id.0 as usize].store(PROBE_UNKNOWN, Ordering::Release);
+                s.probe.store(PROBE_UNKNOWN, Ordering::Release);
             }
         } else {
-            PROBES[id.0 as usize].store(probe_code(Outcome::InsecureOnly), Ordering::Release);
+            s.probe.store(probe_code(Outcome::InsecureOnly), Ordering::Release);
         }
         return id;
     }
 
-    if n >= MAX_SERVERS {
+    if n >= SLOT_LIMIT {
         // The sentinel, not `current()` — see this function's doc for what the old answer did to
-        // the caller's `describe_server` one line later.
-        plx_base::eventlog::log("plex: server registry full — this server was NOT registered");
+        // the caller's `describe_server` one line later. This is the id space's end, the one
+        // exhaustion path the registry has.
+        EXHAUSTED.store(true, Ordering::Release);
+        // Loud on purpose: nothing but a new process gives this registry room again. The plan's
+        // answer is a SAM `launch` of the app's own id, but the only launch call that exists is the
+        // Home-launcher one (`platform::webos::launch_home`), and its device note says launching the
+        // app's own id FOREGROUNDS the running process rather than restarting it. Until that is
+        // proven on the set this records the need and does not pretend to meet it.
+        plx_base::eventlog::log(
+            "plex: server registry full — this server was NOT registered; the app must be restarted \
+             (id space exhausted, relaunch not yet implemented)");
         return ServerId::UNSET;
     }
     let id = ServerId(n as u16);
-    PROBES[n].store(PROBE_UNKNOWN, Ordering::Release);
+    let s = slot_for_write(n);
+    s.probe.store(PROBE_UNKNOWN, Ordering::Release);
     publish(
         id,
         Client::new(id, machine_id, origin.clone(), admitted_token, &client_id)
@@ -1187,7 +1273,7 @@ fn register_lazy(
     activate(id, credential_eligible);
     mark_on_grant(id, on_grant);
     if !credential_eligible {
-        PROBES[n].store(probe_code(Outcome::InsecureOnly), Ordering::Release);
+        s.probe.store(probe_code(Outcome::InsecureOnly), Ordering::Release);
     }
     // Address only — the machineIdentifier is a permanent household fingerprint (see `app::diagnostics`)
     // and the event log is what users send us. `log_form` rather than `base`, for the reason the
@@ -1238,14 +1324,13 @@ pub fn revoke_for_profile_switch() {
         if let Some(c) = client_for(*id) {
             c.set_token("");
         }
-        if let Some(i) = id.index() {
+        if let Some(s) = slot_of(*id) {
             // A token outcome belongs to one profile. The next profile starts at NotProbed until
             // its own request or roster race says otherwise.
-            PROBES[i].store(PROBE_UNKNOWN, Ordering::Release);
+            s.probe.store(PROBE_UNKNOWN, Ordering::Release);
         }
     }
-    let keep_mask = keep.index().filter(|_| keep_live).map_or(0, |i| 1u32 << i);
-    ACTIVE.store(keep_mask, Ordering::Release);
+    set_active_only(&if keep_live { vec![keep] } else { Vec::new() });
     ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     if !keep_live {
         CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
@@ -1289,8 +1374,8 @@ pub fn finish_roster_refresh(installed: &[ServerId]) {
         if let Some(c) = client_for(*id) {
             c.set_token("");
         }
-        if let Some(i) = id.index() {
-            PROBES[i].store(PROBE_UNKNOWN, Ordering::Release);
+        if let Some(s) = slot_of(*id) {
+            s.probe.store(PROBE_UNKNOWN, Ordering::Release);
         }
     }
     commit_installed_roster(installed);
@@ -1314,8 +1399,8 @@ pub fn revoke_before_foreign_retoken(machine_id: &str, token: &str) {
         return;
     };
     if client_for(id).is_some_and(|c| c.revoke_unless_same(token)) {
-        if let Some(i) = id.index() {
-            PROBES[i].store(PROBE_UNKNOWN, Ordering::Release);
+        if let Some(s) = slot_of(id) {
+            s.probe.store(PROBE_UNKNOWN, Ordering::Release);
         }
         plx_machine::idle::invalidate();
     }
@@ -1326,32 +1411,28 @@ pub fn revoke_before_foreign_retoken(machine_id: &str, token: &str) {
 /// old one is not among them. Caller holds [`WRITE`].
 fn commit_installed_roster(installed: &[ServerId]) {
     let floor = FLOOR.load(Ordering::Acquire);
-    let mut exact = 0u32;
+    let mut exact: Vec<ServerId> = Vec::new();
     let mut first = ServerId::UNSET;
     for &id in installed {
         let Some(i) = id.index() else { continue };
         if i < floor || populated(id).is_none() {
             continue;
         }
-        exact |= 1u32 << i;
-        if !first.is_set() && CREDENTIAL_ELIGIBLE.load(Ordering::Acquire) & (1u32 << i) != 0 {
+        exact.push(id);
+        if !first.is_set() && may_carry_credential(id) {
             first = id;
         }
     }
 
     let old_current = current();
-    let keep_current = old_current
-        .index()
-        .is_some_and(|i| exact & (1u32 << i) != 0
-            && CREDENTIAL_ELIGIBLE.load(Ordering::Acquire) & (1u32 << i) != 0);
+    let keep_current = exact.contains(&old_current) && may_carry_credential(old_current);
     let next = if keep_current { old_current } else { first };
 
     // Every installed slot was already activated, so publishing the new CURRENT first cannot
     // point at a hidden slot. Removing the bridge second avoids the inverse window: CURRENT still
     // naming the just-hidden old primary, which would make `client_opt()` transiently return None.
     CURRENT.store(next.0 as u32, Ordering::Release);
-    let old = ACTIVE.swap(exact, Ordering::AcqRel);
-    if old != exact {
+    if set_active_only(&exact) {
         ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
         plx_machine::idle::invalidate();
     }
@@ -1383,17 +1464,22 @@ pub fn revoke_all() {
         if let Some(c) = client_for(id) {
             c.set_token("");
         }
-        if let Some(i) = id.index() {
-            PROBES[i].store(PROBE_UNKNOWN, Ordering::Release);
+        if let Some(s) = slot_of(id) {
+            s.probe.store(PROBE_UNKNOWN, Ordering::Release);
         }
     }
-    // CURRENT first: for the instant between these two stores a reader must never see an id whose
+    // CURRENT first: for the instant between these stores a reader must never see an id whose
     // slot the floor has already killed, which is the one state `client()`'s `expect` would take.
     CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
-    ACTIVE.store(0, Ordering::Release);
-    CREDENTIAL_ELIGIBLE.store(0, Ordering::Release);
-    ON_GRANT.store(0, Ordering::Release);
+    set_active_only(&[]);
+    for_each_slot(|_, s| {
+        s.credential_eligible.store(false, Ordering::Release);
+        s.on_grant.store(false, Ordering::Release);
+    });
     FLOOR.store(n, Ordering::Release);
+    // The per-server rows of the dependant tables go with the slots: the numbers are never
+    // reused, so nothing could read them again. After the floor, so a late writer finds no client.
+    super::serverinfo::forget_below(n);
     ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     if n > floor {
         plx_base::eventlog::log(&format!(
@@ -1407,7 +1493,7 @@ pub fn revoke_all() {
     plx_machine::idle::invalidate();
 }
 
-/// **Re-ask the grant table for every client a grant was carrying** ([`ON_GRANT`]), after a plaintext grant was
+/// **Re-ask the grant table for every client a grant was carrying** ([`Slot::on_grant`]), after a plaintext grant was
 /// revoked or died (`super::grant`'s revocation paths). A client whose origin may no longer carry
 /// a credential has its token blanked IN PLACE — every `&'static Client` already handed out
 /// follows along, so a worker mid-request can at worst send a tokenless request — and is marked
@@ -1421,9 +1507,8 @@ pub fn regrade_credentials() {
     let mut regraded = 0usize;
     for id in ids() {
         let Some(c) = client_for(id) else { continue };
-        let Some(i) = id.index() else { continue };
-        let bit = 1u32 << i;
-        if ON_GRANT.load(Ordering::Acquire) & bit == 0
+        let Some(s) = slot_of(id) else { continue };
+        if !s.on_grant.load(Ordering::Acquire)
             || super::grant::granted_now(c.machine_id(), c.origin())
         {
             continue;
@@ -1431,7 +1516,7 @@ pub fn regrade_credentials() {
         c.set_token("");
         activate(id, false);
         mark_on_grant(id, false);
-        PROBES[i].store(probe_code(Outcome::InsecureOnly), Ordering::Release);
+        s.probe.store(probe_code(Outcome::InsecureOnly), Ordering::Release);
         ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
         regraded += 1;
     }
@@ -1441,6 +1526,13 @@ pub fn regrade_credentials() {
         ));
         plx_machine::idle::invalidate();
     }
+}
+
+/// Has a registration been refused because the id space is spent? The decision point for the
+/// relaunch the plan calls for: the only way back to a registry with room is a new process, and a
+/// caller that sees this must not carry on as if the server had registered.
+pub fn id_space_exhausted() -> bool {
+    EXHAUSTED.load(Ordering::Acquire)
 }
 
 /// Empty the table so each test starts from "nothing installed". Leaks whatever was registered
@@ -1454,19 +1546,18 @@ pub fn regrade_credentials() {
 pub fn reset_for_test() {
     plx_base::testlock::assert_held("the plex server registry (reset)");
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    for s in SLOTS.iter() {
-        s.store(std::ptr::null_mut(), Ordering::Release);
-    }
-    for f in FACTS.iter() {
-        f.store(std::ptr::null_mut(), Ordering::Release);
-    }
-    for p in PROBES.iter() {
-        p.store(PROBE_UNKNOWN, Ordering::Release);
-    }
+    // The segments themselves stay allocated and leaked, like every client: only their contents
+    // are emptied, so a `Slot` address handed out before the reset is still a valid slot.
+    for_each_slot(|_, s| {
+        s.client.store(std::ptr::null_mut(), Ordering::Release);
+        s.facts.store(std::ptr::null_mut(), Ordering::Release);
+        s.probe.store(PROBE_UNKNOWN, Ordering::Release);
+        s.active.store(false, Ordering::Release);
+        s.credential_eligible.store(false, Ordering::Release);
+        s.on_grant.store(false, Ordering::Release);
+    });
     COUNT.store(0, Ordering::Release);
-    ACTIVE.store(0, Ordering::Release);
-    CREDENTIAL_ELIGIBLE.store(0, Ordering::Release);
-    ON_GRANT.store(0, Ordering::Release);
+    EXHAUSTED.store(false, Ordering::Release);
     ROSTER_GEN.store(1, Ordering::Release);
     FACTS_GEN.store(1, Ordering::Release);
     // The floor goes back with the count, or every test after one that signed out would register
@@ -2207,6 +2298,68 @@ mod tests {
         assert!(facts(before).is_none());
     }
 
+    /// Forty servers in one account is past the old 16-slot table, and each one must stay
+    /// retrievable by its id and listed by [`ids`] in registration order — the active set is no
+    /// longer a 32-bit mask, so nothing above slot 31 may vanish from it.
+    #[test]
+    fn forty_servers_register_and_each_is_retrievable_and_listed() {
+        let _g = fresh();
+        let registered: Vec<ServerId> = (0..40)
+            .map(|i| reg(&format!("mach-{i}"), &format!("10.0.2.{i}"), "tok"))
+            .collect();
+        assert!(
+            registered.iter().all(|id| id.is_set()),
+            "every one of the forty fits"
+        );
+        assert_eq!(count(), 40);
+        for (i, &id) in registered.iter().enumerate() {
+            assert_eq!(
+                client_for(id).expect("a registered server resolves").machine_id(),
+                format!("mach-{i}"),
+                "slot {} resolves to its own server",
+                id.raw()
+            );
+        }
+        assert_eq!(
+            ids().collect::<Vec<_>>(),
+            registered,
+            "the active set lists all forty, in registration order"
+        );
+    }
+
+    /// Sign-in / sign-out cycles spend slot numbers, and the number must never be handed out a
+    /// second time: 17 sign-ins of 16 servers (272 registrations, with a sign-out between each
+    /// pair) all succeed, every id is distinct across all of them, and a revoked slot stays dead.
+    #[test]
+    fn sixteen_sign_out_cycles_of_sixteen_servers_never_reuse_an_id() {
+        let _g = fresh();
+        let mut handed_out = std::collections::HashSet::new();
+        let mut revoked = Vec::new();
+        for cycle in 0..17 {
+            let round: Vec<ServerId> = (0..16)
+                .map(|s| reg(&format!("mach-{cycle}-{s}"), &format!("10.1.{cycle}.{s}"), "tok"))
+                .collect();
+            for &id in &round {
+                assert!(id.is_set(), "sign-in {cycle}: every registration fits");
+                assert!(
+                    handed_out.insert(id.raw()),
+                    "slot {} was handed out twice",
+                    id.raw()
+                );
+            }
+            assert_eq!(count(), 16, "sign-in {cycle}: exactly its own sixteen are live");
+            for &old in &revoked {
+                assert!(client_for(old).is_none(), "a revoked slot stays dead");
+            }
+            if cycle < 16 {
+                revoke_all();
+                assert_eq!(count(), 0, "sign-out {cycle} leaves nothing live");
+                revoked.extend(round);
+            }
+        }
+        assert_eq!(handed_out.len(), 272);
+    }
+
     /// **A full table answers with a SENTINEL, not with `current()`.** The caller's next line is a
     /// `describe_server`, so the old answer renamed the user's OWN server to whichever share had
     /// nowhere to go and captioned it "Shared by <friend>" — `auth::install_roster` does exactly
@@ -2216,18 +2369,19 @@ mod tests {
         let _g = fresh();
         let ours = reg("mach-ours", "10.0.0.1", "tok-ours");
         describe(ours, "Mac mini", "", GrantEvidence::ours());
-        for i in 1..MAX_SERVERS {
-            reg(&format!("mach-{i}"), &format!("10.0.1.{i}"), "tok");
-        }
-        assert_eq!(count(), MAX_SERVERS);
+        // Exhaust the id space without making 65,535 registrations: a registration consults only
+        // the high-water mark, and every number below it is one a new server would be given.
+        COUNT.store(SLOT_LIMIT, Ordering::Release);
+        assert!(!id_space_exhausted(), "nothing has been refused yet");
 
         let refused = reg("mach-overflow", "10.0.9.9", "tok-overflow");
+        assert!(id_space_exhausted(), "the refusal is recorded, not only logged");
         assert_eq!(
             refused,
             ServerId::UNSET,
             "there was nowhere to put it, and that is what it says"
         );
-        assert_eq!(count(), MAX_SERVERS, "nothing was appended");
+        assert_eq!(count(), 1, "nothing was appended");
 
         // the call site's very next line, verbatim — and it must land on nobody
         describe(refused, "nas-home", "friend", GrantEvidence::outside());

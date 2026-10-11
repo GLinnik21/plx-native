@@ -105,12 +105,18 @@ fn page_memory_shares_1200_keys_and_preserves_older_snapshots() {
         "neither live reconciliation nor remount mutation may change saved canonical memory");
 }
 
+/// The key at a grid slot that may lie outside the projected windows (a far seat projects it).
+pub(super) fn deep(page: &mut LibraryScreen, fixture: &Fixture, index: usize) -> u32 {
+    page.pair.detail.elem_for(&fixture.cx(None), &mut page.keys, index, COLS).expect("a slot of the listing")
+}
+
 #[test]
 fn all_grid_caption_band_restores_with_the_saved_viewport() {
     let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let mut page = fixture.screen();
-    let key = page.key(page.pair.detail.elem_at(35).unwrap());
+    let elem = deep(&mut page, &fixture, 35);
+    let key = page.key(elem);
     page.relayout(Some(key));
     page.scroll_target = page.target_layout.row_reveal(5);
     page.scroll.jump(page.scroll_target);
@@ -232,7 +238,8 @@ fn duplicate_across_pages_keeps_full_projection_recovery_metadata() {
         partial.sync(&fixture.cx(None));
         full.pair.detail.clear_projection();
         full.sync(&fixture.cx(None));
-        assert_eq!(partial.pair.detail.publication_ops().0, 60);
+        // The pass visits the wanted window (six rows of four), exactly, not the 60-slot listing.
+        assert_eq!(partial.pair.detail.publication_ops().0, 24);
         assert!(partial.pair.detail.publication_ops().1 <= 120);
         canonical.push((grid_hash(&partial), grid_hash(&full)));
         observations.push((partial.keys.last_place(duplicate), full.keys.last_place(duplicate)));
@@ -268,7 +275,7 @@ fn duplicate_across_pages_keeps_full_projection_recovery_metadata() {
 }
 
 #[test]
-fn large_listing_publication_work_is_bounded_by_initial_slots_then_changed_page() {
+fn large_listing_publication_work_is_bounded_by_the_window_not_the_listing() {
     let _guard = plx_base::testlock::serial();
     const TOTAL: usize = 10_000;
     const PAGE: usize = 60;
@@ -292,9 +299,9 @@ fn large_listing_publication_work_is_bounded_by_initial_slots_then_changed_page(
     let next_registry = page.keys.register_probes();
     eprintln!("publication-ops initial slots={initial_slots} known={initial_known} registry={initial_registry}; next slots={next_slots} known={next_known} registry={next_registry}");
 
-    assert!(initial_slots == TOTAL && initial_known <= TOTAL && initial_registry <= TOTAL + 128
-        && next_slots == PAGE && next_known <= PAGE && next_registry <= PAGE + 128,
-        "publication work must be linear initially and page-bounded later: initial slots={initial_slots} known={initial_known} registry={initial_registry}; next slots={next_slots} known={next_known} registry={next_registry}");
+    assert!(initial_slots <= 64 && initial_known <= 64 && initial_registry <= 128
+        && next_slots <= 64 && next_known <= 64 && next_registry <= 128,
+        "publication work is the wanted window, never the listing: initial slots={initial_slots} known={initial_known} registry={initial_registry}; next slots={next_slots} known={next_known} registry={next_registry}");
 }
 
 #[test]
@@ -304,7 +311,7 @@ fn derived_grid_indexes_survive_reorder_truncation_clear_and_restore() {
     let original = fixture.listing.clone();
     let mut page = fixture.screen();
     let stable = page.pair.detail.elem_at(5).unwrap();
-    let removed = page.pair.detail.elem_at(30).unwrap();
+    let removed = deep(&mut page, &fixture, 30);
 
     let mut reordered = (0..36).map(|i| original.view().item(i).unwrap().clone()).collect::<Vec<_>>();
     reordered.swap(5, 17);
@@ -324,7 +331,7 @@ fn derived_grid_indexes_survive_reorder_truncation_clear_and_restore() {
     let memory = page.page_memory();
     fixture.listing = plx_data::browse::view::ListingSnapshot::absent();
     page.sync(&fixture.cx(None));
-    assert!(page.pair.detail.elems.is_empty());
+    assert!(page.pair.detail.total() == 0);
     assert_eq!(page.pair.detail.index_of(stable), None);
 
     fixture.listing = original.with_total(10);
@@ -347,12 +354,12 @@ fn down_from_a_missing_final_row_column_clamps_to_the_last_item() {
         Vec::new());
     let mut page = fixture.screen();
     let mut engine = FocusEngine::new();
-    let key = page.key(page.pair.detail.elems[5]);
+    let key = page.key(page.pair.detail.elem_at(5).unwrap());
     engine.set(OWNER, key, Some(page.pair.groups_config().detail), By::Restore);
     direction(&mut page, &mut engine, &fixture, Dir::Down);
-    assert_eq!(engine.current(OWNER), Some(page.key(page.pair.detail.elems[7])));
+    assert_eq!(engine.current(OWNER), Some(page.key(page.pair.detail.elem_at(7).unwrap())));
     direction(&mut page, &mut engine, &fixture, Dir::Down);
-    assert_eq!(engine.current(OWNER), Some(page.key(page.pair.detail.elems[7])), "the last row remains an edge");
+    assert_eq!(engine.current(OWNER), Some(page.key(page.pair.detail.elem_at(7).unwrap())), "the last row remains an edge");
 }
 
 #[test]
@@ -377,7 +384,7 @@ fn rail_eligibility_and_last_producer_hold_over_a_long_shelf() {
     direction(&mut page, &mut engine, &fixture, Dir::Right);
     assert_eq!(engine.current(OWNER), Some(shelf), "the shelf edge cannot enter an ineligible rail");
 
-    let grid = page.key(page.pair.detail.elems[0]);
+    let grid = page.key(page.pair.detail.elem_at(0).unwrap());
     engine.set(OWNER, grid, Some(page.pair.groups_config().detail), By::Restore);
     let cx = fixture.cx(Some(grid));
     page.pair.master.advance(&cx, Some(0), true, 0.05);
@@ -406,7 +413,7 @@ fn owned_rail_keeps_the_fixed_legacy_origin_and_short_window() {
             (0..n).map(|i| (format!("{i}"), 1)).collect());
         let page = fixture.screen();
         let mut groups = Vec::new();
-        page.pair.master.groups(&fixture.cx(Some(page.key(page.pair.detail.elems[0]))), &mut groups);
+        page.pair.master.groups(&fixture.cx(Some(page.key(page.pair.detail.elem_at(0).unwrap()))), &mut groups);
         let rail = groups.first().expect("the fixture has a real rail").extent;
         assert_eq!(rail.y, 240.0, "the rail is not attached to the scrolling first grid row");
         if n == 9 { assert_eq!(rail.h, 9.0 * layout::RAIL_PITCH); }
@@ -643,8 +650,8 @@ fn owned_card_stops_clip_pointer_hits_and_hold_the_engine_item() {
     page.initial = false;
     page.scroll.jump(400.0);
     page.scroll_target = 400.0;
-    let first = page.key(page.pair.detail.elems[0]);
-    let chosen = page.key(page.pair.detail.elems[1]);
+    let first = page.key(page.pair.detail.elem_at(0).unwrap());
+    let chosen = page.key(page.pair.detail.elem_at(1).unwrap());
     page.relayout(Some(first));
     let cx = fixture.cx(Some(first));
     let mut draw = DrawFrame::new(&cx, plx_ui::Painter::root());
@@ -732,7 +739,7 @@ fn published_library_projection_and_layout_enter_canonical_state() {
     let hash = |page: &LibraryScreen| { let mut c = Canon::new(); page.write(&mut c); c.finish() };
     let mut page = fixture.screen();
     let initial = hash(&page);
-    page.pair.detail.elems.swap(0, 1);
+    page.pair.detail.swap_for_test(0, 1);
     assert_ne!(initial, hash(&page), "published item order determines the next navigation step");
     let prior = hash(&page);
     page.target_layout.rows += 1;
@@ -1488,6 +1495,8 @@ mod art_admission_tests { include!("art_admission_tests.rs"); }
 mod lookahead_tests { include!("lookahead_tests.rs"); }
 
 mod grid_motion_tests { include!("grid_motion_tests.rs"); }
+mod keys_window_tests { include!("keys_window_tests.rs"); }
+mod shelf_paging_tests { include!("shelf_paging_tests.rs"); }
 
 #[test]
 fn every_published_shelf_is_on_the_page_and_reachable() {
@@ -1635,7 +1644,8 @@ fn assert_back_glides(fixture: &Fixture, deep_index: usize) {
     let mut page = fixture.screen();
     page.initial = false;
     let mut engine = FocusEngine::new();
-    let deep = page.key(page.pair.detail.elem_at(deep_index).unwrap());
+    let elem = deep(&mut page, fixture, deep_index);
+    let deep = page.key(elem);
     page.relayout(Some(deep));
     page.scroll_target = page.target_layout.row_reveal(deep_index / page.layout.cols());
     page.scroll.jump(page.scroll_target);

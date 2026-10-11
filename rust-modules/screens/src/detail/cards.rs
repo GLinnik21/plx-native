@@ -59,10 +59,10 @@ impl<'a> Cards<'a> {
     ) -> Self {
         let mut cards = Self { which, d, key_by_local, local_by_key, len: 0, row_y: 0.0, entry: EntryId(0), press: PressRead::default() };
         let n = match which {
-            Which::Related => d.related.len().min(512),
+            Which::Related => d.related.len(),
             Which::Collection => collection::len(d),
             Which::Extras => extras::len(d),
-            Which::Cast => d.credits_len().min(512),
+            Which::Cast => d.credits_len(),
         };
         // The projections are rebuilt on every landing (`StoreChanged` -> `sync_keys`), but the app
         // pumps the Metadata store and then draws in the same loop turn, one frame before that
@@ -115,6 +115,16 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
         self.len
     }
 
+    /// The Related row is its head, then the listing from its tail window: a tail card sits at
+    /// the head's length plus the tail position it was read at.
+    fn global(&self, i: usize) -> usize {
+        let tail = &self.d.related_tail;
+        if self.which != Which::Related || i < tail.head {
+            return i;
+        }
+        tail.head + tail.positions.get(i - tail.head).copied().unwrap_or(tail.offset + i - tail.head)
+    }
+
     fn elem(&self, i: usize) -> u32 {
         let local = self.local(i).unwrap_or_default();
         self.key_by_local.get(&local).copied().unwrap_or(local)
@@ -123,6 +133,13 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
     fn index_of(&self, e: &u32) -> Option<usize> {
         let local = *self.local_by_key.get(e)?;
         self.locate(local).filter(|&i| i < self.len)
+    }
+
+    /// The Related row is its head and a window of its tail: away from the tail's start, the
+    /// window's first card is not the card after the head's last.
+    fn gap_before(&self, i: usize) -> bool {
+        let tail = &self.d.related_tail;
+        self.which == Which::Related && i > 0 && i == tail.head && tail.offset > 0
     }
 
     fn art(&self, i: usize) -> Art<'_> {
@@ -140,6 +157,11 @@ impl<H: Host<Elem = u32>> CardSource<H> for Cards<'_> {
             // the names are drawn under every headshot (`overlay`), not as the focused block
             Which::Cast => TileLabel::default(),
         }
+    }
+
+    /// Only Related has anything behind its cards: the tail of the hubs' own listings.
+    fn more(&self) -> bool {
+        self.which == Which::Related && self.d.related_tail.more
     }
 
     fn progress(&self, i: usize) -> Option<f32> {

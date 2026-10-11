@@ -379,9 +379,11 @@ pub struct SubRect {
 }
 
 impl SubRect {
-    /// the bytes this rect holds in the store (what the byte budget counts)
+    /// the bytes this rect holds in the store (what the byte budget counts): its index buffer as
+    /// ALLOCATED (a `Vec` that grew by doubling holds its spare capacity) plus its palette. The
+    /// store holds only this indexed form; the RGBA expansion exists for the one set on screen.
     pub fn bytes(&self) -> usize {
-        self.index.len() + std::mem::size_of::<[[u8; 4]; 256]>()
+        self.index.capacity() + std::mem::size_of::<[[u8; 4]; 256]>()
     }
 
     /// The straight-alpha RGBA bitmap of `w`×`h` the renderer uploads.

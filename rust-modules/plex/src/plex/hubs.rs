@@ -10,10 +10,27 @@
 //! See [`super::Hub::directory`] for the per-type split and [`Client::search`] for the endpoint.
 use super::client::{Client, QueryBuilder};
 use super::models::MediaContainer;
+use super::paging::{paged_path, without_window, PageReq};
 
-/// The keys a hub's pages may be fetched from: the only prefixes a server's listing keys use.
+/// The keys a hub's pages may be fetched from: the only prefixes a server's listing keys use, plus
+/// the two single shapes under `/library/` that are listings (`similar`, a collection's `children`).
 pub fn is_pageable_hub_key(key: &str) -> bool {
-    key.starts_with("/hubs/") || key.starts_with("/library/sections/")
+    key.starts_with("/hubs/")
+        || key.starts_with("/library/sections/")
+        || is_item_listing_key(key, "/library/metadata/", "/similar")
+        || is_item_listing_key(key, "/library/collections/", "/children")
+}
+
+/// `{prefix}{digits}{suffix}`, with or without a query. Only these exact shapes under the metadata
+/// and collections prefixes: their siblings (`/library/metadata/{id}/children`, `extras`, ...) are not
+/// listings a hub points at. A collection's `children` is the listing the Collection page already
+/// pages (`plex::collections::collection_children`).
+fn is_item_listing_key(key: &str, prefix: &str, suffix: &str) -> bool {
+    let path = key.split_once('?').map_or(key, |(path, _)| path);
+    let Some(rating_key) = path.strip_prefix(prefix).and_then(|rest| rest.strip_suffix(suffix)) else {
+        return false;
+    };
+    !rating_key.is_empty() && rating_key.bytes().all(|b| b.is_ascii_digit())
 }
 
 impl Client {
@@ -34,12 +51,14 @@ impl Client {
     /// only honest one), so we parse and discard them today; and with several sources on Home the
     /// waste is per source per fetch, not once.
     pub fn home_hubs(&self, count: i64) -> Option<MediaContainer> {
-        self.get_json(
-            &QueryBuilder::new("/hubs")
-                .int("count", count)
-                .int("excludeContinueWatching", 1)
-                .build(),
-        )
+        self.get_json(&home_hubs_path(count))
+    }
+
+    /// [`Client::home_hubs`], one window of the hub list: the list pages BY HUB, so `req` names
+    /// hubs, not cards (`docs/pms-api.md`, Paging, observed). The answer carries `totalSize` and
+    /// echoes `offset`.
+    pub fn home_hubs_page(&self, count: i64, req: PageReq) -> Option<MediaContainer> {
+        self.get_json(&paged_path(&home_hubs_path(count), req))
     }
 
     /// GET /hubs/sections/{sectionId}?count=… — **one LIBRARY's own shelves**, in the order the
@@ -65,11 +84,12 @@ impl Client {
     /// set. A refetch legitimately returns a different shelf count and different ids with nothing
     /// changed on the server, which is a fact about this endpoint rather than about any caller.
     pub fn library_hubs(&self, section_key: i64, count: i64) -> Option<MediaContainer> {
-        self.get_json(
-            &QueryBuilder::new(&format!("/hubs/sections/{section_key}"))
-                .int("count", count)
-                .build(),
-        )
+        self.get_json(&library_hubs_path(section_key, count))
+    }
+
+    /// [`Client::library_hubs`], one window of the hub list (by hub, as for [`Client::home_hubs_page`]).
+    pub fn library_hubs_page(&self, section_key: i64, count: i64, req: PageReq) -> Option<MediaContainer> {
+        self.get_json(&paged_path(&library_hubs_path(section_key, count), req))
     }
 
     /// GET /hubs/continueWatching?count=… — the dedicated Continue Watching hub.
@@ -79,6 +99,12 @@ impl Client {
                 .int("count", count)
                 .build(),
         )
+    }
+
+    /// GET /hubs/continueWatching/items, one page: the listing behind the dedicated hub, by offset,
+    /// last viewed descending. The Continue Watching deck reads each server's listing with this.
+    pub fn continue_watching_page(&self, start: i64, size: i64) -> Option<MediaContainer> {
+        self.get_json(&continue_watching_page_path(start, size))
     }
 
     /// PUT /actions/removeFromContinueWatching?ratingKey=… — **hide** an item from the deck. Returns
@@ -102,15 +128,6 @@ impl Client {
             .str("ratingKey", rating_key)
             .build();
         (200..300).contains(&self.put(&path))
-    }
-
-    /// GET /hubs/promoted?count=… — the home screen's featured rows.
-    pub fn promoted(&self, count: i64) -> Option<MediaContainer> {
-        self.get_json(
-            &QueryBuilder::new("/hubs/promoted")
-                .int("count", count)
-                .build(),
-        )
     }
 
     /// GET /hubs/search?query=…[&limit=…][&sectionId=…]&includeCollections=1 — the search screen
@@ -158,15 +175,60 @@ impl Client {
     pub fn search(&self, query: &str, limit: i64, section_id: i64) -> Option<MediaContainer> {
         self.get_json(&search_path(query, limit, section_id))
     }
+
+    /// One window of ONE kind's hits: `/library/search?searchTypes=<kind>`, which pages by offset
+    /// where `/hubs/search` cannot (a window there pages the hub list, not a hub's rows;
+    /// `docs/pms-api.md`, "Paging, observed"). Rows are in `SearchResult` (`Metadata` for a card, a
+    /// `Directory` tag row for a person). Measured: `limit` caps `totalSize`, so `limit` is the
+    /// window's end; the end of a listing is a SHORT page, never `totalSize`. An unknown kind
+    /// answers empty with no error, which `search::tail` treats as "unsupported", not "end".
+    pub fn search_typed(&self, query: &str, kind: SearchKind, req: PageReq) -> Option<MediaContainer> {
+        self.get_json(&typed_search_path(query, kind, req))
+    }
+}
+
+/// The kinds `/library/search` answers for (`music` too, which this app does not draw).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchKind {
+    Movies,
+    /// Shows first, then episodes, in one list.
+    Tv,
+    People,
+}
+
+impl SearchKind {
+    pub fn param(self) -> &'static str {
+        match self {
+            SearchKind::Movies => "movies",
+            SearchKind::Tv => "tv",
+            SearchKind::People => "people",
+        }
+    }
+}
+
+fn typed_search_path(query: &str, kind: SearchKind, req: PageReq) -> String {
+    let path = QueryBuilder::new("/library/search")
+        .str("query", query)
+        .str("searchTypes", kind.param())
+        .int("limit", (req.start + req.size) as i64)
+        .build();
+    paged_path(&path, req)
+}
+
+fn home_hubs_path(count: i64) -> String {
+    QueryBuilder::new("/hubs").int("count", count).int("excludeContinueWatching", 1).build()
+}
+
+fn library_hubs_path(section_key: i64, count: i64) -> String {
+    QueryBuilder::new(&format!("/hubs/sections/{section_key}")).int("count", count).build()
+}
+
+fn continue_watching_page_path(start: i64, size: i64) -> String {
+    paged_path("/hubs/continueWatching/items", PageReq::window(start, size))
 }
 
 fn hub_page_path(key: &str, start: i64, size: i64) -> String {
-    let (path, query) = key.split_once('?').unwrap_or((key, ""));
-    let query = query.split('&').filter(|part| !part.is_empty())
-        .filter(|part| !matches!(part.split('=').next(), Some("X-Plex-Container-Start" | "X-Plex-Container-Size")))
-        .collect::<Vec<_>>().join("&");
-    let key = if query.is_empty() { path.to_owned() } else { format!("{path}?{query}") };
-    QueryBuilder::new(key).int("X-Plex-Container-Start", start).int("X-Plex-Container-Size", size).build()
+    paged_path(&without_window(key), PageReq::window(start, size))
 }
 
 /// The `/hubs/search` path, split out of [`Client::search`] so the query this app puts on the wire
@@ -185,7 +247,37 @@ fn search_path(query: &str, limit: i64, section_id: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::search_path;
+    use super::{search_path, typed_search_path, SearchKind};
+    use super::super::paging::PageReq;
+
+    /// The typed listing is `/library/search` with the kind, the query and a window. `limit` is the
+    /// window's end (`start + size`), which is enough for the slice whichever way the server reads
+    /// the window parameters; the end of a listing is a short page, never `totalSize`.
+    #[test]
+    fn a_typed_search_asks_for_its_kind_and_a_limit_that_covers_the_window() {
+        assert_eq!(
+            typed_search_path("tom & jerry", SearchKind::Movies, PageReq { start: 24, size: 25 }),
+            "/library/search?query=tom%20%26%20jerry&searchTypes=movies&limit=49&X-Plex-Container-Start=24&X-Plex-Container-Size=25"
+        );
+        assert_eq!(
+            typed_search_path("ab", SearchKind::Tv, PageReq { start: 12, size: 1 }),
+            "/library/search?query=ab&searchTypes=tv&limit=13&X-Plex-Container-Start=12&X-Plex-Container-Size=1"
+        );
+        assert_eq!(SearchKind::People.param(), "people");
+    }
+
+    /// A row is `{Metadata}` or `{Directory}` (a person), each beside a score; both land in the
+    /// container's `search_result` rows.
+    #[test]
+    fn a_search_result_row_wraps_a_card_or_a_person() {
+        let mc: super::MediaContainer = serde_json::from_str(r#"{"size":2,"totalSize":9,"offset":4,
+            "SearchResult":[{"Metadata":{"ratingKey":"7","type":"movie","title":"A"},"score":0.9},
+                            {"Directory":{"tag":"P","tagKey":"k1","id":3,"count":2},"score":0.8}]}"#).unwrap();
+        assert_eq!(mc.offset, 4);
+        assert_eq!(mc.search_result.len(), 2);
+        assert_eq!(mc.search_result[0].metadata.as_ref().map(|m| m.rating_key.as_str()), Some("7"));
+        assert_eq!(mc.search_result[1].directory.as_ref().map(|t| t.tag_key.as_str()), Some("k1"));
+    }
 
     /// The query is typed by a user, so it is arbitrary text — and it is the one parameter here
     /// that can carry a `&`, a `?` or a `=`. Un-encoded, "tom & jerry" would split into a bogus
@@ -234,6 +326,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_hub_list_window_keeps_the_preview_count_and_appends_its_window() {
+        use super::{home_hubs_path, library_hubs_path};
+        use super::super::paging::paged_path;
+        let req = PageReq { start: 32, size: 16 };
+        assert_eq!(paged_path(&home_hubs_path(12), req),
+            "/hubs?count=12&excludeContinueWatching=1&X-Plex-Container-Start=32&X-Plex-Container-Size=16");
+        assert_eq!(paged_path(&library_hubs_path(3, 12), req),
+            "/hubs/sections/3?count=12&X-Plex-Container-Start=32&X-Plex-Container-Size=16");
+    }
+
     /// **Collections are asked for as full rows.** Without `includeCollections=1` the server
     /// files its `collection` hub as tag-shaped `Directory[]` rows with no `ratingKey` and no
     /// `thumb` (measured, docs/pms-api.md §2b), and the search shelf can neither draw the
@@ -249,7 +352,39 @@ mod tests {
 
 #[cfg(test)]
 mod paging_tests {
-    use super::hub_page_path;
+    use super::{continue_watching_page_path, hub_page_path, is_pageable_hub_key};
+
+    #[test]
+    fn a_collections_children_listing_is_pageable_and_its_siblings_are_not() {
+        assert!(is_pageable_hub_key("/library/collections/42/children"));
+        assert!(is_pageable_hub_key("/library/collections/42/children?includeGuids=1"));
+        for key in [
+            "/library/collections/42",
+            "/library/collections/42/items",
+            "/library/collections/x/children",
+            "/library/collections//children",
+            "/library/collections/42/children/extra",
+        ] {
+            assert!(!is_pageable_hub_key(key), "{key}");
+        }
+    }
+
+    #[test]
+    fn only_a_similar_list_under_a_metadata_item_is_pageable_from_that_prefix() {
+        assert!(is_pageable_hub_key("/library/metadata/5/similar"));
+        assert!(is_pageable_hub_key("/library/metadata/5/similar?sort=titleSort"));
+        // The `/library/metadata/` prefix is NOT admitted: these are the shapes it would let in.
+        for key in [
+            "/library/metadata/5/children",
+            "/library/metadata/5/extras",
+            "/library/metadata/5",
+            "/library/metadata/x/similar",
+            "/library/metadata//similar",
+            "/library/metadata/5/similar/extra",
+        ] {
+            assert!(!is_pageable_hub_key(key), "{key}");
+        }
+    }
 
     #[test]
     fn paging_preserves_the_provider_filter_and_replaces_its_page_parameters() {
@@ -257,5 +392,11 @@ mod paging_tests {
             "/hubs/home/recentlyAdded?type=2&sectionID=7&X-Plex-Container-Start=12&X-Plex-Container-Size=24");
         assert_eq!(hub_page_path("/library/sections/7/all?sort=addedAt%3Adesc&X-Plex-Container-Size=12&X-Plex-Container-Start=0", 36, 24),
             "/library/sections/7/all?sort=addedAt%3Adesc&X-Plex-Container-Start=36&X-Plex-Container-Size=24");
+    }
+
+    #[test]
+    fn the_continue_watching_listing_is_read_by_offset() {
+        assert_eq!(continue_watching_page_path(11, 13),
+            "/hubs/continueWatching/items?X-Plex-Container-Start=11&X-Plex-Container-Size=13");
     }
 }

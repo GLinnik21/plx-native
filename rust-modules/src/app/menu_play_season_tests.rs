@@ -94,7 +94,7 @@ impl Rig {
             kind: "show".into(),
             seasons: vec![season("sk1", 1), season("sk2", 2)],
             cur_season: 0,
-            episodes: vec![plx_data::metadata::Episode { rk: "stale".into(), ..Default::default() }],
+            episodes: vec![plx_data::metadata::Episode { rk: "stale".into(), ..Default::default() }].into(),
             ..Default::default()
         }));
         Rig {
@@ -142,7 +142,7 @@ impl Rig {
 
     fn episodes(&self) -> Vec<String> {
         self.bridge.metadata_view().current()
-            .map(|d| d.episodes.iter().map(|e| e.rk.clone()).collect()).unwrap_or_default()
+            .map(|d| d.episodes.iter_loaded().map(|(_, e)| e.rk.clone()).collect()).unwrap_or_default()
     }
 
     fn played(&self) -> Option<String> {

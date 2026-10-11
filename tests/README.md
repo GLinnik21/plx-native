@@ -637,6 +637,90 @@ marks pacing invalid if a render-profiler trigger is armed.
   `manifest.json → fps_scenes` and point their `item` keys at your own library from
   `manifest.local.json`; the harness stays library-agnostic.
 
+### Paging under a conditioned link (`tests/paging_link.py`, host; `home-recent-paging-held-*`, TV)
+
+Every list pages through a sliding 24-card window, and the bugs live where a page landing and a
+key repeat coincide, which a loopback mock (a page lands before the next key) never produces. Two
+pieces make that reproducible:
+
+- **`tests/link_conditioner.py`**, wired into `tests/mock_pms.py`: a macOS-Network-Link-Conditioner
+  style link. A profile is latency, jitter, downlink kbit/s (the response BODY is written at that
+  rate, so a 24-item listing and a poster JPEG take realistically different times) and an error
+  rate (`reset` = connection reset, or `503`). Classes are `listing` and `image`
+  (`/photo/:/transcode`, `.../thumb`); the control surface and media bytes are never touched.
+  `--link 3g` (profiles `dsl 3g edge lossy very-bad remote-wan none`), `--link image=edge:error=0.1`,
+  or `--link-latency-ms/--link-jitter-ms/--link-kbit/--link-error-rate/--link-error-kind`.
+  A targeted fault is the deterministic counterpart of the error rate: `--link-fault 'REGEX[@attempts=N,kind=503,min_start=1]'`
+  fails the first N reads of each page (same path and `X-Plex-Container-Start`, the head page spared) of every
+  endpoint whose path matches, and `POST /_mock/link {"faults": [{"path": REGEX, "kind": "503"}]}` re-arms it
+  live (an empty list disarms it). Jitter and failures are hashes of (`--seed`, class, request, nth time seen), so one seed fails
+  the same requests whatever the thread order. At run time: `POST /_mock/link`
+  `{"spec": "listing=3g"}` or `{"class": "image", "profile": "none"}` (loopback only), so one run
+  goes fast, slow, fast; `GET /_mock/wire` is the per-request arrival/finish log.
+  `--shows/--seasons/--episodes` size the TV library (a season over 60 episodes pages; rows page
+  over `--movies`, up to 1000). `python3 tests/test_link_conditioner.py` (in `make check`) and
+  `python3 tests/mock_pms.py --selftest` prove the rate, determinism, per-class overrides, run-time
+  change and the `X-Plex-Container-Start/Size` contract (query and header form, `totalSize`, `size`,
+  `offset`) on every endpoint `ci/plex-requests.ini` classes `paged`.
+- **`tests/paging_link.py`** drives the real macOS simulator with real keys against that mock:
+  `python3 tests/paging_link.py [--build] [--surface library-grid] [--profile remote-wan] [--dump F] [--json F]`
+  (1 to 3 minutes a run; a window opens; not in `make check`; `--list` names the surfaces). Each
+  surface boots straight onto its screen with the dev triggers, presses a seat key until the walked
+  list holds focus, then holds the direction key to the end of the list and back to the start:
+
+  | surface | what is walked | boot |
+  |---|---|---|
+  | `home-row` | Home > Recently Added Movies (Shelf, 24-card window) | `plxnative-grid` |
+  | `library-section-hub-row` | Library > a pageable section shelf (`--section-hubs 3`) | `plxnative-library=0` |
+  | `library-grid` | Library > the 1000-movie poster grid (6 columns, row-band window) | `plxnative-library=0` |
+  | `search-row` | Search > the Movies result row of a 2-letter query | `plxnative-search=sf` |
+  | `detail-related-row` | Detail > the related row (head of 8, tail from `/similar`) | `plxnative-detail=1001 plxnative-detailsec=2` |
+  | `collection` | a ~130-member collection (Grid over a paged listing) | `plxnative-collection=50002` |
+  | `long-season` | Detail > the episode strip of a 150-episode season (pages of 60) | `plxnative-detail=2001` |
+
+  The read-out is one shared hook, `plx_ui::card_probe` (cargo feature `devtriggers`, so a release
+  build has none of it), called from the two functions every card section draws through
+  (`Shelf::draw_card`, `Grid::draw_card`) and the episode strip. With `plxnative-focus` and
+  `plxnative-focusx` armed the focus fingerprint gains, per frame, the focused card's drawn rect
+  (`cdx cdy cdw`), its slot in the run of cards the section holds and that run's length (`cdi cdn`),
+  its index in the source (`cdg`), the ratingKey in its artwork path (`cdk`, the stable item key),
+  whether its texture was resident (`cda`), the caption's left edge and width (`cdc cdcw`) and two
+  running counts over every card drawn: `cdr`, posters that drew with their texture on one frame
+  and with none on the next (a blink in place, counted once per occurrence: the defect, and any is
+  a failure), and `cdb`, cards that left the screen and came back without a picture they once had
+  (reported as `art_returned_bare`, not graded: the poster store holds 64 pictures).
+  `--trigger imgtrace` arms one more dev trigger and puts its lines in `--dump`: each
+  `HIDDEN ... gap=1f cause=...` is one `cdr`, with the store's reason.
+  Without `plxnative-focusx` the fingerprint is byte-for-byte what it was (the replay recordings
+  do not change). Asserted on every surface: the last item and then the first are focused; one
+  key moves one card (one grid row), and keys held while the list could not move may land together
+  but never move more than they were pressed for; no focus change without a key; no slot jump (the
+  same card moving more than 400 px between two frames); the window bound; no poster goes back to
+  a placeholder; placeholders are gone a profile-derived time after the last key; and under an error
+  profile a failed listing page is asked for again and answered within 45 s when the focus still
+  stands at it five seconds after it failed (a held-key walk is past a page in about a second, so a
+  page it left behind is only counted). The random error rate is joined by a TARGETED fault: the
+  first read of every page of the walked list's endpoint fails, armed for the walk forward and again
+  for the walk back, so a run that failed no page in a direction fails the run, except a back walk
+  that reads no page at all (a short list is still fully held; reported as `back_walk_read_no_page`). Reported: host
+  frames, late frames inside and outside a window around each page landing, keys that moved
+  nothing, per page ask -> landed and landed -> the last poster of THAT page (matched by ratingKey
+  in the transcode request), and whether the focused card or its caption was ever drawn outside the
+  canvas (1920 wide; `min_x` / `max_right` give the extremes). **Host frame times are this Mac's
+  debug build, not the television's; they place late frames, they prove no smoothness.**
+  Profiles: `none remote-wan slow-latency low-bandwidth lossy` by default, plus `lossy-503` (10 %
+  of reads answer 503) and any `link_conditioner` profile by name.
+- **On the TV**: `home-recent-paging-held-3g` and `-remote-wan` (Home), and a `-3g` / `-remote-wan`
+  pair for each other surface (`library-grid-paging-held-*`, `library-shelf-paging-held-*`,
+  `search-row-paging-held-*`, `related-row-paging-held-*`, `collection-paging-held-*`,
+  `long-season-paging-held-*`) are `--fps --mock` scenes (the mock block's `"link": [...]` becomes
+  `--link ...`). They are the Home scene's row walk with `walk.key` / `walk.back` (Down and Up for a
+  grid) and, where the app logs no `hubs: landed` line per page, `walk.reach`: the deepest source
+  index (`cdg`) the focused card had must reach `min_global`, so a walk that never got past the first
+  window fails instead of printing a clean number. The detail also counts frames the focused card
+  was drawn partly off the canvas. Build `make ARM_PROFILE=release deploy` first and follow the
+  `profile-tv` skill; never run them without the TV lock. They have not been run on a television.
+
 ### What each case does (per case, automatically)
 
 1. `make kill` — close the app (luna-send `closeByAppId` + `fuser -k`) **first**.

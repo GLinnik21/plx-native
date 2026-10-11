@@ -13,7 +13,8 @@
 //! (32 s) behind the playhead (`player::subtitle_floor_ns`) and caps at 512, because the demuxer
 //! refills it as it reads. A sidecar arrives once, whole —
 //! 1,000-2,000 cues for a feature — and nothing re-reads it after a backward seek. Plain cues
-//! are kept in full, sorted, and looked up by time; a styled script stays intact for libass.
+//! are kept as the file's own text with a compact index, sorted, and looked up by time (a cue's
+//! text is cut out only when it is drawn); a styled script stays intact for libass.
 //!
 //! # The clock
 //!
@@ -39,6 +40,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// One cue with its whole text. Production keeps a [`Span`] per cue and cuts the text out only
+/// when it is drawn; the tests read a file as whole cues through [`parse`].
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Cue {
     pub start_ns: i64,
@@ -75,7 +79,7 @@ struct Selection {
 }
 
 enum Content {
-    Plain(Vec<Cue>),
+    Plain(Subtitles),
     Ass { source: Arc<super::ass::Source>, font_generation: Option<u64> },
 }
 
@@ -100,9 +104,6 @@ static STATE: Mutex<State> = Mutex::new(State {
 
 /// How long a [`Failure`] stays on screen.
 const FAILURE_SHOWN: Duration = Duration::from_secs(6);
-/// A sanity bound on one file; a feature film's SRT is a couple of thousand cues.
-const MAX_CUES: usize = 20_000;
-
 fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -167,7 +168,7 @@ fn select_with_fetch(
         match outcome {
             Ok(content) => {
                 match &content {
-                    Content::Plain(cues) => super::log(&format!("sidecar: stream {stream_id} ready, {} cues", cues.len())),
+                    Content::Plain(subs) => super::log(&format!("sidecar: stream {stream_id} ready, {} cues", subs.cue_count())),
                     Content::Ass { .. } => super::log(&format!("sidecar: stream {stream_id} ready, styled ASS")),
                 }
                 st.loaded = Some((selection, content));
@@ -243,6 +244,13 @@ pub fn restore_server_selection(server: plx_plex::plex::ServerId, meta: plx_data
 
 /// The line to draw at `now_ns`, if a sidecar is selected and the server is not burning it.
 pub fn active(now_ns: i64, burned: bool) -> Option<String> {
+    active_span(now_ns, burned).map(|(text, _, _)| text)
+}
+
+/// [`active`] with the `(start_ns, end_ns)` the cue is shown over, in the subtitle clock — what a
+/// caption too tall for one screen pages across. The on-screen failure notice has no cue span; it
+/// comes back as `(0, i64::MAX)`.
+pub fn active_span(now_ns: i64, burned: bool) -> Option<(String, i64, i64)> {
     let st = state();
     if burned {
         return None; // the server BURNS the selection; drawing it too would double the line
@@ -250,11 +258,11 @@ pub fn active(now_ns: i64, burned: bool) -> Option<String> {
     let want = st.want.as_ref()?;
     if let Some((source, why, at)) = &st.failed {
         if source == want && at.elapsed() < FAILURE_SHOWN {
-            return Some(why.message().to_string());
+            return Some((why.message().to_string(), 0, i64::MAX));
         }
     }
     match &st.loaded {
-        Some((source, Content::Plain(cues))) if source == want => cue_at(cues, now_ns).map(|c| c.text.clone()),
+        Some((source, Content::Plain(subs))) if source == want => subs.cue_at(now_ns),
         _ => None,
     }
 }
@@ -311,69 +319,220 @@ fn decode(bytes: Vec<u8>, codec: &str) -> Result<Content, Failure> {
     if codec.eq_ignore_ascii_case("ass") || codec.eq_ignore_ascii_case("ssa") {
         return Err(Failure::Empty);
     }
-    let cues = parse(&bytes);
-    if cues.is_empty() { Err(Failure::Empty) } else { Ok(Content::Plain(cues)) }
+    let subs = Subtitles::from_bytes(bytes);
+    if subs.cue_count() == 0 { Err(Failure::Empty) } else { Ok(Content::Plain(subs)) }
 }
 
 /// The newest-starting cue covering `now_ns` in a list sorted by start — the same "newest wins"
-/// rule `active_subtitle` applies to the embedded store. Search the bounded whole-file store:
-/// a long-running sign may outlive any number of shorter dialogue cues.
-fn cue_at(cues: &[Cue], now_ns: i64) -> Option<&Cue> {
-    let after = cues.partition_point(|c| c.start_ns <= now_ns);
-    cues[..after]
+/// rule `active_subtitle` applies to the embedded store. Search the whole-file index: a
+/// long-running sign may outlive any number of shorter dialogue cues. Test-only wrapper that
+/// builds the end index per call; production keeps one per file ([`Subtitles::ends`]).
+#[cfg(test)]
+fn cue_at<T: Timed>(cues: &[T], now_ns: i64) -> Option<&T> {
+    cue_at_counted(cues, &EndTree::new(cues), now_ns).0
+}
+
+/// [`cue_at_indexed`] and the number of tree nodes and cues it looked at, so a test can pin the
+/// lookup's cost.
+fn cue_at_counted<'a, T: Timed>(cues: &'a [T], ends: &EndTree, now_ns: i64) -> (Option<&'a T>, usize) {
+    let after = cues.partition_point(|c| c.span().0 <= now_ns);
+    let mut steps = 0;
+    let hit = ends.rightmost_after(after, now_ns, &mut steps).map(|i| &cues[i]);
+    (hit, steps)
+}
+
+/// The cue [`cue_at`] defines, in O(log n): a binary search for the cues that have started, then a
+/// descent of the end-time tree for the newest of them whose end is still ahead. A gap in the
+/// dialogue is therefore as cheap as a hit, however far back the previous cue is.
+fn cue_at_indexed<'a, T: Timed>(cues: &'a [T], ends: &EndTree, now_ns: i64) -> Option<&'a T> {
+    cue_at_counted(cues, ends, now_ns).0
+}
+
+/// A max-tree over the cues' end times, in the cues' own order. Starts are sorted but ends are
+/// not (a sign outlives the dialogue over it), so "the newest cue still on screen" is a search
+/// for the rightmost end past `now`, which the tree answers by skipping every subtree whose
+/// largest end has already passed. 8 bytes per cue (twice the leaves) kept beside the 24-byte spans.
+struct EndTree {
+    size: usize,
+    max: Vec<i64>,
+}
+
+impl EndTree {
+    fn new<T: Timed>(cues: &[T]) -> Self {
+        let size = cues.len().next_power_of_two().max(1);
+        let mut max = vec![i64::MIN; 2 * size];
+        for (i, c) in cues.iter().enumerate() {
+            max[size + i] = c.span().1;
+        }
+        for k in (1..size).rev() {
+            max[k] = max[2 * k].max(max[2 * k + 1]);
+        }
+        Self { size, max }
+    }
+
+    /// The largest index below `hi` whose end is greater than `now`. `steps` counts nodes visited.
+    fn rightmost_after(&self, hi: usize, now: i64, steps: &mut usize) -> Option<usize> {
+        self.descend(1, 0, self.size, hi, now, steps)
+    }
+
+    fn descend(&self, node: usize, lo: usize, len: usize, hi: usize, now: i64, steps: &mut usize) -> Option<usize> {
+        *steps += 1;
+        if lo >= hi || self.max[node] <= now {
+            return None;
+        }
+        if len == 1 {
+            return Some(lo);
+        }
+        let half = len / 2;
+        self.descend(2 * node + 1, lo + half, half, hi, now, steps)
+            .or_else(|| self.descend(2 * node, lo, half, hi, now, steps))
+    }
+}
+
+/// The lookup key of [`cue_at`]: a cue's `(start_ns, end_ns)`.
+trait Timed {
+    fn span(&self) -> (i64, i64);
+}
+
+#[cfg(test)]
+impl Timed for Cue {
+    fn span(&self) -> (i64, i64) {
+        (self.start_ns, self.end_ns)
+    }
+}
+
+/// One cue's place in the file: its times, and the byte range of its text lines in
+/// [`Subtitles::text`]. A cue is 24 bytes here whatever its length; its text is never copied
+/// until it is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Span {
+    start_ns: i64,
+    end_ns: i64,
+    text_start: u32,
+    text_end: u32,
+}
+
+impl Timed for Span {
+    fn span(&self) -> (i64, i64) {
+        (self.start_ns, self.end_ns)
+    }
+}
+
+/// A parsed plain-text subtitle file: the file's own text, kept once, and an index of its cues
+/// sorted by start. A backward seek is a binary search of the index, not a re-read, and no cue
+/// has a count cap or a length cap — the file's bytes already bound both.
+struct Subtitles {
+    text: String,
+    spans: Vec<Span>,
+    /// End-time tree over `spans`, so a lookup in a gap does not walk back over the file.
+    ends: EndTree,
+}
+
+impl Subtitles {
+    fn empty() -> Self {
+        Self { text: String::new(), spans: Vec::new(), ends: EndTree::new::<Span>(&[]) }
+    }
+
+    /// The number of usable cues. Zero means "nothing to draw", which is what turns into the
+    /// on-screen explanation.
+    fn cue_count(&self) -> usize {
+        self.spans.len()
+    }
+
+    /// The caption at `now_ns`: only the cue that covers it is cut from the text.
+    #[cfg(test)]
+    fn line_at(&self, now_ns: i64) -> Option<String> {
+        self.cue_at(now_ns).map(|(text, _, _)| text)
+    }
+
+    /// The caption at `now_ns` with the `(start_ns, end_ns)` it is shown over.
+    fn cue_at(&self, now_ns: i64) -> Option<(String, i64, i64)> {
+        cue_at_indexed(&self.spans, &self.ends, now_ns).map(|span| (cue_text(&self.text, span), span.start_ns, span.end_ns))
+    }
+
+    /// Index a whole subtitle file. An empty index comes back for a file too large to be a
+    /// subtitle, a styled script (its native renderer owns the grammar), or one with no usable
+    /// cue. SubRip and WebVTT share one reader; ASS/SSA is never flattened here.
+    fn from_bytes(bytes: Vec<u8>) -> Self {
+        if bytes.len() > plx_plex::plex::SIDECAR_MAX_BYTES {
+            return Self::empty();
+        }
+        let mut text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        };
+        let bom = text.len() - text.trim_start_matches('\u{feff}').len();
+        text.drain(..bom);
+        if is_ass_script(&text) {
+            return Self::empty();
+        }
+        let mut spans = index_srt(&text);
+        spans.retain(|s| s.end_ns > s.start_ns && !cue_text(&text, s).is_empty());
+        spans.sort_by_key(|s| s.start_ns);
+        let ends = EndTree::new(&spans);
+        Self { text, spans, ends }
+    }
+}
+
+/// The text a cue draws, read from its own lines of the file. `sub_text` drops every `\r`, so
+/// the region's CRLF line endings come out as the same `\n` joins the lines always had.
+fn cue_text(text: &str, span: &Span) -> String {
+    super::sub_text(text[span.text_start as usize..span.text_end as usize].as_bytes())
+}
+
+/// Whole cues with their whole text, sorted by start. Tests read files this way; production
+/// keeps the [`Subtitles`] index and cuts text only when it is drawn.
+#[cfg(test)]
+pub fn parse(bytes: &[u8]) -> Vec<Cue> {
+    let subs = Subtitles::from_bytes(bytes.to_vec());
+    subs.spans
         .iter()
-        .rev()
-        .find(|c| now_ns < c.end_ns)
+        .map(|span| Cue {
+            start_ns: span.start_ns,
+            end_ns: span.end_ns,
+            text: cue_text(&subs.text, span),
+        })
+        .collect()
 }
 
 // ---- parsing (pure) ---------------------------------------------------------------------------
 
-/// Parse a whole subtitle file into sorted cues. SubRip and WebVTT share one reader (a timing
-/// line containing `-->`, text until the next blank line; `,` or `.` before the milliseconds,
-/// hours optional). ASS/SSA belongs to the native renderer and is never flattened here.
-pub fn parse(bytes: &[u8]) -> Vec<Cue> {
-    if bytes.len() > plx_plex::plex::SIDECAR_MAX_BYTES { return Vec::new(); }
-    let text = String::from_utf8_lossy(bytes);
-    let text = text.trim_start_matches('\u{feff}');
-    if is_ass_script(text) { return Vec::new(); }
-    let mut cues = parse_srt(text);
-    cues.retain(|c| c.end_ns > c.start_ns && !c.text.is_empty());
-    for cue in &mut cues {
-        if let Some((end, _)) = cue.text.char_indices().nth(4096) {
-            cue.text.truncate(end);
-        }
-    }
-    cues.sort_by_key(|c| c.start_ns);
-    cues.truncate(MAX_CUES);
-    cues
-}
-
-fn parse_srt(text: &str) -> Vec<Cue> {
-    fn flush(cur: &mut Option<(i64, i64, String)>, out: &mut Vec<Cue>) {
-        if let Some((start_ns, end_ns, raw)) = cur.take() {
-            out.push(Cue {
+/// Index the cues of a SubRip or WebVTT file: a timing line (one containing `-->`) opens a cue,
+/// its text is every line up to the next blank line or timing line, and anything else outside a
+/// cue (the counter line, `WEBVTT`, a NOTE) is not text. Offsets are byte offsets into `text`,
+/// so a cue's text is never copied out at parse time.
+fn index_srt(text: &str) -> Vec<Span> {
+    /// `(start_ns, end_ns, byte range of the text lines)` of the cue being read.
+    type Open = (i64, i64, Option<(usize, usize)>);
+    fn flush(cur: &mut Option<Open>, out: &mut Vec<Span>) {
+        if let Some((start_ns, end_ns, Some((text_start, text_end)))) = cur.take() {
+            out.push(Span {
                 start_ns,
                 end_ns,
-                text: super::sub_text(raw.as_bytes()),
+                text_start: text_start as u32,
+                text_end: text_end as u32,
             });
         }
     }
     let mut out = Vec::new();
-    let mut cur: Option<(i64, i64, String)> = None;
-    for line in text.lines() {
-        let line = line.trim_end_matches('\r');
+    let mut cur: Option<Open> = None;
+    let mut offset = 0;
+    for raw in text.split_inclusive('\n') {
+        let line_start = offset;
+        offset += raw.len();
+        let line = raw.trim_end_matches('\n').trim_end_matches('\r');
         if let Some((start, end)) = timing_line(line) {
             flush(&mut cur, &mut out);
-            cur = Some((start, end, String::new()));
+            cur = Some((start, end, None));
         } else if line.trim().is_empty() {
             flush(&mut cur, &mut out);
-        } else if let Some((_, _, raw)) = cur.as_mut() {
-            if !raw.is_empty() {
-                raw.push('\n');
-            }
-            raw.push_str(line);
+        } else if let Some((_, _, lines)) = cur.as_mut() {
+            let first = match *lines {
+                Some((first, _)) => first,
+                None => line_start,
+            };
+            *lines = Some((first, line_start + line.len()));
         }
-        // anything else is outside a cue: the counter line, `WEBVTT`, a NOTE — not text
     }
     flush(&mut cur, &mut out);
     out
@@ -566,11 +725,72 @@ mod tests {
         assert!(decode(body, "ass").is_err(), "native scripts obey the same download bound");
     }
 
+    /// A cue is never cut: a 10,000-character line reaches the caption whole. The old cut at
+    /// 4,096 characters was silent, so a long sign simply stopped mid-sentence.
     #[test]
-    fn sidecar_cue_text_is_bounded_before_reaching_the_ui() {
-        let body = format!("00:00:01 --> 00:00:03\n{}", "é".repeat(8192));
+    fn sidecar_cue_text_is_whole() {
+        let line = "é".repeat(10_000);
+        let body = format!("00:00:01 --> 00:00:03\n{line}");
         let cues = parse(body.as_bytes());
-        assert!(cues[0].text.chars().count() <= 4096);
+        assert_eq!(cues.len(), 1);
+        assert_eq!(cues[0].text, line);
+    }
+
+    fn srt_stamp(secs: i64) -> String {
+        format!("{:02}:{:02}:{:02},000", secs / 3600, secs / 60 % 60, secs % 60)
+    }
+
+    /// A merged feature-length file is well past the old 20,000-cue cut: the first cue, cue
+    /// 25,000 and the last must all answer, and so must a seek back to the start after the end
+    /// has been read.
+    #[test]
+    fn sidecar_keeps_every_cue_of_a_long_file() {
+        const N: i64 = 30_000;
+        let mut body = String::new();
+        for k in 0..N {
+            // Cue k runs over [2k s, 2k s + 1 s) and says "cue k".
+            body.push_str(&format!("{}\n{} --> {}\ncue {k}\n\n",
+                k + 1, srt_stamp(2 * k), srt_stamp(2 * k + 1)));
+        }
+        let cues = parse(body.as_bytes());
+        let at = |k: i64| cue_at(&cues, 2 * k * S + S / 2).map(|c| c.text.clone());
+        assert_eq!(at(0).as_deref(), Some("cue 0"));
+        assert_eq!(at(25_000).as_deref(), Some("cue 25000"));
+        assert_eq!(at(N - 1).as_deref(), Some("cue 29999"));
+        assert_eq!(at(0).as_deref(), Some("cue 0"), "a backward seek after the end finds the earlier cue");
+        // The production lookup reads the index directly; it must answer the same way.
+        let subs = Subtitles::from_bytes(body.into_bytes());
+        let line = |k: i64| subs.line_at(2 * k * S + S / 2);
+        assert_eq!(subs.cue_count(), N as usize);
+        assert_eq!(line(25_000).as_deref(), Some("cue 25000"));
+        assert_eq!(line(N - 1).as_deref(), Some("cue 29999"));
+        assert_eq!(line(0).as_deref(), Some("cue 0"));
+    }
+
+    /// **The lookup in a long gap costs O(log n), not a scan back over the file.** Cue starts are
+    /// sorted but ends are not, so "newest start whose end is still ahead" needs more than the
+    /// start search; a 30,000-cue file with an hour of silence in the middle is the worst case.
+    #[test]
+    fn a_seek_into_a_long_gap_does_not_scan_the_file() {
+        let mut body = String::new();
+        for k in 0..30_000i64 {
+            let at = if k < 15_000 { 2 * k } else { 2 * k + 3600 };
+            body.push_str(&format!("{}\n{} --> {}\ncue {k}\n\n", k + 1, srt_stamp(at), srt_stamp(at + 1)));
+        }
+        let cues = parse(body.as_bytes());
+        let gap = (2 * 15_000 + 1800) * S;
+        let (hit, steps) = cue_at_counted(&cues, &EndTree::new(&cues), gap);
+        assert!(hit.is_none(), "silence in the gap");
+        assert!(steps <= 64, "a gap lookup took {steps} steps over {} cues", cues.len());
+        let (hit, steps) = cue_at_counted(&cues, &EndTree::new(&cues), (2 * 29_999 + 3600) * S + S / 2);
+        assert_eq!(hit.map(|c| c.text.as_str()), Some("cue 29999"));
+        assert!(steps <= 64, "{steps} steps");
+        // A long sign over the whole file is still found from anywhere.
+        let mut with_sign = vec![Cue { start_ns: 0, end_ns: i64::MAX / 2, text: "sign".into() }];
+        with_sign.extend(cues.iter().cloned());
+        let (hit, steps) = cue_at_counted(&with_sign, &EndTree::new(&with_sign), gap);
+        assert_eq!(hit.map(|c| c.text.as_str()), Some("sign"));
+        assert!(steps <= 64, "{steps} steps");
     }
 
     #[test]

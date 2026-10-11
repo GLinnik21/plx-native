@@ -10,11 +10,11 @@
 use plx_machine::machine::{Canon, Cx, Effects, EntryId, FocusKey, GroupId, Host, ScreenEvent};
 use plx_machine::present::{PresentEvent, Provenance};
 
-use super::{CardEvent, CardSource, Landed, Seen, Tile};
+use super::{CardEvent, CardSource, Landed, Retry, Seen, Tile};
 use crate::card_row;
 use crate::consts::{K_SCROLL, MARGIN_X, SCR_H};
 use crate::card_row::RowStyle;
-use super::pool::{Drawn, ShrinkKey};
+use super::pool::{self, Drawn, ShrinkKey};
 use crate::poster_grid::{self, Geom, GridBand, GridBands, GridPop, COLS, STYLE};
 use crate::screen::{
     Activate, At, AxisMask, By, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Hover, Placed, Seat, Step,
@@ -91,6 +91,9 @@ pub struct Grid {
     /// Which element the running let-go belongs to: the element-keyed pool (`pool.rs`).
     shrink: ShrinkKey,
     seen: Seen,
+    /// The element the last tick had focused (`pool::key`): what tells a landing that moved the
+    /// cards from a focus that moved over them, as the shelf's.
+    anchor: Option<(usize, u64)>,
     landed: Option<Landed>,
     /// External mode: the document shift the last tick's landing needs (see [`Grid::landed_shift`]).
     shift: f32,
@@ -98,6 +101,13 @@ pub struct Grid {
     reveal: Option<f32>,
     ahead: usize,
     asked: Option<(usize, usize)>,
+    /// The first unloaded card in view the latest hole ask named.
+    hole: Option<usize>,
+    /// An ask is out that nothing has answered: it is repeated on the [`Retry`] ladder.
+    out: bool,
+    retry: Retry,
+    /// The source's [`CardSource::page_epoch`] at the last tick.
+    epoch: u32,
 }
 
 impl Grid {
@@ -111,11 +121,16 @@ impl Grid {
             pop: GridPop::new(),
             shrink: ShrinkKey::new(),
             seen: Seen::Nothing,
+            anchor: None,
             landed: None,
             shift: 0.0,
             reveal: None,
             ahead: spec.cols * 2,
             asked: None,
+            hole: None,
+            out: false,
+            retry: Retry::new(),
+            epoch: 0,
         }
     }
 
@@ -129,6 +144,7 @@ impl Grid {
     ) -> Option<CardEvent<H::Elem>> {
         match ev {
             ScreenEvent::Tick(t) => {
+                self.retry.tick(t.ms);
                 self.tick(t.dt(), cx, src, fx);
                 self.want(cx, src)
             }
@@ -168,36 +184,41 @@ impl Grid {
         self.landed = None;
         self.shift = 0.0;
         self.shrink.follow(&mut self.pop, src);
-        let prev = self.pop.cell();
-        // where the previously focused cell was on screen, before any band moves
-        let was = prev.map(|p| self.cell(p, &self.bands.geometry()).y);
+        let mut prev = self.pop.cell();
+        // A landing and a focus change between the same two ticks (a key over cards that moved, a
+        // restore or reconcile landing with a page): the change alone would leave the scroll where
+        // the cards WERE. The card focus was on is carried to where the source now shows it first,
+        // pop and scroll, and the change then starts from there (the shelf's rule, `pool::slid`).
+        let slid = focus.filter(|_| self.seen.announced()).and_then(|i| pool::slid(src, self.anchor).map(|s| (i, s)));
+        // where the previously focused cell was on screen, before any band moves (a deliberate move
+        // has already armed the pop on its new cell: the anchor is the cell focus left)
+        let was = slid.map(|(_, (p, _))| p).or(prev).map(|p| self.cell(p, &self.bands.geometry()).y);
         // A focus the reader did not move (a restore, a landing) adopts its band settled.
         self.bands.focus(focus.map(|i| i / self.spec.cols), false);
+        if let Some((i, (p, q))) = slid {
+            self.carry(p, q, was);
+            prev = Some(q);
+            if let Seen::Deliberate(_) = self.seen {
+                // the let-go the move armed follows its card, and the pop stays on the card the
+                // move named, by the index it has in the cards that stand now
+                if self.pop.shrinking() == Some(p) {
+                    self.pop.move_shrink(Some(q));
+                }
+                self.pop.relocate(i);
+                self.seen = Seen::Deliberate(i);
+            }
+        }
         if let Some(i) = focus {
             match (self.seen, prev) {
                 (Seen::Deliberate(a), _) if a == i => {}
-                // no FocusMoved, another index: the same element, moved by a content landing; the
-                // scroll shifts by what its row moved so the tile stays where it was on screen
-                (Seen::Nothing, Some(p)) if p != i => {
-                    self.pop.relocate(i);
-                    match self.spec.scroll {
-                        ScrollMode::Own => if let Some(was) = was {
-                            self.scroll.pos += self.cell(i, &self.bands.geometry()).y - was;
-                        },
-                        // The owner may have opened the new row's band before this tick, so `was`
-                        // would be measured under it: the rows' pitch is the shift, bands aside.
-                        ScrollMode::External => {
-                            let rows = (i / self.spec.cols) as f32 - (p / self.spec.cols) as f32;
-                            self.shift = rows * self.spec.geom().pitch();
-                        }
-                    }
-                    self.landed = Some(Landed { from: p, to: i });
-                }
+                // no FocusMoved, another index: the same element, moved by a content landing
+                (Seen::Nothing, Some(p)) if p != i => self.carry(p, i, was),
                 _ if prev != Some(i) => self.pop.adopt(i, &self.spec.style),
                 _ => {}
             }
         }
         self.seen = Seen::Nothing;
+        self.anchor = pool::anchor_of(src, focus);
         let home = if self.spec.home_when_unfocused { 0.0 } else { self.target };
         let wanted = focus.map(|i| {
             poster_grid::snap_row_in(&self.spec.geom(), self.scroll.pos + self.shift, i / self.spec.cols, src.len(), self.spec.top, self.spec.edge)
@@ -216,11 +237,80 @@ impl Grid {
         }
     }
 
-    /// The paging rule: the last row the scroll shows, or the focused card's look-ahead.
+    /// The focused element moved from cell `p` to cell `q` because the CONTENT changed: its pop goes
+    /// with it and the scroll shifts by what its row moved so the tile stays where it was on
+    /// screen (`was`: where cell `p` stood before any band moved).
+    fn carry(&mut self, p: usize, q: usize, was: Option<f32>) {
+        self.pop.relocate(q);
+        match self.spec.scroll {
+            ScrollMode::Own => if let Some(was) = was {
+                self.scroll.pos += self.cell(q, &self.bands.geometry()).y - was;
+            },
+            // The owner may have opened the new row's band before this tick, so `was`
+            // would be measured under it: the rows' pitch is the shift, bands aside.
+            ScrollMode::External => {
+                let rows = (q / self.spec.cols) as f32 - (p / self.spec.cols) as f32;
+                self.shift = rows * self.spec.geom().pitch();
+            }
+        }
+        self.landed = Some(Landed { from: p, to: q });
+    }
+
+    /// The paging rule: the last row the scroll shows, or the focused card's look-ahead, asked for
+    /// once per `(len, end)`; and any card in view (or focused) whose page is not present, asked
+    /// for once per first hole. An ask nothing answers is repeated on the [`Retry`] ladder for as
+    /// long as the need stands, so a read that failed, was refused or was withdrawn does not wait
+    /// for a key press; a landing (the length, the first hole or [`CardSource::page_epoch`]
+    /// moving) answers it and the next ask goes at once. The hole scan is the visible cells at
+    /// most, a screenful.
     fn want<H: Host, S: CardSource<H>>(&mut self, cx: &Cx<'_, H>, src: &S) -> Option<CardEvent<H::Elem>> {
-        let window = ((self.scroll.pos + SCR_H - self.spec.top) / self.spec.geom().pitch()).ceil().max(0.0) as usize * self.spec.cols;
-        let focus = super::focused_index(&cx.focus, self.entry, src).map_or(0, |i| i + 1 + self.ahead);
-        super::want(&mut self.asked, src.len(), window.max(focus), src.more()).map(CardEvent::Want)
+        let pitch = self.spec.geom().pitch();
+        let cols = self.spec.cols;
+        let window = ((self.scroll.pos + SCR_H - self.spec.top) / pitch).ceil().max(0.0) as usize * cols;
+        let first = ((self.scroll.pos - self.spec.top) / pitch).floor().max(0.0) as usize * cols;
+        let at = super::focused_index(&cx.focus, self.entry, src);
+        let focus = at.map_or(0, |i| i + 1 + self.ahead);
+        let (len, more) = (src.len(), src.more());
+        let end = window.max(focus);
+        let epoch = src.page_epoch();
+        if epoch != self.epoch {
+            self.epoch = epoch;
+            self.asked = None;
+            self.hole = None;
+            self.retry.reset();
+            self.out = false;
+        }
+        let shown = window.min(len);
+        let hole = (first..shown).chain(at).find(|&i| i < len && src.unread(i));
+        if hole.is_none() && !(more && end > len) {
+            self.hole = None;
+            self.out = false;
+            self.retry.reset();
+            return None;
+        }
+        let due = self.out && self.retry.due();
+        let mut fresh = false;
+        let mut ask = None;
+        if let Some(h) = hole {
+            if self.hole != Some(h) || due {
+                fresh = self.hole != Some(h);
+                self.hole = Some(h);
+                ask = Some(h..shown.max(h + 1));
+            }
+        } else {
+            self.hole = None;
+        }
+        if ask.is_none() {
+            let was = self.asked;
+            ask = super::want(&mut self.asked, len, end, more, due);
+            fresh = self.asked != was;
+        }
+        if ask.is_some() {
+            if fresh { self.retry.mark_fresh(); }
+            self.retry.sent();
+            self.out = true;
+        }
+        ask.map(CardEvent::Want)
     }
 
     /// The landing the last tick carried the focused card's pop through (see [`Landed`]).
@@ -233,6 +323,19 @@ impl Grid {
     /// Zero in [`ScrollMode::Own`], where the grid shifts its own scroll, and when nothing landed.
     pub fn landed_shift(&self) -> f32 {
         self.shift
+    }
+
+    /// External mode: the shift ([`landed_shift`](Self::landed_shift)) the NEXT tick will report for
+    /// the cards as they stand now. An owner that sets its scroll target between two ticks against
+    /// a document that has already landed holds that target in the coordinates its scroll is still
+    /// in: it takes this off, so the tick's rebase of both does not apply the landing twice.
+    pub fn pending_shift<H: Host, S: CardSource<H>>(&self, cx: &Cx<'_, H>, src: &S) -> f32 {
+        if self.spec.scroll != ScrollMode::External || super::focused_index(&cx.focus, self.entry, src).is_none() {
+            return 0.0;
+        }
+        pool::slid(src, self.anchor).map_or(0.0, |(p, q)| {
+            ((q / self.spec.cols) as f32 - (p / self.spec.cols) as f32) * self.spec.geom().pitch()
+        })
     }
 
     /// The scroll the last tick wanted for the focused row (`poster_grid::snap_row_in` against the
@@ -438,7 +541,15 @@ impl Grid {
             let row = i / self.spec.cols;
             let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
             let label = src.label(i).revealed(card_row::band_reveal(open));
+            #[cfg(feature = "devtriggers")]
+            crate::card_probe::begin_card();
             card_row::draw_focused(p, src.art(i), rect, s, &self.spec.style, src.progress(i), &label, f.measure);
+            #[cfg(feature = "devtriggers")]
+            if !p.is_recording() {
+                let at = p.to_screen(rect).0;
+                let held = self.window(src.len());
+                crate::card_probe::focused(at.x, at.y, at.w, i.saturating_sub(held.start), held.len(), i);
+            }
         } else {
             card_row::draw_tile(p, src.art(i), rect, s, &self.spec.style, src.progress(i));
         }

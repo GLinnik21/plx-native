@@ -230,3 +230,21 @@ python3 ci/check-placeholders.py
 # fail if the gate line below is dropped from this file).
 python3 ci/test_check_dump_consumers.py
 python3 ci/check-dump-consumers.py
+# The Plex request registry (ci/plex-requests.ini, rust-modules/plex/src/plex/): every request the plex
+# layer can make is a section that says what it is, its reason and its evidence, and a paged site reaches
+# paged_path or PageReq. This is what stops a new request from landing without a paging decision. Pure
+# lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
+python3 ci/test_check_plex_requests.py
+python3 ci/check-plex-requests.py
+# The list-cap registry (ci/list-caps.ini, rust-modules/*/src and rust-modules/src): every cap-shaped bound on
+# a collection (.take(N), .truncate, a length .min(N), a MAX/CAP/LIMIT constant, a [..N] cut) is classed work,
+# preview-with-route, format, not-a-list or an open reach cap, so a hard cap on what the user can reach cannot
+# land unseen. Pure lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
+python3 ci/test_check_list_caps.py
+python3 ci/check-list-caps.py
+
+# The link conditioner and the mock's paging contract (rate, determinism, per-class, run-time change; the
+# mock's own --selftest rides along): real loopback sockets on port 0, a few seconds.
+python3 tests/test_link_conditioner.py
+# The conditioned paging test's analysis on synthetic logs (the run itself needs a window and minutes: not here).
+python3 tests/paging_link.py --selftest

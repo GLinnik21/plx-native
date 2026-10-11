@@ -121,10 +121,32 @@ unsafe fn sub_canvas(dec: *mut AVCodecContext) -> (i32, i32) {
 /// `ui::guard`). The palette is the decoders' fixed `AVPALETTE_SIZE` (256 entries, which pgssub
 /// and dvdsub allocate whole), so any index byte stays inside it.
 unsafe fn rect_to_indexed(r: *const AVSubtitleRect) -> Option<crate::player::SubRect> {
+    let pixels = rect_pixels(r)?;
+    let (x, y, w, h, stride) = ((*r).x, (*r).y, (*r).w, (*r).h, (*r).linesize[0]);
+    let idx = (*r).data[0];
+    let pal = (*r).data[1] as *const u32;
+    let (hu, su, wu) = (h as usize, stride as usize, w as usize);
+    let mut index = Vec::with_capacity(pixels);
+    for row in 0..hu {
+        index.extend_from_slice(std::slice::from_raw_parts(idx.add(row * su), wu));
+    }
+    let mut palette = Box::new([[0u8; 4]; 256]);
+    for (i, entry) in palette.iter_mut().enumerate() {
+        let p = *pal.add(i); // 0xAARRGGBB (native u32)
+        *entry = [(p >> 16) as u8, (p >> 8) as u8, p as u8, (p >> 24) as u8];
+    }
+    Some(crate::player::SubRect { x, y, w, h, index, palette })
+}
+
+/// The pixel count (`w*h`) of a rect that [`rect_to_indexed`] would copy, read from the rect's own
+/// fields alone — nothing is allocated — or None if the decoder left it unusable. This is the
+/// whole validation, so the cost of a copy is known before it is made
+/// ([`rects_within_budget`]).
+unsafe fn rect_pixels(r: *const AVSubtitleRect) -> Option<usize> {
     if r.is_null() {
         return None;
     }
-    let (x, y, w, h, stride) = ((*r).x, (*r).y, (*r).w, (*r).h, (*r).linesize[0]);
+    let (w, h, stride) = ((*r).w, (*r).h, (*r).linesize[0]);
     let idx = (*r).data[0];
     let pal = (*r).data[1] as *const u32;
     // no real subtitle bitmap approaches 8192 on a side — the largest authoring canvas in the
@@ -140,19 +162,8 @@ unsafe fn rect_to_indexed(r: *const AVSubtitleRect) -> Option<crate::player::Sub
     {
         return None;
     }
-    let (wu, hu, su) = (w as usize, h as usize, stride as usize);
     // the 4x headroom keeps `to_rgba`'s expansion of this rect inside `usize` too
-    let pixels = wu.checked_mul(hu).filter(|n| n.checked_mul(4).is_some())?;
-    let mut index = Vec::with_capacity(pixels);
-    for row in 0..hu {
-        index.extend_from_slice(std::slice::from_raw_parts(idx.add(row * su), wu));
-    }
-    let mut palette = Box::new([[0u8; 4]; 256]);
-    for (i, entry) in palette.iter_mut().enumerate() {
-        let p = *pal.add(i); // 0xAARRGGBB (native u32)
-        *entry = [(p >> 16) as u8, (p >> 8) as u8, p as u8, (p >> 24) as u8];
-    }
-    Some(crate::player::SubRect { x, y, w, h, index, palette })
+    (w as usize).checked_mul(h as usize).filter(|n| n.checked_mul(4).is_some())
 }
 
 /// Decode one image-subtitle packet (the demux loop calls this for EVERY image track while
@@ -178,15 +189,12 @@ unsafe fn decode_bitmap(
         avsubtitle_free(&mut sub);
         return Some(SubCue::BitmapClear { track, pts });
     }
-    // A pathological display set cannot be allowed to bloat the 24 MiB store or the renderer's
-    // texture set; DVB regions are the realistic source of many rects, PGS allows at most 2.
-    let n = (sub.num_rects as usize).min(MAX_RECTS);
-    let mut rects = Vec::with_capacity(n);
-    for i in 0..n {
-        if let Some(r) = rect_to_indexed(*sub.rects.add(i)) {
-            rects.push(r);
-        }
-    }
+    let rects = rects_within_budget(
+        sub.num_rects as usize,
+        |i| rect_pixels(*sub.rects.add(i)).map(|pixels| pixels + PALETTE_BYTES),
+        |i| rect_to_indexed(*sub.rects.add(i)),
+        crate::player::SUB_BITMAP_BUDGET,
+    );
     let cue = if rects.is_empty() {
         None
     } else {
@@ -197,7 +205,40 @@ unsafe fn decode_bitmap(
     cue
 }
 
-const MAX_RECTS: usize = 8;
+/// The rects of one decoded display set that are kept, in the decoder's order: every usable rect
+/// until the next one would take the set past `budget` bytes ([`crate::player::SubRect::bytes`],
+/// the measure the store's ceiling counts). A rect the decoder left unusable is skipped and costs
+/// nothing. The first rect that does not fit ends the set, so the kept rects are always a prefix of
+/// the decoder's order. The FIRST usable rect is kept whatever it costs, even past the budget: a
+/// cue the viewer should see is never dropped for its size (`MAX_SIDE` in [`rect_to_indexed`]
+/// bounds one rect), and the store evicts OTHER cues to make room for it.
+///
+/// `cost_at` is a rect's store cost ([`crate::player::SubRect::bytes`]) read from the decoder's own
+/// fields, or None for an unusable rect; `rect_at` is the copy. A rect the budget will refuse is
+/// never copied: the copy of one the decoder claims at 8192x8192 is 64 MiB, made only to be
+/// dropped on the next line.
+fn rects_within_budget(
+    num_rects: usize,
+    mut cost_at: impl FnMut(usize) -> Option<usize>,
+    mut rect_at: impl FnMut(usize) -> Option<crate::player::SubRect>,
+    budget: usize,
+) -> Vec<crate::player::SubRect> {
+    let mut kept = Vec::new();
+    let mut bytes = 0usize;
+    for i in 0..num_rects {
+        let Some(cost) = cost_at(i) else { continue };
+        if !kept.is_empty() && bytes.saturating_add(cost) > budget {
+            break;
+        }
+        let Some(r) = rect_at(i) else { continue };
+        bytes += r.bytes();
+        kept.push(r);
+    }
+    kept
+}
+
+/// The palette's share of a rect's store cost (`SubRect::bytes`).
+const PALETTE_BYTES: usize = std::mem::size_of::<[[u8; 4]; 256]>();
 
 /// [`decode_bitmap`] then [`SubCue::push`]: the decode-and-store step the demux loop runs for an
 /// image-subtitle packet.
@@ -225,7 +266,8 @@ pub(super) enum SubCue<'a> {
         cw: i32,
         ch: i32,
         rects: Vec<crate::player::SubRect>,
-        /// Rects the decoder produced, before the `MAX_RECTS` cap (for the cap's log line).
+        /// Rects the decoder produced, before the byte budget and the unusable-rect skip (for the
+        /// log line that reports a set the store had to thin).
         total_rects: usize,
     },
     /// An image-subtitle CLEAR: closes the track's open bitmap cue at `pts`.
@@ -277,10 +319,11 @@ impl SubCue<'_> {
                         rects.len()
                     ));
                 }
+                let rects_kept = rects.len();
                 crate::player::push_subtitle_bitmap(track, pts, cw, ch, rects);
-                if total_rects > MAX_RECTS {
+                if rects_kept < total_rects {
                     crate::player::log(&format!(
-                        "ff: image-sub track#{track} {total_rects} rects (capped at {MAX_RECTS})"
+                        "ff: image-sub track#{track} kept {rects_kept} of {total_rects} rects"
                     ));
                 }
             }
@@ -418,6 +461,96 @@ impl SubTracks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rect whose store cost is exactly `pixels + 1024` (its indices plus the palette), so a
+    /// budget can be written as a count of rects.
+    fn rect_of_pixels(pixels: usize, x: i32) -> crate::player::SubRect {
+        crate::player::SubRect { x, y: 0, w: pixels as i32, h: 1, index: vec![0; pixels], palette: Box::new([[0; 4]; 256]) }
+    }
+
+    /// A display set of `n` rects, each `pixels` wide, through the same helper the decoder uses.
+    fn set_of(n: usize, pixels: usize, budget: usize) -> Vec<crate::player::SubRect> {
+        rects_within_budget(n, |_| Some(pixels + PALETTE_BYTES), |i| Some(rect_of_pixels(pixels, i as i32)), budget)
+    }
+
+    /// PGS can carry more than eight objects in one display set, and a dense set (a two-line
+    /// dialogue plus a sign plus a logo, from DVB regions) is authored that way. The eighth-rect
+    /// cap silently left rects 9 onward undrawn, so all twelve must survive, in the decoder's order.
+    #[test]
+    fn a_display_set_of_twelve_rects_keeps_all_twelve() {
+        let kept = set_of(12, 16, crate::player::SUB_BITMAP_BUDGET);
+        assert_eq!(kept.len(), 12, "every rect of the decoded set is kept, not the first eight");
+        let xs: Vec<i32> = kept.iter().map(|r| r.x).collect();
+        assert_eq!(xs, (0..12).collect::<Vec<i32>>(), "decoder order is preserved");
+    }
+
+    /// The store's byte ceiling still bounds one cue's pixels: a rect that does not fit ends the set,
+    /// the rects before it are kept, and nothing panics. Each rect here costs 2024 bytes, so a
+    /// 10_000-byte budget holds four.
+    #[test]
+    fn a_display_set_over_the_byte_budget_keeps_the_prefix_that_fits() {
+        let kept = set_of(12, 1000, 10_000);
+        assert_eq!(kept.len(), 4, "four rects of 2024 bytes fit in 10_000");
+        assert!(kept.iter().map(|r| r.bytes()).sum::<usize>() <= 10_000);
+        assert_eq!(kept.last().map(|r| r.x), Some(3), "the kept rects are the first four, in order");
+    }
+
+    /// **A cue that alone exceeds the budget is still shown.** The budget bounds the cache of OTHER
+    /// cues, never the one the viewer is meant to read: a set's first usable rect is always kept,
+    /// and only the rects after it are held to what is left.
+    #[test]
+    fn a_rect_larger_than_the_budget_is_kept_as_the_cue_itself() {
+        let kept = set_of(3, 5000, 4000);
+        assert_eq!(kept.len(), 1, "the oversized first rect is the cue; nothing after it fits");
+        assert_eq!(kept[0].x, 0);
+        // an unusable rect in front does not use up the exemption
+        let kept = rects_within_budget(
+            3,
+            |i| (i != 0).then_some(5000 + PALETTE_BYTES),
+            |i| (i != 0).then(|| rect_of_pixels(5000, i as i32)),
+            4000,
+        );
+        assert_eq!(kept.iter().map(|r| r.x).collect::<Vec<_>>(), [1]);
+    }
+
+    /// A rect the decoder left unusable is skipped and does not stop the set, and does not spend
+    /// budget.
+    #[test]
+    fn an_unusable_rect_is_skipped_and_costs_no_budget() {
+        let kept = rects_within_budget(
+            3,
+            |i| (i != 1).then_some(100 + PALETTE_BYTES),
+            |i| (i != 1).then(|| rect_of_pixels(100, i as i32)),
+            2 * (100 + 1024),
+        );
+        assert_eq!(kept.iter().map(|r| r.x).collect::<Vec<_>>(), [0, 2]);
+    }
+
+    /// **A rect the budget will refuse is never copied.** Rect 1 is far over what is left, so the set
+    /// ends there; the counter proves its pixels were never allocated (only rect 0 was).
+    #[test]
+    fn a_rect_the_budget_rejects_is_never_allocated() {
+        let copies = std::cell::RefCell::new(Vec::new());
+        let kept = rects_within_budget(
+            3,
+            |i| Some(if i == 1 { 8192 * 8192 + PALETTE_BYTES } else { 100 + PALETTE_BYTES }),
+            |i| {
+                copies.borrow_mut().push(i);
+                Some(rect_of_pixels(100, i as i32))
+            },
+            crate::player::SUB_BITMAP_BUDGET,
+        );
+        assert_eq!(kept.len(), 1);
+        assert_eq!(*copies.borrow(), [0], "only the rect that fits was copied");
+    }
+
+    /// A set of one to eight rects is kept exactly as it always was: every rect, under the budget.
+    #[test]
+    fn a_display_set_of_one_to_eight_rects_is_unchanged() {
+        for n in 1..=8 {
+            assert_eq!(set_of(n, 16, crate::player::SUB_BITMAP_BUDGET).len(), n, "{n} rects");
+        }
+    }
 
     #[test]
     fn shifted_moves_every_variant() {

@@ -117,7 +117,7 @@ fn housekeeping() -> Vec<AppFx> {
     let target = SectionAddress { epoch: 0, sid: plx_plex::plex::ServerId::from_raw(0), section: 1 };
     vec![
         AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed {
-            target, work: LibraryWork::Want { lo: 0, hi: 24 },
+            target, work: LibraryWork::Want { lo: 0, hi: 24, focus: None },
         })),
         AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed { target, work: LibraryWork::Letters })),
         AppFx::Library(LibraryReq::PublishShelves { target, hidden_page: false, at_head: false }),

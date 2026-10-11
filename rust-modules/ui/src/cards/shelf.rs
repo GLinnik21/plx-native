@@ -9,8 +9,8 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 
-use super::pool::{Drawn, RowPool};
-use super::{CardEvent, CardSource, Landed, SectionFrame, Seen, Tile};
+use super::pool::{self, Drawn, RowPool};
+use super::{CardEvent, CardSource, Landed, Retry, SectionFrame, Seen, Tile};
 use crate::card_row::{self, CardRow, RowStyle};
 use crate::consts::SCR_W;
 use crate::screen::{
@@ -21,6 +21,31 @@ use crate::{Painter, Rect};
 
 /// Cards past the last visible one the source is asked for.
 const LOOK_AHEAD: usize = 6;
+
+/// Cards the shelf keeps requested beyond the painted ones, in the direction of travel: a bound
+/// on WORK (the walk and the requests it can make), not on what the row can reach. About one
+/// screenful, so a held key on a slow server finds the next few cards already on their way. The
+/// poster source decides how many of them may be in flight (`PREFETCH_OUTSTANDING_MAX`).
+pub(super) const WARM_AHEAD_CARDS: usize = 8;
+
+/// Cards from either end of a row inside which focus counts as near that edge, for
+/// [`Shelf::page_ask`].
+pub const PAGE_EDGE_CARDS: usize = 6;
+
+/// The edge of a row focus is near, when the owner should ask for the neighbouring page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageEdge {
+    Before,
+    After,
+}
+
+/// The focus read-out for card `i` of `src`, drawn at `rect`: its slot in the held window and its
+/// place in the whole listing the window is part of (`plxnative-focusx`).
+#[cfg(feature = "devtriggers")]
+pub(super) fn note_focused<H: Host, S: CardSource<H>>(pr: Painter, rect: Rect, i: usize, src: &S) {
+    let at = pr.to_screen(rect).0;
+    crate::card_probe::focused(at.x, at.y, at.w, i, src.len(), src.global(i));
+}
 
 pub struct Shelf {
     entry: EntryId,
@@ -38,6 +63,19 @@ pub struct Shelf {
     left: bool,
     asked: Option<(usize, usize)>,
     asked_before: Option<usize>,
+    /// The edge a page ask handed to the owner is out for, until it lands or is cancelled
+    /// ([`Shelf::page_cancel`]).
+    in_flight: Option<PageEdge>,
+    /// When the ask out is repeated if nothing answered it ([`Retry`]).
+    retry: Retry,
+    /// The source's landing count when the shelf last looked ([`CardSource::page_epoch`]).
+    epoch: u32,
+    /// Cards at the row's start that are not part of the window (a pinned head the window's offset
+    /// does not count): the leading edge's zone starts after them ([`Shelf::set_head`]).
+    head: usize,
+    /// The element the last tick had focused (`pool::key`), in the cell the row recorded: what
+    /// tells a landing that moved the cards from a focus that moved over them.
+    anchor: Option<(usize, u64)>,
     /// How far past the screen edge a card still paints and registers a stop (default 0).
     margin: f32,
     /// The page is still dissolving in ([`dormant`](Shelf::dormant)): no card is lifted yet.
@@ -46,12 +84,37 @@ pub struct Shelf {
     slept: bool,
     /// The element-keyed pop pool (`pool.rs`).
     pool: RowPool,
+    /// Where the artwork warm-ahead stands ([`warm_ahead`](Shelf::warm_ahead)).
+    warm: Warm,
+}
+
+/// Render history of the shelf's artwork warm-ahead: never canonised, restored or compared.
+#[derive(Clone, Copy)]
+struct Warm {
+    /// The focused index the last tick saw, which names the direction of travel.
+    last: Option<usize>,
+    /// Travelling toward higher indexes (a shelf starts that way).
+    forward: bool,
+    /// The walk already made for one view of the row: `(which, scanned)`. `scanned` cards from the
+    /// nearest are held by the source, so the next tick resumes there instead of asking again.
+    walk: Option<(WalkKey, usize)>,
+}
+
+/// What a walk is a walk of: the same key means the same cards in the same order.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct WalkKey {
+    edge: usize,
+    forward: bool,
+    len: usize,
+    /// The element at the edge: a window that slid under an unchanged edge index changes it.
+    head: u64,
 }
 
 impl Shelf {
     pub const fn new(entry: EntryId, style: &'static RowStyle) -> Self {
-        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None,
-            margin: 0.0, dormant: false, slept: false, pool: RowPool::new() }
+        Self { entry, style, row: CardRow::new(), seen: Seen::Nothing, landed: None, left: false, asked: None, asked_before: None, in_flight: None, retry: Retry::new(), epoch: 0, head: 0, anchor: None,
+            margin: 0.0, dormant: false, slept: false, pool: RowPool::new(),
+            warm: Warm { last: None, forward: true, walk: None } }
     }
 
     /// Cards this far past the screen's leading (left) edge still paint (a popped card's shadow
@@ -99,7 +162,10 @@ impl Shelf {
     ) -> Option<CardEvent<H::Elem>> {
         match ev {
             ScreenEvent::Tick(t) => {
+                self.retry.tick(t.ms);
+                self.observe_landing(src);
                 self.tick(t.dt(), cx, src);
+                self.warm_ahead(cx, src);
                 self.want(cx, src)
             }
             ScreenEvent::FocusMoved { from, to, by } => {
@@ -142,6 +208,7 @@ impl Shelf {
             self.pool.clear();
             self.seen = Seen::Nothing;
             self.left = false;
+            self.anchor = None;
             if !self.row.at_exact_rest() {
                 self.row.update(src.len(), None, self.style, dt);
                 self.row.park();
@@ -157,6 +224,26 @@ impl Shelf {
         }
         // the element-keyed pool: springs follow their elements before anything reads a cell
         let carried = self.pool.follow(&mut self.row, src, focus);
+        // A landing and a focus change between the same two ticks (a held key over a paged row, the
+        // window sliding under it; a restore or reconcile landing with a page): the change alone
+        // would leave the scroll where the OLD window had it, a window away from every card that
+        // stayed. The card focus was on is carried to where the source now shows it, scroll and
+        // all, at any distance, and the change then starts from there.
+        if let (Some(i), true, Some((p, q))) = (focus, self.seen.announced(), pool::slid(src, self.anchor)) {
+            let dx = (q as f32 - p as f32) * self.pitch();
+            if self.pool.holds(q) {
+                self.row.shift_scroll(dx);
+            } else {
+                self.row.relocate(p, q, dx);
+            }
+            self.row.clamp_scroll(src.len(), self.style);
+            self.row.refocus(q);
+            self.landed = Some(Landed { from: p, to: q });
+            // a deliberate move was announced by the index it had in whichever window stood then
+            if matches!(self.seen, Seen::Deliberate(_)) {
+                self.seen = Seen::Deliberate(i);
+            }
+        }
         if let Some(i) = focus {
             let prev = self.prev();
             match (self.seen, prev) {
@@ -197,6 +284,7 @@ impl Shelf {
             }
         }
         self.pool.admit(&self.row, src, focus);
+        self.anchor = pool::anchor_of(src, focus);
     }
 
     /// Is the pop of cell `cell` held in the element-keyed pool?
@@ -212,27 +300,124 @@ impl Shelf {
     }
 
     pub fn has_page_request(&self) -> bool {
-        self.asked.is_some() || self.asked_before.is_some()
+        self.asked.is_some() || self.asked_before.is_some() || self.in_flight.is_some()
     }
 
     /// Release paging demand when the owner leaves this row.
     pub fn reset_page_requests(&mut self) {
         self.asked = None;
         self.asked_before = None;
+        self.retry.reset();
     }
 
-    /// Request an earlier window once while its leading edge remains active.
-    /// Leaving the edge or landing another offset admits a new request.
+    /// A page landed for the row since the last look, whatever it changed: the ask that was out is
+    /// answered, so the next one goes out at once and the ladder starts over. Without this a landing
+    /// that moved nothing the shelf sees (a rescan of known keys) would wait out a rung of the ladder
+    /// as if the store had ignored it. Each landing admits one ask, so the pace is the store's own.
+    fn observe_landing<H: Host, S: CardSource<H>>(&mut self, src: &S) {
+        let epoch = src.page_epoch();
+        if epoch != self.epoch {
+            self.epoch = epoch;
+            self.asked = None;
+            self.asked_before = None;
+        }
+    }
+
+    /// The owner withdrew the ask itself (it left the row): there is nothing for
+    /// [`page_cancel`](Self::page_cancel) to withdraw. A landing does not call this: the ask it
+    /// answered is simply no longer in the store, and a late cancel for it is a no-op there.
+    pub fn drop_page_flight(&mut self) {
+        self.in_flight = None;
+        self.retry.reset();
+    }
+
+    /// The row leads with `head` cards that no window slides over (Detail's Related head): the leading
+    /// edge's zone is the first [`PAGE_EDGE_CARDS`] cards after them, and focus on them counts too.
+    pub fn set_head(&mut self, head: usize) {
+        self.head = head;
+    }
+
+    /// Request an earlier window while its leading edge remains active: once per window, and again
+    /// when the ask has stood unanswered for a rung of the [`Retry`] ladder (the store may have
+    /// refused it for a reason that has passed, or given the page up). Leaving the edge or landing
+    /// another offset admits a new request.
     pub fn want_before(&mut self, offset: usize, active: bool) -> bool {
         if !active {
             self.asked_before = None;
             return false;
         }
         if self.asked_before == Some(offset) {
-            return false;
+            return self.in_flight == Some(PageEdge::Before) && self.retry.due();
         }
         self.asked_before = Some(offset);
+        self.retry.mark_fresh();
         true
+    }
+
+    /// The page the owner should ask for this tick, if focus is near one edge of the row: one per
+    /// window per edge, and the same one again each time it has stood unanswered for a rung of the
+    /// [`Retry`](super::Retry) ladder. `wanted` is whether this tick's [`on`](Self::on) returned a
+    /// [`CardEvent::Want`](super::CardEvent::Want) (the trailing edge's latch lives there), `offset`
+    /// is the window the source shows (`0` when it has nothing before it), and `active` is whether the
+    /// owner shows the row at all. The owner maps the edge to its own store command, and asks
+    /// [`reset_page_requests`](Self::reset_page_requests) when focus leaves the row.
+    pub fn page_ask<H: Host, S: CardSource<H>>(
+        &mut self,
+        cx: &Cx<'_, H>,
+        src: &S,
+        wanted: bool,
+        offset: usize,
+        active: bool,
+    ) -> Option<PageEdge> {
+        self.observe_landing(src);
+        let focus = self.engine_focus(cx, src);
+        let before = self.near(PageEdge::Before, focus, src.len(), offset);
+        let edge = if self.want_before(offset, active && before) {
+            Some(PageEdge::Before)
+        } else {
+            let after = self.near(PageEdge::After, focus, src.len(), offset);
+            (active && wanted && after && !before).then_some(PageEdge::After)
+        };
+        if edge.is_some() {
+            self.in_flight = edge;
+            self.retry.sent();
+        }
+        edge
+    }
+
+    /// The engine's focus as an index into the source, not the picture's: a hero dive keeps the card
+    /// it came from lifted, and the paging follows the card the engine holds.
+    fn engine_focus<H: Host, S: CardSource<H>>(&self, cx: &Cx<'_, H>, src: &S) -> Option<usize> {
+        cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem))
+    }
+
+    /// Whether focus index `focus` is inside the zone of `edge` that asks for a page there.
+    fn near(&self, edge: PageEdge, focus: Option<usize>, len: usize, offset: usize) -> bool {
+        match edge {
+            PageEdge::Before => offset > 0 && focus.is_some_and(|i| i < self.head.saturating_add(PAGE_EDGE_CARDS)),
+            PageEdge::After => focus.is_some_and(|i| i.saturating_add(PAGE_EDGE_CARDS) >= len),
+        }
+    }
+
+    /// The edge whose page ask the owner must withdraw this tick, if any: one handed out by
+    /// [`page_ask`](Self::page_ask) that has not landed while focus has left that edge's zone (or
+    /// the owner stopped showing the row). Call it every frame before `page_ask`, with the same
+    /// `offset` and `active`, and cancel the owner's store ask for the edge it names.
+    ///
+    /// A page slides the window by half of it, keeping the half on focus's side of the edge, so a
+    /// landing is only safe while focus is still in that half. An ask is sent with focus at most
+    /// [`PAGE_EDGE_CARDS`] from the edge, which leaves that many presses of margin; withdrawing it on
+    /// the first press out of the zone keeps a landing that is already on its way (the owner acts on a
+    /// view one landing old, and the cancel takes a frame to reach the store) well inside the margin.
+    /// The row asks again when focus returns to the edge.
+    pub fn page_cancel<H: Host, S: CardSource<H>>(&mut self, cx: &Cx<'_, H>, src: &S, offset: usize, active: bool)
+        -> Option<PageEdge> {
+        let edge = self.in_flight?;
+        let focus = self.engine_focus(cx, src);
+        if active && self.near(edge, focus, src.len(), offset) { return None; }
+        self.reset_page_requests();
+        self.in_flight = None;
+        Some(edge)
     }
 
     /// The paging rule: the window's last card plus look-ahead (or the focused card's, if further).
@@ -241,7 +426,76 @@ impl Shelf {
         let window = ((self.row.scroll_x() + SCR_W - self.style.margin_x) / pitch).ceil().max(0.0) as usize;
         let focus = super::focused_index(&cx.focus, self.entry, src).map_or(0, |i| i + 1);
         let end = window.max(focus).saturating_add(LOOK_AHEAD);
-        super::want(&mut self.asked, src.len(), end, src.more()).map(CardEvent::Want)
+        let retry = self.in_flight == Some(PageEdge::After) && self.retry.due();
+        let was = self.asked;
+        let ask = super::want(&mut self.asked, src.len(), end, src.more(), retry);
+        if ask.is_some() && self.asked != was { self.retry.mark_fresh(); }
+        ask.map(CardEvent::Want)
+    }
+
+    /// Request the artwork of the cards the focus is travelling toward, before they scroll in.
+    ///
+    /// A card asks for its art when it is first drawn on-axis, so a held key on a slow server
+    /// outruns the fetches and shows skeletons. This asks [`WARM_AHEAD_CARDS`] cards beyond the
+    /// painted ones in the direction of travel (the cards a window slide just landed there
+    /// included) through the Library's mechanism, `tex::warm_ahead_on`: the source admits the
+    /// request only while no drawn card is waiting and one speculative fetch is out, and claims
+    /// a slot only from outside the cards most recently drawn. So the visible cards' own requests
+    /// are never queued behind this, and nothing on screen is evicted for it.
+    ///
+    /// Bounded work: one claim per tick, nearest card first, at most `2 * WARM_AHEAD_CARDS`
+    /// lookups, and none at all once the walk for this view of the row is complete.
+    fn warm_ahead<H: Host, S: CardSource<H>>(&mut self, cx: &Cx<'_, H>, src: &S) {
+        let focus = super::focused_index(&cx.focus, self.entry, src).filter(|&i| !self.dormant && i < src.len());
+        let Some(focus) = focus else {
+            self.warm = Warm { last: None, forward: self.warm.forward, walk: None };
+            return;
+        };
+        // A landing moves the index under an unmoved focus: it says nothing about direction.
+        if let (Some(last), None) = (self.warm.last, self.landed) {
+            if last != focus {
+                self.warm.forward = focus > last;
+            }
+        }
+        self.warm.last = Some(focus);
+        let n = src.len();
+        let forward = self.warm.forward;
+        let pitch = self.pitch();
+        let sx = self.drawn_scroll(src);
+        // the first card past the painted run on each side (a card is painted while any of it shows)
+        let first_shown = ((sx - self.style.margin_x + self.style.gap) / pitch).floor().max(0.0) as usize;
+        let past_shown = ((sx + SCR_W - self.style.margin_x) / pitch).ceil().max(0.0) as usize;
+        // Cards between the painted run and the focus are about to scroll in too (the scroll
+        // lags a held key), so the walk starts at the painted edge, not at the focus.
+        let (edge, lag) = if forward {
+            (past_shown, (focus + 1).saturating_sub(past_shown))
+        } else {
+            (first_shown, first_shown.saturating_sub(focus))
+        };
+        let span = lag + WARM_AHEAD_CARDS;
+        let span = span.min(2 * WARM_AHEAD_CARDS);
+        let head = if edge < n { pool::key(&src.elem(edge)) } else { 0 };
+        let key = WalkKey { edge, forward, len: n, head };
+        let from = match self.warm.walk {
+            Some((k, scanned)) if k == key => scanned,
+            _ => 0,
+        };
+        for at in from..span {
+            // nearest first: forward walks up from the edge, backward walks down from just behind it
+            let Some(i) = (if forward { Some(edge + at) } else { edge.checked_sub(at + 1) }).filter(|&i| i < n) else {
+                break;
+            };
+            if !src.loaded(i) {
+                continue;
+            }
+            let Some((srv, path, w, h)) = crate::widgets::card_art_request(&src.art(i)) else { continue };
+            if crate::tex::warm_ahead_on(srv, path, w, h, false) != crate::tex::Warm::Known {
+                // claimed (the next tick finds it held and goes on) or refused (try again there)
+                self.warm.walk = Some((key, at));
+                return;
+            }
+        }
+        self.warm.walk = Some((key, span));
     }
 
     /// The cell the row last recorded as focused.
@@ -451,7 +705,13 @@ impl Shelf {
         if focused {
             let label = src.label(i).revealed(self.row.band_reveal())
                 .settling(self.row.settle_lag(src.len(), i, self.style) * src.sweep());
+            #[cfg(feature = "devtriggers")]
+            crate::card_probe::begin_card();
             card_row::draw_focused(pr, src.art(i), rect, s, self.style, src.progress(i), &label, f.measure);
+            #[cfg(feature = "devtriggers")]
+            if !pr.is_recording() {
+                note_focused(pr, rect, i, src);
+            }
         } else {
             card_row::draw_tile(pr, src.art(i), rect, s, self.style, src.progress(i));
         }
@@ -464,8 +724,8 @@ impl Shelf {
     pub fn neighbour<H: Host, S: CardSource<H>>(&self, src: &S, key: FocusKey<H::Elem>, dir: Dir) -> Step<H::Elem> {
         let Some(i) = src.index_of(&key.elem) else { return Step::Edge };
         let to = match dir {
-            Dir::Left => i.checked_sub(1),
-            Dir::Right => Some(i + 1).filter(|&j| j < src.len()),
+            Dir::Left => i.checked_sub(1).filter(|_| !src.gap_before(i)),
+            Dir::Right => Some(i + 1).filter(|&j| j < src.len() && !src.gap_before(j)),
             Dir::Up | Dir::Down => None,
         };
         to.map_or(Step::Edge, |j| Step::Move(FocusKey { entry: self.entry, elem: src.elem(j) }))

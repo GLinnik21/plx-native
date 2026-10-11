@@ -101,7 +101,7 @@ mod tests {
     fn publish_fixture() -> (Fixture, SearchSnapshot) {
         let mut fx = Fixture::new();
         fx.set_query("wallace");
-        fx.state.publish_shelves_for_test(vec![Shelf {
+        fx.state.publish_shelves_for_test(vec![Shelf { epoch: 0, window: Default::default(),
             kind: Kind::Movie,
             items: vec![Item::Media(crate::pms::PmsMovie {
                 sid: plx_plex::plex::ServerId::UNSET, rk: "retained-search".into(),

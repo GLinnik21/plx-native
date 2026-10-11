@@ -77,8 +77,9 @@ That is also why **nothing scrolls while the panel is up**: the result set has t
 the user's eyes while they are still typing.
 
 `search::recents::CAP` is **four, not five**, for the same reason — with the keyboard raised the header, the
-rows and the Clear control all have to finish above its edge. The fifth is *dropped*, not scrolled:
-a list you cannot see the end of asks to be paged, and there is no paging in this product.
+rows and the Clear control all have to finish above its edge. The fifth is *dropped*, not scrolled.
+Recents are the user's own typing, not content, so the cap hides nothing they could not retype, and
+four rows fit above the raised keyboard.
 
 ### The caret and the one-character hint stay in the field
 

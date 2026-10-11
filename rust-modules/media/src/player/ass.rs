@@ -8,13 +8,17 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 const MAX_SCRIPT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 256 * 1024;
-const MAX_EVENTS: usize = 20_000;
-const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
-const MAX_FONTS: usize = 128;
+// No event-count bound here: `ass_source` holds an embedded track, and `ass_script` a long sidecar
+// script, to a window far under the native library's own guard (`plx_ass_chunk` refuses past
+// 20 000), so a second count would only be a way to hide a track that is otherwise showable.
+pub const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
+/// Bookkeeping charged per font on top of its bytes, so a file of countless tiny attachments is
+/// bounded by the same byte budget without a font-count constant.
+const FONT_OVERHEAD_BYTES: usize = 1024;
 const MAX_PIXELS: usize = 3840 * 2160;
 const MAX_REGIONS: usize = 64;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Event {
     pub start_ms: i64,
     pub duration_ms: i64,
@@ -26,6 +30,26 @@ pub struct Event {
 pub struct Font {
     pub name: String,
     pub data: Arc<[u8]>,
+}
+
+/// The memory bound on embedded fonts: fonts are admitted in container order until their bytes
+/// (plus a small per-font overhead) fill `MAX_FONT_BYTES`. A font that does not fit is skipped
+/// and a smaller later one may still fit; text naming a skipped font renders in the app's
+/// default face instead of the track being refused or its text dropped.
+#[derive(Default)]
+pub struct FontBudget {
+    used: usize,
+}
+
+impl FontBudget {
+    pub fn admit(&mut self, len: usize) -> bool {
+        let cost = len.saturating_add(FONT_OVERHEAD_BYTES);
+        if len == 0 || self.used.saturating_add(cost) > MAX_FONT_BYTES {
+            return false;
+        }
+        self.used += cost;
+        true
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -71,8 +95,6 @@ pub enum Fault {
     InvalidTrack,
     InvalidEvents,
     TrackTooLarge,
-    TooManyFonts,
-    InvalidFonts,
     RenderFailed,
     Unavailable,
     FontsUnavailable,
@@ -96,8 +118,6 @@ impl Fault {
             Fault::InvalidTrack => msg::widgets_ass_invalid_track(),
             Fault::InvalidEvents => msg::widgets_ass_invalid_events(),
             Fault::TrackTooLarge => msg::widgets_ass_track_too_large(),
-            Fault::TooManyFonts => msg::widgets_ass_too_many_fonts(),
-            Fault::InvalidFonts => msg::widgets_ass_invalid_fonts(),
             Fault::RenderFailed => msg::widgets_ass_render_failed(),
             Fault::Unavailable => msg::widgets_ass_unavailable(),
             Fault::FontsUnavailable => msg::widgets_ass_fonts_unavailable(),
@@ -369,13 +389,11 @@ fn validate(source: &Source) -> Result<(), Fault> {
         Content::Embedded {
             header,
             events,
-            fonts,
+            ..
         } => {
             if header.is_empty()
                 || header.len() > MAX_SCRIPT_BYTES
                 || header.contains(&0)
-                || events.len() > MAX_EVENTS
-                || fonts.len() > MAX_FONTS
             {
                 return Err(Fault::InvalidTrack);
             }
@@ -396,25 +414,7 @@ fn validate(source: &Source) -> Result<(), Fault> {
             }
         }
     }
-    let (Content::Embedded { fonts, .. } | Content::Script { fonts, .. }) = &source.content;
-    if fonts.len() > MAX_FONTS {
-        return Err(Fault::TooManyFonts);
-    }
-    let mut bytes = 0;
-    for font in fonts.iter() {
-        if font.name.is_empty()
-            || font.name.len() > 1024
-            || font.name.contains('\0')
-            || font.data.is_empty()
-            || font.data.len() > MAX_FONT_BYTES
-        {
-            return Err(Fault::InvalidFonts);
-        }
-        bytes += font.data.len();
-        if bytes > MAX_FONT_BYTES {
-            return Err(Fault::TooManyFonts);
-        }
-    }
+    // Fonts are never grounds to refuse a track: `Native::open` skips one it cannot use.
     Ok(())
 }
 
@@ -468,10 +468,19 @@ fn same_embedded_resources(old: &Source, new: &Source) -> bool {
     ) if old.id == new.id && oh == nh && of == nf)
 }
 
+/// A sidecar script too long to hand libass whole ([`super::ass_script`]): the lines it holds now
+/// answer for playheads in `lo..hi`, and a playhead outside is fed again.
+struct Windowed {
+    index: super::ass_script::ScriptIndex,
+    lo: i64,
+    hi: i64,
+}
+
 #[derive(Default)]
 struct Engine {
     source: Option<Arc<Source>>,
     native: Option<Native>,
+    script: Option<Windowed>,
     frame: Option<Arc<Frame>>,
     error: Option<Fault>,
 }
@@ -482,6 +491,40 @@ impl Engine {
             && self.native.is_none()
             && self.frame.is_none()
             && self.error.is_none()
+    }
+
+    /// Load `source` fresh. A sidecar script with more lines than one window holds is fed the lines
+    /// around `now_ms` only; any other source goes in whole.
+    fn open(&mut self, source: &Source, now_ms: i64) -> Result<(), Fault> {
+        self.native = None;
+        self.script = None;
+        if let Content::Script { bytes, fonts } = &source.content {
+            if let Some(index) = super::ass_script::ScriptIndex::parse(bytes).filter(|i| i.windowed()) {
+                let window = index.window(now_ms);
+                self.native = Some(Native::open_data(fonts, &window.text, 1)?);
+                self.script = Some(Windowed { index, lo: window.lo_ms, hi: window.hi_ms });
+                return Ok(());
+            }
+        }
+        self.native = Some(Native::open(source)?);
+        Ok(())
+    }
+
+    /// Feed a windowed script again when the playhead has left the window it holds (a seek either
+    /// way, or the end of the window). The old track is released first, so two windows are never
+    /// held at once.
+    fn slide(&mut self, source: &Source, now_ms: i64) -> Result<(), Fault> {
+        let (Some(held), Content::Script { fonts, .. }) = (self.script.as_mut(), &source.content) else {
+            return Ok(());
+        };
+        if (held.lo..held.hi).contains(&now_ms) {
+            return Ok(());
+        }
+        let window = held.index.window(now_ms);
+        (held.lo, held.hi) = (window.lo_ms, window.hi_ms);
+        self.native = None;
+        self.native = Some(Native::open_data(fonts, &window.text, 1)?);
+        Ok(())
     }
 
     fn render(&mut self, request: &Request) -> Arc<Frame> {
@@ -514,13 +557,19 @@ impl Engine {
                     unsafe { plx_ass_flush_events(native.0) };
                     native.append(&request.source, 0)
                 } else {
-                    self.native = None;
-                    Native::open(&request.source).map(|native| self.native = Some(native))
+                    self.open(&request.source, key.now_ms)
                 };
                 self.error = result.err();
             }
             self.source = Some(request.source.clone());
             if let Some(error) = self.error {
+                self.native = None;
+                plx_base::eventlog::log(&format!("subtitle: ASS refused: {error:?}"));
+            }
+        }
+        if self.error.is_none() {
+            if let Err(error) = self.slide(&request.source, key.now_ms) {
+                self.error = Some(error);
                 self.native = None;
                 plx_base::eventlog::log(&format!("subtitle: ASS refused: {error:?}"));
             }
@@ -625,6 +674,11 @@ plx_base::dynlib! {
 
 struct Native(*mut c_void);
 
+fn source_fonts(source: &Source) -> &[Font] {
+    let (Content::Embedded { fonts, .. } | Content::Script { fonts, .. }) = &source.content;
+    fonts
+}
+
 fn asset_dir() -> &'static std::path::Path {
     // Host unit tests execute in target/debug/deps; their bundled native fixture
     // and fonts live in pkg. This override cannot enter the television binary.
@@ -646,6 +700,19 @@ impl Drop for Native {
 
 impl Native {
     fn open(source: &Source) -> Result<Self, Fault> {
+        match &source.content {
+            Content::Embedded { header, .. } => {
+                let mut native = Self::open_data(source_fonts(source), header, 0)?;
+                native.append(source, 0)?;
+                Ok(native)
+            }
+            Content::Script { bytes, .. } => Self::open_data(source_fonts(source), bytes, 1),
+        }
+    }
+
+    /// A renderer holding `fonts` and the track `data` reads as: a script (`script` 1) or a codec
+    /// private header (0).
+    fn open_data(fonts: &[Font], data: &[u8], script: i32) -> Result<Self, Fault> {
         static LOADED: OnceLock<bool> = OnceLock::new();
         let loaded = *LOADED.get_or_init(|| {
             native_ass::load(Some(asset_dir())).ok() && unsafe { plx_ass_abi_version() } == 2
@@ -669,18 +736,20 @@ impl Native {
             }
             native.font(name, &bytes)?;
         }
-        let (Content::Embedded { fonts, .. } | Content::Script { fonts, .. }) = &source.content;
+        // A font the renderer cannot take (unnamed, over the budget, rejected by the native
+        // side) is skipped: the text still shows, in the default face.
+        let mut budget = FontBudget::default();
         for font in fonts.iter() {
-            native.font(&font.name, &font.data)?;
+            if font.name.is_empty() || font.name.len() > 1024 || font.name.contains('\0')
+                || !budget.admit(font.data.len())
+            {
+                continue;
+            }
+            let _ = native.font(&font.name, &font.data);
         }
-        let (data, script) = match &source.content {
-            Content::Embedded { header, .. } => (header.as_ref(), 0),
-            Content::Script { bytes, .. } => (bytes.as_ref(), 1),
-        };
         if unsafe { plx_ass_load(native.0, data.as_ptr(), data.len(), script) } < 0 {
             return Err(Fault::Unreadable);
         }
-        native.append(source, 0)?;
         Ok(native)
     }
 
