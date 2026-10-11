@@ -2470,6 +2470,9 @@ pub struct PlayingItem {
     /// The show's ratingKey when this is an episode (`grandparentRatingKey`), else empty — what
     /// the resolve asks the show's own language settings of (`route::plan::build_stream`).
     pub show_rk: String,
+    /// The played item's own Plex type (`movie` | `episode` | `track` | `clip` | ...), empty when
+    /// the server sent none. Read from the same `type` the detail page's [`Detail::kind`] reads.
+    pub kind: String,
     pub audio: Vec<Stream>,
     pub subs: Vec<Stream>,
     pub video_fps: f64, // the played leaf's video fps (0 = unknown) — feeds the Load esInfo
@@ -2507,6 +2510,7 @@ impl PlayingItem {
             sid: plx_plex::plex::ServerId::from_raw(0),
             rk: "rk".into(),
             show_rk: String::new(),
+            kind: String::new(),
             audio: Vec::new(),
             subs,
             video_fps: 0.0,
@@ -2554,6 +2558,7 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
             sid,
             rk: rk.to_string(),
             show_rk: d.show_rk.clone(),
+            kind: d.kind.clone(),
             audio: d.audio.clone(),
             subs: d.subs.clone(),
             video_fps: d.video_fps,
@@ -2575,6 +2580,12 @@ pub fn fetch_playing_item(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Pla
         return None;
     }
     let it = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(rk));
+    Some(playing_item_from(sid, rk, it.as_ref()))
+}
+
+/// The conversion half of [`fetch_playing_item`], pure so the parse is testable without a server:
+/// the played item's streams, markers, chapters, frame size and type, given the server's item.
+fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_plex::plex::Metadata>) -> PlayingItem {
     // Markers and chapters hang off the ITEM, streams off its first Part — so a part-less response
     // still yields both of those instead of discarding all three. `Client::metadata` already sends
     // `includeChapters=1` (plex/library.rs), so the Chapter[] is on the wire either way: taking it
@@ -2606,10 +2617,12 @@ pub fn fetch_playing_item(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Pla
         .as_ref()
         .and_then(|it| it.ultra_blur_colors)
         .and_then(|u| u.corners());
-    Some(PlayingItem {
+    let kind = it.map(|it| it.kind.clone()).unwrap_or_default();
+    PlayingItem {
         sid,
         rk: rk.to_string(),
         show_rk,
+        kind,
         audio,
         subs,
         video_fps,
@@ -2620,7 +2633,7 @@ pub fn fetch_playing_item(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Pla
         markers,
         chapters,
         blur,
-    })
+    }
 }
 
 /// Retire BOTH descriptions of the item that was playing, together.

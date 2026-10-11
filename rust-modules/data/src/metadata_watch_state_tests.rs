@@ -338,6 +338,41 @@ fn the_playing_item_cache_hits_only_for_the_same_item_on_the_same_server() {
     clear(test_state(), test_adapter());
 }
 
+/// `PlayingItem.kind` is the played item's own Plex type, read from the same wire `type` the
+/// detail page reads. The three kinds the player meets (episode, movie, track) must each survive
+/// the conversion from the server's item, and an absent item has no type.
+#[test]
+fn the_playing_item_carries_its_plex_type() {
+    for wire in ["episode", "movie", "track"] {
+        let it: plx_plex::plex::Metadata =
+            serde_json::from_value(serde_json::json!({ "type": wire })).unwrap();
+        let item = playing_item_from(SRV_A, "42", Some(&it));
+        assert_eq!(item.kind, wire, "the played item's own type");
+    }
+    assert_eq!(
+        playing_item_from(SRV_A, "42", None).kind,
+        "",
+        "an item the server did not return has no type"
+    );
+}
+
+/// The cache hit must hand back the same `kind` the page loaded, so a play from a detail page
+/// that skips the PMS fetch still knows what it is playing.
+#[test]
+fn the_playing_item_cache_round_trips_the_kind() {
+    let _serial = plx_base::testlock::serial();
+    set_current_for_test(test_state(), Some(Detail {
+        sid: SRV_A,
+        rk: "42".into(),
+        kind: "episode".into(),
+        audio: vec![Stream { id: 7, ..Default::default() }],
+        ..Default::default()
+    }));
+    let hit = cached_playing(test_state(), SRV_A, "42").expect("the loaded page IS this item");
+    assert_eq!(hit.kind, "episode", "the cache carries the page's own type");
+    clear(test_state(), test_adapter());
+}
+
 /// **Regression (2026-10-06):** the loaded page's copy of an item describes the server as the page
 /// read it. Once the item has PLAYED, the server's streams may have moved under it (a subtitle
 /// downloaded mid-playback is installed and selected; a track picked in the HUD changes the part's
