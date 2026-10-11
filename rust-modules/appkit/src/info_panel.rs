@@ -682,7 +682,8 @@ fn meta_badge(
 /// AUDIO/subtitle map and spells h264 as "H264" — the dotted form is the one everybody else's
 /// player uses for the video lane, and this is the only place the app names a video codec to a
 /// user. An unknown codec is upper-cased rather than dropped: "Converting · AV1" is still the
-/// truth, and inventing a friendly name for a codec we have never seen would not be.
+/// truth on a set that cannot decode AV1 (the dev set, and every set whose codec table lists no AV1
+/// decoder), and inventing a friendly name for a codec we have never seen would not be.
 pub fn video_codec_name(codec: &str) -> String {
     match codec.to_ascii_lowercase().as_str() {
         "h264" | "avc" | "avc1" => "H.264".to_string(),

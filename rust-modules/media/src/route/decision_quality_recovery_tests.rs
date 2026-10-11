@@ -24,7 +24,7 @@ fn the_codec_gates_verdict_is_what_the_quality_menu_reads() {
     );
     assert!(
         !video_direct_plays("av1", 3840, 2160, dv, &caps),
-        "and the codec is: the pipeline cannot feed AV1 at any size",
+        "and the codec is: a set whose table lists no AV1 decoder (the assumed caps these tests run with) cannot direct-play AV1 at any size",
     );
 
     let _g = fresh_registry(&mut ps);

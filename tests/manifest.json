@@ -3507,6 +3507,38 @@
       }
     },
     {
+      "name": "pipe_vp9_aac_1080p",
+      "fixture": "pipe_vp9_aac_1080p.mkv",
+      "title": "1080p VP9 Profile 0 + AAC in MKV — direct play on a set whose table lists a VP9 decoder",
+      "covers": [
+        "vp9",
+        "vp9 -> VP9",
+        "video/x-vp9 pass-through"
+      ],
+      "declare": {
+        "vcodec": "vp9",
+        "acodec": "aac",
+        "fps": 24.0
+      },
+      "run_secs": 40,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "vp9",
+        "min_video_width": 1900,
+        "load_video": "VP9",
+        "load_audio": "AAC",
+        "load_dovi": "none",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 1
+      }
+    },
+    {
       "name": "pipe_auto_original_slow_recover",
       "fixture": "pipe_h264_aac_mp4.mp4",
       "title": "no-Plex Auto: Original -> 4 Mbps collapse -> HLS -> recovered Original",

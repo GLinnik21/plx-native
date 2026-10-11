@@ -239,6 +239,8 @@ SAME64(offsetof(AVBSFContext, time_base_in), 40, "AVBSFContext.time_base_in move
        FF_API_VOXWARE were removed; the n3.3 values are 28 / 174 / 0x15029. --- */
 SAME(AV_CODEC_ID_H264, 27, "AV_CODEC_ID_H264 != 27");
 SAME(AV_CODEC_ID_HEVC, 172, "AV_CODEC_ID_HEVC != 172 (173 on FFmpeg 6 — the enum shifts again)");
+SAME(AV_CODEC_ID_VP9, 166, "AV_CODEC_ID_VP9 != 166");
+SAME(AV_CODEC_ID_AV1, 222, "AV_CODEC_ID_AV1 != 222");
 SAME(AV_CODEC_ID_AAC, 0x15002, "AV_CODEC_ID_AAC moved");
 SAME(AV_CODEC_ID_AC3, 0x15003, "AV_CODEC_ID_AC3 moved");
 SAME(AV_CODEC_ID_EAC3, 0x15028, "AV_CODEC_ID_EAC3 != 0x15028 (0x15029 names ATRAC3P here)");

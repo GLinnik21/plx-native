@@ -25,7 +25,7 @@ is not one any `shutdown(2)` of ours can reach. Exactly one of the two ever has 
 and pinned to majors 63/63/61, and is built `--disable-network` with `file` as its only protocol —
 so the AVIO is not merely how bytes reach it today, it is the only way they *can*. See the root
 `docs/agent-reference.md` linking section for why. It
-emits Annex-B video AUs (param sets prepended at each keyframe) and AC3/EAC3, ADTS-framed AAC, or DTS core audio frames,
+emits Annex-B video AUs (param sets prepended at each keyframe) and, for AV1, Section-5 temporal units (TD OBU first, the av1C sequence header and metadata OBUs in-band on keyframes; `/tmp/plxnative-av1obu` = notd,noseq,raw tokens varies it on a debug build), for VP9 the demuxed packet unchanged (a frame carries its own headers and libpf's `video/x-vp9` caps have no `codec_data`), and AC3/EAC3, ADTS-framed AAC, or DTS core audio frames,
 and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 
 ## Threading model (this is the whole ballgame)
@@ -99,8 +99,9 @@ something.
   measured the picture: **13.0 fps presented under the 60 declaration, 24.1 under 24**. So H.264
   declares the stream's rate class
   (`fps_class`), HEVC keeps 60 (4K HEVC under 60 holds 24), and a transcode with no known rate
-  keeps 60. `/tmp/plxnative-sinkmax=WxH@F` overrides the envelope for the legs still unrun on
-  10.3.1.
+  keeps 60. AV1 (only on a set whose codec table lists an AV1 decoder) keeps HEVC's 4K60 rule,
+  clamped by `Caps::av1_row`; that is unmeasured on device. `/tmp/plxnative-sinkmax=WxH@F`
+  overrides the envelope for the legs still unrun on 10.3.1.
 - **There IS a presented-frame instrument now, and it is not a GStreamer trace.** The payload's
   `streamQualityInfo` / `streamQualityInfoNonFlushable` keys make libpf read the video sink's
   `dropped-frames` / `non-flushable-displayed-frames` properties on the same 200 ms timer as the

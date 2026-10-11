@@ -107,10 +107,11 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
     assert!(audio_track_direct_plays(&ps, "dts", 8), "Force bypasses device channels");
     assert!(!audio_track_direct_plays(&ps, "truehd", 8));
     assert!(!audio_track_direct_plays(&ps, "", 0));
-    assert!(!video_feed_supported("vp9", plx_data::metadata::DvPresentation::NotDv));
+    assert!(!video_feed_supported("vp9", plx_data::metadata::DvPresentation::NotDv, &plx_platform::devcaps::Caps::assumed()));
     let blocked_dv = plx_data::metadata::Dovi { present: true, profile: 5, bl_compat: 0, ..plx_data::metadata::Dovi::NONE }
         .presentation(false, plx_platform::devcaps::dv::DvCapability::Unsupported, true);
-    assert!(!video_feed_supported("hevc", blocked_dv));
+    assert!(!video_feed_supported("hevc", blocked_dv, &plx_platform::devcaps::Caps::assumed()));
+    assert!(!video_feed_supported("av1", plx_data::metadata::DvPresentation::NotDv, &plx_platform::devcaps::Caps::assumed()), "Force never feeds AV1 to a set whose table lists no AV1 decoder");
     assert!(hls_abr_control(&ps).is_none());
     assert!(auto_original_watch(&ps).is_none());
     assert!(fallback_auto_to_hls(&mut ps, 1000, 0).is_none());

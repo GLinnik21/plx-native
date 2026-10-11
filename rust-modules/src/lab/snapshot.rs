@@ -88,6 +88,8 @@ pub(crate) struct Caps {
     pub hevc_max_w: u32,
     pub hevc_max_h: u32,
     pub vp9: bool,
+    /// the device table lists an AV1 decoder row (false on the assumed set)
+    pub av1: bool,
     /// the direct-playable audio subset, in `plex::DP_AUDIO_CODECS`'s comma form
     pub audio: String,
 }
@@ -289,6 +291,7 @@ fn caps() -> Caps {
         hevc_max_w: c.hevc_max.0,
         hevc_max_h: c.hevc_max.1,
         vp9: c.vp9,
+        av1: c.av1,
         audio: c.audio.clone(),
     }
 }

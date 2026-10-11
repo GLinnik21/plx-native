@@ -1421,7 +1421,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     #[cfg(not(any(test, feature = "test-support")))]
     let dv_decision = dovi.decision_now(vcodec == "hevc");
     let dv = dv_decision.presentation;
-    let video_dp = if forced { video_feed_supported(vcodec, dv) } else {
+    let video_dp = if forced { video_feed_supported(vcodec, dv, plx_platform::devcaps::caps()) } else {
         video_direct_plays(vcodec, src_w, src_h, dv, plx_platform::devcaps::caps())
     };
     // Carried to the session so the quality menu can say whether "Original" means anything for
@@ -2960,9 +2960,18 @@ fn pick_dp_subtitle_account(
     })
 }
 
-/// Software feed formats and Dolby Vision declaration support, independent of device limits.
-pub(super) fn video_feed_supported(vcodec: &str, dv: plx_data::metadata::DvPresentation) -> bool {
-    matches!(vcodec, "h264" | "hevc") && dv.refusal().is_none()
+/// Software feed formats and Dolby Vision declaration support. Forced mode bypasses device bounds
+/// for h264/hevc, but AV1 and VP9 need the table's row: a set without one has no such decoder to
+/// feed (issue #593), so Forced cannot make it play.
+pub(super) fn video_feed_supported(
+    vcodec: &str,
+    dv: plx_data::metadata::DvPresentation,
+    caps: &plx_platform::devcaps::Caps,
+) -> bool {
+    (matches!(vcodec, "h264" | "hevc")
+        || (vcodec == "av1" && caps.av1)
+        || (vcodec == "vp9" && caps.vp9))
+        && dv.refusal().is_none()
 }
 
 pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: plx_plex::plex::LinkPolicy) -> plx_plex::plex::LinkPolicy {
@@ -2976,14 +2985,14 @@ pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: plx_plex::plex::L
 /// PURE: the local direct-play VIDEO test — the codec, the source's stated frame size and its
 /// Dolby Vision layering must ALL clear what this device and this pipeline can actually show.
 ///
-/// The codec half: h264 unconditionally (every webOS SoC decodes it), hevc only when the table
-/// lists the decoder — anything else the pipeline cannot feed at all. The resolution half is the
-/// local agreement with the profile's `*`-scoped `video.width`/`video.height` limitation: the
-/// profile makes PMS transcode a 4K source down for a 1080p-bounded SoC, but when `/decision` is
-/// unreachable the fallback never asks PMS, so without this test a 4K file with one
-/// direct-playable audio track was fed verbatim to a decoder whose table says 1920x1088 — the
-/// wrong-side failure devcaps' own doc names (issue #22's over-claim class), invisible on the
-/// dev TV, whose bound is 4096x2176.
+/// The codec half: h264 unconditionally (every webOS SoC decodes it), hevc when the table lists the
+/// decoder, av1 / vp9 only when the table lists their own row (`Caps::av1`, `Caps::vp9`), and
+/// anything else the pipeline cannot feed at all. The resolution half is the local agreement with the profile's `*`-scoped
+/// `video.width`/`video.height` limitation: the profile makes PMS transcode a 4K source down for a
+/// 1080p-bounded SoC, but when `/decision` is unreachable the fallback never asks PMS, so without
+/// this test a 4K file with one direct-playable audio track was fed verbatim to a decoder whose
+/// table says 1920x1088 — the wrong-side failure devcaps' own doc names (issue #22's over-claim
+/// class), invisible on the dev TV, whose bound is 4096x2176.
 ///
 /// **The Dolby Vision half is the same shape of bug, found the same way, and it is NOT about the
 /// decoder.** Every profile's base layer is ordinary HEVC and every one of them decodes here — so
@@ -3019,6 +3028,12 @@ pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: plx_plex::plex::L
 /// Unknown dimensions (0) PASS: PMS omitting a Media attribute is not evidence of 4K, and
 /// failing open is yesterday's behavior for every file the server never measured — the same
 /// misread-degrades-to-assumed rule `devcaps::parse` applies, and `Dovi` applies it too.
+///
+/// **AV1 and VP9 are the codecs that need the table's own row (issue #593).** `hevc_max` is the
+/// shared bound and applies to every codec. AV1 and VP9 additionally have to clear `caps.av1_row` /
+/// `caps.vp9_row` on each non-zero axis, because the row is the decoder's own statement of its
+/// size; a set whose table lists no such decoder refuses the codec at any size. Bit depth is not
+/// tested here (no codec's is): the profile's `*` bound and the server's `/decision` carry it.
 pub(super) fn video_direct_plays(
     vcodec: &str,
     src_w: i64,
@@ -3026,9 +3041,20 @@ pub(super) fn video_direct_plays(
     dv: plx_data::metadata::DvPresentation,
     caps: &plx_platform::devcaps::Caps,
 ) -> bool {
-    let codec_ok = vcodec == "h264" || (vcodec == "hevc" && caps.hevc);
+    let codec_ok = vcodec == "h264"
+        || (vcodec == "hevc" && caps.hevc)
+        || (vcodec == "av1" && caps.av1)
+        || (vcodec == "vp9" && caps.vp9);
     let (bw, bh) = caps.hevc_max;
-    codec_ok && src_w <= bw as i64 && src_h <= bh as i64 && dv.refusal().is_none()
+    // The codec's own row, on each axis it states: AV1 and VP9 are the codecs whose bound is the
+    // table's separate row rather than the shared one.
+    let (rw, rh, _) = match vcodec {
+        "av1" => caps.av1_row,
+        "vp9" => caps.vp9_row,
+        _ => (0, 0, 0),
+    };
+    let row_ok = (rw == 0 || src_w <= rw as i64) && (rh == 0 || src_h <= rh as i64);
+    codec_ok && row_ok && src_w <= bw as i64 && src_h <= bh as i64 && dv.refusal().is_none()
 }
 
 
@@ -3268,3 +3294,7 @@ mod dolby_vision_tests;
 #[cfg(test)]
 #[path = "plan_mde_decision_tests.rs"]
 mod mde_decision_tests;
+
+#[cfg(test)]
+#[path = "plan_av1_tests.rs"]
+mod av1_tests;

@@ -155,8 +155,9 @@ pub struct PlaybackSession {
     ///
     /// It answers the one question the word "Original" is a claim about: false means the server
     /// MUST re-encode the pixels, whatever rung is picked and whatever the link does, so the
-    /// quality menu's Original row cannot deliver the original. AV1, VP9 and MPEG-2 are the cases;
-    /// see the `!video_dp` arm's own comment.
+    /// quality menu's Original row cannot deliver the original. MPEG-2 always, AV1 / VP9 unless
+    /// the device table lists that decoder (`devcaps::Caps::av1` / `vp9`) are the cases; see the
+    /// `!video_dp` arm's own comment.
     ///
     /// **Carried, because re-deriving it at draw time would be a second copy of the gate.** The
     /// menu is drawn from a different thread of control and a different set of facts than the
@@ -6704,8 +6705,9 @@ fn apply_quality_choice(ps: &mut PlaybackSession, q: Quality) {
     // Link class cannot create a source candidate. Local normally needs no throughput proof, but
     // it still needs Original to be technically possible. `build_stream` records that fact as
     // `auto_original`: `None` means the source codec/container/audio combination already failed
-    // feasibility. Treating Local alone as sufficient here turns a fixed-rung AV1 transcode into
-    // progressive MKV when the user returns to Auto, so no HLS controller is rebuilt.
+    // feasibility. Treating Local alone as sufficient here turns a fixed-rung AV1 transcode (a set
+    // whose table lists no AV1 decoder, or a source over its row) into progressive MKV when the
+    // user returns to Auto, so no HLS controller is rebuilt.
     let original_feasible = ps.auto_original.is_some();
     let auto_original = q == Quality::Auto
         && original_feasible
@@ -7304,7 +7306,7 @@ fn playback_preview_with_capability(
     let mode = direct_play_mode();
     if mode == DirectPlayMode::Forced {
         return (!part.is_empty() && part_is_streamable(part)
-            && video_feed_supported(vcodec, presentation)
+            && video_feed_supported(vcodec, presentation, plx_platform::devcaps::caps())
             && d.audio.iter().any(|a| audio_direct_plays(mode, &a.codec, a.channels)))
             .then_some(Preview::DirectPlay);
     }

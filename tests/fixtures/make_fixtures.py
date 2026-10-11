@@ -738,6 +738,11 @@ def venc_args(v):
         return a
     if c == "av1":
         return ["-c:v", "libsvtav1", "-preset", "12", "-crf", str(v["crf"]), "-g", "48"]
+    if c == "vp9":
+        # Constant-quality (-b:v 0 + -crf), Profile 0 (8-bit 4:2:0): the only VP9 shape the profile
+        # advertises. One-pass libvpx emits no hidden alt-ref frames, so no superframes here.
+        return ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", str(v["crf"]), "-deadline", "good",
+                "-cpu-used", "5", "-row-mt", "1", "-g", "48", "-pix_fmt", "yuv420p"]
     raise Fail("no encoder recipe for video codec %r" % c)
 
 
@@ -1005,7 +1010,10 @@ QUICK_SECS = 20
 #   * PGS and SRT subtitles. The demuxer would carry them, but the `sub cue` / `image cue`
 #     log lines a case would grade sit behind `desired_sub_idx`, which only the Plex path
 #     ever writes — so a subtitle case down here would assert nothing at all.
-#   * AV1. There is no Load payload video codec for it.
+#   * AV1. The dev set's codec table lists no AV1 decoder, so this tier's TV declares no AV1
+#     video codec, and the AV1 fixtures (`movie_av1_no_dp_audio`) expect a TRANSCODE there. On a
+#     set whose table lists an AV1 decoder the same file would direct-stream video with converted
+#     audio.
 #
 # `declare` IS THE TRIGGER'S PLAYBACK HALF, recorded verbatim into fixtures.json so the
 # harness writes `/tmp/plxnative-playurl` FROM the pack instead of restating it, and read
@@ -1109,6 +1117,18 @@ PIPE_SHAPES = {
         "video": {"codec": "h264", "size": "1920x1080", "crf": 21},
         # Stereo, no track title: mp4 carries neither through this path (see pipe_hevc_aac_mp4).
         "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "192k", "pitch": 233,
+                   "default": True}],
+        "subs": [],
+    },
+    "pipe_vp9_aac_1080p": {
+        # VP9 Profile 0 in MKV. The dev set's codec table lists a VP9 row, so this direct-plays
+        # there; on a set whose table does not, the Load is refused (`load_video_refused`).
+        # The first fixture to reach the `video/x-vp9` caps and the pass-through arm in ff.rs.
+        "kind": "clip", "ext": "mkv",
+        "duration": PIPE_SECS, "rate": 0.06,
+        "declare": {"vcodec": "vp9", "acodec": "aac", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "vp9", "size": "1920x1080", "crf": 33},
+        "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "192k", "pitch": 261,
                    "default": True}],
         "subs": [],
     },
@@ -1531,6 +1551,7 @@ PIPE_MBIT = {
     "pipe_hevc_eac3_4k_dovi_p8": 9.80,  # = movie_hevc_4k_dovi_p8
     "pipe_hevc_aac_mp4": 5.00,          # = movie_hevc_aac_mp4         (hevc 1080p crf 26)
     "pipe_h264_aac_mp4": 6.40,          # measured, from a full 60 s build
+    "pipe_vp9_aac_1080p": 6.10,         # measured, from a full 60 s build (vp9 1080p crf 33)
     "pipe_h264_1080p5994": 9.48,        # measured; NB 2.5x the frames cost only 1.3x the bits
     "pipe_hevc_4k_60fps": 9.40,         # measured, at crf 32 (crf 30 would be well over 15)
     "pipe_multiaudio_1080p": 8.10,      # = movie_h264_ac3_many_audio, minus five tracks
@@ -2026,7 +2047,7 @@ def _xml_escape(s):
 # PLAYER regressed and the evidence all points at the app. Everything a shape CLAIMS is
 # read back out of the finished file; a mismatch names both sides and is fatal.
 # ---------------------------------------------------------------------------------------
-VCODEC_NAME = {"h264": "h264", "hevc": "hevc", "av1": "av1"}
+VCODEC_NAME = {"h264": "h264", "hevc": "hevc", "av1": "av1", "vp9": "vp9"}
 ACODEC_NAME = {"ac3": "ac3", "eac3": "eac3", "aac": "aac", "truehd": "truehd",
                "dts": "dts", "vorbis": "vorbis", "opus": "opus", "flac": "flac"}
 
@@ -2737,7 +2758,7 @@ BREW = {
 
 def shape_requirements(key, spec):
     encs = set()
-    encs.add({"h264": "libx264", "hevc": "libx265", "av1": "libsvtav1"}[spec["video"]["codec"]])
+    encs.add({"h264": "libx264", "hevc": "libx265", "av1": "libsvtav1", "vp9": "libvpx-vp9"}[spec["video"]["codec"]])
     for a in spec.get("audio", []):
         encs.add(AENC[a["codec"]][0])
     return sorted(encs), list(spec.get("tools", []))

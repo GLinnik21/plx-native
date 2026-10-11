@@ -154,6 +154,10 @@ const DIAG: [&str; 37] = [
     // route policy, so an experiment must not independently replace Home with the profile picker.
     "plxnative-dvcaps0",
     "plxnative-dvcaps1",
+    // The AV1 framing A/B (`media::ff`'s `av1obu` tokens: notd, noseq, raw). It alters only
+    // how an AV1 packet is framed before the decoder sees it, so an on-device comparison of the
+    // variants must not move the boot screen out from under the playback being compared.
+    "plxnative-av1obu",
     // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",
