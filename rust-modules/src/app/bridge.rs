@@ -3557,6 +3557,10 @@ mod session_endpoint_policy_tests;
 #[path = "session_stored_home_tests.rs"]
 mod session_stored_home_tests;
 
+#[cfg(all(test, feature = "hostsim"))]
+#[path = "restore_characterisation_tests.rs"]
+mod restore_characterisation_tests;
+
 #[cfg(test)]
 #[path = "bridge_test_support.rs"]
 mod test_support;

@@ -638,6 +638,28 @@ pub(super) fn apply_deferred_capture(rec: &mut super::recorder::Recplay,
     Ok(())
 }
 
+/// **Boot's restore list**, moved out of [`construct`] unchanged so the nine live player cells it
+/// sets can be graded without an SDL window (`run.rs`' `lifecycle_regression_tests`).
+///
+/// Install-wide playback preference, restored before any route can resolve a stream.
+/// A legacy file with no value resolves to Original; a new file can choose Auto only
+/// through route's explicit readiness gate (session::load records that decision once).
+pub(super) fn restore_player_preferences(session: &plx_plex::plex::session::Session, controlled: bool) {
+    plx_media::route::restore_quality(
+        if controlled { session.playback_quality() }
+        else { crate::dev::playback_quality_override().unwrap_or_else(|| session.playback_quality()) },
+    );
+    plx_media::route::restore_direct_play_mode(session.direct_play_mode());
+    plx_media::route::restore_subtitle_size(session.subtitle_size());
+    plx_media::route::restore_subtitle_position(session.subtitle_position());
+    plx_media::route::restore_next_episode_mode(session.next_episode_mode());
+    plx_media::route::restore_skip_interval(session.skip_interval());
+    plx_media::route::restore_deck_press(session.deck_press());
+    // The subtitle tone rides the same file and the same moment: a preference, restored once.
+    plx_media::player::restore_subtitle_tone(session.subtitle_tone());
+    plx_media::player::restore_audio_enhancements(session.audio_enhancements());
+}
+
 pub(crate) unsafe fn construct(
     pms_host: *const c_char, pms_port: c_int, mt: plx_base::task::MainThread,
     preflight: super::bootstrap::Preflight, initial: Option<super::bootstrap::Initial>,
@@ -995,22 +1017,7 @@ pub(crate) unsafe fn construct(
     let mut pages = plx_ui::dispatch::Dispatcher::with_transition(Box::new(
         plx_ui::containers::transition::PageDip::new(),
     ));
-    // Install-wide playback preference, restored before any route can resolve a stream.
-    // A legacy file with no value resolves to Original; a new file can choose Auto only
-    // through route's explicit readiness gate (session::load records that decision once).
-    plx_media::route::restore_quality(
-        if controlled { session.playback_quality() }
-        else { crate::dev::playback_quality_override().unwrap_or_else(|| session.playback_quality()) },
-    );
-    plx_media::route::restore_direct_play_mode(session.direct_play_mode());
-    plx_media::route::restore_subtitle_size(session.subtitle_size());
-    plx_media::route::restore_subtitle_position(session.subtitle_position());
-    plx_media::route::restore_next_episode_mode(session.next_episode_mode());
-    plx_media::route::restore_skip_interval(session.skip_interval());
-    plx_media::route::restore_deck_press(session.deck_press());
-    // The subtitle tone rides the same file and the same moment: a preference, restored once.
-    plx_media::player::restore_subtitle_tone(session.subtitle_tone());
-    plx_media::player::restore_audio_enhancements(session.audio_enhancements());
+    restore_player_preferences(&session, controlled);
     // dev: /tmp/plxnative-audioenh=off|boost|loudness — force the PERSISTED enhancement
     // preference right after it was restored from whatever the install actually has saved, so a
     // harness case's starting preference never depends on what an earlier run's pick left behind.
