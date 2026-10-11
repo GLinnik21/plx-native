@@ -66,7 +66,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 37] = [
+const DIAG: [&str; 38] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -155,6 +155,9 @@ const DIAG: [&str; 37] = [
     // how an AV1 packet is framed before the decoder sees it, so an on-device comparison of the
     // variants must not move the boot screen out from under the playback being compared.
     "plxnative-av1obu",
+    // Send VP9's sourceInfo envelope as the pipeline made it, without the container-derived HDR10
+    // declaration (`media::player::vp9_hdr`): the A/B for whether the television switches to HDR.
+    "plxnative-novp9hdr",
     // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",

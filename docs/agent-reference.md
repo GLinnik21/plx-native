@@ -1335,7 +1335,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   inside `is_back`, in `consts.rs` itself, beside the constant and the comment explaining it).
   Preserve this raw-offset reading if you touch input.
 - **Starfish/ACB ABI + bind-order rules** (the C++-from-C mangled-symbol seam, `Load` with
-  `uid=NULL`, the exact ACB bind sequence, sourceInfo-verbatim, never feed audio to ACB, the
+  `uid=NULL`, the exact ACB bind sequence, sourceInfo-verbatim (one exception: PQ VP9 is rewritten to HDR10), never feed audio to ACB, the
   3-arg taskId ABI) — moved to **`rust-modules/media/src/player/CLAUDE.md`**; read it before touching
   playback or `src/starfish.c`.
 - **Wayland transparency** (`system.rs`)**:** the UI surface is forced to a 32-bit RGBA config and

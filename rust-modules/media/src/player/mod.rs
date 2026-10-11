@@ -46,6 +46,7 @@ pub mod subside; // the side subtitle reader's thread and state (dev trigger `pl
 pub mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
 pub mod threads;
 pub mod video_geometry;
+pub mod vp9_hdr; // HDR10 for a VP9 stream: the container's PQ tag, written into the sourceInfo envelope ACB is sent
 
 use plx_base::task::MainThread;
 #[cfg(test)]

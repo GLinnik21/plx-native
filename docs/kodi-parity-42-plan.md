@@ -8,7 +8,7 @@ Probed `libplayerAPIs.so.1.0.0` (ELF32 ARM dynsym) + strings-grep across all `/u
 
 | Question | Verdict | Effect |
 |---|---|---|
-| `StarfishMediaAPIs::setHdrInfo` exists? | **NO** — absent from every device lib | **Step 8 DROPPED** on 4.5 (in-band SEI already works; `hdrType`/`mediaSei` are parsed by libpf, so HDR could ride the Load payload if ever needed) |
+| `StarfishMediaAPIs::setHdrInfo` exists? | **NO** — absent from every device lib | **Step 8 DROPPED** on 4.5 (in-band SEI already works; `hdrType`/`mediaSei` are read from the ACB `setMediaVideoData` envelope, not from Load; the only HDR key Load takes is Dolby-only `contents.DolbyHdrInfo` (see `player/vp9_hdr.rs`)) |
 | `pushEOS` exists? | **YES** — `_ZN17StarfishMediaAPIs7pushEOSEv` DEFINED GLOBAL FUNC (derived mangled name binds) | Step 5 confirmed |
 | `unloadCompleted`/`endOfStream` events? | **YES** — tokens present in libplayerAPIs | Step 5 synchronous-Unload wait viable |
 | esInfo `videoFpsValue/Scale/Width/Height`, `adaptiveResolution` parsed? | **YES** — referenced by `libpf-1.0.so` (the payload parser) | **Step 6 has real upside** (not cosmetic) |
