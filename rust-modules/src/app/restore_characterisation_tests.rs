@@ -86,7 +86,9 @@ const STORED: Cells = Cells {
 };
 
 /// Nine values that are neither the defaults nor [`STORED`]: the live cells standing where a
-/// restore has not yet run, or where something other than the record last wrote them.
+/// restore has not yet run, or where something other than the record last wrote them. The deck
+/// press has two values only, so it cannot differ from both: it differs from [`STORED`], and a
+/// restore dropped for it is invisible only against a record that chose nothing.
 const SCRAMBLED: Cells = Cells {
     quality: PlaybackQuality::P720Low,
     direct_play: DirectPlayMode::Disabled,
@@ -94,7 +96,7 @@ const SCRAMBLED: Cells = Cells {
     position: SubtitlePosition::Middle,
     next_episode: NextEpisodeMode::Off,
     skip: SkipInterval::Seconds60,
-    deck_press: DeckPress::Play,
+    deck_press: DeckPress::Details,
     tone: SubtitleTone::Grey,
     enhancements: AudioEnhancements { boost_dialog: false, normalize_loudness: true },
 };
