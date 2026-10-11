@@ -108,6 +108,9 @@ jobs:
           cp site/icons/support_me_on_kofi_dark.png _site/icons/support_me_on_kofi_dark.png
 
           cp docs/screenshots/home.jpg _site/docs/screenshots/home.jpg
+          cp docs/screenshots/library.jpg _site/docs/screenshots/library.jpg
+          cp docs/screenshots/search.jpg _site/docs/screenshots/search.jpg
+          cp docs/screenshots/player.jpg _site/docs/screenshots/player.jpg
 
           # Subsets pkg/appfont.ttf / pkg/appfont-bold.ttf (the APP's fonts, untouched) down to
           # the characters the site actually renders and writes WOFF2 into _site/fonts/ — see

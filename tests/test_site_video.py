@@ -655,7 +655,7 @@ class EncodeArgv(unittest.TestCase):
 
     def test_the_site_names_match_index_html_and_styles(self):
         html = (ROOT / "site" / "index.html").read_text()
-        feel = html[html.index('id="feel"'):html.index('id="why"')]
+        feel = html[html.index('id="feel"'):html.index('id="features"')]
         sources = re.findall(r'<source\s+(?:media="[^"]*"\s+)?src="media/([^"]+)"', feel)
         self.assertEqual(sources, [v.name for v in sv.VIDEOS])
         for v in sv.VIDEOS:
@@ -1414,7 +1414,7 @@ class CommittedSiteMedia(unittest.TestCase):
 
     def test_index_html_declares_the_codecs_the_files_carry(self):
         html = (ROOT / "site" / "index.html").read_text()
-        feel = html[html.index('id="feel"'):html.index('id="why"')]
+        feel = html[html.index('id="feel"'):html.index('id="features"')]
         declared = dict(re.findall(r'src="media/([^"]+)"\s+type=\'video/mp4; codecs="([^"]+)"\'', feel))
         self.assertEqual(sorted(declared), sorted(v.name for v in sv.VIDEOS))
         for v in sv.VIDEOS:

@@ -244,9 +244,10 @@ PAGE_TEMPLATE = """<!doctype html>
               <span class="brand-name"><span class="back-arrow" aria-hidden="true">&larr;</span> PlxNative</span>
             </a>
             <nav class="site-nav" aria-label="Primary navigation">
-              <a href="{root}#feel">Demo</a>
-              <a href="{root}#why">Why</a>
-              <a href="{root}#showcase">Features</a>
+              <a href="{root}#features">Features</a>
+              <a href="{root}#approach">Approach</a>
+              <a href="{root}#install">Install</a>
+              <a href="{root}#faq">FAQ</a>
             </nav>
             <div class="header-actions">
               <a class="header-github" href="https://github.com/GLinnik21/plx-native" aria-label="PlxNative on GitHub">

@@ -5,7 +5,7 @@
 
 `--only` renders just the named glows (`site_video.py adopt --derive` asks for the film's two).
 
-A soft, coloured copy of the TV screen and of each close-up glows behind it. The page used to
+A soft, coloured copy of the TV screen glows behind it on the page (the close-ups' glows are no longer used there, since the Landing Page v9 redesign). The page used to
 make it live with `filter: blur(70px)` over the full-size image, which the browser re-renders
 whenever the layer changes; a blur that heavy leaves nothing a 48-pixel picture cannot hold, so
 each glow is now that picture (site/media/*-glow*.png), scaled up by the browser at no cost.

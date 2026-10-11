@@ -216,7 +216,7 @@ sign-in may legitimately have advanced by the time the app is foregrounded again
 ## Documentation screenshots
 
 `make screenshots` regenerates every image under `docs/screenshots/`, and the website's close-up
-stills and link-preview card under `site/media/`, from a committed scene manifest, against the
+stills (no longer on the page) and link-preview card under `site/media/`, from a committed scene manifest, against the
 mock server's demo library — no Plex account, no television, no gitignored file:
 
 ```sh
@@ -249,7 +249,7 @@ make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero 
   must agree within the scene's `max_delta`, the first capture is adopted. `python3 tools/site_stills.py files`
   lists them; `files --manual` is empty today (only the TV photograph `navblur-transition.jpg` is by hand). A Mac
   render is a preview of what the bot commits (the two differ by renderer noise, not by content).
-- **The site's copies follow the render.** After re-rendering the `site-*` scenes, run
+- **The site's copies follow the render.** (The page no longer shows the close-ups, since the Landing Page v9 redesign; the files are still produced and staged.) After re-rendering the `site-*` scenes, run
   `python3 tools/render-site-variants.py` (the WebP of every close-up and the phone copies of
   tiles and player) and then `python3 tools/render-site-glows.py`; both read the rendered JPEGs.
 - **Screenshot triggers worth knowing.** `grid=<row>,<col>` (Home), `libgrid=<row>,<col>` (the

@@ -1288,9 +1288,10 @@ def site_credits(assets, catalog, dst=SITE_CREDITS):
               <span class="brand-name"><span class="back-arrow" aria-hidden="true">&larr;</span> PlxNative</span>
             </a>
             <nav class="site-nav" aria-label="Primary navigation">
-              <a href="./#feel">Demo</a>
-              <a href="./#why">Why</a>
-              <a href="./#showcase">Features</a>
+              <a href="./#features">Features</a>
+              <a href="./#approach">Approach</a>
+              <a href="./#install">Install</a>
+              <a href="./#faq">FAQ</a>
             </nav>
             <div class="header-actions">
               <a class="header-github" href="https://github.com/GLinnik21/plx-native" aria-label="PlxNative on GitHub">

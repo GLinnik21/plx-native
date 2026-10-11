@@ -1142,41 +1142,6 @@ video::-webkit-media-controls-start-playback-button {
   }
 }
 
-/* ---------- Why ---------- */
-.why-section {
-  padding: clamp(72px, 11vh, 140px) 0;
-  scroll-margin-top: var(--header-h);
-}
-.why-section h2 {
-  font-size: clamp(17px, 1.5vw, 21px);
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--text-tertiary);
-  margin: 0 0 clamp(20px, 3vh, 32px);
-}
-.why-lead {
-  font-size: clamp(28px, 4.4vw, 60px);
-  line-height: 1.12;
-  letter-spacing: -0.035em;
-  font-weight: 700;
-  margin: 0 0 clamp(28px, 4vh, 44px);
-  max-width: 1100px;
-  text-wrap: pretty;
-}
-/* site.js wraps each word; they light up in reading order as you scroll. */
-.why-lead .word {
-  transition: opacity 180ms linear;
-}
-.why-copy {
-  font-size: clamp(18px, 1.8vw, 23px);
-  line-height: 1.5;
-  letter-spacing: -0.01em;
-  color: var(--text-reading);
-  margin: 0;
-  max-width: 40ch;
-  text-wrap: pretty;
-}
-
 /* ---------- Big centred section headings (showcase / install) ---------- */
 .section-heading,
 .install-intro {
@@ -1217,129 +1182,6 @@ video::-webkit-media-controls-start-playback-button {
   max-width: 44ch;
 }
 
-/* ---------- Close-up showcase ---------- */
-.showcase-section {
-  /* A close-up's drop shadow, named so the phone's swipe row (a clip) can
-     keep room for it. */
-  --closeup-shadow-y: 20px;
-  --closeup-shadow-blur: 52px;
-  padding: clamp(56px, 8vh, 100px) 0 clamp(44px, 6vh, 68px);
-  scroll-margin-top: var(--header-h);
-}
-.closeup-figure {
-  margin: 0;
-  min-width: 0;
-  position: relative;
-}
-.closeup-figure--full {
-  margin-bottom: clamp(18px, 2.4vw, 30px);
-}
-/* A soft, blurred copy of each close-up glows behind it; site.js brings it up
-   as the close-up opens. Like the TV's glow, a tiny pre-blurred picture
-   (tools/render-site-glows.py) in a box grown by its baked soft edge: the
-   close-up's box is 10% from the top, 6% in from each side, 80% tall. */
-.closeup-glow {
-  --mx: 0.3793;
-  --my: 0.55;
-  position: absolute;
-  left: calc(6% - 88% * var(--mx));
-  top: calc(10% - 80% * var(--my));
-  width: calc(88% * (1 + 2 * var(--mx)));
-  height: calc(80% * (1 + 2 * var(--my)));
-  max-width: none;
-  opacity: 0.5;
-  pointer-events: none;
-  z-index: 0;
-}
-.closeup-figure--full .closeup-glow {
-  --mx: 0.1833;
-  --my: 0.9167;
-}
-/* The glow comes up only once its picture is revealing (site.js's reveal
-   sets .is-revealed on the box), fading in with it and a little after, so it
-   never shows ahead of the picture as coloured fog. Hidden, it has no
-   transition, so a reset is never seen. Where nothing is revealed (no
-   IntersectionObserver), it is simply there. */
-.fx .closeup-glow {
-  opacity: 0;
-}
-.fx .closeup-figure:has(> .closeup-box.is-revealed) .closeup-glow,
-.fx:not(.reveal) .closeup-glow {
-  opacity: 0.5;
-  transition: opacity 900ms ease 200ms;
-}
-/* On its own layer while it is near the screen, so the fade is a compositing
-   change rather than a repaint. */
-.fx .closeup-figure.is-near .closeup-glow {
-  will-change: opacity;
-}
-.closeup-box {
-  position: relative;
-  z-index: 1;
-  aspect-ratio: var(--ar);
-  border-radius: 14px;
-  overflow: hidden;
-  background: #08080a;
-  box-shadow: 0 var(--closeup-shadow-y) var(--closeup-shadow-blur) rgba(0, 0, 0, 0.5), inset 0 0 0 1px var(--card-sheen);
-}
-.closeup-box img {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  max-width: none;
-  object-fit: cover;
-  object-position: var(--focus, 50% 50%);
-  display: block;
-}
-.closeup-box--glass {
-  --ar: 2640 / 480;
-}
-.closeup-box--tiles {
-  --ar: 2540 / 1540;
-}
-.closeup-box--player {
-  --ar: 1920 / 1164;
-}
-.closeup-figure figcaption {
-  position: relative;
-  z-index: 1;
-  margin: clamp(14px, 1.8vw, 20px) 0 0;
-}
-.closeup-figure--full figcaption {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px clamp(14px, 2vw, 26px);
-  align-items: baseline;
-}
-.closeup-figure figcaption h3 {
-  font-size: clamp(19px, 2vw, 24px);
-  font-weight: 700;
-  margin: 0 0 8px;
-  letter-spacing: -0.4px;
-}
-.closeup-figure--full figcaption h3 {
-  flex: 0 1 auto;
-  margin: 0;
-}
-.closeup-figure figcaption p {
-  font-size: clamp(16px, 1.35vw, 18px);
-  line-height: 1.5;
-  color: var(--text-reading);
-  margin: 0;
-  text-wrap: pretty;
-}
-.closeup-figure--full figcaption p {
-  flex: 1 1 300px;
-  max-width: 56ch;
-}
-.closeup-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: clamp(18px, 2.4vw, 30px);
-  align-items: start;
-}
-
 /* ---------- Pointer-lit cards ---------- */
 /* A soft light follows the pointer and the card leans toward it (site.js sets
    --mx/--my/--spot and the tilt). Mouse only; touch gets the plain card. */
@@ -1357,46 +1199,6 @@ video::-webkit-media-controls-start-playback-button {
   background: radial-gradient(var(--spot-size, 520px) circle at var(--mx, 50%) var(--my, 0%), var(--color-white-a10), transparent 60%);
   opacity: var(--spot, 0);
   transition: opacity 400ms ease;
-}
-
-/* ---------- Built differently ---------- */
-.built-section {
-  padding: 0 0 clamp(56px, 8vh, 100px);
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: clamp(18px, 2.4vw, 30px);
-}
-.built-card {
-  padding: clamp(28px, 3.4vw, 48px);
-  border-radius: 14px;
-  background: var(--color-white-a07);
-  box-shadow: inset 0 0 0 1px var(--hairline);
-}
-.built-card .built-title {
-  font-size: clamp(24px, 2.6vw, 34px);
-  line-height: 1.1;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  color: var(--text-primary);
-  margin: 0 0 16px;
-  text-wrap: balance;
-}
-.built-card p {
-  font-size: clamp(16px, 1.6vw, 17px);
-  line-height: 1.55;
-  color: var(--text-reading);
-  margin: 0;
-  max-width: 68ch;
-  text-wrap: pretty;
-}
-.built-card--offline p {
-  max-width: 62ch;
-}
-.built-card p.built-tech {
-  font-size: 14px;
-  line-height: 1.5;
-  color: var(--text-tertiary);
-  margin: 12px 0 0;
 }
 
 /* ---------- Community quote cloud ---------- */
@@ -1866,13 +1668,6 @@ video::-webkit-media-controls-start-playback-button {
   margin: 2px 0 0;
   text-wrap: pretty;
 }
-.install-card .install-note {
-  font-size: 14px;
-  line-height: 1.55;
-  color: var(--text-tertiary);
-  margin: 6px 0 0;
-  text-wrap: pretty;
-}
 .install-card a {
   margin-top: auto;
   padding-top: 16px;
@@ -1982,24 +1777,6 @@ video::-webkit-media-controls-start-playback-button {
 }
 .footer-links a:hover {
   color: var(--text-primary);
-}
-/* The ask: one line in the small-print voice under the links, with Ko-fi's
-   stock dark button (unmodified) beside it; on phones the button wraps
-   under the line. No box of its own, so it stays as quiet as the cup in
-   the header. */
-.footer-support {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 14px 24px;
-  margin: clamp(28px, 3.5vh, 40px) 0 0;
-}
-.footer-support p {
-  font-size: 15px;
-  line-height: 1.5;
-  color: var(--text-secondary);
-  margin: 0;
-  text-wrap: pretty;
 }
 .footer-kofi {
   position: relative;
@@ -2391,10 +2168,6 @@ video::-webkit-media-controls-start-playback-button {
     padding: 11px 0;
     margin: -11px 0;
   }
-  .footer-support {
-    flex-direction: column;
-    align-items: flex-start;
-  }
 
   .doc-body table {
     min-width: 420px;
@@ -2476,96 +2249,6 @@ video::-webkit-media-controls-start-playback-button {
     --mx: 0.6875;
     --my: 1.1;
   }
-  .closeup-figure--full .closeup-glow {
-    --mx: 0.6471;
-    --my: 1;
-  }
-  .why-section {
-    padding-top: 40px;
-  }
-
-  /* Phones get their own taller glass crop (a <picture> source) so the bar
-     reads larger instead of shrinking the wide strip. */
-  .closeup-box--glass {
-    --ar: 1120 / 530;
-  }
-  /* The two smaller close-ups become one swipeable row, edge to edge, each
-     card the same shape; the next one peeks in from the right.
-     It scrolls sideways ONLY. `overflow-x: auto` alone makes overflow-y auto
-     too, and a card or caption still waiting to be revealed (translated
-     down, below) poked out of the row's bottom: the row became a 32px
-     vertical scroller, and a vertical swipe that started on it scrolled the
-     row instead of the page, once down and once back up. overflow-y is
-     hidden (`clip` cannot pair with `auto`), nothing inside may overflow
-     vertically, and a fling at either end stays in the row.
-     Being a clip, the row keeps room above the cards for their drop shadow
-     (it rises blur less offset above a card; below, the captions cover its
-     reach), taken back by its margin so nothing moves. That room overlaps
-     the caption above, which is positioned and so stays on top for taps.
-     Sideways the row already runs to the window's edges. */
-  .closeup-row {
-    --shadow-rise: calc(var(--closeup-shadow-blur) - var(--closeup-shadow-y));
-    display: flex;
-    gap: 14px;
-    overflow-x: auto;
-    overflow-y: hidden;
-    overscroll-behavior-x: contain;
-    scroll-snap-type: x mandatory;
-    scroll-padding-left: var(--gutter);
-    margin: calc(-1 * var(--shadow-rise)) calc(-1 * var(--gutter)) 0;
-    padding: var(--shadow-rise) 0 8px var(--gutter);
-    align-items: start;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-  }
-  .closeup-row::-webkit-scrollbar {
-    display: none;
-  }
-  /* Safari ignores a scroller's end padding; a spacer keeps the last card's
-     right margin equal to the page's left one. */
-  .closeup-row::after {
-    content: "";
-    flex: 0 0 calc(var(--gutter) - 14px);
-    align-self: stretch;
-  }
-  .closeup-row .closeup-figure {
-    flex: 0 0 86%;
-    scroll-snap-align: start;
-  }
-  /* In the row, a glow keeps to its figure's own box: grown by its soft
-     edge, it would overflow the row, widening its sideways scroll and
-     giving it a vertical one (see above). */
-  .closeup-row .closeup-glow {
-    --mx: 0;
-    --my: 0;
-  }
-  /* In the row, reveals fade and settle in place rather than rising from
-     below, which would overflow the row (see above) and be cut off by it. */
-  .reveal .closeup-row [data-reveal] {
-    translate: none;
-  }
-  .closeup-box--tiles {
-    --ar: 1900 / 1540;
-    --focus: 52% 0;
-  }
-  /* The player close-up is wider than the card and its controls reach both
-     edges, so no crop keeps both buttons whole: it is shown entire, on the
-     picture's own black, and the card keeps the row's shape. */
-  .closeup-box--player {
-    --ar: 1900 / 1540;
-    background: #000;
-  }
-  .closeup-box--player img {
-    object-fit: contain;
-  }
-
-  .built-section {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .built-card p.built-tech {
-    font-size: 13px;
-    text-wrap: balance;
-  }
 
   .quote-cloud {
     grid-template-columns: minmax(0, 1fr);
@@ -2613,4 +2296,521 @@ video::-webkit-media-controls-start-playback-button {
     width: min(100%, calc((100vh - 100px) * 16 / 9));
     width: min(100%, calc((100svh - 100px) * 16 / 9));
   }
+}
+
+/* ---------- Hero version line ---------- */
+.hero-version {
+  font-size: 14px;
+  color: var(--text-tertiary);
+  margin: 10px 0 0;
+}
+.hero-version a {
+  color: var(--text-secondary);
+}
+.hero-version a:hover {
+  color: var(--text-primary);
+}
+
+/* ---------- Features ---------- */
+.kicker {
+  font-size: 13px;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  margin: 0;
+}
+.features-section {
+  padding: clamp(40px, 6vh, 72px) 0 clamp(48px, 7vh, 88px);
+  scroll-margin-top: var(--header-h);
+}
+.features-section .section-heading {
+  align-items: flex-start;
+  text-align: left;
+  margin-bottom: clamp(28px, 4.5vh, 52px);
+}
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+  gap: clamp(14px, 1.8vw, 22px);
+}
+.feature-card {
+  border-radius: 16px;
+  background: var(--color-white-a07);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  padding: clamp(22px, 2.4vw, 30px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  --spot-size: 420px;
+}
+.feature-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--color-white-a07);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+.feature-icon svg {
+  display: block;
+}
+.feature-card h3 {
+  font-size: 20px;
+  line-height: 1.25;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+.feature-card p {
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--text-reading);
+  margin: 0;
+  text-wrap: pretty;
+}
+.shots-kicker {
+  margin: clamp(48px, 7vh, 80px) 0 clamp(18px, 2.4vw, 26px);
+}
+.shot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+  gap: clamp(24px, 3vw, 40px) clamp(18px, 2.4vw, 30px);
+}
+.shot {
+  margin: 0;
+  min-width: 0;
+}
+.shot-frame {
+  aspect-ratio: 16 / 9;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--color-neutral-950);
+  box-shadow: 0 20px 52px rgba(0, 0, 0, 0.45), inset 0 0 0 1px var(--card-sheen);
+}
+.shot-frame img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.shot figcaption {
+  margin: clamp(12px, 1.6vw, 18px) 0 0;
+}
+.shot h3 {
+  font-size: 19px;
+  font-weight: 700;
+  margin: 0 0 4px;
+  letter-spacing: -0.02em;
+}
+.shot p {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--text-reading);
+  margin: 0;
+  max-width: 52ch;
+  text-wrap: pretty;
+}
+.shots-credit {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  margin: clamp(20px, 2.8vh, 28px) 0 0;
+}
+.shots-credit a {
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* ---------- Works with your Plex ---------- */
+.works-section,
+.limits-section {
+  padding: clamp(44px, 6.5vh, 76px) 0;
+  box-shadow: inset 0 1px 0 var(--hairline);
+  scroll-margin-top: var(--header-h);
+}
+.works-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px clamp(20px, 3vw, 40px);
+  margin-bottom: clamp(22px, 3vh, 32px);
+}
+.works-heading h2,
+.limits-grid h2,
+.notes-split h2 {
+  font-size: clamp(26px, 3.2vw, 40px);
+  line-height: 1.1;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+}
+.works-heading p {
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--text-reading);
+  margin: 0;
+  text-wrap: pretty;
+}
+.works-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+}
+.works-list li {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 0 18px 0 14px;
+  border-radius: 999px;
+  background: var(--color-white-a07);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  font-size: 16px;
+  line-height: 1.3;
+}
+.works-list svg {
+  flex: none;
+  display: block;
+  color: var(--text-tertiary);
+}
+.works-note {
+  margin-top: clamp(18px, 2.4vw, 26px);
+  max-width: 760px;
+  padding: 18px 22px;
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.works-note p {
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--text-reading);
+  margin: 0;
+  text-wrap: pretty;
+}
+.works-note strong {
+  color: var(--text-primary);
+}
+
+/* ---------- Approach ---------- */
+.approach-section {
+  padding: clamp(56px, 9vh, 110px) 0 clamp(44px, 6vh, 72px);
+  box-shadow: inset 0 1px 0 var(--hairline);
+  scroll-margin-top: var(--header-h);
+}
+.approach-section > h2 {
+  font-size: clamp(34px, 5vw, 64px);
+  line-height: 1.05;
+  font-weight: 700;
+  margin: 0 0 clamp(28px, 4.5vh, 52px);
+  letter-spacing: -0.04em;
+  text-wrap: balance;
+  max-width: 16ch;
+}
+.approach-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
+  gap: clamp(28px, 4vw, 64px);
+  align-items: start;
+}
+.approach-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.approach-copy p {
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--text-reading);
+  margin: 0;
+  text-wrap: pretty;
+}
+.approach-copy .approach-lead {
+  font-size: clamp(19px, 1.9vw, 24px);
+  line-height: 1.45;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+}
+.approach-diagram {
+  padding: clamp(18px, 2.4vw, 28px);
+  border-radius: 16px;
+  background: var(--color-white-a07);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.flows {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(18px, 2.4vw, 28px);
+}
+.flow {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.flow-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(6px, 1vw, 12px);
+}
+.flow-row svg {
+  display: block;
+  flex: none;
+  color: var(--text-tertiary);
+}
+.flow-node {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 56px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  font-size: 15px;
+  line-height: 1.3;
+  min-width: 0;
+  font-weight: 600;
+  background: var(--color-white-a07);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.flow-node--key {
+  font-weight: 700;
+  background: var(--color-white-a10);
+  box-shadow: inset 0 0 0 1px var(--color-white-a22);
+}
+.flow-node--screen {
+  background: var(--color-neutral-950);
+  box-shadow: inset 0 0 0 1px var(--color-white-a10);
+}
+.benefit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  gap: clamp(22px, 3vw, 40px);
+  margin-top: clamp(36px, 5.5vh, 64px);
+}
+.benefit-grid > div {
+  padding-top: 20px;
+  box-shadow: inset 0 1px 0 var(--color-white-a22);
+}
+.benefit-grid h3 {
+  font-size: 21px;
+  line-height: 1.25;
+  font-weight: 700;
+  margin: 0 0 8px;
+  letter-spacing: -0.02em;
+}
+.benefit-grid p {
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--text-reading);
+  margin: 0;
+  text-wrap: pretty;
+}
+.approach-tech {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  margin: clamp(28px, 4vh, 44px) 0 0;
+}
+
+/* ---------- Community: support, press glosses ---------- */
+.community-support {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 24px;
+  margin: clamp(32px, 4.5vh, 48px) 0 0;
+}
+.community-support p {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin: 0;
+  text-wrap: pretty;
+}
+.press-gloss {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-tertiary);
+}
+.press-item {
+  grid-template-areas: "meta head date" "meta gloss date";
+}
+.press-item .press-meta { grid-area: meta; }
+.press-item .press-headline { grid-area: head; }
+.press-item .press-gloss { grid-area: gloss; margin-top: 0; }
+.press-item .press-date { grid-area: date; }
+.press-stage-gloss {
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+  margin: 0;
+}
+.press-stage-gloss[hidden] {
+  display: none;
+}
+@media (max-width: 759px) {
+  .press-item {
+    grid-template-areas: "meta date" "head head" "gloss gloss";
+  }
+}
+
+/* ---------- Limits ---------- */
+.limits-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: clamp(28px, 4vw, 64px);
+  align-items: start;
+}
+.limits-grid h2 {
+  margin-bottom: 14px;
+}
+.limits-grid a,
+.install-card a,
+.renew-block a,
+.notes-split a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.limits-grid a:hover,
+.renew-block a:hover,
+.notes-split a:hover {
+  opacity: 0.75;
+}
+.limits-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.limits-list li {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 56px;
+  padding: 8px 0;
+  box-shadow: inset 0 -1px 0 var(--hairline);
+  font-size: clamp(17px, 1.7vw, 20px);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.limits-list li > span:first-child {
+  flex: none;
+  width: 12px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--text-tertiary);
+}
+
+/* ---------- Install: reassurance chips, renewing ---------- */
+.install-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  justify-content: center;
+  margin-top: 8px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: var(--color-white-a07);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  font-size: 15px;
+}
+.chip svg {
+  flex: none;
+  display: block;
+}
+.renew-block {
+  margin-top: clamp(16px, 2.2vw, 26px);
+  padding: clamp(20px, 2.4vw, 28px);
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  gap: 12px clamp(24px, 3vw, 48px);
+  align-items: start;
+}
+.renew-block h3 {
+  font-size: 19px;
+  line-height: 1.3;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+.renew-block > div {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.renew-block p {
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--text-reading);
+  margin: 0;
+  text-wrap: pretty;
+}
+
+/* ---------- Compatibility and privacy ---------- */
+.notes-split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: clamp(32px, 4vw, 64px);
+  align-items: start;
+}
+.notes-split h2 {
+  font-size: clamp(22px, 2.4vw, 28px);
+  margin-bottom: clamp(18px, 2.6vh, 26px);
+}
+.notes-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.notes-split h3 {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0 0 6px;
+}
+.notes-split p {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-reading);
+  margin: 0 0 12px;
+  text-wrap: pretty;
+}
+.notes-stack p {
+  margin: 0;
+}
+.notes-split .notes-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 24px;
+  margin-top: 12px;
+}
+.install-card a,
+.renew-block a {
+  align-self: flex-start;
 }

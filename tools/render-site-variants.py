@@ -4,7 +4,7 @@
     python3 tools/render-site-variants.py
 
 `make screenshots` renders each close-up once, as a JPEG at the size its scene names
-(`tests/screenshots/scenes.json`, the `site-*` scenes). The page serves more than that: a WebP
+(`tests/screenshots/scenes.json`, the `site-*` scenes). The page used to serve more than that (it no longer shows the close-ups, since the Landing Page v9 redesign; the files are still produced and staged): a WebP
 of every close-up (its <picture> prefers it; the JPEG is the fallback), and a smaller phone copy
 (`-narrow`, the `max-width: 759px` source) of the tiles and the player close-ups. The glass
 close-up's phone copy is a different crop, so it is a scene of its own and only gets its WebP
@@ -24,7 +24,7 @@ MEDIA = ROOT / "site" / "media"
 # The rendered close-ups, each gets a WebP of the same size.
 RENDERED = ["closeup-glass.jpg", "closeup-glass-narrow.jpg", "closeup-tiles.jpg", "closeup-player.jpg"]
 # source, phone copy, its width. On a phone the two cards share one swipeable row, each 86% of
-# the window (styles.css, `.closeup-row`): 1200 px covers a 430 CSS px window at DPR 3 for the
+# the window (the retired `.closeup-row` rule in styles.css): 1200 px covers a 430 CSS px window at DPR 3 for the
 # player (shown whole) and at DPR 2.5 for the tiles (cropped to the card's 1900:1540 shape).
 NARROW = [
     ("closeup-tiles.jpg", "closeup-tiles-narrow", 1200),

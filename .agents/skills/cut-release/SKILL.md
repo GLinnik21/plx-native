@@ -202,7 +202,7 @@ loader check become a playback claim — it grades whether the process starts an
 plane. The note carries one line per tier; the matrix belongs to the audit.
 
 **Look at the screenshots; the release's own run commits them.** The README,
-`docs/ux-scenario.md` and the website's close-up stills and link-preview card (`site/media/`) show
+`docs/ux-scenario.md` and the website's screenshots (`docs/screenshots/`, staged by `pages.yml`) and link-preview card (`site/media/`) show
 the release's own UI, so a release whose figures predate its changes advertises a different app. The `stills` job
 of `site-video.yml` regenerates them after the release (see "Site video" below); this Mac render is a PREVIEW, to
 open the figures and fix any caption they falsify in this release's commit, not to commit the images:

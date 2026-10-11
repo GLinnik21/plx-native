@@ -680,12 +680,14 @@
       const headline = a.querySelector(".press-headline");
       const time = a.querySelector(".press-date");
       const lang = a.querySelector(".press-lang");
+      const gloss = a.querySelector(".press-gloss");
       return {
         href: a.getAttribute("href"),
         outlet: a.querySelector(".press-outlet").textContent,
         language: lang ? lang.textContent : "English",
         lang: headline.getAttribute("lang") || "en",
         headline: headline.innerHTML,
+        gloss: gloss ? gloss.textContent : "",
         date: time.textContent,
         iso: time.getAttribute("datetime"),
       };
@@ -707,6 +709,7 @@
     const stage = el("div", "press-stage", { role: "tabpanel", "aria-live": "polite" });
     const meta = el("span", "press-stage-meta");
     const head = el("span", "press-stage-headline");
+    const gloss = el("p", "press-stage-gloss");
     const foot = el("div", "press-stage-foot");
     const read = el("a", "press-read");
     read.textContent = "Read the article →";
@@ -716,7 +719,7 @@
     prev.innerHTML = arrow("M15 5l-7 7 7 7");
     next.innerHTML = arrow("M9 5l7 7-7 7");
     foot.append(read, pos, prev, next);
-    stage.append(meta, head, foot);
+    stage.append(meta, head, gloss, foot);
 
     let sel = 0;
     const buttons = items.map((it, i) => {
@@ -742,6 +745,8 @@
       meta.textContent = it.date + " · " + it.language;
       head.innerHTML = it.headline;
       head.setAttribute("lang", it.lang);
+      gloss.textContent = it.gloss;
+      gloss.hidden = !it.gloss;
       read.setAttribute("href", it.href);
       if (it.lang !== "en") read.setAttribute("hreflang", it.lang); else read.removeAttribute("hreflang");
       pos.textContent = String(sel + 1).padStart(2, "0") + " / " + String(items.length).padStart(2, "0");
