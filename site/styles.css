@@ -2427,8 +2427,7 @@ video::-webkit-media-controls-start-playback-button {
 }
 
 /* ---------- Works with your Plex ---------- */
-.works-section,
-.limits-section {
+.works-section {
   padding: clamp(44px, 6.5vh, 76px) 0;
   box-shadow: inset 0 1px 0 var(--hairline);
   scroll-margin-top: var(--header-h);
@@ -2441,7 +2440,6 @@ video::-webkit-media-controls-start-playback-button {
   margin-bottom: clamp(22px, 3vh, 32px);
 }
 .works-heading h2,
-.limits-grid h2,
 .notes-split h2 {
   font-size: clamp(26px, 3.2vw, 40px);
   line-height: 1.1;
@@ -2672,16 +2670,7 @@ video::-webkit-media-controls-start-playback-button {
 }
 
 /* ---------- Limits ---------- */
-.limits-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
-  gap: clamp(28px, 4vw, 64px);
-  align-items: start;
-}
-.limits-grid h2 {
-  margin-bottom: 14px;
-}
-.limits-grid a,
+.plex-col a,
 .install-card a,
 .renew-block a,
 .notes-split a {
@@ -2692,7 +2681,7 @@ video::-webkit-media-controls-start-playback-button {
   font-weight: 700;
   color: var(--text-primary);
 }
-.limits-grid a:hover,
+.plex-col a:hover,
 .renew-block a:hover,
 .notes-split a:hover {
   opacity: 0.75;
@@ -2817,3 +2806,21 @@ video::-webkit-media-controls-start-playback-button {
 .renew-block a {
   align-self: flex-start;
 }
+
+/* ---------- Works with your Plex: works and limits side by side ---------- */
+.plex-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: clamp(28px, 4vw, 64px);
+  align-items: start;
+}
+.plex-col h3 {
+  font-size: clamp(22px, 2.4vw, 30px);
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  margin: 0 0 clamp(16px, 2vh, 22px);
+  padding-top: clamp(16px, 2vh, 22px);
+  box-shadow: inset 0 1px 0 var(--hairline);
+}
+.plex-col { scroll-margin-top: var(--header-h); }
