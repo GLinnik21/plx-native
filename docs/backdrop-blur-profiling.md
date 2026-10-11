@@ -62,7 +62,7 @@ per-query floor, which is not zero on this driver and must be quoted beside ever
 
 ## Region and coordinate rules
 
-Each panel's resting bounds are expanded by `BLUR_MARGIN = 88` authored pixels: `BLUR_REACH = 68`
+Each rising panel's resting bounds are expanded by `BLUR_MARGIN = 88` authored pixels (a panel that never rises, by `BLUR_REACH` alone): `BLUR_REACH = 68`
 plus the maximum 20-pixel popover entry slide. `BLUR_REACH` itself is 38 pixels of maximum lens
 displacement plus approximately 24.5 pixels of filter support, rounded up. Cached containment tests
 need only the 68-pixel sampling reach because the 20-pixel slack exists to keep the entry animation

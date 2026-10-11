@@ -29,8 +29,8 @@ renderer has to blur**, in whole 16.7 ms steps.
 
 Four consequences you can act on immediately:
 
-* **What glass is charged for is the RECTANGLE THAT HAS TO BE BLURRED — your surface grown by 88
-  pixels on every side, and unioned across every glass surface in the frame.** Not the surface. Keep
+* **What glass is charged for is the RECTANGLE THAT HAS TO BE BLURRED — your surface grown by up to 88
+  pixels on every side (68 for a glass that never rises), and unioned across every glass surface in the frame.** Not the surface. Keep
   that rectangle **under about 300,000 pixels and you stay at 60 fps**; past it you drop to 45, and
   it steps down from there. **The shipped Account panel sits just inside that line and is free**
   (measured, §3.4).
@@ -77,7 +77,7 @@ that has stopped repainting costs nothing at all.
 ### 3.1 Backdrop glass
 
 **Index everything on the blurred REGION, not on the surface.** The renderer has to snapshot and
-blur your surface grown by **88 pixels on every side** — the glass rim bends in pixels from outside
+blur your surface grown by **up to 88 pixels on every side** (68 for a glass that never rises) — the glass rim bends in pixels from outside
 itself — and where a frame holds several glass surfaces it blurs **one rectangle containing all of
 them**. That rectangle is what you are charged for. You do not set it directly; you set it by how
 big your surfaces are and how far apart you put them.
@@ -298,7 +298,7 @@ half of the bill; the large half is the blur behind it, which is charged in whol
 according to how big the shared blurred rectangle is (§3.1, §3.2). The planning rule for glass is a
 single number:
 
-> **Keep the union of every glass surface in the frame, grown by 88 pixels a side, under about
+> **Keep the union of every glass surface in the frame, grown by at most 88 pixels a side, under about
 > 300,000 pixels. Inside that you keep 60 fps. Outside it you get 45, then 36.**
 
 ---

@@ -11,7 +11,7 @@ use crate::tile::Resume;
 /// track at `(940+176) x 252` = 281k px^2 where the real region is `1116 x 200` = 223k — a 26%
 /// over-estimate that sat under a passing assertion for as long as the limit existed, and the
 /// reason the old limit read as if it had only ~7% of headroom when it had far more. Both
-/// surfaces are grown `gfx::BLUR_MARGIN` a side and then clamped to the screen, so the capsule
+/// surfaces are grown `gfx::BLUR_MARGIN` a side (`blur_region` is the rising, upper-bound region; a band that never rises is grabbed only `BLUR_REACH`) and then clamped to the screen, so the capsule
 /// at x=96 puts the union's left edge at 8 (`BAND_REGION_X0`), the band at y=36 puts its top on 0
 /// and makes it 200 tall
 /// rather than 252. That is `blur_region`'s business, and it is now asked rather than restated.
