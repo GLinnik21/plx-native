@@ -94,6 +94,12 @@ pub struct Caps {
     /// The VP9 row's (max width, max height, ceil max frame rate), MIN-merged across duplicate
     /// rows; 0 = not stated. Read only when `vp9`.
     pub vp9_row: (u32, u32, u32),
+    /// The deepest VP9 bit depth the profile claims: 10 where a 10-bit VP9 stream has been measured
+    /// to decode with the right levels AND to reach HDR when its container says PQ, 8 everywhere
+    /// else (the table has no bit-depth axis, so this is device evidence, not table data). Only the
+    /// webOS 4 family (ACB video path) is measured, so [`vp9_bit_depth_for`] is the one place the
+    /// 10 comes from; the assumed profile and a table read on any other set say 8.
+    pub vp9_bit_depth: u32,
     /// The device table lists an AV1 decoder row. False in `assumed()` and on every table without
     /// the row, which keeps AV1 a server transcode there. Issue #593.
     pub av1: bool,
@@ -122,6 +128,7 @@ impl Caps {
             hevc_row: (0, 0, 0),
             vp9: false,
             vp9_row: (0, 0, 0),
+            vp9_bit_depth: 8,
             av1: false,
             av1_row: (0, 0, 0),
             audio: "aac,ac3,eac3".to_string(),
@@ -337,11 +344,26 @@ fn parse(s: &str) -> Option<Caps> {
         },
         vp9,
         vp9_row: (vp9_wh.0, vp9_wh.1, vp9_fps),
+        vp9_bit_depth: 8,
         av1,
         av1_row: (av1_wh.0, av1_wh.1, av1_fps),
         audio,
         audio_channels,
     })
+}
+
+/// The VP9 bit depth to claim on a set running webOS `major` (0 = unknown). 10 on webOS 1 to 4, the
+/// ACB video path, where the dev set (4.x) decoded a 10-bit Profile 2 stream with correct levels and a
+/// PQ-tagged one switched the panel to HDR through `player::vp9_hdr`. 8 on every other set: on webOS 5+
+/// there is no ACB, so `vp9_hdr` sends nothing, and whether a PQ VP9 stream reaches HDR there is
+/// unknown, which means a 10-bit file might direct-play with washed-out colour where the server
+/// would have converted it correctly.
+pub fn vp9_bit_depth_for(major: u32) -> u32 {
+    if (1..=4).contains(&major) {
+        10
+    } else {
+        8
+    }
 }
 
 /// Read the table once and log what was derived. Called at boot right after `webos::probe`,
@@ -362,8 +384,10 @@ pub fn probe() {
                 } else {
                     String::new()
                 };
+                let mut c = c;
+                c.vp9_bit_depth = vp9_bit_depth_for(crate::tv::device::info().major);
                 plx_base::eventlog::log(&format!(
-                    "devcaps: hevc={} {}x{} vp9={} av1={} audio={} rows: h264={}x{}@{} hevc={}x{}@{}{vp9_row}{av1_row} (device table)",
+                    "devcaps: hevc={} {}x{} vp9={} av1={} audio={} rows: h264={}x{}@{} hevc={}x{}@{}{vp9_row}{av1_row} vp9bits={} (device table)",
                     c.hevc,
                     c.hevc_max.0,
                     c.hevc_max.1,
@@ -375,7 +399,8 @@ pub fn probe() {
                     c.h264_row.2,
                     c.hevc_row.0,
                     c.hevc_row.1,
-                    c.hevc_row.2
+                    c.hevc_row.2,
+                    c.vp9_bit_depth
                 ));
                 c
             }
@@ -747,5 +772,20 @@ mod tests {
         let c = Caps::assumed();
         assert!(!c.vp9);
         assert_eq!(c.vp9_row, (0, 0, 0));
+    }
+
+    /// 10-bit VP9 is claimed only on the webOS 4 family (the ACB path it was measured on); an unknown
+    /// release, webOS 5+ and the assumed profile all say 8.
+    #[test]
+    fn vp9_bit_depth_is_ten_only_where_it_was_measured() {
+        assert_eq!(vp9_bit_depth_for(0), 8, "unknown release");
+        for major in 1..=4 {
+            assert_eq!(vp9_bit_depth_for(major), 10, "webOS {major}");
+        }
+        for major in [5, 6, 7, 8, 9, 10, 11, 25] {
+            assert_eq!(vp9_bit_depth_for(major), 8, "webOS {major}");
+        }
+        assert_eq!(Caps::assumed().vp9_bit_depth, 8);
+        assert_eq!(parse(REAL).unwrap().vp9_bit_depth, 8, "parse() alone never claims it; probe() sets it");
     }
 }

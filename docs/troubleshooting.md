@@ -187,8 +187,9 @@ never needed to get help.
 ## AV1 and VP9 files don't play
 
 PlxNative direct plays AV1 only on a television whose own codec table lists an AV1 decoder, and
-8-bit VP9 (Profile 0) only on one whose table lists a VP9 decoder. On any other set, or for a 10-bit
-VP9 file, the server has to convert the item, which fails when your server can't transcode or
+VP9 only on one whose table lists a VP9 decoder, and 10-bit (Profile 2) VP9, HDR10 included, only on a
+webOS 4 television, the one family it has been measured on. On any other set, or for a 10-bit VP9 file
+on a newer webOS, the server has to convert the item, which fails when your server can't transcode or
 transcoding is switched off.
 
 AV1 and VP9 direct play are new. An owner of an LG OLED A2 (webOS 10.3.1) reported AV1 playing, with no log

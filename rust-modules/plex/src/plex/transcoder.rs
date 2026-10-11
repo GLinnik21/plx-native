@@ -176,7 +176,8 @@ pub fn direct_play_video_codecs(caps: &plx_platform::devcaps::Caps) -> Vec<&'sta
 ///   numbers (the dev set: 4096x2176; the pre-devcaps constants 3840x2176 remain the fallback).
 ///   With a VP9 or AV1 row, a codec-scoped limitation tightens each axis the row measures, but
 ///   only where the row is strictly tighter than `hevc_max` (see `row_limits` below). VP9 is also
-///   capped at `video.bitDepth` 8 (Profile 0): Profile 2 is not claimed.
+///   capped at `video.bitDepth` `Caps::vp9_bit_depth` (8, or 10 on the webOS 4 family where 10-bit
+///   VP9 was measured), and with the cap at 10 no VP9 bit-depth scope is emitted at all.
 /// * **`bitDepth=10`** — a CONSTANT, not a derivation: the device table has no bit-depth axis
 ///   anywhere, so it can neither confirm nor deny 10-bit. The claim stays because it is what
 ///   keeps HDR10 through a transcode (HEVC Main10, BT.2020+PQ in-bitstream — the same in-band
@@ -258,13 +259,15 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
             codec_limits.push_str(&row_limits(name, row));
         }
     }
-    // VP9 Profile 2 (10-bit) is not claimed: this profile's `*` bitDepth bound is 10 for HEVC
-    // Main10, and nothing has shown the VP9 decoder takes the feed at 10 bits, so VP9 is capped at 8
-    // here and a 10-bit VP9 source takes the server route.
-    if caps.vp9 {
-        codec_limits.push_str(
-            "+add-limitation(scope=videoCodec&scopeName=vp9&type=upperBound&name=video.bitDepth&value=8&replace=true)",
-        );
+    // VP9 Profile 2 (10-bit) is claimed only where it was measured (`Caps::vp9_bit_depth`, 10 on the
+    // webOS 4 ACB family). Elsewhere the `*` bitDepth bound of 10 (HEVC Main10) would otherwise cover
+    // VP9 too, so VP9 is capped at the depth the set is known for and a deeper VP9 source takes the
+    // server route.
+    if caps.vp9 && caps.vp9_bit_depth < 10 {
+        codec_limits.push_str(&format!(
+            "+add-limitation(scope=videoCodec&scopeName=vp9&type=upperBound&name=video.bitDepth&value={}&replace=true)",
+            caps.vp9_bit_depth
+        ));
     }
     let dp_audio = &caps.audio;
     // ac3 first — the preferred ENCODE target — then the rest of the caps subset as copy lanes.
@@ -1108,6 +1111,7 @@ mod tests {
                 hevc_row: (0, 0, 0),
                 vp9: true,
                 vp9_row: (0, 0, 0),
+                vp9_bit_depth: 8,
                 av1: false,
                 av1_row: (0, 0, 0),
                 audio: "aac,ac3,eac3".into(),
@@ -1299,6 +1303,7 @@ mod tests {
             hevc_row: (0, 0, 0),
             vp9: false,
             vp9_row: (0, 0, 0),
+            vp9_bit_depth: 8,
             av1: false,
             av1_row: (0, 0, 0),
             audio: "aac,ac3,eac3".into(),
@@ -1329,6 +1334,7 @@ mod tests {
                 hevc_row: (0, 0, 0),
                 vp9: false,
                 vp9_row: (0, 0, 0),
+                vp9_bit_depth: 8,
                 av1: false,
                 av1_row: (0, 0, 0),
                 audio: "aac".into(),
@@ -1356,6 +1362,7 @@ mod tests {
             hevc_row: (0, 0, 0),
             vp9: true,
             vp9_row: (0, 0, 0),
+            vp9_bit_depth: 8,
             av1: false,
             av1_row: (0, 0, 0),
             audio: "aac".into(),
@@ -1562,6 +1569,17 @@ mod tests {
         assert!(!p.contains("scopeName=vp9&type=upperBound&name=video.width"), "{p}");
         assert!(!p.contains("scopeName=vp9&type=upperBound&name=video.height"), "{p}");
         assert!(p.contains("scopeName=vp9&type=upperBound&name=video.bitDepth&value=8"), "{p}");
+    }
+
+    /// Where 10-bit VP9 was measured (`Caps::vp9_bit_depth` = 10, the webOS 4 family) no VP9
+    /// bit-depth scope is emitted: the `*` bound of 10 stands, so a Profile 2 source direct-plays.
+    #[test]
+    fn a_set_measured_at_ten_bit_vp9_emits_no_vp9_bit_depth_cap() {
+        let caps = Caps { vp9: true, vp9_row: (4096, 2304, 60), vp9_bit_depth: 10, ..Caps::assumed() };
+        let p = super::profile_for(&caps);
+        assert!(p.contains("videoCodec=h264,hevc,vp9&"), "{p}");
+        assert!(!p.contains("scopeName=vp9&type=upperBound&name=video.bitDepth"), "{p}");
+        assert!(p.contains("scopeName=*&type=upperBound&name=video.bitDepth&value=10"), "{p}");
     }
 
     /// Without the row, no `vp9` anywhere: the shipped string on every set whose table lists no
