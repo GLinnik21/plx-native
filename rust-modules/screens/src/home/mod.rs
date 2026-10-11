@@ -51,9 +51,6 @@ use plx_ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 use super::clock_readout::ClockWatch;
 
 /// A paging command for a hub, when the hub has a listing identity to page by.
-/// Rows held beyond the ones in view, each side.
-const HOLD_MARGIN: usize = 2;
-
 fn hub_page_cmd(hub: &HubRef<'_>,
     make: impl FnOnce(plx_plex::plex::ServerId, String, String) -> HubsCmd) -> Option<HubsCmd> {
     match hub.identity {
@@ -1084,7 +1081,7 @@ impl HomeScreen {
         // The store holds cards for the rows in view and two either side; the rest keep a descriptor.
         if !self.rows.is_empty() {
             let (lo, hi) = on_screen.unwrap_or((0, 0));
-            let hold = (lo.saturating_sub(HOLD_MARGIN), (hi + HOLD_MARGIN).min(self.rows.len() - 1));
+            let hold = ui_cards::hold_band((lo, hi), self.rows.len());
             if self.hold_sent != Some(hold) {
                 self.hold_sent = Some(hold);
                 fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Hold { lo: hold.0, hi: hold.1 }))));

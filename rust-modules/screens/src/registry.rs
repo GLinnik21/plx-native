@@ -556,6 +556,13 @@ pub(crate) fn merged_ranges(mut ranges: Vec<std::ops::Range<usize>>, total: usiz
     out
 }
 
+/// The slots of the grid row holding `index` and the row either side, for a grid `cols` wide: the
+/// neighbourhood a focus or a restore keeps keys for.
+pub(crate) fn row_neighbourhood(index: usize, cols: usize) -> std::ops::Range<usize> {
+    let row = index / cols.max(1);
+    row.saturating_sub(1) * cols..(row + 2) * cols
+}
+
 /// A card page's stable item-key interning: which engine element each `(sid, rk)` card owns, and
 /// the next element to hand out. It maps identities to elements and never stores which one is
 /// focused. The Person and Collection pages share it; each page picks its own first element.
