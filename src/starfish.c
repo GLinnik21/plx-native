@@ -832,9 +832,9 @@ int acb_send_atmos(const char *mediaId) {
     if (elogf) { fprintf(elogf, "acb setMediaAudioData rv=%d payload=%s", rv, j); fflush(elogf); }
     return rv;
 }
-int acb_send_video_data(const char *sourceInfoVerbatim) {
+int acb_send_video_data(const char *sourceInfo) {
     if (!g_acb) return 0;
-    return acb.setMediaVideoData(g_acb, sourceInfoVerbatim, &g_taskId);
+    return acb.setMediaVideoData(g_acb, sourceInfo, &g_taskId);
 }
 void acb_start(long x, long y, long w, long h) {
     if (!g_acb) return;
