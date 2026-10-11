@@ -450,7 +450,9 @@ fn optimistic_failure_without_a_reply_still_keeps_and_logs() {
 }
 
 /// **Tone, enhancements and the quality pick fail silently**: the pick stays live, nothing is
-/// logged, nothing is republished (plan delta 4's "before"; the record keeps the old value).
+/// logged, nothing is republished (plan delta 4's "before"; the record keeps the old value). Their
+/// plex-side `set_*` returns `update`'s verdict, which is "a write was attempted", so it says `true`
+/// for a refused write.
 #[test]
 fn tone_enhancements_and_quality_failures_keep_the_value_and_log_nothing() {
     let _g = plx_base::testlock::serial();
@@ -470,6 +472,9 @@ fn tone_enhancements_and_quality_failures_keep_the_value_and_log_nothing() {
     assert_eq!(crate::player::audio_enhancements(), boost);
     assert_eq!(quality(), Quality::P720);
     assert!(!mark.since().contains("durable write failed"), "no failure line for these rows: {}", mark.since());
+    // the plex-side door these two rows use reports an ATTEMPT, not a save: a refused write is `true`
+    assert!(session::set_subtitle_tone(SubtitleTone::Charcoal), "`update` is true once a write was tried");
+    assert!(session::set_audio_enhancements(AudioEnhancements { boost_dialog: false, normalize_loudness: true }));
     drop(fixture);
     let after = stored();
     assert_eq!(after.subtitle_tone, SubtitleTone::White, "nothing landed");
