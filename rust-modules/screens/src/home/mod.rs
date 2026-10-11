@@ -221,7 +221,16 @@ struct Backdrop {
     /// yet (`bind` sets it, `draw` counts it — `placeholder.rs`: a count belongs at the DRAW,
     /// never at the resolve, and `prefetch` resolves neighbours it never draws). Empty otherwise.
     pending_art: String,
+    /// The tick (ms) of the last direction-key `Repeat` the page saw, `None` once that key is
+    /// released. While it is fresh a key is being HELD along the page, and the wash keeps the
+    /// colours it has instead of re-keying to every card the focus crosses ([`Self::held`]).
+    repeat_ms: Option<u32>,
 }
+
+/// How long after the last direction-key `Repeat` the wash still counts the key as held, for the
+/// case where the key-up never arrives (the dropped-key-up net `ui::dispatch` keeps for OK). The
+/// panel repeats about every 100 ms, so a live hold refreshes this several times over.
+const WASH_REPEAT_GRACE_MS: u32 = 300;
 
 impl Backdrop {
     fn new() -> Self {
@@ -234,7 +243,30 @@ impl Backdrop {
             outgoing_tex: (0, 0.0, 0.0),
             keyed: None,
             pending_art: String::new(),
+            repeat_ms: None,
         }
+    }
+
+    /// Read a direction key's edge off the input stream (every key reaches the page, handled or
+    /// not): a `Repeat` marks the key as held, an `Up` releases it. A first `Down` marks nothing,
+    /// so a single press still re-keys the wash at once.
+    fn note_key(&mut self, key: Key, edge: Edge, ms: u32) {
+        if !matches!(key, Key::Left | Key::Right | Key::Up | Key::Down) {
+            return;
+        }
+        match edge {
+            Edge::Repeat => self.repeat_ms = Some(ms),
+            Edge::Up => self.repeat_ms = None,
+            Edge::Down => {}
+        }
+    }
+
+    /// Is a direction key being held right now? The chrome glass blurs the page under it and
+    /// reuses that blur only while the draw arguments beneath it are unchanged; a wash re-keyed
+    /// to every card of a held run changes them every frame (about 6 ms of GPU a late frame on
+    /// the TV). So the wash holds its target for the run and re-keys once the key rests.
+    fn held(&self, ms: u32) -> bool {
+        self.repeat_ms.is_some_and(|r| ms.wrapping_sub(r) <= WASH_REPEAT_GRACE_MS)
     }
 
     /// **Bind both art layers to the heroes the page names NOW**: resolve the selected and the
@@ -299,6 +331,7 @@ impl Backdrop {
         selected: Option<&(plx_plex::plex::ServerId, String)>,
         snap: f32,
         dt: f32,
+        ms: u32,
     ) {
         self.bind(hero, outgoing, selected, snap);
         // decorative hero-art reveal dissolve (same reason as the wash below)
@@ -310,7 +343,7 @@ impl Backdrop {
                 self.outgoing_art.step(1.0, AmbientWash::K, dt);
             }
         });
-        if let Some(item) = grid_item.filter(|m| m.has_blur) {
+        if let Some(item) = grid_item.filter(|m| m.has_blur).filter(|_| !self.held(ms)) {
             self.grid_target = AmbientWash::keyed(item.blur, PageGround::CARD_W);
         }
         // decorative colour dissolve under the page — must not hold the page-freeze snapshot
@@ -1255,6 +1288,7 @@ impl HomeScreen {
             self.carousel.as_ref(),
             self.snap.pos,
             dt,
+            t.ms,
         );
         self.prefetch(view);
         let hint = self.hint_input(cx, snap_moving);
@@ -2377,6 +2411,9 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 fx.invalidate(Provenance::Input);
                 return Handled::Yes;
             }
+        }
+        if let ScreenEvent::Input(InputEvent { at, kind: InputKind::Key { key, edge, .. }, .. }) = ev {
+            self.backdrop.note_key(*key, *edge, at.ms);
         }
         match ev {
             ScreenEvent::Mount => {

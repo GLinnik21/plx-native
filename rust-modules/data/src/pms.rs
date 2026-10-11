@@ -3310,6 +3310,20 @@ pub fn seed_recent_window_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapte
     commit(state, build);
 }
 
+/// Give every card of the first shelf its own `UltraBlurColors` envelope (`blur_of(index)`), so a
+/// test can tell WHICH card a colour-keyed ground was keyed to. Call after a `seed_*_for_test`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn blur_first_shelf_for_test(state: &mut PmsState, blur_of: impl Fn(usize) -> [[f32; 3]; 4]) {
+    let shelf = &mut state.srcs[0].last.as_mut().unwrap().shelves[0];
+    for (i, item) in shelf.items.iter_mut().enumerate() {
+        let m = Arc::make_mut(item);
+        m.blur = blur_of(i);
+        m.has_blur = true;
+    }
+    let build = merge(&state.srcs);
+    commit(state, build);
+}
+
 /// A Home whose only row is a Continue Watching deck of `items` cards with `more` behind them.
 #[cfg(any(test, feature = "test-support"))]
 pub fn seed_continue_window_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, items: usize, more: bool) {

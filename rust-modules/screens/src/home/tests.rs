@@ -4377,3 +4377,144 @@ fn a_slid_row_names_its_cards_by_listing_position() {
     assert_eq!(ui_cards::CardSource::<TestHost>::global(&cards, 0), 12);
     assert_eq!(ui_cards::CardSource::<TestHost>::global(&cards, 23), 35);
 }
+
+// ---- the wash holds its colours for the length of a held direction key --------------------------
+//
+// The chrome glass reuses its blur snapshot only while the draw arguments beneath it are unchanged,
+// and the wash is the bottom of every one of them: a wash re-keyed to each card a held key crosses
+// changes them every frame. These tests drive the real screen over a row whose cards each have a
+// colour of their own and read the four corner colours the wash RECORDS (`AmbientWash::drawn_corners`).
+
+/// Twelve cards, card `i` keyed to a colour that is its own: a red ramp up, a blue ramp down.
+fn washed_snapshot() -> (plx_data::pms::PmsState, plx_data::pms::HubsSnapshot) {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_recent_window_for_test(&mut state, &adapter, 0, 12, false);
+    plx_data::pms::blur_first_shelf_for_test(&mut state, |i| card_blur(i));
+    let snap = plx_data::pms::hubs_snapshot(&state);
+    (state, snap)
+}
+
+fn card_blur(i: usize) -> [[f32; 3]; 4] {
+    [[0.1 + 0.07 * i as f32, 0.2, 0.9 - 0.07 * i as f32]; 4]
+}
+
+fn recorded_corners(s: &HomeScreen) -> [[u32; 3]; 4] {
+    s.backdrop.wash.drawn_corners().map(|c| c.map(f32::to_bits))
+}
+
+/// The wash colours card `i`'s envelope keys the page to, as the 8-bit codes the GPU is sent.
+fn card_ground(i: usize) -> [[u32; 3]; 4] {
+    AmbientWash::keyed(card_blur(i), PageGround::CARD_W).map(|c| [0, 1, 2].map(|k| (c[k] * 255.0).round() as u32))
+}
+fn corner_codes(s: &HomeScreen) -> [[u32; 3]; 4] {
+    recorded_corners(s).map(|c| c.map(|b| (f32::from_bits(b) * 255.0).round() as u32))
+}
+
+struct WashRig {
+    s: HomeScreen,
+    key: FocusKey<u32>,
+    ms: u32,
+}
+
+impl WashRig {
+    fn new(view: HubsView<'_>) -> Self {
+        let mut s = screen(view);
+        s.snap.pos = 1.0;
+        s.snap_target = 1.0;
+        let key = FocusKey { entry: s.entry, elem: s.rows[0].elems[0] };
+        pop_card(&mut s, view, key, 1);
+        let mut rig = Self { s, key, ms: 16 };
+        rig.frames(view, 240); // the wash dissolves to card 0's ground and rests
+        rig
+    }
+    fn frames(&mut self, view: HubsView<'_>, n: u32) {
+        for _ in 0..n {
+            self.ms += 16;
+            step(&mut self.s, view, Some(self.key), &ScreenEvent::Tick(Tick { ms: self.ms, dt_us: 16_667 }));
+        }
+    }
+    fn key_edge(&mut self, view: HubsView<'_>, edge: Edge) {
+        let ev = ScreenEvent::Input(InputEvent {
+            at: Tick { ms: self.ms, dt_us: 16_667 },
+            source: Source::Sdl,
+            kind: InputKind::Key { key: Key::Right, sym: 0, wcode: 0, edge, at_edge: false },
+        });
+        step(&mut self.s, view, Some(self.key), &ev);
+    }
+    fn right(&mut self, view: HubsView<'_>) {
+        let from = self.key;
+        let Step::Move(to) = Focusable::<TestHost>::neighbour(&self.s, from, Dir::Right, &cx(view, Some(from))) else {
+            panic!("the row ends before the walk does");
+        };
+        step(&mut self.s, view, Some(to), &ScreenEvent::FocusMoved { from: Some(from), to, by: By::Dir });
+        self.key = to;
+    }
+}
+
+#[test]
+fn a_held_direction_key_leaves_the_wash_alone_across_every_focus_move() {
+    let _guard = plx_base::testlock::serial();
+    let (_state, snap) = washed_snapshot();
+    let view = snap.view();
+    let mut rig = WashRig::new(view);
+    assert_eq!(corner_codes(&rig.s), card_ground(0), "the wash rests on card 0's ground");
+    let before = recorded_corners(&rig.s);
+    rig.key_edge(view, Edge::Repeat); // the run is already repeating
+    for _ in 0..8 {
+        rig.right(view);
+        for _ in 0..6 {
+            rig.frames(view, 1);
+            assert_eq!(recorded_corners(&rig.s), before, "the recorded wash changed under a held key");
+        }
+        rig.key_edge(view, Edge::Repeat);
+    }
+}
+
+#[test]
+fn the_wash_re_keys_to_the_resting_card_once_the_held_key_is_released() {
+    let _guard = plx_base::testlock::serial();
+    let (_state, snap) = washed_snapshot();
+    let view = snap.view();
+    let mut rig = WashRig::new(view);
+    rig.key_edge(view, Edge::Repeat);
+    for _ in 0..8 {
+        rig.right(view);
+        rig.frames(view, 6);
+        rig.key_edge(view, Edge::Repeat);
+    }
+    assert_eq!(corner_codes(&rig.s), card_ground(0), "held: still card 0's ground");
+    rig.key_edge(view, Edge::Up);
+    rig.frames(view, 240);
+    assert_eq!(corner_codes(&rig.s), card_ground(8), "released: the wash rests on the card focus rests on");
+}
+
+#[test]
+fn a_single_press_still_re_keys_the_wash_to_the_card_it_lands_on() {
+    let _guard = plx_base::testlock::serial();
+    let (_state, snap) = washed_snapshot();
+    let view = snap.view();
+    let mut rig = WashRig::new(view);
+    rig.key_edge(view, Edge::Down);
+    rig.right(view);
+    rig.key_edge(view, Edge::Up);
+    rig.frames(view, 240);
+    assert_eq!(corner_codes(&rig.s), card_ground(1), "a press with no repeat re-keys to its card");
+}
+
+#[test]
+fn a_settled_wash_records_the_same_bits_frame_after_frame() {
+    let _guard = plx_base::testlock::serial();
+    let (_state, snap) = washed_snapshot();
+    let view = snap.view();
+    let mut rig = WashRig::new(view);
+    rig.key_edge(view, Edge::Down);
+    rig.right(view);
+    rig.key_edge(view, Edge::Up);
+    rig.frames(view, 60); // a second on, the spring's tail is far under one 8-bit code
+    let settled = recorded_corners(&rig.s);
+    for _ in 0..30 {
+        rig.frames(view, 1);
+        assert_eq!(recorded_corners(&rig.s), settled, "the spring's tail leaked into the recorded bits");
+    }
+}

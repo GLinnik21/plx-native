@@ -3230,6 +3230,15 @@ fn ground_capped(c: [f32; 3]) -> [f32; 4] {
     )
 }
 
+/// A corner channel as the 8-bit code the GPU is sent. A critically damped spring never reaches its
+/// target: its tail keeps changing the float's low bits for seconds after the eye has stopped being
+/// able to see it, and those bits are what the draw RECORDS, so a settled wash never compared equal
+/// from frame to frame and every blur snapshot taken over it was rebuilt. Recording and drawing the
+/// code instead makes a settled wash bit-stable (the springs themselves keep their full precision).
+fn code(v: f32) -> f32 {
+    (v.clamp(0.0, 1.0) * 255.0).round() / 255.0
+}
+
 impl AmbientWash {
     /// The dissolve rate every page wash shares — deliberately slower than any focus spring (the
     /// person mock's `.5s ease`): the wash is atmosphere, and snapping it with the focus pop reads
@@ -3341,6 +3350,11 @@ impl AmbientWash {
             top + (bot - top) * v
         })
     }
+    /// The four corner colours as DRAWN and RECORDED: each channel at the 8-bit code the GPU is
+    /// sent, so a settled wash is bit-stable (see [`code`]). [`sample`](Self::sample) stays exact.
+    pub fn drawn_corners(&self) -> [[f32; 3]; 4] {
+        self.corners.map(|c| [code(c[0].pos), code(c[1].pos), code(c[2].pos)])
+    }
     /// Paint it over `r`. Opaque — this REPLACES what is under it (see the type docs), so it belongs
     /// at the bottom of a screen's draw, standing in for the flat clear.
     ///
@@ -3348,7 +3362,7 @@ impl AmbientWash {
     /// Detail's scrolling still (`gfx::draw_ambient` records the three gates that were tried and
     /// why each came back out).
     pub fn draw(&self, p: Painter, r: Rect) {
-        p.ambient(r, 1.0, self.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos]));
+        p.ambient(r, 1.0, self.drawn_corners());
     }
     /// **Paint the whole GROUND over `r`: this wash, the photograph dissolving over it, and the
     /// screen's atmospheric ramp of scrim ink over both** — the same picture as
@@ -3386,7 +3400,7 @@ impl AmbientWash {
         };
         let corners = |b: Rect| {
             [(b.x, b.y), (b.x + b.w, b.y), (b.x + b.w, b.y + b.h), (b.x, b.y + b.h)]
-                .map(|(x, y)| self.sample(r, x, y))
+                .map(|(x, y)| self.sample(r, x, y).map(code))
         };
         let knees = ramp.map_or([None, None], |q| [Some(q.stops[0].0), Some(q.stops[1].0)]);
         let ink = |b: Rect| {
