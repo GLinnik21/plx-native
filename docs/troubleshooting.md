@@ -192,7 +192,7 @@ VP9 file, the server has to convert the item, which fails when your server can't
 transcoding is switched off.
 
 AV1 and VP9 direct play are new. AV1 was built from LG's firmware and has not yet been watched playing on an
-AV1 set; VP9 has been played on a real set, but only 8-bit and 10-bit SDR files on one model. Both reach
+AV1 set; VP9 has been played on a real set: 8-bit and 10-bit SDR files, and a PQ-tagged file whose HDR the television picked up. That is one model. Both reach
 people through the [nightly build](nightly-builds.md) first. If your TV
 decodes AV1 or VP9 and you want to try it:
 

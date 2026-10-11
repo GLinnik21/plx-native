@@ -771,7 +771,96 @@
     select(0, false);
   }
 
+  /* ---------- Capsule outline ---------- */
+  // The design system's capsule (core/pillPath.js, documented in its
+  // tokens/shape.css): not a stadium, so no straight sides. Each end is a circle
+  // r = END_R x height; the top and bottom are one large arc R, solved from the
+  // element's width; a blend circle f = sqrt(R x r) joins them tangentially, so
+  // curvature falls by the same factor twice. SLACK is how much of the band
+  // between r and half the height the blend may use: 1 returns a stadium.
+  // Applied as clip-path: shape() to every pill-faced control; where shape() is
+  // unsupported the CSS border-radius pill stays. A clip takes an outward
+  // box-shadow with it, so these faces carry no drop shadow.
+  const END_R = 0.492;
+  const SLACK = 0.86;
+  function pillShape(w, h) {
+    const r = END_R * h;
+    const B = h / 2;
+    const half = w / 2;
+    const band = B - r;
+    if (!(half > r) || !(band > 0)) return null;
+    const g = (R) => R - r - Math.hypot(half - r, R - B) - SLACK * band;
+    let lo = r + 1;
+    let hi = r + 1e9;
+    if (g(hi) < 0) return null;
+    for (let k = 0; k < 120; k++) {
+      const m = (lo + hi) / 2;
+      if (g(m) < 0) lo = m;
+      else hi = m;
+    }
+    const R = (lo + hi) / 2;
+    const f = Math.sqrt(R * r);
+    const cx = half;
+    const cy = R;
+    const ex = r;
+    const ey = B;
+    const d = Math.hypot(cx - ex, cy - ey);
+    const a = R - f;
+    const c = f - r;
+    if (a + c < d || Math.abs(a - c) > d) return null;
+    const ux = (ex - cx) / d;
+    const uy = (ey - cy) / d;
+    const x = (d * d + a * a - c * c) / (2 * d);
+    const yy = Math.sqrt(Math.max(0, a * a - x * x));
+    const fx = cx + ux * x - uy * yy;
+    const fy = cy + uy * x + ux * yy;
+    const t1x = cx + ((fx - cx) * R) / (R - f);
+    const t1y = cy + ((fy - cy) * R) / (R - f);
+    const t2x = fx + ((ex - fx) * f) / (f - r);
+    const t2y = fy + ((ey - fy) * f) / (f - r);
+    const p = (v) => +v.toFixed(2) + "px";
+    const mx = (v) => p(w - v);
+    return (
+      "shape(from " + p(t1x) + " " + p(t1y) + "," +
+      " arc to " + mx(t1x) + " " + p(t1y) + " of " + p(R) + " small cw," +
+      " arc to " + mx(t2x) + " " + p(t2y) + " of " + p(f) + " small cw," +
+      " arc to " + mx(t2x) + " " + p(h - t2y) + " of " + p(r) + " small cw," +
+      " arc to " + mx(t1x) + " " + p(h - t1y) + " of " + p(f) + " small cw," +
+      " arc to " + p(t1x) + " " + p(h - t1y) + " of " + p(R) + " small cw," +
+      " arc to " + p(t2x) + " " + p(h - t2y) + " of " + p(f) + " small cw," +
+      " arc to " + p(t2x) + " " + p(t2y) + " of " + p(r) + " small cw," +
+      " arc to " + p(t1x) + " " + p(t1y) + " of " + p(f) + " small cw, close)"
+    );
+  }
+
+  function initPills() {
+    if (!(window.CSS && CSS.supports && CSS.supports("clip-path", "shape(from 0px 0px, close)"))) return;
+    const SELECTOR = ".button, .header-cta, .nav-pill, .press-tab";
+    const apply = (el) => {
+      // Only a face that is a pill right now (the press tabs are bare type on wide screens).
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      const shape = w && h && parseFloat(getComputedStyle(el).borderTopLeftRadius) > 0 ? pillShape(w, h) : null;
+      if (shape) {
+        el.style.clipPath = shape;
+        el.setAttribute("data-pill-clip", "");
+      } else {
+        el.style.clipPath = "";
+        el.removeAttribute("data-pill-clip");
+      }
+    };
+    const ro = "ResizeObserver" in window ? new ResizeObserver((es) => es.forEach((e) => apply(e.target))) : null;
+    const els = [...document.querySelectorAll(SELECTOR)];
+    els.forEach((el) => {
+      apply(el);
+      if (ro) ro.observe(el);
+    });
+    // A breakpoint can change a face's radius without changing its size.
+    if (narrowQuery && narrowQuery.addEventListener) narrowQuery.addEventListener("change", () => els.forEach(apply));
+  }
+
   initPress();
+  initPills();
   initReveal();
   initSpotlights();
   initHeader();

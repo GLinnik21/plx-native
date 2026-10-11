@@ -377,6 +377,8 @@ active codec.
 
 ### 4c. HDR10 — separate `setHdrInfo` call (NOT Load, NOT ACB)
 
+> **NEVER IMPLEMENTED, and not implementable on webOS 4.5:** `setHdrInfo` is absent from `libplayerAPIs`, which exports only `updateHdrInfo(const HdrInfo*)`. HEVC carries HDR10 in-band and the pipeline reports it; a VP9 PQ stream is declared by rewriting the `sourceInfo` envelope ACB is sent (`media::player::vp9_hdr`; measured: the TV's `picture.dynamicRange` flips to HDR).
+
 On webOS HDR10 static metadata is delivered by `StarfishMediaAPIs::setHdrInfo(const char*)`,
 called **after `Load()` reports LOADCOMPLETED and before `Play()`** (Kodi's `SetHDR`).
 
@@ -404,7 +406,7 @@ called **after `Load()` reports LOADCOMPLETED and before `Play()`** (Kodi's `Set
 
 `acb_bind → wait frames → acb_send_video_data(sourceInfoVerbatim) → acb_start`
 (`pump.rs:129-154`, `starfish.c:102-113`) is codec-transparent — it forwards the pipeline's own
-`sourceInfo` envelope verbatim. HEVC/4K/HDR need no ACB change.
+`sourceInfo` envelope as captured, except a container-PQ VP9 stream, whose `hdrType`/`mediaVui`/`mediaSei` are written in first. HEVC/4K/HDR need no ACB change.
 
 ### 4e. Direct-play gate (`route.rs:240`)
 

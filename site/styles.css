@@ -1621,6 +1621,11 @@ video::-webkit-media-controls-start-playback-button {
   }
 }
 
+/* A clipped capsule would lose its outline ring, which is drawn outside the box. */
+[data-pill-clip]:focus-visible {
+  outline-offset: -4px;
+}
+
 /* ---------- Press switcher ---------- */
 /* site.js turns the list above into outlet tabs plus one article on stage; the
    list stays as the no-JS form. The Trendshift badge is Trendshift's own live
