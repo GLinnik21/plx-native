@@ -100,7 +100,7 @@ something.
   declares the stream's rate class
   (`fps_class`), HEVC keeps 60 (4K HEVC under 60 holds 24), and a transcode with no known rate
   keeps 60. AV1 (only on a set whose codec table lists an AV1 decoder) keeps HEVC's 4K60 rule,
-  clamped by `Caps::av1_row`; that is unmeasured on device. `/tmp/plxnative-sinkmax=WxH@F`
+  clamped by `Caps::av1_row`; the clamp is unmeasured (one owner reports AV1 playing on a webOS 10.3.1 set, with no log). `/tmp/plxnative-sinkmax=WxH@F`
   overrides the envelope for the legs still unrun on 10.3.1.
 - **There IS a presented-frame instrument now, and it is not a GStreamer trace.** The payload's
   `streamQualityInfo` / `streamQualityInfoNonFlushable` keys make libpf read the video sink's
