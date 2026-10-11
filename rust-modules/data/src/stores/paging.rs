@@ -295,6 +295,15 @@ impl Keys {
         }
     }
 
+    /// Inserts a key the ledger does not hold at `at`, fixing up the index of the keys it shifts.
+    pub fn insert_at(&mut self, at: usize, key: LedgerKey) {
+        if self.index.contains_key(&key) { return; }
+        let list = Arc::make_mut(&mut self.list);
+        list.insert(at, key);
+        let index = Arc::make_mut(&mut self.index);
+        for (shifted, key) in list.iter().enumerate().skip(at) { index.insert(key.clone(), shifted); }
+    }
+
     /// Changes the order or the set in place; the index is rebuilt once afterwards.
     pub fn edit(&mut self, change: impl FnOnce(&mut Vec<LedgerKey>)) {
         change(Arc::make_mut(&mut self.list));
@@ -417,21 +426,21 @@ impl Ledger {
     /// row, after the rest), and a window with nothing known goes at the end.
     pub fn note(&mut self, rows: &[Row]) {
         let keys: Vec<LedgerKey> = rows.iter().map(|(_, item)| LedgerKey::new(&item.rk)).collect();
+        // A window of keys the ledger already holds changes nothing, whatever their order.
+        if keys.iter().all(|key| self.keys.contains(key)) { return; }
         let Some(anchor) = keys.iter().position(|key| self.keys.contains(key)) else {
             for key in keys { self.keys.push(key); }
             return;
         };
-        self.keys.edit(|ledger| {
-            let at = ledger.iter().position(|k| *k == keys[anchor]).unwrap_or(0);
-            for key in keys[..anchor].iter().rev() { ledger.insert(at, key.clone()); }
-            let mut cursor = at + anchor;
-            for key in &keys[anchor..] {
-                match ledger.iter().position(|k| k == key) {
-                    Some(index) => cursor = index + 1,
-                    None => { ledger.insert(cursor, key.clone()); cursor += 1; }
-                }
+        let at = self.keys.position_of(&keys[anchor]).unwrap_or(0);
+        for key in keys[..anchor].iter().rev() { self.keys.insert_at(at, key.clone()); }
+        let mut cursor = at + anchor;
+        for key in &keys[anchor..] {
+            match self.keys.position_of(key) {
+                Some(index) => cursor = index + 1,
+                None => { self.keys.insert_at(cursor, key.clone()); cursor += 1; }
             }
-        });
+        }
     }
 }
 
@@ -920,3 +929,7 @@ fn read_hub_windows<S>(
 #[cfg(test)]
 #[path = "paging_hub_list_tests.rs"]
 pub(crate) mod hub_list_tests;
+
+#[cfg(test)]
+#[path = "paging_ledger_note_tests.rs"]
+mod ledger_note_tests;
