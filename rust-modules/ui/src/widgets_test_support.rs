@@ -8,7 +8,7 @@ use crate::tile::Resume;
 ///
 /// The copy is the thing to avoid here and there is a measurement to prove it: this test's
 /// predecessor modelled the region inline and left the screen CLAMP out, which priced the tab
-/// track at `(940+176) x 252` = 281k px^2 where the real region is `1116 x 200` = 223k — a 26%
+/// track at `(940+176) x 252` = 281k px^2 where the rising region is `1116 x 200` = 223k — a 26%
 /// over-estimate that sat under a passing assertion for as long as the limit existed, and the
 /// reason the old limit read as if it had only ~7% of headroom when it had far more. Both
 /// surfaces are grown `gfx::BLUR_MARGIN` a side (`blur_region` is the rising, upper-bound region; a band that never rises is grabbed only `BLUR_REACH`) and then clamped to the screen, so the capsule
