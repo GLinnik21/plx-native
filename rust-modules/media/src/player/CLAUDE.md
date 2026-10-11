@@ -206,7 +206,7 @@ something.
   `setState(LOADED)` → *wait for decoded frames* → `setMediaVideoData(<sourceInfo envelope
   VERBATIM>)` → `setDisplayWindow` → `setState(PLAYING)`. The payload passed to
   `setMediaVideoData` is the **whole `sourceInfo` envelope** captured verbatim from the pipeline's
-  callback (`sourceInfoRaw`), not a reconstructed one. Audio is owned by the pipeline — **never feed
+  callback (`sourceInfoRaw`), not a reconstructed one — with ONE exception: a VP9 stream whose container says PQ gets `hdrType` / `mediaVui` / `mediaSei` written in first (`player/vp9_hdr.rs`), because a VP9 bitstream cannot carry the transfer function, so the pipeline's own envelope says `"hdrType":"none"` and the panel stays SDR (device-measured: the TV's `picture.dynamicRange` flips to HDR with the rewrite and stays SDR with `/tmp/plxnative-novp9hdr`). The envelope is otherwise untouched, and an envelope that already names an HDR type is never overridden. Audio is owned by the pipeline — **never feed
   ACB an audio SINK or elementary stream**. That half is real and unchanged. Its long-stated
   consequence is not: `SOUND_ERROR_019` is a literal that exists in **no library on this
   television** (swept across ~70 harvested libraries including 92 MB of Chromium), and the clause

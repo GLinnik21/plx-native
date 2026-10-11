@@ -25,6 +25,7 @@
 #include <libavutil/frame.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/dovi_meta.h>
+#include <libavutil/mastering_display_metadata.h>
 #include <libavutil/dict.h>
 
 #define SAME(expr, want, what) _Static_assert((expr) == (want), what)
@@ -239,6 +240,10 @@ SAME64(offsetof(AVBSFContext, time_base_in), 40, "AVBSFContext.time_base_in move
        FF_API_VOXWARE were removed; the n3.3 values are 28 / 174 / 0x15029. --- */
 SAME(AV_CODEC_ID_H264, 27, "AV_CODEC_ID_H264 != 27");
 SAME(AV_CODEC_ID_HEVC, 172, "AV_CODEC_ID_HEVC != 172 (173 on FFmpeg 6 — the enum shifts again)");
+SAME(AV_PKT_DATA_MASTERING_DISPLAY_METADATA, 20, "AV_PKT_DATA_MASTERING_DISPLAY_METADATA != 20");
+SAME(AV_PKT_DATA_CONTENT_LIGHT_LEVEL, 22, "AV_PKT_DATA_CONTENT_LIGHT_LEVEL != 22");
+SAME(sizeof(AVMasteringDisplayMetadata), 88, "AVMasteringDisplayMetadata size moved");
+SAME(sizeof(AVContentLightMetadata), 8, "AVContentLightMetadata size moved");
 SAME(AV_CODEC_ID_VP9, 166, "AV_CODEC_ID_VP9 != 166");
 SAME(AV_CODEC_ID_AV1, 222, "AV_CODEC_ID_AV1 != 222");
 SAME(AV_CODEC_ID_AAC, 0x15002, "AV_CODEC_ID_AAC moved");

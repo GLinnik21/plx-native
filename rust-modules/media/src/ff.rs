@@ -527,6 +527,11 @@ pub const NS_TB: AVRational = AVRational {
 /// because `AVPacketSideDataType` is an ordinary sequential enum and every value in it shifts
 /// when a member is inserted above.
 pub const AV_PKT_DATA_DOVI_CONF: c_int = 29;
+/// `AV_PKT_DATA_MASTERING_DISPLAY_METADATA` (an `AVMasteringDisplayMetadata`, 88 bytes) and
+/// `AV_PKT_DATA_CONTENT_LIGHT_LEVEL` (an `AVContentLightMetadata`, 8 bytes): 20 and 22 in FFmpeg 9.0,
+/// asserted in `ci/ffabi-assert.c` for the same reason as the Dolby Vision tag.
+pub const AV_PKT_DATA_MASTERING_DISPLAY_METADATA: c_int = 20;
+pub const AV_PKT_DATA_CONTENT_LIGHT_LEVEL: c_int = 22;
 
 // ---- AVStream field accessors, at the constants above. Read by offset rather than modelled:
 // the struct is large, mostly internal, and only three fields are wanted. ----
@@ -588,6 +593,37 @@ unsafe fn dovi_conf(cp: *const AVCodecParameters) -> Option<AVDOVIDecoderConfigu
         return parse_dovi_conf(std::slice::from_raw_parts(sd.data, sd.size));
     }
     None
+}
+/// What the container said about a stream's colour: the three H.273 code points from
+/// `AVCodecParameters`, plus the mastering display and content light level from the stream's coded
+/// side data when the demuxer found them (Matroska's `Colour` element fills them; each only when the
+/// file states it). Read for VP9, whose bitstream cannot carry the transfer function.
+unsafe fn container_hdr(cp: *const AVCodecParameters) -> crate::player::vp9_hdr::ContainerHdr {
+    use crate::player::vp9_hdr::{parse_cll, parse_mastering, ContainerHdr};
+    let mut h = ContainerHdr {
+        trc: (*cp).color_trc,
+        pri: (*cp).color_primaries,
+        mc: (*cp).color_space,
+        mastering: None,
+        cll: None,
+    };
+    let (list, n) = ((*cp).coded_side_data, (*cp).nb_coded_side_data);
+    if list.is_null() || n <= 0 {
+        return h;
+    }
+    for i in 0..n as usize {
+        let sd = &*list.add(i);
+        if sd.data.is_null() {
+            continue;
+        }
+        let bytes = std::slice::from_raw_parts(sd.data, sd.size);
+        match sd.type_ {
+            AV_PKT_DATA_MASTERING_DISPLAY_METADATA => h.mastering = parse_mastering(bytes),
+            AV_PKT_DATA_CONTENT_LIGHT_LEVEL => h.cll = parse_cll(bytes),
+            _ => {}
+        }
+    }
+    h
 }
 /// The container's own name for this track — `title` (Matroska and most formats), else `name`
 /// (MP4's per-track `udta` name box, which is what FFmpeg's mov demuxer exposes it as).
@@ -8247,6 +8283,10 @@ pub fn demux(
                         ));
                     }
                 }
+                // A VP9 stream's PQ is in the container only; hand it to the pump, which writes it into
+                // the sourceInfo envelope ACB is sent. Always replaced, so a previous stream's colour
+                // cannot outlive it.
+                *SHARED.container_hdr.lock().unwrap() = if is_vp9 { Some(container_hdr(vcp)) } else { None };
                 crate::player::log(&format!(
                     "ff: param_sets={} bytes nal_len={} is_hevc={} is_av1={} is_vp9={} av1_cfg={}B",
                     param_blob.len(),
