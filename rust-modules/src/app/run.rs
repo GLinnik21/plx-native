@@ -2496,6 +2496,11 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                             plx_base::diag::spans::span("disc", || page(Z::ALL));
                         }
                         sources.borrow_mut().resolve();
+                        // `plxnative-framedrop` armed: which recorded draw invalidated a source.
+                        // Empty (no allocation, no work) unarmed.
+                        for line in sources.borrow_mut().take_diffs() {
+                            log(&line);
+                        }
                         let jobs = sources.borrow().jobs();
                         // Independent bands replay only the strict prefix below their ceiling.
                         // A band intersecting lower glass captures that composite in visible order.

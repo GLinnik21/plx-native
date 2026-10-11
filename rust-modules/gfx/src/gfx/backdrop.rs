@@ -379,6 +379,136 @@ pub fn in_surfaces_band() -> bool {
 }
 
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+/// What made two ordered draw lists unequal, for the armed `GLASSDIFF` probe. Pure: it reads the
+/// same `Paint`s `Sources::resolve` compares (`Paint::eq`: bounds, exact value words, nested
+/// source), so it names what `current != captured` saw without touching GL.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaintDiff {
+    pub prev_n: usize,
+    pub now_n: usize,
+    /// Index of the first draw that differs (positionally).
+    pub first: usize,
+    /// Number of positions that differ (a mid-list insertion shifts the tail, so this is large).
+    pub changed: usize,
+    pub kind: String,
+    /// The draw's placed rect (logical px), from its recorded words; paint bounds for a layer.
+    pub rect: [f32; 4],
+    pub what: &'static str,
+    /// For `what=args`: (word index, before, after) of the first differing argument word.
+    pub arg: Option<(usize, u64, u64)>,
+}
+fn kind_name(tag: u64) -> String {
+    match tag {
+        1 => "rect".into(),
+        2 => "rrect".into(),
+        3 => "rring".into(),
+        7 => "rect_sheened".into(),
+        8 => "rect_rimmed".into(),
+        9 => "rect_rimmed_w".into(),
+        10 => "face_rimmed".into(),
+        11 => "rrect_sheened".into(),
+        12 => "tex_uv".into(),
+        13 => "tex_stroked".into(),
+        15 => "hero_ground".into(),
+        16 => "ambient".into(),
+        17 => "grad4".into(),
+        18 => "field".into(),
+        19 => "field_ground".into(),
+        20 => "field_panel".into(),
+        21 => "art_scrim".into(),
+        22 => "ambient_art".into(),
+        23 => "ambient_inked".into(),
+        GLASS_COMMAND => "glass".into(),
+        u64::MAX => "layer".into(),
+        t => format!("tag{t}"),
+    }
+}
+// Recorded word layout of every declared draw (`ui::Painter::declare`): tag, then `[a, rgb]`
+// (count word, alpha, mode), then `[x, y, w, h]` (count word, four f32 bit patterns), then the
+// primitive's own arguments.
+const W_ALPHA: usize = 2;
+const W_MODE: usize = 3;
+const W_RECT: std::ops::Range<usize> = 5..9;
+const W_ARGS: usize = 9;
+fn rect_of(p: &Paint) -> [f32; 4] {
+    if p.values.first() != Some(&u64::MAX) && p.values.len() >= W_ARGS {
+        let w = &p.values[W_RECT];
+        [w[0], w[1], w[2], w[3]].map(|b| f32::from_bits(b as u32))
+    } else {
+        p.bounds.map(f32::from_bits)
+    }
+}
+/// First positional difference between two draw lists, or `None` when they are equal.
+pub fn diff_paints(prev: &[Rc<Paint>], now: &[Rc<Paint>]) -> Option<PaintDiff> {
+    let n = prev.len().max(now.len());
+    let differs = |i: usize| match (prev.get(i), now.get(i)) {
+        (Some(a), Some(b)) => a != b,
+        _ => true,
+    };
+    let first = (0..n).find(|&i| differs(i))?;
+    let changed = (first..n).filter(|&i| differs(i)).count();
+    let (a, b) = (prev.get(first), now.get(first));
+    let shown = b.or(a).expect("one side exists");
+    let mut diff = PaintDiff {
+        prev_n: prev.len(),
+        now_n: now.len(),
+        first,
+        changed,
+        kind: kind_name(shown.values.first().copied().unwrap_or(0)),
+        rect: rect_of(shown),
+        what: "count",
+        arg: None,
+    };
+    let (Some(a), Some(b)) = (a, b) else { return Some(diff) };
+    let (av, bv) = (&a.values, &b.values);
+    diff.what = if av.first() != bv.first() {
+        "kind"
+    } else if av.len() != bv.len() {
+        "arglen"
+    } else if av.get(W_ALPHA) != bv.get(W_ALPHA) {
+        "alpha"
+    } else if av.get(W_MODE) != bv.get(W_MODE) {
+        "mode"
+    } else if av.get(W_RECT) != bv.get(W_RECT) {
+        "rect"
+    } else if let Some(i) = (W_ARGS..av.len()).find(|&i| av[i] != bv[i]) {
+        diff.arg = Some((i, av[i], bv[i]));
+        "args"
+    } else if av != bv {
+        "values"
+    } else if a.bounds != b.bounds {
+        "clip"
+    } else {
+        "source"
+    };
+    Some(diff)
+}
+fn u8_of(word: u64) -> u8 {
+    (f32::from_bits(word as u32).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+/// One compact `GLASSDIFF` log line for the compare of glass `job`.
+fn format_diff(frame: u64, job: Z, prev: &[Rc<Paint>], now: &[Rc<Paint>]) -> String {
+    let Some(d) = diff_paints(prev, now) else {
+        return format!("GLASSDIFF frame={frame} job={:#x} what=none", job.0);
+    };
+    let [x, y, w, h] = d.rect;
+    let arg = d.arg.map_or(String::new(), |(i, a, b)| {
+        format!(
+            " arg={i} was={:#x} now={:#x} f32={}>{} u8={}>{}",
+            a,
+            b,
+            f32::from_bits(a as u32),
+            f32::from_bits(b as u32),
+            u8_of(a),
+            u8_of(b)
+        )
+    });
+    format!(
+        "GLASSDIFF frame={frame} job={:#x} prev_n={} now_n={} first={} kind={} rect={x:.1},{y:.1},{w:.1},{h:.1} what={}{arg} changed={}",
+        job.0, d.prev_n, d.now_n, d.first, d.kind, d.what, d.changed
+    )
+}
+
 #[derive(Default)]
 pub struct Sources {
     pub entries: BTreeMap<Z, Entry>,
@@ -387,6 +517,8 @@ pub struct Sources {
     frame: u64,
     pub paints: Vec<std::rc::Rc<Paint>>,
     assignments: BTreeMap<(Z, u64), Z>,
+    /// Armed probe only: this frame's `GLASSDIFF` lines, drained by the frame loop.
+    diffs: Vec<String>,
 }
 pub struct Entry {
     rect: Rect,
@@ -402,8 +534,16 @@ pub struct Entry {
     inline_attempt: Option<u64>,
     fell_back: bool,
     source_alpha: Option<f32>,
+    /// Armed probe only: why the non-compare paths (`begin`'s damage, `request`'s growth) cleared
+    /// `valid`, so `resolve` can name it. Never set while the probe is off.
+    cause: Option<&'static str>,
 }
 impl Sources {
+    /// The `GLASSDIFF` lines `resolve` recorded since the last call (empty unless the frame probe
+    /// is armed). `mem::take` of an empty Vec allocates nothing.
+    pub fn take_diffs(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.diffs)
+    }
     pub fn damage(&mut self, z: Z, rect: Rect) {
         self.damage.push(Damage { z, rect });
     }
@@ -435,6 +575,9 @@ impl Sources {
                 )
                 .refresh
             }) {
+                if e.valid && plx_base::diag::spans::armed() {
+                    e.cause = Some("damage");
+                }
                 e.valid = false;
             }
         }
@@ -490,7 +633,17 @@ impl Sources {
             // Query the scene that produced the retained image at the CURRENT sampling rects.
             // Growing into an unchanged part of its captured union is not underlay damage.
             if current != captured {
+                // Armed probe only (`plxnative-framedrop`): name the draw that made the compare
+                // unequal. Unarmed this is one relaxed load and nothing else.
+                if e.valid && plx_base::diag::spans::armed() {
+                    self.diffs.push(format_diff(frame, z, &captured, &current));
+                }
                 e.valid = false;
+            }
+            if let Some(cause) = e.cause.take() {
+                if plx_base::diag::spans::armed() {
+                    self.diffs.push(format!("GLASSDIFF frame={frame} job={:#x} what={cause}", z.0));
+                }
             }
             e.underlay = current;
             e.prefix = prefix;
@@ -568,10 +721,14 @@ impl Sources {
             inline_attempt: None,
             fell_back: false,
             source_alpha: None,
+            cause: None,
         });
         if !covers(e.rect, rect) {
             e.rect = union(e.rect, rect);
             if e.image.as_ref().is_none_or(|image| !image.covers(rect)) {
+                if e.valid && plx_base::diag::spans::armed() {
+                    e.cause = Some("grow");
+                }
                 e.valid = false;
             }
         }
@@ -1246,5 +1403,73 @@ mod tests {
             );
         }
         assert!(!decide(request(), &[], &[]).refresh);
+    }
+}
+
+#[cfg(test)]
+mod glassdiff_tests {
+    use super::*;
+    fn draw(x: f32, a: f32) -> Rc<Paint> {
+        let mut v = vec![1u64];
+        [a, 0.0f32].record(&mut v);
+        [x, 10.0, 100.0, 50.0].record(&mut v);
+        1.0f32.record(&mut v);
+        Rc::new(Paint {
+            z: Z(0),
+            bounds: [x, 10.0, 100.0, 50.0].map(f32::to_bits),
+            values: v,
+            glass: None,
+            source: Vec::new(),
+        })
+    }
+    #[test]
+    fn a_moved_rect_is_named() {
+        let prev = [draw(0.0, 1.0), draw(5.0, 1.0)];
+        let now = [draw(0.0, 1.0), draw(9.0, 1.0)];
+        let d = diff_paints(&prev, &now).unwrap();
+        assert_eq!((d.first, d.changed, d.what, d.kind.as_str()), (1, 1, "rect", "rect"));
+        assert_eq!(d.rect, [9.0, 10.0, 100.0, 50.0]);
+        let line = format_diff(7, Z::CHROME, &prev, &now);
+        assert!(line.contains("what=rect") && line.contains("kind=rect"), "{line}");
+    }
+    #[test]
+    fn identical_frames_produce_no_diff() {
+        let a = [draw(0.0, 1.0), draw(5.0, 0.5)];
+        let b = [draw(0.0, 1.0), draw(5.0, 0.5)];
+        assert!(diff_paints(&a, &b).is_none());
+    }
+    #[test]
+    fn alpha_and_count_are_told_apart() {
+        let d = diff_paints(&[draw(0.0, 1.0)], &[draw(0.0, 0.5)]).unwrap();
+        assert_eq!(d.what, "alpha");
+        let d = diff_paints(&[draw(0.0, 1.0)], &[draw(0.0, 1.0), draw(1.0, 1.0)]).unwrap();
+        assert_eq!((d.what, d.first, d.now_n), ("count", 1, 2));
+    }
+    #[test]
+    fn a_colour_word_reports_8_bit_values() {
+        let (mut a, mut b) = (draw(0.0, 1.0), draw(0.0, 1.0));
+        let last = a.values.len() - 1;
+        Rc::get_mut(&mut a).unwrap().values[last] = 0.0f32.to_bits() as u64;
+        Rc::get_mut(&mut b).unwrap().values[last] = 1.0f32.to_bits() as u64;
+        let d = diff_paints(&[a], &[b]).unwrap();
+        assert_eq!(d.what, "args");
+        let (_, was, now) = d.arg.unwrap();
+        assert_eq!((u8_of(was), u8_of(now)), (0, 255));
+    }
+    #[test]
+    fn unarmed_resolve_invalidates_but_records_nothing() {
+        let _guard = plx_base::testlock::serial();
+        assert!(!plx_base::diag::spans::armed());
+        let mut s = Sources::default();
+        s.begin(Vec::new());
+        let member = Rect::new(0.0, 10.0, 100.0, 50.0);
+        s.request(Z::CHROME, member);
+        s.paints.push(draw(5.0, 1.0));
+        let e = s.entries.get_mut(&Z::CHROME).unwrap();
+        e.valid = true;
+        e.captured_prefix = vec![draw(0.0, 1.0)];
+        s.resolve();
+        assert!(!s.entries[&Z::CHROME].valid, "the compare still invalidates");
+        assert!(s.take_diffs().is_empty());
     }
 }
