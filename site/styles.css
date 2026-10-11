@@ -2516,6 +2516,15 @@ video::-webkit-media-controls-start-playback-button {
   text-wrap: balance;
   max-width: 16ch;
 }
+.approach-statement {
+  font-size: clamp(24px, 3.4vw, 46px);
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  text-wrap: balance;
+  max-width: 28ch;
+  margin: 0 0 clamp(28px, 4vw, 56px);
+}
 .approach-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr));
@@ -2533,12 +2542,6 @@ video::-webkit-media-controls-start-playback-button {
   color: var(--text-reading);
   margin: 0;
   text-wrap: pretty;
-}
-.approach-copy .approach-lead {
-  font-size: clamp(19px, 1.9vw, 24px);
-  line-height: 1.45;
-  letter-spacing: -0.015em;
-  color: var(--text-primary);
 }
 .approach-diagram {
   padding: clamp(18px, 2.4vw, 28px);
