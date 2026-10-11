@@ -133,6 +133,25 @@ pub fn link_policy(link: Option<Location>) -> LinkPolicy {
     }
 }
 
+/// The video codecs the profile lists for direct play, in list order: h264 always, hevc when the
+/// table lists it, then the table-gated copy codecs (vp9, av1). **The one definition**: the profile
+/// string is built from it, and `route::plan::video_direct_plays` (the local gate that stands in for
+/// `/decision` when it is unreachable) is held to it by a test over every capability combination,
+/// so the two can no longer drift apart silently.
+pub fn direct_play_video_codecs(caps: &plx_platform::devcaps::Caps) -> Vec<&'static str> {
+    let mut v = vec!["h264"];
+    if caps.hevc {
+        v.push("hevc");
+    }
+    if caps.vp9 {
+        v.push("vp9");
+    }
+    if caps.av1 {
+        v.push("av1");
+    }
+    v
+}
+
 /// Capability profile (X-Plex-Client-Profile-Extra, raw form — the QueryBuilder encodes it),
 /// as a PURE function of the device's decode capabilities: direct-play an MKV or MP4 whose video
 /// the SoC decodes (H264 everywhere; HEVC when its table says so, VP9 / AV1 when the table lists
@@ -188,25 +207,6 @@ pub fn link_policy(link: Option<Location>) -> LinkPolicy {
 ///
 /// The Load payload cannot drift whatever PMS chooses: `route.rs` reads the OUTPUT codecs off
 /// the /decision response (`decision_codecs`) and describes those, not the profile's wish.
-/// The video codecs the profile lists for direct play, in list order: h264 always, hevc when the
-/// table lists it, then the table-gated copy codecs (vp9, av1). **The one definition**: the profile
-/// string is built from it, and `route::plan::video_direct_plays` (the local gate that stands in for
-/// `/decision` when it is unreachable) is held to it by a test over every capability combination,
-/// so the two can no longer drift apart silently.
-pub fn direct_play_video_codecs(caps: &plx_platform::devcaps::Caps) -> Vec<&'static str> {
-    let mut v = vec!["h264"];
-    if caps.hevc {
-        v.push("hevc");
-    }
-    if caps.vp9 {
-        v.push("vp9");
-    }
-    if caps.av1 {
-        v.push("av1");
-    }
-    v
-}
-
 fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeDelivery) -> String {
     let dp_video = direct_play_video_codecs(caps).join(",");
     // The table-gated copy codecs, in list order. Each one is advertised only when the table

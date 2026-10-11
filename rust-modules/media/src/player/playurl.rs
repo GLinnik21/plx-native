@@ -19,7 +19,7 @@
 /// which are normally installed together by `route::apply_plan` from a PMS decision and replaced
 /// together by later route transitions. So a URL-fed 4K HEVC file was declared to the television
 /// as whatever the route happened to hold — in a fresh boot, the empty string, which falls through
-/// [`crate::player::engine`]'s `_ =>` arm to `"AC3"` and an H264 payload. The declaration is
+/// [`crate::player::engine`]'s `_ =>` arm to `"AC3"` (and `LoadVideo::of_stream` deliberately maps it to H264). The declaration is
 /// precisely what governs HEVC-vs-H264 payload selection, the `"AC3 PLUS"` naming trap, and both
 /// Dolby nodes, so a tier that cannot set it cannot test them.
 ///
@@ -45,9 +45,10 @@ pub struct PlayUrl {
     /// no DNS on this path, so a name is a flat failure to open with nothing to read it by.
     #[serde(default)]
     pub url: String,
-    /// The Load payload's video codec: `"hevc"` selects the H265 payload, `"av1"` / `"vp9"` the AV1
-    /// / VP9 ones (only on a set whose table lists that decoder; elsewhere the Load is refused),
-    /// anything else H264.
+    /// The Load payload's video codec, matched case-insensitively: `"h264"` or empty selects H264,
+    /// `"hevc"` / `"h265"` H265, `"av1"` / `"vp9"` the AV1 / VP9 ones (only on a set whose table lists
+    /// that decoder; elsewhere the Load is refused). Any other value refuses the Load with a log line
+    /// naming the codec; it is never declared as H264.
     #[serde(default)]
     pub vcodec: String,
     /// The Load payload's audio codec, in FFmpeg's spelling (`"eac3"`, not `"AC3 PLUS"`) — the
