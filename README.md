@@ -6,6 +6,8 @@ page — the interface is drawn straight on the GPU at 60 fps, and video plays o
 **Website: [plxnative.com](https://plxnative.com/)** · [Install guide](https://plxnative.com/install/) ·
 [Troubleshooting](https://plxnative.com/troubleshooting/)
 
+<a href="https://trendshift.io/repositories/244171?utm_source=repository-badge&utm_medium=badge&utm_campaign=badge-repository-244171" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/repositories/244171" alt="GLinnik21/plx-native | Trendshift" width="250" height="55"/></a>
+
 *In daily use on a 2019 LG set. PlxNative is an independent project and is not affiliated with Plex, Inc.
 or LG. The same install steps are in the repo: [installation guide](docs/install-and-verify.md).*
 
