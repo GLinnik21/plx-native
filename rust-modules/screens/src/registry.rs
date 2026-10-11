@@ -541,6 +541,21 @@ pub struct CardIdentity {
     pub elem: u32,
 }
 
+/// The slot ranges to project, sorted and merged, clamped to `total`. Shared by the sliding-window
+/// key projections of the Library grid and the Collection page.
+pub(crate) fn merged_ranges(mut ranges: Vec<std::ops::Range<usize>>, total: usize) -> Vec<std::ops::Range<usize>> {
+    ranges.retain_mut(|r| { r.end = r.end.min(total); r.start < r.end });
+    ranges.sort_by_key(|r| r.start);
+    let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+    for r in ranges {
+        match out.last_mut() {
+            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
+            _ => out.push(r),
+        }
+    }
+    out
+}
+
 /// A card page's stable item-key interning: which engine element each `(sid, rk)` card owns, and
 /// the next element to hand out. It maps identities to elements and never stores which one is
 /// focused. The Person and Collection pages share it; each page picks its own first element.
