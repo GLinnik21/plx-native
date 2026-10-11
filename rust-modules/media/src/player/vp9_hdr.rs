@@ -18,6 +18,11 @@
 //! envelope before it is sent. No Load key carries any of this (the only HDR key the firmware reads
 //! is Dolby-only, `contents.DolbyHdrInfo`), and there is no `setHdrInfo` on this firmware.
 //!
+//! **Reach:** the envelope goes out through ACB (`acb_send_video_data`), which exists on the webOS 4
+//! family only. On webOS 5+ there is no ACB (`g_acb` is NULL and the send is a no-op), so this does
+//! nothing there; how a VP9 PQ stream reaches HDR on those sets is not known. Measured on the dev set
+//! (4.x) only.
+//!
 //! Only HDR10 (PQ, transfer 16) is handled. HLG is not: the envelope's name for it was never
 //! observed, and a guessed string is a silent no-op or a rejected envelope.
 //!

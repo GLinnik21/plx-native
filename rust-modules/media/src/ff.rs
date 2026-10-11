@@ -529,7 +529,9 @@ pub const NS_TB: AVRational = AVRational {
 pub const AV_PKT_DATA_DOVI_CONF: c_int = 29;
 /// `AV_PKT_DATA_MASTERING_DISPLAY_METADATA` (an `AVMasteringDisplayMetadata`, 88 bytes) and
 /// `AV_PKT_DATA_CONTENT_LIGHT_LEVEL` (an `AVContentLightMetadata`, 8 bytes): 20 and 22 in FFmpeg 9.0,
-/// asserted in `ci/ffabi-assert.c` for the same reason as the Dolby Vision tag.
+/// asserted in `ci/ffabi-assert.c` for the same reason as the Dolby Vision tag. The two structs'
+/// member offsets are hard-coded in `player::vp9_hdr::{parse_mastering, parse_cll}` and pinned by
+/// the same file; a bump that moves them has to change both.
 pub const AV_PKT_DATA_MASTERING_DISPLAY_METADATA: c_int = 20;
 pub const AV_PKT_DATA_CONTENT_LIGHT_LEVEL: c_int = 22;
 
