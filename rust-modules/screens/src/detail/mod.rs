@@ -29,7 +29,7 @@ mod identity_tests;
 mod placeholder_tests;
 
 use plx_data::metadata::{Detail, Extra, Spot};
-use crate::registry::PlayIntent;
+use crate::registry::{key_cap, unlive_excess, EvictOrder, PlayIntent};
 use plx_plex::plex::ServerId;
 use plx_data::stores::metadata::MetadataCmd;
 use plx_data::stores::viewstate::ViewStateCmd;
@@ -667,15 +667,16 @@ impl DetailScreen {
     fn prune_keys(&mut self, held: &[u32]) {
         let live = |elem: u32| self.local_by_key.contains_key(&elem) || self.prev_by_key.contains_key(&elem) || held.contains(&elem);
         let pending = self.pending_season.and_then(season::elem).and_then(|local| self.engine_key(local));
-        let cap = 2 * self.local_by_key.len() + 256;
+        let cap = key_cap(self.local_by_key.len());
         if self.keys.len() <= cap {
             return;
         }
-        let mut oldest: Vec<u32> = self.keys.iter().map(|key| key.elem)
-            .filter(|&elem| !live(elem) && Some(elem) != pending)
-            .collect();
-        oldest.sort_unstable();
-        let drop: std::collections::HashSet<u32> = oldest.into_iter().take(self.keys.len() - cap).collect();
+        let drop = unlive_excess(
+            self.keys.iter().map(|key| key.elem),
+            |elem| live(elem) || Some(elem) == pending,
+            self.keys.len() - cap,
+            EvictOrder::Elem,
+        );
         if drop.is_empty() {
             return;
         }

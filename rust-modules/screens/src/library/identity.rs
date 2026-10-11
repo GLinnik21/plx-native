@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::registry::{
-    LibraryIdentity, LibraryKey, LibraryMemory, LibrarySectionIdentity,
+    unlive_excess, EvictOrder, LibraryIdentity, LibraryKey, LibraryMemory, LibrarySectionIdentity,
 };
 use plx_machine::machine::GroupId;
 
@@ -132,13 +132,13 @@ impl KeyRegistry {
     pub(super) fn prune(&mut self, region: KeyRegion, cap: usize, live: impl Fn(u32) -> bool) -> bool {
         let count = self.keys.iter().filter(|key| identity_region(&key.identity) == region).count();
         if count <= cap { return false; }
-        let mut old: Vec<u32> = self.keys.iter()
-            .filter(|key| identity_region(&key.identity) == region && !live(key.elem))
-            .map(|key| key.elem).collect();
-        old.sort_unstable();
-        old.truncate(count - cap);
-        if old.is_empty() { return false; }
-        let drop: std::collections::HashSet<u32> = old.into_iter().collect();
+        let drop = unlive_excess(
+            self.keys.iter().filter(|key| identity_region(&key.identity) == region).map(|key| key.elem),
+            live,
+            count - cap,
+            EvictOrder::Elem,
+        );
+        if drop.is_empty() { return false; }
         Arc::make_mut(&mut self.keys).retain(|key| !drop.contains(&key.elem));
         self.identity_index.clear();
         self.elem_index.clear();

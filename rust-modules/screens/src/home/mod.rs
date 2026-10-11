@@ -67,7 +67,7 @@ fn hub_page_cmd(hub: &HubRef<'_>,
 }
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
-    tile_facts, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
+    key_cap, tile_facts, unlive_excess, EvictOrder, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
     HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory,
 };
 
@@ -814,15 +814,16 @@ impl HomeScreen {
             })
             .map(|key| key.elem)
             .collect();
-        let cap = 2 * now.len() + 256;
+        let cap = key_cap(now.len());
         let kept = self.items.len() - drop.len();
         if kept > cap {
-            let mut oldest: Vec<u32> = self.items.iter()
-                .map(|key| key.elem)
-                .filter(|&elem| !live(elem) && !drop.contains(&elem))
-                .collect();
-            oldest.sort_unstable();
-            drop.extend(oldest.into_iter().take(kept - cap));
+            let held = unlive_excess(
+                self.items.iter().map(|key| key.elem),
+                |elem| live(elem) || drop.contains(&elem),
+                kept - cap,
+                EvictOrder::Elem,
+            );
+            drop.extend(held);
         }
         let groups_before = self.groups.len();
         self.groups.retain(|key| !matches!(key.identity, HomeHubIdentity::Ephemeral { generation: g, .. } if g != generation));
