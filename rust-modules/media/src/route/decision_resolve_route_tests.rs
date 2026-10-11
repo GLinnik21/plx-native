@@ -1401,7 +1401,7 @@ fn the_visible_switch_stamp_is_the_frame_tick_and_a_landing_cannot_rewind_it() {
 }
 
 /// Retry, and a quality picked after a failure, resolve the SAME item with the subtitle the viewer
-/// had (`RetryContext::sub_sid`), so the timing offset tuned against that subtitle rides along. A
+/// had (`RetryContext::selection`), so the timing offset tuned against that subtitle rides along. A
 /// genuinely new request (no retry) still starts at 0.
 #[test]
 fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
@@ -1411,8 +1411,7 @@ fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
     let retry = RetryContext {
             direct_play_mode: DirectPlayMode::Auto,
         resume_ns: 0,
-        audio_sid: 17,
-        sub_sid: 23,
+        selection: Some((17, 23)),
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         suppress_enhancement: false,
     };
@@ -1464,6 +1463,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
         s.requested_resume_ns = 3_600_000_000_000;
         s.cur_audio = Some(CarriedAudio::named(17, -1));
         s.cur_sub_sid = 23;
+        s.selection_known = true;
     } };
 
     assert_eq!(
@@ -1471,8 +1471,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
         RetryContext {
             direct_play_mode: DirectPlayMode::Auto,
             resume_ns: 3_600_000_000_000,
-            audio_sid: 17,
-            sub_sid: 23,
+            selection: Some((17, 23)),
             sub_offset_ms: 0,
             suppress_enhancement: false,
         },

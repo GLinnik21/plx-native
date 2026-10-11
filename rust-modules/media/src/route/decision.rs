@@ -46,8 +46,14 @@ struct PlaybackRequest {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RetryContext {
     resume_ns: i64,
-    audio_sid: i64,
-    sub_sid: i64,
+    /// `(audio_sid, sub_sid)` the session HELD when this retry was built, `Some` only when that
+    /// selection was KNOWN ([`PlaybackSession::selection_known`]): a playable plan landed, or the
+    /// viewer picked a track. `0` is both "subtitles Off" and "nothing landed yet", so the pair
+    /// cannot be told apart from the cleared defaults by value; `None` says that nothing landed
+    /// (a quality change or contract bump while loading, a retry of a refused plan) and leaves the
+    /// fresh defaults (the account / show / server rules) in charge instead of forcing the
+    /// subtitle Off. Applied by [`apply_retry`].
+    selection: Option<(i64, i64)>,
     sub_offset_ms: i64,
     direct_play_mode: DirectPlayMode,
     /// Issue #266: resolve this retry WITHOUT the audio enhancement. Set only by a start-failure
@@ -246,6 +252,13 @@ pub struct PlaybackSession {
     /// Plex's decision is burn), or client-rendered from the demuxer on direct play
     /// (`player::request_subtitle`).
     cur_sub_sid: i64,
+    /// Do [`Self::cur_audio`] and [`Self::cur_sub_sid`] name a selection that is KNOWN rather than
+    /// the cleared `0` a play request leaves (`0` is both "Off" and "nothing landed yet")? True
+    /// only after a PLAYABLE plan landed ([`apply_plan`]; a refused plan installs too, with a
+    /// selection nobody made) or after the viewer picked a track ([`commit_audio_selection`],
+    /// [`commit_subtitle_selection`]); cleared with the selection by [`clear_track_selection`].
+    /// [`RetryContext::selection`] is `Some` exactly when this held at capture time.
+    selection_known: bool,
     /// Is [`Self::cur_sub_sid`] an external sidecar (`metadata::Stream::sidecar_renderable`) rather
     /// than an embedded (in-container) track? Meaningless when `cur_sub_sid == 0`. Issue #266 I6:
     /// this is what tells `route::decision::facts`'s [`super::plan::SubtitleEffect::Sidecar`]
@@ -432,6 +445,7 @@ impl PlaybackSession {
         cur_sid: ServerId::UNSET,
         cur_audio: None,
         cur_sub_sid: 0,
+        selection_known: false,
         cur_sub_sidecar: false,
         cur_sub_client_drawable: false,
         cur_sub_ordinal: -1,
@@ -504,6 +518,7 @@ impl PlaybackSession {
             cur_sid,
             cur_audio,
             cur_sub_sid,
+            selection_known,
             cur_sub_sidecar,
             cur_sub_client_drawable,
             cur_sub_ordinal,
@@ -557,6 +572,7 @@ impl PlaybackSession {
             cur_sid: *cur_sid,
             cur_audio: cur_audio.clone(),
             cur_sub_sid: *cur_sub_sid,
+            selection_known: *selection_known,
             cur_sub_sidecar: *cur_sub_sidecar,
             cur_sub_client_drawable: *cur_sub_client_drawable,
             cur_sub_ordinal: *cur_sub_ordinal,
@@ -7732,6 +7748,7 @@ fn request_play_inner(
 fn clear_track_selection(s: &mut PlaybackSession) {
     s.cur_audio = None;
     s.cur_sub_sid = 0;
+    s.selection_known = false;
     s.cur_sub_sidecar = false;
     s.cur_sub_client_drawable = false;
     s.cur_sub_ordinal = -1;
@@ -7739,9 +7756,9 @@ fn clear_track_selection(s: &mut PlaybackSession) {
 }
 
 /// Clear the outgoing item's live track selection for a play request. A retry is the SAME item
-/// resolved again with the subtitle it had (`RetryContext::sub_sid`, applied to the resolve env
-/// below), so the timing offset tuned against that subtitle is carried with it. A genuinely NEW
-/// request (no retry) instead resumes whatever this profile last tuned for THIS item, if anything
+/// resolved again with the subtitle it had when that was known (`RetryContext::selection`, applied
+/// to the resolve env by [`apply_retry`]), so the timing offset tuned against that subtitle is
+/// carried with it. A genuinely NEW request (no retry) instead resumes whatever this profile last tuned for THIS item, if anything
 /// (`Session::subtitle_offset_for`, keyed by machine id + ratingKey, never by track — a track
 /// CHANGE within one playback already zeros it, `commit_subtitle_selection`'s own doc). Either way
 /// the landing re-clamps it once the subtitle is re-selected (`player::reclamp_subtitle_offset`),
@@ -7823,8 +7840,7 @@ pub fn confirm_resume_presented(ps: &mut PlaybackSession) {
 fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     RetryContext {
         resume_ns: resume_ns.max(0),
-        audio_sid: cur_audio_sid(ps),
-        sub_sid: cur_sub_sid(ps),
+        selection: ps.selection_known.then(|| (cur_audio_sid(ps), cur_sub_sid(ps))),
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         direct_play_mode: ps.direct_play_mode,
         suppress_enhancement: false,
@@ -7845,13 +7861,17 @@ fn rescue_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
 /// Everything a retry overrides in the resolve environment it is about to hand the worker.
 fn apply_retry(env: &mut ResolveEnv, retry: RetryContext) {
     apply_retry_enhancement(env, retry);
+    env.direct_play_mode = retry.direct_play_mode;
     // `request_play` resets the live selection because that is correct for a new item.  A
     // retry is the SAME item: override the fresh defaults with the selection captured before
     // that reset so a rescue does not silently turn subtitles/audio back to server default.
-    env.direct_play_mode = retry.direct_play_mode;
-    env.audio_sid = retry.audio_sid;
-    env.sub_sid = retry.sub_sid;
-    env.subtitle_override = Some(retry.sub_sid);
+    // Only a KNOWN selection is carried: with nothing landed the captured pair is the cleared `0`
+    // sentinel, and applying it would force subtitles Off over the account's own rule.
+    if let Some((audio_sid, sub_sid)) = retry.selection {
+        env.audio_sid = audio_sid;
+        env.sub_sid = sub_sid;
+        env.subtitle_override = Some(sub_sid);
+    }
 }
 
 /// Apply a retry's enhancement decision to the resolve environment it is about to hand the worker.
@@ -8040,7 +8060,7 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
     PLAY_BUSY.store(false, Ordering::SeqCst);
     let ok = !plan.url.is_empty();
     // A refusing `/decision` is a real landing (its verdict must still be installed for the error
-    // read-out), but it has no Engine and therefore no ACTIVE_ENCODER/scrobble owner. The cold
+    // read-out; `apply_plan` leaves the selection UNKNOWN for it), but it has no Engine and therefore no ACTIVE_ENCODER/scrobble owner. The cold
     // source probe or the decision itself may already have registered the logical resource.
     let refused_resources = (!ok).then(|| abandoned_plan_resources(&plan)).flatten();
     let resume_ns = {
@@ -8103,6 +8123,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         String::new()
     };
     let resolve_failed = plan.url.is_empty() && plan.verdict.is_none();
+    // A REFUSED plan installs too (its verdict feeds the error read-out) but selected nothing, so
+    // only a playable one makes the selection below known.
+    let selection_known = !plan.url.is_empty();
     meta.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(
         plan.playing,
     ));
@@ -8188,6 +8211,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             // the part/show-selected subtitle (0 = none), so the menu checkmark, the timeline report
             // and any later transcode of this item all agree with what the renderer is told below
             cur_sub_sid: plan.sub_sid,
+            selection_known,
             // Negative = an external sidecar the client draws itself (`sub_render_ordinal`'s own
             // convention); `None` (Off) never sets `sub_sid` either, so this reads `false` for it.
             cur_sub_sidecar: plan.sub_render_ordinal.is_some_and(|ord| ord < 0),
@@ -10023,7 +10047,7 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) {
     let stream_id = audio.sid;
     let native = family == RouteFamily::Direct && direct_plays;
     let (ordinal, codec) = (audio.ordinal, audio.codec.clone());
-    { let s = &mut *ps; s.cur_audio = Some(audio) };
+    { let s = &mut *ps; s.cur_audio = Some(audio); s.selection_known = true };
     if native {
         // record the pick: the timeline then reports the stream that actually plays, and a
         // later transcode event (subtitle burn refresh / transcode seek) keeps this track.
@@ -10133,6 +10157,7 @@ pub fn commit_subtitle_selection(
     }
     crate::player::request_subtitle(sub_idx);
     set_subtitle(ps, stream_id);
+    ps.selection_known = true;
     // `sub_idx` is `metadata::sub_render_ordinal`'s own convention: negative for an external
     // sidecar (and for Off, where `stream_id == 0` disambiguates), non-negative for an embedded
     // track. Issue #266 I6 reads this back through `facts` to tell a sidecar (unaffected by the

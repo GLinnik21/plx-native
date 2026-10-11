@@ -1069,7 +1069,8 @@ pub struct ResolveEnv {
     /// keeps this subtitle in a remux-shaped plan must then say `subtitles=none` on the wire — the
     /// server has nothing to burn — instead of carrying the id as a burn.
     pub sub_drawn: Option<i32>,
-    /// A retry carries the viewer's explicit Off as well as a positive subtitle id.
+    /// A retry whose selection was KNOWN (`RetryContext::selection`) carries the viewer's explicit
+    /// Off as well as a positive subtitle id; a retry with nothing landed leaves this `None`.
     pub subtitle_override: Option<i64>,
     /// the loaded detail's streams when it IS this item — saves the worker a GET
     pub cached_item: Option<plx_data::metadata::PlayingItem>,
