@@ -116,7 +116,7 @@ pub fn fetch_window(sid: ServerId, ask: &Ask, current: Option<(&[Row], PageInfo)
     // Keep each worker bounded even when several consecutive server pages are hidden.
     // A partial window retains the overlap and publishes its advanced server cursor.
     let mut requests = 0;
-    while requests < 8 || (!ask.before && cursor < minimum_end) {
+    while requests < REQUESTS_PER_ASK || (!ask.before && cursor < minimum_end) {
         requests += 1;
         if rows.len() >= MAX_SHELF_ITEMS || (ask.before && cursor == 0) { break; }
         // Backward pages ask only for the room left beside the retained overlap, so every row
@@ -208,7 +208,10 @@ fn relocate(fetch: &mut impl FnMut(usize, usize) -> Option<MediaContainer>, edge
     })
 }
 
-fn find_key(page: &MediaContainer, key: &str) -> Option<usize> {
+/// The most requests one ask may make: a worker is bounded per ask.
+pub(crate) const REQUESTS_PER_ASK: usize = 8;
+
+pub(crate) fn find_key(page: &MediaContainer, key: &str) -> Option<usize> {
     page.metadata.iter().position(|item| clean(&item.rating_key) == key)
 }
 
@@ -442,7 +445,7 @@ enum Fetched {
 }
 
 /// One card of a listing row, or `None` when the shelf does not show it.
-fn card(sid: ServerId, item: &Metadata, hidden: &[i64]) -> Option<Arc<PmsMovie>> {
+pub(crate) fn card(sid: ServerId, item: &Metadata, hidden: &[i64]) -> Option<Arc<PmsMovie>> {
     if !listable(&item.kind) { return None; }
     let item = parse_item(item, sid);
     (!item.title.is_empty() && !item.thumb.is_empty() && !hidden.contains(&item.sec)).then(|| Arc::new(item))
@@ -519,7 +522,7 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
         .map_or(info.end.min(ledger.keys.len()), |i| i + 1);
     let mut first = rows.first().and_then(|(_, item)| ledger.position(&item.rk))
         .unwrap_or(info.offset.min(ledger.keys.len()));
-    while rows.len() < MAX_SHELF_ITEMS && requests < 8 {
+    while rows.len() < MAX_SHELF_ITEMS && requests < REQUESTS_PER_ASK {
         if ask.before {
             if first == 0 { break; }
             requests += 1;

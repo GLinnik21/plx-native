@@ -42,7 +42,7 @@ use super::{same_tag, tag_hit, Item, Kind, Projection};
 /// Rows per typed request, the overlap row excluded.
 pub(super) const PAGE: usize = 24;
 /// Requests one read may spend before it publishes what it has.
-pub(super) const REQUESTS: usize = 8;
+pub(super) use crate::stores::paging::REQUESTS_PER_ASK as REQUESTS;
 const FAV: &[(ServerId, i64, bool)] = &[];
 
 /// What a worker reads a lane with: the typed listing and the grown hub list.
@@ -271,7 +271,10 @@ impl Lane {
             }
             taken += 1;
             let Some(item) = row_item(row, sid) else { continue };
-            if self.sample && self.preview.iter().any(|x| key_of(x) == key_of(&item)) { continue; }
+            if self.sample {
+                let k = key_of(&item);
+                if self.preview.iter().any(|x| key_of(x) == k) { continue; }
+            }
             if let Item::Tag(t) = &item {
                 // The same person listed again for another library section: the preview fold SUMS
                 // their counts (`search::project`), so the card still held takes this row's count

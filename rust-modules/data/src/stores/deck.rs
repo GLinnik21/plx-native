@@ -26,17 +26,17 @@
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use plx_plex::plex::{MediaContainer, Metadata, ServerId};
 
-use crate::pms::{clean, listable, parse_item, CwItem, HUB_FETCH_COUNT, MAX_SHELF_ITEMS};
+use super::paging;
+use crate::pms::{clean, CwItem, HUB_FETCH_COUNT, MAX_SHELF_ITEMS};
 
 /// Rows per server request, and the lookahead each lane keeps.
 pub(crate) const PAGE: usize = HUB_FETCH_COUNT as usize;
 
 /// Requests one read may spend on one lane before it publishes what it has.
-const REQUESTS: usize = 8;
+use super::paging::REQUESTS_PER_ASK as REQUESTS;
 
 fn is_zero(n: &usize) -> bool { *n == 0 }
 
@@ -368,16 +368,9 @@ pub(crate) enum Fail {
     Lost,
 }
 
-fn find(page: &MediaContainer, key: &str) -> Option<usize> {
-    page.metadata.iter().position(|item| clean(&item.rating_key) == key)
-}
-
 /// One card of a listing row, or `None` when the deck does not show it.
 fn row(sid: ServerId, item: &Metadata, position: usize, hidden: &[i64]) -> Option<CwItem> {
-    if !listable(&item.kind) { return None; }
-    let m = parse_item(item, sid);
-    (!m.title.is_empty() && !m.thumb.is_empty() && !hidden.contains(&m.sec))
-        .then(|| CwItem { last_viewed_at: item.last_viewed_at, m: Arc::new(m), position })
+    paging::card(sid, item, hidden).map(|m| CwItem { last_viewed_at: item.last_viewed_at, m, position })
 }
 
 /// Reads `lane` forward until it holds `n` rows past its shown ones, or its listing ends. A lane
@@ -395,7 +388,7 @@ pub(crate) fn read_ahead(sid: ServerId, lane: &mut Lane, n: usize, hidden: &[i64
         let (start, count) = if overlap { (lane.tail.position, PAGE + 1) } else { (lane.tail.position, PAGE) };
         let mc = list(start, count).filter(|mc| mc.offset == start as i64).ok_or(Fail::Server)?;
         if overlap {
-            match find(&mc, &lane.tail.key) {
+            match paging::find_key(&mc, &lane.tail.key) {
                 Some(0) => {}
                 Some(j) => lane.shift(j as isize).ok_or(Fail::Lost)?,
                 None => {
@@ -404,7 +397,7 @@ pub(crate) fn read_ahead(sid: ServerId, lane: &mut Lane, n: usize, hidden: &[i64
                     let found = if far < lane.tail.position {
                         let page = list(far, lane.tail.position - far).filter(|mc| mc.offset == far as i64)
                             .ok_or(Fail::Server)?;
-                        find(&page, &lane.tail.key)
+                        paging::find_key(&page, &lane.tail.key)
                     } else { None };
                     match found {
                         Some(j) => lane.shift((far + j) as isize - lane.tail.position as isize).ok_or(Fail::Lost)?,
@@ -472,14 +465,14 @@ pub(crate) fn read_behind(sid: ServerId, lane: &mut Lane, n: usize, hidden: &[i6
         let start = lane.head.position.saturating_sub(PAGE);
         let count = lane.head.position - start + 1;
         let mc = list(start, count).filter(|mc| mc.offset == start as i64).ok_or(Fail::Server)?;
-        match find(&mc, &lane.head.key) {
+        match paging::find_key(&mc, &lane.head.key) {
             Some(j) if j + 1 == mc.metadata.len().min(count) => {}
             Some(j) => lane.shift((start + j) as isize - lane.head.position as isize).ok_or(Fail::Lost)?,
             None => {
                 // The edge is ahead of where it was read: one page on that side.
                 let far = lane.head.position + 1;
                 let page = list(far, PAGE).filter(|mc| mc.offset == far as i64).ok_or(Fail::Server)?;
-                match find(&page, &lane.head.key) {
+                match paging::find_key(&page, &lane.head.key) {
                     Some(j) => lane.shift((far + j) as isize - lane.head.position as isize).ok_or(Fail::Lost)?,
                     None => lane.to_ledger()?,
                 }
