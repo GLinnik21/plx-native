@@ -10400,3 +10400,7 @@ mod plan_audio_enhancement_tests;
 #[cfg(test)]
 #[path = "decision_audio_enhancement_tests.rs"]
 mod audio_enhancement_tests;
+
+#[cfg(test)]
+#[path = "decision_prefs_characterisation_tests.rs"]
+mod prefs_characterisation_tests;
