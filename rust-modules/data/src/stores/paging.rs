@@ -549,16 +549,15 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
             let lo = first.saturating_sub(MAX_SHELF_ITEMS - rows.len());
             let keys: Vec<String> = ledger.keys[lo..first].iter().map(LedgerKey::text).collect();
             let mut fresh = Vec::new();
+            let mut gone = HashSet::new();
             for (key, fetched) in keys.iter().zip(materialise(sid, &keys, ask.hidden, &cache, &mut many)?) {
                 match fetched {
                     Fetched::Card(item) => fresh.push((0, item)),
                     Fetched::Skip => {}
-                    Fetched::Gone => {
-                        let gone = LedgerKey::new(key);
-                        ledger.keys.retain(|k| *k != gone);
-                    }
+                    Fetched::Gone => { gone.insert(LedgerKey::new(key)); }
                 }
             }
+            if !gone.is_empty() { ledger.keys.retain(|k| !gone.contains(k)); }
             fresh.extend(rows);
             rows = fresh;
             first = lo;
@@ -569,16 +568,15 @@ pub fn ledger_window(sid: ServerId, ask: &Ask, current: (&[Row], PageInfo), ledg
             let upto = (cursor + MAX_SHELF_ITEMS - rows.len()).min(ledger.keys.len());
             let keys: Vec<String> = ledger.keys[cursor..upto].iter().map(LedgerKey::text).collect();
             let mut kept = 0;
+            let mut gone = HashSet::new();
             for (key, fetched) in keys.iter().zip(materialise(sid, &keys, ask.hidden, &cache, &mut many)?) {
                 match fetched {
                     Fetched::Card(item) => { kept += 1; rows.push((0, item)); }
                     Fetched::Skip => kept += 1,
-                    Fetched::Gone => {
-                        let gone = LedgerKey::new(key);
-                        ledger.keys.retain(|k| *k != gone);
-                    }
+                    Fetched::Gone => { gone.insert(LedgerKey::new(key)); }
                 }
             }
+            if !gone.is_empty() { ledger.keys.retain(|k| !gone.contains(k)); }
             cursor += kept;
             continue;
         }
