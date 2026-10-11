@@ -607,7 +607,7 @@ fn playback_quality_is_stored_as_null_when_reset_and_reads_back_none() {
     assert_eq!(stored_preferences(&mut store)["playback_quality"], "720p_4_mbps");
     session.playback_quality = None;
     commit(&mut store, &session, SaveAuthority::PublicOnly);
-    assert_eq!(stored_preferences(&mut store)["playback_quality"], Value::Null);
+    assert_eq!(stored_preferences(&mut store).get("playback_quality"), Some(&Value::Null), "present and null");
     assert_eq!(opened(&mut store).playback_quality, None);
 }
 
