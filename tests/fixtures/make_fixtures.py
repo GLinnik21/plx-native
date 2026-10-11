@@ -2641,7 +2641,7 @@ def verify(key, spec, dur, path, ep=None):
         verify_late_audio(path, spec, streams, rec, problems)
 
     want_subs = [s for s in spec.get("subs", []) if not s.get("sidecar")]
-    rec["subtitles"] =[{"codec": s.get("codec_name"),
+    rec["subtitles"] = [{"codec": s.get("codec_name"),
                          "language": (s.get("tags") or {}).get("language"),
                          "title": (s.get("tags") or {}).get("title"),
                          "forced": (s.get("disposition") or {}).get("forced")} for s in ss]
