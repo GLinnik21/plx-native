@@ -1762,11 +1762,24 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         }
     }
 
-    // ---------- send the WHOLE sourceInfo envelope VERBATIM, once frames flow, then
+    // ---------- send the WHOLE sourceInfo envelope once frames flow (verbatim, except a
+    // container-PQ VP9 stream, see below), then
     // window + PLAYING (setMediaVideoData -> setDisplayWindow -> setState PLAYING) ----------
     if eng.stage == Stage::Bound && !eng.video_info_sent && SHARED.frames.load(Relaxed) >= 2 {
         let bytes = SHARED.source_info.lock().unwrap().clone();
-        if let Some(bytes) = bytes {
+        if let Some(mut bytes) = bytes {
+            // A VP9 stream's PQ lives in the container, which the pipeline never sees, so its own
+            // envelope says "hdrType":"none". Say HDR10 here when the demuxer found PQ (see
+            // `vp9_hdr`). `/tmp/plxnative-novp9hdr` sends the envelope as the pipeline made it.
+            let container_hdr = *SHARED.container_hdr.lock().unwrap();
+            if let Some(h) = container_hdr {
+                if !plx_base::devtrig::flag("novp9hdr") {
+                    if let Some(rewritten) = super::vp9_hdr::rewrite_source_info(&bytes, &h) {
+                        super::log(&super::vp9_hdr::log_line(&h));
+                        bytes = rewritten;
+                    }
+                }
+            }
             let rv = unsafe { super::sink().plane_send_video_data(mt, bytes.as_ptr() as *const c_char) };
             super::log(&format!(
                 "setMediaVideoData rv={rv} frames={}",

@@ -1621,6 +1621,211 @@ video::-webkit-media-controls-start-playback-button {
   }
 }
 
+/* A clipped capsule would lose its outline ring, which is drawn outside the box. */
+[data-pill-clip]:focus-visible {
+  outline-offset: -4px;
+}
+
+/* ---------- Press switcher ---------- */
+/* site.js turns the list above into outlet tabs plus one article on stage; the
+   list stays as the no-JS form. The Trendshift badge is Trendshift's own live
+   image (its rank is never frozen here), parked under the tabs. */
+.press-badge {
+  display: block;
+  line-height: 0;
+  max-width: 100%;
+  width: fit-content;
+  margin-top: 28px;
+}
+.press-badge[hidden] {
+  display: none;
+}
+.press-badge img {
+  display: block;
+  width: 250px;
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 250 / 55;
+}
+.press-badge:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 4px;
+  border-radius: 12px;
+}
+.press-section.is-switcher .press-list {
+  display: none;
+}
+.press-switcher {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: clamp(32px, 5vw, 64px);
+  align-items: start;
+  max-width: 1080px;
+}
+.press-side {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.press-tabs {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-height: 280px;
+  scrollbar-width: none;
+}
+.press-tabs::-webkit-scrollbar {
+  display: none;
+}
+.press-tabs.is-long {
+  overflow-y: auto;
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(180deg, transparent, #000 12%, #000 88%, transparent);
+}
+.press-tab {
+  font: inherit;
+  flex: none;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 56px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: clamp(28px, 3vw, 36px);
+  line-height: 1.1;
+  letter-spacing: -0.035em;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  transition: color 250ms ease;
+}
+.press-tab span {
+  display: block;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.press-tab[aria-selected="true"],
+.press-tab:hover {
+  color: var(--text-primary);
+}
+.press-tab:focus-visible,
+.press-step:focus-visible,
+.press-read:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+.press-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-height: 300px;
+  min-width: 0;
+}
+.press-stage-meta {
+  font-size: 15px;
+  color: var(--text-tertiary);
+}
+.press-stage-headline {
+  font-size: clamp(24px, 3vw, 36px);
+  line-height: 1.18;
+  letter-spacing: -0.03em;
+  font-weight: 700;
+  text-wrap: balance;
+}
+.press-stage-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+.press-read {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  margin-right: auto;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+  transition: opacity 200ms ease;
+}
+.press-read:hover {
+  opacity: 0.75;
+}
+.press-pos {
+  font-size: 14px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.press-step {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  color: var(--text-primary);
+  background: var(--color-white-a07);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  transition: background 200ms ease;
+}
+.press-step:hover {
+  background: var(--color-white-a10);
+}
+@media (max-width: 759px) {
+  .press-switcher {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px;
+  }
+  /* The badge falls below the stage, so the side column's order is flattened. */
+  .press-side {
+    display: contents;
+  }
+  .press-tabs {
+    flex-direction: row;
+    gap: 8px;
+    max-height: none;
+    overflow-x: auto;
+    margin: 0 calc(-1 * var(--gutter));
+    padding: 0 var(--gutter);
+    scroll-snap-type: x proximity;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  .press-tab {
+    max-width: 72vw;
+    height: 44px;
+    padding: 0 18px;
+    border-radius: 999px;
+    font-size: 17px;
+    letter-spacing: -0.2px;
+    color: var(--text-secondary);
+    background: var(--color-white-a07);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    transition: color 250ms ease, background 250ms ease;
+  }
+  .press-tab[aria-selected="true"] {
+    color: var(--accent-ink);
+    background: var(--accent-face-fill);
+    box-shadow: inset 0 0 0 1px var(--color-white-a22);
+  }
+  .press-stage {
+    gap: 16px;
+    min-height: 0;
+  }
+  .press-badge {
+    order: 3;
+    margin-top: 4px;
+  }
+}
+
 /* ---------- Install ---------- */
 .install-section {
   padding: clamp(72px, 11vh, 140px) 0 clamp(44px, 6vh, 68px);

@@ -667,6 +667,200 @@
     measure();
   }
 
+  /* ---------- Press switcher ---------- */
+  // The press list in the markup is the no-JS (and no-script crawler) form: one
+  // linked row per article. With JS it becomes a switcher: outlet names as tabs
+  // on the left, the selected article on stage on the right. The tabs are built
+  // from the list, so a new outlet is one new <li> and nothing here changes.
+  function initPress() {
+    const section = document.querySelector(".press-section");
+    const list = section && section.querySelector(".press-list");
+    if (!list) return;
+    const items = [...list.querySelectorAll(".press-item")].map((a) => {
+      const headline = a.querySelector(".press-headline");
+      const time = a.querySelector(".press-date");
+      const lang = a.querySelector(".press-lang");
+      return {
+        href: a.getAttribute("href"),
+        outlet: a.querySelector(".press-outlet").textContent,
+        language: lang ? lang.textContent : "English",
+        lang: headline.getAttribute("lang") || "en",
+        headline: headline.innerHTML,
+        date: time.textContent,
+        iso: time.getAttribute("datetime"),
+      };
+    });
+    if (items.length < 2) return;
+    items.sort((a, b) => b.iso.localeCompare(a.iso));
+
+    const el = (tag, cls, attrs) => {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      Object.entries(attrs || {}).forEach(([k, v]) => n.setAttribute(k, v));
+      return n;
+    };
+    const arrow = (d) =>
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + d + '"></path></svg>';
+
+    const root = el("div", "press-switcher", { "data-reveal": "" });
+    const tabs = el("div", "press-tabs", { role: "tablist", "aria-label": "Press coverage", "aria-orientation": "vertical" });
+    const stage = el("div", "press-stage", { role: "tabpanel", "aria-live": "polite" });
+    const meta = el("span", "press-stage-meta");
+    const head = el("span", "press-stage-headline");
+    const foot = el("div", "press-stage-foot");
+    const read = el("a", "press-read");
+    read.textContent = "Read the article →";
+    const pos = el("span", "press-pos");
+    const prev = el("button", "press-step", { type: "button", "aria-label": "Previous article" });
+    const next = el("button", "press-step", { type: "button", "aria-label": "Next article" });
+    prev.innerHTML = arrow("M15 5l-7 7 7 7");
+    next.innerHTML = arrow("M9 5l7 7-7 7");
+    foot.append(read, pos, prev, next);
+    stage.append(meta, head, foot);
+
+    let sel = 0;
+    const buttons = items.map((it, i) => {
+      const b = el("button", "press-tab", { type: "button", role: "tab", id: "press-tab-" + i, title: it.outlet });
+      const label = el("span");
+      label.textContent = it.outlet;
+      b.append(label);
+      b.addEventListener("click", () => select(i, false));
+      return b;
+    });
+    tabs.append(...buttons);
+    tabs.classList.toggle("is-long", items.length > 5);
+
+    const select = (i, focus) => {
+      sel = (i + items.length) % items.length;
+      const it = items[sel];
+      buttons.forEach((b, j) => {
+        const on = j === sel;
+        b.setAttribute("aria-selected", on ? "true" : "false");
+        b.tabIndex = on ? 0 : -1;
+      });
+      stage.setAttribute("aria-labelledby", "press-tab-" + sel);
+      meta.textContent = it.date + " · " + it.language;
+      head.innerHTML = it.headline;
+      head.setAttribute("lang", it.lang);
+      read.setAttribute("href", it.href);
+      if (it.lang !== "en") read.setAttribute("hreflang", it.lang); else read.removeAttribute("hreflang");
+      pos.textContent = String(sel + 1).padStart(2, "0") + " / " + String(items.length).padStart(2, "0");
+      // Centre the active tab inside the tab strip only; never scroll the page.
+      const b = buttons[sel];
+      const horiz = isNarrow();
+      const t = horiz ? b.offsetLeft - (tabs.clientWidth - b.offsetWidth) / 2 : b.offsetTop - (tabs.clientHeight - b.offsetHeight) / 2;
+      tabs.scrollTo(horiz ? { left: Math.max(0, t), behavior: reducedMotion() ? "auto" : "smooth" } : { top: Math.max(0, t), behavior: reducedMotion() ? "auto" : "smooth" });
+      if (focus) b.focus({ preventScroll: true });
+    };
+    prev.addEventListener("click", () => select(sel - 1, false));
+    next.addEventListener("click", () => select(sel + 1, false));
+    tabs.addEventListener("keydown", (e) => {
+      const step = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+      if (step) { e.preventDefault(); select(sel + step, true); }
+      else if (e.key === "Home") { e.preventDefault(); select(0, true); }
+      else if (e.key === "End") { e.preventDefault(); select(items.length - 1, true); }
+    });
+
+    const left = el("div", "press-side");
+    left.append(tabs);
+    const badge = section.querySelector(".press-badge");
+    if (badge) left.append(badge);
+    root.append(left, stage);
+    list.after(root);
+    section.classList.add("is-switcher");
+    select(0, false);
+  }
+
+  /* ---------- Capsule outline ---------- */
+  // The design system's capsule (core/pillPath.js, documented in its
+  // tokens/shape.css): not a stadium, so no straight sides. Each end is a circle
+  // r = END_R x height; the top and bottom are one large arc R, solved from the
+  // element's width; a blend circle f = sqrt(R x r) joins them tangentially, so
+  // curvature falls by the same factor twice. SLACK is how much of the band
+  // between r and half the height the blend may use: 1 returns a stadium.
+  // Applied as clip-path: shape() to every pill-faced control; where shape() is
+  // unsupported the CSS border-radius pill stays. A clip takes an outward
+  // box-shadow with it, so these faces carry no drop shadow.
+  const END_R = 0.492;
+  const SLACK = 0.86;
+  function pillShape(w, h) {
+    const r = END_R * h;
+    const B = h / 2;
+    const half = w / 2;
+    const band = B - r;
+    if (!(half > r) || !(band > 0)) return null;
+    const g = (R) => R - r - Math.hypot(half - r, R - B) - SLACK * band;
+    let lo = r + 1;
+    let hi = r + 1e9;
+    if (g(hi) < 0) return null;
+    for (let k = 0; k < 120; k++) {
+      const m = (lo + hi) / 2;
+      if (g(m) < 0) lo = m;
+      else hi = m;
+    }
+    const R = (lo + hi) / 2;
+    const f = Math.sqrt(R * r);
+    const cx = half;
+    const cy = R;
+    const ex = r;
+    const ey = B;
+    const d = Math.hypot(cx - ex, cy - ey);
+    const a = R - f;
+    const c = f - r;
+    if (a + c < d || Math.abs(a - c) > d) return null;
+    const ux = (ex - cx) / d;
+    const uy = (ey - cy) / d;
+    const x = (d * d + a * a - c * c) / (2 * d);
+    const yy = Math.sqrt(Math.max(0, a * a - x * x));
+    const fx = cx + ux * x - uy * yy;
+    const fy = cy + uy * x + ux * yy;
+    const t1x = cx + ((fx - cx) * R) / (R - f);
+    const t1y = cy + ((fy - cy) * R) / (R - f);
+    const t2x = fx + ((ex - fx) * f) / (f - r);
+    const t2y = fy + ((ey - fy) * f) / (f - r);
+    const p = (v) => +v.toFixed(2) + "px";
+    const mx = (v) => p(w - v);
+    return (
+      "shape(from " + p(t1x) + " " + p(t1y) + "," +
+      " arc to " + mx(t1x) + " " + p(t1y) + " of " + p(R) + " small cw," +
+      " arc to " + mx(t2x) + " " + p(t2y) + " of " + p(f) + " small cw," +
+      " arc to " + mx(t2x) + " " + p(h - t2y) + " of " + p(r) + " small cw," +
+      " arc to " + mx(t1x) + " " + p(h - t1y) + " of " + p(f) + " small cw," +
+      " arc to " + p(t1x) + " " + p(h - t1y) + " of " + p(R) + " small cw," +
+      " arc to " + p(t2x) + " " + p(h - t2y) + " of " + p(f) + " small cw," +
+      " arc to " + p(t2x) + " " + p(t2y) + " of " + p(r) + " small cw," +
+      " arc to " + p(t1x) + " " + p(t1y) + " of " + p(f) + " small cw, close)"
+    );
+  }
+
+  function initPills() {
+    if (!(window.CSS && CSS.supports && CSS.supports("clip-path", "shape(from 0px 0px, close)"))) return;
+    const SELECTOR = ".button, .header-cta, .nav-pill, .press-tab";
+    const apply = (el) => {
+      // Only a face that is a pill right now (the press tabs are bare type on wide screens).
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      const shape = w && h && parseFloat(getComputedStyle(el).borderTopLeftRadius) > 0 ? pillShape(w, h) : null;
+      if (shape) {
+        el.style.clipPath = shape;
+        el.setAttribute("data-pill-clip", "");
+      } else {
+        el.style.clipPath = "";
+        el.removeAttribute("data-pill-clip");
+      }
+    };
+    const ro = "ResizeObserver" in window ? new ResizeObserver((es) => es.forEach((e) => apply(e.target))) : null;
+    const els = [...document.querySelectorAll(SELECTOR)];
+    els.forEach((el) => {
+      apply(el);
+      if (ro) ro.observe(el);
+    });
+    // A breakpoint can change a face's radius without changing its size.
+    if (narrowQuery && narrowQuery.addEventListener) narrowQuery.addEventListener("change", () => els.forEach(apply));
+  }
+
+  initPress();
+  initPills();
   initReveal();
   initSpotlights();
   initHeader();
