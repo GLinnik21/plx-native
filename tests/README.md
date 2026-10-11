@@ -1037,6 +1037,18 @@ here grades); the 4096-wide edge the device table claims, and any refusal above 
 non-24p rung — the frame-rate axis is `pipe_h264_1080p5994` and `pipe_hevc_4k_60fps`, at 1080p and
 4K only.
 
+### Audio that starts late (`pipe_late_audio_eac3`)
+
+`pipe_h264_eac3_late_audio.mkv` carries an E-AC-3 track whose first packet is 11.008 s into the
+file, behind ~16 MB of 12 Mbit/s video — more than the 10 MiB video lane. A player that parks the
+demuxer on the full video lane, or drops/throttles the late audio, never starts its clock and sits
+at 0:00. `make_fixtures.py` reads the first audio packet's time and the video bytes ahead of it back
+out of the finished file (`verify_late_audio`), so a clip that lost either fails the build. The case
+grades the whole-path symptom (`min_pos_climb_s`) and the second stall on its own
+(`require_audio_feed_ready`). The demux half also has a host test over a generated file,
+`ff::late_audio_tests` in `rust-modules/media` (needs the host FFmpeg and the `ffmpeg` CLI; run with
+`--ignored`, see its module doc).
+
 ### Playing to the END, and then again (LG #46)
 
 `pipe_finish_eos` and `pipe_replay_after_eos` are **the only cases in either tier that are supposed

@@ -3170,6 +3170,51 @@
       }
     },
     {
+      "name": "pipe_late_audio_eac3",
+      "fixture": "pipe_h264_eac3_late_audio.mkv",
+      "title": "E-AC-3 that starts 11 s after the video — the clock must still start and climb",
+      "covers": [
+        "late-audio-start",
+        "aq video-lane headroom",
+        "feed_audio_lane stale drop",
+        "feed-ahead throttle",
+        "ff.rs demux"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "eac3",
+        "fps": 24.0,
+        "source_raster": [
+          1920,
+          1080
+        ]
+      },
+      "run_secs": 45,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "video_size": "1920x1080",
+        "load_video": "H264",
+        "load_audio": "AC3 PLUS",
+        "load_dovi": "none",
+        "load_atmos": false,
+        "audio_stream_index": 1,
+        "min_pos_climb_s": 15,
+        "require_video_bound": true,
+        "require_audio_feed_ready": true,
+        "no_reload": true,
+        "no_playing_error": true,
+        "server_opens_min": 1,
+        "load_max": "1920x1080@24",
+        "sink_echo": "1920x1080@24"
+      },
+      "_note": "The fixture carries NO audio packet for its first 11.008 s and ~16 MB of 12 Mbit/s video ahead of the first one (make_fixtures.py reads both back out of the finished file), which is more than the 10 MiB video lane. Two stalls stood behind each other: the demuxer parked on the full video lane before reaching the first audio packet, and then `feed_audio_lane` dropped the late audio as stale / the feed-ahead throttle held it, so no `feed a#` ever reached Starfish and the clock sat at 0. `min_pos_climb_s` is the whole-path symptom (a stalled clock climbs 0 s); `require_audio_feed_ready` (a `feed a#… reply=O` line) is the second stall on its own, so a fix for only the first cannot pass. `no_reload` keeps the stuck-clock watchdog's recovery reload from masking a stall as a late success. The 45 s cap leaves ~34 s of play after the audio exists and cannot reach this 60 s clip's EOS. WRITTEN AND STATICALLY VALIDATED ONLY — not yet run on a television; the first on-device run may need `run_secs` / `min_pos_climb_s` tuned to the real startup latency."
+    },
+    {
       "name": "pipe_res_h264_sd",
       "fixture": "pipe_h264_ac3_480p.mkv",
       "title": "SD 720x480 h264 + AC-3 — the smallest raster in the matrix",

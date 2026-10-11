@@ -4421,6 +4421,96 @@ class AbrSegmentVariation(unittest.TestCase):
                     "delivers one byte size for the whole playback")
 
 
+class LateAudioFixture(unittest.TestCase):
+    """The late-audio clip and its case (PR #603): a file whose audio starts 11 s after its video.
+
+    Static only. The clip is only worth anything if it really puts more video than the video lane
+    holds ahead of its first audio packet, and the case is only worth anything if it can tell a
+    stalled clock and an audio lane that never reached Starfish from a healthy start.
+    """
+
+    KEY = "pipe_h264_eac3_late_audio"
+
+    def _packets(self, audio_at, video_every=1 / 24.0, video_size=1000, seconds=14):
+        pkts = [{"stream_index": 0, "pts_time": f"{i * video_every:.3f}", "size": str(video_size)}
+                for i in range(int(seconds / video_every))]
+        return pkts + [{"stream_index": 1, "pts_time": f"{audio_at + i * 0.032:.3f}",
+                        "size": "700"} for i in range(20)]
+
+    def test_the_lead_is_the_audio_start_and_the_video_bytes_before_it(self):
+        first, ahead = fixturegen.late_audio_lead(self._packets(11.008), 0, 1)
+        self.assertAlmostEqual(first, 11.008, places=3)
+        # 24 fps, 1000 bytes a frame: frames at t < 11.008 are indices 0..264, i.e. 265 of them.
+        self.assertEqual(ahead, 265 * 1000)
+
+    def test_an_on_time_audio_track_has_no_video_ahead_of_it(self):
+        first, ahead = fixturegen.late_audio_lead(self._packets(0.0), 0, 1)
+        self.assertEqual((first, ahead), (0.0, 0))
+
+    def test_a_file_without_audio_or_a_timestamp_is_refused_not_zeroed(self):
+        with self.assertRaises(ValueError):
+            fixturegen.late_audio_lead(self._packets(11.0)[:-20], 0, 1)
+        broken = self._packets(11.0)
+        broken[-1] = {"stream_index": 1, "size": "700"}
+        with self.assertRaises(ValueError):
+            fixturegen.late_audio_lead(broken, 0, 1)
+
+    def test_the_shape_is_built_to_fill_the_video_lane_before_the_first_audio_packet(self):
+        spec = fixturegen.PIPE_SHAPES[self.KEY]
+        (audio,) = spec["audio"]
+        self.assertAlmostEqual(audio["delay"], 11.008)
+        # The design arithmetic, written down where a change to either number trips it: the
+        # rate-targeted video must queue more than the lane's cap in the delay it sits behind,
+        # even at the verify() band's lower edge (0.70x), or the clip can not park the demuxer.
+        video_bytes_by_audio = spec["video"]["vbr"] * 1000 / 8 * audio["delay"] * 0.70
+        self.assertGreater(video_bytes_by_audio, fixturegen.AQ_VIDEO_BYTES)
+        self.assertEqual(spec["late_audio"]["min_video_bytes_before_audio"],
+                         fixturegen.AQ_VIDEO_BYTES)
+        self.assertLess(audio["delay"], fixturegen.PIPE_SECS - 20,
+                        "the audio must leave the case a long stretch to climb through")
+
+    def test_the_audio_input_is_offset_by_exactly_the_delay(self):
+        """`-itsoffset` must precede the delayed track's `-i` and no other input's."""
+        captured = []
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(fixturegen, "run",
+                                  side_effect=lambda argv, quiet=True: captured.append(list(argv)) or ""):
+            work = fixturegen.Path(d)
+            fixturegen.build_generic(
+                mock.Mock(markers=False), self.KEY, fixturegen.PIPE_SHAPES[self.KEY], 4, None,
+                work / "out.mkv", work)
+        argv = captured[0]
+        self.assertEqual(argv.count("-itsoffset"), 1, "only the delayed track is offset")
+        at = argv.index("-itsoffset")
+        self.assertEqual(argv[at + 1], "11.008")
+        self.assertEqual(argv[at + 2:at + 5], ["-t", "4", "-f"], "it must sit right before the audio -i")
+        self.assertIn("sine=", argv[at + 7], "and the input it offsets is the audio graph")
+
+    def test_the_case_grades_the_stalled_clock_and_the_unfed_audio_lane(self):
+        case = next(c for c in _manifest()["pipeline_cases"] if c["name"] == "pipe_late_audio_eac3")
+        spec = fixturegen.PIPE_SHAPES[self.KEY]
+        self.assertEqual(case["fixture"], self.KEY + ".mkv")
+        for k in ("vcodec", "acodec", "fps"):
+            self.assertEqual(case["declare"][k], spec["declare"][k], f"declare.{k} drifted from the shape")
+        exp = case["expect"]
+        # The two stalls are separate failures: a stalled clock and an audio lane that never
+        # reached Starfish. A case that graded only the first would pass a fix for stall 1 alone.
+        self.assertTrue(exp["require_audio_feed_ready"])
+        self.assertGreaterEqual(exp["min_pos_climb_s"], 12)
+        self.assertEqual(exp["audio_stream_index"], 1)
+        self.assertEqual(exp["load_audio"], "AC3 PLUS")
+        self.assertLess(exp["min_pos_climb_s"] + 5, case["run_secs"])
+        self.assertLess(case["run_secs"], fixturegen.PIPE_SECS, "the clip must not end in the window")
+
+    def test_a_stalled_clock_and_a_silent_audio_lane_both_fail_the_case_assertions(self):
+        # What the broken player logs: heartbeat position pinned at 0, video fed, audio never.
+        stalled = [f"loop=100 fps=60 pos=0s stage=Playing" for _ in range(6)]
+        self.assertFalse(run.a_timeline_climb(stalled, 15, dense_only=True)[0])
+        climbing = [f"loop=100 fps=60 pos={t}s stage=Playing" for t in range(0, 20)]
+        self.assertTrue(run.a_timeline_climb(climbing, 15, dense_only=True)[0])
+        self.assertFalse(run.a_audio_feed_ready(["feed v#1 sz=9 fed=0 reply=O qbytes=1"])[0])
+
+
 class AbrResponseProfile(unittest.TestCase):
     """One request actuator may produce different completed renditions in fresh PMS sessions."""
 
