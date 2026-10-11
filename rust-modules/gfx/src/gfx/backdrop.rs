@@ -396,12 +396,28 @@ pub struct PaintDiff {
     pub what: &'static str,
     /// For `what=args`: (word index, before, after) of the first differing argument word.
     pub arg: Option<(usize, u64, u64)>,
+    /// Every differing position (in order), not just the first.
+    pub all: Vec<DiffItem>,
+}
+/// One differing draw position.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffItem {
+    pub index: usize,
+    pub kind: String,
+    pub what: &'static str,
+    pub arg: Option<usize>,
+    /// Old and new placed rect, for `what=rect`.
+    pub rects: Option<([f32; 4], [f32; 4])>,
 }
 fn kind_name(tag: u64) -> String {
     match tag {
+        0 => "tag0(undeclared)".into(),
         1 => "rect".into(),
         2 => "rrect".into(),
         3 => "rring".into(),
+        4 => "shadow".into(),
+        5 => "shadow_outside".into(),
+        6 => "focus_shadow".into(),
         7 => "rect_sheened".into(),
         8 => "rect_rimmed".into(),
         9 => "rect_rimmed_w".into(),
@@ -409,6 +425,7 @@ fn kind_name(tag: u64) -> String {
         11 => "rrect_sheened".into(),
         12 => "tex_uv".into(),
         13 => "tex_stroked".into(),
+        14 => "tex_carded".into(),
         15 => "hero_ground".into(),
         16 => "ambient".into(),
         17 => "grad4".into(),
@@ -416,8 +433,12 @@ fn kind_name(tag: u64) -> String {
         19 => "field_ground".into(),
         20 => "field_panel".into(),
         21 => "art_scrim".into(),
-        22 => "ambient_art".into(),
+        // Two painters declare tag 22 (`ambient_art`, `tex_carded_still`); the words cannot tell them apart.
+        22 => "ambient_art|tex_carded_still".into(),
         23 => "ambient_inked".into(),
+        100 => "text".into(),
+        101 => "text_fade".into(),
+        102 => "text_fade_v".into(),
         GLASS_COMMAND => "glass".into(),
         u64::MAX => "layer".into(),
         t => format!("tag{t}"),
@@ -458,10 +479,31 @@ pub fn diff_paints(prev: &[Rc<Paint>], now: &[Rc<Paint>]) -> Option<PaintDiff> {
         rect: rect_of(shown),
         what: "count",
         arg: None,
+        all: Vec::new(),
     };
-    let (Some(a), Some(b)) = (a, b) else { return Some(diff) };
+    diff.all = (first..n)
+        .filter(|&i| differs(i))
+        .map(|i| item(i, prev.get(i), now.get(i)))
+        .collect();
+    let head = &diff.all[0];
+    diff.what = head.what;
+    if let (Some(index), Some(a), Some(b)) = (head.arg, a, b) {
+        diff.arg = Some((index, a.values[index], b.values[index]));
+    }
+    Some(diff)
+}
+fn item(index: usize, a: Option<&Rc<Paint>>, b: Option<&Rc<Paint>>) -> DiffItem {
+    let shown = b.or(a).expect("one side exists");
+    let mut it = DiffItem {
+        index,
+        kind: kind_name(shown.values.first().copied().unwrap_or(0)),
+        what: "count",
+        arg: None,
+        rects: None,
+    };
+    let (Some(a), Some(b)) = (a, b) else { return it };
     let (av, bv) = (&a.values, &b.values);
-    diff.what = if av.first() != bv.first() {
+    it.what = if av.first() != bv.first() {
         "kind"
     } else if av.len() != bv.len() {
         "arglen"
@@ -470,9 +512,10 @@ pub fn diff_paints(prev: &[Rc<Paint>], now: &[Rc<Paint>]) -> Option<PaintDiff> {
     } else if av.get(W_MODE) != bv.get(W_MODE) {
         "mode"
     } else if av.get(W_RECT) != bv.get(W_RECT) {
+        it.rects = Some((rect_of(a), rect_of(b)));
         "rect"
     } else if let Some(i) = (W_ARGS..av.len()).find(|&i| av[i] != bv[i]) {
-        diff.arg = Some((i, av[i], bv[i]));
+        it.arg = Some(i);
         "args"
     } else if av != bv {
         "values"
@@ -481,13 +524,35 @@ pub fn diff_paints(prev: &[Rc<Paint>], now: &[Rc<Paint>]) -> Option<PaintDiff> {
     } else {
         "source"
     };
-    Some(diff)
+    it
+}
+/// Items listed on a line before `+N`.
+const ALL_MAX: usize = 12;
+fn all_field(all: &[DiffItem]) -> String {
+    let r = |r: [f32; 4]| format!("{:.0},{:.0},{:.0},{:.0}", r[0], r[1], r[2], r[3]);
+    let mut out = String::from("all=");
+    for (n, it) in all.iter().take(ALL_MAX).enumerate() {
+        if n > 0 {
+            out.push('|');
+        }
+        out.push_str(&format!("{}:{}:{}", it.index, it.kind, it.what));
+        if let Some(i) = it.arg {
+            out.push_str(&format!("@{i}"));
+        }
+        if let Some((a, b)) = it.rects {
+            out.push_str(&format!("@{}>{}", r(a), r(b)));
+        }
+    }
+    if all.len() > ALL_MAX {
+        out.push_str(&format!("|+{}", all.len() - ALL_MAX));
+    }
+    out
 }
 fn u8_of(word: u64) -> u8 {
     (f32::from_bits(word as u32).clamp(0.0, 1.0) * 255.0).round() as u8
 }
 /// One compact `GLASSDIFF` log line for the compare of glass `job`.
-fn format_diff(frame: u64, job: Z, prev: &[Rc<Paint>], now: &[Rc<Paint>]) -> String {
+fn format_diff(frame: u64, job: Z, region: [f32; 4], prev: &[Rc<Paint>], now: &[Rc<Paint>]) -> String {
     let Some(d) = diff_paints(prev, now) else {
         return format!("GLASSDIFF frame={frame} job={:#x} what=none", job.0);
     };
@@ -504,8 +569,9 @@ fn format_diff(frame: u64, job: Z, prev: &[Rc<Paint>], now: &[Rc<Paint>]) -> Str
         )
     });
     format!(
-        "GLASSDIFF frame={frame} job={:#x} prev_n={} now_n={} first={} kind={} rect={x:.1},{y:.1},{w:.1},{h:.1} what={}{arg} changed={}",
-        job.0, d.prev_n, d.now_n, d.first, d.kind, d.what, d.changed
+        "GLASSDIFF frame={frame} job={:#x} prev_n={} now_n={} first={} kind={} rect={x:.1},{y:.1},{w:.1},{h:.1} what={}{arg} changed={} region={:.0},{:.0},{:.0},{:.0} {}",
+        job.0, d.prev_n, d.now_n, d.first, d.kind, d.what, d.changed,
+        region[0], region[1], region[2], region[3], all_field(&d.all)
     )
 }
 
@@ -636,7 +702,10 @@ impl Sources {
                 // Armed probe only (`plxnative-framedrop`): name the draw that made the compare
                 // unequal. Unarmed this is one relaxed load and nothing else.
                 if e.valid && plx_base::diag::spans::armed() {
-                    self.diffs.push(format_diff(frame, z, &captured, &current));
+                    let region = e.members.iter().copied().reduce(union).map_or([0.0; 4], |r| {
+                        crate::gfx::blur_region(r.x, r.y, r.w, r.h)
+                    });
+                    self.diffs.push(format_diff(frame, z, region, &captured, &current));
                 }
                 e.valid = false;
             }
@@ -1429,8 +1498,25 @@ mod glassdiff_tests {
         let d = diff_paints(&prev, &now).unwrap();
         assert_eq!((d.first, d.changed, d.what, d.kind.as_str()), (1, 1, "rect", "rect"));
         assert_eq!(d.rect, [9.0, 10.0, 100.0, 50.0]);
-        let line = format_diff(7, Z::CHROME, &prev, &now);
+        let line = format_diff(7, Z::CHROME, [0.0, 0.0, 300.0, 100.0], &prev, &now);
         assert!(line.contains("what=rect") && line.contains("kind=rect"), "{line}");
+        assert!(line.contains("region=0,0,300,100"), "{line}");
+        assert!(line.ends_with("all=1:rect:rect@5,10,100,50>9,10,100,50"), "{line}");
+    }
+    #[test]
+    fn all_differing_draws_are_listed_in_order_and_truncate_with_a_count() {
+        let prev: Vec<_> = (0..16).map(|i| draw(i as f32, 1.0)).collect();
+        let mut now: Vec<_> = prev.clone();
+        now[1] = draw(100.0, 1.0);
+        now[3] = draw(3.0, 0.5);
+        let d = diff_paints(&prev, &now).unwrap();
+        assert_eq!(d.changed, 2);
+        let f = all_field(&d.all);
+        assert_eq!(f, "all=1:rect:rect@1,10,100,50>100,10,100,50|3:rect:alpha");
+        let now: Vec<_> = (0..16).map(|i| draw(i as f32 + 50.0, 1.0)).collect();
+        let f = all_field(&diff_paints(&prev, &now).unwrap().all);
+        assert_eq!(f.matches(":rect:rect@").count(), 12);
+        assert!(f.starts_with("all=0:rect:rect@") && f.ends_with("|+4"), "{f}");
     }
     #[test]
     fn identical_frames_produce_no_diff() {
