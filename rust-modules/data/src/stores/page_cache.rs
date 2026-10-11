@@ -57,6 +57,18 @@ pub(crate) fn kept_pages(pages: usize, keep: &Keep, page_of: impl Fn(usize) -> u
     kept
 }
 
+/// The eviction decision every page directory shares: `None` while `loaded` pages are
+/// `MAX_LOADED` or fewer (nothing is dropped), else the pages [`kept_pages`] holds, with the same
+/// `page_of`.
+pub(crate) fn kept_when_over_budget(
+    loaded: usize,
+    pages: usize,
+    keep: &Keep,
+    page_of: impl Fn(usize) -> usize,
+) -> Option<Vec<bool>> {
+    (loaded > MAX_LOADED).then(|| kept_pages(pages, keep, page_of))
+}
+
 #[derive(Clone, Debug)]
 struct Page<T> {
     rows: Option<Arc<Vec<T>>>,
@@ -172,6 +184,20 @@ impl<T> PageCache<T> {
         changed
     }
 
+    /// Lands `rows` as page `page` without touching its kept count, so indices do not move. For a
+    /// listing that is never filtered, whose caller has already clipped the page to at most
+    /// `PAGE` rows. Reports whether the page exists; a page past the directory is ignored.
+    pub fn set_rows(&mut self, page: usize, rows: Vec<T>) -> bool {
+        let Some(slot) = self.pages.get_mut(page) else { return false };
+        slot.rows = Some(Arc::new(rows));
+        true
+    }
+
+    /// The loaded rows of page `page`, or `None` for a hole or a page past the directory.
+    pub fn page_rows(&self, page: usize) -> Option<&[T]> {
+        self.pages.get(page)?.rows.as_deref().map(Vec::as_slice)
+    }
+
     pub fn clear(&mut self) {
         *self = Self::default();
     }
@@ -205,17 +231,17 @@ impl<T> PageCache<T> {
     }
 
     /// Drops the rows of every loaded page the screen no longer needs. Does nothing while
-    /// `MAX_LOADED` or fewer pages are loaded.
-    pub fn evict(&mut self, keep: &Keep) {
-        if self.loaded_pages() <= MAX_LOADED {
-            return;
-        }
-        let kept = kept_pages(self.pages.len(), keep, |i| self.page_of(i));
+    /// `MAX_LOADED` or fewer pages are loaded, and then returns `false`.
+    pub fn evict(&mut self, keep: &Keep) -> bool {
+        let Some(kept) = kept_when_over_budget(self.loaded_pages(), self.pages.len(), keep, |i| self.page_of(i)) else {
+            return false;
+        };
         for (page, keep) in self.pages.iter_mut().zip(kept) {
             if !keep {
                 page.rows = None;
             }
         }
+        true
     }
 
     /// One kept count per page of the directory, for a screen to save with its position.

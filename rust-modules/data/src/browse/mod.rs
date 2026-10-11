@@ -59,7 +59,7 @@
 use plx_plex::plex::{SectionQuery, ServerId};
 use saved_view::ViewField;
 use crate::pms::{parse_item, PmsMovie};
-use crate::stores::page_cache::{kept_pages, Keep, MAX_LOADED, PAGE};
+use crate::stores::page_cache::{kept_when_over_budget, Keep, PAGE};
 use std::panic::catch_unwind;
 #[cfg(test)]
 use std::panic::AssertUnwindSafe;
@@ -643,11 +643,11 @@ impl SecItems {
     /// the next want for the page fetches it again. Readers that already cloned the table keep
     /// their rows, the copy-on-write sharing `set` relies on.
     fn evict(&mut self, keep: &Keep) {
-        if self.pages.iter().filter(|page| page.is_some()).count() <= MAX_LOADED {
-            return;
-        }
         let (len, pages) = (self.len, self.pages.len());
-        let kept = kept_pages(pages, keep, |i| if i < len { i / PAGE } else { pages });
+        let loaded = self.pages.iter().filter(|page| page.is_some()).count();
+        let Some(kept) = kept_when_over_budget(loaded, pages, keep, |i| if i < len { i / PAGE } else { pages }) else {
+            return;
+        };
         self.retain_pages(|p| kept[p]);
     }
     /// Keeps only the pages covering `window` (an empty window keeps none). Used for a section the
