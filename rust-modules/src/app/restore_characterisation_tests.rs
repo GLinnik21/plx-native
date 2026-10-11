@@ -29,6 +29,7 @@ use plx_plex::plex::session::{
 use plx_plex::plex::AudioEnhancements;
 use plx_session::auth::owner::{SessionEnvelope, SessionEvent, SessionWork};
 use plx_session::auth::{Phase, Picker, SessionCmd, SessionInit};
+use plx_ui::screen::ScreenArg;
 
 /// The nine cells, as the player reads them.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,7 +88,7 @@ const STORED: Cells = Cells {
 /// Nine values that are neither the defaults nor [`STORED`]: the live cells standing where a
 /// restore has not yet run, or where something other than the record last wrote them.
 const SCRAMBLED: Cells = Cells {
-    quality: PlaybackQuality::P1080Low,
+    quality: PlaybackQuality::P720Low,
     direct_play: DirectPlayMode::Disabled,
     size: SubtitleSize::ExtraLarge,
     position: SubtitlePosition::Middle,
@@ -155,7 +156,7 @@ fn record(seated: &str, others: &[&str]) -> Session {
         home_users: if seated.is_empty() { Vec::new() } else {
             all.iter().map(|u| HomeUserRef { uuid: (*u).into(), title: (*u).into(), ..Default::default() }).collect()
         },
-        profiles: others.iter().map(|u| ProfileCreds { uuid: (*u).into(), user: user(u),
+        profiles: all.iter().filter(|u| !u.is_empty()).map(|u| ProfileCreds { uuid: (*u).into(), user: user(u),
             server: server(&format!("{u}-token")), sources: vec![source(&format!("{u}-token"))], pin: None,
             extensions: Default::default() }).collect(),
         ..Default::default()
@@ -276,7 +277,7 @@ fn boot_and_the_auth_landing_set_the_same_nine_cells_for_a_managed_profile_and_f
             // Boot: the list `construct` runs before any profile is published, over the record it
             // loaded, with `controlled = false`.
             put(SCRAMBLED);
-            super::boot::restore_player_preferences(&session::load(), false);
+            crate::app::boot::restore_player_preferences(&session::load(), false);
             let at_boot = cells();
 
             // The landing: the stored-resume `Ready`, then the restore `follow_auth_landing` runs.
@@ -291,4 +292,118 @@ fn boot_and_the_auth_landing_set_the_same_nine_cells_for_a_managed_profile_and_f
             drop(fixture);
         }
     }
+}
+
+fn settle(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, from: u32) {
+    for i in 0..24 { super::frame(d, rig, tick(from + i * 16), vec![]); }
+}
+
+fn stack_has_player(d: &Dispatcher<AppHost>) -> bool {
+    d.nav.tabs.stack.entries.iter().any(|e| matches!(e.arg, AppArg::Player))
+}
+
+/// **A0 item 13.** A profile switch runs the restore: profile A seated and landed, A's player up,
+/// then `switch_profile`, B's `Ready`, `follow_auth_landing`. Today the landing re-publishes the
+/// record's install values, identical to the ones A had; and the player page is gone before `Ready`.
+///
+/// The cells are scrambled while the picker stands, so "identical" cannot be a restore that never
+/// ran: only the landing's restore can put them back. P1a flips this (the landing then publishes
+/// B's own values).
+#[test]
+fn a_profile_switch_republishes_the_install_values_and_retires_the_player_before_ready() {
+    let _serial = plx_base::testlock::serial();
+    let stored = with_stored_installs(record("profile-a", &["profile-b"]));
+    let _fixture = Fixture::new("a0c-switch", &stored);
+
+    let (mut rig, mut d) = resume(&stored);
+    follow_auth_landing(&mut d, &mut rig);
+    settle(&mut rig, &mut d, 100);
+    assert_eq!(cells(), STORED, "A seated: the landing published the record's install values");
+    let top = d.nav.top_page().map(|e| e.arg.id());
+    assert!(top.is_some(), "A's landing mounted a page: {top:?}");
+
+    // A is playing something.
+    frame(&mut d, &mut rig, AppArg::Player, tick(1000), vec![]);
+    settle(&mut rig, &mut d, 1100);
+    assert!(stack_has_player(&d), "A's player is on the stack");
+
+    // Something other than the record last wrote the cells (a pick that never persisted, a harness):
+    // the switch's restore is the only thing that can undo it.
+    put(SCRAMBLED);
+    open_picker(&mut rig, &mut d, 2000);
+    assert!(!stack_has_player(&d), "the player page is retired before B's Ready");
+    assert_eq!(d.nav.tabs.stack.entries.len(), 1, "nothing of A's tree stands but the picker");
+    assert_ne!(rig.auth_read().0.phase, Phase::Ready, "...and Ready has not arrived yet");
+    assert_eq!(cells(), SCRAMBLED, "opening the picker restores nothing");
+
+    pick(&mut rig, &mut d, 1, 3000);
+    assert_eq!(cells(), SCRAMBLED, "B's Ready alone restores nothing: the landing does");
+    follow_auth_landing(&mut d, &mut rig);
+    assert_eq!(cells(), STORED, "B's landing re-published the identical install values");
+}
+
+/// **A0 item 14.** Install keys are shared by every profile today. Profile A picks subtitle size
+/// Large and Direct Play Force through the doors Settings uses; profile B is seated and reads Large
+/// and Force, from the record and in the live cells. Then B's failure read-out "Play Automatically"
+/// moves Direct Play to Auto, and A, seated again, reads Auto: B reset A too.
+///
+/// The fixture adapter does not write the session file at a switch's commit, so each switch below
+/// writes the new `user` into the record itself, the one thing a commit changes there.
+#[test]
+fn install_keys_are_shared_by_every_profile_and_play_automatically_on_b_resets_a() {
+    let _serial = plx_base::testlock::serial();
+    let stored = record("profile-a", &["profile-b"]);
+    let _fixture = Fixture::new("a0c-shared", &stored);
+    let seat = |uuid: &str| {
+        let uuid = uuid.to_owned();
+        assert!(session::update(move |s| Some(Session { user: user(&uuid), ..s.clone() })));
+    };
+
+    let (mut rig, mut d) = resume(&stored);
+    follow_auth_landing(&mut d, &mut rig);
+    settle(&mut rig, &mut d, 100);
+    assert_eq!(cells(), DEFAULTS, "A seated on a record that chose nothing");
+
+    // Profile A picks Large and Force.
+    plx_media::route::select_subtitle_size(SubtitleSize::Large, None);
+    plx_base::storage_worker::drain_for_test();
+    assert!(plx_media::route::set_direct_play_mode(DirectPlayMode::Forced));
+    let a = session::load();
+    assert_eq!((a.user.uuid.as_str(), a.subtitle_size(), a.direct_play_mode()),
+        ("profile-a", SubtitleSize::Large, DirectPlayMode::Forced));
+
+    // Profile B is seated.
+    put(SCRAMBLED);
+    open_picker(&mut rig, &mut d, 2000);
+    pick(&mut rig, &mut d, 1, 3000);
+    seat("profile-b");
+    follow_auth_landing(&mut d, &mut rig);
+    let b = session::peek();
+    assert_eq!((b.user.uuid.as_str(), b.subtitle_size(), b.direct_play_mode()),
+        ("profile-b", SubtitleSize::Large, DirectPlayMode::Forced), "B's record carries A's keys");
+    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::Large, "B reads Large");
+    assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Forced, "B reads Force");
+
+    // B's playback failed under Force and B presses Play Automatically.
+    let mut player = plx_media::player::machine::Player::new();
+    let mut adapter = plx_media::player::adapter::PlayerAdapter::new(unsafe {
+        plx_base::task::MainThread::assume()
+    });
+    assert!(!crate::app::playback::play_automatically(&mut player.session, &mut adapter, rig.metadata_mut()),
+        "there is no reusable Plex request to retry, so only the preference moves");
+    assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Auto, "B's live cell moved at once");
+    plx_base::storage_worker::drain_for_test();
+    let after = session::load();
+    assert_eq!((after.user.uuid.as_str(), after.direct_play_mode(), after.subtitle_size()),
+        ("profile-b", DirectPlayMode::Auto, SubtitleSize::Large), "...and the shared record moved");
+
+    // A is seated again and finds Auto.
+    put(SCRAMBLED);
+    open_picker(&mut rig, &mut d, 4000);
+    pick(&mut rig, &mut d, 0, 5000);
+    seat("profile-a");
+    follow_auth_landing(&mut d, &mut rig);
+    assert_eq!(session::peek().user.uuid, "profile-a");
+    assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Auto, "B's Play Automatically reset A too");
+    assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::Large, "A's size survived");
 }
