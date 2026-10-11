@@ -7633,12 +7633,7 @@ fn request_play_inner(
             set_c(s.title.as_mut_ptr(), s.title.len(), title);
             set_c(s.ctxline.as_mut_ptr(), s.ctxline.len(), plx_data::metadata::context_label(ctx));
         }
-        s.cur_audio = None;
-        s.cur_sub_sid = 0;
-        s.cur_sub_sidecar = false;
-        s.cur_sub_client_drawable = false;
-        s.cur_sub_ordinal = -1;
-        s.side_subs_refused = false;
+        clear_track_selection(s);
         // The outgoing item's enhancement outcome is not this one's; the landing installs its own.
         s.cur_enhancement = EnhancementOutcome::Off;
         // Retire the OUTGOING item's queue before its successor resolves: this names the episode
@@ -7671,14 +7666,7 @@ fn request_play_inner(
     env.omit_queue_continuous = plx_data::metadata::context_omits_queue_continuous(ctx);
     env.set_preview(request.preview);
     if let Some(retry) = retry {
-        apply_retry_enhancement(&mut env, retry);
-        // `request_play` resets the live selection because that is correct for a new item.  A
-        // retry is the SAME item: override the fresh defaults with the selection captured before
-        // that reset so a rescue does not silently turn subtitles/audio back to server default.
-        env.direct_play_mode = retry.direct_play_mode;
-        env.audio_sid = retry.audio_sid;
-        env.sub_sid = retry.sub_sid;
-        env.subtitle_override = Some(retry.sub_sid);
+        apply_retry(&mut env, retry);
     }
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     if let Some(resume_ns) = retry.map(|r| r.resume_ns).filter(|ns| *ns > 0) {
@@ -7737,6 +7725,17 @@ fn request_play_inner(
         settle_failed_resolve_spawn(ps);
     }
     spawned
+}
+
+/// What a play REQUEST clears of the outgoing item's live track selection (the landing installs
+/// the incoming item's own).
+fn clear_track_selection(s: &mut PlaybackSession) {
+    s.cur_audio = None;
+    s.cur_sub_sid = 0;
+    s.cur_sub_sidecar = false;
+    s.cur_sub_client_drawable = false;
+    s.cur_sub_ordinal = -1;
+    s.side_subs_refused = false;
 }
 
 /// Clear the outgoing item's live track selection for a play request. A retry is the SAME item
@@ -7841,6 +7840,18 @@ fn rescue_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
         suppress_enhancement: ps.cur_contract.audio.any(),
         ..current_retry_context(ps, resume_ns)
     }
+}
+
+/// Everything a retry overrides in the resolve environment it is about to hand the worker.
+fn apply_retry(env: &mut ResolveEnv, retry: RetryContext) {
+    apply_retry_enhancement(env, retry);
+    // `request_play` resets the live selection because that is correct for a new item.  A
+    // retry is the SAME item: override the fresh defaults with the selection captured before
+    // that reset so a rescue does not silently turn subtitles/audio back to server default.
+    env.direct_play_mode = retry.direct_play_mode;
+    env.audio_sid = retry.audio_sid;
+    env.sub_sid = retry.sub_sid;
+    env.subtitle_override = Some(retry.sub_sid);
 }
 
 /// Apply a retry's enhancement decision to the resolve environment it is about to hand the worker.
@@ -10321,6 +10332,10 @@ mod direct_play_mode_tests;
 #[cfg(test)]
 #[path = "decision_subtitle_style_tests.rs"]
 mod subtitle_style_tests;
+
+#[cfg(test)]
+#[path = "decision_selection_known_tests.rs"]
+mod selection_known_tests;
 
 #[cfg(test)]
 #[path = "carried_audio_tests.rs"]
