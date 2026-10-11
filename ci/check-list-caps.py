@@ -68,6 +68,7 @@ _spec = importlib.util.spec_from_file_location('check_plex_requests',
 _plex = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_plex)
 without_test_items, code, impl_type = _plex.without_test_items, _plex.code, _plex.impl_type
+section_name, read_registry = _plex.section_name, _plex.read_registry
 
 REPO = Path(__file__).resolve().parent.parent
 MODULES = REPO / 'rust-modules'
@@ -225,21 +226,6 @@ def read_hits(modules=MODULES):
         kept = [kind for kind, name in entries if not (name and name in all_defs and kind != 'const')]
         if kept: sites[key] = sorted(set(kept))
     return sites
-
-
-def section_name(file, symbol):
-    return f'{file}::{symbol}'
-
-
-def read_registry(path):
-    parser = configparser.ConfigParser(interpolation=None, comment_prefixes=('#',),
-                                       inline_comment_prefixes=None)
-    try:
-        with open(path, encoding='utf-8') as f:
-            parser.read_file(f)
-    except (OSError, configparser.Error) as error:
-        return {}, [f'{Path(path).name} does not parse: {error}']
-    return {name: dict(parser[name]) for name in parser.sections()}, []
 
 
 def entry_problems(name, section):

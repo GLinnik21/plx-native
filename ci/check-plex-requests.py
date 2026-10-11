@@ -283,7 +283,7 @@ def read_registry(path):
         with open(path, encoding='utf-8') as f:
             parser.read_file(f)
     except (OSError, configparser.Error) as error:
-        return {}, [f'{path.name} does not parse: {error}']
+        return {}, [f'{Path(path).name} does not parse: {error}']
     return {name: dict(parser[name]) for name in parser.sections()}, []
 
 

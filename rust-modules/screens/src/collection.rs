@@ -28,7 +28,7 @@ use plx_ui::theme;
 use plx_ui::widgets::{self, Art, PageGround, StatusKind, StatusOverlay};
 use plx_ui::{Env, Painter, Rect};
 
-use super::registry::{tile_facts, AppFx, CardKeys, CardPageMemory, CollectionLike, ContentArg,
+use super::registry::{merged_ranges, tile_facts, AppFx, CardKeys, CardPageMemory, CollectionLike, ContentArg,
     ContentLike, ContentPanel, ContentReq, PageMemory};
 
 #[cfg(test)]
@@ -213,20 +213,6 @@ impl Projection {
     fn cells(&self) -> usize { self.runs.iter().map(|run| run.elems.len()).sum() }
 }
 
-/// The slot ranges to project, sorted and merged, clamped to `total`.
-fn merged(mut ranges: Vec<std::ops::Range<usize>>, total: usize) -> Vec<std::ops::Range<usize>> {
-    ranges.retain_mut(|r| { r.end = r.end.min(total); r.start < r.end });
-    ranges.sort_by_key(|r| r.start);
-    let mut out: Vec<std::ops::Range<usize>> = Vec::new();
-    for r in ranges {
-        match out.last_mut() {
-            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
-            _ => out.push(r),
-        }
-    }
-    out
-}
-
 /// The grid's content (`CardSource`): the store's members read through the screen's projection.
 /// Built from the screen's FIELDS, not `&CollectionScreen`, so a call can hold it while the grid
 /// itself is borrowed mutably.
@@ -407,7 +393,7 @@ impl Page {
     fn project(&mut self, collection: &Collection, revision: Option<u64>) {
         let shown = collection.shown();
         let default = [0..4 * ui_cards::GRID_COLS];
-        let ranges = merged(if self.want.0.is_empty() { default.to_vec() } else { self.want.0.clone() }, shown);
+        let ranges = merged_ranges(if self.want.0.is_empty() { default.to_vec() } else { self.want.0.clone() }, shown);
         if revision.is_some() && self.proj.revision == revision && self.proj.total == shown && self.proj.applied == ranges {
             return;
         }

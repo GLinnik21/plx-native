@@ -1351,6 +1351,15 @@ impl Bridge {
 }
 
 impl Bridge {
+    /// Carry a store step's due endpoint refreshes to the end of the dispatcher turn, where
+    /// `deliver_inner`'s caller emits them; every store-step arm ends here so none can forget.
+    ///
+    /// An associated function over the field (not `&mut self`) so an arm holding `home_io` can call it.
+    fn carry(carried: &mut plx_data::stores::EndpointRefreshSet, due: plx_data::stores::EndpointRefreshSet) -> Handled {
+        carried.merge(due);
+        Handled::Yes
+    }
+
     fn deliver_inner(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
         if let AppMsg::Consent(command) = msg {
             if to != MachineId::Consent { return Handled::No; }
@@ -1409,8 +1418,7 @@ impl Bridge {
                 AppMsg::Store(StoreCmd::Hubs(cmd)) => {
                     let directory = self.directory.view();
                     let due = io.hubs_with_directory(&mut self.stores.hubs, Some(cmd.clone()), 0.0, directory).endpoints;
-                    self.endpoint_carry.merge(due);
-                    return Handled::Yes;
+                    return Self::carry(&mut self.endpoint_carry, due);
                 }
                 AppMsg::Store(StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Discovery(result))) => {
                     let mut endpoints = plx_data::stores::EndpointRefreshSet::default();
@@ -1423,14 +1431,12 @@ impl Bridge {
                     if outcome.changed {
                         self.stores.browse.borrow_mut().capture_directory(&mut self.directory);
                     }
-                    self.endpoint_carry.merge(endpoints);
-                    return Handled::Yes;
+                    return Self::carry(&mut self.endpoint_carry, endpoints);
                 }
                 AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs) => {
                     let directory = self.directory.view();
                     let due = io.hubs_with_directory(&mut self.stores.hubs, None, parts.tick.dt(), directory).endpoints;
-                    self.endpoint_carry.merge(due);
-                    return Handled::Yes;
+                    return Self::carry(&mut self.endpoint_carry, due);
                 }
                 AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
                     io.discovery_owned(&self.stores);
@@ -1474,31 +1480,26 @@ impl Bridge {
             AppMsg::Store(StoreCmd::Hubs(c)) => {
                 let directory = self.directory.view();
                 let due = self.stores.hubs.run_with_directory(c.clone(), directory).endpoints;
-                self.endpoint_carry.merge(due);
-                Handled::Yes
+                Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
             AppMsg::HubsResult(result) => {
                 let directory = self.directory.view();
                 let due = self.stores.hubs.land_with_directory(result, directory).endpoints;
-                self.endpoint_carry.merge(due);
-                Handled::Yes
+                Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs) => {
                 let directory = self.directory.view();
                 let due = self.stores.hubs.tick_with_directory(parts.tick.dt(), directory).endpoints;
-                self.endpoint_carry.merge(due);
-                Handled::Yes
+                Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
                 let due = self.stores.browse.borrow_mut().discover_pump_with_gate(&self.stores.landgate).endpoints;
-                self.endpoint_carry.merge(due);
-                Handled::Yes
+                Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Browse) => {
                 let due = self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate).endpoints;
-                self.endpoint_carry.merge(due);
-                Handled::Yes
+                Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Search { dt_us }) => {
                 self.stores.search_pump(*dt_us as f32 / 1_000_000.0, self.directory.view());

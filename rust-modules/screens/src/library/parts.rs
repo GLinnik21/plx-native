@@ -10,7 +10,7 @@ pub(super) use super::rail::RailPart;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
-use crate::registry::{tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
+use crate::registry::{merged_ranges, tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
 use plx_ui::cards as ui_cards;
 use plx_ui::cards::{CardSource, Grid, GridSpec, Tile};
 use plx_ui::consts::{MARGIN_X, SCR_H};
@@ -99,20 +99,6 @@ struct PublicationOps {
 struct Window {
     first: usize,
     elems: Vec<u32>,
-}
-
-/// The slot ranges to project, sorted and merged, clamped to `total`.
-fn merged(mut ranges: Vec<Range<usize>>, total: usize) -> Vec<Range<usize>> {
-    ranges.retain_mut(|r| { r.end = r.end.min(total); r.start < r.end });
-    ranges.sort_by_key(|r| r.start);
-    let mut out: Vec<Range<usize>> = Vec::new();
-    for r in ranges {
-        match out.last_mut() {
-            Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
-            _ => out.push(r),
-        }
-    }
-    out
 }
 
 pub(super) struct GridPart {
@@ -276,7 +262,7 @@ impl GridPart {
     pub(super) fn refresh<H: LibraryLike>(&mut self, cx: &Cx<'_, H>, keys: &mut KeyRegistry,
         ranges: Vec<Range<usize>>) {
         let view = H::listing(cx);
-        let ranges = merged(ranges, view.total().max(0) as usize);
+        let ranges = merged_ranges(ranges, view.total().max(0) as usize);
         if self.snapshot.as_ref().is_some_and(|old| view.same_items(old.view())) && ranges == self.applied {
             return;
         }
@@ -347,7 +333,7 @@ impl GridPart {
         let row = index / cols.max(1);
         let mut ranges = self.applied.clone();
         ranges.push(row.saturating_sub(1) * cols..(row + 2) * cols);
-        let ranges = merged(ranges, self.total);
+        let ranges = merged_ranges(ranges, self.total);
         self.project(H::listing(cx), keys, ranges);
         self.elem_at(index)
     }
