@@ -49,8 +49,8 @@
 //!   cache rather than keep a second copy of the session live.
 use super::origin::Origin;
 use super::probe::Location;
-pub use prefs::{AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, NextEpisodeModePref,
-    Preferences, QualityPref, Setting, SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref,
+pub use prefs::{persist_pref, AudioEnhancementsPref, DeckPressPref, DirectPlayModePref,
+    NextEpisodeModePref, Preferences, QualityPref, Setting, SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref,
     SubtitleTonePref};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -951,27 +951,6 @@ pub fn set_trailer_autoplay(on: bool) -> bool {
             return None;
         }
         Some(cur.with_trailer_autoplay(on))
-    })
-}
-
-/// Persist the subtitle tone through [`update`], merging with the current disk record.
-pub fn set_subtitle_tone(tone: SubtitleTone) -> bool {
-    update(|cur| {
-        if cur.prefs.subtitle_tone == tone {
-            return None;
-        }
-        Some(cur.with_pref::<SubtitleTonePref>(tone))
-    })
-}
-
-/// Persist the Plex Pass audio-DSP preference (issue #266) through [`update`], merging with the
-/// current disk record — the same door as [`set_subtitle_tone`].
-pub fn set_audio_enhancements(enhancements: crate::plex::AudioEnhancements) -> bool {
-    update(|cur| {
-        if cur.prefs.audio_enhancements == enhancements {
-            return None;
-        }
-        Some(cur.with_pref::<AudioEnhancementsPref>(enhancements))
     })
 }
 

@@ -409,3 +409,33 @@ fn install_keys_are_shared_by_every_profile_and_play_automatically_on_b_resets_a
     assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Auto, "B's Play Automatically reset A too");
     assert_eq!(plx_media::route::subtitle_size(), SubtitleSize::Large, "A's size survived");
 }
+
+/// **Declared delta 3: Play Automatically publishes Auto once.** It used to publish twice, once on
+/// the caller's thread and again from the storage worker when the queued Confirm write came back
+/// Durable (which could overwrite a newer pick). The one door publishes on the caller's thread and
+/// persists behind it, never republishing; the publish counter on the cell proves it.
+#[test]
+fn play_automatically_publishes_direct_play_auto_once() {
+    use plx_media::route::publishes_for_test;
+    use plx_plex::plex::session::DirectPlayModePref;
+    let _serial = plx_base::testlock::serial();
+    let stored = record("profile-a", &[]);
+    let _fixture = Fixture::new("a0c-play-auto-once", &stored);
+
+    let (mut rig, mut d) = resume(&stored);
+    follow_auth_landing(&mut d, &mut rig);
+    settle(&mut rig, &mut d, 100);
+    assert!(plx_media::route::set_direct_play_mode(DirectPlayMode::Forced));
+    assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Forced);
+
+    let mut player = plx_media::player::machine::Player::new();
+    let mut adapter = plx_media::player::adapter::PlayerAdapter::new(unsafe {
+        plx_base::task::MainThread::assume()
+    });
+    let before = publishes_for_test::<DirectPlayModePref>();
+    crate::app::playback::play_automatically(&mut player.session, &mut adapter, rig.metadata_mut());
+    plx_base::storage_worker::drain_for_test();
+    assert_eq!(publishes_for_test::<DirectPlayModePref>() - before, 1, "published exactly once");
+    assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Auto);
+    assert_eq!(session::load().direct_play_mode(), DirectPlayMode::Auto, "and persisted behind it");
+}

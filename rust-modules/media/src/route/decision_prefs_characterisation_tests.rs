@@ -13,7 +13,8 @@
 //!   `set_audio_enhancements`, the player's quality pick `persist_quality_choice`): the cell moves
 //!   first, a persist-only closure follows on the worker and never republishes.
 //! * **Unchanged-skip**: tone, enhancements and the player's quality pick write nothing when the
-//!   stored value already equals the pick; the Confirm rows and size/position always write.
+//!   stored value already equals the pick; on main before A2 the Confirm rows and size/position
+//!   always wrote (delta 6 changed that).
 //!
 //! **A non-Durable outcome without a new seam.** `redirect_for_test(blocker/auth.json)` (what the
 //! older "failed write" tests use) makes the session UNREADABLE, so `update_with_outcome` returns
@@ -23,7 +24,8 @@
 //! `Failed` (for an unprivileged uid). The first test pins that the fixture really is that.
 use super::*;
 use plx_plex::plex::session::{
-    self as session, DeckPress, NextEpisodeMode, SkipInterval, SubtitlePosition, SubtitleSize, SubtitleTone,
+    self as session, DeckPress, NextEpisodeMode, SkipInterval, SkipIntervalPref, SubtitlePosition, SubtitleSize,
+    SubtitleTone,
 };
 use plx_plex::plex::AudioEnhancements;
 use plx_telemetry::diag::schema::{DiagEvent, Feature};
@@ -31,7 +33,7 @@ use std::sync::mpsc;
 
 /// Put every cell this file moves back, whatever the outcome. Declared AFTER the `serial()` guard so
 /// it drops first (`restore_*` assert the lock is held).
-struct Restore {
+pub(super) struct Restore {
     direct_play: DirectPlayMode,
     next_episode: NextEpisodeMode,
     skip: SkipInterval,
@@ -43,7 +45,7 @@ struct Restore {
     enhancements: AudioEnhancements,
 }
 impl Restore {
-    fn take() -> Self {
+    pub(super) fn take() -> Self {
         Restore {
             direct_play: direct_play_mode(),
             next_episode: next_episode_mode(),
@@ -72,7 +74,7 @@ impl Drop for Restore {
 }
 
 /// The nine cells at the shipped defaults, so a test starts from a known baseline.
-fn defaults() {
+pub(super) fn defaults() {
     restore_direct_play_mode(DirectPlayMode::Auto);
     restore_next_episode_mode(NextEpisodeMode::Countdown);
     restore_skip_interval(SkipInterval::Seconds10);
@@ -89,11 +91,11 @@ fn defaults() {
 /// the file itself still reads. The same technique `plex`'s `session_persistence_tests` use; it
 /// binds only an unprivileged uid, so the fixture refuses to run as root rather than quietly
 /// producing a Durable write.
-struct Unwritable {
+pub(super) struct Unwritable {
     dir: std::path::PathBuf,
 }
 impl Unwritable {
-    fn new(session: &session::TempSession) -> Self {
+    pub(super) fn new(session: &session::TempSession) -> Self {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         let dir = session.path().parent().unwrap().to_path_buf();
         assert_ne!(
@@ -116,21 +118,21 @@ impl Drop for Unwritable {
 
 /// The record on disk, read without letting the read count as a write ([`session::load`] re-persists
 /// a plaintext session, which would set the write witness).
-fn stored() -> session::Session {
+pub(super) fn stored() -> session::Session {
     let s = session::load();
     session::reset_last_write_authority_for_test();
     s
 }
 
 /// Did running `f` (and every storage-worker job it queued) write the session?
-fn writes(f: impl FnOnce()) -> bool {
+pub(super) fn writes(f: impl FnOnce()) -> bool {
     session::reset_last_write_authority_for_test();
     f();
     plx_base::storage_worker::drain_for_test();
     session::last_write_authority_for_test().is_some()
 }
 
-fn recv(rx: &mpsc::Receiver<bool>) -> bool {
+pub(super) fn recv(rx: &mpsc::Receiver<bool>) -> bool {
     rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the persist-only write answered")
 }
 
@@ -138,36 +140,20 @@ fn recv(rx: &mpsc::Receiver<bool>) -> bool {
 /// private per-thread log cannot see a worker). Other processes only ever add lines, so a test
 /// asserts presence ("at least once") of its own distinctive text, or absence of text only this
 /// code path writes.
-struct LogMark(u64);
+pub(super) struct LogMark(u64);
 impl LogMark {
-    fn now() -> Self {
+    pub(super) fn now() -> Self {
         LogMark(std::fs::metadata(plx_base::eventlog::events_log()).map_or(0, |m| m.len()))
     }
-    fn since(&self) -> String {
+    pub(super) fn since(&self) -> String {
         let all = std::fs::read(plx_base::eventlog::events_log()).unwrap_or_default();
         // The simulator truncates the file at startup: a file shorter than the mark is a new file.
         let from = if (self.0 as usize) <= all.len() { self.0 as usize } else { 0 };
         String::from_utf8_lossy(&all[from..]).into_owned()
     }
-    /// Lines naming a failed durable write that are NOT from the two labels these tests drive
-    /// themselves: the log is machine-wide (host unit builds are not steered by
-    /// `PLXNATIVE_RUNTIME_DIR`), so a concurrent `plx_media` test process legitimately writes the
-    /// subtitle size/position lines into it. Any other label (a tone, enhancement or quality line)
-    /// is a failure of the code under test.
-    fn foreign_write_failures(&self) -> Vec<String> {
-        self.since()
-            .lines()
-            .filter(|l| {
-                l.contains("durable write failed")
-                    && !l.contains("subtitle size:")
-                    && !l.contains("subtitle position:")
-            })
-            .map(str::to_owned)
-            .collect()
-    }
 }
 
-const WRITE_FAILED: &str = "durable write failed (live value kept for this session)";
+pub(super) const WRITE_FAILED: &str = "durable write failed (live value kept for this session)";
 
 // =====================================================================================
 // The fixture
@@ -332,8 +318,9 @@ fn confirm_default_quality_publishes_only_a_durable_write() {
     assert_eq!(stored().prefs.playback_quality, Some(Quality::P720));
 }
 
-/// **Quality Confirm writes `Some(q)` even when nothing changed**: from an absent field a pick of
-/// Original stores `Some(Original)`, and picking the stored value again still rewrites the record.
+/// **Quality Confirm records an explicit pick of the default**: from an absent field a pick of
+/// Original stores `Some(Original)` (absent and `Some(Original)` are different stored values, so it
+/// is a change); picking the stored value again writes nothing (plan delta 6, flipped).
 #[test]
 fn confirm_quality_writes_some_q_even_when_unchanged() {
     let _g = plx_base::testlock::serial();
@@ -345,29 +332,32 @@ fn confirm_quality_writes_some_q_even_when_unchanged() {
     assert!(writes(|| assert!(set_default_quality(Quality::Original))));
     assert_eq!(stored().prefs.playback_quality, Some(Quality::Original), "an explicit pick of the default is recorded");
 
-    assert!(writes(|| assert!(set_default_quality(Quality::Original))), "the same pick again still writes");
+    // Delta 6, flipped: the same pick again is already the stored value, so it writes nothing and
+    // still reports saved.
+    assert!(!writes(|| assert!(set_default_quality(Quality::Original))), "the same pick again writes nothing");
     assert_eq!(stored().prefs.playback_quality, Some(Quality::Original));
 }
 
-/// **Delta 6's "before": an unchanged Confirm pick is written again.** (Size and position, the two
-/// Optimistic rows that share the habit, are pinned beside them.)
+/// **Delta 6, flipped: an unchanged pick writes nothing and reports saved.** Confirm rows answer
+/// true (the value is durable: it is what is stored); the Optimistic size and position rows answer
+/// true on their reply too. (Before the door, every one of these rewrote the record.)
 #[test]
-fn an_unchanged_confirm_or_size_position_pick_still_writes() {
+fn an_unchanged_confirm_or_size_position_pick_writes_nothing_and_reports_saved() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("prefs-char-unchanged-writes");
     let _restore = Restore::take();
     defaults();
 
-    assert!(writes(|| assert!(set_direct_play_mode(DirectPlayMode::Auto))), "direct play");
-    assert!(writes(|| assert!(set_next_episode_mode(NextEpisodeMode::Countdown))), "next episode");
-    assert!(writes(|| assert!(set_skip_interval(SkipInterval::Seconds10))), "skip interval");
-    assert!(writes(|| assert!(set_deck_press(DeckPress::Details))), "deck press");
+    assert!(!writes(|| assert!(set_direct_play_mode(DirectPlayMode::Auto))), "direct play");
+    assert!(!writes(|| assert!(set_next_episode_mode(NextEpisodeMode::Countdown))), "next episode");
+    assert!(!writes(|| assert!(set_skip_interval(SkipInterval::Seconds10))), "skip interval");
+    assert!(!writes(|| assert!(set_deck_press(DeckPress::Details))), "deck press");
 
     let (tx, rx) = mpsc::channel();
-    assert!(writes(|| select_subtitle_size(SubtitleSize::Medium, Some(tx))), "size");
+    assert!(!writes(|| select_subtitle_size(SubtitleSize::Medium, Some(tx))), "size");
     assert!(recv(&rx));
     let (tx, rx) = mpsc::channel();
-    assert!(writes(|| select_subtitle_position(SubtitlePosition::Low, Some(tx))), "position");
+    assert!(!writes(|| select_subtitle_position(SubtitlePosition::Low, Some(tx))), "position");
     assert!(recv(&rx));
 }
 
@@ -467,12 +457,13 @@ fn optimistic_failure_without_a_reply_still_keeps_and_logs() {
     assert!(mark.since().contains(&format!("subtitle size: {WRITE_FAILED}")));
 }
 
-/// **Tone, enhancements and the quality pick fail silently**: the pick stays live, nothing is
-/// logged, nothing is republished (plan delta 4's "before"; the record keeps the old value). Their
-/// plex-side `set_*` returns `update`'s verdict, which is "a write was attempted", so it says `true`
-/// for a refused write.
+/// **Tone, enhancements and the quality pick fail with the door's line** (plan delta 4, flipped
+/// from "fail silently"): the pick stays live, the one door logs `"<label>: durable write failed
+/// (live value kept for this session)"`, nothing is republished, and the record keeps the old
+/// value. The plex-side `set_subtitle_tone` / `set_audio_enhancements` that reported "a write was
+/// attempted" are gone with the old door.
 #[test]
-fn tone_enhancements_and_quality_failures_keep_the_value_and_log_nothing() {
+fn tone_enhancements_and_quality_failures_keep_the_value_and_log_the_door_line() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("prefs-char-opt-failed-silent");
     let _restore = Restore::take();
@@ -489,11 +480,10 @@ fn tone_enhancements_and_quality_failures_keep_the_value_and_log_nothing() {
     assert_eq!(crate::player::subtitle_tone(), SubtitleTone::Grey);
     assert_eq!(crate::player::audio_enhancements(), boost);
     assert_eq!(quality(), Quality::P720);
-    let foreign = mark.foreign_write_failures();
-    assert!(foreign.is_empty(), "no failure line for these rows: {foreign:?}");
-    // the plex-side door these two rows use reports an ATTEMPT, not a save: a refused write is `true`
-    assert!(session::set_subtitle_tone(SubtitleTone::Charcoal), "`update` is true once a write was tried");
-    assert!(session::set_audio_enhancements(AudioEnhancements { boost_dialog: false, normalize_loudness: true }));
+    let log = mark.since();
+    assert!(log.contains(&format!("subtitle tone: {WRITE_FAILED}")), "{log}");
+    assert!(log.contains(&format!("audio enhancements: {WRITE_FAILED}")), "{log}");
+    assert!(log.contains(&format!("playback quality: {WRITE_FAILED}")), "{log}");
     drop(fixture);
     let after = stored();
     assert_eq!(after.prefs.subtitle_tone, SubtitleTone::White, "nothing landed");
@@ -630,18 +620,20 @@ fn the_players_quality_pick_skips_only_a_stored_equal_rung() {
 }
 
 // =====================================================================================
-// 9. play_automatically publishes twice
+// 9. The Confirm half of Play Automatically: a Durable write republishes
 // =====================================================================================
 
-/// **`app::playback::play_automatically` publishes Auto twice** (plan delta 3's "before"): once on
-/// the caller's thread (`restore_direct_play_mode(Auto)`), then again from the storage worker when
-/// the Confirm write it queues turns out Durable (`set_direct_play_mode(Auto)`).
+/// **The Confirm half's publish-on-Durable, which A2 keeps** (`set_direct_play_mode`, the
+/// `How::Confirm` door). A Durable write publishes unconditionally, so a newer cell value written
+/// between a restore and the write is overwritten with the written value.
 ///
-/// The function itself is `pub(crate)` in the app crate and cannot be driven from here (it takes
-/// the player adapter, and its worker closure calls `restore_direct_play_mode` off the test thread,
-/// which the test lock refuses), so this pins the two ingredients it is made of. The second
-/// publish is observable because it is unconditional: a newer cell value written between the two is
-/// overwritten with Auto again.
+/// This row used to be plan delta 3's "before": `app::playback::play_automatically` was exactly
+/// this pair, a `restore_direct_play_mode(Auto)` on the caller's thread and then a queued
+/// `set_direct_play_mode(Auto)` that republished from the storage worker. It has not used the pair
+/// since delta 3, which publishes Auto once through `choose` (`How::Optimistic`); the hostsim test
+/// `play_automatically_publishes_direct_play_auto_once` in `app/restore_characterisation_tests.rs`
+/// pins that. What stays pinned here is the ingredient: `How::Confirm`, which `choose` runs for a
+/// Settings row whose write is `SettingsWrite::Confirm`.
 #[test]
 fn a_durable_direct_play_write_republishes_over_an_already_published_auto() {
     let _g = plx_base::testlock::serial();
@@ -669,7 +661,9 @@ fn a_refused_direct_play_write_does_not_republish_auto() {
 
     restore_direct_play_mode(DirectPlayMode::Auto);
     restore_direct_play_mode(DirectPlayMode::Disabled);
-    assert!(!set_direct_play_mode(DirectPlayMode::Auto));
+    // (A pick that differs from the stored Auto: an unchanged pick now writes nothing and so is
+    // never refused, delta 6.)
+    assert!(!set_direct_play_mode(DirectPlayMode::Forced));
     assert_eq!(direct_play_mode(), DirectPlayMode::Disabled);
 }
 
@@ -682,17 +676,16 @@ fn a_refused_direct_play_write_does_not_republish_auto() {
 /// default of each type, never a neighbouring rung.
 #[test]
 fn live_cell_indices_are_pinned() {
-    use std::sync::atomic::Ordering::Relaxed;
     let _g = plx_base::testlock::serial();
     let _restore = Restore::take();
 
     for (mode, index) in [(DirectPlayMode::Auto, 0), (DirectPlayMode::Forced, 1), (DirectPlayMode::Disabled, 2)] {
         restore_direct_play_mode(mode);
-        assert_eq!(DIRECT_PLAY_MODE.load(Relaxed), index, "{mode:?}");
+        assert_eq!(DIRECT_PLAY_MODE.raw(), index, "{mode:?}");
     }
     for (mode, index) in [(NextEpisodeMode::Countdown, 0), (NextEpisodeMode::AfterCredits, 1), (NextEpisodeMode::Off, 2)] {
         restore_next_episode_mode(mode);
-        assert_eq!(NEXT_EPISODE_MODE.load(Relaxed), index, "{mode:?}");
+        assert_eq!(NEXT_EPISODE_MODE.raw(), index, "{mode:?}");
     }
     assert_eq!(NextEpisodeMode::from_index(250), NextEpisodeMode::Countdown, "out of range is the default");
     for (interval, index) in [
@@ -703,12 +696,12 @@ fn live_cell_indices_are_pinned() {
         (SkipInterval::Seconds60, 4),
     ] {
         restore_skip_interval(interval);
-        assert_eq!(SKIP_INTERVAL.load(Relaxed), index, "{interval:?}");
+        assert_eq!(SKIP_INTERVAL.raw(), index, "{interval:?}");
     }
     assert_eq!(SkipInterval::from_index(250), SkipInterval::Seconds10);
     for (press, index) in [(DeckPress::Details, 0), (DeckPress::Play, 1)] {
         restore_deck_press(press);
-        assert_eq!(DECK_PRESS.load(Relaxed), index, "{press:?}");
+        assert_eq!(DECK_PRESS.raw(), index, "{press:?}");
     }
     assert_eq!(DeckPress::from_index(250), DeckPress::Details);
     for (size, index) in [
@@ -718,12 +711,12 @@ fn live_cell_indices_are_pinned() {
         (SubtitleSize::ExtraLarge, 3),
     ] {
         restore_subtitle_size(size);
-        assert_eq!(SUBTITLE_SIZE.load(Relaxed), index, "{size:?}");
+        assert_eq!(SUBTITLE_SIZE.raw(), index, "{size:?}");
     }
     assert_eq!(SubtitleSize::from_index(250), SubtitleSize::Medium);
     for (position, index) in [(SubtitlePosition::Low, 0), (SubtitlePosition::Middle, 1), (SubtitlePosition::High, 2)] {
         restore_subtitle_position(position);
-        assert_eq!(SUBTITLE_POSITION.load(Relaxed), index, "{position:?}");
+        assert_eq!(SUBTITLE_POSITION.raw(), index, "{position:?}");
     }
     assert_eq!(SubtitlePosition::from_index(250), SubtitlePosition::Low);
 
@@ -738,7 +731,7 @@ fn live_cell_indices_are_pinned() {
         (Quality::P480, 6),
     ] {
         restore_quality(q);
-        assert_eq!(QUALITY.load(Relaxed), index, "{q:?}");
+        assert_eq!(QUALITY.raw(), index, "{q:?}");
         assert_eq!(quality(), q);
     }
     assert_eq!(quality_from_index(250), Quality::Original, "out of range is Original");
@@ -772,7 +765,6 @@ fn live_cell_indices_are_pinned() {
 /// and passed.
 #[test]
 fn unrestored_cells_hold_their_seeds() {
-    use std::sync::atomic::Ordering::Relaxed;
     const CHILD_ENV: &str = "PLX_PREFS_CHAR_SEEDS_CHILD";
     if std::env::var_os(CHILD_ENV).is_none() {
         // libtest names a test without its crate: `route::decision::…`.
@@ -793,13 +785,13 @@ fn unrestored_cells_hold_their_seeds() {
         );
         return;
     }
-    assert_eq!(DIRECT_PLAY_MODE.load(Relaxed), 0);
-    assert_eq!(NEXT_EPISODE_MODE.load(Relaxed), 0);
-    assert_eq!(SKIP_INTERVAL.load(Relaxed), 1);
-    assert_eq!(DECK_PRESS.load(Relaxed), 0);
-    assert_eq!(SUBTITLE_SIZE.load(Relaxed), 1);
-    assert_eq!(SUBTITLE_POSITION.load(Relaxed), 0);
-    assert_eq!(QUALITY.load(Relaxed), 1);
+    assert_eq!(DIRECT_PLAY_MODE.raw(), 0);
+    assert_eq!(NEXT_EPISODE_MODE.raw(), 0);
+    assert_eq!(SKIP_INTERVAL.raw(), 1);
+    assert_eq!(DECK_PRESS.raw(), 0);
+    assert_eq!(SUBTITLE_SIZE.raw(), 1);
+    assert_eq!(SUBTITLE_POSITION.raw(), 0);
+    assert_eq!(QUALITY.raw(), 1);
     assert_eq!(quality(), Quality::Original);
     assert_eq!(direct_play_mode(), DirectPlayMode::Auto);
     assert_eq!(next_episode_mode(), NextEpisodeMode::Countdown);

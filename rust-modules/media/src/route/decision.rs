@@ -13,14 +13,14 @@
 //! (the claim table, the enhancement step, the plans and the PMS attempts) stay here.
 
 use plx_plex::plex::ServerId;
-use plx_plex::plex::session::{DeckPressPref, DirectPlayModePref, NextEpisodeModePref, QualityPref,
-    SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref};
+use plx_plex::plex::session::QualityPref;
 use plx_data::pms::PmsMovie;
 use std::os::raw::c_char;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 use super::flight::*;
 use super::plan::*;
+use super::prefs::*;
 
 // ---- ONE playback session, as ONE value -----------------------------------------------------
 
@@ -6343,215 +6343,6 @@ pub fn available_quality_ladder() -> &'static [Quality] {
     quality_ladder_for(auto_quality_ready())
 }
 
-/// An in-memory index back to a rung — out of range is `Original`, never a neighbouring rung,
-/// for the same reason the more menu resolves a press by row identity rather than position: the ladder can grow or shrink.
-fn quality_from_index(i: u8) -> Quality {
-    QUALITY_LADDER
-        .get(i as usize)
-        .copied()
-        .unwrap_or(Quality::Original)
-}
-
-fn quality_index(q: Quality) -> u8 {
-    QUALITY_LADDER.iter().position(|&r| r == q).unwrap_or(1) as u8
-}
-
-/// Install-wide preference; each resolve captures its own immutable mode.
-static DIRECT_PLAY_MODE: AtomicU8 = AtomicU8::new(0);
-
-pub fn direct_play_mode() -> DirectPlayMode {
-    match DIRECT_PLAY_MODE.load(Ordering::Relaxed) {
-        1 => DirectPlayMode::Forced,
-        2 => DirectPlayMode::Disabled,
-        _ => DirectPlayMode::Auto,
-    }
-}
-
-pub fn restore_direct_play_mode(mode: DirectPlayMode) {
-    #[cfg(any(test, feature = "test-support"))]
-    plx_base::testlock::assert_held("direct-play preference");
-    DIRECT_PLAY_MODE.store(match mode {
-        DirectPlayMode::Auto => 0, DirectPlayMode::Forced => 1, DirectPlayMode::Disabled => 2,
-    }, Ordering::Relaxed);
-}
-
-/// Blocking persistence seam; Settings dispatches it on the storage worker.
-pub fn set_direct_play_mode(mode: DirectPlayMode) -> bool {
-    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<DirectPlayModePref>(mode)))
-        .is_some_and(|write| matches!(write.classify(),
-            plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
-    if saved { restore_direct_play_mode(mode); plx_machine::idle::invalidate(); }
-    saved
-}
-
-/// What the player does at an episode's credits when a successor is queued — install-wide, like
-/// [`DIRECT_PLAY_MODE`]. Read by `appkit::player_hud::slot` every frame and by `finish_playback` at
-/// the end of the stream.
-static NEXT_EPISODE_MODE: AtomicU8 = AtomicU8::new(0); // NextEpisodeMode::Countdown's index
-
-pub fn next_episode_mode() -> NextEpisodeMode {
-    NextEpisodeMode::from_index(NEXT_EPISODE_MODE.load(Ordering::Relaxed))
-}
-
-pub fn restore_next_episode_mode(mode: NextEpisodeMode) {
-    #[cfg(any(test, feature = "test-support"))]
-    plx_base::testlock::assert_held("next episode preference");
-    NEXT_EPISODE_MODE.store(mode.index(), Ordering::Relaxed);
-}
-
-/// Blocking persistence seam; Settings dispatches it on the storage worker. The live value changes
-/// only once the write is durable, so a failed save claims nothing.
-pub fn set_next_episode_mode(mode: NextEpisodeMode) -> bool {
-    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<NextEpisodeModePref>(mode)))
-        .is_some_and(|write| matches!(write.classify(),
-            plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
-    if saved {
-        restore_next_episode_mode(mode);
-        plx_machine::idle::invalidate();
-        plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
-            feature: plx_telemetry::diag::schema::Feature::NextEpisode(mode),
-        });
-    }
-    saved
-}
-
-/// How far one Left/Right press jumps in the player and the trailer transport — install-wide,
-/// like [`NEXT_EPISODE_MODE`]. Read per press by `appkit::player_hud::scrub_step_ns`.
-static SKIP_INTERVAL: AtomicU8 = AtomicU8::new(1); // SkipInterval::Seconds10's index
-
-pub fn skip_interval() -> SkipInterval {
-    SkipInterval::from_index(SKIP_INTERVAL.load(Ordering::Relaxed))
-}
-
-pub fn restore_skip_interval(interval: SkipInterval) {
-    #[cfg(any(test, feature = "test-support"))]
-    plx_base::testlock::assert_held("skip interval preference");
-    SKIP_INTERVAL.store(interval.index(), Ordering::Relaxed);
-}
-
-/// Blocking persistence seam; Settings dispatches it on the storage worker. The live value changes
-/// only once the write is durable, so a failed save claims nothing.
-pub fn set_skip_interval(interval: SkipInterval) -> bool {
-    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<SkipIntervalPref>(interval)))
-        .is_some_and(|write| matches!(write.classify(),
-            plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
-    if saved {
-        restore_skip_interval(interval);
-        plx_machine::idle::invalidate();
-        plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
-            feature: plx_telemetry::diag::schema::Feature::SkipInterval(interval),
-        });
-    }
-    saved
-}
-
-/// What OK does on a Continue Watching card — install-wide, like [`NEXT_EPISODE_MODE`]. Read by
-/// every deck's press and draw (Home's and the Library's) and by the item menu when it builds its
-/// rows; `DeckPress::press_plays` is the one question they all ask of it.
-static DECK_PRESS: AtomicU8 = AtomicU8::new(0); // DeckPress::Details's index
-
-pub fn deck_press() -> DeckPress {
-    DeckPress::from_index(DECK_PRESS.load(Ordering::Relaxed))
-}
-
-pub fn restore_deck_press(mode: DeckPress) {
-    #[cfg(any(test, feature = "test-support"))]
-    plx_base::testlock::assert_held("deck press preference");
-    DECK_PRESS.store(mode.index(), Ordering::Relaxed);
-}
-
-/// Blocking persistence seam; Settings dispatches it on the storage worker. The live value changes
-/// only once the write is durable, so a failed save claims nothing.
-pub fn set_deck_press(mode: DeckPress) -> bool {
-    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<DeckPressPref>(mode)))
-        .is_some_and(|write| matches!(write.classify(),
-            plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
-    if saved {
-        restore_deck_press(mode);
-        plx_machine::idle::invalidate();
-    }
-    saved
-}
-
-pub fn set_default_quality(q: Quality) -> bool {
-    let q = supported_quality(q);
-    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<QualityPref>(q)))
-        .is_some_and(|write| matches!(write.classify(),
-            plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
-    if saved { restore_quality(q); plx_machine::idle::invalidate(); }
-    saved
-}
-
-/// The client-rendered subtitle caption's text size — install-wide, like [`DIRECT_PLAY_MODE`].
-static SUBTITLE_SIZE: AtomicU8 = AtomicU8::new(1); // SubtitleSize::Medium's index
-
-pub fn subtitle_size() -> SubtitleSize {
-    SubtitleSize::from_index(SUBTITLE_SIZE.load(Ordering::Relaxed))
-}
-
-pub fn restore_subtitle_size(size: SubtitleSize) {
-    #[cfg(any(test, feature = "test-support"))]
-    plx_base::testlock::assert_held("subtitle size preference");
-    SUBTITLE_SIZE.store(size.index(), Ordering::Relaxed);
-}
-
-/// **Pick a caption size: one optimistic operation, on the main thread.** The live atomic is
-/// stored and the frame invalidated FIRST, so the caption changes on the next frame; then a
-/// persist-only closure is retained for the shared storage worker. The closure writes the session
-/// store and NEVER touches the atomic (the pattern of `player::set_subtitle_tone`), so no
-/// completion can overwrite a newer live pick: live = the latest pick, durable writes are FIFO on
-/// the worker, last submitted wins. `reply` (Settings) learns whether the write was durable; a
-/// failure claims nothing about the next boot and republishes nothing.
-pub fn select_subtitle_size(size: SubtitleSize, reply: Option<std::sync::mpsc::Sender<bool>>) {
-    restore_subtitle_size(size);
-    plx_machine::idle::invalidate();
-    let _ = plx_base::storage_worker::submit_retained(move || {
-        let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<SubtitleSizePref>(size)))
-            .is_some_and(|write| matches!(write.classify(),
-                plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
-        if !saved {
-            plx_base::eventlog::log("subtitle size: durable write failed (live value kept for this session)");
-        }
-        if let Some(reply) = reply {
-            let _ = reply.send(saved);
-        }
-        plx_machine::idle::invalidate();
-    });
-}
-
-/// The client-rendered subtitle caption's vertical placement — install-wide, like
-/// [`DIRECT_PLAY_MODE`]. Only the plain-text caption draw moves with this; image (PGS/VobSub)
-/// captions and native ASS/SSA keep their own placement.
-static SUBTITLE_POSITION: AtomicU8 = AtomicU8::new(0); // SubtitlePosition::Low's index
-
-pub fn subtitle_position() -> SubtitlePosition {
-    SubtitlePosition::from_index(SUBTITLE_POSITION.load(Ordering::Relaxed))
-}
-
-pub fn restore_subtitle_position(position: SubtitlePosition) {
-    #[cfg(any(test, feature = "test-support"))]
-    plx_base::testlock::assert_held("subtitle position preference");
-    SUBTITLE_POSITION.store(position.index(), Ordering::Relaxed);
-}
-
-/// [`select_subtitle_size`] for the caption's vertical placement.
-pub fn select_subtitle_position(position: SubtitlePosition, reply: Option<std::sync::mpsc::Sender<bool>>) {
-    restore_subtitle_position(position);
-    plx_machine::idle::invalidate();
-    let _ = plx_base::storage_worker::submit_retained(move || {
-        let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<SubtitlePositionPref>(position)))
-            .is_some_and(|write| matches!(write.classify(),
-                plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
-        if !saved {
-            plx_base::eventlog::log("subtitle position: durable write failed (live value kept for this session)");
-        }
-        if let Some(reply) = reply {
-            let _ = reply.send(saved);
-        }
-        plx_machine::idle::invalidate();
-    });
-}
-
 pub fn forced_direct_play(ps: &PlaybackSession) -> bool {
     ps.direct_play_mode == DirectPlayMode::Forced
 }
@@ -6571,33 +6362,6 @@ pub fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64
 pub fn audio_converted_by_server(codec: &str, channels: i64) -> bool {
     let mode = direct_play_mode();
     mode != DirectPlayMode::Forced && !audio_direct_plays(mode, codec, channels)
-}
-
-/// The user's current pick. An atomic rather than a field on [`Session`] because it OUTLIVES a
-/// playback — it is a preference, not session state — and because `appkit::more_menu` reads it to draw
-/// the checkmark while [`ResolveEnv::snapshot`] reads it to hand the worker a copy.
-///
-/// Seeded to Original even before the boot gate restores the session: no call path may turn a
-/// missing preference into Auto simply because initialization order changed.
-static QUALITY: AtomicU8 = AtomicU8::new(1);
-
-/// The selected ceiling. Safe from any thread; the resolve worker gets a COPY through
-/// [`ResolveEnv`] rather than reading this, per that struct's own rule.
-pub fn quality() -> Quality {
-    quality_from_index(QUALITY.load(Ordering::Relaxed))
-}
-
-/// Restore the persisted preference without writing it back. The distinction matters for legacy
-/// sessions: their missing field resolves to Original but remains missing until the user makes an
-/// explicit choice, so a future Auto-ready build still cannot reinterpret that old install.
-pub fn restore_quality(q: Quality) {
-    // `QUALITY` is a process global `quality()` reads without taking any lock, so a test that
-    // writes it without `testlock::serial()` lands the write mid some OTHER test's read —
-    // `on_deck_hevc_p5_preview_uses_the_selected_episodes_codec` flaked exactly this way. Same
-    // guard as the plex server registry (`plex::servers::register_with_client_id`).
-    #[cfg(any(test, feature = "test-support"))]
-    plx_base::testlock::assert_held("the playback quality ceiling (restore_quality)");
-    QUALITY.store(quality_index(supported_quality(q)), Ordering::Relaxed);
 }
 
 /// Select a rung. MAIN THREAD (it writes the session).
@@ -6624,22 +6388,11 @@ pub fn restore_quality(q: Quality) {
 fn persist_quality_choice(q: Quality) -> Quality {
     let q = supported_quality(q);
     crate::player::report::note_quality_selected_for(playback_trace_generation(), q);
-    // See `restore_quality`: the same process global, the same lock requirement in tests.
-    #[cfg(any(test, feature = "test-support"))]
-    plx_base::testlock::assert_held("the playback quality ceiling (persist_quality_choice)");
-    QUALITY.store(quality_index(q), Ordering::Relaxed);
-    // A session write is a read-modify-write under the session lock: changing this preference
-    // must not overwrite a roster refresh, a profile switch, or another profile's recents.
-    let _ = plx_plex::plex::session::queue_update(move |s| {
-        if s.prefs.playback_quality == Some(q) {
-            None
-        } else {
-            Some(s.with_pref::<QualityPref>(q))
-        }
-    });
-    // The picker's checkmark moves on this and on nothing else — a settled popover presents no
-    // frames, so without this the row would still read as the old rung until the next keypress.
-    plx_machine::idle::invalidate();
+    // The picker's checkmark moves on the door's own `invalidate`, and on nothing else — a settled
+    // popover presents no frames, so without it the row would still read as the old rung until the
+    // next keypress. The persist is the door's FIFO read-modify-write under the session lock, so it
+    // cannot overwrite a roster refresh, a profile switch, or another profile's recents.
+    choose::<QualityPref>(q, How::Optimistic(None));
     q
 }
 
@@ -10406,3 +10159,7 @@ mod audio_enhancement_tests;
 #[cfg(test)]
 #[path = "decision_prefs_characterisation_tests.rs"]
 mod prefs_characterisation_tests;
+
+#[cfg(test)]
+#[path = "decision_prefs_door_tests.rs"]
+mod prefs_door_tests;

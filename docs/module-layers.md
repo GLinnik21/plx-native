@@ -963,7 +963,8 @@ four lower layers'. Its 458 tests run in their own binary. What it taught beyond
   `PlaybackQuality`, legal in one crate and E0116 in two. `ceiling` and `label` (which build a
   `plex::Ceiling` and a localized row) moved onto `PlaybackQuality` in `plex::session`, beside its
   other methods; `from_index` and `index` read the route-owned `QUALITY_LADDER`, so they became
-  private free functions of `decision.rs` (`quality_from_index`, `quality_index`). Look for `impl X`
+  private free functions of the route module (`quality_from_index`, `quality_index`, now in
+  `route/prefs.rs` beside the live cells). Look for `impl X`
   without a trait in the layers above, not only for trait impls.
 - **A `cargo:rustc-env` reaches one crate, and the version is the thing that needed it.**
   `identity.rs` reported `env!("PLX_VERSION")` as `X-Plex-Version` and in the `User-Agent`.

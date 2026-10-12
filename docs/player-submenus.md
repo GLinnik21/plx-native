@@ -62,8 +62,9 @@ because the overlay's state shape changed on purpose.
 ## Persistence and live preview
 
 One optimistic operation, no deferred publication: `route::select_subtitle_size/position(v)` on the
-main thread stores the live atomic, invalidates, and submits a persist-only closure that writes the
-session store and never touches the atomic (mirrors `player::set_subtitle_tone`). Settings'
+main thread is `route::choose::<S>(v, How::Optimistic(..))`, the one write door: it stores the live
+cell, invalidates, and queues the durable write behind it, which never touches the cell again
+(`player::set_subtitle_tone` is the same call). Settings'
 Size/Position arms use the same call, so no completion can overwrite a newer live pick; durable
 writes are FIFO on the worker, last submitted wins. A failed write is logged, never alerted over
 video, and claims nothing about the next boot. The live value survives BACK and dismissal (global

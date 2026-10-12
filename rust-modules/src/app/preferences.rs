@@ -1,7 +1,10 @@
 //! Live executor for Settings preference effects. The bridge's controlled-IO guard must admit
 //! the effect before this entrypoint: profile capture, thread admission and persistence all live
 //! here, never in a screen constructor or step.
+use plx_media::route::{choose, How};
 use plx_plex::plex::account::{PreferenceError, PreferenceRequest};
+use plx_plex::plex::session::{DeckPressPref, DirectPlayModePref, NextEpisodeModePref, QualityPref,
+    SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref};
 use plx_screens::registry::{AccountPreferenceReply, PreferenceCmd};
 
 pub(super) fn execute(command: PreferenceCmd) {
@@ -29,12 +32,12 @@ pub(super) fn execute(command: PreferenceCmd) {
                 plx_machine::idle::invalidate();
             });
         }
-        PreferenceCmd::Quality { quality, reply } => {
-            let _ = plx_base::storage_worker::submit_retained(move || {
-                let _ = reply.send(plx_media::route::set_default_quality(quality));
-                plx_machine::idle::invalidate();
-            });
-        }
+        // Every live setting saves through the one write door; each row's own `SETTINGS` policy
+        // (`How::settings`) decides whether the pick is confirmed first (`Confirm`: persisted on
+        // the storage worker, published only once durable) or published at once and persisted
+        // behind it (`Optimistic`, which runs HERE on the main thread so no outer worker
+        // submission republishes).
+        PreferenceCmd::Quality { quality, reply } => choose::<QualityPref>(quality, How::settings::<QualityPref>(reply)),
         PreferenceCmd::Language { language, reply } => {
             let _ = plx_base::storage_worker::submit_retained(move || {
                 let _ = reply.send(plx_plex::plex::session::set_language(language));
@@ -42,35 +45,20 @@ pub(super) fn execute(command: PreferenceCmd) {
             });
         }
         PreferenceCmd::DirectPlay { mode, reply } => {
-            let _ = plx_base::storage_worker::submit_retained(move || {
-                let _ = reply.send(plx_media::route::set_direct_play_mode(mode));
-                plx_machine::idle::invalidate();
-            });
+            choose::<DirectPlayModePref>(mode, How::settings::<DirectPlayModePref>(reply))
         }
         PreferenceCmd::NextEpisode { mode, reply } => {
-            let _ = plx_base::storage_worker::submit_retained(move || {
-                let _ = reply.send(plx_media::route::set_next_episode_mode(mode));
-                plx_machine::idle::invalidate();
-            });
+            choose::<NextEpisodeModePref>(mode, How::settings::<NextEpisodeModePref>(reply))
         }
-        PreferenceCmd::DeckPress { mode, reply } => {
-            let _ = plx_base::storage_worker::submit_retained(move || {
-                let _ = reply.send(plx_media::route::set_deck_press(mode));
-                plx_machine::idle::invalidate();
-            });
-        }
+        PreferenceCmd::DeckPress { mode, reply } => choose::<DeckPressPref>(mode, How::settings::<DeckPressPref>(reply)),
         PreferenceCmd::SkipInterval { interval, reply } => {
-            let _ = plx_base::storage_worker::submit_retained(move || {
-                let _ = reply.send(plx_media::route::set_skip_interval(interval));
-                plx_machine::idle::invalidate();
-            });
+            choose::<SkipIntervalPref>(interval, How::settings::<SkipIntervalPref>(reply))
         }
-        // The optimistic picks run HERE, on the main thread: the live value is published before
-        // anything is persisted and the persistence rides the storage worker on its own
-        // (`route::select_subtitle_size`), so there is no outer worker submission to republish.
-        PreferenceCmd::SubtitleSize { size, reply } => plx_media::route::select_subtitle_size(size, Some(reply)),
+        PreferenceCmd::SubtitleSize { size, reply } => {
+            choose::<SubtitleSizePref>(size, How::settings::<SubtitleSizePref>(reply))
+        }
         PreferenceCmd::SubtitlePosition { position, reply } => {
-            plx_media::route::select_subtitle_position(position, Some(reply))
+            choose::<SubtitlePositionPref>(position, How::settings::<SubtitlePositionPref>(reply))
         }
     }
 }

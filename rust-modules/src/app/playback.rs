@@ -175,23 +175,18 @@ pub(crate) fn retry_failed_playback(
 ///
 /// A PERSISTENT switch, deliberately, not a one-shot: Force is what made this play fail, and it
 /// would make the next unsupported file fail the same way. The preference moves to Auto now (the
-/// in-memory value every later resolve reads) and is saved on the storage worker exactly as the
-/// Settings row saves it (`app::preferences`' `DirectPlay` arm), since the frame may not block on
-/// storage. The retry resolves under Auto explicitly rather than inheriting the failed attempt's
-/// Force, which a plain retry keeps on purpose.
+/// in-memory value every later resolve reads) and is saved on the storage worker behind it, both
+/// by the one write door (`route::choose`, `How::Optimistic`): the frame may not block on storage,
+/// the cell is published ONCE, and a failed save is logged by the door while the pick stands for
+/// this session. The retry resolves under Auto explicitly rather than inheriting the failed
+/// attempt's Force, which a plain retry keeps on purpose.
 pub(crate) fn play_automatically(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     meta: &mut plx_data::stores::metadata::MetadataStore,
 ) -> bool {
-    use plx_plex::plex::session::DirectPlayMode;
-    plx_media::route::restore_direct_play_mode(DirectPlayMode::Auto);
-    let _ = plx_base::storage_worker::submit_retained(|| {
-        if !plx_media::route::set_direct_play_mode(DirectPlayMode::Auto) {
-            log("play automatically: the Direct Play preference was not saved");
-        }
-        plx_machine::idle::invalidate();
-    });
+    use plx_plex::plex::session::{DirectPlayMode, DirectPlayModePref};
+    plx_media::route::choose::<DirectPlayModePref>(DirectPlayMode::Auto, plx_media::route::How::Optimistic(None));
     retry_failed_playback(ps, pa, meta, Some(DirectPlayMode::Auto))
 }
 

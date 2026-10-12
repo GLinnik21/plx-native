@@ -75,7 +75,7 @@ fn login_frames_never_wait_for_the_session_io_lock() {
 }
 
 /// Issue #266: the audio-DSP preference round-trips through the player's one write door
-/// (`player::set_audio_enhancements` -> retained worker job -> `session::set_audio_enhancements`)
+/// (`player::set_audio_enhancements` -> `route::choose` -> retained worker job -> `session::persist_pref`)
 /// and comes back through the boot-time restore, merged into the record rather than replacing
 /// it. A record saved before the field existed loads as NONE.
 #[test]
@@ -95,6 +95,8 @@ fn audio_enhancements_persist_and_restore() {
     plx_media::player::restore_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
     plx_media::player::restore_audio_enhancements(saved.audio_enhancements());
     assert_eq!(plx_media::player::audio_enhancements(), enh, "boot restores what was saved");
-    assert!(!session::set_audio_enhancements(enh), "an unchanged preference is not rewritten");
+    session::reset_last_write_authority_for_test();
+    assert!(session::persist_pref::<session::AudioEnhancementsPref>(enh), "an unchanged preference is saved...");
+    assert!(session::last_write_authority_for_test().is_none(), "...without being rewritten");
     plx_media::player::restore_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
 }

@@ -56,8 +56,9 @@
 //! plain-text caption follows Size and Position, so under an image (PGS/VobSub) or native ASS/SSA
 //! subtitle those two rows are dim, focusable and inert, with a separate note each. Color stays
 //! live under every renderer: the subtitle ink tints bitmaps and ASS alike. Size and Position are
-//! persisted by `route::select_subtitle_size` / `select_subtitle_position` (live value first, a
-//! persist-only write second); Color by `player::set_subtitle_tone`.
+//! persisted by `route::select_subtitle_size` / `select_subtitle_position` and Color by
+//! `player::set_subtitle_tone`: all three are one call into the one write door (`route::choose`,
+//! `How::Optimistic`: live value first, the durable write second, never republished).
 //!
 //! **A sub-page never outlives the root it was built on.** The root's [`SubSig`] — subs
 //! fingerprint, active index, renderer kind, transcoding, presenter and enhancement route — is
@@ -522,7 +523,8 @@ pub enum TrackCommit {
     /// extension. `None` — Off, or an embedded track — deselects any sidecar.
     Subtitle { render_ordinal: c_int, stream_id: i64, sidecar_key: Option<String>, sidecar_codec: String },
     /// The caption's tone. Not a track at all, but it is picked in this panel and it is the
-    /// loop that performs it (`player::set_subtitle_tone` writes the session), like the two above.
+    /// loop that performs it (`player::set_subtitle_tone` saves through the one write door, `route::choose`),
+    /// like the two above.
     SubtitleTone(SubtitleTone),
     /// The caption's size, picked on the Style > Size page: the loop publishes it live and
     /// persists it (`route::select_subtitle_size`).

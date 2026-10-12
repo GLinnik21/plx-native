@@ -1664,23 +1664,27 @@ pub fn request_subtitle(idx: i32) {
         SHARED.sub_bitmaps.lock().unwrap().clear();
     }
 }
-/// The tone client-rendered subtitles are drawn in. An atomic rather than a field of [`SHARED`]
-/// because it OUTLIVES a playback — it is a preference, not session state (`route::QUALITY`'s
-/// reasoning) — and `reset_session` must not put a viewer back on white between two episodes.
+/// The tone client-rendered subtitles are drawn in. A [`crate::route::LiveCell`] rather than a field
+/// of [`SHARED`] because it OUTLIVES a playback — it is a preference, not session state
+/// (the same reasoning as the quality cell in `route::prefs`) — and `reset_session` must not put a viewer back on white
+/// between two episodes. Restored by `route::restore_all`; written by [`set_subtitle_tone`] through
+/// the one write door (`route::choose`).
 ///
 /// Seeded to white, which is what every build before the preference drew.
-static SUBTITLE_TONE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+pub(crate) static SUBTITLE_TONE: crate::route::LiveCell<plx_plex::plex::session::SubtitleTone> =
+    crate::route::LiveCell::new("subtitle tone preference");
 
 /// The selected tone. Read once a frame by the two subtitle draws (`appkit::player_hud`) and by the
 /// track menu for its checkmark.
 pub fn subtitle_tone() -> plx_plex::plex::session::SubtitleTone {
-    plx_plex::plex::session::SubtitleTone::from_index(SUBTITLE_TONE.load(Relaxed))
+    SUBTITLE_TONE.get()
 }
 
 /// The viewer's subtitle timing offset in MILLISECONDS — positive draws every client-rendered cue
 /// later, negative earlier. **It belongs to ONE playback of ONE subtitle track**, unlike
 /// [`SUBTITLE_TONE`]: a timing error is a property of a track against a media file, so the next
-/// film, or another track of this one, must never inherit it. Nothing persists it; [`reset_subtitle`]
+/// film, or another track of this one, must never inherit it. It is saved per item and track by
+/// [`persist_subtitle_offset`] and read back on that track's next play; [`reset_subtitle`]
 /// (a new item) and `route::commit_subtitle_selection` (a different track) put it back to 0. A
 /// retry of the same item with the same subtitle carries it ([`restore_subtitle_offset`]).
 /// `AtomicI32` rather than `I64`: the range fits trivially, and the 32-bit target gets a plain
@@ -1781,33 +1785,26 @@ fn clamp_subtitle_offset_ms(offset_ms: i64) -> i32 {
 /// as two bits — a PREFERENCE, like [`SUBTITLE_TONE`], so it outlives a playback. Only the
 /// resolve's `ResolveEnv::snapshot` reads it, on the main thread, and it reaches the wire only
 /// through `route::desired_audio`: with no Plex Pass (or an unknown one) nothing reads it at all.
-static AUDIO_ENHANCEMENTS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-
-const ENH_BOOST_DIALOG: u8 = 1;
-const ENH_NORMALIZE_LOUDNESS: u8 = 2;
+/// Restored by `route::restore_all`; written through the one write door (`route::choose`).
+pub(crate) static AUDIO_ENHANCEMENTS: crate::route::LiveCell<plx_plex::plex::AudioEnhancements> =
+    crate::route::LiveCell::new("audio enhancements preference");
 
 /// The current preference (see [`AUDIO_ENHANCEMENTS`]).
 pub fn audio_enhancements() -> plx_plex::plex::AudioEnhancements {
-    let bits = AUDIO_ENHANCEMENTS.load(Relaxed);
-    plx_plex::plex::AudioEnhancements {
-        boost_dialog: bits & ENH_BOOST_DIALOG != 0,
-        normalize_loudness: bits & ENH_NORMALIZE_LOUDNESS != 0,
-    }
+    AUDIO_ENHANCEMENTS.get()
 }
 
-/// Restore the persisted preference without writing it back — boot and the credentials handoff,
-/// the same two places [`restore_subtitle_tone`] is called from.
+/// Restore the persisted preference without writing it back — what `route::restore_all` does for
+/// boot, the credentials handoff and a profile switch.
 pub fn restore_audio_enhancements(a: plx_plex::plex::AudioEnhancements) {
-    let bits = if a.boost_dialog { ENH_BOOST_DIALOG } else { 0 }
-        | if a.normalize_loudness { ENH_NORMALIZE_LOUDNESS } else { 0 };
-    AUDIO_ENHANCEMENTS.store(bits, Relaxed);
+    AUDIO_ENHANCEMENTS.set(a);
 }
 
 /// Select a preference on the main thread and retain its persistence for the shared storage
-/// worker, exactly as [`set_subtitle_tone`] does.
+/// worker, exactly as [`set_subtitle_tone`] does: both go through `route::choose` with
+/// `How::Optimistic`.
 pub fn set_audio_enhancements(a: plx_plex::plex::AudioEnhancements) {
-    restore_audio_enhancements(a);
-    persist_audio_enhancements(a);
+    crate::route::choose::<plx_plex::plex::session::AudioEnhancementsPref>(a, crate::route::How::Optimistic(None));
 }
 
 /// **The Audio tab's toggle rows land here** (issue #266): persist the preference, then bring the
@@ -1816,33 +1813,26 @@ pub fn set_audio_enhancements(a: plx_plex::plex::AudioEnhancements) {
 pub fn request_audio_enhancement(ps: &mut crate::route::PlaybackSession, a: plx_plex::plex::AudioEnhancements) {
     set_audio_enhancements(a);
     crate::route::reconcile_enhancement(ps, false);
-    // the rows' checkmarks move on this — see `route::persist_quality_choice`
+    // the rows' checkmarks move on this — see `route::choose`
     plx_machine::idle::invalidate();
 }
 
-fn persist_audio_enhancements(a: plx_plex::plex::AudioEnhancements) {
-    let _ = plx_base::storage_worker::submit_retained(move || plx_plex::plex::session::set_audio_enhancements(a));
-}
-
-/// Restore the persisted preference without writing it back (boot, and the credentials handoff
-/// after a fresh sign-in — the two places `route::restore_quality` is called from).
+/// Restore the persisted preference without writing it back (what `route::restore_all` does for
+/// boot, the credentials handoff and a profile switch).
 pub fn restore_subtitle_tone(tone: plx_plex::plex::session::SubtitleTone) {
-    SUBTITLE_TONE.store(tone.index(), Relaxed);
+    SUBTITLE_TONE.set(tone);
 }
 
-/// Select a tone on the main thread and retain its persistence work for the shared worker.
-/// Takes effect on the next drawn frame —
-/// the draws read the atomic — so there is nothing to reload and no cue store to touch.
+/// Select a tone on the main thread and retain its persistence work for the shared worker
+/// (`route::choose`, `How::Optimistic`). Takes effect on the next drawn frame — the draws read the
+/// cell — so there is nothing to reload and no cue store to touch.
 pub fn set_subtitle_tone(tone: plx_plex::plex::session::SubtitleTone) {
-    SUBTITLE_TONE.store(tone.index(), Relaxed);
-    let _ = plx_base::storage_worker::submit_retained(move || plx_plex::plex::session::set_subtitle_tone(tone));
-    // the picker's checkmark moves on this — see `route::persist_quality_choice`
-    plx_machine::idle::invalidate();
+    crate::route::choose::<plx_plex::plex::session::SubtitleTonePref>(tone, crate::route::How::Optimistic(None));
 }
 
 /// Set the timing offset (ms) on the main thread, clamped to the range; like the tone it takes
-/// effect on the next drawn frame, with nothing to reload. Never persisted — see
-/// [`SUBTITLE_OFFSET_MS`].
+/// effect on the next drawn frame, with nothing to reload. The live value is not persisted
+/// here; a commit saves it per item and track — see [`SUBTITLE_OFFSET_MS`].
 pub fn set_subtitle_offset(offset_ms: i64) {
     SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(offset_ms), Relaxed);
     plx_machine::idle::invalidate();

@@ -12,6 +12,7 @@
 mod decision;
 mod flight;
 mod plan;
+mod prefs;
 
 pub use decision::*;
 pub use flight::{
@@ -19,3 +20,4 @@ pub use flight::{
     take_ready_recovery_flight, ReadyFlight, RecoveryLanding, RecoveryVerdict, SeekVerdict,
 };
 pub use plan::*;
+pub use prefs::*;

@@ -86,7 +86,7 @@ pub struct Preferences {
     /// normalization. `NONE` by default and skipped on write while `NONE`, so every session
     /// persisted before the field existed — and every viewer who never opted in — round-trips
     /// byte-identical to what it wrote before. Restored into `player::audio_enhancements` at boot
-    /// and at the credentials handoff; written by `player::set_audio_enhancements`. Soft-parsed
+    /// and at the credentials handoff; written by `player::set_audio_enhancements` through the media door (`route::choose`, which saves via `persist_pref`). Soft-parsed
     /// like every preference in this struct: an unknown shape costs the preference, never the
     /// credentials.
     #[serde(default, deserialize_with = "de_soft_audio_enhancements", skip_serializing_if = "crate::plex::AudioEnhancements::is_none")]
@@ -135,8 +135,9 @@ pub enum SettingsWrite {
 
 /// One setting, keyed by a marker type.
 pub trait Setting: 'static {
-    /// The field's type in [`Preferences`].
-    type Stored;
+    /// The field's type in [`Preferences`]. `PartialEq`, because the write door skips a write whose
+    /// STORED value already equals the pick ([`persist_pref`]).
+    type Stored: PartialEq;
     /// What callers speak. Equal to `Stored` except where the stored form carries "never chosen"
     /// (quality: `Option<PlaybackQuality>` stored, `PlaybackQuality` spoken).
     type Value: Copy + PartialEq + Send + 'static;
@@ -259,6 +260,37 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<DeckPressPref>(),
     Descriptor::of::<AudioEnhancementsPref>(),
 ];
+
+/// **The persist half of the one write door** (`media::route::prefs::choose` is the live half):
+/// make the record hold `S = v`, as a read-modify-write under the session lock, and say whether the
+/// record holds it afterwards.
+///
+/// The skip compares STORED values, so for quality a legacy absent field (`None`) and a pick of
+/// Original count as different, and the pick writes `Some(Original)`; an absent field stays absent
+/// until an explicit choice. `true` is a `Durable` write, or no write at all because the record
+/// already read the same (`read && unchanged`: there was nothing to refuse). `false` is a refused
+/// or failed write, an unreadable record, and the revocation guard of
+/// [`update_guarded_with_outcome`](super::update_guarded_with_outcome) (sign-out wins over an
+/// install write queued before it).
+pub fn persist_pref<S: Setting>(v: S::Value) -> bool {
+    let (mut read, mut unchanged) = (false, false);
+    let write = super::update_guarded_with_outcome(
+        |cur| {
+            read = true;
+            if S::stored(&cur.prefs) == &S::to_stored(v) {
+                unchanged = true;
+                None
+            } else {
+                Some(cur.with_pref::<S>(v))
+            }
+        },
+        || true,
+    );
+    match write {
+        Some(write) => matches!(write.classify(), super::async_persistence::CompletionOutcome::Durable(_)),
+        None => read && unchanged,
+    }
+}
 
 impl Session {
     /// This session with `S` set to `value`, every other field intact.
