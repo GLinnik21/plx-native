@@ -36,6 +36,7 @@ pub mod ffi;
 pub mod ffi_host;
 mod pump;
 pub mod report;
+mod sub_encoding;
 #[cfg(all(test, feature = "hostsim"))]
 mod foreground_flight_tests;
 #[cfg(all(test, feature = "hostsim"))]
@@ -2092,7 +2093,7 @@ pub fn bitmap_by_key(key: i64) -> Option<(i32, i32, Vec<SubRect>)> {
 /// Extract plain caption text, stripping markup and normalizing line breaks.
 /// ASS/SSA never enters this path: the native renderer receives its complete script/events.
 fn sub_text(payload: &[u8]) -> String {
-    let s = String::from_utf8_lossy(payload);
+    let s = sub_encoding::decode_to_utf8(payload);
     let mut out = String::with_capacity(s.len());
     let mut ch = s.chars().peekable();
     while let Some(c) = ch.next() {

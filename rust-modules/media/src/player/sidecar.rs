@@ -303,7 +303,7 @@ fn is_ass_script(text: &str) -> bool {
 
 fn decode(bytes: Vec<u8>, codec: &str) -> Result<Content, Failure> {
     if bytes.len() > plx_plex::plex::SIDECAR_MAX_BYTES { return Err(Failure::Empty); }
-    let text = String::from_utf8_lossy(&bytes);
+    let text = super::sub_encoding::decode_to_utf8(&bytes);
     if is_ass_script(&text) {
         // Validate only the presence of events. libass owns the script grammar, including
         // style/format declarations, overlapping dialogue and vector drawing events.
@@ -457,10 +457,7 @@ impl Subtitles {
         if bytes.len() > plx_plex::plex::SIDECAR_MAX_BYTES {
             return Self::empty();
         }
-        let mut text = match String::from_utf8(bytes) {
-            Ok(text) => text,
-            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-        };
+        let mut text = super::sub_encoding::decode_to_utf8(&bytes);
         let bom = text.len() - text.trim_start_matches('\u{feff}').len();
         text.drain(..bom);
         if is_ass_script(&text) {

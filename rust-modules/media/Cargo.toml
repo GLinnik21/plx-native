@@ -48,6 +48,7 @@ plx_net = { path = "../net" }
 plx_plex = { path = "../plex" }
 plx_telemetry = { path = "../telemetry" }
 plx_data = { path = "../data" }
+encoding_rs = "0.8"
 libc = "0.2"
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
