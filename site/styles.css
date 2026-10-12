@@ -2898,7 +2898,7 @@ video::-webkit-media-controls-start-playback-button {
 }
 
 /* ---------- Community: support, press glosses ---------- */
-/* Support closes the page, after the FAQ, in a lit card of its own. */
+/* Support closes the page, after the FAQ, in a plate as wide as its line and button. */
 .support-section {
   padding-bottom: clamp(40px, 6vh, 72px);
 }
@@ -2906,9 +2906,11 @@ video::-webkit-media-controls-start-playback-button {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 16px 28px;
-  margin: clamp(36px, 5vh, 56px) 0 0;
+  width: fit-content;
+  max-width: 100%;
+  margin: clamp(36px, 5vh, 56px) auto 0;
   padding: clamp(18px, 2.4vw, 24px) clamp(20px, 2.6vw, 28px);
   border-radius: 18px;
   background: var(--color-white-a07);
@@ -2920,8 +2922,8 @@ video::-webkit-media-controls-start-playback-button {
   line-height: 1.55;
   color: var(--text-reading);
   margin: 0;
-  max-width: 46ch;
-  text-wrap: pretty;
+  text-align: center;
+  text-wrap: balance;
 }
 .press-gloss {
   display: block;
