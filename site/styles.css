@@ -3281,6 +3281,7 @@ video::-webkit-media-controls-start-playback-button {
 }
 .feature-stage--net {
   --stage-tint: rgba(48, 209, 88, 0.13);
+  --link: 48, 209, 88;
   gap: 12px;
 }
 .stage-pill {
@@ -3468,8 +3469,8 @@ video::-webkit-media-controls-start-playback-button {
   height: 2px;
   margin: 26px 10px 0;
   border-radius: 1px;
-  background: linear-gradient(90deg, rgba(48, 209, 88, 0.4), rgba(48, 209, 88, 0.9), rgba(48, 209, 88, 0.4));
-  box-shadow: 0 0 12px rgba(48, 209, 88, 0.5);
+  background: linear-gradient(90deg, rgba(var(--link), 0.4), rgba(var(--link), 0.9), rgba(var(--link), 0.4));
+  box-shadow: 0 0 12px rgba(var(--link), 0.5);
 }
 .net-link i {
   position: absolute;
@@ -3480,7 +3481,7 @@ video::-webkit-media-controls-start-playback-button {
   content: "";
   position: absolute;
   inset: 0;
-  background: radial-gradient(closest-side, #fff, rgba(160, 255, 180, 0.7) 40%, transparent) 50% 50% / 40px 10px no-repeat;
+  background: radial-gradient(closest-side, #fff, rgba(var(--link), 0.8) 40%, transparent) 50% 50% / 40px 10px no-repeat;
   opacity: 0;
 }
 .net-label {
@@ -3610,8 +3611,315 @@ video::-webkit-media-controls-start-playback-button {
   }
 }
 
-/* The offline card alone spans both tablet columns, so its stage sits beside
-   the text instead of above it. */
+/* Decoder: the file runs through the TV's own decoder chip, and the screen
+   below lights up in HDR, played directly. */
+.feature-stage--decode {
+  --stage-tint: rgba(130, 120, 255, 0.18);
+  --link: 160, 170, 255;
+  gap: 18px;
+}
+.feature-stage--decode .net-row {
+  width: min(100%, 250px);
+}
+.net-node--chip svg {
+  color: #fff;
+  background: rgba(140, 150, 255, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(170, 180, 255, 0.5), 0 0 26px rgba(130, 140, 255, 0.45), 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+.decode-screen {
+  position: relative;
+  display: block;
+  width: min(100%, 330px);
+  aspect-ratio: 2.2;
+  border-radius: 12px;
+  overflow: hidden;
+  background:
+    radial-gradient(60% 80% at 78% 20%, rgba(255, 230, 170, 0.75), transparent 60%),
+    linear-gradient(125deg, #ffb35c, #e0457b 45%, #5a4dff);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3), 0 0 40px rgba(224, 69, 123, 0.35), 0 14px 30px rgba(0, 0, 0, 0.4);
+}
+.decode-screen::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: #121216;
+  opacity: 0;
+}
+.decode-badges {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 1;
+  display: flex;
+  gap: 5px;
+}
+.decode-badges em,
+.decode-play {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: #fff;
+}
+.decode-play {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  z-index: 1;
+  translate: -50% 0;
+  gap: 5px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  letter-spacing: 0;
+  background: rgba(255, 255, 255, 0.2);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+.decode-play svg {
+  display: block;
+}
+
+/* Player: a frame of a film with a styled subtitle, the timeline with its
+   chapter breaks, and the focused Skip Intro button. */
+.feature-stage--player {
+  --stage-tint: rgba(232, 140, 80, 0.18);
+  padding: 20px;
+}
+.mini-player {
+  position: relative;
+  display: block;
+  width: min(100%, 380px);
+  aspect-ratio: 16 / 9;
+  border-radius: 12px;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 62% at 26% 112%, #140b08 45%, transparent 46%),
+    radial-gradient(90% 50% at 86% 118%, #1d100b 48%, transparent 49%),
+    radial-gradient(38% 30% at 68% 46%, rgba(255, 214, 150, 0.95), rgba(255, 170, 100, 0.4) 50%, transparent 75%),
+    linear-gradient(180deg, #1f2b48 0%, #6b4560 42%, #e08a52 72%, #4a2416 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16), 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+.mini-player::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 55%, rgba(0, 0, 0, 0.6));
+}
+.mini-sub {
+  position: absolute;
+  inset: auto 0 42%;
+  text-align: center;
+  font: italic 600 clamp(13px, 3.6vw, 16px) / 1.2 Georgia, "Times New Roman", serif;
+  color: #fff4c8;
+  text-shadow: 0 0 2px #000, 0 0 2px #000, 0 1px 4px rgba(0, 0, 0, 0.8);
+}
+.mini-skip {
+  position: absolute;
+  right: 10px;
+  bottom: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--color-cool-0);
+  color: #111;
+  font-size: 11px;
+  font-weight: 700;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35), 0 6px 16px rgba(0, 0, 0, 0.45);
+}
+.mini-skip svg {
+  display: block;
+}
+.mini-bar {
+  position: absolute;
+  inset: auto 10px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.86);
+}
+.mini-track {
+  position: relative;
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.26);
+  /* Chapter breaks. */
+  -webkit-mask: linear-gradient(90deg, #000 0 23%, transparent 23% 24%, #000 24% 49%, transparent 49% 50%, #000 50% 81%, transparent 81% 82%, #000 82%);
+  mask: linear-gradient(90deg, #000 0 23%, transparent 23% 24%, #000 24% 49%, transparent 49% 50%, #000 50% 81%, transparent 81% 82%, #000 82%);
+}
+.mini-track i {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  transform-origin: left;
+  scale: 0.6 1;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .reveal .feature-card .decode-screen::after {
+    opacity: 0.88;
+  }
+  .reveal .feature-card .mini-track i {
+    scale: 0.04 1;
+  }
+  .reveal .feature-card .mini-sub,
+  .reveal .feature-card .mini-skip {
+    opacity: 0;
+  }
+  .reveal .feature-card .mini-skip {
+    translate: 0 8px;
+    scale: 0.85;
+  }
+  .reveal .feature-card.is-revealed .decode-screen::after {
+    opacity: 0;
+    transition: opacity 900ms ease-out calc(var(--reveal-delay, 0ms) + 1200ms);
+  }
+  .reveal .feature-card.is-revealed .feature-stage--decode .net-link i::after {
+    animation-name: decode-run;
+    animation-duration: 1800ms;
+    animation-direction: normal;
+  }
+  .reveal .feature-card.is-revealed .mini-track i {
+    scale: 0.6 1;
+    transition: scale 1800ms cubic-bezier(0.22, 1, 0.36, 1) calc(var(--reveal-delay, 0ms) + 400ms);
+  }
+  .reveal .feature-card.is-revealed .mini-sub {
+    opacity: 1;
+    transition: opacity 500ms ease-out calc(var(--reveal-delay, 0ms) + 700ms);
+  }
+  .reveal .feature-card.is-revealed .mini-skip {
+    opacity: 1;
+    translate: none;
+    scale: none;
+    transition:
+      opacity 280ms ease-out calc(var(--reveal-delay, 0ms) + 1500ms),
+      translate 640ms cubic-bezier(0.34, 1.56, 0.64, 1) calc(var(--reveal-delay, 0ms) + 1500ms),
+      scale 640ms cubic-bezier(0.34, 1.56, 0.64, 1) calc(var(--reveal-delay, 0ms) + 1500ms);
+  }
+}
+.up-next {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: min(100%, 380px);
+  padding: 8px 14px 8px 8px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16), 0 10px 24px rgba(0, 0, 0, 0.3);
+}
+.up-next-thumb {
+  flex: none;
+  width: 64px;
+  aspect-ratio: 16 / 9;
+  border-radius: 6px;
+  background:
+    radial-gradient(80% 60% at 30% 110%, #0f1a1c 45%, transparent 46%),
+    linear-gradient(180deg, #2b4a5c, #6f9a8f 70%, #1d2f2c);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+.up-next-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.up-next-text small {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-tertiary);
+}
+.up-next-text b {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .reveal .feature-card .up-next {
+    opacity: 0;
+    translate: 0 12px;
+  }
+  .reveal .feature-card.is-revealed .up-next {
+    opacity: 1;
+    translate: none;
+    transition:
+      opacity 400ms ease-out calc(var(--reveal-delay, 0ms) + 2000ms),
+      translate 700ms cubic-bezier(0.19, 1, 0.22, 1) calc(var(--reveal-delay, 0ms) + 2000ms);
+  }
+}
+@keyframes decode-run {
+  0%,
+  10% {
+    translate: -62% 0;
+    opacity: 0;
+  }
+  25%,
+  75% {
+    opacity: 1;
+  }
+  90%,
+  100% {
+    translate: 62% 0;
+    opacity: 0;
+  }
+}
+
+/* From tablets up, a two-thirds card runs its chips across the top and puts
+   the stage beside the text below them; so does the offline card on a
+   tablet, where it alone spans both columns. */
+@media (min-width: 760px) {
+  .feature-card--wide {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto 1fr auto auto 1fr;
+    gap: 0 clamp(24px, 3vw, 40px);
+  }
+  .feature-card--wide .feature-chips {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    margin-bottom: 22px;
+  }
+  .feature-card--wide .feature-stage {
+    grid-column: 2;
+    grid-row: 2 / 6;
+    min-height: 0;
+    margin: 0;
+  }
+  .feature-card--wide h3 {
+    grid-column: 1;
+    grid-row: 3;
+    margin-bottom: 12px;
+  }
+  .feature-card--wide p {
+    grid-column: 1;
+    grid-row: 4;
+  }
+  .feature-stage--player {
+    padding: 14px;
+  }
+  .feature-stage--player .mini-player {
+    width: 100%;
+  }
+}
 @media (min-width: 760px) and (max-width: 999px) {
   .feature-card--half:last-child {
     display: grid;
