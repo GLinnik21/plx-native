@@ -1294,13 +1294,13 @@ video::-webkit-media-controls-start-playback-button {
 .quote-cloud > .quote-sm {
   margin-top: 12px;
 }
-.quote-cloud > .quote-sm:nth-child(5) {
+.quote-cloud > .quote-sm:nth-child(4) {
   margin-top: 30px;
   justify-self: center;
 }
 /* No sideways offset: with sources under them the short quotes are wide
    enough that pulling one into the gutter crowded its neighbour. */
-.quote-cloud > .quote-sm:nth-child(6) {
+.quote-cloud > .quote-sm:nth-child(5) {
   margin-top: 18px;
 }
 .quote-caption {
@@ -2273,12 +2273,12 @@ video::-webkit-media-controls-start-playback-button {
     grid-column: 1 / -1;
   }
   .quote-cloud > .quote-sm,
-  .quote-cloud > .quote-sm:nth-child(5),
-  .quote-cloud > .quote-sm:nth-child(6) {
+  .quote-cloud > .quote-sm:nth-child(4),
+  .quote-cloud > .quote-sm:nth-child(5) {
     margin-top: 0;
     justify-self: start;
   }
-  .quote-cloud > .quote-sm:nth-child(4) {
+  .quote-cloud > .quote-sm:nth-child(3) {
     margin-top: 10px;
   }
   .quote-sm {
@@ -2403,8 +2403,8 @@ video::-webkit-media-controls-start-playback-button {
 .shots-kicker {
   margin: clamp(64px, 10vh, 112px) 0 clamp(18px, 2.4vw, 26px);
 }
-/* Home and Player run the full width; Library and Search sit side by side
-   between them, Search a little lower so the pair does not read as a grid. */
+/* Library and Search sit side by side, Search a little lower so the pair
+   does not read as a grid; Player runs the full width under them. */
 .shot-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -2415,11 +2415,10 @@ video::-webkit-media-controls-start-playback-button {
   .shot-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .shot:first-child,
   .shot:last-child {
     grid-column: 1 / -1;
   }
-  .shot:nth-child(3) {
+  .shot:nth-child(2) {
     margin-top: clamp(40px, 6vw, 88px);
   }
 }
@@ -2544,13 +2543,6 @@ video::-webkit-media-controls-start-playback-button {
   max-width: 1100px;
   margin: 0 0 clamp(28px, 4vh, 44px);
 }
-/* The story on the left, its two benefits beside it (stacked on phones). */
-.approach-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
-  gap: clamp(24px, 4vw, 64px);
-  align-items: start;
-}
 .approach-lede {
   font-size: clamp(18px, 1.8vw, 23px);
   line-height: 1.5;
@@ -2558,29 +2550,6 @@ video::-webkit-media-controls-start-playback-button {
   color: var(--text-reading);
   margin: 0;
   max-width: 46ch;
-  text-wrap: pretty;
-}
-.benefit-list > div {
-  padding: clamp(14px, 2vh, 20px) 0;
-  box-shadow: inset 0 1px 0 var(--color-white-a22);
-}
-.benefit-list > div:first-child {
-  padding-top: 0;
-  box-shadow: none;
-}
-.benefit-list h3 {
-  font-size: clamp(21px, 2.2vw, 28px);
-  line-height: 1.12;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  margin: 0 0 6px;
-  text-wrap: balance;
-}
-.benefit-list p {
-  font-size: 16px;
-  line-height: 1.5;
-  color: var(--text-reading);
-  margin: 0;
   text-wrap: pretty;
 }
 
@@ -2916,7 +2885,10 @@ video::-webkit-media-controls-start-playback-button {
 }
 
 /* ---------- Community: support, press glosses ---------- */
-/* Support sits with the community, in a lit card of its own. */
+/* Support closes the page, after the FAQ, in a lit card of its own. */
+.support-section {
+  padding-bottom: clamp(40px, 6vh, 72px);
+}
 .community-support {
   display: flex;
   flex-wrap: wrap;
