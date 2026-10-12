@@ -2223,6 +2223,20 @@ video::-webkit-media-controls-start-playback-button {
     margin: 0;
   }
 
+  /* The two hero buttons stay side by side: stacked, each as wide as its own
+     label, they read as two unrelated widths. Type and padding scale down with
+     the window so the pair fits a 320px phone; 48px tall keeps the target. */
+  .hero-actions {
+    flex-wrap: nowrap;
+    gap: clamp(8px, 2.6vw, 12px);
+  }
+  .hero-actions .button {
+    flex: 0 1 auto;
+    min-height: 48px;
+    padding: 0 clamp(14px, 4.6vw, 22px);
+    font-size: clamp(14px, 4.2vw, 16px);
+  }
+
   /* The row does not fit a phone's column, and a break left to the browser
      ends a line with a separator. Phones get two lines, broken on purpose
      before the last item, which drops its separator. */
