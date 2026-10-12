@@ -2744,6 +2744,15 @@ video::-webkit-media-controls-start-playback-button {
   height: 100%;
   object-fit: cover;
 }
+/* While the stack is "a typical TV app" its picture is an unbranded app,
+   blurred and grey, so PlxNative is never drawn on a browser; it gives way to
+   PlxNative's own picture as the label turns (an opacity, so the compositor
+   does it). */
+.plate--picture .plate-generic {
+  position: absolute;
+  inset: 0;
+  opacity: calc(1 - var(--k));
+}
 .plate--glass {
   background: rgba(255, 255, 255, 0.07);
   -webkit-backdrop-filter: blur(8px);
