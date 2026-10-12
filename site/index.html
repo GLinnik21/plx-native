@@ -406,41 +406,21 @@
             <h2 id="plex-title">Works with your Plex</h2>
             <p>Your account, servers and profiles carry over from Plex.</p>
           </div>
-          <!-- A cloud, not a checklist, set in rows: a row of three with one key feature
-               large in the middle, then a row of four small ones, and so on. The large ones
-               are what a Plex user looks for first; the small ones show how much is there. -->
-          <ul class="works-cloud">
-            <li data-reveal>Recently Added</li>
-            <li class="is-key" data-reveal>Continue Watching</li>
-            <li data-reveal>Collections</li>
-            <li class="works-break" aria-hidden="true"></li>
-            <li class="is-minor" data-reveal>Chapters</li>
-            <li class="is-minor" data-reveal>Cast &amp; Crew</li>
-            <li class="is-minor" data-reveal>PIN-protected profiles</li>
-            <li class="is-minor" data-reveal>Sort and filter</li>
-            <li class="works-break" aria-hidden="true"></li>
-            <li data-reveal>Up Next</li>
-            <li class="is-key" data-reveal>Plex Home profiles</li>
-            <li data-reveal>Trailers and extras</li>
-            <li class="works-break" aria-hidden="true"></li>
-            <li class="is-minor" data-reveal>Skip Credits</li>
-            <li class="is-minor" data-reveal>Audio tracks</li>
-            <li class="is-minor" data-reveal>Mark as watched</li>
-            <li class="is-minor" data-reveal>A–Z rail</li>
-            <li class="works-break" aria-hidden="true"></li>
-            <li data-reveal>Seasons and episodes</li>
-            <li class="is-key" data-reveal>Skip Intro</li>
-            <li data-reveal>Search across servers</li>
-            <li class="works-break" aria-hidden="true"></li>
-            <li class="is-minor" data-reveal>Image subtitles</li>
-            <li class="is-minor" data-reveal>Related titles</li>
-            <li class="is-minor" data-reveal>Auto quality</li>
-            <li class="is-minor" data-reveal>Remove from Continue Watching</li>
-            <li class="works-break" aria-hidden="true"></li>
-            <li data-reveal>Subtitle search</li>
-            <li class="is-key" data-reveal>Shared libraries</li>
-            <li data-reveal>Progress sync</li>
-          </ul>
+          <!-- A block of type, not a checklist: every line runs the full width, each line's
+               size fitted to it (--fit, measured from the real font, in container units so the
+               block keeps its shape at any width). Key features large and white, the everyday
+               ones medium grey, the long tail small and dim. -->
+          <div class="works-cloud">
+            <ul class="works-row" style="--fit: 7.332" data-reveal><li class="is-key">Continue Watching</li><li>Recently Added</li></ul>
+            <ul class="works-row" style="--fit: 9.285" data-reveal><li>Collections</li><li class="is-minor">Chapters</li><li class="is-minor">Cast &amp; Crew</li><li>Up Next</li></ul>
+            <ul class="works-row" style="--fit: 11.754" data-reveal><li class="is-key">Plex Home profiles</li></ul>
+            <ul class="works-row" style="--fit: 8.421" data-reveal><li class="is-minor">PIN-protected profiles</li><li>Trailers and extras</li><li class="is-minor">A–Z rail</li></ul>
+            <ul class="works-row" style="--fit: 9.19" data-reveal><li class="is-key">Skip Intro</li><li>Skip Credits</li><li class="is-minor">Audio tracks</li></ul>
+            <ul class="works-row" style="--fit: 7.352" data-reveal><li>Seasons and episodes</li><li class="is-minor">Mark as watched</li><li class="is-minor">Image subtitles</li></ul>
+            <ul class="works-row" style="--fit: 8.095" data-reveal><li>Search across servers</li><li class="is-minor">Related titles</li><li class="is-minor">Sort and filter</li></ul>
+            <ul class="works-row" style="--fit: 8.665" data-reveal><li class="is-key">Shared libraries</li><li>Progress sync</li></ul>
+            <ul class="works-row" style="--fit: 7.178" data-reveal><li>Subtitle search</li><li class="is-minor">Auto quality</li><li class="is-minor">Remove from Continue Watching</li></ul>
+          </div>
         </section>
 
         <section class="approach-section" id="approach" aria-labelledby="approach-title">

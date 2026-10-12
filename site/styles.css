@@ -2493,54 +2493,44 @@ video::-webkit-media-controls-start-playback-button {
   max-width: 44ch;
   text-wrap: balance;
 }
-/* A cloud set in rows that alternate: three items with a key feature large,
-   bold and white between two medium grey ones, then four small dim ones from
-   the long tail. Each item rises in on its own (data-reveal), so the cloud
-   fills in rather than appearing. On phones the row breaks give way: each key
-   feature takes a line of its own and the rest flow, centred, between them. */
+/* A justified block of type: each line runs the full width of the block,
+   its size set by --fit (in cqi, so the block keeps its shape from a phone to
+   a desktop). Within a line, key features are full size, bold and white,
+   everyday ones smaller and grey, the long tail smallest and dim. */
 .works-cloud {
-  list-style: none;
+  container-type: inline-size;
+  max-width: 980px;
   margin: 0 auto;
+}
+.works-row {
+  list-style: none;
+  margin: 0;
   padding: 0;
-  max-width: 1080px;
   display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  align-items: center;
-  gap: clamp(8px, 1.2vh, 14px) clamp(18px, 2.6vw, 40px);
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.3em;
+  white-space: nowrap;
+  font-size: calc(var(--fit) * 1cqi);
+  line-height: 1.12;
 }
-.works-break {
-  flex-basis: 100%;
-  height: 0;
-}
-.works-cloud li {
-  font-size: clamp(20px, 2.6vw, 32px);
-  line-height: 1.25;
-  font-weight: 500;
+.works-row li {
+  font-size: 0.62em;
+  font-weight: 600;
   letter-spacing: -0.03em;
   color: var(--text-secondary);
 }
-.works-cloud li.is-key {
-  font-size: clamp(28px, 4.4vw, 58px);
+.works-row li.is-key {
+  font-size: 1em;
   font-weight: 700;
-  letter-spacing: -0.04em;
+  letter-spacing: -0.045em;
   color: var(--text-primary);
 }
-.works-cloud li.is-minor {
-  font-size: clamp(15px, 1.6vw, 20px);
-  font-weight: 400;
+.works-row li.is-minor {
+  font-size: 0.42em;
+  font-weight: 500;
   letter-spacing: -0.01em;
   color: var(--text-tertiary);
-}
-@media (max-width: 759px) {
-  .works-break {
-    display: none;
-  }
-  .works-cloud li.is-key {
-    flex-basis: 100%;
-    text-align: center;
-    margin-block: 6px;
-  }
 }
 
 /* ---------- Approach ---------- */
