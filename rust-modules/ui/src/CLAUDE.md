@@ -91,6 +91,12 @@ most, so a row still loading does not look finished (`Shelf::paint_pending`). Th
 same grid: no stop, no pool entry, no request, no caption, so focus never lands on one and the
 page that lands takes them over in place. Gate `more_after` on nothing focus-dependent (Home's
 `more()` is gated on focus being near the edge, because that is when it asks; its `more_after` is not).
+A skeleton in view is a promise the row keeps: `Shelf::page_ask` asks for the trailing page while
+focus is elsewhere whenever the cell past the last card is on screen (`pending_in_view`), so a row
+shorter than the screen — Detail's Related head, cut to a card or two when a member movie's
+collection takes its previews — does not stand there as a screenful of skeletons until somebody
+focuses it. A row whose `more()` is gated on focus (Home, the Library) emits no `Want` unfocused and
+so still asks only from focus; Detail's Related and Search's rows are not gated.
 
 `GridSpec::new(top, edge)` is the six-column `cards::GRID_STYLE` grid from `MARGIN_X`;
 `.columns(cols, style, left)` sets the column count, card style and left edge (a rail-aware or

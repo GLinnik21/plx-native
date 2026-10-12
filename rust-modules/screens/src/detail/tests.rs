@@ -4330,3 +4330,95 @@ fn a_long_season_asks_for_the_pages_the_strip_reaches_only_when_the_range_change
     assert_eq!(wants(&effects), 3, "a page still missing a second later is asked for again");
     clear();
 }
+
+// ---- A short Related head: the row that paints pending cells asks for them -------------------
+
+/// A member movie whose `/related` previews were mostly its own collection: the members go to the
+/// collection shelf (`plx_data::metadata::CollectionShelf`), so the Related head that is left is
+/// ONE card, and the similar hub still has more behind its preview (`related_tail.more`).
+fn short_related_head(sid: ServerId) -> Detail {
+    let mut d = collection_movie(sid);
+    d.related = vec![plx_data::pms::PmsMovie { thumb: "/t/r1".into(), ..collection_member(sid, "r1") }];
+    d.related_tail = plx_data::metadata::RelatedTail {
+        hubs: vec![plx_data::metadata::TailHub { key: "/library/metadata/1/similar".into(), preview: 8, len: None }],
+        exclude: ["m1", "m2", "m3", "m4"].iter().map(|rk| rk.to_string()).collect(),
+        head: 1,
+        more: true,
+        ..Default::default()
+    };
+    d
+}
+
+/// The cells the Related row paints past its last loaded card (`Shelf::paint_pending`): skeletons
+/// that stand in for no card (an empty key); the loaded card's own skeleton names its thumb.
+fn related_pending_cells(screen: &DetailScreen, measure: &plx_ui::fixture::FixtureMeasure) -> usize {
+    let context = cx(measure, None);
+    let meta = test_store().view();
+    let d = screen.detail(meta).unwrap();
+    let (_, frame) = plx_ui::placeholder::capture_declared(|| {
+        let mut f = DrawFrame::new(&context, plx_ui::Painter::root());
+        let p = f.painter;
+        let at = SectionFrame { y: 600.0, clip: Rect::FULL };
+        screen.related.draw(&mut f, p, &screen.cards(cards::Which::Related, d), at);
+    });
+    frame.entries.iter().filter(|e| e.reason == plx_ui::placeholder::Reason::CardSkeleton && e.key.is_empty()).count()
+}
+
+/// **Regression (the site-video frame dump's `card-skeleton:<empty>` on Tears of Steel).** A Related
+/// row whose head is shorter than the screen and whose tail goes on paints the skeletons of the
+/// cards past its edge whoever is looking (`CardSource::more_after`). The tail used to be asked for
+/// only with focus near the row's end, so a row on screen that nobody had focused showed a
+/// screenful of skeletons for as long as the page was up: a promise of cards that never came. The
+/// row that paints pending cells on screen asks for them, focused or not.
+#[test]
+fn an_unfocused_related_row_that_paints_pending_cells_asks_for_the_tail() {
+    let sid = ServerId::UNSET;
+    let _guard = install(short_related_head(sid));
+    let mut screen = bare(&_guard, sid, "m1");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    assert!(related_pending_cells(&screen, &measure) > 0, "the row paints the cells past its one card");
+    let mut asks = Vec::new();
+    for n in 0..60 {
+        let tick = ScreenEvent::Tick(plx_machine::machine::Tick { ms: 17 * n, dt_us: 16_667 });
+        // focus stands on the hero's Play, not on the Related row
+        let (_, effects) = step(&mut screen, &tick, Some(hero::ELEM_PLAY));
+        asks.extend(effects.into_iter().filter_map(|e| match e.fx {
+            Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(MetadataCmd::WantRelated { before, seen }))) => Some((before, seen)),
+            _ => None,
+        }));
+    }
+    assert_eq!(asks.first(), Some(&(false, (0, 0))),
+        "the unfocused row asks for the tail its skeletons stand in for: {asks:?}");
+    // The tail lands (24 cards from position 0, more behind them) and takes the cells over.
+    let mut window = short_related_head(sid);
+    window.related.extend((0..24).map(|n| plx_data::pms::PmsMovie { thumb: format!("/t/t{n}"), ..collection_member(sid, &format!("t{n}")) }));
+    window.related_tail = plx_data::metadata::RelatedTail { positions: (0..24).collect(), end: 24, total: 0, ..window.related_tail };
+    let (state, adapter) = test_store().split_for_test();
+    plx_data::metadata::land_related_for_test(adapter, (0, 0), &window);
+    assert!(plx_data::metadata::pump_related_pages(state, adapter), "the window installs");
+    screen.sync_keys(test_store().view());
+    assert_eq!(related_pending_cells(&screen, &measure), 0, "no skeleton is left in view");
+    clear();
+}
+
+/// The other half of the rule: a row whose loaded cards already reach past the screen paints no
+/// pending cell there, and an unfocused one asks for nothing (the tail is read as focus nears it).
+#[test]
+fn an_unfocused_related_row_that_fills_the_screen_does_not_ask() {
+    let sid = ServerId::UNSET;
+    let mut d = short_related_head(sid);
+    d.related = (0..12).map(|i| plx_data::pms::PmsMovie { thumb: format!("/t/r{i}"), ..collection_member(sid, &format!("r{i}")) }).collect();
+    d.related_tail.head = 12;
+    let _guard = install(d);
+    let mut screen = bare(&_guard, sid, "m1");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    assert_eq!(related_pending_cells(&screen, &measure), 0, "no pending cell is on screen");
+    for n in 0..60 {
+        let tick = ScreenEvent::Tick(plx_machine::machine::Tick { ms: 17 * n, dt_us: 16_667 });
+        let (_, effects) = step(&mut screen, &tick, Some(hero::ELEM_PLAY));
+        assert!(!effects.iter().any(|e| matches!(&e.fx,
+            Fx::App(AppFx::Store(StoreId::Metadata, StoreCmd::Metadata(MetadataCmd::WantRelated { .. }))))),
+            "tick {n}: an unfocused row that fills the screen asks for nothing");
+    }
+    clear();
+}

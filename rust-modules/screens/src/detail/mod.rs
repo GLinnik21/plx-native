@@ -1897,7 +1897,8 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 // a press cannot cross from it to a window that is away from the tail's start
                 // (`Cards::gap_before`), so the window comes back to it. Both edges ride the shelf's
                 // liveness (an ask nobody answered is repeated while focus stands there), and a read
-                // whose edge focus has left is withdrawn before its window can slide in.
+                // whose edge focus has left is withdrawn before its window can slide in. A row whose
+                // cards end on screen asks for the tail with focus anywhere: its skeletons are in view.
                 let t = &d.related_tail;
                 self.related.set_head(t.head);
                 if self.related.page_cancel(cx, &related, t.offset, true).is_some() {
