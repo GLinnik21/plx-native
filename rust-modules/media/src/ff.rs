@@ -1223,7 +1223,9 @@ unsafe fn begin_ass_sources(
             while header.last() == Some(&0) {
                 header = &header[..header.len() - 1];
             }
-            headers.push((track as i32, header.to_vec()));
+            if !header.is_empty() {
+                headers.push((track as i32, header.to_vec()));
+            }
         }
     }
     let mut fonts = Vec::new();

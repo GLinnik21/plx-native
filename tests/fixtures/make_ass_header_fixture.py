@@ -10,18 +10,25 @@ HEADER = ROOT / "ass-terminated-header.bin"
 OUTPUT = ROOT / "ass-terminated-header.mkv"
 
 
+def vint_width(data, pos):
+    if pos >= len(data):
+        raise ValueError("Truncated Matroska element")
+    for width in range(1, 9):
+        if data[pos] & (0x80 >> (width - 1)):
+            if pos + width > len(data):
+                raise ValueError("Truncated Matroska element")
+            return width
+    raise ValueError("Invalid Matroska element length")
+
+
 def elements(data):
     pos = 0
     while pos < len(data):
         start = pos
-        width = 1
-        while not data[pos] & (0x80 >> (width - 1)):
-            width += 1
+        width = vint_width(data, pos)
         ident = data[pos:pos + width]
         pos += width
-        width = 1
-        while not data[pos] & (0x80 >> (width - 1)):
-            width += 1
+        width = vint_width(data, pos)
         size = int.from_bytes(data[pos:pos + width], "big") & ((1 << (7 * width)) - 1)
         pos += width
         if size == (1 << (7 * width)) - 1:
@@ -121,7 +128,8 @@ def main():
         "ffprobe", "-v", "error", "-select_streams", "s", "-count_packets",
         "-show_entries", "stream=extradata_size,nb_read_packets", "-of", "json", str(OUTPUT),
     ]))
-    assert [(s["extradata_size"], s["nb_read_packets"]) for s in probe["streams"]] == [(521, "2"), (520, "2")]
+    if [(s["extradata_size"], s["nb_read_packets"]) for s in probe["streams"]] != [(521, "2"), (520, "2")]:
+        raise ValueError("Expected two ASS tracks with the captured headers and two packets each")
     print(f"{OUTPUT.name}: terminated header and packets, unterminated control, two captions per track")
 
 

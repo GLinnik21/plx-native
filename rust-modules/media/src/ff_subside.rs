@@ -1028,7 +1028,6 @@ mod tests {
         });
     }
 
-    /// A range-capable file server on loopback: `GET` answers 200, `Range: bytes=N-` answers 206.
     /// **End to end through the bundled FFmpeg**: a generated 5 s MKV with one SRT cue at 1.0 s is
     /// side-read over a local HTTP listener with the clock `offset 2 s`, `disp_base 1 s`, so the
     /// assumed mapping gives `delta = +1 s` and the cue must land at 0.0 s in the store.

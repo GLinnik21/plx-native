@@ -17,6 +17,9 @@ The demuxer copies ASS headers, complete timed packets and font attachments out 
 The header and packet copies remove trailing zero terminators before validation. A zero byte
 inside the header or caption text still causes rejection. The raw byte limits apply before
 trimming. Direct playback and the subtitle side reader use the same copies.
+An empty normalized header creates no source. Empty normalized packets are dropped so they
+cannot prevent valid captions on the same track from rendering. External ASS files retain
+their existing validation rules.
 `Shared` owns the ASS source store and renderer mailbox alongside the other playback transport
 state. `player::ass_source` retains immutable snapshots and a bounded event window, including the
 history needed for subtitle delay. It keeps all embedded ASS tracks so selecting another language

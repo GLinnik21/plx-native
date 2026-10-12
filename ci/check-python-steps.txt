@@ -251,3 +251,5 @@ python3 tests/paging_link.py --selftest
 
 # ci/check-debug-files.py (the Sentry upload step's "debug-files check must show symbols" gate), exercised against a stub CLI.
 python3 ci/test_check_debug_files.py
+# The ASS header fixture generator's Matroska parsing and validation, on synthetic input (no ffmpeg run).
+python3 ci/test_ass_header_fixture.py

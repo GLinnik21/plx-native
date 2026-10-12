@@ -264,6 +264,9 @@ pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, mut payload
     while payload.last() == Some(&0) {
         payload = &payload[..payload.len() - 1];
     }
+    if payload.is_empty() {
+        return;
+    }
     let mut store = store();
     store.selected_track = Some(super::desired_sub_idx()).filter(|&t| t >= 0);
     store.push(

@@ -54,6 +54,10 @@ impl AssFixture {
         while av_read_frame(self.fmt, self.pkt) >= 0 {
             let si = (*self.pkt).stream_index;
             if let Some(pos) = self.subs.position(si) {
+                assert!(
+                    !(*self.pkt).data.is_null() && (*self.pkt).size > 0,
+                    "a fixture subtitle packet must contain data"
+                );
                 let raw = std::slice::from_raw_parts((*self.pkt).data, (*self.pkt).size as usize);
                 assert_eq!(raw.last() == Some(&0), pos == 0);
                 if let Some(cue) =
@@ -235,8 +239,8 @@ fn terminated_ass_header_and_packets_render_through_http_side_reader() {
     let end = reader.join();
     STOP_SERVER.store(true, Ordering::Release);
     server.join().unwrap();
-    assert_eq!(end.unwrap(), RunEnd::Stopped);
     let source = source.expect("the side reader must deliver both ASS packets");
+    assert_eq!(end.unwrap(), RunEnd::Stopped);
     assert_ass_caption(&source, 2000);
     assert_eq!(ass_frame(source.clone(), 4000, false).error, None);
     assert_ass_caption(&source, 6000);
@@ -251,7 +255,11 @@ fn ass_packet_terminators_do_not_weaken_validation() {
     crate::player::request_subtitle(0);
     unsafe {
         let d = AssFixture::open();
-        for payload in [b"0,0,Default,,0,0,0,,bad\0caption\0".as_slice(), b"\0\0\0"] {
+        SHARED.playpos_ns.store(0, Ordering::Relaxed);
+        for payload in [
+            b"0,0,Default,,0,0,0,,bad\0caption\0".as_slice(),
+            b"\0caption",
+        ] {
             ass_source::reset();
             let generation = d.sources();
             SubCue::Ass {
@@ -268,6 +276,15 @@ fn ass_packet_terminators_do_not_weaken_validation() {
         }
         ass_source::reset();
         let generation = d.sources();
+        for payload in [b"".as_slice(), b"\0", b"\0\0\0"] {
+            SubCue::Ass {
+                track: 0,
+                start: 1_000_000_000,
+                end: 3_000_000_000,
+                payload,
+            }
+            .push(generation);
+        }
         let oversized = vec![0; 256 * 1024 + 1];
         SubCue::Ass {
             track: 0,
@@ -280,7 +297,10 @@ fn ass_packet_terminators_do_not_weaken_validation() {
         let ass::Content::Embedded { events, .. } = &source.content else {
             panic!()
         };
-        assert!(events.is_empty(), "the raw size bound runs before trimming");
+        assert!(
+            events.is_empty(),
+            "empty and oversized packets must be dropped"
+        );
         SubCue::Ass {
             track: 0,
             start: 1_000_000_000,
@@ -318,9 +338,9 @@ fn ass_header_terminators_do_not_weaken_validation() {
         );
         std::ptr::write_bytes((*cp).extradata, 0, 523);
         d.sources();
-        assert_eq!(
-            ass_frame(ass_source::selected(0).unwrap(), 2000, false).error,
-            Some(ass::Fault::InvalidTrack)
+        assert!(
+            ass_source::selected(0).is_none(),
+            "an empty normalized header has no source"
         );
         (*cp).extradata_size = ass_source::MAX_HEADER_BYTES as i32 + 1;
         d.sources();
