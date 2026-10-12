@@ -3090,19 +3090,16 @@ video::-webkit-media-controls-start-playback-button {
   max-width: 34ch;
   text-wrap: pretty;
 }
-.look-panels {
-  display: flex;
-  flex-direction: column;
-  gap: clamp(18px, 2.4vw, 30px);
-  margin-bottom: clamp(36px, 5.5vh, 64px);
-}
+/* The glass close-up opens the feature grid as a card across its full
+   width. */
 .look-panel {
+  grid-column: 1 / -1;
   margin: 0;
   min-width: 0;
-  border-radius: 20px;
+  border-radius: 18px;
   overflow: hidden;
   background: var(--color-white-a07);
-  box-shadow: 0 30px 72px rgba(0, 0, 0, 0.45), inset 0 0 0 1px var(--hairline);
+  box-shadow: inset 0 0 0 1px var(--hairline);
 }
 .look-panel picture,
 .look-panel img {
@@ -3159,27 +3156,6 @@ video::-webkit-media-controls-start-playback-button {
     width: 152.78%;
     max-width: none;
     margin-left: -26.39%;
-  }
-}
-/* Beside its caption, the posters' right edge fades into the card, so the
-   picture and the text read as one panel without a seam between them. */
-@media (min-width: 760px) {
-  .look-panel--side {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-  }
-  .look-panel--side picture {
-    flex: 1.3 1 min(440px, 100%);
-    min-width: 0;
-    padding-right: 14%;
-    background: #272c2f;
-    -webkit-mask-image: linear-gradient(to right, #000 86%, transparent 100%);
-    mask-image: linear-gradient(to right, #000 86%, transparent 100%);
-  }
-  .look-panel--side figcaption {
-    flex: 1 1 min(320px, 100%);
-    box-shadow: none;
   }
 }
 /* The fast card is the numeral itself, as large as the card allows, with its
