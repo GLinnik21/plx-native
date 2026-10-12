@@ -3410,9 +3410,13 @@ video::-webkit-media-controls-start-playback-button {
   width: min(100%, 300px);
 }
 .net-node {
+  /* Every node as wide as the widest label, so the icons sit evenly about the
+     middle one whatever their labels ("HEVC 10-bit" beside "4K HDR"). */
+  flex: 0 0 66px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  text-align: center;
   gap: 8px;
   color: var(--text-primary);
 }
@@ -3433,6 +3437,8 @@ video::-webkit-media-controls-start-playback-button {
 }
 .net-node b,
 .net-cloud b {
+  /* One line, centred on its icon even where it is wider than the node. */
+  white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
@@ -3445,6 +3451,9 @@ video::-webkit-media-controls-start-playback-button {
 }
 .feature-stage--decode .net-row {
   width: min(100%, 320px);
+}
+.feature-stage--decode .net-link {
+  margin-inline: 8px;
 }
 .feature-stage--net {
   gap: 14px;
