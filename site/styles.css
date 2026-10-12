@@ -2404,7 +2404,7 @@ video::-webkit-media-controls-start-playback-button {
   margin: clamp(64px, 10vh, 112px) 0 clamp(18px, 2.4vw, 26px);
 }
 /* Library and Search sit side by side, Search a little lower so the pair
-   does not read as a grid; Player runs the full width under them. */
+   does not read as a grid. (The player's capture is in the player card.) */
 .shot-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -2414,9 +2414,6 @@ video::-webkit-media-controls-start-playback-button {
 @media (min-width: 760px) {
   .shot-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .shot:last-child {
-    grid-column: 1 / -1;
   }
   .shot:nth-child(2) {
     margin-top: clamp(40px, 6vw, 88px);
@@ -3392,64 +3389,20 @@ video::-webkit-media-controls-start-playback-button {
   background: #30d158;
 }
 
-/* Player: a still with a subtitle on it and the timeline. */
-.feature-stage--player {
-  padding: 16px;
-}
-.mini-player {
-  position: relative;
-  display: block;
-  width: min(100%, 380px);
+/* Player: the real capture of the player, whole, in a 16:9 stage of its own
+   shape (beside the text it is centred rather than stretched to the card). */
+.feature-stage--shot {
+  min-height: 0;
   aspect-ratio: 16 / 9;
-  border-radius: 10px;
-  overflow: hidden;
-  background:
-    radial-gradient(120% 60% at 26% 112%, #121010 45%, transparent 46%),
-    radial-gradient(40% 32% at 68% 46%, rgba(230, 205, 170, 0.5), transparent 75%),
-    linear-gradient(180deg, #23262e 0%, #4a4444 55%, #6e5a4c 75%, #241c18 100%);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12), 0 14px 32px rgba(0, 0, 0, 0.4);
+  padding: 0;
+  background: #060606;
 }
-.mini-player::before {
-  content: "";
+.feature-stage--shot img {
   position: absolute;
   inset: 0;
-  background: linear-gradient(180deg, transparent 55%, rgba(0, 0, 0, 0.55));
-}
-.mini-sub {
-  position: absolute;
-  inset: auto 0 34%;
-  text-align: center;
-  font-size: clamp(13px, 3.4vw, 15px);
-  font-weight: 600;
-  line-height: 1.2;
-  color: #fff;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
-}
-.mini-bar {
-  position: absolute;
-  inset: auto 12px 10px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 10px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  color: rgba(255, 255, 255, 0.8);
-}
-.mini-track {
-  position: relative;
-  flex: 1;
-  height: 3px;
-  border-radius: 2px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.24);
-}
-.mini-track i {
-  position: absolute;
-  inset: 0;
-  background: #fff;
-  transform-origin: left;
-  scale: 0.6 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -3463,9 +3416,6 @@ video::-webkit-media-controls-start-playback-button {
   }
   .reveal .feature-card .net-link {
     scale: 0 1;
-  }
-  .reveal .feature-card .mini-track i {
-    scale: 0.08 1;
   }
   .reveal .feature-card.is-revealed .qr-frame {
     opacity: 1;
@@ -3495,10 +3445,6 @@ video::-webkit-media-controls-start-playback-button {
     scale: none;
     transition: scale 800ms cubic-bezier(0.65, 0, 0.35, 1) calc(var(--reveal-delay, 0ms) + 300ms);
   }
-  .reveal .feature-card.is-revealed .mini-track i {
-    scale: 0.6 1;
-    transition: scale 1400ms cubic-bezier(0.19, 1, 0.22, 1) calc(var(--reveal-delay, 0ms) + 300ms);
-  }
 }
 
 /* From tablets up, a two-thirds card runs its chips across the top and puts
@@ -3522,6 +3468,9 @@ video::-webkit-media-controls-start-playback-button {
     min-height: 0;
     margin: 0;
   }
+  .feature-card--wide .feature-stage--shot {
+    align-self: center;
+  }
   .feature-card--wide h3 {
     grid-column: 1;
     grid-row: 3;
@@ -3530,12 +3479,6 @@ video::-webkit-media-controls-start-playback-button {
   .feature-card--wide p {
     grid-column: 1;
     grid-row: 4;
-  }
-  .feature-stage--player {
-    padding: 14px;
-  }
-  .feature-stage--player .mini-player {
-    width: 100%;
   }
 }
 @media (min-width: 760px) and (max-width: 999px) {
