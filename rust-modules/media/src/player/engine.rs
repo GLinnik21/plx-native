@@ -1056,6 +1056,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
         return BufferfeedStartOutcome::Failed;
     }
     ps.jail_load_blocked = false;
+    ps.native_start_refused = false;
     if let Some(existing) = pa.engine().map(|engine| engine.route_start) {
         match crate::route::classify_live_engine_start(existing) {
             crate::route::LiveEngineStartRelation::CurrentAttempt => {
@@ -1086,7 +1087,14 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
         ));
         return BufferfeedStartOutcome::Failed;
     };
-    start_bufferfeed_for(ps, pa, route_start)
+    let outcome = start_bufferfeed_for(ps, pa, route_start);
+    // The refusal for an outstanding abandoned Load builds no Engine, so no pump will ever publish
+    // why the player is empty. Record it where `player::state` derives the read-out from; the start
+    // itself stays refused.
+    if outcome == BufferfeedStartOutcome::Failed && pa.has_abandoned_load() {
+        ps.native_start_refused = true;
+    }
+    outcome
 }
 
 /// Builds the "stream: <origin> path=<path>" diagnostic line for the freshly opened
@@ -5427,6 +5435,64 @@ mod load_in_flight_tests {
             crate::player::error_now(&ps).kind,
             crate::player::FailureKind::LoadTimeout,
             "the refusal must keep the timeout as its cause, not report `unspecified`"
+        );
+    }
+
+    /// The fresh-start half of the same hole: a Retry or Back+Play while the parked Load is still
+    /// inside `sf_load` is refused with no Engine to publish anything, so the player sat in Idle
+    /// and drew nothing: no read-out, no report, no Try Again. The refusal stays (a second native
+    /// object must not be started), but the viewer is told why.
+    #[test]
+    fn a_fresh_start_refused_for_an_abandoned_load_shows_an_error_with_try_again() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        install_engine_with_timed_out_load(&mut ps, &mut pa);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.has_abandoned_load(), "PRECONDITION FAILED: the Load must be parked");
+
+        // `finish_landed_play`'s entry. A refused start answers false and creates no Engine.
+        assert!(!crate::player::start_bufferfeed(&mut ps, &mut pa));
+        assert!(!pa.is_live(), "the start stays refused: no second native object");
+        assert!(pa.has_abandoned_load());
+
+        assert_eq!(
+            crate::player::state(&ps),
+            crate::player::PlaybackState::Error,
+            "a refused fresh start left the player Idle: a black screen with no read-out"
+        );
+        let shape = crate::player::error_now(&ps);
+        assert_eq!(shape.kind, crate::player::FailureKind::LoadTimeout);
+        let actions = crate::player::failure_actions(
+            shape.kind,
+            crate::player::FailureContext { forced: false, can_retry: true, repair_idle: true },
+        );
+        assert!(
+            actions.contains(&crate::player::FailureAction::TryAgain),
+            "the read-out must offer Try Again: {actions:?}"
+        );
+
+        // The Load returns and is reaped: the next start is no longer refused for it, and the
+        // refusal's read-out does not outlive the refusal.
+        crate::player::ffi_host::release_load_for_test();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !reap_abandoned_load(&mut pa) {
+            assert!(std::time::Instant::now() < deadline, "the returned Load was never released");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let _ = crate::player::start_bufferfeed(&mut ps, &mut pa);
+        assert_ne!(
+            crate::player::state(&ps),
+            crate::player::PlaybackState::Error,
+            "a start that is no longer refused must not keep the refusal's read-out"
         );
     }
 }

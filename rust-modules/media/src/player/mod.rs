@@ -623,7 +623,14 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
     // that owns `pb_state` never runs. Deriving it in the one reader keeps a single writer — the
     // alternative is poking `Error` into the player's state from the frame loop. It sits BELOW the
     // resolve check because a fresh resolve is the thing that retires the last verdict.
-    if ps.jail_load_blocked || crate::route::play_refused(ps) || crate::route::play_resolution_failed(ps) {
+    // A start refused because a timed-out Load is still parked (`ps.native_start_refused`) is the
+    // same kind of fact: no Engine was built, so the pump that owns `pb_state` never runs and
+    // nothing else could say why the player is empty.
+    if ps.jail_load_blocked
+        || ps.native_start_refused
+        || crate::route::play_refused(ps)
+        || crate::route::play_resolution_failed(ps)
+    {
         return shared::PlaybackState::Error;
     }
     // A seek in flight is derived HERE too, not only published by the pump's own ladder (which
@@ -1144,7 +1151,8 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
             demux_failed,
             demux_io_failed,
             SHARED.load_failed.load(Relaxed),
-            SHARED.load_timed_out.load(Relaxed),
+            // The refused start's cause: an abandoned Load exists only after the budget fired.
+            SHARED.load_timed_out.load(Relaxed) || ps.native_start_refused,
         ),
     ), crate::route::forced_direct_play(ps))
 }

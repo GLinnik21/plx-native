@@ -123,7 +123,10 @@ something.
   thread still inside `sf_load` (that froze the SDL thread on BACK): the thread, payload and
   epoch are parked as `engine::AbandonedLoad` (Rust phase `Abandoned`), native starts are
   refused, and `reap_abandoned_load` runs the ordinary Unload → gate → retire → D1 release on the
-  main thread once Load returns; a Load that never returns leaks its object. A Load that has not
+  main thread once Load returns; a Load that never returns leaks its object. A refusal says why:
+  a reload refused for the parked Load (`pump::settle_reload`) republishes `load_timed_out`, and a
+  refused FRESH start sets `ps.native_start_refused`, which `player::state` derives `Error` from
+  (cause `load_timeout`, Try Again offered) because no Engine exists to publish it. A Load that has not
   timed out is still joined. The host concurrent tests model this boundary, not
   the firmware's native initialization. ACB dispatch is additionally constrained by stage/bind
   ordering; the C Starfish gate does not wrap ACB calls.
