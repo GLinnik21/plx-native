@@ -81,7 +81,6 @@ jobs:
           cp site/media/feel-720p60.h264.mp4 _site/media/feel-720p60.h264.mp4
           cp site/media/feel-poster.jpg _site/media/feel-poster.jpg
           cp site/media/feel-poster-narrow.jpg _site/media/feel-poster-narrow.jpg
-          cp site/media/stack-typical-app.jpg _site/media/stack-typical-app.jpg
           cp site/media/feel-glow.png _site/media/feel-glow.png
           cp site/media/feel-glow-narrow.png _site/media/feel-glow-narrow.png
           cp site/media/fan-caligari.jpg _site/media/fan-caligari.jpg

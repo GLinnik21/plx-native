@@ -54,7 +54,10 @@
       "state": "The Movies library scrolled to its All grid, focus on the third card of the first row, toolbar visible.",
       "triggers": {"library": "0", "libgrid": "0,2"},
       "expect": ["libgrid: focus seated at row 0 col 2"],
-      "outputs": [{"file": "ux-library-grid.jpg", "size": "1920x1080"}]
+      "outputs": [{"file": "ux-library-grid.jpg", "size": "1920x1080"},
+                  {"file": "fan-caligari.jpg", "dest": "site", "crop": [385, 336, 242, 366], "size": "160x242"},
+                  {"file": "fan-cosmos.jpg", "dest": "site", "crop": [1241, 336, 242, 366], "size": "160x242"},
+                  {"file": "fan-elephants.jpg", "dest": "site", "crop": [1526, 336, 242, 366], "size": "160x242"}]
     },
     {
       "name": "library-sort",
