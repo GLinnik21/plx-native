@@ -562,7 +562,6 @@
         const open = 0.22 + 0.78 * opened;
         setVar(stackSticky, "--open", opened.toFixed(3));
         const d = ease(0.46, 0.34);
-        let fs = 0;
         stackLayers.forEach((el) => {
           const y0 = parseFloat(el.dataset.y0) * open;
           let f = y0;
@@ -572,12 +571,10 @@
             f = y0 + (parseFloat(el.dataset.y1) - y0) * d;
           }
           setVar(el, "--f", f.toFixed(4));
-          fs = f;
         });
         const k = clamp01((p - 0.6) / 0.26);
         setVar(stackSticky, "--k", k.toFixed(3));
         setVar(stackSticky, "--s", p.toFixed(3));
-        setVar(stackSticky, "--fs", fs.toFixed(4));
         if (stackCount) {
           const n = String(Math.round(60 * (k * k * (3 - 2 * k))));
           if (n !== stackShown) {
