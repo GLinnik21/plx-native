@@ -145,7 +145,25 @@ impl LogMark {
     }
     fn since(&self) -> String {
         let all = std::fs::read(plx_base::eventlog::events_log()).unwrap_or_default();
-        String::from_utf8_lossy(all.get(self.0 as usize..).unwrap_or_default()).into_owned()
+        // The simulator truncates the file at startup: a file shorter than the mark is a new file.
+        let from = if (self.0 as usize) <= all.len() { self.0 as usize } else { 0 };
+        String::from_utf8_lossy(&all[from..]).into_owned()
+    }
+    /// Lines naming a failed durable write that are NOT from the two labels these tests drive
+    /// themselves: the log is machine-wide (host unit builds are not steered by
+    /// `PLXNATIVE_RUNTIME_DIR`), so a concurrent `plx_media` test process legitimately writes the
+    /// subtitle size/position lines into it. Any other label (a tone, enhancement or quality line)
+    /// is a failure of the code under test.
+    fn foreign_write_failures(&self) -> Vec<String> {
+        self.since()
+            .lines()
+            .filter(|l| {
+                l.contains("durable write failed")
+                    && !l.contains("subtitle size:")
+                    && !l.contains("subtitle position:")
+            })
+            .map(str::to_owned)
+            .collect()
     }
 }
 
@@ -471,7 +489,8 @@ fn tone_enhancements_and_quality_failures_keep_the_value_and_log_nothing() {
     assert_eq!(crate::player::subtitle_tone(), SubtitleTone::Grey);
     assert_eq!(crate::player::audio_enhancements(), boost);
     assert_eq!(quality(), Quality::P720);
-    assert!(!mark.since().contains("durable write failed"), "no failure line for these rows: {}", mark.since());
+    let foreign = mark.foreign_write_failures();
+    assert!(foreign.is_empty(), "no failure line for these rows: {foreign:?}");
     // the plex-side door these two rows use reports an ATTEMPT, not a save: a refused write is `true`
     assert!(session::set_subtitle_tone(SubtitleTone::Charcoal), "`update` is true once a write was tried");
     assert!(session::set_audio_enhancements(AudioEnhancements { boost_dialog: false, normalize_loudness: true }));
