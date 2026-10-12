@@ -4,8 +4,9 @@
 //! CODE is written down, but for the two stops the renderer paints with, which `gfx::tokens` holds. **Roles** (`pub`, everything after them) are the JOBS — [`TEXT_PRIMARY`],
 //! [`ACCENT`], [`HAIRLINE`] — and every role resolves to a primitive, never to a fresh literal. A
 //! screen may only ever name a role; that is the other end of `ui/CLAUDE.md`'s "never write a raw
-//! colour literal" rule. The design project mirrors this split exactly (`tokens/primitives.css` +
-//! `tokens/colors.css`), so a palette decision is one edit here and one there.
+//! colour literal" rule. The design system mirrors this split (its `tokens.json`: solid stops, then roles), and
+//! `tools/design-tokens.py diff <tokens.json>` reports any token that has drifted from this file, so a palette
+//! decision is one edit here and one re-sync there.
 //!
 //! Two roles may resolve to the SAME primitive and still stay two roles — [`ACCENT`] and
 //! [`TEXT_PRIMARY`] are both `COOL_0`, [`TEXT_TERTIARY`] and [`RATING_MUTED`] both `COOL_400` —
@@ -45,7 +46,6 @@ const COOL_850: [f32; 4] = rgb8(0x1f, 0x21, 0x29);
 const COOL_900: [f32; 4] = rgb8(0x14, 0x17, 0x1c);
 
 // Neutral — achromatic: the shelf, panels, control plates, inks.
-const NEUTRAL_600: [f32; 4] = rgb8(0x25, 0x25, 0x27);
 const NEUTRAL_650: [f32; 4] = rgb8(0x22, 0x22, 0x24);
 const NEUTRAL_750: [f32; 4] = rgb8(0x1b, 0x1b, 0x1d);
 const NEUTRAL_850: [f32; 4] = rgb8(0x14, 0x14, 0x16);
@@ -96,7 +96,6 @@ const ATMOS_ASH: [f32; 4] = rgb8(0x42, 0x42, 0x4a);
 
 // Semantic — amber / red / green: state and verdict, never decoration.
 const AMBER_300: [f32; 4] = rgb8(0xfa, 0xb8, 0x2e);
-const AMBER_400: [f32; 4] = rgb8(0xf0, 0xb4, 0x29);
 const AMBER_500: [f32; 4] = rgb8(0xe5, 0xa0, 0x0d);
 const AMBER_950: [f32; 4] = rgb8(0x1a, 0x12, 0x04);
 const RED_400: [f32; 4] = rgb8(0xeb, 0x52, 0x4a);
@@ -312,7 +311,7 @@ pub const FIELD_EDITING_INK: [f32; 4] = TEXT_PRIMARY;
 pub const FIELD_WAITING_INK: [f32; 4] = WHITE;
 
 /// Idle (unfocused) control disc/pill fill — solid dark, faintly translucent.
-pub const CONTROL_IDLE_FILL: [f32; 4] = with_a(NEUTRAL_600, 0.92);
+pub const CONTROL_IDLE_FILL: [f32; 4] = with_a(NEUTRAL_650, 0.92);
 /// White glyph/label over an idle control. Both grounds ink it the same: the design system states
 /// one `--control-idle-ink`, and the UNKEYED face below is a white film over a black ramp, which is
 /// still a dark surface — see [`CONTROL_IDLE_FILL_UNKEYED`].
@@ -1193,10 +1192,10 @@ pub const TINT_WHITE: [f32; 4] = WHITE;
 // only colour left in the row is the verdict.
 /// The ripe tomato's body — `#f5341a`.
 pub const RATING_FRESH: [f32; 4] = RED_500;
-/// The Certified body — `#f0b429`. The SAME fruit struck in gold rather than a separate seal:
+/// The Certified body — `#fab82e`, the same amber as [`RESUME_FILL`]'s stop. The SAME fruit struck in gold rather than a separate seal:
 /// a rarer bar reads as a richer version of the thing, and a seal was the one shape here that was
 /// unmistakably somebody's award rather than a piece of fruit.
-pub const RATING_CERTIFIED: [f32; 4] = AMBER_400;
+pub const RATING_CERTIFIED: [f32; 4] = AMBER_300;
 /// The audience crowd when the verdict is good — `#3ec96b`. Note the polarity across the row is
 /// deliberately NOT uniform: critics go red-for-good (a ripe tomato), audience goes green-for-good
 /// (a healthy crowd). Each mark is read against itself, not against its neighbour.
