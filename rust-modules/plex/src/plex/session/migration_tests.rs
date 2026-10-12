@@ -824,20 +824,27 @@ fn a_preference_returned_to_its_default_is_not_resurrected_by_the_public_rewrite
     let mut backend = plx_platform::storage::backend::Backend::new(
         Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
     let mut transport = |request: Request| Ok(backend.dispatch(request));
+    let base = fixture();
     let session = Session {
-        subtitle_size: SubtitleSize::Large,
-        subtitle_position: SubtitlePosition::High,
-        skip_interval: SkipInterval::Seconds30,
-        ..fixture()
+        prefs: Preferences {
+            subtitle_size: SubtitleSize::Large,
+            subtitle_position: SubtitlePosition::High,
+            skip_interval: SkipInterval::Seconds30,
+            ..base.prefs.clone()
+        },
+        ..base
     };
     commit_fresh(&session, &mut transport);
     let stored = stored_preferences(&mut transport);
     assert_eq!(stored["subtitle_size"], "large");
 
     let back = Session {
-        subtitle_size: SubtitleSize::default(),
-        subtitle_position: SubtitlePosition::default(),
-        skip_interval: SkipInterval::default(),
+        prefs: Preferences {
+            subtitle_size: SubtitleSize::default(),
+            subtitle_position: SubtitlePosition::default(),
+            skip_interval: SkipInterval::default(),
+            ..session.prefs.clone()
+        },
         ..session
     };
     assert!(matches!(
@@ -846,9 +853,9 @@ fn a_preference_returned_to_its_default_is_not_resurrected_by_the_public_rewrite
     let persistence::CanonicalRead::Opened { session: opened, .. } = persistence::load_helper_with(&mut transport) else {
         panic!("the session opens")
     };
-    assert_eq!(opened.subtitle_size, SubtitleSize::default(), "size stays at the default");
-    assert_eq!(opened.subtitle_position, SubtitlePosition::default(), "position stays at the default");
-    assert_eq!(opened.skip_interval, SkipInterval::default(), "skip interval stays at the default");
+    assert_eq!(opened.prefs.subtitle_size, SubtitleSize::default(), "size stays at the default");
+    assert_eq!(opened.prefs.subtitle_position, SubtitlePosition::default(), "position stays at the default");
+    assert_eq!(opened.prefs.skip_interval, SkipInterval::default(), "skip interval stays at the default");
 }
 
 /// **Issue #380: a learned server key belongs to the account that learned it.** The key rides in

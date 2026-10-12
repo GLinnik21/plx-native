@@ -732,11 +732,11 @@ fn prepare_load_seeds_a_fresh_playback_quality_for_cleared_exactly_as_for_missin
     let missing = prepare_load(&ReadState::Missing, || "id-missing".to_string()).0;
     let cleared = prepare_load(&ReadState::Cleared { language: plx_platform::i18n::Preference::System }, || "id-cleared".to_string()).0;
     assert!(
-        missing.playback_quality.is_some(),
+        missing.prefs.playback_quality.is_some(),
         "setup: a Missing read must seed a fresh quality"
     );
     assert!(
-        cleared.playback_quality.is_some(),
+        cleared.prefs.playback_quality.is_some(),
         "a Cleared read must seed a fresh playback quality exactly like Missing; today \
          `persisted` conflates Cleared with Locked/Blocked and refuses to seed one"
     );
@@ -887,7 +887,7 @@ fn a_quality_choice_persists_without_replacing_other_session_state() {
     save(&s);
 
     assert!(update(|cur| Some(
-        cur.with_playback_quality(PlaybackQuality::P720)
+        cur.with_pref::<QualityPref>(PlaybackQuality::P720)
     )));
     let landed = peek();
     assert_eq!(landed.playback_quality(), PlaybackQuality::P720);
@@ -965,13 +965,13 @@ fn loading_legacy_json_without_an_id_repairs_only_the_id_not_the_quality() {
     assert_eq!(loaded.account_token, "legacy-account");
     assert_eq!(loaded.playback_quality(), PlaybackQuality::Original);
     assert_eq!(
-        loaded.playback_quality, None,
+        loaded.prefs.playback_quality, None,
         "a parsable old file is not fresh and must not acquire a default choice"
     );
 
     let saved: Session = serde_json::from_slice(&std::fs::read(t.file()).unwrap()).unwrap();
     assert_eq!(saved.playback_quality(), PlaybackQuality::Original);
-    assert_eq!(saved.playback_quality, None);
+    assert_eq!(saved.prefs.playback_quality, None);
 }
 
 #[test]
@@ -982,13 +982,13 @@ fn loading_with_no_file_records_the_gated_fresh_default() {
 
     let loaded = load();
     assert_eq!(
-        loaded.playback_quality,
+        loaded.prefs.playback_quality,
         Some(PlaybackQuality::Auto),
         "the production readiness gate gives only a genuinely fresh install Auto"
     );
     let saved: Session = serde_json::from_slice(&std::fs::read(t.file()).unwrap()).unwrap();
     assert_eq!(
-        saved.playback_quality,
+        saved.prefs.playback_quality,
         Some(PlaybackQuality::Auto),
         "freshness is decided once and stored explicitly"
     );

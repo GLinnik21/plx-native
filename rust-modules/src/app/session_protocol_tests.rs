@@ -1042,7 +1042,7 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
         assert_eq!(records.len(), 1);
         assert!(rig.session_adapter.fixture_resources().registry_writes.is_empty());
         assert_eq!(rig.session_adapter.fixture_resources().disk.sources[0].origin_url, initial_origin.base());
-        rig.session_adapter.fixture_resources().disk.playback_quality = Some(plx_plex::plex::session::PlaybackQuality::Original);
+        rig.session_adapter.fixture_resources().disk.prefs.playback_quality = Some(plx_plex::plex::session::PlaybackQuality::Original);
         match replacement {
             1 => {
                 client.set_token("synthetic-new-profile-token");
@@ -1064,7 +1064,7 @@ fn endpoint_owner_bridge_preserves_https_pin_and_rejects_native_replacements() {
             AppMsg::Session(SessionEvent::Result(envelope)))).collect();
         d.frame_with(&mut rig, Tick { ms: 16, dt_us: 16_000 }, Vec::new(), results, &mut NoTap, false);
         let resources = rig.session_adapter.fixture_resources();
-        assert_eq!(resources.disk.playback_quality, Some(plx_plex::plex::session::PlaybackQuality::Original));
+        assert_eq!(resources.disk.prefs.playback_quality, Some(plx_plex::plex::session::PlaybackQuality::Original));
         if replacement == 0 {
             let [RegistryPlan::Endpoint { source, .. }] = resources.registry_writes.as_slice()
                 else { panic!("positive endpoint observation did not commit exactly one route") };

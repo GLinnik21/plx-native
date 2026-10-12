@@ -2095,7 +2095,7 @@ mod tests {
         let owner = SessionMachine::from_init(init);
         let mut a = SessionAdapter::fixture_with(disk.clone());
         let mut b = SessionAdapter::fixture_with(disk.clone());
-        a.fixture_resources().disk.playback_quality = Some(plx_plex::plex::session::PlaybackQuality::Original);
+        a.fixture_resources().disk.prefs.playback_quality = Some(plx_plex::plex::session::PlaybackQuality::Original);
         let mut next = disk.clone();
         next.account_token = "synthetic-new-token".into();
         let plan = CommitPlan { registry_client_id: disk.client_id.clone(), expected_disk: Identity::of(&disk),
@@ -2104,7 +2104,7 @@ mod tests {
             writes_durable: true, authority: plx_plex::plex::session::SaveAuthority::Routine };
         assert!(a.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan).admission.accepted());
         assert_eq!(a.fixture_resources().disk.account_token, "synthetic-new-token");
-        assert_eq!(a.fixture_resources().disk.playback_quality, Some(plx_plex::plex::session::PlaybackQuality::Original));
+        assert_eq!(a.fixture_resources().disk.prefs.playback_quality, Some(plx_plex::plex::session::PlaybackQuality::Original));
         assert!(b.fixture_resources().disk.account_token.is_empty());
         assert!(a.fixture_resources().profile.is_none());
         assert!(a.fixture_resources().registry_writes.is_empty());

@@ -183,13 +183,13 @@ fn the_unwritable_fixture_is_a_readable_session_whose_write_is_not_durable() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("prefs-char-fixture");
 
-    let durable = session::update_with_outcome(|s| Some(s.with_skip_interval(SkipInterval::Seconds30)))
+    let durable = session::update_with_outcome(|s| Some(s.with_pref::<SkipIntervalPref>(SkipInterval::Seconds30)))
         .expect("a readable session is written");
     assert!(matches!(durable.classify(), CompletionOutcome::Durable(_)));
 
     let fixture = Unwritable::new(&session);
     assert_eq!(stored().skip_interval(), SkipInterval::Seconds30, "the session is still READABLE");
-    let refused = session::update_with_outcome(|s| Some(s.with_skip_interval(SkipInterval::Seconds60)))
+    let refused = session::update_with_outcome(|s| Some(s.with_pref::<SkipIntervalPref>(SkipInterval::Seconds60)))
         .expect("a readable session reaches the write");
     assert!(!matches!(refused.classify(), CompletionOutcome::Durable(_)), "and the write is not durable");
     drop(fixture);
@@ -200,7 +200,7 @@ fn the_unwritable_fixture_is_a_readable_session_whose_write_is_not_durable() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("blocker"), b"x").unwrap();
     session::redirect_for_test(Some(dir.join("blocker").join("auth.json")));
-    assert!(session::update_with_outcome(|s| Some(s.with_skip_interval(SkipInterval::Seconds60))).is_none());
+    assert!(session::update_with_outcome(|s| Some(s.with_pref::<SkipIntervalPref>(SkipInterval::Seconds60))).is_none());
     session::redirect_for_test(None);
     let _ = std::fs::remove_dir_all(&dir);
     drop(session);
@@ -225,12 +225,12 @@ fn confirm_direct_play_mode_publishes_only_a_durable_write() {
     assert_eq!(direct_play_mode(), DirectPlayMode::Auto, "a refused write publishes nothing");
     assert!(events.is_empty(), "{events:?}");
     drop(fixture);
-    assert_eq!(stored().direct_play_mode, DirectPlayMode::Auto);
+    assert_eq!(stored().prefs.direct_play_mode, DirectPlayMode::Auto);
 
     let (saved, events) = plx_telemetry::diag::test_events::capture(|| set_direct_play_mode(DirectPlayMode::Forced));
     assert!(saved);
     assert_eq!(direct_play_mode(), DirectPlayMode::Forced);
-    assert_eq!(stored().direct_play_mode, DirectPlayMode::Forced);
+    assert_eq!(stored().prefs.direct_play_mode, DirectPlayMode::Forced);
     assert!(events.is_empty(), "this row reports no feature.used: {events:?}");
 }
 
@@ -325,11 +325,11 @@ fn confirm_default_quality_publishes_only_a_durable_write() {
     assert!(!set_default_quality(Quality::P720));
     assert_eq!(quality(), Quality::Original, "a refused write publishes nothing");
     drop(fixture);
-    assert_eq!(stored().playback_quality, None, "and the legacy absent field stays absent");
+    assert_eq!(stored().prefs.playback_quality, None, "and the legacy absent field stays absent");
 
     assert!(set_default_quality(Quality::P720));
     assert_eq!(quality(), Quality::P720);
-    assert_eq!(stored().playback_quality, Some(Quality::P720));
+    assert_eq!(stored().prefs.playback_quality, Some(Quality::P720));
 }
 
 /// **Quality Confirm writes `Some(q)` even when nothing changed**: from an absent field a pick of
@@ -340,13 +340,13 @@ fn confirm_quality_writes_some_q_even_when_unchanged() {
     let _session = session::TempSession::new("prefs-char-confirm-quality-unchanged");
     let _restore = Restore::take();
     defaults();
-    assert_eq!(stored().playback_quality, None, "a legacy session has no quality field");
+    assert_eq!(stored().prefs.playback_quality, None, "a legacy session has no quality field");
 
     assert!(writes(|| assert!(set_default_quality(Quality::Original))));
-    assert_eq!(stored().playback_quality, Some(Quality::Original), "an explicit pick of the default is recorded");
+    assert_eq!(stored().prefs.playback_quality, Some(Quality::Original), "an explicit pick of the default is recorded");
 
     assert!(writes(|| assert!(set_default_quality(Quality::Original))), "the same pick again still writes");
-    assert_eq!(stored().playback_quality, Some(Quality::Original));
+    assert_eq!(stored().prefs.playback_quality, Some(Quality::Original));
 }
 
 /// **Delta 6's "before": an unchanged Confirm pick is written again.** (Size and position, the two
@@ -397,8 +397,8 @@ fn optimistic_size_and_position_publish_before_the_write() {
     });
     assert!(recv(&size_rx));
     assert!(recv(&pos_rx));
-    assert_eq!(stored().subtitle_size, SubtitleSize::Large);
-    assert_eq!(stored().subtitle_position, SubtitlePosition::High);
+    assert_eq!(stored().prefs.subtitle_size, SubtitleSize::Large);
+    assert_eq!(stored().prefs.subtitle_position, SubtitlePosition::High);
 }
 
 /// The same for the three Optimistic rows that take no reply: tone, enhancements, and the player's
@@ -421,9 +421,9 @@ fn optimistic_tone_enhancements_and_quality_publish_before_the_write() {
     });
     plx_base::storage_worker::drain_for_test();
     let after = stored();
-    assert_eq!(after.subtitle_tone, SubtitleTone::Grey);
-    assert_eq!(after.audio_enhancements, boost);
-    assert_eq!(after.playback_quality, Some(Quality::P720));
+    assert_eq!(after.prefs.subtitle_tone, SubtitleTone::Grey);
+    assert_eq!(after.prefs.audio_enhancements, boost);
+    assert_eq!(after.prefs.playback_quality, Some(Quality::P720));
 }
 
 /// **A failed write keeps the viewer's pick, replies `false` and logs the line** (size and
@@ -496,9 +496,9 @@ fn tone_enhancements_and_quality_failures_keep_the_value_and_log_nothing() {
     assert!(session::set_audio_enhancements(AudioEnhancements { boost_dialog: false, normalize_loudness: true }));
     drop(fixture);
     let after = stored();
-    assert_eq!(after.subtitle_tone, SubtitleTone::White, "nothing landed");
-    assert_eq!(after.audio_enhancements, AudioEnhancements::NONE);
-    assert_eq!(after.playback_quality, None);
+    assert_eq!(after.prefs.subtitle_tone, SubtitleTone::White, "nothing landed");
+    assert_eq!(after.prefs.audio_enhancements, AudioEnhancements::NONE);
+    assert_eq!(after.prefs.playback_quality, None);
 }
 
 /// **The write never republishes over a newer pick.** A second pick is made while the first write
@@ -523,7 +523,7 @@ fn optimistic_size_and_position_never_republish_over_a_newer_pick() {
     assert!(recv(&pos_rx));
     assert_eq!(subtitle_size(), SubtitleSize::Small);
     assert_eq!(subtitle_position(), SubtitlePosition::Low);
-    assert_eq!(stored().subtitle_size, SubtitleSize::Large, "the older pick is what the record holds");
+    assert_eq!(stored().prefs.subtitle_size, SubtitleSize::Large, "the older pick is what the record holds");
 }
 
 /// The same when the completing write FAILS: no revert, no republish.
@@ -566,9 +566,9 @@ fn optimistic_tone_enhancements_and_quality_never_republish_over_a_newer_pick() 
     assert_eq!(crate::player::audio_enhancements(), AudioEnhancements::NONE);
     assert_eq!(quality(), Quality::P480);
     let after = stored();
-    assert_eq!(after.subtitle_tone, SubtitleTone::Grey, "while the record holds the older ones");
-    assert_eq!(after.audio_enhancements, boost);
-    assert_eq!(after.playback_quality, Some(Quality::P720));
+    assert_eq!(after.prefs.subtitle_tone, SubtitleTone::Grey, "while the record holds the older ones");
+    assert_eq!(after.prefs.audio_enhancements, boost);
+    assert_eq!(after.prefs.playback_quality, Some(Quality::P720));
 }
 
 // =====================================================================================
@@ -586,10 +586,10 @@ fn an_unchanged_tone_pick_is_not_written() {
 
     assert!(!writes(|| crate::player::set_subtitle_tone(SubtitleTone::White)), "stored White, picked White");
     assert!(writes(|| crate::player::set_subtitle_tone(SubtitleTone::Grey)));
-    assert_eq!(stored().subtitle_tone, SubtitleTone::Grey);
+    assert_eq!(stored().prefs.subtitle_tone, SubtitleTone::Grey);
     assert!(!writes(|| crate::player::set_subtitle_tone(SubtitleTone::Grey)), "stored Grey, picked Grey");
     assert!(writes(|| crate::player::set_subtitle_tone(SubtitleTone::White)), "back to the default writes");
-    assert_eq!(stored().subtitle_tone, SubtitleTone::White);
+    assert_eq!(stored().prefs.subtitle_tone, SubtitleTone::White);
 }
 
 /// **Enhancements: the same skip**, compared as the pair of switches.
@@ -603,11 +603,11 @@ fn an_unchanged_enhancements_pick_is_not_written() {
 
     assert!(!writes(|| crate::player::set_audio_enhancements(AudioEnhancements::NONE)));
     assert!(writes(|| crate::player::set_audio_enhancements(boost)));
-    assert_eq!(stored().audio_enhancements, boost);
+    assert_eq!(stored().prefs.audio_enhancements, boost);
     assert!(!writes(|| crate::player::set_audio_enhancements(boost)));
     let both = AudioEnhancements { boost_dialog: true, normalize_loudness: true };
     assert!(writes(|| crate::player::set_audio_enhancements(both)), "a second switch is a change");
-    assert_eq!(stored().audio_enhancements, both);
+    assert_eq!(stored().prefs.audio_enhancements, both);
 }
 
 /// **The player's quality pick: `Some(q)` already stored means no write; an absent field plus a
@@ -618,13 +618,13 @@ fn the_players_quality_pick_skips_only_a_stored_equal_rung() {
     let _session = session::TempSession::new("prefs-char-skip-quality");
     let _restore = Restore::take();
     defaults();
-    assert_eq!(stored().playback_quality, None);
+    assert_eq!(stored().prefs.playback_quality, None);
 
     assert!(writes(|| set_quality_for_retry(Quality::Original)), "None + Original is a change");
-    assert_eq!(stored().playback_quality, Some(Quality::Original));
+    assert_eq!(stored().prefs.playback_quality, Some(Quality::Original));
     assert!(!writes(|| set_quality_for_retry(Quality::Original)), "Some(Original) + Original is not");
     assert!(writes(|| set_quality_for_retry(Quality::P720)));
-    assert_eq!(stored().playback_quality, Some(Quality::P720));
+    assert_eq!(stored().prefs.playback_quality, Some(Quality::P720));
     assert!(!writes(|| set_quality_for_retry(Quality::P720)));
     assert_eq!(quality(), Quality::P720, "and the live value is the pick either way");
 }

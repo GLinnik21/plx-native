@@ -290,13 +290,13 @@ mod tests {
                     user: "synthetic-kid".into(), terms: vec!["newer preference".into()],
                     extensions: Default::default(),
                 });
-                disk.playback_quality = Some(plx_plex::plex::session::PlaybackQuality::Original);
+                disk.prefs.playback_quality = Some(plx_plex::plex::session::PlaybackQuality::Original);
                 assert!(!disk.sources.iter().any(|source| source.machine_id == "synthetic-share" && source.dialable()));
                 frame(&mut rig, &mut d, vec![roster]);
                 drain_carried(&mut rig, &mut d);
                 let disk = &rig.session_adapter.fixture_resources().disk;
                 assert_eq!(disk.recent_searches[0].terms, ["newer preference"]);
-                assert_eq!(disk.playback_quality, Some(plx_plex::plex::session::PlaybackQuality::Original));
+                assert_eq!(disk.prefs.playback_quality, Some(plx_plex::plex::session::PlaybackQuality::Original));
             }
             assert!(rig.take_session_ready().is_some());
             assert!(rig.take_session_ready().is_none());

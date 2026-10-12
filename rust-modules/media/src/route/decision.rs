@@ -13,6 +13,8 @@
 //! (the claim table, the enhancement step, the plans and the PMS attempts) stay here.
 
 use plx_plex::plex::ServerId;
+use plx_plex::plex::session::{DeckPressPref, DirectPlayModePref, NextEpisodeModePref, QualityPref,
+    SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref};
 use plx_data::pms::PmsMovie;
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
@@ -6375,7 +6377,7 @@ pub fn restore_direct_play_mode(mode: DirectPlayMode) {
 
 /// Blocking persistence seam; Settings dispatches it on the storage worker.
 pub fn set_direct_play_mode(mode: DirectPlayMode) -> bool {
-    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_direct_play_mode(mode)))
+    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<DirectPlayModePref>(mode)))
         .is_some_and(|write| matches!(write.classify(),
             plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
     if saved { restore_direct_play_mode(mode); plx_machine::idle::invalidate(); }
@@ -6400,7 +6402,7 @@ pub fn restore_next_episode_mode(mode: NextEpisodeMode) {
 /// Blocking persistence seam; Settings dispatches it on the storage worker. The live value changes
 /// only once the write is durable, so a failed save claims nothing.
 pub fn set_next_episode_mode(mode: NextEpisodeMode) -> bool {
-    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_next_episode_mode(mode)))
+    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<NextEpisodeModePref>(mode)))
         .is_some_and(|write| matches!(write.classify(),
             plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
     if saved {
@@ -6430,7 +6432,7 @@ pub fn restore_skip_interval(interval: SkipInterval) {
 /// Blocking persistence seam; Settings dispatches it on the storage worker. The live value changes
 /// only once the write is durable, so a failed save claims nothing.
 pub fn set_skip_interval(interval: SkipInterval) -> bool {
-    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_skip_interval(interval)))
+    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<SkipIntervalPref>(interval)))
         .is_some_and(|write| matches!(write.classify(),
             plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
     if saved {
@@ -6461,7 +6463,7 @@ pub fn restore_deck_press(mode: DeckPress) {
 /// Blocking persistence seam; Settings dispatches it on the storage worker. The live value changes
 /// only once the write is durable, so a failed save claims nothing.
 pub fn set_deck_press(mode: DeckPress) -> bool {
-    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_deck_press(mode)))
+    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<DeckPressPref>(mode)))
         .is_some_and(|write| matches!(write.classify(),
             plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
     if saved {
@@ -6473,7 +6475,7 @@ pub fn set_deck_press(mode: DeckPress) -> bool {
 
 pub fn set_default_quality(q: Quality) -> bool {
     let q = supported_quality(q);
-    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_playback_quality(q)))
+    let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<QualityPref>(q)))
         .is_some_and(|write| matches!(write.classify(),
             plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
     if saved { restore_quality(q); plx_machine::idle::invalidate(); }
@@ -6504,7 +6506,7 @@ pub fn select_subtitle_size(size: SubtitleSize, reply: Option<std::sync::mpsc::S
     restore_subtitle_size(size);
     plx_machine::idle::invalidate();
     let _ = plx_base::storage_worker::submit_retained(move || {
-        let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_subtitle_size(size)))
+        let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<SubtitleSizePref>(size)))
             .is_some_and(|write| matches!(write.classify(),
                 plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
         if !saved {
@@ -6537,7 +6539,7 @@ pub fn select_subtitle_position(position: SubtitlePosition, reply: Option<std::s
     restore_subtitle_position(position);
     plx_machine::idle::invalidate();
     let _ = plx_base::storage_worker::submit_retained(move || {
-        let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_subtitle_position(position)))
+        let saved = plx_plex::plex::session::update_with_outcome(|s| Some(s.with_pref::<SubtitlePositionPref>(position)))
             .is_some_and(|write| matches!(write.classify(),
                 plx_plex::plex::session::async_persistence::CompletionOutcome::Durable(_)));
         if !saved {
@@ -6629,10 +6631,10 @@ fn persist_quality_choice(q: Quality) -> Quality {
     // A session write is a read-modify-write under the session lock: changing this preference
     // must not overwrite a roster refresh, a profile switch, or another profile's recents.
     let _ = plx_plex::plex::session::queue_update(move |s| {
-        if s.playback_quality == Some(q) {
+        if s.prefs.playback_quality == Some(q) {
             None
         } else {
-            Some(s.with_playback_quality(q))
+            Some(s.with_pref::<QualityPref>(q))
         }
     });
     // The picker's checkmark moves on this and on nothing else — a settled popover presents no

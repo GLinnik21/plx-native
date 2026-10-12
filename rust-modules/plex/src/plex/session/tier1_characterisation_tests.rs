@@ -44,15 +44,15 @@ fn rich() -> Session {
         "last_hero_blur": [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3], [0.1, 0.2, 0.3], [0.1, 0.2, 0.3]]
     })).unwrap();
     session.language = plx_platform::i18n::Preference::Be;
-    session.playback_quality = Some(PlaybackQuality::P1080High);
-    session.direct_play_mode = DirectPlayMode::Forced;
-    session.subtitle_tone = SubtitleTone::Grey;
-    session.subtitle_size = SubtitleSize::Large;
-    session.subtitle_position = SubtitlePosition::High;
-    session.next_episode_mode = NextEpisodeMode::AfterCredits;
-    session.skip_interval = SkipInterval::Seconds30;
-    session.deck_press = DeckPress::Play;
-    session.audio_enhancements = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
+    session.prefs.playback_quality = Some(PlaybackQuality::P1080High);
+    session.prefs.direct_play_mode = DirectPlayMode::Forced;
+    session.prefs.subtitle_tone = SubtitleTone::Grey;
+    session.prefs.subtitle_size = SubtitleSize::Large;
+    session.prefs.subtitle_position = SubtitlePosition::High;
+    session.prefs.next_episode_mode = NextEpisodeMode::AfterCredits;
+    session.prefs.skip_interval = SkipInterval::Seconds30;
+    session.prefs.deck_press = DeckPress::Play;
+    session.prefs.audio_enhancements = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
     session.set_subtitle_offset_for("u-7", MACHINE, "rk-1", Some(1_500));
     session.set_view_for("u-7", LibraryView {
         machine_id: MACHINE.into(), key: 1, sort: "addedAt".into(), desc: true, ..Default::default()
@@ -376,8 +376,8 @@ fn tier1_db8_extra_preference_keys_leave_credentials_and_todays_keys_intact() {
         // Today's join.
         let joined = join_canonical(&decoded.public, &auth).expect("the credentials still open");
         assert_credentials_intact(&joined, &original, case);
-        assert_eq!(joined.subtitle_size, original.subtitle_size, "{case}");
-        assert_eq!(joined.skip_interval, original.skip_interval, "{case}");
+        assert_eq!(joined.prefs.subtitle_size, original.prefs.subtitle_size, "{case}");
+        assert_eq!(joined.prefs.skip_interval, original.prefs.skip_interval, "{case}");
         assert_eq!(joined.trailer_autoplay, original.trailer_autoplay, "{case}");
         assert_eq!(joined.language, original.language, "{case}");
         assert_eq!(joined.subtitle_offset_for("u-7", MACHINE, "rk-1"), Some(1_500), "{case}");
@@ -391,7 +391,7 @@ fn tier1_db8_extra_preference_keys_leave_credentials_and_todays_keys_intact() {
         let public_only = public_session(&decoded.public);
         assert_eq!(public_only.client_id, original.client_id, "{case}");
         assert!(public_only.account_token.is_empty(), "{case}: no credential in the public snapshot");
-        assert_eq!(public_only.subtitle_size, original.subtitle_size, "{case}");
+        assert_eq!(public_only.prefs.subtitle_size, original.prefs.subtitle_size, "{case}");
     }
 }
 
@@ -442,8 +442,8 @@ fn tier1_legacy_file_extra_top_level_keys_leave_credentials_and_todays_keys_inta
         assert_eq!(parsed.home_pins, baseline.home_pins, "{case}");
         assert_eq!(parsed.recent_searches, baseline.recent_searches, "{case}");
         assert_eq!(parsed.language, original.language, "{case}");
-        assert_eq!(parsed.subtitle_size, original.subtitle_size, "{case}");
-        assert_eq!(parsed.skip_interval, original.skip_interval, "{case}");
+        assert_eq!(parsed.subtitle_size, original.prefs.subtitle_size, "{case}");
+        assert_eq!(parsed.skip_interval, original.prefs.skip_interval, "{case}");
         assert_eq!(parsed.trailer_autoplay, original.trailer_autoplay, "{case}");
         assert_eq!(parsed.plaintext_consent, baseline.plaintext_consent, "{case}");
         assert_eq!(parsed.server_key_pins, baseline.server_key_pins, "{case}");

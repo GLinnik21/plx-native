@@ -32,13 +32,13 @@ fn select_publishes_the_live_value_before_the_write_and_persists_it() {
     select_subtitle_size(SubtitleSize::Large, Some(tx));
     assert_eq!(subtitle_size(), SubtitleSize::Large, "published synchronously, ahead of the worker");
     assert!(recv(&rx), "a writable session is durable");
-    assert_eq!(plx_plex::plex::session::load().subtitle_size, SubtitleSize::Large);
+    assert_eq!(plx_plex::plex::session::load().prefs.subtitle_size, SubtitleSize::Large);
 
     let (tx, rx) = mpsc::channel();
     select_subtitle_position(SubtitlePosition::High, Some(tx));
     assert_eq!(subtitle_position(), SubtitlePosition::High);
     assert!(recv(&rx));
-    assert_eq!(plx_plex::plex::session::load().subtitle_position, SubtitlePosition::High);
+    assert_eq!(plx_plex::plex::session::load().prefs.subtitle_position, SubtitlePosition::High);
     drop(session);
 }
 

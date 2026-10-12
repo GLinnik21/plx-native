@@ -241,11 +241,11 @@ fn the_three_named_garbage_corners_and_a_valid_value_that_still_wins() {
     let s = legacy_from(json!({"trailer_autoplay":"garbage","auto_sign_in":"garbage","playback_quality":"garbage"}));
     assert!(s.trailer_autoplay);
     assert!(!s.auto_sign_in);
-    assert_eq!(s.playback_quality, None);
+    assert_eq!(s.prefs.playback_quality, None);
     let s = legacy_from(json!({"trailer_autoplay":false,"auto_sign_in":true,"playback_quality":"auto"}));
     assert!(!s.trailer_autoplay);
     assert!(s.auto_sign_in);
-    assert_eq!(s.playback_quality, Some(PlaybackQuality::Auto));
+    assert_eq!(s.prefs.playback_quality, Some(PlaybackQuality::Auto));
 }
 
 /// One list key: a good element, a bad one, and the key's slot in each form.
@@ -399,13 +399,13 @@ fn a_canonical_preferences_value_that_is_not_an_object_falls_back_to_the_manual_
     for not_an_object in [json!("x"), json!(3), json!([]), Value::Null] {
         let s = canonical_from(not_an_object.clone());
         assert!(s.trailer_autoplay, "{not_an_object}");
-        assert_eq!(s.direct_play_mode, DirectPlayMode::Auto);
-        assert_eq!(s.playback_quality, None);
+        assert_eq!(s.prefs.direct_play_mode, DirectPlayMode::Auto);
+        assert_eq!(s.prefs.playback_quality, None);
     }
     let s = canonical_from(json!({"subtitle_size":"huge","auto_sign_in":true,"skip_interval":"60s"}));
     assert!(s.auto_sign_in, "a sibling of a bad key is kept");
-    assert_eq!(s.skip_interval, SkipInterval::Seconds60);
-    assert_eq!(s.subtitle_size, SubtitleSize::Medium);
+    assert_eq!(s.prefs.skip_interval, SkipInterval::Seconds60);
+    assert_eq!(s.prefs.subtitle_size, SubtitleSize::Medium);
 }
 
 // ---- item 3: unknown keys, and #582 -----------------------------------------------------------------
@@ -523,19 +523,19 @@ struct SkipRow {
 
 fn skip_rows() -> Vec<SkipRow> {
     vec![
-        SkipRow { key: "subtitle_size", set: |s| s.subtitle_size = SubtitleSize::Large,
-            reset: |s| s.subtitle_size = SubtitleSize::default() },
-        SkipRow { key: "subtitle_position", set: |s| s.subtitle_position = SubtitlePosition::High,
-            reset: |s| s.subtitle_position = SubtitlePosition::default() },
-        SkipRow { key: "next_episode_mode", set: |s| s.next_episode_mode = NextEpisodeMode::Off,
-            reset: |s| s.next_episode_mode = NextEpisodeMode::default() },
-        SkipRow { key: "skip_interval", set: |s| s.skip_interval = SkipInterval::Seconds30,
-            reset: |s| s.skip_interval = SkipInterval::default() },
-        SkipRow { key: "deck_press", set: |s| s.deck_press = DeckPress::Play,
-            reset: |s| s.deck_press = DeckPress::default() },
+        SkipRow { key: "subtitle_size", set: |s| s.prefs.subtitle_size = SubtitleSize::Large,
+            reset: |s| s.prefs.subtitle_size = SubtitleSize::default() },
+        SkipRow { key: "subtitle_position", set: |s| s.prefs.subtitle_position = SubtitlePosition::High,
+            reset: |s| s.prefs.subtitle_position = SubtitlePosition::default() },
+        SkipRow { key: "next_episode_mode", set: |s| s.prefs.next_episode_mode = NextEpisodeMode::Off,
+            reset: |s| s.prefs.next_episode_mode = NextEpisodeMode::default() },
+        SkipRow { key: "skip_interval", set: |s| s.prefs.skip_interval = SkipInterval::Seconds30,
+            reset: |s| s.prefs.skip_interval = SkipInterval::default() },
+        SkipRow { key: "deck_press", set: |s| s.prefs.deck_press = DeckPress::Play,
+            reset: |s| s.prefs.deck_press = DeckPress::default() },
         SkipRow { key: "audio_enhancements",
-            set: |s| s.audio_enhancements = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true },
-            reset: |s| s.audio_enhancements = crate::plex::AudioEnhancements::NONE },
+            set: |s| s.prefs.audio_enhancements = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true },
+            reset: |s| s.prefs.audio_enhancements = crate::plex::AudioEnhancements::NONE },
         SkipRow { key: "subtitle_offsets",
             set: |s| s.set_subtitle_offset_for("", "m", "1", Some(500)),
             reset: |s| s.set_subtitle_offset_for("", "m", "1", None) },
@@ -602,13 +602,16 @@ fn a_skip_at_default_row_set_back_to_default_is_not_resurrected_and_a_future_key
 #[test]
 fn playback_quality_is_stored_as_null_when_reset_and_reads_back_none() {
     let mut store = store();
-    let mut session = Session { playback_quality: Some(PlaybackQuality::P720), ..signed_in_session() };
+    let mut session = Session {
+        prefs: Preferences { playback_quality: Some(PlaybackQuality::P720), ..Preferences::default() },
+        ..signed_in_session()
+    };
     commit(&mut store, &session, SaveAuthority::FreshReauthentication);
     assert_eq!(stored_preferences(&mut store)["playback_quality"], "720p_4_mbps");
-    session.playback_quality = None;
+    session.prefs.playback_quality = None;
     commit(&mut store, &session, SaveAuthority::PublicOnly);
     assert_eq!(stored_preferences(&mut store).get("playback_quality"), Some(&Value::Null), "present and null");
-    assert_eq!(opened(&mut store).playback_quality, None);
+    assert_eq!(opened(&mut store).prefs.playback_quality, None);
 }
 
 // ---- item 4: forgetting an offset prunes the profile record -----------------------------------------
@@ -679,7 +682,7 @@ fn the_file_backend_keeps_only_the_language_at_sign_out() {
     redirect_candidates_for_test(Some(vec![root.dir.join("legacy-auth.json")]));
 
     save(&all_non_default());
-    assert_eq!(peek().subtitle_size, SubtitleSize::Large, "setup: the non-default preferences are stored");
+    assert_eq!(peek().prefs.subtitle_size, SubtitleSize::Large, "setup: the non-default preferences are stored");
     assert_eq!(peek().language, Preference::Be);
     assert!(matches!(clear(), ClearOutcome::Durable { .. }));
 

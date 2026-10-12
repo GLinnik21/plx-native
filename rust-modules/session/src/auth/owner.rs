@@ -934,7 +934,7 @@ pub fn write_persisted(w: &mut Canon, s: &PersistedSession) {
     w.option(s.last_hero_blur, |w, blur| {
         for corner in blur { for channel in corner { w.f32(channel); } }
     });
-    w.option(s.playback_quality, |w, quality| {
+    w.option(s.prefs.playback_quality, |w, quality| {
         use plx_plex::plex::session::PlaybackQuality;
         w.u8(match quality { PlaybackQuality::Auto => 0, PlaybackQuality::Original => 1,
             PlaybackQuality::P1080High => 2, PlaybackQuality::P1080 => 3,

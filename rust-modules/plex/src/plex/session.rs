@@ -49,6 +49,9 @@
 //!   cache rather than keep a second copy of the session live.
 use super::origin::Origin;
 use super::probe::Location;
+pub use prefs::{AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, NextEpisodeModePref,
+    Preferences, QualityPref, Setting, SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref,
+    SubtitleTonePref};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Mutex;
@@ -568,21 +571,12 @@ pub struct Session {
     /// Soft-parsed like every list in this struct: an entry costs itself, never the credentials.
     #[serde(default, deserialize_with = "de_profile_cache")]
     pub profiles: Vec<ProfileCreds>,
-    /// The install's playback-quality preference. `None` is deliberately distinct from an
-    /// explicit value: every session written before this field existed lands there and must keep
-    /// the old **Original** behaviour rather than being migrated onto automatic playback.
-    ///
-    /// A newly-created session writes an explicit default through [`PlaybackQuality::fresh_default`].
-    /// That default may become Auto only when the playback owner exposes a positive readiness
-    /// gate. The integrated HLS prime/swap path opens it for fresh installs; old files remain
-    /// Original because their absent field is not reinterpreted. Unknown or malformed future
-    /// values soften to `None`, and therefore Original,
-    /// instead of making the credentials file fail to parse.
-    #[serde(default, deserialize_with = "de_soft_playback_quality")]
-    pub playback_quality: Option<PlaybackQuality>,
-    /// Install-wide original-stream override; malformed/future values remain automatic.
-    #[serde(default, deserialize_with = "de_soft_direct_play_mode")]
-    pub direct_play_mode: DirectPlayMode,
+    /// The install-wide player settings (quality, Direct Play, next episode, skip, deck press,
+    /// subtitle size, position and tone, audio enhancements), flattened so the keys sit at the top
+    /// level of the file under the same keys they always had. Declared before [`Session::extensions`]:
+    /// a flattened struct takes its keys first, so the unknown-key map sees only keys nobody models.
+    #[serde(flatten)]
+    pub prefs: Preferences,
     /// **Automatically Sign In** — skip the boot who's-watching picker and enter as
     /// [`Session::user`]. Install-wide, not per profile: the boot gate reads it before anyone is
     /// seated this run. Absence is **off**, which is today's picker. Enabling it from Settings
@@ -599,43 +593,6 @@ pub struct Session {
     /// has no mute, so this is also the only sound control.
     #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
     pub trailer_autoplay: bool,
-    /// **How bright the client-rendered subtitles are drawn** — white, or a rung of the grey
-    /// ladder under it. Install-wide like [`Session::playback_quality`], because it answers a fact
-    /// about the PANEL (an HDR picture maps graphics white to a searing level) rather than about
-    /// whoever is watching. Absence is white, which is what every build before the field drew.
-    /// Soft-parsed: an unknown spelling costs the preference, never the credentials.
-    #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
-    pub subtitle_tone: SubtitleTone,
-    /// **The client-rendered subtitle caption's text size.** Install-wide like
-    /// [`Session::subtitle_tone`]. Absence is Medium — see [`SubtitleSize`]'s own doc. Skipped at
-    /// the default so a session predating this field — committed replay fixtures included —
-    /// serializes exactly as it did before.
-    #[serde(default, deserialize_with = "de_soft_subtitle_size", skip_serializing_if = "is_default_subtitle_size")]
-    pub subtitle_size: SubtitleSize,
-    /// **The client-rendered subtitle caption's vertical placement.** Install-wide like
-    /// [`Session::subtitle_tone`]. Absence is Low — see [`SubtitlePosition`]'s own doc. Skipped at
-    /// the default for the same reason as [`Session::subtitle_size`].
-    #[serde(default, deserialize_with = "de_soft_subtitle_position", skip_serializing_if = "is_default_subtitle_position")]
-    pub subtitle_position: SubtitlePosition,
-    /// **What the player does when an episode with a successor reaches its credits** — see
-    /// [`NextEpisodeMode`]. Install-wide like [`Session::playback_quality`]. Absence is
-    /// Countdown, which is what every build before the field did. Skipped at the default so a
-    /// session predating this field — committed replay fixtures included — serializes exactly as
-    /// it did before.
-    #[serde(default, deserialize_with = "de_soft_next_episode_mode", skip_serializing_if = "is_default_next_episode_mode")]
-    pub next_episode_mode: NextEpisodeMode,
-    /// **How far one Left/Right press jumps in the player** — see [`SkipInterval`]. Install-wide
-    /// like [`Session::playback_quality`], one value for both directions. Absence is 10 s, the
-    /// hop every build before the field made. Skipped at the default so a session predating this
-    /// field — committed replay fixtures included — serializes exactly as it did before.
-    #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
-    pub skip_interval: SkipInterval,
-    /// **What OK does on a Continue Watching card** — see [`DeckPress`]. Install-wide like
-    /// [`Session::playback_quality`]. Absence is Details, so a session written before the field
-    /// existed opens the page on OK. Skipped at the default so a session predating this field —
-    /// committed replay fixtures included — serializes exactly as it did before.
-    #[serde(default, deserialize_with = "de_soft_deck_press", skip_serializing_if = "is_default_deck_press")]
-    pub deck_press: DeckPress,
     /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
     /// rendered on this television, so a route in the Settings/first-run family that opens
     /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
@@ -684,15 +641,6 @@ pub struct Session {
     /// byte-identical to what it wrote before. Soft-parsed: an unreadable entry costs that entry.
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     pub server_key_pins: Vec<ServerKeyPin>,
-    /// Plex Pass per-track transcoder DSP preference (issue #266): dialog boost / loudness
-    /// normalization. `NONE` by default and skipped on write while `NONE`, so every session
-    /// persisted before the field existed — and every viewer who never opted in — round-trips
-    /// byte-identical to what it wrote before. Restored into `player::audio_enhancements` at boot
-    /// and at the credentials handoff; written by `player::set_audio_enhancements`. Soft-parsed
-    /// like every preference in this struct: an unknown shape costs the preference, never the
-    /// credentials.
-    #[serde(default, deserialize_with = "de_soft_audio_enhancements", skip_serializing_if = "crate::plex::AudioEnhancements::is_none")]
-    pub audio_enhancements: crate::plex::AudioEnhancements,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub extensions: OpaqueExtensions,
 
@@ -719,10 +667,10 @@ struct CanonicalSessionAuth {
 struct CanonicalSessionPreferences {
     #[serde(default)]
     language: plx_platform::i18n::Preference,
-    #[serde(default, deserialize_with = "de_soft_playback_quality")]
-    playback_quality: Option<PlaybackQuality>,
-    #[serde(default, deserialize_with = "de_soft_direct_play_mode")]
-    direct_play_mode: DirectPlayMode,
+    /// The nine install-wide player settings, flattened ahead of `extensions` so a flattened
+    /// struct takes its keys first and `extensions` still sees only unknown ones.
+    #[serde(flatten)]
+    prefs: Preferences,
     #[serde(default, deserialize_with = "de_soft_bool")]
     auto_sign_in: bool,
     #[serde(default, deserialize_with = "de_soft_vec")]
@@ -736,24 +684,10 @@ struct CanonicalSessionPreferences {
     last_hero_blur: Option<[[f32; 3]; 4]>,
     #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
     trailer_autoplay: bool,
-    #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
-    subtitle_tone: SubtitleTone,
-    #[serde(default, deserialize_with = "de_soft_subtitle_size", skip_serializing_if = "is_default_subtitle_size")]
-    subtitle_size: SubtitleSize,
-    #[serde(default, deserialize_with = "de_soft_subtitle_position", skip_serializing_if = "is_default_subtitle_position")]
-    subtitle_position: SubtitlePosition,
-    #[serde(default, deserialize_with = "de_soft_next_episode_mode", skip_serializing_if = "is_default_next_episode_mode")]
-    next_episode_mode: NextEpisodeMode,
-    #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
-    skip_interval: SkipInterval,
-    #[serde(default, deserialize_with = "de_soft_deck_press", skip_serializing_if = "is_default_deck_press")]
-    deck_press: DeckPress,
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     plaintext_consent: Vec<PlaintextConsent>,
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     server_key_pins: Vec<ServerKeyPin>,
-    #[serde(default, deserialize_with = "de_soft_audio_enhancements", skip_serializing_if = "crate::plex::AudioEnhancements::is_none")]
-    audio_enhancements: crate::plex::AudioEnhancements,
     /// Parsed only so a future preference does not make the known fields disappear. The shipping
     /// adapter merges these opaque keys from the current DB8 public payload before every rewrite;
     /// they are not promoted into the Session domain object.
@@ -772,23 +706,15 @@ impl Default for CanonicalSessionPreferences {
     fn default() -> Self {
         Self {
             language: plx_platform::i18n::Preference::System,
-            playback_quality: None,
-            direct_play_mode: DirectPlayMode::Auto,
+            prefs: Preferences::default(),
             auto_sign_in: false,
             last_library: Vec::new(),
             library_views: Vec::new(),
             subtitle_offsets: Vec::new(),
             last_hero_blur: None,
             trailer_autoplay: true,
-            subtitle_tone: SubtitleTone::White,
-            subtitle_size: SubtitleSize::Medium,
-            subtitle_position: SubtitlePosition::Low,
-            next_episode_mode: NextEpisodeMode::Countdown,
-            skip_interval: SkipInterval::Seconds10,
-            deck_press: DeckPress::Details,
             plaintext_consent: Vec::new(),
             server_key_pins: Vec::new(),
-            audio_enhancements: crate::plex::AudioEnhancements::NONE,
             extensions: BTreeMap::new(),
         }
     }
@@ -824,23 +750,15 @@ pub fn split_canonical(
 fn split_public(session: &Session) -> Result<plx_platform::storage::state::PublicPayload, ()> {
     let preferences = serde_json::to_value(CanonicalSessionPreferences {
         language: session.language,
-        playback_quality: session.playback_quality,
-        direct_play_mode: session.direct_play_mode,
+        prefs: session.prefs.clone(),
         auto_sign_in: session.auto_sign_in,
         last_library: session.last_library.clone(),
         library_views: session.library_views.clone(),
         subtitle_offsets: session.subtitle_offsets.clone(),
         last_hero_blur: session.last_hero_blur,
         trailer_autoplay: session.trailer_autoplay,
-        subtitle_tone: session.subtitle_tone,
-        subtitle_size: session.subtitle_size,
-        subtitle_position: session.subtitle_position,
-        next_episode_mode: session.next_episode_mode,
-        skip_interval: session.skip_interval,
-        deck_press: session.deck_press,
         plaintext_consent: session.plaintext_consent.clone(),
         server_key_pins: session.server_key_pins.clone(),
-        audio_enhancements: session.audio_enhancements,
         extensions: BTreeMap::new(),
     })
     .map_err(|_| ())?;
@@ -898,23 +816,15 @@ pub fn join_canonical(
         home_pins,
         recent_searches,
         language: preferences.language,
-        playback_quality: preferences.playback_quality,
-        direct_play_mode: preferences.direct_play_mode,
+        prefs: preferences.prefs,
         auto_sign_in: preferences.auto_sign_in,
         last_library: preferences.last_library,
         library_views: preferences.library_views,
         subtitle_offsets: preferences.subtitle_offsets,
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
-        subtitle_tone: preferences.subtitle_tone,
-        subtitle_size: preferences.subtitle_size,
-        subtitle_position: preferences.subtitle_position,
-        next_episode_mode: preferences.next_episode_mode,
-        skip_interval: preferences.skip_interval,
-        deck_press: preferences.deck_press,
         plaintext_consent: preferences.plaintext_consent,
         server_key_pins: preferences.server_key_pins,
-        audio_enhancements: preferences.audio_enhancements,
         profiles,
         extensions: auth.extensions,
     })
@@ -931,23 +841,15 @@ fn public_session(public: &plx_platform::storage::state::PublicPayload) -> Sessi
     Session {
         client_id: public.client_id.clone().unwrap_or_default(),
         language: preferences.language,
-        playback_quality: preferences.playback_quality,
-        direct_play_mode: preferences.direct_play_mode,
+        prefs: preferences.prefs,
         auto_sign_in: preferences.auto_sign_in,
         last_library: preferences.last_library,
         library_views: preferences.library_views,
         subtitle_offsets: preferences.subtitle_offsets,
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
-        subtitle_tone: preferences.subtitle_tone,
-        subtitle_size: preferences.subtitle_size,
-        subtitle_position: preferences.subtitle_position,
-        next_episode_mode: preferences.next_episode_mode,
-        skip_interval: preferences.skip_interval,
-        deck_press: preferences.deck_press,
         plaintext_consent: preferences.plaintext_consent,
         server_key_pins: preferences.server_key_pins,
-        audio_enhancements: preferences.audio_enhancements,
         home_pins, recent_searches,
         ..Default::default()
     }
@@ -1055,10 +957,10 @@ pub fn set_trailer_autoplay(on: bool) -> bool {
 /// Persist the subtitle tone through [`update`], merging with the current disk record.
 pub fn set_subtitle_tone(tone: SubtitleTone) -> bool {
     update(|cur| {
-        if cur.subtitle_tone == tone {
+        if cur.prefs.subtitle_tone == tone {
             return None;
         }
-        Some(cur.with_subtitle_tone(tone))
+        Some(cur.with_pref::<SubtitleTonePref>(tone))
     })
 }
 
@@ -1066,10 +968,10 @@ pub fn set_subtitle_tone(tone: SubtitleTone) -> bool {
 /// current disk record — the same door as [`set_subtitle_tone`].
 pub fn set_audio_enhancements(enhancements: crate::plex::AudioEnhancements) -> bool {
     update(|cur| {
-        if cur.audio_enhancements == enhancements {
+        if cur.prefs.audio_enhancements == enhancements {
             return None;
         }
-        Some(cur.with_audio_enhancements(enhancements))
+        Some(cur.with_pref::<AudioEnhancementsPref>(enhancements))
     })
 }
 
@@ -2269,129 +2171,6 @@ where
     Ok(serde_json::from_value::<Option<Location>>(v).unwrap_or(None))
 }
 
-/// Future or malformed direct-play policies retain the automatic compatibility checks.
-fn de_soft_direct_play_mode<'de, D>(d: D) -> Result<DirectPlayMode, D::Error>
-where D: Deserializer<'de> {
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(serde_json::from_value(value).unwrap_or_default())
-}
-
-/// Playback quality is a preference, not a credential gate. A value written by a newer build or
-/// damaged by a hand edit therefore degrades to the legacy-safe Original mode rather than making
-/// the enclosing [`Session`] disappear.
-fn de_soft_playback_quality<'de, D>(d: D) -> Result<Option<PlaybackQuality>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let Ok(v) = serde_json::Value::deserialize(d) else {
-        return Ok(None);
-    };
-    Ok(serde_json::from_value::<Option<PlaybackQuality>>(v).unwrap_or(None))
-}
-
-/// The subtitle tone is a preference too: a spelling this build does not know degrades to white.
-fn de_soft_subtitle_tone<'de, D>(d: D) -> Result<SubtitleTone, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let Ok(v) = serde_json::Value::deserialize(d) else {
-        return Ok(SubtitleTone::White);
-    };
-    Ok(serde_json::from_value::<SubtitleTone>(v).unwrap_or_default())
-}
-
-/// The subtitle size is a preference too: a spelling this build does not know degrades to Medium.
-fn de_soft_subtitle_size<'de, D>(d: D) -> Result<SubtitleSize, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let Ok(v) = serde_json::Value::deserialize(d) else {
-        return Ok(SubtitleSize::Medium);
-    };
-    Ok(serde_json::from_value::<SubtitleSize>(v).unwrap_or_default())
-}
-
-/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
-fn is_default_subtitle_size(size: &SubtitleSize) -> bool {
-    *size == SubtitleSize::default()
-}
-
-/// The subtitle position is a preference too: a spelling this build does not know degrades to Low.
-fn de_soft_subtitle_position<'de, D>(d: D) -> Result<SubtitlePosition, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let Ok(v) = serde_json::Value::deserialize(d) else {
-        return Ok(SubtitlePosition::Low);
-    };
-    Ok(serde_json::from_value::<SubtitlePosition>(v).unwrap_or_default())
-}
-
-/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
-fn is_default_subtitle_position(position: &SubtitlePosition) -> bool {
-    *position == SubtitlePosition::default()
-}
-
-/// The next-episode mode is a preference too: a spelling this build does not know degrades to Countdown.
-fn de_soft_next_episode_mode<'de, D>(d: D) -> Result<NextEpisodeMode, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let Ok(v) = serde_json::Value::deserialize(d) else {
-        return Ok(NextEpisodeMode::Countdown);
-    };
-    Ok(serde_json::from_value::<NextEpisodeMode>(v).unwrap_or_default())
-}
-
-/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
-fn is_default_next_episode_mode(mode: &NextEpisodeMode) -> bool {
-    *mode == NextEpisodeMode::default()
-}
-
-/// The skip interval is a preference too: a spelling this build does not know degrades to 10 s.
-fn de_soft_skip_interval<'de, D>(d: D) -> Result<SkipInterval, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let Ok(v) = serde_json::Value::deserialize(d) else {
-        return Ok(SkipInterval::default());
-    };
-    Ok(serde_json::from_value::<SkipInterval>(v).unwrap_or_default())
-}
-
-/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
-fn is_default_skip_interval(interval: &SkipInterval) -> bool {
-    *interval == SkipInterval::default()
-}
-
-/// The deck-press mode is a preference too: a spelling this build does not know degrades to Details.
-fn de_soft_deck_press<'de, D>(d: D) -> Result<DeckPress, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let Ok(v) = serde_json::Value::deserialize(d) else {
-        return Ok(DeckPress::default());
-    };
-    Ok(serde_json::from_value::<DeckPress>(v).unwrap_or_default())
-}
-
-/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
-fn is_default_deck_press(mode: &DeckPress) -> bool {
-    *mode == DeckPress::default()
-}
-
-/// The audio-enhancement toggle is a preference too: an unknown shape degrades to both flags
-/// off rather than failing the enclosing [`Session`].
-fn de_soft_audio_enhancements<'de, D>(d: D) -> Result<crate::plex::AudioEnhancements, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let Ok(v) = serde_json::Value::deserialize(d) else {
-        return Ok(crate::plex::AudioEnhancements::NONE);
-    };
-    Ok(serde_json::from_value::<crate::plex::AudioEnhancements>(v).unwrap_or(crate::plex::AudioEnhancements::NONE))
-}
-
 /// A preference switch: garbage degrades to off rather than failing the enclosing [`Session`].
 fn de_soft_bool<'de, D>(d: D) -> Result<bool, D::Error>
 where
@@ -2467,23 +2246,10 @@ impl Session {
     /// The effective persisted playback quality. Absence is the literal legacy migration rule:
     /// builds that predate the field played Original, so they continue to play Original.
     #[allow(dead_code)]
-    pub fn direct_play_mode(&self) -> DirectPlayMode { self.direct_play_mode }
-
-    pub fn with_direct_play_mode(&self, mode: DirectPlayMode) -> Self {
-        let mut next = self.clone();
-        next.direct_play_mode = mode;
-        next
-    }
+    pub fn direct_play_mode(&self) -> DirectPlayMode { self.prefs.direct_play_mode }
 
     pub fn playback_quality(&self) -> PlaybackQuality {
-        self.playback_quality.unwrap_or(PlaybackQuality::Original)
-    }
-
-    /// Record an explicit user choice while leaving every unrelated session field intact.
-    pub fn with_playback_quality(&self, quality: PlaybackQuality) -> Self {
-        let mut next = self.clone();
-        next.playback_quality = Some(quality);
-        next
+        self.prefs.playback_quality.unwrap_or(PlaybackQuality::Original)
     }
 
     pub fn auto_sign_in(&self) -> bool {
@@ -2561,73 +2327,31 @@ impl Session {
     }
 
     pub fn subtitle_tone(&self) -> SubtitleTone {
-        self.subtitle_tone
-    }
-
-    pub fn with_subtitle_tone(&self, tone: SubtitleTone) -> Self {
-        let mut next = self.clone();
-        next.subtitle_tone = tone;
-        next
+        self.prefs.subtitle_tone
     }
 
     pub fn subtitle_size(&self) -> SubtitleSize {
-        self.subtitle_size
-    }
-
-    pub fn with_subtitle_size(&self, size: SubtitleSize) -> Self {
-        let mut next = self.clone();
-        next.subtitle_size = size;
-        next
+        self.prefs.subtitle_size
     }
 
     pub fn subtitle_position(&self) -> SubtitlePosition {
-        self.subtitle_position
-    }
-
-    pub fn with_subtitle_position(&self, position: SubtitlePosition) -> Self {
-        let mut next = self.clone();
-        next.subtitle_position = position;
-        next
+        self.prefs.subtitle_position
     }
 
     pub fn next_episode_mode(&self) -> NextEpisodeMode {
-        self.next_episode_mode
-    }
-
-    pub fn with_next_episode_mode(&self, mode: NextEpisodeMode) -> Self {
-        let mut next = self.clone();
-        next.next_episode_mode = mode;
-        next
+        self.prefs.next_episode_mode
     }
 
     pub fn skip_interval(&self) -> SkipInterval {
-        self.skip_interval
-    }
-
-    pub fn with_skip_interval(&self, interval: SkipInterval) -> Self {
-        let mut next = self.clone();
-        next.skip_interval = interval;
-        next
+        self.prefs.skip_interval
     }
 
     pub fn deck_press(&self) -> DeckPress {
-        self.deck_press
-    }
-
-    pub fn with_deck_press(&self, mode: DeckPress) -> Self {
-        let mut next = self.clone();
-        next.deck_press = mode;
-        next
+        self.prefs.deck_press
     }
 
     pub fn audio_enhancements(&self) -> crate::plex::AudioEnhancements {
-        self.audio_enhancements
-    }
-
-    pub fn with_audio_enhancements(&self, enhancements: crate::plex::AudioEnhancements) -> Self {
-        let mut next = self.clone();
-        next.audio_enhancements = enhancements;
-        next
+        self.prefs.audio_enhancements
     }
 
     /// Interactive boot with a multi-user Plex Home shows the who's-watching picker unless
@@ -4012,8 +3736,8 @@ fn has_unmarked_secure_locked() -> bool {
 /// even when it omitted `client_id`; otherwise opening the Auto gate in a future build would turn
 /// that old install into a fresh one merely because its identifier also needed repair.
 fn seed_fresh_quality(s: &mut Session, persisted: bool, auto_ready: bool) {
-    if !persisted && s.playback_quality.is_none() {
-        s.playback_quality = Some(PlaybackQuality::fresh_default(auto_ready));
+    if !persisted && s.prefs.playback_quality.is_none() {
+        s.prefs.playback_quality = Some(PlaybackQuality::fresh_default(auto_ready));
     }
 }
 
@@ -5615,6 +5339,9 @@ mod prefs_characterisation_tests;
 #[allow(dead_code)] // Stage B connects typed owner admission/completions.
 pub mod async_persistence;
 mod install_preferences;
+pub mod prefs;
+#[cfg(test)]
+mod prefs_tests;
 
 #[cfg(test)]
 mod v0;
@@ -5631,11 +5358,11 @@ mod direct_play_mode_tests {
             assert_eq!(session.direct_play_mode(), DirectPlayMode::Auto);
         }
         for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced, DirectPlayMode::Disabled] {
-            let session = Session::default().with_direct_play_mode(mode);
+            let session = Session::default().with_pref::<DirectPlayModePref>(mode);
             let round: Session = serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
             assert_eq!(round.direct_play_mode(), mode);
             let prefs: CanonicalSessionPreferences = serde_json::from_value(split_public(&session).unwrap().preferences).unwrap();
-            assert_eq!(prefs.direct_play_mode, mode);
+            assert_eq!(prefs.prefs.direct_play_mode, mode);
         }
     }
 }
@@ -5672,7 +5399,7 @@ mod next_episode_mode_tests {
     #[test]
     fn a_pick_round_trips_through_both_formats() {
         for mode in [NextEpisodeMode::AfterCredits, NextEpisodeMode::Off] {
-            let session = Session::default().with_next_episode_mode(mode);
+            let session = Session::default().with_pref::<NextEpisodeModePref>(mode);
             let json = serde_json::to_string(&session).unwrap();
             assert!(json.contains("next_episode_mode"), "{json}");
             let round: Session = serde_json::from_str(&json).unwrap();
@@ -5716,7 +5443,7 @@ mod deck_press_tests {
 
     #[test]
     fn a_pick_round_trips_through_both_formats() {
-        let session = Session::default().with_deck_press(DeckPress::Play);
+        let session = Session::default().with_pref::<DeckPressPref>(DeckPress::Play);
         let json = serde_json::to_string(&session).unwrap();
         assert!(json.contains("deck_press"), "{json}");
         let round: Session = serde_json::from_str(&json).unwrap();
@@ -5769,7 +5496,7 @@ mod skip_interval_tests {
     #[test]
     fn a_pick_round_trips_through_both_formats() {
         for interval in SkipInterval::LADDER.into_iter().filter(|&i| i != SkipInterval::default()) {
-            let session = Session::default().with_skip_interval(interval);
+            let session = Session::default().with_pref::<SkipIntervalPref>(interval);
             let json = serde_json::to_string(&session).unwrap();
             assert!(json.contains("skip_interval"), "{json}");
             let round: Session = serde_json::from_str(&json).unwrap();
@@ -5852,7 +5579,7 @@ mod audio_enhancements_tests {
             crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
             crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true },
         ] {
-            let session = Session::default().with_audio_enhancements(enh);
+            let session = Session::default().with_pref::<AudioEnhancementsPref>(enh);
             assert_eq!(session.audio_enhancements(), enh);
 
             // Legacy fallback format: the whole `Session` serialized directly.

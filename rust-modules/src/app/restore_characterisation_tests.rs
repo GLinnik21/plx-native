@@ -116,15 +116,15 @@ fn put(c: Cells) {
 
 /// A record carrying [`STORED`] in its nine install keys.
 fn with_stored_installs(s: Session) -> Session {
-    s.with_playback_quality(STORED.quality)
-        .with_direct_play_mode(STORED.direct_play)
-        .with_subtitle_size(STORED.size)
-        .with_subtitle_position(STORED.position)
-        .with_next_episode_mode(STORED.next_episode)
-        .with_skip_interval(STORED.skip)
-        .with_deck_press(STORED.deck_press)
-        .with_subtitle_tone(STORED.tone)
-        .with_audio_enhancements(STORED.enhancements)
+    s.with_pref::<plx_plex::plex::session::QualityPref>(STORED.quality)
+        .with_pref::<plx_plex::plex::session::DirectPlayModePref>(STORED.direct_play)
+        .with_pref::<plx_plex::plex::session::SubtitleSizePref>(STORED.size)
+        .with_pref::<plx_plex::plex::session::SubtitlePositionPref>(STORED.position)
+        .with_pref::<plx_plex::plex::session::NextEpisodeModePref>(STORED.next_episode)
+        .with_pref::<plx_plex::plex::session::SkipIntervalPref>(STORED.skip)
+        .with_pref::<plx_plex::plex::session::DeckPressPref>(STORED.deck_press)
+        .with_pref::<plx_plex::plex::session::SubtitleTonePref>(STORED.tone)
+        .with_pref::<plx_plex::plex::session::AudioEnhancementsPref>(STORED.enhancements)
 }
 
 const MACHINE: &str = "a0c-machine";

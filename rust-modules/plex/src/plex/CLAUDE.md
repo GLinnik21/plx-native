@@ -476,6 +476,17 @@ a dead source is **absent** from Home and states itself in its own library secti
   across the write's `sync_all`, so **nothing per-frame may take it directly** — but a per-frame
   reader may now call `session::peek()`, because `peek()` is backed by a live in-memory read
   cache, not a per-call file transaction.
+- **The nine install-wide player settings live in ONE struct, `session/prefs.rs`'s `Preferences`,
+  flattened (`#[serde(flatten)] prefs`) into BOTH on-disk forms** — the legacy file's `Session` and
+  the canonical preference record — declared before each form's own `extensions`, so the flatten
+  takes its keys first and the unknown-key map still sees only keys nobody models. A new setting of
+  that kind is a `Preferences` field (its serde attributes written out where rustfmt and a reviewer
+  see them, copied from a neighbour, never unified: each row keeps its own soft-parse policy), a
+  `Setting` marker (`setting!` for the plain shape; hand-written when `Stored` ≠ `Value`, as for
+  quality) and a line in `prefs::DESCRIPTORS`. Callers read `session.prefs.<field>` or the hand-written
+  getter, and change a value with `session.with_pref::<Marker>(v)`. `prefs_tests` holds the table to
+  the struct (T-fields), to platform's `ACCOUNT_BOUND_PREFERENCES` (T-account) and to each row's
+  parse policy (T-parse), both ways; a field with no row, or a row with no field, fails there.
 - **`session::peek()` is a write-through cache over the persisted session, not a fresh read.** A
   hit is one uncontended `Mutex` lock and an `Arc<Session>` clone — no `IO`, no helper round trip —
   which is what makes it safe to call every frame (`player::preview::enabled` does). The invariants
