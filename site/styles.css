@@ -3,7 +3,7 @@
   --color-cool-50: #ebf0f7;
   --color-cool-200: #cdd3dd;
   --color-cool-300: #b8bfcc;
-  --color-cool-400: #9499a3;
+  --color-cool-400: #a3a8b2;
   --color-neutral-500: #2c2c2e;
   --color-neutral-950: #08080a;
   --color-atmos-charcoal: #202022;
@@ -302,9 +302,9 @@ video::-webkit-media-controls-start-playback-button {
   inset: 0;
   z-index: -1;
   border-radius: inherit;
-  background: color-mix(in srgb, var(--surface-app) 76%, transparent);
-  -webkit-backdrop-filter: blur(22px) saturate(1.8);
-  backdrop-filter: blur(22px) saturate(1.8);
+  background: color-mix(in srgb, var(--surface-app) 86%, transparent);
+  -webkit-backdrop-filter: blur(30px) saturate(1.8);
+  backdrop-filter: blur(30px) saturate(1.8);
   box-shadow:
     inset 0 0 0 1px var(--color-white-a10),
     inset 0 1px 0 rgba(255, 255, 255, 0.09),
@@ -1192,6 +1192,14 @@ video::-webkit-media-controls-start-playback-button {
   padding: clamp(40px, 5.5vh, 60px) 0 clamp(44px, 6vh, 68px);
   box-shadow: inset 0 1px 0 var(--hairline);
 }
+/* The lead quote hands straight on to the features, which open with their own
+   padding: no second gap of its own under it. */
+.quote-section--lead {
+  padding-bottom: 0;
+}
+.quote-section--lead .quote-lead {
+  margin-bottom: 0;
+}
 .quote-section > .kicker,
 .press-section > .kicker {
   font-size: 14px;
@@ -1585,8 +1593,9 @@ video::-webkit-media-controls-start-playback-button {
     margin: 0 calc(-1 * var(--gutter));
     padding: 0 var(--gutter);
     scroll-snap-type: x proximity;
-    -webkit-mask-image: none;
-    mask-image: none;
+    /* The row runs past the screen's edge; a fade there says it scrolls. */
+    -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 56px), transparent);
+    mask-image: linear-gradient(90deg, #000 calc(100% - 56px), transparent);
   }
   .press-tab {
     max-width: 72vw;
@@ -2288,8 +2297,12 @@ video::-webkit-media-controls-start-playback-button {
   .quote-cloud > .quote-sm:nth-child(3) {
     margin-top: 10px;
   }
+  /* One column: every quote gets the same rule and indent, so the long and
+     short ones differ only in size and never read as two stylings. */
   .quote-sm {
     font-size: 16px;
+    padding: 2px 0 2px 16px;
+    box-shadow: inset 2px 0 0 var(--color-white-a22);
   }
   .quote-lead {
     margin-bottom: 18px;
@@ -2330,6 +2343,24 @@ video::-webkit-media-controls-start-playback-button {
 }
 .hero-version a:hover {
   color: var(--text-primary);
+}
+/* On a touchscreen the small inline links get a 44px-tall target; the
+   negative margin keeps the line where it was. */
+@media (pointer: coarse) {
+  .hero-version a,
+  .install-note a {
+    display: inline-block;
+    padding-block: 13px;
+    margin-block: -13px;
+  }
+  .quote-lead-link {
+    padding-block: 13px;
+    margin-block: 1px -13px;
+  }
+  .footer-links a {
+    display: inline-block;
+    padding-block: 10px;
+  }
 }
 
 /* ---------- Features ---------- */
@@ -2546,11 +2577,18 @@ video::-webkit-media-controls-start-playback-button {
 }
 /* The section's slogan, as large as the hero's headline; the first-person
    sentence under it lights up word by word. */
+/* A chapter opener, so centred like the others (See how it feels, Works with
+   your Plex, the stack, Install), with its statement and lede under it. */
+.approach-section > h2,
+.approach-statement,
+.approach-lede {
+  text-align: center;
+}
 .approach-section > h2 {
   font-size: clamp(44px, 7vw, 104px);
   line-height: 1;
   font-weight: 700;
-  margin: 0 0 clamp(28px, 4.5vh, 52px);
+  margin: 0 auto clamp(28px, 4.5vh, 52px);
   letter-spacing: -0.05em;
   text-wrap: balance;
 }
@@ -2561,14 +2599,14 @@ video::-webkit-media-controls-start-playback-button {
   letter-spacing: -0.035em;
   text-wrap: pretty;
   max-width: 1100px;
-  margin: 0 0 clamp(28px, 4vh, 44px);
+  margin: 0 auto clamp(28px, 4vh, 44px);
 }
 .approach-lede {
   font-size: clamp(18px, 1.8vw, 23px);
   line-height: 1.5;
   letter-spacing: -0.01em;
   color: var(--text-reading);
-  margin: 0;
+  margin: 0 auto;
   max-width: 46ch;
   text-wrap: pretty;
 }
@@ -2695,7 +2733,15 @@ video::-webkit-media-controls-start-playback-button {
 .layer[data-cut] {
   --t: 1;
   opacity: calc(1 - var(--t));
-  transform: translate(calc(var(--W) * var(--t) * -0.45), calc(var(--W) * var(--f)));
+  transform: translate(calc(var(--W) * var(--t) * var(--cut-x, -0.45)), calc(var(--W) * var(--f)));
+}
+/* A phone has no room to the left of the stack: the plates leave by a shorter
+   way and are gone before they reach the edge. */
+@media (max-width: 759px) {
+  .layer[data-cut] {
+    --cut-x: -0.2;
+    opacity: max(0, 1 - var(--t) * 1.4);
+  }
 }
 /* Each plate is a pane of glass with an edge: a hard shadow, offset in the
    plate's own plane, reads as its thickness once it is laid flat. The offset
@@ -2882,6 +2928,9 @@ video::-webkit-media-controls-start-playback-button {
 }
 .layer[data-cut] .layer-label {
   color: var(--text-secondary);
+  /* The plate slides away; its label stays on the shared column and only
+     fades with it, so the labels never break ranks mid-scene. */
+  transform: translate(calc(var(--W) * var(--t, 1) * var(--cut-x, -0.45) * -1), -50%);
 }
 /* While the typical app is still one closed block (--open below 1), only the
    app's label shows; the others come in as it opens, never on top of each
@@ -2933,6 +2982,9 @@ video::-webkit-media-controls-start-playback-button {
   margin: 0;
   font-size: clamp(15px, 1.4vw, 19px);
   color: var(--text-secondary);
+  /* Only once the count has landed on 60: "21 fps on a 2019 LG TV" on the way
+     up would read as a claim. */
+  opacity: max(0, (var(--k) - 0.96) * 25);
 }
 
 /* ---------- Community: support, press glosses ---------- */
@@ -3188,6 +3240,9 @@ video::-webkit-media-controls-start-playback-button {
   flex-wrap: wrap;
   align-items: center;
   align-content: center;
+  /* The numeral and its copy sit together in the middle of a wide card,
+     never in its left half. */
+  justify-content: center;
   gap: 20px clamp(32px, 5vw, 80px);
 }
 .feature-card .feature-stat {
@@ -3433,7 +3488,9 @@ video::-webkit-media-controls-start-playback-button {
    the text under it. */
 .feature-stage--shot {
   min-height: 0;
-  aspect-ratio: 16 / 9;
+  /* The capture's top 12% is the film's own black letterbox; the frame is cut
+     to start under it (the image sits on the bottom edge). */
+  aspect-ratio: 160 / 79;
   margin: calc(-1 * var(--card-pad)) calc(-1 * var(--card-pad)) 14px;
   padding: 0;
   border-radius: 18px 18px 0 0;
@@ -3446,6 +3503,7 @@ video::-webkit-media-controls-start-playback-button {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: 50% 100%;
 }
 /* A one-third card beside a taller card lets its stage take the extra
    height, so the art stays centred instead of leaving a gap under the text. */
@@ -3530,6 +3588,17 @@ video::-webkit-media-controls-start-playback-button {
   .feature-card--wide p {
     grid-column: 1;
     grid-row: 4;
+  }
+}
+/* Two thirds of a 1000-1199px window is too narrow for the decoder's chain
+   beside its text: the chain goes back on top, as on a phone. */
+@media (min-width: 1000px) and (max-width: 1199px) {
+  .feature-card--decode {
+    display: flex;
+  }
+  .feature-card--decode .feature-stage {
+    min-height: 168px;
+    margin-bottom: 10px;
   }
 }
 @media (min-width: 760px) and (max-width: 999px) {
