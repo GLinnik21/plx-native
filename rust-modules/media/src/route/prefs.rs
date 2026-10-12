@@ -211,7 +211,8 @@ live_cell!(
     pub(super) SKIP_INTERVAL: SkipInterval, "skip interval preference"
 );
 live_cell!(
-    /// What OK does on a Continue Watching card. Read by every deck's press and draw (Home's and
+    /// What OK does on a Continue Watching card: play, or open its page (a movie's own; an
+    /// episode's SHOW, on the card's season). Read by every deck's press and draw (Home's and
     /// the Library's) and by the item menu when it builds its rows; `DeckPress::press_plays` is the
     /// one question they all ask of it.
     pub(super) DECK_PRESS: DeckPress, "deck press preference"

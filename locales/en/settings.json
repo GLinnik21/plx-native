@@ -697,7 +697,7 @@
   },
   "settings.playback.deck_press.details": {
     "value": "Open details",
-    "description": "Continue Watching picker option (the default): OK on a card opens the movie or episode page."
+    "description": "Continue Watching picker option (the default): OK on a card opens the movie page, or the show page on the card's season for an episode."
   },
   "settings.playback.deck_press.play": {
     "value": "Play",
@@ -770,7 +770,7 @@
     "description": "Explanation under the title of the Next episode picker. It names the three options by their picker labels (Up Next countdown, After credits, Off); keep those words identical to settings.playback.next_episode.countdown, .after_credits and .off. Only credits that run to the end of the item trigger the button."
   },
   "settings.playback.deck_press.copy": {
-    "value": "Open details shows the movie or episode page when you press OK on a Continue Watching card. Play starts or resumes it at once. The card's menu, opened by holding OK, always has the other.",
+    "value": "Open details opens the movie page when you press OK on a Continue Watching card, or the show page for an episode. Play starts or resumes it at once. The card's menu, opened by holding OK, always has the other.",
     "description": "Explanation under the title of the Continue Watching picker. It names the two options by their picker labels (Open details, Play); keep those words identical to settings.playback.deck_press.details and .play."
   },
   "settings.playback.skip_interval.copy": {

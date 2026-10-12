@@ -486,7 +486,9 @@ its ground participate in backdrop discovery, including texture changes and UV c
   always the mark that read as "this will play".
 - A **`✓`** means **finished** — likewise a state, not a promise.
 
-**A card with no play indicator NAVIGATES**, and an episode navigates to its own detail page.
+**A card with no play indicator NAVIGATES**, and an episode navigates to its own detail page —
+except on Continue Watching, where it opens the SHOW on the card's season
+(`app::input::activate_deck_card`; the card menu's Go to Episode is the way to the episode).
 Until 2026-09-05 `want_play` was `from_deck || kind == 3` on both Home and the Library, so an
 episode played immediately from ANY shelf and every landscape tile drew the triangle whatever its
 press did. Behaviour and mark both read `is_continue && route::deck_press().press_plays()`

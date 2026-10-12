@@ -1325,3 +1325,60 @@ fn a_closing_item_menus_opener_lift_stands_down_when_focus_moves_off_the_opener(
     d.set_focus(Some(key(8)));
     assert_eq!(opener_lift(&d), None, "closing, focus moved to the neighbour: the old tile is NOT repainted as focused");
 }
+
+/// **OK on a Continue Watching EPISODE opens the SHOW on the card's season** (Settings > Playback >
+/// Continue Watching = "Open details"): the decision `activate_deck_card` makes from the card, the
+/// shelf's `from_deck` and whether the press plays. The pure half pins every case that must NOT
+/// reroute — a discovery shelf's episode (its OK opens the episode's page), a press that plays
+/// (`DeckPress::Play` arrives as `want_play`), a movie, a show/season card, and an episode whose
+/// row names no show.
+#[test]
+fn a_deck_episode_press_opens_the_show_and_nothing_else_reroutes() {
+    use crate::app::input::deck_press_opens_show;
+    let card = |kind: i32, show_rk: &str| {
+        let mut m = plx_data::pms::PmsMovie::default();
+        m.rk = "ep".into();
+        m.kind = kind;
+        m.show_rk = show_rk.into();
+        m.season_index = 3;
+        m
+    };
+    let episode = card(3, "show");
+    assert!(deck_press_opens_show(&episode, true, false), "deck episode, OK opens details");
+    assert!(!deck_press_opens_show(&episode, false, false), "a discovery shelf's episode keeps its own page");
+    assert!(!deck_press_opens_show(&episode, true, true), "a press that plays plays");
+    assert!(!deck_press_opens_show(&card(3, ""), true, false), "no show row: today's episode page");
+    for kind in [0, 1, 2] {
+        assert!(!deck_press_opens_show(&card(kind, "show"), true, false), "kind {kind} is unchanged");
+    }
+}
+
+/// …and the other half: the page that is actually opened. A deck episode seeds the SHOW's detail
+/// page with the card's season; the same card from a discovery shelf seeds the episode's own page
+/// with no season (`open_detail` writes the seed in the call, before any frame spends it).
+#[test]
+fn activating_a_deck_episode_seeds_the_show_page_on_its_season_and_a_discovery_one_its_own() {
+    let _g = plx_base::testlock::serial();
+    let mut ps = plx_media::route::PlaybackSession::default();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
+    let mut pa = plx_media::player::adapter::PlayerAdapter::new(mt);
+    let mut wait = None;
+    let mut episode = plx_data::pms::PmsMovie::default();
+    episode.sid = plx_plex::plex::ServerId::UNSET;
+    episode.rk = "ep-55".into();
+    episode.kind = 3;
+    episode.show_rk = "show-7".into();
+    episode.season_index = 3;
+
+    for (from_deck, rk, season) in [(true, "show-7", Some(3)), (false, "ep-55", None)] {
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+        unsafe {
+            crate::app::input::activate_deck_card(&mut ps, &mut pa, &episode, from_deck, false, 0, None,
+                &mut d, &mut rig, &mut wait, 0);
+        }
+        let seed = rig.mounter.seed.as_ref().expect("a detail page was opened");
+        assert_eq!((seed.rk.as_str(), seed.spot.season), (rk, season), "from_deck {from_deck}");
+    }
+}
