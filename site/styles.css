@@ -2493,29 +2493,40 @@ video::-webkit-media-controls-start-playback-button {
   max-width: 44ch;
   text-wrap: balance;
 }
-/* A centred cloud in large type: the features a Plex user looks for first in
-   bold white, the rest in light grey between them. Each word group rises in
-   on its own (data-reveal), so the cloud fills in rather than appearing. */
+/* A centred cloud in three sizes: the features a Plex user looks for first
+   large, bold and white; the everyday ones medium and light grey; the long
+   tail small and dim, there to show how much is supported. Each item rises
+   in on its own (data-reveal), so the cloud fills in rather than appearing. */
 .works-cloud {
   list-style: none;
   margin: 0 auto;
   padding: 0;
-  max-width: 1040px;
+  max-width: 1080px;
   text-align: center;
-  font-size: clamp(26px, 4.2vw, 56px);
-  line-height: 1.22;
-  letter-spacing: -0.035em;
+  line-height: 1.5;
   text-wrap: balance;
 }
 .works-cloud li {
   display: inline-block;
-  margin: 0 clamp(6px, 0.9vw, 12px);
-  font-weight: 400;
-  color: var(--text-tertiary);
+  vertical-align: middle;
+  margin: 0 clamp(8px, 1.1vw, 16px);
+  font-size: clamp(20px, 2.7vw, 34px);
+  line-height: 1.25;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  color: var(--text-secondary);
 }
 .works-cloud li.is-key {
+  font-size: clamp(28px, 4.4vw, 58px);
   font-weight: 700;
+  letter-spacing: -0.04em;
   color: var(--text-primary);
+}
+.works-cloud li.is-minor {
+  font-size: clamp(15px, 1.7vw, 21px);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--text-tertiary);
 }
 
 /* ---------- Approach ---------- */
