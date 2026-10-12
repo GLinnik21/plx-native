@@ -98,9 +98,76 @@ pub fn publish_hardware(hw: Hardware) {
     let _ = HW.set(hw);
 }
 
+/// What the boot probe found in ONE of nyx's two files. A closed vocabulary, so an empty `model`
+/// or `release` in a report says why it is empty instead of looking like a field the firmware
+/// never had.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum NyxFile {
+    /// The probe has not published yet (a read racing ahead of boot, or a host build).
+    #[default]
+    Unprobed,
+    /// The file was read and at least one expected key answered.
+    Ok,
+    /// The file was read and none of the expected keys answered: a firmware that names them
+    /// differently, an empty object, or text that is not the flat JSON this parser reads.
+    NoKeys,
+    /// The file could not be read at all (absent, or not visible to the app's jail).
+    Unreadable,
+}
+
+impl NyxFile {
+    /// The wire spelling — one of four fixed words, never free text.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Unprobed => "unprobed",
+            Self::Ok => "ok",
+            Self::NoKeys => "no_keys",
+            Self::Unreadable => "unreadable",
+        }
+    }
+}
+
+/// What the boot probe found in each of nyx's two files: `os_info.json` (the webOS release, which
+/// fills [`Info`]) and `device_info.json` (the set, which fills [`Hardware`]).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Probe {
+    pub os_info: NyxFile,
+    pub device_info: NyxFile,
+}
+
+impl Probe {
+    /// `<os_info>/<device_info>`, each one of [`NyxFile::code`]'s four words — e.g. `ok/ok`,
+    /// `unreadable/no_keys`. The closed value the hardware context carries.
+    pub fn code(self) -> String {
+        format!("{}/{}", self.os_info.code(), self.device_info.code())
+    }
+}
+
+static PROBE: OnceLock<Probe> = OnceLock::new();
+
+/// What the boot probe found. [`Probe::default`] (`unprobed/unprobed`) until it publishes; a plain
+/// `get()` like [`info`], so an early read leaves the cell open for [`publish_probe`].
+pub fn probe() -> Probe {
+    PROBE.get().copied().unwrap_or_default()
+}
+
+/// The boot probe's account of its own reads. First write wins.
+pub fn publish_probe(probe: Probe) {
+    let _ = PROBE.set(probe);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_probe_code_is_two_closed_words() {
+        assert_eq!(Probe::default().code(), "unprobed/unprobed");
+        let p = Probe { os_info: NyxFile::Unreadable, device_info: NyxFile::NoKeys };
+        assert_eq!(p.code(), "unreadable/no_keys");
+        let p = Probe { os_info: NyxFile::Ok, device_info: NyxFile::Ok };
+        assert_eq!(p.code(), "ok/ok");
+    }
 
     #[test]
     fn the_set_line_omits_what_is_unknown_and_never_invents_a_set() {

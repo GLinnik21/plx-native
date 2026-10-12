@@ -34,7 +34,7 @@
 //! for service replies: [`caps`] uses `serde_json` and strict types because uncertainty there is a
 //! playback-safety decision. The capability query deliberately does not fill a missing webOS
 //! version; no public version key or anonymous permission for one is evidenced.
-use crate::tv::device::{Hardware, Info};
+use crate::tv::device::{Hardware, Info, NyxFile};
 
 pub mod jail_repair;
 pub mod caps;
@@ -74,15 +74,16 @@ fn parse(s: &str) -> Info {
 
 /// Read it once and log it. Called at boot; safe to call when the file does not exist.
 pub fn probe() {
-    let info = match std::fs::read_to_string(OS_INFO) {
-        Ok(s) => parse(&s),
+    let text = match std::fs::read_to_string(OS_INFO) {
+        Ok(s) => Some(s),
         Err(e) => {
             plx_base::eventlog::log(&format!(
                 "webos: {OS_INFO} unreadable ({e}) — version unknown"
             ));
-            Info::default()
+            None
         }
     };
+    let (info, os_info) = os_info_from(text.as_deref());
     if info.major > 0 {
         plx_base::eventlog::log(&format!(
             "webos: {} release={} codename={} api={} major={}",
@@ -90,7 +91,8 @@ pub fn probe() {
         ));
     }
     crate::tv::device::publish_info(info);
-    probe_hw();
+    let device_info = probe_hw();
+    crate::tv::device::publish_probe(crate::tv::device::Probe { os_info, device_info });
     probe_jail();
 }
 
@@ -116,17 +118,68 @@ fn parse_hw(s: &str) -> Hardware {
     }
 }
 
-/// Read it once and log it. Called from [`probe`], so it shares that call's one boot slot.
-fn probe_hw() {
-    let hw = match std::fs::read_to_string(DEVICE_INFO) {
-        Ok(s) => parse_hw(&s),
+/// PURE: [`parse`] plus what the read said. `None` is a file that could not be read.
+fn os_info_from(text: Option<&str>) -> (Info, NyxFile) {
+    let Some(text) = text else {
+        return (Info::default(), NyxFile::Unreadable);
+    };
+    let info = parse(text);
+    let answered = !info.release.is_empty()
+        || !info.codename.is_empty()
+        || !info.api.is_empty()
+        || !info.name.is_empty();
+    (info, if answered { NyxFile::Ok } else { NyxFile::NoKeys })
+}
+
+/// PURE: the SoC class from `/etc/prefs/properties/machineName`, for a set whose
+/// `device_info.json` names none. The file is a flat text value whose leading run of lowercase
+/// letters and digits is the board family (`k5lp`, `k3lp`, `o22`…), the same prefix
+/// [`is_realtek_k5lp_family`] matches; anything after it (a variant suffix, a separator, a build
+/// tag) is not reported. Bounded to eight characters and ASCII alphanumerics so the result can
+/// only ever be a short class name, never free text; empty when the name does not start like one.
+fn soc_from_machine_name(machine_name: &str) -> String {
+    let class: String = machine_name
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        .take(8)
+        .collect();
+    if class.starts_with(|c: char| c.is_ascii_lowercase()) {
+        class
+    } else {
+        String::new()
+    }
+}
+
+/// PURE: [`parse_hw`] plus what the read said, with the SoC taken from the machine name when
+/// `device_info.json` gave none. The status describes the FILE, so a set whose soc was recovered
+/// from the machine name still reads `no_keys`.
+fn hardware_from(text: Option<&str>, machine_name: &str) -> (Hardware, NyxFile) {
+    let Some(text) = text else {
+        let hw = Hardware { board: soc_from_machine_name(machine_name), ..Hardware::default() };
+        return (hw, NyxFile::Unreadable);
+    };
+    let mut hw = parse_hw(text);
+    let answered = !hw.model.is_empty() || !hw.board.is_empty() || !hw.hw_revision.is_empty();
+    if hw.board.is_empty() {
+        hw.board = soc_from_machine_name(machine_name);
+    }
+    (hw, if answered { NyxFile::Ok } else { NyxFile::NoKeys })
+}
+
+/// Read it once and log it. Called from [`probe`], so it shares that call's one boot slot. Returns
+/// what the read found, for [`probe`] to publish beside the other file's.
+fn probe_hw() -> NyxFile {
+    let text = match std::fs::read_to_string(DEVICE_INFO) {
+        Ok(s) => Some(s),
         Err(e) => {
             plx_base::eventlog::log(&format!(
                 "webos: {DEVICE_INFO} unreadable ({e}) — model/board unknown"
             ));
-            Hardware::default()
+            None
         }
     };
+    let (hw, status) = hardware_from(text.as_deref(), &read_machine_name());
     if !hw.model.is_empty() || !hw.board.is_empty() {
         plx_base::eventlog::log(&format!(
             "webos: model={} board={} hw={}",
@@ -134,6 +187,7 @@ fn probe_hw() {
         ));
     }
     crate::tv::device::publish_hardware(hw);
+    status
 }
 
 // ---- k5lp/k3lp jail pre-flight: does this jail have /dev/rtkmem? ------------------------------
@@ -155,6 +209,14 @@ const MACHINE_NAME: &str = "/etc/prefs/properties/machineName";
 /// The device node whose absence is the reported root cause. See the section doc above.
 const RTKMEM_DEVICE: &str = "/dev/rtkmem";
 
+/// The trimmed machine name, or empty when the file cannot be read. Shared by the jail pre-flight
+/// and the hardware probe's SoC fallback.
+fn read_machine_name() -> String {
+    std::fs::read_to_string(MACHINE_NAME)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
 /// PURE: does this machine name belong to the affected 2019 Realtek family? Exact PREFIX match —
 /// the two SoC name spellings webosbrew's PR names, and nothing broader: a name that merely
 /// *contains* one of them without starting with it does not match, and neither does a case
@@ -170,9 +232,7 @@ pub fn is_realtek_k5lp_family(machine_name: &str) -> bool {
 /// empty when the file could not be read — logged honestly rather than invented, the same rule
 /// [`probe`] and [`probe_hw`] already follow for their own unreadable files.
 fn probe_jail() {
-    let name = std::fs::read_to_string(MACHINE_NAME)
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
+    let name = read_machine_name();
     let result = if is_realtek_k5lp_family(&name) {
         let readable = std::ffi::CString::new(RTKMEM_DEVICE)
             .map(|path| unsafe { libc::access(path.as_ptr(), libc::R_OK) } == 0)
@@ -1019,6 +1079,56 @@ mod tests {
     fn an_unreadable_device_info_yields_an_empty_record() {
         let hw = parse_hw("not json at all");
         assert!(hw.model.is_empty() && hw.board.is_empty() && hw.hw_revision.is_empty());
+    }
+
+    /// PLX-NATIVE-15's set: both nyx files yielded nothing, so `model`, `soc` and the webOS release
+    /// were empty strings, indistinguishable from a probe that never ran. The SoC is still
+    /// recoverable from the machine name the jail pre-flight already reads.
+    #[test]
+    fn a_device_info_without_keys_takes_its_soc_from_the_machine_name() {
+        let (hw, status) = hardware_from(Some("{}"), "k5lp");
+        assert_eq!(hw.board, "k5lp");
+        assert!(hw.model.is_empty() && hw.hw_revision.is_empty(), "nothing else is invented");
+        assert_eq!(status, NyxFile::NoKeys, "the status describes the file, not the fallback");
+        // A longer real-looking name reports its family prefix only.
+        assert_eq!(hardware_from(Some("{}"), "k5lp.grampians").0.board, "k5lp");
+        assert_eq!(hardware_from(Some("{}"), "k3lp-0042 extra").0.board, "k3lp");
+        // Never overrides what the file said.
+        let named = r#"{"modelName":"OLED55C1","boardType":"k8hp"}"#;
+        let (hw, status) = hardware_from(Some(named), "k5lp");
+        assert_eq!((hw.board.as_str(), hw.model.as_str()), ("k8hp", "OLED55C1"));
+        assert_eq!(status, NyxFile::Ok);
+    }
+
+    #[test]
+    fn the_soc_class_is_a_short_ascii_token_or_nothing() {
+        assert_eq!(soc_from_machine_name(""), "");
+        assert_eq!(soc_from_machine_name("  o22n3 \n"), "o22n3");
+        assert_eq!(soc_from_machine_name("123abc"), "", "a name must start like a board class");
+        assert_eq!(soc_from_machine_name("K5LP"), "");
+        assert_eq!(soc_from_machine_name("abcdefghijklmnop"), "abcdefgh", "bounded to eight");
+        assert_eq!(soc_from_machine_name("k5lp\u{e9}"), "k5lp");
+    }
+
+    #[test]
+    fn an_unreadable_device_info_reports_unreadable_and_still_recovers_the_soc() {
+        let (hw, status) = hardware_from(None, "k3lp");
+        assert_eq!(status, NyxFile::Unreadable);
+        assert_eq!(hw.board, "k3lp");
+        let (hw, status) = hardware_from(None, "");
+        assert_eq!(status, NyxFile::Unreadable);
+        assert!(hw.board.is_empty() && hw.model.is_empty());
+    }
+
+    #[test]
+    fn os_info_reports_ok_no_keys_or_unreadable() {
+        assert_eq!(os_info_from(Some(REAL)).1, NyxFile::Ok);
+        assert_eq!(os_info_from(Some("{}")).1, NyxFile::NoKeys);
+        assert_eq!(os_info_from(Some("not json at all")).1, NyxFile::NoKeys);
+        let (info, status) = os_info_from(None);
+        assert_eq!(status, NyxFile::Unreadable);
+        assert_eq!(info.major, 0);
+        assert!(info.release.is_empty());
     }
 
     /// Absent key, present file.

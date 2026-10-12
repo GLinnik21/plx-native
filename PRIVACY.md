@@ -90,7 +90,8 @@ sent as usage events. Disabling crash reports removes the local trace.
 When the television's own crash reporter leaves nothing for a crash that was a native fault (a
 signal such as a segmentation fault), PlxNative sends a simpler report built from its own crash
 log instead. It carries the same kernel name and release, webOS and hardware compatibility
-details as a native report, and the file name (never the folder) and build identifier of each
+details as a native report (plus the same `probe` fact described for playback-error reports
+below), and the file name (never the folder) and build identifier of each
 library (a library of the television's firmware or one bundled with PlxNative) the faulting
 address and the return address were in, with the library's load address and size. A library that
 has no build identifier (the television's own C library has none) is still named, with its load
@@ -125,7 +126,10 @@ most 32 typed playback transitions with bucketed elapsed times. It contains no t
 URL, path, playhead, duration, exact bitrate, server identity, address, token, account or profile,
 and is not joined to the product analytics identifier or `playback_id`. It carries the same Crash
 report ID as a crash report, and the same television model, SoC, hardware revision, webOS release
-and the `rtkmem`/`install` sandbox facts a crash report carries. Buffering, seeking, holding
+and the `rtkmem`/`install` sandbox facts a crash report carries. It also carries a `probe` fact:
+two fixed words, `ok`, `no_keys` or `unreadable`, one for each of the two firmware information
+files the television model and webOS release are read from (`probe` is `ok/ok` when both
+answered), saying why that model, SoC or release is empty when it is. Buffering, seeking, holding
 a low quality, or rejecting an adaptive-bitrate candidate does not by itself send a report.
 The closed diagnostic vocabulary includes terminal kinds such as `playback_interrupted` and
 `original_rollback`; HLS direction `refresh`; delivery reasons `original_open_rollback` and `quality_pick`; and

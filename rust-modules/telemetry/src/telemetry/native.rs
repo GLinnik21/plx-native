@@ -290,7 +290,13 @@ const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "codename", "api"];
 /// crash report beside the existing hardware compatibility class — the same two closed-enum
 /// sandbox facts PostHog's usage envelope carries as super-properties (`telemetry::posthog`'s
 /// `envelope_props`), so a chassis's crash-at-start rate is queryable by sandbox on either side.
-const HARDWARE_FIELDS: &[&str] = &["type", "model", "soc", "revision", "rtkmem", "install"];
+///
+/// `probe` (`<os_info>/<device_info>`, each `ok`/`no_keys`/`unreadable`) says why `model`, `soc` or
+/// the webOS release are empty. The SDK's own scope never sets it (that would need the C shim), so
+/// it rides the HANDLED events and the fallback fault report that
+/// `sentry::attach_hardware_context` builds; it is allowed here so a native event could carry it
+/// without a second allowlist edit.
+const HARDWARE_FIELDS: &[&str] = &["type", "model", "soc", "revision", "probe", "rtkmem", "install"];
 const EXCEPTION_CONTAINER_FIELDS: &[&str] = &["values"];
 const EXCEPTION_FIELDS: &[&str] = &["type", "value", "mechanism", "stacktrace"];
 const MECHANISM_FIELDS: &[&str] = &["type", "handled", "meta"];
@@ -539,6 +545,7 @@ pub fn preview_event() -> Vec<u8> {
                 "codename": "<webOS release codename>", "api": "<webOS API version>"},
             "hardware": {"type": "hardware", "model": "<device model class>",
                 "soc": "<SoC/platform class>", "revision": "<hardware revision class>",
+                "probe": "<ok / no_keys / unreadable per nyx file>",
                 "rtkmem": "<ok / missing / n/a>", "install": "<devmode / homebrew / unknown>"}
         },
         "exception": {"values": [{

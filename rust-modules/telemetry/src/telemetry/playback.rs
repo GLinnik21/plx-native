@@ -806,7 +806,7 @@ mod tests {
         );
         assert_eq!(
             keys(&v["contexts"]["hardware"]),
-            ["install", "model", "revision", "rtkmem", "soc", "type"]
+            ["install", "model", "probe", "revision", "rtkmem", "soc", "type"]
         );
         assert_eq!(
             keys(&v["contexts"]["playback"]),

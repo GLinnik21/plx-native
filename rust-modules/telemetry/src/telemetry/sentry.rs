@@ -554,6 +554,10 @@ pub fn attach_hardware_context(body: &mut serde_json::Value) {
         "model": hw.model,
         "soc": hw.board,
         "revision": hw.hw_revision,
+        // Why the three fields above may be empty: what the boot probe found in each of nyx's
+        // two files (`<os_info>/<device_info>`, each `ok` / `no_keys` / `unreadable`, or
+        // `unprobed`). Four fixed words, never free text.
+        "probe": plx_platform::tv::device::probe().code(),
         "rtkmem": plx_platform::tv::sandbox::context(),
         "install": plx_base::paths::install_kind(),
     });
@@ -674,9 +678,17 @@ mod tests {
         hardware_keys.sort_unstable();
         assert_eq!(
             hardware_keys,
-            ["install", "model", "revision", "rtkmem", "soc", "type"]
+            ["install", "model", "probe", "revision", "rtkmem", "soc", "type"]
         );
         assert_eq!(hardware["type"], "hardware");
+        // The status is the closed `<os_info>/<device_info>` pair, so an empty model or release is
+        // never mistaken for a probe that did not run: it reads `unprobed` here, off the TV.
+        let probe = hardware["probe"].as_str().expect("probe is a string");
+        let words: Vec<&str> = probe.split('/').collect();
+        assert_eq!(words.len(), 2, "{probe}");
+        for word in words {
+            assert!(["unprobed", "ok", "no_keys", "unreadable"].contains(&word), "{probe}");
+        }
         // On the host these read as the empty/`n/a`/`unknown` fallbacks the probes report when
         // there is no `/var/run/nyx/os_info.json` — still present as keys, never omitted.
         assert!(hardware["rtkmem"].is_string());
