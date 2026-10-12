@@ -287,6 +287,8 @@
     const stackSticky = stack && stack.querySelector(".stack-sticky");
     const stackStage = stack && stack.querySelector(".stack-stage");
     const stackLayers = stack ? [...stack.querySelectorAll("[data-layer]")] : [];
+    const stackCount = stack && stack.querySelector("[data-count]");
+    let stackShown = null;
 
     const demo = initDemoVideo(true);
 
@@ -542,10 +544,12 @@
       // that the pin lasts; in the flow (phones), from when the stack's middle
       // is at 85% of the window's height until it reaches 40%, so all of it
       // plays on screen.
-      //   0.12–0.50  the three browser plates leave, one after another…
-      //   0.40–0.74  …the four that stay close up into a tight stack…
-      //   0.55–0.80  …the label turns to "PlxNative", 60 fps and the
-      //              picture's motion blur come in.
+      //   0.00–0.18  the typical app, one closed block, opens up…
+      //   0.20–0.58  …its three browser plates leave, one after another…
+      //   0.46–0.80  …the four that stay close up into a tight stack…
+      //   0.60–0.86  …the label turns to "PlxNative", the picture's motion
+      //              blur comes in and the number counts up to 60.
+      // A band of light crosses the glass over the whole of it.
       if (stackStage) {
         const p = L.stackFlow
           ? clamp01((vh * 0.85 - (L.stackStageTop + L.stackStageH / 2 - y)) / (vh * 0.45))
@@ -554,17 +558,33 @@
           const t = clamp01((p - a) / len);
           return t * t * (3 - 2 * t);
         };
-        const d = ease(0.4, 0.34);
+        const opened = ease(0, 0.18);
+        const open = 0.22 + 0.78 * opened;
+        setVar(stackSticky, "--open", opened.toFixed(3));
+        const d = ease(0.46, 0.34);
+        let fs = 0;
         stackLayers.forEach((el) => {
-          const y0 = parseFloat(el.dataset.y0);
+          const y0 = parseFloat(el.dataset.y0) * open;
+          let f = y0;
           if (el.dataset.cut !== undefined) {
-            setVar(el, "--t", ease(0.12 + Number(el.dataset.cut) * 0.07, 0.24).toFixed(3));
-            setVar(el, "--f", y0.toFixed(3));
+            setVar(el, "--t", ease(0.2 + Number(el.dataset.cut) * 0.08, 0.22).toFixed(3));
           } else {
-            setVar(el, "--f", (y0 + (parseFloat(el.dataset.y1) - y0) * d).toFixed(4));
+            f = y0 + (parseFloat(el.dataset.y1) - y0) * d;
           }
+          setVar(el, "--f", f.toFixed(4));
+          fs = f;
         });
-        setVar(stackSticky, "--k", clamp01((p - 0.55) / 0.25).toFixed(3));
+        const k = clamp01((p - 0.6) / 0.26);
+        setVar(stackSticky, "--k", k.toFixed(3));
+        setVar(stackSticky, "--s", p.toFixed(3));
+        setVar(stackSticky, "--fs", fs.toFixed(4));
+        if (stackCount) {
+          const n = String(Math.round(60 * (k * k * (3 - 2 * k))));
+          if (n !== stackShown) {
+            stackShown = n;
+            stackCount.textContent = n;
+          }
+        }
       }
 
       // The Why sentence lights up word by word in reading order: from when

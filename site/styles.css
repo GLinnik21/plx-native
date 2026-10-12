@@ -2708,7 +2708,12 @@ video::-webkit-media-controls-start-playback-button {
   opacity: calc(1 - var(--t));
   transform: translate(calc(var(--W) * var(--t) * -0.45), calc(var(--W) * var(--f)));
 }
+/* Each plate is a pane of glass with an edge: the stepped shadows, offset
+   in the plate's own plane, read as its thickness once it is laid flat. A
+   soft band of light crosses every pane as the scene scrolls (--s, 0..1),
+   the way light runs over a phone turning in a product film. */
 .plate {
+  --edge: 1px 1px 0 rgba(255, 255, 255, 0.28), 2px 2px 0 rgba(255, 255, 255, 0.2), 3px 3px 0 rgba(255, 255, 255, 0.14), 4px 4px 0 rgba(255, 255, 255, 0.09), 5px 5px 0 rgba(255, 255, 255, 0.05);
   position: absolute;
   left: 50%;
   top: 50%;
@@ -2719,9 +2724,22 @@ video::-webkit-media-controls-start-playback-button {
   overflow: hidden;
   transform: rotateX(60deg) rotateZ(-45deg);
 }
+.plate::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 38%, rgba(255, 255, 255, 0.16) 50%, transparent 62%) no-repeat;
+  background-size: 300% 100%;
+  background-position: calc(110% - var(--s, 1) * 120%) 0;
+}
+.ghost .plate::after {
+  display: none;
+}
 .plate--picture {
   background: var(--color-neutral-950);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4), 14px 14px 40px rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4), var(--edge), 14px 14px 40px rgba(0, 0, 0, 0.45);
 }
 .plate--picture picture,
 .plate--picture img {
@@ -2734,7 +2752,7 @@ video::-webkit-media-controls-start-playback-button {
   background: rgba(255, 255, 255, 0.07);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.32), 14px 14px 40px rgba(0, 0, 0, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.32), var(--edge), 14px 14px 40px rgba(0, 0, 0, 0.32);
 }
 /* The wireframes: fine white outlines only. */
 .plate--glass svg {
@@ -2794,6 +2812,21 @@ video::-webkit-media-controls-start-playback-button {
     linear-gradient(90deg, rgba(255, 255, 255, 0.22) 1px, transparent 1px);
   background-size: 6.25% 11.1%;
 }
+/* Light pooling under the screen plate, below the whole stack so it never
+   shows through the glass; it strengthens as the frames arrive (--k). */
+.stack-bloom {
+  position: absolute;
+  z-index: 0;
+  left: calc(var(--W) * 0.05);
+  width: calc(var(--W) * 1);
+  top: calc(var(--W) * (var(--fs, 0.72) + 0.42));
+  height: calc(var(--W) * 0.42);
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(250, 184, 46, 0.5), rgba(120, 150, 220, 0.22) 60%, transparent);
+  filter: blur(calc(var(--W) * 0.08));
+  opacity: calc(0.15 + 0.6 * var(--k));
+  pointer-events: none;
+}
 /* The picture's motion blur, from the app plate down to the screen: ten
    copies, fainter near the app, blurred together. It comes in once the stack
    has mostly closed up. */
@@ -2838,6 +2871,12 @@ video::-webkit-media-controls-start-playback-button {
 .layer[data-cut] .layer-label {
   color: var(--text-secondary);
 }
+/* While the typical app is still one closed block (--open below 1), only the
+   app's label shows; the others come in as it opens, never on top of each
+   other. */
+.layer:not([data-y0="0"]) .layer-label {
+  opacity: max(0, var(--open, 1) * 2 - 1);
+}
 .layer-sub {
   font-size: clamp(13px, 1.1vw, 15px);
   font-weight: 400;
@@ -2863,7 +2902,16 @@ video::-webkit-media-controls-start-playback-button {
   font-weight: 700;
   letter-spacing: -0.055em;
 }
-.stack-fps span {
+/* The number counts up to 60 as the stack closes (site.js), in a warm
+   white taken from the picture; tabular figures, so it never jitters. */
+.stack-fps-n {
+  font-variant-numeric: tabular-nums;
+  background: linear-gradient(180deg, #ffffff 30%, #ffd9a6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.stack-fps-u {
   margin-left: 0.12em;
   font-size: 0.38em;
   letter-spacing: -0.01em;
