@@ -768,7 +768,7 @@ pub(crate) fn read_once(
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
     use super::*;
     #[allow(unused_imports)]
     use super::super::test_support::*;
@@ -1029,65 +1029,14 @@ pub(super) mod tests {
     }
 
     /// A range-capable file server on loopback: `GET` answers 200, `Range: bytes=N-` answers 206.
-    pub(in crate::ff) fn serve_file(body: Vec<u8>, stop: &'static AtomicBool) -> (u16, std::thread::JoinHandle<()>) {
-        use std::io::{Read, Write};
-        let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = srv.local_addr().unwrap().port();
-        srv.set_nonblocking(true).unwrap();
-        let h = std::thread::spawn(move || {
-            while !stop.load(Ordering::Acquire) {
-                let Ok((mut s, _)) = plx_base::testnet::accept(&srv) else {
-                    std::thread::yield_now();
-                    continue;
-                };
-                let body = body.clone();
-                std::thread::spawn(move || {
-                    let mut buf: Vec<u8> = Vec::new();
-                    let mut chunk = [0u8; 1024];
-                    loop {
-                        let Some(k) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
-                            match s.read(&mut chunk) {
-                                Ok(0) | Err(_) => return,
-                                Ok(n) => {
-                                    buf.extend_from_slice(&chunk[..n]);
-                                    continue;
-                                }
-                            }
-                        };
-                        let head = String::from_utf8_lossy(&buf[..k]).to_ascii_lowercase();
-                        buf.drain(..k + 4);
-                        let from = head
-                            .lines()
-                            .find_map(|l| l.strip_prefix("range: bytes="))
-                            .and_then(|r| r.trim_end_matches('-').parse::<usize>().ok());
-                        let reply = match from {
-                            Some(n) if n < body.len() => format!(
-                                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {n}-{}/{}\r\n\r\n",
-                                body.len() - n,
-                                body.len() - 1,
-                                body.len()
-                            ),
-                            _ => format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()),
-                        };
-                        let n = from.filter(|n| *n < body.len()).unwrap_or(0);
-                        if s.write_all(reply.as_bytes()).is_err() || s.write_all(&body[n..]).is_err() {
-                            return;
-                        }
-                    }
-                });
-            }
-        });
-        (port, h)
-    }
-
     /// **End to end through the bundled FFmpeg**: a generated 5 s MKV with one SRT cue at 1.0 s is
     /// side-read over a local HTTP listener with the clock `offset 2 s`, `disp_base 1 s`, so the
     /// assumed mapping gives `delta = +1 s` and the cue must land at 0.0 s in the store.
     ///
-    /// Needs the host build of the bundled FFmpeg (`make check-ffmpeg`) and a system `ffmpeg` to
-    /// generate the fixture; skips (loudly) when the latter is absent.
+    /// Needs the host build of the bundled FFmpeg and a system `ffmpeg` to generate the fixture.
+    /// Run this test explicitly with `--ignored`; `make check-ffmpeg` stages its libraries.
     #[test]
-    #[ignore = "needs the host build of the bundled FFmpeg and a system ffmpeg — run by `make check-ffmpeg`"]
+    #[ignore = "needs the host build of the bundled FFmpeg and a system ffmpeg — run explicitly with --ignored"]
     fn side_reader_draws_a_shifted_cue_from_a_generated_mkv() {
         let _g = plx_base::testlock::serial();
         super::super::image_subtitle_tests::bind_host_ffmpeg();

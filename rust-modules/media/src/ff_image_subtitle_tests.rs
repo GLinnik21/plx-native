@@ -185,7 +185,7 @@ fn terminated_ass_header_renders_through_http_side_reader() {
             .join("../../tests/fixtures/ass-terminated-header.mkv"),
     )
     .unwrap();
-    let (port, server) = super::subside::tests::serve_file(body, &STOP_SERVER);
+    let (port, server) = super::test_support::serve_file(body, &STOP_SERVER);
     let stop = SideStop::new();
     ass_source::reset();
     crate::player::request_subtitle(0);
