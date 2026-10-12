@@ -748,12 +748,14 @@
       const headline = a.querySelector(".press-headline");
       const time = a.querySelector(".press-date");
       const gloss = a.querySelector(".press-gloss");
+      const language = a.querySelector(".press-lang");
       return {
         href: a.getAttribute("href"),
         outlet: a.querySelector(".press-outlet").textContent,
         lang: headline.getAttribute("lang") || "en",
         headline: headline.innerHTML,
         gloss: gloss ? gloss.textContent : "",
+        language: language ? language.textContent : "",
         date: time.textContent,
         iso: time.getAttribute("datetime"),
       };
@@ -808,7 +810,8 @@
         b.tabIndex = on ? 0 : -1;
       });
       stage.setAttribute("aria-labelledby", "press-tab-" + sel);
-      meta.textContent = it.date;
+      // A foreign-language article says so beside its date, before the reader follows the link.
+      meta.textContent = it.language ? it.date + " · " + it.language : it.date;
       head.innerHTML = it.headline;
       head.setAttribute("lang", it.lang);
       gloss.textContent = it.gloss;
