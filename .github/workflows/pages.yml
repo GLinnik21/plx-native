@@ -83,6 +83,9 @@ jobs:
           cp site/media/feel-poster-narrow.jpg _site/media/feel-poster-narrow.jpg
           cp site/media/feel-glow.png _site/media/feel-glow.png
           cp site/media/feel-glow-narrow.png _site/media/feel-glow-narrow.png
+          cp site/media/fan-caligari.jpg _site/media/fan-caligari.jpg
+          cp site/media/fan-cosmos.jpg _site/media/fan-cosmos.jpg
+          cp site/media/fan-elephants.jpg _site/media/fan-elephants.jpg
           cp site/media/closeup-glass.jpg _site/media/closeup-glass.jpg
           cp site/media/closeup-glass.webp _site/media/closeup-glass.webp
           cp site/media/closeup-glass-narrow.jpg _site/media/closeup-glass-narrow.jpg
@@ -110,7 +113,7 @@ jobs:
           cp docs/screenshots/home.jpg _site/docs/screenshots/home.jpg
           cp docs/screenshots/library.jpg _site/docs/screenshots/library.jpg
           cp docs/screenshots/search.jpg _site/docs/screenshots/search.jpg
-          cp docs/screenshots/ux-detail.jpg _site/docs/screenshots/ux-detail.jpg
+          cp docs/screenshots/ux-library-sort.jpg _site/docs/screenshots/ux-library-sort.jpg
           cp docs/screenshots/player.jpg _site/docs/screenshots/player.jpg
 
           # Subsets pkg/appfont.ttf / pkg/appfont-bold.ttf (the APP's fonts, untouched) down to

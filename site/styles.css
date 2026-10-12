@@ -3278,7 +3278,7 @@ video::-webkit-media-controls-start-playback-button {
   border-bottom-right-radius: 8px;
 }
 
-/* Libraries: the posters fan out. */
+/* Libraries: three posters from the demo library fan out. */
 .feature-fan {
   position: relative;
   width: 166px;
@@ -3294,17 +3294,17 @@ video::-webkit-media-controls-start-playback-button {
   box-shadow: 0 12px 26px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.2);
 }
 .feature-fan i:nth-child(1) {
-  background: linear-gradient(160deg, #6a7aa6, #2b3452);
+  background: #2b3452 url(media/fan-caligari.jpg) center / cover;
   translate: -43px 6px;
   rotate: -10deg;
 }
 .feature-fan i:nth-child(2) {
-  background: linear-gradient(160deg, #b08455, #47321f);
+  background: #47321f url(media/fan-cosmos.jpg) center / cover;
   translate: 0 -7px;
   rotate: -1deg;
 }
 .feature-fan i:nth-child(3) {
-  background: linear-gradient(160deg, #58948d, #1f3d3c);
+  background: #1f3d3c url(media/fan-elephants.jpg) center / cover;
   translate: 43px 6px;
   rotate: 9deg;
 }
