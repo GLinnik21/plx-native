@@ -1219,7 +1219,11 @@ unsafe fn begin_ass_sources(
         let cp = stream_codecpar(*streams.add(*si as usize));
         let len = (*cp).extradata_size.max(0) as usize;
         if len > 0 && len <= ass_source::MAX_HEADER_BYTES && !(*cp).extradata.is_null() {
-            headers.push((track as i32, std::slice::from_raw_parts((*cp).extradata, len).to_vec()));
+            let mut header = std::slice::from_raw_parts((*cp).extradata, len);
+            while header.last() == Some(&0) {
+                header = &header[..header.len() - 1];
+            }
+            headers.push((track as i32, header.to_vec()));
         }
     }
     let mut fonts = Vec::new();

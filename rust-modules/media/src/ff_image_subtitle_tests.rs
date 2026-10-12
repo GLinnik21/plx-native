@@ -7,6 +7,268 @@
 //! "not run" in `make check`, never a pass that executed nothing.
 
 use super::*;
+use crate::player::{ass, ass_source};
+use std::sync::Arc;
+
+const TERMINATED_ASS_HEADER: &[u8] =
+    include_bytes!("../../../tests/fixtures/ass-terminated-header.bin");
+
+struct AssFixture {
+    fmt: *mut AVFormatContext,
+    pkt: *mut AVPacket,
+    subs: SubTracks,
+}
+
+impl AssFixture {
+    unsafe fn open() -> Self {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/ass-terminated-header.mkv");
+        let path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut fmt = std::ptr::null_mut();
+        assert!(
+            avformat_open_input(
+                &mut fmt,
+                path.as_ptr(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut()
+            ) >= 0
+        );
+        let pkt = av_packet_alloc();
+        assert!(!pkt.is_null());
+        let subs = SubTracks::open(fmt, (*fmt).streams);
+        assert_eq!(subs.entries().len(), 2);
+        Self { fmt, pkt, subs }
+    }
+
+    unsafe fn sources(&self) -> u64 {
+        begin_ass_sources(
+            "fixture:ass-header",
+            self.fmt,
+            (*self.fmt).streams,
+            self.subs.entries(),
+        )
+    }
+
+    unsafe fn read(&self, generation: u64) {
+        while av_read_frame(self.fmt, self.pkt) >= 0 {
+            let si = (*self.pkt).stream_index;
+            if let Some(pos) = self.subs.position(si) {
+                if let Some(cue) =
+                    self.subs
+                        .decode(pos, self.pkt, *(*self.fmt).streams.add(si as usize))
+                {
+                    cue.push(generation);
+                }
+            }
+            av_packet_unref(self.pkt);
+        }
+    }
+}
+
+impl Drop for AssFixture {
+    fn drop(&mut self) {
+        unsafe {
+            self.subs = SubTracks::empty();
+            av_packet_free(&mut self.pkt);
+            avformat_close_input(&mut self.fmt);
+        }
+    }
+}
+
+struct AssReset;
+impl Drop for AssReset {
+    fn drop(&mut self) {
+        ass::clear();
+        ass_source::reset();
+        crate::player::request_subtitle(-1);
+    }
+}
+
+fn ass_frame(source: Arc<ass::Source>, now_ms: i64, visible: bool) -> Arc<ass::Frame> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(frame) = ass::request(source.clone(), now_ms, 320, 180, 320, 180) {
+            if frame.error.is_some() || !frame.rects.is_empty() == visible {
+                return frame;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "ASS frame did not arrive at {now_ms} ms"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+fn assert_ass_caption(source: &Arc<ass::Source>, now_ms: i64) -> Arc<ass::Frame> {
+    let frame = ass_frame(source.clone(), now_ms, true);
+    assert_eq!(
+        frame.error, None,
+        "the supplied ASS header must render its captions"
+    );
+    assert!(
+        frame
+            .rects
+            .iter()
+            .any(|r| r.rgba.chunks_exact(4).any(|p| p[3] != 0)),
+        "caption pixels are visible"
+    );
+    frame
+}
+
+#[test]
+#[ignore = "requires the bundled host FFmpeg, native libass and packaged fonts"]
+fn terminated_ass_header_renders_through_main_subtitle_ingestion() {
+    let _g = plx_base::testlock::serial();
+    let _reset = AssReset;
+    bind_host_ffmpeg();
+    ass_source::reset();
+    crate::player::request_subtitle(0);
+    SHARED.playpos_ns.store(0, Ordering::Relaxed);
+    unsafe {
+        let d = AssFixture::open();
+        let cp = stream_codecpar(*(*d.fmt).streams.add(d.subs.entries()[0].0 as usize));
+        assert_eq!((*cp).extradata_size, 521);
+        assert_eq!(
+            std::slice::from_raw_parts((*cp).extradata, 521),
+            TERMINATED_ASS_HEADER
+        );
+        let generation = d.sources();
+        d.read(generation);
+        let terminated = ass_source::selected(0).unwrap();
+        let control = ass_source::selected(1).unwrap();
+        let frame = assert_ass_caption(&terminated, 2000);
+        let control_frame = assert_ass_caption(&control, 2000);
+        assert_eq!(
+            frame.rects, control_frame.rects,
+            "a terminator does not change caption pixels"
+        );
+        for source in [&terminated, &control] {
+            let ass::Content::Embedded { header, events, .. } = &source.content else {
+                panic!()
+            };
+            assert_eq!(header.as_ref(), &TERMINATED_ASS_HEADER[..520]);
+            assert_eq!(
+                events
+                    .iter()
+                    .map(|e| (e.start_ms, e.duration_ms))
+                    .collect::<Vec<_>>(),
+                [(1730, 2000), (5000, 2000)]
+            );
+            assert_eq!(ass_frame(source.clone(), 4000, false).error, None);
+            assert_ass_caption(source, 6000);
+            assert_eq!(ass_frame(source.clone(), 8000, false).error, None);
+            assert_ass_caption(source, 2000);
+        }
+        ass::clear();
+        assert_ass_caption(&terminated, 2000);
+        let reopened_generation = d.sources();
+        let reopened = ass_source::selected(0).unwrap();
+        assert_ne!(reopened.id, terminated.id);
+        assert_ass_caption(&reopened, 2000);
+        ass_source::seek(reopened_generation);
+        assert_ass_caption(&ass_source::selected(0).unwrap(), 6000);
+    }
+}
+
+#[test]
+#[ignore = "requires the bundled host FFmpeg, native libass and packaged fonts"]
+fn terminated_ass_header_renders_through_http_side_reader() {
+    use super::subside::{Anchor, ReadCfg, RunEnd, SideStop};
+    let _g = plx_base::testlock::serial();
+    let _reset = AssReset;
+    bind_host_ffmpeg();
+    static STOP_SERVER: AtomicBool = AtomicBool::new(false);
+    STOP_SERVER.store(false, Ordering::Release);
+    let body = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/ass-terminated-header.mkv"),
+    )
+    .unwrap();
+    let (port, server) = super::subside::tests::serve_file(body, &STOP_SERVER);
+    let stop = SideStop::new();
+    ass_source::reset();
+    crate::player::request_subtitle(0);
+    crate::player::set_subtitle_offset(0);
+    SHARED.playpos_ns.store(0, Ordering::Relaxed);
+    let reader = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let url = format!("http://127.0.0.1:{port}/library/parts/1/ass-header.mkv");
+            let cfg = ReadCfg {
+                url: &url,
+                offset_ns: 0,
+                ordinal: 0,
+                kbps: 0,
+            };
+            let anchor = Anchor::of(0, &[0]);
+            let mut delta = Some(0);
+            super::subside::read_once(&cfg, &stop, &anchor, &mut delta, &|_| 0, &|| 0, &|| (0, 0))
+        })
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let source = loop {
+        if let Some(source) = ass_source::selected(0) {
+            if matches!(&source.content, ass::Content::Embedded { events, .. } if events.len() == 2)
+            {
+                break Some(source);
+            }
+        }
+        if reader.is_finished() || std::time::Instant::now() >= deadline {
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    stop.trigger();
+    reader.thread().unpark();
+    let end = reader.join();
+    STOP_SERVER.store(true, Ordering::Release);
+    server.join().unwrap();
+    assert_eq!(end.unwrap(), RunEnd::Stopped);
+    let source = source.expect("the side reader must deliver both ASS packets");
+    assert_ass_caption(&source, 2000);
+    assert_eq!(ass_frame(source.clone(), 4000, false).error, None);
+    assert_ass_caption(&source, 6000);
+}
+
+#[test]
+#[ignore = "requires the bundled host FFmpeg, native libass and packaged fonts"]
+fn ass_header_terminators_do_not_weaken_validation() {
+    let _g = plx_base::testlock::serial();
+    let _reset = AssReset;
+    bind_host_ffmpeg();
+    ass_source::reset();
+    unsafe {
+        let d = AssFixture::open();
+        let cp = stream_codecpar(*(*d.fmt).streams.add(d.subs.entries()[0].0 as usize));
+        // FFmpeg allocates zeroed AV_INPUT_BUFFER_PADDING_SIZE bytes after extradata.
+        (*cp).extradata_size = 523;
+        d.sources();
+        let source = ass_source::selected(0).unwrap();
+        let ass::Content::Embedded { header, .. } = &source.content else {
+            panic!()
+        };
+        assert_eq!(header.as_ref(), &TERMINATED_ASS_HEADER[..520]);
+        *(*cp).extradata.add(20) = 0;
+        d.sources();
+        assert_eq!(
+            ass_frame(ass_source::selected(0).unwrap(), 2000, false).error,
+            Some(ass::Fault::InvalidTrack)
+        );
+        std::ptr::write_bytes((*cp).extradata, 0, 523);
+        d.sources();
+        assert_eq!(
+            ass_frame(ass_source::selected(0).unwrap(), 2000, false).error,
+            Some(ass::Fault::InvalidTrack)
+        );
+        (*cp).extradata_size = ass_source::MAX_HEADER_BYTES as i32 + 1;
+        d.sources();
+        assert!(
+            ass_source::selected(0).is_none(),
+            "the raw size bound runs before copying or trimming"
+        );
+    }
+}
 
 /// Where the host FFmpeg was staged: `PLX_FFMPEG_DIR` (what `make check-ffmpeg` passes), else the
 /// checkout's own `pkg/`.
@@ -43,6 +305,7 @@ pub(super) fn bind_host_ffmpeg() {
         (63, 63, 61),
         "the staged FFmpeg is not the one ff.rs is built for"
     );
+    ABI_OK.store(true, Ordering::Relaxed);
 }
 
 /// **A subtitle track muxed by mkvmerge is zlib-compressed, and the bundled FFmpeg must undo it.**

@@ -2084,7 +2084,7 @@ $(FFMPEG_HOST_STAGED): pkg/%.dylib: $(FFMPEG_HOST_INC)/libavformat/avformat.h ci
 # which decoders) is invisible to it. These tests load the host build of that same list and are
 # `#[ignore]`d in the plain suite; the first is the zlib-compressed PGS track that no configure
 # flag change may silently drop again (`ff_image_subtitle_tests.rs`). macOS only, like the staging.
-check-ffmpeg: $(FFMPEG_HOST_STAGED)
+check-ffmpeg: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED)
 	cd rust-modules && CARGO_INCREMENTAL=0 PLX_FFMPEG_DIR=$(CURDIR)/pkg PATH="$$HOME/.cargo/bin:$$PATH" \
 	  cargo +$(RUST_NIGHTLY) test --lib -p plx_media ff::image_subtitle_tests -- --ignored
 

@@ -768,7 +768,7 @@ pub(crate) fn read_once(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     #[allow(unused_imports)]
     use super::super::test_support::*;
@@ -1029,7 +1029,7 @@ mod tests {
     }
 
     /// A range-capable file server on loopback: `GET` answers 200, `Range: bytes=N-` answers 206.
-    fn serve_file(body: Vec<u8>, stop: &'static AtomicBool) -> (u16, std::thread::JoinHandle<()>) {
+    pub(in crate::ff) fn serve_file(body: Vec<u8>, stop: &'static AtomicBool) -> (u16, std::thread::JoinHandle<()>) {
         use std::io::{Read, Write};
         let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let port = srv.local_addr().unwrap().port();
