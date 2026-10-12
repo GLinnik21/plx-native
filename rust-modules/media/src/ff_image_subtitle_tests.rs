@@ -6,6 +6,7 @@
 //! staged into `pkg/` by `make check-ffmpeg`) and is `#[ignore]`d everywhere else — an honest
 //! "not run" in `make check`, never a pass that executed nothing.
 
+use super::subs::SubCue;
 use super::*;
 use crate::player::{ass, ass_source};
 use std::sync::Arc;
@@ -53,6 +54,8 @@ impl AssFixture {
         while av_read_frame(self.fmt, self.pkt) >= 0 {
             let si = (*self.pkt).stream_index;
             if let Some(pos) = self.subs.position(si) {
+                let raw = std::slice::from_raw_parts((*self.pkt).data, (*self.pkt).size as usize);
+                assert_eq!(raw.last() == Some(&0), pos == 0);
                 if let Some(cue) =
                     self.subs
                         .decode(pos, self.pkt, *(*self.fmt).streams.add(si as usize))
@@ -104,7 +107,7 @@ fn assert_ass_caption(source: &Arc<ass::Source>, now_ms: i64) -> Arc<ass::Frame>
     let frame = ass_frame(source.clone(), now_ms, true);
     assert_eq!(
         frame.error, None,
-        "the supplied ASS header must render its captions"
+        "the terminated ASS header and packets must render their captions"
     );
     assert!(
         frame
@@ -118,7 +121,7 @@ fn assert_ass_caption(source: &Arc<ass::Source>, now_ms: i64) -> Arc<ass::Frame>
 
 #[test]
 #[ignore = "requires the bundled host FFmpeg, native libass and packaged fonts"]
-fn terminated_ass_header_renders_through_main_subtitle_ingestion() {
+fn terminated_ass_header_and_packets_render_through_main_subtitle_ingestion() {
     let _g = plx_base::testlock::serial();
     let _reset = AssReset;
     bind_host_ffmpeg();
@@ -149,6 +152,14 @@ fn terminated_ass_header_renders_through_main_subtitle_ingestion() {
             };
             assert_eq!(header.as_ref(), &TERMINATED_ASS_HEADER[..520]);
             assert_eq!(
+                events[0].payload.as_ref(),
+                b"0,0,Default,,0,0,0,,FIRST TEST CAPTION"
+            );
+            assert_eq!(
+                events[1].payload.as_ref(),
+                b"1,0,Default,,0,0,0,,SECOND TEST CAPTION"
+            );
+            assert_eq!(
                 events
                     .iter()
                     .map(|e| (e.start_ms, e.duration_ms))
@@ -173,7 +184,7 @@ fn terminated_ass_header_renders_through_main_subtitle_ingestion() {
 
 #[test]
 #[ignore = "requires the bundled host FFmpeg, native libass and packaged fonts"]
-fn terminated_ass_header_renders_through_http_side_reader() {
+fn terminated_ass_header_and_packets_render_through_http_side_reader() {
     use super::subside::{Anchor, ReadCfg, RunEnd, SideStop};
     let _g = plx_base::testlock::serial();
     let _reset = AssReset;
@@ -229,6 +240,56 @@ fn terminated_ass_header_renders_through_http_side_reader() {
     assert_ass_caption(&source, 2000);
     assert_eq!(ass_frame(source.clone(), 4000, false).error, None);
     assert_ass_caption(&source, 6000);
+}
+
+#[test]
+#[ignore = "requires the bundled host FFmpeg, native libass and packaged fonts"]
+fn ass_packet_terminators_do_not_weaken_validation() {
+    let _g = plx_base::testlock::serial();
+    let _reset = AssReset;
+    bind_host_ffmpeg();
+    crate::player::request_subtitle(0);
+    unsafe {
+        let d = AssFixture::open();
+        for payload in [b"0,0,Default,,0,0,0,,bad\0caption\0".as_slice(), b"\0\0\0"] {
+            ass_source::reset();
+            let generation = d.sources();
+            SubCue::Ass {
+                track: 0,
+                start: 1_000_000_000,
+                end: 3_000_000_000,
+                payload,
+            }
+            .push(generation);
+            assert_eq!(
+                ass_frame(ass_source::selected(0).unwrap(), 2000, false).error,
+                Some(ass::Fault::InvalidEvents)
+            );
+        }
+        ass_source::reset();
+        let generation = d.sources();
+        let oversized = vec![0; 256 * 1024 + 1];
+        SubCue::Ass {
+            track: 0,
+            start: 1_000_000_000,
+            end: 3_000_000_000,
+            payload: &oversized,
+        }
+        .push(generation);
+        let source = ass_source::selected(0).unwrap();
+        let ass::Content::Embedded { events, .. } = &source.content else {
+            panic!()
+        };
+        assert!(events.is_empty(), "the raw size bound runs before trimming");
+        SubCue::Ass {
+            track: 0,
+            start: 1_000_000_000,
+            end: 3_000_000_000,
+            payload: b"0,0,Default,,0,0,0,,MULTIPLE TERMINATORS\0\0\0",
+        }
+        .push(generation);
+        assert_ass_caption(&ass_source::selected(0).unwrap(), 2000);
+    }
 }
 
 #[test]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the ASS header regression fixture with generated video and captions."""
+"""Build the terminated ASS header and packet fixture with generated captions."""
 import json
 from pathlib import Path
 import subprocess
@@ -63,6 +63,21 @@ def replace_headers(data, header):
     return b"".join(tracks)
 
 
+def terminate_packets(data):
+    output = []
+    for ident, body, raw in elements(data):
+        if ident == bytes.fromhex("bf"):
+            continue
+        if ident == bytes.fromhex("a0"):
+            output.append(element(ident, terminate_packets(body)))
+        elif ident in (bytes.fromhex("a1"), bytes.fromhex("a3")) and body[0] == 0x82:
+            # Track 2 is the first ASS stream. Track 3 stays unchanged as the control.
+            output.append(element(ident, body + b"\0"))
+        else:
+            output.append(raw)
+    return b"".join(output)
+
+
 def main():
     header = HEADER.read_bytes()
     if len(header) != 521 or header[-1:] != b"\0" or b"\0" in header[:-1]:
@@ -92,7 +107,12 @@ def main():
                     # These elements contain offsets or checksums of the original header.
                     if i in [bytes.fromhex(s) for s in ("114d9b74", "1c53bb6b", "bf")]:
                         continue
-                    segment.append(element(i, replace_headers(b, header)) if i == bytes.fromhex("1654ae6b") else r)
+                    if i == bytes.fromhex("1654ae6b"):
+                        segment.append(element(i, replace_headers(b, header)))
+                    elif i == bytes.fromhex("1f43b675"):
+                        segment.append(element(i, terminate_packets(b)))
+                    else:
+                        segment.append(r)
                 output.append(element(ident, b"".join(segment)))
             else:
                 output.append(raw)
@@ -102,7 +122,7 @@ def main():
         "-show_entries", "stream=extradata_size,nb_read_packets", "-of", "json", str(OUTPUT),
     ]))
     assert [(s["extradata_size"], s["nb_read_packets"]) for s in probe["streams"]] == [(521, "2"), (520, "2")]
-    print(f"{OUTPUT.name}: terminated header 521 bytes, control 520 bytes, two captions per track")
+    print(f"{OUTPUT.name}: terminated header and packets, unterminated control, two captions per track")
 
 
 if __name__ == "__main__":

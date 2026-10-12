@@ -257,9 +257,12 @@ impl Store {
 pub fn begin(media_key: &str, headers: Vec<(i32, Vec<u8>)>, fonts: Vec<Font>) -> u64 {
     store().begin(media_key, headers, fonts)
 }
-pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, payload: &[u8]) {
+pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, mut payload: &[u8]) {
     if payload.len() > MAX_PACKET_BYTES {
         return;
+    }
+    while payload.last() == Some(&0) {
+        payload = &payload[..payload.len() - 1];
     }
     let mut store = store();
     store.selected_track = Some(super::desired_sub_idx()).filter(|&t| t >= 0);

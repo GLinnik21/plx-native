@@ -14,8 +14,9 @@ new Starfish API is required. Pins, checksums, license notices and corresponding
 are part of the normal package/source-bundle workflow.
 
 The demuxer copies ASS headers, complete timed packets and font attachments out of FFmpeg.
-The header copy removes trailing zero terminators before validation. A zero byte inside the
-header text still causes rejection. Direct playback and the subtitle side reader use the same copy.
+The header and packet copies remove trailing zero terminators before validation. A zero byte
+inside the header or caption text still causes rejection. The raw byte limits apply before
+trimming. Direct playback and the subtitle side reader use the same copies.
 `Shared` owns the ASS source store and renderer mailbox alongside the other playback transport
 state. `player::ass_source` retains immutable snapshots and a bounded event window, including the
 history needed for subtitle delay. It keeps all embedded ASS tracks so selecting another language
@@ -72,10 +73,10 @@ python3 tests/mock_pms.py --host 0.0.0.0 --port "$MOCK_PMS_PORT" \
 
 The native host test checks actual libass pixels; ordinary host tests check source preservation,
 selection/seek fencing, overlap, bounds and download policy. Neither proves TV performance.
-`make check-ffmpeg` also builds the native ASS renderer and tests a terminated header through
+`make check-ffmpeg` also builds the native ASS renderer and tests terminated headers and packets through
 the shared subtitle ingestion path and the HTTP side reader. Both tests check caption pixels and
 timing. `tests/fixtures/make_ass_header_fixture.py` regenerates their synthetic MKV from the
-captured header and generated captions. Its second subtitle track has no terminator and is the control.
+captured header and generated captions. Its second subtitle track has no terminators and is the control.
 Boot the fixture with `tools/tv-session.sh up --guest --mock --screen player=990001`.
 `--mock` verifies the configured server’s synthetic identity and supplies a fabricated guest token;
 it never resolves a real Plex account. Configure and build the developer app against that mock first.
