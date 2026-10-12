@@ -2527,7 +2527,7 @@ video::-webkit-media-controls-start-playback-button {
   color: var(--text-primary);
 }
 .works-row li.is-minor {
-  font-size: 0.42em;
+  font-size: 0.46em;
   font-weight: 500;
   letter-spacing: -0.01em;
   color: var(--text-tertiary);
