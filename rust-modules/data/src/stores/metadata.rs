@@ -206,8 +206,10 @@ pub enum MetadataCmd {
     /// position its focus was last seen at. `seen` is the window the ask was computed from, and is
     /// refused the same way a `WantRelated`'s is; so is an ask while a read is out.
     SeekRelated { at: usize, seen: (usize, usize) },
-    /// Withdraw the read `WantRelated` started: focus left the edge it was asked from, and a window
-    /// sliding in now would take the card it stands on out of the row. A read already out is
+    /// Withdraw the read `WantRelated` started: focus is no longer in the zone it was asked from (it
+    /// left the edge, or, for an ask the row made unfocused because its skeletons were on its axis,
+    /// it entered the row far from the end), and a window sliding in now could move the card it
+    /// stands on. A read already out is
     /// discarded when it lands, and one landed but not yet installed is dropped.
     CancelRelated,
     SetNowPlaying(Option<crate::metadata::NowPlaying>),
