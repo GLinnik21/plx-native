@@ -20,9 +20,10 @@
 //! lists them, and the tests hold that table to the struct and to platform's account-bound list,
 //! both ways, so a field without a row (or a row without a field) fails instead of drifting.
 use super::{
-    DeckPress, DirectPlayMode, NextEpisodeMode, PlaybackQuality, Session, SkipInterval,
-    SubtitlePosition, SubtitleSize, SubtitleTone,
+    DeckPress, DirectPlayMode, NextEpisodeMode, OpaqueExtensions, PlaybackQuality, Session, SkipInterval,
+    SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone,
 };
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// The nine install-wide player settings, flattened into [`Session`] and into the canonical
@@ -299,6 +300,187 @@ impl Session {
         S::put(&mut next.prefs, value);
         next
     }
+}
+
+// ---- the memory door: per-profile, per-item lists ---------------------------------------------
+
+/// **One profile's remembered entries of one kind**, oldest first: the record shape a per-profile
+/// list shares (today `subtitle_offsets`; track memory follows). `{user, items, extensions}` is
+/// exactly what `subtitle_offsets` was on disk before the door, so a file is read and written
+/// byte for byte as before; `account` is the stamp of an account-bound list and is skipped while
+/// empty (the first tenant is not bound, so it stays empty and writes no key).
+///
+/// The list as a whole is a `Vec<ProfileList<E>>` held in a [`Session`] field and soft-parsed per
+/// element, so one bad profile record drops only that record; [`ProfileMemory`] is the operations
+/// over it, and [`MemoryEntry`] is what a tenant supplies.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(default, bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
+pub struct ProfileList<E> {
+    /// The Plex Home user's `uuid`, or **empty for the account owner** (`LastLibrary`'s
+    /// convention, and for the same reason).
+    pub user: String,
+    /// The account stamp of an account-bound list (`grant::account_key`), else empty. A value
+    /// that is not a string reads as empty: an unreadable stamp binds to no account.
+    #[serde(deserialize_with = "de_soft_string", skip_serializing_if = "String::is_empty")]
+    pub account: String,
+    /// Oldest first: a re-recorded entry moves to the end and the cap drains the front.
+    #[serde(deserialize_with = "super::de_soft_vec")]
+    pub items: Vec<E>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub extensions: OpaqueExtensions,
+}
+
+impl<E> Default for ProfileList<E> {
+    fn default() -> Self {
+        ProfileList { user: String::new(), account: String::new(), items: Vec::new(), extensions: OpaqueExtensions::default() }
+    }
+}
+
+/// What a tenant of the memory door supplies: its entry type, how an entry is identified, how many
+/// a profile keeps, and which [`Session`] list holds it.
+pub trait MemoryEntry: Serialize + DeserializeOwned + Clone + PartialEq {
+    /// What identifies an entry within one profile's list (an item, a show).
+    type Key: PartialEq + Clone + Send + 'static;
+    /// The most entries one profile keeps; the oldest are dropped first.
+    const CAP: usize;
+    fn key(&self) -> Self::Key;
+    /// An entry that says "forget me" (or cannot be recorded): writing it removes the entry for
+    /// its key and records nothing (an offset of 0 is Original, which needs no record).
+    fn forgets(&self) -> bool;
+    /// The session list this entry kind lives in.
+    fn slot(session: &Session) -> &Vec<ProfileList<Self>>;
+    fn slot_mut(session: &mut Session) -> &mut Vec<ProfileList<Self>>;
+}
+
+impl<E: MemoryEntry> ProfileList<E> {
+    /// The most entries one profile keeps ([`MemoryEntry::CAP`]).
+    pub const CAP: usize = E::CAP;
+
+    /// The entry recorded for `key`, if any.
+    pub fn find(&self, key: &E::Key) -> Option<&E> {
+        self.items.iter().find(|e| e.key() == *key)
+    }
+
+    /// Replace the entry for `key` with `next` as the most recent, or remove it when `next` is
+    /// `None` or [`forgets`](MemoryEntry::forgets), then drain the oldest past the cap (T4).
+    fn place(&mut self, key: &E::Key, next: Option<E>) {
+        self.items.retain(|e| e.key() != *key);
+        let Some(next) = next.filter(|e| !e.forgets()) else { return };
+        debug_assert!(next.key() == *key, "an upserted entry keeps the key it was upserted under");
+        self.items.push(next);
+        let excess = self.items.len().saturating_sub(E::CAP);
+        self.items.drain(..excess);
+    }
+}
+
+/// The operations over a session's list of [`ProfileList`]s: the one place a per-profile entry is
+/// found, merged and pruned, so a tenant cannot spell its own.
+pub trait ProfileMemory<E: MemoryEntry> {
+    /// `user`'s entry for `key` in the record stamped `account`.
+    fn get(&self, user: &str, account: &str, key: &E::Key) -> Option<&E>;
+
+    /// **Merge a change against what the list holds NOW** (T3). `f` receives the current entry for
+    /// `key` and returns the entry to hold (`None`, or an entry that
+    /// [`forgets`](MemoryEntry::forgets), removes it). It runs inside the write closure against
+    /// the FILE's list, never against the caller's earlier copy, so a delta built from a half of
+    /// an entry (one new pick over a diverged file) merges instead of overwriting the other half.
+    /// A changed entry moves to the end and the cap drains from the front; a profile record whose
+    /// items become empty is dropped (T4), so the list never carries empties.
+    ///
+    /// Returns whether the list changed. An entry equal to what the list already holds is not a
+    /// change: it is neither rewritten nor moved.
+    fn upsert_with(&mut self, user: &str, account: &str, key: &E::Key, f: impl FnOnce(Option<&E>) -> Option<E>) -> bool;
+}
+
+impl<E: MemoryEntry> ProfileMemory<E> for Vec<ProfileList<E>> {
+    fn get(&self, user: &str, account: &str, key: &E::Key) -> Option<&E> {
+        self.iter().find(|r| r.user == user && r.account == account).and_then(|r| r.find(key))
+    }
+
+    fn upsert_with(&mut self, user: &str, account: &str, key: &E::Key, f: impl FnOnce(Option<&E>) -> Option<E>) -> bool {
+        let at = self.iter().position(|r| r.user == user && r.account == account);
+        let current = at.and_then(|i| self[i].find(key));
+        let next = f(current).filter(|e| !e.forgets());
+        if current == next.as_ref() {
+            return false;
+        }
+        let at = at.unwrap_or_else(|| {
+            self.push(ProfileList { user: user.to_string(), account: account.to_string(), ..ProfileList::default() });
+            self.len() - 1
+        });
+        self[at].place(key, next);
+        self.retain(|r| !r.items.is_empty());
+        true
+    }
+}
+
+impl MemoryEntry for SubtitleOffsetEntry {
+    type Key = (String, String);
+    /// A household corrects a handful of mistimed files; the cap keeps the public payload bounded
+    /// the same way `LibraryViews::CAP` does, for the same reason.
+    const CAP: usize = 24;
+    fn key(&self) -> Self::Key {
+        (self.machine_id.clone(), self.rating_key.clone())
+    }
+    /// Original (0) needs no record, and an item with no machine id or ratingKey is never recorded
+    /// (`LastLibrary::set`'s reason).
+    fn forgets(&self) -> bool {
+        self.machine_id.is_empty() || self.rating_key.is_empty() || self.offset_ms == 0
+    }
+    fn slot(session: &Session) -> &Vec<ProfileList<Self>> {
+        &session.subtitle_offsets
+    }
+    fn slot_mut(session: &mut Session) -> &mut Vec<ProfileList<Self>> {
+        &mut session.subtitle_offsets
+    }
+}
+
+impl ProfileList<SubtitleOffsetEntry> {
+    /// This profile's remembered correction for one item, if it ever tuned one.
+    pub fn get(&self, machine_id: &str, rating_key: &str) -> Option<i64> {
+        if machine_id.is_empty() || rating_key.is_empty() {
+            return None;
+        }
+        self.items.iter().find(|e| e.machine_id == machine_id && e.rating_key == rating_key)
+            .map(|e| e.offset_ms)
+    }
+
+    /// Record an item's correction as the most recent, or FORGET it with `None` (the viewer set
+    /// the offset back to Original, which needs no record to be restored). Evicts the oldest
+    /// entries past [`CAP`](Self::CAP). An item with no machine id or ratingKey is never recorded.
+    pub fn set(&mut self, machine_id: &str, rating_key: &str, offset_ms: Option<i64>) {
+        let entry = offset_ms.map(|offset_ms| SubtitleOffsetEntry {
+            machine_id: machine_id.to_string(),
+            rating_key: rating_key.to_string(),
+            offset_ms,
+            extensions: Default::default(),
+        });
+        self.place(&(machine_id.to_string(), rating_key.to_string()), entry);
+    }
+}
+
+impl Session {
+    /// This session with its `E` list edited by `edit`, or `None` when `edit` reports no change
+    /// (so a queued update writes nothing). The closure is the memory door's write half:
+    /// `cur.with_memory::<E>(|m| m.upsert_with(..))`.
+    pub fn with_memory<E: MemoryEntry>(&self, edit: impl FnOnce(&mut Vec<ProfileList<E>>) -> bool) -> Option<Session> {
+        let mut next = self.clone();
+        edit(E::slot_mut(&mut next)).then_some(next)
+    }
+}
+
+/// **The revocation tenure**: a counter that moves whenever the session is revoked (sign-out, a
+/// replaced account). A reader of the memory door's mirror compares it against the one the mirror
+/// was seeded under, and `queue_update` refuses an edit queued under an older one.
+pub fn tenure() -> u64 {
+    super::REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// A stamp that is not a string binds to no account, instead of costing the record.
+fn de_soft_string<'de, D>(d: D) -> Result<String, D::Error>
+where D: Deserializer<'de> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(value.as_str().map(str::to_owned).unwrap_or_default())
 }
 
 /// Future or malformed direct-play policies retain the automatic compatibility checks.

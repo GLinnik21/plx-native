@@ -49,9 +49,10 @@
 //!   cache rather than keep a second copy of the session live.
 use super::origin::Origin;
 use super::probe::Location;
-pub use prefs::{persist_pref, AudioEnhancementsPref, DeckPressPref, DirectPlayModePref,
+pub use prefs::{persist_pref, tenure, AudioEnhancementsPref, DeckPressPref, DirectPlayModePref,
     NextEpisodeModePref, Preferences, QualityPref, Setting, SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref,
     SubtitleTonePref};
+use prefs::ProfileMemory;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::sync::Mutex;
@@ -547,6 +548,14 @@ pub struct Session {
     ///
     /// Bounded per profile ([`SubtitleOffsets::CAP`], most recent kept), and setting the offset
     /// back to Original (0) forgets the entry rather than recording a no-op correction.
+    ///
+    /// **The player does not read or write this field directly**: it is the first tenant of the
+    /// memory door (`media::route::{remember, recall}`), which reads a mirror seeded from this list
+    /// at the first restore and reseeded only when the revocation tenure or the account stamp moves
+    /// (`MemoryMirror::reseed`), writes through at once, and queues the file write as a delta merged
+    /// against the list ([`prefs::ProfileMemory::upsert_with`]) under `queue_update`'s tenure and
+    /// credential guard. So this list is what a restart or a handoff re-seeds from, and it can lag
+    /// the mirror by the writes still queued.
     ///
     /// Soft-parsed for the reason every list in this struct is; omitted while empty so a session
     /// that never tuned a subtitle's timing serializes exactly as it did before the field existed.
@@ -1954,19 +1963,12 @@ impl LibraryViews {
 }
 
 /// One profile's remembered subtitle sync-timing corrections. See [`Session::subtitle_offsets`].
-#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
-#[serde(default)]
-pub struct SubtitleOffsets {
-    /// The Plex Home user's `uuid`, or **empty for the account owner** — [`LastLibrary`]'s
-    /// convention, and for the same reason.
-    pub user: String,
-    /// Oldest first: [`SubtitleOffsets::set`] moves a re-tuned item to the end, and the cap
-    /// drops from the front.
-    #[serde(deserialize_with = "de_soft_vec")]
-    pub items: Vec<SubtitleOffsetEntry>,
-    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
-    pub extensions: OpaqueExtensions,
-}
+///
+/// The first tenant of the memory door ([`prefs::ProfileList`]): `{user, items, extensions}` on
+/// disk exactly as it was before the door existed (`account` is skipped while empty, and this
+/// tenant is not account-bound). Oldest first: a re-tuned item moves to the end and the cap drops
+/// from the front ([`SubtitleOffsetEntry`]'s [`MemoryEntry`] impl names the cap and the key).
+pub type SubtitleOffsets = prefs::ProfileList<SubtitleOffsetEntry>;
 
 /// One item's remembered subtitle sync-timing correction, in milliseconds
 /// (`player::SUBTITLE_OFFSET_LATEST_MS`'s own unit and clamp).
@@ -1978,40 +1980,6 @@ pub struct SubtitleOffsetEntry {
     pub offset_ms: i64,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub extensions: OpaqueExtensions,
-}
-
-impl SubtitleOffsets {
-    /// A household corrects a handful of mistimed files; the cap keeps the public payload bounded
-    /// the same way [`LibraryViews::CAP`] does, for the same reason.
-    pub const CAP: usize = 24;
-
-    /// This profile's remembered correction for one item, if it ever tuned one.
-    pub fn get(&self, machine_id: &str, rating_key: &str) -> Option<i64> {
-        if machine_id.is_empty() || rating_key.is_empty() {
-            return None;
-        }
-        self.items.iter().find(|e| e.machine_id == machine_id && e.rating_key == rating_key)
-            .map(|e| e.offset_ms)
-    }
-    /// Record an item's correction as the most recent, or FORGET it with `None` (the viewer set
-    /// the offset back to Original, which needs no record to be restored). Evicts the oldest
-    /// entries past [`CAP`](Self::CAP). An item with no machine id or ratingKey is never
-    /// recorded — [`LastLibrary::set`]'s reason.
-    pub fn set(&mut self, machine_id: &str, rating_key: &str, offset_ms: Option<i64>) {
-        self.items.retain(|e| !(e.machine_id == machine_id && e.rating_key == rating_key));
-        let Some(offset_ms) = offset_ms else { return };
-        if machine_id.is_empty() || rating_key.is_empty() || offset_ms == 0 {
-            return;
-        }
-        self.items.push(SubtitleOffsetEntry {
-            machine_id: machine_id.to_string(),
-            rating_key: rating_key.to_string(),
-            offset_ms,
-            extensions: Default::default(),
-        });
-        let excess = self.items.len().saturating_sub(Self::CAP);
-        self.items.drain(..excess);
-    }
 }
 
 /// **One profile's FAVOURITE libraries** — the first-run route's record (`Shared Sources.dc.html`
@@ -2598,17 +2566,18 @@ impl Session {
 
     /// Record (or, with `None`, forget) one item's subtitle offset for one profile, leaving every
     /// other profile's alone — [`Session::set_view_for`]'s reason. A profile whose last entry is
-    /// forgotten loses its record entirely, so the list never carries empties.
+    /// forgotten loses its record entirely, so the list never carries empties. The in-memory
+    /// half of the memory door's `upsert_with` ([`prefs::ProfileMemory`]), with the tenant's
+    /// empty account (offsets are not account-bound yet).
     pub fn set_subtitle_offset_for(&mut self, user: &str, machine_id: &str, rating_key: &str, offset_ms: Option<i64>) {
-        match self.subtitle_offsets.iter_mut().find(|o| o.user == user) {
-            Some(slot) => slot.set(machine_id, rating_key, offset_ms),
-            None => {
-                let mut fresh = SubtitleOffsets { user: user.to_string(), ..Default::default() };
-                fresh.set(machine_id, rating_key, offset_ms);
-                self.subtitle_offsets.push(fresh);
-            }
-        }
-        self.subtitle_offsets.retain(|o| !o.items.is_empty());
+        let entry = offset_ms.map(|offset_ms| SubtitleOffsetEntry {
+            machine_id: machine_id.to_string(),
+            rating_key: rating_key.to_string(),
+            offset_ms,
+            extensions: Default::default(),
+        });
+        let key = (machine_id.to_string(), rating_key.to_string());
+        self.subtitle_offsets.upsert_with(user, "", &key, |_| entry);
     }
 }
 
@@ -5321,6 +5290,8 @@ mod install_preferences;
 pub mod prefs;
 #[cfg(test)]
 mod prefs_tests;
+#[cfg(test)]
+mod memory_tests;
 
 #[cfg(test)]
 mod v0;

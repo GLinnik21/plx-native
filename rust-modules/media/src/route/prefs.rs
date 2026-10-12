@@ -18,6 +18,12 @@
 //! * The getters and `restore_*` / `set_*` / `select_*` functions below are thin wrappers kept so
 //!   a caller does not have to name a marker.
 //!
+//! * The memory door ([`remember`] / [`recall`] / [`MemoryMirror`], below) is the same idea for the
+//!   per-profile, per-item lists a profile builds up (the subtitle offsets are its first tenant):
+//!   plex owns the schema and the store (`plex::session::prefs::ProfileList`), and this is the
+//!   in-memory copy the player reads, written through on the main thread so a read is never older
+//!   than the last pick. [`restore_all`] reseeds it.
+//!
 //! **What `restore_*` does NOT do** is write: it is the in-memory half only, used where the value
 //! comes FROM the record (a legacy session's missing quality stays missing until an explicit
 //! choice, so a future Auto-ready build cannot reinterpret an old install).
@@ -28,11 +34,13 @@ use plx_plex::plex::session::{
     SkipIntervalPref, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone,
     SubtitleTonePref,
 };
-use plx_plex::plex::session::prefs::SettingsWrite;
+use plx_plex::plex::session::prefs::{MemoryEntry, ProfileList, ProfileMemory, SettingsWrite};
+use plx_plex::plex::session::{self, Session, SubtitleOffsetEntry};
 use plx_plex::plex::AudioEnhancements;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU8, Ordering::Relaxed};
 use std::sync::mpsc::Sender;
+use std::sync::Mutex;
 
 // ---- the cell -------------------------------------------------------------------------------
 
@@ -342,14 +350,173 @@ fn restore_live<S: LiveSetting>(v: S::Value) {
     S::publish(S::normalize(v));
 }
 
-/// **Put every live cell where `prefs` says**, without writing anything back. The one restore:
-/// boot, the credentials handoff after a sign-in, and a profile switch all call it. A legacy
-/// session's missing quality resolves to Original but stays missing on disk until the user makes an
-/// explicit choice, so a future Auto-ready build still cannot reinterpret that old install.
-pub fn restore_all(prefs: &Preferences, ov: Overrides) {
+/// **Put every live cell where the record says, and reseed the memory mirrors from it**, without
+/// writing anything back. The one restore: boot, the credentials handoff after a sign-in, and a
+/// profile switch all call it. A legacy session's missing quality resolves to Original but stays
+/// missing on disk until the user makes an explicit choice, so a future Auto-ready build still
+/// cannot reinterpret that old install.
+///
+/// The mirrors are reseeded only when the tenure or the account stamp they were seeded under has
+/// moved ([`MemoryMirror::reseed`]); a restore that changes neither leaves them alone, because the
+/// mirror is AHEAD of the file by exactly the writes still queued.
+pub fn restore_all(record: &Session, ov: Overrides) {
     for row in LIVE_ROWS {
-        (row.restore)(prefs, &ov);
+        (row.restore)(&record.prefs, &ov);
     }
+    for row in MEMORY_ROWS {
+        (row.reseed)(record);
+    }
+}
+
+// ---- the memory door ------------------------------------------------------------------------
+
+/// A tenant of the memory door: a [`MemoryEntry`] that has a process-global mirror here.
+pub trait MemoryTenant: MemoryEntry + Send + 'static {
+    fn mirror() -> &'static MemoryMirror<Self>;
+    /// The name in the one refusal line.
+    fn log_label() -> &'static str;
+}
+
+/// What a mirror was seeded under: the revocation tenure, and the account stamp
+/// (`grant::account_key` of the account token).
+type Seed = (u64, String);
+
+struct MirrorState<E> {
+    /// `None` until the first [`MemoryMirror::reseed`]: a mirror nobody restored answers nothing.
+    seeded: Option<Seed>,
+    lists: Vec<ProfileList<E>>,
+}
+
+/// **The in-memory copy of one per-profile list**, seeded from the session at [`restore_all`] and
+/// written through by [`remember`] on the caller's (main) thread, so [`recall`] sees a pick the
+/// moment it is made instead of after the queued file write lands.
+///
+/// It is valid only for the tenure it was seeded under: a sign-out or account replacement moves
+/// the tenure, after which a read sees nothing and a write is refused until the next restore
+/// reseeds it. The stamp changes with a new sign-in WITHOUT a tenure change (the token is replaced,
+/// nothing was revoked), and the restore that follows the handoff reseeds on that too.
+pub struct MemoryMirror<E: MemoryEntry> {
+    state: Mutex<MirrorState<E>>,
+}
+
+impl<E: MemoryEntry> MemoryMirror<E> {
+    pub const fn new() -> Self {
+        MemoryMirror { state: Mutex::new(MirrorState { seeded: None, lists: Vec::new() }) }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, MirrorState<E>> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Seed from `record`'s list if the mirror was never seeded or was seeded under another tenure
+    /// or account stamp; otherwise leave it, since it already holds everything the record does
+    /// plus the writes still in flight.
+    pub fn reseed(&self, record: &Session) {
+        let seed = (session::tenure(), plx_plex::plex::grant::account_key(&record.account_token));
+        let mut state = self.lock();
+        if state.seeded.as_ref() != Some(&seed) {
+            state.lists = E::slot(record).clone();
+            state.seeded = Some(seed);
+        }
+    }
+
+    /// Whether the mirror was seeded under the tenure that stands now.
+    fn valid(state: &MirrorState<E>) -> bool {
+        state.seeded.as_ref().is_some_and(|(tenure, _)| *tenure == session::tenure())
+    }
+}
+
+/// A mirror as data, so [`restore_all`] can walk them all.
+#[derive(Clone, Copy)]
+pub struct MemoryRow {
+    reseed: fn(&Session),
+}
+
+impl MemoryRow {
+    pub const fn of<E: MemoryTenant>() -> MemoryRow {
+        MemoryRow { reseed: reseed_mirror::<E> }
+    }
+}
+
+fn reseed_mirror<E: MemoryTenant>(record: &Session) {
+    E::mirror().reseed(record);
+}
+
+/// Every tenant of the memory door, once.
+pub const MEMORY_ROWS: &[MemoryRow] = &[MemoryRow::of::<SubtitleOffsetEntry>()];
+
+static SUBTITLE_OFFSETS: MemoryMirror<SubtitleOffsetEntry> = MemoryMirror::new();
+
+impl MemoryTenant for SubtitleOffsetEntry {
+    fn mirror() -> &'static MemoryMirror<Self> {
+        &SUBTITLE_OFFSETS
+    }
+    fn log_label() -> &'static str {
+        "subtitle offset"
+    }
+}
+
+/// **Remember a change to one entry of a per-profile list: the memory door's write.** `f` turns the
+/// entry that is there NOW (`None` if none) into the one to hold (`None`, or an entry that
+/// [`forgets`](MemoryEntry::forgets), removes it). It is applied twice, and that is the point: to
+/// the mirror right here on the caller's thread, so [`recall`] sees it at once, and as a DELTA
+/// inside the queued session update, against whatever the file holds when that runs (a half-entry
+/// merges with the file's other half, and a failed write followed by the same pick writes again).
+///
+/// The queued write is `session::queue_update`, so its guard stands: it is dropped if the tenure
+/// moved, or the client id or account token changed, between queue and run. This is account data.
+/// A pick whose file write fails or is dropped by that guard stays recalled (the mirror is not taken
+/// back) until the next restart or tenure/stamp reseed.
+///
+/// Refused (returns `false`; neither the mirror nor the file changes) when the mirror is not valid
+/// for the current tenure: never seeded, or seeded before a sign-out. Otherwise the entry would be
+/// visible in a session whose file write is refused.
+///
+/// Before profile seats, `user` is `session::current_profile_key()`, where `""` is both the
+/// account owner and "no profile published".
+pub fn remember<E: MemoryTenant>(
+    user: &str,
+    key: E::Key,
+    f: impl Fn(Option<&E>) -> Option<E> + Clone + Send + 'static,
+) -> bool {
+    {
+        let mut state = E::mirror().lock();
+        if !MemoryMirror::valid(&state) {
+            drop(state);
+            plx_base::eventlog::log(&format!("{}: not remembered — no valid session", E::log_label()));
+            return false;
+        }
+        state.lists.upsert_with(user, "", &key, f.clone());
+    }
+    let user = user.to_string();
+    session::queue_update(move |cur| cur.with_memory::<E>(|m| m.upsert_with(&user, "", &key, f)))
+}
+
+/// Seed `E`'s mirror from `record` whatever it was seeded under before, so a test does not inherit
+/// another test's remembered entries (the mirror is a process global, and a restore under an
+/// unchanged tenure and stamp deliberately keeps it).
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_memory_for_test<E: MemoryTenant>(record: &Session) {
+    unseed_memory_for_test::<E>();
+    E::mirror().reseed(record);
+}
+
+/// Put `E`'s mirror back to never-seeded, which is how a process looks before its first restore.
+#[cfg(any(test, feature = "test-support"))]
+pub fn unseed_memory_for_test<E: MemoryTenant>() {
+    let mut state = E::mirror().lock();
+    state.seeded = None;
+    state.lists.clear();
+}
+
+/// **What this profile remembered for `key`**, as of the last [`remember`] (not the last write that
+/// landed). Nothing when the mirror was never seeded or the tenure has moved since it was.
+pub fn recall<E: MemoryTenant>(user: &str, key: &E::Key) -> Option<E> {
+    let state = E::mirror().lock();
+    if !MemoryMirror::valid(&state) {
+        return None;
+    }
+    state.lists.get(user, "", key).cloned()
 }
 
 // ---- the write door -------------------------------------------------------------------------

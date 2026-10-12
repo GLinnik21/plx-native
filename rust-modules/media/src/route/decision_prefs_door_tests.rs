@@ -83,9 +83,9 @@ fn tone_write_failure_logs_and_keeps_the_live_value() {
 
 /// Hold the storage worker on a job, so an edit queued behind it runs only after the test has
 /// changed the world.
-struct Parked(mpsc::Sender<()>);
+pub(super) struct Parked(mpsc::Sender<()>);
 impl Parked {
-    fn new() -> Parked {
+    pub(super) fn new() -> Parked {
         let (release, wait) = mpsc::channel::<()>();
         let (started, running) = mpsc::channel::<()>();
         drop(plx_base::storage_worker::submit_retained(move || {
@@ -95,7 +95,7 @@ impl Parked {
         running.recv().expect("the worker picked the parking job up");
         Parked(release)
     }
-    fn release(self) {
+    pub(super) fn release(self) {
         let _ = self.0.send(());
     }
 }

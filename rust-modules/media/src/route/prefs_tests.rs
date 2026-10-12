@@ -67,6 +67,11 @@ fn stored_prefs() -> Preferences {
     s.prefs
 }
 
+/// A session record holding `prefs` and nothing else, for the restore.
+fn record(prefs: Preferences) -> session::Session {
+    session::Session { prefs, ..Default::default() }
+}
+
 #[derive(Debug, PartialEq)]
 struct Cells(Quality, DirectPlayMode, SubtitleSize, SubtitlePosition, NextEpisodeMode, SkipInterval, DeckPress,
     SubtitleTone, AudioEnhancements);
@@ -121,7 +126,7 @@ fn restore_all_sets_every_cell_from_the_record_and_honours_only_the_quality_over
     let _restore = Put::back(cells());
 
     scramble();
-    restore_all(&stored_prefs(), Overrides::default());
+    restore_all(&record(stored_prefs()), Overrides::default());
     assert_eq!(
         cells(),
         Cells(Quality::P1080High, DirectPlayMode::Forced, SubtitleSize::Large, SubtitlePosition::High,
@@ -130,13 +135,13 @@ fn restore_all_sets_every_cell_from_the_record_and_honours_only_the_quality_over
     );
 
     scramble();
-    restore_all(&stored_prefs(), Overrides { quality: Some(Quality::P720) });
+    restore_all(&record(stored_prefs()), Overrides { quality: Some(Quality::P720) });
     assert_eq!(quality(), Quality::P720, "the override replaces the record's quality");
     assert_eq!(direct_play_mode(), DirectPlayMode::Forced, "and nothing else");
     assert_eq!(subtitle_size(), SubtitleSize::Large);
 
     scramble();
-    restore_all(&Preferences::default(), Overrides::default());
+    restore_all(&record(Preferences::default()), Overrides::default());
     assert_eq!(
         cells(),
         Cells(Quality::Original, DirectPlayMode::Auto, SubtitleSize::Medium, SubtitlePosition::Low,
@@ -153,7 +158,7 @@ fn restore_all_publishes_each_live_cell_once() {
     let _g = plx_base::testlock::serial();
     let _restore = Put::back(cells());
     let before = (publishes_for_test::<QualityPref>(), publishes_for_test::<SubtitleTonePref>());
-    restore_all(&stored_prefs(), Overrides::default());
+    restore_all(&record(stored_prefs()), Overrides::default());
     assert_eq!(publishes_for_test::<QualityPref>(), before.0 + 1);
     assert_eq!(publishes_for_test::<SubtitleTonePref>(), before.1 + 1);
 }

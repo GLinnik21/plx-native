@@ -2745,7 +2745,7 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         // process. Re-read only at this one credentials handoff so the old account's in-memory
         // preference cannot leak into the new session.
         let saved = plx_plex::plex::session::peek();
-        plx_media::route::restore_all(&saved.prefs, plx_media::route::Overrides {
+        plx_media::route::restore_all(&saved, plx_media::route::Overrides {
             quality: crate::dev::playback_quality_override(),
         });
         let endpoints = super::boot::install_pms_owned(bridge, &c.origin,

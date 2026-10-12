@@ -648,7 +648,7 @@ pub(super) fn apply_deferred_capture(rec: &mut super::recorder::Recplay,
 /// (session::load records that decision once). The dev quality override is honoured unless the
 /// harness is `controlled`.
 pub(super) fn restore_player_preferences(session: &plx_plex::plex::session::Session, controlled: bool) {
-    plx_media::route::restore_all(&session.prefs, plx_media::route::Overrides {
+    plx_media::route::restore_all(session, plx_media::route::Overrides {
         quality: if controlled { None } else { crate::dev::playback_quality_override() },
     });
 }

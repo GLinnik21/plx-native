@@ -2355,6 +2355,8 @@ fn a_subtitle_offset_survives_a_resume_of_the_same_item() {
     let _g = fresh_registry(&mut ps);
     let session = plx_plex::plex::session::TempSession::new("subtitle-offset-resume");
     session.watching("u-resume");
+    // The memory the player reads is seeded at a restore (boot, the credentials handoff).
+    seed_memory_for_test::<SubtitleOffsetEntry>(&plx_plex::plex::session::peek());
     let sid = plx_plex::plex::register_for_test("machine-resume", "10.0.0.9", 32400, "tok", "cid-resume");
     apply_plan(&mut ps, Plan::default(), "rk-resume-a");
     swap_cur_sid_for_test(&mut ps, sid);

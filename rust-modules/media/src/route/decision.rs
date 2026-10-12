@@ -13,7 +13,7 @@
 //! (the claim table, the enhancement step, the plans and the PMS attempts) stay here.
 
 use plx_plex::plex::ServerId;
-use plx_plex::plex::session::QualityPref;
+use plx_plex::plex::session::{QualityPref, SubtitleOffsetEntry};
 use plx_data::pms::PmsMovie;
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -7533,7 +7533,7 @@ fn begin_track_selection(s: &mut PlaybackSession, retry: Option<RetryContext>) {
 /// resolved again with the subtitle it had when that was known (`RetryContext::selection`, applied
 /// to the resolve env by [`apply_retry`]), so the timing offset tuned against that subtitle is
 /// carried with it. A genuinely NEW request (no retry) instead resumes whatever this profile last tuned for THIS item, if anything
-/// (`Session::subtitle_offset_for`, keyed by machine id + ratingKey, never by track — a track
+/// ([`recall`] of the subtitle-offset memory, keyed by machine id + ratingKey, never by track — a track
 /// CHANGE within one playback already zeros it, `commit_subtitle_selection`'s own doc). Either way
 /// the landing re-clamps it once the subtitle is re-selected (`player::reclamp_subtitle_offset`),
 /// since the reset has just deselected the sidecar whose range allows an advance.
@@ -7551,23 +7551,26 @@ fn reset_track_selection(sid: ServerId, rk: &str, retry: Option<RetryContext>) {
 }
 
 /// This profile's remembered subtitle sync-timing correction for `rk` on `sid`'s server, if this
-/// television has ever tuned one — the read half of [`persist_subtitle_offset`]. `None` when the
-/// server is not (yet) registered, which a resolve about to fail for the same reason would find
-/// out anyway.
+/// television has ever tuned one — the read half of [`persist_subtitle_offset`], through the memory
+/// door's mirror ([`recall`]), so a correction made a moment ago is found whether or not its file
+/// write has landed yet. `None` when the server is not (yet) registered, which a resolve about to
+/// fail for the same reason would find out anyway.
 fn remembered_subtitle_offset(sid: ServerId, rk: &str) -> Option<i64> {
-    let machine_id = plx_plex::plex::client_for(sid)?.machine_id();
+    let machine_id = plx_plex::plex::client_for(sid)?.machine_id().to_string();
     if machine_id.is_empty() {
         return None;
     }
-    plx_plex::plex::session::peek().subtitle_offset_for(&plx_plex::plex::session::current_profile_key(), machine_id, rk)
+    recall::<SubtitleOffsetEntry>(&plx_plex::plex::session::current_profile_key(), &(machine_id, rk.to_string()))
+        .map(|e| e.offset_ms)
 }
 
-/// Persist the viewer's subtitle sync-timing correction for the CURRENTLY PLAYING item, so the
+/// Remember the viewer's subtitle sync-timing correction for the CURRENTLY PLAYING item, so the
 /// next resume of this exact file starts from where they left it (`remembered_subtitle_offset`'s
-/// own doc). Fire-and-forget on the storage worker, like every other in-player preference edit
-/// (`player::set_subtitle_tone`) — the live atomic ([`crate::player::set_subtitle_offset`]) is
-/// already applied by the time this queues, so a slow or lost write costs only the NEXT resume,
-/// never this one.
+/// own doc). It goes through the memory door ([`remember`]): the mirror takes it now, on this
+/// thread, and the file write is queued on the storage worker like every other in-player
+/// preference edit (`player::set_subtitle_tone`) — the live atomic
+/// ([`crate::player::set_subtitle_offset`]) is already applied by the time this queues, so a slow
+/// or lost write costs only a restart's worth of memory, never this resume.
 pub fn persist_subtitle_offset(ps: &PlaybackSession, offset_ms: i64) {
     let Some(machine_id) = plx_plex::plex::client_for(cur_sid(ps)).map(|c| c.machine_id().to_string()) else {
         return;
@@ -7577,14 +7580,16 @@ pub fn persist_subtitle_offset(ps: &PlaybackSession, offset_ms: i64) {
     }
     let rk = cur_rk(ps);
     let user = plx_plex::plex::session::current_profile_key();
-    let wanted = (offset_ms != 0).then_some(offset_ms);
-    plx_plex::plex::session::queue_update(move |current| {
-        if current.subtitle_offset_for(&user, &machine_id, &rk) == wanted {
-            return None;
-        }
-        let mut next = current.clone();
-        next.set_subtitle_offset_for(&user, &machine_id, &rk, wanted);
-        Some(next)
+    let key = (machine_id.clone(), rk.clone());
+    // Only the offset is the viewer's pick: whatever else the entry carries (a key a newer build
+    // wrote) is the list's, so it is taken from the entry that is there when this runs.
+    remember::<SubtitleOffsetEntry>(&user, key, move |current| {
+        (offset_ms != 0).then(|| SubtitleOffsetEntry {
+            machine_id: machine_id.clone(),
+            rating_key: rk.clone(),
+            offset_ms,
+            extensions: current.map(|e| e.extensions.clone()).unwrap_or_default(),
+        })
     });
 }
 
@@ -10163,3 +10168,7 @@ mod prefs_characterisation_tests;
 #[cfg(test)]
 #[path = "decision_prefs_door_tests.rs"]
 mod prefs_door_tests;
+
+#[cfg(test)]
+#[path = "decision_memory_tests.rs"]
+mod memory_tests;

@@ -1683,8 +1683,9 @@ pub fn subtitle_tone() -> plx_plex::plex::session::SubtitleTone {
 /// The viewer's subtitle timing offset in MILLISECONDS — positive draws every client-rendered cue
 /// later, negative earlier. **It belongs to ONE playback of ONE subtitle track**, unlike
 /// [`SUBTITLE_TONE`]: a timing error is a property of a track against a media file, so the next
-/// film, or another track of this one, must never inherit it. It is saved per item and track by
-/// [`persist_subtitle_offset`] and read back on that track's next play; [`reset_subtitle`]
+/// film, or another track of this one, must never inherit it. It is remembered per item (never per
+/// track) by [`persist_subtitle_offset`], through the memory door, and recalled at that item's next
+/// play; [`reset_subtitle`]
 /// (a new item) and `route::commit_subtitle_selection` (a different track) put it back to 0. A
 /// retry of the same item with the same subtitle carries it ([`restore_subtitle_offset`]).
 /// `AtomicI32` rather than `I64`: the range fits trivially, and the 32-bit target gets a plain
@@ -1832,7 +1833,8 @@ pub fn set_subtitle_tone(tone: plx_plex::plex::session::SubtitleTone) {
 
 /// Set the timing offset (ms) on the main thread, clamped to the range; like the tone it takes
 /// effect on the next drawn frame, with nothing to reload. The live value is not persisted
-/// here; a commit saves it per item and track — see [`SUBTITLE_OFFSET_MS`].
+/// here; a commit remembers it per item, never per track, through the memory door
+/// (`route::persist_subtitle_offset`) — see [`SUBTITLE_OFFSET_MS`].
 pub fn set_subtitle_offset(offset_ms: i64) {
     SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(offset_ms), Relaxed);
     plx_machine::idle::invalidate();
