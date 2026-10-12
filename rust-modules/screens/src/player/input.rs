@@ -304,8 +304,8 @@ impl HudState {
         }
     }
 }
-// scrub tuning: a press jumps scrub_step_ns() (the Skip interval); holding engages a continuous scrub ramping
-// SCRUB_BASE→SCRUB_MAX (playback-seconds per real-second). Defined in `appkit::player_hud` and
+// scrub tuning: a press jumps scrub_step_ns() (the Skip interval); holding engages a continuous scrub stepping
+// up via `scrub_speed` (playback-seconds per real-second, doubling every `SCRUB_STEP_MS`). Defined in `appkit::player_hud` and
 // re-exported here — the trailer transport's own hold-to-scrub (`screens::detail::trailer`) wants
 // the identical feel and cannot name this module directly (`ci/check-deps.sh`'s `sibling` gate).
 // Long enough that a rapid tap burst coalesces into ONE seek (`TAP_COMMIT_MS`) — each
@@ -313,7 +313,7 @@ impl HudState {
 // race the demux (the stale-audio silence incident); short enough that a single tap still feels
 // immediate.
 pub use plx_appkit::player_hud::{
-    scrub_step_ns, SCRUB_ACCEL, SCRUB_BASE, SCRUB_LOST_MS, SCRUB_MAX, TAP_COMMIT_MS,
+    scrub_step_ns, SCRUB_LOST_MS, TAP_COMMIT_MS,
 };
 // HUD auto-hide: how long the HUD lingers after the input that raised it.
 pub const HUD_LINGER_MS: u32 = plx_appkit::player_hud::LINGER_MS; // plain transport/nav input

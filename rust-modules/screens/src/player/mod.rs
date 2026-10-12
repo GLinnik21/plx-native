@@ -1109,8 +1109,7 @@ impl PlayerScreen {
         if self.scrub.dir == 0 || !self.scrub.hold || self.scrub.ns < 0 || self.scrub.drag {
             return;
         }
-        let held = now.wrapping_sub(self.scrub.hold_since) as f32 / 1000.0;
-        let speed = (input::SCRUB_BASE + input::SCRUB_ACCEL * held).min(input::SCRUB_MAX);
+        let speed = plx_appkit::player_hud::scrub_speed(now.wrapping_sub(self.scrub.hold_since));
         let mut sdt = now.wrapping_sub(self.scrub.t) as f32 / 1000.0;
         if sdt > 0.1 {
             sdt = 0.1;

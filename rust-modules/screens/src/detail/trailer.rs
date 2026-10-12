@@ -178,7 +178,7 @@ pub(super) struct Transport {
     //
     // The same idiom `screens::player::input::Scrub` drives the real HUD's scrubber with — a
     // fresh press hops `scrub_step_ns()`, a HELD key (auto-repeat) engages a continuous ramp
-    // (`SCRUB_BASE`→`SCRUB_MAX`), and the release commits at once for a hold or arms a short
+    // (`player_hud::scrub_speed`), and the release commits at once for a hold or arms a short
     // debounce for a tap — but not the same STATE TYPE: `ci/check-deps.sh`'s `sibling` gate
     // forbids this module from naming `crate::player` at all. The tuning constants and
     // the clamp formula ARE shared, from `appkit::player_hud` (see that module's own doc for why).
@@ -294,9 +294,7 @@ impl Transport {
         if self.scrub_dir == 0 || !self.scrub_hold {
             return None;
         }
-        let held = now.wrapping_sub(self.scrub_hold_since) as f32 / 1000.0;
-        let speed = (plx_appkit::player_hud::SCRUB_BASE + plx_appkit::player_hud::SCRUB_ACCEL * held)
-            .min(plx_appkit::player_hud::SCRUB_MAX);
+        let speed = plx_appkit::player_hud::scrub_speed(now.wrapping_sub(self.scrub_hold_since));
         let mut sdt = now.wrapping_sub(self.scrub_t) as f32 / 1000.0;
         if sdt > 0.1 {
             sdt = 0.1;

@@ -1616,7 +1616,7 @@ pub const LINGER_MS: u32 = 4500;
 // ---- scrub tuning, shared by the player HUD's scrubber and the trailer transport's own --------
 //
 // Both hold-to-scrub gestures want the same feel — a press jumps `scrub_step_ns()`; holding engages
-// a continuous scrub ramping `SCRUB_BASE`→`SCRUB_MAX` (playback-seconds per real-second) — but the
+// a continuous scrub stepping `SCRUB_BASE`→`SCRUB_MAX` via [`scrub_speed`] (playback-seconds per real-second) — but the
 // STATE (`screens::player::input::Scrub`, and `screens::detail::trailer::Transport`'s own fields)
 // cannot live in one shared type: `ci/check-deps.sh`'s `sibling` gate forbids a file under
 // `screens/detail/` from naming `crate::screens::player` at all, the same rule that keeps
@@ -1628,9 +1628,22 @@ pub const LINGER_MS: u32 = 4500;
 pub fn scrub_step_ns() -> i64 {
     plx_media::route::skip_interval().ns()
 }
+/// Playback-seconds per real-second at the start of a hold, and the speed it doubles from.
 pub const SCRUB_BASE: f32 = 10.0;
-pub const SCRUB_ACCEL: f32 = 45.0; // added per second of hold
-pub const SCRUB_MAX: f32 = 140.0;
+/// How long a hold dwells at each speed before doubling — long enough to land on a spot at the
+/// current speed, short enough that crossing a film does not take a held thumb.
+pub const SCRUB_STEP_MS: u32 = 2000;
+/// The fastest a hold gets (reached after five doublings, ten seconds of holding).
+pub const SCRUB_MAX: f32 = 320.0;
+
+/// The hold-to-scrub speed after `held_ms` of holding: [`SCRUB_BASE`] doubling every
+/// [`SCRUB_STEP_MS`] up to [`SCRUB_MAX`]. Stepped rather than linear so each speed lasts long
+/// enough to be read and aimed at, and so the ramp is a ladder the user can feel climb; both
+/// hold-to-scrub gestures (the player's and the trailer's) call this one function.
+pub fn scrub_speed(held_ms: u32) -> f32 {
+    let doublings = (held_ms / SCRUB_STEP_MS).min(16);
+    (SCRUB_BASE * (1u32 << doublings) as f32).min(SCRUB_MAX)
+}
 // tap released → commit after this (further taps accumulate); see `screens::player::input`'s own
 // doc for why this debounce exists (coalescing a rapid tap burst into one Load/reload).
 pub const TAP_COMMIT_MS: u32 = 450;
@@ -2116,6 +2129,24 @@ pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hold_doubles_its_scrub_speed_every_step_up_to_the_cap() {
+        use super::{scrub_speed, SCRUB_BASE, SCRUB_MAX, SCRUB_STEP_MS};
+        assert_eq!(scrub_speed(0), SCRUB_BASE);
+        assert_eq!(scrub_speed(SCRUB_STEP_MS - 1), SCRUB_BASE, "a step holds until its dwell is up");
+        assert_eq!(scrub_speed(SCRUB_STEP_MS), 2.0 * SCRUB_BASE);
+        assert_eq!(scrub_speed(2 * SCRUB_STEP_MS), 4.0 * SCRUB_BASE);
+        assert_eq!(scrub_speed(4 * SCRUB_STEP_MS), 16.0 * SCRUB_BASE);
+        assert_eq!(scrub_speed(5 * SCRUB_STEP_MS), SCRUB_MAX);
+        assert_eq!(scrub_speed(u32::MAX), SCRUB_MAX, "a very long hold stays at the cap");
+        let mut last = 0.0;
+        for ms in (0..20_000).step_by(100) {
+            let v = scrub_speed(ms);
+            assert!(v >= last && v <= SCRUB_MAX, "{ms} ms -> {v}");
+            last = v;
+        }
+    }
+
     /// #585: a cue of authored line breaks that each wrap again ran past three lines and the tail
     /// was silently dropped. Every line of an ordinary long cue must survive.
     #[test]
