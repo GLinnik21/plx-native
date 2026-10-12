@@ -1419,7 +1419,8 @@ class SceneManifest(unittest.TestCase):
         site = {o["file"]: s for s in self.scenes for o in s["outputs"]
                 if o.get("dest") == "site" and "card" not in o}
         self.assertEqual(set(site), {"closeup-glass.jpg", "closeup-glass-narrow.jpg",
-                                     "closeup-tiles.jpg", "closeup-player.jpg"})
+                                     "closeup-tiles.jpg", "closeup-player.jpg", "closeup-fan-caligari.jpg",
+                                     "closeup-fan-cosmos.jpg", "closeup-fan-elephants.jpg"})
         for file, s in site.items():
             with self.subTest(file=file):
                 self.assertGreaterEqual(s.get("render_scale", 1), 3)

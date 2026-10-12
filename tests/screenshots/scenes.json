@@ -54,10 +54,7 @@
       "state": "The Movies library scrolled to its All grid, focus on the third card of the first row, toolbar visible.",
       "triggers": {"library": "0", "libgrid": "0,2"},
       "expect": ["libgrid: focus seated at row 0 col 2"],
-      "outputs": [{"file": "ux-library-grid.jpg", "size": "1920x1080"},
-                  {"file": "fan-caligari.jpg", "dest": "site", "crop": [385, 336, 242, 366], "size": "160x242"},
-                  {"file": "fan-cosmos.jpg", "dest": "site", "crop": [1241, 336, 242, 366], "size": "160x242"},
-                  {"file": "fan-elephants.jpg", "dest": "site", "crop": [1526, 336, 242, 366], "size": "160x242"}]
+      "outputs": [{"file": "ux-library-grid.jpg", "size": "1920x1080"}]
     },
     {
       "name": "library-sort",
@@ -104,6 +101,16 @@
       "triggers": {"play": "102", "clocksink": "", "simvideo": "", "autopause": "at=446020"},
       "expect": ["simvideo: first picture decoded", "autopause: Pause accepted"],
       "outputs": [{"file": "player.jpg", "size": "1600x900"}]
+    },
+    {
+      "name": "site-fan",
+      "state": "The website's libraries card fans three posters, supersampled 3x: the library-grid scene (Movies, All grid, focus on the third card of the first row), cropped to the first row's first, fourth and fifth cards, which are unfocused and so at rest size. Crops in canvas pixels sit 4 px inside each card, past its rounded corner, so the card's own background never shows; the page rounds them again.",
+      "triggers": {"library": "0", "libgrid": "0,2"},
+      "render_scale": 3,
+      "expect": ["libgrid: focus seated at row 0 col 2"],
+      "outputs": [{"file": "closeup-fan-caligari.jpg", "dest": "site", "crop": [385, 336, 242, 366], "size": "240x363"},
+                  {"file": "closeup-fan-cosmos.jpg", "dest": "site", "crop": [1241, 336, 242, 366], "size": "240x363"},
+                  {"file": "closeup-fan-elephants.jpg", "dest": "site", "crop": [1526, 336, 242, 366], "size": "240x363"}]
     },
     {
       "name": "site-glass",

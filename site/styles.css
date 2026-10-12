@@ -3332,17 +3332,17 @@ video::-webkit-media-controls-start-playback-button {
   box-shadow: 0 12px 26px rgba(0, 0, 0, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.2);
 }
 .feature-fan i:nth-child(1) {
-  background: #2b3452 url(media/fan-caligari.jpg) center / cover;
+  background: #2b3452 url(media/closeup-fan-caligari.jpg) center / cover;
   translate: -43px 6px;
   rotate: -10deg;
 }
 .feature-fan i:nth-child(2) {
-  background: #47321f url(media/fan-cosmos.jpg) center / cover;
+  background: #47321f url(media/closeup-fan-cosmos.jpg) center / cover;
   translate: 0 -7px;
   rotate: -1deg;
 }
 .feature-fan i:nth-child(3) {
-  background: #1f3d3c url(media/fan-elephants.jpg) center / cover;
+  background: #1f3d3c url(media/closeup-fan-elephants.jpg) center / cover;
   translate: 43px 6px;
   rotate: 9deg;
 }
