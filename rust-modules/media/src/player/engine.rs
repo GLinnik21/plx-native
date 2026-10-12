@@ -5354,6 +5354,81 @@ mod load_in_flight_tests {
         let next = SHARED.begin_native_session().expect("native sessions resume after the release");
         assert!(SHARED.retire_native_session(next));
     }
+
+    /// Releases the held host `sf_load` when a test unwinds, so a failed assertion cannot leave
+    /// the next test's Load hanging.
+    struct ReleaseLoadOnDrop;
+    impl Drop for ReleaseLoadOnDrop {
+        fn drop(&mut self) {
+            crate::player::ffi_host::release_load_for_test();
+        }
+    }
+
+    /// An Engine whose `sf_load` is held past the budget: the pump's budget arm has fired
+    /// (`load_failed` + `load_timed_out`), the Load thread is still inside `sf_load`, and the
+    /// Engine is installed in `pa`. The state the Auto Original's recovery starts from.
+    fn install_engine_with_timed_out_load(
+        ps: &mut crate::route::PlaybackSession,
+        pa: &mut crate::player::adapter::PlayerAdapter,
+    ) {
+        let epoch = SHARED.begin_native_session().expect("native session");
+        let mut eng = engine_loading(epoch);
+        crate::player::ffi_host::hold_load_for_test();
+        let payload_ptr = threads::SendPtr(eng.payload.as_ptr() as *mut c_char);
+        eng.load_th = Some(
+            std::thread::Builder::new()
+                .name("test-load-thread-hung".into())
+                .spawn(move || threads::load_thread(payload_ptr, epoch, None))
+                .expect("spawn load_thread"),
+        );
+        pa.install(eng);
+        wait_for_load_in_flight();
+        assert!(
+            SHARED.test_backdate_native_load_issued(epoch, crate::player::pump::NATIVE_LOAD_BUDGET),
+            "PRECONDITION FAILED: the epoch must still own Active to backdate it"
+        );
+        crate::player::pump::pump(ps, pa, 1_000);
+        assert!(
+            SHARED.load_timed_out.load(Ordering::Acquire),
+            "PRECONDITION FAILED: the budget must have fired, or this test is not about a timed-out Load"
+        );
+    }
+
+    /// PLX-NATIVE-15: the Auto Original's Load passes its budget, the HLS recovery reloads while
+    /// the Load is still inside `sf_load`, the reload's teardown parks that Load (clearing
+    /// `load_timed_out` with the rest of the session) and the start is refused. The failure was
+    /// published with no cause, so the report said `unspecified`; the cause is the timeout.
+    #[test]
+    fn a_recovery_reload_refused_for_an_abandoned_load_still_reports_the_timeout() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        crate::route::set_url(&mut ps, "http://127.0.0.1:1/hls/start.m3u8");
+        install_engine_with_timed_out_load(&mut ps, &mut pa);
+
+        // `land_recovery_flight`'s own two calls: the reload (whose teardown parks the
+        // still-running Load) and the settle that publishes the outcome.
+        let started = crate::player::pump::settle_reload(
+            reload_transcode(&mut ps, &mut pa, 0),
+            "test HLS recovery",
+        );
+        assert!(!started, "the recovery start must be refused while the Load is outstanding");
+        assert!(pa.has_abandoned_load(), "PRECONDITION FAILED: the Load must still be parked");
+        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Error);
+        assert_eq!(
+            crate::player::error_now(&ps).kind,
+            crate::player::FailureKind::LoadTimeout,
+            "the refusal must keep the timeout as its cause, not report `unspecified`"
+        );
+    }
 }
 
 /// **The webOS 10.3.1 refusal, replayed.** `docs/webos10-lab-report.md` §3.2 records the exact

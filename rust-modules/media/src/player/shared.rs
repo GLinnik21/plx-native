@@ -1243,6 +1243,18 @@ impl Shared {
         true
     }
 
+    /// Whether a timed-out Load is parked ([`NativeSessionPhase::Abandoned`]): the native object
+    /// is still owned by a `Load` that has not returned, so every native start is refused.
+    pub fn native_load_abandoned(&self) -> bool {
+        matches!(
+            self.native_session
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .phase,
+            NativeSessionPhase::Abandoned { .. }
+        )
+    }
+
     /// Test-only: drop an abandoned phase that a failing test left behind, which
     /// [`reset_session`](Self::reset_session) deliberately preserves.
     #[cfg(all(any(test, feature = "test-support"), feature = "hostsim"))]

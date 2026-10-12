@@ -677,13 +677,21 @@ fn land_recovery_flight(
 /// Settle a synchronous native reload effect.  A failed `start_bufferfeed` used to be only a log:
 /// callers had already advanced the route reducer and then returned, leaving no Engine to publish
 /// the failure and (for Original) an `OriginalTrial` which could never receive its first frame.
-fn settle_reload(outcome: super::engine::ReloadOutcome, operation: &str) -> bool {
+pub(super) fn settle_reload(outcome:super::engine::ReloadOutcome, operation: &str) -> bool {
     if outcome == super::engine::ReloadOutcome::Started {
         return true;
     }
     super::log(&format!(
         "route transition: {operation} failed synchronously ({outcome:?})",
     ));
+    // The reload's teardown parked a Load that had already passed its budget and cleared the
+    // session flags with the rest of that session's state, then the start was refused for the
+    // outstanding object. Without the cause the report says `unspecified`; the cause is the
+    // timeout, so publish it again beside the Error.
+    if outcome == super::engine::ReloadOutcome::StartFailed && SHARED.native_load_abandoned() {
+        SHARED.load_failed.store(true, Release);
+        SHARED.load_timed_out.store(true, Release);
+    }
     set_state(super::shared::PlaybackState::Error);
     false
 }
