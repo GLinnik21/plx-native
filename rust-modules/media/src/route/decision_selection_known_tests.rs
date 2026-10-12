@@ -149,3 +149,69 @@ fn a_viewer_audio_pick_is_known_without_a_landing() {
     assert_eq!(env.subtitle_override, Some(0), "the pair is carried together");
     reset_session(&mut ps);
 }
+
+/// What `retry_current_play` does to the session: build the retry, then let the request clear the
+/// selection while keeping the pair the retry carried.
+fn request_retry(ps: &mut PlaybackSession) -> RetryContext {
+    let retry = retry_context_with(ps, 0, None);
+    begin_track_selection(ps, Some(retry));
+    retry
+}
+
+/// The viewer chose subtitles Off on a landed item, pressed Retry, and changed quality while that
+/// retry loads: the contract bump's retry must still carry the Off (the account's subtitle rule
+/// must not come back on).
+#[test]
+fn an_explicit_off_survives_a_contract_bump_during_a_retry() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    apply_plan(&mut ps, playable(0), "rk-off-retry");
+    request_retry(&mut ps);
+    assert!(!ps.selection_known, "the retry's request has cleared the live selection");
+
+    let retry = current_retry_context(&ps, 0);
+
+    assert_eq!(retry.selection, Some((17, 0)), "the retry's own pair is carried on");
+    assert_eq!(env_after(&ps, retry).subtitle_override, Some(0), "the explicit Off holds");
+    reset_session(&mut ps);
+}
+
+/// A landed subtitle, a retry, a refusal of that retry, then *Switch to Auto and play*: the refused
+/// landing selected nothing, so the second retry still carries the first one's subtitle.
+#[test]
+fn a_refused_retry_keeps_the_selection_it_carried() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    apply_plan(&mut ps, playable(23), "rk-refused-retry");
+    request_retry(&mut ps);
+    apply_plan(
+        &mut ps,
+        Plan {
+            direct_play_mode: DirectPlayMode::Forced,
+            verdict: Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion)),
+            ..Default::default()
+        },
+        "rk-refused-retry",
+    );
+    assert!(!has_url(&ps), "a refusal has no playable URL");
+
+    let env = resolve_env_of_retry(&mut ps, Some(DirectPlayMode::Auto));
+
+    assert_eq!(env.direct_play_mode, DirectPlayMode::Auto);
+    assert_eq!(env.subtitle_override, Some(23), "the subtitle the first retry carried survives");
+    assert_eq!((env.audio_sid, env.sub_sid), (17, 23));
+    reset_session(&mut ps);
+}
+
+/// A NEW item's request carries nothing, however the previous one ended.
+#[test]
+fn a_new_item_request_carries_no_selection() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    apply_plan(&mut ps, playable(23), "rk-previous");
+    request_retry(&mut ps);
+    begin_track_selection(&mut ps, None);
+
+    assert_eq!(current_retry_context(&ps, 0).selection, None);
+    reset_session(&mut ps);
+}

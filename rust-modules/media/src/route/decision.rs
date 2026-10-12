@@ -259,6 +259,14 @@ pub struct PlaybackSession {
     /// [`commit_subtitle_selection`]); cleared with the selection by [`clear_track_selection`].
     /// [`RetryContext::selection`] is `Some` exactly when this held at capture time.
     selection_known: bool,
+    /// The `(audio_sid, sub_sid)` a RETRY carried into the request now loading, kept while no
+    /// playable plan has landed: the request clears the live selection ([`Self::selection_known`]
+    /// goes false), so a second retry built before this one lands (a contract bump in flight, or
+    /// *Switch to Auto and play* after a refusal) would otherwise find nothing to carry and lose
+    /// the viewer's choice, an explicit subtitles Off included. Set by [`begin_track_selection`],
+    /// kept across a refused landing, dropped by a playable one ([`apply_plan`]).
+    /// [`current_retry_context`] reads it only while the selection is unknown.
+    carried_selection: Option<(i64, i64)>,
     /// Is [`Self::cur_sub_sid`] an external sidecar (`metadata::Stream::sidecar_renderable`) rather
     /// than an embedded (in-container) track? Meaningless when `cur_sub_sid == 0`. Issue #266 I6:
     /// this is what tells `route::decision::facts`'s [`super::plan::SubtitleEffect::Sidecar`]
@@ -446,6 +454,7 @@ impl PlaybackSession {
         cur_audio: None,
         cur_sub_sid: 0,
         selection_known: false,
+        carried_selection: None,
         cur_sub_sidecar: false,
         cur_sub_client_drawable: false,
         cur_sub_ordinal: -1,
@@ -519,6 +528,7 @@ impl PlaybackSession {
             cur_audio,
             cur_sub_sid,
             selection_known,
+            carried_selection,
             cur_sub_sidecar,
             cur_sub_client_drawable,
             cur_sub_ordinal,
@@ -573,6 +583,7 @@ impl PlaybackSession {
             cur_audio: cur_audio.clone(),
             cur_sub_sid: *cur_sub_sid,
             selection_known: *selection_known,
+            carried_selection: *carried_selection,
             cur_sub_sidecar: *cur_sub_sidecar,
             cur_sub_client_drawable: *cur_sub_client_drawable,
             cur_sub_ordinal: *cur_sub_ordinal,
@@ -7649,7 +7660,7 @@ fn request_play_inner(
             set_c(s.title.as_mut_ptr(), s.title.len(), title);
             set_c(s.ctxline.as_mut_ptr(), s.ctxline.len(), plx_data::metadata::context_label(ctx));
         }
-        clear_track_selection(s);
+        begin_track_selection(s, retry);
         // The outgoing item's enhancement outcome is not this one's; the landing installs its own.
         s.cur_enhancement = EnhancementOutcome::Off;
         // Retire the OUTGOING item's queue before its successor resolves: this names the episode
@@ -7755,6 +7766,14 @@ fn clear_track_selection(s: &mut PlaybackSession) {
     s.side_subs_refused = false;
 }
 
+/// What a play request does to the live track selection: clear it, and keep the pair a RETRY
+/// carried ([`PlaybackSession::carried_selection`]) so a retry built before this one lands still
+/// finds it. A new item (`None`) carries nothing.
+fn begin_track_selection(s: &mut PlaybackSession, retry: Option<RetryContext>) {
+    clear_track_selection(s);
+    s.carried_selection = retry.and_then(|r| r.selection);
+}
+
 /// Clear the outgoing item's live track selection for a play request. A retry is the SAME item
 /// resolved again with the subtitle it had when that was known (`RetryContext::selection`, applied
 /// to the resolve env by [`apply_retry`]), so the timing offset tuned against that subtitle is
@@ -7840,7 +7859,11 @@ pub fn confirm_resume_presented(ps: &mut PlaybackSession) {
 fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     RetryContext {
         resume_ns: resume_ns.max(0),
-        selection: ps.selection_known.then(|| (cur_audio_sid(ps), cur_sub_sid(ps))),
+        selection: if ps.selection_known {
+            Some((cur_audio_sid(ps), cur_sub_sid(ps)))
+        } else {
+            ps.carried_selection
+        },
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         direct_play_mode: ps.direct_play_mode,
         suppress_enhancement: false,
@@ -8168,6 +8191,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         } else {
             (plan.vcodec, plan.acodec, plan.src_vcodec, plan.src_acodec)
         };
+        // A refused landing selected nothing, so it keeps what the retry that led here carried; a
+        // playable one has a known selection of its own.
+        let carried_selection = if selection_known { None } else { s.carried_selection };
         let now_ms = s.now_ms;
         let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
@@ -8212,6 +8238,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             // and any later transcode of this item all agree with what the renderer is told below
             cur_sub_sid: plan.sub_sid,
             selection_known,
+            carried_selection,
             // Negative = an external sidecar the client draws itself (`sub_render_ordinal`'s own
             // convention); `None` (Off) never sets `sub_sid` either, so this reads `false` for it.
             cur_sub_sidecar: plan.sub_render_ordinal.is_some_and(|ord| ord < 0),
