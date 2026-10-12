@@ -249,7 +249,7 @@ make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero 
   must agree within the scene's `max_delta`, the first capture is adopted. `python3 tools/site_stills.py files`
   lists them; `files --manual` is empty today (only the TV photograph `navblur-transition.jpg` is by hand). A Mac
   render is a preview of what the bot commits (the two differ by renderer noise, not by content).
-- **The site's copies follow the render.** (The page shows the `closeup-glass` and `closeup-tiles` stills in its Features look panels, so a re-render changes live site imagery; only the `closeup-player` set is unused by the page, still produced and staged.) After re-rendering the `site-*` scenes, run
+- **The site's copies follow the render.** (The page shows the `closeup-glass` and `closeup-tiles` stills in its Features look panels, so a re-render changes live site imagery; the `closeup-player` set and the narrow glass cut are unused by the page (phones crop the wide glass still), still produced and staged.) After re-rendering the `site-*` scenes, run
   `python3 tools/render-site-variants.py` (the WebP of every close-up and the phone copies of
   tiles and player) and then `python3 tools/render-site-glows.py`; both read the rendered JPEGs.
 - **Screenshot triggers worth knowing.** `grid=<row>,<col>` (Home), `libgrid=<row>,<col>` (the
