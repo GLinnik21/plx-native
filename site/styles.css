@@ -2525,19 +2525,19 @@ video::-webkit-media-controls-start-playback-button {
   box-shadow: inset 0 1px 0 var(--hairline);
   scroll-margin-top: var(--header-h);
 }
-/* The section's name is a quiet label; the first-person sentence under it,
-   lit word by word, is what reads as the heading. */
+/* The section's slogan, as large as the hero's headline; the first-person
+   sentence under it lights up word by word. */
 .approach-section > h2 {
-  font-size: clamp(17px, 1.5vw, 21px);
-  line-height: 1.3;
+  font-size: clamp(44px, 7vw, 104px);
+  line-height: 1;
   font-weight: 700;
-  margin: 0 0 clamp(20px, 3vh, 32px);
-  letter-spacing: -0.01em;
-  color: var(--text-tertiary);
+  margin: 0 0 clamp(28px, 4.5vh, 52px);
+  letter-spacing: -0.05em;
+  text-wrap: balance;
 }
 .approach-statement {
-  font-size: clamp(28px, 4.4vw, 60px);
-  line-height: 1.12;
+  font-size: clamp(24px, 3.4vw, 46px);
+  line-height: 1.15;
   font-weight: 700;
   letter-spacing: -0.035em;
   text-wrap: pretty;
@@ -2585,30 +2585,41 @@ video::-webkit-media-controls-start-playback-button {
 }
 
 /* ---------- The stack scene ---------- */
-/* One idea, one picture: a typical TV app's seven layers, of which the three
-   browser layers (JavaScript, browser engine, compositor) slide out and fade
-   while the app drops straight onto OpenGL. What is left is PlxNative. site.js
-   drives it from the scroll position (--t on each leaving layer, --d for the
-   app's drop, --k for the title swap, all 0..1); without it (no JS, reduced
-   motion) every value is 1, the end state. Pinned for a stretch of scroll on
-   wide screens; on phones and short landscape windows it plays in the page's
-   flow as the stack passes up the screen. */
+/* One idea, one picture: a typical TV app's seven layers as isometric plates,
+   the picture on the app's plate and on the screen, glass with a fine
+   wireframe between. As the page scrolls, the three browser plates
+   (JavaScript, browser engine, compositor) slide away, the four that stay
+   close up into a tight stack, the label turns to "PlxNative", and a still
+   motion blur of the picture shows it dropping straight from the app to the
+   screen, over "60 fps". site.js drives it: --t (0..1, leaving) on each
+   browser plate, --f (its height, in plate widths) on every layer, --k (0..1,
+   the PlxNative end state) on .stack-sticky. Without it (no JS, reduced
+   motion) every value is the settled end state. Pinned for a stretch of
+   scroll on wide screens; on phones and short landscape windows it plays in
+   the page's flow as the stack passes up the screen.
+
+   Geometry, in --W (one plate's width): a plate is 16:9, laid flat by
+   rotateX(60deg) rotateZ(-45deg), which takes a box 1.1 W wide and 0.55 W
+   tall. The seven sit 0.22 W apart (0 to 1.32); the four that stay close up
+   under the app to 0.24 W apart (0 to 0.72), and "60 fps" takes the room below
+   them. Labels sit to the right of the plates; on a narrow phone --W shrinks
+   so they still fit. */
 .stack-scene {
   margin: clamp(56px, 9vh, 112px) 0 0;
-  /* A slab is --slab wide, a layer's row two-thirds of that, so the slabs nest. */
-  --slab: clamp(64px, min(9vw, 11svh), 120px);
-  --row: calc(var(--slab) * 0.62);
+  --label-w: clamp(150px, 18vw, 240px);
+  --W: min(clamp(160px, min(34vw, 30svh), 400px), calc((100vw - 2 * var(--gutter) - var(--label-w)) / 1.1));
 }
 .fx .stack-scene {
   height: 220vh;
   height: 220svh;
 }
 .stack-sticky {
+  --k: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: clamp(28px, 5vh, 56px);
+  gap: clamp(24px, 4vh, 48px);
   text-align: center;
 }
 .fx .stack-sticky {
@@ -2643,10 +2654,10 @@ video::-webkit-media-controls-start-playback-button {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: clamp(10px, 1.6vh, 18px);
+  gap: clamp(8px, 1.4vh, 16px);
   text-align: left;
 }
-/* "A typical TV app" gives way to "PlxNative" as the stack settles. */
+/* "A typical TV app" gives way to "PlxNative": one out, then the other in. */
 .stack-kicker,
 .layer-sub {
   display: grid;
@@ -2657,8 +2668,8 @@ video::-webkit-media-controls-start-playback-button {
   grid-area: 1 / 1;
 }
 .stack-kicker {
-  font-size: 13px;
-  letter-spacing: 1.1px;
+  font-size: 15px;
+  letter-spacing: 1.2px;
   text-transform: uppercase;
   font-weight: 600;
   color: var(--text-tertiary);
@@ -2666,101 +2677,152 @@ video::-webkit-media-controls-start-playback-button {
 .stack-kicker .is-ours {
   color: var(--text-primary);
 }
-/* One out, then the other in: never both half there on top of each other. */
 .stack-kicker .is-typical,
 .layer-sub .is-typical {
-  opacity: max(0, 1 - var(--k, 1) * 2);
+  opacity: max(0, 1 - var(--k) * 2);
 }
 .stack-kicker .is-ours,
 .layer-sub .is-ours {
-  opacity: max(0, var(--k, 1) * 2 - 1);
-}
-/* The four layers that stay end up centred where the seven stood: the stage
-   rises a row and a half as the app falls three, and the kicker falls with
-   the app so it stays on top of the stack. */
-.stack-stage {
-  transform: translateY(calc(var(--d, 1) * var(--row) * -1.5));
-}
-.stack-kicker {
-  transform: translateY(calc(var(--d, 1) * var(--row) * 3));
+  opacity: max(0, var(--k) * 2 - 1);
 }
 .stack-layers {
   position: relative;
-  height: calc(var(--row) * 6 + var(--slab) * 0.677);
-  width: calc(var(--slab) + clamp(150px, 16vw, 210px));
-  color: var(--text-primary);
+  width: calc(var(--W) * 1.1 + var(--label-w));
+  height: calc(var(--W) * 1.87);
 }
-.layer {
+.layer,
+.ghost {
   position: absolute;
   left: 0;
-  top: calc(var(--row) * var(--slot));
-  display: flex;
-  align-items: center;
-  gap: clamp(10px, 1.4vw, 18px);
-  height: calc(var(--slab) * 0.677);
+  top: 0;
+  width: calc(var(--W) * 1.1);
+  height: calc(var(--W) * 0.55);
+  transform: translateY(calc(var(--W) * var(--f)));
 }
-/* Drawn bottom up, so each slab sits on the one below it. */
-.layer:nth-child(1) { z-index: 7; }
-.layer:nth-child(2) { z-index: 6; }
-.layer:nth-child(3) { z-index: 5; }
-.layer:nth-child(4) { z-index: 4; }
-.layer:nth-child(5) { z-index: 3; }
-.layer:nth-child(6) { z-index: 2; }
-.layer:nth-child(7) { z-index: 1; }
-/* The three browser layers leave sideways and fade. */
-.layer--cut {
-  opacity: calc(1 - var(--t, 1));
-  transform: translateX(calc(var(--t, 1) * var(--slab) * -0.7));
+.layer {
+  z-index: var(--z);
 }
-/* The app falls three rows, onto OpenGL. */
-.layer--app {
-  transform: translateY(calc(var(--d, 1) * var(--row) * 3));
+/* The browser plates leave sideways and fade. */
+.layer[data-cut] {
+  --t: 1;
+  opacity: calc(1 - var(--t));
+  transform: translate(calc(var(--W) * var(--t) * -0.45), calc(var(--W) * var(--f)));
 }
-.layer-slab {
-  flex: none;
+.plate {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--W);
+  height: calc(var(--W) * 0.5625);
+  margin: calc(var(--W) * -0.28125) 0 0 calc(var(--W) * -0.5);
+  border-radius: calc(var(--W) * 0.035);
+  overflow: hidden;
+  transform: rotateX(60deg) rotateZ(-45deg);
+}
+.plate--picture {
+  background: var(--color-neutral-950);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4), 14px 14px 40px rgba(0, 0, 0, 0.45);
+}
+.plate--picture picture,
+.plate--picture img {
   display: block;
-  width: var(--slab);
-  height: auto;
-  overflow: visible;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
-.layer-slab:not(.layer-slab--screen) path {
-  fill: currentColor;
-  stroke: currentColor;
-  stroke-opacity: 0.5;
-  stroke-width: 1.4;
-  stroke-linejoin: round;
+.plate--glass {
+  background: rgba(255, 255, 255, 0.07);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.32), 14px 14px 40px rgba(0, 0, 0, 0.32);
 }
-.layer-slab .layer-mark path {
-  fill-opacity: 0.5;
-  stroke: none;
+/* The wireframes: fine white outlines only. */
+.plate--glass svg {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
-.layer-slab .layer-grid {
+.plate--glass path {
   fill: none;
-  stroke-width: 1;
-}
-.layer-slab .layer-grid--fine {
-  stroke-opacity: 0.28;
-  stroke-width: 0.8;
-}
-/* The screen is a dark slab whatever the page's ink, with the one warm glow. */
-.layer-slab--screen path {
-  stroke: #fff;
-  stroke-opacity: 0.3;
-  stroke-width: 1.4;
+  stroke: rgba(255, 255, 255, 0.55);
+  stroke-width: 0.7;
   stroke-linejoin: round;
 }
-.layer-slab--screen .layer-glow {
-  stroke: none;
-}
-/* Quiet labels, joined to their slab by a hairline. */
-.layer-label {
-  position: relative;
+.plate--code {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding-left: clamp(18px, 2vw, 28px);
-  font-size: clamp(14px, 1.3vw, 16px);
-  line-height: 1.2;
+  justify-content: center;
+  gap: 8%;
+  padding: 0 12%;
+}
+.plate--code i {
+  display: block;
+  height: 4%;
+  border-radius: 99px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+.plate--page {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: 22% 1fr;
+  gap: 9%;
+  padding: 9% 10%;
+}
+.plate--page i,
+.plate--panes i {
+  display: block;
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+.plate--page i:first-child {
+  grid-column: 1 / -1;
+}
+.plate--page i:last-child {
+  grid-column: span 2;
+}
+.plate--panes i {
+  position: absolute;
+  width: 46%;
+  height: 48%;
+}
+.plate--panes i:nth-child(1) { left: 10%; top: 14%; }
+.plate--panes i:nth-child(2) { left: 30%; top: 30%; }
+.plate--panes i:nth-child(3) { left: 50%; top: 44%; width: 38%; height: 40%; }
+.plate--grid {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.22) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.22) 1px, transparent 1px);
+  background-size: 6.25% 11.1%;
+}
+/* The picture's motion blur, from the app plate down to the screen: ten
+   copies, fainter near the app, blurred together. It comes in once the stack
+   has mostly closed up. */
+.stack-trail {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  filter: blur(2px);
+  opacity: max(0, var(--k) * 2 - 1);
+}
+.ghost {
+  opacity: var(--o);
+}
+.ghost .plate {
+  box-shadow: none;
+}
+/* Quiet labels, joined to their plate by a hairline. */
+.layer-label {
+  position: absolute;
+  left: calc(100% + 6px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: clamp(30px, 3.4vw, 46px);
+  font-size: clamp(15px, 1.6vw, 22px);
+  line-height: 1.15;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -2769,13 +2831,47 @@ video::-webkit-media-controls-start-playback-button {
   position: absolute;
   left: 0;
   top: 0.6em;
-  width: clamp(12px, 1.4vw, 20px);
+  width: clamp(16px, 2vw, 32px);
   height: 1px;
   background: var(--color-white-a22);
 }
+.layer[data-cut] .layer-label {
+  color: var(--text-secondary);
+}
 .layer-sub {
-  font-size: 13px;
+  font-size: clamp(13px, 1.1vw, 15px);
   font-weight: 400;
+  color: var(--text-secondary);
+}
+/* 60 fps: centred under the settled stack, in the room the browser plates
+   leave, and in with it. */
+.stack-stat {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(var(--W) * 1.36);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  opacity: var(--k);
+}
+.stack-fps {
+  margin: 0;
+  font-size: clamp(56px, 7vw, 104px);
+  line-height: 0.95;
+  font-weight: 700;
+  letter-spacing: -0.055em;
+}
+.stack-fps span {
+  margin-left: 0.12em;
+  font-size: 0.38em;
+  letter-spacing: -0.01em;
+  color: var(--text-tertiary);
+}
+.stack-caption {
+  margin: 0;
+  font-size: clamp(15px, 1.4vw, 19px);
   color: var(--text-secondary);
 }
 

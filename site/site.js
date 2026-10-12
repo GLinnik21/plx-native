@@ -281,12 +281,12 @@
     }));
     const bigs = [...document.querySelectorAll("[data-scrub-big]")].map((el) => ({ el, top: 0 }));
     const words = splitWords(document.querySelector("[data-words]"));
-    // The stack scene: a typical TV app's layers, whose browser layers leave
-    // while the app drops onto OpenGL (styles.css reads the progress).
+    // The stack scene: a typical TV app's plates, whose browser plates leave
+    // while the rest close up (styles.css reads the progress).
     const stack = document.querySelector(".stack-scene");
     const stackSticky = stack && stack.querySelector(".stack-sticky");
     const stackStage = stack && stack.querySelector(".stack-stage");
-    const stackCuts = stack ? [...stack.querySelectorAll("[data-cut]")] : [];
+    const stackLayers = stack ? [...stack.querySelectorAll("[data-layer]")] : [];
 
     const demo = initDemoVideo(true);
 
@@ -404,6 +404,7 @@
         L.stackStickyTop = parseFloat(getComputedStyle(stackSticky).top) || 0;
         L.stackStickyH = stackSticky.offsetHeight;
         L.stackStageTop = docTop(stackStage);
+        L.stackStageH = stackStage.offsetHeight;
       }
       if (words.length) {
         const line = words[0].parentElement;
@@ -538,22 +539,32 @@
       });
 
       // The stack scene, p = 0..1: pinned on wide screens, over the scroll
-      // that the pin lasts; in the flow (phones), from when the stack's top
-      // is at 80% of the window's height until it reaches 30%.
-      //   0.14–0.52  the three browser layers leave, one after another…
-      //   0.42–0.72  …the app drops onto OpenGL…
-      //   0.50–0.72  …and the label turns from "A typical TV app" to "PlxNative".
+      // that the pin lasts; in the flow (phones), from when the stack's middle
+      // is at 85% of the window's height until it reaches 40%, so all of it
+      // plays on screen.
+      //   0.12–0.50  the three browser plates leave, one after another…
+      //   0.40–0.74  …the four that stay close up into a tight stack…
+      //   0.55–0.80  …the label turns to "PlxNative", 60 fps and the
+      //              picture's motion blur come in.
       if (stackStage) {
         const p = L.stackFlow
-          ? clamp01((vh * 0.8 - (L.stackStageTop - y)) / (vh * 0.5))
+          ? clamp01((vh * 0.85 - (L.stackStageTop + L.stackStageH / 2 - y)) / (vh * 0.45))
           : clamp01((y + L.stackStickyTop - L.stackTop) / Math.max(1, L.stackH - L.stackStickyH));
         const ease = (a, len) => {
           const t = clamp01((p - a) / len);
-          return (t * t * (3 - 2 * t)).toFixed(3);
+          return t * t * (3 - 2 * t);
         };
-        stackCuts.forEach((el, i) => setVar(el, "--t", ease(0.14 + i * 0.07, 0.24)));
-        setVar(stackStage, "--d", ease(0.42, 0.3));
-        setVar(stackStage, "--k", clamp01((p - 0.5) / 0.22).toFixed(3));
+        const d = ease(0.4, 0.34);
+        stackLayers.forEach((el) => {
+          const y0 = parseFloat(el.dataset.y0);
+          if (el.dataset.cut !== undefined) {
+            setVar(el, "--t", ease(0.12 + Number(el.dataset.cut) * 0.07, 0.24).toFixed(3));
+            setVar(el, "--f", y0.toFixed(3));
+          } else {
+            setVar(el, "--f", (y0 + (parseFloat(el.dataset.y1) - y0) * d).toFixed(4));
+          }
+        });
+        setVar(stackSticky, "--k", clamp01((p - 0.55) / 0.25).toFixed(3));
       }
 
       // The Why sentence lights up word by word in reading order: from when
