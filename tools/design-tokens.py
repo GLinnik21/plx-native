@@ -136,7 +136,27 @@ def close(a, b):
     return a == b
 
 
+def app_shadow(res, token):
+    """A box-shadow string rebuilt from the card-shadow constants, or None."""
+    if token == "card-shadow-focus":
+        k = ("CARD_SHADOW_DY", "CARD_SHADOW_BLUR", None)
+        alpha = res.get("CARD_SHADOW")[3]
+    elif token == "card-shadow-rest":
+        k = ("CARD_SHADOW_REST_DY", "CARD_SHADOW_REST_BLUR", None)
+        alpha = res.get("CARD_SHADOW_REST_A")
+    else:
+        return None
+    dy, blur = res.get(k[0]), res.get(k[1])
+    return None if None in (dy, blur, alpha) else f"0 {dy:g}px {blur:g}px rgba(0,0,0,{alpha:g})"
+
+
+def numbers(s):
+    return [float(x) for x in re.findall(r"-?\d*\.?\d+", str(s))]
+
+
 def app_value(res, token):
+    if (sh := app_shadow(res, token)) is not None:
+        return sh
     c = const_for(token)
     if isinstance(c, tuple):
         names = re.findall(r"[A-Z][A-Z0-9_]+", res.defs.get(c[0], ""))
@@ -159,11 +179,15 @@ def cmd_diff(res, path):
         for t in body["tokens"]:
             name = t["name"]
             app = app_value(res, name)
-            if app is None:
+            if app is None or (fam == "shadow" and app_shadow(res, name) is None):
                 unmapped.append(name)
                 continue
             ds = ds_value(tokens, name)
-            if close(norm(ds), norm(app)):
+            if fam == "shadow":
+                same = numbers(ds) == numbers(app)
+            else:
+                same = close(norm(ds), norm(app))
+            if same:
                 ok += 1
             else:
                 drift.append((fam, name, ds, app))
