@@ -281,6 +281,12 @@
     }));
     const bigs = [...document.querySelectorAll("[data-scrub-big]")].map((el) => ({ el, top: 0 }));
     const words = splitWords(document.querySelector("[data-words]"));
+    // The stack scene: a typical TV app's layers, whose browser layers leave
+    // while the app drops onto OpenGL (styles.css reads the progress).
+    const stack = document.querySelector(".stack-scene");
+    const stackSticky = stack && stack.querySelector(".stack-sticky");
+    const stackStage = stack && stack.querySelector(".stack-stage");
+    const stackCuts = stack ? [...stack.querySelectorAll("[data-cut]")] : [];
 
     const demo = initDemoVideo(true);
 
@@ -391,6 +397,14 @@
         d.h = d.el.offsetHeight;
       });
       bigs.forEach((b) => (b.top = docTop(b.el)));
+      if (stack && stackSticky && stackStage) {
+        L.stackFlow = !!(flowQuery && flowQuery.matches);
+        L.stackTop = docTop(stack);
+        L.stackH = stack.offsetHeight;
+        L.stackStickyTop = parseFloat(getComputedStyle(stackSticky).top) || 0;
+        L.stackStickyH = stackSticky.offsetHeight;
+        L.stackStageTop = docTop(stackStage);
+      }
       if (words.length) {
         const line = words[0].parentElement;
         L.wordsTop = docTop(line);
@@ -415,9 +429,7 @@
         (entries) => entries.forEach((e) => e.target.classList.toggle("is-near", e.isIntersecting)),
         { rootMargin: "50% 0px" }
       );
-      [pin, ...bigs.map((b) => b.el), ...frames.map((f) => f.frame.parentElement), document.querySelector(".approach-diagram")].forEach(
-        (el) => el && nearby.observe(el)
-      );
+      [pin, ...bigs.map((b) => b.el), ...frames.map((f) => f.frame.parentElement)].forEach((el) => el && nearby.observe(el));
     }
 
     let zoomed = false;
@@ -525,6 +537,25 @@
         set(b.el, "transform", `scale(${(1 + s0 - s0 * t).toFixed(4)})`);
       });
 
+      // The stack scene, p = 0..1: pinned on wide screens, over the scroll
+      // that the pin lasts; in the flow (phones), from when the stack's top
+      // is at 80% of the window's height until it reaches 30%.
+      //   0.14–0.52  the three browser layers leave, one after another…
+      //   0.42–0.72  …the app drops onto OpenGL…
+      //   0.50–0.72  …and the label turns from "A typical TV app" to "PlxNative".
+      if (stackStage) {
+        const p = L.stackFlow
+          ? clamp01((vh * 0.8 - (L.stackStageTop - y)) / (vh * 0.5))
+          : clamp01((y + L.stackStickyTop - L.stackTop) / Math.max(1, L.stackH - L.stackStickyH));
+        const ease = (a, len) => {
+          const t = clamp01((p - a) / len);
+          return (t * t * (3 - 2 * t)).toFixed(3);
+        };
+        stackCuts.forEach((el, i) => setVar(el, "--t", ease(0.14 + i * 0.07, 0.24)));
+        setVar(stackStage, "--d", ease(0.42, 0.3));
+        setVar(stackStage, "--k", clamp01((p - 0.5) / 0.22).toFixed(3));
+      }
+
       // The Why sentence lights up word by word in reading order: from when
       // its top is at 90% of the window's height until its bottom reaches
       // 62%, where it is being read, fully lit.
@@ -562,6 +593,14 @@
     if (last[prop] === value) return;
     last[prop] = value;
     el.style[prop] = value;
+  }
+
+  // The same for a custom property.
+  function setVar(el, name, value) {
+    const last = el.__plxStyle || (el.__plxStyle = {});
+    if (last[name] === value) return;
+    last[name] = value;
+    el.style.setProperty(name, value);
   }
 
   // Calls fn whenever the page's layout may have moved: resizes, the load

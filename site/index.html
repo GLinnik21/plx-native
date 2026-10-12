@@ -413,51 +413,39 @@
           <h2 id="approach-title" data-reveal>A different way to build a TV app</h2>
           <p class="approach-statement" data-words>Browsing my Plex library on my 2019 LG TV felt slower than it needed to, even though the picture still looked great.</p>
           <div class="approach-grid">
-            <div class="approach-copy">
-              <p data-reveal>I wanted an interface that felt quick under the remote and enjoyable to spend time in. PlxNative takes a different route from a typical TV app: there is no browser inside it at all. It is written in Rust, and video goes to the TV's own decoder. I use it every day to watch things off my server in the next room.</p>
-              <div class="benefit-list">
-                <div data-reveal>
-                  <h3>The remote feels instant.</h3>
-                  <p>The remote responds as you press.</p>
-                </div>
-                <div data-reveal>
-                  <h3>Older TVs stay usable.</h3>
-                  <p>60 fps on a 2019 TV.</p>
+            <p class="approach-lede" data-reveal>I wanted an interface that felt quick under the remote and enjoyable to spend time in. PlxNative takes a different route from a typical TV app: there is no browser inside it at all. It is written in Rust, and video goes to the TV's own decoder. I use it every day to watch things off my server in the next room.</p>
+            <div class="benefit-list">
+              <div data-reveal>
+                <h3>The remote feels instant.</h3>
+                <p>The remote responds as you press.</p>
+              </div>
+              <div data-reveal>
+                <h3>Older TVs stay usable.</h3>
+                <p>60 fps on a 2019 TV.</p>
+              </div>
+            </div>
+          </div>
+          <!-- One stack that changes as it scrolls (site.js sets the progress; pinned on wide
+               screens, in the page's flow on phones): a typical TV app's seven layers, then its
+               three browser layers leave and the app drops straight onto OpenGL, which is
+               PlxNative. Without the scene (no JS, reduced motion) it is PlxNative's stack. -->
+          <figure class="stack-scene" aria-labelledby="stack-title">
+            <div class="stack-sticky">
+              <p class="stack-title" id="stack-title"><strong>Most TV apps run inside a browser.</strong> PlxNative doesn't.</p>
+              <div class="stack-stage" role="img" aria-label="A stack of layers. A typical TV app: the app as a web page, JavaScript, a browser engine, a compositor, OpenGL, the GPU, the screen. PlxNative has no JavaScript, browser engine or compositor: the app, in native code, draws with OpenGL straight to the GPU and the screen.">
+                <p class="stack-kicker" aria-hidden="true"><span class="is-typical">A typical TV app</span><span class="is-ours">PlxNative</span></p>
+                <div class="stack-layers" aria-hidden="true">
+                  <div class="layer layer--app" style="--slot: 0"><svg class="layer-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.34"></path><g class="layer-mark"><path d="M21.7 30.0L38.5 22.2L55.3 30.0L38.5 37.8Z"></path><path d="M45.2 40.9L62.0 33.1L78.8 40.9L62.0 48.7Z"></path><path d="M45.2 19.1L62.0 11.3L78.8 19.1L62.0 26.9Z"></path><path d="M68.7 30.0L85.5 22.2L102.3 30.0L85.5 37.8Z"></path></g></svg><span class="layer-label">The app<span class="layer-sub"><span class="is-typical">a web page</span><span class="is-ours">native code</span></span></span></div>
+                  <div class="layer layer--cut" style="--slot: 1" data-cut="0"><svg class="layer-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.16"></path></svg><span class="layer-label">JavaScript</span></div>
+                  <div class="layer layer--cut" style="--slot: 2" data-cut="1"><svg class="layer-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.16"></path></svg><span class="layer-label">Browser engine</span></div>
+                  <div class="layer layer--cut" style="--slot: 3" data-cut="2"><svg class="layer-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.16"></path></svg><span class="layer-label">Compositor</span></div>
+                  <div class="layer" style="--slot: 4"><svg class="layer-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.2"></path><path class="layer-grid" d="M6.0 30.0L62.0 56.0M6.0 30.0L62.0 4.0M24.7 21.3L80.7 47.3M24.7 38.7L80.7 12.7M43.3 12.7L99.3 38.7M43.3 47.3L99.3 21.3M62.0 4.0L118.0 30.0M62.0 56.0L118.0 30.0M6.0 30.0L43.3 30.0M24.7 38.7L62.0 38.7M43.3 47.3L80.7 47.3M24.7 21.3L62.0 21.3M43.3 30.0L80.7 30.0M62.0 38.7L99.3 38.7M43.3 12.7L80.7 12.7M62.0 21.3L99.3 21.3M80.7 30.0L118.0 30.0"></path></svg><span class="layer-label">OpenGL</span></div>
+                  <div class="layer" style="--slot: 5"><svg class="layer-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.12"></path><path class="layer-grid layer-grid--fine" d="M13.0 26.8L69.0 52.8M13.0 33.3L69.0 7.3M20.0 23.5L76.0 49.5M20.0 36.5L76.0 10.5M27.0 20.3L83.0 46.3M27.0 39.8L83.0 13.8M34.0 17.0L90.0 43.0M34.0 43.0L90.0 17.0M41.0 13.8L97.0 39.8M41.0 46.3L97.0 20.3M48.0 10.5L104.0 36.5M48.0 49.5L104.0 23.5M55.0 7.3L111.0 33.3M55.0 52.8L111.0 26.8"></path></svg><span class="layer-label">GPU</span></div>
+                  <div class="layer" style="--slot: 6"><svg class="layer-slab layer-slab--screen" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill="#141417"></path><path d="M62 56L118 30L118 42L62 68Z" fill="#0c0c0e"></path><path d="M62 4L118 30L62 56L6 30Z" fill="#08080a"></path><defs><radialGradient id="layer-screen-glow" cx=".3" cy=".25" r=".9"><stop offset="0" stop-color="#fab82e" stop-opacity=".6"></stop><stop offset=".55" stop-color="#7896dc" stop-opacity=".3"></stop><stop offset="1" stop-color="#7896dc" stop-opacity="0"></stop></radialGradient></defs><path d="M62 4L118 30L62 56L6 30Z" class="layer-glow" fill="url(#layer-screen-glow)"></path></svg><span class="layer-label">Screen</span></div>
                 </div>
               </div>
             </div>
-            <!-- Two isometric stacks side by side: a typical TV app (a web page in the TV's browser
-                 engine) and PlxNative, which skips those layers and draws straight to the GPU. Both
-                 end on the same screen, so PlxNative's is visibly shorter. Light streaks run down
-                 each (styles.css): faster through the shorter stack, still under reduced motion. -->
-            <figure class="approach-diagram" data-reveal="card">
-              <div class="stack-pair" role="img" aria-label="Diagram comparing two stacks. A typical TV app: a web page, JavaScript, the browser engine, a compositor, the GPU, the screen. PlxNative: the app, OpenGL, the GPU buffer, the screen.">
-                <div class="stack stack--typical">
-                  <p class="kicker">A typical TV app</p>
-                  <div class="stack-rows">
-                    <div class="stack-row"><svg class="stack-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.2"></path></svg><span>Web page</span></div>
-                    <div class="stack-row"><svg class="stack-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.16"></path></svg><span>JavaScript</span></div>
-                    <div class="stack-row"><svg class="stack-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.16"></path></svg><span>Browser engine</span></div>
-                    <div class="stack-row"><svg class="stack-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.16"></path></svg><span>Compositor</span></div>
-                    <div class="stack-row"><svg class="stack-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.12"></path><path class="stack-grid stack-grid--fine" d="M13.0 26.8L69.0 52.8M13.0 33.3L69.0 7.3M20.0 23.5L76.0 49.5M20.0 36.5L76.0 10.5M27.0 20.3L83.0 46.3M27.0 39.8L83.0 13.8M34.0 17.0L90.0 43.0M34.0 43.0L90.0 17.0M41.0 13.8L97.0 39.8M41.0 46.3L97.0 20.3M48.0 10.5L104.0 36.5M48.0 49.5L104.0 23.5M55.0 7.3L111.0 33.3M55.0 52.8L111.0 26.8"></path></svg><span>GPU</span></div>
-                    <div class="stack-row"><svg class="stack-slab stack-slab--screen" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill="#141417"></path><path d="M62 56L118 30L118 42L62 68Z" fill="#0c0c0e"></path><path d="M62 4L118 30L62 56L6 30Z" fill="#08080a"></path><defs><radialGradient id="stack-screen-glow" cx=".3" cy=".25" r=".9"><stop offset="0" stop-color="#fab82e" stop-opacity=".55"></stop><stop offset=".55" stop-color="#7896dc" stop-opacity=".35"></stop><stop offset="1" stop-color="#7896dc" stop-opacity="0"></stop></radialGradient></defs><path d="M62 4L118 30L62 56L6 30Z" class="stack-screen-glow" fill="url(#stack-screen-glow)"></path></svg><span>Screen</span></div>
-                    <div class="stack-rail"><i></i><i></i><i></i></div>
-                  </div>
-                </div>
-                <div class="stack stack--ours">
-                  <p class="kicker">PlxNative</p>
-                  <div class="stack-rows">
-                    <div class="stack-row"><svg class="stack-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.34"></path><g class="stack-mark"><path d="M21.7 30.0L38.5 22.2L55.3 30.0L38.5 37.8Z"></path><path d="M45.2 40.9L62.0 33.1L78.8 40.9L62.0 48.7Z"></path><path d="M45.2 19.1L62.0 11.3L78.8 19.1L62.0 26.9Z"></path><path d="M68.7 30.0L85.5 22.2L102.3 30.0L85.5 37.8Z"></path></g></svg><span>The app</span></div>
-                    <div class="stack-row"><svg class="stack-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.2"></path><path class="stack-grid" d="M6.0 30.0L62.0 56.0M6.0 30.0L62.0 4.0M24.7 21.3L80.7 47.3M24.7 38.7L80.7 12.7M43.3 12.7L99.3 38.7M43.3 47.3L99.3 21.3M62.0 4.0L118.0 30.0M62.0 56.0L118.0 30.0M6.0 30.0L43.3 30.0M24.7 38.7L62.0 38.7M43.3 47.3L80.7 47.3M24.7 21.3L62.0 21.3M43.3 30.0L80.7 30.0M62.0 38.7L99.3 38.7M43.3 12.7L80.7 12.7M62.0 21.3L99.3 21.3M80.7 30.0L118.0 30.0"></path></svg><span>OpenGL</span></div>
-                    <div class="stack-row"><svg class="stack-slab" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill-opacity="0.13"></path><path d="M62 56L118 30L118 42L62 68Z" fill-opacity="0.07"></path><path d="M62 4L118 30L62 56L6 30Z" fill-opacity="0.12"></path><path class="stack-grid stack-grid--fine" d="M13.0 26.8L69.0 52.8M13.0 33.3L69.0 7.3M20.0 23.5L76.0 49.5M20.0 36.5L76.0 10.5M27.0 20.3L83.0 46.3M27.0 39.8L83.0 13.8M34.0 17.0L90.0 43.0M34.0 43.0L90.0 17.0M41.0 13.8L97.0 39.8M41.0 46.3L97.0 20.3M48.0 10.5L104.0 36.5M48.0 49.5L104.0 23.5M55.0 7.3L111.0 33.3M55.0 52.8L111.0 26.8"></path></svg><span>GPU buffer</span></div>
-                    <div class="stack-row"><svg class="stack-slab stack-slab--screen" viewBox="0 0 124 84" width="124" height="84"><path d="M6 30L62 56L62 68L6 42Z" fill="#141417"></path><path d="M62 56L118 30L118 42L62 68Z" fill="#0c0c0e"></path><path d="M62 4L118 30L62 56L6 30Z" fill="#08080a"></path><path d="M62 4L118 30L62 56L6 30Z" class="stack-screen-glow" fill="url(#stack-screen-glow)"></path></svg><span>Screen</span></div>
-                    <div class="stack-rail"><i></i><i></i><i></i></div>
-                  </div>
-                </div>
-              </div>
-              <figcaption>Most TV apps are web pages running in the TV’s browser. PlxNative has no browser in it: it draws straight to the GPU.</figcaption>
-            </figure>
-          </div>
+          </figure>
         </section>
 
         <section class="quote-section" aria-label="Community feedback">

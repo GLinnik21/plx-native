@@ -2544,22 +2544,14 @@ video::-webkit-media-controls-start-playback-button {
   max-width: 1100px;
   margin: 0 0 clamp(28px, 4vh, 44px);
 }
-/* The story and its benefits on the left, the stack beside them, so the
-   picture belongs to the same block (one column on narrow screens). */
+/* The story on the left, its two benefits beside it (stacked on phones). */
 .approach-grid {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: clamp(28px, 4vw, 64px);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr));
+  gap: clamp(24px, 4vw, 64px);
+  align-items: start;
 }
-.approach-copy {
-  flex: 1 1 340px;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: clamp(24px, 3.5vh, 36px);
-}
-.approach-copy > p {
+.approach-lede {
   font-size: clamp(18px, 1.8vw, 23px);
   line-height: 1.5;
   letter-spacing: -0.01em;
@@ -2571,6 +2563,10 @@ video::-webkit-media-controls-start-playback-button {
 .benefit-list > div {
   padding: clamp(14px, 2vh, 20px) 0;
   box-shadow: inset 0 1px 0 var(--color-white-a22);
+}
+.benefit-list > div:first-child {
+  padding-top: 0;
+  box-shadow: none;
 }
 .benefit-list h3 {
   font-size: clamp(21px, 2.2vw, 28px);
@@ -2587,187 +2583,200 @@ video::-webkit-media-controls-start-playback-button {
   margin: 0;
   text-wrap: pretty;
 }
-.approach-diagram {
-  flex: 1 1 380px;
-  min-width: 0;
-  padding: clamp(20px, 2.6vw, 32px);
-  border-radius: 22px;
-  background: linear-gradient(160deg, var(--color-white-a10), var(--color-white-a07) 60%);
-  box-shadow:
-    inset 0 0 0 1px var(--hairline),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    0 24px 60px rgba(0, 0, 0, 0.45);
+
+/* ---------- The stack scene ---------- */
+/* One idea, one picture: a typical TV app's seven layers, of which the three
+   browser layers (JavaScript, browser engine, compositor) slide out and fade
+   while the app drops straight onto OpenGL. What is left is PlxNative. site.js
+   drives it from the scroll position (--t on each leaving layer, --d for the
+   app's drop, --k for the title swap, all 0..1); without it (no JS, reduced
+   motion) every value is 1, the end state. Pinned for a stretch of scroll on
+   wide screens; on phones and short landscape windows it plays in the page's
+   flow as the stack passes up the screen. */
+.stack-scene {
+  margin: clamp(56px, 9vh, 112px) 0 0;
+  /* A slab is --slab wide, a layer's row two-thirds of that, so the slabs nest. */
+  --slab: clamp(64px, min(9vw, 11svh), 120px);
+  --row: calc(var(--slab) * 0.62);
 }
-/* Two stacks side by side, ending on the same screen: a typical TV app (a
-   web page, its JavaScript, the browser engine and its compositor above the
-   GPU) and PlxNative (the app, OpenGL and the GPU buffer). Each column's rows
-   sit at the bottom, so the shorter stack reads as the missing layers. A slab
-   is --slab wide and a row is two-thirds of that, so the slabs nest. */
-.approach-diagram {
-  margin: 0;
+.fx .stack-scene {
+  height: 220vh;
+  height: 220svh;
 }
-.stack-pair {
-  --slab: clamp(52px, 6.4vw, 96px);
-  --row: calc(var(--slab) * 0.66);
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: clamp(14px, 2.4vw, 28px);
-}
-.stack {
+.stack-sticky {
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(28px, 5vh, 56px);
+  text-align: center;
+}
+.fx .stack-sticky {
+  position: sticky;
+  top: var(--header-h);
+  height: calc(100vh - var(--header-h));
+  height: calc(100svh - var(--header-h));
+}
+@media (max-width: 759px), (max-height: 559px) and (orientation: landscape) {
+  .fx .stack-scene {
+    height: auto;
+  }
+  .fx .stack-sticky {
+    position: static;
+    height: auto;
+  }
+}
+.stack-title {
+  margin: 0;
+  max-width: 22ch;
+  font-size: clamp(28px, 4.2vw, 56px);
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  color: var(--text-tertiary);
+  text-wrap: balance;
+}
+.stack-title strong {
   color: var(--text-primary);
 }
-.stack .kicker {
-  margin: 0 0 clamp(12px, 1.6vw, 18px);
+.stack-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: clamp(10px, 1.6vh, 18px);
+  text-align: left;
 }
-.stack--ours .kicker {
-  color: var(--text-primary);
+/* "A typical TV app" gives way to "PlxNative" as the stack settles. */
+.stack-kicker,
+.layer-sub {
+  display: grid;
+  margin: 0;
 }
-/* The typical app's stack is the quiet one: same drawing, dimmer ink. */
-.stack--typical {
+.stack-kicker > span,
+.layer-sub > span {
+  grid-area: 1 / 1;
+}
+.stack-kicker {
+  font-size: 13px;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+  font-weight: 600;
   color: var(--text-tertiary);
 }
-.stack--typical .stack-slab {
-  opacity: 0.75;
+.stack-kicker .is-ours {
+  color: var(--text-primary);
 }
-.stack-rows {
+/* One out, then the other in: never both half there on top of each other. */
+.stack-kicker .is-typical,
+.layer-sub .is-typical {
+  opacity: max(0, 1 - var(--k, 1) * 2);
+}
+.stack-kicker .is-ours,
+.layer-sub .is-ours {
+  opacity: max(0, var(--k, 1) * 2 - 1);
+}
+/* The four layers that stay end up centred where the seven stood: the stage
+   rises a row and a half as the app falls three, and the kicker falls with
+   the app so it stays on top of the stack. */
+.stack-stage {
+  transform: translateY(calc(var(--d, 1) * var(--row) * -1.5));
+}
+.stack-kicker {
+  transform: translateY(calc(var(--d, 1) * var(--row) * 3));
+}
+.stack-layers {
   position: relative;
-  margin-top: auto;
+  height: calc(var(--row) * 6 + var(--slab) * 0.677);
+  width: calc(var(--slab) + clamp(150px, 16vw, 210px));
+  color: var(--text-primary);
 }
-.stack-row {
+.layer {
+  position: absolute;
+  left: 0;
+  top: calc(var(--row) * var(--slot));
   display: flex;
   align-items: center;
-  gap: clamp(8px, 1.2vw, 14px);
-  height: var(--row);
+  gap: clamp(10px, 1.4vw, 18px);
+  height: calc(var(--slab) * 0.677);
 }
-.stack-slab {
+/* Drawn bottom up, so each slab sits on the one below it. */
+.layer:nth-child(1) { z-index: 7; }
+.layer:nth-child(2) { z-index: 6; }
+.layer:nth-child(3) { z-index: 5; }
+.layer:nth-child(4) { z-index: 4; }
+.layer:nth-child(5) { z-index: 3; }
+.layer:nth-child(6) { z-index: 2; }
+.layer:nth-child(7) { z-index: 1; }
+/* The three browser layers leave sideways and fade. */
+.layer--cut {
+  opacity: calc(1 - var(--t, 1));
+  transform: translateX(calc(var(--t, 1) * var(--slab) * -0.7));
+}
+/* The app falls three rows, onto OpenGL. */
+.layer--app {
+  transform: translateY(calc(var(--d, 1) * var(--row) * 3));
+}
+.layer-slab {
   flex: none;
   display: block;
   width: var(--slab);
   height: auto;
   overflow: visible;
 }
-.stack-slab:not(.stack-slab--screen) path {
+.layer-slab:not(.layer-slab--screen) path {
   fill: currentColor;
   stroke: currentColor;
   stroke-opacity: 0.5;
   stroke-width: 1.4;
   stroke-linejoin: round;
 }
-.stack-slab .stack-mark path {
+.layer-slab .layer-mark path {
   fill-opacity: 0.5;
   stroke: none;
 }
-.stack-slab .stack-grid {
+.layer-slab .layer-grid {
   fill: none;
   stroke-width: 1;
 }
-.stack-slab .stack-grid--fine {
+.layer-slab .layer-grid--fine {
   stroke-opacity: 0.28;
   stroke-width: 0.8;
 }
-/* The screen is a dark slab whatever the page's ink, with a warm-to-cool glow. */
-.stack-slab--screen path {
+/* The screen is a dark slab whatever the page's ink, with the one warm glow. */
+.layer-slab--screen path {
   stroke: #fff;
   stroke-opacity: 0.3;
   stroke-width: 1.4;
   stroke-linejoin: round;
 }
-.stack-slab--screen .stack-screen-glow {
+.layer-slab--screen .layer-glow {
   stroke: none;
 }
-.stack-row span {
-  min-width: 0;
-  font-size: clamp(13px, 1.3vw, 15px);
-  line-height: 1.15;
-  font-weight: 700;
-  text-wrap: balance;
+/* Quiet labels, joined to their slab by a hairline. */
+.layer-label {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: clamp(18px, 2vw, 28px);
+  font-size: clamp(14px, 1.3vw, 16px);
+  line-height: 1.2;
+  font-weight: 600;
+  white-space: nowrap;
 }
-.approach-diagram figcaption {
-  margin-top: clamp(18px, 2.4vw, 26px);
-  padding-top: clamp(14px, 1.8vw, 18px);
-  box-shadow: inset 0 1px 0 var(--hairline);
-  font-size: 15px;
-  line-height: 1.5;
-  color: var(--text-secondary);
-  text-wrap: pretty;
-}
-/* The rail runs down the slabs' centre line, from the top slab's face to the
-   screen's (a face's centre is about 0.23 slab widths below its row's top). */
-.stack-rail {
-  position: absolute;
-  left: calc(var(--slab) / 2 - 1.5px);
-  width: 3px;
-  top: calc(var(--slab) * 0.23);
-  bottom: calc(var(--row) - var(--slab) * 0.23);
-  overflow: hidden;
-  pointer-events: none;
-}
-.stack-rail::before {
+.layer-label::before {
   content: "";
   position: absolute;
-  left: 0.9px;
-  width: 1.2px;
-  top: 0;
-  bottom: 0;
-  background: repeating-linear-gradient(to bottom, currentColor 0 2px, transparent 2px 7px);
-  opacity: 0.22;
+  left: 0;
+  top: 0.6em;
+  width: clamp(12px, 1.4vw, 20px);
+  height: 1px;
+  background: var(--color-white-a22);
 }
-/* Streaks of light shoot down each rail: three at a time, each crossing
-   PlxNative's stack in 0.7s and the typical one's in 1.5s. Each streak is a
-   rail-tall box whose bottom 46px are lit, slid from above the rail to its
-   end. Still (and hidden) under reduced motion. */
-.stack-rail i {
-  position: absolute;
-  inset: 0;
-  border-radius: 1.5px;
-  background: linear-gradient(to bottom, transparent calc(100% - 46px), currentColor);
-  opacity: 0;
-  transform: translateY(-100%);
-}
-@media (prefers-reduced-motion: no-preference) {
-  .stack-rail i {
-    animation: stack-streak 0.7s linear infinite;
-  }
-  .stack-rail i:nth-child(2) {
-    animation-delay: 0.23s;
-  }
-  .stack-rail i:nth-child(3) {
-    animation-delay: 0.46s;
-  }
-  .stack--typical .stack-rail i {
-    animation-duration: 1.5s;
-  }
-  .stack--typical .stack-rail i:nth-child(2) {
-    animation-delay: 0.5s;
-  }
-  .stack--typical .stack-rail i:nth-child(3) {
-    animation-delay: 1s;
-  }
-  /* Running only while the diagram is near the screen (site.js sets .is-near
-     where the scroll scenes run): an endless animation off screen still costs
-     a style pass every frame. */
-  .fx .approach-diagram:not(.is-near) .stack-rail i {
-    animation-play-state: paused;
-  }
-}
-@keyframes stack-streak {
-  0% {
-    transform: translateY(-100%);
-    opacity: 0;
-  }
-  15% {
-    opacity: 1;
-  }
-  80% {
-    opacity: 1;
-  }
-  100% {
-    transform: translateY(0);
-    opacity: 0;
-  }
+.layer-sub {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-secondary);
 }
 
 /* ---------- Community: support, press glosses ---------- */
