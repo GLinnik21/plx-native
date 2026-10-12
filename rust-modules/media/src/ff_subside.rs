@@ -1033,12 +1033,12 @@ mod tests {
     /// assumed mapping gives `delta = +1 s` and the cue must land at 0.0 s in the store.
     ///
     /// Needs the host build of the bundled FFmpeg and a system `ffmpeg` to generate the fixture.
-    /// Run this test explicitly with `--ignored`; `make check-ffmpeg` stages its libraries.
+    /// `make check-ffmpeg` stages its libraries and runs this test.
     #[test]
-    #[ignore = "needs the host build of the bundled FFmpeg and a system ffmpeg — run explicitly with --ignored"]
+    #[ignore = "needs the bundled host FFmpeg and a system ffmpeg; run make check-ffmpeg"]
     fn side_reader_draws_a_shifted_cue_from_a_generated_mkv() {
         let _g = plx_base::testlock::serial();
-        super::super::image_subtitle_tests::bind_host_ffmpeg();
+        let _ffmpeg = super::super::image_subtitle_tests::bind_host_ffmpeg();
         let dir = std::env::temp_dir().join(format!("plx-subside-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("t.srt"), "1\n00:00:01,000 --> 00:00:02,500\nHello\n\n").unwrap();

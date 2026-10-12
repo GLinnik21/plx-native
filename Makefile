@@ -2087,7 +2087,7 @@ $(FFMPEG_HOST_STAGED): pkg/%.dylib: $(FFMPEG_HOST_INC)/libavformat/avformat.h ci
 # The ASS reader tests also need staged libass to compare caption pixels after packet ingestion.
 check-ffmpeg: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED)
 	cd rust-modules && CARGO_INCREMENTAL=0 PLX_FFMPEG_DIR=$(CURDIR)/pkg PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_NIGHTLY) test --lib -p plx_media ff::image_subtitle_tests -- --ignored
+	  cargo +$(RUST_NIGHTLY) test --lib -p plx_media -- ff::image_subtitle_tests ff::subside::tests::side_reader_draws_a_shifted_cue_from_a_generated_mkv --ignored
 
 # The same ABI gate the cross build runs, at the other pointer width. ci/ffabi-assert.c `#if`s on
 # `__SIZEOF_POINTER__` and carries both tables, so this compile is what holds ff.rs's 64-bit

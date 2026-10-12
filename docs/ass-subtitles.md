@@ -14,12 +14,13 @@ new Starfish API is required. Pins, checksums, license notices and corresponding
 are part of the normal package/source-bundle workflow.
 
 The demuxer copies ASS headers, complete timed packets and font attachments out of FFmpeg.
-The header and packet copies remove trailing zero terminators before validation. A zero byte
-inside the header or caption text still causes rejection. The raw byte limits apply before
-trimming. Direct playback and the subtitle side reader use the same copies.
-An empty normalized header creates no source. Empty normalized packets are dropped so they
-cannot prevent valid captions on the same track from rendering. External ASS files retain
-their existing validation rules.
+The source store removes trailing zero terminators from headers and packets. A zero byte
+inside a header makes the track invalid. The raw byte limits apply before trimming.
+Direct playback and the subtitle side reader use the same source store.
+An empty normalized header or a missing header reports an invalid track. The source store drops
+empty normalized packets and packets with an internal zero byte. These packets cannot prevent
+valid captions on the same track from rendering. External ASS files retain their existing
+validation rules.
 `Shared` owns the ASS source store and renderer mailbox alongside the other playback transport
 state. `player::ass_source` retains immutable snapshots and a bounded event window, including the
 history needed for subtitle delay. It keeps all embedded ASS tracks so selecting another language

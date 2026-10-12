@@ -128,7 +128,7 @@ fn assert_ass_caption(source: &Arc<ass::Source>, now_ms: i64) -> Arc<ass::Frame>
 fn terminated_ass_header_and_packets_render_through_main_subtitle_ingestion() {
     let _g = plx_base::testlock::serial();
     let _reset = AssReset;
-    bind_host_ffmpeg();
+    let _ffmpeg = bind_host_ffmpeg();
     ass_source::reset();
     crate::player::request_subtitle(0);
     SHARED.playpos_ns.store(0, Ordering::Relaxed);
@@ -192,7 +192,7 @@ fn terminated_ass_header_and_packets_render_through_http_side_reader() {
     use super::subside::{Anchor, ReadCfg, RunEnd, SideStop};
     let _g = plx_base::testlock::serial();
     let _reset = AssReset;
-    bind_host_ffmpeg();
+    let _ffmpeg = bind_host_ffmpeg();
     static STOP_SERVER: AtomicBool = AtomicBool::new(false);
     STOP_SERVER.store(false, Ordering::Release);
     let body = std::fs::read(
@@ -251,7 +251,7 @@ fn terminated_ass_header_and_packets_render_through_http_side_reader() {
 fn ass_packet_terminators_do_not_weaken_validation() {
     let _g = plx_base::testlock::serial();
     let _reset = AssReset;
-    bind_host_ffmpeg();
+    let _ffmpeg = bind_host_ffmpeg();
     crate::player::request_subtitle(0);
     unsafe {
         let d = AssFixture::open();
@@ -269,10 +269,19 @@ fn ass_packet_terminators_do_not_weaken_validation() {
                 payload,
             }
             .push(generation);
-            assert_eq!(
-                ass_frame(ass_source::selected(0).unwrap(), 2000, false).error,
-                Some(ass::Fault::InvalidEvents)
-            );
+            SubCue::Ass {
+                track: 0,
+                start: 1_000_000_000,
+                end: 3_000_000_000,
+                payload: b"0,0,Default,,0,0,0,,VALID CAPTION",
+            }
+            .push(generation);
+            let source = ass_source::selected(0).unwrap();
+            let ass::Content::Embedded { events, .. } = &source.content else {
+                panic!()
+            };
+            assert_eq!(events.len(), 1, "the malformed packet must be dropped");
+            assert_ass_caption(&source, 2000);
         }
         ass_source::reset();
         let generation = d.sources();
@@ -317,7 +326,7 @@ fn ass_packet_terminators_do_not_weaken_validation() {
 fn ass_header_terminators_do_not_weaken_validation() {
     let _g = plx_base::testlock::serial();
     let _reset = AssReset;
-    bind_host_ffmpeg();
+    let _ffmpeg = bind_host_ffmpeg();
     ass_source::reset();
     unsafe {
         let d = AssFixture::open();
@@ -338,9 +347,24 @@ fn ass_header_terminators_do_not_weaken_validation() {
         );
         std::ptr::write_bytes((*cp).extradata, 0, 523);
         d.sources();
-        assert!(
-            ass_source::selected(0).is_none(),
-            "an empty normalized header has no source"
+        assert_eq!(
+            ass_frame(ass_source::selected(0).unwrap(), 2000, false).error,
+            Some(ass::Fault::InvalidTrack)
+        );
+        (*cp).extradata_size = 0;
+        d.sources();
+        assert_eq!(
+            ass_frame(ass_source::selected(0).unwrap(), 2000, false).error,
+            Some(ass::Fault::InvalidTrack)
+        );
+        let allocated = (*cp).extradata;
+        (*cp).extradata = std::ptr::null_mut();
+        (*cp).extradata_size = 521;
+        d.sources();
+        (*cp).extradata = allocated;
+        assert_eq!(
+            ass_frame(ass_source::selected(0).unwrap(), 2000, false).error,
+            Some(ass::Fault::InvalidTrack)
         );
         (*cp).extradata_size = ass_source::MAX_HEADER_BYTES as i32 + 1;
         d.sources();
@@ -359,9 +383,38 @@ pub(super) fn host_ffmpeg_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pkg"))
 }
 
-/// Bind the three libraries exactly as `load_libraries` does — dependency order, one directory —
-/// and hold the build to the ABI table this file's offsets were checked against.
-pub(super) fn bind_host_ffmpeg() {
+#[test]
+#[ignore = "requires the bundled host FFmpeg; run make check-ffmpeg"]
+fn host_ffmpeg_binding_restores_the_abi_gate() {
+    let _g = plx_base::testlock::serial();
+    assert!(!abi_ok(), "host tests must leave the ABI gate closed");
+    {
+        let _ffmpeg = bind_host_ffmpeg();
+        assert!(abi_ok());
+        {
+            let _nested = bind_host_ffmpeg();
+            assert!(abi_ok());
+        }
+        assert!(abi_ok(), "an inner binding must preserve the outer binding");
+    }
+    assert!(!abi_ok(), "the next host test must start with a closed ABI gate");
+}
+
+pub(super) struct HostFfmpeg {
+    previous_abi_ok: bool,
+}
+
+impl Drop for HostFfmpeg {
+    fn drop(&mut self) {
+        ABI_OK.store(self.previous_abi_ok, Ordering::Relaxed);
+    }
+}
+
+/// Bind the host libraries in dependency order and check their ABI majors.
+/// Keep the guard until all readers stop so the next test gets the previous ABI state.
+#[must_use]
+pub(super) fn bind_host_ffmpeg() -> HostFfmpeg {
+    plx_base::testlock::assert_held("bind_host_ffmpeg");
     let dir = host_ffmpeg_dir();
     for (what, verdict) in [
         ("avutil", avutil::load(Some(&dir))),
@@ -386,7 +439,9 @@ pub(super) fn bind_host_ffmpeg() {
         (63, 63, 61),
         "the staged FFmpeg is not the one ff.rs is built for"
     );
-    ABI_OK.store(true, Ordering::Relaxed);
+    HostFfmpeg {
+        previous_abi_ok: ABI_OK.swap(true, Ordering::Relaxed),
+    }
 }
 
 /// **A subtitle track muxed by mkvmerge is zlib-compressed, and the bundled FFmpeg must undo it.**
@@ -423,7 +478,7 @@ pub(super) fn bind_host_ffmpeg() {
 #[ignore = "needs the host build of the bundled FFmpeg — run by `make check-ffmpeg`"]
 fn mkvmerge_zlib_subtitle_tracks_decode_like_uncompressed_ones() {
     let _g = plx_base::testlock::serial();
-    bind_host_ffmpeg();
+    let _ffmpeg = bind_host_ffmpeg();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../tests/fixtures/mkv_zlib_subs.mkv")
         .canonicalize()

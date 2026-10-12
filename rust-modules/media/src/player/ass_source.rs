@@ -23,6 +23,13 @@ const OTHER_TRACKS_EVENT_BYTES: usize = 8 * 1024 * 1024;
 const STALE_AHEAD_MS: i64 = 5_000;
 const MAX_MEDIA_KEY_BYTES: usize = 64 * 1024;
 
+fn trim_terminators(mut bytes: &[u8]) -> &[u8] {
+    while bytes.last() == Some(&0) {
+        bytes = &bytes[..bytes.len() - 1];
+    }
+    bytes
+}
+
 #[derive(Default)]
 pub struct Store {
     generation: u64,
@@ -80,6 +87,16 @@ impl Store {
     }
 
     fn begin(&mut self, media_key: &str, headers: Vec<(i32, Vec<u8>)>, fonts: Vec<Font>) -> u64 {
+        let headers: Vec<_> = headers
+            .into_iter()
+            .filter_map(|(track, mut header)| {
+                if header.len() > MAX_HEADER_BYTES {
+                    return None;
+                }
+                header.truncate(trim_terminators(&header).len());
+                Some((track, header))
+            })
+            .collect();
         let same_file = !media_key.is_empty()
             && self.media_key.as_deref() == Some(media_key)
             && headers.len() == self.tracks.len()
@@ -108,9 +125,6 @@ impl Store {
             .into();
         self.fonts = Some(fonts.clone());
         for (track, header) in headers {
-            if header.len() > MAX_HEADER_BYTES {
-                continue;
-            }
             // An unchanged inventory also preserves the per-track/global byte budgets.
             // A demux reopen seeks to a video cue and may never resend a long sign.
             let events = previous.get(&track).and_then(|source| match &source.content {
@@ -257,14 +271,12 @@ impl Store {
 pub fn begin(media_key: &str, headers: Vec<(i32, Vec<u8>)>, fonts: Vec<Font>) -> u64 {
     store().begin(media_key, headers, fonts)
 }
-pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, mut payload: &[u8]) {
+pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, payload: &[u8]) {
     if payload.len() > MAX_PACKET_BYTES {
         return;
     }
-    while payload.last() == Some(&0) {
-        payload = &payload[..payload.len() - 1];
-    }
-    if payload.is_empty() {
+    let payload = trim_terminators(payload);
+    if payload.is_empty() || payload.contains(&0) {
         return;
     }
     let mut store = store();
@@ -337,6 +349,39 @@ impl Clock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn begin_keeps_empty_headers_but_bounds_raw_bytes_before_trimming() {
+        let mut s = Store::default();
+        s.begin(
+            "fixture",
+            vec![(0, vec![]), (1, vec![0; 3]), (2, vec![0; MAX_HEADER_BYTES + 1])],
+            vec![],
+        );
+        for track in [0, 1] {
+            let source = s.selected(track).unwrap();
+            let Content::Embedded { header, .. } = &source.content else {
+                panic!()
+            };
+            assert!(header.is_empty(), "validation must receive the empty header");
+        }
+        assert!(s.selected(2).is_none());
+    }
+
+    #[test]
+    fn begin_normalizes_headers_before_reopen_identity_checks() {
+        let mut s = Store::default();
+        let generation = s.begin("fixture", vec![(0, b"header\0\0".to_vec())], vec![]);
+        s.push(generation, 0, event("caption", 1000), 0);
+        s.retain_for_reload();
+        s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
+        let source = s.selected(0).unwrap();
+        let Content::Embedded { header, events, .. } = &source.content else {
+            panic!()
+        };
+        assert_eq!(header.as_ref(), b"header");
+        assert_eq!(events.as_ref(), &[event("caption", 1000)]);
+    }
 
     #[test]
     fn resetting_another_playback_owner_cannot_retire_the_live_subtitles() {
@@ -548,7 +593,9 @@ mod tests {
             s.push(g, t, event(&format!("track {t}"), 1000), 0);
         }
         let source = s.selected(69).expect("track 70 has a source");
-        let Content::Embedded { header, events, .. } = &source.content else { panic!() };
+        let Content::Embedded { header, events, .. } = &source.content else {
+            panic!()
+        };
         assert_eq!(header.as_ref(), b"header 69");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].payload.as_ref(), b"track 69");
