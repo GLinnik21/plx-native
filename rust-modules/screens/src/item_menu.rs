@@ -1595,7 +1595,7 @@ mod tests {
             fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
         }
         let measure = MenuMeasure;
-        for preference in [Preference::En, Preference::Es, Preference::Be] {
+        for preference in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
             let locale = LocaleContext::resolve(preference, None, None, None, None);
             let mut form: FormTable<ItemRow, Action, Infallible> = FormTable::new(crate::registry::BAND);
             form.table.compact = true;

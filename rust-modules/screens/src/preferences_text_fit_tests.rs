@@ -198,6 +198,7 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
         let want = match language.tag() {
             "en" => "When audio isn't in the subtitle language",
             "es" => "Audio fuera del idioma de subtítulos",
+            "fr" => "Audio hors langue des sous-titres",
             _ => "Калі гук не на мове субцітраў",
         };
         assert_eq!(readouts[1], want, "{}", language.tag());

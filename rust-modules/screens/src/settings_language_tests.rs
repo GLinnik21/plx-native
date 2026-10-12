@@ -131,7 +131,7 @@ fn contribution_is_focusable_and_right_opens_the_guide() {
     let cx = cx(Some(key));
     assert!(<LanguagePage as Focusable<InnerHost>>::place(&page, &key.elem, &cx, At::SpringTarget).is_some());
     assert!(matches!(<LanguagePage as Focusable<InnerHost>>::neighbour(&page,
-        FocusKey { entry: key.entry, elem: lang(Preference::Be) }, Dir::Down, &cx), Step::Move(next) if next == key));
+        FocusKey { entry: key.entry, elem: lang(Preference::Fr) }, Dir::Down, &cx), Step::Move(next) if next == key));
     let mut out = Vec::new();
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);

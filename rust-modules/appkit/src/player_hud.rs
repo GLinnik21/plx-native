@@ -2862,7 +2862,7 @@ mod tests {
             &[A::Repair, A::Back],
         ];
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
             let _guard = language_on_this_thread_for_test(language);
             for row in rows {
                 let labels: Vec<&'static std::ffi::CStr> = row.iter().map(|a| failure_action_label(*a)).collect();
@@ -2889,7 +2889,7 @@ mod tests {
         use plx_ui::text_view::TextView;
         use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
             let _guard = language_on_this_thread_for_test(language);
             let help = msg::widgets_reason_jail_help();
             let fits = !TextView::new(help, theme::size::CAPTION, theme::TEXT_TERTIARY)
@@ -2911,7 +2911,7 @@ mod tests {
         use plx_ui::fit::HEADROOM;
         use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
             let _guard = language_on_this_thread_for_test(language);
             for s in [msg::widgets_verdict_forced_no_original(), msg::widgets_verdict_forced_container(),
                 msg::widgets_verdict_forced_video(), msg::widgets_verdict_forced_audio(),

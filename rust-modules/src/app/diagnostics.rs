@@ -3259,7 +3259,7 @@ mod tests {
     /// locale's keys are held to the English budget: "Conservative" and "Dolby Vision".
     #[test]
     fn every_locale_keeps_its_row_keys_inside_the_gutter() {
-        for lang in ["en", "es", "be"] {
+        for lang in ["en", "es", "be", "fr"] {
             let path = format!("{}/../locales/{lang}/browse.json", env!("CARGO_MANIFEST_DIR"));
             let text = std::fs::read_to_string(&path).expect("catalog");
             let catalog: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).expect("catalog JSON");
