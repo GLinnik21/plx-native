@@ -618,6 +618,12 @@ pub fn session_candidates() -> Vec<PathBuf> {
 /// order, as DIRECTORIES. `/media/developer` under the Developer Mode jail, `/media/internal`
 /// under the production one, the app dir as a theory, and a steerable build's instance root
 /// first of all so two simulators never share (or race) one cache.
+///
+/// `/media/developer/temp` comes after both: on a 2016 set running webOS 3.4.3 it is the only
+/// persistent directory a Developer Mode app may write (`/media/developer` is root-owned there and
+/// `/media/internal` is read-only), so without it that set re-downloaded every poster every time.
+/// It shares the partition installed apps live on, which is why `imgcache` sizes its ceiling from
+/// the free space rather than taking its fixed one.
 pub fn image_cache_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     if ENV_STEERABLE {
@@ -627,6 +633,7 @@ pub fn image_cache_candidates() -> Vec<PathBuf> {
     v.extend([
         PathBuf::from(format!("/media/developer/{id}-imgcache")),
         PathBuf::from(format!("/media/internal/.{id}-imgcache")),
+        PathBuf::from(format!("/media/developer/temp/{id}-imgcache")),
         in_app_dir("imgcache"),
     ]);
     v

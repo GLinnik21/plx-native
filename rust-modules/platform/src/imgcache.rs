@@ -225,6 +225,9 @@ struct Index {
     lru: BTreeSet<(u64, String)>,
     bytes: u64,
     sequence: u64,
+    /// The byte ceiling for THIS root, set once it is chosen: [`Limits::bytes`] clamped to the
+    /// space the filesystem can spare (see [`byte_cap`]). `None` before initialization.
+    cap: Option<u64>,
 }
 
 #[derive(Default)]
@@ -307,13 +310,23 @@ impl Cache {
         for (mtime, name, size) in found {
             index.insert(name, size, mtime);
         }
+        let Some(cap) = byte_cap(self.limits.bytes, free_bytes(&root), index.bytes) else {
+            plx_base::eventlog::log(&format!(
+                "imgcache: {} has too little free space; disk cache unavailable",
+                root.display()
+            ));
+            index.root = None;
+            return;
+        };
+        index.cap = Some(cap);
         self.make_room(index, None, 0, 0);
         self.publish_size(index);
         plx_base::eventlog::log(&format!(
-            "imgcache: {} entries={} bytes={}",
+            "imgcache: {} entries={} bytes={} cap={}",
             root.display(),
             index.entries.len(),
-            index.bytes
+            index.bytes,
+            index.cap.unwrap_or(self.limits.bytes)
         ));
     }
 
@@ -385,7 +398,7 @@ impl Cache {
             return false;
         };
         let size = (bytes.len() + HEADER_LEN) as u64;
-        if size > self.limits.bytes || self.limits.entries == 0 {
+        if size > self.cap(index) || self.limits.entries == 0 {
             return false;
         }
         // One writer under the gate, and startup removes residue from an interrupted process.
@@ -432,7 +445,7 @@ impl Cache {
         added_bytes: u64,
         added_entries: usize,
     ) -> bool {
-        while index.bytes.saturating_add(added_bytes) > self.limits.bytes
+        while index.bytes.saturating_add(added_bytes) > self.cap(index)
             || index.entries.len() + added_entries > self.limits.entries
         {
             let candidate = index
@@ -608,6 +621,41 @@ fn cache_name(name: &str) -> bool {
         .or_else(|| name.strip_prefix("avatar-"))
         .and_then(|s| s.strip_suffix(".img"))
         .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+impl Cache {
+    fn cap(&self, index: &Index) -> u64 {
+        index.cap.unwrap_or(self.limits.bytes)
+    }
+}
+
+/// Below this much spare space the disk tier is not worth having, and taking any of it risks the
+/// filesystem the television installs apps onto.
+const MIN_CAP: u64 = 8 * 1024 * 1024;
+
+/// The byte ceiling for a root: `limit`, but never more than HALF of what the filesystem could
+/// give the cache (its free space plus what the cache already holds). `None` when that half is
+/// under [`MIN_CAP`], or the free space is unknown and `limit` would then be a guess. The floor
+/// is about the FILESYSTEM, never the configured limit, which may legitimately be small.
+///
+/// A 2016 set on webOS 3.4.3 has exactly one writable persistent directory a Developer Mode app
+/// can reach, `/media/developer/temp`, on the 636 MB partition that also holds installed apps,
+/// with 76.5 MB free: the fixed 128 MiB ceiling would have filled it.
+fn byte_cap(limit: u64, free: Option<u64>, held: u64) -> Option<u64> {
+    let spare = free?.saturating_add(held) / 2;
+    (spare >= MIN_CAP).then_some(limit.min(spare))
+}
+
+/// Bytes an unprivileged process may still write on `path`'s filesystem, or `None` if unknown.
+fn free_bytes(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast)] // the field widths differ between targets
+    Some((st.f_bavail as u64).saturating_mul(st.f_frsize as u64))
 }
 
 fn probe_dir(path: &Path) -> bool {

@@ -437,3 +437,27 @@ fn unavailable_storage_is_harmless_and_stats_do_not_initialize_it() {
     assert!(!cache.write_at(0, &poster(0), b"image"));
     assert_eq!(cache.stats().miss, 1);
 }
+
+/// The 3.4.3 set's numbers: 76.5 MB free on the partition installed apps share, so the cache takes
+/// at most half, not its fixed 128 MiB.
+#[test]
+fn the_byte_ceiling_takes_at_most_half_of_what_the_filesystem_can_spare() {
+    const MB: u64 = 1024 * 1024;
+    const GB: u64 = 1024 * MB;
+    assert_eq!(byte_cap(128 * MB, Some(76 * MB), 0), Some(38 * MB));
+    // A roomy disk keeps the fixed ceiling.
+    assert_eq!(byte_cap(128 * MB, Some(10 * GB), 0), Some(128 * MB));
+    // What the cache already holds counts as spare.
+    assert_eq!(byte_cap(128 * MB, Some(40 * MB), 36 * MB), Some(38 * MB));
+    // Too little to be worth having, and unknown free space is not a licence.
+    assert_eq!(byte_cap(128 * MB, Some(12 * MB), 0), None);
+    assert_eq!(byte_cap(128 * MB, None, 0), None);
+    // A small configured limit is honoured.
+    assert_eq!(byte_cap(4096, Some(10 * GB), 0), Some(4096));
+}
+
+#[test]
+fn a_test_directory_reports_its_free_space() {
+    let dir = TestDir::new();
+    assert!(free_bytes(&dir.0).is_some_and(|b| b > 0));
+}
