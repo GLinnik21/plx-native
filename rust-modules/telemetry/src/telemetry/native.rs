@@ -291,11 +291,12 @@ const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "codename", "api"];
 /// sandbox facts PostHog's usage envelope carries as super-properties (`telemetry::posthog`'s
 /// `envelope_props`), so a chassis's crash-at-start rate is queryable by sandbox on either side.
 ///
-/// `probe` (`<os_info>/<device_info>`, each `ok`/`no_keys`/`unreadable`) says why `model`, `soc` or
+/// `probe` (`<os_info>/<device_info>`, each `ok`/`no_keys`/`unreadable`/`unprobed`) says why `model`, `soc` or
 /// the webOS release are empty. The SDK's own scope never sets it (that would need the C shim), so
 /// it rides the HANDLED events and the fallback fault report that
 /// `sentry::attach_hardware_context` builds; it is allowed here so a native event could carry it
-/// without a second allowlist edit.
+/// without a second allowlist edit, and [`preview_event`] leaves it out because a real native
+/// crash event does not carry it.
 const HARDWARE_FIELDS: &[&str] = &["type", "model", "soc", "revision", "probe", "rtkmem", "install"];
 const EXCEPTION_CONTAINER_FIELDS: &[&str] = &["values"];
 const EXCEPTION_FIELDS: &[&str] = &["type", "value", "mechanism", "stacktrace"];
@@ -545,7 +546,6 @@ pub fn preview_event() -> Vec<u8> {
                 "codename": "<webOS release codename>", "api": "<webOS API version>"},
             "hardware": {"type": "hardware", "model": "<device model class>",
                 "soc": "<SoC/platform class>", "revision": "<hardware revision class>",
-                "probe": "<ok / no_keys / unreadable per nyx file>",
                 "rtkmem": "<ok / missing / n/a>", "install": "<devmode / homebrew / unknown>"}
         },
         "exception": {"values": [{
@@ -1211,7 +1211,12 @@ mod tests {
         assert_eq!(value["user"]["id"], PREVIEW_USER_ID);
         assert_keys(&value, "/contexts/os", OS_FIELDS);
         assert_keys(&value, "/contexts/webos", WEBOS_FIELDS);
-        assert_keys(&value, "/contexts/hardware", HARDWARE_FIELDS);
+        // `probe` is allowlisted but never set by the SDK's scope, so a real native crash event (and
+        // therefore this preview) has no such key; the handled and fallback reports show it.
+        let shown: Vec<&str> =
+            HARDWARE_FIELDS.iter().copied().filter(|key| *key != "probe").collect();
+        assert_keys(&value, "/contexts/hardware", &shown);
+        assert!(value.pointer("/contexts/hardware/probe").is_none());
         assert_keys(&value, "/exception", EXCEPTION_CONTAINER_FIELDS);
         assert_keys(&value, "/exception/values/0", EXCEPTION_FIELDS);
         assert_keys(&value, "/exception/values/0/mechanism", MECHANISM_FIELDS);

@@ -127,7 +127,7 @@ URL, path, playhead, duration, exact bitrate, server identity, address, token, a
 and is not joined to the product analytics identifier or `playback_id`. It carries the same Crash
 report ID as a crash report, and the same television model, SoC, hardware revision, webOS release
 and the `rtkmem`/`install` sandbox facts a crash report carries. It also carries a `probe` fact:
-two fixed words, `ok`, `no_keys` or `unreadable`, one for each of the two firmware information
+two fixed words, each `ok`, `no_keys`, `unreadable` or `unprobed` (the boot probe had not run yet), one for each of the two firmware information
 files the television model and webOS release are read from (`probe` is `ok/ok` when both
 answered), saying why that model, SoC or release is empty when it is. Buffering, seeking, holding
 a low quality, or rejecting an adaptive-bitrate candidate does not by itself send a report.
@@ -250,7 +250,7 @@ Every product analytics event also carries this bounded compatibility and connec
 | `webos_api` | the webOS API version reported by nyx |
 | `webos_codename` | the webOS firmware family reported by nyx |
 | `device_model` | the LG model/platform class reported by nyx |
-| `soc` | the SoC/board class reported by nyx |
+| `soc` | the SoC/board class reported by nyx or, when nyx names none, the leading board-family token (at most eight lowercase letters and digits, such as `k5lp`) of the television's machine name |
 | `hardware_revision` | the hardware revision class reported by nyx |
 | `server_connection` | `local` / `remote` / `relay` / `unknown` — omitted entirely on an event with no one server, such as `app.launch`, `route.entered` or a `signin.*` event |
 | `ip_version` | `v4` / `v6` / `unknown` — omitted entirely on an event with no one server, same as `server_connection` |

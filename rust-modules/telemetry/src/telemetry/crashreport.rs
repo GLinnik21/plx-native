@@ -881,6 +881,10 @@ pub fn panic_sentry_body(
     serde_json::to_vec(&body).unwrap_or_default()
 }
 
+/// The fallback sample's `hardware.probe`: the four words the real field draws from, per nyx file.
+/// The consent screen lists the same string among its translated placeholders.
+const FALLBACK_PROBE_PLACEHOLDER: &str = "<ok / no_keys / unreadable / unprobed per nyx file>";
+
 /// Representative fallback payloads built by the real serializers, with every runtime value
 /// replaced afterwards by an explicit placeholder. The consent screen can therefore show both
 /// degraded schemas without minting an id or inspecting the crash log before consent.
@@ -945,6 +949,9 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
     for key in ["os", "webos", "hardware"] {
         fault_json["contexts"][key] = native["contexts"][key].clone();
     }
+    // A native crash event has no `probe` (the SDK's scope cannot set it), but this fallback is
+    // built through `attach_hardware_context`, which adds it, so the sample must show it.
+    fault_json["contexts"]["hardware"]["probe"] = serde_json::json!(FALLBACK_PROBE_PLACEHOLDER);
 
     fault_json["event_id"] = serde_json::json!("<stable id for this crash-log record>");
     fault_json["dist"] = serde_json::json!("<crashed ELF build id>");
@@ -2140,6 +2147,11 @@ mod tests {
         let preview = preview_events();
         let fault: serde_json::Value = serde_json::from_slice(&preview[0].1).unwrap();
         assert_eq!(fault["contexts"]["os"]["version"], "<kernel release>", "never this host's kernel");
+        assert_eq!(
+            fault["contexts"]["hardware"]["probe"],
+            "<ok / no_keys / unreadable / unprobed per nyx file>",
+            "the fallback report carries `probe` even though the native crash event does not"
+        );
         // A closed value, shown as a real one like the signal name: PRIVACY.md lists both.
         assert_eq!(fault["contexts"]["crash"]["native_path"], "no_envelope");
         let images = fault["debug_meta"]["images"].as_array().unwrap();

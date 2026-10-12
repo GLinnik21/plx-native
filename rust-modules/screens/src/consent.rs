@@ -1374,7 +1374,7 @@ fn placeholder(token: &str) -> Option<&'static str> {
         "webOS codename" => msg::settings_consent_placeholder_webos_codename_short(),
         // Placeholders that list the field's possible wire values: the codes are the payload.
         "ok / missing / n/a" => "ok / missing / n/a",
-        "ok / no_keys / unreadable per nyx file" => "ok / no_keys / unreadable per nyx file",
+        "ok / no_keys / unreadable / unprobed per nyx file" => "ok / no_keys / unreadable / unprobed per nyx file",
         "devmode / homebrew / unknown" => "devmode / homebrew / unknown",
         "local / remote / relay / unknown" => "local / remote / relay / unknown",
         "v4 / v6 / unknown" => "v4 / v6 / unknown",

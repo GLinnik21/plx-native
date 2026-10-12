@@ -735,7 +735,9 @@ pub const CONTEXT_SPECS: &[F] = &[
     },
     F {
         key: "soc",
-        domain: "the SoC/board class reported by nyx",
+        domain: "the SoC/board class reported by nyx or, when nyx names none, the leading \
+                  board-family token (at most eight lowercase letters and digits, such as `k5lp`) \
+                  of the television's machine name",
     },
     F {
         key: "hardware_revision",
