@@ -240,7 +240,7 @@
 
   /* ---------- Scroll-driven scenes ---------- */
   // Everything that moves with the scroll position rather than on a timer:
-  // the hero receding, the pinned TV scene, the close-ups opening, the Why
+  // the hero receding, the pinned TV scene, the screenshots opening, the Why
   // sentence lighting up word by word, the quotes drifting and the big
   // headlines settling. One rAF-throttled pass per scroll frame.
   //
@@ -268,7 +268,7 @@
     const screen = q(".demo-card");
     const toggle = q(".demo-toggle");
     const headerBar = document.querySelector(".site-header .header-bar");
-    const frames = [...document.querySelectorAll(".closeup-box")].map((frame) => ({
+    const frames = [...document.querySelectorAll("[data-unveil]")].map((frame) => ({
       frame,
       img: frame.querySelector("img"),
       top: 0,
@@ -415,7 +415,9 @@
         (entries) => entries.forEach((e) => e.target.classList.toggle("is-near", e.isIntersecting)),
         { rootMargin: "50% 0px" }
       );
-      [pin, ...bigs.map((b) => b.el), ...frames.map((f) => f.frame.parentElement)].forEach((el) => el && nearby.observe(el));
+      [pin, ...bigs.map((b) => b.el), ...frames.map((f) => f.frame.parentElement), document.querySelector(".approach-diagram")].forEach(
+        (el) => el && nearby.observe(el)
+      );
     }
 
     let zoomed = false;
@@ -497,9 +499,8 @@
         demo.setInView(top < vh * 1.5 && top + L.pinH > -vh * 0.5);
       }
 
-      // Close-ups open from slightly smaller while the picture inside settles
-      // from slightly larger. Nothing is cropped at rest. (Their glow comes
-      // up with the picture's reveal: styles.css.)
+      // App screenshots open from slightly smaller while the picture inside
+      // settles from slightly larger. Nothing is cropped at rest.
       frames.forEach((f) => {
         const t = easeOut3(clamp01((vh - (f.top - y)) / (vh * 0.85)));
         const k = 1 - t;
