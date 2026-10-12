@@ -1118,7 +1118,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
 - `site/` — the landing page (`index.html`/`styles.css`/`site.js`/`CNAME`); `.github/workflows/
   pages.yml` stages its screenshots, logo and fonts from their existing README/app locations
   rather than copying them into `site/`. The close-up stills `site/media/closeup-*.jpg` and the
-  link-preview card `site/media/og-card.jpg` are `make screenshots` outputs (the page no longer shows the close-ups since the Landing Page v9 redesign; they are still rendered and staged until that pipeline is removed, and the page's four app screenshots are `docs/screenshots/{home,library,search,player}.jpg`, staged by `pages.yml`) (`ui-sim` skill,
+  link-preview card `site/media/og-card.jpg` are `make screenshots` outputs (the page shows `closeup-glass` and `closeup-tiles` in its Features look panels; only `closeup-player` is no longer referenced, though still rendered and staged; the page's four app screenshots are `docs/screenshots/{home,library,search,player}.jpg`, staged by `pages.yml`) (`ui-sim` skill,
   "Documentation screenshots"): the card is `site/og/card.html` (not deployed) rendered around
   the home figure by `tools/render-og-card.sh`; re-render after editing the card. Their WebP and
   phone (`-narrow`) copies come from those JPEGs through `tools/render-site-variants.py`, and the

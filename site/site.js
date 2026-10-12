@@ -679,12 +679,10 @@
     const items = [...list.querySelectorAll(".press-item")].map((a) => {
       const headline = a.querySelector(".press-headline");
       const time = a.querySelector(".press-date");
-      const lang = a.querySelector(".press-lang");
       const gloss = a.querySelector(".press-gloss");
       return {
         href: a.getAttribute("href"),
         outlet: a.querySelector(".press-outlet").textContent,
-        language: lang ? lang.textContent : "English",
         lang: headline.getAttribute("lang") || "en",
         headline: headline.innerHTML,
         gloss: gloss ? gloss.textContent : "",
@@ -742,7 +740,7 @@
         b.tabIndex = on ? 0 : -1;
       });
       stage.setAttribute("aria-labelledby", "press-tab-" + sel);
-      meta.textContent = it.date + " · " + it.language;
+      meta.textContent = it.date;
       head.innerHTML = it.headline;
       head.setAttribute("lang", it.lang);
       gloss.textContent = it.gloss;
