@@ -106,8 +106,9 @@ folder or other file content is sent.
 When the crash was a Rust panic rather than a fault, the fallback report is smaller still: the
 source file and line of the panic, a hash of the panic message (the message itself is never sent),
 the app version and build identifier of PlxNative, the `environment` label of the build (`production`
-or `development`), the time of the panic (read and bounded as above) and the Crash report ID below.
-It carries none of the library details above.
+or `development`), the time of the panic (read and bounded as above), the same kernel name and release,
+webOS and hardware compatibility details (including the `probe` fact) that the fault fallback report carries, and
+the Crash report ID below. It carries none of the library details above.
 
 Every crash and error report carries a **Crash report ID**: a random identifier created on this
 television when you turn crash reports on, sent as the report's `user.id`. It exists so that
