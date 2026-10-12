@@ -1654,6 +1654,10 @@ pub struct Detail {
     /// itself changed every time you browsed to another tab. `None` for a movie, for a show with
     /// nothing on deck (never started, or finished), and on any server that omitted the hub.
     pub on_deck: Option<Episode>,
+    /// SHOWS: the selected season's POSITION in `seasons` (`episodes` holds its episodes). The
+    /// fetch opens a show on its `on_deck` episode's season, else the first; a re-read of the page
+    /// already loaded keeps the season selected on it ([`initial_season`]). A tab switch moves it
+    /// ([`load_season`]).
     pub cur_season: usize,
     pub related: Vec<Related>,
     /// What lies past the previews in `related` ([`RelatedTail`]); empty for most pages.
