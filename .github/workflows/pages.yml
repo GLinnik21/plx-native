@@ -110,6 +110,7 @@ jobs:
           cp docs/screenshots/home.jpg _site/docs/screenshots/home.jpg
           cp docs/screenshots/library.jpg _site/docs/screenshots/library.jpg
           cp docs/screenshots/search.jpg _site/docs/screenshots/search.jpg
+          cp docs/screenshots/ux-detail.jpg _site/docs/screenshots/ux-detail.jpg
           cp docs/screenshots/player.jpg _site/docs/screenshots/player.jpg
 
           # Subsets pkg/appfont.ttf / pkg/appfont-bold.ttf (the APP's fonts, untouched) down to
