@@ -2599,7 +2599,7 @@ video::-webkit-media-controls-start-playback-button {
    the page's flow as the stack passes up the screen.
 
    Geometry, in --W (one plate's width): a plate is 16:9, laid flat by
-   rotateX(60deg) rotateZ(-45deg), which takes a box 1.1 W wide and 0.55 W
+   scale(1, 0.5) rotate(-45deg) (an isometric tilt), which takes a box 1.1 W wide and 0.55 W
    tall. The seven sit 0.22 W apart (0 to 1.32); the four that stay close up
    under the app to 0.24 W apart (0 to 0.72), and "60 fps" takes the room below
    them. Labels sit to the right of the plates; on a narrow phone --W shrinks
@@ -2723,7 +2723,10 @@ video::-webkit-media-controls-start-playback-button {
   margin: calc(var(--W) * -0.28125) 0 0 calc(var(--W) * -0.5);
   border-radius: calc(var(--W) * 0.035);
   overflow: hidden;
-  transform: rotateX(60deg) rotateZ(-45deg);
+  /* rotateX(60deg) rotateZ(-45deg) without perspective, as a flat 2D
+     transform: WebKit lets a backdrop blur on a 3D-transformed element bleed
+     past its outline as a halo, and draws the 2D one cleanly. */
+  transform: scale(1, 0.5) rotate(-45deg);
 }
 .plate::after {
   content: "";
@@ -2749,10 +2752,10 @@ video::-webkit-media-controls-start-playback-button {
   height: 100%;
   object-fit: cover;
 }
-/* Frosted by a tinted fill, not backdrop-filter: on a 3D-transformed element
-   Safari lets the backdrop blur bleed past the plate's outline as a halo. */
 .plate--glass {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.04)), rgba(38, 38, 42, 0.55);
+  background: rgba(255, 255, 255, 0.07);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.32), var(--edge), 14px 14px 40px rgba(0, 0, 0, 0.32);
 }
 /* The wireframes: fine white outlines only. */
