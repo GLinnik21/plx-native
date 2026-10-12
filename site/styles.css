@@ -2598,29 +2598,55 @@ video::-webkit-media-controls-start-playback-button {
     inset 0 1px 0 rgba(255, 255, 255, 0.1),
     0 24px 60px rgba(0, 0, 0, 0.45);
 }
-/* The stack: four isometric slabs, 80px apart, each labelled beside it. The
-   rail and its light streaks are one SVG laid over the slabs' centre line;
-   its 344px are the kicker (24px) plus the four rows. */
+/* Two stacks side by side, ending on the same screen: a typical TV app (a
+   web page, its JavaScript, the browser engine and its compositor above the
+   GPU) and PlxNative (the app, OpenGL and the GPU buffer). Each column's rows
+   sit at the bottom, so the shorter stack reads as the missing layers. A slab
+   is --slab wide and a row is two-thirds of that, so the slabs nest. */
+.approach-diagram {
+  margin: 0;
+}
+.stack-pair {
+  --slab: clamp(52px, 6.4vw, 96px);
+  --row: calc(var(--slab) * 0.66);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(14px, 2.4vw, 28px);
+}
 .stack {
-  position: relative;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   color: var(--text-primary);
 }
 .stack .kicker {
-  height: 18px;
-  line-height: 18px;
-  margin: 0 0 6px;
+  margin: 0 0 clamp(12px, 1.6vw, 18px);
+}
+.stack--ours .kicker {
+  color: var(--text-primary);
+}
+/* The typical app's stack is the quiet one: same drawing, dimmer ink. */
+.stack--typical {
+  color: var(--text-tertiary);
+}
+.stack--typical .stack-slab {
+  opacity: 0.75;
+}
+.stack-rows {
+  position: relative;
+  margin-top: auto;
 }
 .stack-row {
   display: flex;
-  align-items: flex-start;
-  gap: clamp(14px, 2vw, 22px);
-  height: 80px;
+  align-items: center;
+  gap: clamp(8px, 1.2vw, 14px);
+  height: var(--row);
 }
 .stack-slab {
   flex: none;
   display: block;
+  width: var(--slab);
+  height: auto;
   overflow: visible;
 }
 .stack-slab:not(.stack-slab--screen) path {
@@ -2652,65 +2678,84 @@ video::-webkit-media-controls-start-playback-button {
 .stack-slab--screen .stack-screen-glow {
   stroke: none;
 }
-.stack-row p {
-  min-width: 0;
-  height: 72px;
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 3px;
-}
-.stack-row strong {
-  font-size: clamp(15px, 1.4vw, 17px);
-  line-height: 1.2;
-  font-weight: 700;
-}
 .stack-row span {
-  font-size: 14px;
-  line-height: 1.35;
+  min-width: 0;
+  font-size: clamp(13px, 1.3vw, 15px);
+  line-height: 1.15;
+  font-weight: 700;
+  text-wrap: balance;
+}
+.approach-diagram figcaption {
+  margin-top: clamp(18px, 2.4vw, 26px);
+  padding-top: clamp(14px, 1.8vw, 18px);
+  box-shadow: inset 0 1px 0 var(--hairline);
+  font-size: 15px;
+  line-height: 1.5;
   color: var(--text-secondary);
   text-wrap: pretty;
 }
-.stack-flow {
+/* The rail runs down the slabs' centre line, from the top slab's face to the
+   screen's (a face's centre is about 0.23 slab widths below its row's top). */
+.stack-rail {
   position: absolute;
-  left: 0;
-  top: 0;
-  display: block;
-  overflow: visible;
+  left: calc(var(--slab) / 2 - 1.5px);
+  width: 3px;
+  top: calc(var(--slab) * 0.23);
+  bottom: calc(var(--row) - var(--slab) * 0.23);
+  overflow: hidden;
   pointer-events: none;
 }
-.stack-rail {
-  fill: none;
-  stroke: currentColor;
-  stroke-opacity: 0.22;
-  stroke-width: 1.2;
-  stroke-dasharray: 2 5;
+.stack-rail::before {
+  content: "";
+  position: absolute;
+  left: 0.9px;
+  width: 1.2px;
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(to bottom, currentColor 0 2px, transparent 2px 7px);
+  opacity: 0.22;
 }
-/* Three streaks of light shoot down the stack, each crossing it in 0.7s, a
-   third of that apart. Still (and hidden) under reduced motion. */
-.stack-streak {
+/* Streaks of light shoot down each rail: three at a time, each crossing
+   PlxNative's stack in 0.7s and the typical one's in 1.5s. Each streak is a
+   rail-tall box whose bottom 46px are lit, slid from above the rail to its
+   end. Still (and hidden) under reduced motion. */
+.stack-rail i {
+  position: absolute;
+  inset: 0;
+  border-radius: 1.5px;
+  background: linear-gradient(to bottom, transparent calc(100% - 46px), currentColor);
   opacity: 0;
+  transform: translateY(-100%);
 }
 @media (prefers-reduced-motion: no-preference) {
-  .stack-streak {
+  .stack-rail i {
     animation: stack-streak 0.7s linear infinite;
   }
-  .stack-streak:nth-of-type(2) {
+  .stack-rail i:nth-child(2) {
     animation-delay: 0.23s;
   }
-  .stack-streak:nth-of-type(3) {
+  .stack-rail i:nth-child(3) {
     animation-delay: 0.46s;
-  }  /* Running only while the diagram is near the screen (site.js sets .is-near
+  }
+  .stack--typical .stack-rail i {
+    animation-duration: 1.5s;
+  }
+  .stack--typical .stack-rail i:nth-child(2) {
+    animation-delay: 0.5s;
+  }
+  .stack--typical .stack-rail i:nth-child(3) {
+    animation-delay: 1s;
+  }
+  /* Running only while the diagram is near the screen (site.js sets .is-near
      where the scroll scenes run): an endless animation off screen still costs
      a style pass every frame. */
-  .fx .approach-diagram:not(.is-near) .stack-streak {
+  .fx .approach-diagram:not(.is-near) .stack-rail i {
     animation-play-state: paused;
   }
 }
 @keyframes stack-streak {
   0% {
-    transform: translateY(20px);
+    transform: translateY(-100%);
     opacity: 0;
   }
   15% {
@@ -2720,7 +2765,7 @@ video::-webkit-media-controls-start-playback-button {
     opacity: 1;
   }
   100% {
-    transform: translateY(300px);
+    transform: translateY(0);
     opacity: 0;
   }
 }
