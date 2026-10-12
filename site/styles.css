@@ -2630,11 +2630,6 @@ video::-webkit-media-controls-start-playback-button {
   stroke-width: 1.4;
   stroke-linejoin: round;
 }
-.stack-shadow {
-  fill: currentColor;
-  fill-opacity: 0.1;
-  filter: blur(8px);
-}
 .stack-slab .stack-mark path {
   fill-opacity: 0.5;
   stroke: none;
