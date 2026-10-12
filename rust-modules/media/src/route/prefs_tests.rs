@@ -5,7 +5,7 @@
 //! forgotten in the other fails here, both ways, by marker KEY.
 use super::*;
 use plx_plex::plex::session::{self as session, prefs::DESCRIPTORS};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn declared_by_plex() -> BTreeMap<&'static str, bool> {
     DESCRIPTORS.iter().map(|d| (d.key, d.live)).collect()
@@ -196,4 +196,41 @@ fn how_settings_follows_the_rows_declared_policy() {
     assert!(matches!(How::settings::<QualityPref>(tx.clone()), How::Confirm(_)));
     assert!(matches!(How::settings::<SubtitleSizePref>(tx.clone()), How::Optimistic(Some(_))));
     assert!(matches!(How::settings::<SubtitlePositionPref>(tx), How::Optimistic(Some(_))));
+}
+
+/// The keys of the descriptors that have a Settings row, as plex declares them.
+fn settings_rows() -> BTreeSet<&'static str> {
+    DESCRIPTORS.iter().filter(|d| d.settings.is_some()).map(|d| d.key).collect()
+}
+
+/// **T-settings.** `{descriptor.key : descriptor.settings.is_some()}` equals [`Choice::KEYS`], both
+/// ways. A Settings row with no `Choice` variant, or a `Choice` variant whose setting has no row
+/// (its `SETTINGS` fact dropped), fails here.
+#[test]
+fn t_settings_rows_equal_the_choices_both_ways() {
+    let choices: BTreeSet<&str> = Choice::KEYS.iter().copied().collect();
+    assert_eq!(choices.len(), Choice::KEYS.len(), "no setting has two choices");
+    let rows = settings_rows();
+    for key in &rows {
+        assert!(choices.contains(key), "plex gives `{key}` a Settings row but no Choice saves it");
+    }
+    for key in &choices {
+        assert!(rows.contains(key), "a Choice saves `{key}` but plex gives it no Settings row");
+    }
+    assert_eq!(rows, choices);
+}
+
+/// The tie test must be able to fail: a row that loses its key from the choices, and a choice whose
+/// key the descriptors no longer give a row, are both reported by the same comparison.
+#[test]
+fn t_settings_catches_a_row_or_choice_dropped() {
+    let choices: BTreeSet<&str> = Choice::KEYS.iter().copied().collect();
+    let agrees = |rows: &BTreeSet<&str>| *rows == choices;
+    let mut rows = settings_rows();
+    assert!(agrees(&rows));
+    rows.remove("playback_quality"); // the Quality row's SETTINGS fact dropped
+    assert!(!agrees(&rows), "a Choice whose setting has no Settings row is caught");
+    rows.insert("playback_quality");
+    rows.insert("subtitle_tone"); // a panel-only setting gains a row with no Choice
+    assert!(!agrees(&rows), "a Settings row with no Choice is caught");
 }

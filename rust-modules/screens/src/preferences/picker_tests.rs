@@ -102,7 +102,7 @@ fn a_local_write_pops_on_its_receipt_and_a_refusal_keeps_the_page() {
         let mut page = PickerPage::new(EntryId(0), PickerKind::Quality);
         let other = plx_media::route::available_quality_ladder().iter().position(|q| *q != Quality::Original).unwrap() as u32;
         let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
-        let Some(Fx::App(AppFx::Preferences(PreferenceCmd::Quality { reply, .. }))) = emitted.into_iter().map(|e| e.fx)
+        let Some(Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::Quality(_), reply)))) = emitted.into_iter().map(|e| e.fx)
             .find(|f| matches!(f, Fx::App(AppFx::Preferences(_)))) else { panic!("a quality pick saves locally") };
         reply.send(ok).unwrap();
         let emitted = drive(&mut page, tick(), other);
@@ -146,7 +146,7 @@ fn confirming_force_emits_a_preference_effect_without_executing_it() {
     let emitted = drive(&mut page, ScreenEvent::PressCommit(plx_machine::machine::PressId(1)), ALERT + 1);
     assert!(page.state.io.busy);
     assert!(emitted.iter().any(|event| matches!(&event.fx,
-        Fx::App(AppFx::Preferences(PreferenceCmd::DirectPlay { mode: DirectPlayMode::Forced, .. })))));
+        Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::DirectPlay(DirectPlayMode::Forced), _))))));
     assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Auto,
         "only an admitted app executor can persist and activate Force");
     plx_media::route::restore_direct_play_mode(previous);
@@ -207,8 +207,8 @@ fn the_subtitle_pickers_write_locally_and_pop_on_the_receipt() {
         let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
         assert!(!popped(&emitted), "{field:?}: a write waits for its receipt");
         let reply = emitted.into_iter().find_map(|e| match e.fx {
-            Fx::App(AppFx::Preferences(PreferenceCmd::SubtitleSize { reply, .. }))
-            | Fx::App(AppFx::Preferences(PreferenceCmd::SubtitlePosition { reply, .. })) => Some(reply),
+            Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::SubtitleSize(_), reply)))
+            | Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::SubtitlePosition(_), reply))) => Some(reply),
             _ => None,
         }).expect("a local subtitle command");
         reply.send(true).unwrap();
@@ -247,7 +247,7 @@ fn ok_on_the_checked_size_after_a_failed_write_retries_the_write() {
     let other = if page.state.checked == 0 { 1 } else { 0 };
     let emitted = drive(&mut page, ScreenEvent::Activate(other), other);
     let reply = emitted.into_iter().find_map(|e| match e.fx {
-        Fx::App(AppFx::Preferences(PreferenceCmd::SubtitleSize { size, reply })) => {
+        Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::SubtitleSize(size), reply))) => {
             // what select_subtitle_size does on the main thread before the write lands
             plx_media::route::restore_subtitle_size(size);
             Some(reply)

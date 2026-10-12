@@ -376,6 +376,33 @@ impl How {
     }
 }
 
+/// Declares every Settings row's pick in one list: each arm names a variant and the marker whose
+/// value type it carries. The macro generates the enum and [`Choice::KEYS`] from that list, so a
+/// variant cannot exist without its setting's key being listed (`prefs_tests::t_settings_*`).
+macro_rules! choices {
+    ($($variant:ident => $marker:ident),* $(,)?) => {
+        /// One Settings pick: which live setting, and its typed value. The Settings screen sends
+        /// one of these; the app maps it to [`choose`] in one place.
+        pub enum Choice {
+            $($variant(<$marker as Setting>::Value)),*
+        }
+        impl Choice {
+            /// The key of every setting a Settings row saves through [`Choice`], in declaration order.
+            pub const KEYS: &'static [&'static str] = &[$(<$marker as Setting>::KEY),*];
+        }
+    };
+}
+
+choices! {
+    Quality => QualityPref,
+    DirectPlay => DirectPlayModePref,
+    NextEpisode => NextEpisodeModePref,
+    SkipInterval => SkipIntervalPref,
+    DeckPress => DeckPressPref,
+    SubtitleSize => SubtitleSizePref,
+    SubtitlePosition => SubtitlePositionPref,
+}
+
 /// **The one write door for a live setting.** `v` is normalized first, so the clamp happens before
 /// publish and before persist.
 pub fn choose<S: LiveSetting>(v: S::Value, how: How) {

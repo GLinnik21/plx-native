@@ -6,7 +6,8 @@
 //!   `ACCOUNT_BOUND_PREFERENCES` (minus the rows that do not exist yet).
 //! * **T-parse** — each descriptor's declared parse policy is the one its field really has.
 //!
-//! T-live (media) and T-settings (media, A3) join them when their lists exist.
+//! T-live and T-settings sit in media (`route/prefs_tests.rs`), where the lists they hold to these
+//! descriptors are declared.
 use super::prefs::{Descriptor, Parse, Scope, Setting, SettingsWrite, DESCRIPTORS};
 use super::prefs::{AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, NextEpisodeModePref,
     QualityPref, SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref};

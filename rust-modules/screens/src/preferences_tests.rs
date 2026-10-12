@@ -224,7 +224,7 @@ fn the_continue_watching_row_defaults_to_open_details_and_its_picker_saves_the_p
     let emitted = drive(&mut picker, ScreenEvent::Activate(1), 1);
     plx_media::route::restore_deck_press(prior);
     let saved = emitted.into_iter().find_map(|e| match e.fx {
-        Fx::App(AppFx::Preferences(PreferenceCmd::DeckPress { mode, .. })) => Some(mode),
+        Fx::App(AppFx::Preferences(PreferenceCmd::Choose(plx_media::route::Choice::DeckPress(mode), _))) => Some(mode),
         _ => None,
     });
     assert_eq!(saved, Some(DeckPress::Play));

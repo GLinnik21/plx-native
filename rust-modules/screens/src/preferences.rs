@@ -19,7 +19,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver};
 use plx_plex::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
-use plx_media::route::{DeckPress, DirectPlayMode, NextEpisodeMode, Quality, SkipInterval, SubtitlePosition, SubtitleSize};
+use plx_media::route::{Choice, DeckPress, DirectPlayMode, NextEpisodeMode, Quality, SkipInterval, SubtitlePosition, SubtitleSize};
 use plx_ui::form::{Form, FormId, FormSection, FormTable, RowKey, RowKind};
 use plx_ui::frame::Budget;
 use plx_machine::machine::{Canon, Cx, Delivery, Edge, Effects, EntryId, FocusKey, Fx, GroupId,
@@ -202,20 +202,20 @@ impl Txn {
         fx.push(Fx::App(AppFx::Preferences(command)));
     }
     fn save_local(&mut self, io: &mut Io, value: Value, fx: &mut Effects<'_, InnerHost>) {
-        let (reply, rx) = mpsc::channel();
-        let command = match value {
-            Value::Quality(quality) => PreferenceCmd::Quality { quality, reply },
-            Value::DirectPlay(mode) => PreferenceCmd::DirectPlay { mode, reply },
-            Value::SubtitleSize(size) => PreferenceCmd::SubtitleSize { size, reply },
-            Value::SubtitlePosition(position) => PreferenceCmd::SubtitlePosition { position, reply },
-            Value::NextEpisode(mode) => PreferenceCmd::NextEpisode { mode, reply },
-            Value::DeckPress(mode) => PreferenceCmd::DeckPress { mode, reply },
-            Value::SkipInterval(interval) => PreferenceCmd::SkipInterval { interval, reply },
+        let choice = match value {
+            Value::Quality(quality) => Choice::Quality(quality),
+            Value::DirectPlay(mode) => Choice::DirectPlay(mode),
+            Value::SubtitleSize(size) => Choice::SubtitleSize(size),
+            Value::SubtitlePosition(position) => Choice::SubtitlePosition(position),
+            Value::NextEpisode(mode) => Choice::NextEpisode(mode),
+            Value::DeckPress(mode) => Choice::DeckPress(mode),
+            Value::SkipInterval(interval) => Choice::SkipInterval(interval),
             _ => return,
         };
+        let (reply, rx) = mpsc::channel();
         self.pending = Some(Pending::Local(rx)); io.busy = true; self.saving = true;
         io.status = plx_platform::i18n::msg::settings_playback_saving().into();
-        fx.push(Fx::App(AppFx::Preferences(command)));
+        fx.push(Fx::App(AppFx::Preferences(PreferenceCmd::Choose(choice, reply))));
     }
     /// The request no longer names the active profile: drop the snapshot and any in-flight
     /// receipt and load again.

@@ -3685,11 +3685,12 @@ mod preference_effect_tests {
                 "controlled account load must drop the reply without capturing a live profile");
             for save_quality in [false, true] {
                 let (reply, receipt) = mpsc::channel();
-                let command = if save_quality {
-                    PreferenceCmd::Quality { quality: plx_media::route::Quality::P480, reply }
+                let choice = if save_quality {
+                    plx_media::route::Choice::Quality(plx_media::route::Quality::P480)
                 } else {
-                    PreferenceCmd::DirectPlay { mode: plx_media::route::DirectPlayMode::Forced, reply }
+                    plx_media::route::Choice::DirectPlay(plx_media::route::DirectPlayMode::Forced)
                 };
+                let command = PreferenceCmd::Choose(choice, reply);
                 bridge.app_effect(MachineId::Instance(InstanceId(1)), AppFx::Preferences(command), &mut out);
                 assert!(matches!(receipt.try_recv(), Err(TryRecvError::Disconnected)),
                     "controlled local preference must not enqueue persistence");

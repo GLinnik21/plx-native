@@ -655,9 +655,9 @@ fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
         assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 1 }), "the picker's Forced option");
         assert!(!path(&d, id).contains("confirm=true"), "the chosen answer closes the warning");
         if confirm {
-            assert!(matches!(rig.preference_commands.pop(), Some(registry::PreferenceCmd::DirectPlay {
-                mode: plx_media::route::DirectPlayMode::Forced, ..
-            })), "Enable Force emits the admitted persistence request");
+            assert!(matches!(rig.preference_commands.pop(), Some(registry::PreferenceCmd::Choose(
+                plx_media::route::Choice::DirectPlay(plx_media::route::DirectPlayMode::Forced), _)
+            )), "Enable Force emits the admitted persistence request");
         } else {
             assert!(rig.preference_commands.is_empty(), "Cancel must never request persistence");
         }
