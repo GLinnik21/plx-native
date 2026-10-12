@@ -1115,7 +1115,14 @@ fn start_bufferfeed_for(
     route_start: crate::route::RouteStartTransaction,
 ) -> BufferfeedStartOutcome {
     match start_bufferfeed_inner(ps, pa, route_start) {
-        Ok(attempt) => BufferfeedStartOutcome::Launched(attempt),
+        Ok(attempt) => {
+            // Every start funnels through here (fresh, reload and the rollback's reload alike), so
+            // the refusal's read-out ends at the first start that is NOT refused. Clearing it only
+            // in `start_bufferfeed_tracked` left a reload landing after a refused fresh start
+            // (the foreground restore's rollback) with an Error over the video it began.
+            ps.native_start_refused = false;
+            BufferfeedStartOutcome::Launched(attempt)
+        }
         Err(result) => {
             let _ = crate::route::abort_route_start(route_start, result);
             BufferfeedStartOutcome::Failed
@@ -5494,6 +5501,62 @@ mod load_in_flight_tests {
             crate::player::PlaybackState::Error,
             "a start that is no longer refused must not keep the refusal's read-out"
         );
+    }
+
+    /// The latch's other edge: a start refused for the parked Load sets `native_start_refused`,
+    /// and a RELOAD that then starts (the foreground restore's rollback landing after the Load was
+    /// reaped: `land_engineless_rollback` -> `reload_transcode_tracked`) goes through
+    /// `start_bufferfeed_for`, not `start_bufferfeed_tracked`, which is where the flag used to be
+    /// cleared. The flag outlived the refusal and, once the flight ended, `state()` answered Error
+    /// over playing video and `report::tick` sent a bogus `load_timeout`.
+    #[test]
+    fn a_reload_that_starts_after_a_refused_fresh_start_does_not_keep_the_refusals_error() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        install_engine_with_timed_out_load(&mut ps, &mut pa);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.has_abandoned_load(), "PRECONDITION FAILED: the Load must be parked");
+        crate::route::set_url(&mut ps, "http://127.0.0.1:1/hls/start.m3u8");
+        crate::route::set_stream_acodec(&mut ps, "aac");
+
+        // The resumed foreground's `PlayerForegroundActuator::start_load`.
+        assert_eq!(
+            start_bufferfeed_tracked(&mut ps, &mut pa),
+            BufferfeedStartOutcome::Failed,
+            "PRECONDITION FAILED: the fresh start must be refused for the parked Load"
+        );
+        assert!(ps.native_start_refused, "PRECONDITION FAILED: the refusal must be recorded");
+
+        // The parked Load returns and is reaped; the rollback's reload then starts.
+        crate::player::ffi_host::release_load_for_test();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !reap_abandoned_load(&mut pa) {
+            assert!(std::time::Instant::now() < deadline, "the returned Load was never released");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let reload = reload_transcode_tracked(&mut ps, &mut pa, 0);
+        assert!(
+            matches!(reload, BufferfeedStartOutcome::Launched(_)),
+            "PRECONDITION FAILED: the reload must start once the Load is reaped ({reload:?})"
+        );
+        assert!(pa.is_live(), "the reload must have built an Engine");
+
+        assert_ne!(
+            crate::player::state(&ps),
+            crate::player::PlaybackState::Error,
+            "a reload that started kept the refused fresh start's Error over live video \
+             (and report::tick would send a bogus load_timeout)"
+        );
+        stop_bufferfeed(&mut ps, &mut pa);
     }
 }
 

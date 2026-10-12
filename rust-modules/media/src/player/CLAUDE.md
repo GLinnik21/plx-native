@@ -126,7 +126,7 @@ something.
   main thread once Load returns; a Load that never returns leaks its object. A refusal says why:
   a reload refused for the parked Load (`pump::settle_reload`) republishes `load_timed_out`, and a
   refused FRESH start sets `ps.native_start_refused`, which `player::state` derives `Error` from
-  (cause `load_timeout`, Try Again offered) because no Engine exists to publish it. A Load that has not
+  (cause `load_timeout`, Try Again offered) because no Engine exists to publish it; the first start that is not refused (`start_bufferfeed_for`, which every reload shares) clears it. A Load that has not
   timed out is still joined. The host concurrent tests model this boundary, not
   the firmware's native initialization. ACB dispatch is additionally constrained by stage/bind
   ordering; the C Starfish gate does not wrap ACB calls.
