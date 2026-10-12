@@ -3395,6 +3395,13 @@ video::-webkit-media-controls-start-playback-button {
 .feature-stage--net {
   gap: 14px;
 }
+/* The home network link is the one coloured line: it is the point. */
+.feature-stage--net .net-link {
+  height: 2px;
+  border-radius: 1px;
+  background: #30d158;
+  box-shadow: 0 0 10px rgba(48, 209, 88, 0.45);
+}
 .net-cloud {
   display: flex;
   flex-direction: column;
@@ -3422,8 +3429,7 @@ video::-webkit-media-controls-start-playback-button {
   background: #30d158;
 }
 
-/* Player: a still with a subtitle on it and the timeline with its chapter
-   breaks. */
+/* Player: a still with a subtitle on it and the timeline. */
 .feature-stage--player {
   padding: 16px;
 }
@@ -3450,7 +3456,9 @@ video::-webkit-media-controls-start-playback-button {
   position: absolute;
   inset: auto 0 34%;
   text-align: center;
-  font: italic 500 clamp(13px, 3.4vw, 15px) / 1.2 Georgia, "Times New Roman", serif;
+  font-size: clamp(13px, 3.4vw, 15px);
+  font-weight: 600;
+  line-height: 1.2;
   color: #fff;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
 }
@@ -3472,9 +3480,6 @@ video::-webkit-media-controls-start-playback-button {
   border-radius: 2px;
   overflow: hidden;
   background: rgba(255, 255, 255, 0.24);
-  /* Chapter breaks. */
-  -webkit-mask: linear-gradient(90deg, #000 0 23%, transparent 23% 24%, #000 24% 49%, transparent 49% 50%, #000 50% 81%, transparent 81% 82%, #000 82%);
-  mask: linear-gradient(90deg, #000 0 23%, transparent 23% 24%, #000 24% 49%, transparent 49% 50%, #000 50% 81%, transparent 81% 82%, #000 82%);
 }
 .mini-track i {
   position: absolute;
