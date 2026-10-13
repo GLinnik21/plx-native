@@ -438,6 +438,23 @@ pub(crate) unsafe fn show_cursor_after_motion() {
     }
 }
 
+/// **webOS 3.x: shorten LG's own idle hide from about five minutes to five seconds.** Without
+/// LG's extension, LG's SDL hides its pointer by itself after `SDL_WEBOS_CURSOR_SLEEP_TIME` of
+/// stillness, and its default is about five minutes (timed on a 3.9.3 set, issue #642), where
+/// every other app on that television hides it within seconds. Measured on the same set: the value
+/// is milliseconds, `5000` hides a still pointer after about five seconds, and a deliberate
+/// movement brings it back. Set only where `SDL_webOSCursorVisibility` is absent, so webOS 4+
+/// keeps its SDL's own behaviour. Must run before `SDL_Init`, which reads the hint.
+#[cfg(not(feature = "hostsim"))]
+unsafe fn webos3_cursor_sleep_hint() {
+    if plx_base::dynlib::Handle::self_handle().sym("SDL_webOSCursorVisibility").is_none() {
+        SDL_SetHint(c"SDL_WEBOS_CURSOR_SLEEP_TIME".as_ptr(), c"5000".as_ptr());
+        log("cursor: SDL_WEBOS_CURSOR_SLEEP_TIME=5000 (no SDL_webOS* in this SDL)");
+    }
+}
+#[cfg(feature = "hostsim")]
+unsafe fn webos3_cursor_sleep_hint() {}
+
 /// The cursor [`hide_cursor`] replaced with the transparent one, for the motion that restores it.
 #[cfg(not(feature = "hostsim"))]
 static SHOWN_CURSOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -802,6 +819,7 @@ pub(crate) unsafe fn construct(
     // app, and nothing reachable from SDL changes that. The line stays because it costs
     // nothing and states the intent; it is not what keeps the screensaver away.
     SDL_SetHint(c"SDL_VIDEO_ALLOW_SCREENSAVER".as_ptr(), c"0".as_ptr());
+    webos3_cursor_sleep_hint();
     if SDL_Init(SDL_INIT_VIDEO) != 0 {
         log("SDL_Init failed");
         return Err(1);
