@@ -16,6 +16,7 @@ import urllib.request
 from mock_pms import (
     ENHANCEMENT_AAC_51_RK, ENHANCEMENT_AC3_2CH_RK, ENHANCEMENT_DEFAULT_SRT_RK,
     ENHANCEMENT_DV_P8_RK, ENHANCEMENT_EXTERNAL_SRT_RK, EXTRA_MEDIA_RK_BASE, PLEX_DIRECT_HASH,
+    RESUME_ON_DECK_SHOW_RK, RESUME_PLAIN_SHOW_RK,
     CatalogLibrary, Library, MockPms, demo_cache_dir, plaintext_only_lan_resources, serve,
 )
 
@@ -221,6 +222,43 @@ class LibraryRail(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class ResumeFixture(unittest.TestCase):
+    """`--resume-fixture`: a show that has been watched up to S12E14, and one that has not."""
+
+    def test_the_on_deck_show_carries_its_episode_only_when_asked(self):
+        pms = MockPms(Library(resume_fixture=True))
+        show = get(pms, f"/library/metadata/{RESUME_ON_DECK_SHOW_RK}?includeOnDeck=1")["Metadata"][0]
+        deck = show["OnDeck"]["Metadata"]
+        self.assertEqual((deck["parentIndex"], deck["index"], deck["type"]), (12, 14, "episode"))
+        self.assertGreater(deck["viewOffset"], 0)
+        self.assertEqual(show["childCount"], 12)
+        self.assertNotIn("OnDeck", get(pms, f"/library/metadata/{RESUME_ON_DECK_SHOW_RK}")["Metadata"][0])
+
+    def test_the_other_show_has_no_on_deck_and_is_unwatched(self):
+        pms = MockPms(Library(resume_fixture=True))
+        show = get(pms, f"/library/metadata/{RESUME_PLAIN_SHOW_RK}?includeOnDeck=1")["Metadata"][0]
+        self.assertNotIn("OnDeck", show)
+        self.assertEqual(show["viewedLeafCount"], 0)
+
+    def test_the_resume_episode_heads_continue_watching_and_a_season_pages_over_one_screen(self):
+        pms = MockPms(Library(resume_fixture=True))
+        deck = get(pms, "/hubs/continueWatching?count=12")["Hub"][0]["Metadata"]
+        self.assertEqual(deck[0]["grandparentRatingKey"], str(RESUME_ON_DECK_SHOW_RK))
+        seasons = get(pms, f"/library/metadata/{RESUME_ON_DECK_SHOW_RK}/children")["Metadata"]
+        self.assertEqual([s["index"] for s in seasons], list(range(1, 13)))
+        self.assertEqual(len(get(pms, f"/library/metadata/{seasons[11]['ratingKey']}/children")["Metadata"]), 30)
+
+    def test_off_by_default_and_the_generated_library_does_not_move(self):
+        plain, fixture = Library(), Library(resume_fixture=True)
+        self.assertEqual(plain.on_deck, {})
+        self.assertNotIn(RESUME_ON_DECK_SHOW_RK, plain.items)
+        for rk, item in plain.items.items():
+            if item["type"] in ("movie", "show", "season", "episode") and rk < 970000:
+                self.assertEqual(item, {**fixture.items[rk],
+                                        **{k: item[k] for k in ("leafCount", "viewedLeafCount", "childCount")
+                                           if k in item}}, rk)
 
 
 class HomeHubsFlag(unittest.TestCase):
