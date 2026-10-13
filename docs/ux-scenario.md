@@ -612,7 +612,7 @@ Seeking is a **preview-then-commit** gesture, not one immediate jump per press.
   band being dragged is on screen.
 - **With the HUD up and the scrubber focused, one press moves the preview by the Skip interval — 10 s unless Settings > Playback says otherwise.** The picture does
   not move yet; the scrubber shows the target, and the state mark shows the direction.
-- **Holding engages a continuous scrub that accelerates** — 10× playback speed, doubling every 2 s up to 320× — and
+- **Holding engages a continuous scrub that accelerates** — 30× playback speed, doubling every 1.5 s up to 480× — and
   the key release commits it. A lost key-up is caught by a 400 ms watchdog, so a dropped release
   cannot leave the scrub running.
 - **Quick repeated taps accumulate into one seek.** The commit waits ~450 ms after the last tap, so

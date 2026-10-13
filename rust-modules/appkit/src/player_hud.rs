@@ -1629,12 +1629,12 @@ pub fn scrub_step_ns() -> i64 {
     plx_media::route::skip_interval().ns()
 }
 /// Playback-seconds per real-second at the start of a hold, and the speed it doubles from.
-pub const SCRUB_BASE: f32 = 10.0;
+pub const SCRUB_BASE: f32 = 30.0;
 /// How long a hold dwells at each speed before doubling — long enough to land on a spot at the
 /// current speed, short enough that crossing a film does not take a held thumb.
-pub const SCRUB_STEP_MS: u32 = 2000;
-/// The fastest a hold gets (reached after five doublings, ten seconds of holding).
-pub const SCRUB_MAX: f32 = 320.0;
+pub const SCRUB_STEP_MS: u32 = 1500;
+/// The fastest a hold gets (reached after four doublings, six seconds of holding).
+pub const SCRUB_MAX: f32 = 480.0;
 
 /// The hold-to-scrub speed after `held_ms` of holding: [`SCRUB_BASE`] doubling every
 /// [`SCRUB_STEP_MS`] up to [`SCRUB_MAX`]. Stepped rather than linear so each speed lasts long
@@ -2136,8 +2136,9 @@ mod tests {
         assert_eq!(scrub_speed(SCRUB_STEP_MS - 1), SCRUB_BASE, "a step holds until its dwell is up");
         assert_eq!(scrub_speed(SCRUB_STEP_MS), 2.0 * SCRUB_BASE);
         assert_eq!(scrub_speed(2 * SCRUB_STEP_MS), 4.0 * SCRUB_BASE);
-        assert_eq!(scrub_speed(4 * SCRUB_STEP_MS), 16.0 * SCRUB_BASE);
-        assert_eq!(scrub_speed(5 * SCRUB_STEP_MS), SCRUB_MAX);
+        assert_eq!(scrub_speed(3 * SCRUB_STEP_MS), 8.0 * SCRUB_BASE);
+        assert_eq!(scrub_speed(4 * SCRUB_STEP_MS), SCRUB_MAX);
+        assert_eq!(SCRUB_MAX, 16.0 * SCRUB_BASE, "the cap is a whole step of the ladder");
         assert_eq!(scrub_speed(u32::MAX), SCRUB_MAX, "a very long hold stays at the cap");
         let mut last = 0.0;
         for ms in (0..20_000).step_by(100) {
