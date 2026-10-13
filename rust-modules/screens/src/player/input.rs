@@ -40,7 +40,7 @@ pub fn hud_visible(ps: &plx_media::route::PlaybackSession, now: u32, until: u32,
     ((now < until || is_paused) && !dismissed) || plx_media::player::loading(ps)
 }
 
-// (`struct HeldKey` stood here — WHICH key the remote is holding, as one value: the sym the
+// (A different `struct HeldKey` stood here, unrelated to `appkit::held_key::HeldKey` — WHICH key the remote is holding, as one value: the sym the
 // CLIENT-SIDE repeat timer was driving, the two instants that timer read, the hardware heartbeat
 // that caught a dropped key-up, and the sym we watched go physically down. Deleted with the timer
 // in restructure phase 10, whose last consumer was the item context menu; every discrete focus
@@ -58,8 +58,10 @@ pub fn hud_visible(ps: &plx_media::route::PlaybackSession, now: u32, until: u32,
 /// Scrub-seek gesture state. This Magic Remote emits a HELD key as auto-repeat keydowns
 /// (state 0x101, ~50ms apart) followed by ONE keyup on release; a TAP is a lone
 /// keydown(0x001)+keyup(0x000). So: a fresh press does the fixed jump; the 0x101 repeats
-/// engage the continuous scrub; the keyup is a reliable release. Taps commit on a short
-/// debounce so quick taps accumulate.
+/// engage the continuous scrub. A held key's keyup is provisional — the driver can bounce `Up`
+/// then `Down` mid-hold — so the release commits only after `SCRUB_RELEASE_DEBOUNCE_MS` passes
+/// without the same key returning (`appkit::held_key::HeldKey`). A TAP's keyup is immediate and
+/// starts the tap debounce, so quick taps accumulate.
 pub struct Scrub {
     /// The key-hold half — direction, the engaged ramp, the bounce debounce and the lost-keyup net —
     /// owned once in `appkit::held_key`, which the trailer transport's hold-to-scrub shares.
@@ -130,7 +132,7 @@ impl Scrub {
     /// were three copies of the same four lines in `app/run.rs` and `app/playback.rs`.
     ///
     /// A thin call-through to `appkit::player_hud::scrub_clamp_target` — the shared home for this
-    /// formula and the tuning constants below, since `screens::detail::trailer`'s own hold-to-scrub
+    /// formula (the tuning constants sit beside it), since `screens::detail::trailer`'s own hold-to-scrub
     /// (the trailer transport's LEFT/RIGHT) wants the exact same bound and `ci/check-deps.sh`'s
     /// `sibling` gate forbids that module from naming `crate::player` to reach it here.
     /// Every call site in this file is unchanged.
@@ -295,9 +297,10 @@ impl HudState {
     }
 }
 // scrub tuning: a press jumps scrub_step_ns() (the Skip interval); holding engages a continuous scrub stepping
-// up via `scrub_speed` (playback-seconds per real-second, doubling every `SCRUB_STEP_MS`). Defined in `appkit::player_hud` and
-// re-exported here — the trailer transport's own hold-to-scrub (`screens::detail::trailer`) wants
-// the identical feel and cannot name this module directly (`ci/check-deps.sh`'s `sibling` gate).
+// up via `appkit::player_hud::scrub_speed` (playback-seconds per real-second, doubling every
+// `SCRUB_STEP_MS`). Only the press hop and the tap debounce are re-exported here; the ramp and the
+// key-bounce constants are reached through `plx_appkit` — the trailer transport's own hold-to-scrub
+// (`screens::detail::trailer`) shares them and cannot name this module (`ci/check-deps.sh`'s `sibling` gate).
 // Long enough that a rapid tap burst coalesces into ONE seek (`TAP_COMMIT_MS`) — each
 // separate commit is a full reopen+prime on the engine, and back-to-back in-flight seeks are what
 // race the demux (the stale-audio silence incident); short enough that a single tap still feels

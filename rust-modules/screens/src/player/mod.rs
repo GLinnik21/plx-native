@@ -1040,9 +1040,9 @@ impl PlayerScreen {
             if self.scrub.key.repeat(now) {
                 // `reveal` is deliberately NOT cleared here. Engaging the hold is not the same
                 // event as the preview MOVING: `t` is stamped now, so the advance's first pass
-                // computes `sdt ≈ 0` and travels nothing, and at ~10 s/s it takes ~100 ms before
-                // the preview has moved even a second. A firm tap that trips one hardware repeat
-                // and releases inside that window would otherwise commit a seek to the spot
+                // computes `sdt ≈ 0` and travels nothing, and at `SCRUB_BASE` it takes
+                // `1/SCRUB_BASE` of a real second before the preview has moved even a second.
+                // A firm tap that trips one hardware repeat and releases inside that window would otherwise commit a seek to the spot
                 // playback is already sitting on — a full reopen + prime and a visible stall, out
                 // of a press the reveal rule promises moves nothing. `step_scrub_hold` clears it
                 // once there is real travel.
@@ -1057,7 +1057,7 @@ impl PlayerScreen {
     /// Three outcomes, and the ORDER of the first two is load-bearing. A reveal-only gesture
     /// throws the preview away: the press was spent raising the transport and the preview sits on
     /// the seed, so committing it is a full reopen + prime to the spot playback is already on.
-    /// Tested BEFORE `hold`, because a hold that engaged but has not TRAVELLED yet is still that
+    /// Tested BEFORE the key release (`HeldKey::release`), because a hold that engaged but has not TRAVELLED yet is still that
     /// case — the ramp is what retires `reveal`, on real travel. A travelled hold commits now. A
     /// plain tap arms the debounce instead, so that a rapid burst of hops becomes one seek.
     fn key_scrub_release(&mut self, now: u32) {
@@ -2322,7 +2322,7 @@ mod scrub_ownership_tests {
     /// arrives, on the `SCRUB_LOST_MS` net.
     ///
     /// This remote emits a held key as auto-repeat keydowns followed by ONE keyup, so a dropped
-    /// keyup leaves `hold` armed with the preview slewing at up to `SCRUB_MAX` for as long as the
+    /// keyup leaves the `HeldKey` engaged with the preview slewing at up to `SCRUB_MAX` for as long as the
     /// page is up. The net was `app/run.rs`'s and phase 9 did not reproduce it; it is the screen's
     /// `Tick` now, beside the ramp it guards.
     #[test]

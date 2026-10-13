@@ -1616,12 +1616,15 @@ pub const LINGER_MS: u32 = 4500;
 // ---- scrub tuning, shared by the player HUD's scrubber and the trailer transport's own --------
 //
 // Both hold-to-scrub gestures want the same feel — a press jumps `scrub_step_ns()`; holding engages
-// a continuous scrub stepping `SCRUB_BASE`→`SCRUB_MAX` via [`scrub_speed`] (playback-seconds per real-second) — but the
-// STATE (`screens::player::input::Scrub`, and `screens::detail::trailer::Transport`'s own fields)
-// cannot live in one shared type: `ci/check-deps.sh`'s `sibling` gate forbids a file under
-// `screens/detail/` from naming `crate::screens::player` at all, the same rule that keeps
-// `LINGER_MS` above defined here rather than in `screens::player::input` for `trailer.rs` to
-// import from a sibling. `screens::player::input::Scrub::clamp_target` is a thin call-through to
+// a continuous scrub stepping `SCRUB_BASE`→`SCRUB_MAX` via [`scrub_speed`] (playback-seconds per real-second).
+// The key-hold half of the state (direction, ramp, key-bounce debounce, lost-keyup net) is ONE type,
+// `crate::held_key::HeldKey`, which `screens::player::input::Scrub` and
+// `screens::detail::trailer::Transport` both embed; it lives in `appkit` because
+// `ci/check-deps.sh`'s `sibling` gate forbids a file under `screens/detail/` from naming
+// `crate::screens::player` at all, the same rule that keeps `LINGER_MS` above defined here rather
+// than in `screens::player::input` for `trailer.rs` to import from a sibling. What stays per screen
+// is the preview position, the tap debounce and the HUD's reveal/drag flags.
+// `screens::player::input::Scrub::clamp_target` is a thin call-through to
 // [`scrub_clamp_target`] below so its own many call sites are untouched.
 /// What one fresh press hops: the Skip interval preference (10 s unless Settings changed it),
 /// read per press so a pick takes effect in a film already playing.

@@ -613,8 +613,8 @@ Seeking is a **preview-then-commit** gesture, not one immediate jump per press.
 - **With the HUD up and the scrubber focused, one press moves the preview by the Skip interval — 10 s unless Settings > Playback says otherwise.** The picture does
   not move yet; the scrubber shows the target, and the state mark shows the direction.
 - **Holding engages a continuous scrub that accelerates** — 60× playback speed, doubling every second up to 480× — and
-  the key release commits it. A lost key-up is caught by a 400 ms watchdog, so a dropped release
-  cannot leave the scrub running.
+  the key release commits it. A lost key-up is caught by a 400 ms watchdog (700 ms right after a key bounce, while the remote's
+  repeat delay restarts), so a dropped release cannot leave the scrub running.
 - **Quick repeated taps accumulate into one seek.** The commit waits ~450 ms after the last tap, so
   "back thirty seconds" is three presses at the default 10 s step and a single seek rather than three. That matters beyond
   feel: back-to-back in-flight seeks are what stress the demux pipeline.
