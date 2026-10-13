@@ -130,6 +130,82 @@ impl AccountClient {
         ));
         Some(groups)
     }
+
+    /// GET {DISCOVER}/library/sections/watchlist/all — the signed-in user's **Watchlist**, newest
+    /// first, at most `size` rows.
+    ///
+    /// Like the filmography, these are **Discover** rows: a plex.tv `ratingKey` and an absolute
+    /// artwork URL, neither of which addresses anything on a PMS. What crosses to a library is the
+    /// item's guid ([`WatchlistItem::join_guid`]), which `plex::Client::find_by_guid` asks each
+    /// server about. Requires the plex.tv ACCOUNT token, exactly as the credits call does.
+    ///
+    /// `None` = the request failed or the body carried no `MediaContainer`; an empty vector is an
+    /// empty Watchlist. **Unmeasured on this codebase's own wire**: the first answer logs its row
+    /// count and the key set of its first row, so a drifted shape is visible in one device log.
+    pub fn watchlist(&self, size: usize) -> Option<Vec<WatchlistItem>> {
+        let url = super::paging::paged_path(
+            &format!("{DISCOVER}/library/sections/watchlist/all?includeCollections=0&includeExternalMedia=0"),
+            super::PageReq { start: 0, size },
+        );
+        let env: WatchlistEnvelope = self.get(&url)?;
+        let Some(container) = env.media_container else {
+            plx_base::eventlog::log("watchlist: 200 with no MediaContainer; treating as a failure");
+            return None;
+        };
+        let rows = container.metadata;
+        plx_base::eventlog::log(&format!(
+            "watchlist: rows={} with_guid={} first_kind={}",
+            rows.len(),
+            rows.iter().filter(|r| !r.guid.is_empty()).count(),
+            rows.first().map_or("-", |r| r.kind.as_str()),
+        ));
+        Some(rows)
+    }
+}
+
+// ---- the watchlist -----------------------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+struct WatchlistEnvelope {
+    #[serde(rename = "MediaContainer")]
+    media_container: Option<WatchlistContainer>,
+}
+
+#[derive(Deserialize, Default)]
+struct WatchlistContainer {
+    #[serde(rename = "Metadata", default)]
+    metadata: Vec<WatchlistItem>,
+}
+
+/// One Watchlist row — a Discover item, the same kind of record as [`CreditItem`].
+#[derive(Deserialize, Default, Clone)]
+pub struct WatchlistItem {
+    #[serde(rename = "type", default)]
+    pub kind: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default, deserialize_with = "de_i64")]
+    pub year: i64,
+    /// `plex://movie/<id>` where the provider states one.
+    #[serde(default)]
+    pub guid: String,
+    /// The bare catalog ID, which PMS spells `plex://<kind>/<this>` (see [`CreditItem::rating_key`]).
+    #[serde(rename = "ratingKey", default)]
+    pub rating_key: String,
+}
+
+impl WatchlistItem {
+    /// The guid a PMS knows this item by: the row's own `guid` when it carries one, else the
+    /// `plex://<kind>/<ratingKey>` spelling of the same catalog ID. Empty when neither is known.
+    pub fn join_guid(&self) -> String {
+        if self.guid.starts_with("plex://") {
+            return self.guid.clone();
+        }
+        match (self.kind.as_str(), self.rating_key.is_empty()) {
+            ("movie" | "show", false) => format!("plex://{}/{}", self.kind, self.rating_key),
+            _ => String::new(),
+        }
+    }
 }
 
 // ---- serde DTOs (only the fields the page consumes; all optional to tolerate shape drift) ----
@@ -299,4 +375,38 @@ pub struct CreditItem {
     /// shipped with no posters at all. Nothing was measured before that claim was written down.
     #[serde(default)]
     pub thumb: String,
+}
+
+#[cfg(test)]
+mod watchlist_tests {
+    use super::*;
+
+    #[test]
+    fn a_watchlist_row_joins_on_its_guid_or_its_catalog_id() {
+        let with_guid = WatchlistItem {
+            kind: "movie".into(),
+            guid: "plex://movie/5d776b59ad5437001f79c6f8".into(),
+            rating_key: "5d776b59ad5437001f79c6f8".into(),
+            ..Default::default()
+        };
+        assert_eq!(with_guid.join_guid(), "plex://movie/5d776b59ad5437001f79c6f8");
+        let bare = WatchlistItem { kind: "show".into(), rating_key: "5d9c0874ffd9ef001e99607a".into(), ..Default::default() };
+        assert_eq!(bare.join_guid(), "plex://show/5d9c0874ffd9ef001e99607a");
+        let unknown = WatchlistItem { kind: "episode".into(), rating_key: "x".into(), ..Default::default() };
+        assert_eq!(unknown.join_guid(), "", "only movies and shows are joined");
+    }
+
+    #[test]
+    fn a_watchlist_body_parses_with_lenient_numbers_and_tells_empty_from_missing() {
+        let body = r#"{"MediaContainer":{"size":"1","Metadata":[{"type":"movie","title":"Cupertino",
+            "year":"2024","guid":"plex://movie/abc","ratingKey":"abc","thumb":"https://x/y.jpg"}]}}"#;
+        let env: WatchlistEnvelope = serde_json::from_str(body).unwrap();
+        let rows = env.media_container.unwrap().metadata;
+        assert_eq!((rows.len(), rows[0].year, rows[0].title.as_str()), (1, 2024, "Cupertino"));
+
+        let empty: WatchlistEnvelope = serde_json::from_str(r#"{"MediaContainer":{"size":0}}"#).unwrap();
+        assert!(empty.media_container.unwrap().metadata.is_empty());
+        let missing: WatchlistEnvelope = serde_json::from_str(r#"{"error":"nope"}"#).unwrap();
+        assert!(missing.media_container.is_none());
+    }
 }

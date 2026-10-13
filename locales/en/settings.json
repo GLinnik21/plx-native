@@ -55,6 +55,14 @@
     "value": "After a moment on a title, play its trailer with sound.",
     "description": "Settings, account, onboarding or privacy UI: settings.trailers.detail"
   },
+  "settings.watchlist.title": {
+    "value": "Watchlist on Home",
+    "description": "Settings toggle: show a Home shelf of the plex.tv Watchlist titles your servers hold"
+  },
+  "settings.watchlist.detail": {
+    "value": "Show your Plex Watchlist titles that your servers have.",
+    "description": "Settings detail line under settings.watchlist.title"
+  },
   "settings.about.title": {
     "value": "About PlxNative",
     "description": "Settings, account, onboarding or privacy UI: settings.about.title"

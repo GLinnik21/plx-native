@@ -750,6 +750,10 @@
     "value": "Continue Watching",
     "description": "browse home continue_watching"
   },
+  "browse.home.watchlist": {
+    "value": "Watchlist",
+    "description": "Home shelf of the titles on your plex.tv Watchlist that your servers hold"
+  },
   "browse.diagnostics.title": {
     "value": "Diagnostics",
     "description": "browse diagnostics title"

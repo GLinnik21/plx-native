@@ -13,6 +13,8 @@
   "settings.auto_sign_in.detail": "Прапускаць спіс карыстальнікаў пры запуску праграмы.",
   "settings.trailers.title": "Аўтаматычна паказваць трэйлеры",
   "settings.trailers.detail": "Прайграваць трэйлер з гукам на старонцы твора.",
+  "settings.watchlist.title": "Спіс для прагляду на галоўнай",
+  "settings.watchlist.detail": "Паказваць творы са спіса, якія ёсць на вашых серверах.",
   "settings.about.title": "Пра PlxNative",
   "settings.about.section": "Пра праграму",
   "settings.about.detail": "Версія, аўтарскія правы і звесткі пра праект.",

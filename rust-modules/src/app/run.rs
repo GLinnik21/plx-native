@@ -1640,6 +1640,16 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // Continue Watching shows the new resume point / next episode; the small delay lets
         // the final timeline PUT land server-side first. The request is worker-only; the
         // landing logs the resulting item count when it actually commits.
+        // A Watchlist shelf matched in the background (`plx_data::pms::watchlist_shelf`) reaches
+        // Home through an ordinary refetch, which reads it from the matcher's memo. Not during
+        // playback, for the same reason as below; the flag waits for the player to close.
+        if !matches!(app.route(), AppArg::Player) && plx_data::pms::take_watchlist_ready() {
+            super::bridge::execute_endpoint_outcomes(
+                &mut app.pages,
+                app.bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints,
+            );
+            log("home: hubs refresh queued for the Watchlist");
+        }
         if app.refresh_hubs_at != 0
             && fr.now.wrapping_sub(app.refresh_hubs_at) < 0x8000_0000
             && !matches!(app.route(), AppArg::Player)

@@ -1367,7 +1367,7 @@ fn keep_heroes(items: &[Arc<PmsMovie>], heroes: &[HeroSlot], build: &mut HubBuil
 /// The hub list is read in windows of hubs ([`paging::read_hub_list`]) and each window is projected
 /// as it arrives; `held` names the rows whose cards the source holds now, and the rest are
 /// descriptors from the moment they are parsed (see [`Projection`]).
-fn fetch_source(c: &plx_plex::plex::Client, sid: ServerId, held: &[(String, String)]) -> Option<SourceBuild> {
+fn fetch_source(c: &'static plx_plex::plex::Client, sid: ServerId, held: &[(String, String)]) -> Option<SourceBuild> {
     let mut build = project_hubs(sid, held, |req| match req {
         Some(req) => c.home_hubs_page(HUB_FETCH_COUNT, req),
         None => c.home_hubs(HUB_FETCH_COUNT),
@@ -1378,7 +1378,207 @@ fn fetch_source(c: &plx_plex::plex::Client, sid: ServerId, held: &[(String, Stri
     let cw = c.continue_watching(HUB_FETCH_COUNT)?;
     project_deck(&mut build, &cw, sid);
     with_lookahead(&mut build, sid, |start, size| c.continue_watching_page(start as i64, size as i64));
+    // The Watchlist leads this source's shelves when the account has one and this server holds
+    // any of it. It is never waited for (see `watchlist_shelf`), and unlike Continue Watching its
+    // failure costs only the shelf, never the source.
+    if let Some(shelf) = watchlist_shelf(c, sid) {
+        build.shelves.insert(0, shelf);
+    }
     Some(build)
+}
+
+/// How long one Watchlist answer, and one server's matches against it, are reused. Home refetches
+/// after every playback; the Watchlist changes on a phone, rarely, and each match is a request.
+#[cfg(not(any(test, feature = "test-support")))]
+const WATCHLIST_TTL: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Lookups in flight at once per server. Measured on a 3.4.3 set's own PMS, one
+/// `/library/all?guid=` took about three seconds, so 24 in series held Home for 73 s.
+#[cfg(not(any(test, feature = "test-support")))]
+const WATCHLIST_LOOKUPS: usize = 4;
+
+/// The account's Watchlist as join guids, newest first, keyed on the token it was fetched with so a
+/// profile switch never reads the previous profile's list.
+#[cfg(not(any(test, feature = "test-support")))]
+static WATCHLIST: LazyLock<Mutex<Option<(String, std::time::Instant, Arc<Vec<String>>)>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// Each server's last Watchlist shelf: when it was matched, against which token, and the shelf.
+#[cfg(not(any(test, feature = "test-support")))]
+type WatchlistMatch = (std::time::Instant, String, Option<Shelf>);
+#[cfg(not(any(test, feature = "test-support")))]
+static WATCHLIST_SHELVES: LazyLock<Mutex<std::collections::HashMap<ServerId, WatchlistMatch>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// Servers whose matching is running now, so a burst of Home refreshes starts one worker each.
+#[cfg(not(any(test, feature = "test-support")))]
+static WATCHLIST_RUNNING: LazyLock<Mutex<std::collections::HashSet<ServerId>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashSet::new()));
+
+/// Raised by a matcher that changed a shelf; [`take_watchlist_ready`] hands it to the frame loop,
+/// which answers it with an ordinary Home refetch that then reads the new shelf.
+static WATCHLIST_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// FRAME THREAD: `true` once per finished Watchlist match whose shelf differs from the last one.
+pub fn take_watchlist_ready() -> bool {
+    WATCHLIST_READY.swap(false, Ordering::AcqRel)
+}
+
+/// The Watchlist setting changed: ask for the same Home refetch a finished match does, so the
+/// shelf appears or goes without waiting for the next ordinary refresh.
+pub fn watchlist_setting_changed() {
+    WATCHLIST_READY.store(true, Ordering::Release);
+}
+
+/// WORKER THREAD: the account's Watchlist, from the cache while it is fresh. `None` on a failed
+/// fetch.
+#[cfg(not(any(test, feature = "test-support")))]
+fn watchlist_guids(token: &str, client_id: &str) -> Option<Arc<Vec<String>>> {
+    let mut cache = WATCHLIST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((tok, at, list)) = cache.as_ref() {
+        if tok == token && at.elapsed() < WATCHLIST_TTL {
+            return Some(Arc::clone(list));
+        }
+    }
+    let rows = plx_plex::plex::account::AccountClient::new(client_id, Some(token))
+        .watchlist(MAX_SHELF_ITEMS)?;
+    let list: Arc<Vec<String>> = Arc::new(
+        rows.iter().map(|r| r.join_guid()).filter(|g| !g.is_empty()).collect(),
+    );
+    *cache = Some((token.to_owned(), std::time::Instant::now(), Arc::clone(&list)));
+    Some(list)
+}
+
+/// HUB WORKER: this server's Watchlist shelf as last matched, **without waiting for anything**.
+/// When there is none yet, or it is older than [`WATCHLIST_TTL`], a background matcher is started
+/// and this fetch goes on with the shelf it has (stale, or none). The Watchlist used to be matched
+/// inline here, and Home's shelves then waited 28-73 s for it on a 3.4.3 set instead of 5-8 s.
+/// `None` without a plex.tv account token: a server-token boot has no Watchlist to read.
+#[cfg(not(any(test, feature = "test-support")))]
+fn watchlist_shelf(c: &'static plx_plex::plex::Client, sid: ServerId) -> Option<Shelf> {
+    let s = plx_plex::plex::session::peek();
+    // Settings > Libraries > Watchlist on Home. Off costs nothing: no plex.tv fetch, no lookups.
+    if s.account_token.is_empty() || !s.watchlist_shown() {
+        return None;
+    }
+    let (shelf, fresh) = {
+        let memo = WATCHLIST_SHELVES.lock().unwrap_or_else(|e| e.into_inner());
+        match memo.get(&sid) {
+            Some((at, tok, shelf)) if *tok == s.account_token => {
+                (shelf.clone(), at.elapsed() < WATCHLIST_TTL)
+            }
+            _ => (None, false),
+        }
+    };
+    if !fresh && WATCHLIST_RUNNING.lock().unwrap_or_else(|e| e.into_inner()).insert(sid) {
+        let (token, client_id) = (s.account_token.clone(), s.client_id.clone());
+        let spawned = plx_base::task::spawn_small("watchlist", move || {
+            let _ = catch_unwind(move || match_watchlist(c, sid, &token, &client_id));
+            WATCHLIST_RUNNING.lock().unwrap_or_else(|e| e.into_inner()).remove(&sid);
+        });
+        if !spawned {
+            WATCHLIST_RUNNING.lock().unwrap_or_else(|e| e.into_inner()).remove(&sid);
+        }
+    }
+    shelf
+}
+
+/// WATCHLIST WORKER: match every Watchlist guid on `sid`, [`WATCHLIST_LOOKUPS`] at a time, keep
+/// the hits in Watchlist order as ordinary library rows (so a card opens the local detail page and
+/// plays), memoise the shelf and, when it changed, ask the frame loop for a Home refetch. A pass in
+/// which every lookup failed says nothing about this server and is not memoised.
+#[cfg(not(any(test, feature = "test-support")))]
+fn match_watchlist(
+    c: &'static plx_plex::plex::Client,
+    sid: ServerId,
+    token: &str,
+    client_id: &str,
+) {
+    let Some(list) = watchlist_guids(token, client_id) else { return };
+    let mut found: Vec<Option<Arc<PmsMovie>>> = vec![None; list.len()];
+    let failed = std::sync::atomic::AtomicUsize::new(0);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..WATCHLIST_LOOKUPS.min(list.len()))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut hits = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(guid) = list.get(i) else { break };
+                        let Some(mc) = c.find_by_guid(guid) else {
+                            failed.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        };
+                        let hit = mc
+                            .metadata
+                            .iter()
+                            .filter(|it| listable(&it.kind))
+                            .map(|it| parse_item(it, sid))
+                            .find(|m| !m.title.is_empty() && !m.thumb.is_empty());
+                        if let Some(m) = hit {
+                            hits.push((i, Arc::new(m)));
+                        }
+                    }
+                    hits
+                })
+            })
+            .collect();
+        for w in workers {
+            for (i, m) in w.join().unwrap_or_default() {
+                found[i] = Some(m);
+            }
+        }
+    });
+    let failed = failed.into_inner();
+    let items: Vec<Arc<PmsMovie>> = found.into_iter().flatten().collect();
+    plx_base::eventlog::log(&format!(
+        "watchlist: source {sid:?} matched={} of {} failed={failed}",
+        items.len(),
+        list.len()
+    ));
+    if failed == list.len() && !list.is_empty() {
+        return;
+    }
+    // A whole row, not a window of a listing: nothing to page, so `more` is false and the row
+    // state is the default (Home asks no page of it).
+    let shelf = (!items.is_empty()).then(|| Shelf {
+        epoch: 0,
+        title: plx_platform::i18n::msg::browse_home_watchlist().to_string(),
+        hub_id: "home.watchlist".to_string(),
+        key: String::new(),
+        positions: (0..items.len()).collect(),
+        total: items.len(),
+        offset: 0,
+        end: items.len(),
+        more: false,
+        shown: 0,
+        row: Default::default(),
+        items,
+    });
+    let changed = {
+        let mut memo = WATCHLIST_SHELVES.lock().unwrap_or_else(|e| e.into_inner());
+        let before = memo.get(&sid).map(|(_, _, sh)| shelf_keys(sh));
+        let changed = before != Some(shelf_keys(&shelf));
+        memo.insert(sid, (std::time::Instant::now(), token.to_owned(), shelf));
+        changed
+    };
+    if changed {
+        WATCHLIST_READY.store(true, Ordering::Release);
+    }
+}
+
+/// What a Watchlist shelf shows, for "did this match change anything": its rows' keys in order.
+#[cfg(not(any(test, feature = "test-support")))]
+fn shelf_keys(shelf: &Option<Shelf>) -> Vec<String> {
+    shelf.iter().flat_map(|sh| sh.items.iter().map(|m| m.rk.clone())).collect()
+}
+
+/// HOST SUITE: the Watchlist reaches plex.tv over libcurl, which the host test binary cannot link
+/// (the same cut `person::fetch_profile` makes). Every Home test therefore sees no Watchlist shelf.
+#[cfg(any(test, feature = "test-support"))]
+fn watchlist_shelf(_c: &'static plx_plex::plex::Client, _sid: ServerId) -> Option<Shelf> {
+    None
 }
 
 /// The first window is the merge of the servers' previews, which is the deck's order only if no

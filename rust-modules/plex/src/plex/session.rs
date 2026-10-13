@@ -602,6 +602,10 @@ pub struct Session {
     /// has no mute, so this is also the only sound control.
     #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
     pub trailer_autoplay: bool,
+    /// **Hide the Watchlist shelf on Home.** Stored as the negative so absence (every session
+    /// written before the shelf existed) and a derived `Default` both mean SHOWN. Install-wide.
+    #[serde(default, deserialize_with = "de_soft_bool", skip_serializing_if = "is_false")]
+    pub hide_watchlist: bool,
     /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
     /// rendered on this television, so a route in the Settings/first-run family that opens
     /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
@@ -693,6 +697,8 @@ struct CanonicalSessionPreferences {
     last_hero_blur: Option<[[f32; 3]; 4]>,
     #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
     trailer_autoplay: bool,
+    #[serde(default, deserialize_with = "de_soft_bool", skip_serializing_if = "is_false")]
+    hide_watchlist: bool,
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     plaintext_consent: Vec<PlaintextConsent>,
     #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
@@ -722,6 +728,7 @@ impl Default for CanonicalSessionPreferences {
             subtitle_offsets: Vec::new(),
             last_hero_blur: None,
             trailer_autoplay: true,
+            hide_watchlist: false,
             plaintext_consent: Vec::new(),
             server_key_pins: Vec::new(),
             extensions: BTreeMap::new(),
@@ -766,6 +773,7 @@ fn split_public(session: &Session) -> Result<plx_platform::storage::state::Publi
         subtitle_offsets: session.subtitle_offsets.clone(),
         last_hero_blur: session.last_hero_blur,
         trailer_autoplay: session.trailer_autoplay,
+        hide_watchlist: session.hide_watchlist,
         plaintext_consent: session.plaintext_consent.clone(),
         server_key_pins: session.server_key_pins.clone(),
         extensions: BTreeMap::new(),
@@ -832,6 +840,7 @@ pub fn join_canonical(
         subtitle_offsets: preferences.subtitle_offsets,
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
+        hide_watchlist: preferences.hide_watchlist,
         plaintext_consent: preferences.plaintext_consent,
         server_key_pins: preferences.server_key_pins,
         profiles,
@@ -857,6 +866,7 @@ fn public_session(public: &plx_platform::storage::state::PublicPayload) -> Sessi
         subtitle_offsets: preferences.subtitle_offsets,
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
+        hide_watchlist: preferences.hide_watchlist,
         plaintext_consent: preferences.plaintext_consent,
         server_key_pins: preferences.server_key_pins,
         home_pins, recent_searches,
@@ -2119,6 +2129,10 @@ where
     Ok(serde_json::from_value::<Option<Location>>(v).unwrap_or(None))
 }
 
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 /// A preference switch: garbage degrades to off rather than failing the enclosing [`Session`].
 fn de_soft_bool<'de, D>(d: D) -> Result<bool, D::Error>
 where
@@ -2296,6 +2310,17 @@ impl Session {
 
     pub fn deck_press(&self) -> DeckPress {
         self.prefs.deck_press
+    }
+
+    /// Whether Home shows the Watchlist shelf (the default).
+    pub fn watchlist_shown(&self) -> bool {
+        !self.hide_watchlist
+    }
+
+    pub fn with_watchlist_shown(&self, on: bool) -> Self {
+        let mut next = self.clone();
+        next.hide_watchlist = !on;
+        next
     }
 
     pub fn audio_enhancements(&self) -> crate::plex::AudioEnhancements {
@@ -5842,5 +5867,33 @@ mod server_key_pin_tests {
         plx_base::storage_worker::drain_for_test();
         let _ = peek();
         assert_eq!(plx_net::net::keypin::pin_for_test(&key), None, "the late probe did not repopulate it");
+    }
+}
+
+/// `Session::hide_watchlist`: soft-parse, omit-at-default (so committed replay fixtures serialize
+/// unchanged), round-trip through the canonical split.
+#[cfg(test)]
+mod watchlist_preference_tests {
+    use super::*;
+
+    #[test]
+    fn the_watchlist_switch_is_absent_at_its_default_and_survives_a_round_trip() {
+        let session = Session::default();
+        assert!(session.watchlist_shown(), "absence means shown");
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(!json.contains("hide_watchlist"), "{json}");
+
+        let set = session.with_watchlist_shown(false);
+        let round: Session = serde_json::from_str(&serde_json::to_string(&set).unwrap()).unwrap();
+        assert!(!round.watchlist_shown());
+        let (public, protected) = split_canonical(&set).unwrap();
+        let joined = join_canonical(&public, &protected).unwrap();
+        assert!(!joined.watchlist_shown());
+    }
+
+    #[test]
+    fn a_garbled_watchlist_switch_is_shown() {
+        let s: Session = serde_json::from_str(r#"{"client_id":"c","hide_watchlist":"yes"}"#).unwrap();
+        assert!(s.watchlist_shown());
     }
 }
