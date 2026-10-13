@@ -79,7 +79,7 @@ transcodes, Developer Mode installs included.
 |---|---|
 | **Some 2019 sets on LG's k5lp or k3lp chip**, installed through Developer Mode | Video won't play. On these sets LG's Developer Mode sandbox can withhold a device the video path needs — Kodi and Moonlight hit the same wall. The app checks for it and says so instead of crashing; other sets on the same chip play normally. On a rooted TV with Homebrew Channel, the failure screen offers **Repair**, which applies the Homebrew Channel fix to the sandbox (one owner fixed it this way from a root shell; the button itself hasn't been run on an affected set yet). Without root there is no fix. |
 | **2018 sets on firmware that reports platform release 3.9.3** | Sign-in and browsing work, but video has never been seen to start on one, and no error is reported either: [#249](https://github.com/GLinnik21/plx-native/issues/249). |
-| **webOS 3.x** | Seeking restarts the stream at the new position instead of jumping in place, so each seek takes a moment longer. In-place seek depends on the internal layout of LG's 4.x media player, and on 3.4 that layout differs. |
+| **webOS 3.x** | Seeking restarts the stream at the new position instead of jumping in place, so each seek takes a moment longer. In-place seek depends on the internal layout of LG's 4.x media player, and on 3.4 that layout differs. The interface is drawn at 1280x720 and scaled up by the TV, so text is slightly softer than on newer sets: these GPUs cannot fill 1920x1080 at 60 fps. |
 | **Sets on LG's k6hp chip** | A crash seen in opt-in crash reports and not reproduced here, because I have no such set: [#174](https://github.com/GLinnik21/plx-native/issues/174). |
 
 ### Rooted or not

@@ -7,10 +7,12 @@
 //! crispness contract (`gfx::snap`) assumes 1:1 texels. That canvas is not going to change, and
 //! it should not — see [`scale`] for why rendering at panel resolution is the wrong trade.
 //!
-//! What can change is the **drawable**: the pixel buffer GL renders into. Today it is 1920x1080
-//! because that is what `SDL_CreateWindow` asks for and webOS grants, on a 4K panel that composites
-//! the result up to 3840x2160 in hardware, for free. That is the right arrangement and this module
-//! exists to keep it working, not to replace it.
+//! What can change is the **drawable**: the pixel buffer GL renders into. On webOS 4 and later it
+//! is 1920x1080 because that is what `SDL_CreateWindow` asks for and webOS grants, on a 4K panel
+//! that composites the result up to 3840x2160 in hardware, for free. That is the right arrangement
+//! and this module exists to keep it working, not to replace it. On webOS 1-3 the app asks for
+//! 1280x720 instead (`app::boot::requested_drawable`: those GPUs are fill-rate bound at 1080p), and
+//! the same compositor upscale fills the panel.
 //!
 //! The trap is the third number. **`SDL_webOSGetPanelResolution` reports the PANEL** — 3840x2160
 //! on a 2019 4K set whose UI surface is 1080p. It is present on every webOS release, which makes
@@ -71,8 +73,10 @@ fn drawable() -> (i32, i32) {
 
 /// **Uniform** logical -> physical scale: `min(dw/1920, dh/1080)`.
 ///
-/// 1.0 on every device this has ever run on, and the fast path stays exactly that — `scale() == 1.0`
-/// means every drawn coordinate is already a pixel and the crispness contract holds unchanged.
+/// 1.0 on webOS 4 and later, and the fast path stays exactly that — `scale() == 1.0` means every
+/// drawn coordinate is already a pixel and the crispness contract holds unchanged. **0.667 on
+/// webOS 1-3**, which asks for a 1280x720 window because its GPU is fill-rate bound at 1080p
+/// (`app::boot::requested_drawable` has the measurement); the compositor fills the panel.
 ///
 /// It is `min`, not `dw/1920`, because the alternative is a stretched interface. Stretching to fill
 /// only looks harmless while every drawable is 16:9 — which is true of televisions, and is exactly
@@ -421,15 +425,16 @@ pub fn probe(win: *mut c_void) {
         ));
         if (dw, dh) != (LOGICAL_W as i32, LOGICAL_H as i32) {
             // The plea for a bug report belongs to the TELEVISION alone: there, a drawable that is
-            // not the canvas is a firmware doing something no set has been seen to do. On a desktop
+            // not the canvas is either webOS 1-3's deliberate 1280x720 or a firmware doing something
+            // no set has been seen to do. On a desktop
             // it is the ordinary case — the window is an exact divisor of the canvas by design
             // (`app.rs`'s `desktop_window_size`) — and asking a Mac user for their webOS version
             // reads as a malfunction. Same measurement either way; only the sentence differs.
             let tail = if cfg!(feature = "hostsim") {
                 "This is expected on a desktop: the window is a whole fraction of the canvas."
             } else {
-                "Please report this with your webOS version; the app has only ever been seen on a \
-                 1:1 surface."
+                "Expected on webOS 1-3, which asks for 1280x720; anywhere else, please report this \
+                 with your webOS version."
             };
             log(&format!(
                 "surface: drawable is NOT the {}x{} the UI is authored at — scaling the whole \
