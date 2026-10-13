@@ -390,20 +390,82 @@ mod seam_order_tests {
 /// Resolved at runtime rather than linked: webOS 3.4 ships SDL 2.0.3, which has none of LG's
 /// `SDL_webOS*` extensions, and a strong reference there is a lazily-bound PLT slot that kills
 /// the process on the first D-pad press (`tools/fwcompat.py --release 3.4.0`).
+///
+/// **Without LG's extension the pointer is SDL's own, and SDL's own API hides it.** webOS 3.9.3
+/// ships SDL 2.0.4 with no `SDL_webOS*` export at all, and that SDL draws the pointer itself (its
+/// `.rodata` carries `/usr/share/im/cursorType*.png` and `wl_starfish_pointer`). With nothing to
+/// call, every hide was a no-op and the pointer stayed up until LG's ~5-minute idle timeout,
+/// issue #642. There the fallback is `SDL_ShowCursor(SDL_DISABLE)`, and because nothing in the
+/// compositor brings a cursor hidden that way back, [`show_cursor_after_motion`] re-enables it on
+/// the next motion. `SDL_ShowCursor` is dlsym'd too, so this door adds no import to the binary.
 #[inline]
 pub(crate) unsafe fn hide_cursor() {
     #[cfg(not(feature = "hostsim"))]
     {
-        type CursorVisibility = unsafe extern "C" fn(c_int) -> c_int;
-        static SYM: std::sync::OnceLock<Option<CursorVisibility>> = std::sync::OnceLock::new();
-        let f = SYM.get_or_init(|| {
-            let p = plx_base::dynlib::Handle::self_handle().sym("SDL_webOSCursorVisibility")?;
-            (!p.is_null()).then(|| std::mem::transmute::<*mut std::ffi::c_void, CursorVisibility>(p))
-        });
-        if let Some(f) = f {
-            f(0);
+        match cursor_door() {
+            CursorDoor::Lg(f) => {
+                f(0);
+            }
+            CursorDoor::Sdl(f) => {
+                f(SDL_DISABLE);
+            }
+            CursorDoor::None => {}
         }
     }
+}
+
+/// Bring the pointer back after [`hide_cursor`] hid it through `SDL_ShowCursor`. Call on pointer
+/// motion while the cursor is hidden. A no-op wherever LG's extension exists: there the
+/// compositor shows its own pointer on motion, as it always has.
+#[inline]
+pub(crate) unsafe fn show_cursor_after_motion() {
+    #[cfg(not(feature = "hostsim"))]
+    {
+        if let CursorDoor::Sdl(f) = cursor_door() {
+            f(SDL_ENABLE);
+        }
+    }
+}
+
+#[cfg(not(feature = "hostsim"))]
+const SDL_DISABLE: c_int = 0;
+#[cfg(not(feature = "hostsim"))]
+const SDL_ENABLE: c_int = 1;
+
+/// Which call hides the pointer on this firmware, resolved once: LG's extension when the system
+/// SDL has it (webOS 4+), else stock `SDL_ShowCursor` (webOS 3.x).
+#[cfg(not(feature = "hostsim"))]
+#[derive(Clone, Copy)]
+enum CursorDoor {
+    Lg(unsafe extern "C" fn(c_int) -> c_int),
+    Sdl(unsafe extern "C" fn(c_int) -> c_int),
+    None,
+}
+
+#[cfg(not(feature = "hostsim"))]
+fn cursor_door() -> CursorDoor {
+    type Fn1 = unsafe extern "C" fn(c_int) -> c_int;
+    static DOOR: std::sync::OnceLock<CursorDoor> = std::sync::OnceLock::new();
+    *DOOR.get_or_init(|| {
+        let sym = |name: &str| -> Option<Fn1> {
+            let p = plx_base::dynlib::Handle::self_handle().sym(name)?;
+            // SAFETY: both symbols are `int f(int)` in every SDL2 that exports them.
+            (!p.is_null()).then(|| unsafe { std::mem::transmute::<*mut std::ffi::c_void, Fn1>(p) })
+        };
+        let door = if let Some(f) = sym("SDL_webOSCursorVisibility") {
+            CursorDoor::Lg(f)
+        } else if let Some(f) = sym("SDL_ShowCursor") {
+            CursorDoor::Sdl(f)
+        } else {
+            CursorDoor::None
+        };
+        log(match door {
+            CursorDoor::Lg(_) => "cursor: SDL_webOSCursorVisibility",
+            CursorDoor::Sdl(_) => "cursor: SDL_ShowCursor fallback (no SDL_webOS* in this SDL)",
+            CursorDoor::None => "cursor: no way to hide the pointer",
+        });
+        door
+    })
 }
 /// Advance the once-per-second LOOP-RATE window: bump `iters_ct` and, when a full second has
 /// elapsed, recompute `loop_shown`, reset the window, and return `true` so the caller logs the
