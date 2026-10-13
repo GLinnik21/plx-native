@@ -847,7 +847,11 @@ where
         // 2. ingest: external events, delivered to the input owner, AHEAD of everything queued
         //    (external_events_are_drained_before_effect_results).
         let mut head: Vec<Stamped<H>> = Vec::new();
+        // The television keyboard's state AS OF each event: its edges take effect in delivery
+        // order, so a pointer behind an edge in this batch must see that edge.
+        let mut keyboard = self.input.keyboard;
         for mut ev in inputs {
+            if let InputKind::SystemKeyboard(up) = ev.kind { keyboard = up; }
             // the Input machine's own half first (§3.4): keyboard ownership, the press edges,
             // dpad mode, the pointer resolved against the hit map
             let pointer = match ev.kind {
@@ -869,10 +873,15 @@ where
                         let focused = self.focus();
                         let actual = (tap.resolution_mode() != Some(false)).then(||
                             self.input.hit.resolve(owner_e, kind, x, y, focused));
-                        let Some(res) = tap.resolve_hit(f, kind, owner_e, actual) else {
+                        let Some(mut res) = tap.resolve_hit(f, kind, owner_e, actual) else {
                             tap.resolution_error("missing hit resolution");
                             continue;
                         };
+                        // While the television keyboard is up, hover moves no focus. The keyboard
+                        // is drawn over the page, so the pointer crosses the page's stops on its
+                        // way to the keys, and a focus move off a text field puts the keyboard
+                        // away (search). A click still lands.
+                        if keyboard && kind == PointerKind::Move { res.focus = None; }
                         if tap.resolution_active() && [res.hit, res.focus, res.activate.map(|v| v.0)].into_iter().flatten()
                             .any(|k| !self.valid_resolution_key(rig, &self.parts(tick), k, None, false)) {
                             tap.resolution_error("impossible hit resolution");
