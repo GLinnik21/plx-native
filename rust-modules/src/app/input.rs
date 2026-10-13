@@ -195,10 +195,50 @@ pub(crate) unsafe fn activate_card(
         //
         // The show is still one press away: it is the card menu's second navigation row, and the
         // episode page's own BACK returns to the shelf.
+        //
+        // This is the DISCOVERY shelves' press. A Continue Watching episode never reaches this arm
+        // while its press opens details: [`activate_deck_card`] opens the SHOW on the card's season
+        // first (the card menu then offers Go to Episode instead), and falls through to here only
+        // for an episode whose row names no show.
         super::bridge::open_detail(pages, bridge, mm.sid, &rk, None, ret.take());
     } else {
         super::bridge::open_detail(pages, bridge, mm.sid, &rk, None, ret.take());
     }
+}
+
+/// Does a card press open the SHOW's page instead of going through [`activate_card`]? Only a
+/// Continue Watching episode whose press does not play, and only while it names its show
+/// ([`plx_screens::item_menu::deck_episode_opens_show`], which the card menu reads for its
+/// Go to Episode / Go to Show rows too). Pure, so the decision is testable without a session.
+pub(crate) fn deck_press_opens_show(mm: &plx_data::pms::PmsMovie, from_deck: bool, want_play: bool) -> bool {
+    from_deck && !want_play && plx_screens::item_menu::deck_episode_opens_show(mm)
+}
+
+/// **A press on a card the caller knows to be on Continue Watching**, `from_deck` being the
+/// SHELF's answer (Home's hub, a library's own `is_continue` shelf). Under "Open details" an
+/// episode there opens its SHOW on the card's season — the page that shows where the viewer is in
+/// the series — while a discovery shelf's episode ([`activate_card`]) still opens its own page.
+/// Everything else, and every press that plays, is [`activate_card`] unchanged.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn activate_deck_card(
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    mm: &plx_data::pms::PmsMovie,
+    from_deck: bool,
+    want_play: bool,
+    hud_ms: u32,
+    mut ret: Option<plx_ui::screen::ReturnState<u32, plx_screens::registry::PageMemory>>,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
+    menu_play_await: &mut Option<MenuPlayAwait>,
+    now: u32,
+) {
+    if deck_press_opens_show(mm, from_deck, want_play) {
+        super::bridge::open_detail(pages, bridge, mm.sid, &mm.show_rk,
+            (mm.season_index > 0).then_some(mm.season_index), ret.take());
+        return;
+    }
+    activate_card(ps, pa, mm, want_play, hud_ms, ret, pages, bridge, menu_play_await, now);
 }
 
 fn collection_content_arg(mm: &plx_data::pms::PmsMovie) -> plx_screens::registry::ContentArg {

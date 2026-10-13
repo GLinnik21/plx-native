@@ -193,7 +193,8 @@ left"*, which is the resume state. A watched item carries a check mark in its co
 **OK on a card in *Continue Watching* opens its page by default** (Settings → Playback →
 Continue Watching: *Open details*); set to *Play*, OK plays it directly and the amber ▶ on the card is
 what announces that — the ▶ is drawn only in that mode, and in the default the card's menu leads
-with Play instead. **Every other card opens a page, an episode included**: an episode tile on a
+with Play instead; an *episode* card there opens its **show** on that episode's season (the card's menu
+offers *Go to Episode*). **Every other card opens a page, an episode included**: an episode tile on a
 discovery shelf ("Recently Released Episodes", "Recently Added…") opens that EPISODE's own page and
 carries no ▶, precisely so nothing on it promises playback. The one-press resume is *Play* mode: there the deck is a list of things already in progress and one
 press is the whole point of it. In the default the deck behaves like every other shelf — a press is

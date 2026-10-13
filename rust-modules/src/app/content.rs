@@ -850,13 +850,14 @@ fn library_requests(app: &mut App, now: u32) {
                 bridge::open_item_menu(&mut app.pages, arg);
                 app.ok_armed = false;
             }
-            LibraryReq::Detail { sid, ref rk } | LibraryReq::Play { sid, ref rk, .. } => {
+            LibraryReq::Detail { sid, ref rk, .. } | LibraryReq::Play { sid, ref rk, .. } => {
                 let Some((mut item, _)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
                 if item.sid != sid || &item.rk != rk { continue; }
                 let play = matches!(request, LibraryReq::Play { .. });
+                let from_deck = matches!(request, LibraryReq::Detail { from_deck: true, .. });
                 if let LibraryReq::Play { resume_ns, .. } = request { item.resume_ms = resume_ns / 1_000_000; }
-                unsafe { activate_card(&mut app.player.session, &mut app.adapters.player, &item, play, HUD_LINGER_MS,
-                    Some(ret), &mut app.pages, &mut app.bridge, &mut app.menu_play_await, now); }
+                unsafe { activate_deck_card(&mut app.player.session, &mut app.adapters.player, &item, from_deck, play,
+                    HUD_LINGER_MS, Some(ret), &mut app.pages, &mut app.bridge, &mut app.menu_play_await, now); }
             }
         }
     }
@@ -2301,8 +2302,10 @@ fn activate_home_item(app: &mut App, source: MachineId, entry: EntryId,
     // above it to spend — `Trail::reset()` stood here and was a no-op in the only case that could
     // reach it (see `apply_item_action`'s note on `from_home`).
     let _ = (source, entry);
-    unsafe { activate_card(&mut app.player.session, &mut app.adapters.player, &item, resume_ns.is_some(), HUD_LINGER_MS,
-        Some(ret), &mut app.pages, &mut app.bridge, &mut app.menu_play_await, now); }
+    let from_deck = home_menu_from_deck(&ret);
+    unsafe { activate_deck_card(&mut app.player.session, &mut app.adapters.player, &item, from_deck,
+        resume_ns.is_some(), HUD_LINGER_MS, Some(ret), &mut app.pages, &mut app.bridge,
+        &mut app.menu_play_await, now); }
 }
 
 // (`cancel_content_navigation` and `freeze_request` stood here. The first re-checked the queued

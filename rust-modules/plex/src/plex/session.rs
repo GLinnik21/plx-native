@@ -1281,8 +1281,9 @@ impl SkipInterval {
 }
 
 /// What OK does on a Continue Watching card — install-wide, like [`SubtitleTone`]. Absence is
-/// `Details`: OK opens the movie or episode page, exactly as on any other shelf, and the card's
-/// menu leads with Play (and the card draws no amber ▶, which promises a press that plays).
+/// `Details`: OK opens the movie page, exactly as on any other shelf, or for an episode the SHOW's
+/// page on the card's season; the card's menu leads with Play (and the card draws no amber ▶, which
+/// promises a press that plays).
 /// `Play` is what every build before this preference did: OK plays or resumes at once.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeckPress {

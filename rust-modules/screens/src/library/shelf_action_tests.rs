@@ -148,9 +148,12 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
                     resume_ns: 0,
                 }
             } else {
+                // the page request says WHICH shelf the press came from: a deck episode opens its
+                // show, a discovery shelf's opens the episode (`activate_deck_card`)
                 LibraryReq::Detail {
                     sid: item.sid,
                     rk: item.rk.clone(),
+                    from_deck,
                 }
             };
             assert_eq!(requests, vec![expected]);

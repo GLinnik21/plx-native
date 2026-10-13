@@ -92,6 +92,16 @@ pub fn strip_x(i: usize) -> f32 {
     plx_ui::consts::MARGIN_X + i as f32 * (W + GAP)
 }
 
+/// The strip scroll that stands episode `i` of `len` at the strip's leading edge, so the episode a
+/// viewer left off at opens first in view with the ones to watch after it. Clamped like
+/// `scroll_into_view`: a season's last episodes do not scroll past its end.
+pub fn seat_scroll(i: usize, len: usize) -> f32 {
+    let pitch = W + GAP;
+    let view_w = plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X;
+    let end = (len as f32 * pitch - GAP - view_w).max(0.0);
+    (i as f32 * pitch).min(end)
+}
+
 pub fn still_rect(i: usize, top: f32, scroll: f32) -> Rect {
     Rect::new(strip_x(i) - scroll, top, W, H)
 }
