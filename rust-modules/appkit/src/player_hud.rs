@@ -1649,6 +1649,14 @@ pub fn scrub_speed(held_ms: u32) -> f32 {
 // doc for why this debounce exists (coalescing a rapid tap burst into one Load/reload).
 pub const TAP_COMMIT_MS: u32 = 450;
 pub const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
+/// How long a key-up of a HELD scrub waits before it counts as the release. The remote's key
+/// driver was measured delivering `Up` and a fresh `Down` 0-17 ms apart in the middle of a hold; a
+/// thumb cannot release and press again that fast, so a same-direction `Down` inside this window
+/// is the same hold. Short enough that a true release commits imperceptibly later.
+pub const SCRUB_RELEASE_DEBOUNCE_MS: u32 = 50;
+/// How long the lost-keyup net waits after such a bounce: the re-press restarts the remote's
+/// ~500 ms auto-repeat delay (measured 499-519 ms), so no repeat can arrive sooner.
+pub const SCRUB_REPEAT_RESTART_MS: u32 = 700;
 
 /// Sets the Skip interval for one test and puts the prior value back on drop. The caller holds
 /// `testlock::serial()`: the live value is a process global, like every preference.

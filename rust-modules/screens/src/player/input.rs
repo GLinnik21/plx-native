@@ -66,6 +66,14 @@ pub struct Scrub {
     pub hold_since: u32, // when that hold engaged — the acceleration ramp is measured from here
     pub alive: u32,      // last held (0x101) event — for the lost-keyup safety commit
     pub commit_at: u32,  // tap released → commit at this tick (0 = none; a new press cancels)
+    /// A HELD scrub's key-up is waiting out the key-bounce window: the release commits at this
+    /// tick (`0` = none). A same-direction press or a repeat before then means the key never went
+    /// up (`SCRUB_RELEASE_DEBOUNCE_MS`).
+    pub release_at: u32,
+    /// The hold was bounced and re-pressed, so the remote's repeat delay has restarted: the
+    /// lost-keyup net waits `SCRUB_REPEAT_RESTART_MS` instead of `SCRUB_LOST_MS` until a repeat
+    /// arrives.
+    pub rearmed: bool,
     /// This gesture began on a HIDDEN HUD, so its press was spent raising the transport
     /// (`ScrubPress::Reveal`) rather than hopping. It is still a fully armed scrub — a user who
     /// keeps holding gets the ordinary continuous rewind, and `hold` engaging clears this — but if
@@ -102,6 +110,8 @@ impl Scrub {
         hold_since: 0,
         alive: 0,
         commit_at: 0,
+        release_at: 0,
+        rearmed: false,
         reveal: false,
         ns: -1,
         drag: false,
@@ -122,6 +132,8 @@ impl Scrub {
         self.t = now;
         self.alive = now;
         self.commit_at = 0; // more input → cancel a pending tap commit
+        self.release_at = 0;
+        self.rearmed = false;
         self.reveal = false;
         self.drag = false; // a key gesture supersedes a pointer one
     }
@@ -131,6 +143,8 @@ impl Scrub {
     pub fn disengage(&mut self) {
         self.dir = 0;
         self.hold = false;
+        self.release_at = 0;
+        self.rearmed = false;
         self.reveal = false;
         self.drag = false;
     }
@@ -313,7 +327,7 @@ impl HudState {
 // race the demux (the stale-audio silence incident); short enough that a single tap still feels
 // immediate.
 pub use plx_appkit::player_hud::{
-    scrub_step_ns, SCRUB_LOST_MS, TAP_COMMIT_MS,
+    scrub_step_ns, SCRUB_LOST_MS, SCRUB_RELEASE_DEBOUNCE_MS, SCRUB_REPEAT_RESTART_MS, TAP_COMMIT_MS,
 };
 // HUD auto-hide: how long the HUD lingers after the input that raised it.
 pub const HUD_LINGER_MS: u32 = plx_appkit::player_hud::LINGER_MS; // plain transport/nav input
@@ -506,7 +520,7 @@ mod hud_visibility_tests {
     #[test]
     fn disengaging_ends_every_part_of_the_gesture() {
         let mut scrub = Scrub { t: 11, dir: 1, hold: true, hold_since: 12, alive: 13,
-            commit_at: 14, reveal: true, ns: 15, drag: true };
+            commit_at: 14, release_at: 16, rearmed: true, reveal: true, ns: 15, drag: true };
         scrub.disengage();
         assert_eq!((scrub.dir, scrub.hold, scrub.reveal, scrub.drag), (0, false, false, false));
         assert_eq!(scrub.commit_at, 14, "disengage must preserve the released tap's commit");
