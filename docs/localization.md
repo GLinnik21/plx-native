@@ -70,6 +70,18 @@ Open a pull request describing which language and screens changed, and how you c
 wording and layout. Translations ship with app releases; the app does not download language packs.
 New translations and changes remain subject to language review.
 
+### Who reviews a translation
+
+A translation is accepted when a native speaker of that language has read it. Machine or AI-drafted
+translations are welcome as a starting point, but say so in the pull request and name who reviewed
+the wording (the author, or someone they asked). A pull request from a non-native speaker waits
+for a native reviewer before it is merged.
+
+The reviewer does not need to build anything. Send them the catalog files in `locales/<tag>/` and
+screenshots of the affected screens (desktop simulator with `PLXNATIVE_LOCALE=<tag>`, or the TV),
+so they can see each string in its place: the same words read differently in a button, a menu and
+a sentence. Note any wording they changed and why.
+
 ## Adding a language
 
 Add a catalog directory using its BCP-47 language tag, translating all source keys. This currently
