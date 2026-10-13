@@ -17,6 +17,7 @@
 //! in phase 10 and needs the same cadence, and a screen may not name a sibling family for a shared
 //! word (§2.1).
 
+use plx_appkit::held_key::HeldKey;
 use std::os::raw::c_int;
 
 /// Is the transport HUD on screen? Its timer is live, OR playback is paused, OR the pipeline is
@@ -60,23 +61,13 @@ pub fn hud_visible(ps: &plx_media::route::PlaybackSession, now: u32, until: u32,
 /// engage the continuous scrub; the keyup is a reliable release. Taps commit on a short
 /// debounce so quick taps accumulate.
 pub struct Scrub {
-    pub t: u32,          // last continuous-advance tick
-    pub dir: i32,        // -1 back / +1 forward / 0 = no scrub in progress
-    pub hold: bool,      // a 0x101 repeat arrived → continuous accelerating scrub engaged
-    pub hold_since: u32, // when that hold engaged — the acceleration ramp is measured from here
-    pub alive: u32,      // last held (0x101) event — for the lost-keyup safety commit
-    pub commit_at: u32,  // tap released → commit at this tick (0 = none; a new press cancels)
-    /// A HELD scrub's key-up is waiting out the key-bounce window: the release commits at this
-    /// tick (`0` = none). A same-direction press or a repeat before then means the key never went
-    /// up (`SCRUB_RELEASE_DEBOUNCE_MS`).
-    pub release_at: u32,
-    /// The hold was bounced and re-pressed, so the remote's repeat delay has restarted: the
-    /// lost-keyup net waits `SCRUB_REPEAT_RESTART_MS` instead of `SCRUB_LOST_MS` until a repeat
-    /// arrives.
-    pub rearmed: bool,
+    /// The key-hold half — direction, the engaged ramp, the bounce debounce and the lost-keyup net —
+    /// owned once in `appkit::held_key`, which the trailer transport's hold-to-scrub shares.
+    pub key: HeldKey,
+    pub commit_at: u32, // tap released → commit at this tick (0 = none; a new press cancels)
     /// This gesture began on a HIDDEN HUD, so its press was spent raising the transport
     /// (`ScrubPress::Reveal`) rather than hopping. It is still a fully armed scrub — a user who
-    /// keeps holding gets the ordinary continuous rewind, and `hold` engaging clears this — but if
+    /// keeps holding gets the ordinary continuous rewind, and the hold engaging clears this — but if
     /// it turns out to have been a TAP, the release must throw the preview away instead of
     /// committing it: the preview sits on the seed, i.e. exactly where playback already is, and
     /// committing that is a full reopen+prime to no effect.
@@ -104,14 +95,8 @@ pub struct Scrub {
 impl Scrub {
     /// No scrub in progress and no tap commit pending — where the loop starts.
     pub const IDLE: Scrub = Scrub {
-        t: 0,
-        dir: 0,
-        hold: false,
-        hold_since: 0,
-        alive: 0,
+        key: HeldKey::IDLE,
         commit_at: 0,
-        release_at: 0,
-        rearmed: false,
         reveal: false,
         ns: -1,
         drag: false,
@@ -121,19 +106,13 @@ impl Scrub {
     ///
     /// A gesture can also end without [`disengage`](Self::disengage) — a pointer drag's commit, or
     /// a fresh key press arriving on top of one — and `exit_player` never touches this at all, so
-    /// `hold`/`hold_since` can outlive the gesture that set them and even the playback session.
-    /// Arming only `dir`/`alive` on top of that leaves the per-frame advance reading a `hold_since`
+    /// the hold's clocks can outlive the gesture that set them and even the playback session.
+    /// Arming only the direction on top of that leaves the per-frame advance reading a `since`
     /// from minutes ago: its acceleration ramp is measured from there, so the first frame of a
     /// brand-new press runs at `SCRUB_MAX` and one tap slews the preview tens of seconds.
     pub fn begin(&mut self, now: u32, fwd: bool) {
-        self.dir = if fwd { 1 } else { -1 };
-        self.hold = false;
-        self.hold_since = now;
-        self.t = now;
-        self.alive = now;
+        self.key.begin(now, fwd);
         self.commit_at = 0; // more input → cancel a pending tap commit
-        self.release_at = 0;
-        self.rearmed = false;
         self.reveal = false;
         self.drag = false; // a key gesture supersedes a pointer one
     }
@@ -141,10 +120,7 @@ impl Scrub {
     /// `commit_at` is deliberately NOT cleared — most call sites leave a pending tap commit alone,
     /// and the one that IS that commit clears the field itself right after calling this.
     pub fn disengage(&mut self) {
-        self.dir = 0;
-        self.hold = false;
-        self.release_at = 0;
-        self.rearmed = false;
+        self.key.disengage();
         self.reveal = false;
         self.drag = false;
     }
@@ -326,9 +302,7 @@ impl HudState {
 // separate commit is a full reopen+prime on the engine, and back-to-back in-flight seeks are what
 // race the demux (the stale-audio silence incident); short enough that a single tap still feels
 // immediate.
-pub use plx_appkit::player_hud::{
-    scrub_step_ns, SCRUB_LOST_MS, SCRUB_RELEASE_DEBOUNCE_MS, SCRUB_REPEAT_RESTART_MS, TAP_COMMIT_MS,
-};
+pub use plx_appkit::player_hud::{scrub_step_ns, TAP_COMMIT_MS};
 // HUD auto-hide: how long the HUD lingers after the input that raised it.
 pub const HUD_LINGER_MS: u32 = plx_appkit::player_hud::LINGER_MS; // plain transport/nav input
 pub const HUD_MENU_MS: u32 = 8000; // a modal menu is up (track/chapter nav) — longer read time
@@ -519,10 +493,14 @@ mod hud_visibility_tests {
     /// End every live gesture owner while preserving the independently pending tap debounce.
     #[test]
     fn disengaging_ends_every_part_of_the_gesture() {
-        let mut scrub = Scrub { t: 11, dir: 1, hold: true, hold_since: 12, alive: 13,
-            commit_at: 14, release_at: 16, rearmed: true, reveal: true, ns: 15, drag: true };
+        let mut key = HeldKey::IDLE;
+        key.press(11, true);
+        key.repeat(12);
+        key.release(13);
+        let mut scrub = Scrub { key, commit_at: 14, reveal: true, ns: 15, drag: true };
         scrub.disengage();
-        assert_eq!((scrub.dir, scrub.hold, scrub.reveal, scrub.drag), (0, false, false, false));
+        assert_eq!((scrub.key.dir, scrub.key.engaged, scrub.reveal, scrub.drag), (0, false, false, false));
+        assert!(!scrub.key.release_pending(), "…nor a release still waiting out the bounce window");
         assert_eq!(scrub.commit_at, 14, "disengage must preserve the released tap's commit");
     }
 

@@ -2120,10 +2120,12 @@ fn left_right_scrub_hops_on_down_and_asks_for_no_transport_request() {
     clear();
 }
 
-/// A HELD scrub commits at once on its key-up, through `ContentReq::PreviewSeek` — never
-/// `route::request_seek`'s own `PlayerReq::SeekTo`/`CommitSeek`, which is the whole point of
-/// routing a preview's seek through `player::preview::seek` instead (see `ContentReq::PreviewSeek`
-/// and `player/preview.rs`'s own module doc for the watch-state promise this keeps).
+/// A HELD scrub commits once its key-up has survived the key-bounce window, through
+/// `ContentReq::PreviewSeek` — never `route::request_seek`'s own `PlayerReq::SeekTo`/`CommitSeek`,
+/// which is the whole point of routing a preview's seek through `player::preview::seek` instead
+/// (see `ContentReq::PreviewSeek` and `player/preview.rs`'s own module doc for the watch-state
+/// promise this keeps). The key-up itself commits nothing; the page's tick (`preview_tick`, not
+/// exercised by this direct `trailer_act` harness) does, so the window is stepped by hand here.
 #[test]
 fn a_held_left_right_scrub_commits_a_preview_seek_on_key_up() {
     let sid = ServerId::UNSET;
@@ -2137,8 +2139,14 @@ fn a_held_left_right_scrub_commits_a_preview_seek_on_key_up() {
     let target = screen.trailer_ctl.preview_ns_for_test();
     let effects = trailer_act_edge(&mut screen, trailer::TrailerKey::Scrub(true), Edge::Up, 0);
 
-    assert_eq!(seek_reqs(&effects), vec![target], "the hold's own preview position, verbatim");
+    assert!(seek_reqs(&effects).is_empty(), "the key-up waits out the bounce window first");
     assert!(transport_reqs(&effects).is_empty(), "a seek is not a pause/resume");
+    assert!(screen.trailer_ctl.scrubbing(), "the preview stays up while it waits");
+    let commit = screen.trailer_ctl.step_scrub_hold(
+        plx_appkit::player_hud::SCRUB_RELEASE_DEBOUNCE_MS,
+        DurationFixture::DUR,
+    );
+    assert_eq!(commit, Some(target), "the hold's own preview position, verbatim");
     assert!(!screen.trailer_ctl.scrubbing(), "committing ends the gesture");
     clear();
 }
