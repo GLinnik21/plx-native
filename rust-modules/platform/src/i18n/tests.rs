@@ -42,7 +42,21 @@ fn locale_resolution_separates_language_from_formatting() {
         LocaleContext::resolve(Preference::Fr, None, None, None, None).format_locale(),
         "fr-FR"
     );
-    for tag in ["de-DE", "be-Latn", "fr-Cyrl", "garbage\r\nheader", "C"] {
+    for tag in ["pt-PT", "pt_PT.UTF-8", "pt", "pt-AO"] {
+        let cx = LocaleContext::resolve(Preference::System, Some(tag), None, None, None);
+        assert_eq!(cx.language(), Language::PtPt, "{tag}");
+        assert_eq!(cx.preference(), Preference::System);
+    }
+    assert_eq!(
+        LocaleContext::resolve(Preference::System, Some("pt-AO"), None, None, None).format_locale(),
+        "pt-AO"
+    );
+    let pt = LocaleContext::resolve(Preference::PtPt, None, None, None, None);
+    assert_eq!(pt.format_locale(), "pt-PT");
+    assert_eq!(pt.decimal(45, 1), "4,5");
+    assert_eq!(Preference::from_tag(Preference::PtPt.tag()), Preference::PtPt);
+    assert_eq!(serde_json::to_string(&Preference::PtPt).unwrap(), r#""pt-PT""#);
+    for tag in ["de-DE", "be-Latn", "fr-Cyrl", "pt-BR", "pt_BR.UTF-8", "garbage\r\nheader", "C"] {
         assert_eq!(
             LocaleContext::resolve(Preference::System, Some(tag), None, None, None).language(),
             Language::En
@@ -73,6 +87,12 @@ fn plural_rules_follow_the_message_language() {
     assert_eq!(fr.plural(1), PluralCategory::One);
     assert_eq!(fr.plural(2), PluralCategory::Other);
     assert_eq!(fr.plural(1_000_000), PluralCategory::Many);
+    // European Portuguese, not Brazilian: zero takes the plural form ("0 episódios").
+    let pt = LocaleContext::resolve(Preference::PtPt, None, None, None, None);
+    assert_eq!(pt.plural(0), PluralCategory::Other);
+    assert_eq!(pt.plural(1), PluralCategory::One);
+    assert_eq!(pt.plural(2), PluralCategory::Other);
+    assert_eq!(pt.plural(1_000_000), PluralCategory::Many);
 }
 
 #[test]
