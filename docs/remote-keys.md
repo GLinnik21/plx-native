@@ -276,8 +276,9 @@ predicate: `classify` names a `Key`, **or** `page_dir` answers, **or** the sym i
 build's configured upload trigger (`crate::labcfg::is_trigger_key`, `false` at compile time in every
 build anyone can install; `docs/lab-diagnostics.md`). The guarded half lives in
 `app/input.rs::note_global_press`, split
-out so `make check` can grade it — `begin_fresh_press` itself calls `hide_cursor`, a webOS-only SDL
-symbol, and a host test that reaches it fails at `ld` rather than at an assertion.
+out so `make check` can grade it — `begin_fresh_press` itself calls `hide_cursor`, which acts on
+whatever pointer calls the process's SDL exports, so a host test that reached it would be grading the
+host's SDL rather than the press.
 
 **The digit term reads `sym` and not `wcode`, diverging from `screens::profiles::digit_of`, on purpose.**
 48–57 in the scancode field are `]` `\` `#` `;` `'` `` ` `` `,` `.` `/` and CapsLock (the digits'

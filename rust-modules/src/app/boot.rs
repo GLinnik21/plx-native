@@ -379,6 +379,22 @@ mod seam_order_tests {
         let init = body.find(concat!("plx_net::net::", "global_init()")).expect("construct's libcurl init");
         assert!(user_agent < init, "set_user_agent must come before net::global_init");
     }
+
+    /// SDL reads `SDL_WEBOS_CURSOR_SLEEP_TIME` in `SDL_Init`, so the hint set after it does nothing.
+    #[test]
+    fn the_cursor_sleep_hint_is_set_before_sdl_init() {
+        // Split with `concat!` for the reason the test above gives.
+        let source = include_str!("boot.rs");
+        let body = source
+            .split_once(concat!("pub(crate) unsafe fn ", "construct("))
+            .expect("construct")
+            .1;
+        let hint = body
+            .find(concat!("webos3_cursor_", "sleep_hint()"))
+            .expect("construct must set the cursor sleep hint");
+        let init = body.find(concat!("SDL_Init(", "SDL_INIT_VIDEO)")).expect("construct's SDL_Init");
+        assert!(hint < init, "the cursor sleep hint must come before SDL_Init");
+    }
 }
 
 /// Hide the Magic Remote's on-screen pointer. A webOS-only concept: there is no such cursor to
@@ -405,20 +421,7 @@ mod seam_order_tests {
 pub(crate) unsafe fn hide_cursor() {
     #[cfg(not(feature = "hostsim"))]
     {
-        match cursor_door() {
-            CursorDoor::Lg(f) => {
-                f(0);
-            }
-            CursorDoor::Sdl { set, get, def, blank } => {
-                let cur = get() as usize;
-                if cur != blank {
-                    let keep = if cur != 0 { cur } else { def() as usize };
-                    SHOWN_CURSOR.store(keep, std::sync::atomic::Ordering::Relaxed);
-                }
-                set(blank as *mut std::ffi::c_void);
-            }
-            CursorDoor::None => {}
-        }
+        hide_through(cursor_door(), &SHOWN_CURSOR);
     }
 }
 
@@ -429,11 +432,40 @@ pub(crate) unsafe fn hide_cursor() {
 pub(crate) unsafe fn show_cursor_after_motion() {
     #[cfg(not(feature = "hostsim"))]
     {
-        if let CursorDoor::Sdl { set, .. } = cursor_door() {
-            let shown = SHOWN_CURSOR.load(std::sync::atomic::Ordering::Relaxed);
-            if shown != 0 {
-                set(shown as *mut std::ffi::c_void);
+        show_through(cursor_door(), &SHOWN_CURSOR);
+    }
+}
+
+/// [`hide_cursor`] on a given door, the cursor it replaced kept in `shown`. Split out so the
+/// bookkeeping is gradeable on the host with a door of fake functions.
+#[cfg(not(feature = "hostsim"))]
+unsafe fn hide_through(door: CursorDoor, shown: &std::sync::atomic::AtomicUsize) {
+    match door {
+        CursorDoor::Lg(f) => {
+            f(0);
+        }
+        CursorDoor::Sdl { set, get, def, blank } => {
+            let cur = get() as usize;
+            if cur != blank {
+                let keep = if cur != 0 { cur } else { def() as usize };
+                if keep == 0 {
+                    return; // nothing to put back, so the pointer would never return: leave it
+                }
+                shown.store(keep, std::sync::atomic::Ordering::Relaxed);
             }
+            set(blank as *mut std::ffi::c_void);
+        }
+        CursorDoor::None => {}
+    }
+}
+
+/// [`show_cursor_after_motion`] on a given door.
+#[cfg(not(feature = "hostsim"))]
+unsafe fn show_through(door: CursorDoor, shown: &std::sync::atomic::AtomicUsize) {
+    if let CursorDoor::Sdl { set, .. } = door {
+        let shown = shown.load(std::sync::atomic::Ordering::Relaxed);
+        if shown != 0 {
+            set(shown as *mut std::ffi::c_void);
         }
     }
 }
@@ -447,13 +479,26 @@ pub(crate) unsafe fn show_cursor_after_motion() {
 /// keeps its SDL's own behaviour. Must run before `SDL_Init`, which reads the hint.
 #[cfg(not(feature = "hostsim"))]
 unsafe fn webos3_cursor_sleep_hint() {
-    if plx_base::dynlib::Handle::self_handle().sym("SDL_webOSCursorVisibility").is_none() {
-        SDL_SetHint(c"SDL_WEBOS_CURSOR_SLEEP_TIME".as_ptr(), c"5000".as_ptr());
+    if let Some(ms) = cursor_sleep_hint(self_sym("SDL_webOSCursorVisibility").is_some()) {
+        SDL_SetHint(c"SDL_WEBOS_CURSOR_SLEEP_TIME".as_ptr(), ms.as_ptr());
         log("cursor: SDL_WEBOS_CURSOR_SLEEP_TIME=5000 (no SDL_webOS* in this SDL)");
     }
 }
 #[cfg(feature = "hostsim")]
 unsafe fn webos3_cursor_sleep_hint() {}
+
+/// The idle-hide time to ask SDL for, in milliseconds as a string; `None` where LG's extension is
+/// present and its SDL keeps its own behaviour.
+#[cfg(not(feature = "hostsim"))]
+fn cursor_sleep_hint(has_lg_extension: bool) -> Option<&'static std::ffi::CStr> {
+    (!has_lg_extension).then_some(c"5000")
+}
+
+/// A symbol of the running process (the system SDL), resolved at runtime; `None` if absent or NULL.
+#[cfg(not(feature = "hostsim"))]
+fn self_sym(name: &str) -> Option<*mut std::ffi::c_void> {
+    plx_base::dynlib::Handle::self_handle().sym(name).filter(|p| !p.is_null())
+}
 
 /// The cursor [`hide_cursor`] replaced with the transparent one, for the motion that restores it.
 #[cfg(not(feature = "hostsim"))]
@@ -486,19 +531,18 @@ enum CursorDoor {
 fn cursor_door() -> CursorDoor {
     static DOOR: std::sync::OnceLock<CursorDoor> = std::sync::OnceLock::new();
     *DOOR.get_or_init(|| {
-        let sym = |name: &str| plx_base::dynlib::Handle::self_handle().sym(name).filter(|p| !p.is_null());
         use std::ffi::c_void;
         use std::mem::transmute;
         // SAFETY: each symbol is transmuted to the signature SDL2's public API (or, for
         // `SDL_webOSCursorVisibility`, LG's fork) gives it, and is called on the main thread.
         let door = unsafe {
-            if let Some(f) = sym("SDL_webOSCursorVisibility") {
+            if let Some(f) = self_sym("SDL_webOSCursorVisibility") {
                 CursorDoor::Lg(transmute::<*mut c_void, CursorVisibilityFn>(f))
             } else if let (Some(set), Some(get), Some(def), Some(create)) = (
-                sym("SDL_SetCursor"),
-                sym("SDL_GetCursor"),
-                sym("SDL_GetDefaultCursor"),
-                sym("SDL_CreateCursor"),
+                self_sym("SDL_SetCursor"),
+                self_sym("SDL_GetCursor"),
+                self_sym("SDL_GetDefaultCursor"),
+                self_sym("SDL_CreateCursor"),
             ) {
                 // 8x1 with every data and mask bit clear: SDL's transparent pixel throughout.
                 let bits = [0u8; 1];
@@ -526,6 +570,116 @@ fn cursor_door() -> CursorDoor {
         door
     })
 }
+#[cfg(all(test, not(feature = "hostsim")))]
+mod cursor_door_tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::ffi::c_void;
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+
+    const BLANK: usize = 0x99;
+
+    thread_local! {
+        static CURRENT: Cell<usize> = const { Cell::new(0) };
+        static DEFAULT: Cell<usize> = const { Cell::new(0) };
+        static SET: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+        static LG: RefCell<Vec<c_int>> = const { RefCell::new(Vec::new()) };
+    }
+
+    unsafe extern "C" fn set(c: *mut c_void) {
+        SET.with(|s| s.borrow_mut().push(c as usize));
+        CURRENT.with(|cur| cur.set(c as usize));
+    }
+    unsafe extern "C" fn get() -> *mut c_void {
+        CURRENT.with(Cell::get) as *mut c_void
+    }
+    unsafe extern "C" fn def() -> *mut c_void {
+        DEFAULT.with(Cell::get) as *mut c_void
+    }
+    unsafe extern "C" fn lg(visible: c_int) -> c_int {
+        LG.with(|l| l.borrow_mut().push(visible));
+        0
+    }
+
+    /// A fresh door with SDL's current cursor and default cursor as given (0 = NULL).
+    fn sdl(current: usize, default: usize) -> CursorDoor {
+        CURRENT.with(|c| c.set(current));
+        DEFAULT.with(|d| d.set(default));
+        SET.with(|s| s.borrow_mut().clear());
+        CursorDoor::Sdl { set, get, def, blank: BLANK }
+    }
+    fn installed() -> Vec<usize> {
+        SET.with(|s| s.borrow().clone())
+    }
+
+    #[test]
+    fn hiding_swaps_in_the_blank_cursor_and_motion_puts_the_previous_one_back() {
+        let shown = AtomicUsize::new(0);
+        let door = sdl(0x10, 0x20);
+        unsafe {
+            hide_through(door, &shown);
+            assert_eq!(installed(), [BLANK]);
+            show_through(door, &shown);
+        }
+        assert_eq!(installed(), [BLANK, 0x10]);
+    }
+
+    #[test]
+    fn with_no_current_cursor_the_default_one_is_what_comes_back() {
+        let shown = AtomicUsize::new(0);
+        let door = sdl(0, 0x20);
+        unsafe {
+            hide_through(door, &shown);
+            show_through(door, &shown);
+        }
+        assert_eq!(installed(), [BLANK, 0x20]);
+    }
+
+    #[test]
+    fn hiding_again_while_hidden_keeps_the_cursor_to_restore() {
+        let shown = AtomicUsize::new(0);
+        let door = sdl(0x10, 0x20);
+        unsafe {
+            hide_through(door, &shown);
+            hide_through(door, &shown); // `get` now answers the blank cursor
+            show_through(door, &shown);
+        }
+        assert_eq!(installed(), [BLANK, BLANK, 0x10]);
+    }
+
+    /// With no current and no default cursor there is nothing to put back, so the pointer must not
+    /// be hidden: it would never come back.
+    #[test]
+    fn with_nothing_to_restore_the_cursor_is_left_alone() {
+        let shown = AtomicUsize::new(0);
+        let door = sdl(0, 0);
+        unsafe {
+            hide_through(door, &shown);
+            show_through(door, &shown);
+        }
+        assert_eq!(installed(), Vec::<usize>::new());
+        assert_eq!(shown.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn lgs_extension_is_asked_to_hide_and_motion_leaves_it_to_the_compositor() {
+        let shown = AtomicUsize::new(0);
+        LG.with(|l| l.borrow_mut().clear());
+        unsafe {
+            hide_through(CursorDoor::Lg(lg), &shown);
+            show_through(CursorDoor::Lg(lg), &shown);
+        }
+        assert_eq!(LG.with(|l| l.borrow().clone()), [0]);
+    }
+
+    #[test]
+    fn the_idle_hide_hint_is_asked_for_only_where_lgs_extension_is_absent() {
+        assert_eq!(cursor_sleep_hint(false), Some(c"5000"));
+        assert_eq!(cursor_sleep_hint(true), None);
+    }
+}
+
+
 /// Advance the once-per-second LOOP-RATE window: bump `iters_ct` and, when a full second has
 /// elapsed, recompute `loop_shown`, reset the window, and return `true` so the caller logs the
 /// heartbeat with its own route/overlay tag. Shared by the player and home/detail draw paths.
