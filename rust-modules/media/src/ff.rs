@@ -2120,6 +2120,10 @@ struct AvioState {
     /// a segment body is already complete before feed.
     bounce: Vec<u8>,
     bounce_pos: usize,
+    /// `seek_cb` answered a seek to (or past) the known size without fetching, so the transport's
+    /// stream is somewhere else and `read_cb` must answer the clean end itself. Any other read at
+    /// the end still asks the transport, which is how a failure there stays an error.
+    parked_at_end: bool,
 }
 
 // TEST ONLY: a deterministic stand-in for the two `Instant::elapsed()` calls that measure
@@ -2455,10 +2459,9 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 None => &mut unarmed,
             };
             let r = match &mut s.src {
-                // At or past a known end the body has nothing left: the clean end, without asking
-                // a transport whose stream may sit elsewhere — `seek_cb` takes that position for a
-                // seek to the end without fetching anything.
-                _ if s.size >= 0 && s.off >= s.size => 0,
+                // Parked at the end by `seek_cb`: the clean end, without asking a transport whose
+                // stream sits elsewhere.
+                _ if s.parked_at_end => 0,
                 Src::Socket { hs, .. } => plx_net::stream::http_read_until(
                     *hs,
                     dst as *mut c_uchar,
@@ -2623,14 +2626,16 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         // a server can give `Range: bytes=<size>-` is 416. Reopening for it closed the live
         // stream and failed, while libavformat's buffer still held the chapter samples: the first
         // video sample just past them read a dead transport ("partial file"), and the player sat
-        // at t=0. Nothing here is fetched, so nothing is closed; `read_cb` answers EOF from
-        // `off`, and the next seek into the file reopens as it always has
+        // at t=0. Nothing here is fetched, so nothing is closed; `read_cb` answers EOF while
+        // `parked_at_end`, and the next seek into the file reopens as it always has
         // (`ff_eof_seek_tests.rs`). An unsized source has no end to compare with and still asks.
         if s.size >= 0 && target >= s.size {
             s.off = target;
             s.io_failed = false;
+            s.parked_at_end = true;
             return target;
         }
+        s.parked_at_end = false;
         let aq = s.aq;
         let mut hopped_to_tls = None;
         let ok = match &mut s.src {
@@ -4170,6 +4175,7 @@ unsafe fn hls_input(
             acquisition: Some(acquisition),
             bounce: Vec::new(),
             bounce_pos: 0,
+            parked_at_end: false,
         }),
         avio: std::ptr::null_mut(),
         fmt: std::ptr::null_mut(),
@@ -8415,6 +8421,7 @@ pub fn demux(
                     acquisition: None,
                     bounce: Vec::new(),
                     bounce_pos: 0,
+                    parked_at_end: false,
                 });
                 let buf = av_malloc(65536) as *mut u8;
                 if buf.is_null() {

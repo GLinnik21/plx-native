@@ -45,6 +45,7 @@ fn a_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
+            parked_at_end: false,
         };
         let op = &mut st as *mut AvioState as *mut c_void;
 
@@ -100,6 +101,7 @@ fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
             acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
+            parked_at_end: false,
         };
         let op = &mut st as *mut AvioState as *mut c_void;
         let mut dst = [0u8; 8];
@@ -151,6 +153,7 @@ fn an_expired_candidate_deadline_stops_before_touching_its_transport() {
         acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
+        parked_at_end: false,
     };
     let mut dst = [0u8; 8];
     let result = read_cb(
@@ -236,6 +239,7 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
         acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
+        parked_at_end: false,
     };
     let started = std::time::Instant::now();
     let mut dst = [0u8; 8];
@@ -435,6 +439,7 @@ fn io_failed_after_drain_surfaces_once_bounce_is_empty() {
         acquisition: None,
         bounce: b"ABCD".to_vec(),
         bounce_pos: 0,
+        parked_at_end: false,
     };
     let op = &mut st as *mut AvioState as *mut c_void;
     let mut dst = [0u8; 8];
@@ -477,6 +482,7 @@ fn take_curl_leaves_idle_and_seek_on_idle_does_not_open() {
         acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
+        parked_at_end: false,
     };
     let op = &mut st as *mut AvioState as *mut c_void;
     assert_eq!(
@@ -536,6 +542,7 @@ fn a_curl_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
+            parked_at_end: false,
         };
         let op = &mut st as *mut AvioState as *mut c_void;
 
@@ -584,6 +591,7 @@ fn an_aborted_curl_read_and_seek_cannot_ping_pong_into_new_connections() {
             acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
+            parked_at_end: false,
         };
         let op = &mut st as *mut AvioState as *mut c_void;
         let mut dst = [0u8; 8];
@@ -651,6 +659,7 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
             acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
+            parked_at_end: false,
         };
         let op = &mut st as *mut AvioState as *mut c_void;
         let mut dst = [0u8; 8];
@@ -735,6 +744,7 @@ fn a_frame_read_failure_names_the_curl_rc_and_publishes_it_for_the_report() {
                 acquisition: None,
                 bounce: Vec::new(),
                 bounce_pos: 0,
+                parked_at_end: false,
             }
         }
         let mut aq = crate::aq::aq_new(1 << 20);
@@ -801,6 +811,7 @@ fn a_cut_transfer_is_reopened_at_its_offset_before_the_read_fails() {
             acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
+            parked_at_end: false,
         };
         let op = &mut st as *mut AvioState as *mut c_void;
         let mut dst = [0u8; 8];
@@ -877,6 +888,7 @@ fn read_all_through_read_cb(port: u16) -> (Vec<u8>, c_int, bool, Option<c_int>) 
         acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
+        parked_at_end: false,
     };
     let op = &mut st as *mut AvioState as *mut c_void;
     let mut got = Vec::new();
@@ -964,6 +976,7 @@ fn a_cut_hls_segment_read_is_not_reopened_by_the_read_callback() {
         acquisition: Some(runtime),
         bounce: Vec::new(),
         bounce_pos: 0,
+        parked_at_end: false,
     };
     let op = &mut st as *mut AvioState as *mut c_void;
     let mut dst = [0u8; 32768];

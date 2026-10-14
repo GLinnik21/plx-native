@@ -217,6 +217,7 @@ fn avio_over(src: Src, size: i64, aq: *mut AuQueue) -> AvioState {
         acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
+        parked_at_end: false,
     }
 }
 
