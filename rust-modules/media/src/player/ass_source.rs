@@ -1,5 +1,6 @@
-//! Embedded ASS source ownership. The demuxer preserves headers, fonts and timed packets;
-//! the renderer receives immutable snapshots, never a pointer into FFmpeg's storage.
+//! Embedded ASS source ownership. The demuxer hands over headers, fonts and timed packets;
+//! headers and packets lose their trailing NUL terminators on the way in, and the renderer
+//! receives immutable snapshots, never a pointer into FFmpeg's storage.
 //! Selection does not discard read-ahead. A seek replaces each source identity so a completed
 //! render from the old position cannot land in the new playback epoch.
 use super::ass::{self, Content, Event, Font, Source};
@@ -366,6 +367,82 @@ mod tests {
             assert!(header.is_empty(), "validation must receive the empty header");
         }
         assert!(s.selected(2).is_none());
+    }
+
+    #[test]
+    fn terminators_are_trimmed_from_headers_and_packets_but_a_zero_inside_is_not() {
+        let _guard = plx_base::testlock::serial();
+        super::super::SHARED.playpos_ns.store(0, std::sync::atomic::Ordering::Relaxed);
+        let generation = begin(
+            "fixture",
+            vec![
+                (0, b"[Script Info]\n\0\0".to_vec()),
+                (1, b"[Script Info]\0\n".to_vec()),
+                (2, vec![]),
+                (3, vec![0; 4]),
+            ],
+            vec![],
+        );
+        let caption = b"0,0,Default,,0,0,0,,hello";
+        let second = b"1,0,Default,,0,0,0,,again";
+        let terminated = [caption.as_slice(), b"\0\0"].concat();
+        let hidden_zero = b"2,0,Default,,0,0,0,,he\0llo";
+        for payload in [
+            terminated.as_slice(),
+            b"".as_slice(),
+            b"\0\0\0".as_slice(),
+            hidden_zero.as_slice(),
+            second.as_slice(),
+        ] {
+            push(generation, 0, 1_000_000_000, 3_000_000_000, payload);
+        }
+
+        let track = |n| selected(n).unwrap();
+        let source = track(0);
+        let Content::Embedded { header, events, .. } = &source.content else {
+            panic!()
+        };
+        assert_eq!(header.as_ref(), b"[Script Info]\n", "trailing zeros leave the header");
+        let payloads: Vec<&[u8]> = events.iter().map(|e| &*e.payload).collect();
+        assert_eq!(
+            payloads,
+            [caption.as_slice(), second.as_slice()],
+            "a terminated packet is kept without its zeros; empty, all-zero and \
+             inner-zero packets are dropped without costing the valid ones"
+        );
+        assert_eq!(ass::validate(&source), Ok(()));
+
+        let source = track(1);
+        let Content::Embedded { header, .. } = &source.content else {
+            panic!()
+        };
+        assert_eq!(header.as_ref(), b"[Script Info]\0\n", "a zero inside is not trimmed");
+        assert_eq!(ass::validate(&source), Err(ass::Fault::InvalidTrack));
+        for empty in [2, 3] {
+            let source = track(empty);
+            let Content::Embedded { header, .. } = &source.content else {
+                panic!()
+            };
+            assert!(header.is_empty());
+            assert_eq!(ass::validate(&source), Err(ass::Fault::InvalidTrack));
+        }
+
+        // `push` never lets an inner zero in, but a track built any other way still fails it.
+        let forged = Source {
+            id: ass::next_source_id(),
+            revision: 0,
+            content: Content::Embedded {
+                header: Arc::from(&b"[Script Info]\n"[..]),
+                events: Arc::from([Event {
+                    start_ms: 0,
+                    duration_ms: 1000,
+                    payload: hidden_zero.as_slice().into(),
+                }]),
+                fonts: Arc::from([]),
+            },
+        };
+        assert_eq!(ass::validate(&forged), Err(ass::Fault::InvalidEvents));
+        reset();
     }
 
     #[test]

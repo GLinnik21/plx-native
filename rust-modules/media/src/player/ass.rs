@@ -379,7 +379,7 @@ fn worker() {
     }
 }
 
-fn validate(source: &Source) -> Result<(), Fault> {
+pub(super) fn validate(source: &Source) -> Result<(), Fault> {
     match &source.content {
         Content::Script { bytes, .. } => {
             if bytes.is_empty() || bytes.len() > MAX_SCRIPT_BYTES || bytes.contains(&0) {

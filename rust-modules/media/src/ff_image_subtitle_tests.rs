@@ -1,10 +1,14 @@
-//! Subtitles through the FFmpeg the app SHIPS — the component list is the seam under test.
+//! Subtitles through the FFmpeg the app SHIPS — the component list and the ASS ingestion path are
+//! the seams under test.
 //!
-//! Every other `ff` test stays off `av_*`, because the host suite has no FFmpeg to call. This one
-//! cannot: what it grades is a property of `ci/build-ffmpeg.sh`'s configure line, which no pure
-//! function can see. So it loads the host build of that same FFmpeg (`HOST=1 ci/build-ffmpeg.sh`,
-//! staged into `pkg/` by `make check-ffmpeg`) and is `#[ignore]`d everywhere else — an honest
-//! "not run" in `make check`, never a pass that executed nothing.
+//! The host suite has no FFmpeg to call, so most `ff` tests stay off `av_*`. These cannot: what
+//! they grade is a property of `ci/build-ffmpeg.sh`'s configure line (zlib-compressed PGS tracks)
+//! or of bytes only the real demuxer produces (an ASS header and packets that arrive NUL-terminated,
+//! through both the main subtitle ingestion and the HTTP side reader). So they load the host build of
+//! that same FFmpeg (`HOST=1 ci/build-ffmpeg.sh`, staged into `pkg/` by `make check-ffmpeg`), and the
+//! ASS ones also need the staged libass; all are `#[ignore]`d everywhere else — an honest "not run" in
+//! `make check`, never a pass that executed nothing. `bind_host_ffmpeg` is shared with the `ff` tests
+//! that run a real demux (`ff_subside`, `ff_late_audio_tests`).
 
 use super::subs::SubCue;
 use super::*;
