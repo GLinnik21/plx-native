@@ -339,6 +339,138 @@ fn a_curl_seek_to_the_end_answers_the_size_without_a_request() {
     crate::aq::aq_destroy(&mut *aq);
 }
 
+/// The non-regression half of the invariant above: a seek that lands INSIDE the file, however
+/// close to the end, is still a request. Each one closes the stream, reopens it with
+/// `Range: bytes=<target>-` (one request per seek, answered `206`), and the bytes read afterwards
+/// are the file's bytes from `target`. Only `target >= size` is parked, so `size - 1` is the last
+/// byte that is fetched, and a seek into the file after a parked end reopens as well.
+fn a_seek_inside_the_file_still_reopens_with_a_range(
+    server: &StrictServer,
+    st: &mut AvioState,
+    body: &[u8],
+) {
+    let op = st as *mut AvioState as *mut c_void;
+    let n = body.len() as i64;
+    let mut dst = [0u8; 16];
+    assert_eq!(
+        read_cb(op, dst.as_mut_ptr(), 4),
+        4,
+        "fixture: the open reads"
+    );
+
+    // (offset, whence, the byte it lands on, what it is)
+    let inside = [
+        (20, SEEK_SET, 20, "SEEK_SET into the middle"),
+        (-8, SEEK_END, n - 8, "SEEK_END -8"),
+        (n - 1, SEEK_SET, n - 1, "SEEK_SET to the last byte"),
+        (30, SEEK_SET, 30, "SEEK_SET back into the middle"),
+    ];
+    for (offset, whence, target, what) in inside {
+        let before = server.served().len();
+        assert_eq!(
+            seek_cb(op, offset, whence),
+            target,
+            "{what} answers the byte it landed on"
+        );
+        let served = server.served();
+        assert_eq!(
+            served.len(),
+            before + 1,
+            "{what} must reopen the connection, exactly one request: {served:?}"
+        );
+        assert_eq!(
+            served.last(),
+            Some(&(Some(target as u64), 206)),
+            "{what} must ask for `Range: bytes={target}-` and be served it: {served:?}"
+        );
+        let got = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
+        assert!(got > 0, "{what}: the reopened source reads, got {got}");
+        assert_eq!(
+            &dst[..got as usize],
+            &body[target as usize..target as usize + got as usize],
+            "{what}: bytes from offset {target}"
+        );
+        assert!(!st.io_failed, "{what} is not an I/O failure");
+    }
+
+    // Park at the end (no request), then seek back into the file: it reopens with a Range.
+    let before = server.served().len();
+    assert_eq!(seek_cb(op, n, SEEK_SET), n);
+    assert_eq!(server.served().len(), before, "the seek to the end is free");
+    assert_eq!(
+        read_cb(op, dst.as_mut_ptr(), dst.len() as c_int),
+        AVERROR_EOF
+    );
+    assert_eq!(seek_cb(op, 12, SEEK_SET), 12);
+    assert_eq!(
+        server.served().last(),
+        Some(&(Some(12), 206)),
+        "a seek into the file after a parked end reopens with a Range: {:?}",
+        server.served()
+    );
+    let got = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
+    assert!(
+        got > 0,
+        "the source reads again after the parked end, got {got}"
+    );
+    assert_eq!(&dst[..got as usize], &body[12..12 + got as usize]);
+    assert!(
+        server.refused().is_empty(),
+        "nothing may be refused: {:?}",
+        server.served()
+    );
+}
+
+/// **Mid-file seeks are unchanged on the socket arm** (the webOS 4+ behaviour the EOF guard must
+/// not touch): each one reopens with a Range request.
+#[test]
+fn a_socket_seek_inside_the_file_still_reopens_with_a_range() {
+    let body = pattern();
+    let server = StrictServer::start(Virtual::flat(body.clone()));
+    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut hs = plx_net::stream::http_stream_boxed();
+    let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
+    let (src, size) =
+        open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq)
+            .unwrap_or_else(|e| panic!("fixture: the plain open failed: {e:?}"));
+    assert_eq!(
+        size,
+        body.len() as i64,
+        "fixture: the size is the Content-Length"
+    );
+    let mut st = avio_over(src, size, &mut *aq);
+    a_seek_inside_the_file_still_reopens_with_a_range(&server, &mut st, &body);
+    drop(st);
+    plx_net::stream::http_close(&mut *hs);
+    crate::aq::aq_destroy(&mut *aq);
+}
+
+/// The same on the https arm's source.
+#[test]
+fn a_curl_seek_inside_the_file_still_reopens_with_a_range() {
+    let _g = plx_base::testlock::serial();
+    if !(plx_net::net::global_init() && crate::curlio::available()) {
+        eprintln!("SKIP: libcurl multi is not available on this host");
+        return;
+    }
+    let body = pattern();
+    let server = StrictServer::start(Virtual::flat(body.clone()));
+    let mut aq = crate::aq::aq_new(1 << 20);
+    let url = format!("http://127.0.0.1:{}/library/parts/1/file.mp4", server.port);
+    let cs = crate::curlio::CurlSource::open(&url, 0)
+        .unwrap_or_else(|e| panic!("fixture: the curl open failed: {e:?}"));
+    let size = cs.size();
+    assert_eq!(
+        size,
+        body.len() as i64,
+        "fixture: the size is the Content-Length"
+    );
+    let mut st = avio_over(Src::Curl(cs), size, &mut *aq);
+    a_seek_inside_the_file_still_reopens_with_a_range(&server, &mut st, &body);
+    drop(st);
+    crate::aq::aq_destroy(&mut *aq);
+}
+
 /// An unsized source has no end to compare with: a seek there still goes to the transport, as it
 /// always did. Pins the guard to a KNOWN size.
 #[test]
