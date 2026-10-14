@@ -405,6 +405,38 @@ pub(crate) unsafe fn hide_cursor() {
         }
     }
 }
+/// The window to ask for when it is not the 1920x1080 canvas: whatever
+/// `/tmp/plxnative-drawable=<W>x<H>` says when that trigger is armed (debug builds), else
+/// **1280x720 on webOS 1-3**; `None` (the canvas, 1:1) on webOS 4 and later.
+///
+/// Why 3.x draws smaller. On a 2016 set (55UH650V, webOS 3.4.3, Mali-T760) Home is fill-rate
+/// bound at 1080p: frame prep is about 1.5 ms while half of all frames ran over 16.7 ms, poster
+/// uploads barely moved it, and turning the tab glass off (`flattabs`) did not move it at all. At
+/// 1280x720 (2.25x fewer pixels) webOS granted the surface, the compositor filled the panel, and
+/// Home went from 9% to 65% of seconds at 58-61 fps, frames over 33 ms from 7.1% to 0.5%, p95
+/// 34 -> 19 ms. `surface::probe` reads back what was granted and `scale`/`viewport` fit the
+/// 1920x1080 canvas into it; text is softer below 1:1, which that set's owner judged fine. The
+/// trigger is bounded to 640x360..=1920x1080 so a typo cannot ask for nonsense.
+#[cfg(not(feature = "hostsim"))]
+fn requested_drawable() -> Option<(c_int, c_int)> {
+    if let Some(v) = plx_base::devtrig::read("drawable") {
+        let parsed = v.trim().split_once('x').and_then(|(w, h)| {
+            Some((w.trim().parse::<c_int>().ok()?, h.trim().parse::<c_int>().ok()?))
+        });
+        let ok = parsed.filter(|&(w, h)| (640..=SCR_W).contains(&w) && (360..=SCR_H).contains(&h));
+        log(&format!("surface: drawable trigger {:?} -> {:?}", v.trim(), ok));
+        if ok.is_some() {
+            return ok;
+        }
+    }
+    let major = plx_platform::tv::device::info().major;
+    let small = (1..=3).contains(&major);
+    if small {
+        log(&format!("surface: webOS {major} draws 1280x720 (fill-rate bound below webOS 4)"));
+    }
+    small.then_some((1280, 720))
+}
+
 /// Advance the once-per-second LOOP-RATE window: bump `iters_ct` and, when a full second has
 /// elapsed, recompute `loop_shown`, reset the window, and return `true` so the caller logs the
 /// heartbeat with its own route/overlay tag. Shared by the player and home/detail draw paths.
@@ -754,7 +786,10 @@ pub(crate) unsafe fn construct(
         (0x2FFF_0000u32 as c_int, 0x2FFF_0000u32 as c_int, w, h)
     };
     #[cfg(not(feature = "hostsim"))]
-    let (wx, wy, ww_req, wh_req) = (0, 0, SCR_W, SCR_H);
+    let (wx, wy, ww_req, wh_req) = {
+        let (w, h) = requested_drawable().unwrap_or((SCR_W, SCR_H));
+        (0, 0, w, h)
+    };
     // The title is furniture a television never draws (no window manager, no decoration) and
     // the first thing a desktop shows, so the two builds spell it differently: the device keeps
     // the process-shaped name every log, `pidof` recipe and skill already uses.
