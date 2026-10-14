@@ -443,7 +443,9 @@ human at the panel, check whether the platform already publishes it.
 - **Cross-firmware reply behavior.** The libplayerAPIs mechanism exists in the symbol/decompile
   census from 3.9.2 through 11.2.0, but the key, ACL and reply semantics have not been exercised
   across that range. Older or refusing firmware remains Unknown rather than being inferred from a
-  version or from unrelated `updateConfig` symbols.
+  version or from unrelated `updateConfig` symbols. The one version rule is `platform_gate`: a
+  configd `true` on webOS 1..=3 is reported Unsupported, because that answer was measured wrong
+  on a C7 (webOS 3.9.3).
 - **Profile 9's gate/payload disagreement is closed in code.** `presentation` now takes the output
   codec and an AVC stream cannot produce `Declare`; the regression covers the SDR-compatible
   fallback and an unusable-base non-HEVC refusal. No Profile 9 asset has been measured on device.
