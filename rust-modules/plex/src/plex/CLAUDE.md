@@ -523,7 +523,8 @@ a dead source is **absent** from Home and states itself in its own library secti
   (`TrackCommit`'s `memo`), `route::commit_audio_pick` / `commit_subtitle_pick` call `route::remember`
   when the route accepted the pick, and nothing else writes it (a movie, an unseated boot, an
   automatic choice and a harness setup commit remember nothing; the harness's
-  `plxnative-trackmemory=clear` removes entries through the same door). A remembered Off beats the
+  `plxnative-trackmemory=clear` removes entries through the same door, and `=fill[:N]` writes N worst-case
+  shows through it to read the DB8 write cost at the budget). A remembered Off beats the
   account's rule and PMS's embedded selection, but not a server-selected sidecar the app can draw
   (`plan.rs` `pick_subtitle` withholds the memory from the ladder while the item has one).
   The subtitle half is one of THREE states (`SubtitleMemo`: `Track`, `Off`, `ForcedOnly { lang }`);

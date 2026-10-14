@@ -31,28 +31,10 @@ pub(super) fn typical(n: u32) -> TrackMemoryEntry {
     TrackMemoryEntry::new(MACHINE, &n.to_string(), Some(audio_pick()), Some(subtitle_pick()))
 }
 
-/// An entry with EVERY string at its bound, every boolean at its longest spelling and the widest
-/// digits: the largest an entry can be, built through the same constructor as any other.
+/// An entry with EVERY string at its bound: the largest an entry can be (`TrackMemoryEntry::worst_case`).
 pub(super) fn worst(n: u32) -> TrackMemoryEntry {
-    let audio = AudioMemo {
-        lang: "l".repeat(LANG_MAX),
-        tag: "t".repeat(TAG_MAX),
-        commentary: false,
-        ad: false,
-        codec: "c".repeat(CODEC_MAX),
-        channels: CHANNELS_MAX,
-        title: "t".repeat(TITLE_MAX),
-    };
-    let subtitle = SubtitleMemo::Track(SubtitleTrackMemo {
-        lang: "l".repeat(LANG_MAX),
-        tag: "t".repeat(TAG_MAX),
-        forced: false,
-        sdh: false,
-        kind: "k".repeat(KIND_MAX),
-        external: false,
-        title: "t".repeat(TITLE_MAX),
-    });
-    let entry = TrackMemoryEntry::new(&"m".repeat(MACHINE_ID_MAX), &show(n), Some(audio), Some(subtitle));
+    let entry = TrackMemoryEntry::worst_case(n);
+    assert_eq!(entry.show_rk, show(n), "the fixture's show key is the sixteen-digit one");
     assert_eq!(entry.show_rk.len(), SHOW_RK_MAX, "the fixture's show key is at its bound");
     entry
 }

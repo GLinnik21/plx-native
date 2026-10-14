@@ -55,7 +55,9 @@ pub use profile_prefs::{
     effective, own_prefs, persist_profile_pref, put_own, stored_effective, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite,
 };
-pub use track_memory::{AudioMemo, SubtitleMemo, SubtitleTrackMemo, TrackMemoryEntry, TrackMemoryPref};
+pub use track_memory::{
+    AudioMemo, SubtitleMemo, SubtitleTrackMemo, TrackMemoryEntry, TrackMemoryPref, CAP as TRACK_MEMORY_CAP,
+};
 
 /// Every preference key but `language`, flattened into [`Session`] and into
 /// the canonical preference record. Defaults are each type's own `Default`, which A0 pins as equal

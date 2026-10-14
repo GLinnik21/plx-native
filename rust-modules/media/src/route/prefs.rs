@@ -595,8 +595,8 @@ impl MemoryTenant for SubtitleOffsetEntry {
 /// stamp (the mirror's, and the file's own `account_key`) and [`recall`] reads under it. `track_memory`
 /// is read through [`recall`] and [`recall_all`] and written here, by `commit_audio_pick` and
 /// `commit_subtitle_pick` (the track menu's pick) and by nothing else but the harness's
-/// `plxnative-trackmemory=clear` (`dev::scenarios::arm_track_memory`), which removes entries through
-/// this same door.
+/// `plxnative-trackmemory=clear` and `=fill` (`dev::scenarios::arm_track_memory`), which remove and
+/// write entries through this same door.
 pub fn remember<E: MemoryTenant>(
     user: &str,
     key: E::Key,

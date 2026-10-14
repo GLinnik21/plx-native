@@ -423,9 +423,14 @@ pub(crate) fn arm_audio_enhancements() {
 pub(crate) fn arm_track_memory(user: &str) {
     use plx_plex::plex::session::prefs::{MemoryEntry, TrackMemoryEntry};
     let Some(v) = plx_base::devtrig::read("trackmemory") else { return };
-    if v.trim() != "clear" {
+    let v = v.trim();
+    if let Some(count) = v.strip_prefix("fill") {
+        fill_track_memory(user, count.strip_prefix(':').unwrap_or(""));
+        return;
+    }
+    if v != "clear" {
         #[cfg(feature = "devtriggers")]
-        plx_base::eventlog::log(&format!("trackmemory: unrecognised value {:?} — ignored", v.trim()));
+        plx_base::eventlog::log(&format!("trackmemory: unrecognised value {v:?} — ignored"));
         return;
     }
     let cleared = plx_media::route::recall_all::<TrackMemoryEntry>(user)
@@ -436,6 +441,39 @@ pub(crate) fn arm_track_memory(user: &str) {
     plx_base::eventlog::log(&format!("trackmemory: cleared {cleared} shows by /tmp/plxnative-trackmemory"));
     #[cfg(not(feature = "devtriggers"))]
     let _ = cleared;
+}
+
+/// `/tmp/plxnative-trackmemory=fill[:N]` — give the seated profile `N` (default and ceiling: the
+/// per-profile cap, 64) remembered shows with every string at its bound, harness-only.
+///
+/// This is what makes the DB8 write cost of a document carrying `track_memory` at its budget
+/// readable from the log (`session: db8 document bytes=… track_memory=…`, then `session: canonical
+/// write took … ms`): one profile's 64 worst-case entries are the household budget's size
+/// (`one_profile_keeps_64_worst_case_entries`), which no sequence of menu picks reaches on a mock with
+/// a handful of shows. The entries are keyed on a machine id no server has, so they never match a
+/// playback, and are written through the same door as a menu pick (`route::remember`), so a seatless
+/// boot refuses them exactly as it refuses a pick. `clear` removes them.
+fn fill_track_memory(user: &str, count: &str) {
+    use plx_plex::plex::session::prefs::{MemoryEntry, TrackMemoryEntry};
+    // The per-profile cap is the ceiling: a larger count would only evict its own first entries.
+    let cap = plx_plex::plex::session::prefs::TRACK_MEMORY_CAP;
+    let wanted = if count.is_empty() { Some(cap) } else { count.parse::<usize>().ok() };
+    let Some(wanted) = wanted.filter(|n| (1..=cap).contains(n)) else {
+        #[cfg(feature = "devtriggers")]
+        plx_base::eventlog::log(&format!("trackmemory: fill count {count:?} is not 1..={cap} — ignored"));
+        return;
+    };
+    let written = (0..wanted as u32)
+        .map(TrackMemoryEntry::worst_case)
+        .filter(|entry| {
+            let value = entry.clone();
+            plx_media::route::remember::<TrackMemoryEntry>(user, entry.key(), move |_| Some(value.clone()))
+        })
+        .count();
+    #[cfg(feature = "devtriggers")]
+    plx_base::eventlog::log(&format!("trackmemory: filled {written} of {wanted} shows by /tmp/plxnative-trackmemory"));
+    #[cfg(not(feature = "devtriggers"))]
+    let _ = written;
 }
 
 /// `/tmp/plxnative-nobudget` — the frame budget's A/B CONTROL LEG (spec §8.1, phase 11).
@@ -899,6 +937,49 @@ mod track_memory_arm_tests {
         });
         plx_base::storage_worker::drain_for_test();
         assert_eq!(filed(), 0, "and the file forgot them through the same queued update");
+        unseed_memory_for_test::<TrackMemoryEntry>();
+    }
+
+    /// **`plxnative-trackmemory=fill[:N]` writes `N` worst-case shows through the door, and `clear`
+    /// takes them back.** The count defaults to, and is bounded by, the per-profile cap; a count
+    /// outside `1..=CAP` or one that is not a number writes nothing (a guess would put an unplanned
+    /// document size on the set); a profile that is not the seated one gets none.
+    #[test]
+    fn trackmemory_fill_writes_worst_case_shows_through_the_door_and_clear_takes_them_back() {
+        let _serial = plx_base::testlock::serial();
+        assert!(plx_base::devtrig::ENABLED, "this test arms a dev trigger, which a build without devtriggers cannot");
+        let session = TempSession::new("arm-track-memory-fill");
+        session::save(&Session { client_id: "cid-1".into(), account_token: "acct".into(), ..Default::default() });
+        session.seated("", "acct");
+        seed_memory_for_test::<TrackMemoryEntry>(&session::peek());
+        let cap = plx_plex::plex::session::prefs::TRACK_MEMORY_CAP;
+
+        plx_base::devtrig::with_private_triggers(|| {
+            let arm = |value: &str, user: &str| {
+                std::fs::write(plx_base::devtrig::path("trackmemory"), value).unwrap();
+                arm_track_memory(user);
+            };
+            for refused in ["fill:0", &format!("fill:{}", cap + 1), "fill:many", "fill:-3"] {
+                arm(refused, "");
+                assert_eq!(held(""), 0, "{refused:?} is not a count in 1..={cap}, so it fills nothing");
+            }
+            arm("fill:3", "kid");
+            assert_eq!(held(""), 0, "a profile that is not the seated one is given nothing");
+
+            arm("fill:3", "");
+            assert_eq!(held(""), 3, "fill:3 writes three shows");
+            arm("fill", "");
+            assert_eq!(held(""), cap, "a bare fill writes the cap, and the three it overlaps are the same shows");
+            plx_base::storage_worker::drain_for_test();
+            assert_eq!(filed(), cap, "the file holds them too, not only the mirror");
+            assert!(recall_all::<TrackMemoryEntry>("").iter().all(|e| e.audio.is_some() && e.subtitle.is_some()),
+                "each is the worst-case shape, both halves present");
+
+            arm("clear", "");
+            assert_eq!(held(""), 0, "clear takes the filled shows back like any others");
+        });
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(filed(), 0, "and the file forgot them");
         unseed_memory_for_test::<TrackMemoryEntry>();
     }
 }
