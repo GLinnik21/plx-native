@@ -1,7 +1,7 @@
 //! The `User-Agent` boot installs reaches the wire as one header value, never as more than one, on
 //! every hop of every request the easy path makes, and a request made before boot installs one sends
 //! none. The plaintext path and the player's HTTPS source have their own wire tests
-//! (`stream_user_agent_tests.rs`, `curlio_redirect_tests.rs`, `curlio_user_agent_tests.rs`).
+//! (`stream_user_agent_tests.rs`, and `curlio_redirect_tests.rs` in the `media` crate).
 //!
 //! The installed value is a `OnceLock`: the first `set_user_agent` of the test binary wins and
 //! nothing takes it back. So every test in this crate that installs one installs
