@@ -1441,3 +1441,174 @@ fn a_pick_on_one_episode_is_what_the_next_episode_resolves_to() {
     assert_eq!(query_param(transcode_decision(&requests), "audioStreamID"), Some("46015"), "{requests:?}");
     tidy_write(&mut ps);
 }
+
+// ---- C5: a remembered EXTERNAL subtitle selects this episode's same-language sidecar -------------
+
+/// A sidecar the app can draw (`sidecar_renderable`): external, an SRT, with the key it is fetched by.
+fn sidecar_stream(id: i64, lang: &str) -> plx_data::metadata::Stream {
+    plx_data::metadata::Stream {
+        key: format!("/library/streams/{id}"),
+        external: true,
+        ..stream(id, 9, lang, "srt", 0)
+    }
+}
+
+/// What the menu remembers for an English sidecar picked on the PREVIOUS episode (another stream id,
+/// another file): the writer's own descriptor, so the rows below prove it reads back.
+#[cfg(feature = "devtriggers")]
+fn english_sidecar_memo() -> SubtitleMemo {
+    let memo = memo_of_subtitle(&sidecar_stream(41009, "eng"));
+    assert!(matches!(&memo, SubtitleMemo::Track(t) if t.external && t.lang == "eng"), "{memo:?}");
+    memo
+}
+
+/// E2: PMS selected its Spanish track, and the English file beside it is a sidecar of its own.
+#[cfg(feature = "devtriggers")]
+fn e2_with_english_sidecar() -> Vec<plx_data::metadata::Stream> {
+    vec![srt(55002, 4, "spa", false, true), sidecar_stream(55009, "eng")]
+}
+
+/// **Direct play.** The remembered external English subtitle plans E2's English sidecar: the plan
+/// names it for the landing (`memory_sidecar`), no embedded ordinal rides it, no PUT is sent (the
+/// direct-play return has none) and nothing is written back (the Part carries an external, W5).
+#[test]
+#[cfg(feature = "devtriggers")]
+fn c5_a_remembered_external_subtitle_plans_this_episodes_sidecar_on_direct_play() {
+    let memo = english_sidecar_memo();
+    let (plan, requests, log) = resolve_logged(Case::episode(e2_with_english_sidecar(), memory(None, Some(memo))));
+    assert!(is_direct_play(&plan), "{}", plan.url);
+    assert_eq!(plan.memory_sidecar, Some(55009), "{requests:?}");
+    assert_eq!(plan.sub_render_ordinal, None, "a sidecar has no container ordinal; the landing restores it");
+    assert!(!plan.memory_note);
+    assert_eq!(puts(&requests), 0, "{requests:?}");
+    assert_eq!(plan.write_back, None, "an external on the Part withholds the subtitle half (W5)");
+    let lines = memory_lines(&log, 55009);
+    assert_eq!(lines.len(), 1, "{log}");
+    assert!(lines[0].ends_with("track-memory: applied subtitle (track 55009)"), "{}", lines[0]);
+}
+
+/// With NO same-language external file on E2 the memo declines and the ladder continues: PMS's own
+/// selection plays (never Off), nothing is planned for the landing, and the menu has no note.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn c5_with_no_sidecar_a_remembered_external_subtitle_falls_through() {
+    let subs = || vec![srt(55002, 4, "spa", false, true)];
+    let (control, _) = resolve(Case::episode(subs(), Vec::new()));
+    let (plan, _, log) = resolve_logged(Case::episode(subs(), memory(None, Some(english_sidecar_memo()))));
+    assert_eq!(plan.memory_sidecar, None);
+    assert_eq!((plan.sub_sid, plan.sub_render_ordinal), (control.sub_sid, control.sub_render_ordinal));
+    assert_eq!(plan.sub_sid, 55002, "the next rung: PMS's selection");
+    assert!(!plan.memory_note);
+    assert!(log.contains("no match (language) subtitle"), "{log}");
+}
+
+/// A sidecar in ANOTHER language is not E2's English file: it is not selected, and the route is
+/// today's.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn c5_a_different_language_sidecar_is_not_selected() {
+    let subs = || vec![srt(55002, 4, "spa", false, true), sidecar_stream(55010, "fra")];
+    let (control, _) = resolve(Case::episode(subs(), Vec::new()));
+    let (plan, _) = resolve(Case::episode(subs(), memory(None, Some(english_sidecar_memo()))));
+    assert_eq!(plan.memory_sidecar, None);
+    assert_eq!((plan.sub_sid, plan.sub_render_ordinal), (control.sub_sid, control.sub_render_ordinal));
+}
+
+/// Forced vs full is the matcher's own hard constraint: a remembered FULL external subtitle does not
+/// take a forced sidecar, and a remembered FORCED one does.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn c5_a_forced_sidecar_is_not_the_full_one() {
+    let forced_sidecar = plx_data::metadata::Stream { forced: true, ..sidecar_stream(55011, "eng") };
+    let subs = || vec![srt(55002, 4, "spa", false, true), forced_sidecar.clone()];
+    let (full, _) = resolve(Case::episode(subs(), memory(None, Some(english_sidecar_memo()))));
+    assert_eq!((full.memory_sidecar, full.sub_sid), (None, 55002), "the full memo declines the forced file");
+    let forced_memo = memo_of_subtitle(&plx_data::metadata::Stream { forced: true, ..sidecar_stream(41011, "eng") });
+    let (forced, _) = resolve(Case::episode(subs(), memory(None, Some(forced_memo))));
+    assert_eq!(forced.memory_sidecar, Some(55011));
+}
+
+/// **A copy remux the app draws over.** A sidecar is not an embedded track: the app fetches and
+/// draws it beside the remux, so unlike a remembered embedded track on this route it is shown, the
+/// menu has no note, `subtitles=none` rides the wire and the start PUT keeps naming the file.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn c5_a_remembered_sidecar_is_drawn_over_a_copy_remux_with_no_note() {
+    let mut case = Case::episode(e2_with_english_sidecar(), memory(None, Some(english_sidecar_memo())));
+    case.mode = DirectPlayMode::Disabled;
+    case.mde = MDE_TRANSCODE_COPY;
+    case.extra = 1;
+    let (plan, requests, log) = resolve_logged(case);
+    assert!(plan.url.contains("start.mkv") && plan.contract.remux, "setup: a copy remux: {}", plan.url);
+    assert_eq!(plan.memory_sidecar, Some(55009));
+    assert_eq!(plan.sub_sid, 55009, "the session's subtitle is the sidecar");
+    assert!(!plan.memory_note, "the app draws it, so there is nothing to explain");
+    assert_eq!(query_param(&plan.url, "subtitles"), Some("none"), "{}", plan.url);
+    assert_eq!(put_subtitle(&requests), Some("55009"), "a selection PUT keeps naming the file: {requests:?}");
+    assert!(requests.iter().all(|r| !r.contains("subtitles=burn")), "{requests:?}");
+    let lines = memory_lines(&log, 55009);
+    assert_eq!(lines.len(), 1, "{log}");
+    assert!(lines[0].ends_with("track-memory: applied subtitle (track 55009)"), "{}", lines[0]);
+}
+
+/// A route that re-encodes video anyway burns the remembered sidecar, as it burns a server-selected
+/// one (Q-TOP (b)): the decision, the start URL and the PUT all name the file.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn c5_a_remembered_sidecar_rides_a_video_re_encode_as_a_burn() {
+    let mut case = Case::episode(e2_with_english_sidecar(), memory(None, Some(english_sidecar_memo())));
+    case.quality = Some(Quality::P720);
+    case.mde = MDE_TRANSCODE;
+    case.extra = 1;
+    let (plan, requests, _) = resolve_logged(case);
+    assert!(plan.url.contains("start.mkv"), "setup: a fixed-rung encode: {}", plan.url);
+    assert_burned(&plan, &requests, 55009);
+}
+
+/// **The landing.** The plan's `memory_sidecar` is looked up in the playing item (its key and codec
+/// are THIS episode's) and selected through the one sidecar door: the session shows it as the
+/// drawn sidecar. The control is a plan that names none; the other rows are ids the item cannot
+/// carry (an embedded track's, a stream the app cannot draw, a stranger).
+#[test]
+fn c5_the_landing_selects_the_remembered_sidecar_from_the_playing_item() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let sid = plx_plex::plex::register_for_test(MACHINE, "127.0.0.1", 32401, "tok", "cid-tm");
+    let pgs = plx_data::metadata::Stream { codec: "pgs".into(), ..sidecar_stream(55012, "eng") };
+    let item = || plx_data::metadata::PlayingItem {
+        kind: "episode".into(),
+        show_rk: SHOW.into(),
+        ..plx_data::metadata::PlayingItem::with_subs(vec![
+            srt(55002, 4, "spa", false, false),
+            sidecar_stream(55009, "eng"),
+            pgs.clone(),
+        ])
+    };
+    let land = |ps: &mut PlaybackSession, memory_sidecar: Option<i64>| {
+        crate::player::sidecar::reset();
+        let plan = Plan {
+            sid,
+            url: "http://fixture.invalid/ep.mkv".into(),
+            playing: Some(item()),
+            memory_sidecar,
+            ..Default::default()
+        };
+        apply_plan(ps, plan, "rk-ep");
+    };
+
+    land(&mut ps, None);
+    assert!(!crate::player::sidecar::selected() && cur_sub_sid(&ps) == 0, "control: nothing names a sidecar");
+    for stranger in [55002, 55012, 99999] {
+        land(&mut ps, Some(stranger));
+        assert!(
+            !crate::player::sidecar::selected() && cur_sub_sid(&ps) == 0,
+            "{stranger} is not a sidecar this episode can draw"
+        );
+    }
+    land(&mut ps, Some(55009));
+    assert!(crate::player::sidecar::selected(), "the sidecar is selected");
+    assert_eq!(cur_sub_sid(&ps), 55009);
+    assert!(ps.cur_sub_sidecar && ps.cur_sub_client_drawable, "and it is the one the app draws itself");
+    crate::player::sidecar::reset();
+    tidy_write(&mut ps);
+}

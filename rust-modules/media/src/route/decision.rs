@@ -8473,12 +8473,17 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
     }
     // Restore the external renderer AND the route's stream identity before publishing the
     // start contract, so timeline reports and later audio/quality transcodes keep this pick.
-    // Also over a plain remux: the server carries no subtitle there, so the app draws the sidecar
-    // (`side_subs_allowed`). Every other transcode keeps the server's burn and no client sidecar.
+    // The sidecar is the server's own selection, else the one the profile's memory chose for this
+    // episode (`plan.memory_sidecar`, its key and codec read from the playing item: one restore, one
+    // selection list). Also over a plain remux: the server carries no subtitle there, so the app
+    // draws the sidecar (`side_subs_allowed`). Every other transcode keeps the server's burn and no
+    // client sidecar.
     if plan.sub_render_ordinal.is_none()
         && (!is_transcoding(ps) || (ps.cur_contract.remux && original_remux_shape(ps)))
     {
-        if let Some(id) = crate::player::sidecar::restore_server_selection(cur_sid(ps), meta.view()) {
+        if let Some(id) =
+            crate::player::sidecar::restore_selection(cur_sid(ps), meta.view(), plan.memory_sidecar)
+        {
             set_subtitle(ps, id);
             ps.cur_sub_sidecar = true;
             ps.cur_sub_client_drawable = true;

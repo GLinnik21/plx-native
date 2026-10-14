@@ -50,13 +50,17 @@ server has already selected, then what the profile remembered for the show (epis
 existing PMS item selections, then explicit show preferences, then account defaults. The remembered
 pick is written by the track menu: choosing an audio or subtitle track (or Off) while an episode
 plays remembers it for that show under the seated profile, and the next episode of the show starts on
-the same pick, matched by language, forced/SDH and the like rather than by stream id. When a fresh
+the same pick, matched by language, forced/SDH and the like rather than by stream id. A remembered
+external subtitle (a sidecar or downloaded file) cannot be reused as that file: the next episode has
+its own, so the pick means that episode's text sidecar of the same language and forced-ness, drawn by
+the app wherever it can draw a sidecar and burned on a video re-encode. With no such sidecar the
+episode's embedded track of that language and forced-ness is used if it has one; with neither, the
+memory steps aside and the order continues (it never falls to Off). When a fresh
 play of an episode applies a remembered pick on a direct play, the app also writes the applied tracks
 to the server once, on the first decoded frame, so the server's selection for that viewer matches
 the screen; a declined or fall-through pick, a retry and a transcode write nothing, a Part with a
 downloaded subtitle gets no subtitle write, and a pick the viewer makes first carries its own
-write. A movie's pick,
-a pick the route refused (Force Direct Play), an automatic choice and an OK on the subtitle already
+write. A movie's pick, a pick the route refused (Force Direct Play), an automatic choice and an OK on the subtitle already
 showing are not remembered. A remembered Off beats the account's rule and the server's embedded
 selection (a subtitle file the server has selected for the item still shows first). That mode shows subtitles when the audio that will play is not in the subtitle language (`route/plan.rs` compares the two).
 Account defaults do not introduce subtitle burning when playback starts as a transcode. A remembered

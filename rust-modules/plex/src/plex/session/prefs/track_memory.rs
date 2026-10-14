@@ -88,7 +88,8 @@ pub struct SubtitleTrackMemo {
     pub sdh: bool,
     /// `text` or `image`.
     pub kind: String,
-    /// A sidecar file rather than an embedded stream.
+    /// A sidecar file rather than an embedded stream. The file differs per episode, so a memo of
+    /// one means the next episode's own same-language sidecar (`route::plan::memory_subtitle`).
     pub external: bool,
     pub title: String,
 }
