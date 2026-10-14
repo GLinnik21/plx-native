@@ -19,7 +19,7 @@
 use super::*;
 use plx_plex::plex::session::prefs::{AudioMemo, SubtitleMemo, TrackMemoryEntry};
 use plx_plex::plex::session::SubtitleOffsetEntry;
-use super::super::track_memory::{forced_only_shown, memory_show, rematch_with_names};
+use super::super::track_memory::{forced_only_shown, memory_show, rematch_with_names, subtitle_pick_changed};
 
 /// **Whose memory this is**: the active profile's key and the machine id of `sid`'s server, the two
 /// halves of every key of the memory door. `None` until the server is registered and has said its
@@ -365,7 +365,7 @@ pub fn commit_subtitle_pick(
     // Read before the commit, which writes the stream it was handed and the mode. Leaving Forced
     // only is a change even onto the stream it drew (the forced track's own row) or onto nothing
     // (Off while no forced track matched): same stream id, different state.
-    let changed = stream_id != ps.cur_sub_sid || ps.sub_mode == SubMode::ForcedOnly;
+    let changed = subtitle_pick_changed(ps.cur_sub_sid, stream_id, ps.sub_mode == SubMode::ForcedOnly);
     commit_subtitle_selection(ps, sub_idx, stream_id, client_renderable);
     if let Some(memo) = memo.filter(|_| changed) {
         remember_track_pick(ps, TrackPick::Subtitle(memo));

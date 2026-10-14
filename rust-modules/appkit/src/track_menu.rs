@@ -1240,7 +1240,7 @@ impl TrackMenuState {
         // Leaving Forced only is a change even onto the stream it drew (the forced track's own row)
         // or onto nothing (Off while no forced track matched): the index is the same, the state is
         // not.
-        let changed = self.active_sub != new_sub || self.forced_only;
+        let changed = plx_media::route::subtitle_pick_changed(self.active_sub, new_sub, self.forced_only);
         self.active_sub = new_sub;
         self.forced_only = false;
         // the client renderer takes the EMBEDDED-subtitle ordinal (what the demuxer

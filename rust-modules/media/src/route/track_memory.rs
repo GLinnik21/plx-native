@@ -58,6 +58,17 @@ pub(super) fn memory_show<'a>(kind: &str, show_rk: &'a str) -> Option<&'a str> {
     (kind == "episode" && !show_rk.is_empty()).then_some(show_rk)
 }
 
+/// **Did a subtitle pick change what is shown?** The one rule of the menu's memo gate and the
+/// route's memory write: a pick is a change when it names another track than the one shown, and
+/// ALSO when the mode being left is Forced only, whatever it lands on (the forced track's own row,
+/// or Off while no forced track matched: the same track, a different state). `shown` and `picked`
+/// are the caller's own notion of "which track" (the menu compares its rows, the route stream ids),
+/// so the rule is generic over it. An OK on the checked row is not a change: the menu closes, it
+/// does not choose.
+pub fn subtitle_pick_changed<T: PartialEq>(shown: T, picked: T, forced_only: bool) -> bool {
+    shown != picked || forced_only
+}
+
 /// **What a pick of audio track `i` of `tracks` is remembered as**, or `None` for an index that
 /// names no track. The commentary-ness is the planner's own notion ([`super::plan::audio_is_commentary`]:
 /// titled one AND not the only track of its language), the same one [`match_audio`] is handed.
