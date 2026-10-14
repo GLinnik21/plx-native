@@ -520,8 +520,9 @@ a dead source is **absent** from Home and states itself in its own library secti
   it yet, so the list stays empty in practice; the menu write comes later.
   `subtitle_offsets` is account-bound as well (since SO) under different rules: a record without a
   stamp is read as the signed-in account's own and is stamped at the list's next write
-  (`MemoryEntry::ADOPTS_UNSTAMPED`), a write with no account token is still accepted, kept
-  unstamped, and prunes nothing, and a record stamped for another account reads as nothing and is
+  (`MemoryEntry::ADOPTS_UNSTAMPED`), at the plex list a write with no account token is still
+  accepted, kept unstamped, and prunes nothing (the media door refuses it: a seat needs a non-empty
+  stamp), and a record stamped for another account reads as nothing and is
   pruned by the next write. The media half (`route/prefs.rs` `remember`) stamps its mirror write with
   the stamp the mirror was seeded under (`decision_memory_tests`
   `a_retune_or_a_forget_reaches_the_stamped_record_the_restore_seeded`).

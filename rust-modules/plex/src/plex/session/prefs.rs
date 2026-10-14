@@ -706,9 +706,10 @@ pub trait MemoryEntry: Serialize + DeserializeOwned + Clone + PartialEq {
     /// was bound (`subtitle_offsets`): a record with NO stamp is read as the signed-in account's
     /// own, and the first write to the list stamps it ([`ProfileMemory::upsert_with`]). Today's
     /// visibility is kept, so nothing a viewer sees changes until the sign-out that now clears it.
-    /// A tenant that adopts is also not refused without a stamp (a session with no account token
-    /// never refused it): it reads and writes the unstamped records, prunes nothing and leaves any
-    /// stamped record alone. `track_memory` was bound from its first write, so an unstamped record
+    /// At THIS (plex) layer a tenant that adopts is also not refused without a stamp: its list
+    /// reads and writes the unstamped records, prunes nothing and leaves any stamped record alone.
+    /// The media door is stricter: it only reads or writes for a seated profile, and a seat needs a
+    /// non-empty stamp, so a write with no account token never reaches the list through it. `track_memory` was bound from its first write, so an unstamped record
     /// is nobody's and stays `false`.
     const ADOPTS_UNSTAMPED: bool = false;
     /// The household budget, in logical bytes (platform's counting rule), for the whole list across

@@ -195,8 +195,12 @@ fn the_door_stamps_its_writes_adopts_legacy_records_and_drops_another_accounts()
 
     assert_eq!(recall::<SubtitleOffsetEntry>("", &key("machine-so", "rk-legacy")).map(|e| e.offset_ms), Some(700),
         "the legacy record is the account's own");
+    // Seat "kid" for this one read: the seat gate answers `None` for any unseated profile, so
+    // without it this would not grade the account stamp at all.
+    _session.seated("kid", "acct");
     assert_eq!(recall::<SubtitleOffsetEntry>("kid", &key("machine-so", "rk-foreign")), None,
         "another account's record reads as nothing");
+    _session.seated("", "acct");
 
     persist_subtitle_offset(&ps, 1_800);
     plx_base::storage_worker::drain_for_test();

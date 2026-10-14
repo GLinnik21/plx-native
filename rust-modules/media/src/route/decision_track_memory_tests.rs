@@ -542,9 +542,11 @@ fn the_snapshot_captures_this_profiles_memory_for_the_servers_machine() {
         ResolveEnv::snapshot(ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk").memory
     };
 
+    // Seated, so that what answers the first read is the mirror and not the seat gate (which has
+    // its own test below).
+    seat(&session, "");
     assert_eq!(snapshot_memory(&ps, sid_a), Vec::<TrackMemoryEntry>::new(), "a mirror never seeded holds nothing");
 
-    seat(&session, "");
     seed_memory_for_test::<TrackMemoryEntry>(&record_with(vec![
         list("", &stamp, vec![here.clone(), there.clone()]),
         list("kid", &stamp, vec![kids_here.clone(), kids_there.clone()]),
@@ -561,6 +563,31 @@ fn the_snapshot_captures_this_profiles_memory_for_the_servers_machine() {
 
     seed_memory_for_test::<TrackMemoryEntry>(&record_with(vec![list("kid", "a-stale-stamp", vec![kids_here])]));
     assert_eq!(snapshot_memory(&ps, sid_a), Vec::<TrackMemoryEntry>::new(), "another account's stamp reads as nothing");
+    tidy();
+}
+
+/// **The seat gate on the whole-list read.** `recall_all` answers only for the SEATED profile: a
+/// profile published without a stamp (`watching`: an unseated boot, a dev token) seats nobody and
+/// reads no track memory, even with a seeded mirror holding that profile's stamped record; the same
+/// record read once the profile is seated is the whole list.
+#[test]
+fn track_memory_is_read_only_for_the_seated_profile() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-seat-gate");
+    let stamp = plx_plex::plex::grant::account_key("acct");
+    let entry = TrackMemoryEntry::new("machine-a", "10", None, Some(SubtitleMemo::Off));
+    let sid = plx_plex::plex::register_for_test("machine-a", "127.0.0.1", 32401, "tok", "cid-a");
+    seed_memory_for_test::<TrackMemoryEntry>(&record_with(vec![list("", &stamp, vec![entry.clone()])]));
+    let snapshot_memory = |ps: &PlaybackSession| {
+        ResolveEnv::snapshot(ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk").memory
+    };
+
+    session.watching("");
+    assert_eq!(snapshot_memory(&ps), Vec::<TrackMemoryEntry>::new(), "an unstamped publication seats nobody");
+
+    seat(&session, "");
+    assert_eq!(snapshot_memory(&ps), vec![entry], "the seated profile reads its own list");
     tidy();
 }
 
