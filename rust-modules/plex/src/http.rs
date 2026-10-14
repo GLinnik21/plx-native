@@ -968,6 +968,40 @@ mod tests {
         (port, h)
     }
 
+    /// **The bytes the control plane's plaintext arm puts on the wire**, pinned before the request
+    /// head is validated: `Connection: close` first, then the caller's lines in order, each
+    /// CRLF-terminated, after the transport's own `Host`, `User-Agent` and default `Accept`. A caller
+    /// that already named `Connection` keeps its own spelling and gets no second one.
+    #[test]
+    fn the_plaintext_arm_sends_its_connection_block_and_the_callers_lines_verbatim() {
+        use std::io::{Read, Write};
+        let capture = |headers: &'static [&'static str]| -> String {
+            let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            let port = srv.local_addr().expect("address").port();
+            let h = std::thread::spawn(move || {
+                let mut req = Vec::new();
+                if let Ok((mut s, _)) = srv.accept() {
+                    let mut buf = [0u8; 2048];
+                    if let Ok(n) = s.read(&mut buf) {
+                        req.extend_from_slice(&buf[..n]);
+                    }
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                }
+                String::from_utf8_lossy(&req).into_owned()
+            });
+            let got = request(&Origin::http("127.0.0.1", port as i32), "/x", Method::Get, headers, None);
+            assert!(got.is_some_and(|r| r.status == 200));
+            h.join().unwrap()
+        };
+        let head = capture(&["X-Plex-Token: t", "Accept: application/json"]);
+        let tail = "Connection: close\r\nX-Plex-Token: t\r\nAccept: application/json\r\n\r\n";
+        assert!(head.starts_with("GET /x HTTP/1.1\r\nHost: 127.0.0.1:"), "{head:?}");
+        assert!(head.ends_with(tail), "{head:?}");
+        let named = capture(&["Connection: keep-alive", "X-Plex-Token: t"]);
+        assert!(named.ends_with("Connection: keep-alive\r\nX-Plex-Token: t\r\n\r\n"), "{named:?}");
+        assert_eq!(named.matches("onnection:").count(), 1, "{named:?}");
+    }
+
     /// `GET /x` at a loopback port through [`request`], the door the control plane uses.
     fn loopback(port: u16) -> Option<Reply> {
         request(&Origin::http("127.0.0.1", port as i32), "/x", Method::Get, &[], None)

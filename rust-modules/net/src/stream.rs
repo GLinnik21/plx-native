@@ -2245,3 +2245,8 @@ mod checkpoint_tests;
 #[cfg(test)]
 #[path = "stream_user_agent_tests.rs"]
 mod user_agent_tests;
+
+/// The plaintext request head's bytes, pinned as they are before request validation.
+#[cfg(test)]
+#[path = "stream_wire_characterization_tests.rs"]
+mod wire_characterization_tests;

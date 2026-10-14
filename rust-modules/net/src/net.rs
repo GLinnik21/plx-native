@@ -3805,6 +3805,12 @@ mod roots_tests;
 #[path = "net_user_agent_tests.rs"]
 pub(crate) mod user_agent_tests;
 
+/// What the easy path puts on the wire apart from the `User-Agent`: the default `Accept`, the header
+/// set, the `Expect:` suppression.
+#[cfg(test)]
+#[path = "net_wire_characterization_tests.rs"]
+mod wire_characterization_tests;
+
 /// The latch's clock, through the `*_at` seam: it lapses after [`keypin::LATCH`] and a later key-mode
 /// success inside the interval does not slide it.
 #[cfg(test)]
