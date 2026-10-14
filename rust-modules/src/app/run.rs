@@ -3990,9 +3990,12 @@ mod lifecycle_regression_tests {
     /// state: a `PUT /library/parts` selection is never echoed into the next episode's answer, so
     /// nothing but the app's own memory can carry a pick from E1 to E2.
     fn show_fixture(request: &str) -> String {
+        serve_show(request, show_episode("1", 11, 1, E1_AUDIO, E1_SUBS), show_episode("2", 12, 2, E2_AUDIO, E2_SUBS))
+    }
+
+    /// [`show_fixture`]'s answers for any pair of episode bodies `e1` and `e2`.
+    fn serve_show(request: &str, e1: String, e2: String) -> String {
         let path = request.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("");
-        let e1 = show_episode("1", 11, 1, E1_AUDIO, E1_SUBS);
-        let e2 = show_episode("2", 12, 2, E2_AUDIO, E2_SUBS);
         if request.contains("/decision?") {
             queue_body(request, true).to_owned()
         } else if path.starts_with("/playQueues") {
@@ -4007,6 +4010,44 @@ mod lifecycle_regression_tests {
         } else {
             r#"{"MediaContainer":{"size":0}}"#.to_owned()
         }
+    }
+
+    /// An episode of show 4242 for Forced only: English and Japanese E-AC3 5.1, and three SRT tracks
+    /// `(language, id, forced)` in file order. NO subtitle is selected on the server, so what plays
+    /// is whatever the viewer's memory says.
+    fn forced_show_episode(
+        rk: &str, item: i64, index: i64, audio: [(&str, i64); 2], subs: [(&str, i64, bool); 3],
+    ) -> String {
+        let name = |code: &str| if code == "jpn" { "Japanese" } else { "English" };
+        let mut streams = vec![show_stream(item * 10 + 1, 1, 0, "hevc", None, false)];
+        for (i, (code, id)) in audio.into_iter().enumerate() {
+            streams.push(show_stream(id, 2, 1 + i as i64, "eac3", Some((code, name(code))), i == 0));
+        }
+        for (i, (code, id, forced)) in subs.into_iter().enumerate() {
+            streams.push(format!(
+                r#"{{"id":{id},"streamType":3,"index":{},"codec":"srt","channels":0,
+                "languageCode":"{code}","language":"{}","forced":{forced},"selected":false}}"#,
+                3 + i as i64,
+                name(code),
+            ));
+        }
+        format!(
+            r#"{{"ratingKey":"{rk}","playQueueItemID":{item},"type":"episode","title":"Episode {index}",
+            "grandparentRatingKey":"4242","parentIndex":1,"index":{index},"duration":60000,
+            "Media":[{{"videoCodec":"hevc","audioCodec":"eac3","width":1920,"height":1080,"bitrate":8000,
+            "Part":[{{"id":{item},"key":"/library/parts/{rk}/file.mkv","Stream":[{}]}}]}}]}}"#,
+            streams.join(","),
+        )
+    }
+
+    /// [`show_fixture`] for Forced only. E2 has the same tracks as E1 under other ids and in another
+    /// order (the Japanese forced track first), so only the remembered MODE can find E2's.
+    fn forced_show_fixture(request: &str) -> String {
+        serve_show(
+            request,
+            forced_show_episode("1", 11, 1, E1_AUDIO, [("eng", 1014, false), ("eng", 1015, true), ("jpn", 1016, true)]),
+            forced_show_episode("2", 12, 2, E2_AUDIO, [("jpn", 2014, true), ("eng", 2015, true), ("eng", 2016, false)]),
+        )
     }
 
     /// Sign the fixture in as the account owner and give track memory a mirror seeded for that
@@ -4051,6 +4092,18 @@ mod lifecycle_regression_tests {
             let mut menu = plx_appkit::track_menu::TrackMenuState::new(&self.app.player.session, meta, 1, Vec::new());
             let plx_appkit::track_menu::TrackOk::Commit { commit, .. } = menu.commit_sub_track(index, meta) else {
                 panic!("the menu committed nothing for subtitle {id}");
+            };
+            super::super::playback::commit_track(&mut self.app.player.session, commit);
+        }
+
+        /// Pick the Subtitles tab's Forced only row through the track menu: focus it, OK, and perform
+        /// the commit the way the loop does.
+        fn pick_forced_only(&mut self) {
+            let meta = self.app.bridge.metadata_view();
+            let mut menu = plx_appkit::track_menu::TrackMenuState::new(&self.app.player.session, meta, 1, Vec::new());
+            assert!(menu.focus_id(plx_appkit::track_menu::TrackRow::SubForcedOnly), "the Forced only row is on the page");
+            let plx_appkit::track_menu::TrackOk::Commit { commit, .. } = menu.on_ok(meta) else {
+                panic!("the menu committed nothing for Forced only");
             };
             super::super::playback::commit_track(&mut self.app.player.session, commit);
         }
@@ -4113,6 +4166,53 @@ mod lifecycle_regression_tests {
             (2014, 2013),
             "E2 shows the English subtitle and plays the Japanese audio the viewer chose on E1 \
              (the server's own selection there is Spanish, English)"
+        );
+    }
+
+    /// **Forced only, end to end (FO, §4.9).** The viewer picks the Subtitles tab's Forced only row on
+    /// episode 1 (which shows its English forced track), and episode 2, whose forced tracks have
+    /// other ids and sit in another order, draws ITS English forced track: the mode is what was
+    /// remembered, not a track. An audio switch on E2 then re-points the subtitle to the Japanese
+    /// forced track, which a remembered TRACK would not do.
+    #[test]
+    fn forced_only_on_one_episode_draws_the_next_episodes_forced_track() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(forced_show_fixture) else {
+            eprintln!("SKIPPED forced_only_on_one_episode_draws_the_next_episodes_forced_track: no fixture worker thread");
+            return;
+        };
+        let _session = seated_with_empty_memory("track-memory-forced-only");
+
+        rig.play_show_episode_one();
+        let ps = &rig.app.player.session;
+        assert_eq!(
+            (plx_media::route::cur_sub_sid(ps), plx_media::route::cur_audio_sid(ps)),
+            (0, 1012),
+            "E1 starts with no subtitle (the server selected none) and its first audio"
+        );
+        rig.pick_forced_only();
+        let ps = &rig.app.player.session;
+        assert_eq!(
+            (plx_media::route::cur_sub_sid(ps), plx_media::route::cur_sub_mode(ps)),
+            (1015, plx_media::route::SubMode::ForcedOnly),
+            "Forced only drew E1's English forced track"
+        );
+
+        rig.advance_to_next_episode();
+        let ps = &rig.app.player.session;
+        assert_eq!(
+            (plx_media::route::cur_sub_sid(ps), plx_media::route::cur_sub_mode(ps)),
+            (2015, plx_media::route::SubMode::ForcedOnly),
+            "E2 draws ITS English forced track (not the Japanese one listed first, not the full track)"
+        );
+        assert_eq!(plx_media::route::cur_audio_sid(ps), 2012, "under the English audio it plays");
+
+        rig.pick_audio(2013);
+        let ps = &rig.app.player.session;
+        assert_eq!(
+            (plx_media::route::cur_audio_sid(ps), plx_media::route::cur_sub_sid(ps)),
+            (2013, 2014),
+            "the Japanese audio re-points Forced only at the Japanese forced track"
         );
     }
 

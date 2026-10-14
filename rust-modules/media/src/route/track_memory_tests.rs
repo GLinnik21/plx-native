@@ -229,6 +229,81 @@ fn forced_commentary_is_skipped() {
     assert_eq!(match_forced_only(&subs, "eng", "", anyone), Some(1));
 }
 
+// ---- Forced only once the container's names are known (FO, §4.9) -------------------------------
+
+fn names(subs: &[&str]) -> TrackNames {
+    TrackNames { audio: Vec::new(), subs: subs.iter().map(|s| s.to_string()).collect() }
+}
+
+/// An MP4 part: PMS gives its subtitle streams no `title`, so the file's own track name is the only
+/// thing that says which one is forced. The resolve (no names yet) finds none; the names do.
+#[test]
+fn forced_only_pick_finds_a_track_only_the_containers_name_reveals() {
+    let subs = vec![sub(1, "eng", ""), sub(2, "eng", "")];
+    assert_eq!(match_forced_only(&subs, "eng", "", anyone), None, "setup: the streams alone name no forced track");
+    assert_eq!(forced_only_pick(&subs, &names(&["", ""]), "eng", ""), None, "names that say nothing find nothing");
+    assert_eq!(forced_only_pick(&subs, &names(&["English", "English (Forced)"]), "eng", ""), Some(1));
+    assert_eq!(
+        forced_only_pick(&subs, &names(&["", "Forced"]), "spa", ""),
+        None,
+        "and the audio's language still decides: Spanish audio, an English forced track, nothing"
+    );
+}
+
+/// A sidecar is not in the container (its ordinal names no track), and an embedded track in a codec
+/// the demuxer does not render is not a candidate.
+#[test]
+fn forced_only_pick_never_takes_a_sidecar_or_an_undrawable_codec() {
+    let mut subs = vec![sub(1, "eng", "Forced"), sub(2, "eng", "Forced")];
+    subs[0].external = true;
+    subs[1].codec = "dvb_teletext".into();
+    assert_eq!(forced_only_pick(&subs, &names(&["Forced"]), "eng", ""), None);
+    subs[1].codec = "srt".into();
+    assert_eq!(forced_only_pick(&subs, &names(&["Forced"]), "eng", ""), Some(1));
+}
+
+/// **The first decoded frame's re-match**: what the memo picks over the named streams, when it
+/// differs from what the landing showed. Nothing when it is the same, and nothing for Off.
+#[test]
+fn rematch_with_names_reports_a_change_only() {
+    let subs = vec![sub(55001, "eng", ""), sub(55003, "eng", "")];
+    let forced_only = SubtitleMemo::ForcedOnly { lang: "eng".into() };
+    let named = names(&["", "Forced"]);
+    assert_eq!(
+        rematch_with_names(&subs, &named, &forced_only, "eng", 0),
+        Some(Rematched { id: 55003, ordinal: 1 }),
+        "the landing showed nothing, the names reveal the forced track"
+    );
+    assert_eq!(rematch_with_names(&subs, &named, &forced_only, "eng", 55003), None, "already on screen: no change");
+    assert_eq!(rematch_with_names(&subs, &named, &SubtitleMemo::Off, "eng", 55001), None, "Off has nothing to find");
+
+    let forced_track = SubtitleMemo::Track(SubtitleTrackMemo { forced: true, ..memo_sub("eng") });
+    assert_eq!(
+        rematch_with_names(&subs, &named, &forced_track, "eng", 55001),
+        Some(Rematched { id: 55003, ordinal: 1 }),
+        "a remembered FORCED track is found by the same names"
+    );
+    let japanese = SubtitleMemo::Track(memo_sub("jpn"));
+    assert_eq!(
+        rematch_with_names(&subs, &named, &japanese, "eng", 0),
+        None,
+        "a track memo that still matches nothing leaves the landing alone"
+    );
+}
+
+/// Forced only can come to NOTHING: the landing showed a stream, and with the names there is no
+/// forced track in the playing audio's language, so the answer is `id 0` (never a full track).
+#[test]
+fn rematch_with_names_for_forced_only_can_come_to_nothing() {
+    let subs = vec![sub(55001, "eng", ""), sub(55003, "spa", "")];
+    let forced_only = SubtitleMemo::ForcedOnly { lang: String::new() };
+    assert_eq!(
+        rematch_with_names(&subs, &names(&["", "Forced"]), &forced_only, "eng", 55001),
+        Some(Rematched { id: 0, ordinal: -1 }),
+        "English audio, only a Spanish forced track: nothing, however the landing came to show 55001"
+    );
+}
+
 // ---- the write half: a memo built from a pick matches that pick back --------------------------
 
 /// A file whose subtitle names exercise every reading the menu makes: a plain track, a flagged

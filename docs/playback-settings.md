@@ -45,7 +45,13 @@ or an obsolete preference revision cannot replace newer settings.
 
 Audio **Original** clears the preferred language while enabling automatic selection. Subtitle
 mode offers manual selection, "when audio isn't in the subtitle language", and always; **No preference** clears only the
-subtitle language. Order: this playback's own pick, then (subtitles only) a subtitle file the
+subtitle language. The "when audio isn't in the subtitle language" mode shows subtitles when the audio that will play is not in the subtitle language (`route/plan.rs` compares the two).
+The Subtitles menu's second row, **Forced only**, is a third remembered state: the next episode shows its forced subtitle in the
+language of the audio that plays (audio that names none uses the language it was chosen in), or
+nothing (never a full track), and switching the audio switches
+the forced track with it; like Off it is absolute, and it is not remembered again by an OK on the row
+that already holds it.
+Order: this playback's own pick, then (subtitles only) a subtitle file the
 server has already selected, then what the profile remembered for the show (episodes only), then
 existing PMS item selections, then explicit show preferences, then account defaults. The remembered
 pick is written by the track menu: choosing an audio or subtitle track (or Off) while an episode
@@ -62,7 +68,8 @@ the screen; a declined or fall-through pick, a retry and a transcode write nothi
 downloaded subtitle gets no subtitle write, and a pick the viewer makes first carries its own
 write. A movie's pick, a pick the route refused (Force Direct Play), an automatic choice and an OK on the subtitle already
 showing are not remembered. A remembered Off beats the account's rule and the server's embedded
-selection (a subtitle file the server has selected for the item still shows first). That mode shows subtitles when the audio that will play is not in the subtitle language (`route/plan.rs` compares the two).
+selection (a subtitle file the server has selected for the item still shows first).
+That mode shows subtitles when the audio that will play is not in the subtitle language (`route/plan.rs` compares the two).
 Account defaults do not introduce subtitle burning when playback starts as a transcode. A remembered
 pick is burned only where the video is being re-encoded anyway (a fixed quality, a relay, adaptive
 streaming); on a copy remux or a direct play the app draws it if it can, and otherwise it is not

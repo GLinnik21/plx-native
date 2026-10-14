@@ -44,6 +44,13 @@ tab's note line: a subtitle remembered on episode 1 that episode 2's remux route
 with `--no-plex-pass` or `--no-loudness-analysis`; with both on, the app burns the subtitle into a
 re-encode instead of remuxing, and there is no note.
 
+`--media-forced-subtitle` (needs `--media`, default off) marks the English embedded subtitle of
+`mockverify-v1.mkv` FORCED on the wire (`"forced": true` on its Stream, nothing else about the stream
+changes, the file is untouched), for the first episode and, under `--media-next-episode`, the second
+(which is the same file). The surface has no forced track otherwise. It is how a sim run reaches
+the Subtitles tab's "Forced only" row with a forced track to draw: Forced only then shows that
+track, and the run proves the mode, not a full track. Without the flag every stream is unchanged.
+
 `--extra-media FILE` (repeatable) adds one movie per arbitrary file outside that fixture set —
 e.g. a hand-generated Dolby Vision asset — with its DOVI*/colorTrc/bitDepth/container fields read
 from ffprobe exactly like `--media`, at a fixed ratingKey block (990001+) that cannot collide with
@@ -328,12 +335,18 @@ class Library:
     # `--media-next-episode-remux` (module doc): the second episode answers a copy remux and reads a
     # high bitrate. Also a class default, for the same reason.
     next_episode_remux = False
+    # `--media-forced-subtitle` (module doc): the verification episodes' English subtitle is flagged
+    # forced on the wire. A class default, for the same reason.
+    media_forced_subtitle = False
 
     def __init__(self, seed=1, movies=48, shows=6, seasons=2, episodes=6, rail_fixture=False,
                  media=None, extra_media=None, loudness_analysis=True, extras=0,
-                 resume_fixture=False, media_next_episode=False, next_episode_remux=False):
+                 resume_fixture=False, media_next_episode=False, next_episode_remux=False,
+                 media_forced_subtitle=False):
         if media_next_episode and media is None:
             raise ValueError("--media-next-episode needs --media")
+        if media_forced_subtitle and media is None:
+            raise ValueError("--media-forced-subtitle needs --media")
         if next_episode_remux and not media_next_episode:
             raise ValueError("--media-next-episode-remux needs --media-next-episode")
         # Movie keys start at 1001; shows start at 2001. Refuse a fixture that would silently
@@ -412,6 +425,8 @@ class Library:
             self.media_next_episode = True
         if next_episode_remux:
             self.next_episode_remux = True
+        if media_forced_subtitle:
+            self.media_forced_subtitle = True
         if media is not None:
             self._add_verification_media(pathlib.Path(media), next_episode=media_next_episode)
         if extra_media:
@@ -604,6 +619,18 @@ class Library:
         self.verification_streams[part_id] = streams
         return media, duration
 
+    def _flag_forced_subtitle(self, media):
+        """`--media-forced-subtitle`: the English embedded subtitle of `media`'s Part is forced on
+        the wire. The stream dicts are shared with `verification_streams`, so a selection PUT sees
+        the same flag; nothing else about the stream changes."""
+        if not self.media_forced_subtitle:
+            return
+        for stream in media["Part"][0]["Stream"]:
+            if stream["streamType"] == 3 and stream.get("languageCode") == "eng":
+                stream["forced"] = True
+                return
+        raise ValueError("--media-forced-subtitle: the verification file has no English subtitle")
+
     def _add_verification_media(self, media_dir, next_episode=False):
         """Add the two opt-in items without perturbing the seeded library's random sequence.
         `next_episode` adds the third (module doc, `--media-next-episode`)."""
@@ -611,6 +638,7 @@ class Library:
             media_dir / "mockverify-v1.mkv", V1_RATING_KEY, VERIFY_PARTS[V1_RATING_KEY])
         v2_media, v2_duration = self._verified_media(
             media_dir / "mockverify-v2.mkv", V2_RATING_KEY, VERIFY_PARTS[V2_RATING_KEY])
+        self._flag_forced_subtitle(v1_media)
         sidecar = media_dir / "mockverify-v2.eng.srt"
         side_info = self._probe(sidecar)
         side_stream = next((s for s in side_info.get("streams", [])
@@ -651,6 +679,7 @@ class Library:
             # PUT on episode 1's part never touches this one (module doc).
             v3_media, v3_duration = self._verified_media(
                 media_dir / "mockverify-v1.mkv", V3_RATING_KEY, VERIFY_PARTS[V3_RATING_KEY])
+            self._flag_forced_subtitle(v3_media)
             if self.next_episode_remux:
                 v3_media["bitrate"] = V3_REMUX_KBPS
             second = self._base(random.Random(152), V3_RATING_KEY, "episode", self.sections[1])
@@ -2641,7 +2670,8 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
           home_hubs=0, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0,
           home_users=1, link=(), link_faults=(), shows=6, seasons=2, episodes=6,
-          resume_fixture=False, media_next_episode=False, next_episode_remux=False):
+          resume_fixture=False, media_next_episode=False, next_episode_remux=False,
+          media_forced_subtitle=False):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -2671,7 +2701,8 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     that pages). `resume_fixture` adds the two shows of `Library._add_resume_fixture` (seeded
     library only). `media_next_episode` adds the verification show's second episode (module doc;
     needs `media`); `next_episode_remux` makes it a copy remux at a high bitrate (needs
-    `media_next_episode`)."""
+    `media_next_episode`); `media_forced_subtitle` flags the English subtitle of the verification
+    episodes forced (module doc; needs `media`)."""
     if transcode_fixture is not None and not pathlib.Path(transcode_fixture).is_file():
         raise ValueError(f"--transcode-fixture file is missing: {transcode_fixture}")
     if catalog is not None:
@@ -2682,7 +2713,8 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
                       rail_fixture=rail_fixture, media=media, extra_media=extra_media,
                       loudness_analysis=loudness_analysis, resume_fixture=resume_fixture,
                       media_next_episode=media_next_episode,
-                      next_episode_remux=next_episode_remux)
+                      next_episode_remux=next_episode_remux,
+                      media_forced_subtitle=media_forced_subtitle)
     pms = MockPms(lib)
     pms.link = link_conditioner.Conditioner(seed=seed)
     for spec in link:
@@ -3027,9 +3059,34 @@ def selftest():
     assert decision(remux_base, V1_RATING_KEY, remux_shape)["decision"] == "directplay"
     assert queue_keys(remux_base, V1_RATING_KEY) == [V1_RATING_KEY, V3_RATING_KEY]
     assert not remux_pms.unknown, remux_pms.unknown
+    # `--media-forced-subtitle`: the English subtitle of the verification episodes is forced on the
+    # wire, and nothing else about them (or the second film) moves.
+    def subtitles(base, rk):
+        return [s_ for s_ in part_streams(base, rk)[1] if s_["streamType"] == 3]
+
+    assert [s_["forced"] for s_ in subtitles(media_base, V1_RATING_KEY)] == [False], "off by default"
+    try:
+        Library(media_forced_subtitle=True)
+    except ValueError as e:
+        assert "needs --media" in str(e)
+    else:
+        raise AssertionError("--media-forced-subtitle without --media must be refused")
+    forced_srv, forced_pms = serve(0, seed=7, media=media, media_next_episode=True,
+                                   media_forced_subtitle=True)
+    forced_base = f"http://127.0.0.1:{forced_srv.server_address[1]}"
+    for rk in (V1_RATING_KEY, V3_RATING_KEY):
+        english = subtitles(forced_base, rk)
+        assert [(s_["languageCode"], s_["forced"]) for s_ in english] == [("eng", True)], english
+    assert not any(s_["forced"] for s_ in subtitles(forced_base, V2_RATING_KEY)), "the film is untouched"
+    without = [{k: v for k, v in s_.items() if k not in ("id", "forced")}
+               for s_ in subtitles(next_base, V1_RATING_KEY)]
+    flagged = [{k: v for k, v in s_.items() if k not in ("id", "forced")}
+               for s_ in subtitles(forced_base, V1_RATING_KEY)]
+    assert flagged == without, "only the forced flag differs"
+    assert not forced_pms.unknown, forced_pms.unknown
     assert not media_pms.unknown, media_pms.unknown
     assert not pms.unknown, pms.unknown
-    for s_ in (srv, srv2, srv3, srv4, media_srv, next_srv, remux_srv):
+    for s_ in (srv, srv2, srv3, srv4, media_srv, next_srv, remux_srv, forced_srv):
         s_.shutdown()
         s_.server_close()
     tmp.cleanup()
@@ -3325,6 +3382,9 @@ def main():
                     help="with --media-next-episode: the second episode is a copy remux at "
                          f"{V3_REMUX_KBPS} kbps (the decision says transcode/copy; the app's "
                          "subtitle side reader is not admitted)")
+    ap.add_argument("--media-forced-subtitle", action="store_true",
+                    help="with --media: flag the verification episodes' English subtitle forced on "
+                         "the wire (the surface has no forced track otherwise)")
     ap.add_argument("--extra-media", type=pathlib.Path, action="append", default=[],
                     help="opt-in arbitrary media file (repeatable); each becomes one movie, "
                          "ratingKey assigned from EXTRA_MEDIA_RK_BASE and printed at startup")
@@ -3475,7 +3535,8 @@ def main():
                          link=link, link_faults=a.link_fault, shows=a.shows, seasons=a.seasons, episodes=a.episodes,
                          resume_fixture=a.resume_fixture,
                          media_next_episode=a.media_next_episode,
-                         next_episode_remux=a.media_next_episode_remux)
+                         next_episode_remux=a.media_next_episode_remux,
+                         media_forced_subtitle=a.media_forced_subtitle)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"

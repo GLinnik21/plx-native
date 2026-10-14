@@ -1128,6 +1128,11 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         crate::route::confirm_original_recovery(ps);
     }
     if SHARED.frames.load(Relaxed) > 0 {
+        // The demuxer's track names exist now: re-match the remembered subtitle with them, once
+        // per landing (FO, §4.9). It goes BEFORE anything that tells the server what is on screen
+        // (the write-back's send), so that names what the re-match settled on. It returns the
+        // stream id it committed (`None` = nothing): that is what the send's subtitle half takes.
+        crate::route::rematch_subtitle_with_names(ps);
         crate::route::confirm_resume_presented(ps);
         // **The same acceptance point writes a remembered choice back to the server** (§4.8 W6):
         // the landing parked it, and a decoded frame is the evidence the television took the

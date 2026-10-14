@@ -159,8 +159,9 @@ TWO IDEAS BORROWED FROM iwalton3/stdjflib, both about making a WRONG FILE VISIBL
 
 --------------------------------------------------------------------------------------
 ORDERING IS PART OF THE SPEC — the cases assert track POSITIONS, not just presence.
-`tests/README.md`: audio-tab row = the metadata audio index in file order; subtitle-tab
-row 0 is *Off* and row r is subtitle index r-1. So:
+`tests/README.md`: audio-tab row = the metadata audio index in file order; a subtitle case
+names its track by position (`"track": N` counts the Subtitles tab's tracks only), so the
+rows above the tracks (row 0 *Off*, row 1 *Forced only*) never move it. So:
 
  * `audio_switch_transcode` picks audio row 6 on `movie_h264_ac3_many_audio` and expects a
    transcode, so index 6 is the ENGLISH TrueHD track (TrueHD is outside the direct-play set).
@@ -170,10 +171,11 @@ row 0 is *Off* and row r is subtitle index r-1. So:
    English one: with no Plex language preference the route auto-picks the file's default
    (German, row 0) at start (#210), and row 1 switches to the English track — both being
    E-AC-3 keeps the switch native.
- * `subtitle_text_srt` picks subtitle row 3 = index 2 and expects English cues, so the four
-   text tracks are ordered [rus forced, rus, eng, eng-SDH] — the same order as the real
-   library item the case was written against.
- * `subtitle_image_pgs` picks subtitle row 1 = index 0, so the PGS track is index 0.
+ * `subtitle_text_srt` expects English cues from index 2, so the four text tracks are ordered
+   [rus forced, rus, eng, eng-SDH] — the same order as the real library item the case was
+   written against.
+ * `subtitle_image_pgs` picks the track at position 0 (`"track": 0`, whatever rows sit above
+   the tracks), so the PGS track is index 0.
 
 WHAT THIS DOES NOT SOLVE, stated here rather than discovered later: intro/credits MARKERS.
 Plex's detector needs Plex Pass, ignores intros under 20 s, and will not detect an intro
@@ -832,7 +834,7 @@ SHAPES = {
         "video": {"codec": "h264", "size": "1920x1080", "crf": 20},
         "audio": [{"codec": "ac3", "ch": 6, "lang": "eng", "br": "448k", "pitch": 220,
                    "default": True, "title": "AC-3 5.1 English"}],
-        # Order is the spec: subtitle_text_srt picks row 3 = index 2 and expects English.
+        # Order is the spec: subtitle_text_srt expects English cues from index 2.
         "subs": [{"codec": "subrip", "lang": "rus", "forced": True, "title": "Russian (Forced)"},
                  {"codec": "subrip", "lang": "rus", "title": "Russian"},
                  {"codec": "subrip", "lang": "eng", "title": "English"},
@@ -965,7 +967,7 @@ SHAPES = {
         "video": {"codec": "hevc", "size": "3840x2160", "crf": 34, "hdr": True},
         "audio": [{"codec": "eac3", "ch": 6, "lang": "eng", "br": "384k", "pitch": 700,
                    "default": True, "title": "E-AC-3 5.1 English"}],
-        # index 0, because subtitle_image_pgs picks row 1 (row 0 is Off).
+        # index 0, because subtitle_image_pgs picks the track at position 0 ("track": 0).
         "subs": [{"codec": "hdmv_pgs_subtitle", "lang": "eng", "title": "English (PGS)"}],
     },
 }

@@ -7,9 +7,10 @@
 //! from the previous procedural version — only the presentation moved onto the table.
 //!
 //! **The Subtitles panel is grouped, not one flat list** (plan `subtitle-menu-capsule` §3,
-//! `/tmp/dsplayer/player.html:1104-1162`): Off and every single-track "yours" language sit under
-//! one "Subtitles" header; a "yours" language with several tracks gets its own section (header =
-//! language, `accessory("N tracks")`), ranked full < SDH < forced < commentary; everything else is
+//! `/tmp/dsplayer/player.html:1104-1162`): Off, Forced only and every single-track "yours"
+//! language sit under one "Subtitles" header; a "yours" language with several tracks gets its own
+//! section (header = language, `accessory("N tracks")`), ranked full < SDH < forced < commentary;
+//! everything else is
 //! ONE "Other languages" row (a drill-in to [`TrackPage::OtherLanguages`], one row per language
 //! A-Z; a multi-track language there drills in again to [`TrackPage::Language`], its tracks
 //! ranked); and a headerless section holds Timing and Style. That
@@ -31,8 +32,9 @@
 //! hand-off, not a page); OK on it does not step anything here — it returns
 //! [`TrackOk::OpenTiming`], which `screens::player::overlay`'s `activate` turns into a hand-off: it
 //! dismisses this panel and presents the Timing capsule overlay (`OverlayKind::Timing`,
-//! `appkit::timing_capsule`) in its place. The row is dim and inert while subtitles are Off (OK there
-//! neither opens the capsule nor closes the panel), and Timing together with Style is omitted
+//! `appkit::timing_capsule`) in its place. The row is dim and inert while no subtitle is drawn
+//! (Off, or Forced only with no forced track to show; OK there neither opens the capsule nor
+//! closes the panel), and Timing together with Style is omitted
 //! during an ordinary transcode, which burns captions into the picture where no client-side offset
 //! or style can reach. That omission now holds only while no subtitle is on: once the server draws
 //! the selected subtitle ([`plx_media::route::subtitle_presenter`] says `ServerBurn`: a remux that
@@ -41,9 +43,21 @@
 //! why the server is drawing it — rather than being found simply gone. An external sidecar over a
 //! remux is drawn by the app (`ClientOverRemux`), so there both rows are live with no reason.
 //!
+//! **Forced only is a MODE row, not a track** (`track-memory-plan.md` §4.9). It sits right after Off
+//! wherever Off is, whether or not the item carries a forced track, and holds exactly one checkmark
+//! with the tracks and Off: while the mode holds, the forced track it draws is NOT also checked on
+//! its own row, and Off is not checked. Its value is the language of what it draws (else the playing
+//! audio's), bounded (`sub_layout::forced_only_readout`) so a long name never clips the row's own
+//! words. OK commits [`TrackCommit::SubtitleForcedOnly`]: the forced track for the audio that plays
+//! ([`plx_media::route::forced_only_pick`], with the container's track names) or nothing; for audio
+//! that names no language it matches in the language the session fell back to
+//! ([`plx_media::route::forced_only_lang`]), as the resolve does. OK on the row that is already the
+//! mode recommits what is on screen and writes nothing.
+//!
 //! **A pick is the show's memory, and the menu says when the route cannot honour it.** An explicit
 //! pick in either tab commits its descriptor with the track ([`TrackCommit`]'s `memo`), which the
-//! app's `commit_track` hands to `route::commit_audio_pick` / `commit_subtitle_pick`; they write it to
+//! app's `commit_track` hands to `route::commit_audio_pick` / `commit_subtitle_pick` /
+//! `commit_forced_only_pick`; they write it to
 //! the show's track memory when the route accepted the pick, and the next episode's plan reads it
 //! back. When the memory chose a subtitle for this play and the route can show none of it (a copy
 //! remux the app cannot draw), Off is on screen, so the first group closes with one inert
@@ -124,6 +138,10 @@ pub enum TrackRow {
     Loudness,
     /// The Subtitles tab's Off row.
     SubOff,
+    /// The Subtitles tab's Forced only row, directly after Off: the third remembered state
+    /// (Off, a track, or the forced track in the playing audio's language). It is offered wherever
+    /// Off is, with or without a forced track on this item.
+    SubForcedOnly,
     /// A Subtitles-tab track row — the index into the playing item's subs list.
     Sub(usize),
     /// The Timing row (hands off to the Timing capsule).
@@ -164,6 +182,7 @@ impl From<RowTarget> for TrackRow {
     fn from(t: RowTarget) -> Self {
         match t {
             RowTarget::Off => TrackRow::SubOff,
+            RowTarget::ForcedOnly => TrackRow::SubForcedOnly,
             RowTarget::Sub(i) => TrackRow::Sub(i),
             RowTarget::Timing => TrackRow::Timing,
             RowTarget::Style => TrackRow::Style,
@@ -280,6 +299,7 @@ impl FormId for TrackRow {
             TrackRow::Boost => 0x0002_0000,
             TrackRow::Loudness => 0x0002_0001,
             TrackRow::SubOff => 0x0003_0000,
+            TrackRow::SubForcedOnly => 0x0003_0001,
             TrackRow::Sub(i) => 0x0004_0000 + i as u32,
             TrackRow::Timing => 0x0005_0000,
             TrackRow::Style => 0x0005_0001,
@@ -384,6 +404,10 @@ struct SubSig {
     /// the show's remembered subtitle was chosen for this play and the route shows none of it
     /// ([`plx_media::route::cur_memory_note`]): the root says why
     memory_note: bool,
+    /// Forced only is the mode, with the language its row reads out
+    /// ([`sub_layout::forced_only_readout`]); `None` off the mode. The row's check, the single
+    /// checkmark and the read-out all follow it, and the language moves with the playing audio.
+    forced_only: Option<String>,
 }
 
 impl SubSig {
@@ -411,6 +435,14 @@ pub struct TrackMenuState {
     tab: c_int, // 0=Audio, 1=Subtitles
     active_audio: c_int, // index into the playing item's audio list
     active_sub: c_int, // -1 = Off, else index into the playing item's subs list
+    /// Forced only is the mode ([`plx_media::route::cur_sub_mode`]). `active_sub` is then the
+    /// forced track it drew (or -1 when none matched) and is NOT what the root checks: the
+    /// checkmark sits on the Forced only row alone ([`Self::checked_sub`]).
+    forced_only: bool,
+    /// The language Forced only falls back to when the audio names none
+    /// ([`plx_media::route::forced_only_lang`]) as of the last open or poll. `on_ok` has no
+    /// session, so a pick matches and remembers by this copy; its own Forced only pick moves it.
+    forced_lang: String,
     /// Both tabs' rows, declared once each as a [`TrackForm`] and resolved by [`TrackRow`]
     /// identity — [`Self::on_ok`] reads back what the focused row IS from its id rather than from a
     /// position (and so cannot disagree with what was drawn, the way a fresh call to
@@ -542,7 +574,9 @@ pub enum TrackCommit {
     /// route commit. `sidecar_codec` preserves ASS/SSA on download; a key need not have an
     /// extension. `None` — Off, or an embedded track — deselects any sidecar. `memo` is
     /// `SubtitleMemo::Off` for Off and `Track(..)` for every track, an embedded one, a sidecar or
-    /// a fresh download alike; `None` for an OK on the row that is already checked.
+    /// a fresh download alike; `None` for an OK on the row that is already checked (a row that is
+    /// checked because the mode is Forced only is NOT: leaving Forced only is a change, so the
+    /// track it drew is a memo of its own when picked on its row).
     Subtitle {
         render_ordinal: c_int,
         stream_id: i64,
@@ -550,6 +584,15 @@ pub enum TrackCommit {
         sidecar_codec: String,
         memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>,
     },
+    /// **Forced only** (`track-memory-plan.md` §4.9): the panel matched the forced track in the
+    /// playing audio's language (`render_ordinal`/`stream_id`, `-1`/`0` when the item has none),
+    /// and the loop commits it, holds the mode and remembers `SubtitleMemo::ForcedOnly { lang }`
+    /// (the drawn track's language, else the audio's, else the language the session fell back to).
+    /// `changed` is false for OK on the row that is already the mode: the menu closes, the commit
+    /// carries what is on screen unchanged (that stream, or `-1`/`0` for nothing) and nothing is
+    /// written. Always an embedded track, never a sidecar: a forced track the client cannot demux is
+    /// not matched.
+    SubtitleForcedOnly { render_ordinal: c_int, stream_id: i64, lang: String, changed: bool },
     /// The caption's tone. Not a track at all, but it is picked in this panel and it is the
     /// loop that performs it (`player::set_subtitle_tone` saves through the one write door, `route::choose`),
     /// like the two above.
@@ -632,6 +675,8 @@ impl TrackMenuState {
             tab,
             active_audio: 0,
             active_sub: -1,
+            forced_only: false,
+            forced_lang: String::new(),
             form: TrackTable::new(BAND_BASE),
             offset_ms: plx_media::player::subtitle_offset_ms(),
             tone: plx_media::player::subtitle_tone(),
@@ -745,9 +790,19 @@ impl TrackMenuState {
     pub fn active_audio(&self) -> c_int {
         self.active_audio
     }
-    /// -1 = subtitles off, else index into the playing item's subs list
+    /// -1 = subtitles off, else index into the playing item's subs list. Under Forced only, the
+    /// forced track it drew (-1 when none matched); [`Self::forced_only`] says which mode it is.
     pub fn active_sub(&self) -> c_int {
         self.active_sub
+    }
+    /// Is Forced only the subtitle mode (the checkmark is on its row)?
+    pub fn forced_only(&self) -> bool {
+        self.forced_only
+    }
+    /// The track the track rows check: the active one, or none while Forced only holds the
+    /// checkmark. Every row that checks a track reads this, never `active_sub` directly.
+    fn checked_sub(&self) -> c_int {
+        if self.forced_only { -1 } else { self.active_sub }
     }
     /// Plex stream id of the chosen audio track (for &audioStreamID), or 0
     pub fn audio_stream_id(&self, meta: metadata::MetadataView<'_>) -> i64 {
@@ -810,7 +865,39 @@ impl TrackMenuState {
         let (audio, sub) = Self::derive_active(ps, meta);
         self.active_audio = audio;
         self.active_sub = sub;
+        self.forced_only = Self::derive_forced_only(ps);
+        self.forced_lang = plx_media::route::forced_only_lang(ps).to_string();
         self.read_item_sidecars(meta);
+    }
+
+    /// Is the playback in Forced only? The route owns that fact (`cur_sub_mode`): the drawn forced
+    /// track's stream id alone cannot tell it from a pick of that same track.
+    fn derive_forced_only(ps: &plx_media::route::PlaybackSession) -> bool {
+        plx_media::route::cur_sub_mode(ps) == plx_media::route::SubMode::ForcedOnly
+    }
+
+    /// The language the Forced only row reads out while it is the mode: the drawn track's, else the
+    /// playing audio's ([`sub_layout::forced_only_readout`]); for audio that names no language, the
+    /// one the mode fell back to, named by a track of the item that carries it. `None` off the mode.
+    fn forced_readout(
+        ps: &plx_media::route::PlaybackSession,
+        meta: metadata::MetadataView<'_>,
+        active: c_int,
+        forced: bool,
+    ) -> Option<String> {
+        forced.then(|| {
+            let item = tracks(meta);
+            let drawn = item.and_then(|t| t.subs.get(usize::try_from(active).ok()?));
+            let audio = item.and_then(|t| t.audio.get(usize::try_from(Self::derive_active_audio(ps, meta)).ok()?));
+            let audio_lang = audio.map_or("", |a| a.lang_code.as_str());
+            let language = plx_media::route::forced_only_language(audio_lang, plx_media::route::forced_only_lang(ps));
+            // the fallback stood in for audio that names none: no stream of that language need be
+            // drawn, so it is named by any track of the item that carries it
+            let stand_in = (drawn.is_none() && language != audio_lang)
+                .then(|| item.and_then(|t| t.subs.iter().chain(&t.audio).find(|s| metadata::lang_matches(language, &s.lang_code))))
+                .flatten();
+            sub_layout::forced_only_readout(drawn, stand_in.or(audio))
+        })
     }
 
     /// Re-read the playing item's external subtitles for the Search page ([`Self::item_sidecars`]).
@@ -845,11 +932,17 @@ impl TrackMenuState {
     /// while a track list or enhancement change it does not read leaves it alone.
     fn poll_subtitle_state(&mut self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
         let live_sub = Self::derive_active_sub(ps, meta);
-        let sig = self.sub_sig_for(ps, meta, live_sub);
+        let live_forced = Self::derive_forced_only(ps);
+        let live_lang = plx_media::route::forced_only_lang(ps);
+        if self.forced_lang != live_lang {
+            self.forced_lang = live_lang.to_string();
+        }
+        let sig = self.sub_sig_for(ps, meta, live_sub, live_forced);
         if self.sub_sig.as_ref() == Some(&sig) {
             return;
         }
         self.active_sub = live_sub;
+        self.forced_only = live_forced;
         self.read_item_sidecars(meta);
         let Some(first) = self.pages.first().copied() else {
             let form = self.layout(ps, meta);
@@ -903,7 +996,13 @@ impl TrackMenuState {
 
     /// The Subtitles root's rebuild signature for `active`, read fresh off the route and the
     /// item. [`Self::layout`] stores the same value it builds from.
-    fn sub_sig_for(&self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, active: c_int) -> SubSig {
+    fn sub_sig_for(
+        &self,
+        ps: &plx_media::route::PlaybackSession,
+        meta: metadata::MetadataView<'_>,
+        active: c_int,
+        forced: bool,
+    ) -> SubSig {
         let item = tracks(meta);
         let offered = visible_subs(ps, meta);
         let subs = item
@@ -922,6 +1021,7 @@ impl TrackMenuState {
             enhancement,
             effect,
             memory_note: plx_media::route::cur_memory_note(ps),
+            forced_only: Self::forced_readout(ps, meta, active, forced),
         }
     }
 
@@ -952,11 +1052,14 @@ impl TrackMenuState {
         }
     }
 
-    /// The Subtitles ROOT's row carrying the checkmark: the active track, or Off — or, when the
-    /// active track is not listed on the root at all (its language is not "yours": a codeless or
-    /// unrecognised-language track, or one a live change moved), the Other languages row that
-    /// stands for it.
+    /// The Subtitles ROOT's row carrying the checkmark: Forced only while it is the mode, else the
+    /// active track, or Off — or, when the active track is not listed on the root at all (its
+    /// language is not "yours": a codeless or unrecognised-language track, or one a live change
+    /// moved), the Other languages row that stands for it.
     fn active_sub_id(&self) -> TrackRow {
+        if self.forced_only {
+            return TrackRow::SubForcedOnly;
+        }
         match self.active_sub {
             i if i >= 0 && self.other.iter().any(|o| o.tracks.iter().any(|t| t.i == i as usize)) => TrackRow::OpenOther,
             i if i >= 0 => TrackRow::Sub(i as usize),
@@ -1111,6 +1214,7 @@ impl TrackMenuState {
             TrackRow::Timing if self.active_sub >= 0 => TrackOk::OpenTiming,
             TrackRow::Timing => TrackOk::Inert, // dim and inert while subtitles are Off
             TrackRow::SubOff => self.commit_sub(-1, meta),
+            TrackRow::SubForcedOnly => self.commit_forced_only(meta),
             TrackRow::Sub(i) => self.commit_sub(i as c_int, meta),
             TrackRow::SearchHit(i) => self.search_download(i),
             TrackRow::SearchRetry => TrackOk::Search(plx_data::subsearch::SubSearchCmd::Retry),
@@ -1133,8 +1237,12 @@ impl TrackMenuState {
     /// an OK there is closing the menu, not choosing, and an automatic pick (the ladder's Off, or
     /// its track) must not become the show's memory.
     fn commit_sub(&mut self, new_sub: c_int, meta: metadata::MetadataView<'_>) -> TrackOk {
-        let changed = self.active_sub != new_sub;
+        // Leaving Forced only is a change even onto the stream it drew (the forced track's own row)
+        // or onto nothing (Off while no forced track matched): the index is the same, the state is
+        // not.
+        let changed = self.active_sub != new_sub || self.forced_only;
         self.active_sub = new_sub;
+        self.forced_only = false;
         // the client renderer takes the EMBEDDED-subtitle ordinal (what the demuxer
         // enumerates); an external pick has no demux ordinal — it is drawn by the sidecar
         // renderer on direct play, or burned
@@ -1169,6 +1277,57 @@ impl TrackMenuState {
                         .and_then(|t| t.subs.get(new_sub as usize))
                         .map(plx_media::route::memo_of_subtitle)
                 },
+            },
+            keep_open: false,
+        }
+    }
+
+    /// **OK on Forced only**: match the forced track for the audio that plays, commit it (or
+    /// nothing, when the item has none) and hold the mode. The match is the route's own
+    /// ([`plx_media::route::forced_only_pick`]) over the container's names, in the language the
+    /// resolve would use: the audio's, else the one the session fell back to ([`Self::forced_lang`]).
+    /// So the row and the next episode choose by one rule. The language remembered is the drawn
+    /// track's, else that same language.
+    ///
+    /// **A pick of the row that is already the mode is not a choice**: the menu opens on the checked
+    /// row, so OK there is how it is dismissed. It recommits what the route shows (that stream, or
+    /// nothing), unchanged and with `changed: false`, and matches nothing again: a re-match could
+    /// find no track where the resolve drew one (untagged audio drawn through the fallback), and
+    /// turn the subtitle off.
+    fn commit_forced_only(&mut self, meta: metadata::MetadataView<'_>) -> TrackOk {
+        let changed = !self.forced_only;
+        let item = tracks(meta);
+        let audio = item.and_then(|t| t.audio.get(usize::try_from(self.active_audio).ok()?));
+        let audio_lang = audio.map_or("", |a| a.lang_code.as_str());
+        let picked = if changed {
+            item.and_then(|t| {
+                let names = plx_media::player::SHARED.track_names.lock().unwrap_or_else(|e| e.into_inner());
+                plx_media::route::forced_only_pick(&t.subs, &names, audio_lang, &self.forced_lang)
+            })
+        } else {
+            usize::try_from(self.active_sub).ok()
+        };
+        let drawn = item.and_then(|t| {
+            let i = picked?;
+            Some((i, metadata::sub_render_ordinal(&t.subs, i), t.subs.get(i)?))
+        });
+        let lang = drawn
+            .map_or_else(|| plx_media::route::forced_only_language(audio_lang, &self.forced_lang), |(.., s)| s.lang_code.as_str())
+            .to_string();
+        self.active_sub = drawn.map_or(-1, |(i, ..)| i as c_int);
+        self.forced_only = true;
+        if changed {
+            self.forced_lang = lang.clone();
+            plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
+                feature: plx_telemetry::diag::schema::Feature::SubtitleTrack,
+            });
+        }
+        TrackOk::Commit {
+            commit: TrackCommit::SubtitleForcedOnly {
+                render_ordinal: drawn.map_or(-1, |(_, ordinal, _)| ordinal),
+                stream_id: drawn.map_or(0, |(.., s)| s.id),
+                lang,
+                changed,
             },
             keep_open: false,
         }
@@ -1237,7 +1396,7 @@ impl TrackMenuState {
     /// pick row (checked when it is the active track); a multi-track one is a drill-in reading out
     /// its track count, or — when the active track is inside it — a check and that variant.
     fn other_form(&self) -> TrackForm {
-        let active = self.active_sub;
+        let active = self.checked_sub();
         let sec = self.other.iter().fold(FormSection::new(""), |sec, lang| match lang.tracks.as_slice() {
             [t] => sec.item(TrackRow::Sub(t.i), RowKind::Choice, (), flat_row(t, active)),
             tracks => {
@@ -1255,7 +1414,7 @@ impl TrackMenuState {
 
     /// A language page: its tracks ranked full < SDH < forced < commentary, a pick row each.
     fn language_form(&self, stream: i64) -> TrackForm {
-        let active = self.active_sub;
+        let active = self.checked_sub();
         let tracks = self.other_lang(stream).map(|o| o.tracks.as_slice()).unwrap_or_default();
         let sec = tracks.iter().fold(FormSection::new(""), |sec, t| {
             sec.item(TrackRow::Sub(t.i), RowKind::Choice, (), in_lang_row(t, active))
@@ -1527,7 +1686,7 @@ impl TrackMenuState {
     /// drill-in) else the first, a language page on the active variant if it is inside, else its
     /// first track. `None` (a language already gone) leaves it to the table's opening row.
     fn page_initial(&self, page: TrackPage) -> Option<TrackRow> {
-        let active = usize::try_from(self.active_sub).ok();
+        let active = usize::try_from(self.checked_sub()).ok();
         let holds_active = |o: &OtherLang| active.is_some_and(|a| o.tracks.iter().any(|t| t.i == a));
         match page {
             TrackPage::Style => Some(TrackRow::OpenField(StyleField::Size)),
@@ -1760,7 +1919,7 @@ impl TrackMenuState {
         // stay drawn (dim, with a reason) instead of being omitted the way an ordinary
         // non-enhancement transcode omits both — a viewer who turned the enhancement on must still
         // see why the control they had is gone, not just find it missing.
-        let sig = self.sub_sig_for(ps, meta, self.active_sub);
+        let sig = self.sub_sig_for(ps, meta, self.active_sub, self.forced_only);
         self.renderer = sig.renderer;
         self.sub_sig = Some(sig);
         let (form, model) = self.sub_root_form(ps, meta);
@@ -1791,8 +1950,15 @@ impl TrackMenuState {
         let show_timing = !plx_media::route::is_transcoding(ps)
             || presenter != plx_media::route::SubtitlePresenter::None;
         let model = self.sub_model(ps, meta, show_timing);
-        let mut form =
-            table_form(&model, self.active_sub, self.offset_ms, burn, plx_media::route::cur_memory_note(ps));
+        let forced = Self::forced_readout(ps, meta, self.active_sub, self.forced_only);
+        let mut form = table_form(
+            &model,
+            self.active_sub,
+            self.offset_ms,
+            burn,
+            plx_media::route::cur_memory_note(ps),
+            forced.as_deref(),
+        );
         if self.search.is_some() {
             // offered on direct play AND during a transcode: a downloaded sidecar is drawn by the
             // client on one and burned by the server on the other, so it reaches the picture either way
@@ -2325,9 +2491,9 @@ fn in_lang_label(t: &SubTrack) -> String {
 }
 
 /// **Declare the Subtitles root** from its model (`metadata::sub_layout::sub_sections`) as a keyed
-/// form — the catalog words for each header, the checkmark on `active_sub` (-1 for Off), and the
-/// Timing read-out (`offset_ms`). Each row is declared once: a track carries its subs-list index
-/// as its id and key; Timing is dim while subtitles are Off and hands off to the capsule (so it has
+/// form — the catalog words for each header, the checkmark on `active_sub` (-1 for Off, unless
+/// Forced only holds it), and the Timing read-out (`offset_ms`). Each row is declared once: a track carries its subs-list index
+/// as its id and key; Timing is dim while no subtitle is drawn and hands off to the capsule (so it has
 /// no chevron); Style and Other languages are Nav rows, the drill-ins to [`TrackPage::Style`] and
 /// [`TrackPage::OtherLanguages`] (the latter reads out the language count, or — when the active
 /// track lives behind it — a check and that track's language).
@@ -2343,16 +2509,26 @@ fn in_lang_label(t: &SubTrack) -> String {
 /// route shows none of it, so Off is on screen although a track is remembered. One non-selectable
 /// [`FormSection::note`] closes the FIRST group (Off and the tracks), where the viewer's eye is when
 /// the checkmark sits on Off; it is declared only when the flag is set.
+///
+/// `forced_only` (FO, `track-memory-plan.md` §4.9) is `Some(read-out)` while Forced only is the
+/// mode, else `None`. The read-out is the language the row shows or looked for
+/// ([`sub_layout::forced_only_readout`]). **One checkmark**: the check sits on the Forced only row
+/// and on nothing else: not on Off and not on the forced track it drew, whose own row (and its
+/// Other languages row) stays unchecked. `active_sub` still says whether a track is drawn, which is
+/// what keeps Timing live, so Timing is dim only while nothing is drawn.
 fn table_form(
     model: &SubModel,
     active_sub: c_int,
     offset_ms: i64,
     burn: Option<plx_media::route::BurnReason>,
     memory_note: bool,
+    forced_only: Option<&str>,
 ) -> TrackForm {
     use plx_platform::i18n::msg;
+    // the track the rows check: the drawn one, unless Forced only holds the checkmark
+    let checked_sub = if forced_only.is_some() { -1 } else { active_sub };
     let active_other =
-        model.other.iter().find(|o| o.tracks.iter().any(|t| active_sub >= 0 && t.i == active_sub as usize));
+        model.other.iter().find(|o| o.tracks.iter().any(|t| checked_sub >= 0 && t.i == checked_sub as usize));
     model.sections.iter().enumerate().fold(Form::new(), |form, (at, sec)| {
         let head = match &sec.header {
             SubHeader::Subtitles => Section::new(msg::widgets_tracks_subtitles()),
@@ -2369,10 +2545,19 @@ fn table_form(
                     id,
                     RowKind::Choice,
                     (),
-                    Row::new(msg::widgets_tracks_off()).checked(active_sub < 0),
+                    Row::new(msg::widgets_tracks_off()).checked(checked_sub < 0 && forced_only.is_none()),
                 ),
-                SubRow::Flat(t) => out.item(id, RowKind::Choice, (), flat_row(t, active_sub)),
-                SubRow::InLanguage(t) => out.item(id, RowKind::Choice, (), in_lang_row(t, active_sub)),
+                SubRow::ForcedOnly => {
+                    let row = Row::new(msg::widgets_tracks_forced_only()).checked(forced_only.is_some());
+                    // the read-out is a language name: the stream's own text, so it may elide
+                    // before the row's catalog words do
+                    out.item(id, RowKind::Choice, (), match forced_only {
+                        Some(language) => row.value(language).server_value(),
+                        None => row,
+                    })
+                }
+                SubRow::Flat(t) => out.item(id, RowKind::Choice, (), flat_row(t, checked_sub)),
+                SubRow::InLanguage(t) => out.item(id, RowKind::Choice, (), in_lang_row(t, checked_sub)),
                 SubRow::OtherLanguages { languages } => {
                     let (value, checked) = match active_other {
                         Some(o) => (o.name.clone(), true),
@@ -2451,7 +2636,7 @@ mod tests {
         let yours: Vec<String> = yours.iter().map(|y| y.to_string()).collect();
         let model = sub_layout::sub_sections(subs, offered, names, &yours, show_timing);
         let mut built = FormTable::new(plx_ui::table_screen::BAND_BASE);
-        built.set(table_form(&model, active_sub, offset_ms, None, false), None);
+        built.set(table_form(&model, active_sub, offset_ms, None, false, None), None);
         let ids = (0..built.table.n_rows() as usize).map(|i| built.id_at(i).copied()).collect();
         (std::mem::take(&mut built.table.sections), ids)
     }
@@ -2497,9 +2682,9 @@ mod tests {
         let names = TrackNames::new();
         let (sections, targets) = sub_layout(&subs, &[0], &names, &["spa"], -1, true, 0);
         assert_eq!(sections[0].header, "Subtitles");
-        assert_eq!(sections[0].rows.len(), 2, "Off + the one track");
-        assert_eq!(sections[0].rows[1].label, "Spanish");
-        assert_eq!(targets[1], Some(TrackRow::Sub(0)));
+        assert_eq!(sections[0].rows.len(), 3, "Off + Forced only + the one track");
+        assert_eq!(sections[0].rows[2].label, "Spanish");
+        assert_eq!(targets[2], Some(TrackRow::Sub(0)));
     }
 
     // ---- sub_layout: a nameless track reads as its kind, with no badge ------------------------
@@ -2557,34 +2742,34 @@ mod tests {
 
         let subs = vec![mk(true, false, "srt")];
         let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
-        assert!(matches!(sections[0].rows[1].badges.as_slice(), [Badge::Sdh]));
+        assert!(matches!(sections[0].rows[2].badges.as_slice(), [Badge::Sdh]));
 
         let subs = vec![mk(false, true, "srt")];
         let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
-        assert!(matches!(sections[0].rows[1].badges.as_slice(), [Badge::Text(t)] if t == "EXTERNAL"));
+        assert!(matches!(sections[0].rows[2].badges.as_slice(), [Badge::Text(t)] if t == "EXTERNAL"));
 
         let subs = vec![mk(true, true, "srt")];
         let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
         assert!(
-            matches!(sections[0].rows[1].badges.as_slice(), [Badge::Sdh]),
+            matches!(sections[0].rows[2].badges.as_slice(), [Badge::Sdh]),
             "SDH beats EXTERNAL"
         );
 
         let subs = vec![mk(false, false, "pgs")];
         let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
-        assert!(matches!(sections[0].rows[1].badges.as_slice(), [Badge::Text(t)] if t == "PGS"));
+        assert!(matches!(sections[0].rows[2].badges.as_slice(), [Badge::Text(t)] if t == "PGS"));
 
         // an image subtitle keeps its format whatever else it is: the codec chip follows the kind
         let subs = vec![mk(true, false, "pgs")];
         let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
         assert!(
-            matches!(sections[0].rows[1].badges.as_slice(), [Badge::Sdh, Badge::Text(t)] if t == "PGS"),
+            matches!(sections[0].rows[2].badges.as_slice(), [Badge::Sdh, Badge::Text(t)] if t == "PGS"),
             "SDH + PGS"
         );
         // a text subtitle never shows a format, external or not
         let subs = vec![mk(false, true, "ass")];
         let (sections, _) = sub_layout(&subs, &[0], &names, &["eng"], -1, true, 0);
-        assert!(matches!(sections[0].rows[1].badges.as_slice(), [Badge::Text(t)] if t == "EXTERNAL"));
+        assert!(matches!(sections[0].rows[2].badges.as_slice(), [Badge::Text(t)] if t == "EXTERNAL"));
     }
 
     // ---- sub_layout: "Other languages" is ONE drill-in row on the root -------------------------
@@ -2598,7 +2783,10 @@ mod tests {
         ];
         let offered: Vec<usize> = (0..subs.len()).collect();
         let (sections, ids) = sub_layout(&subs, &offered, &TrackNames::new(), &[], -1, true, 0);
-        assert_eq!(ids, [Some(TrackRow::SubOff), Some(TrackRow::OpenOther), Some(TrackRow::Timing), Some(TrackRow::Style)]);
+        assert_eq!(
+            ids,
+            [Some(TrackRow::SubOff), Some(TrackRow::SubForcedOnly), Some(TrackRow::OpenOther), Some(TrackRow::Timing), Some(TrackRow::Style)]
+        );
         let row = &sections[1].rows[0];
         assert_eq!((row.label.as_str(), row.value.as_deref()), ("Other languages", Some("2")), "two languages, three tracks");
         assert!(!row.checked, "no active track behind it");
@@ -2739,7 +2927,7 @@ mod tests {
         let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
         assert_eq!(
             menu.ids(),
-            vec![TrackRow::SubOff, TrackRow::Sub(0), TrackRow::Timing, TrackRow::Style]
+            vec![TrackRow::SubOff, TrackRow::SubForcedOnly, TrackRow::Sub(0), TrackRow::Timing, TrackRow::Style]
         );
     }
 
@@ -2829,11 +3017,13 @@ mod tests {
             },
         ]);
         let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into(), "fre".into()]);
-        // Off(0), English(1), French sidecar(2), then the headerless Timing(3) / Style(4) section
+        // Off(0), Forced only(1), English(2), French sidecar(3), then the headerless Timing(4) /
+        // Style(5) section
         assert_eq!(
             menu.ids(),
             vec![
                 TrackRow::SubOff,
+                TrackRow::SubForcedOnly,
                 TrackRow::Sub(0),
                 TrackRow::Sub(1),
                 TrackRow::Timing,
@@ -2841,7 +3031,7 @@ mod tests {
             ]
         );
 
-        menu.focus_row(2);
+        menu.focus_row(3);
         assert_eq!(
             menu.on_ok(store.view()),
             TrackOk::Commit {
@@ -2863,7 +3053,7 @@ mod tests {
             }
         );
 
-        menu.focus_row(3);
+        menu.focus_row(4);
         assert_eq!(
             menu.on_ok(store.view()),
             TrackOk::OpenTiming,
@@ -2871,7 +3061,7 @@ mod tests {
         );
 
         // Style -> Color -> the second tone: a Nav row pushes, a choice commits and the panel stays
-        menu.focus_row(4);
+        menu.focus_row(5);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated);
         assert_eq!(menu.on_ok(store.view()), TrackOk::Navigated, "Size is first and live for a text subtitle");
         assert_eq!(menu.page_path(), [TrackPage::Style, TrackPage::Picker(StyleField::Size)]);
@@ -3045,7 +3235,7 @@ mod tests {
                 other => panic!("row {row} did not commit a subtitle: {other:?}"),
             }
         };
-        let (stream_id, memo) = commit_of(&mut menu, 2);
+        let (stream_id, memo) = commit_of(&mut menu, 3);
         assert_eq!(stream_id, 42);
         let Some(SubtitleMemo::Track(track)) = memo else { panic!("a track is remembered as a Track: {memo:?}") };
         assert_eq!((track.lang.as_str(), track.kind.as_str(), track.title.as_str()), ("spa", "text", "Forced"));
@@ -3078,9 +3268,9 @@ mod tests {
             }
         };
         assert_eq!(commit_of(&mut menu, 0), (0, None), "Off is what the route shows: OK on it commits, remembers nothing");
-        let (stream_id, memo) = commit_of(&mut menu, 2);
+        let (stream_id, memo) = commit_of(&mut menu, 3);
         assert_eq!((stream_id, memo.is_some()), (42, true), "control: a changed pick carries its memo");
-        assert_eq!(commit_of(&mut menu, 2), (42, None), "OK on the track that is already checked remembers nothing");
+        assert_eq!(commit_of(&mut menu, 3), (42, None), "OK on the track that is already checked remembers nothing");
         assert_eq!(commit_of(&mut menu, 0), (0, Some(SubtitleMemo::Off)), "Off after a track is a change, remembered as Off");
         assert_eq!(commit_of(&mut menu, 0), (0, None), "and OK on that Off again is not");
     }
@@ -4564,6 +4754,468 @@ mod enhancement_menu_tests {
     }
 }
 
+/// **Forced only (FO, `track-memory-plan.md` §4.9)**: the row after Off, the one checkmark, what OK
+/// on it commits and remembers, and the read-out that tells the audio's language from the
+/// account setting's.
+#[cfg(test)]
+mod forced_only_tests {
+    use super::tests::stream;
+    use super::*;
+    use plx_media::route::{
+        enhancement_test_session, reset_player_control_for_test, set_forced_only_lang_for_test, set_sub_mode_for_test,
+        EnhTestFixture, SubMode, SubtitleEffect,
+    };
+    use plx_plex::plex::session::prefs::SubtitleMemo;
+
+    fn audio(id: i64, lang: &str, code: &str) -> metadata::Stream {
+        metadata::Stream {
+            id,
+            index: 0,
+            lang: lang.into(),
+            lang_code: code.into(),
+            codec: "eac3".into(),
+            channels: 6,
+            default: true,
+            ..Default::default()
+        }
+    }
+
+    fn forced(id: i64, index: i64, lang: &str, code: &str) -> metadata::Stream {
+        metadata::Stream { forced: true, ..stream(id, index, lang, code, "") }
+    }
+
+    fn store_of(audio: Vec<metadata::Stream>, subs: Vec<metadata::Stream>) -> plx_data::stores::metadata::MetadataStore {
+        let mut store = plx_data::stores::metadata::MetadataStore::default();
+        let mut item = metadata::PlayingItem::with_subs(subs);
+        item.audio = audio;
+        assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
+        store
+    }
+
+    /// The Subtitles tab on a direct play in `mode`. `drawn` is `Embedded` when the route shows a
+    /// track (`enhancement_test_session` names it stream 999) or `None` when it shows nothing.
+    /// Caller holds `testlock::serial()` and tears the session down.
+    fn open(
+        mode: SubMode,
+        drawn: SubtitleEffect,
+        audio: Vec<metadata::Stream>,
+        subs: Vec<metadata::Stream>,
+    ) -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
+        open_with_fallback(mode, drawn, audio, subs, "")
+    }
+
+    /// [`open`] on a session whose Forced only falls back to `fallback` for audio that names no
+    /// language (what a landing under a Forced only memo recorded).
+    fn open_with_fallback(
+        mode: SubMode,
+        drawn: SubtitleEffect,
+        audio: Vec<metadata::Stream>,
+        subs: Vec<metadata::Stream>,
+        fallback: &str,
+    ) -> (TrackMenuState, plx_media::route::PlaybackSession, plx_data::stores::metadata::MetadataStore) {
+        let (mut ps, _sid) = enhancement_test_session(EnhTestFixture {
+            remux: None,
+            subtitle_effect: drawn,
+            ..Default::default()
+        });
+        set_sub_mode_for_test(&mut ps, mode);
+        if !fallback.is_empty() {
+            set_forced_only_lang_for_test(&mut ps, fallback);
+        }
+        let store = store_of(audio, subs);
+        let menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into()]);
+        (menu, ps, store)
+    }
+
+    fn teardown(ps: &plx_media::route::PlaybackSession) {
+        reset_player_control_for_test(ps);
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    fn rows(menu: &TrackMenuState) -> Vec<&Row> {
+        menu.form.table.sections.iter().flat_map(|s| &s.rows).collect()
+    }
+
+    fn row_of(menu: &TrackMenuState, id: TrackRow) -> &Row {
+        rows(menu)[menu.form.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on this page"))]
+    }
+
+    /// The rows carrying a checkmark, by identity.
+    fn checked(menu: &TrackMenuState) -> Vec<TrackRow> {
+        let flags: Vec<bool> = rows(menu).iter().map(|r| r.checked).collect();
+        let ids = menu.ids();
+        // notes carry no id, so line the ids up with the focusable rows only
+        let focusable: Vec<bool> = (0..flags.len()).filter(|&i| menu.form.id_at(i).is_some()).map(|i| flags[i]).collect();
+        ids.into_iter().zip(focusable).filter(|(_, c)| *c).map(|(id, _)| id).collect()
+    }
+
+    fn ok_on(menu: &mut TrackMenuState, store: &plx_data::stores::metadata::MetadataStore, id: TrackRow) -> TrackOk {
+        let i = menu.form.index_of(&id).unwrap_or_else(|| panic!("{id:?} is not on this page"));
+        menu.focus_row(i as c_int);
+        menu.on_ok(store.view())
+    }
+
+    fn english_with_a_forced_track() -> Vec<metadata::Stream> {
+        vec![stream(1, 0, "English", "eng", ""), forced(999, 1, "English", "eng")]
+    }
+
+    /// **One checkmark.** While Forced only is the mode the check sits on its row and nowhere
+    /// else: not on Off, and not on the forced track it drew (whose own row stays unchecked). The
+    /// row reads out the drawn track's language. Outside the mode the drawn track is the checked
+    /// one and the Forced only row is plain.
+    #[test]
+    fn the_check_is_on_forced_only_and_not_on_the_track_it_drew() {
+        let _g = plx_base::testlock::serial();
+        let (menu, ps, _store) = open(
+            SubMode::ForcedOnly,
+            SubtitleEffect::Embedded,
+            vec![audio(10, "English", "eng")],
+            english_with_a_forced_track(),
+        );
+        assert_eq!(menu.ids()[..2], [TrackRow::SubOff, TrackRow::SubForcedOnly], "directly after Off");
+        assert_eq!(checked(&menu), [TrackRow::SubForcedOnly], "exactly one checkmark, on Forced only");
+        assert_eq!(row_of(&menu, TrackRow::SubForcedOnly).value.as_deref(), Some("English"), "it reads out the language");
+        assert_eq!(menu.selected_id(), Some(TrackRow::SubForcedOnly), "the cursor lands on the checked row");
+        assert!(menu.forced_only() && menu.active_sub() == 1, "the mode, and the track it drew");
+        teardown(&ps);
+
+        let (menu, ps, _store) = open(
+            SubMode::Track,
+            SubtitleEffect::Embedded,
+            vec![audio(10, "English", "eng")],
+            english_with_a_forced_track(),
+        );
+        assert_eq!(checked(&menu), [TrackRow::Sub(1)], "control: a picked track carries the check");
+        assert_eq!(row_of(&menu, TrackRow::SubForcedOnly).value, None, "and the plain row reads out nothing");
+        teardown(&ps);
+    }
+
+    /// The one checkmark holds behind Other languages too: a forced track whose language is not
+    /// "yours" is reached through that row and its page, and neither shows a check while Forced
+    /// only is the mode.
+    #[test]
+    fn the_check_is_not_on_other_languages_or_its_pages_under_forced_only() {
+        let _g = plx_base::testlock::serial();
+        let subs = vec![stream(1, 0, "English", "eng", ""), forced(999, 1, "German", "deu")];
+        let (mut menu, ps, _store) =
+            open(SubMode::ForcedOnly, SubtitleEffect::Embedded, vec![audio(10, "German", "deu")], subs.clone());
+        assert_eq!(checked(&menu), [TrackRow::SubForcedOnly]);
+        assert!(!row_of(&menu, TrackRow::OpenOther).checked, "the drawn track sits behind Other languages, unchecked");
+        assert_eq!(row_of(&menu, TrackRow::OpenOther).value.as_deref(), Some("1"), "it counts languages, it does not name one");
+        menu.push(TrackPage::OtherLanguages);
+        assert_eq!(checked(&menu), Vec::<TrackRow>::new(), "no checkmark on the page either");
+        teardown(&ps);
+
+        let (mut menu, ps, _store) = open(SubMode::Track, SubtitleEffect::Embedded, vec![audio(10, "German", "deu")], subs);
+        assert_eq!(checked(&menu), [TrackRow::OpenOther], "control: a picked track behind it checks the row");
+        menu.push(TrackPage::OtherLanguages);
+        assert_eq!(checked(&menu), [TrackRow::Sub(1)]);
+        teardown(&ps);
+    }
+
+    /// Timing follows whether a track is DRAWN, not which row holds the check: dim and inert while
+    /// Forced only shows nothing, live once it draws a track. The read-out names the language it
+    /// looked for when nothing matched.
+    #[test]
+    fn timing_is_dim_while_forced_only_draws_nothing_and_live_once_it_draws() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, ps, store) = open(
+            SubMode::ForcedOnly,
+            SubtitleEffect::None,
+            vec![audio(10, "Japanese", "jpn")],
+            english_with_a_forced_track(),
+        );
+        assert_eq!(checked(&menu), [TrackRow::SubForcedOnly]);
+        assert_eq!(
+            row_of(&menu, TrackRow::SubForcedOnly).value.as_deref(),
+            Some("Japanese"),
+            "nothing matched: the language it looked for, the audio's"
+        );
+        assert!(row_of(&menu, TrackRow::Timing).dim, "nothing is drawn");
+        assert_eq!(ok_on(&mut menu, &store, TrackRow::Timing), TrackOk::Inert);
+        teardown(&ps);
+
+        let (mut menu, ps, store) = open(
+            SubMode::ForcedOnly,
+            SubtitleEffect::Embedded,
+            vec![audio(10, "English", "eng")],
+            english_with_a_forced_track(),
+        );
+        assert!(!row_of(&menu, TrackRow::Timing).dim, "a forced track is drawn");
+        assert_eq!(ok_on(&mut menu, &store, TrackRow::Timing), TrackOk::OpenTiming);
+        teardown(&ps);
+    }
+
+    fn forced_commit(ok: TrackOk) -> (c_int, i64, String, bool) {
+        match ok {
+            TrackOk::Commit {
+                commit: TrackCommit::SubtitleForcedOnly { render_ordinal, stream_id, lang, changed },
+                keep_open: false,
+            } => (render_ordinal, stream_id, lang, changed),
+            other => panic!("not a Forced only commit: {other:?}"),
+        }
+    }
+
+    /// **OK on Forced only commits the forced track for the AUDIO that plays**, or nothing, and
+    /// says which language to remember: the drawn track's, else the audio's. A second OK on the row
+    /// that is already the mode closes the menu and changes nothing.
+    #[test]
+    fn ok_on_forced_only_commits_the_forced_track_in_the_playing_audios_language() {
+        let _g = plx_base::testlock::serial();
+        let subs = vec![stream(1, 0, "English", "eng", ""), forced(2, 1, "English", "eng"), forced(3, 2, "Spanish", "spa")];
+        let (mut menu, ps, store) = open(SubMode::Track, SubtitleEffect::None, vec![audio(10, "English", "eng")], subs.clone());
+        assert_eq!(
+            forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)),
+            (1, 2, "eng".to_string(), true),
+            "English audio: the English forced track, by its demuxer ordinal"
+        );
+        assert!(menu.forced_only() && menu.active_sub() == 1);
+        assert_eq!(
+            forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)),
+            (1, 2, "eng".to_string(), false),
+            "OK on the row that is the mode again changes nothing"
+        );
+        teardown(&ps);
+
+        let (mut menu, ps, store) = open(SubMode::Track, SubtitleEffect::None, vec![audio(10, "Spanish", "spa")], subs);
+        assert_eq!(
+            forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)),
+            (2, 3, "spa".to_string(), true),
+            "Spanish audio: the Spanish one"
+        );
+        teardown(&ps);
+    }
+
+    /// Forced only is offered and chosen where there is no forced track at all: it commits
+    /// nothing-on-screen, is still the mode, and is remembered with the audio's language.
+    #[test]
+    fn forced_only_with_no_forced_track_commits_nothing_and_is_still_the_mode() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, ps, store) = open(
+            SubMode::Off,
+            SubtitleEffect::None,
+            vec![audio(10, "English", "eng")],
+            vec![stream(1, 0, "English", "eng", "")],
+        );
+        assert_eq!(forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)), (-1, 0, "eng".to_string(), true));
+        assert!(menu.forced_only() && menu.active_sub() == -1);
+        teardown(&ps);
+
+        // untagged audio and no language to name: nothing to match, nothing to say
+        let (mut menu, ps, store) =
+            open(SubMode::Track, SubtitleEffect::None, vec![audio(10, "", "")], english_with_a_forced_track());
+        assert_eq!(forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)), (-1, 0, String::new(), true));
+        teardown(&ps);
+    }
+
+    /// **Untagged audio: the language the mode fell back to is what the row and the next episode
+    /// choose by.** An episode whose audio names no language drew its forced track through the
+    /// memo's language (`forced_only_lang`). OK on the CHECKED row, the natural way to dismiss the
+    /// menu it opened on, must recommit that track unchanged, not turn the subtitle off; "und" is
+    /// as untagged as nothing.
+    #[test]
+    fn ok_on_the_checked_forced_only_row_keeps_what_untagged_audio_drew() {
+        let _g = plx_base::testlock::serial();
+        for code in ["", "und"] {
+            let (mut menu, ps, store) = open_with_fallback(
+                SubMode::ForcedOnly,
+                SubtitleEffect::Embedded,
+                vec![audio(10, "", code)],
+                english_with_a_forced_track(),
+                "eng",
+            );
+            assert_eq!(menu.active_sub(), 1, "setup: the forced track is drawn ({code:?})");
+            assert_eq!(
+                forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)),
+                (1, 999, "eng".to_string(), false),
+                "{code:?}: the same track, the same stream, nothing changed"
+            );
+            assert!(menu.forced_only() && menu.active_sub() == 1, "{code:?}: and the mode is held");
+            teardown(&ps);
+        }
+
+        // Nothing drawn (no forced track in this item): the press commits nothing-on-screen and
+        // still names the fallback, never a blank language that would erase it.
+        let (mut menu, ps, store) = open_with_fallback(
+            SubMode::ForcedOnly,
+            SubtitleEffect::None,
+            vec![audio(10, "", "")],
+            vec![stream(1, 0, "English", "eng", "")],
+            "eng",
+        );
+        assert_eq!(forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)), (-1, 0, "eng".to_string(), false));
+        teardown(&ps);
+    }
+
+    /// Entering Forced only on untagged audio matches in the same language the resolve did: Off,
+    /// then Forced only, draws the memo-language forced track, and remembers that language. With no
+    /// fallback to name (a first press on an episode nothing remembered), it still finds nothing.
+    #[test]
+    fn entering_forced_only_on_untagged_audio_draws_the_fallback_languages_track() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, ps, store) = open_with_fallback(
+            SubMode::Off,
+            SubtitleEffect::None,
+            vec![audio(10, "", "")],
+            english_with_a_forced_track(),
+            "eng",
+        );
+        assert_eq!(
+            forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)),
+            (1, 999, "eng".to_string(), true),
+            "the route's own rule: the fallback language stands in for audio that names none"
+        );
+        assert!(menu.forced_only() && menu.active_sub() == 1);
+        teardown(&ps);
+
+        let (mut menu, ps, store) = open(SubMode::Off, SubtitleEffect::None, vec![audio(10, "", "")], english_with_a_forced_track());
+        assert_eq!(
+            forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)),
+            (-1, 0, String::new(), true),
+            "control: no fallback, no language to match in"
+        );
+        teardown(&ps);
+
+        // tagged audio wins over the fallback, as in the resolve
+        let (mut menu, ps, store) = open_with_fallback(
+            SubMode::Off,
+            SubtitleEffect::None,
+            vec![audio(10, "Spanish", "spa")],
+            vec![stream(1, 0, "English", "eng", ""), forced(2, 1, "English", "eng"), forced(3, 2, "Spanish", "spa")],
+            "eng",
+        );
+        assert_eq!(forced_commit(ok_on(&mut menu, &store, TrackRow::SubForcedOnly)), (2, 3, "spa".to_string(), true));
+        teardown(&ps);
+    }
+
+    /// The read-out names the language the mode looked in. Untagged audio with nothing drawn used to
+    /// read "Unknown" although the mode was looking in the fallback language; it names that one now,
+    /// by a track of the item that carries it. Without a fallback it is still "Unknown".
+    #[test]
+    fn the_readout_names_the_fallback_language_for_untagged_audio() {
+        let _g = plx_base::testlock::serial();
+        let subs = vec![stream(1, 0, "English", "eng", ""), forced(2, 1, "Spanish", "spa")];
+        let (menu, ps, _store) = open_with_fallback(
+            SubMode::ForcedOnly,
+            SubtitleEffect::None,
+            vec![audio(10, "", "")],
+            subs.clone(),
+            "eng",
+        );
+        assert_eq!(row_of(&menu, TrackRow::SubForcedOnly).value.as_deref(), Some("English"));
+        teardown(&ps);
+
+        let (menu, ps, _store) =
+            open(SubMode::ForcedOnly, SubtitleEffect::None, vec![audio(10, "", "")], subs);
+        assert_eq!(
+            row_of(&menu, TrackRow::SubForcedOnly).value.as_deref(),
+            Some(plx_platform::i18n::msg::widgets_tracks_unknown()),
+            "control: no fallback, nothing to name"
+        );
+        teardown(&ps);
+    }
+
+    /// **Leaving Forced only is a change** even onto the very stream it drew, or onto Off while it
+    /// drew nothing: the stream id is the same, the state is not, so the pick carries its memo.
+    /// The control is the ordinary rule, an OK on the checked track remembering nothing.
+    #[test]
+    fn leaving_forced_only_is_remembered_even_onto_the_same_stream_or_onto_nothing() {
+        let _g = plx_base::testlock::serial();
+        let commit_memo = |ok: TrackOk| match ok {
+            TrackOk::Commit { commit: TrackCommit::Subtitle { stream_id, memo, .. }, .. } => (stream_id, memo),
+            other => panic!("not a subtitle commit: {other:?}"),
+        };
+        let (mut menu, ps, store) = open(
+            SubMode::ForcedOnly,
+            SubtitleEffect::Embedded,
+            vec![audio(10, "English", "eng")],
+            english_with_a_forced_track(),
+        );
+        let (stream_id, memo) = commit_memo(ok_on(&mut menu, &store, TrackRow::Sub(1)));
+        assert_eq!(stream_id, 999);
+        assert!(matches!(memo, Some(SubtitleMemo::Track(_))), "the forced track's own row is a track pick now: {memo:?}");
+        assert!(!menu.forced_only(), "and the mode is left");
+        let (_, memo) = commit_memo(ok_on(&mut menu, &store, TrackRow::Sub(1)));
+        assert_eq!(memo, None, "control: OK on the checked track again remembers nothing");
+        teardown(&ps);
+
+        let (mut menu, ps, store) = open(
+            SubMode::ForcedOnly,
+            SubtitleEffect::None,
+            vec![audio(10, "English", "eng")],
+            english_with_a_forced_track(),
+        );
+        assert_eq!(commit_memo(ok_on(&mut menu, &store, TrackRow::SubOff)), (0, Some(SubtitleMemo::Off)), "Off after Forced only");
+        assert!(!menu.forced_only());
+        assert_eq!(commit_memo(ok_on(&mut menu, &store, TrackRow::SubOff)), (0, None), "control: Off again is not a change");
+        teardown(&ps);
+    }
+
+    /// The panel follows the route's mode on the live poll: a Forced only pick the loop has
+    /// performed (or a landing's) moves the check onto its row, and leaving it moves it back.
+    #[test]
+    fn the_live_poll_moves_the_check_with_the_routes_mode() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, mut ps, store) = open(
+            SubMode::Track,
+            SubtitleEffect::Embedded,
+            vec![audio(10, "English", "eng")],
+            english_with_a_forced_track(),
+        );
+        assert_eq!(checked(&menu), [TrackRow::Sub(1)]);
+        set_sub_mode_for_test(&mut ps, SubMode::ForcedOnly);
+        menu.poll_subtitle_state(&ps, store.view());
+        assert_eq!(checked(&menu), [TrackRow::SubForcedOnly]);
+        assert_eq!(row_of(&menu, TrackRow::SubForcedOnly).value.as_deref(), Some("English"));
+        set_sub_mode_for_test(&mut ps, SubMode::Track);
+        menu.poll_subtitle_state(&ps, store.view());
+        assert_eq!(checked(&menu), [TrackRow::Sub(1)]);
+        teardown(&ps);
+    }
+
+    /// **The row fits the panel in every shipped language WITH its read-out**, the longest case: the
+    /// catalog words beside the longest language names a stream can carry (the read-out is bounded,
+    /// so a long name or a region qualifier never clips the row's own words), at the shared menu cap
+    /// and hugged.
+    #[test]
+    fn the_forced_only_row_with_its_readout_fits_the_panel_in_every_shipped_language() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        let mut out = Vec::new();
+        for language in SHIPPED {
+            for name in ["Portuguese (Brazil)", "Norwegian Bokm\u{e5}l", "Serbo-Croatian", "Scottish Gaelic", "Tagalog"] {
+                let _g = plx_base::testlock::serial();
+                let _guard = language_on_this_thread_for_test(language);
+                let subs = vec![stream(1, 0, name, "xxx", ""), forced(999, 1, name, "xxx")];
+                let (menu, ps, _store) =
+                    open(SubMode::ForcedOnly, SubtitleEffect::Embedded, vec![audio(10, name, "xxx")], subs);
+                let row = row_of(&menu, TrackRow::SubForcedOnly);
+                assert_eq!(row.label, plx_platform::i18n::msg::widgets_tracks_forced_only(), "{language:?}");
+                assert!(row.value.as_deref().is_some_and(|v| !v.is_empty() && v.chars().count() <= 11), "{language:?} {name}");
+                out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
+                out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
+                out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
+                teardown(&ps);
+            }
+        }
+        plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// The key-level gate: the row's words exist in every shipped catalogue and are the SAME words
+    /// the account-wide Forced Subtitles setting already ships (`settings.audio.only_forced.short`),
+    /// which the Belarusian review (skarnik.by, verbum.by) covered once.
+    #[test]
+    fn the_forced_only_words_are_in_every_catalogue_and_match_the_settings_value() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, msg, SHIPPED};
+        for language in SHIPPED {
+            let _g = plx_base::testlock::serial();
+            let _guard = language_on_this_thread_for_test(language);
+            let words = msg::widgets_tracks_forced_only();
+            assert!(!words.trim().is_empty(), "{language:?}");
+            assert_eq!(words, msg::settings_audio_only_forced_short(), "{language:?}: one vocabulary for one concept");
+        }
+    }
+}
+
 #[cfg(test)]
 mod focus_tests {
     use super::*;
@@ -4610,6 +5262,8 @@ mod focus_tests {
             tab: 0,
             active_audio: 0,
             active_sub: -1,
+            forced_only: false,
+            forced_lang: String::new(),
             form,
             offset_ms: 0,
             tone: SubtitleTone::White,
@@ -5393,7 +6047,7 @@ mod language_page_tests {
     fn push_and_pop_walk_root_other_languages_and_a_language() {
         let _g = plx_base::testlock::serial();
         let (mut menu, ps, store) = open(subs());
-        assert_eq!(menu.ids()[..3], [TrackRow::SubOff, TrackRow::Sub(0), TrackRow::OpenOther]);
+        assert_eq!(menu.ids()[..4], [TrackRow::SubOff, TrackRow::SubForcedOnly, TrackRow::Sub(0), TrackRow::OpenOther]);
         assert_eq!(row_of(&menu, TrackRow::OpenOther).value.as_deref(), Some("3"), "Dutch, French, German");
 
         focus_id(&mut menu, TrackRow::OpenOther);

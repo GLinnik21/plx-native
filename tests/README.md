@@ -830,8 +830,9 @@ our in-process buffer-feed — see project memory). Verified on a 4K HEVC movie 
 tracks (`movie_hevc_4k_pgs_subs`).
 
 The text case targets `movie_h264_ac3_1080p`, which has four text tracks
-`[RU-forced, RU, EN, EN-SDH]`, so it picks **row 3 = the English track** (row 0 is Off;
-`desired_sub_idx = row − 1`) and seeds a `viewOffset` of 843 s so playback lands in the dense
+`[RU-forced, RU, EN, EN-SDH]`, so a hand-written row for the English track is **row 4** (row 0 is
+Off, row 1 is Forced only; `desired_sub_idx = row − 2`) — the case names its track by position
+(`"track": N`), which no new row moves — and seeds a `viewOffset` of 843 s so playback lands in the dense
 opening monologue and cues appear within the run window. (For a transcode item, soft subs ride a
 WebVTT sidecar, which per project memory delivers 0 bytes on this pipeline — direct-play is the
 only reliable sub path.)
@@ -878,8 +879,9 @@ comma-separated steps, absolute `120` or tap-relative `+10`/`-10`, fired one per
 `pause_resume`→one `plxnative-autopause=delay=<ms>,hold=<ms>` script;
 `audio_switch`/`subtitle`→`plxnative-menupick`) and picks the
 per-op assertions from the `op`/`mode`. Track-menu row semantics: **audio tab** row = the
-metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row *r* = subtitle
-index *r−1*.
+metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row 1 = *Forced only*
+(shown wherever Off is), row *r* = subtitle index *r−2* on the root's flat list. A `"track": N`
+target skips all of them (it counts tracks only), which is why the manifest uses it.
 
 **Track memory.** A track-menu pick on an episode (what `audio_switch` and `subtitle` emulate) is
 remembered for its show by the SEATED profile, and the next episode plays it. So `run.py` arms
@@ -902,6 +904,19 @@ note line. Serve `--transcode-fixture <the mockverify mkv>` so the remux's start
 `--no-plex-pass` (or `--no-loudness-analysis`): on a server with Plex Pass and an analysed audio track the
 plan demotes the remux to a burn re-encode, which draws the remembered subtitle in the picture and
 leaves nothing to note.
+
+**Forced only.** The Subtitles tab's second row (right after Off) is the third remembered subtitle
+state: the forced track in the language of the audio that plays, or nothing. `mock_pms.py --media DIR
+--media-forced-subtitle` flags the verification episodes' English subtitle forced on the wire (the
+fixture has no forced track otherwise; add `--media-next-episode` and episode 2, the same file, has
+it too). Boot seated, `plxnative-play=900003` and `plxnative-menupick=1,1` (row 1 IS Forced only;
+the trigger leaves the panel up) check the row with the language it draws beside it. The show's
+first audio is German, so the first pick draws nothing (the fixture's only forced track is
+English) and the read-out names the audio's language; pick the English audio (Audio tab) and the
+select-streams log shows the follow (`audio=… sub=<the forced track>`; the follow itself writes no
+memory, the audio pick does). The
+log's `track-memory:` line on a later boot or on the next episode (`applied forced-only (track …)`)
+is the memory read.
 
 A **synthetic** case is a `pipeline_cases` entry instead, and its `expect` keys are the ones listed
 under *Assertions* below. Two are worth naming here because they are recent and easy to miss:

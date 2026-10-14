@@ -81,6 +81,8 @@ mod through_build_stream {
         pub bitrate: i64,
         /// A known retry's own pick (`env.sub_sid` and `env.subtitle_override`); `0` is a cold start.
         pub sub_sid: i64,
+        /// The subtitle mode that retry held (`env.sub_mode`); meaningful only beside `sub_sid`.
+        pub sub_mode: SubMode,
     }
 
     impl Case {
@@ -102,6 +104,7 @@ mod through_build_stream {
                 part: "/library/parts/36013/1/file.mkv",
                 bitrate: 48_000,
                 sub_sid: 0,
+                sub_mode: SubMode::Track,
             }
         }
     }
@@ -176,6 +179,7 @@ mod through_build_stream {
         if case.sub_sid > 0 {
             env.sub_sid = case.sub_sid;
             env.subtitle_override = Some(case.sub_sid);
+            env.sub_mode = case.sub_mode;
         }
         env.memory = case.memory;
         env.fresh_play = case.fresh_play;
@@ -1611,4 +1615,503 @@ fn c5_the_landing_selects_the_remembered_sidecar_from_the_playing_item() {
     assert!(ps.cur_sub_sidecar && ps.cur_sub_client_drawable, "and it is the one the app draws itself");
     crate::player::sidecar::reset();
     tidy_write(&mut ps);
+}
+
+// ---- Forced only (FO, §4.9): the third remembered subtitle state -------------------------------
+
+fn forced_only_memo() -> SubtitleMemo {
+    SubtitleMemo::ForcedOnly { lang: "eng".into() }
+}
+
+/// One full English track and a forced track per language: what a feature film with a foreign-
+/// language passage carries. Container order is the id order, so the forced English track is the
+/// second subtitle (ordinal 1) and the forced Japanese one the third.
+fn forced_subs() -> Vec<plx_data::metadata::Stream> {
+    vec![
+        srt(55001, 3, "eng", false, false),
+        srt(55003, 4, "eng", true, false),
+        srt(55004, 5, "jpn", true, false),
+    ]
+}
+
+/// Land an episode of [`SHOW`] the way a direct-play landing in `mode` does, English audio playing:
+/// the item's streams parked on the session for the audio follow and the names re-match, and
+/// subtitle `shown` (an index into `subs`; `None` = nothing) on screen.
+fn land_with_context(
+    ps: &mut PlaybackSession, subs: Vec<plx_data::metadata::Stream>, shown: Option<usize>, mode: SubMode,
+) -> ServerId {
+    let sid = plx_plex::plex::register_for_test(MACHINE, "127.0.0.1", 32401, "tok", "cid-tm");
+    let item = plx_data::metadata::PlayingItem {
+        kind: "episode".into(),
+        show_rk: SHOW.into(),
+        audio: audio_pair(),
+        subs,
+        ..plx_data::metadata::PlayingItem::with_subs(Vec::new())
+    };
+    let sub_sid = shown.map_or(0, |i| item.subs[i].id);
+    let sub_render_ordinal = shown.map(|i| plx_data::metadata::sub_render_ordinal(&item.subs, i));
+    let track_ctx = Some(TrackContext::of_landing(&item, "eng", Some(&forced_only_memo())));
+    let plan = Plan {
+        sid,
+        url: "http://fixture.invalid/ep.mkv".into(),
+        playing: Some(item),
+        sub_sid,
+        sub_render_ordinal,
+        sub_mode: mode,
+        track_ctx,
+        ..Default::default()
+    };
+    apply_plan(ps, plan, "rk-ep");
+    sid
+}
+
+fn japanese_audio() -> CarriedAudio {
+    CarriedAudio::from_stream(&audio_pair()[1], 1)
+}
+
+fn english_audio() -> CarriedAudio {
+    CarriedAudio::from_stream(&audio_pair()[0], 0)
+}
+
+/// **The landing holds the mode, and a retry carries it.** A remembered Forced only that decided the
+/// landing puts the session in Forced only (`cur_sub_stream` alone would read as a pick of that
+/// forced track); a retry of that playback (a quality change, a rescue) names the SAME stream by
+/// id, so the mode has to ride it or the next audio switch would no longer re-point the subtitle.
+/// The controls: a remembered track, and no memory at all, land in their own states.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_forced_only_landing_holds_the_mode_and_a_retry_carries_it() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let landed = |ps: &mut PlaybackSession, memory: Vec<TrackMemoryEntry>| {
+        resolve_in(ps, Case::episode(forced_subs(), memory), |ps, plan| {
+            let landed = (plan.sub_sid, plan.sub_mode);
+            apply_plan(ps, plan, "rk-4k");
+            landed
+        })
+        .0
+    };
+
+    assert_eq!(landed(&mut ps, Vec::new()), (0, SubMode::Off), "control: no memory, no forced track in play: Off");
+    assert_eq!(landed(&mut ps, memory(None, Some(english_track()))), (55001, SubMode::Track), "control: a remembered track");
+    assert_eq!(landed(&mut ps, memory(None, Some(SubtitleMemo::Off))), (0, SubMode::Off), "control: a remembered Off");
+    assert_eq!(landed(&mut ps, memory(None, Some(forced_only_memo()))), (55003, SubMode::ForcedOnly));
+    assert_eq!(cur_sub_mode(&ps), SubMode::ForcedOnly, "the session holds it");
+
+    // The retry names the stream by id; the mode rides it through the same `RetryContext`.
+    let retry = current_retry_context(&ps, 0);
+    assert_eq!((retry.selection.map(|s| s.1), retry.sub_mode), (Some(55003), SubMode::ForcedOnly));
+    let sid = cur_sid(&ps);
+    let env = env_of(&ps, &request(sid, false), Some(retry));
+    assert_eq!((env.subtitle_override, env.sub_mode), (Some(55003), SubMode::ForcedOnly));
+    begin_track_selection(&mut ps, Some(retry));
+    assert_eq!(cur_sub_mode(&ps), SubMode::ForcedOnly, "kept while the retry's plan has not landed");
+    begin_track_selection(&mut ps, None);
+    assert_eq!(cur_sub_mode(&ps), SubMode::Track, "a new item starts in no mode");
+
+    // …and the re-resolve it feeds lands in Forced only, where the control (the same override
+    // without the mode) is a plain track.
+    let mut retried = Case::episode(forced_subs(), Vec::new());
+    retried.sub_sid = 55003;
+    let mut control = Case::episode(forced_subs(), Vec::new());
+    control.sub_sid = 55003;
+    retried.sub_mode = SubMode::ForcedOnly;
+    assert_eq!(resolve_in(&mut ps, control, |_, plan| plan).0.sub_mode, SubMode::Track, "control: a known pick is a track");
+    let (plan, _, _) = resolve_in(&mut ps, retried, |_, plan| plan);
+    assert_eq!((plan.sub_sid, plan.sub_mode), (55003, SubMode::ForcedOnly));
+    tidy_write(&mut ps);
+}
+
+/// **Forced only is remembered with the language it drew** (or the playing audio's, when nothing is
+/// drawn), through the C4 door, and only when the viewer changed something. The audio half is kept.
+#[test]
+fn the_forced_only_pick_is_remembered_with_its_language_and_only_when_it_changed() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-forced-only-write");
+    sign_in_and_seat(&session, "");
+    land_with_context(&mut ps, forced_subs(), Some(0), SubMode::Track);
+    assert!(commit_audio_pick(&mut ps, japanese_audio(), Some(japanese_eac3())));
+
+    // OK on the row that is already checked closes the menu: the mode is held, nothing is written.
+    commit_forced_only_pick(&mut ps, 1, 55003, true, "eng", false);
+    assert_eq!((cur_sub_sid(&ps), cur_sub_mode(&ps)), (55003, SubMode::ForcedOnly));
+    assert_eq!(remembered("").and_then(|e| e.subtitle), None, "an unchanged press writes nothing");
+
+    commit_forced_only_pick(&mut ps, 1, 55003, true, "eng", true);
+    assert_eq!(
+        remembered(""),
+        Some(TrackMemoryEntry::new(MACHINE, SHOW, Some(japanese_eac3()), Some(forced_only_memo()))),
+        "`mode: forced_only` with the drawn track's language, and the audio half kept"
+    );
+
+    // The language is the caller's: the drawn track's, not a hard-coded one.
+    commit_forced_only_pick(&mut ps, 2, 55004, true, "jpn", true);
+    assert_eq!(cur_sub_sid(&ps), 55004);
+    assert_eq!(
+        remembered("").and_then(|e| e.subtitle),
+        Some(SubtitleMemo::ForcedOnly { lang: "jpn".into() }),
+        "the Japanese forced track was drawn, so Japanese is what is remembered"
+    );
+    tidy_write(&mut ps);
+}
+
+/// **OK on the Forced only row that is already the mode changes nothing the session holds**: the
+/// subtitle on screen stays, and so does the language the mode falls back to for untagged audio
+/// (an untagged episode drew its forced track through it). A press that CHANGES the mode names the
+/// language it chose, which is the control.
+#[test]
+fn an_unchanged_forced_only_press_keeps_the_subtitle_and_the_fallback_language() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-forced-only-repress");
+    sign_in_and_seat(&session, "");
+    land_with_context(&mut ps, forced_subs(), Some(1), SubMode::ForcedOnly);
+    assert_eq!(forced_only_lang(&ps), "eng", "setup: the landing's memo named the fallback language");
+
+    commit_forced_only_pick(&mut ps, 1, 55003, true, "", false);
+    assert_eq!((cur_sub_sid(&ps), cur_sub_mode(&ps)), (55003, SubMode::ForcedOnly), "what is shown stays");
+    assert_eq!(forced_only_lang(&ps), "eng", "and a press that changes nothing does not blank the fallback");
+    assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new(), "nothing is written");
+
+    commit_forced_only_pick(&mut ps, 2, 55004, true, "jpn", true);
+    assert_eq!(forced_only_lang(&ps), "jpn", "control: a changed press names the language it chose");
+    tidy_write(&mut ps);
+}
+
+/// **A retry of Forced only keeps the language the mode falls back to.** The retry names the stream
+/// by id and consults no memory (`apply_retry` clears it), so the memo that supplied the fallback
+/// is no longer in the resolve: the landing's context is seeded from the outgoing one. A fresh play
+/// is the control: it never inherits the previous item's fallback.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_retry_of_forced_only_keeps_the_language_the_mode_falls_back_to() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    // What a resolve would land in, and the fallback it would hold; the session is left as it was,
+    // so every case below is asked of the same outgoing landing.
+    let context = |ps: &mut PlaybackSession, case: Case| {
+        resolve_in(ps, case, |_, plan| (plan.sub_mode, plan.track_ctx.as_ref().map(|c| c.forced_lang.clone()))).0
+    };
+    resolve_in(&mut ps, Case::episode(forced_subs(), memory(None, Some(forced_only_memo()))), |ps, plan| {
+        apply_plan(ps, plan, "rk-4k")
+    });
+    assert_eq!(forced_only_lang(&ps), "eng", "setup: the memo's language rides the landing");
+
+    let mut retried = Case::episode(forced_subs(), Vec::new());
+    retried.sub_sid = 55003;
+    retried.sub_mode = SubMode::ForcedOnly;
+    assert_eq!(
+        context(&mut ps, retried),
+        (SubMode::ForcedOnly, Some("eng".to_string())),
+        "the retry holds the mode and the fallback"
+    );
+
+    let mut track_retry = Case::episode(forced_subs(), Vec::new());
+    track_retry.sub_sid = 55003;
+    assert_eq!(
+        context(&mut ps, track_retry),
+        (SubMode::Track, Some(String::new())),
+        "control: a retry in no mode inherits no fallback"
+    );
+
+    let blank_memo = SubtitleMemo::ForcedOnly { lang: String::new() };
+    assert_eq!(
+        context(&mut ps, Case::episode(forced_subs(), memory(None, Some(blank_memo)))),
+        (SubMode::ForcedOnly, Some(String::new())),
+        "control: a fresh play under a memo that names no language inherits nothing"
+    );
+    tidy_write(&mut ps);
+}
+
+/// **Off -> Forced only with no forced track is remembered.** No stream changes (Off before, nothing
+/// drawn after), so the C4 rule that an unchanged commit is not a choice must not swallow it: the
+/// mode is the news. The control is the same press on a plain Off, which writes nothing.
+#[test]
+fn off_to_forced_only_with_no_forced_track_is_remembered() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-forced-only-nothing");
+    sign_in_and_seat(&session, "");
+    land_with_context(&mut ps, vec![srt(55001, 3, "eng", false, false)], None, SubMode::Off);
+    assert_eq!(cur_sub_sid(&ps), 0, "setup: Off is on screen");
+
+    commit_subtitle_pick(&mut ps, -1, 0, false, Some(SubtitleMemo::Off));
+    assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new(), "control: OK on Off remembers nothing");
+
+    commit_forced_only_pick(&mut ps, -1, 0, false, "eng", true);
+    assert_eq!((cur_sub_sid(&ps), cur_sub_mode(&ps)), (0, SubMode::ForcedOnly), "it shows nothing and is still the mode");
+    assert_eq!(
+        remembered("").and_then(|e| e.subtitle),
+        Some(forced_only_memo()),
+        "the viewer chose Forced only, with the playing audio's language"
+    );
+    tidy_write(&mut ps);
+}
+
+/// **Leaving Forced only is a choice**, even onto the stream it was drawing: same stream id, a
+/// different state. The control (the press before the mode was entered) is the C4 no-change case.
+#[test]
+fn leaving_forced_only_for_the_track_it_drew_is_remembered() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-forced-only-leave-track");
+    sign_in_and_seat(&session, "");
+    land_with_context(&mut ps, forced_subs(), Some(1), SubMode::Track);
+    let forced_track = memo_of_subtitle(&forced_subs()[1]);
+
+    commit_subtitle_pick(&mut ps, 1, 55003, true, Some(forced_track.clone()));
+    assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new(), "control: OK on the drawn track is not a choice");
+
+    commit_forced_only_pick(&mut ps, 1, 55003, true, "eng", false);
+    assert_eq!(cur_sub_mode(&ps), SubMode::ForcedOnly);
+    commit_subtitle_pick(&mut ps, 1, 55003, true, Some(forced_track.clone()));
+    assert_eq!(cur_sub_mode(&ps), SubMode::Track, "the pick settles the mode from the stream");
+    assert_eq!(remembered("").and_then(|e| e.subtitle), Some(forced_track), "the very track Forced only drew, now chosen as itself");
+    tidy_write(&mut ps);
+}
+
+/// The same for Off: Forced only with nothing drawn, then Off, is a change although no stream moves.
+#[test]
+fn leaving_forced_only_for_off_with_nothing_drawn_is_remembered() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-forced-only-leave-off");
+    sign_in_and_seat(&session, "");
+    land_with_context(&mut ps, vec![srt(55001, 3, "eng", false, false)], None, SubMode::Off);
+
+    commit_forced_only_pick(&mut ps, -1, 0, false, "eng", false);
+    assert_eq!(cur_sub_mode(&ps), SubMode::ForcedOnly);
+    assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new(), "setup: entering it unchanged wrote nothing");
+
+    commit_subtitle_pick(&mut ps, -1, 0, false, Some(SubtitleMemo::Off));
+    assert_eq!(cur_sub_mode(&ps), SubMode::Off);
+    assert_eq!(remembered("").and_then(|e| e.subtitle), Some(SubtitleMemo::Off), "Off after Forced only is a change");
+    tidy_write(&mut ps);
+}
+
+/// **The audio switch re-matches Forced only, and writes no memory.** English audio shows the English
+/// forced track; the Japanese audio the Japanese one; back again. The subtitle half of the entry
+/// stays Forced only throughout: the re-pointing is derived, not a pick of those tracks. The audio
+/// half is the viewer's audio pick, as always.
+#[test]
+fn an_audio_switch_under_forced_only_re_points_the_subtitle_and_writes_no_memory() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-forced-only-audio");
+    sign_in_and_seat(&session, "");
+    land_with_context(&mut ps, forced_subs(), Some(1), SubMode::Track);
+    commit_forced_only_pick(&mut ps, 1, 55003, true, "eng", true);
+    let remembered_forced_only = TrackMemoryEntry::new(MACHINE, SHOW, None, Some(forced_only_memo()));
+    assert_eq!(remembered(""), Some(remembered_forced_only.clone()), "setup");
+
+    assert!(commit_audio_selection(&mut ps, japanese_audio()));
+    assert_eq!((cur_sub_sid(&ps), cur_sub_mode(&ps)), (55004, SubMode::ForcedOnly), "the Japanese forced track");
+    assert_eq!(remembered(""), Some(remembered_forced_only.clone()), "an automatic re-match remembers nothing");
+
+    assert!(commit_audio_selection(&mut ps, english_audio()));
+    assert_eq!((cur_sub_sid(&ps), cur_sub_mode(&ps)), (55003, SubMode::ForcedOnly), "and back to the English one");
+
+    assert!(commit_audio_pick(&mut ps, japanese_audio(), Some(japanese_eac3())));
+    assert_eq!(cur_sub_sid(&ps), 55004);
+    assert_eq!(
+        remembered(""),
+        Some(TrackMemoryEntry::new(MACHINE, SHOW, Some(japanese_eac3()), Some(forced_only_memo()))),
+        "the viewer's audio pick is written; the subtitle half is still Forced only, not the Japanese track"
+    );
+    tidy_write(&mut ps);
+}
+
+/// The controls of the audio follow: it exists only in Forced only (a picked track stays through an
+/// audio switch), it shows NOTHING when the new audio has no forced track (never a full track), and
+/// it does not turn the landing's "this copy remux cannot show the remembered subtitle" into a
+/// re-encode.
+#[test]
+fn the_audio_follow_is_forced_only_alone_and_never_falls_back_to_a_full_track() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    land_with_context(&mut ps, forced_subs(), Some(1), SubMode::Track);
+    assert!(commit_audio_selection(&mut ps, japanese_audio()));
+    assert_eq!(cur_sub_sid(&ps), 55003, "control: a picked track stays when the audio changes");
+
+    let english_only = vec![srt(55001, 3, "eng", false, false), srt(55003, 4, "eng", true, false)];
+    land_with_context(&mut ps, english_only, Some(1), SubMode::ForcedOnly);
+    assert!(commit_audio_selection(&mut ps, japanese_audio()));
+    assert_eq!((cur_sub_sid(&ps), cur_sub_mode(&ps)), (0, SubMode::ForcedOnly), "no Japanese forced track: nothing, not 55001");
+
+    land_with_context(&mut ps, forced_subs(), Some(1), SubMode::ForcedOnly);
+    ps.cur_memory_note = true;
+    assert!(commit_audio_selection(&mut ps, japanese_audio()));
+    assert_eq!(cur_sub_sid(&ps), 55003, "the copy remux that shows no remembered subtitle is not rebuilt for one");
+    reset_player_control_for_test(&ps);
+    tidy_write(&mut ps);
+}
+
+/// On a live transcode the re-pointed subtitle is a burn, so the audio switch and the subtitle
+/// change both rebuild: they must be ONE Retranscode, and the subtitle the rebuild names is the new
+/// one.
+#[test]
+fn the_audio_follow_on_a_transcode_is_one_rebuild_naming_the_new_subtitle() {
+    let mut idle = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut idle);
+    let (mut ps, _sid) =
+        enhancement_test_session(EnhTestFixture { remux: Some(false), ..Default::default() });
+    let item = plx_data::metadata::PlayingItem { audio: audio_pair(), subs: forced_subs(), ..plx_data::metadata::PlayingItem::with_subs(Vec::new()) };
+    ps.track_ctx = Some(TrackContext::of_landing(&item, "eng", Some(&forced_only_memo())));
+    ps.sub_mode = SubMode::ForcedOnly;
+    set_subtitle(&mut ps, 55003);
+    reset_player_control_for_test(&ps);
+    assert!(is_transcoding(&ps), "setup: a live transcode");
+    assert!(!pending_user_route_intent(UserRouteIntent::Retranscode), "setup: nothing pending");
+
+    assert!(commit_audio_selection(&mut ps, japanese_audio()));
+    assert_eq!(cur_sub_sid(&ps), 55004, "the Japanese forced track is what the rebuild will burn");
+    assert!(
+        pending_user_route_intent(UserRouteIntent::Retranscode),
+        "ONE rebuild is owed (the reducer holds a single pending user intent): the audio and the subtitle coalesced"
+    );
+    reset_player_control_for_test(&ps);
+    tidy();
+}
+
+/// A resolve of an MP4-like part: PMS gives the subtitle streams no `title` and no forced flag, so
+/// the resolve cannot find the forced track; the demuxer's own names say ordinal 1 is "Forced".
+#[cfg(feature = "devtriggers")]
+fn land_mp4_forced_only(ps: &mut PlaybackSession) {
+    let subs = vec![srt(55001, 3, "eng", false, false), srt(55003, 4, "eng", false, false)];
+    let case = Case::episode(subs, memory(None, Some(forced_only_memo())));
+    let landed = resolve_in(ps, case, |ps, plan| {
+        let shown = plan.sub_sid;
+        apply_plan(ps, plan, "rk-4k");
+        shown
+    })
+    .0;
+    // The resolve took its loopback server down with it. Seat the same machine again, so that a
+    // memory write made after the landing would find the server the playing item is on: without it
+    // "writes no memory" below would hold for the wrong reason.
+    let sid = plx_plex::plex::register_for_test(MACHINE, "127.0.0.1", 32401, "tok", "cid-tm");
+    assert_eq!(sid, cur_sid(ps), "setup: the landing's server is registered again");
+    assert_eq!(landed, 0, "setup: nothing names a forced track yet, so nothing is shown");
+    assert_eq!(cur_sub_mode(ps), SubMode::ForcedOnly, "setup: and Forced only is the mode");
+}
+
+/// The demuxer publishes the container's track names when it opens a part.
+#[cfg(feature = "devtriggers")]
+fn publish_container_names(subs: &[&str]) {
+    *crate::player::SHARED.track_names.lock().unwrap_or_else(|e| e.into_inner()) =
+        crate::player::TrackNames { audio: Vec::new(), subs: subs.iter().map(|s| s.to_string()).collect() };
+}
+
+/// **The first decoded frame's re-match.** The MP4's forced track is found once its names arrive:
+/// one derived commit (the session and the server now agree), the mode kept, NO memory write, and
+/// once only — a viewer who then moves off it is not pulled back by the next frame.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn mp4_forced_found_after_names_arrive() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-names");
+    sign_in_and_seat(&session, "");
+    land_mp4_forced_only(&mut ps);
+    assert!(ps.track_ctx.as_ref().is_some_and(|c| c.rematch.is_some()), "setup: a direct play owes the re-match");
+
+    rematch_subtitle_with_names(&mut ps);
+    assert_eq!(cur_sub_sid(&ps), 0, "control: no names yet, so there is nothing to find");
+    assert!(ps.track_ctx.as_ref().is_some_and(|c| c.rematch.is_none()), "(and it is spent: it asks once per landing)");
+
+    land_mp4_forced_only(&mut ps);
+    publish_container_names(&["", "Forced"]);
+    rematch_subtitle_with_names(&mut ps);
+    assert_eq!(cur_sub_sid(&ps), 55003, "the track the name reveals is now the one shown");
+    assert_eq!(cur_sub_mode(&ps), SubMode::ForcedOnly);
+    assert_eq!(ps.cur_sub_ordinal, 1);
+    assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new(), "a derived commit writes no memory");
+
+    // Once per landing: the viewer's own move afterwards is left alone.
+    set_subtitle(&mut ps, 0);
+    rematch_subtitle_with_names(&mut ps);
+    assert_eq!(cur_sub_sid(&ps), 0, "the re-match does not run a second time");
+    publish_container_names(&[]);
+    tidy_write(&mut ps);
+}
+
+/// **The re-match says what it committed**, which is what a write-back's send point needs to tell the
+/// server: the id it put on screen (`0` = nothing), or `None` when it committed nothing (not owed, no
+/// change found, or the viewer decided first). Once per landing.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn the_names_rematch_returns_what_it_committed() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-names-returns");
+    sign_in_and_seat(&session, "");
+
+    land_mp4_forced_only(&mut ps);
+    assert_eq!(rematch_subtitle_with_names(&mut ps), None, "no names yet: nothing found, nothing committed");
+
+    land_mp4_forced_only(&mut ps);
+    publish_container_names(&["", "Forced"]);
+    assert_eq!(rematch_subtitle_with_names(&mut ps), Some(55003), "the track the name reveals");
+    assert_eq!(rematch_subtitle_with_names(&mut ps), None, "once per landing: the next frame commits nothing");
+
+    land_mp4_forced_only(&mut ps);
+    commit_subtitle_pick(&mut ps, -1, 0, false, Some(SubtitleMemo::Off));
+    assert_eq!(rematch_subtitle_with_names(&mut ps), None, "a viewer who picked first has decided");
+
+    // The other direction: the landing drew a track the PMS flags as forced, and the container's own
+    // name says it is a commentary. Forced only then shows nothing, which is `Some(0)`, not `None`.
+    let subs = vec![srt(55001, 3, "eng", false, false), srt(55003, 4, "eng", true, false)];
+    let shown = resolve_in(&mut ps, Case::episode(subs, memory(None, Some(forced_only_memo()))), |ps, plan| {
+        let shown = plan.sub_sid;
+        apply_plan(ps, plan, "rk-4k");
+        shown
+    })
+    .0;
+    plx_plex::plex::register_for_test(MACHINE, "127.0.0.1", 32401, "tok", "cid-tm");
+    assert_eq!(shown, 55003, "setup: the flag drew the forced track");
+    publish_container_names(&["", "Director's Commentary"]);
+    assert_eq!(rematch_subtitle_with_names(&mut ps), Some(0), "the names say it is a commentary: nothing is shown");
+    assert_eq!((cur_sub_sid(&ps), cur_sub_mode(&ps)), (0, SubMode::ForcedOnly));
+    publish_container_names(&[]);
+    tidy_write(&mut ps);
+}
+
+/// A viewer who picks before the first frame has decided: the names do not override the pick. Off is
+/// the pick the stream id cannot tell apart from the landing (nothing shown before, nothing after),
+/// so it is the one the "viewer decided" rule itself has to hold; another track is the control.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_pick_before_the_first_frame_ends_the_names_rematch() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-names-pick");
+    sign_in_and_seat(&session, "");
+
+    land_mp4_forced_only(&mut ps);
+    commit_subtitle_pick(&mut ps, -1, 0, false, Some(SubtitleMemo::Off));
+    publish_container_names(&["", "Forced"]);
+    rematch_subtitle_with_names(&mut ps);
+    assert_eq!((cur_sub_sid(&ps), cur_sub_mode(&ps)), (0, SubMode::Off), "the viewer's Off stands");
+
+    land_mp4_forced_only(&mut ps);
+    commit_subtitle_pick(&mut ps, 0, 55001, true, Some(english_track()));
+    rematch_subtitle_with_names(&mut ps);
+    assert_eq!((cur_sub_sid(&ps), cur_sub_mode(&ps)), (55001, SubMode::Track), "and so does a picked track");
+    publish_container_names(&[]);
+    tidy_write(&mut ps);
+}
+
+/// Only a direct play owes the re-match: a transcode carries the server's own subtitle decision, and
+/// the demuxer's names do not describe the stream the app plays.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_transcode_landing_owes_no_names_rematch() {
+    let subs = vec![srt(55001, 3, "eng", false, false), srt(55003, 4, "eng", true, false)];
+    let mut case = Case::episode(subs, memory(None, Some(forced_only_memo())));
+    case.mode = DirectPlayMode::Disabled;
+    case.mde = MDE_TRANSCODE_COPY;
+    case.extra = 1;
+    let (plan, _) = resolve(case);
+    assert!(plan.url.contains("start.mkv"), "setup: a remux: {}", plan.url);
+    assert!(plan.track_ctx.as_ref().is_some_and(|c| c.rematch.is_none()), "no re-match is owed off a direct play");
 }

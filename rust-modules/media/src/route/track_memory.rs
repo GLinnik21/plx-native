@@ -23,6 +23,11 @@
 //!   track in the language of the audio that is PLAYING (the memo's language only when the audio
 //!   has none), or nothing. A commentary is never the answer to Forced only, however it is
 //!   flagged.
+//! * **When the container's names arrive** ([`with_container_names`]) the same matchers run a
+//!   second time over streams whose `title` is the MERGED name (`track_label::track_name`), so a
+//!   forced track only the demuxer's tag reveals (an MP4 part has no PMS `title`) is found by the
+//!   one predicate and not a second copy of it. [`forced_only_pick`] is that answer for the menu's
+//!   choice and the audio follow; [`rematch_with_names`] is the first decoded frame's.
 //!
 //! **The write half is here too** ([`memo_of_audio`], [`memo_of_subtitle`]): the descriptor a menu
 //! pick is remembered as, built from the exact `Stream` the row was drawn from with the SAME
@@ -32,7 +37,8 @@
 //! next episode's hard constraint would decline that very track.
 use plx_data::metadata::sub_layout::is_image_sub_codec;
 use plx_data::metadata::track_label::{self, Kind};
-use plx_data::metadata::{lang_matches, Stream};
+use plx_data::metadata::track_names::TrackNames;
+use plx_data::metadata::{lang_matches, sub_render_ordinal, PlayingItem, Stream};
 use plx_plex::plex::session::prefs::{AudioMemo, SubtitleMemo, SubtitleTrackMemo};
 
 /// Why a record matched no track: the log's `no match (<reason>)`.
@@ -207,6 +213,14 @@ pub(super) fn match_subtitle(
     best_by(forced.into_iter(), key).ok_or("language")
 }
 
+/// **The language Forced only matches in**: the playing audio's, or `fallback` (the one the memo, or
+/// the row's last choice, recorded) when the audio names none (empty, or the ISO "und"). The one
+/// rule of the resolve, the audio follow and the Subtitles menu, which also remembers and reads out
+/// this language.
+pub fn forced_only_language<'a>(audio_lang: &'a str, fallback: &'a str) -> &'a str {
+    if blank_lang(audio_lang) { fallback } else { audio_lang }
+}
+
 /// **The forced track Forced only means**: a forced ([`sub_traits`]), non-commentary, `eligible`
 /// subtitle in the language of the audio that is PLAYING (`audio_lang`), or in `memo_lang` when the
 /// audio names no language. Soft, in order: not SDH, embedded before a sidecar, file order. `None`
@@ -214,7 +228,7 @@ pub(super) fn match_subtitle(
 pub(super) fn match_forced_only(
     subs: &[Stream], audio_lang: &str, memo_lang: &str, eligible: impl Fn(&Stream) -> bool,
 ) -> Option<usize> {
-    let language = if blank_lang(audio_lang) { memo_lang } else { audio_lang };
+    let language = forced_only_language(audio_lang, memo_lang);
     if blank_lang(language) {
         return None;
     }
@@ -223,6 +237,154 @@ pub(super) fn match_forced_only(
         eligible(&subs[i]) && traits.forced && !traits.commentary && lang_matches(language, &subs[i].lang_code)
     });
     best_by(candidates, |i| (!sub_traits(&subs[i]).sdh, !subs[i].external))
+}
+
+/// **Which of the three subtitle states the playing item is in** (`track-memory-plan.md` §4.9).
+/// `cur_sub_sid` alone cannot tell Forced only from a pick of the very forced track it drew, and
+/// the two part ways the moment the audio changes: a track stays, Forced only follows the audio's
+/// language.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SubMode {
+    /// A track is on screen because it was picked (the viewer's, a retry's, the ladder's).
+    #[default]
+    Track,
+    /// Nothing is on screen because Off was chosen or decided.
+    Off,
+    /// The forced track in the language of the audio that is playing, or nothing.
+    ForcedOnly,
+}
+
+impl SubMode {
+    /// The mode an ORDINARY pick of `stream_id` (`0` = Off) puts the playback in. A derived pick
+    /// (the audio follow, the names re-match) puts it back to [`SubMode::ForcedOnly`] itself.
+    pub fn of_stream(stream_id: i64) -> Self {
+        if stream_id == 0 { SubMode::Off } else { SubMode::Track }
+    }
+}
+
+/// A subtitle memo consulted at a direct-play landing whose answer may change once the container's
+/// names are known ([`rematch_with_names`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rematch {
+    pub(super) memo: SubtitleMemo,
+    /// The subtitle stream id the landing put on screen (`0` = none). The re-match runs only while
+    /// that is still what is shown: a viewer who picked meanwhile has decided.
+    pub(super) landed_sub: i64,
+}
+
+/// **What the two re-matches that run AFTER the landing need of the playing item**, parked on the
+/// session at the landing. Neither has the item: the audio follow runs inside
+/// `commit_audio_selection(ps, audio)` and the container-name re-match inside the pump, and the
+/// metadata store that holds the item is not theirs to read. The streams are a small clone, taken
+/// once per landing; the session's published copy leaves it out.
+#[derive(Clone, Default)]
+pub struct TrackContext {
+    pub(super) subs: Vec<Stream>,
+    /// `(stream id, language code)` of every audio stream: a new audio's language by its id.
+    pub(super) audio: Vec<(i64, String)>,
+    /// The language of the audio that played at the landing, for an audio the list cannot name.
+    pub(super) audio_lang: String,
+    /// The language Forced only falls back to when the audio names none: the one the memo (or the
+    /// row's choice) recorded.
+    pub(super) forced_lang: String,
+    /// Owed once, at the first decoded frame of a direct play; `None` after, or when no remembered
+    /// track decided the landing.
+    pub(super) rematch: Option<Rematch>,
+}
+
+impl TrackContext {
+    /// The context of a landing of `item` under `audio_lang`, with `memo` the remembered subtitle
+    /// the ladder consulted (`None` for a retry, a server-selected sidecar or no memory).
+    pub(super) fn of_landing(item: &PlayingItem, audio_lang: &str, memo: Option<&SubtitleMemo>) -> Self {
+        let forced_lang = match memo {
+            Some(SubtitleMemo::ForcedOnly { lang }) => lang.clone(),
+            _ => String::new(),
+        };
+        TrackContext {
+            subs: item.subs.clone(),
+            audio: item.audio.iter().map(|s| (s.id, s.lang_code.clone())).collect(),
+            audio_lang: audio_lang.to_string(),
+            forced_lang,
+            rematch: None,
+        }
+    }
+
+    /// Keep the fallback language the outgoing landing held, for a RETRY of Forced only: it names
+    /// its stream by id and consults no memory, so the memo that supplied the language is not in the
+    /// resolve. A language this landing already has (from the memo it consulted) wins.
+    pub(super) fn keep_forced_lang(&mut self, carried: &str) {
+        if self.forced_lang.is_empty() {
+            self.forced_lang = carried.to_string();
+        }
+    }
+
+    /// Owe the first-frame re-match for `memo` when it is one the names can change: a Track or a
+    /// Forced only (Off has nothing to find). `landed_sub` is what the landing shows.
+    pub(super) fn owe_rematch(&mut self, memo: Option<&SubtitleMemo>, landed_sub: i64) {
+        self.rematch = memo
+            .filter(|m| !matches!(m, SubtitleMemo::Off))
+            .map(|memo| Rematch { memo: memo.clone(), landed_sub });
+    }
+
+    /// The language of audio stream `sid`, or the landing's audio when the list does not name it.
+    pub(super) fn audio_lang_of(&self, sid: i64) -> &str {
+        self.audio.iter().find(|(id, _)| *id == sid).map_or(self.audio_lang.as_str(), |(_, l)| l.as_str())
+    }
+}
+
+/// The subtitles of `subs` with each `title` replaced by the MERGED track name
+/// (`track_label::track_name`: the PMS title, else the container's tag for its ordinal). The
+/// matchers read a name through [`sub_traits`] alone, so handing them these streams is the whole of
+/// making them names-aware: one forced/SDH/commentary predicate, not two.
+fn with_container_names(subs: &[Stream], names: &TrackNames) -> Vec<Stream> {
+    subs.iter()
+        .enumerate()
+        .map(|(i, s)| Stream {
+            title: track_label::track_name(&s.title, names.sub(sub_render_ordinal(subs, i)), &s.lang),
+            ..s.clone()
+        })
+        .collect()
+}
+
+/// The subtitle a resolve of this app can draw: embedded and a codec the demuxer renders. What
+/// `plan`'s memory rung matches against, and so what every later re-match of it does.
+fn drawable(s: &Stream) -> bool {
+    super::plan::drawable_embedded(s)
+}
+
+/// **The forced track Forced only means, with the container's names**: an index into `subs`, or
+/// `None` for nothing. The menu's choice (the row's read-out and what OK commits) and the audio
+/// follow use this; the resolve, which has no names yet, uses [`match_forced_only`] directly.
+pub fn forced_only_pick(subs: &[Stream], names: &TrackNames, audio_lang: &str, memo_lang: &str) -> Option<usize> {
+    match_forced_only(&with_container_names(subs, names), audio_lang, memo_lang, drawable)
+}
+
+/// What a re-match with the container's names concluded, as the stream to show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Rematched {
+    /// The stream id to show (`0` = none) and its demuxer ordinal (`-1` = none).
+    pub id: i64,
+    pub ordinal: i32,
+}
+
+/// **The first-frame re-match** (`track-memory-plan.md` §4.9): what `memo` picks over streams the
+/// container's names have now been joined to, when that differs from `landed_sub`, what the landing
+/// showed. A Forced only memo can come to nothing (`id` 0); a Track memo that still matches nothing
+/// leaves the landing as it was. `audio_lang` is the language of the audio that plays.
+pub(super) fn rematch_with_names(
+    subs: &[Stream], names: &TrackNames, memo: &SubtitleMemo, audio_lang: &str, landed_sub: i64,
+) -> Option<Rematched> {
+    let named = with_container_names(subs, names);
+    let picked = match memo {
+        SubtitleMemo::Off => return None,
+        SubtitleMemo::ForcedOnly { lang } => Some(match_forced_only(&named, audio_lang, lang, drawable)),
+        SubtitleMemo::Track(track) => match_subtitle(&named, track, drawable).ok().map(Some),
+    }?;
+    let (id, ordinal) = picked
+        .map(|i| (subs[i].id, sub_render_ordinal(subs, i)))
+        .filter(|&(id, ordinal)| id > 0 && ordinal >= 0)
+        .unwrap_or((0, -1));
+    (id != landed_sub).then_some(Rematched { id, ordinal })
 }
 
 #[cfg(test)]

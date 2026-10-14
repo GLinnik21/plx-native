@@ -526,6 +526,22 @@ a dead source is **absent** from Home and states itself in its own library secti
   `plxnative-trackmemory=clear` removes entries through the same door). A remembered Off beats the
   account's rule and PMS's embedded selection, but not a server-selected sidecar the app can draw
   (`plan.rs` `pick_subtitle` withholds the memory from the ladder while the item has one).
+  The subtitle half is one of THREE states (`SubtitleMemo`: `Track`, `Off`, `ForcedOnly { lang }`);
+  **Forced only** is the Subtitles menu's second row (`TrackCommit::SubtitleForcedOnly`,
+  `route::commit_forced_only_pick`), written on an explicit change of mode and never on an OK on the
+  row that already holds it (which recommits what is on screen), with the drawn track's language
+  (else the playing audio's, else the one the session fell back to). It is as
+  absolute as Off: the next episode shows its forced, non-commentary, renderable subtitle in the
+  language of the audio that PLAYS (`route::track_memory::match_forced_only`), or nothing, and never
+  falls to a full track or to the lower rungs. `PlaybackSession::sub_mode` (`SubMode`) holds which
+  state the playback is in, because a stream id cannot say it (a retry carries it in
+  `RetryContext::sub_mode`, and the language the mode falls back to for audio that names none in
+  `ResolveEnv::forced_lang`, since a retry consults no memory). Two derived commits keep the mode true, both through the one commit every
+  pick goes through and neither writing memory: a new audio re-points it (`commit_audio_selection`),
+  and, on a direct play, the first decoded frame re-matches the remembered subtitle once with the
+  container's track names (`route::rematch_subtitle_with_names`, called from `player/pump.rs`; an MP4
+  part's PMS streams carry no `title`, so only the demuxer's tag says which track is forced). Leaving
+  Forced only is a remembered change even onto the very track it drew.
   `subtitle_offsets` is account-bound as well (since SO) under different rules: a record without a
   stamp is read as the signed-in account's own and is stamped at the list's next write
   (`MemoryEntry::ADOPTS_UNSTAMPED`), at the plex list a write with no account token is still

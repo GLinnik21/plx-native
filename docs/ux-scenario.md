@@ -634,8 +634,9 @@ full-screen sheet. All three are modal while open: they take every key, and BACK
 
 - **Subtitles** and **Audio** open the same two-panel track menu, on whichever panel was asked for.
   **LEFT/RIGHT swaps between the Audio and Subtitles panels**, UP/DOWN moves the row, OK selects and
-  closes. Subtitles offers the item's subtitle tracks plus *Off*; both text and image (PGS/VobSub)
-  subtitles render. Audio offers the item's audio tracks. Switching is a **server-side** selection,
+  closes. Subtitles offers the item's subtitle tracks plus *Off* and *Forced only* (the forced track
+  in the language of the audio that plays, or nothing; remembered per show like *Off*); both text and
+  image (PGS/VobSub) subtitles render. Audio offers the item's audio tracks. Switching is a **server-side** selection,
   so it persists as the item's preference rather than lasting only this session.
 - **More** opens a popover led by the **Quality** ladder — Auto plus the fixed rungs — with an
   *Options* section beneath it: **Stats for nerds**, an On/Off toggle that overlays live playback

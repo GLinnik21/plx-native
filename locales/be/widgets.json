@@ -13,6 +13,7 @@
   "widgets.tracks.subtitles": "Субцітры",
   "widgets.tracks.unknown": "Невядома",
   "widgets.tracks.off": "Выкл.",
+  "widgets.tracks.forced_only": "Толькі прымусовыя",
   "widgets.tracks.mono": "Мона",
   "widgets.tracks.stereo": "Стэрэа",
   "widgets.tracks.original": "Арыгінал: {language}",

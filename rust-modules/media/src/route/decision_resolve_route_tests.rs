@@ -1414,6 +1414,7 @@ fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
         selection: Some((17, 23)),
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         suppress_enhancement: false,
+        sub_mode: SubMode::Track,
     };
     reset_track_selection(plx_plex::plex::ServerId::UNSET, "rk-no-memory", Some(retry));
     assert_eq!(
@@ -1474,6 +1475,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
             selection: Some((17, 23)),
             sub_offset_ms: 0,
             suppress_enhancement: false,
+            sub_mode: SubMode::Track,
         },
         "a rescue must not silently restore the server-default tracks",
     );
