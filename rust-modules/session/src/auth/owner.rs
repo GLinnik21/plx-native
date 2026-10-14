@@ -568,7 +568,7 @@ pub enum SessionFx {
     SelectionReply { to: ReplyTo, accepted: bool, flow_epoch: u64 },
     BackReply { to: ReplyTo, resumed: bool },
     /// Record the person's plaintext answer for one server: this launch's grant authority
-    /// (`plex::grant::answer`) and the persisted choice (`Session::plaintext_consent`), under
+    /// (`plex::grant::answer`) and the persisted choice (`Preferences::plaintext_consent`), under
     /// `account` — `plex::grant::account_key` of the account signed in when it was given.
     PlaintextAnswer { machine_id: String, choice: plx_plex::plex::session::PlaintextChoice, account: String },
 }
@@ -918,8 +918,8 @@ pub fn write_persisted(w: &mut Canon, s: &PersistedSession) {
         w.str(&recent.user).seq(recent.terms.len());
         for term in &recent.terms { w.str(term); }
     }
-    w.seq(s.last_library.len());
-    for last in &s.last_library {
+    w.seq(s.prefs.last_library.len());
+    for last in &s.prefs.last_library {
         w.str(&last.user).seq(last.libs.len());
         for lib in &last.libs { w.str(&lib.kind).str(&lib.machine_id).u64(lib.key as u64); }
     }
@@ -931,7 +931,7 @@ pub fn write_persisted(w: &mut Canon, s: &PersistedSession) {
             for lib in list { w.str(&lib.machine_id).u64(lib.key as u64); }
         }
     }
-    w.option(s.last_hero_blur, |w, blur| {
+    w.option(s.prefs.last_hero_blur, |w, blur| {
         for corner in blur { for channel in corner { w.f32(channel); } }
     });
     w.option(s.prefs.playback_quality, |w, quality| {

@@ -28,7 +28,7 @@
 //! ignored on read and not written back, and a half this build cannot read at all (an unknown
 //! `mode` from a newer build, a field of the wrong type) is dropped alone, reading as "never
 //! picked" while the other half and the rest of the list survive.
-use super::{ListSetting, MemoryEntry, Parse, ProfileList, Scope, SettingsWrite};
+use super::{MemoryEntry, Parse, ProfileList, Row, Scope, SettingsWrite};
 use crate::plex::session::Session;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -269,10 +269,10 @@ impl MemoryEntry for TrackMemoryEntry {
 }
 
 /// The `track_memory` row: one show, one profile, bound to the account, applied by the player's
-/// track selection (not a live cell), with no Settings row. A list row, so it states its facts
-/// through [`ListSetting`] and is written through the memory door.
+/// track selection (not a live cell), with no Settings row. A [`Row`] and deliberately not a
+/// `ListRow`: it has no whole-list accessor, so it is written only through the memory door.
 pub struct TrackMemoryPref;
-impl ListSetting for TrackMemoryPref {
+impl Row for TrackMemoryPref {
     const KEY: &'static str = "track_memory";
     const SCOPE: Scope = Scope::PerShow;
     const ACCOUNT_BOUND: bool = true;

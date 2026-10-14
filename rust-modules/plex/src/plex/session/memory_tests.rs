@@ -150,11 +150,11 @@ fn subtitle_offsets_run_through_the_generic_with_their_own_cap_and_key() {
     session.set_subtitle_offset_for("u", "", "rk-1", Some(500));
     session.set_subtitle_offset_for("u", "m", "", Some(500));
     session.set_subtitle_offset_for("u", "m", "rk-2", Some(0));
-    assert_eq!(session.subtitle_offsets.len(), 1);
-    assert_eq!(session.subtitle_offsets[0].items.len(), 1, "empty ids and an offset of 0 record nothing");
+    assert_eq!(session.prefs.subtitle_offsets.len(), 1);
+    assert_eq!(session.prefs.subtitle_offsets[0].items.len(), 1, "empty ids and an offset of 0 record nothing");
     assert_eq!(session.subtitle_offset_for("u", "m", "rk-1"), Some(500));
     let key = ("m".to_string(), "rk-1".to_string());
-    assert_eq!(session.subtitle_offsets.get("u", "", &key).map(|e| e.offset_ms), Some(500));
+    assert_eq!(session.prefs.subtitle_offsets.get("u", "", &key).map(|e| e.offset_ms), Some(500));
 }
 
 /// `{user, items}` is exactly the shape the field had before the door existed: no `account` key is

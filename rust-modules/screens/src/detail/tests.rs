@@ -1640,7 +1640,7 @@ fn preview_tick_does_not_read_the_session_file_every_frame() {
     let _session = plx_plex::plex::session::TempSession::new("detail-preview-fps");
     plx_plex::plex::session::save(&plx_plex::plex::session::Session {
         client_id: "cid-detail-preview-fps".into(),
-        trailer_autoplay: true,
+        prefs: plx_plex::plex::session::Preferences { trailer_autoplay: true, ..Default::default() },
         ..Default::default()
     });
 

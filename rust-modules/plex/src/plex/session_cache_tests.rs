@@ -38,7 +38,7 @@ fn update_reads_the_authority_and_peek_reads_the_result() {
     reset_reads_for_test();
     assert!(update(|s| {
         let mut next = s.clone();
-        next.trailer_autoplay = true;
+        next.prefs.trailer_autoplay = true;
         Some(next)
     }));
     assert_eq!(
@@ -155,7 +155,7 @@ fn a_non_durable_write_drops_the_cache() {
     // `storage::JsonStore::commit`), so `save_locked_with_authority` takes the `!durable` branch.
     plx_platform::storage::inject_next_commit_failure_for_test(plx_platform::storage::CommitStage::ParentSync);
     let mut next = signed_in();
-    next.trailer_autoplay = true;
+    next.prefs.trailer_autoplay = true;
     save(&next);
     plx_platform::storage::clear_injected_commit_failure_for_test();
 

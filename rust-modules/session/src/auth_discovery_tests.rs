@@ -3087,7 +3087,7 @@ fn a_changed_key_replaces_the_entry_and_the_same_key_costs_no_write() {
     assert_eq!(probe_and_learn("https", port_b, "m-real", probe::Location::Local), Outcome::Reachable);
     assert_eq!(learned_pin("m-real"), Some(plx_base::spki::pin_from_spki_der(&second.spki_der)));
     let after = plx_plex::plex::session::peek();
-    assert_eq!(after.server_key_pins.len(), 1, "one entry per machine");
+    assert_eq!(after.prefs.server_key_pins.len(), 1, "one entry per machine");
     assert_ne!(stamp(&file), before);
 }
 

@@ -25,7 +25,7 @@
 //! and only once, in case a future server starts advertising the key itself (issue #146).
 //!
 //! Everything a viewer chose in a library's view is remembered across restarts, per profile, by
-//! (machine id, section key), as ONE record (`plex::session::Session::library_views`, issues #278
+//! (machine id, section key), as ONE record (`plex::session::Preferences::library_views`, issues #278
 //! and #441; [`saved_view`] holds the merge rules): the sort and its direction, the Unwatched
 //! switch, the genre and the listing type. A sort is recorded by its KEY, never its menu
 //! position, and applied on the section's first page only after that page's menu has offered the
@@ -790,7 +790,7 @@ pub struct BrowseState {
     tab_shape: u32,
     retry_cd: u32,
     remembered: Vec<(SecKind, String, i64)>,
-    /// This profile's remembered library views ([`plx_plex::plex::session::Session::library_views`]):
+    /// This profile's remembered library views ([`plx_plex::plex::session::Preferences::library_views`]):
     /// sort, Unwatched, genre and listing type. Loaded beside [`remembered`](Self::remembered) and
     /// cleared with it on a reset, so a profile switch can never open one person's library in
     /// another's view.
@@ -1213,18 +1213,19 @@ impl BrowseState {
         plx_plex::plex::session::queue_update(move |current| {
             let mut next = current.clone();
             let slot = match next
+                .prefs
                 .last_library
                 .iter_mut()
                 .find(|library| library.user == user)
             {
                 Some(library) => library,
                 None => {
-                    next.last_library.push(plx_plex::plex::session::LastLibrary {
+                    next.prefs.last_library.push(plx_plex::plex::session::LastLibrary {
                         user: user.clone(),
                         libs: Vec::new(),
                         extensions: Default::default(),
                     });
-                    next.last_library.last_mut()?
+                    next.prefs.last_library.last_mut()?
                 }
             };
             slot.set(wire, &machine, key);
@@ -1768,7 +1769,7 @@ impl BrowseState {
         }
     }
     fn load_remembered(&mut self, session: &plx_plex::plex::session::Session, user: &str) {
-        self.remembered = session.last_library.iter().find(|library| library.user == user)
+        self.remembered = session.prefs.last_library.iter().find(|library| library.user == user)
             .map(|library| library.libs.iter().filter_map(|target| {
                 SecKind::from_wire(&target.kind)
                     .map(|kind| (kind, target.machine_id.clone(), target.key))
@@ -2642,7 +2643,7 @@ impl BrowseState {
 
 /// A remembered sort and genre to put the first page in, once the server proves it still offers
 /// them — see [`fetch_listing_page`]. Built by [`BrowseState::restore_for`] from
-/// [`plx_plex::plex::session::Session::library_views`].
+/// [`plx_plex::plex::session::Preferences::library_views`].
 struct Restore {
     kind: SecKind,
     /// The listing the first page is for, which scopes the genre list the check reads.

@@ -260,7 +260,7 @@ fn a_repick_keeps_the_entrys_other_keys_and_an_unchanged_one_writes_nothing() {
     let _g = fresh_registry(&mut ps);
     let _session = session::TempSession::new("memory-extensions");
     let mut with_extension = signed_in("acct");
-    with_extension.subtitle_offsets = serde_json::from_value(serde_json::json!([
+    with_extension.prefs.subtitle_offsets = serde_json::from_value(serde_json::json!([
         {"user":"","items":[{"machine_id":"machine-ext","rating_key":"rk-ext","offset_ms":100,"future":"kept"}]}
     ])).unwrap();
     session::save(&with_extension);
@@ -269,13 +269,13 @@ fn a_repick_keeps_the_entrys_other_keys_and_an_unchanged_one_writes_nothing() {
 
     persist_subtitle_offset(&ps, 250);
     plx_base::storage_worker::drain_for_test();
-    let stored = serde_json::to_value(&session::peek().subtitle_offsets).unwrap();
+    let stored = serde_json::to_value(&session::peek().prefs.subtitle_offsets).unwrap();
     assert_eq!(stored[0]["items"][0]["offset_ms"], 250);
     assert_eq!(stored[0]["items"][0]["future"], "kept", "the entry's other keys survive a re-pick");
 
     let before = stored.clone();
     persist_subtitle_offset(&ps, 250);
     plx_base::storage_worker::drain_for_test();
-    assert_eq!(serde_json::to_value(&session::peek().subtitle_offsets).unwrap(), before);
+    assert_eq!(serde_json::to_value(&session::peek().prefs.subtitle_offsets).unwrap(), before);
     tidy();
 }

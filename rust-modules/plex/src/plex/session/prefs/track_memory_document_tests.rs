@@ -155,7 +155,7 @@ fn fill_memory(session: &mut Session, users: usize, fill: Fill) {
         for k in 0..fill.views {
             session.set_view_for(&user, view(k));
         }
-        session.last_library.push(LastLibrary {
+        session.prefs.last_library.push(LastLibrary {
             user: user.clone(),
             libs: ["movie", "show", "music"]
                 .map(|kind| TypedLib { kind: kind.into(), machine_id: machine(u), key: i64::MIN, extensions: Default::default() })
@@ -978,9 +978,9 @@ fn worst_case_household_document_fits() {
         fill_memory(&mut worst_case, USERS, FULL);
 
         // every list is at its cap, strings at their bounds
-        assert_eq!(worst_case.subtitle_offsets.iter().map(|r| r.items.len()).collect::<Vec<_>>(), [SubtitleOffsets::CAP; USERS]);
-        assert_eq!(worst_case.library_views.iter().map(|r| r.libs.len()).collect::<Vec<_>>(), [LibraryViews::CAP; USERS]);
-        assert_eq!((worst_case.server_key_pins.len(), worst_case.plaintext_consent.len()), (USERS, USERS));
+        assert_eq!(worst_case.prefs.subtitle_offsets.iter().map(|r| r.items.len()).collect::<Vec<_>>(), [SubtitleOffsets::CAP; USERS]);
+        assert_eq!(worst_case.prefs.library_views.iter().map(|r| r.libs.len()).collect::<Vec<_>>(), [LibraryViews::CAP; USERS]);
+        assert_eq!((worst_case.prefs.server_key_pins.len(), worst_case.prefs.plaintext_consent.len()), (USERS, USERS));
         assert!(worst_case.recent_searches.iter().all(|r| r.terms.len() == data_recents_cap()));
         assert!(worst_case.profiles.iter().all(|p| p.sources.len() == SOURCES) && SOURCES == USERS, "sixteen sources each");
         let budget_used = super::list_size(&worst_case.prefs.track_memory);

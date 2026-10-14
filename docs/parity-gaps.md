@@ -883,7 +883,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   The official client remembers each library's sort and filter between sessions, and so do we now:
   the sort and its direction, the Unwatched switch, the genre and the listing type (Movies /
   Collections, Shows / Seasons / Episodes / Collections) are remembered per profile per library in
-  ONE view record (`Session::library_views`, still stored on disk as `library_sorts` so a rollback
+  ONE view record (`Preferences::library_views`, still stored on disk as `library_sorts` so a rollback
   reads it). The sort (#278) and the genre are re-checked against the server before they are sent:
   a sort the menu no longer offers, or a genre the library's genre list no longer has, falls back
   silently to the default (a check that could not be read at all leaves the saved value in the
@@ -898,7 +898,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 - **No way to enter the grid with a preset query (a hub's "See All")** — `minor` / `medium`
   In the official client every hub row has a "See All" that opens the library grid pre-sorted/pre-filtered to that hub (Recently Added → the grid sorted by addedAt desc). Our grid can only ever be entered at whatever query the section last remembered — the owned Library uses a `SectionAddress` and `BrowseCmd::Addressed` for its own controls, but no external hub action supplies a preset query.
   *Where:* `rust-modules/src/stores/browse.rs` (`SectionAddress`/`LibraryWork::Commit`), `rust-modules/screens/src/library/`, and the missing hub-heading activation in the owned Home/app path.
-  *Verified:* CONFIRMED. The Browse command vocabulary can apply sort/filter edits emitted by the Library itself, but no `See All` effect or preset-query entry point exists from a hub. The grid opens in the per-profile saved view (`Session::library_views`, #441), which is the viewer's own last choice, never a hub's preset; no `See All` effect or preset-query entry point exists. A tree-wide search finds no `See All` implementation.
+  *Verified:* CONFIRMED. The Browse command vocabulary can apply sort/filter edits emitted by the Library itself, but no `See All` effect or preset-query entry point exists from a hub. The grid opens in the per-profile saved view (`Preferences::library_views`, #441), which is the viewer's own last choice, never a hub's preset; no `See All` effect or preset-query entry point exists. A tree-wide search finds no `See All` implementation.
 
 - **Grid posters carry a title/year only while focused** — `polish` / `small`
   The reference grid labels every poster with an ellipsized title and the year underneath. Ours draws bare posters and puts the title + year only under the single focused card, so scanning an unfamiliar library means walking focus cell by cell — noticeably worse for shows whose posters don't carry the name.

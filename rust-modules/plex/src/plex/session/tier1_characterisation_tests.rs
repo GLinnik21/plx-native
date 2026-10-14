@@ -57,7 +57,7 @@ fn rich() -> Session {
     session.set_view_for("u-7", LibraryView {
         machine_id: MACHINE.into(), key: 1, sort: "addedAt".into(), desc: true, ..Default::default()
     });
-    session.last_library.push(LastLibrary {
+    session.prefs.last_library.push(LastLibrary {
         user: "u-7".into(),
         libs: vec![TypedLib { kind: "movie".into(), machine_id: MACHINE.into(), key: 1, extensions: Default::default() }],
         extensions: Default::default(),
@@ -378,11 +378,11 @@ fn tier1_db8_extra_preference_keys_leave_credentials_and_todays_keys_intact() {
         assert_credentials_intact(&joined, &original, case);
         assert_eq!(joined.prefs.subtitle_size, original.prefs.subtitle_size, "{case}");
         assert_eq!(joined.prefs.skip_interval, original.prefs.skip_interval, "{case}");
-        assert_eq!(joined.trailer_autoplay, original.trailer_autoplay, "{case}");
+        assert_eq!(joined.prefs.trailer_autoplay, original.prefs.trailer_autoplay, "{case}");
         assert_eq!(joined.language, original.language, "{case}");
         assert_eq!(joined.subtitle_offset_for("u-7", MACHINE, "rk-1"), Some(1_500), "{case}");
-        assert_eq!(joined.last_library.len(), 1, "{case}");
-        assert_eq!(joined.library_views.len(), 1, "{case}");
+        assert_eq!(joined.prefs.last_library.len(), 1, "{case}");
+        assert_eq!(joined.prefs.library_views.len(), 1, "{case}");
         assert_eq!(joined.plaintext_choice("acct-fp", MACHINE), PlaintextChoice::Allowed, "{case}");
         assert_eq!(joined.server_key_pin(MACHINE), Some(pin().as_str()), "{case}");
         assert!(joined.extensions.0.get("profile_prefs").is_none() && joined.extensions.0.get("track_memory").is_none(),
@@ -413,8 +413,8 @@ fn tier1_db8_unreadable_preferences_cost_only_the_preferences() {
         assert!(parsed.subtitle_offsets.is_empty(), "{case}");
         let joined = join_canonical(&decoded.public, &auth).expect("the credentials still open");
         assert_credentials_intact(&joined, &original, case);
-        assert!(joined.trailer_autoplay, "{case}: the whole-value fallback keeps trailer autoplay on");
-        assert!(joined.subtitle_offsets.is_empty(), "{case}");
+        assert!(joined.prefs.trailer_autoplay, "{case}: the whole-value fallback keeps trailer autoplay on");
+        assert!(joined.prefs.subtitle_offsets.is_empty(), "{case}");
     }
 }
 
@@ -444,7 +444,7 @@ fn tier1_legacy_file_extra_top_level_keys_leave_credentials_and_todays_keys_inta
         assert_eq!(parsed.language, original.language, "{case}");
         assert_eq!(parsed.subtitle_size, original.prefs.subtitle_size, "{case}");
         assert_eq!(parsed.skip_interval, original.prefs.skip_interval, "{case}");
-        assert_eq!(parsed.trailer_autoplay, original.trailer_autoplay, "{case}");
+        assert_eq!(parsed.trailer_autoplay, original.prefs.trailer_autoplay, "{case}");
         assert_eq!(parsed.plaintext_consent, baseline.plaintext_consent, "{case}");
         assert_eq!(parsed.server_key_pins, baseline.server_key_pins, "{case}");
         assert_eq!(parsed.last_library, baseline.last_library, "{case}");

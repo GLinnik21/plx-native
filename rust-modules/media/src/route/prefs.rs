@@ -30,7 +30,7 @@
 use super::plan::{supported_quality, Quality, QUALITY_LADDER};
 use plx_plex::plex::session::{
     persist_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode, DirectPlayModePref,
-    NextEpisodeMode, NextEpisodeModePref, Preferences, QualityPref, Setting, SkipInterval,
+    NextEpisodeMode, NextEpisodeModePref, Preferences, QualityPref, Row, Setting, SkipInterval,
     SkipIntervalPref, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone,
     SubtitleTonePref,
 };
@@ -556,7 +556,7 @@ macro_rules! choices {
         }
         impl Choice {
             /// The key of every setting a Settings row saves through [`Choice`], in declaration order.
-            pub const KEYS: &'static [&'static str] = &[$(<$marker as Setting>::KEY),*];
+            pub const KEYS: &'static [&'static str] = &[$(<$marker as Row>::KEY),*];
         }
     };
 }

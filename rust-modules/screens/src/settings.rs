@@ -1266,7 +1266,7 @@ impl RootPage {
     fn plaintext_inputs(&mut self) -> Vec<PlaintextRowInput> {
         use plx_plex::plex::session::PlaintextChoice;
         let sess = &self.session_snapshot;
-        let answered = plx_plex::plex::grant::choices(&sess.plaintext_consent, &sess.account_token);
+        let answered = plx_plex::plex::grant::choices(&sess.prefs.plaintext_consent, &sess.account_token);
         let mut rows: Vec<(String, bool)> = answered
             .iter()
             .filter(|(_, choice)| *choice != PlaintextChoice::Undecided)

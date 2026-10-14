@@ -163,9 +163,9 @@ pub struct AuthContext {
 /// installation, so [`Mutation::ClearTenure`] removes them while it retains every other
 /// preference (the install-wide language among them). They live in the public half on purpose:
 /// writing one must stay a public-only edit with no credential reseal. `server_key_pins` is the
-/// learned public key of each server the account reached (`plex::session::Session::server_key_pins`);
+/// learned public key of each server the account reached (`plex::session::Preferences::server_key_pins`);
 /// `plaintext_consent` is that account's answer, per server, to "Connect without encryption?"
-/// (`plex::session::Session::plaintext_consent`), which carries an account fingerprint and a
+/// (`plex::session::Preferences::plaintext_consent`), which carries an account fingerprint and a
 /// `machineIdentifier`; `track_memory` is each profile's remembered audio and subtitle picks per
 /// show (`plex::session::prefs::TrackMemoryEntry`), which name a `machineIdentifier` and a show
 /// and belong to the account that watched it.

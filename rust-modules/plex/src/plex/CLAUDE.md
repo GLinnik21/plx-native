@@ -108,7 +108,7 @@ place the rule is spelled. The dashed `*.plex.direct` names are the only origins
 can ever apply to, and a custom server-access URL behind a proxy with its own certificate would
 otherwise rewrite the machine's single entry on every discovery. Plaintext, a failed verification,
 a mismatched `machineIdentifier`, an origin without a pin and a relay route (skipped as a
-conservative choice) learn nothing. It lives in `Session::server_key_pins`, one entry per
+conservative choice) learn nothing. It lives in `Preferences::server_key_pins`, one entry per
 `machineIdentifier`, session-level like `plaintext_consent` (NOT in `ServerRef`/`SourceRef`/
 `ProfileCreds`, which are cloned per profile), soft-parsed and skipped while empty.
 **It is in the PUBLIC preferences, so sign-out forgets it by an explicit rule, not with the
@@ -476,24 +476,32 @@ a dead source is **absent** from Home and states itself in its own library secti
   across the write's `sync_all`, so **nothing per-frame may take it directly** — but a per-frame
   reader may now call `session::peek()`, because `peek()` is backed by a live in-memory read
   cache, not a per-call file transaction.
-- **The nine install-wide player settings live in ONE struct, `session/prefs.rs`'s `Preferences`,
-  flattened (`#[serde(flatten)] prefs`) into BOTH on-disk forms** — the legacy file's `Session` and
-  the canonical preference record — declared before each form's own `extensions`, so the flatten
-  takes its keys first and the unknown-key map still sees only keys nobody models. A new setting of
-  that kind is a `Preferences` field (its serde attributes written out where rustfmt and a reviewer
-  see them, copied from a neighbour, never unified: each row keeps its own soft-parse policy), a
-  `Setting` marker (`setting!` for the plain shape; hand-written when `Stored` ≠ `Value`, as for
-  quality) and a line in `prefs::DESCRIPTORS`. Callers read `session.prefs.<field>` or the hand-written
-  getter, and change a value with `session.with_pref::<Marker>(v)`. `prefs_tests` holds the table to
-  the struct (T-fields), to platform's `ACCOUNT_BOUND_PREFERENCES` (T-account) and to each row's
-  parse policy (T-parse), both ways; a field with no row, or a row with no field, fails there.
-  The struct also holds one LIST beside the nine, `track_memory` (each profile's remembered audio and
-  subtitle picks per show, `prefs/track_memory.rs`): it has no `Copy` value, so its row is a
-  `ListSetting` (`Descriptor::of_list`), and it is written only through `ProfileMemory::upsert_with`
-  (account-bound: no stamp, no write; a write prunes every other account's record). Its entry
-  strings are bounded (an over-long one reads as absent, a title is cut), it is capped at 64 entries
-  a profile and held to a 32 KiB HOUSEHOLD budget by eviction, never refusal. Nothing reads or
-  writes it yet; the matchers come later.
+- **Every preference key but `language` lives in ONE struct, `session/prefs.rs`'s `Preferences`**
+  (the nine player settings, `auto_sign_in`, `trailer_autoplay`, `last_hero_blur`, the account-bound
+  `plaintext_consent` and `server_key_pins`, the per-profile `last_library` and `library_sorts`, and
+  the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
+  forms — the legacy file's `Session` and the canonical preference record — declared before each
+  form's own `extensions`, so the flatten takes its keys first and the unknown-key map still sees
+  only keys nobody models. A new key of that kind is a `Preferences` field (its serde attributes
+  written out where rustfmt and a reviewer see them, copied from a neighbour, never unified: each
+  row keeps its own soft-parse policy), a marker (`setting!` for a `Copy` value, hand-written when
+  `Stored` != `Value` as for quality, `list_row!` for a list) and a line in `prefs::DESCRIPTORS`.
+  Callers read `session.prefs.<field>` or the hand-written getter, and change a value with
+  `session.with_pref::<Marker>(v)` (a `Copy` row). `auto_sign_in` is Install and never
+  account-bound: `boot_shows_picker` reads it before any profile is seated. `trailer_autoplay`'s
+  derived default (here and in `Session`) is OFF while an ABSENT key reads on, so the canonical
+  record's own `Default` sets it. `plaintext_consent` is written as `[]` in the legacy file but
+  omitted from the canonical record while empty (`split_public` drops the key). `prefs_tests` holds
+  the table to the struct (T-fields), to platform's `ACCOUNT_BOUND_PREFERENCES` (T-account) and to
+  each row's parse policy (T-parse), both ways; a field with no row, or a row with no field, fails
+  there.
+  The two memory-door lists (`track_memory`: each profile's remembered audio and subtitle picks per
+  show, `prefs/track_memory.rs`; `subtitle_offsets`) have no `Copy` value and no whole-list accessor:
+  their markers implement `Row` only (not `ListRow`), and they are written only through
+  `ProfileMemory::upsert_with`. `track_memory` is account-bound (no stamp, no write; a write prunes
+  every other account's record), its entry strings are bounded (an over-long one reads as absent, a
+  title is cut), and it is capped at 64 entries a profile and held to a 32 KiB HOUSEHOLD budget by
+  eviction, never refusal. Nothing reads or writes it yet; the matchers come later.
 - **The DB8 document may not pass `MAX_LOGICAL_BYTES` (256 KiB), and per-profile memory is what
   grows it.** Past the cap EVERY write fails (`LogicalTooLarge`, reported as `InvalidSchema`), so
   `persistence::commit_session_with` measures the projected document (platform's own
