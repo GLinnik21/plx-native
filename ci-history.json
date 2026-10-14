@@ -1,4 +1,4 @@
-{"updated":"2026-10-14T12:37:31Z",
+{"updated":"2026-10-14T13:02:10Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -2419,7 +2419,8 @@
 {"id":38548041950,"at":"2026-10-14T10:13:23Z","sha":"c7f57bca6","title":"Merge main into subs/wrap-width","pr":682,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":146,"Linux simulator build + launch":262,"macOS simulator build + launch":190,"Windows launcher syntax":16}},
 {"id":38549448709,"at":"2026-10-14T10:25:19Z","sha":"c7f57bca6","title":"Merge main into subs/wrap-width","pr":663,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":165,"Linux simulator build + launch":196,"macOS simulator build + launch":116}},
 {"id":38552278965,"at":"2026-10-14T10:49:42Z","sha":"f1e30a33a","title":"Subtitles: wrap captions by pixel width, capped at 75% of the screen","pr":663,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"Linux simulator build + launch":217,"macOS simulator build + launch":198,"macOS tests against bundled FFmpeg and ASS":171}},
-{"id":38563835562,"at":"2026-10-14T12:26:40Z","sha":"af8497886","title":"Track memory write path: a subtitle or audio pick on an episode is remembered for its show","pr":685,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":39,"macOS tests against bundled FFmpeg and ASS":187,"macOS simulator build + launch":111,"Linux simulator build + launch":176}}
+{"id":38563835562,"at":"2026-10-14T12:26:40Z","sha":"af8497886","title":"Track memory write path: a subtitle or audio pick on an episode is remembered for its show","pr":685,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":39,"macOS tests against bundled FFmpeg and ASS":187,"macOS simulator build + launch":111,"Linux simulator build + launch":176}},
+{"id":38567878607,"at":"2026-10-14T12:57:46Z","sha":"d28ff3005","title":"Image cache: create the /media/developer/temp directory owner-only","pr":667,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":134,"macOS tests against bundled FFmpeg and ASS":94,"Windows launcher syntax":22,"Linux simulator build + launch":229}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
