@@ -687,6 +687,18 @@ pub(super) fn fit_document(
     })
 }
 
+/// The one line that reports what a write is about to put in DB8: the whole projected document
+/// and the share `track_memory` holds of it, both in the platform's logical bytes, against the
+/// cap. It is what the device check reads to see how close memory sits to the budget; the write's
+/// own latency is the line `session.rs` logs after the helper answers.
+pub(super) fn document_size_line(total: usize, preferences: &serde_json::Value) -> String {
+    let track_memory = preferences.get("track_memory").map_or(0, state::logical_size);
+    format!(
+        "session: db8 document bytes={total} track_memory={track_memory} cap={}",
+        state::MAX_LOGICAL_BYTES
+    )
+}
+
 /// The logical size of the document after `write` carrying `public`: the projection with the new
 /// preferences left out, plus exactly one copy of them (the projection holds a `null`, 4 bytes, in
 /// their place).
@@ -798,6 +810,9 @@ pub fn commit_session_with(
     if let Some((state, write)) = sizing {
         for (list, evicted) in fit_document(state, &mut public, write, &protected) {
             plx_base::eventlog::log(&format!("prefs: evicted {evicted} {list} entries to fit the 256 KiB document"));
+        }
+        if let Some(total) = projected_size(state, &public, write, &protected) {
+            plx_base::eventlog::log(&document_size_line(total, &public.preferences));
         }
     }
     let may_fallback = migration || authority == super::SaveAuthority::FreshReauthentication;
@@ -1817,6 +1832,33 @@ pub fn uncertain_helper_reply_for_test(reconcile: bool) -> super::async_persiste
     // The diagnostic must travel with the commit, not a later thread-local observation.
     failure::clear();
     super::async_persistence::LiveWrite::canonical(commit, None).classify()
+}
+
+#[cfg(test)]
+mod document_size_line_tests {
+    use super::*;
+
+    #[test]
+    fn the_line_names_the_document_the_track_memory_share_and_the_cap() {
+        let memory = serde_json::json!([{"show": "x", "audio": "eng"}]);
+        let preferences = serde_json::json!({ "track_memory": memory, "quality": "original" });
+        let line = document_size_line(12_345, &preferences);
+        assert_eq!(
+            line,
+            format!(
+                "session: db8 document bytes=12345 track_memory={} cap={}",
+                state::logical_size(&memory),
+                state::MAX_LOGICAL_BYTES
+            )
+        );
+        assert!(!line.contains("eng") && !line.contains("original"), "sizes only, never content");
+    }
+
+    #[test]
+    fn a_document_without_memory_reports_zero_rather_than_omitting_the_field() {
+        let line = document_size_line(900, &serde_json::json!({}));
+        assert!(line.contains("track_memory=0"), "{line}");
+    }
 }
 
 #[cfg(test)]
