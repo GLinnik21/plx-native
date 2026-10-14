@@ -5659,6 +5659,27 @@ mod sink_envelope_tests {
         assert_eq!(sink_envelope(LoadVideo::H264, (3840, 2160), 30.0, &slow, true).fps, 25);
     }
 
+    /// Issue #665: an MKV's 1 ms timebase stores a 30p frame as 33 ms, so PMS reports 30.303 and
+    /// the strict class rounded it up to 50, which a 4K@30 H.264 decoder refuses. A rate within
+    /// the timebase rounding error above a class snaps to it; a genuinely higher one still rounds up.
+    #[test]
+    fn a_millisecond_timebase_rate_snaps_to_its_class() {
+        let c = caps(DEV_SET.0, DEV_SET.1);
+        for (fps, want) in [
+            (30.303, 30), (24.39, 24), (23.81, 24), (25.0, 25), (50.0, 50), (58.82, 60), (59.94, 60),
+            (31.0, 50), (26.0, 30),
+        ] {
+            assert_eq!(sink_envelope(LoadVideo::H264, (3840, 2160), fps, &c, false).fps, want, "h264 {fps}");
+        }
+    }
+
+    /// Issue #665: the re-encode of a 4K source at 480p declares FHD60 for H.264.
+    #[test]
+    fn a_480p_ceiling_on_a_4k_source_declares_fhd60_for_h264() {
+        let c = caps(DEV_SET.0, DEV_SET.1);
+        assert_eq!(sink_envelope(LoadVideo::H264, (854, 480), 0.0, &c, false), ENVELOPE_FHD60);
+    }
+
     #[test]
     fn the_payload_carries_all_three_envelope_numbers() {
         let ps = crate::route::PlaybackSession::IDLE;

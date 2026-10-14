@@ -1524,6 +1524,32 @@ fn a_quality_change_survives_an_original_handoff_rollback() {
     crate::player::reset_route_requests_for_test(&ps);
 }
 
+/// **Issue #665: a fixed-quality re-encode keeps `ProgressiveMkv` delivery, and its Load must
+/// declare the quality's ceiling, not the 4K source.** `sink_max_raster` used to return the
+/// source raster for the whole progressive arm, so a 4K H.264 source forced to 480p declared
+/// 4K@60 for a 480p stream and the pipeline refused it (`type=18 num=601`).
+#[test]
+fn a_fixed_quality_progressive_reencode_declares_the_ceiling_not_the_source() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    { let s = &mut ps; {
+        s.cur_src.1 = 3840;
+        s.cur_src.2 = 2160;
+        s.cur_contract.delivery = plx_plex::plex::TranscodeDelivery::ProgressiveMkv;
+        s.cur_contract.ceiling = Quality::P480.ceiling();
+    } };
+    assert_eq!(sink_max_raster(&ps), (854, 480), "the smaller of source and ceiling");
+    // Direct play / remux (Original has no ceiling) still declares the source.
+    { let s = &mut ps; s.cur_contract.ceiling = Quality::Original.ceiling() };
+    assert_eq!(sink_max_raster(&ps), (3840, 2160));
+    // PMS never upscales: a source smaller than the ceiling wins.
+    { let s = &mut ps; {
+        s.cur_src.1 = 640;
+        s.cur_src.2 = 360;
+        s.cur_contract.ceiling = Quality::P480.ceiling();
+    } };
+    assert_eq!(sink_max_raster(&ps), (640, 360));
+}
+
 #[test]
 fn a_failed_rollback_load_discards_trial_effects_before_the_next_trial() {
     let mut ps = crate::route::PlaybackSession::IDLE;
