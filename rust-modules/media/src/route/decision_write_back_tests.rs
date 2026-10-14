@@ -116,13 +116,6 @@ impl Drop for World {
     }
 }
 
-/// The demuxer publishes the container's subtitle track names (by ordinal) when it opens a part.
-/// Process-global, so a world starts and ends with none.
-fn publish_container_names(subs: &[&str]) {
-    *crate::player::SHARED.track_names.lock().unwrap_or_else(|e| e.into_inner()) =
-        crate::player::TrackNames { audio: Vec::new(), subs: subs.iter().map(|s| s.to_string()).collect() };
-}
-
 fn wait_idle() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while !selection_queue_idle() {

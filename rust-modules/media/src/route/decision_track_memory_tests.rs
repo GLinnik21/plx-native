@@ -1995,13 +1995,6 @@ fn land_mp4_forced_only(ps: &mut PlaybackSession) {
     assert_eq!(cur_sub_mode(ps), SubMode::ForcedOnly, "setup: and Forced only is the mode");
 }
 
-/// The demuxer publishes the container's track names when it opens a part.
-#[cfg(feature = "devtriggers")]
-fn publish_container_names(subs: &[&str]) {
-    *crate::player::SHARED.track_names.lock().unwrap_or_else(|e| e.into_inner()) =
-        crate::player::TrackNames { audio: Vec::new(), subs: subs.iter().map(|s| s.to_string()).collect() };
-}
-
 /// **The first decoded frame's re-match.** The MP4's forced track is found once its names arrive:
 /// one derived commit (the session and the server now agree), the mode kept, NO memory write, and
 /// once only — a viewer who then moves off it is not pulled back by the next frame.
