@@ -2216,7 +2216,7 @@ pub mod redirect;
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 #[path = "stream_test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;
 
 #[cfg(test)]
 #[path = "stream_deadline_connect_tests.rs"]

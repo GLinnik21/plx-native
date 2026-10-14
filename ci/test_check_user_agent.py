@@ -3,7 +3,10 @@
 and everything else is clean; a second `CURLOPT_USERAGENT`, a literal `User-Agent` header (any case,
 in a string or a raw string, at the start of a request line too), in Rust or C, fails and names the
 file; comments, tests and the identity function that only BUILDS the string do not; and an
-allow-list entry that no longer applies anything is itself a failure. Each case writes a tiny tree
+allow-list entry that no longer applies anything is itself a failure. The other direction is read too:
+a file that calls `curl_easy_init` more often than `apply_user_agent`, or builds more request lines by hand
+than it calls `user_agent_header_line`, fails and names the file (the allowed file included), and a C file
+that opens a curl handle fails; declarations, status lines, comments and test code do not count. Each case writes a tiny tree
 to a private temp dir; nothing here reads the real repository."""
 import importlib.util
 import tempfile
@@ -99,6 +102,78 @@ class Verdicts(unittest.TestCase):
         self.assertIn('allow-list', problems[0])
         missing = Tree({k: v for k, v in CLEAN.items() if k != ALLOWED}).problems()
         self.assertEqual(len(missing), 1, missing)
+
+
+HANDLE = 'let h = plx_net::net::curl_easy_init();\n'
+REQUEST = 'let r = format!("{method} {path} HTTP/1.1\\r\\nHost: {h}\\r\\n{ua}\\r\\n");\n'
+
+
+class ForgottenUserAgent(unittest.TestCase):
+    """A transport that never sends the value: every easy handle applies it, every hand-built request
+    line is followed by the helper's line."""
+
+    def test_an_easy_handle_that_never_applies_the_user_agent_fails_and_names_the_file(self):
+        problems = with_file(OTHER, 'fn open() { ' + HANDLE + ' }\n').problems()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn(OTHER, problems[0])
+        self.assertIn('curl_easy_init', problems[0])
+        self.assertIn('apply_user_agent', problems[0])
+
+    def test_an_easy_handle_that_applies_it_passes(self):
+        source = 'fn open() { ' + HANDLE + ' plx_net::net::apply_user_agent(h); }\n'
+        self.assertEqual(with_file(OTHER, source).problems(), [])
+
+    def test_every_handle_needs_its_own_apply(self):
+        source = 'fn a() { ' + HANDLE + ' apply_user_agent(h); }\nfn b() { ' + HANDLE + ' }\n'
+        problems = with_file(OTHER, source).problems()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn('2 time(s)', problems[0])
+
+    def test_the_allowed_file_is_held_to_it_too(self):
+        stale = CLEAN[ALLOWED] + 'fn open() { let h = curl_easy_init(); }\n'
+        problems = Tree({**CLEAN, ALLOWED: stale}).problems()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn(ALLOWED, problems[0])
+        fixed = stale + 'fn apply(easy: *mut CURL) { apply_user_agent(easy); }\n'
+        self.assertEqual(Tree({**CLEAN, ALLOWED: fixed}).problems(), [])
+
+    def test_a_declaration_a_path_a_comment_and_test_code_are_not_a_handle(self):
+        for source in ('fn curl_easy_init() -> *mut CURL;',
+                       'fn f() { let present = !plx_net::net::curl::curl_easy_init; }',
+                       '// curl_easy_init() is called by the other file\nfn f() {}',
+                       '#[cfg(test)]\nmod tests { fn t() { ' + HANDLE + ' } }',
+                       'fn f() { log("curl_easy_init() failed"); }'):
+            with self.subTest(source=source):
+                self.assertEqual(with_file(OTHER, source + '\n').problems(), [])
+        self.assertEqual(with_file('rust-modules/media/src/curlio_tests.rs', 'fn t() { ' + HANDLE + ' }\n').problems(), [])
+
+    def test_a_hand_built_request_line_without_the_helper_fails(self):
+        problems = with_file(OTHER, 'fn f() { ' + REQUEST + ' }\n').problems()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn(OTHER, problems[0])
+        self.assertIn('user_agent_header_line', problems[0])
+        for source in ('fn f() { let r = b"GET / HTTP/1.0\\r\\n\\r\\n"; }',
+                       'fn f() { let r = "GET /a HTTP/1.1\\nHost: x\\n"; }'):
+            with self.subTest(source=source):
+                self.assertEqual(len(with_file(OTHER, source + '\n').problems()), 1)
+
+    def test_a_hand_built_request_line_with_the_helper_passes(self):
+        source = 'fn f() { let ua = crate::net::user_agent_header_line(); ' + REQUEST + ' }\n'
+        self.assertEqual(with_file(OTHER, source).problems(), [])
+
+    def test_status_lines_and_version_checks_are_not_request_lines(self):
+        for source in ('fn f() { w("HTTP/1.1 200 OK\\r\\nContent-Length: 0\\r\\n\\r\\n"); }',
+                       'fn f() { w(format!("HTTP/1.1 {status} Refused\\r\\n")); }',
+                       'fn f() -> bool { h.starts_with(b"HTTP/1.1") }',
+                       '#[cfg(test)]\nmod tests { fn t() { ' + REQUEST + ' } }'):
+            with self.subTest(source=source):
+                self.assertEqual(with_file(OTHER, source + '\n').problems(), [])
+
+    def test_a_c_file_opening_a_curl_handle_fails_but_naming_it_in_a_comment_does_not(self):
+        problems = with_file('src/main.c', 'int f(void) { CURL *c = curl_easy_init(); return c != 0; }\n').problems()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn('src/main.c', problems[0])
+        self.assertEqual(with_file('src/main.c', '/* curl_easy_init() */ int f(void) { return 0; }\n').problems(), [])
 
 
 if __name__ == '__main__':

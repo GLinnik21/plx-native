@@ -159,6 +159,42 @@ pub fn assert_held(what: &str) {
     );
 }
 
+/// The environment variable that tells a [`fresh_process`] child which test it was started for.
+const FRESH_PROCESS_ENV: &str = "PLX_TEST_FRESH_PROCESS";
+
+/// Run the calling test in a CHILD copy of the test binary, for a global that can be set once per
+/// process and whose UNSET state is what the test grades (the `User-Agent` `OnceLock`: any other
+/// test in the same binary may already have installed it, and nothing can take it back).
+///
+/// Call it first, with `module_path!()` and the test's own name. It answers `true` inside the
+/// child, where the test body goes on to run alone; in the parent it starts the child on
+/// `--exact` that one test, asserts the child ran it and passed, and answers `false`, so the
+/// parent returns. A child that matched no test fails loudly (`1 passed` is required), because a
+/// filter that matches nothing still exits 0.
+///
+/// The technique is `eventlog`'s umask test and `storage::diagnostics`' publication test, which
+/// each carry their own copy for the same reason.
+pub fn fresh_process(module_path: &str, test: &str) -> bool {
+    if std::env::var(FRESH_PROCESS_ENV).as_deref() == Ok(test) {
+        return true;
+    }
+    // libtest names a test without its crate: `net::user_agent_tests::name`.
+    let path = module_path.split_once("::").map_or(module_path, |(_, rest)| rest);
+    let name = format!("{path}::{test}");
+    let out = std::process::Command::new(std::env::current_exe().expect("the test binary"))
+        .args(["--exact", &name, "--test-threads=1"])
+        .env(FRESH_PROCESS_ENV, test)
+        .output()
+        .expect("start the child test process");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("1 passed"),
+        "the child process failed or ran nothing ({name}):\n{stdout}\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    false
+}
+
 #[cfg(test)]
 mod tests {
     /// **Ownership is per THREAD, which is the whole discriminating property.**

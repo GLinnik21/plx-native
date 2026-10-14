@@ -3801,7 +3801,7 @@ mod roots_tests;
 /// The `User-Agent` the transport installs: one header value, whichever path sends it.
 #[cfg(test)]
 #[path = "net_user_agent_tests.rs"]
-mod user_agent_tests;
+pub(crate) mod user_agent_tests;
 
 /// The latch's clock, through the `*_at` seam: it lapses after [`keypin::LATCH`] and a later key-mode
 /// success inside the interval does not slide it.
