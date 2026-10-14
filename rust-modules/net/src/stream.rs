@@ -1752,12 +1752,12 @@ pub fn http_read_until(
         }
         let mut n = n;
         if hs.content_length >= 0 {
-            let remain = (hs.content_length - hs.consumed).max(0) as usize;
+            let remain = body_take(n, hs.content_length - hs.consumed);
             if remain == 0 {
                 finish_body(hs);
                 return 0;
             }
-            n = n.min(remain);
+            n = remain;
         }
         // serve buffered body first
         if (hs.bpos as usize) < (hs.blen as usize) {
@@ -1800,6 +1800,18 @@ pub fn http_read_until(
             }
             return r as c_int;
         }
+    }
+}
+
+/// How many of the `n` bytes a read asks for the body still holds, `remaining` being what is left
+/// of it. Compared as `i64`, never cast first: on the 32-bit television `usize` keeps only the low
+/// 32 bits of a remainder over 4 GiB, which read a 23 GB film as finished 1.87 GB in
+/// (`stream_body_take_tests.rs`).
+fn body_take(n: usize, remaining: i64) -> usize {
+    if remaining <= 0 {
+        0
+    } else {
+        usize::try_from(remaining).map_or(n, |r| r.min(n))
     }
 }
 
@@ -2081,9 +2093,9 @@ pub fn http_drain_available(hs: *mut HttpStream, dst: &mut [u8]) -> c_int {
             }
         }
         let remain = if hs.chunked != 0 {
-            hs.chunk_left.max(0) as usize
+            body_take(dst.len(), hs.chunk_left)
         } else if hs.content_length >= 0 {
-            (hs.content_length - hs.consumed).max(0) as usize
+            body_take(dst.len(), hs.content_length - hs.consumed)
         } else {
             dst.len()
         };
@@ -2212,6 +2224,10 @@ pub fn http_stream_boxed() -> Box<HttpStream> {
 pub mod redirect;
 
 // ---------------------------------------------------------------------------------------
+#[cfg(test)]
+#[path = "stream_body_take_tests.rs"]
+mod body_take_tests;
+
 #[cfg(test)]
 #[path = "stream_test_support.rs"]
 mod test_support;
