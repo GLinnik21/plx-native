@@ -264,7 +264,9 @@ pub enum LibraryReq {
     PublishShelves { target: plx_data::stores::browse::SectionAddress, hidden_page: bool, at_head: bool },
     Menu { kind: LibraryMenuKind, anchor: [u32; 4], target: plx_data::stores::browse::SectionAddress },
     Play { sid: plx_plex::plex::ServerId, rk: String, resume_ns: i64 },
-    Detail { sid: plx_plex::plex::ServerId, rk: String },
+    /// Open the item's page. `from_deck` is the SHELF's answer (this library's own Continue
+    /// Watching shelf): a deck episode opens its show, any other card its own page.
+    Detail { sid: plx_plex::plex::ServerId, rk: String, from_deck: bool },
     ItemMenu { sid: plx_plex::plex::ServerId, rk: String, from_deck: bool },
     Account,
     Tab(HomeTab),

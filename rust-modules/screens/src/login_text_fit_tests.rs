@@ -67,7 +67,7 @@ fn reasons() -> Vec<(&'static str, String)> {
 #[test]
 fn every_sign_in_reason_fits_the_read_out_slot_in_every_language() {
     let mut out = Vec::new();
-    for language in [Preference::En, Preference::Es, Preference::Be] {
+    for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
         let _guard = language_on_this_thread_for_test(language);
         for (key, text) in reasons() {
             let c = CString::new(text.as_str()).unwrap();
@@ -91,7 +91,7 @@ fn the_server_failure_reasons_fit_the_pickers_one_line_in_every_language() {
     use plx_machine::machine::Measure;
     let column = plx_ui::consts::SAFE.w;
     let mut over = Vec::new();
-    for language in [Preference::En, Preference::Es, Preference::Be] {
+    for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
         let _guard = language_on_this_thread_for_test(language);
         for (key, text) in [
             ("no_source_access", msg::browse_auth_no_source_access("Alexandra Konstantinopolskaya")),
@@ -129,7 +129,7 @@ fn the_failed_reason_names_the_account_or_keeps_the_caption() {
 fn the_signed_in_reason_names_the_account_on_one_line_for_every_name_length() {
     use plx_machine::machine::Measure;
     let column = StatusOverlay::REASON_W * HEADROOM;
-    for language in [Preference::En, Preference::Es, Preference::Be] {
+    for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
         let _guard = language_on_this_thread_for_test(language);
         let second = msg::browse_auth_no_servers();
         for name in ["alexandra", "alexandra.konstantinopolskaya",
@@ -270,6 +270,7 @@ fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action(
         (Preference::En, "Connect", "Try again", "Settings → Unencrypted connections"),
         (Preference::Es, "Conectar", "Reintentar", "Ajustes → Conexiones sin cifrar"),
         (Preference::Be, "Злучыцца", "Паспрабаваць зноў", "Налады → Злучэнні без шыфравання"),
+        (Preference::Fr, "Se connecter", "Réessayer", "Paramètres → Connexions non chiffrées"),
     ] {
         let locale = LocaleContext::resolve(preference, None, None, None, None);
         for owner in ["", "a-longish-owner18"] {

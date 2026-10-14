@@ -583,3 +583,25 @@ fn a_spot_names_a_tail_card_by_its_position_and_a_head_card_by_its_index() {
     assert_eq!(Spot { section: 7, col: -1, ..Default::default() }.tail_position(), None);
     assert_eq!(Spot { section: 7, col: Spot::tail_col(3), ..Default::default() }.tail_position(), None);
 }
+
+/// A member movie whose similar hub previews mostly its own collection: the members go to the
+/// collection shelf, so the Related head is what is left (one card here) while the hub still has
+/// more behind its preview. The screen's Related row is then shorter than the screen and goes on:
+/// it paints pending cells in view and must ask for the tail without waiting for focus
+/// (`plx_ui::cards::Shelf::page_ask`; `screens::detail::tests`,
+/// `an_unfocused_related_row_that_paints_pending_cells_asks_for_the_tail`).
+#[test]
+fn a_collection_that_fills_the_preview_leaves_a_one_card_head_that_goes_on() {
+    let members: Vec<String> = (0..7)
+        .map(|i| format!(r#"{{"ratingKey":"1-{i}","type":"movie","title":"T1-{i}","librarySectionID":1}}"#))
+        .collect();
+    let collection = format!(
+        r#"{{"hubIdentifier":"collection.related.1.1","title":"Saga","key":"/library/sections/1/all?type=1&tagId=812","Metadata":[{}]}}"#,
+        members.join(","),
+    );
+    let rows = related_rows(&related_response(&[(1, 8, 40, true)], &collection), plx_plex::plex::ServerId::UNSET, "page");
+    assert_eq!(rows.collection.map(|c| c.members.len()), Some(7));
+    let head: Vec<&str> = rows.related.iter().map(|m| m.rk.as_str()).collect();
+    assert_eq!(head, ["1-7"], "the members are not also Related tiles");
+    assert_eq!((rows.tail.head, rows.tail.more, rows.tail.hubs.len()), (1, true, 1), "and the hub goes on past its preview");
+}

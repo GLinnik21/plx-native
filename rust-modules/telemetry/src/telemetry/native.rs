@@ -283,8 +283,8 @@ const TOP_FIELDS: &[&str] = &[
 /// drops the whole object rather than passing a partial one.
 const USER_FIELDS: &[&str] = &["id"];
 const SDK_FIELDS: &[&str] = &["name", "version"];
-const OS_FIELDS: &[&str] = &["type", "name", "version", "build", "kernel_version"];
-const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "codename", "api"];
+pub(super) const OS_FIELDS: &[&str] = &["type", "name", "version", "build", "kernel_version"];
+pub(super) const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "codename", "api"];
 /// issue #74: `rtkmem` (`ok`/`missing`/`n/a`, from [`plx_platform::tv::sandbox::context`]) and `install`
 /// (`devmode`/`homebrew`/`unknown`, from [`plx_base::paths::install_kind`]) ride on every native
 /// crash report beside the existing hardware compatibility class — the same two closed-enum
@@ -293,11 +293,11 @@ const WEBOS_FIELDS: &[&str] = &["type", "name", "release", "codename", "api"];
 ///
 /// `probe` (`<os_info>/<device_info>`, each `ok`/`no_keys`/`unreadable`/`unprobed`) says why `model`, `soc` or
 /// the webOS release are empty. The SDK's own scope never sets it (that would need the C shim), so
-/// it rides the HANDLED events and the fallback fault report that
+/// it rides the HANDLED events and both fallback reports (fault and panic) that
 /// `sentry::attach_hardware_context` builds; it is allowed here so a native event could carry it
 /// without a second allowlist edit, and [`preview_event`] leaves it out because a real native
 /// crash event does not carry it.
-const HARDWARE_FIELDS: &[&str] = &["type", "model", "soc", "revision", "probe", "rtkmem", "install"];
+pub(super) const HARDWARE_FIELDS: &[&str] = &["type", "model", "soc", "revision", "probe", "rtkmem", "install"];
 const EXCEPTION_CONTAINER_FIELDS: &[&str] = &["values"];
 const EXCEPTION_FIELDS: &[&str] = &["type", "value", "mechanism", "stacktrace"];
 const MECHANISM_FIELDS: &[&str] = &["type", "handled", "meta"];

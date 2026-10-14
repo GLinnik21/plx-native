@@ -1089,7 +1089,7 @@ mod tests {
         }
         let measure = TitleMeasure;
         let min_content = RouteLayout::screen().content.w;
-        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be] {
+        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be, plx_platform::i18n::Preference::Fr] {
             let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
             let title = plx_platform::i18n::msg::browse_person_filmography_in(&locale);
             let layout = RouteLayout::screen_for_title(480.0, min_content, title, &measure);
@@ -1151,7 +1151,7 @@ mod tests {
         }
         let measure = QuestionMeasure;
         let layout = RouteLayout::screen();
-        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be] {
+        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be, plx_platform::i18n::Preference::Fr] {
             let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
             for question in [plx_platform::i18n::msg::settings_consent_crash_title_in(&locale),
                 plx_platform::i18n::msg::settings_consent_product_title_in(&locale)] {

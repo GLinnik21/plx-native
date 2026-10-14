@@ -13,6 +13,7 @@ mod decision;
 mod flight;
 mod plan;
 mod prefs;
+mod track_memory;
 
 pub use decision::*;
 pub use flight::{

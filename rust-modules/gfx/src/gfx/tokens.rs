@@ -30,7 +30,10 @@ pub const fn rgb8(r: u8, g: u8, b: u8) -> [f32; 4] {
 // written down in exactly one place.
 /// The app ground, Apple TV's shelf gray `#2c2c2e` (`theme::SURFACE_APP`'s stop).
 pub const NEUTRAL_500: [f32; 4] = rgb8(0x2c, 0x2c, 0x2e);
-/// The scrim ink, near-black `#050508` (`theme::scrim`'s stop).
+/// The scrim ink, near-black `#050508` (`theme::scrim`'s stop). It is NOT merged into `NEUTRAL_950`
+/// (`#08080a`, two perceptual units lighter): the hero-text legibility floor
+/// (`widgets::hero_scrim_tests::the_hero_text_reads_over_bright_artwork`) has 0.02:1 of headroom and the
+/// lighter ink measured 2.48:1 against its 2.5:1.
 pub const NEUTRAL_1000: [f32; 4] = rgb8(0x05, 0x05, 0x08);
 
 /// GL clear color — 3-float (`frame_clear` takes r,g,b, no alpha). The app's DEFAULT base, and

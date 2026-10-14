@@ -8,3 +8,6 @@ Please include a `Signed-off-by: Your Name <email>` trailer certifying the
 [Developer Certificate of Origin 1.1](https://developercertificate.org/). This records your right
 to contribute; it is not a transfer of copyright or a requirement to re-sign historical MIT work.
 Use the project verification workflow in `AGENTS.md`, and preserve unrelated changes.
+
+Translations: see `docs/localization.md`. A new or changed language is merged once a native speaker
+has reviewed it; the pull request should say who, and screenshots of the UI help them judge it.

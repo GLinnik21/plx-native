@@ -91,6 +91,14 @@ most, so a row still loading does not look finished (`Shelf::paint_pending`). Th
 same grid: no stop, no pool entry, no request, no caption, so focus never lands on one and the
 page that lands takes them over in place. Gate `more_after` on nothing focus-dependent (Home's
 `more()` is gated on focus being near the edge, because that is when it asks; its `more_after` is not).
+A skeleton in view is a promise the row keeps: `Shelf::page_ask` asks for the trailing page while
+focus is elsewhere whenever the cell past the last card falls within the screen's width at the row's
+scroll (`pending_in_view`; horizontal only, so a short Detail Related row below the fold asks on
+the page's open too), so a row
+shorter than the screen — Detail's Related head, cut to a card or two when a member movie's
+collection takes its previews — does not stand there as a screenful of skeletons until somebody
+focuses it. A row whose `more()` is gated on focus (Home, the Library) emits no `Want` unfocused and
+so still asks only from focus; Detail's Related and Search's rows are not gated.
 
 `GridSpec::new(top, edge)` is the six-column `cards::GRID_STYLE` grid from `MARGIN_X`;
 `.columns(cols, style, left)` sets the column count, card style and left edge (a rail-aware or
@@ -157,7 +165,7 @@ on the QR allocation.
 
 **Text fit is a rule about who owns the text, and it is tested, not eyeballed.** App-owned text
 (`i18n::msg`, `plex::languages` names, `Quality::label`) never elides in any shipped language
-(`i18n::SHIPPED`: en, es, be) at the shipped sizes; server- and user-owned text (machine names,
+(`i18n::SHIPPED`: en, es, be, fr) at the shipped sizes; server- and user-owned text (machine names,
 handles, profile names, titles) may. `ui::table` types that at the call site with
 `Origin { App, Server }` per text slot, defaulting to App; `Row::server_label`/`server_detail`/
 `server_value` and `Section::server_header`/`server_accessory` mark a slot Server. There is no
@@ -486,7 +494,9 @@ its ground participate in backdrop discovery, including texture changes and UV c
   always the mark that read as "this will play".
 - A **`✓`** means **finished** — likewise a state, not a promise.
 
-**A card with no play indicator NAVIGATES**, and an episode navigates to its own detail page.
+**A card with no play indicator NAVIGATES**, and an episode navigates to its own detail page —
+except on Continue Watching, where it opens the SHOW on the card's season
+(`app::input::activate_deck_card`; the card menu's Go to Episode is the way to the episode).
 Until 2026-09-05 `want_play` was `from_deck || kind == 3` on both Home and the Library, so an
 episode played immediately from ANY shelf and every landscape tile drew the triangle whatever its
 press did. Behaviour and mark both read `is_continue && route::deck_press().press_plays()`

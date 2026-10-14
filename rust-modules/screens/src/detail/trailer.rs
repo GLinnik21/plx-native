@@ -14,6 +14,7 @@
 //! the screen owns — so the key policy, the auto-hide and the hint's visibility are all host-
 //! testable without driving the process-wide `player::preview` singleton or a live engine.
 
+use plx_appkit::held_key::HeldKey;
 use plx_ui::icons::Icon;
 use plx_appkit::player_hud::{Knob, Playbar, TransportMark};
 use plx_ui::widgets::KeyHint;
@@ -178,17 +179,14 @@ pub(super) struct Transport {
     //
     // The same idiom `screens::player::input::Scrub` drives the real HUD's scrubber with — a
     // fresh press hops `scrub_step_ns()`, a HELD key (auto-repeat) engages a continuous ramp
-    // (`SCRUB_BASE`→`SCRUB_MAX`), and the release commits at once for a hold or arms a short
-    // debounce for a tap — but not the same STATE TYPE: `ci/check-deps.sh`'s `sibling` gate
-    // forbids this module from naming `crate::player` at all. The tuning constants and
-    // the clamp formula ARE shared, from `appkit::player_hud` (see that module's own doc for why).
+    // (`player_hud::scrub_speed`), and the release commits for a hold or arms a short debounce for
+    // a tap. The key-hold half of that — direction, ramp, key-bounce debounce and lost-keyup net —
+    // is ONE type, `appkit::held_key::HeldKey`, which both screens embed because
+    // `ci/check-deps.sh`'s `sibling` gate forbids this module from naming `crate::player`. The
+    // tuning constants and the clamp formula are shared from `appkit::player_hud` too.
     // `scrub_ns < 0` means no gesture is in progress; a caller reads it via [`Self::scrubbing`]
     // rather than the raw field, matching how `until_ms`/`revealed` are read through a method.
-    scrub_dir: i32,        // -1 back / +1 forward / 0 = no scrub in progress
-    scrub_hold: bool,      // a repeat arrived → continuous accelerating scrub engaged
-    scrub_hold_since: u32, // when that hold engaged — the acceleration ramp is measured from here
-    scrub_t: u32,          // last continuous-advance tick
-    scrub_alive: u32,      // last held (repeat) event — for the lost-keyup safety commit
+    scrub_key: HeldKey,
     scrub_commit_at: u32,  // tap released → commit at this tick (0 = none)
     scrub_ns: i64,         // the PREVIEW position, in ns; -1 = not scrubbing
 }
@@ -202,11 +200,7 @@ impl Transport {
         play_at: None,
         was_paused: false,
         now_ms: 0,
-        scrub_dir: 0,
-        scrub_hold: false,
-        scrub_hold_since: 0,
-        scrub_t: 0,
-        scrub_alive: 0,
+        scrub_key: HeldKey::IDLE,
         scrub_commit_at: 0,
         scrub_ns: -1,
     };
@@ -237,8 +231,7 @@ impl Transport {
     /// mid-hold) leaves playback exactly where it already was.
     pub(super) fn cancel_scrub(&mut self) {
         self.scrub_ns = -1;
-        self.scrub_dir = 0;
-        self.scrub_hold = false;
+        self.scrub_key.disengage();
         self.scrub_commit_at = 0;
     }
 
@@ -249,18 +242,30 @@ impl Transport {
     /// is `player::duration_ns()`, `live_ns` is `player::playpos_ns()` — passed in rather than
     /// read here so this stays a pure function of state the caller already has, like the rest of
     /// this type.
-    pub(super) fn scrub_fresh(&mut self, fwd: bool, now: u32, dur_ns: i64, live_ns: i64) {
+    ///
+    /// Returns the target of a held scrub whose release was still waiting out the key-bounce window
+    /// when a DIFFERENT press arrived (the other direction): that release was the real one, so it
+    /// commits now, as the `Up` itself would have before the debounce existed.
+    pub(super) fn scrub_fresh(
+        &mut self,
+        fwd: bool,
+        now: u32,
+        dur_ns: i64,
+        live_ns: i64,
+    ) -> Option<i64> {
         if dur_ns <= 0 {
-            return;
+            return None;
         }
-        if self.scrub_dir == 0 {
-            self.scrub_t = now;
-            self.scrub_hold_since = now;
+        // The same hold coming back inside the bounce window is no new gesture: no hop, no commit.
+        if self.scrub_key.bounce(now, fwd) {
+            return None;
+        }
+        let settled = self.settle_release();
+        if self.scrub_key.dir == 0 {
             self.scrub_ns = live_ns;
         }
         self.scrub_commit_at = 0; // more input → cancel a pending tap commit
-        self.scrub_alive = now;
-        if !self.scrub_hold {
+        if !self.scrub_key.engaged {
             let step = if fwd {
                 plx_appkit::player_hud::scrub_step_ns()
             } else {
@@ -269,46 +274,49 @@ impl Transport {
             self.scrub_ns =
                 plx_appkit::player_hud::scrub_clamp_target(self.scrub_ns.max(0) + step, dur_ns);
         }
-        self.scrub_dir = if fwd { 1 } else { -1 };
+        self.scrub_key.press(now, fwd);
+        settled
+    }
+
+    /// A held scrub's release, once it has survived the bounce window (or been overtaken by another
+    /// press): the preview is the commit target and the gesture is over.
+    fn settle_release(&mut self) -> Option<i64> {
+        if !self.scrub_key.release_pending() {
+            return None;
+        }
+        let target = self.scrub_ns;
+        self.cancel_scrub();
+        (target >= 0).then_some(target)
     }
 
     /// A hardware auto-repeat while a direction is held: port of the HUD's `key_scrub_repeat`.
     pub(super) fn scrub_repeat(&mut self, now: u32) {
-        if self.scrub_dir != 0 && !self.scrub_hold {
-            self.scrub_hold = true;
-            self.scrub_hold_since = now;
-            self.scrub_t = now;
-        }
-        if self.scrub_dir != 0 {
-            self.scrub_alive = now;
+        if self.scrub_key.dir != 0 {
             self.scrub_commit_at = 0;
+            self.scrub_key.repeat(now);
         }
     }
 
     /// The continuous accelerating advance while a direction is held, and the lost-keyup safety
-    /// net — same formula and constants as the player HUD's `step_scrub_hold`. Returns the commit
-    /// target once `SCRUB_LOST_MS` has passed with no repeat (a dropped keyup, exactly as the
-    /// HUD's own safety commit exists for); `None` otherwise. The caller asks `player::preview` to
-    /// seek there — this type only tracks the gesture, it does not perform the seek.
+    /// net — same formula and constants as the player HUD's `step_scrub_hold`, because it is the
+    /// same [`HeldKey`]. Returns the commit target once a release has survived the bounce window,
+    /// or `SCRUB_LOST_MS` has passed with no repeat (a dropped keyup, exactly as the HUD's own
+    /// safety commit exists for); `None` otherwise. The caller asks `player::preview` to seek
+    /// there — this type only tracks the gesture, it does not perform the seek.
     pub(super) fn step_scrub_hold(&mut self, now: u32, dur_ns: i64) -> Option<i64> {
-        if self.scrub_dir == 0 || !self.scrub_hold {
-            return None;
+        if self.scrub_key.release_due(now) {
+            return self.settle_release();
         }
-        let held = now.wrapping_sub(self.scrub_hold_since) as f32 / 1000.0;
-        let speed = (plx_appkit::player_hud::SCRUB_BASE + plx_appkit::player_hud::SCRUB_ACCEL * held)
-            .min(plx_appkit::player_hud::SCRUB_MAX);
-        let mut sdt = now.wrapping_sub(self.scrub_t) as f32 / 1000.0;
-        if sdt > 0.1 {
-            sdt = 0.1;
+        if self.scrub_key.dir == 0 || !self.scrub_key.engaged {
+            return None;
         }
         let was = self.scrub_ns;
         self.scrub_ns = plx_appkit::player_hud::scrub_clamp_target(
-            was + (self.scrub_dir as f64 * speed as f64 * sdt as f64 * 1e9) as i64,
+            was + self.scrub_key.advance_ns(now),
             dur_ns,
         );
-        self.scrub_t = now;
         self.reveal();
-        if now.wrapping_sub(self.scrub_alive) > plx_appkit::player_hud::SCRUB_LOST_MS {
+        if self.scrub_key.lost(now) {
             let target = self.scrub_ns;
             self.cancel_scrub();
             return Some(target);
@@ -316,25 +324,20 @@ impl Transport {
         None
     }
 
-    /// Key-up: a hold commits at once; a plain tap arms the debounce instead, so a rapid burst
-    /// coalesces into one seek — the HUD's own `key_scrub_release`, minus the `reveal`-only-press
-    /// case it needs and this transport does not (see [`scrub_fresh`](Self::scrub_fresh)'s doc).
-    pub(super) fn scrub_release(&mut self, now: u32) -> Option<i64> {
-        if self.scrub_dir == 0 {
-            return None;
+    /// Key-up: a hold's release is deferred (`HeldKey::release`, the key-bounce window) and
+    /// commits from [`step_scrub_hold`](Self::step_scrub_hold); a plain tap arms the debounce
+    /// instead, so a rapid burst coalesces into one seek — the HUD's own `key_scrub_release`,
+    /// minus the `reveal`-only-press case it needs and this transport does not (see
+    /// [`scrub_fresh`](Self::scrub_fresh)'s doc).
+    pub(super) fn scrub_release(&mut self, now: u32) {
+        if self.scrub_key.dir == 0 || self.scrub_key.release(now) {
+            return;
         }
-        if self.scrub_hold {
-            let target = self.scrub_ns;
-            self.cancel_scrub();
-            Some(target)
-        } else {
-            // A tap → commit on a short debounce so a quick burst accumulates first. `dir`/`hold`
-            // are deliberately left alone (not `cancel_scrub`): a same-direction tap arriving
-            // before the debounce fires must see `scrub_dir != 0` and keep accumulating from the
-            // preview already in flight, exactly like the HUD's own `key_scrub_release` tap arm.
-            self.scrub_commit_at = now.wrapping_add(plx_appkit::player_hud::TAP_COMMIT_MS).max(1);
-            None
-        }
+        // A tap → commit on a short debounce so a quick burst accumulates first. The direction is
+        // deliberately left alone (not `cancel_scrub`): a same-direction tap arriving before the
+        // debounce fires must see `dir != 0` and keep accumulating from the preview already in
+        // flight, exactly like the HUD's own `key_scrub_release` tap arm.
+        self.scrub_commit_at = now.wrapping_add(plx_appkit::player_hud::TAP_COMMIT_MS).max(1);
     }
 
     /// The tap debounce, stepped every frame — the HUD's own `step_tap_commit`. Fires once
@@ -607,7 +610,8 @@ mod tests {
             "one default-step hop (10 s) forward from the live position"
         );
 
-        assert_eq!(t.scrub_release(0), None, "a tap does not commit at once");
+        t.scrub_release(0);
+        assert!(t.scrubbing(), "a tap does not commit at once");
         assert!(t.scrubbing(), "the preview stays up while the debounce runs");
         assert_eq!(t.step_tap_commit(100), None, "the debounce has not elapsed yet");
 
@@ -639,10 +643,10 @@ mod tests {
     }
 
     /// **Requirement 4's other half: a HELD LEFT/RIGHT accumulates continuously via the auto-repeat
-    /// ramp, and commits AT ONCE on key-up** — unlike a tap, a hold does not wait for the debounce,
-    /// matching the player HUD's own `key_scrub_release`.
+    /// ramp, and commits on key-up without the tap debounce** — only the short key-bounce window
+    /// (`SCRUB_RELEASE_DEBOUNCE_MS`) the player HUD's own `key_scrub_release` waits out too.
     #[test]
-    fn a_held_press_advances_continuously_and_commits_at_once_on_release() {
+    fn a_held_press_advances_continuously_and_commits_on_release() {
         let mut t = Transport::IDLE;
         let dur = 600_000_000_000i64;
         let live = 100_000_000_000i64;
@@ -653,7 +657,7 @@ mod tests {
         t.scrub_repeat(now);
         // The hardware auto-repeat pulses roughly every 100ms; `step_scrub_hold` is stepped every
         // frame (16ms) in between, same cadence `preview_tick` drives it at. Each repeat refreshes
-        // `scrub_alive`, well inside `SCRUB_LOST_MS` (400ms), so the ramp must never self-commit.
+        // the key's liveness, well inside `SCRUB_LOST_MS` (400ms), so the ramp must never self-commit.
         for _ in 0..5 {
             for _ in 0..6 {
                 now += FRAME_MS;
@@ -668,12 +672,67 @@ mod tests {
         assert!(t.scrub_ns > after_hop, "the hold ramp advances the preview forward");
 
         let before_release = t.scrub_ns;
+        t.scrub_release(now);
+        assert_eq!(t.step_scrub_hold(now, dur), None, "…not before the bounce window has passed");
         assert_eq!(
-            t.scrub_release(now),
+            t.step_scrub_hold(now + plx_appkit::player_hud::SCRUB_RELEASE_DEBOUNCE_MS, dur),
             Some(before_release),
-            "a held direction commits at once on key-up"
+            "a held direction commits on key-up, once the bounce window is over"
         );
         assert!(!t.scrubbing(), "committing ends the gesture");
+    }
+
+    /// **The key driver bounces mid-hold** (an `Up` then a fresh `Down` 0-17 ms later, measured on
+    /// the television): the same key coming back inside the window is the same hold — no commit,
+    /// no extra hop, and the ramp keeps its speed. The trailer shares the player HUD's `HeldKey`,
+    /// so this is the same rule, graded on this transport's own wiring.
+    #[test]
+    fn a_key_bounce_mid_hold_continues_the_hold_instead_of_committing() {
+        let mut t = Transport::IDLE;
+        let dur = 600_000_000_000i64;
+        let live = 100_000_000_000i64;
+        t.scrub_fresh(true, 0, dur, live);
+        t.scrub_repeat(500);
+        for (i, now) in (516..=1_500).step_by(16).enumerate() {
+            t.step_scrub_hold(now, dur);
+            if i % 3 == 0 {
+                t.scrub_repeat(now);
+            }
+        }
+        let (before, since) = (t.scrub_ns, t.scrub_key.since);
+
+        t.scrub_release(1_504);
+        assert_eq!(t.scrub_fresh(true, 1_505, dur, live), None, "the bounce commits nothing");
+        assert!(t.scrubbing() && t.scrub_key.engaged, "the hold goes on");
+        assert_eq!(t.scrub_key.since, since, "…and the ramp keeps its speed");
+        assert_eq!(t.scrub_ns, before, "…with no extra hop");
+
+        // Past the window, and past the remote's restarted repeat delay, nothing has committed —
+        // and the window is over, so a repeat arriving puts the ordinary net back.
+        assert_eq!(t.step_scrub_hold(1_520, dur), None);
+        t.scrub_repeat(1_560);
+        assert!(t.scrub_ns > before, "the ramp still advances after the bounce");
+    }
+
+    /// A press of the OTHER direction inside the window is not a bounce: the pending release was
+    /// the real one and commits first, as the `Up` itself used to.
+    #[test]
+    fn an_opposite_press_inside_the_window_settles_the_release_first() {
+        let mut t = Transport::IDLE;
+        let dur = 600_000_000_000i64;
+        let live = 100_000_000_000i64;
+        t.scrub_fresh(true, 0, dur, live);
+        t.scrub_repeat(500);
+        t.step_scrub_hold(600, dur);
+        let held = t.scrub_ns;
+        t.scrub_release(610);
+        assert_eq!(
+            t.scrub_fresh(false, 615, dur, live),
+            Some(held),
+            "the held scrub commits where it was released"
+        );
+        assert!(t.scrubbing(), "…and the new press starts its own gesture");
+        assert_eq!(t.scrub_key.dir, -1);
     }
 
     /// The lost-keyup safety net: if the hardware auto-repeat stream silently stops (a dropped

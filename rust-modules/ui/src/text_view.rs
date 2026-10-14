@@ -724,7 +724,7 @@ mod tests {
     /// silently drifting one screen away from every other.
     #[test]
     fn the_more_mark_is_uppercase_in_supported_locales() {
-        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be] {
+        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be, plx_platform::i18n::Preference::Fr] {
         let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
         let s = plx_platform::i18n::msg::browse_action_more_in(&locale);
         assert_eq!(

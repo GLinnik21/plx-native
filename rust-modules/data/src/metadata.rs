@@ -157,7 +157,7 @@ pub struct MetadataAdapter {
     /// TEST ONLY: the detail fetches [`request_detail`] admitted, parked here instead of on a
     /// worker thread — see [`MetadataAdapter::run_held_detail_fetches_for_test`].
     #[cfg(any(test, feature = "test-support"))]
-    held_detail: std::sync::Mutex<Vec<(plx_plex::plex::ServerId, String, u32)>>,
+    held_detail: std::sync::Mutex<Vec<(plx_plex::plex::ServerId, String, u32, Option<i64>)>>,
 }
 
 impl Default for MetadataAdapter {
@@ -215,13 +215,13 @@ impl MetadataAdapter {
     fn run_held_detail_fetches(&self, pick: impl Fn(u32) -> bool) -> usize {
         let run: Vec<_> = {
             let mut held = self.held_detail.lock().unwrap_or_else(|e| e.into_inner());
-            let (run, keep) = std::mem::take(&mut *held).into_iter().partition(|(_, _, gen)| pick(*gen));
+            let (run, keep) = std::mem::take(&mut *held).into_iter().partition(|(_, _, gen, _)| pick(*gen));
             *held = keep;
             run
         };
         let n = run.len();
-        for (sid, rk, gen) in run {
-            finish_detail_fetch(self, sid, &rk, gen, || fetch_full(sid, &rk));
+        for (sid, rk, gen, prefer) in run {
+            finish_detail_fetch(self, sid, &rk, gen, || fetch_full(sid, &rk, prefer));
         }
         n
     }
@@ -1654,6 +1654,10 @@ pub struct Detail {
     /// itself changed every time you browsed to another tab. `None` for a movie, for a show with
     /// nothing on deck (never started, or finished), and on any server that omitted the hub.
     pub on_deck: Option<Episode>,
+    /// SHOWS: the selected season's POSITION in `seasons` (`episodes` holds its episodes). The
+    /// fetch opens a show on its `on_deck` episode's season, else the first; a re-read of the page
+    /// already loaded keeps the season selected on it ([`initial_season`]). A tab switch moves it
+    /// ([`load_season`]).
     pub cur_season: usize,
     pub related: Vec<Related>,
     /// What lies past the previews in `related` ([`RelatedTail`]); empty for most pages.
@@ -3437,8 +3441,58 @@ fn collection_shelf(
     Some(CollectionShelf { title: h.title.clone(), section, tag, members, count })
 }
 
+/// A show's season list and the episodes of the season the page opens on (`Detail::cur_season`).
+///
+/// The season is chosen HERE, in the fetch, and its episodes are loaded in the same pass: picking
+/// it later (a `LoadSeason` once the page landed) would flash season 1's row first and spend a
+/// round trip fetching episodes nobody looks at.
+fn load_show_seasons(sid: plx_plex::plex::ServerId, rk: &str, d: &mut Detail, prefer: Option<i64>) {
+    d.seasons = fetch_seasons(sid, rk);
+    d.cur_season = initial_season(&d.seasons, d.on_deck.as_ref(), prefer);
+    if let Some(season) = d.seasons.get(d.cur_season) {
+        // a season failure is not worth failing the whole page over — the hero, cast
+        // and Related still load, and there is no previous list here to protect. It is still
+        // named, because the `eps=` in the summary line cannot tell it from a season with no episodes.
+        d.episodes = fetch_episodes(sid, &season.rk).unwrap_or_else(|| {
+            plx_base::eventlog::log(&format!(
+                "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
+                season.rk));
+            EpisodeList::default()
+        });
+    }
+}
+
+/// Which season (a POSITION in `seasons`) a freshly read show opens on: the season whose number
+/// `prefer` names, else the season of the server's on-deck episode (where the viewer left off),
+/// else the first. Matched by `Season::index`, the season NUMBER — never by list position: the
+/// list can start at a Specials season 0 or skip a number. A number the list does not hold falls
+/// through to the next rule, so a stale preference or an on-deck from a season the server no
+/// longer lists degrades to the first season, as a show with no on-deck always did.
+///
+/// `prefer` is the season the viewer has selected on THIS show's page when the read is a refresh
+/// of it (see [`selected_season_number`]); it outranks the on-deck so a re-read — a watched toggle,
+/// a return from the player — never moves the tab out from under someone browsing season 4.
+fn initial_season(seasons: &[Season], on_deck: Option<&Episode>, prefer: Option<i64>) -> usize {
+    let position_of = |number: i64| seasons.iter().position(|s| s.index == number);
+    prefer
+        .and_then(position_of)
+        .or_else(|| on_deck.and_then(|e| position_of(e.season)))
+        .unwrap_or(0)
+}
+
+/// The number of the season selected on the loaded page, when that page is `(sid, rk)` itself.
+///
+/// Read on the MAIN thread at request time and handed to the worker: the worker must not read
+/// `state` (see the fetch block's note). `None` for any other item — a first open takes the
+/// on-deck season, and the old page's season says nothing about this show.
+fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str) -> Option<i64> {
+    let d = state.current.as_ref().filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk)))?;
+    d.seasons.get(d.cur_season).map(|s| s.index)
+}
+
 /// The full detail fetch for `rk` (movie or show): item metadata + cast + streams, plus — for
-/// shows — seasons, the first season's episodes and its stream backfill, plus the related hub.
+/// shows — seasons, the opening season's episodes ([`initial_season`]) and a stream backfill, plus
+/// the related hub.
 /// 2 PMS round-trips for a movie, 5 for a show.
 ///
 /// PURE NETWORK + PARSING — it touches no `static mut`, which is what let it run either on the
@@ -3446,7 +3500,7 @@ fn collection_shelf(
 /// (phase 12/D7 deleted the last one, `load_detail_now`; see that deletion's note below). Keep it
 /// that way: installing the result is the caller's job, and on the async path that must happen on
 /// the main thread (see the `DETAIL_LANDING`/`land_detail` note).
-fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Detail> {
+fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {
     // `ms=` is the whole chain's wall clock. It is the exact cost `request_detail` moves off the
     // SDL loop, so it is the number to read when judging whether a call site can afford to block
     // — note the framedrop breakdown CANNOT show it (fd_pc0 starts after event handling).
@@ -3471,18 +3525,7 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Detail> {
         return None;
     };
     if d.is_show {
-        d.seasons = fetch_seasons(sid, rk);
-        if let Some(s0) = d.seasons.first() {
-            // a first-season failure is not worth failing the whole page over — the hero, cast
-            // and Related still load, and there is no previous list here to protect. It is still
-            // named, because the `eps=` below cannot tell it from a season with no episodes.
-            d.episodes = fetch_episodes(sid, &s0.rk).unwrap_or_else(|| {
-                plx_base::eventlog::log(&format!(
-                    "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
-                    s0.rk));
-                EpisodeList::default()
-            });
-        }
+        load_show_seasons(sid, rk, &mut d, prefer);
         // A show carries no streams itself — backfill from ONE episode: the one the hero is
         // about, which is the one Play starts (`on_deck` when the show has been started, else
         // its first). Everything downstream reads this as "the show's" media, so borrowing from
@@ -3685,7 +3728,7 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId
 /// `sid` names the server to ask and is captured by the CALLER, on the main thread — the worker
 /// must not read the current server (see the fetch block's note), and the page being opened may
 /// belong to a machine that is not the current one at all.
-fn request_detail(adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str) {
+fn request_detail(adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) {
     request_detail_with_spawn(adapter, sid, rk, |gen| {
         let rk = rk.to_string();
         let adapter = std::sync::Arc::clone(adapter);
@@ -3696,12 +3739,12 @@ fn request_detail(adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex
             // when it chooses, never on a thread racing its assertions.
             #[cfg(any(test, feature = "test-support"))]
             {
-                adapter.held_detail.lock().unwrap_or_else(|e| e.into_inner()).push((sid, rk, gen));
+                adapter.held_detail.lock().unwrap_or_else(|e| e.into_inner()).push((sid, rk, gen, prefer));
                 true
             }
             #[cfg(not(any(test, feature = "test-support")))]
             plx_base::task::spawn_small("detail", move || {
-                finish_detail_fetch(&adapter, sid, &rk, gen, || fetch_full(sid, &rk));
+                finish_detail_fetch(&adapter, sid, &rk, gen, || fetch_full(sid, &rk, prefer));
             })
         })
     });
@@ -3737,7 +3780,8 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
     use crate::stores::metadata::MetadataCmd;
     match cmd {
         MetadataCmd::RequestDetail { sid, rk } => {
-            request_detail(adapter, sid, &rk);
+            let prefer = selected_season_number(state, sid, &rk);
+            request_detail(adapter, sid, &rk, prefer);
             true
         }
         MetadataCmd::Clear => {
@@ -5796,3 +5840,7 @@ mod episode_pages_tests;
 #[cfg(test)]
 #[path = "metadata_related_tail_tests.rs"]
 mod related_tail_tests;
+
+#[cfg(test)]
+#[path = "metadata_initial_season_tests.rs"]
+mod initial_season_tests;

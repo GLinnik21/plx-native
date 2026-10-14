@@ -34,8 +34,10 @@ or an obsolete preference revision cannot replace newer settings.
 
 Audio **Original** clears the preferred language while enabling automatic selection. Subtitle
 mode offers manual selection, "when audio isn't in the subtitle language", and always; **No preference** clears only the
-subtitle language. Existing PMS item selections take precedence, followed by explicit show
-preferences and then account defaults. That mode shows subtitles when the audio that will play is not in the subtitle language (`route/plan.rs` compares the two).
+subtitle language. Order: this playback's own pick, then (subtitles only) a subtitle file the
+server has already selected, then what the profile remembered for the show (episodes only), then
+existing PMS item selections, then explicit show preferences, then account defaults. Nothing writes
+the remembered pick yet, so that rung is dormant until the menu write lands. That mode shows subtitles when the audio that will play is not in the subtitle language (`route/plan.rs` compares the two).
 Account defaults do not introduce subtitle burning when playback starts as a transcode.
 
 PMS can keep using an earlier account preference until its own copy updates. The UI explains

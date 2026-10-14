@@ -1266,7 +1266,7 @@ impl RootPage {
     fn plaintext_inputs(&mut self) -> Vec<PlaintextRowInput> {
         use plx_plex::plex::session::PlaintextChoice;
         let sess = &self.session_snapshot;
-        let answered = plx_plex::plex::grant::choices(&sess.plaintext_consent, &sess.account_token);
+        let answered = plx_plex::plex::grant::choices(&sess.prefs.plaintext_consent, &sess.account_token);
         let mut rows: Vec<(String, bool)> = answered
             .iter()
             .filter(|(_, choice)| *choice != PlaintextChoice::Undecided)
@@ -1584,9 +1584,10 @@ fn preference_name(preference: plx_platform::i18n::Preference) -> &'static str {
     }
 }
 
-const LANGUAGES: [plx_platform::i18n::Preference; 4] = [
+const LANGUAGES: [plx_platform::i18n::Preference; 5] = [
     plx_platform::i18n::Preference::System, plx_platform::i18n::Preference::En,
     plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be,
+    plx_platform::i18n::Preference::Fr,
 ];
 
 /// A Language row's identity: the preference a `Choice` row saves, or the contribution guide.
@@ -1604,6 +1605,7 @@ impl FormId for LangId {
             LangId::Choice(P::En) => 1,
             LangId::Choice(P::Es) => 2,
             LangId::Choice(P::Be) => 3,
+            LangId::Choice(P::Fr) => 5,
             LangId::Contribute => 4,
         })
     }

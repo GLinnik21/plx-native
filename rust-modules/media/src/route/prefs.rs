@@ -30,11 +30,11 @@
 use super::plan::{supported_quality, Quality, QUALITY_LADDER};
 use plx_plex::plex::session::{
     persist_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode, DirectPlayModePref,
-    NextEpisodeMode, NextEpisodeModePref, Preferences, QualityPref, Setting, SkipInterval,
+    NextEpisodeMode, NextEpisodeModePref, Preferences, QualityPref, Row, Setting, SkipInterval,
     SkipIntervalPref, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone,
     SubtitleTonePref,
 };
-use plx_plex::plex::session::prefs::{MemoryEntry, ProfileList, ProfileMemory, SettingsWrite};
+use plx_plex::plex::session::prefs::{MemoryEntry, ProfileList, ProfileMemory, SettingsWrite, TrackMemoryEntry};
 use plx_plex::plex::session::{self, Session, SubtitleOffsetEntry};
 use plx_plex::plex::AudioEnhancements;
 use std::marker::PhantomData;
@@ -211,7 +211,8 @@ live_cell!(
     pub(super) SKIP_INTERVAL: SkipInterval, "skip interval preference"
 );
 live_cell!(
-    /// What OK does on a Continue Watching card. Read by every deck's press and draw (Home's and
+    /// What OK does on a Continue Watching card: play, or open its page (a movie's own; an
+    /// episode's SHOW, on the card's season). Read by every deck's press and draw (Home's and
     /// the Library's) and by the item menu when it builds its rows; `DeckPress::press_plays` is the
     /// one question they all ask of it.
     pub(super) DECK_PRESS: DeckPress, "deck press preference"
@@ -424,6 +425,17 @@ impl<E: MemoryEntry> MemoryMirror<E> {
     fn valid(state: &MirrorState<E>) -> bool {
         state.seeded.as_ref().is_some_and(|(tenure, _)| *tenure == session::tenure())
     }
+
+    /// The account stamp the mirror was seeded under: the one its reads and writes go through, so
+    /// an [`ACCOUNT_BOUND`](MemoryEntry::ACCOUNT_BOUND) list (offsets, track memory) shows this
+    /// account's records and not another's. A tenant that is not account-bound keeps no stamp, as
+    /// it never had one.
+    fn stamp(state: &MirrorState<E>) -> &str {
+        match &state.seeded {
+            Some((_, stamp)) if E::ACCOUNT_BOUND => stamp,
+            _ => "",
+        }
+    }
 }
 
 /// A mirror as data, so [`restore_all`] can walk them all.
@@ -443,9 +455,10 @@ fn reseed_mirror<E: MemoryTenant>(record: &Session) {
 }
 
 /// Every tenant of the memory door, once.
-pub const MEMORY_ROWS: &[MemoryRow] = &[MemoryRow::of::<SubtitleOffsetEntry>()];
+pub const MEMORY_ROWS: &[MemoryRow] = &[MemoryRow::of::<SubtitleOffsetEntry>(), MemoryRow::of::<TrackMemoryEntry>()];
 
 static SUBTITLE_OFFSETS: MemoryMirror<SubtitleOffsetEntry> = MemoryMirror::new();
+static TRACK_MEMORY: MemoryMirror<TrackMemoryEntry> = MemoryMirror::new();
 
 impl MemoryTenant for SubtitleOffsetEntry {
     fn mirror() -> &'static MemoryMirror<Self> {
@@ -474,6 +487,11 @@ impl MemoryTenant for SubtitleOffsetEntry {
 ///
 /// Before profile seats, `user` is `session::current_profile_key()`, where `""` is both the
 /// account owner and "no profile published".
+///
+/// Both tenants are account-bound, so the mirror write and the queued file write carry the account
+/// stamp (the mirror's, and the file's own `account_key`) and [`recall`] reads under it. `track_memory`
+/// is read through [`recall`] and [`recall_all`]; nothing calls `remember` for it yet, the menu
+/// write is the change that does.
 pub fn remember<E: MemoryTenant>(
     user: &str,
     key: E::Key,
@@ -486,10 +504,25 @@ pub fn remember<E: MemoryTenant>(
             plx_base::eventlog::log(&format!("{}: not remembered — no valid session", E::log_label()));
             return false;
         }
-        state.lists.upsert_with(user, "", &key, f.clone());
+        let stamp = MemoryMirror::stamp(&state).to_string();
+        state.lists.upsert_with(user, &stamp, &key, f.clone());
     }
     let user = user.to_string();
-    session::queue_update(move |cur| cur.with_memory::<E>(|m| m.upsert_with(&user, "", &key, f)))
+    session::queue_update(move |cur| {
+        // The file's own account: the guard has already dropped this edit if it is not the one
+        // the mirror was seeded under.
+        let stamp = if E::ACCOUNT_BOUND { plx_plex::plex::grant::account_key(&cur.account_token) } else { String::new() };
+        cur.with_memory::<E>(|m| m.upsert_with(&user, &stamp, &key, f))
+    })
+}
+
+impl MemoryTenant for TrackMemoryEntry {
+    fn mirror() -> &'static MemoryMirror<Self> {
+        &TRACK_MEMORY
+    }
+    fn log_label() -> &'static str {
+        "track memory"
+    }
 }
 
 /// Seed `E`'s mirror from `record` whatever it was seeded under before, so a test does not inherit
@@ -516,7 +549,26 @@ pub fn recall<E: MemoryTenant>(user: &str, key: &E::Key) -> Option<E> {
     if !MemoryMirror::valid(&state) {
         return None;
     }
-    state.lists.get(user, "", key).cloned()
+    state.lists.get(user, MemoryMirror::stamp(&state), key).cloned()
+}
+
+/// **Everything this profile remembered**, oldest first, as of the last [`remember`]: the whole
+/// list, for a reader that does not know its key yet (a play raised off a shelf does not know its
+/// show until the item is fetched). Nothing when the mirror was never seeded or the tenure has
+/// moved since it was, and for an account-bound tenant nothing without a stamp. It is the record
+/// stamped as the mirror is: a tenant that [adopts](MemoryEntry::ADOPTS_UNSTAMPED) unstamped
+/// records does not show the ones not yet adopted here (only [`recall`] falls back to them), and
+/// only `track_memory` is read this way.
+pub fn recall_all<E: MemoryTenant>(user: &str) -> Vec<E> {
+    let state = E::mirror().lock();
+    if !MemoryMirror::valid(&state) {
+        return Vec::new();
+    }
+    let account = MemoryMirror::stamp(&state);
+    if E::ACCOUNT_BOUND && account.is_empty() && !E::ADOPTS_UNSTAMPED {
+        return Vec::new();
+    }
+    state.lists.iter().find(|r| r.user == user && r.account == account).map(|r| r.items.clone()).unwrap_or_default()
 }
 
 // ---- the write door -------------------------------------------------------------------------
@@ -555,7 +607,7 @@ macro_rules! choices {
         }
         impl Choice {
             /// The key of every setting a Settings row saves through [`Choice`], in declaration order.
-            pub const KEYS: &'static [&'static str] = &[$(<$marker as Setting>::KEY),*];
+            pub const KEYS: &'static [&'static str] = &[$(<$marker as Row>::KEY),*];
         }
     };
 }

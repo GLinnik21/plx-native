@@ -848,6 +848,11 @@ pub fn sentry_body(
 /// here is a hash and would put every distinct panic message in its own issue while telling you
 /// nothing about which. Grouping on `(location, hash)` says "this panic, at this line", which is
 /// what the message would have been used for.
+///
+/// It carries the same `os`/`webos`/`hardware` contexts as [`sentry_body`] (the same two attach
+/// functions, so the same closed `native::{OS,WEBOS,HARDWARE}_FIELDS` vocabulary) and none of the
+/// fault-only `crash` context. Both are read from the process-wide device snapshot at the time this
+/// runs, on the next launch, which is the same television the panic was logged on.
 pub fn panic_sentry_body(
     p: &PanicReport,
     event_id: &str,
@@ -877,6 +882,12 @@ pub fn panic_sentry_body(
     if let Some(t) = crash_timestamp(p.crash_time, now_secs()) {
         body["timestamp"] = serde_json::json!(t);
     }
+    // The same `os`/`webos`/`hardware` contexts the fault fallback carries, through the same two
+    // functions. This body is built on the NEXT launch, from the crash log, by
+    // [`recover_pending`] — never inside the panic hook — so reading the booted device's
+    // snapshot here takes no lock the panicking thread could have held.
+    super::sentry::attach_os_context(&mut body);
+    super::sentry::attach_hardware_context(&mut body);
     super::sentry::attach_user(&mut body, errors_id);
     serde_json::to_vec(&body).unwrap_or_default()
 }
@@ -946,12 +957,15 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
     // this host's kernel and model are not shown to a person deciding what to share.
     let native: serde_json::Value =
         serde_json::from_slice(&super::native::preview_event()).unwrap_or_default();
-    for key in ["os", "webos", "hardware"] {
-        fault_json["contexts"][key] = native["contexts"][key].clone();
-    }
-    // A native crash event has no `probe` (the SDK's scope cannot set it), but this fallback is
-    // built through `attach_hardware_context`, which adds it, so the sample must show it.
-    fault_json["contexts"]["hardware"]["probe"] = serde_json::json!(FALLBACK_PROBE_PLACEHOLDER);
+    // A native crash event has no `probe` (the SDK's scope cannot set it), but both fallbacks are
+    // built through `attach_hardware_context`, which adds it, so each sample must show it.
+    let placeholder_contexts = |json: &mut serde_json::Value| {
+        for key in ["os", "webos", "hardware"] {
+            json["contexts"][key] = native["contexts"][key].clone();
+        }
+        json["contexts"]["hardware"]["probe"] = serde_json::json!(FALLBACK_PROBE_PLACEHOLDER);
+    };
+    placeholder_contexts(&mut fault_json);
 
     fault_json["event_id"] = serde_json::json!("<stable id for this crash-log record>");
     fault_json["dist"] = serde_json::json!("<crashed ELF build id>");
@@ -1003,6 +1017,7 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
         Some(super::native::PREVIEW_USER_ID),
     ))
     .unwrap_or_default();
+    placeholder_contexts(&mut panic_json);
     let source = "<validated compile-time source:line>";
     panic_json["event_id"] = serde_json::json!("<stable id for this crash-log record>");
     panic_json["dist"] = serde_json::json!("<crashed ELF build id>");
@@ -1743,6 +1758,47 @@ mod tests {
         assert_eq!(body["contexts"]["os"], os["contexts"]["os"]);
     }
 
+    /// **A panic report says which kernel, webOS and television it came from, exactly as the fault
+    /// fallback does.** The panic body used to carry none of the three contexts, so the same
+    /// firmware-specific panic could not be told apart from any other in Sentry's Contexts UI. The
+    /// keys are graded against the native sanitiser's own allowlists, not a copy of them.
+    #[test]
+    fn a_panic_body_carries_the_same_os_webos_and_hardware_contexts_as_a_fault() {
+        use super::super::native::{HARDWARE_FIELDS, OS_FIELDS, WEBOS_FIELDS};
+        let p = PanicReport {
+            location: "src/example.rs:42".into(),
+            message_hash: 7,
+            image: None,
+            crash_time: None,
+        };
+        let panic: serde_json::Value =
+            serde_json::from_slice(&panic_sentry_body(&p, "e", None)).unwrap();
+        let fault: serde_json::Value = serde_json::from_slice(&sentry_body(
+            &only_fault(REC), "e", BUILD, Some("did"), None, &extra(),
+        ))
+        .unwrap();
+        for key in ["os", "webos", "hardware"] {
+            assert!(panic["contexts"][key].is_object(), "panic body lacks contexts.{key}");
+            assert_eq!(panic["contexts"][key], fault["contexts"][key], "contexts.{key} differs");
+        }
+        assert!(panic["contexts"]["hardware"]["probe"].is_string(), "hardware.probe is the why-empty fact");
+        // Closed vocabulary only, and nothing but the three contexts (a fault's `crash` context
+        // says why the daemon's report is absent, which a panic has no equivalent of).
+        let keys_of = |v: &serde_json::Value| -> Vec<String> {
+            let mut k: Vec<String> = v.as_object().unwrap().keys().cloned().collect();
+            k.sort();
+            k
+        };
+        assert_eq!(keys_of(&panic["contexts"]), ["hardware", "os", "webos"]);
+        for (key, allowed) in
+            [("os", OS_FIELDS), ("webos", WEBOS_FIELDS), ("hardware", HARDWARE_FIELDS)]
+        {
+            for field in keys_of(&panic["contexts"][key]) {
+                assert!(allowed.contains(&field.as_str()), "contexts.{key}.{field} is not allowlisted");
+            }
+        }
+    }
+
     #[test]
     fn fallback_body_identifies_pc_and_lr_modules() {
         let f = only_fault(WAYLAND_REC);
@@ -2160,6 +2216,21 @@ mod tests {
         let mut all = Vec::new();
         strings(&fault, &mut all);
         assert!(all.iter().all(|s| !s.starts_with('/')));
+    }
+
+    /// The panic preview shows the same three contexts as placeholders, never this host's kernel or
+    /// model, so the person deciding what to share sees what a panic report carries.
+    #[test]
+    fn the_panic_preview_declares_the_contexts_as_placeholders() {
+        let preview = preview_events();
+        let fault: serde_json::Value = serde_json::from_slice(&preview[0].1).unwrap();
+        let panic: serde_json::Value = serde_json::from_slice(&preview[1].1).unwrap();
+        for key in ["os", "webos", "hardware"] {
+            assert_eq!(panic["contexts"][key], fault["contexts"][key], "contexts.{key}");
+        }
+        assert_eq!(panic["contexts"]["os"]["version"], "<kernel release>");
+        assert_eq!(panic["contexts"]["hardware"]["probe"], FALLBACK_PROBE_PLACEHOLDER);
+        assert!(panic["contexts"].get("crash").is_none(), "a panic has no native_path");
     }
 
     /// The report belongs to the binary that CRASHED, not to whichever binary happens to read the

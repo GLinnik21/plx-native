@@ -130,6 +130,27 @@ impl Default for RelatedSeek {
     }
 }
 
+/// How long a seat on a long season's on-deck episode waits for the page that holds it before it
+/// stays where the hint put it. The strip re-asks a missing page every second meanwhile
+/// ([`EP_RETRY_MS`]), so this bounds how late a landing may still move the strip under a viewer
+/// who has not touched it.
+const SEAT_GIVE_UP_MS: u32 = 5_000;
+
+/// What [`DetailScreen::seat_strips`] has done for the season now selected.
+#[derive(Default)]
+struct StripSeat {
+    /// The season (its rating key) the strips were last seated for; `None` until the first one.
+    season: Option<String>,
+    /// The seat is final: the on-deck episode was found, there is none to find, or the page that
+    /// would hold it is in hand without it.
+    done: bool,
+    /// The viewer took the strips (focus on the tabs or the filmstrip) before the page seated them,
+    /// or since: the page stops moving them.
+    touched: bool,
+    /// When the seat for `season` began, to bound the wait for a page that never lands.
+    since: u32,
+}
+
 /// The range of a long season's episodes the strip last asked the store for, so the same range is
 /// not said every frame; said again after [`EP_RETRY_MS`] while a page in it is still a hole
 /// (a failed fetch is retried that way).
@@ -254,6 +275,9 @@ pub struct DetailScreen {
     episode_scroll: Spring,
     /// What the episode strip last asked the store to have loaded, and when.
     ep_want: EpWant,
+    /// Where the page itself last seated the two strips, and whether the viewer has taken them
+    /// over since ([`seat_strips`](Self::seat_strips)). Render state: not hashed, not in [`SHAPE`].
+    strip_seat: StripSeat,
     tab_scroll: Spring,
     /// The focused episode's pop spring and label-block lift (earned by the TEXT stop alone; the
     /// plate also shows for the still's pop — see `episodes::draw_cell`), keyed by episode so the
@@ -509,6 +533,7 @@ impl DetailScreen {
             tab_scroll: Spring::at(0.0),
             episode_cells: episodes::Cells::new(),
             ep_want: EpWant::default(),
+            strip_seat: StripSeat::default(),
             about_card_lift: TextLift::new(),
             about_lang_lift: TextLift::new(),
             related: Shelf::new(entry, cards::Which::Related.style()),
@@ -1897,7 +1922,9 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 // a press cannot cross from it to a window that is away from the tail's start
                 // (`Cards::gap_before`), so the window comes back to it. Both edges ride the shelf's
                 // liveness (an ask nobody answered is repeated while focus stands there), and a read
-                // whose edge focus has left is withdrawn before its window can slide in.
+                // whose edge focus has left is withdrawn before its window can slide in. A row whose
+                // cards end inside the screen's width asks for the tail with focus anywhere (below the
+                // fold too: the shelf reads no vertical position).
                 let t = &d.related_tail;
                 self.related.set_head(t.head);
                 if self.related.page_cancel(cx, &related, t.offset, true).is_some() {
@@ -3467,6 +3494,70 @@ impl DetailScreen {
         )));
     }
 
+    /// Seat the season tabs and the episode filmstrip where the viewer left off, with focus and the
+    /// page's own scroll untouched: the page opens on the hero as ever, and only the two strips'
+    /// horizontal scroll moves. The selected season (the fetch chose it: `Detail::cur_season`) is
+    /// put in view on the tabs, and the filmstrip stands the server's on-deck episode at its
+    /// leading edge when it belongs to the selected season, else at its first episode.
+    ///
+    /// Done by JUMP, once per selected season, when that season's list is in hand — the strips
+    /// otherwise follow only focus (`tick`), so a viewer who never leaves the hero would see
+    /// neither. Because it runs per season it is also the rule for a tab switch: the filmstrip
+    /// used to keep the previous season's offset across one, so a season opened part way along.
+    ///
+    /// A long season lands as its first page; when the on-deck episode is not in it the strip is
+    /// seated at the number the server gave it (the existing page ask follows the strip there) and
+    /// corrected to the episode's real place when its page lands. Left alone when the viewer has
+    /// focused a strip (they own it) and while a return or a restore onto the filmstrip is in
+    /// flight (`restore_focus`'s seat and `scroll_into_view` put it back where it was); a restore
+    /// onto the hero that merely names a season (`Spot::season`) is neither.
+    fn seat_strips(&mut self, d: &Detail, focused: Option<Located>, season_loading: bool, now: u32) {
+        let Some(season) = d.seasons.get(d.cur_season) else { return };
+        // `cur_season` flips before the new season's episodes land; the list in hand is not its own
+        if season_loading {
+            return;
+        }
+        if self.return_pending || self.restore_intent.as_ref().is_some_and(|intent| intent.spot.section == 2) {
+            return;
+        }
+        let on_tab = matches!(focused, Some(Located::Season(_)));
+        let on_episode = matches!(focused, Some(Located::Episode(..)));
+        let seat = &mut self.strip_seat;
+        if seat.season.as_deref() != Some(season.rk.as_str()) {
+            // A first look with focus already on a strip, or a switch made with focus on the
+            // filmstrip: the viewer got there before the page, and focus owns the scroll.
+            let touched = on_episode || seat.season.is_none() && on_tab;
+            *seat = StripSeat { season: Some(season.rk.clone()), done: false, touched, since: now };
+            // On a user switch the focused tab is already in view (`tick` follows focus).
+            if !touched && !on_tab {
+                let target = self.season_metrics.scroll_target(self.tab_scroll.pos, d.cur_season);
+                self.tab_scroll.jump(target);
+            }
+        } else if on_tab || on_episode {
+            seat.touched = true;
+        }
+        if seat.done || seat.touched || now.wrapping_sub(seat.since) >= SEAT_GIVE_UP_MS {
+            return;
+        }
+        let len = d.episodes.len();
+        let (target, done) = match d.on_deck.as_ref().filter(|e| e.season == season.index) {
+            None => (0.0, true),
+            Some(e) => match d.episodes.position(&e.rk) {
+                Some(i) => (episodes::seat_scroll(i, len), true),
+                None if len == 0 || d.episodes.is_complete() => (0.0, true),
+                None => {
+                    // Not on a page that has landed: the episode number is the best guess of its
+                    // place. Final only once the hint's own page is in hand without it (numbering
+                    // that has gaps), else the page's landing corrects it.
+                    let hint = ((e.index - 1).max(0) as usize).min(len - 1);
+                    (episodes::seat_scroll(hint, len), d.episodes.get(hint).is_some())
+                }
+            },
+        };
+        self.episode_scroll.jump(target);
+        self.strip_seat.done = done;
+    }
+
     fn tick<H: ContentLike + crate::registry::MetadataLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let meta = H::metadata(cx);
         self.refresh_spot_facts(meta);
@@ -3521,6 +3612,7 @@ impl DetailScreen {
         self.about_lang_lift.step(focused == Some(Located::About(1)), dt);
 
         if let Some(d) = d {
+            self.seat_strips(d, focused, meta.season_loading(), t.ms);
             let mut strip_target = self.episode_scroll.pos;
             if let Some(i) = match focused {
                 Some(Located::Episode(i, _)) => Some(i),
@@ -3875,20 +3967,20 @@ impl DetailScreen {
         use trailer::TrailerKey;
         if let TrailerKey::Scrub(fwd) = act {
             let commit = match edge {
-                Edge::Down => {
-                    self.trailer_ctl.scrub_fresh(
-                        fwd,
-                        now,
-                        plx_media::player::duration_ns(),
-                        plx_media::player::playpos_ns(),
-                    );
-                    None
-                }
+                Edge::Down => self.trailer_ctl.scrub_fresh(
+                    fwd,
+                    now,
+                    plx_media::player::duration_ns(),
+                    plx_media::player::playpos_ns(),
+                ),
                 Edge::Repeat => {
                     self.trailer_ctl.scrub_repeat(now);
                     None
                 }
-                Edge::Up => self.trailer_ctl.scrub_release(now),
+                Edge::Up => {
+                    self.trailer_ctl.scrub_release(now);
+                    None
+                }
             };
             if let Some(target_ns) = commit {
                 self.content(fx, ContentReq::PreviewSeek(target_ns));

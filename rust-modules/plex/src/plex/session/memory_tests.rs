@@ -150,11 +150,11 @@ fn subtitle_offsets_run_through_the_generic_with_their_own_cap_and_key() {
     session.set_subtitle_offset_for("u", "", "rk-1", Some(500));
     session.set_subtitle_offset_for("u", "m", "", Some(500));
     session.set_subtitle_offset_for("u", "m", "rk-2", Some(0));
-    assert_eq!(session.subtitle_offsets.len(), 1);
-    assert_eq!(session.subtitle_offsets[0].items.len(), 1, "empty ids and an offset of 0 record nothing");
+    assert_eq!(session.prefs.subtitle_offsets.len(), 1);
+    assert_eq!(session.prefs.subtitle_offsets[0].items.len(), 1, "empty ids and an offset of 0 record nothing");
     assert_eq!(session.subtitle_offset_for("u", "m", "rk-1"), Some(500));
     let key = ("m".to_string(), "rk-1".to_string());
-    assert_eq!(session.subtitle_offsets.get("u", "", &key).map(|e| e.offset_ms), Some(500));
+    assert_eq!(session.prefs.subtitle_offsets.get("u", "", &key).map(|e| e.offset_ms), Some(500));
 }
 
 /// `{user, items}` is exactly the shape the field had before the door existed: no `account` key is
@@ -215,8 +215,9 @@ fn a_queued_memory_edit_merges_against_the_file_it_finds() {
     }));
     let key = ("m".to_string(), "rk-second".to_string());
     let ticket = queue_update_ticket(move |cur| {
+        let stamp = crate::plex::grant::account_key(&cur.account_token);
         cur.with_memory::<SubtitleOffsetEntry>(|m| {
-            m.upsert_with("u", "", &key, |_| {
+            m.upsert_with("u", &stamp, &key, |_| {
                 Some(SubtitleOffsetEntry {
                     machine_id: "m".into(), rating_key: "rk-second".into(), offset_ms: 200, extensions: Default::default(),
                 })
@@ -239,4 +240,113 @@ fn the_tenure_moves_when_the_session_is_revoked() {
     assert_eq!(tenure(), before, "stable while nothing is revoked");
     revoke_cached_session();
     assert_ne!(tenure(), before);
+}
+
+// ---- SO: offsets are account-bound, with legacy unstamped records adopted -----------------------
+
+const STAMP: &str = "00112233445566ff";
+
+fn offset(rating_key: &str, offset_ms: i64) -> SubtitleOffsetEntry {
+    SubtitleOffsetEntry { machine_id: "m".into(), rating_key: rating_key.into(), offset_ms, extensions: Default::default() }
+}
+
+fn offset_key(rating_key: &str) -> (String, String) {
+    ("m".to_string(), rating_key.to_string())
+}
+
+/// A file written before offsets were account-bound holds records with no stamp. The signed-in
+/// account sees them exactly as it did (nothing a viewer sees changes before sign-out), and the
+/// first write to the list stamps them as that account's own, so the sign-out that follows can
+/// tell whose they are.
+#[test]
+fn unstamped_offsets_are_adopted_and_stamped_on_write() {
+    let mut list: Vec<SubtitleOffsets> = serde_json::from_value(json!([
+        {"user": "u", "items": [{"machine_id": "m", "rating_key": "rk-1", "offset_ms": 100},
+                                {"machine_id": "m", "rating_key": "rk-2", "offset_ms": 200}]},
+        {"user": "v", "items": [{"machine_id": "m", "rating_key": "rk-1", "offset_ms": 300}]},
+    ]))
+    .unwrap();
+    assert_eq!(list.get("u", STAMP, &offset_key("rk-1")).map(|e| e.offset_ms), Some(100), "visible before any write");
+    assert_eq!(list.get("v", STAMP, &offset_key("rk-1")).map(|e| e.offset_ms), Some(300));
+
+    assert!(list.upsert_with("u", STAMP, &offset_key("rk-3"), |_| Some(offset("rk-3", 400))));
+
+    assert_eq!(list.len(), 2, "adopted in place, not duplicated beside an unstamped copy");
+    assert!(list.iter().all(|r| r.account == STAMP), "every legacy record is now the account's own: {list:?}");
+    assert_eq!(list.get("u", STAMP, &offset_key("rk-1")).map(|e| e.offset_ms), Some(100));
+    assert_eq!(list.get("u", STAMP, &offset_key("rk-2")).map(|e| e.offset_ms), Some(200));
+    assert_eq!(list.get("u", STAMP, &offset_key("rk-3")).map(|e| e.offset_ms), Some(400));
+    assert_eq!(list.get("v", STAMP, &offset_key("rk-1")).map(|e| e.offset_ms), Some(300), "another profile's too");
+    assert_eq!(serde_json::to_value(&list[0]).unwrap()["account"], json!(STAMP), "and the stamp is written");
+}
+
+/// An unchanged entry is not a write, but a legacy record that WOULD be stamped is a change: the
+/// list reports it, so the queued update writes the stamp instead of dropping the edit.
+#[test]
+fn adopting_an_unstamped_record_is_a_change_even_when_the_entry_is_unchanged() {
+    let mut list: Vec<SubtitleOffsets> = serde_json::from_value(json!([
+        {"user": "u", "items": [{"machine_id": "m", "rating_key": "rk-1", "offset_ms": 100}]}])).unwrap();
+    assert!(list.upsert_with("u", STAMP, &offset_key("rk-1"), |current| current.cloned()));
+    assert_eq!(list[0].account, STAMP);
+    assert!(!list.upsert_with("u", STAMP, &offset_key("rk-1"), |current| current.cloned()), "and then it is settled");
+}
+
+/// A record stamped for another account reads as nothing to this one, and the next write drops it
+/// (the previous sign-in's offsets must not outlive the first write of the next). A tenant that
+/// adopts does not read an unstamped record as foreign.
+#[test]
+fn a_foreign_stamp_reads_as_nothing_and_the_next_write_prunes_it() {
+    let mut list: Vec<SubtitleOffsets> = serde_json::from_value(json!([
+        {"user": "u", "account": "ffffffffffffffff", "items": [{"machine_id": "m", "rating_key": "rk-1", "offset_ms": 100}]},
+        {"user": "w", "items": [{"machine_id": "m", "rating_key": "rk-9", "offset_ms": 900}]},
+    ]))
+    .unwrap();
+    assert!(list.get("u", STAMP, &offset_key("rk-1")).is_none(), "another account's record is not ours");
+    assert_eq!(list.get("w", STAMP, &offset_key("rk-9")).map(|e| e.offset_ms), Some(900));
+
+    assert!(list.upsert_with("u", STAMP, &offset_key("rk-2"), |_| Some(offset("rk-2", 200))));
+    assert!(list.get("u", "ffffffffffffffff", &offset_key("rk-1")).is_none(), "pruned");
+    assert_eq!(list.len(), 2, "the foreign record is gone, ours and the adopted one remain: {list:?}");
+    assert!(list.iter().all(|r| r.account == STAMP));
+}
+
+/// Both an unstamped record and a stamped one for the same profile (a build that predates the stamp
+/// wrote beside a stamped record): adoption merges them into the one record, the stamped record's
+/// entries winning, rather than leaving two records for one `(user, account)`.
+#[test]
+fn an_unstamped_record_merges_into_the_accounts_own_record_of_the_same_profile() {
+    let mut list: Vec<SubtitleOffsets> = serde_json::from_value(json!([
+        {"user": "u", "items": [{"machine_id": "m", "rating_key": "rk-1", "offset_ms": 100},
+                                {"machine_id": "m", "rating_key": "rk-2", "offset_ms": 200}]},
+        {"user": "u", "account": STAMP, "items": [{"machine_id": "m", "rating_key": "rk-2", "offset_ms": 999}]},
+    ]))
+    .unwrap();
+    assert!(list.upsert_with("u", STAMP, &offset_key("rk-3"), |_| Some(offset("rk-3", 300))));
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list.get("u", STAMP, &offset_key("rk-1")).map(|e| e.offset_ms), Some(100));
+    assert_eq!(list.get("u", STAMP, &offset_key("rk-2")).map(|e| e.offset_ms), Some(999), "the stamped entry wins");
+    assert_eq!(list.get("u", STAMP, &offset_key("rk-3")).map(|e| e.offset_ms), Some(300));
+}
+
+/// A session with no account token has no stamp to bind to; offsets are not refused there (they
+/// never were), they are written unstamped and a later account adopts them. Nothing is pruned
+/// without a stamp to compare against.
+#[test]
+fn a_write_without_a_stamp_is_kept_unstamped_and_prunes_nothing() {
+    let mut list: Vec<SubtitleOffsets> = serde_json::from_value(json!([
+        {"user": "u", "account": "ffffffffffffffff", "items": [{"machine_id": "m", "rating_key": "rk-1", "offset_ms": 100}]}])).unwrap();
+    assert!(list.upsert_with("u", "", &offset_key("rk-2"), |_| Some(offset("rk-2", 200))));
+    assert_eq!(list.len(), 2, "the stamped record is left alone: {list:?}");
+    assert_eq!(list.get("u", "", &offset_key("rk-2")).map(|e| e.offset_ms), Some(200));
+    assert!(list.get("u", "", &offset_key("rk-1")).is_none(), "and still reads as nothing without its account");
+}
+
+/// The in-memory half of the door stamps with the session's OWN account.
+#[test]
+fn a_session_stamps_the_offsets_it_records_with_its_own_account() {
+    let mut session = Session { account_token: "acct".into(), ..Default::default() };
+    session.set_subtitle_offset_for("u", "m", "rk-1", Some(500));
+    let stamp = crate::plex::grant::account_key("acct");
+    assert_eq!(session.prefs.subtitle_offsets[0].account, stamp);
+    assert_eq!(session.prefs.subtitle_offsets.get("u", &stamp, &offset_key("rk-1")).map(|e| e.offset_ms), Some(500));
 }

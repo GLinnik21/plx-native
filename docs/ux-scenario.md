@@ -193,7 +193,8 @@ left"*, which is the resume state. A watched item carries a check mark in its co
 **OK on a card in *Continue Watching* opens its page by default** (Settings → Playback →
 Continue Watching: *Open details*); set to *Play*, OK plays it directly and the amber ▶ on the card is
 what announces that — the ▶ is drawn only in that mode, and in the default the card's menu leads
-with Play instead. **Every other card opens a page, an episode included**: an episode tile on a
+with Play instead; an *episode* card there opens its **show** on that episode's season (the card's menu
+offers *Go to Episode*). **Every other card opens a page, an episode included**: an episode tile on a
 discovery shelf ("Recently Released Episodes", "Recently Added…") opens that EPISODE's own page and
 carries no ▶, precisely so nothing on it promises playback. The one-press resume is *Play* mode: there the deck is a list of things already in progress and one
 press is the whole point of it. In the default the deck behaves like every other shelf — a press is
@@ -611,9 +612,9 @@ Seeking is a **preview-then-commit** gesture, not one immediate jump per press.
   band being dragged is on screen.
 - **With the HUD up and the scrubber focused, one press moves the preview by the Skip interval — 10 s unless Settings > Playback says otherwise.** The picture does
   not move yet; the scrubber shows the target, and the state mark shows the direction.
-- **Holding engages a continuous scrub that accelerates** — from 10× up to 140× playback speed — and
-  the key release commits it. A lost key-up is caught by a 400 ms watchdog, so a dropped release
-  cannot leave the scrub running.
+- **Holding engages a continuous scrub that accelerates** — 60× playback speed, doubling every second up to 480× — and
+  the key release commits it. A lost key-up is caught by a 400 ms watchdog (700 ms right after a key bounce, while the remote's
+  repeat delay restarts), so a dropped release cannot leave the scrub running.
 - **Quick repeated taps accumulate into one seek.** The commit waits ~450 ms after the last tap, so
   "back thirty seconds" is three presses at the default 10 s step and a single seek rather than three. That matters beyond
   feel: back-to-back in-flight seeks are what stress the demux pipeline.

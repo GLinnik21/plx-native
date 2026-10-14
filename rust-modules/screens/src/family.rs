@@ -34,8 +34,8 @@ impl SessionGround {
     pub fn refresh(&mut self) -> bool {
         if !self.from_session || !self.watch.changed() { return false; }
         let Some(session) = plx_plex::plex::session::peek_settled() else { return false; };
-        if self.seed == session.last_hero_blur { return false; }
-        self.seed = session.last_hero_blur;
+        if self.seed == session.prefs.last_hero_blur { return false; }
+        self.seed = session.prefs.last_hero_blur;
         self.ground = plx_ui::route_screen::RouteGround::for_home(self.seed);
         true
     }
@@ -392,13 +392,13 @@ mod session_tests {
         let _serial = plx_base::testlock::serial();
         let _session = plx_plex::plex::session::TempSession::new("first-run-seed-refresh");
         let mut saved = (*plx_plex::plex::session::peek()).clone();
-        saved.last_hero_blur = Some([[0.2, 0.3, 0.4]; 4]);
+        saved.prefs.last_hero_blur = Some([[0.2, 0.3, 0.4]; 4]);
         plx_plex::plex::session::install_transient_for_test(true);
         let mut ground = super::pre_home_ground(plx_data::pms::HubsSnapshot::empty_for_test().view());
         assert!(ground.seed.is_none());
         plx_plex::plex::session::save(&saved);
         assert!(ground.refresh());
-        assert_eq!(ground.seed, saved.last_hero_blur);
+        assert_eq!(ground.seed, saved.prefs.last_hero_blur);
         assert!(!ground.refresh());
     }
 }

@@ -3,17 +3,20 @@
 //!
 //! * **T-fields** — `Preferences`' serde field list equals `DESCRIPTORS`' keys.
 //! * **T-account** — `DESCRIPTORS`' account-bound keys equal platform's
-//!   `ACCOUNT_BOUND_PREFERENCES` (minus the rows that do not exist yet).
+//!   `ACCOUNT_BOUND_PREFERENCES`, and `auto_sign_in` is never account-bound.
 //! * **T-parse** — each descriptor's declared parse policy is the one its field really has.
 //!
 //! T-live and T-settings sit in media (`route/prefs_tests.rs`), where the lists they hold to these
 //! descriptors are declared.
-use super::prefs::{Descriptor, Parse, Scope, Setting, SettingsWrite, DESCRIPTORS};
-use super::prefs::{AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, NextEpisodeModePref,
-    QualityPref, SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref};
+use super::prefs::{Descriptor, ListRow, Parse, ProfileMemory, Row, Scope, Setting, SettingsWrite, DESCRIPTORS};
+use super::prefs::{AudioEnhancementsPref, AutoSignInPref, DeckPressPref, DirectPlayModePref, LastHeroBlurPref,
+    LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
+    SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
+    TrailerAutoplayPref};
 use super::{
-    CanonicalSessionPreferences, DeckPress, DirectPlayMode, NextEpisodeMode, PlaybackQuality,
-    Preferences, Session, SkipInterval, SubtitlePosition, SubtitleSize, SubtitleTone,
+    CanonicalSessionPreferences, DeckPress, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
+    PlaintextChoice, PlaintextConsent, PlaybackQuality, Preferences, ServerKeyPin, Session, SkipInterval,
+    SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone,
 };
 use serde::de::{self, Deserializer, Visitor};
 use serde_json::{json, Value};
@@ -108,8 +111,54 @@ fn every_marker_names_its_own_field() {
     check_row::<SkipIntervalPref>(SkipInterval::Seconds30);
     check_row::<DeckPressPref>(DeckPress::Play);
     check_row::<AudioEnhancementsPref>(crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false });
-    // The table lists exactly these nine: a tenth row needs its line here too.
-    assert_eq!(DESCRIPTORS.len(), 9);
+    // A5: the remaining `Copy` rows.
+    check_row::<AutoSignInPref>(true);
+    check_row::<TrailerAutoplayPref>(true);
+    check_row::<LastHeroBlurPref>(Some([[0.5, 0.25, 0.125]; 4]));
+    // The table lists exactly these twelve `Setting` rows, the four list rows below and the two
+    // memory-door rows (`TrackMemoryPref`, whose field check is
+    // `track_memory_tests::the_list_row_names_its_own_field`, and `SubtitleOffsetsPref`, checked by
+    // `the_subtitle_offsets_row_names_its_own_field`): a row needs its line in one of the three
+    // places.
+    assert_eq!(DESCRIPTORS.len(), 12 + 4 + 2);
+}
+
+/// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
+/// (writing the list writes its key and no other, and the key reads back).
+fn check_list_row<R: ListRow>(item: R::Item)
+where
+    R::Item: Clone + PartialEq + std::fmt::Debug,
+{
+    let default_json = serde_json::to_value(Preferences::default()).unwrap();
+    let mut p = Preferences::default();
+    assert!(R::items(&p).is_empty(), "{}: a list row starts empty", R::KEY);
+    R::items_mut(&mut p).push(item.clone());
+    let json = serde_json::to_value(&p).unwrap();
+    let object = json.as_object().unwrap();
+    assert!(object.contains_key(R::KEY), "{}: writing the row must write its own key: {json}", R::KEY);
+    for (key, value) in object {
+        if key != R::KEY {
+            assert_eq!(default_json.get(key), Some(value), "{}: moved the unrelated key {key}", R::KEY);
+        }
+    }
+    let back: Preferences = serde_json::from_value(json).unwrap();
+    assert_eq!(R::items(&back), &vec![item], "{}: the written key must read back", R::KEY);
+}
+
+#[test]
+fn every_list_marker_names_its_own_field() {
+    check_list_row::<PlaintextConsentRow>(PlaintextConsent {
+        machine_id: "m".into(), account: "a".into(), choice: PlaintextChoice::Allowed, extensions: Default::default(),
+    });
+    check_list_row::<ServerKeyPinsRow>(ServerKeyPin {
+        machine_id: "m".into(), pin: "sha256//x".into(), extensions: Default::default(),
+    });
+    check_list_row::<LastLibraryRow>(serde_json::from_value::<LastLibrary>(
+        json!({"user":"u1","libs":[{"kind":"movie","machine_id":"m","key":1}]})).unwrap());
+    check_list_row::<LibraryViewsRow>(serde_json::from_value::<LibraryViews>(
+        json!({"user":"u1","libs":[{"machine_id":"m","key":1,"sort":"plays"}]})).unwrap());
+    // `library_views` is stored as `library_sorts`: the row's key is the wire key.
+    assert_eq!(LibraryViewsRow::KEY, "library_sorts");
 }
 
 /// Quality is the one row whose stored and spoken types differ: absent reads as Original, and an
@@ -124,20 +173,22 @@ fn quality_is_stored_optional_and_read_as_original() {
 }
 
 /// **T-account.** Platform names the preference keys sign-out clears; this crate declares which
-/// rows are account-bound. The two lists are held to each other both ways. The rows that are not
-/// `Preferences` fields yet (`NOT_YET_ROWS`) are the only exception, and the last row to land
-/// deletes the list.
+/// rows are account-bound. The two lists are held to each other both ways: every key platform
+/// clears has a row that says so, and no row says so that platform does not clear.
 #[test]
 fn t_account_the_bound_rows_are_the_platform_bound_keys() {
-    const NOT_YET_ROWS: &[&str] = &["server_key_pins", "plaintext_consent"];
     let platform: BTreeSet<&str> = plx_platform::storage::state::ACCOUNT_BOUND_PREFERENCES.iter().copied().collect();
-    for key in NOT_YET_ROWS {
-        assert!(platform.contains(key), "NOT_YET_ROWS names {key}, which platform no longer clears");
-        assert!(!keys().contains(key), "{key} has a row now: delete it from NOT_YET_ROWS");
-    }
-    let expected: BTreeSet<&str> = platform.iter().copied().filter(|k| !NOT_YET_ROWS.contains(k)).collect();
     let declared: BTreeSet<&str> = DESCRIPTORS.iter().filter(|d| d.account_bound).map(|d| d.key).collect();
-    assert_eq!(declared, expected, "account-bound rows and platform's ACCOUNT_BOUND_PREFERENCES drifted");
+    assert_eq!(declared, platform, "account-bound rows and platform's ACCOUNT_BOUND_PREFERENCES drifted");
+    // Every key platform clears is a row at all (a bound key with no row would be unlisted here).
+    for key in &platform {
+        assert!(keys().contains(key), "{key}: platform clears it at sign-out but no row describes it");
+    }
+    // `auto_sign_in` is read by `boot_shows_picker` BEFORE any profile is seated, so it can never be
+    // per-profile and never account-bound (sign-out keeps the television's switch).
+    let auto = DESCRIPTORS.iter().find(|d| d.key == "auto_sign_in").expect("auto_sign_in has a row");
+    assert_eq!(auto.scope, Scope::Install);
+    assert!(!auto.account_bound && !platform.contains("auto_sign_in"));
     for d in DESCRIPTORS {
         match d.scope {
             Scope::Install => assert!(!d.account_bound, "{}: an Install row is never account-bound", d.key),
@@ -172,6 +223,52 @@ fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
     }
 }
 
+/// The facts the A5 rows declare, pinned per key like the nine above: none is live (no media cell
+/// applies them) and none has a `choose` Settings row (Settings writes `auto_sign_in` and
+/// `trailer_autoplay` through its own ticketed update).
+#[test]
+fn the_a5_rows_declare_the_scope_and_binding_main_has() {
+    let row = |key: &str| -> &Descriptor { DESCRIPTORS.iter().find(|d| d.key == key).unwrap() };
+    for (key, scope, bound, parse) in [
+        ("auto_sign_in", Scope::Install, false, Parse::BoolOff),
+        ("trailer_autoplay", Scope::Install, false, Parse::BoolOn),
+        ("last_hero_blur", Scope::Install, false, Parse::OptionalSoft),
+        ("plaintext_consent", Scope::Account, true, Parse::SoftVec),
+        ("server_key_pins", Scope::Account, true, Parse::SoftVec),
+        ("last_library", Scope::Profile, true, Parse::SoftVec),
+        ("library_sorts", Scope::Profile, true, Parse::SoftVec),
+    ] {
+        let d = row(key);
+        assert_eq!((d.scope, d.account_bound, d.parse), (scope, bound, parse), "{key}");
+        assert!(!d.live && d.settings.is_none(), "{key}");
+    }
+}
+
+/// The `subtitle_offsets` row is a `Preferences` field under its own key, written only while
+/// non-empty, and its descriptor is the memory-door tenant it was before A5 (per item, account-bound
+/// from SO on, no live cell, no Settings row). It is a `Row` and not a `ListRow`: the
+/// whole-list accessor is exactly what the memory door exists to withhold.
+#[test]
+fn the_subtitle_offsets_row_names_its_own_field() {
+    let default_json = serde_json::to_value(Preferences::default()).unwrap();
+    assert!(default_json.get("subtitle_offsets").is_none(), "an empty list writes no key: {default_json}");
+    let mut p = Preferences::default();
+    assert!(p.subtitle_offsets.upsert_with("u1", "", &("m".to_string(), "42".to_string()), |_| {
+        Some(SubtitleOffsetEntry { machine_id: "m".into(), rating_key: "42".into(), offset_ms: 1_500, extensions: Default::default() })
+    }));
+    let body = serde_json::to_value(&p).unwrap();
+    assert!(body["subtitle_offsets"].is_array(), "{body}");
+    for (key, value) in body.as_object().unwrap() {
+        if key != SubtitleOffsetsPref::KEY {
+            assert_eq!(default_json.get(key), Some(value), "writing the row moved the unrelated key {key}");
+        }
+    }
+    let back: Preferences = serde_json::from_value(body).unwrap();
+    assert_eq!(back, p);
+    let row = DESCRIPTORS.iter().find(|d| d.key == SubtitleOffsetsPref::KEY).expect("the row is in the table");
+    assert_eq!((row.scope, row.account_bound, row.live, row.settings, row.parse), (Scope::PerItem, true, false, None, Parse::SoftVec));
+}
+
 /// What garbage a key is fed, per descriptor key. A descriptor with no entry here fails
 /// `t_parse`, and so does an entry without a descriptor.
 fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
@@ -186,7 +283,40 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("skip_interval", generic()),
         ("deck_press", generic()),
         ("audio_enhancements", generic()),
+        // A5. A switch's garbage excludes the booleans, which are VALID values for it.
+        ("auto_sign_in", not_a_bool()),
+        ("trailer_autoplay", not_a_bool()),
+        ("last_hero_blur", vec![Value::Null, json!("zzz"), json!(17), json!([1, "x"]), json!([[1, 2, 3]]), json!({"unexpected": 1})]),
+        // A list's garbage is anything that is not an array; a mixed array is driven separately.
+        ("plaintext_consent", not_a_list()),
+        ("server_key_pins", not_a_list()),
+        ("last_library", not_a_list()),
+        ("library_sorts", not_a_list()),
+        ("track_memory", not_a_list()),
+        ("subtitle_offsets", not_a_list()),
     ]
+}
+
+fn not_a_bool() -> Vec<Value> {
+    vec![Value::Null, json!("zzz-not-a-spelling"), json!("true"), json!(17), json!([1, "x"]), json!({"unexpected": 1})]
+}
+
+fn not_a_list() -> Vec<Value> {
+    vec![Value::Null, json!("zzz-not-a-list"), json!(17), json!(true), json!({"unexpected": 1})]
+}
+
+/// One valid element per list key: the mixed array around it must keep exactly these.
+fn good_element(key: &str) -> Value {
+    match key {
+        "plaintext_consent" => json!({"machine_id":"m","account":"a","choice":"allowed"}),
+        "server_key_pins" => json!({"machine_id":"m","pin":"sha256//x"}),
+        "last_library" => json!({"user":"u1","libs":[{"kind":"movie","machine_id":"m","key":1}]}),
+        "library_sorts" => json!({"user":"u1","libs":[{"machine_id":"m","key":1,"sort":"plays"}]}),
+        "subtitle_offsets" => json!({"user":"u1","items":[{"machine_id":"m","rating_key":"42","offset_ms":1500}]}),
+        "track_memory" => json!({"user":"u1","account":"a","items":[{"machine_id":"m","show_rk":"42",
+            "audio":{"lang":"eng","tag":"","commentary":false,"ad":false,"codec":"eac3","channels":6,"title":""}}]}),
+        other => panic!("{other}: a SoftVec row needs a valid element in `good_element`"),
+    }
 }
 
 /// **T-parse.** Each descriptor's `PARSE` is the policy its field really has: the garbage that
@@ -197,7 +327,11 @@ fn t_parse_each_row_keeps_its_declared_policy() {
     let fixtures = garbage_fixtures();
     let fixture_keys: BTreeSet<&str> = fixtures.iter().map(|(k, _)| *k).collect();
     assert_eq!(fixture_keys, keys(), "a descriptor needs a garbage fixture, and a fixture needs a descriptor");
-    let default_prefs = Preferences::default();
+    // An ABSENT key is the baseline: `trailer_autoplay` reads on there although the derived
+    // `Preferences::default()` has it off, so the baseline is a parse, never `default()`.
+    let baseline: Preferences = serde_json::from_value(json!({})).unwrap();
+    assert!(baseline.trailer_autoplay, "an absent trailer_autoplay key reads on");
+    assert_ne!(baseline, Preferences::default(), "the one absent-key read that is not the derived default");
     for d in DESCRIPTORS {
         let (_, garbage) = fixtures.iter().find(|(k, _)| *k == d.key).unwrap();
         for value in garbage {
@@ -209,40 +343,53 @@ fn t_parse_each_row_keeps_its_declared_policy() {
             let canonical: CanonicalSessionPreferences = serde_json::from_value(object)
                 .unwrap_or_else(|e| panic!("{}: {value} must not fail the canonical record: {e}", d.key));
             for (host, parsed) in [("struct", &alone), ("legacy", &legacy.prefs), ("canonical", &canonical.prefs)] {
+                // Every policy's garbage reads as an absent key, whatever that key's own fallback is:
+                // the type's default (`Soft`), `None` (`OptionalSoft`), no elements (`SoftVec`), off
+                // for a switch whose product default is off (`BoolOff`) and ON for the one whose
+                // product default is on (`BoolOn`, where on is also what an absent key reads).
+                assert_eq!(parsed, &baseline, "{} in {host}: {value}", d.key);
                 match d.parse {
-                    // garbage reads as the type's default, i.e. as an absent key
-                    Parse::Soft => assert_eq!(parsed, &default_prefs, "{} in {host}: {value}", d.key),
-                    // garbage reads as None, i.e. as an absent key
+                    Parse::Soft | Parse::SoftVec => {}
                     Parse::OptionalSoft => {
-                        assert_eq!(parsed, &default_prefs, "{} in {host}: {value}", d.key);
                         assert_eq!(parsed.playback_quality, None, "{host}: {value}");
+                        assert_eq!(parsed.last_hero_blur, None, "{host}: {value}");
                     }
-                    Parse::SoftVec | Parse::BoolOn | Parse::BoolOff => {
-                        panic!("{}: no Preferences row has this policy yet; add its fixture with the row", d.key)
-                    }
+                    Parse::BoolOn => assert!(parsed.trailer_autoplay, "{host}: garbage reads ON: {value}"),
+                    Parse::BoolOff => assert!(!parsed.auto_sign_in, "{host}: garbage reads OFF: {value}"),
                 }
+            }
+        }
+        if d.parse == Parse::SoftVec {
+            // SoftVec keeps the good elements of a mixed array and drops the bad ones around them.
+            let good = good_element(d.key);
+            let mixed = json!([7, good, "x", Value::Null, {"user": 5}, good]);
+            let object = json!({ d.key: mixed });
+            let alone: Preferences = serde_json::from_value(object.clone()).unwrap();
+            let legacy: Session = serde_json::from_value(object.clone()).unwrap();
+            let canonical: CanonicalSessionPreferences = serde_json::from_value(object).unwrap();
+            let want = serde_json::to_value(serde_json::from_value::<Preferences>(json!({ d.key: [good, good] })).unwrap()).unwrap();
+            for (host, parsed) in [("struct", &alone), ("legacy", &legacy.prefs), ("canonical", &canonical.prefs)] {
+                assert_eq!(serde_json::to_value(parsed).unwrap(), want, "{} in {host}: both good elements, no bad one", d.key);
+                assert_ne!(parsed, &baseline, "{} in {host}: the good elements are kept", d.key);
             }
         }
     }
 }
 
-/// The three policies no `Preferences` row uses yet are still the ones the rest of `Session` has
-/// (S1): the per-element list, the switch that defaults on, the switch that defaults off. They
-/// join `t_parse` as rows when their fields do; until then this pins that A1 did not unify them.
+/// The lists that are NOT rows (`home_pins`, `recent_searches`) keep the per-element soft parse
+/// they were written with; A5 did not touch them.
 #[test]
-fn the_other_parse_policies_survive_the_move() {
+fn the_lists_outside_the_preferences_keep_their_soft_parse() {
     let session: Session = serde_json::from_value(json!({
-        "trailer_autoplay": "garbage",
-        "auto_sign_in": "garbage",
         "home_pins": [{"user":"u1","asked":true,"on":[{"machine_id":"m1","key":2}],"off":[]}, 3, "x"],
+        "recent_searches": [{"user":"u1","terms":["a"]}, 3, "x"],
     }))
     .unwrap();
-    assert!(session.trailer_autoplay, "BoolOn: garbage reads true");
-    assert!(!session.auto_sign_in, "BoolOff: garbage reads false");
     assert_eq!(session.home_pins.len(), 1, "SoftVec keeps the good element and drops the bad ones");
+    assert_eq!(session.recent_searches.len(), 1);
 }
 
-/// A flattened struct takes its keys first: the nine are in `Preferences`, never in the unknown-key
+/// A flattened struct takes its keys first: the modelled ones are in `Preferences`, never in the unknown-key
 /// map beside them, and a key nobody models still is.
 #[test]
 fn modelled_keys_never_reach_extensions_and_future_keys_still_do() {

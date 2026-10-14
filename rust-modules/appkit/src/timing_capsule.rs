@@ -389,9 +389,11 @@ mod tests {
         use plx_platform::i18n::{LocaleContext, Preference};
         let es = LocaleContext::resolve(Preference::Es, None, Some("es-ES"), None, None);
         let be = LocaleContext::resolve(Preference::Be, None, Some("be-BY"), None, None);
+        let fr = LocaleContext::resolve(Preference::Fr, None, Some("fr-FR"), None, None);
         assert_eq!(text_in(300, &es), "Subtítulos 0,3 s más tarde");
         assert_eq!(text_in(-300, &be), "Субцітры на 0,3 с раней");
         assert_eq!(text_in(0, &es), "Sincronización original");
+        assert_eq!(text_in(300, &fr), "Sous-titres 0,3 s plus tard");
     }
 
     /// **The capsule's sentence fits its fixed [`CAPSULE_TEXT_W`] block in every shipped
@@ -404,7 +406,7 @@ mod tests {
         use plx_platform::i18n::{LocaleContext, Preference};
         use plx_machine::machine::Measure;
         let mut out = Vec::new();
-        for (language, region) in [(Preference::En, "en-US"), (Preference::Es, "es-ES"), (Preference::Be, "be-BY")] {
+        for (language, region) in [(Preference::En, "en-US"), (Preference::Es, "es-ES"), (Preference::Be, "be-BY"), (Preference::Fr, "fr-FR")] {
             let locale = LocaleContext::resolve(language, None, Some(region), None, None);
             for ms in [-60_000, 60_000, 0] {
                 let t = text_in(ms, &locale);

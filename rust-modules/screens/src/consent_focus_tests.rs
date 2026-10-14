@@ -656,6 +656,7 @@ fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
         ("en", LocaleContext::resolve(Preference::En, None, None, None, None)),
         ("es", LocaleContext::resolve(Preference::Es, None, None, None, None)),
         ("be", LocaleContext::resolve(Preference::Be, None, None, None, None)),
+        ("fr", LocaleContext::resolve(Preference::Fr, None, None, None, None)),
         ("pseudo", LocaleContext::pseudo_for_test()),
     ] {
         let mut table = TableView::new();

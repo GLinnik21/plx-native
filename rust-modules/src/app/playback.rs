@@ -516,7 +516,9 @@ pub(crate) fn commit_track(
 ) {
     use plx_appkit::track_menu::TrackCommit;
     match commit {
-        TrackCommit::Audio(audio) => plx_media::route::commit_audio_selection(ps, audio),
+        TrackCommit::Audio(audio) => {
+            plx_media::route::commit_audio_selection(ps, audio);
+        }
         TrackCommit::AudioEnhancement(a) => plx_media::player::request_audio_enhancement(ps, a),
         TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec } => {
             // What the client can draw itself — an embedded ordinal or an external sidecar — is
