@@ -4,39 +4,46 @@
 //! of the files in the wild are not (a GBK or Big5 `.srt` muxed with `-c:s copy` keeps its bytes),
 //! which `String::from_utf8_lossy` turned into a row of U+FFFD (issue #628). [`subtitle_text`] is
 //! the one place that decides: a BOM wins, valid UTF-8 passes through untouched and uncopied, and
-//! anything else is read in the legacy encoding the TRACK's language implies ([`TrackCharset`]).
+//! anything else is read in the encoding `chardetng` (Mozilla's detector, pure Rust, on
+//! `encoding_rs`) guesses from the bytes of the TRACK, hinted by its language ([`TrackCharset`]).
+//! Bytes the guessed encoding itself rejects become U+FFFD, the last resort.
 //!
-//! The legacy encoding is decided ONCE per track, from the first packet that is not valid UTF-8,
-//! and then kept: later cues of a track are often pure ASCII ("OK", a music note) and would
-//! otherwise look like a different encoding than the cues around them. Pure Rust (`encoding_rs`),
-//! no FFI, so it links nothing the firmware has to provide.
+//! The encoding is decided per track, not per cue: the detector is fed the track's first
+//! non-UTF-8 packets and the guess is LOCKED once it has seen [`LOCK_NON_ASCII`] non-ASCII bytes
+//! (a single long cue is enough). A one-word cue is too little to guess from, so cues before the
+//! lock may be read under a provisional guess; after it nothing changes, and a later all-ASCII
+//! cue ("OK", a music note) never reaches the detector at all (it is valid UTF-8). A whole file
+//! (the sidecar fallback) is one packet and locks at once ([`subtitle_text_whole`]).
 
-use encoding_rs::{Encoding, BIG5, EUC_KR, GB18030, SHIFT_JIS, WINDOWS_1251, WINDOWS_1252};
+use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
+use encoding_rs::Encoding;
 use std::borrow::Cow;
-use std::sync::OnceLock;
+use std::sync::Mutex;
+
+/// Non-ASCII bytes the detector must have seen before a track's encoding is locked. About eighty
+/// CJK characters or a few short Cyrillic/Greek/Thai sentences.
+const LOCK_NON_ASCII: usize = 160;
 
 /// What is known about a track's text encoding, and what has been decided about it.
 pub struct TrackCharset {
-    /// The legacy encoding the language implies; Chinese is settled by the first packet's bytes.
-    hint: Hint,
-    /// The legacy encoding fixed by the first non-UTF-8 packet.
-    decided: OnceLock<&'static Encoding>,
+    /// chardetng's top-level-domain-style hint for the track's language (`"tw"`, `"jp"`), if any.
+    tld: Option<&'static str>,
+    state: Mutex<State>,
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Hint {
-    /// Chinese with no script/region that picks a side: GB18030 unless Big5 reads the bytes cleaner.
-    ChineseUnmarked,
-    /// Chinese tagged Traditional (`Hant`, `TW`, `HK`, `MO`).
-    ChineseTraditional,
-    Fixed(&'static Encoding),
+#[derive(Default)]
+struct State {
+    /// Created by the first non-UTF-8 packet, so a UTF-8 track never allocates one.
+    detector: Option<Box<EncodingDetector>>,
+    non_ascii: usize,
+    locked: Option<&'static Encoding>,
 }
 
 impl TrackCharset {
     /// A track tagged `language`: an ISO 639-2 code (`chi`, `jpn`), a 639-1 code or a BCP-47 tag
     /// (`zh-TW`, `zh-Hant`), or `None` when nothing is known.
     pub fn new(language: Option<&str>) -> Self {
-        Self { hint: hint_of(language.unwrap_or("")), decided: OnceLock::new() }
+        Self { tld: tld_hint(language.unwrap_or("")), state: Mutex::new(State::default()) }
     }
 
     /// A track whose language is unknown.
@@ -44,108 +51,157 @@ impl TrackCharset {
         Self::new(None)
     }
 
-    fn encoding_for(&self, bytes: &[u8]) -> &'static Encoding {
-        *self.decided.get_or_init(|| match self.hint {
-            // Both Chinese decoders accept most of each other's byte space; the one that leaves
-            // fewer implausible characters on this packet is the right one, and a tie is GB18030
-            // (the larger audience).
-            Hint::ChineseUnmarked => {
-                if implausible(BIG5, bytes) < implausible(GB18030, bytes) {
-                    BIG5
-                } else {
-                    GB18030
-                }
-            }
-            Hint::ChineseTraditional => BIG5,
-            Hint::Fixed(enc) => enc,
-        })
+    /// The track's encoding after seeing `bytes`; `complete` means they are the whole text.
+    fn encoding_for(&self, bytes: &[u8], complete: bool) -> &'static Encoding {
+        let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(enc) = st.locked {
+            return enc;
+        }
+        st.non_ascii += bytes.iter().filter(|b| !b.is_ascii()).count();
+        let detector = st
+            .detector
+            .get_or_insert_with(|| Box::new(EncodingDetector::new(Iso2022JpDetection::Deny)));
+        detector.feed(bytes, complete);
+        let enc = detector.guess(self.tld.map(str::as_bytes), Utf8Detection::Deny);
+        if complete || st.non_ascii >= LOCK_NON_ASCII {
+            st.locked = Some(enc);
+            st.detector = None;
+        }
+        enc
     }
 }
 
-/// How badly `enc` reads `bytes`: replacement characters, plus private-use characters (GB18030
-/// maps Big5's byte pairs it has no hanzi for into the private-use area rather than rejecting them,
-/// so Big5 text read as GB18030 shows up there and not as U+FFFD).
-fn implausible(enc: &'static Encoding, bytes: &[u8]) -> usize {
-    enc.decode_without_bom_handling(bytes)
-        .0
-        .chars()
-        .filter(|&c| c == '\u{fffd}' || ('\u{e000}'..='\u{f8ff}').contains(&c))
-        .count()
-}
-
-fn hint_of(language: &str) -> Hint {
+/// The TLD-style hint chardetng takes for a track language: the country whose legacy encoding
+/// that language's files most often carry. `None` leaves the guess to the bytes alone.
+fn tld_hint(language: &str) -> Option<&'static str> {
     let lower = language.trim().to_ascii_lowercase();
     let mut parts = lower.split(['-', '_']);
     let primary = parts.next().unwrap_or("");
-    let traditional = parts.any(|p| matches!(p, "hant" | "tw" | "hk" | "mo"));
-    match primary {
+    let region = |r: &str| parts.clone().any(|p| p == r);
+    Some(match primary {
         "chi" | "zho" | "zh" | "cmn" | "yue" | "chs" | "cht" => {
-            if traditional || primary == "cht" {
-                Hint::ChineseTraditional
+            if region("hk") {
+                "hk"
+            } else if primary == "cht" || region("hant") || region("tw") || region("mo") {
+                "tw"
             } else {
-                Hint::ChineseUnmarked
+                "cn"
             }
         }
-        "jpn" | "ja" => Hint::Fixed(SHIFT_JIS),
-        "kor" | "ko" => Hint::Fixed(EUC_KR),
-        "rus" | "ru" | "ukr" | "uk" | "bel" | "be" | "bul" | "bg" | "srp" | "sr" | "mkd" | "mac" | "mk" => {
-            Hint::Fixed(WINDOWS_1251)
-        }
-        _ => Hint::Fixed(WINDOWS_1252),
-    }
+        "jpn" | "ja" => "jp",
+        "kor" | "ko" => "kr",
+        "rus" | "ru" => "ru",
+        "ukr" | "uk" => "ua",
+        "bel" | "be" => "by",
+        "bul" | "bg" => "bg",
+        "srp" | "sr" => "rs",
+        "mkd" | "mac" | "mk" => "mk",
+        "gre" | "ell" | "el" => "gr",
+        "tha" | "th" => "th",
+        "heb" | "he" | "iw" => "il",
+        "ara" | "ar" => "sa",
+        "tur" | "tr" => "tr",
+        "pol" | "pl" => "pl",
+        "cze" | "ces" | "cs" => "cz",
+        "slo" | "slk" | "sk" => "sk",
+        "hun" | "hu" => "hu",
+        "rum" | "ron" | "ro" => "ro",
+        "vie" | "vi" => "vn",
+        _ => return None,
+    })
 }
 
-/// `bytes` as text: BOM, else valid UTF-8 (borrowed, zero-copy), else `charset`'s legacy encoding
-/// (lossy only for bytes that encoding itself rejects).
+/// One packet of a track as text: BOM, else valid UTF-8 (borrowed, zero-copy), else the track's
+/// detected encoding (lossy only for bytes that encoding itself rejects).
 pub fn subtitle_text<'a>(bytes: &'a [u8], charset: &TrackCharset) -> Cow<'a, str> {
+    decode(bytes, charset, false)
+}
+
+/// [`subtitle_text`] for bytes that are the track's whole text (a sidecar file): the detector sees
+/// all of it and the guess locks at once.
+pub fn subtitle_text_whole<'a>(bytes: &'a [u8], charset: &TrackCharset) -> Cow<'a, str> {
+    decode(bytes, charset, true)
+}
+
+fn decode<'a>(bytes: &'a [u8], charset: &TrackCharset, complete: bool) -> Cow<'a, str> {
     if let Some((enc, bom_len)) = Encoding::for_bom(bytes) {
         return enc.decode_without_bom_handling(&bytes[bom_len..]).0;
     }
     if let Ok(s) = std::str::from_utf8(bytes) {
         return Cow::Borrowed(s);
     }
-    charset.encoding_for(bytes).decode_without_bom_handling(bytes).0
+    charset.encoding_for(bytes, complete).decode_without_bom_handling(bytes).0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use encoding_rs::{BIG5, EUC_KR, GB18030, GBK, ISO_8859_7, SHIFT_JIS, WINDOWS_1251, WINDOWS_1252, WINDOWS_874};
+
+    const ZH_HANS: &str = "你好，世界！这是一个中文字幕的测试。\n我们今天晚上去哪里吃饭？\n不要担心，一切都会好起来的。";
+    const ZH_HANT: &str = "你好，這是繁體中文字幕的測試。\n我們今天晚上要去哪裡吃飯？\n不要擔心，一切都會好起來的。";
+    const JA: &str = "こんにちは、これは日本語の字幕のテストです。\n今夜はどこで夕食を食べましょうか?\n心配しないで、すべてうまくいきますよ。";
+    const KO: &str = "안녕하세요, 이것은 한국어 자막 테스트입니다.\n오늘 저녁에 어디서 식사할까요?\n걱정하지 마세요, 모든 것이 잘될 거예요.";
+    const RU: &str = "Привет, это тест русских субтитров.\nГде мы будем ужинать сегодня вечером?\nНе волнуйся, всё будет хорошо.";
+    const FR: &str = "Où est-ce qu'on dîne ce soir ? J'ai très faim.\nÇa fait déjà trois heures qu'on attend, c'est inadmissible.\nNe t'inquiète pas, tout ira bien. Señor, ¿dónde está la sortie ?";
+    const EL: &str = "Γεια σου, αυτή είναι μια δοκιμή ελληνικών υπότιτλων.\nΠού θα φάμε απόψε το βράδυ;\nΜην ανησυχείς, όλα θα πάνε καλά.";
+    const TH: &str = "สวัสดีครับ นี่คือการทดสอบคำบรรยายภาษาไทย\nคืนนี้เราจะไปกินข้าวที่ไหนกันดี\nไม่ต้องกังวลนะ ทุกอย่างจะเรียบร้อยดี";
 
     fn enc(e: &'static Encoding, s: &str) -> Vec<u8> {
-        e.encode(s).0.into_owned()
+        let (bytes, _, lost) = e.encode(s);
+        assert!(!lost, "sample is representable in {}", e.name());
+        bytes.into_owned()
     }
 
     #[test]
-    fn gbk_with_a_chinese_hint() {
+    fn detection_without_any_language_hint() {
+        let cases: [(&'static Encoding, &str); 8] = [
+            (GB18030, ZH_HANS),
+            (BIG5, ZH_HANT),
+            (SHIFT_JIS, JA),
+            (EUC_KR, KO),
+            (WINDOWS_1251, RU),
+            (WINDOWS_1252, FR),
+            (ISO_8859_7, EL),
+            (WINDOWS_874, TH),
+        ];
+        for (e, text) in cases {
+            let b = enc(e, text);
+            assert!(std::str::from_utf8(&b).is_err(), "{} sample is not UTF-8", e.name());
+            assert_eq!(subtitle_text_whole(&b, &TrackCharset::unknown()), text, "{}", e.name());
+        }
+    }
+
+    #[test]
+    fn the_language_hint_settles_what_the_bytes_leave_open() {
+        // A single short cue is ambiguous between several CJK encodings; the hint decides.
         let b = enc(GB18030, "你好，世界！");
-        assert!(std::str::from_utf8(&b).is_err());
         assert_eq!(subtitle_text(&b, &TrackCharset::new(Some("chi"))), "你好，世界！");
-        assert_eq!(subtitle_text(&b, &TrackCharset::new(Some("zho"))), "你好，世界！");
         assert_eq!(subtitle_text(&b, &TrackCharset::new(Some("zh"))), "你好，世界！");
+        let b = enc(BIG5, "你好，這是繁體中文。");
+        assert_eq!(subtitle_text(&b, &TrackCharset::new(Some("zh-TW"))), "你好，這是繁體中文。");
+        assert_eq!(subtitle_text(&b, &TrackCharset::new(Some("zh-Hant"))), "你好，這是繁體中文。");
     }
 
     #[test]
-    fn big5_with_a_traditional_hint_or_by_its_bytes() {
-        let s = "你好，這是繁體中文字幕。";
-        let b = enc(BIG5, s);
-        assert_eq!(subtitle_text(&b, &TrackCharset::new(Some("zh-TW"))), s);
-        assert_eq!(subtitle_text(&b, &TrackCharset::new(Some("zh-Hant"))), s);
-        assert_eq!(subtitle_text(&b, &TrackCharset::new(Some("zh_HK"))), s);
-        // Untagged Chinese: GB18030 chokes on these bytes, Big5 does not.
-        assert_eq!(subtitle_text(&b, &TrackCharset::new(Some("chi"))), s);
-    }
-
-    #[test]
-    fn shift_jis_euc_kr_and_windows_1251() {
-        let jp = "こんにちは、世界";
-        assert_eq!(subtitle_text(&enc(SHIFT_JIS, jp), &TrackCharset::new(Some("jpn"))), jp);
-        let kr = "안녕하세요 세계";
-        assert_eq!(subtitle_text(&enc(EUC_KR, kr), &TrackCharset::new(Some("kor"))), kr);
-        let ru = "Привет, мир!";
-        assert_eq!(subtitle_text(&enc(WINDOWS_1251, ru), &TrackCharset::new(Some("rus"))), ru);
-        let fr = "Où est l'été ?";
-        assert_eq!(subtitle_text(&enc(WINDOWS_1252, fr), &TrackCharset::new(Some("fre"))), fr);
-        assert_eq!(subtitle_text(&enc(WINDOWS_1252, fr), &TrackCharset::unknown()), fr);
+    fn language_tags_map_to_tld_hints() {
+        for (tag, tld) in [
+            ("chi", Some("cn")),
+            ("zh", Some("cn")),
+            ("zh-TW", Some("tw")),
+            ("zh-Hant", Some("tw")),
+            ("zh_HK", Some("hk")),
+            ("jpn", Some("jp")),
+            ("kor", Some("kr")),
+            ("rus", Some("ru")),
+            ("gre", Some("gr")),
+            ("tha", Some("th")),
+            ("und", None),
+            ("eng", None),
+            ("", None),
+        ] {
+            assert_eq!(tld_hint(tag), tld, "{tag:?}");
+        }
     }
 
     #[test]
@@ -172,15 +228,24 @@ mod tests {
     }
 
     #[test]
-    fn the_first_legacy_packet_fixes_the_track() {
-        let cs = TrackCharset::new(Some("chi"));
-        let gbk = enc(GB18030, "你好，世界！");
-        assert_eq!(subtitle_text(&gbk, &cs), "你好，世界！");
-        // An ASCII cue in between is valid UTF-8 and never reaches the decision.
+    fn enough_non_ascii_locks_the_track() {
+        let cs = TrackCharset::unknown();
+        // One long cue (>= LOCK_NON_ASCII non-ASCII bytes) decides; later packets follow it.
+        let long = ZH_HANS.repeat(3);
+        assert_eq!(subtitle_text(&enc(GB18030, &long), &cs), long);
+        assert_eq!(cs.state.lock().unwrap().locked, Some(GBK));
+        // An ASCII cue in between is valid UTF-8 and never reaches the detector.
         assert_eq!(subtitle_text(b"OK", &cs), "OK");
-        // A later packet whose bytes would read better as Big5 is still read as the decided GBK.
-        let big5 = enc(BIG5, "這是繁體中文字幕。");
-        assert_eq!(subtitle_text(&big5, &cs), GB18030.decode_without_bom_handling(&big5).0);
+        // A later packet that would read better as Big5 is still read as the locked GBK.
+        let big5 = enc(BIG5, ZH_HANT);
+        assert_eq!(subtitle_text(&big5, &cs), GBK.decode_without_bom_handling(&big5).0);
+    }
+
+    #[test]
+    fn a_short_first_cue_does_not_lock_yet() {
+        let cs = TrackCharset::new(Some("rus"));
+        subtitle_text(&enc(WINDOWS_1251, "Привет!"), &cs);
+        assert_eq!(cs.state.lock().unwrap().locked, None);
     }
 
     #[test]
