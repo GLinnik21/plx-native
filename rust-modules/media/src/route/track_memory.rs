@@ -22,7 +22,9 @@
 //! * **Forced only** ([`match_forced_only`]) is a matcher of its own: the forced, non-commentary
 //!   track in the language of the audio that is PLAYING (the memo's language only when the audio
 //!   has none), or nothing. A commentary is never the answer to Forced only, however it is
-//!   flagged.
+//!   flagged. Nothing is an ANSWER, not a decline, so it never falls to the rungs below; but the
+//!   ladder's rungs ABOVE the memory (a retry's own pick, a server-selected sidecar the app can
+//!   draw) outrank it exactly as they outrank a remembered track or Off.
 //! * **When the container's names arrive** ([`with_container_names`]) the same matchers run a
 //!   second time over streams whose `title` is the MERGED name (`track_label::track_name`), so a
 //!   forced track only the demuxer's tag reveals (an MP4 part has no PMS `title`) is found by the

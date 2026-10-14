@@ -3251,8 +3251,9 @@ fn memory_subtitle(
 }
 
 /// **The subtitle ladder**, read top-down; a rung applies when its record exists and matches, and
-/// otherwise falls through to the next. Never to Off, except a remembered Off (absolute) and Forced
-/// only (the forced track or nothing).
+/// otherwise falls through to the next. Never to Off, except a remembered Off and Forced only (the
+/// forced track or nothing): those two never fall through themselves, but they are memory like a
+/// remembered track, so rungs 1 and 2 outrank all three alike.
 ///   1. this playback's own pick (`override_id`, a known retry);
 ///   2. a subtitle the SERVER has selected and the app draws itself
 ///      (`metadata::server_selected_sidecar`): memory is not consulted, and the result is today's;

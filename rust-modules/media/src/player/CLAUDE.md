@@ -302,7 +302,14 @@ something.
   A subtitle change before the send that is not the viewer's pick (the first-frame container-name
   re-match, FO) re-points the parked write with `route::repoint_parked_subtitle` and queues no PUT
   of its own: a PUT of its own would move the selection under the parked write, which would then be
-  dropped, and would reach PMS without W5 and W7.
+  dropped, and would reach PMS without W5 and W7. That re-match is
+  `route::rematch_subtitle_with_names`, and the order in `pump`'s `frames > 0` branch is load-bearing:
+  re-match FIRST (the demuxer's track names exist only once the file is open), `send_parked_write_back`
+  second, so one PUT names the remembered audio and the re-matched subtitle together. It calls
+  `repoint_parked_subtitle` BEFORE it commits, because the commit changes `cur_sub_sid` under the
+  parked pair; with nothing parked it commits with its own PUT as before. It holds itself to the
+  subtitle the landing put on screen (`owed.landed_sub`, settled from the session by
+  `settle_landing_selection`), so it never replaces a remembered sidecar the restore drew.
 - **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine and the
   transport-pause contract are `player/lifecycle.rs`, which `app::lifecycle` re-exports; details in
   the `docs/agent-reference.md` gotchas): OS
