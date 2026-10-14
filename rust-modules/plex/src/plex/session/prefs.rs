@@ -769,7 +769,7 @@ fn adopt_unstamped<E: MemoryEntry>(list: &mut Vec<ProfileList<E>>, account: &str
             at += 1;
             continue;
         };
-        let legacy = list.remove(at);
+        let Some(legacy) = list.drain(at..=at).next() else { break };
         let own = if own > at { own - 1 } else { own };
         let target = &mut list[own];
         let mut items: Vec<E> = legacy.items.into_iter().filter(|e| target.find(&e.key()).is_none()).collect();
