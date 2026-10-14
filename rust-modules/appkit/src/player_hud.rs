@@ -3137,13 +3137,25 @@ mod tests {
         assert_eq!((plan.layout.face, plan.pages()), (54, 1), "full Extra large size, one page");
     }
 
+    /// **Huge, the rung above Extra large, keeps the same two lines too**, at its full 65 px (the
+    /// official client's largest caption reads about that size on the TV), on one page.
+    #[test]
+    fn a_two_line_cue_at_huge_stays_two_lines_at_full_size() {
+        let huge = size_scale(plx_plex::plex::session::SubtitleSize::Huge);
+        let cue = "I don't know why you came here tonight,\nbut you had better leave right now.";
+        let lines = caption_wrap(cue, huge, &FM);
+        assert_eq!(lines, ["I don't know why you came here tonight,", "but you had better leave right now."]);
+        let plan = CaptionPlan::new(lines, huge, SUB_BASE_Y, CAPTION_FLOOR_Y);
+        assert_eq!((plan.layout.face, plan.pages()), (65, 1), "full Huge size, one page");
+    }
+
     /// **No wrapped line is wider than the wrap width, and no size's width passes three quarters
     /// of the screen**; only a single word wider than the width keeps a line of its own.
     #[test]
     fn caption_lines_stay_inside_the_wrap_width() {
         use plx_plex::plex::session::SubtitleSize;
         let widths: Vec<f32> = SubtitleSize::LADDER.iter().map(|&s| wrap_width(size_scale(s))).collect();
-        assert_eq!(widths, [760.0 * 0.78, 760.0, 950.0, 1140.0]);
+        assert_eq!(widths, [760.0 * 0.78, 760.0, 950.0, 1140.0, 1368.0]);
         assert!(widths.iter().all(|&w| w <= 1440.0), "{widths:?}");
         assert_eq!(wrap_width(10.0), 1440.0, "any size is capped at 75% of 1920");
         let measure = |s: &str| s.chars().count() as f32 * 10.0;
@@ -3177,7 +3189,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(n, 24);
+        assert_eq!(n, 30);
     }
 
     /// **A 1-3 line caption lays out exactly as it did before the fit rule**: 36 px at the
@@ -3246,7 +3258,7 @@ mod tests {
     fn every_line_of_a_tall_cue_is_shown_on_screen_in_order() {
         const S: i64 = 1_000_000_000;
         for hud_up in [false, true] {
-            for scale in [0.8f32, 1.0, 1.25, 1.5] {
+            for scale in [0.8f32, 1.0, 1.25, 1.5, 1.8] {
                 let (baseline, floor) = if hud_up { (SUB_CEIL_Y, SUB_CEIL_Y) } else { (SUB_BASE_Y, CAPTION_FLOOR_Y) };
                 for n in [3usize, 8, 20, 60] {
                     let pager = CaptionPager::default();

@@ -96,6 +96,7 @@ pub fn size_scale(size: SubtitleSize) -> f32 {
         SubtitleSize::Medium => 1.0,
         SubtitleSize::Large => 1.25,
         SubtitleSize::ExtraLarge => 1.5,
+        SubtitleSize::Huge => 1.8,
     }
 }
 

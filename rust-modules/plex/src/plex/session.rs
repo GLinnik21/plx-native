@@ -1053,15 +1053,22 @@ pub enum SubtitleSize {
     Large,
     #[serde(rename = "extra_large")]
     ExtraLarge,
+    /// Added on top of the ladder rather than by moving the other rungs up, so no saved pick
+    /// changes size. A build from before it reads `"huge"` as a value it cannot parse: the
+    /// per-profile field falls back to the install's older value and the install key to `Medium`
+    /// (both are parsed softly), never a failed load.
+    #[serde(rename = "huge")]
+    Huge,
 }
 
 impl SubtitleSize {
     /// Every rung, smallest first — the order the picker lists them in.
-    pub const LADDER: [SubtitleSize; 4] = [
+    pub const LADDER: [SubtitleSize; 5] = [
         SubtitleSize::Small,
         SubtitleSize::Medium,
         SubtitleSize::Large,
         SubtitleSize::ExtraLarge,
+        SubtitleSize::Huge,
     ];
 
     /// An in-memory index back to a rung — out of range is `Medium`, never a neighbouring rung,

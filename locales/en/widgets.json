@@ -692,7 +692,7 @@
   },
   "widgets.tracks.style_size": {
     "value": "Size",
-    "description": "Style page of the player's subtitle menu. Row label and page title for the caption size; its value reads out the chosen size (Small, Medium, Large, Extra Large)."
+    "description": "Style page of the player's subtitle menu. Row label and page title for the caption size; its value reads out the chosen size (Small, Medium, Large, Extra Large, Huge)."
   },
   "widgets.tracks.style_position": {
     "value": "Position",

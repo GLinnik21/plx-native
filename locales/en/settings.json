@@ -657,6 +657,10 @@
   },
   "settings.playback.subtitle_size.extra_large": {
     "value": "Extra Large",
+    "description": "Subtitle size picker option: a larger client-rendered caption size, one step below Huge."
+  },
+  "settings.playback.subtitle_size.huge": {
+    "value": "Huge",
     "description": "Subtitle size picker option: the largest client-rendered caption size."
   },
   "settings.playback.subtitle_position": {

@@ -161,6 +161,7 @@
   "settings.playback.subtitle_size.medium": "Mediano",
   "settings.playback.subtitle_size.large": "Grande",
   "settings.playback.subtitle_size.extra_large": "Muy grande",
+  "settings.playback.subtitle_size.huge": "Enorme",
   "settings.playback.subtitle_position": "Posición de los subtítulos",
   "settings.playback.subtitle_position.low": "Baja",
   "settings.playback.subtitle_position.middle": "Media",

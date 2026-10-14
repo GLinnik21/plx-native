@@ -117,6 +117,25 @@ fn garbage_own_value_reads_the_legacy_value() {
     assert_eq!(effective::<SubtitlePositionPref>(&legacy, own), SubtitlePosition::High, "a good neighbour survives");
 }
 
+/// **A size spelling this build does not know is read like a build before `Huge` reads `"huge"`**:
+/// the profile's own value falls back to the install's older one and the install key to `Medium`;
+/// neither fails the load. `"huge"` itself is this build's largest rung, in both places.
+#[test]
+fn an_unknown_size_falls_back_and_huge_round_trips() {
+    let mut legacy = Preferences::default();
+    SubtitleSizePref::put(&mut legacy, SubtitleSize::Large);
+    let p = prefs_with(json!([record("kid", STAMP, json!({ "subtitle_size": "gigantic" }))]));
+    assert_eq!(effective::<SubtitleSizePref>(&legacy, own_prefs(&p.profile_prefs, "kid", STAMP)), SubtitleSize::Large);
+    let install: Preferences = serde_json::from_value(json!({ "subtitle_size": "gigantic" })).unwrap();
+    assert_eq!(SubtitleSizePref::get(&install), SubtitleSize::Medium);
+
+    let p = prefs_with(json!([record("kid", STAMP, json!({ "subtitle_size": "huge" }))]));
+    assert_eq!(effective::<SubtitleSizePref>(&legacy, own_prefs(&p.profile_prefs, "kid", STAMP)), SubtitleSize::Huge);
+    assert_eq!(serde_json::to_value(&p).unwrap()["profile_prefs"][0]["prefs"], json!({ "subtitle_size": "huge" }));
+    let install: Preferences = serde_json::from_value(json!({ "subtitle_size": "huge" })).unwrap();
+    assert_eq!(SubtitleSizePref::get(&install), SubtitleSize::Huge);
+}
+
 /// A record or a stamp that is the wrong shape costs only itself.
 #[test]
 fn a_malformed_record_costs_only_itself() {

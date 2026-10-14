@@ -775,6 +775,7 @@ fn live_cell_indices_are_pinned() {
         (SubtitleSize::Medium, 1),
         (SubtitleSize::Large, 2),
         (SubtitleSize::ExtraLarge, 3),
+        (SubtitleSize::Huge, 4),
     ] {
         restore_subtitle_size(size);
         assert_eq!(SUBTITLE_SIZE.raw(), index, "{size:?}");
