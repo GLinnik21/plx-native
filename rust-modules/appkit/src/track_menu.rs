@@ -43,7 +43,7 @@
 //! why the server is drawing it — rather than being found simply gone. An external sidecar over a
 //! remux is drawn by the app (`ClientOverRemux`), so there both rows are live with no reason.
 //!
-//! **Forced only is a MODE row, not a track** (`track-memory-plan.md` §4.9). It sits right after Off
+//! **Forced only is a MODE row, not a track** (FO, `docs/playback-settings.md`). It sits right after Off
 //! wherever Off is, whether or not the item carries a forced track, and holds exactly one checkmark
 //! with the tracks and Off: while the mode holds, the forced track it draws is NOT also checked on
 //! its own row, and Off is not checked. Its value is the language of what it draws (else the playing
@@ -584,7 +584,7 @@ pub enum TrackCommit {
         sidecar_codec: String,
         memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>,
     },
-    /// **Forced only** (`track-memory-plan.md` §4.9): the panel matched the forced track in the
+    /// **Forced only** (FO): the panel matched the forced track in the
     /// playing audio's language (`render_ordinal`/`stream_id`, `-1`/`0` when the item has none),
     /// and the loop commits it, holds the mode and remembers `SubtitleMemo::ForcedOnly { lang }`
     /// (the drawn track's language, else the audio's, else the language the session fell back to).
@@ -937,7 +937,7 @@ impl TrackMenuState {
         if self.forced_lang != live_lang {
             self.forced_lang = live_lang.to_string();
         }
-        let sig = self.sub_sig_for(ps, meta, live_sub, live_forced);
+        let sig = self.sub_sig_for(ps, meta, live_sub, Self::forced_readout(ps, meta, live_sub, live_forced));
         if self.sub_sig.as_ref() == Some(&sig) {
             return;
         }
@@ -1001,7 +1001,7 @@ impl TrackMenuState {
         ps: &plx_media::route::PlaybackSession,
         meta: metadata::MetadataView<'_>,
         active: c_int,
-        forced: bool,
+        forced_only: Option<String>,
     ) -> SubSig {
         let item = tracks(meta);
         let offered = visible_subs(ps, meta);
@@ -1021,7 +1021,7 @@ impl TrackMenuState {
             enhancement,
             effect,
             memory_note: plx_media::route::cur_memory_note(ps),
-            forced_only: Self::forced_readout(ps, meta, active, forced),
+            forced_only,
         }
     }
 
@@ -1301,7 +1301,7 @@ impl TrackMenuState {
         let audio_lang = audio.map_or("", |a| a.lang_code.as_str());
         let picked = if changed {
             item.and_then(|t| {
-                let names = plx_media::player::SHARED.track_names.lock().unwrap_or_else(|e| e.into_inner());
+                let names = plx_media::player::SHARED.track_names_lenient();
                 plx_media::route::forced_only_pick(&t.subs, &names, audio_lang, &self.forced_lang)
             })
         } else {
@@ -1919,10 +1919,14 @@ impl TrackMenuState {
         // stay drawn (dim, with a reason) instead of being omitted the way an ordinary
         // non-enhancement transcode omits both — a viewer who turned the enhancement on must still
         // see why the control they had is gone, not just find it missing.
-        let sig = self.sub_sig_for(ps, meta, self.active_sub, self.forced_only);
+        // The Forced only read-out is made once: the signature keeps it and the form shows it.
+        let forced_readout = Self::forced_readout(ps, meta, self.active_sub, self.forced_only);
+        let sig = self.sub_sig_for(ps, meta, self.active_sub, forced_readout);
         self.renderer = sig.renderer;
         self.sub_sig = Some(sig);
-        let (form, model) = self.sub_root_form(ps, meta);
+        let (form, model) = self.sub_root_form(
+            ps, meta, self.sub_sig.as_ref().and_then(|sig| sig.forced_only.as_deref()),
+        );
         self.root_tracks = model
             .sections
             .iter()
@@ -1938,7 +1942,9 @@ impl TrackMenuState {
 
     /// The Subtitles root's form and the model it was built from, storing nothing: [`Self::layout`]
     /// keeps what it needs from the model, [`Self::warm_other_tab`] only draws the form.
-    fn sub_root_form(&self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (TrackForm, SubModel) {
+    fn sub_root_form(
+        &self, ps: &plx_media::route::PlaybackSession, meta: metadata::MetadataView<'_>, forced: Option<&str>,
+    ) -> (TrackForm, SubModel) {
         let presenter = plx_media::route::subtitle_presenter(ps);
         let burn = match presenter {
             plx_media::route::SubtitlePresenter::ServerBurn(why) => Some(why),
@@ -1950,14 +1956,13 @@ impl TrackMenuState {
         let show_timing = !plx_media::route::is_transcoding(ps)
             || presenter != plx_media::route::SubtitlePresenter::None;
         let model = self.sub_model(ps, meta, show_timing);
-        let forced = Self::forced_readout(ps, meta, self.active_sub, self.forced_only);
         let mut form = table_form(
             &model,
             self.active_sub,
             self.offset_ms,
             burn,
             plx_media::route::cur_memory_note(ps),
-            forced.as_deref(),
+            forced,
         );
         if self.search.is_some() {
             // offered on direct play AND during a transcode: a downloaded sidecar is drawn by the
@@ -2173,7 +2178,8 @@ impl TrackMenuState {
         // its recording lacks instead of refusing on it.
         let owner = plx_ui::rec::speculative(|| {
             let form = if self.tab == 0 {
-                self.sub_root_form(ps, meta).0
+                let forced = Self::forced_readout(ps, meta, self.active_sub, self.forced_only);
+                self.sub_root_form(ps, meta, forced.as_deref()).0
             } else {
                 self.audio_form_for(meta, Self::enh_state(ps))
             };
@@ -2510,7 +2516,7 @@ fn in_lang_label(t: &SubTrack) -> String {
 /// [`FormSection::note`] closes the FIRST group (Off and the tracks), where the viewer's eye is when
 /// the checkmark sits on Off; it is declared only when the flag is set.
 ///
-/// `forced_only` (FO, `track-memory-plan.md` §4.9) is `Some(read-out)` while Forced only is the
+/// `forced_only` (FO) is `Some(read-out)` while Forced only is the
 /// mode, else `None`. The read-out is the language the row shows or looked for
 /// ([`sub_layout::forced_only_readout`]). **One checkmark**: the check sits on the Forced only row
 /// and on nothing else: not on Off and not on the forced track it drew, whose own row (and its
@@ -4754,7 +4760,7 @@ mod enhancement_menu_tests {
     }
 }
 
-/// **Forced only (FO, `track-memory-plan.md` §4.9)**: the row after Off, the one checkmark, what OK
+/// **Forced only (FO)**: the row after Off, the one checkmark, what OK
 /// on it commits and remembers, and the read-out that tells the audio's language from the
 /// account setting's.
 #[cfg(test)]

@@ -22,7 +22,7 @@ use std::sync::Mutex;
 use super::flight::*;
 use super::plan::*;
 use super::prefs::*;
-use super::track_memory::{rematch_with_names, SubMode, TrackContext};
+use super::track_memory::{forced_only_shown, memory_show, rematch_with_names, SubMode, TrackContext};
 
 // ---- ONE playback session, as ONE value -----------------------------------------------------
 
@@ -7253,16 +7253,27 @@ impl ResolveEnv {
     }
 }
 
+/// **Whose memory this is**: the active profile's key and the machine id of `sid`'s server, the two
+/// halves of every key of the memory door. `None` until the server is registered and has said its
+/// machine id (a blank one names no server, so nothing could be found or kept under it).
+fn memory_scope(sid: ServerId) -> Option<(String, String)> {
+    let machine_id = plx_plex::plex::client_for(sid)?.machine_id().to_string();
+    if machine_id.is_empty() {
+        return None;
+    }
+    Some((plx_plex::plex::session::current_profile_key(), machine_id))
+}
+
 /// **Everything the active profile remembered about its shows on `sid`'s server** (the track
 /// memory), through the memory door's mirror. MAIN THREAD, like the rest of the snapshot: the
 /// resolve worker must not read the mirror. A play raised off a shelf does not know its show until
 /// the item is fetched, so the whole list rides along and `build_stream` picks the entry by
 /// `playing.show_rk`. Empty until the server is registered and has said its machine id.
 fn recalled_track_memory(sid: ServerId) -> Vec<TrackMemoryEntry> {
-    let Some(machine_id) = plx_plex::plex::client_for(sid).map(|c| c.machine_id()).filter(|m| !m.is_empty()) else {
+    let Some((profile, machine_id)) = memory_scope(sid) else {
         return Vec::new();
     };
-    recall_all::<TrackMemoryEntry>(&plx_plex::plex::session::current_profile_key())
+    recall_all::<TrackMemoryEntry>(&profile)
         .into_iter()
         .filter(|e| e.machine_id == machine_id)
         .collect()
@@ -7800,12 +7811,8 @@ fn reset_track_selection(sid: ServerId, rk: &str, retry: Option<RetryContext>) {
 /// write has landed yet. `None` when the server is not (yet) registered, which a resolve about to
 /// fail for the same reason would find out anyway.
 fn remembered_subtitle_offset(sid: ServerId, rk: &str) -> Option<i64> {
-    let machine_id = plx_plex::plex::client_for(sid)?.machine_id().to_string();
-    if machine_id.is_empty() {
-        return None;
-    }
-    recall::<SubtitleOffsetEntry>(&plx_plex::plex::session::current_profile_key(), &(machine_id, rk.to_string()))
-        .map(|e| e.offset_ms)
+    let (profile, machine_id) = memory_scope(sid)?;
+    recall::<SubtitleOffsetEntry>(&profile, &(machine_id, rk.to_string())).map(|e| e.offset_ms)
 }
 
 /// Remember the viewer's subtitle sync-timing correction for the CURRENTLY PLAYING item, so the
@@ -7816,14 +7823,10 @@ fn remembered_subtitle_offset(sid: ServerId, rk: &str) -> Option<i64> {
 /// ([`crate::player::set_subtitle_offset`]) is already applied by the time this queues, so a slow
 /// or lost write costs only a restart's worth of memory, never this resume.
 pub fn persist_subtitle_offset(ps: &PlaybackSession, offset_ms: i64) {
-    let Some(machine_id) = plx_plex::plex::client_for(cur_sid(ps)).map(|c| c.machine_id().to_string()) else {
+    let Some((user, machine_id)) = memory_scope(cur_sid(ps)) else {
         return;
     };
-    if machine_id.is_empty() {
-        return;
-    }
     let rk = cur_rk(ps);
-    let user = plx_plex::plex::session::current_profile_key();
     let key = (machine_id.clone(), rk.clone());
     // Only the offset is the viewer's pick: whatever else the entry carries (a key a newer build
     // wrote) is the list's, so it is taken from the entry that is there when this runs.
@@ -10535,7 +10538,7 @@ enum TrackPick {
 }
 
 /// **Remember a track pick for the playing show: the track memory's one write.** Gated by the
-/// same predicate the read side applies in `plan::show_memory` (an `episode` with a known show),
+/// same predicate the read side applies ([`memory_show`]: an `episode` with a known show),
 /// so what is written is exactly what a later resolve can read; a movie, a trailer or an item the
 /// server did not place in a show writes nothing. The seat and the tenure are `remember`'s to
 /// refuse: nothing is written for a run that seated nobody (a dev token), and a refused write
@@ -10545,18 +10548,13 @@ enum TrackPick {
 /// and against the file's entry when the queued write runs): an audio pick must not erase the
 /// subtitle the viewer chose a minute ago, nor the other way round.
 fn remember_track_pick(ps: &PlaybackSession, pick: TrackPick) -> bool {
-    let show = cur_show_rk(ps);
-    if cur_kind(ps) != "episode" || show.is_empty() {
-        return false;
-    }
-    let Some(machine_id) = plx_plex::plex::client_for(cur_sid(ps)).map(|c| c.machine_id().to_string()) else {
+    let Some(show) = memory_show(cur_kind(ps), cur_show_rk(ps)) else {
         return false;
     };
-    if machine_id.is_empty() {
+    let Some((user, machine_id)) = memory_scope(cur_sid(ps)) else {
         return false;
-    }
+    };
     let show = show.to_string();
-    let user = plx_plex::plex::session::current_profile_key();
     remember::<TrackMemoryEntry>(&user, (machine_id.clone(), show.clone()), move |current| {
         let mut entry = current.cloned().unwrap_or_else(|| TrackMemoryEntry::new(&machine_id, &show, None, None));
         match &pick {
@@ -10694,14 +10692,12 @@ fn follow_audio_with_forced_only(ps: &mut PlaybackSession, audio_sid: i64) {
         return;
     }
     let Some(ctx) = ps.track_ctx.as_ref() else { return };
-    let picked = {
-        let names = crate::player::SHARED.track_names.lock().unwrap_or_else(|e| e.into_inner());
-        super::forced_only_pick(&ctx.subs, &names, ctx.audio_lang_of(audio_sid), &ctx.forced_lang)
-            .map(|i| (ctx.subs[i].id, plx_data::metadata::sub_render_ordinal(&ctx.subs, i)))
+    let shown = {
+        let names = crate::player::SHARED.track_names_lenient();
+        forced_only_shown(&ctx.subs, &names, ctx.audio_lang_of(audio_sid), &ctx.forced_lang)
     };
-    let picked = picked.filter(|&(id, ordinal)| id > 0 && ordinal >= 0).unwrap_or((0, -1));
-    if picked.0 != ps.cur_sub_sid {
-        commit_derived_subtitle(ps, picked, true, true);
+    if shown.id != ps.cur_sub_sid {
+        commit_derived_subtitle(ps, (shown.id, shown.ordinal), true, true);
     }
 }
 
@@ -10744,7 +10740,7 @@ pub fn rematch_subtitle_with_names(ps: &mut PlaybackSession) -> Option<i64> {
     }
     let ctx = ps.track_ctx.as_ref()?;
     let rematched = {
-        let names = crate::player::SHARED.track_names.lock().unwrap_or_else(|e| e.into_inner());
+        let names = crate::player::SHARED.track_names_lenient();
         rematch_with_names(&ctx.subs, &names, &owed.memo, ctx.audio_lang_of(cur_audio_sid(ps)), owed.landed_sub)
     };
     if let Some(found) = rematched {

@@ -917,6 +917,13 @@ pub struct Shared {
 }
 
 impl Shared {
+    /// The container's track names ([`Shared::track_names`]) for a READER on the main thread. A
+    /// panicked writer cannot leave the names half-built (they are replaced whole), so a poisoned
+    /// lock still holds a usable value and the reader takes it rather than panic.
+    pub fn track_names_lenient(&self) -> std::sync::MutexGuard<'_, TrackNames> {
+        self.track_names.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub const fn new() -> Self {
         Shared {
             native_session: Mutex::new(NativeSessionState::new()),

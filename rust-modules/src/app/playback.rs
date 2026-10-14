@@ -501,11 +501,6 @@ pub(crate) unsafe fn commit_info_press(
     apply_info_action(ps, pa, action, refresh_hubs_at, pages, bridge);
 }
 
-/// **Perform what a player overlay decided** (§14): the panel owns its own state and its own
-/// input, but not the playback — seeking, pausing, applying a quality rung and leaving for a
-/// detail page all need the player adapter, the route or the trail, none of which a screen may
-/// name. Drained once per frame, after the dispatcher's, exactly as the Library's requests are.
-#[allow(clippy::too_many_arguments)]
 /// **Perform the track menu's pick.**
 ///
 /// `route::commit_audio_pick`/`commit_subtitle_pick`/`commit_forced_only_pick` take the playback
@@ -549,7 +544,7 @@ pub(crate) fn commit_track(
                 None => plx_media::player::sidecar::deselect(),
             }
         }
-        // Forced only (FO, `track-memory-plan.md` §4.9): the panel matched the forced track for the
+        // Forced only (FO): the panel matched the forced track for the
         // playing audio (or nothing), the route holds the mode and remembers `ForcedOnly { lang }`
         // when it changed. The track is always an embedded one the demuxer draws, so a sidecar
         // from an earlier pick is dropped as for Off.
@@ -568,6 +563,11 @@ pub(crate) fn commit_track(
     }
 }
 
+/// **Perform what a player overlay decided** (§14): the panel owns its own state and its own
+/// input, but not the playback — seeking, pausing, applying a quality rung and leaving for a
+/// detail page all need the player adapter, the route or the trail, none of which a screen may
+/// name. Drained once per frame, after the dispatcher's, exactly as the Library's requests are.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn player_requests(
     repair: &mut plx_media::player::machine::RepairAttempt,
     ps: &mut plx_media::route::PlaybackSession,
