@@ -502,9 +502,9 @@ a dead source is **absent** from Home and states itself in its own library secti
   (`Seat::of(profile, stamp)`, `current_seat()`); the live cells follow it in `plx_media::route`.
   `auto_sign_in` is Install and never
   account-bound: `boot_shows_picker` reads it before any profile is seated. `trailer_autoplay` is
-  NOT Install any more (P1c): the Home hero reads the seated profile's value, the top-level key is its
-  frozen fallback, and `preview::enabled()` reads the cell. Its
-  derived default (here and in `Session`) is OFF while an ABSENT key reads on, so the canonical
+  NOT Install any more (P1c): the DETAIL page's hero reads the seated profile's value, the top-level key
+  is its frozen fallback, and `preview::enabled()` reads the cell (seeded ON). The `trailer_autoplay`
+  FIELD's derived default (here and in `Session`) is OFF while an ABSENT key reads on, so the canonical
   record's own `Default` sets it. `plaintext_consent` is written as `[]` in the legacy file but
   omitted from the canonical record while empty (`split_public` drops the key). `prefs_tests` holds
   the table to the struct (T-fields), to platform's `ACCOUNT_BOUND_PREFERENCES` (T-account) and to

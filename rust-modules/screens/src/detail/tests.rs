@@ -1628,9 +1628,11 @@ fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_
 /// focused (dwelling toward a preview, same as
 /// `preview_chrome_drives_the_below_hero_sections_to_zero_in_full_trailer_mode_and_back`'s setup)
 /// and asserts the underlying session read never happens after the fixture's own `save` primed the
-/// cache — not even once, let alone once per frame. Watched RED against the original bug: reverting
-/// `session::peek()` to its pre-cache, always-reads-`IO` form fails this with `reads=1` (left) vs
-/// the expected `reads=0` (right).
+/// cache — not even once, let alone once per frame. Watched RED on 2026-09-18, when
+/// `preview::enabled()` still called `session::peek()`: reverting `peek()` to its pre-cache,
+/// always-reads-`IO` form failed this with `reads=1` (left) vs the expected `reads=0` (right). Since
+/// P1c nothing on this path peeks, so that revert no longer turns it red; the peek cache's own guard
+/// is `session_cache_tests`.
 #[test]
 fn preview_tick_does_not_read_the_session_file_every_frame() {
     let sid = ServerId::UNSET;
@@ -1666,7 +1668,7 @@ fn preview_tick_does_not_read_the_session_file_every_frame() {
         reads, 0,
         "preview_tick must not re-read the session file every frame -- {reads} session reads over \
          30 frames of hero focus reproduces the 60->26 fps regression (2026-09-18); the write-through \
-         cache installs on `save` above, so even the very first frame's peek() must be a hit"
+         cache installs on `save` above, so any peek() reached from here must be a hit"
     );
 
     drop(sink);

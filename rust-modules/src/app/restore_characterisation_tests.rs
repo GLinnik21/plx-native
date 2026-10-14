@@ -904,7 +904,7 @@ fn with_own_trailer(mut s: Session, uuid: &str, on: bool, legacy: bool) -> Sessi
     s
 }
 
-/// What the Home hero asks every frame (`preview::enabled`), which is the decision P1c moved onto the
+/// What the detail page's hero asks every frame (`preview::enabled`), which is the decision P1c moved onto the
 /// seat: it reads the trailer cell, nothing else.
 fn hero_may_autoplay() -> bool {
     plx_media::player::preview::enabled()
@@ -919,15 +919,15 @@ impl Drop for TrailerCell {
     }
 }
 
-/// **The Home hero's trailer decision follows the seat, in each boot path (plan 3.8.5, P1c).** Each
+/// **The hero trailer decision follows the seat, in each boot path (plan 3.8.5, P1c).** Each
 /// case is built so that a read at the wrong time is visibly wrong: the answer BEFORE the seat is the TV's
 /// key, the answer AFTER it is the profile's own value, and the two differ. `preview::enabled()` is the
-/// oracle at the point the handoff is consumed, which is where Home mounts and takes its first hero
-/// decision.
+/// oracle at the point the handoff is consumed, which is where Home mounts and the first detail page
+/// opened from it takes its hero decision.
 ///
 /// 1. **Stored boot, auto sign-in on:** the TV's key says on, the stored profile turned trailers off.
 ///    Process start reads on (nobody seated); `ResumeStored` seats the profile in the same drain, so
-///    the first decision Home takes reads off.
+///    the first hero decision after Home mounts reads off.
 /// 2. **The boot picker:** the stored profile has no value of its own and the chosen one turned trailers
 ///    off. While the picker stands, the cell holds what the stored profile reads (on: nothing reads it);
 ///    the pick seats the chosen profile before the `Ready` the landing consumes, so Home reads off.
@@ -937,7 +937,7 @@ impl Drop for TrailerCell {
 /// 4. **A dev-token boot never seats:** the owner's record says on over a TV key of off, and the cell
 ///    reads the TV's off, not the owner's on.
 #[test]
-fn home_trailer_decision_follows_the_seat() {
+fn trailer_decision_follows_the_seat() {
     let _serial = plx_base::testlock::serial();
     let _cell = TrailerCell;
 

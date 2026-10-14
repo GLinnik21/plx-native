@@ -202,8 +202,8 @@ fn t_account_the_bound_rows_are_the_platform_bound_keys() {
 /// The facts a row declares that a later PR reads (`LIVE` by media's T-live, `SETTINGS` by the
 /// Settings dispatcher's T-settings), pinned here per key so a change is a visible edit. The nine
 /// are `Profile` rows with the legacy install key as their fallback since the per-profile work (P1a),
-/// and so is `trailer_autoplay` since P1c (live, saved through the Settings `choose` door);
-/// every other fact is what `main` declared.
+/// and so is `trailer_autoplay` since P1c, which also gained its live cell and its Confirm Settings
+/// row then; every other fact, of every other row, is what `main` declared.
 #[test]
 fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
     let row = |key: &str| -> &Descriptor { DESCRIPTORS.iter().find(|d| d.key == key).unwrap() };
@@ -223,7 +223,7 @@ fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
         let d = row(key);
         assert_eq!(d.settings, settings, "{key}");
         assert!(d.live, "{key}: every one of the ten has a live cell in media");
-        assert_eq!(d.scope, Scope::Profile, "{key}: DECLARED FLIP (P1a, and P1c for trailer_autoplay): it was Install on main");
+        assert_eq!(d.scope, Scope::Profile, "{key}: DECLARED FLIP (P1a, and P1c for trailer_autoplay, where live and settings flipped too): it was Install on main");
         assert_eq!(d.fallback, Fallback::LegacyInstallKey, "{key}: a profile with no value of its own reads the TV's");
         assert!(!d.account_bound, "{key}: the top-level key is the TV's, the profile's own value is `profile_prefs`");
     }

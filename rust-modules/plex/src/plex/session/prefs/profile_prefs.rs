@@ -2,7 +2,7 @@
 //!
 //! Quality, Direct Play, subtitle size, position and tone, audio enhancements, the next-episode
 //! mode, the skip interval, what OK does on a Continue Watching card, and (since P1c) whether the
-//! Home hero autoplays its trailer used to be one value for
+//! detail page's hero autoplays its trailer used to be one value for
 //! the whole television. Each is now a value of the SEATED profile ([`Seat`]), kept in
 //! `profile_prefs`:
 //!
@@ -17,8 +17,8 @@
 //! * **The migration is a FALLBACK, not a copy.** [`effective`] is the profile's own value, else the
 //!   top-level key of the same name read through [`Setting::get`] (quality `None` is Original), else
 //!   the type's default. The top-level keys are frozen: a build with per-profile settings never
-//!   writes one (session creation's `fresh_default` quality is the one exception, because it sets
-//!   the install default for profiles with no value of their own). So "copy today's values to
+//!   writes one (session creation is the exception for two of them, `fresh_default` quality and
+//!   `trailer_autoplay` set on, each the install default for profiles with no value of their own). So "copy today's values to
 //!   every profile" and "read the shared value until the profile picks its own" read the same for
 //!   every profile, existing or future, and the fallback writes nothing, so the upgrade cannot fail
 //!   half-way.

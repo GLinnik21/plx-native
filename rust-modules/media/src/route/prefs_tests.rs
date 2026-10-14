@@ -207,8 +207,9 @@ fn restore_profile_rows_unseated_reads_the_legacy_keys_and_never_an_own_value() 
     );
 }
 
-/// **A seated profile reads its own value, else the legacy key, per setting.** u1 picked two of the
-/// ten, three of them here (the trailer switch among them); the rest read the TV's. Another profile with no record reads the TV's for all nine,
+/// **A seated profile reads its own value, else the legacy key, per setting.** u1 picked three of the
+/// ten (subtitle size, skip interval and the trailer switch); the other seven read the TV's. Another
+/// profile with no record reads the TV's for all ten,
 /// the owner (`""`) has a record of its own, and a record under another sign-in's stamp is not read.
 #[test]
 fn restore_profile_rows_seated_reads_the_own_value_and_falls_back_per_setting() {
@@ -255,7 +256,7 @@ fn restore_profile_rows_seated_reads_the_own_value_and_falls_back_per_setting() 
 /// (the trailer switch a household turned off before profiles had their own): a profile that never
 /// picked reads off, one that picked on reads on, nobody seated reads the TV's. On a PARSED record
 /// that never had the key, everybody reads on (the product default); the cell is what
-/// `preview::enabled` reads, so these are the per-profile answers the Home hero gets.
+/// `preview::enabled` reads, so these are the per-profile answers the detail hero gets.
 #[test]
 fn restore_profile_rows_trailer_autoplay_follows_the_seat_and_falls_back_to_the_tv() {
     use crate::player::preview::enabled;
