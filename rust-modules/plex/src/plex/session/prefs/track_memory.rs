@@ -101,7 +101,9 @@ pub struct SubtitleTrackMemo {
 pub enum SubtitleMemo {
     /// A specific track, matched by its descriptor (hard: language, `forced`).
     Track(SubtitleTrackMemo),
-    /// Off, absolute.
+    /// Off. Like a track, it outranks the account's rule and the server's embedded selection, but
+    /// unlike one it does not fall through to them; a server-selected sidecar the app can draw
+    /// still shows first (see `rust-modules/plex/src/plex/CLAUDE.md`).
     Off,
     /// Forced only. `lang` is the language of the forced track on screen when the viewer chose it
     /// (empty if none was), used only when the playing audio has no language tag.
