@@ -206,7 +206,7 @@ fn scalars() -> Vec<Scalar> {
         Scalar { key: "auto_sign_in", future: json!("yes"), fallback: Some(json!(false)) },
         Scalar { key: "trailer_autoplay", future: json!("yes"), fallback: Some(json!(true)) },
         Scalar { key: "subtitle_tone", future: json!("grey_10"), fallback: Some(json!("white")) },
-        Scalar { key: "subtitle_size", future: json!("huge"), fallback: None },
+        Scalar { key: "subtitle_size", future: json!("gigantic"), fallback: None },
         Scalar { key: "subtitle_position", future: json!("top"), fallback: None },
         Scalar { key: "next_episode_mode", future: json!("sometimes"), fallback: None },
         Scalar { key: "skip_interval", future: json!("45s"), fallback: None },
@@ -402,7 +402,7 @@ fn a_canonical_preferences_value_that_is_not_an_object_falls_back_to_the_manual_
         assert_eq!(s.prefs.direct_play_mode, DirectPlayMode::Auto);
         assert_eq!(s.prefs.playback_quality, None);
     }
-    let s = canonical_from(json!({"subtitle_size":"huge","auto_sign_in":true,"skip_interval":"60s"}));
+    let s = canonical_from(json!({"subtitle_size":"gigantic","auto_sign_in":true,"skip_interval":"60s"}));
     assert!(s.prefs.auto_sign_in, "a sibling of a bad key is kept");
     assert_eq!(s.prefs.skip_interval, SkipInterval::Seconds60);
     assert_eq!(s.prefs.subtitle_size, SubtitleSize::Medium);
