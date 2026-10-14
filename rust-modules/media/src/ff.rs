@@ -659,6 +659,21 @@ unsafe fn stream_name(s: *mut AVStream) -> String {
     String::new()
 }
 
+/// The stream's `language` tag (ISO 639-2 in Matroska/MP4: `chi`, `jpn`, `und`), or None when it
+/// has none. A COPY, like [`stream_name`]. Only used to pick a legacy text-subtitle charset.
+unsafe fn stream_language(s: *mut AVStream) -> Option<String> {
+    let dict = *((s as *const u8).add(OFF_STREAM_METADATA) as *const *const AVDictionary);
+    if dict.is_null() {
+        return None;
+    }
+    let e = av_dict_get(dict, c"language".as_ptr(), std::ptr::null(), 0);
+    if e.is_null() || (*e).value.is_null() {
+        return None;
+    }
+    let v = std::ffi::CStr::from_ptr((*e).value).to_string_lossy().trim().to_string();
+    (!v.is_empty()).then_some(v)
+}
+
 /// Every track's container name, by TYPE, in file order — the two lists
 /// `metadata::audio_ordinal` / `metadata::sub_render_ordinal` index into.
 ///
@@ -9189,6 +9204,10 @@ mod stall_guard_tests;
 #[cfg(test)]
 #[path = "ff_image_subtitle_tests.rs"]
 mod image_subtitle_tests;
+
+#[cfg(test)]
+#[path = "ff_subtitle_charset_tests.rs"]
+mod subtitle_charset_tests;
 
 #[cfg(test)]
 #[path = "ff_redirect_tests.rs"]
