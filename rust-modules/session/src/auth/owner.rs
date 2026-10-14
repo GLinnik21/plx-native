@@ -139,8 +139,10 @@ pub struct ProfilePublication {
     pub scope: ProfileScope,
     /// `grant::account_key` of the account token the profile is published under: the half of the
     /// seat (`plex::session::Seat`) that says which sign-in the profile belongs to. Empty with no
-    /// account token, and in a recording made before the field existed.
-    #[serde(default)]
+    /// account token, and in a recording made before the field existed. An empty stamp is left off
+    /// the wire: a controlled replay grades the regenerated effect as complete canonical JSON
+    /// against the committed recordings, which hold `{epoch, profile, scope}` alone.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub stamp: String,
 }
 
