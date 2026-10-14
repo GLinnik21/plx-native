@@ -399,8 +399,8 @@ pub fn threaded_tls_ready() -> bool {
 /// (`curlio`) and its plaintext path (`stream`). The transport does not know who the client is —
 /// that is the Plex layer's identity (`plex::identity::user_agent`) — so boot hands it over once,
 /// with [`set_user_agent`] before [`global_init`], instead of this layer naming the one above it.
-/// Unset (a host test that never booted) no `User-Agent` is set, which is all libcurl sends by
-/// default. This file is the one place that applies it ([`apply_user_agent`] to a curl handle,
+/// Unset (a host test that never booted, or boot refused the value) no `User-Agent` is set, which
+/// is all libcurl sends by default. This file is the one place that applies it ([`apply_user_agent`] to a curl handle,
 /// [`user_agent_header_line`] to hand-built request text), and `ci/check-user-agent.py` keeps it so.
 static USER_AGENT: OnceLock<UserAgent> = OnceLock::new();
 
@@ -1781,7 +1781,8 @@ fn request_tls_evidence(
             curl_easy_setopt_long(easy.0, CURLOPT_LOW_SPEED_LIMIT, t.low_speed_bps);
             curl_easy_setopt_long(easy.0, CURLOPT_LOW_SPEED_TIME, t.low_speed_s);
             // Boot installs the User-Agent before `global_init` publishes `CURL_OK`
-            // (`app::boot::construct`), so a request past the `available()` gate finds it.
+            // (`app::boot::construct`), so a request past the `available()` gate finds it unless boot
+            // refused the value (a control character); boot logged that and none is sent.
             apply_user_agent(easy.0);
 
             // request headers — keep the CStrings alive until after perform.
