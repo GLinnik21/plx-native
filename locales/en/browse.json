@@ -11,6 +11,10 @@
     "value": "Sign in",
     "description": "browse action sign_in"
   },
+  "browse.action.use_another_account": {
+    "value": "Use another account",
+    "description": "Sign-in read-out primary button when the signed-in Plex account has no server: starts a fresh QR sign-in so a different account can be used."
+  },
   "browse.action.more": {
     "value": "MORE",
     "description": "browse action more"

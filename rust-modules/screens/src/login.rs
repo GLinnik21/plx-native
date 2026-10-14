@@ -510,6 +510,11 @@ enum ControlKind {
     /// the read-out keeps one primary, never a third button. Once answered the primary is *Try
     /// again* ([`ControlKind::Retry`]), and the reason says what it does.
     ConnectPlaintext,
+    /// `Phase::Error`'s no-server verdict (`DiscoveryClass::NoServers`) in place of `Try again`:
+    /// the token that signed in is the account with nothing on it, and every retry would re-run
+    /// discovery with that same token and land on this same read-out. Starts a whole fresh sign-in
+    /// (the same command as [`ControlKind::StartLogin`]) so a different account can be used.
+    UseAnotherAccount,
 }
 
 fn label_for(kind: ControlKind) -> &'static CStr {
@@ -518,6 +523,7 @@ fn label_for(kind: ControlKind) -> &'static CStr {
         ControlKind::StartLogin => plx_platform::i18n::msg::browse_action_sign_in_c(),
         ControlKind::ContinueUnsaved => plx_platform::i18n::msg::settings_login_continue_unsaved_c(),
         ControlKind::ConnectPlaintext => connect(),
+        ControlKind::UseAnotherAccount => plx_platform::i18n::msg::browse_action_use_another_account_c(),
     }
 }
 
@@ -1200,6 +1206,7 @@ impl LoginScreen {
         match self.phase {
             Phase::Deleted => Some(ControlKind::StartLogin),
             Phase::Error if self.plaintext_asks() => Some(ControlKind::ConnectPlaintext),
+            Phase::Error if self.no_servers() => Some(ControlKind::UseAnotherAccount),
             Phase::Error => Some(ControlKind::Retry),
             Phase::Waiting if qr_escape_offered(self.phase_ms) => Some(ControlKind::RestartWait),
             p if working_phase(p) && escape_offered(p, self.phase_ms) => {
@@ -1207,6 +1214,14 @@ impl LoginScreen {
             }
             _ => None,
         }
+    }
+
+    /// Whether the failure on screen is the no-server verdict: the account signed in and has
+    /// nothing on it, so a retry with the same token cannot end differently.
+    fn no_servers(&self) -> bool {
+        self.phase == Phase::Error && self.report.offer.as_ref().is_some_and(|o| o.key.kind ==
+            plx_telemetry::telemetry::incident::IncidentKind::Discovery(
+                plx_telemetry::telemetry::incident::DiscoveryClass::NoServers))
     }
 
     /// Whether the failure on screen is an eligible plaintext-only server — answered or not. Such
@@ -1334,6 +1349,7 @@ impl LoginScreen {
             ControlKind::StartLogin => true, // `deleted_readout` always states one
             ControlKind::ContinueUnsaved => true, // the warning sentence is unconditional
             ControlKind::ConnectPlaintext => true, // `auth::insecure_only_copy` always states one
+            ControlKind::UseAnotherAccount => true, // the no-server reason is always stated
         };
         let details = self.details_offered().then_some(plx_platform::i18n::msg::settings_login_details_c());
         ([Some(label_for(kind)), details], has_reason)
@@ -1497,7 +1513,7 @@ impl LoginScreen {
                     )));
                 }
             }
-            Some(ControlKind::StartLogin) => {
+            Some(ControlKind::StartLogin | ControlKind::UseAnotherAccount) => {
                 fx.push(Fx::App(AppFx::Session(auth::SessionCmd::StartLogin)));
             }
             Some(ControlKind::Retry) => {
@@ -3106,6 +3122,25 @@ mod tests {
             (first.phase, first.qr_gen, first.qr_code.as_ref()),
             (Phase::Waiting, 41, "AAAA")
         );
+    }
+
+    /// #694: an account with no server cannot be helped by re-running discovery with the same
+    /// token, so that read-out's one primary starts a whole fresh sign-in instead of `Try again`.
+    /// Every other discovery verdict keeps `Try again`.
+    #[test]
+    fn no_servers_readout_offers_a_fresh_sign_in_and_other_discovery_errors_keep_retry() {
+        use plx_telemetry::telemetry::incident::{DiscoveryClass, IncidentKind};
+        let state = auth::owner::IncidentState::NotNow;
+        let mut none = screen_with(Phase::Error, state.clone(), IncidentKind::Discovery(DiscoveryClass::NoServers));
+        assert_eq!(none.control_kind(), Some(ControlKind::UseAnotherAccount));
+        let (_, fx) = step_ev(&mut none, &ScreenEvent::Activate(CONTROL));
+        assert!(fx.iter().any(|st| matches!(st.fx, Fx::App(AppFx::Session(auth::SessionCmd::StartLogin)))));
+        assert!(!fx.iter().any(|st| matches!(st.fx, Fx::App(AppFx::Session(auth::SessionCmd::Retry)))));
+
+        let mut silent = screen_with(Phase::Error, state, IncidentKind::Discovery(DiscoveryClass::Silent));
+        assert_eq!(silent.control_kind(), Some(ControlKind::Retry));
+        let (_, fx) = step_ev(&mut silent, &ScreenEvent::Activate(CONTROL));
+        assert!(fx.iter().any(|st| matches!(st.fx, Fx::App(AppFx::Session(auth::SessionCmd::Retry)))));
     }
 
     #[test]
