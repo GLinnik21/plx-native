@@ -1,8 +1,9 @@
 //! **Per-show track memory — the data layer.** What a profile picked for a show's audio and
 //! subtitles, remembered so the next episode can start on the same pick. This file is only the
 //! DATA: the row, the entry, the bounds and the budget. Read at resolve time by `route::recall_all`
-//! and `route/track_memory.rs`; nothing writes it yet (the menu write comes later), so the list
-//! stays empty and the key is never serialized until it does.
+//! and `route/track_memory.rs`, and written by the track menu's explicit pick on an episode
+//! (`route::commit_audio_pick` / `commit_subtitle_pick`, through `route::remember`), so the key is
+//! not serialized until a viewer has picked a track of some show.
 //!
 //! The list is `Preferences::track_memory`, a [`ProfileList`] per profile held through the memory
 //! door (`ProfileMemory::upsert_with`), keyed by `(machine_id, show_rk)`, at most [`CAP`] entries a

@@ -2773,7 +2773,7 @@ fn same_audio_language(a: &str, b: &str) -> bool {
 
 /// Whether track `i` is a commentary: titled one AND not the only track of its language (a film
 /// whose single English track is titled "Director's Commentary" is just its audio).
-fn audio_is_commentary(tracks: &[plx_data::metadata::Stream], i: usize) -> bool {
+pub(super) fn audio_is_commentary(tracks: &[plx_data::metadata::Stream], i: usize) -> bool {
     plx_data::metadata::track_label::is_commentary(&tracks[i].title)
         && tracks.iter().enumerate().any(|(j, s)| {
             j != i

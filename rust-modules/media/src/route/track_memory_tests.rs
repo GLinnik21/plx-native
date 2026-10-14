@@ -196,3 +196,94 @@ fn forced_commentary_is_skipped() {
     subs[1].forced = true;
     assert_eq!(match_forced_only(&subs, "eng", "", anyone), Some(1));
 }
+
+// ---- the write half: a memo built from a pick matches that pick back --------------------------
+
+/// A file whose subtitle names exercise every reading the menu makes: a plain track, a flagged
+/// forced one, a track the NAME makes forced (no flag), an SDH one by name, a sidecar and a bitmap.
+fn menu_subtitles() -> Vec<Stream> {
+    let mut subs = vec![
+        sub(1, "eng", "English"),
+        sub(2, "eng", "English forced"),
+        sub(3, "eng", "Forced"),
+        sub(4, "eng", "English SDH"),
+        sub(5, "spa", "Spanish"),
+    ];
+    subs[1].forced = true;
+    subs[3].codec = "pgs".into();
+    subs[4].external = true;
+    subs
+}
+
+/// **The memo is the menu's own reading.** Every subtitle of the file, remembered through
+/// [`memo_of_subtitle`] and matched back with [`match_subtitle`], is found again: the matcher's hard
+/// constraint on `forced` is read from `sub_traits` (the menu's FORCED badge, which a NAME can earn),
+/// and a memo that took the raw `Stream.forced` instead would write `forced: false` for the track
+/// titled "Forced" and the next episode's hard constraint would decline that very track.
+#[test]
+fn a_memo_written_from_a_subtitle_pick_matches_that_subtitle_back() {
+    let subs = menu_subtitles();
+    for (i, s) in subs.iter().enumerate() {
+        let SubtitleMemo::Track(memo) = memo_of_subtitle(s) else { panic!("a track is remembered as a Track") };
+        assert_eq!(match_subtitle(&subs, &memo, anyone), Ok(i), "track {i} ({:?}) is found again by {memo:?}", s.title);
+    }
+}
+
+/// What each field of a subtitle memo says, for the readings that are not the raw stream's.
+#[test]
+fn a_subtitle_memo_records_forced_sdh_kind_and_sidecar_as_the_menu_reads_them() {
+    let subs = menu_subtitles();
+    let track = |i: usize| match memo_of_subtitle(&subs[i]) {
+        SubtitleMemo::Track(t) => t,
+        other => panic!("{other:?}"),
+    };
+    assert!(track(2).forced && !subs[2].forced, "titled Forced, flag unset: remembered forced");
+    assert!(track(1).forced, "flagged forced");
+    assert!(!track(0).forced);
+    assert!(track(3).sdh, "titled SDH: remembered SDH");
+    assert_eq!(track(3).kind, "image", "a PGS track is a bitmap");
+    assert_eq!(track(0).kind, "text");
+    assert!(track(4).external && !track(0).external, "a sidecar is told from an embedded track");
+    assert_eq!((track(4).lang.as_str(), track(4).title.as_str()), ("spa", "Spanish"));
+}
+
+/// **The audio memo is the planner's own reading too**: a commentary-titled track that shares its
+/// language with another is a commentary, and the memo says so, so it is matched back (and the main
+/// track is not taken for it). An audio-description track is told from a plain one.
+#[test]
+fn a_memo_written_from_an_audio_pick_matches_that_track_back() {
+    let mut described = audio(4, "eng", "ac3", 2, "");
+    described.ad = true;
+    let tracks = vec![
+        audio(1, "eng", "eac3", 6, ""),
+        audio(2, "eng", "ac3", 2, "Director's Commentary"),
+        audio(3, "jpn", "eac3", 6, ""),
+        described,
+    ];
+    let commentary_of = |i: usize| super::super::plan::audio_is_commentary(&tracks, i);
+    for i in 0..tracks.len() {
+        let memo = memo_of_audio(&tracks, i).expect("a track of the file");
+        assert_eq!(match_audio(&tracks, &memo, commentary_of), Ok(i), "track {i} is found again by {memo:?}");
+    }
+    assert!(memo_of_audio(&tracks, 1).unwrap().commentary, "a commentary that shares its language is a commentary");
+    assert!(!memo_of_audio(&tracks, 0).unwrap().commentary);
+    assert!(memo_of_audio(&tracks, 3).unwrap().ad);
+    assert_eq!(memo_of_audio(&tracks, 2).unwrap(), memo_audio("jpn", "eac3", 6), "language, codec, channels");
+}
+
+/// The only track of its language is just that language's audio, however it is titled: the same
+/// notion the planner applies, so the memo does not call it a commentary.
+#[test]
+fn a_lone_commentary_titled_track_is_remembered_as_its_languages_audio() {
+    let tracks = vec![audio(1, "eng", "eac3", 6, ""), audio(2, "jpn", "ac3", 2, "Commentary")];
+    assert!(!memo_of_audio(&tracks, 1).unwrap().commentary);
+    let commentary_of = |i: usize| super::super::plan::audio_is_commentary(&tracks, i);
+    assert_eq!(match_audio(&tracks, &memo_of_audio(&tracks, 1).unwrap(), commentary_of), Ok(1));
+}
+
+#[test]
+fn an_audio_index_that_names_no_track_is_remembered_as_nothing() {
+    let tracks = vec![audio(1, "eng", "eac3", 6, "")];
+    assert_eq!(memo_of_audio(&tracks, 1), None);
+    assert_eq!(memo_of_audio(&[], 0), None);
+}

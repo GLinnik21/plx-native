@@ -13,7 +13,7 @@
 //! (the claim table, the enhancement step, the plans and the PMS attempts) stay here.
 
 use plx_plex::plex::ServerId;
-use plx_plex::plex::session::prefs::TrackMemoryEntry;
+use plx_plex::plex::session::prefs::{AudioMemo, SubtitleMemo, TrackMemoryEntry};
 use plx_plex::plex::session::{QualityPref, SubtitleOffsetEntry};
 use plx_data::pms::PmsMovie;
 use std::os::raw::c_char;
@@ -305,7 +305,9 @@ pub struct PlaybackSession {
     cur_show_rk: String,
     cur_kind: String,
     /// A remembered subtitle was chosen for this play but the route shows none of it
-    /// ([`super::plan::Plan::memory_note`]): the Subtitles menu says why.
+    /// ([`super::plan::Plan::memory_note`]): the Subtitles menu says why. Set by a landing; cleared
+    /// by the first commit that changes the subtitle shown, because a pick the app draws in place
+    /// runs no landing to clear it.
     cur_memory_note: bool,
     /// the playing item's Part id (from the part key), so an audio switch can PUT the
     /// server-side stream selection — the transcoder encodes the part's SELECTED audio.
@@ -9819,6 +9821,9 @@ pub struct EnhTestFixture {
     /// Part bitrate, with the client able to draw it. Only meaningful with
     /// `subtitle_effect: Embedded` on a remux.
     pub side_reader: bool,
+    /// A remembered subtitle was chosen for this play but the route shows none of it
+    /// ([`cur_memory_note`]): the Subtitles tab says why.
+    pub memory_note: bool,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -9838,6 +9843,7 @@ impl Default for EnhTestFixture {
             applied_burn: false,
             in_flight: false,
             side_reader: false,
+            memory_note: false,
         }
     }
 }
@@ -9875,6 +9881,7 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
     ps.cur_sub_sid = if route.subtitle_effect == SubtitleEffect::None { 0 } else { 999 };
     ps.cur_sub_sidecar = route.subtitle_effect == SubtitleEffect::Sidecar;
     ps.cur_sub_client_drawable = ps.cur_sub_sidecar;
+    ps.cur_memory_note = route.memory_note;
     ps.cur_enhancement = if route.refused {
         EnhancementOutcome::Refused
     } else if route.unverified {
@@ -10116,6 +10123,13 @@ pub fn commit_subtitle_selection(
     // always republishes — keeps what the viewer found.
     if stream_id != ps.cur_sub_sid {
         crate::player::set_subtitle_offset(0);
+        // What the track-memory note explained (the remembered subtitle is not what is shown) ends
+        // with the first commit that changes what is shown. A landing sets the flag afresh from its
+        // plan, but a pick the app draws in place (a sidecar, a track the side reader draws) runs
+        // none, and the note would go on denying a subtitle the viewer can see. Pressing OK on what
+        // is already shown (Off, while the note is up) is not such a commit: the memory still holds
+        // a track the route still cannot show.
+        ps.cur_memory_note = false;
     }
     crate::player::request_subtitle(sub_idx);
     set_subtitle(ps, stream_id);
@@ -10150,6 +10164,90 @@ pub fn commit_subtitle_selection(
     }
     if transcoding && !in_place {
         crate::player::request_transcode_refresh(ps); // retranscode PUTs the selection itself
+    }
+}
+
+/// One half of a show's track memory, as the track menu's pick describes it.
+#[derive(Clone)]
+enum TrackPick {
+    Audio(AudioMemo),
+    Subtitle(SubtitleMemo),
+}
+
+/// **Remember a track pick for the playing show: the track memory's one write.** Gated by the
+/// same predicate the read side applies in `plan::show_memory` (an `episode` with a known show),
+/// so what is written is exactly what a later resolve can read; a movie, a trailer or an item the
+/// server did not place in a show writes nothing. The seat and the tenure are `remember`'s to
+/// refuse: nothing is written for a run that seated nobody (a dev token), and a refused write
+/// leaves the mirror as it was.
+///
+/// The closure keeps the OTHER half of the entry as it is when it runs (against the mirror now,
+/// and against the file's entry when the queued write runs): an audio pick must not erase the
+/// subtitle the viewer chose a minute ago, nor the other way round.
+fn remember_track_pick(ps: &PlaybackSession, pick: TrackPick) -> bool {
+    let show = cur_show_rk(ps);
+    if cur_kind(ps) != "episode" || show.is_empty() {
+        return false;
+    }
+    let Some(machine_id) = plx_plex::plex::client_for(cur_sid(ps)).map(|c| c.machine_id().to_string()) else {
+        return false;
+    };
+    if machine_id.is_empty() {
+        return false;
+    }
+    let show = show.to_string();
+    let user = plx_plex::plex::session::current_profile_key();
+    remember::<TrackMemoryEntry>(&user, (machine_id.clone(), show.clone()), move |current| {
+        let mut entry = current.cloned().unwrap_or_else(|| TrackMemoryEntry::new(&machine_id, &show, None, None));
+        match &pick {
+            TrackPick::Audio(memo) => entry.audio = Some(memo.clone()),
+            TrackPick::Subtitle(memo) => entry.subtitle = Some(memo.clone()),
+        }
+        Some(entry)
+    })
+}
+
+/// **The track menu's audio pick: commit it, and remember it if the route took it.** `memo` is the
+/// descriptor of the picked row ([`memo_of_audio`](super::memo_of_audio)); `None` is a commit that is
+/// not a viewer's choice and remembers nothing. The write is made only when
+/// [`commit_audio_selection`] accepted the pick, so the Forced refusal (a track the route will not
+/// play) is never remembered. Returns whether the route accepted it.
+///
+/// Automatic picks do NOT come through here: the start-of-play auto-pick, a retry, a rescue and
+/// Switch to Auto call [`commit_audio_selection`] or build a plan directly, and write no memory.
+/// A pick deferred behind a pending Original handoff was accepted, and so remembered, when the
+/// viewer made it; [`apply_deferred_original_effects`] only replays it and writes nothing.
+pub fn commit_audio_pick(ps: &mut PlaybackSession, audio: CarriedAudio, memo: Option<AudioMemo>) -> bool {
+    let accepted = commit_audio_selection(ps, audio);
+    if accepted {
+        if let Some(memo) = memo {
+            remember_track_pick(ps, TrackPick::Audio(memo));
+        }
+    }
+    accepted
+}
+
+/// **The track menu's subtitle pick: commit it, and remember it.** `memo` is
+/// [`SubtitleMemo::Off`] for Off, or [`memo_of_subtitle`](super::memo_of_subtitle) of the picked
+/// track (an embedded track, a sidecar, a fresh download); `None` remembers nothing. A subtitle
+/// commit has no refusal, so every one that carries a memo and CHANGES the subtitle is written.
+/// The commit is always made (an OK on the checked row republishes), but a pick of the stream the
+/// route already shows is the menu being closed, not chosen: the route put that stream there
+/// (the ladder, a rescue, an earlier pick), and an automatic pick is never written. Off is stored
+/// as Off: it beats the account's rule and the server's embedded selection next episode (only a
+/// server-selected sidecar the app can draw ranks above memory, `plan::pick_subtitle`).
+pub fn commit_subtitle_pick(
+    ps: &mut PlaybackSession,
+    sub_idx: i32,
+    stream_id: i64,
+    client_renderable: bool,
+    memo: Option<SubtitleMemo>,
+) {
+    // Read before the commit, which writes the stream it was handed.
+    let changed = stream_id != ps.cur_sub_sid;
+    commit_subtitle_selection(ps, sub_idx, stream_id, client_renderable);
+    if let Some(memo) = memo.filter(|_| changed) {
+        remember_track_pick(ps, TrackPick::Subtitle(memo));
     }
 }
 

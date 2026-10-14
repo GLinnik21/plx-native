@@ -22,10 +22,17 @@
 //!   track in the language of the audio that is PLAYING (the memo's language only when the audio
 //!   has none), or nothing. A commentary is never the answer to Forced only, however it is
 //!   flagged.
+//!
+//! **The write half is here too** ([`memo_of_audio`], [`memo_of_subtitle`]): the descriptor a menu
+//! pick is remembered as, built from the exact `Stream` the row was drawn from with the SAME
+//! predicates the matchers read (`sub_traits`, `audio_is_commentary`), so a memo written from the
+//! menu is a memo the matchers find the same track by. A builder that read the raw `Stream.forced`
+//! instead would write `forced: false` for a track the menu badges FORCED by its name, and the
+//! next episode's hard constraint would decline that very track.
 use plx_data::metadata::sub_layout::is_image_sub_codec;
 use plx_data::metadata::track_label::{self, Kind};
 use plx_data::metadata::{lang_matches, Stream};
-use plx_plex::plex::session::prefs::{AudioMemo, SubtitleTrackMemo};
+use plx_plex::plex::session::prefs::{AudioMemo, SubtitleMemo, SubtitleTrackMemo};
 
 /// Why a record matched no track: the log's `no match (<reason>)`.
 pub(super) type Miss = &'static str;
@@ -50,6 +57,39 @@ pub(super) fn sub_traits(s: &Stream) -> SubTraits {
     let label = track_label::parse(&name, &s.lang, s.forced, s.sdh);
     let (forced, sdh) = track_label::flags(&label, s.forced, s.sdh);
     SubTraits { forced, sdh, commentary: label.kind == Kind::Commentary }
+}
+
+/// **What a pick of audio track `i` of `tracks` is remembered as**, or `None` for an index that
+/// names no track. The commentary-ness is the planner's own notion ([`super::plan::audio_is_commentary`]:
+/// titled one AND not the only track of its language), the same one [`match_audio`] is handed.
+pub fn memo_of_audio(tracks: &[Stream], i: usize) -> Option<AudioMemo> {
+    let s = tracks.get(i)?;
+    Some(AudioMemo {
+        lang: s.lang_code.clone(),
+        tag: s.language_tag.clone(),
+        commentary: super::plan::audio_is_commentary(tracks, i),
+        ad: s.ad,
+        codec: s.codec.clone(),
+        // A count over the memo's bound reads as unknown (0) when the entry is normalised.
+        channels: u8::try_from(s.channels).unwrap_or(0),
+        title: s.title.clone(),
+    })
+}
+
+/// **What a pick of the subtitle track `s` is remembered as** (Off is [`SubtitleMemo::Off`], which
+/// needs no stream). `forced` and `sdh` are the menu's own reading ([`sub_traits`]), not the raw
+/// flags; `external` is the stream's, so a sidecar is told from an embedded track of the same name.
+pub fn memo_of_subtitle(s: &Stream) -> SubtitleMemo {
+    let traits = sub_traits(s);
+    SubtitleMemo::Track(SubtitleTrackMemo {
+        lang: s.lang_code.clone(),
+        tag: s.language_tag.clone(),
+        forced: traits.forced,
+        sdh: traits.sdh,
+        kind: if is_image_sub_codec(&s.codec) { "image" } else { "text" }.to_string(),
+        external: s.external,
+        title: s.title.clone(),
+    })
 }
 
 /// A language tag that names no language: empty, or the ISO "undetermined".

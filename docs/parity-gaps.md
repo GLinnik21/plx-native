@@ -151,8 +151,9 @@ the main episode-play path** — the response carries `Chapter[]` and it is disc
 opens Settings for Home/server selection, Privacy & data, Legal notices and About. Preferred
 audio/subtitle language, auto-skip intro/credits, subtitle appearance and sync,
 quality-per-network, direct-play policy and version choice remain absent, as does the general
-preference store they would require. Track choices are still forgotten at every item boundary, and
-the server's own per-part selection is written but never read back.
+preference store they would require. An episode's track choices are remembered per show (track memory), a
+movie's are still forgotten at the item boundary, and the server's own per-part selection is written
+but never read back.
 
 **F. The play queue is created and discarded.** Every playback POSTs `/playQueues` with `continuous=1`
 and gets the full `Metadata[]` window back; `plex/timeline.rs:72` keeps **only the successor** and drops
@@ -1627,6 +1628,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
 
 - **Track choices are forgotten at every item boundary — nothing is remembered per show/series** — `major` / `medium`
   Plex HTPC remembers the audio/subtitle choice per series, so binge-watching in Japanese-audio/English-subs keeps working episode to episode. Here every new playback zeroes both stream ids and turns subtitles off, then re-runs the English-preference auto-pick. Auto-advancing to the next episode through Up Next goes through the same path, so the subtitle track the user just chose vanishes the moment the credits roll.
+  *Landed (track memory):* an explicit pick in the track menu on an episode is remembered for its show by the seated profile (`route::commit_audio_pick` / `commit_subtitle_pick`, `plex/session/prefs/track_memory.rs`), and the next episode, by Up Next or from a shelf, resolves to the same pick by descriptor and not by stream id (`route/track_memory.rs`). A movie, an unseated boot and an automatic choice remember nothing. The text below describes the code as it was.
   *Where:* rust-modules/src/route.rs:738-756 (consult a remembered choice keyed by grandparentRatingKey before resetting) + a small store beside rust-modules/src/metadata.rs's playing-item state; the pick would then flow through the existing route::commit_* / pick_dp_audio path.
   *Device:* none known — pure route/metadata state on the main thread. The only wrinkle is that the remembered subtitle must be re-resolved by language/stream identity on the NEW leaf (ids differ per episode), not by raw id.
   *Verified:* CONFIRMED. rust-modules/src/route.rs:745-746 `CUR_AUDIO_SID.write(0)` / `CUR_SUB_SID.write(0)` then `player::reset_audio_track()` + `player::reset_subtitle()` at the top of `request_play`; player/mod.rs `reset_subtitle` stores -1. `request_play_up_next` (route.rs:797-802) funnels straight into `request_play`, so the auto-advance chain inherits the wipe. No per-show map exists: `grandparent` appears only as display data (metadata.rs:204-205 show_title/show_rk, route.rs:370/413). TWO PARTIALS worth recording. (1) Within one item the choice IS sticky and deliberately so — player/mod.rs's `reset_s

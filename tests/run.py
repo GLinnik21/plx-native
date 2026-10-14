@@ -1131,6 +1131,13 @@ def triggers_for_case(case, url_base=None):
     # reset case below to prove the cold-start "a saved preference forces a remux" path);
     # everything else gets `"off"`.
     files.append(("plxnative-audioenh", case.get("audio_enhancements_boot", "off")))
+    # Track memory (the per-show audio/subtitle pick a track-menu choice on an episode writes to the
+    # SEATED profile): forget it at the seat on EVERY case, for the same reason as the line above. A
+    # case's `menupick` is a viewer's pick and is remembered, so without this the next case that plays
+    # the same show would start from the previous case's tracks. `dev::scenarios::arm_track_memory`
+    # runs once at the first seat (`app::bridge::SeatWatch`); a dev-token boot never seats, writes no
+    # memory, and so has nothing to clear.
+    files.append(("plxnative-trackmemory", "clear"))
     # Arbitrary extra dev triggers, `{"name": content}` → `plxnative-<name>` in the runtime root
     # (`null` for a bare flag). For the one-run experiments a trigger exists for — `sinkmax`,
     # `nofps` — without teaching the harness a key per knob; the case's own triggers above win on

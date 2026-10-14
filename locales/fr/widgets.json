@@ -166,6 +166,7 @@
   "widgets.tracks.enh_reason_refused": "Votre serveur Plex n’a pas pu l’activer pour cette vidéo.",
   "widgets.tracks.sub_burn_audio": "Incrustés par votre serveur pendant la conversion de l’audio.",
   "widgets.tracks.sub_burn_quality": "Incrustés par votre serveur à cette qualité.",
+  "widgets.tracks.sub_remembered_note": "Les sous-titres choisis pour cette série ne peuvent pas être affichés avec cette vidéo.",
   "widgets.tracks.style": "Style",
   "widgets.tracks.style_size": "Taille",
   "widgets.tracks.style_position": "Position",

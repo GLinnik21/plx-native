@@ -518,8 +518,14 @@ a dead source is **absent** from Home and states itself in its own library secti
   title is cut), and it is capped at 64 entries a profile and held to a 32 KiB HOUSEHOLD budget by
   eviction, never refusal. It is READ at resolve time (`route::recall_all` into `ResolveEnv::memory`, and
   only for the SEATED profile: `recall` and `recall_all` ask `session::is_seated_as`, so an unseated
-  boot or a dev token reads none; matched by `route/track_memory.rs`, ranked above the PMS selection by `plan.rs`) and nothing writes
-  it yet, so the list stays empty in practice; the menu write comes later.
+  boot or a dev token reads none; matched by `route/track_memory.rs`, ranked above the PMS selection by `plan.rs`)
+  and WRITTEN by the track menu: an explicit pick on an episode carries its descriptor
+  (`TrackCommit`'s `memo`), `route::commit_audio_pick` / `commit_subtitle_pick` call `route::remember`
+  when the route accepted the pick, and nothing else writes it (a movie, an unseated boot, an
+  automatic choice and a harness setup commit remember nothing; the harness's
+  `plxnative-trackmemory=clear` removes entries through the same door). A remembered Off beats the
+  account's rule and PMS's embedded selection, but not a server-selected sidecar the app can draw
+  (`plan.rs` `pick_subtitle` withholds the memory from the ladder while the item has one).
   `subtitle_offsets` is account-bound as well (since SO) under different rules: a record without a
   stamp is read as the signed-in account's own and is stamped at the list's next write
   (`MemoryEntry::ADOPTS_UNSTAMPED`), at the plex list a write with no account token is still
@@ -528,6 +534,43 @@ a dead source is **absent** from Home and states itself in its own library secti
   pruned by the next write. The media half (`route/prefs.rs` `remember`) stamps its mirror write with
   the stamp the mirror was seeded under (`decision_memory_tests`
   `a_retune_or_a_forget_reaches_the_stamped_record_the_restore_seeded`).
+- **The contract for a new setting.** Step 4 is a review rule: no test or CI check enforces it.
+  1. **Add the field** to `Preferences`, with explicit serde attributes. Pick the parse policy (a
+     soft scalar, `de_soft_vec` for lists, `de_soft_bool_on` when absence or garbage means on) and
+     the skip predicate.
+  2. **Add the `setting!` line** (`list_row!` for a list, a hand impl when `Stored` != `Value`), and
+     add it to `DESCRIPTORS`. Choose:
+     - **Scope.** `Install` describes the TV (its decoders, its panel only if the owner says so).
+       `Profile` is a person's habit, and is the default for a new player setting. `PerItem` and
+       `PerShow` are memories for content. The scope alone decides whether it persists across episodes.
+     - **Account binding.** `Account` rows are always bound, `Install` rows never; T-account holds both.
+     - **`LIVE`**, whether the media layer applies it to a live cell.
+     - **The settings write.** Optimistic (`How::Optimistic`) only when the viewer watches the effect
+       while choosing.
+  3. **If `LIVE`,** add a `live_cell!` and a `LiveSetting` impl (`normalize`, `after_saved`) to
+     `LIVE_ROWS`. T-live fails until both sides agree.
+  4. **Write only through the door.** `route::choose` for a profile's value (it takes a
+     `LiveSetting`, and only `Profile` rows have a `ProfileSetting`; an `Install` value has no
+     `choose` door and goes through its own ticketed writer, `queue_update_ticket`),
+     `route::remember` for a memory. `queue_update_settled` is for an edit whose landing the caller
+     reports (`plex::grant::persist` does); do not use it to claim "saved" before the write has
+     landed. Never add a second restore list (`restore_install_rows` / `restore_profile_rows` are
+     the only ones).
+  5. **Schema rules.**
+     - Never rename a key. A change of meaning gets a new key.
+     - New data goes only inside `public.preferences` (DB8) or the legacy file's top level. Never add
+       a `PublicPayload` slot, a state or auth field or a `Mutation` variant: they are
+       `deny_unknown_fields`, and an older build would sign the user out.
+     - New keys are additive, and a new list is soft-parsed per element (`de_soft_vec`). T-parse
+       needs a fixture for it, and the A0 characterisation needs a real-shape case.
+     - A new list that can grow has a byte bound, checked against the 256 KiB document (next
+       bullet); the document guard's eviction order (`prefs::shed_memory`) names every list it may evict.
+     - An EXISTING struct keeps its flatten `extensions`; a new struct needs none.
+     - Omit a value at its default (`skip_serializing_if`). Fields of `Preferences` without one are
+       written at their default, kept that way for behaviour preservation; read them from the
+       struct, and a new field follows the omit rule.
+  6. **The Settings row** (labels, i18n, picker) is a screens edit, and `Choice` gains a variant
+     (T-settings).
 - **The DB8 document may not pass `MAX_LOGICAL_BYTES` (256 KiB), and per-profile memory is what
   grows it.** Past the cap EVERY write fails (`LogicalTooLarge`, reported as `InvalidSchema`), so
   `persistence::commit_session_with` measures the projected document (platform's own

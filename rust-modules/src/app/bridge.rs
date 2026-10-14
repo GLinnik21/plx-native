@@ -316,11 +316,13 @@ impl ConsentMachine {
 /// Process start is the first seat, `Unseated`: boot restores the cells for it itself
 /// (`boot::restore_player_preferences`), so a watch starts there too.
 ///
-/// It also carries the one boot writer, the dev audio-enhancement arm: it runs once, right after the
-/// restore of the first `Unseated` to `Seated` change, so it forces the SEATED profile's record. That
+/// It also carries the boot writers, the dev audio-enhancement arm and the dev track-memory `clear`
+/// (`dev::scenarios::arm_track_memory`): they run once, right after the restore of the first
+/// `Unseated` to `Seated` change, so they force the SEATED profile's record. That
 /// is a stored or picker boot's. A harness boot that injects a token (`--guest` included: both
 /// `tools/tv-session.sh` and `tests/run.py` write `plxnative-token`) is a dev-token boot, which never
-/// seats, so the arm run at boot is the only one there and sets the live cell alone.
+/// seats, so the audio-enhancement arm run at boot is the only one there and sets the live cell alone
+/// (a dev-token boot remembers no track and has nothing to clear).
 struct SeatWatch {
     restored: plx_plex::plex::session::Seat,
     arm_pending: bool,
@@ -342,6 +344,9 @@ impl SeatWatch {
         self.restored = seat;
         if seated && std::mem::take(&mut self.arm_pending) {
             crate::dev::scenarios::arm_audio_enhancements();
+            if let Some(user) = self.restored.user() {
+                crate::dev::scenarios::arm_track_memory(user);
+            }
         }
         true
     }

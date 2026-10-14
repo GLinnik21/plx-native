@@ -3675,6 +3675,38 @@ mod lifecycle_regression_tests {
         plx_machine::landgate::disarm();
     }
 
+    /// The fixture's original answers, verbatim: `/decision` direct-plays, anything else is the
+    /// PlayQueue (two episodes, or one film when `successor` is false).
+    fn queue_body(request: &str, successor: bool) -> &'static str {
+        if request.contains("/decision?") {
+            r#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#
+        } else if !successor {
+            r#"{"MediaContainer":{"machineIdentifier":"lifecycle-fixture","size":1,
+            "playQueueID":1,"playQueueSelectedItemID":11,"playQueueTotalCount":1,
+            "Metadata":[
+            {"ratingKey":"1","playQueueItemID":11,"type":"movie","title":"First",
+             "duration":60000,
+             "Media":[{"videoCodec":"h264","audioCodec":"aac","width":1280,"height":720,
+             "Part":[{"id":1,"key":"/library/parts/1/file.mkv","Stream":[
+             {"id":1,"streamType":1,"codec":"h264"},
+             {"id":2,"streamType":2,"codec":"aac","selected":true}]}]}]}]}}"#
+        } else {
+            r#"{"MediaContainer":{"machineIdentifier":"lifecycle-fixture","size":2,
+            "playQueueID":1,"playQueueSelectedItemID":11,"playQueueTotalCount":2,
+            "Metadata":[
+            {"ratingKey":"1","playQueueItemID":11,"type":"episode","title":"First",
+             "parentIndex":1,"index":1,"duration":60000,
+             "Media":[{"videoCodec":"h264","audioCodec":"aac","width":1280,"height":720,
+             "Part":[{"id":1,"key":"/library/parts/1/file.mkv","Stream":[
+             {"id":1,"streamType":1,"codec":"h264"},
+             {"id":2,"streamType":2,"codec":"aac","selected":true}]}]}]},
+            {"ratingKey":"2","playQueueItemID":12,"type":"episode","title":"Next",
+             "parentIndex":1,"index":2,"duration":60000,
+             "Media":[{"videoCodec":"h264","audioCodec":"aac",
+             "Part":[{"id":2,"key":"/library/parts/2/file.mkv"}]}]}]}}"#
+        }
+    }
+
     struct Rig {
         app: App,
         sid: plx_plex::plex::ServerId,
@@ -3713,6 +3745,12 @@ mod lifecycle_regression_tests {
         /// `successor: false` serves a one-row queue — a film, with no Up Next to hand off to — so
         /// an end of stream leaves the player instead of starting the next item.
         fn serving(successor: bool) -> Option<Rig> {
+            Self::serving_with(move |request: &str| queue_body(request, successor).to_owned())
+        }
+
+        /// [`Self::serving`] with the server's answers chosen by `respond(request line)`. The first
+        /// request still parks until [`Self::resolve`] releases it.
+        fn serving_with(respond: impl Fn(&str) -> String + Send + 'static) -> Option<Rig> {
             plx_plex::plex::reset_servers_for_test();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
@@ -3761,33 +3799,7 @@ mod lifecycle_regression_tests {
                         arrived.send(()).unwrap();
                         let _ = wait.recv_timeout(Duration::from_secs(5));
                     }
-                    let body = if request.contains("/decision?") {
-                        r#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#
-                    } else if !successor {
-                        r#"{"MediaContainer":{"machineIdentifier":"lifecycle-fixture","size":1,
-                        "playQueueID":1,"playQueueSelectedItemID":11,"playQueueTotalCount":1,
-                        "Metadata":[
-                        {"ratingKey":"1","playQueueItemID":11,"type":"movie","title":"First",
-                         "duration":60000,
-                         "Media":[{"videoCodec":"h264","audioCodec":"aac","width":1280,"height":720,
-                         "Part":[{"id":1,"key":"/library/parts/1/file.mkv","Stream":[
-                         {"id":1,"streamType":1,"codec":"h264"},
-                         {"id":2,"streamType":2,"codec":"aac","selected":true}]}]}]}]}}"#
-                    } else {
-                        r#"{"MediaContainer":{"machineIdentifier":"lifecycle-fixture","size":2,
-                        "playQueueID":1,"playQueueSelectedItemID":11,"playQueueTotalCount":2,
-                        "Metadata":[
-                        {"ratingKey":"1","playQueueItemID":11,"type":"episode","title":"First",
-                         "parentIndex":1,"index":1,"duration":60000,
-                         "Media":[{"videoCodec":"h264","audioCodec":"aac","width":1280,"height":720,
-                         "Part":[{"id":1,"key":"/library/parts/1/file.mkv","Stream":[
-                         {"id":1,"streamType":1,"codec":"h264"},
-                         {"id":2,"streamType":2,"codec":"aac","selected":true}]}]}]},
-                        {"ratingKey":"2","playQueueItemID":12,"type":"episode","title":"Next",
-                         "parentIndex":1,"index":2,"duration":60000,
-                         "Media":[{"videoCodec":"h264","audioCodec":"aac",
-                         "Part":[{"id":2,"key":"/library/parts/2/file.mkv"}]}]}]}}"#
-                    };
+                    let body = respond(&request);
                     let _ = write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                 }
             }) {
@@ -3862,6 +3874,11 @@ mod lifecycle_regression_tests {
         fn due_up_next(&mut self) -> Frame {
             self.request();
             self.resolve();
+            self.expire_up_next_countdown()
+        }
+
+        /// The resolved item's Player page, mounted, with its Up Next countdown run out.
+        fn expire_up_next_countdown(&mut self) -> Frame {
             // A mounted, resolved Player whose Engine has already drained still owns its
             // session and successor. No native decoding is needed to exercise the countdown.
             super::super::bridge::nav_push(&mut self.app.pages, AppArg::Player);
@@ -3918,6 +3935,182 @@ mod lifecycle_regression_tests {
             plx_media::route::reset_player_control_for_test(&self.app.player.session);
             plx_plex::plex::reset_servers_for_test();
         }
+    }
+
+    // ---- track memory: what the viewer picked on one episode is what the next episode plays -----
+
+    /// One stream of a [`show_episode`], as the server describes it.
+    fn show_stream(id: i64, kind: i64, index: i64, codec: &str, lang: Option<(&str, &str)>, selected: bool) -> String {
+        let (code, name) = lang.unwrap_or(("", ""));
+        format!(
+            r#"{{"id":{id},"streamType":{kind},"index":{index},"codec":"{codec}","channels":{},
+            "languageCode":"{code}","language":"{name}","selected":{selected}}}"#,
+            if kind == 2 { 6 } else { 0 },
+        )
+    }
+
+    /// An episode of show 4242 with English and Japanese E-AC3 5.1 and English and Spanish SRT.
+    /// `audio` and `subs` list `(language, id)` in file order; the server has the FIRST audio and
+    /// the SPANISH subtitle selected, which is what plays unless something remembered overrides it.
+    fn show_episode(rk: &str, item: i64, index: i64, audio: [(&str, i64); 2], subs: [(&str, i64); 2]) -> String {
+        let name = |code: &str| match code {
+            "eng" => "English",
+            "jpn" => "Japanese",
+            _ => "Spanish",
+        };
+        let mut streams = vec![show_stream(item * 10 + 1, 1, 0, "hevc", None, false)];
+        for (i, (code, id)) in audio.into_iter().enumerate() {
+            streams.push(show_stream(id, 2, 1 + i as i64, "eac3", Some((code, name(code))), i == 0));
+        }
+        for (i, (code, id)) in subs.into_iter().enumerate() {
+            streams.push(show_stream(id, 3, 3 + i as i64, "srt", Some((code, name(code))), code == "spa"));
+        }
+        format!(
+            r#"{{"ratingKey":"{rk}","playQueueItemID":{item},"type":"episode","title":"Episode {index}",
+            "grandparentRatingKey":"4242","parentIndex":1,"index":{index},"duration":60000,
+            "Media":[{{"videoCodec":"hevc","audioCodec":"eac3","width":1920,"height":1080,"bitrate":8000,
+            "Part":[{{"id":{item},"key":"/library/parts/{rk}/file.mkv","Stream":[{}]}}]}}]}}"#,
+            streams.join(","),
+        )
+    }
+
+    /// E1's streams and E2's: the SAME tracks under other ids and in another order, so only a
+    /// remembered DESCRIPTOR (never a stream id) can carry a pick from one to the other.
+    const E1_AUDIO: [(&str, i64); 2] = [("eng", 1012), ("jpn", 1013)];
+    const E1_SUBS: [(&str, i64); 2] = [("spa", 1014), ("eng", 1015)];
+    const E2_AUDIO: [(&str, i64); 2] = [("eng", 2012), ("jpn", 2013)];
+    const E2_SUBS: [(&str, i64); 2] = [("eng", 2014), ("spa", 2015)];
+
+    /// A PMS that serves the two episodes of show 4242 per ratingKey: the PlayQueue carries both,
+    /// `/library/metadata/<rk>` answers with the one asked for, `/decision` direct-plays, and every
+    /// other request (a PUT, the show's preferences, a timeline) is an empty container. It keeps NO
+    /// state: a `PUT /library/parts` selection is never echoed into the next episode's answer, so
+    /// nothing but the app's own memory can carry a pick from E1 to E2.
+    fn show_fixture(request: &str) -> String {
+        let path = request.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("");
+        let e1 = show_episode("1", 11, 1, E1_AUDIO, E1_SUBS);
+        let e2 = show_episode("2", 12, 2, E2_AUDIO, E2_SUBS);
+        if request.contains("/decision?") {
+            queue_body(request, true).to_owned()
+        } else if path.starts_with("/playQueues") {
+            format!(
+                r#"{{"MediaContainer":{{"machineIdentifier":"lifecycle-fixture","size":2,"playQueueID":1,
+                "playQueueSelectedItemID":11,"playQueueTotalCount":2,"Metadata":[{e1},{e2}]}}}}"#
+            )
+        } else if request.starts_with("GET ") && path == "/library/metadata/1" {
+            format!(r#"{{"MediaContainer":{{"size":1,"Metadata":[{e1}]}}}}"#)
+        } else if request.starts_with("GET ") && path == "/library/metadata/2" {
+            format!(r#"{{"MediaContainer":{{"size":1,"Metadata":[{e2}]}}}}"#)
+        } else {
+            r#"{"MediaContainer":{"size":0}}"#.to_owned()
+        }
+    }
+
+    /// Sign the fixture in as the account owner and give track memory a mirror seeded for that
+    /// account, empty: the state of a stored-session boot (the harness's seated cases).
+    fn seated_with_empty_memory(tag: &str) -> plx_plex::plex::session::TempSession {
+        let session = plx_plex::plex::session::TempSession::new(tag);
+        session.seated("", "acct");
+        plx_media::route::seed_memory_for_test::<plx_plex::plex::session::prefs::TrackMemoryEntry>(
+            &plx_plex::plex::session::Session {
+                client_id: "cid-1".into(),
+                account_token: "acct".into(),
+                ..Default::default()
+            },
+        );
+        session
+    }
+
+    impl Rig {
+        /// Play E1 of [`show_fixture`] and wait for its plan to land.
+        fn play_show_episode_one(&mut self) {
+            assert!(plx_media::route::request_play(
+                &mut self.app.player.session,
+                self.app.bridge.metadata_mut(),
+                self.sid,
+                "1",
+                "/library/parts/1/file.mkv",
+                "hevc",
+                "eac3",
+                "Episode 1",
+                ""
+            ));
+            self.entered.recv_timeout(Duration::from_secs(3)).unwrap();
+            self.resolve();
+        }
+
+        /// Pick the subtitle `id` through the track menu, as OK on its row, and perform the commit
+        /// the way the loop does.
+        fn pick_subtitle(&mut self, id: i64) {
+            let meta = self.app.bridge.metadata_view();
+            let playing = meta.playing().expect("the item is installed");
+            let index = playing.subs.iter().position(|s| s.id == id).unwrap_or_else(|| panic!("no subtitle {id}"));
+            let mut menu = plx_appkit::track_menu::TrackMenuState::new(&self.app.player.session, meta, 1, Vec::new());
+            let plx_appkit::track_menu::TrackOk::Commit { commit, .. } = menu.commit_sub_track(index, meta) else {
+                panic!("the menu committed nothing for subtitle {id}");
+            };
+            super::super::playback::commit_track(&mut self.app.player.session, commit);
+        }
+
+        /// Pick the audio track `id` through the track menu: focus its row, OK.
+        fn pick_audio(&mut self, id: i64) {
+            let meta = self.app.bridge.metadata_view();
+            let playing = meta.playing().expect("the item is installed");
+            let index = playing.audio.iter().position(|s| s.id == id).unwrap_or_else(|| panic!("no audio {id}"));
+            let mut menu = plx_appkit::track_menu::TrackMenuState::new(&self.app.player.session, meta, 0, Vec::new());
+            assert!(menu.focus_id(plx_appkit::track_menu::TrackRow::Audio(index)), "the audio row is on the page");
+            let plx_appkit::track_menu::TrackOk::Commit { commit, .. } = menu.on_ok(meta) else {
+                panic!("the menu committed nothing for audio {id}");
+            };
+            super::super::playback::commit_track(&mut self.app.player.session, commit);
+        }
+
+        /// Advance to the queue's next episode the way the countdown does (the loop's
+        /// `play_up_next`, run by `playback_tick` once the countdown expires), and wait for its plan.
+        fn advance_to_next_episode(&mut self) {
+            let mut fr = self.expire_up_next_countdown();
+            unsafe {
+                playback_tick(&mut self.app, &mut fr);
+            }
+            assert!(plx_media::route::play_pending(), "the countdown requested the successor");
+            poll_until("E2's plan did not land", || {
+                plx_media::route::pump_play(&mut self.app.player.session, self.app.bridge.metadata_mut()).is_some()
+            });
+            assert_eq!(plx_media::route::cur_rk(&self.app.player.session), "2");
+        }
+    }
+
+    /// **The bug, end to end (Step 0).** A viewer who picks a subtitle and an audio track on episode 1
+    /// finds them again on episode 2 of the same show: the pick goes through the track menu's OK
+    /// and the loop's `commit_track`, the next episode is resolved against a server that remembers
+    /// nothing, and E2's plan carries the remembered English subtitle and Japanese audio instead of
+    /// the server's Spanish and English.
+    #[test]
+    fn a_pick_on_one_episode_is_what_the_next_episode_plays() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::serving_with(show_fixture) else {
+            eprintln!("SKIPPED a_pick_on_one_episode_is_what_the_next_episode_plays: no fixture worker thread");
+            return;
+        };
+        let _session = seated_with_empty_memory("track-memory-step-0");
+
+        rig.play_show_episode_one();
+        let ps = &rig.app.player.session;
+        assert_eq!(plx_media::route::cur_sub_sid(ps), 1014, "E1 starts on the server's Spanish subtitle");
+        assert_eq!(plx_media::route::cur_audio_sid(ps), 1012, "and its first audio, English");
+        rig.pick_subtitle(1015);
+        rig.pick_audio(1013);
+        let ps = &rig.app.player.session;
+        assert_eq!((plx_media::route::cur_sub_sid(ps), plx_media::route::cur_audio_sid(ps)), (1015, 1013), "the picks stood");
+
+        rig.advance_to_next_episode();
+        let ps = &rig.app.player.session;
+        assert_eq!(
+            (plx_media::route::cur_sub_sid(ps), plx_media::route::cur_audio_sid(ps)),
+            (2014, 2013),
+            "E2 shows the English subtitle and plays the Japanese audio the viewer chose on E1 \
+             (the server's own selection there is Spanish, English)"
+        );
     }
 
     /// **The GL-while-backgrounded audit (S12a), as far as a host can run it.** One iteration of

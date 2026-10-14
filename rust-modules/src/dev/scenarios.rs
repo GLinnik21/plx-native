@@ -403,6 +403,41 @@ pub(crate) fn arm_audio_enhancements() {
     ));
 }
 
+/// `/tmp/plxnative-trackmemory=clear` — forget everything the seated profile's track memory holds,
+/// harness-only.
+///
+/// Track memory is the per-profile record a harness case writes without meaning to: a menu pick on
+/// an episode (`route::commit_audio_pick` / `commit_subtitle_pick`) lands in it, and the next case
+/// that plays the same show would then start from the previous case's tracks. `tests/run.py` writes
+/// `clear` for every case beside `plxnative-audioenh`, so a case's starting memory is a property of
+/// the manifest instead of of history, the argument `arm_audio_enhancements` makes for the
+/// preference. An unrecognised value is ignored rather than guessed at.
+///
+/// **It needs a seat, and so does the memory it clears.** The entries are the seated profile's, read
+/// and removed through the memory door (`route::recall_all`, then `route::remember` with a removal:
+/// the same refusal, the same queued delta, never a write around the door), which refuses for nobody.
+/// A dev-token boot never seats, so it neither remembers nor has anything to clear. The seat trigger
+/// (`app::bridge::SeatWatch`) runs this once, right after the restore of the process's first
+/// `Unseated` to `Seated` change and beside `arm_audio_enhancements`, with the profile it seated: a
+/// stored-session boot (the harness's seated cases) or a picker boot.
+pub(crate) fn arm_track_memory(user: &str) {
+    use plx_plex::plex::session::prefs::{MemoryEntry, TrackMemoryEntry};
+    let Some(v) = plx_base::devtrig::read("trackmemory") else { return };
+    if v.trim() != "clear" {
+        #[cfg(feature = "devtriggers")]
+        plx_base::eventlog::log(&format!("trackmemory: unrecognised value {:?} — ignored", v.trim()));
+        return;
+    }
+    let cleared = plx_media::route::recall_all::<TrackMemoryEntry>(user)
+        .into_iter()
+        .filter(|entry| plx_media::route::remember::<TrackMemoryEntry>(user, entry.key(), |_| None))
+        .count();
+    #[cfg(feature = "devtriggers")]
+    plx_base::eventlog::log(&format!("trackmemory: cleared {cleared} shows by /tmp/plxnative-trackmemory"));
+    #[cfg(not(feature = "devtriggers"))]
+    let _ = cleared;
+}
+
 /// `/tmp/plxnative-nobudget` — the frame budget's A/B CONTROL LEG (spec §8.1, phase 11).
 ///
 /// Present, admission is what it was before phase 11: the `Poster` quota of three per frame and
@@ -805,6 +840,67 @@ fn detail_boot_ready(sid: plx_plex::plex::ServerId, rk: &str, want_season: Optio
     loaded: Option<(plx_plex::plex::ServerId, &str, Option<i64>)>, detail_loading: bool, season_loading: bool) -> bool {
     !detail_loading && !season_loading && loaded.is_some_and(|(server, key, season)|
         server == sid && key == rk && want_season.is_none_or(|wanted| season == Some(wanted)))
+}
+
+#[cfg(test)]
+mod track_memory_arm_tests {
+    use super::arm_track_memory;
+    use plx_media::route::{recall_all, remember, seed_memory_for_test, unseed_memory_for_test};
+    use plx_plex::plex::session::prefs::{AudioMemo, TrackMemoryEntry};
+    use plx_plex::plex::session::{self, Session, TempSession};
+
+    const MACHINE: &str = "machine-1";
+
+    fn entry(show: &str) -> TrackMemoryEntry {
+        let japanese = AudioMemo { lang: "jpn".into(), codec: "eac3".into(), channels: 6, ..Default::default() };
+        TrackMemoryEntry::new(MACHINE, show, Some(japanese), None)
+    }
+
+    fn held(user: &str) -> usize {
+        recall_all::<TrackMemoryEntry>(user).len()
+    }
+
+    fn filed() -> usize {
+        session::load().prefs.track_memory.iter().map(|list| list.items.len()).sum()
+    }
+
+    /// **`plxnative-trackmemory=clear` forgets what the SEATED profile remembered, through the door.**
+    /// Each case in the harness starts from empty memory, so a pick one case made is not the next
+    /// case's starting tracks. Armed with `clear` only; another profile's seat clears nothing of
+    /// this one's; the file loses the entries too, not just the mirror.
+    #[test]
+    fn trackmemory_clear_forgets_the_seated_profiles_shows_and_nothing_else() {
+        let _serial = plx_base::testlock::serial();
+        assert!(plx_base::devtrig::ENABLED, "this test arms a dev trigger, which a build without devtriggers cannot");
+        let session = TempSession::new("arm-track-memory");
+        session::save(&Session { client_id: "cid-1".into(), account_token: "acct".into(), ..Default::default() });
+        session.seated("", "acct");
+        seed_memory_for_test::<TrackMemoryEntry>(&session::peek());
+        for show in ["100", "200"] {
+            assert!(remember::<TrackMemoryEntry>("", (MACHINE.to_string(), show.to_string()), move |_| Some(entry(show))));
+        }
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!((held(""), filed()), (2, 2), "setup: two shows remembered, in the mirror and in the file");
+
+        plx_base::devtrig::with_private_triggers(|| {
+            arm_track_memory("");
+            assert_eq!(held(""), 2, "nothing is armed, so nothing is forgotten");
+
+            std::fs::write(plx_base::devtrig::path("trackmemory"), "keep").unwrap();
+            arm_track_memory("");
+            assert_eq!(held(""), 2, "an unrecognised value is ignored, not guessed at");
+
+            std::fs::write(plx_base::devtrig::path("trackmemory"), "clear").unwrap();
+            arm_track_memory("kid");
+            assert_eq!(held(""), 2, "a profile that is not the seated one clears nothing");
+
+            arm_track_memory("");
+            assert_eq!(held(""), 0, "armed with clear, the seated profile's shows are forgotten");
+        });
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(filed(), 0, "and the file forgot them through the same queued update");
+        unseed_memory_for_test::<TrackMemoryEntry>();
+    }
 }
 
 #[cfg(test)]
@@ -1457,6 +1553,12 @@ fn menu_arm(app: &mut App, fr: &mut Frame) {
 /// itself, which is the issue #266 PR4 fix this trigger inherits (see
 /// `TrackMenuState::row_for_audio_target`'s doc for that history). An unrecognized name logs a
 /// clear line and commits nothing, same shape as the existing "row already active" no-commit log.
+///
+/// **The pick is a viewer's.** It goes through the menu's own commit, so it carries the pick's
+/// descriptor and `commit_track` remembers it for the show (seated, episode, accepted), exactly as a
+/// press would; `plxnative-trackmemory=clear` ([`arm_track_memory`]) is what keeps one case's pick
+/// out of the next case's starting tracks. [`subtiming_arm`] and the other setup arms commit with no
+/// descriptor and remember nothing.
 fn menupick_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.menupick_tried && matches!(app.route(), AppArg::Player) && fr.now.wrapping_sub(app.t0) > 7000 {
         app.scenarios.menupick_tried = true;
@@ -1775,6 +1877,8 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
             stream_id,
             sidecar_key: None,
             sidecar_codec: String::new(),
+            // A setup commit, not the viewer's choice: it remembers nothing.
+            memo: None,
         },
     );
 }

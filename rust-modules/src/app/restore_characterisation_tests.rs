@@ -750,6 +750,41 @@ fn audioenh_arm_writes_the_seated_profile() {
     });
 }
 
+/// **The dev track-memory clear runs at the first seat (track memory C4).** `plxnative-trackmemory=clear`
+/// forgets what the SEATED profile remembered, so the harness's seated cases start from empty
+/// memory. Boot runs nothing for it (nobody is seated, and the memory door refuses for nobody); the
+/// seat trigger runs it beside the audio-enhancement arm, once, with the profile it seated. An
+/// ADDED test: the cases above are as they were.
+#[test]
+fn trackmemory_arm_forgets_the_first_seated_profiles_shows() {
+    use plx_plex::plex::session::prefs::{AudioMemo, TrackMemoryEntry};
+    let _serial = plx_base::testlock::serial();
+    assert!(plx_base::devtrig::ENABLED, "this test arms a dev trigger, which a build without devtriggers cannot");
+    let stored = record("guest", &["profile-b"]);
+    let _fixture = Fixture::new("a0c-trackmemory-arm", &stored);
+    let held = |uuid: &str| plx_media::route::recall_all::<TrackMemoryEntry>(uuid).len();
+
+    plx_base::devtrig::with_private_triggers(|| {
+        std::fs::write(plx_base::devtrig::path("trackmemory"), "clear").unwrap();
+        crate::app::boot::restore_player_preferences(&session::load(), false);
+        // Something remembered before the boot's seat, as an earlier case's pick would have left it.
+        seat_globally("guest");
+        let japanese = AudioMemo { lang: "jpn".into(), codec: "eac3".into(), channels: 6, ..Default::default() };
+        let entry = TrackMemoryEntry::new(MACHINE, "show-1", Some(japanese), None);
+        assert!(plx_media::route::remember::<TrackMemoryEntry>("guest", (MACHINE.into(), "show-1".into()),
+            move |_| Some(entry.clone())));
+        assert_eq!(held("guest"), 1, "setup: the guest remembered a show");
+
+        let (rig, _d) = resume(&stored);
+        assert_eq!(rig.seat_watch.restored, seat_of("guest"), "the stored boot seated the guest");
+        assert_eq!(held("guest"), 0, "and the seat trigger ran the clear for the profile it seated");
+        plx_base::storage_worker::drain_for_test();
+        assert!(session::load().prefs.track_memory.iter().all(|list| list.items.is_empty()),
+            "the file forgot it too");
+    });
+    plx_media::route::unseed_memory_for_test::<TrackMemoryEntry>();
+}
+
 /// **A republication of the same seat restores nothing (plan 3.8.5).** A roster refresh or a
 /// rediscovery publishes the profile again while a pick is in flight; the pick is not clobbered. The
 /// cell's publish counter is the oracle: the value alone could not tell a restore of the same record

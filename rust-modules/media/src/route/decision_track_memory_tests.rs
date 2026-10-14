@@ -10,6 +10,8 @@ use super::test_support::apply_plan;
 use super::test_support::*;
 use super::*;
 use plx_plex::plex::session::prefs::{AudioMemo, SubtitleMemo, SubtitleTrackMemo, TrackMemoryEntry};
+use super::prefs_door_tests::Parked;
+use crate::route::{memo_of_audio, memo_of_subtitle};
 use plx_plex::plex::session::prefs::ProfileList;
 use plx_plex::plex::session::{self as session, Preferences, Session};
 
@@ -993,4 +995,402 @@ fn commit_audio_selection_is_false_only_for_the_forced_refusal() {
     assert_eq!(cur_audio_sid(&forced), 0, "and the selection is untouched");
     restore_direct_play_mode(DirectPlayMode::Auto);
     reset_session(&mut ps);
+}
+
+// ---- the write: a track-menu pick is remembered (`commit_audio_pick`, `commit_subtitle_pick`) -----
+
+fn signed_in() -> Session {
+    Session { client_id: "cid-1".into(), account_token: "acct".into(), ..Default::default() }
+}
+
+/// What `user` has remembered for the playing show, read through the door's own `recall`.
+fn remembered(user: &str) -> Option<TrackMemoryEntry> {
+    recall::<TrackMemoryEntry>(user, &(MACHINE.to_string(), SHOW.to_string()))
+}
+
+/// Everything `user` has remembered, for any show.
+fn remembered_anything(user: &str) -> Vec<TrackMemoryEntry> {
+    recall_all::<TrackMemoryEntry>(user)
+}
+
+/// What the FILE holds for `user`, once the storage worker has run the queued write.
+fn filed(user: &str) -> Vec<TrackMemoryEntry> {
+    let stamp = plx_plex::plex::grant::account_key("acct");
+    session::peek()
+        .prefs
+        .track_memory
+        .iter()
+        .find(|l| l.user == user && l.account == stamp)
+        .map(|l| l.items.clone())
+        .unwrap_or_default()
+}
+
+/// The state of a stored-session boot: signed in, `user` seated, the mirror seeded from the record.
+fn sign_in_and_seat(session: &session::TempSession, user: &str) {
+    session::save(&signed_in());
+    session.seated(user, "acct");
+    seed_memory_for_test::<TrackMemoryEntry>(&session::peek());
+}
+
+/// Land a playback of `kind` / `show_rk` on a registered server (machine [`MACHINE`]). The plan names
+/// no Part, so a commit sends no selection PUT.
+fn land_playing(ps: &mut PlaybackSession, kind: &str, show_rk: &str) -> ServerId {
+    let sid = plx_plex::plex::register_for_test(MACHINE, "127.0.0.1", 32401, "tok", "cid-tm");
+    let playing = plx_data::metadata::PlayingItem {
+        kind: kind.into(),
+        show_rk: show_rk.into(),
+        ..plx_data::metadata::PlayingItem::with_subs(Vec::new())
+    };
+    apply_plan(ps, Plan { sid, url: "http://fixture.invalid/ep.mkv".into(), playing: Some(playing), ..Default::default() }, "rk-ep");
+    sid
+}
+
+/// Leave the process as the next test expects it.
+fn tidy_write(ps: &mut PlaybackSession) {
+    reset_session(ps);
+    tidy();
+}
+
+/// **The write.** A menu pick on an episode is remembered under the profile, the server's machine and
+/// the show; the other half of the entry is left as it was.
+#[test]
+fn a_menu_pick_is_remembered_for_the_show_and_each_half_keeps_the_other() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-write");
+    sign_in_and_seat(&session, "");
+    land_playing(&mut ps, "episode", SHOW);
+    assert_eq!(remembered(""), None, "setup: nothing is remembered yet");
+
+    assert!(commit_audio_pick(&mut ps, CarriedAudio::named(36015, 1), Some(japanese_eac3())));
+    assert_eq!(remembered(""), Some(TrackMemoryEntry::new(MACHINE, SHOW, Some(japanese_eac3()), None)));
+
+    commit_subtitle_pick(&mut ps, 0, 55001, true, Some(english_track()));
+    assert_eq!(
+        remembered(""),
+        Some(TrackMemoryEntry::new(MACHINE, SHOW, Some(japanese_eac3()), Some(english_track()))),
+        "the subtitle pick kept the audio half"
+    );
+
+    let spanish = AudioMemo { lang: "spa".into(), ..japanese_eac3() };
+    assert!(commit_audio_pick(&mut ps, CarriedAudio::named(36016, 2), Some(spanish.clone())));
+    assert_eq!(
+        remembered(""),
+        Some(TrackMemoryEntry::new(MACHINE, SHOW, Some(spanish), Some(english_track()))),
+        "and a second audio pick replaced the audio half and kept the subtitle"
+    );
+    tidy_write(&mut ps);
+}
+
+/// A commit that is not the viewer's choice (a harness setup) carries no memo and remembers nothing.
+#[test]
+fn a_commit_that_carries_no_memo_remembers_nothing() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-no-memo");
+    sign_in_and_seat(&session, "");
+    land_playing(&mut ps, "episode", SHOW);
+
+    assert!(commit_audio_pick(&mut ps, CarriedAudio::named(36015, 1), None), "the route still took the pick");
+    commit_subtitle_pick(&mut ps, 0, 55001, true, None);
+    assert_eq!(cur_audio_sid(&ps), 36015, "setup: the picks stood");
+    assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new());
+    tidy_write(&mut ps);
+}
+
+/// **A subtitle commit that changes nothing remembers nothing.** The track menu opens on the
+/// checked row and an OK there still commits (the route republishes), so a press to close the menu
+/// on the Off the ladder chose, or on the track it chose, reaches the door with a descriptor; the
+/// ladder's pick is not the viewer's choice (`track-memory-plan.md` §4.4: "Not written: any
+/// auto-pick"), so the stream the route already shows is never written. The controls: a pick of
+/// another stream is, and so is an Off after a track.
+#[test]
+fn a_subtitle_commit_that_changes_nothing_remembers_nothing() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-unchanged");
+    sign_in_and_seat(&session, "");
+    land_playing(&mut ps, "episode", SHOW);
+    assert_eq!(cur_sub_sid(&ps), 0, "setup: the ladder landed on Off");
+
+    commit_subtitle_pick(&mut ps, -1, 0, false, Some(SubtitleMemo::Off));
+    assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new(), "OK on the Off the ladder chose wrote nothing");
+
+    set_subtitle(&mut ps, 55001);
+    commit_subtitle_pick(&mut ps, 0, 55001, true, Some(english_track()));
+    assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new(), "nor did OK on the track the ladder chose");
+
+    commit_subtitle_pick(&mut ps, 1, 55002, true, Some(english_track()));
+    assert_eq!(
+        remembered(""),
+        Some(TrackMemoryEntry::new(MACHINE, SHOW, None, Some(english_track()))),
+        "control: another track is the viewer's choice"
+    );
+    commit_subtitle_pick(&mut ps, 1, 55002, true, Some(SubtitleMemo::Off));
+    assert_eq!(
+        remembered("").and_then(|e| e.subtitle),
+        Some(english_track()),
+        "OK on that track again is not a second choice, whatever it carries"
+    );
+    commit_subtitle_pick(&mut ps, -1, 0, false, Some(SubtitleMemo::Off));
+    assert_eq!(
+        remembered("").and_then(|e| e.subtitle),
+        Some(SubtitleMemo::Off),
+        "control: Off after a track is a change, remembered as Off"
+    );
+    tidy_write(&mut ps);
+}
+
+/// **The remembered-subtitle note ends when what it explained does.** `cur_memory_note` is set by a
+/// landing, but a sidecar the app draws over the copy remux is drawn in place: no landing runs, so
+/// the flag would outlive the fact (the chosen subtitle "can't be shown") while the viewer's own
+/// subtitle is on screen. Clearing it belongs to a commit that changes what is shown. The control
+/// is the press that does not: Off, which the route already shows, leaves the note true.
+#[test]
+fn an_in_place_subtitle_commit_ends_the_remembered_note() {
+    let mut idle = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut idle);
+    let (mut ps, _sid) =
+        enhancement_test_session(EnhTestFixture { remux: Some(true), memory_note: true, ..Default::default() });
+    assert!(cur_memory_note(&ps) && is_transcoding(&ps), "setup: the note case, on a live copy remux");
+    assert_eq!(cur_sub_sid(&ps), 0, "setup: Off is on screen");
+
+    commit_subtitle_pick(&mut ps, -1, 0, false, None);
+    assert!(cur_memory_note(&ps), "control: Off over Off changes nothing shown, so the note is still true");
+
+    commit_subtitle_pick(&mut ps, -1, 78, true, None);
+    assert_eq!(cur_sub_sid(&ps), 78, "setup: the sidecar stands");
+    assert!(
+        !pending_user_route_intent(UserRouteIntent::Retranscode),
+        "setup: it is drawn in place, so no landing will ever clear the note for it"
+    );
+    assert!(!cur_memory_note(&ps), "the viewer's subtitle is on screen: the note is no longer true");
+    reset_player_control_for_test(&ps);
+    tidy();
+}
+
+/// **A pick the route refuses is not remembered.** Force Direct Play refuses a track it cannot feed
+/// (`commit_audio_selection` is `false`); remembering it would put a track on the next episode that
+/// this route will not play. The control: a track it CAN feed, under the same mode, is remembered.
+#[test]
+fn a_pick_the_route_refuses_writes_nothing() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-refused");
+    sign_in_and_seat(&session, "");
+    land_playing(&mut ps, "episode", SHOW);
+    ps.direct_play_mode = DirectPlayMode::Forced;
+    restore_direct_play_mode(DirectPlayMode::Disabled);
+    assert!(forced_direct_play(&ps), "setup: Force Direct Play is on");
+
+    let truehd = CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false };
+    assert!(!commit_audio_pick(&mut ps, truehd, Some(japanese_eac3())), "the route refuses TrueHD it cannot feed");
+    assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new(), "and the refused pick wrote nothing");
+
+    let eac3 = CarriedAudio { sid: 10, ordinal: 1, codec: "eac3".into(), channels: 6, can_normalize_loudness: false, immersive: false };
+    assert!(commit_audio_pick(&mut ps, eac3, Some(japanese_eac3())), "control: a track the route can feed stands");
+    assert_eq!(remembered(""), Some(TrackMemoryEntry::new(MACHINE, SHOW, Some(japanese_eac3()), None)));
+    restore_direct_play_mode(DirectPlayMode::Auto);
+    tidy_write(&mut ps);
+}
+
+/// **Off is remembered as Off**, absolute: it is stored as `SubtitleMemo::Off` (not as the absence of
+/// a track), replaces the track that was remembered, and the next resolve honours it over the
+/// account's rule and the server's selection.
+#[test]
+fn a_menu_off_is_stored_as_off_and_beats_the_accounts_rule() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-off");
+    sign_in_and_seat(&session, "");
+    land_playing(&mut ps, "episode", SHOW);
+
+    commit_subtitle_pick(&mut ps, 0, 55001, true, Some(english_track()));
+    commit_subtitle_pick(&mut ps, -1, 0, false, Some(SubtitleMemo::Off));
+    let entry = remembered("").expect("Off is a choice, and a choice is remembered");
+    assert_eq!(entry.subtitle, Some(SubtitleMemo::Off), "Off replaced the remembered track");
+
+    #[cfg(feature = "devtriggers")]
+    {
+        let mut case = Case::episode(vec![srt(55001, 3, "eng", false, false)], remembered_anything(""));
+        case.account = Some((Some("eng".into()), 2, 0));
+        let (plan, _, _) = resolve_in(&mut ps, case, |_, plan| plan);
+        assert_eq!((plan.sub_sid, plan.sub_render_ordinal), (0, None), "the next episode shows nothing, whatever the account says");
+    }
+    tidy_write(&mut ps);
+}
+
+/// **Episodes only.** A movie, an item no show claims, a track and an item of no kind write nothing;
+/// the control (an episode of a known show) writes.
+#[test]
+fn only_an_episode_of_a_known_show_is_remembered() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-kinds");
+    sign_in_and_seat(&session, "");
+    for (kind, show_rk) in [("movie", SHOW), ("episode", ""), ("track", SHOW), ("", SHOW)] {
+        land_playing(&mut ps, kind, show_rk);
+        commit_audio_pick(&mut ps, CarriedAudio::named(36015, 1), Some(japanese_eac3()));
+        commit_subtitle_pick(&mut ps, 0, 55001, true, Some(english_track()));
+        assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new(), "{kind:?}/{show_rk:?} wrote nothing");
+    }
+    land_playing(&mut ps, "episode", SHOW);
+    commit_audio_pick(&mut ps, CarriedAudio::named(36015, 1), Some(japanese_eac3()));
+    assert_eq!(remembered_anything("").len(), 1, "control: an episode of a known show is remembered");
+    tidy_write(&mut ps);
+}
+
+/// **Unseated, nothing is written.** A profile published without a seat (an unseated boot, a dev
+/// token) reaches the door, and the door refuses. Read back once the profile IS seated, so the empty
+/// answer is the mirror's and not the seat gate's.
+#[test]
+fn a_pick_made_while_unseated_writes_nothing() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-unseated");
+    sign_in_and_seat(&session, "");
+    session.watching("");
+    land_playing(&mut ps, "episode", SHOW);
+
+    assert!(commit_audio_pick(&mut ps, CarriedAudio::named(36015, 1), Some(japanese_eac3())), "the route took the pick");
+    commit_subtitle_pick(&mut ps, 0, 55001, true, Some(english_track()));
+    plx_base::storage_worker::drain_for_test();
+    assert_eq!(filed(""), Vec::<TrackMemoryEntry>::new(), "the file got nothing");
+
+    seat(&session, "");
+    assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new(), "and neither did the mirror");
+    tidy_write(&mut ps);
+}
+
+/// **A second profile on the same server does not see the first's memory**, and its own picks land in
+/// its own list, leaving the first's as they were.
+#[test]
+fn a_second_profile_on_the_same_server_has_its_own_memory() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-profiles");
+    sign_in_and_seat(&session, "");
+    land_playing(&mut ps, "episode", SHOW);
+    commit_audio_pick(&mut ps, CarriedAudio::named(36015, 1), Some(japanese_eac3()));
+    let owners = TrackMemoryEntry::new(MACHINE, SHOW, Some(japanese_eac3()), None);
+    assert_eq!(remembered(""), Some(owners.clone()), "setup: the owner remembered a pick");
+
+    seat(&session, "kid");
+    assert_eq!(remembered("kid"), None, "the second profile sees nothing of the owner's");
+    assert_eq!(remembered_anything("kid"), Vec::<TrackMemoryEntry>::new());
+
+    let spanish = AudioMemo { lang: "spa".into(), ..japanese_eac3() };
+    commit_audio_pick(&mut ps, CarriedAudio::named(36016, 2), Some(spanish.clone()));
+    assert_eq!(remembered("kid"), Some(TrackMemoryEntry::new(MACHINE, SHOW, Some(spanish), None)));
+
+    seat(&session, "");
+    assert_eq!(remembered(""), Some(owners), "and the owner's pick is as it was");
+    tidy_write(&mut ps);
+}
+
+/// **The write is the single door.** The pick reaches the file through `remember`'s QUEUED update (not
+/// applied in line), so it carries the door's guard: a write queued before the client id changed is
+/// dropped when it runs (the file never gets it), while an unguarded write would have landed in the
+/// new client's file. The mirror keeps it, the declared delta of `decision_memory_tests`.
+#[test]
+fn the_pick_reaches_the_file_only_through_the_guarded_door() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-door");
+    sign_in_and_seat(&session, "");
+    land_playing(&mut ps, "episode", SHOW);
+
+    let parked = Parked::new();
+    commit_audio_pick(&mut ps, CarriedAudio::named(36015, 1), Some(japanese_eac3()));
+    assert_eq!(filed(""), Vec::<TrackMemoryEntry>::new(), "setup: the write is queued behind the parked worker, not applied in line");
+    parked.release();
+    plx_base::storage_worker::drain_for_test();
+    assert_eq!(
+        filed(""),
+        vec![TrackMemoryEntry::new(MACHINE, SHOW, Some(japanese_eac3()), None)],
+        "the queued update wrote the stamped entry"
+    );
+
+    let parked = Parked::new();
+    commit_subtitle_pick(&mut ps, 0, 55001, true, Some(english_track()));
+    session::save(&Session { client_id: "cid-2".into(), account_token: "acct".into(), ..Default::default() });
+    parked.release();
+    plx_base::storage_worker::drain_for_test();
+    assert_eq!(session::peek().client_id, "cid-2", "setup: the client id moved under the queued write");
+    assert_eq!(filed(""), Vec::<TrackMemoryEntry>::new(), "the guard dropped the write; the new client's file has nothing");
+    tidy_write(&mut ps);
+}
+
+/// **U8, the media half of the bug.** One viewer, one server, two episodes the server answers
+/// differently (a ratingKey-keyed responder): the viewer picks Japanese audio and English subtitles
+/// on E1, and E2, a file with other stream ids, plays the Japanese track of ITS file, and knows the
+/// remembered subtitle is withheld (the server remuxes E2, which the app cannot draw on).
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_pick_on_one_episode_is_what_the_next_episode_resolves_to() {
+    fn by_episode(line: &str) -> Option<&'static [u8]> {
+        if line.contains("rk-e2") {
+            Some(MDE_TRANSCODE_COPY)
+        } else if line.contains("rk-e1") {
+            Some(MDE_DIRECTPLAY)
+        } else {
+            None
+        }
+    }
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-chain");
+    sign_in_and_seat(&session, "");
+    assert!(plx_net::net::global_init());
+    // E1: PlayQueue, MDE decision, two show reads, then the two selection PUTs the picks queue.
+    // E2: PlayQueue, two show reads, the remux decision, its selection PUT.
+    let (port, rx, server) = plan_pms_keyed(11, MDE_DIRECTPLAY, by_episode);
+    let sid = plx_plex::plex::register_for_test(MACHINE, "127.0.0.1", port, "token", "tm-client");
+    let store = plx_data::stores::metadata::MetadataStore::default();
+    let view = store.view();
+    // A viewer's launch of `rk`, in the order `request_play_inner` does it: the outgoing item's live
+    // selection is cleared, then the env is built (reading the memory off the mirror).
+    let resolve_episode = |ps: &PlaybackSession, rk: &str, part: &str, audio: Vec<plx_data::metadata::Stream>,
+                           subs: Vec<plx_data::metadata::Stream>, mode: DirectPlayMode| {
+        reset_track_selection(sid, rk, None);
+        let launch = PlaybackRequest { rk: rk.into(), part: part.into(), ..request(sid, false) };
+        let mut env = request_env(ps, view, &launch, None);
+        env.direct_play_mode = mode;
+        env.cached_item = Some(plx_data::metadata::PlayingItem {
+            kind: "episode".into(),
+            show_rk: SHOW.into(),
+            ..fourk_item_with_subs(sid, audio, subs)
+        });
+        build_stream(&plx_base::task::OffFrame::for_test(), rk, part, "hevc", "eac3", &env)
+    };
+
+    let e1_audio = audio_pair();
+    let e1_subs = two_subs();
+    let e1 = resolve_episode(&ps, "rk-e1", "/library/parts/36013/1/file.mkv", e1_audio.clone(), e1_subs.clone(), DirectPlayMode::Auto);
+    assert_eq!((e1.audio.as_ref().map(|a| a.sid), e1.sub_sid), (Some(36014), 55002), "E1 starts on the server's own selection");
+    apply_plan(&mut ps, e1, "rk-e1");
+
+    // The viewer picks, through the menu's commits, the Japanese audio and the English subtitle.
+    assert!(commit_audio_pick(&mut ps, CarriedAudio::from_stream(&e1_audio[1], 1), memo_of_audio(&e1_audio, 1)));
+    commit_subtitle_pick(&mut ps, 0, 55001, true, Some(memo_of_subtitle(&e1_subs[0])));
+
+    // The next launch retires the outgoing item's selection before it builds its env.
+    begin_track_selection(&mut ps, None);
+    // E2's file has other ids for the same tracks. The snapshot reads the real mirror.
+    let e2_audio = vec![
+        plx_data::metadata::Stream { id: 46014, ..eac3_track() },
+        stream(46015, 2, "jpn", "eac3", 6),
+    ];
+    let e2_subs = vec![srt(65001, 3, "eng", false, false), srt(65002, 4, "spa", false, true)];
+    let e2 = resolve_episode(&ps, "rk-e2", "/library/parts/46013/1/file.mkv", e2_audio, e2_subs, DirectPlayMode::Disabled);
+    let requests = rx.recv_timeout(std::time::Duration::from_secs(15)).expect("PMS never saw both resolves");
+    server.join().unwrap();
+
+    assert_eq!(e2.audio.as_ref().map(|a| a.sid), Some(46015), "E2 plays the Japanese track of its own file");
+    assert!(e2.url.contains("start.mkv") && e2.contract.remux, "setup: the server remuxes E2: {}", e2.url);
+    assert_eq!(e2.sub_sid, 0, "a copy remux does not show the remembered subtitle");
+    assert!(e2.memory_note, "and the menu is told the remembered subtitle was withheld: {requests:?}");
+    assert_eq!(e2.write_back, None);
+    assert_eq!(query_param(transcode_decision(&requests), "audioStreamID"), Some("46015"), "{requests:?}");
+    tidy_write(&mut ps);
 }

@@ -47,12 +47,17 @@ Audio **Original** clears the preferred language while enabling automatic select
 mode offers manual selection, "when audio isn't in the subtitle language", and always; **No preference** clears only the
 subtitle language. Order: this playback's own pick, then (subtitles only) a subtitle file the
 server has already selected, then what the profile remembered for the show (episodes only), then
-existing PMS item selections, then explicit show preferences, then account defaults. Nothing writes
-the remembered pick yet, so that rung is dormant until the menu write lands. That mode shows subtitles when the audio that will play is not in the subtitle language (`route/plan.rs` compares the two).
+existing PMS item selections, then explicit show preferences, then account defaults. The remembered
+pick is written by the track menu: choosing an audio or subtitle track (or Off) while an episode
+plays remembers it for that show under the seated profile, and the next episode of the show starts on
+the same pick, matched by language, forced/SDH and the like rather than by stream id. A movie's pick,
+a pick the route refused (Force Direct Play), an automatic choice and an OK on the subtitle already
+showing are not remembered. A remembered Off beats the account's rule and the server's embedded
+selection (a subtitle file the server has selected for the item still shows first). That mode shows subtitles when the audio that will play is not in the subtitle language (`route/plan.rs` compares the two).
 Account defaults do not introduce subtitle burning when playback starts as a transcode. A remembered
 pick is burned only where the video is being re-encoded anyway (a fixed quality, a relay, adaptive
 streaming); on a copy remux or a direct play the app draws it if it can, and otherwise it is not
-shown rather than forcing a re-encode (the audio enhancements' own burn rule is a separate matter); the resolve's single `track-memory:` line says `not shown (copy remux) subtitle N` for it (applied halves lead that line, so search for the substring), and the Subtitles menu will say so once the menu note lands.
+shown rather than forcing a re-encode (the audio enhancements' own burn rule is a separate matter); the resolve's single `track-memory:` line says `not shown (copy remux) subtitle N` for it (applied halves lead that line, so search for the substring), and the Subtitles menu says so with one line under its first group (shown only for that case).
 
 PMS can keep using an earlier account preference until its own copy updates. The UI explains
 this delay, and the resolver does not guess that an old-language selection was automatic.

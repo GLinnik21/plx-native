@@ -678,6 +678,10 @@
     "value": "Drawn by your server at this quality.",
     "description": "Subtitles tab of the player's track selector. One-line reason under the DIMMED Timing and Style rows while the subtitle on screen is drawn into the picture by the server for any reason other than converting the audio (a quality-limited re-encode, a picture subtitle that must be burned): the text is already in the video, so neither control can reach it. No jargon: never say burn/remux/transcode."
   },
+  "widgets.tracks.sub_remembered_note": {
+    "value": "The subtitles you chose for this show can’t be shown with this video.",
+    "description": "Subtitles tab of the player's track selector. A short reason under the first group of rows, shown only when the show's remembered subtitle choice was applied to this episode but this way of playing it can show none of it (the player cannot draw that subtitle itself and the server would have to re-encode the picture to do it), so Off is what is on screen. Wraps over several lines on the panel (three in English). No jargon: never say burn/remux/transcode."
+  },
   "widgets.tracks.style": {
     "value": "Style",
     "description": "Subtitles tab of the player's track selector. The drill-in row that opens the caption style pages (Size, Position, Color), and the title of that page."
