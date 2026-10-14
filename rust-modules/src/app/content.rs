@@ -488,7 +488,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
             &mut app.adapters.player,
             player_reqs,
             fr.now,
-            &mut app.refresh_hubs_at,
+            &mut app.refresh_hubs,
             &mut app.pages,
             &mut app.bridge,
             &mut app.ok_armed,

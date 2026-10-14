@@ -183,6 +183,10 @@ impl HubsStore {
         crate::pms::owed(&self.adapter)
     }
 
+    /// Test hook: how many authoritative refetches (`RefetchHubs`) this store has started.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn refetch_count_for_test(&self) -> u32 { crate::pms::hub_gen_for_test(&self.state) }
+
     /// Test hook: how many spawned workers still owe a landing.
     #[cfg(any(test, feature = "test-support"))]
     pub fn owed_for_test(&self) -> u32 { crate::pms::owed_count_for_test(&self.adapter) }

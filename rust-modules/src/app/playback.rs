@@ -488,7 +488,7 @@ pub(crate) fn close_player_overlays(pages: &mut plx_ui::dispatch::Dispatcher<sup
 pub(crate) unsafe fn commit_info_press(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
-    refresh_hubs_at: &mut u32,
+    refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
@@ -498,7 +498,7 @@ pub(crate) unsafe fn commit_info_press(
         return;
     };
     close_player_overlays(pages);
-    apply_info_action(ps, pa, action, refresh_hubs_at, pages, bridge);
+    apply_info_action(ps, pa, action, refresh_hubs, pages, bridge);
 }
 
 /// **Perform the track menu's pick.**
@@ -565,7 +565,7 @@ pub(crate) fn player_requests(
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     reqs: Vec<plx_screens::registry::PlayerReq>,
     now: u32,
-    refresh_hubs_at: &mut u32,
+    refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
     ok_armed: &mut bool,
@@ -622,7 +622,7 @@ pub(crate) fn player_requests(
                 *ok_armed = true;
             }
             PlayerReq::Info(action) => {
-                apply_info_action(ps, pa, action, refresh_hubs_at, pages, bridge)
+                apply_info_action(ps, pa, action, refresh_hubs, pages, bridge)
             }
             // The old `key_ok`'s tabs-row (`focus == 2`) and failure-read-out (`ChooseQuality`)
             // arms, both of which presented a panel immediately rather than through the deferred
@@ -641,7 +641,7 @@ pub(crate) fn player_requests(
             // The STOP key, a BACK with nothing else open and the failure read-out's own BACK
             // escape all reach the same ritual.
             PlayerReq::Exit => {
-                exit_player(ps, pa, refresh_hubs_at, pages);
+                exit_player(ps, pa, refresh_hubs, pages);
             }
         }
     }
@@ -700,7 +700,7 @@ pub(super) fn return_from_player(
 pub(crate) fn exit_player(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
-    refresh_hubs_at: &mut u32,
+    refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     plx_media::route::cancel_play(ps); // BACK during a load: supersede, drop the landing
@@ -722,7 +722,7 @@ pub(crate) fn exit_player(
     // through `nav_pop_to`'s Home floor; a live Content entry with no identity takes the explicit
     // Home floor in `return_from_player`, preserving `return_page`'s old anti-strand contract.
     return_from_player(pages);
-    *refresh_hubs_at = clock::now().wrapping_add(800).max(1);
+    *refresh_hubs = true;
 }
 
 /// The episode is OVER — drained to EOS, or the user skipped a `final` credits marker.
@@ -738,7 +738,7 @@ pub(crate) fn exit_player(
 pub(crate) fn finish_playback(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
-    refresh_hubs_at: &mut u32,
+    refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) -> bool {
@@ -747,7 +747,7 @@ pub(crate) fn finish_playback(
     {
         return true;
     }
-    exit_player(ps, pa, refresh_hubs_at, pages);
+    exit_player(ps, pa, refresh_hubs, pages);
     // The ring goes back to the scrubber for the NEXT session, and the next session is a fresh
     // instance — so there is nothing to park here any more (`start_playback`'s note).
     false
@@ -762,7 +762,7 @@ pub(crate) fn activate_ctrl_row(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     slot: plx_appkit::player_hud::ControlSlot,
-    refresh_hubs_at: &mut u32,
+    refresh_hubs: &mut bool,
     btn: c_int,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
@@ -807,7 +807,7 @@ pub(crate) fn activate_ctrl_row(
                 }
                 // a `final` credits segment: skipping it IS finishing the item
                 SkipAction::Finish => {
-                    let _ = finish_playback(ps, pa, refresh_hubs_at, pages, bridge);
+                    let _ = finish_playback(ps, pa, refresh_hubs, pages, bridge);
                     true
                 }
             }
@@ -970,7 +970,7 @@ fn apply_info_action(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     action: plx_appkit::info_panel::InfoAction,
-    refresh_hubs_at: &mut u32,
+    refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
@@ -996,7 +996,7 @@ fn apply_info_action(
                 let sid = bridge.metadata_view().playing()
                     .map(|p| p.sid)
                     .unwrap_or_else(plx_plex::plex::current_server);
-                exit_player(ps, pa, refresh_hubs_at, pages);
+                exit_player(ps, pa, refresh_hubs, pages);
                 // A LANDING, not a navigation, so the page is SHOWN rather than pushed blindly:
                 // the exit above has usually already put this very page on top (the show playback
                 // started from), and `show_page` is a no-op there. It is also strictly better than
@@ -1032,7 +1032,7 @@ pub(crate) unsafe fn activate_player_row(
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     ctrl: plx_appkit::player_hud::ControlSlot,
     now: u32,
-    refresh_hubs_at: &mut u32,
+    refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
@@ -1049,7 +1049,7 @@ pub(crate) unsafe fn activate_player_row(
             ps,
             pa,
             ctrl,
-            refresh_hubs_at,
+            refresh_hubs,
             btn,
             pages,
             bridge,
