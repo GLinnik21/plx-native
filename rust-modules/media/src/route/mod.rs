@@ -5,7 +5,7 @@
 //! [`plan::build_stream`] run on the resolve worker; [`decision`] holds everything else — the
 //! main-thread `Session`, the synchronized `PlayerControl`, and every PMS/native effect. Every
 //! item this module re-exports keeps its old `route::` path, so nothing outside `route/` had to
-//! change. `ci/check-deps.sh`'s `wall` gate holds `plan.rs` to zero
+//! change. `ci/check-deps.sh`'s `wall` gate holds `plan.rs` (and `plan_memory.rs`, its child) to zero
 //! `Instant::now`/`SystemTime::now`/`.elapsed()`; `decision.rs` is not scanned by that gate (a
 //! network/adapter effect is allowed to read wall time) but as of this split carries none either.
 

@@ -53,7 +53,7 @@ pub(super) type Miss = &'static str;
 /// **The show a playing item's picks belong to**: track memory is kept per episode of a known show,
 /// so a movie, a trailer, an item of no type or an episode the server placed in no show has none.
 /// The one predicate of the read side (`plan::show_memory`) and the write
-/// (`decision::remember_track_pick`), so what is written is exactly what a later resolve can read.
+/// (`decision::memory::remember_track_pick`), so what is written is exactly what a later resolve can read.
 pub(super) fn memory_show<'a>(kind: &str, show_rk: &'a str) -> Option<&'a str> {
     (kind == "episode" && !show_rk.is_empty()).then_some(show_rk)
 }
@@ -293,7 +293,7 @@ impl SubMode {
 pub struct Rematch {
     pub(super) memo: SubtitleMemo,
     /// The subtitle stream id the landing put on screen (`0` = none), read from the session once the
-    /// landing is complete (`decision::settle_landing_selection`), not from the plan. The re-match
+    /// landing is complete (`decision::memory::settle_landing_selection`), not from the plan. The re-match
     /// runs only while that is still what is shown: a viewer who picked meanwhile has decided.
     pub(super) landed_sub: i64,
 }

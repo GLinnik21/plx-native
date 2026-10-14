@@ -15,7 +15,7 @@ use super::prefs_door_tests::Parked;
 use super::test_support::apply_plan;
 use super::test_support::*;
 use super::*;
-use plx_plex::plex::session::{self as session, Session};
+use plx_plex::plex::session::{self as session, Session, SubtitleOffsetEntry};
 
 fn signed_in(token: &str) -> Session {
     Session { client_id: "cid-1".into(), account_token: token.into(), ..Default::default() }
