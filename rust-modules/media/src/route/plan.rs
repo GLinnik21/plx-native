@@ -2128,7 +2128,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // — the ordinary enhanced remux drops it (M4). `enhancement_policy`'s `remux` half denies the
     // uncapped-remux flavour on exactly this route, same as it already denies direct play whenever
     // any enhancement is wanted.
-    let force_burn = matches!(route, Some(EnhancementRoute::Burn));
+    // `route` is what the enhancement WOULD take where it is offered, whether or not the viewer
+    // turned one on, so the forced re-encode is spent only when an audio param is actually asked for
+    // (`audio.any()`, the same condition `OriginalRecoveryPlan::force_burn_for` applies): with both
+    // toggles off the route stays the remux it was, rather than demoting a copy to a burn.
+    let force_burn = audio.any() && matches!(route, Some(EnhancementRoute::Burn));
     // Remembered for the fallback: a refused enhancement restores the route it decorated.
     let enhanced_from_direct = audio.any() && directplay;
     if audio.any() {

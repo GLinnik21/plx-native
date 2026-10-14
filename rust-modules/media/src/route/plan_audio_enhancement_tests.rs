@@ -951,3 +951,27 @@ fn q_top_b_a_refused_forced_burn_keeps_the_remembered_subtitle() {
     assert_eq!(query_param(&r.plan.url, "subtitles"), Some("burn"), "{}", r.plan.url);
     plx_plex::plex::reset_servers_for_test();
 }
+
+/// **Both enhancement toggles off, the route is not forced into a burn.** `enhancement_route` says
+/// what the enhancement WOULD take where it is offered (Plex Pass, an analysed track, an embedded
+/// subtitle on screen: `Burn`), and says it whether or not the viewer turned anything on. The forced
+/// re-encode is that route spent, so with no param to send it has nothing to carry: the plan stays
+/// the codec-preserving remux the server's own decision named, with the video copied and nothing
+/// burned.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn burn_route_offered_but_no_enhancement_wanted_is_not_forced_into_a_re_encode() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_TRANSCODE_COPY, EnhMode::Honor("ac3"), 0, MKV, "truehd",
+        |sid| fourk_item_with_subs(sid, vec![track(1, "truehd", 8, true)], vec![selected_sub(9, "srt")]),
+        |env, _| env.audio_enhancements = plx_plex::plex::AudioEnhancements::NONE);
+    assert!(r.plan.url.contains("start.mkv"), "setup: the TrueHD is converted by the server: {}", r.plan.url);
+    assert_eq!(r.plan.contract.audio, plx_plex::plex::AudioEnhancements::NONE, "setup: nothing is asked for");
+    assert!(!any_param(&r.requests), "no enhancement param rides: {:?}", r.requests);
+    assert!(r.plan.contract.remux, "the video is copied: nothing was asked that needs a re-encode");
+    for d in transcode_decisions(&r.requests) {
+        assert!(!d.contains("subtitles=burn"), "nothing burns: {d}");
+    }
+    plx_plex::plex::reset_servers_for_test();
+}
