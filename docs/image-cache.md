@@ -20,7 +20,10 @@ isolated by installation flavour (or simulator instance). It caps committed stor
 and **8,192 files**, with **4 MiB** maximum compressed image size. The byte cap is further limited
 to half of what the chosen filesystem can spare (its free space plus the cache's own files), and
 below 8 MiB of spare the disk tier is off: on webOS 3.4.3 the only writable persistent directory is
-`/media/developer/temp`, on the partition installed apps share, which had 76.5 MB free. One temporary write can consume
+`/media/developer/temp`, on the partition installed apps share, which had 76.5 MB free. That
+directory is world-writable, so the cache directory inside it is created `0700` (an existing one we
+own is tightened to `0700`; a foreign-owned one or a symlink is refused); the other candidates keep
+the mode they are given. One temporary write can consume
 up to another image's size. A lazy startup scan builds a byte-accounted LRU index; normal reads
 and writes use that index, avoiding repeated directory scans. Reads advance recency in memory;
 file modification times persist recency at most once an hour per accessed entry. The header's

@@ -461,3 +461,47 @@ fn a_test_directory_reports_its_free_space() {
     let dir = TestDir::new();
     assert!(free_bytes(&dir.0).is_some_and(|b| b > 0));
 }
+
+/// `/media/developer/temp` is mode 777, so a cache directory made there with the default mode
+/// would let any other process read the library's posters.
+#[test]
+fn a_private_root_is_created_for_its_owner_alone() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let dir = TestDir::new();
+    fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o777)).unwrap();
+    let root = dir.0.join("imgcache");
+    assert!(probe_dir(&root, true));
+    assert_eq!(fs::metadata(&root).unwrap().mode() & 0o7777, 0o700);
+}
+
+#[test]
+fn a_looser_private_root_we_own_is_tightened_and_a_foreign_or_linked_one_is_refused() {
+    use std::os::unix::fs::{symlink, MetadataExt, PermissionsExt};
+    let dir = TestDir::new();
+    let mode = |p: &Path| fs::metadata(p).unwrap().mode() & 0o7777;
+    let ours = dir.0.join("ours");
+    fs::create_dir(&ours).unwrap();
+    fs::set_permissions(&ours, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(probe_dir(&ours, true));
+    assert_eq!(mode(&ours), 0o700);
+    // Not ours: left as found, and not used.
+    let theirs = dir.0.join("theirs");
+    fs::create_dir(&theirs).unwrap();
+    fs::set_permissions(&theirs, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(!private_dir(&theirs, unsafe { libc::geteuid() } + 1));
+    assert_eq!(mode(&theirs), 0o755);
+    // A link planted at the name must not carry the chmod, or the cache, to its target.
+    let link = dir.0.join("link");
+    symlink(&theirs, &link).unwrap();
+    assert!(!probe_dir(&link, true));
+    assert_eq!(mode(&theirs), 0o755);
+}
+
+#[test]
+fn a_root_that_is_not_private_keeps_the_mode_it_has() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let dir = TestDir::new();
+    fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(probe_dir(&dir.0, false));
+    assert_eq!(fs::metadata(&dir.0).unwrap().mode() & 0o7777, 0o755);
+}

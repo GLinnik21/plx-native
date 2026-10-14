@@ -266,7 +266,11 @@ impl Cache {
             return;
         }
         index.initialized = true;
-        index.root = self.candidates.iter().find(|p| probe_dir(p)).cloned();
+        index.root = self
+            .candidates
+            .iter()
+            .find(|p| probe_dir(p, plx_base::paths::image_cache_dir_is_private(p)))
+            .cloned();
         let Some(root) = index.root.clone() else {
             plx_base::eventlog::log("imgcache: no writable directory; disk cache unavailable");
             return;
@@ -658,8 +662,40 @@ fn free_bytes(path: &Path) -> Option<u64> {
     Some((st.f_bavail as u64).saturating_mul(st.f_frsize as u64))
 }
 
-fn probe_dir(path: &Path) -> bool {
-    if fs::create_dir_all(path).is_err() {
+/// Creates `path` owner-only, or tightens it to that, and says whether it now is one. What stands
+/// at the name is looked at before anything is chmod'ed: the parent is world-writable, so another
+/// process can plant a symlink there or pre-create the directory under its own uid. So `mkdir`
+/// (never `create_dir_all`, which follows a link at the final component), then open it with
+/// `O_NOFOLLOW` and `fchmod` THAT descriptor once `fstat` says it is a directory `owner` owns.
+fn private_dir(path: &Path, owner: u32) -> bool {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::DirBuilder::new().mode(0o700).create(path);
+    let Ok(dir) = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+    else {
+        return false;
+    };
+    let Ok(meta) = dir.metadata() else {
+        return false;
+    };
+    meta.is_dir()
+        && meta.uid() == owner
+        && (meta.mode() & 0o077 == 0
+            || dir.set_permissions(fs::Permissions::from_mode(0o700)).is_ok())
+}
+
+fn probe_dir(path: &Path, private: bool) -> bool {
+    let made = if private {
+        private_dir(path, unsafe { libc::geteuid() })
+    } else {
+        fs::create_dir_all(path).is_ok()
+    };
+    if !made {
         return false;
     }
     let probe = path.join(".probe");
