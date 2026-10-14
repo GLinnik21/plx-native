@@ -49,9 +49,10 @@
 //!   cache rather than keep a second copy of the session live.
 use super::origin::Origin;
 use super::probe::Location;
-pub use prefs::{persist_pref, tenure, AudioEnhancementsPref, DeckPressPref, DirectPlayModePref,
-    NextEpisodeModePref, Preferences, QualityPref, Row, Setting, SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref,
-    SubtitleTonePref};
+pub use prefs::{effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
+    DeckPressPref, DirectPlayModePref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
+    ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
+    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref};
 use prefs::ProfileMemory;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -68,11 +69,81 @@ static CURRENT: Mutex<Option<std::sync::Arc<CurrentProfile>>> = Mutex::new(None)
 pub struct CurrentProfile {
     pub user: Option<UserRef>,
     pub generation: u32,
+    /// `grant::account_key` of the account token the owner published this profile under: the half of
+    /// the [`Seat`] that says WHICH sign-in the profile belongs to. Empty before a sign-in and in a
+    /// publication recorded before the field existed.
+    pub stamp: String,
+}
+
+impl CurrentProfile {
+    /// Who this publication seats. A publication with no profile seats nobody, and so does one with
+    /// no stamp (a dev token, an older recording): without a stamp a stored per-profile value cannot
+    /// be told from another sign-in's, so nothing may be read from or written to a record.
+    pub fn seat(&self) -> Seat {
+        Seat::of(self.user.as_ref(), &self.stamp)
+    }
+}
+
+/// **Whose per-profile settings the TV is showing**, as a value that can be compared, captured on the
+/// main thread and carried to a worker. `current_profile_key()` cannot say this: it is `""` for the
+/// account owner AND for "no profile published yet", and it carries no sign-in.
+///
+/// * [`Seat::Unseated`] is the process before a profile is chosen, the boot picker until a choice, a
+///   change-profile, a sign-out, a dev token and a controlled replay. Nothing is restored for it and
+///   nothing may be written for it.
+/// * [`Seat::Seated`] names the Plex Home user's `uuid` (`""` for the account owner) and the
+///   account stamp. Two seats are the same seat only when both match, so a re-login as the same
+///   person with a different token is a new seat.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum Seat {
+    #[default]
+    Unseated,
+    Seated { user: String, stamp: String },
+}
+
+impl Seat {
+    /// The seat a publication of `user` under the account `stamp` occupies. Nobody published seats
+    /// nobody, and so does a profile with no stamp (a dev token, an older recording): without a stamp
+    /// a stored per-profile value cannot be told from another sign-in's, so nothing may be read from
+    /// or written to a record. The unstamped case is logged once, so a field report would show it.
+    pub fn of(user: Option<&UserRef>, stamp: &str) -> Seat {
+        match user {
+            Some(user) if !stamp.is_empty() => Seat::Seated { user: user.uuid.clone(), stamp: stamp.to_string() },
+            Some(_) => {
+                static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    plx_base::eventlog::log("session: a profile was published without an account stamp; unseated");
+                }
+                Seat::Unseated
+            }
+            None => Seat::Unseated,
+        }
+    }
+
+    /// The seated profile's key (`""` for the owner), or `None` while unseated.
+    pub fn user(&self) -> Option<&str> {
+        match self {
+            Seat::Seated { user, .. } => Some(user),
+            Seat::Unseated => None,
+        }
+    }
 }
 
 pub fn current_snapshot() -> std::sync::Arc<CurrentProfile> {
     CURRENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().cloned()
-        .unwrap_or_else(|| std::sync::Arc::new(CurrentProfile { user: None, generation: 0 }))
+        .unwrap_or_else(|| std::sync::Arc::new(CurrentProfile { user: None, generation: 0, stamp: String::new() }))
+}
+
+/// The seat the published profile occupies — [`CurrentProfile::seat`] of [`current_snapshot`].
+pub fn current_seat() -> Seat {
+    current_snapshot().seat()
+}
+
+/// Whether the profile `user` (`""` for the account owner) is the one seated now: the allocation-free
+/// question the memory door asks on every recall.
+pub fn is_seated_as(user: &str) -> bool {
+    let profile = current_snapshot();
+    !profile.stamp.is_empty() && profile.user.as_ref().is_some_and(|u| u.uuid == user)
 }
 
 /// Resource-side capability; constructing it borrows, but does not duplicate or retain, the
@@ -87,24 +158,31 @@ impl ProfilePublisher {
         Self { scoped: None, _main_thread: std::marker::PhantomData }
     }
     pub fn scoped(_mt: &plx_base::task::MainThread) -> Self {
-        Self { scoped: Some(std::sync::Arc::new(CurrentProfile { user: None, generation: 0 })),
+        Self { scoped: Some(std::sync::Arc::new(CurrentProfile { user: None, generation: 0, stamp: String::new() })),
             _main_thread: std::marker::PhantomData }
     }
     pub fn snapshot(&self) -> std::sync::Arc<CurrentProfile> {
         self.scoped.clone().unwrap_or_else(current_snapshot)
     }
+    /// Whether this publisher keeps its publications to itself (a controlled replay): they never
+    /// reach the process global, so they seat nobody in the process.
+    pub fn is_scoped(&self) -> bool {
+        self.scoped.is_some()
+    }
     /// A user-confirmed exit from recording resumes ordinary live publication, preserving
     /// the last owner-supplied scope. Replay never receives this transition capability.
     pub fn resume_live(&mut self) {
         if let Some(scoped) = self.scoped.take() {
-            self.publish(scoped.user.clone(), scoped.generation);
+            self.publish(scoped.user.clone(), scoped.generation, scoped.stamp.clone());
         }
     }
-    pub fn publish(&mut self, user: Option<UserRef>, generation: u32) {
+    /// Publish `user` as the active profile under the owner's `generation` and the account `stamp`
+    /// (`grant::account_key` of the account token) the owner published it under.
+    pub fn publish(&mut self, user: Option<UserRef>, generation: u32, stamp: String) {
         #[cfg(any(test, feature = "test-support"))]
-        self.publish_with(user, generation, |_, _| {});
+        self.publish_with(user, generation, stamp, |_, _| {});
         #[cfg(not(any(test, feature = "test-support")))]
-        self.publish_with(user, generation, |user, generation| {
+        self.publish_with(user, generation, stamp, |user, generation| {
             super::account::publish_audio_preferences_profile(user.as_ref(), generation);
             let Some(user) = user else { return; };
             let client_id = peek().client_id.clone();
@@ -112,22 +190,22 @@ impl ProfilePublisher {
             super::account::warm_audio_preferences(client_id, credential, user, generation);
         });
     }
-    fn publish_with<W>(&mut self, user: Option<UserRef>, generation: u32, warm: W)
+    fn publish_with<W>(&mut self, user: Option<UserRef>, generation: u32, stamp: String, warm: W)
     where W: FnOnce(Option<UserRef>, u32) {
         if let Some(scoped) = &mut self.scoped {
-            *scoped = std::sync::Arc::new(CurrentProfile { user, generation });
+            *scoped = std::sync::Arc::new(CurrentProfile { user, generation, stamp });
             return;
         }
         {
             *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(
-                CurrentProfile { user: user.clone(), generation }));
+                CurrentProfile { user: user.clone(), generation, stamp }));
         }
         warm(user, generation);
     }
     #[cfg(any(test, feature = "test-support"))]
     fn publish_with_warmer_for_test<W>(&mut self, user: Option<UserRef>, generation: u32, warm: W)
     where W: FnOnce(Option<UserRef>, u32) {
-        self.publish_with(user, generation, warm);
+        self.publish_with(user, generation, String::new(), warm);
     }
 }
 
@@ -135,9 +213,17 @@ impl ProfilePublisher {
 /// This is not a controller or a process-global scope allocator. Caller owns teardown/serial guard.
 #[cfg(any(test, feature = "test-support"))]
 pub fn publish_profile_for_test(user: Option<UserRef>, generation: u32) {
+    publish_seat_for_test(user, generation, String::new());
+}
+
+/// [`publish_profile_for_test`] with the account `stamp`, so the published profile occupies a
+/// [`Seat`]. The plain fixture publishes none (an unstamped publication seats nobody), which keeps
+/// every test that does not care about a seat unseated.
+#[cfg(any(test, feature = "test-support"))]
+pub fn publish_seat_for_test(user: Option<UserRef>, generation: u32, stamp: String) {
     plx_base::testlock::assert_held("profile publication fixture");
     let mt = unsafe { plx_base::task::MainThread::assume() };
-    ProfilePublisher::new(&mt).publish(user, generation);
+    ProfilePublisher::new(&mt).publish(user, generation, stamp);
 }
 /// The active profile (name + avatar), if any. Empty title = the owner with no Plex Home selection.
 pub fn current() -> Option<UserRef> {
@@ -381,6 +467,23 @@ impl TempSession {
             ..Default::default()
         }), current_gen().wrapping_add(1));
     }
+
+    /// **Sign the fixture in and seat `uuid`**: store `account_token` in the scratch record, then
+    /// publish the profile with the stamp of that token, so [`current_seat`] is
+    /// [`Seat::Seated`] and a per-profile write has somewhere to land. [`TempSession::watching`]
+    /// publishes no stamp (an unstamped publication seats nobody), which is what every test that
+    /// does not care about a seat wants. Returns the stamp.
+    pub fn seated(&self, uuid: &str, account_token: &str) -> String {
+        assert!(update(|cur| {
+            let mut next = cur.clone();
+            next.account_token = account_token.into();
+            Some(next)
+        }), "the fixture session takes the account token");
+        let stamp = super::grant::account_key(account_token);
+        publish_seat_for_test(Some(UserRef { uuid: uuid.into(), ..Default::default() }),
+            current_gen().wrapping_add(1), stamp.clone());
+        stamp
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -508,7 +611,8 @@ pub struct Session {
     /// Soft-parsed like every list in this struct: an entry costs itself, never the credentials.
     #[serde(default, deserialize_with = "de_profile_cache")]
     pub profiles: Vec<ProfileCreds>,
-    /// Every preference key but `language` (the nine player settings, `auto_sign_in`,
+    /// Every preference key but `language` (`profile_prefs`, the per-profile home of the nine player
+    /// settings, and those settings' frozen top-level keys every profile falls back to, `auto_sign_in`,
     /// `trailer_autoplay`, `last_hero_blur`, `plaintext_consent`, `server_key_pins`, `last_library`,
     /// `library_sorts`, `track_memory`, `subtitle_offsets`), flattened so the keys sit at the top level of the file under
     /// the same keys they always had. Declared before [`Session::extensions`]:
@@ -942,9 +1046,10 @@ impl SubtitleTone {
     }
 }
 
-/// The persisted subtitle text sizes, smallest first — install-wide like [`SubtitleTone`]: a
-/// legible caption size answers a fact about the PANEL and the couch distance from it, not about
-/// whoever is watching. Absence is `Medium`, which is the caption face every build before this
+/// The persisted subtitle text sizes, smallest first — one per PROFILE, like [`SubtitleTone`]: a
+/// legible caption size is as much about the viewer's eyes as the panel and the couch distance, and
+/// two people on one couch differ. A profile that has not picked reads the install's older key.
+/// Absence is `Medium`, which is the caption face every build before this
 /// preference drew (`appkit::player_hud`'s hardcoded `sz = 36`). Spelling on disk is explicit, like
 /// every other persisted ladder here.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -980,7 +1085,7 @@ impl SubtitleSize {
     }
 }
 
-/// The persisted subtitle vertical placements, lowest first — install-wide like [`SubtitleTone`].
+/// The persisted subtitle vertical placements, lowest first — one per profile, like [`SubtitleTone`].
 /// Absence is `Low`, which is where every build before this preference drew the caption
 /// (`appkit::player_hud`'s fixed `SUB_BASE_Y`/`SUB_CEIL_Y` baseline). Only the plain-text caption draw
 /// moves with this; image (PGS/VobSub) captions and native ASS/SSA keep their own placement
@@ -1015,7 +1120,7 @@ impl SubtitlePosition {
     }
 }
 
-/// What the player does when an episode that has a successor reaches its credits — install-wide,
+/// What the player does when an episode that has a successor reaches its credits — one per profile,
 /// like [`SubtitleTone`]. Absence is `Countdown`, the Up Next tile and its 10 s countdown every
 /// build before this preference showed. `AfterCredits` shows nothing during the credits and
 /// starts the next episode only when the stream ends; `Off` shows nothing and, at the end of the
@@ -1050,7 +1155,7 @@ impl NextEpisodeMode {
     }
 }
 
-/// How far one Left/Right press jumps in the player (and the trailer transport) — install-wide
+/// How far one Left/Right press jumps in the player (and the trailer transport) — one per profile
 /// like [`SubtitleTone`], the same for both directions. Absence is `Seconds10`, the fixed hop
 /// every build before this preference made. A closed set rather than a free number so the
 /// telemetry code for a pick is a fixed string and a hand-edited file cannot ask for a
@@ -1106,7 +1211,7 @@ impl SkipInterval {
     }
 }
 
-/// What OK does on a Continue Watching card — install-wide, like [`SubtitleTone`]. Absence is
+/// What OK does on a Continue Watching card — one per profile, like [`SubtitleTone`]. Absence is
 /// `Details`: OK opens the movie page, exactly as on any other shelf, or for an episode the SHOW's
 /// page on the card's season; the card's menu leads with Play (and the card draws no amber ▶, which
 /// promises a press that plays).
@@ -2414,8 +2519,13 @@ impl Session {
 }
 
 /// Which profile's history is in play: the active Plex Home user's `uuid`, or `""` for the owner
-/// with no Home selection. One accessor, so the reader and the writer cannot key on different
-/// things — which would look exactly like the leak this scoping exists to prevent.
+/// with no Home selection AND for "no profile published yet" (the boot picker, a sign-out), which
+/// this cannot tell apart from the owner. It does not say whether anyone is SEATED either: a profile
+/// published without a sign-in stamp (a dev token) has a key here and seats nobody. Who is seated,
+/// as a comparable value that also names the sign-in, is [`current_seat`] / [`Seat`]; the nine
+/// per-profile player settings key on that, never on this. One accessor, so the reader and the
+/// writer cannot key on different things — which would look exactly like the leak this scoping
+/// exists to prevent.
 pub fn current_profile_key() -> String {
     current().map(|u| u.uuid).unwrap_or_default()
 }

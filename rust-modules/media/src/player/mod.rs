@@ -1675,8 +1675,10 @@ pub fn request_subtitle(idx: i32) {
 /// The tone client-rendered subtitles are drawn in. A [`crate::route::LiveCell`] rather than a field
 /// of [`SHARED`] because it OUTLIVES a playback — it is a preference, not session state
 /// (the same reasoning as the quality cell in `route::prefs`) — and `reset_session` must not put a viewer back on white
-/// between two episodes. Restored by `route::restore_all`; written by [`set_subtitle_tone`] through
-/// the one write door (`route::choose`).
+/// between two episodes. Restored by `route::restore_profile_rows` (at boot, and when the seat
+/// changes: the seated profile's own tone, else the install's older one); written by
+/// [`set_subtitle_tone`] through the one write door (`route::choose`), which saves it as the seated
+/// profile's own.
 ///
 /// Seeded to white, which is what every build before the preference drew.
 pub(crate) static SUBTITLE_TONE: crate::route::LiveCell<plx_plex::plex::session::SubtitleTone> =
@@ -1794,7 +1796,9 @@ fn clamp_subtitle_offset_ms(offset_ms: i64) -> i32 {
 /// as two bits — a PREFERENCE, like [`SUBTITLE_TONE`], so it outlives a playback. Only the
 /// resolve's `ResolveEnv::snapshot` reads it, on the main thread, and it reaches the wire only
 /// through `route::desired_audio`: with no Plex Pass (or an unknown one) nothing reads it at all.
-/// Restored by `route::restore_all`; written through the one write door (`route::choose`).
+/// Restored by `route::restore_profile_rows` (the seated profile's own pair, else the install's
+/// older one); written through the one write door (`route::choose`), which saves it as the seated
+/// profile's own.
 pub(crate) static AUDIO_ENHANCEMENTS: crate::route::LiveCell<plx_plex::plex::AudioEnhancements> =
     crate::route::LiveCell::new("audio enhancements preference");
 
@@ -1803,8 +1807,8 @@ pub fn audio_enhancements() -> plx_plex::plex::AudioEnhancements {
     AUDIO_ENHANCEMENTS.get()
 }
 
-/// Restore the persisted preference without writing it back — what `route::restore_all` does for
-/// boot, the credentials handoff and a profile switch.
+/// Restore the persisted preference without writing it back — what `route::restore_profile_rows`
+/// does at boot and whenever the seat changes.
 pub fn restore_audio_enhancements(a: plx_plex::plex::AudioEnhancements) {
     AUDIO_ENHANCEMENTS.set(a);
 }
@@ -1826,8 +1830,8 @@ pub fn request_audio_enhancement(ps: &mut crate::route::PlaybackSession, a: plx_
     plx_machine::idle::invalidate();
 }
 
-/// Restore the persisted preference without writing it back (what `route::restore_all` does for
-/// boot, the credentials handoff and a profile switch).
+/// Restore the persisted preference without writing it back (what `route::restore_profile_rows`
+/// does at boot and whenever the seat changes).
 pub fn restore_subtitle_tone(tone: plx_plex::plex::session::SubtitleTone) {
     SUBTITLE_TONE.set(tone);
 }

@@ -8,7 +8,7 @@
 //!
 //! T-live and T-settings sit in media (`route/prefs_tests.rs`), where the lists they hold to these
 //! descriptors are declared.
-use super::prefs::{Descriptor, ListRow, Parse, ProfileMemory, Row, Scope, Setting, SettingsWrite, DESCRIPTORS};
+use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Scope, Setting, SettingsWrite, DESCRIPTORS};
 use super::prefs::{AudioEnhancementsPref, AutoSignInPref, DeckPressPref, DirectPlayModePref, LastHeroBlurPref,
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
@@ -115,12 +115,13 @@ fn every_marker_names_its_own_field() {
     check_row::<AutoSignInPref>(true);
     check_row::<TrailerAutoplayPref>(true);
     check_row::<LastHeroBlurPref>(Some([[0.5, 0.25, 0.125]; 4]));
-    // The table lists exactly these twelve `Setting` rows, the four list rows below and the two
+    // The table lists exactly these twelve `Setting` rows, the four list rows below, the two
     // memory-door rows (`TrackMemoryPref`, whose field check is
     // `track_memory_tests::the_list_row_names_its_own_field`, and `SubtitleOffsetsPref`, checked by
-    // `the_subtitle_offsets_row_names_its_own_field`): a row needs its line in one of the three
-    // places.
-    assert_eq!(DESCRIPTORS.len(), 12 + 4 + 2);
+    // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
+    // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
+    // its line in one of the four places.
+    assert_eq!(DESCRIPTORS.len(), 12 + 4 + 2 + 1);
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -199,7 +200,9 @@ fn t_account_the_bound_rows_are_the_platform_bound_keys() {
 }
 
 /// The facts a row declares that a later PR reads (`LIVE` by media's T-live, `SETTINGS` by the
-/// Settings dispatcher's T-settings), pinned here per key so a change is a visible edit.
+/// Settings dispatcher's T-settings), pinned here per key so a change is a visible edit. The nine
+/// are `Profile` rows with the legacy install key as their fallback since the per-profile work (P1a);
+/// every other fact is what `main` declared.
 #[test]
 fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
     let row = |key: &str| -> &Descriptor { DESCRIPTORS.iter().find(|d| d.key == key).unwrap() };
@@ -218,8 +221,9 @@ fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
         let d = row(key);
         assert_eq!(d.settings, settings, "{key}");
         assert!(d.live, "{key}: every one of the nine has a live cell in media");
-        assert_eq!(d.scope, Scope::Install, "{key}");
-        assert!(!d.account_bound, "{key}");
+        assert_eq!(d.scope, Scope::Profile, "{key}: DECLARED FLIP (P1a): it was Install on main");
+        assert_eq!(d.fallback, Fallback::LegacyInstallKey, "{key}: a profile with no value of its own reads the TV's");
+        assert!(!d.account_bound, "{key}: the top-level key is the TV's, the profile's own value is `profile_prefs`");
     }
 }
 
@@ -294,6 +298,7 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("library_sorts", not_a_list()),
         ("track_memory", not_a_list()),
         ("subtitle_offsets", not_a_list()),
+        ("profile_prefs", not_a_list()),
     ]
 }
 
@@ -315,6 +320,7 @@ fn good_element(key: &str) -> Value {
         "subtitle_offsets" => json!({"user":"u1","items":[{"machine_id":"m","rating_key":"42","offset_ms":1500}]}),
         "track_memory" => json!({"user":"u1","account":"a","items":[{"machine_id":"m","show_rk":"42",
             "audio":{"lang":"eng","tag":"","commentary":false,"ad":false,"codec":"eac3","channels":6,"title":""}}]}),
+        "profile_prefs" => json!({"user":"u1","account":"a","prefs":{"subtitle_size":"large"}}),
         other => panic!("{other}: a SoftVec row needs a valid element in `good_element`"),
     }
 }

@@ -511,10 +511,13 @@ fn tidy() {
 
 /// Put `user` (`""` for the account owner) on the screen as the profile whose memory is read: the
 /// fixture publishes it, and its Drop unpublishes. This is the ONE place a test here says "this
-/// profile is the active one", so a rule that reads memory only for a SEATED profile (a stamped
-/// publication) changes this line and no test.
+/// profile is the active one". Memory is read only for a SEATED profile (`recall` and `recall_all`
+/// ask `session::is_seated_as`), and a seat is a publication that carries a stamp, so this signs
+/// the fixture in with the token [`record_with`] uses (`"acct"`) and the seat's stamp is
+/// `account_key("acct")`, the stamp the mirror seeded from that record carries.
 fn seat(session: &session::TempSession, user: &str) {
-    session.watching(user);
+    let stamp = session.seated(user, "acct");
+    assert_eq!(stamp, plx_plex::plex::grant::account_key("acct"), "the seat's stamp is the fixture record's");
 }
 
 /// The capture: the snapshot carries THIS profile's entries for THIS server's machine, read through

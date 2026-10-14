@@ -90,6 +90,7 @@ mod tests {
 
     #[test]
     fn r2a_offline_worker_completion_waits_for_main_application() {
+        let _serial = plx_base::testlock::serial();
         let mut rig = profile_rig(false);
         let mut d = Dispatcher::<AppHost>::new();
         let before = resources(&mut rig);
@@ -169,6 +170,7 @@ mod tests {
 
     #[test]
     fn a_late_profile_observation_cannot_replace_a_newer_flow() {
+        let _serial = plx_base::testlock::serial();
         let mut rig = profile_rig(true);
         let mut d = Dispatcher::<AppHost>::new();
         inject(&mut rig, RefusedIo);
@@ -254,6 +256,7 @@ mod tests {
 
     #[test]
     fn successful_profile_stream_preserves_handoff_preferences_and_erase_order() {
+        let _serial = plx_base::testlock::serial();
         // Separate legal request histories: a stream permits one terminal roster, not the several
         // terminal ProfileRoster values the legacy mailbox test manufactured on one epoch.
         for roster_before_take in [true, false] {
@@ -371,6 +374,7 @@ mod tests {
 
     #[test]
     fn real_profile_worker_injection_reaches_owner_and_handoff_without_global_state() {
+        let _serial = plx_base::testlock::serial();
         let mut init = plx_session::auth::SessionInit::captured(cached_fixture());
         init.phase = plx_session::auth::Phase::Profiles;
         init.users = vec![plx_session::auth::UserTile { uuid: "synthetic-kid".into(), title: "Kid".into(),

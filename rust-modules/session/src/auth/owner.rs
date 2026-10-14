@@ -137,6 +137,11 @@ pub struct ProfilePublication {
     pub epoch: u64,
     pub profile: Option<UserRef>,
     pub scope: ProfileScope,
+    /// `grant::account_key` of the account token the profile is published under: the half of the
+    /// seat (`plex::session::Seat`) that says which sign-in the profile belongs to. Empty with no
+    /// account token, and in a recording made before the field existed.
+    #[serde(default)]
+    pub stamp: String,
 }
 
 /// Credentials-owned patch data. The adapter merges it into the current disk value, retaining
@@ -1807,6 +1812,7 @@ impl SessionMachine {
         self.state.active_profile = profile;
         emit(SessionFx::PublishProfile(ProfilePublication {
             epoch: self.state.epoch, profile: self.state.active_profile.clone(), scope: self.state.profile_scope,
+            stamp: plx_plex::plex::grant::account_key(&self.state.persisted.account_token),
         }));
     }
 

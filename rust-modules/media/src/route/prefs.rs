@@ -1,20 +1,24 @@
-//! **The nine install-wide player settings, live: one cell each, one restore, one write door.**
+//! **The nine per-profile player settings, live: one cell each, one restore, one write door.**
 //!
 //! The persisted half of each setting is a [`Setting`] row in `plex::session::prefs`; this is the
 //! other half, the in-memory copy the player reads every frame (a process-global [`LiveCell`], an
-//! atomic rather than a field of any session because a preference OUTLIVES a playback). Before this
-//! module each setting was spelled out as its own static, getter, restore and setter, with five
-//! different write styles; now each is one [`LiveSetting`] impl and everything else is generic:
+//! atomic rather than a field of any session because a preference OUTLIVES a playback). The cells
+//! hold the SEATED profile's values (`session::Seat`): the profile's own pick, else the frozen
+//! install-wide key beside it ([`effective`]). Each setting is one [`LiveSetting`] impl and
+//! everything else is generic:
 //!
-//! * [`restore_all`] puts every cell where a [`Preferences`] record says. Boot, the credentials
-//!   handoff and a profile switch all call it, so there is one list and it cannot differ between
-//!   them. A new live setting is one more row in [`LIVE_ROWS`], and `prefs_tests::t_live_*` fails
+//! * [`restore_profile_rows`] puts every cell where a [`Seat`] says, and runs ONLY when the seat
+//!   changes (the app's `SeatWatch`, fed by the profile publication) and once at process start for
+//!   `Unseated`. [`restore_install_rows`] reseeds the mirrors from a record (boot and the credentials
+//!   handoff). A new live setting is one more row in [`LIVE_ROWS`], and `prefs_tests::t_live_*` fails
 //!   until plex's `LIVE` flag and that list agree.
-//! * [`choose`] is the one write door. [`How::Confirm`] persists first and publishes only a
-//!   durable write ("a failed save claims nothing"); [`How::Optimistic`] publishes now and
-//!   persists FIFO on the shared storage worker, never republishing, so a newer pick can never be
-//!   overwritten by an older write's completion. The value is run through
-//!   [`LiveSetting::normalize`] BEFORE either, so what is stored is what is published.
+//! * [`choose`] is the one write door. It captures the seat on the caller's (main) thread and
+//!   refuses `Unseated`: a pick belongs to somebody. [`How::Confirm`] persists first and publishes
+//!   only a durable write ("a failed save claims nothing") and only if that profile is still seated;
+//!   [`How::Optimistic`] publishes now and persists FIFO on the shared storage worker, never
+//!   republishing, so a newer pick can never be overwritten by an older write's completion. The
+//!   value is run through [`LiveSetting::normalize`] BEFORE either, so what is stored is what is
+//!   published.
 //! * The getters and `restore_*` / `set_*` / `select_*` functions below are thin wrappers kept so
 //!   a caller does not have to name a marker.
 //!
@@ -22,20 +26,22 @@
 //!   per-profile, per-item lists a profile builds up (the subtitle offsets are its first tenant):
 //!   plex owns the schema and the store (`plex::session::prefs::ProfileList`), and this is the
 //!   in-memory copy the player reads, written through on the main thread so a read is never older
-//!   than the last pick. [`restore_all`] reseeds it.
+//!   than the last pick. [`restore_install_rows`] reseeds it. Both doors need a seat (a profile to
+//!   remember FOR).
 //!
 //! **What `restore_*` does NOT do** is write: it is the in-memory half only, used where the value
 //! comes FROM the record (a legacy session's missing quality stays missing until an explicit
-//! choice, so a future Auto-ready build cannot reinterpret an old install).
+//! choice, so a future Auto-ready build cannot reinterpret an old install). The same holds for the
+//! frozen top-level keys: no pick in this module ever writes one.
 use super::plan::{supported_quality, Quality, QUALITY_LADDER};
 use plx_plex::plex::session::{
-    persist_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode, DirectPlayModePref,
-    NextEpisodeMode, NextEpisodeModePref, Preferences, QualityPref, Row, Setting, SkipInterval,
-    SkipIntervalPref, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone,
-    SubtitleTonePref,
+    effective, own_prefs, persist_profile_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode,
+    DirectPlayModePref, NextEpisodeMode, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsRecord,
+    ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipInterval, SkipIntervalPref, SubtitlePosition,
+    SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref,
 };
-use plx_plex::plex::session::prefs::{MemoryEntry, ProfileList, ProfileMemory, SettingsWrite, TrackMemoryEntry};
-use plx_plex::plex::session::{self, Session, SubtitleOffsetEntry};
+use plx_plex::plex::session::prefs::{MemoryEntry, ProfileKeyed, ProfileList, ProfileMemory, SettingsWrite, TrackMemoryEntry};
+use plx_plex::plex::session::{self, Seat, Session, SubtitleOffsetEntry};
 use plx_plex::plex::AudioEnhancements;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU8, Ordering::Relaxed};
@@ -197,7 +203,7 @@ impl Packed for AudioEnhancements {
 // ---- the cells ------------------------------------------------------------------------------
 
 live_cell!(
-    /// Install-wide Direct Play mode; each resolve captures its own immutable copy.
+    /// The seated profile's Direct Play mode; each resolve captures its own immutable copy.
     pub(super) DIRECT_PLAY_MODE: DirectPlayMode, "direct-play preference"
 );
 live_cell!(
@@ -227,7 +233,7 @@ live_cell!(
     pub(super) SUBTITLE_POSITION: SubtitlePosition, "subtitle position preference"
 );
 live_cell!(
-    /// The user's current quality pick. An atomic rather than a field on `Session` because it
+    /// The seated profile's current quality pick. An atomic rather than a field on `Session` because it
     /// OUTLIVES a playback (it is a preference, not session state) and because `appkit::more_menu`
     /// reads it to draw the checkmark while `ResolveEnv::snapshot` reads it to hand the worker a
     /// copy.
@@ -236,11 +242,11 @@ live_cell!(
 
 // ---- the rows -------------------------------------------------------------------------------
 
-/// A live [`Setting`]: what the media layer adds to the persisted row.
-pub trait LiveSetting: Setting {
+/// A live per-profile [`Setting`]: what the media layer adds to the persisted row.
+pub trait LiveSetting: ProfileSetting {
     /// The value in the cell now.
     fn live() -> Self::Value;
-    /// Publish `v` into the cell. Prefer [`choose`] or [`restore_all`]: this does not persist.
+    /// Publish `v` into the cell. Prefer [`choose`] or [`restore_profile_rows`]: this does not persist.
     fn publish(v: Self::Value);
     /// How many times the cell has been published (tests only).
     #[cfg(any(test, feature = "test-support"))]
@@ -254,7 +260,7 @@ pub trait LiveSetting: Setting {
     fn after_saved(_v: Self::Value) {}
     /// The setting's name in the one failure line.
     fn log_label() -> &'static str;
-    /// A value a caller of [`restore_all`] forces over the record's (the dev quality override).
+    /// A value a caller of [`restore_profile_rows`] forces over the record's (the dev quality override).
     fn overridden(_ov: &Overrides) -> Option<Self::Value> {
         None
     }
@@ -304,18 +310,20 @@ live_setting!(QualityPref, QUALITY, "playback quality",
     }
 );
 
-/// A live row as data, so a test (and [`restore_all`]) can walk them all.
+/// A live row as data, so a test (and [`restore_profile_rows`]) can walk them all.
 #[derive(Clone, Copy)]
 pub struct LiveRow {
     pub key: &'static str,
     /// Always `S::LIVE`; carried so the tie test compares the same `{key: live}` map on both sides.
     pub live: bool,
-    restore: fn(&Preferences, &Overrides),
+    /// Always `S::SCOPE`; every live row is `Profile` since the nine moved (T-live checks it).
+    pub scope: plx_plex::plex::session::prefs::Scope,
+    restore: fn(&Preferences, Option<&ProfilePrefs>, &Overrides),
 }
 
 impl LiveRow {
     pub const fn of<S: LiveSetting>() -> LiveRow {
-        LiveRow { key: S::KEY, live: S::LIVE, restore: restore_row::<S> }
+        LiveRow { key: S::KEY, live: S::LIVE, scope: S::SCOPE, restore: restore_row::<S> }
     }
 }
 
@@ -335,37 +343,53 @@ pub const LIVE_ROWS: &[LiveRow] = &[
 
 // ---- restore --------------------------------------------------------------------------------
 
-/// What a caller of [`restore_all`] forces over the record. Each caller computes it exactly as it
-/// did when it spelled the list out: boot passes none when the harness is controlled and the dev
-/// quality override otherwise; the credentials handoff passes the override.
+/// What a caller of [`restore_profile_rows`] forces over the record. Each caller computes it
+/// exactly as it did when it spelled the list out: boot passes none when the harness is controlled
+/// and the dev quality override otherwise; the seat trigger passes the override.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Overrides {
     pub quality: Option<Quality>,
 }
 
-fn restore_row<S: LiveSetting>(prefs: &Preferences, ov: &Overrides) {
-    restore_live::<S>(S::overridden(ov).unwrap_or_else(|| S::get(prefs)));
+fn restore_row<S: LiveSetting>(legacy: &Preferences, own: Option<&ProfilePrefs>, ov: &Overrides) {
+    restore_live::<S>(S::overridden(ov).unwrap_or_else(|| effective::<S>(legacy, own)));
 }
 
 fn restore_live<S: LiveSetting>(v: S::Value) {
     S::publish(S::normalize(v));
 }
 
-/// **Put every live cell where the record says, and reseed the memory mirrors from it**, without
-/// writing anything back. The one restore: boot, the credentials handoff after a sign-in, and a
-/// profile switch all call it. A legacy session's missing quality resolves to Original but stays
-/// missing on disk until the user makes an explicit choice, so a future Auto-ready build still
-/// cannot reinterpret that old install.
+/// **Reseed the mirrors from `record`** (the memory door's lists and the profiles' own player
+/// values) without writing anything back. Boot and the credentials handoff after a sign-in call it;
+/// it puts no cell anywhere (that is the seat's: [`restore_profile_rows`]).
 ///
 /// The mirrors are reseeded only when the tenure or the account stamp they were seeded under has
-/// moved ([`MemoryMirror::reseed`]); a restore that changes neither leaves them alone, because the
+/// moved ([`KeyedMirror::reseed`]); a restore that changes neither leaves them alone, because the
 /// mirror is AHEAD of the file by exactly the writes still queued.
-pub fn restore_all(record: &Session, ov: Overrides) {
-    for row in LIVE_ROWS {
-        (row.restore)(&record.prefs, &ov);
-    }
+pub fn restore_install_rows(record: &Session) {
+    PROFILE_PREFS.reseed(record);
     for row in MEMORY_ROWS {
         (row.reseed)(record);
+    }
+}
+
+/// **Put every live cell where `seat` says**, without writing anything back: the seated profile's
+/// own value of each setting from the mirror, else the legacy install-wide key in `record`, else the
+/// type's default ([`effective`]); `Unseated` has nobody to own a value and reads the legacy one.
+/// A legacy session's missing quality resolves to Original but stays missing on disk until the
+/// profile makes an explicit choice, so a future Auto-ready build still cannot reinterpret that old
+/// install. `ov` is forced over the result.
+///
+/// The one restore of the player's cells. It runs when the seat CHANGES (a republication of the same
+/// seat restores nothing, so a pick in flight is not clobbered) and once at process start with
+/// `Unseated`. `record` supplies the frozen legacy keys and reseeds the profile mirror if its tenure
+/// or stamp moved; the profile's own values are read from the mirror, never from `record`, because
+/// the mirror is ahead of a file that still has writes queued.
+pub fn restore_profile_rows(record: &Session, seat: &Seat, ov: Overrides) {
+    PROFILE_PREFS.reseed(record);
+    let own = PROFILE_PREFS.own(seat);
+    for row in LIVE_ROWS {
+        (row.restore)(&record.prefs, own.as_ref(), &ov);
     }
 }
 
@@ -382,30 +406,37 @@ pub trait MemoryTenant: MemoryEntry + Send + 'static {
 /// (`grant::account_key` of the account token).
 type Seed = (u64, String);
 
-struct MirrorState<E> {
-    /// `None` until the first [`MemoryMirror::reseed`]: a mirror nobody restored answers nothing.
+struct MirrorState<R> {
+    /// `None` until the first [`KeyedMirror::reseed`]: a mirror nobody restored answers nothing.
     seeded: Option<Seed>,
-    lists: Vec<ProfileList<E>>,
+    lists: Vec<R>,
 }
 
-/// **The in-memory copy of one per-profile list**, seeded from the session at [`restore_all`] and
-/// written through by [`remember`] on the caller's (main) thread, so [`recall`] sees a pick the
-/// moment it is made instead of after the queued file write lands.
+/// **The in-memory copy of one per-profile list**, seeded from the session at
+/// [`restore_install_rows`] and written through by [`remember`] (the memory door) or [`choose`] (the
+/// profiles' own player values) on the caller's (main) thread, so a read sees a pick the moment it
+/// is made instead of after the queued file write lands.
+///
+/// Generic over the record ([`ProfileKeyed`]), because two shapes share it: a [`ProfileList`] of
+/// remembered entries ([`MemoryMirror`]) and a [`ProfilePrefsRecord`] of one profile's own settings.
 ///
 /// It is valid only for the tenure it was seeded under: a sign-out or account replacement moves
 /// the tenure, after which a read sees nothing and a write is refused until the next restore
 /// reseeds it. The stamp changes with a new sign-in WITHOUT a tenure change (the token is replaced,
 /// nothing was revoked), and the restore that follows the handoff reseeds on that too.
-pub struct MemoryMirror<E: MemoryEntry> {
-    state: Mutex<MirrorState<E>>,
+pub struct KeyedMirror<R: ProfileKeyed + Clone> {
+    state: Mutex<MirrorState<R>>,
 }
 
-impl<E: MemoryEntry> MemoryMirror<E> {
+/// The mirror of a memory-door tenant's list.
+pub type MemoryMirror<E> = KeyedMirror<ProfileList<E>>;
+
+impl<R: ProfileKeyed + Clone> KeyedMirror<R> {
     pub const fn new() -> Self {
-        MemoryMirror { state: Mutex::new(MirrorState { seeded: None, lists: Vec::new() }) }
+        KeyedMirror { state: Mutex::new(MirrorState { seeded: None, lists: Vec::new() }) }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, MirrorState<E>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, MirrorState<R>> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -416,21 +447,23 @@ impl<E: MemoryEntry> MemoryMirror<E> {
         let seed = (session::tenure(), plx_plex::plex::grant::account_key(&record.account_token));
         let mut state = self.lock();
         if state.seeded.as_ref() != Some(&seed) {
-            state.lists = E::slot(record).clone();
+            state.lists = R::slot(record).clone();
             state.seeded = Some(seed);
         }
     }
 
     /// Whether the mirror was seeded under the tenure that stands now.
-    fn valid(state: &MirrorState<E>) -> bool {
+    fn valid(state: &MirrorState<R>) -> bool {
         state.seeded.as_ref().is_some_and(|(tenure, _)| *tenure == session::tenure())
     }
+}
 
+impl<E: MemoryEntry> MemoryMirror<E> {
     /// The account stamp the mirror was seeded under: the one its reads and writes go through, so
     /// an [`ACCOUNT_BOUND`](MemoryEntry::ACCOUNT_BOUND) list (offsets, track memory) shows this
     /// account's records and not another's. A tenant that is not account-bound keeps no stamp, as
     /// it never had one.
-    fn stamp(state: &MirrorState<E>) -> &str {
+    fn stamp(state: &MirrorState<ProfileList<E>>) -> &str {
         match &state.seeded {
             Some((_, stamp)) if E::ACCOUNT_BOUND => stamp,
             _ => "",
@@ -438,7 +471,58 @@ impl<E: MemoryEntry> MemoryMirror<E> {
     }
 }
 
-/// A mirror as data, so [`restore_all`] can walk them all.
+/// The profiles' own values of the nine settings, as of the last pick (not the last write that
+/// landed): what [`restore_profile_rows`] reads, because `session::peek()` is write-after and a
+/// switch back to a profile must not show a pre-pick value.
+static PROFILE_PREFS: KeyedMirror<ProfilePrefsRecord> = KeyedMirror::new();
+
+impl KeyedMirror<ProfilePrefsRecord> {
+    /// The seated profile's own values; nothing while unseated, never seeded, or seeded before a
+    /// sign-out.
+    fn own(&self, seat: &Seat) -> Option<ProfilePrefs> {
+        let Seat::Seated { user, stamp } = seat else { return None };
+        let state = self.lock();
+        if !Self::valid(&state) {
+            return None;
+        }
+        own_prefs(&state.lists, user, stamp).cloned()
+    }
+
+    /// Record the pick for the profile that made it, whoever is seated now. Refused (and the live
+    /// value still published by the caller) while the mirror is not valid for the current tenure.
+    fn put<S: ProfileSetting>(&self, write: &ProfileWrite, v: S::Value) {
+        let mut state = self.lock();
+        if Self::valid(&state) {
+            plx_plex::plex::session::put_own::<S>(&mut state.lists, write.user(), write.stamp(), v);
+        }
+    }
+}
+
+/// Seed the profiles' own-values mirror from `record` whatever it was seeded under before, so a test
+/// does not inherit another test's picks (the mirror is a process global, and a restore under an
+/// unchanged tenure and stamp deliberately keeps it).
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_profile_prefs_for_test(record: &Session) {
+    unseed_profile_prefs_for_test();
+    PROFILE_PREFS.reseed(record);
+}
+
+/// Put the profiles' own-values mirror back to never-seeded, which is how a process looks before its
+/// first restore.
+#[cfg(any(test, feature = "test-support"))]
+pub fn unseed_profile_prefs_for_test() {
+    let mut state = PROFILE_PREFS.lock();
+    state.seeded = None;
+    state.lists.clear();
+}
+
+/// What the profiles' own-values mirror holds now (the picks, not the file).
+#[cfg(any(test, feature = "test-support"))]
+pub fn profile_prefs_mirror_for_test() -> Vec<ProfilePrefsRecord> {
+    PROFILE_PREFS.lock().lists.clone()
+}
+
+/// A mirror as data, so [`restore_install_rows`] can walk them all.
 #[derive(Clone, Copy)]
 pub struct MemoryRow {
     reseed: fn(&Session),
@@ -454,7 +538,7 @@ fn reseed_mirror<E: MemoryTenant>(record: &Session) {
     E::mirror().reseed(record);
 }
 
-/// Every tenant of the memory door, once.
+/// Every tenant of the memory door, once. (The profiles' own player values are reseeded beside them.)
 pub const MEMORY_ROWS: &[MemoryRow] = &[MemoryRow::of::<SubtitleOffsetEntry>(), MemoryRow::of::<TrackMemoryEntry>()];
 
 static SUBTITLE_OFFSETS: MemoryMirror<SubtitleOffsetEntry> = MemoryMirror::new();
@@ -485,8 +569,10 @@ impl MemoryTenant for SubtitleOffsetEntry {
 /// for the current tenure: never seeded, or seeded before a sign-out. Otherwise the entry would be
 /// visible in a session whose file write is refused.
 ///
-/// Before profile seats, `user` is `session::current_profile_key()`, where `""` is both the
-/// account owner and "no profile published".
+/// **Refused without a seat for `user`.** `user` is the key the caller read from
+/// `session::current_profile_key()`, where `""` is both the account owner and "no profile
+/// published"; the memory door asks the seat instead, so a run that never seated anybody (a dev
+/// token, a replay) cannot write to the owner's record of whatever account is on disk.
 ///
 /// Both tenants are account-bound, so the mirror write and the queued file write carry the account
 /// stamp (the mirror's, and the file's own `account_key`) and [`recall`] reads under it. `track_memory`
@@ -497,6 +583,10 @@ pub fn remember<E: MemoryTenant>(
     key: E::Key,
     f: impl Fn(Option<&E>) -> Option<E> + Clone + Send + 'static,
 ) -> bool {
+    if !session::is_seated_as(user) {
+        plx_base::eventlog::log(&format!("{}: not remembered — no profile seated", E::log_label()));
+        return false;
+    }
     {
         let mut state = E::mirror().lock();
         if !MemoryMirror::valid(&state) {
@@ -543,8 +633,12 @@ pub fn unseed_memory_for_test<E: MemoryTenant>() {
 }
 
 /// **What this profile remembered for `key`**, as of the last [`remember`] (not the last write that
-/// landed). Nothing when the mirror was never seeded or the tenure has moved since it was.
+/// landed). Nothing when the mirror was never seeded or the tenure has moved since it was, and
+/// nothing unless `user` is the seated profile.
 pub fn recall<E: MemoryTenant>(user: &str, key: &E::Key) -> Option<E> {
+    if !session::is_seated_as(user) {
+        return None;
+    }
     let state = E::mirror().lock();
     if !MemoryMirror::valid(&state) {
         return None;
@@ -555,11 +649,16 @@ pub fn recall<E: MemoryTenant>(user: &str, key: &E::Key) -> Option<E> {
 /// **Everything this profile remembered**, oldest first, as of the last [`remember`]: the whole
 /// list, for a reader that does not know its key yet (a play raised off a shelf does not know its
 /// show until the item is fetched). Nothing when the mirror was never seeded or the tenure has
-/// moved since it was, and for an account-bound tenant nothing without a stamp. It is the record
+/// moved since it was, nothing unless `user` is the seated profile (the seat gate of [`recall`]: an
+/// unseated boot or a dev token reads no track memory), and for an account-bound tenant nothing
+/// without a stamp. It is the record
 /// stamped as the mirror is: a tenant that [adopts](MemoryEntry::ADOPTS_UNSTAMPED) unstamped
 /// records does not show the ones not yet adopted here (only [`recall`] falls back to them), and
 /// only `track_memory` is read this way.
 pub fn recall_all<E: MemoryTenant>(user: &str) -> Vec<E> {
+    if !session::is_seated_as(user) {
+        return Vec::new();
+    }
     let state = E::mirror().lock();
     if !MemoryMirror::valid(&state) {
         return Vec::new();
@@ -623,26 +722,47 @@ choices! {
 }
 
 /// **The one write door for a live setting.** `v` is normalized first, so the clamp happens before
-/// publish and before persist.
+/// publish and before persist. The seat is captured HERE, on the caller's thread: the pick is the
+/// seated profile's whoever is seated when the worker runs, and it is refused when nobody is
+/// ([`Seat::Unseated`]).
 pub fn choose<S: LiveSetting>(v: S::Value, how: How) {
     choose_via::<S>(v, how, S::normalize);
 }
 
 fn choose_via<S: LiveSetting>(v: S::Value, how: How, normalize: impl FnOnce(S::Value) -> S::Value) {
     let v = normalize(v);
+    let Some(write) = ProfileWrite::capture() else {
+        // Nobody to own the pick: nothing is persisted and nothing is claimed. An optimistic pick
+        // still shows live (for this seat only: the next seat change restores over it).
+        plx_base::eventlog::log(&format!("prefs: {} not saved — no profile seated", S::KEY));
+        match how {
+            How::Confirm(reply) => {
+                let _ = reply.send(false);
+            }
+            How::Optimistic(reply) => {
+                S::publish(v);
+                plx_machine::idle::invalidate();
+                if let Some(reply) = reply {
+                    let _ = reply.send(false);
+                }
+            }
+        }
+        return;
+    };
     match how {
         How::Confirm(reply) => {
             let _ = plx_base::storage_worker::submit_retained(move || {
-                let saved = confirm_via::<S>(v, |v| v);
+                let saved = confirm_with::<S>(&write, v);
                 let _ = reply.send(saved);
                 plx_machine::idle::invalidate();
             });
         }
         How::Optimistic(reply) => {
+            PROFILE_PREFS.put::<S>(&write, v);
             S::publish(v);
             plx_machine::idle::invalidate();
             let _ = plx_base::storage_worker::submit_retained(move || {
-                let saved = persist_pref::<S>(v);
+                let saved = persist_profile_pref::<S>(&write, v);
                 if !saved {
                     plx_base::eventlog::log(&format!(
                         "{}: durable write failed (live value kept for this session)",
@@ -659,18 +779,34 @@ fn choose_via<S: LiveSetting>(v: S::Value, how: How, normalize: impl FnOnce(S::V
 }
 
 /// The blocking half of [`How::Confirm`], for a caller already on the storage worker (and the
-/// tests, which grade it without a thread): persist, then publish and report only if the write is
-/// durable. `true` also when the record already held the value (nothing to write, nothing to
-/// refuse).
+/// tests, which grade it without a thread): persist for the profile seated NOW, then publish and
+/// report only if the write is durable. `true` also when the record already held the value (nothing
+/// to write, nothing to refuse). `false`, with nothing written, while nobody is seated.
 pub fn confirm<S: LiveSetting>(v: S::Value) -> bool {
     confirm_via::<S>(v, S::normalize)
 }
 
 fn confirm_via<S: LiveSetting>(v: S::Value, normalize: impl FnOnce(S::Value) -> S::Value) -> bool {
     let v = normalize(v);
-    let saved = persist_pref::<S>(v);
+    match ProfileWrite::capture() {
+        Some(write) => confirm_with::<S>(&write, v),
+        None => {
+            plx_base::eventlog::log(&format!("prefs: {} not saved — no profile seated", S::KEY));
+            false
+        }
+    }
+}
+
+/// [`confirm`] for the profile `write` captured. Durable: the pick is recorded in the mirror under
+/// the profile that made it WHATEVER is seated now (a switch back to it must show the pick), and
+/// published to the cells only if that profile still is the seated one. The reply is true either way.
+fn confirm_with<S: LiveSetting>(write: &ProfileWrite, v: S::Value) -> bool {
+    let saved = persist_profile_pref::<S>(write, v);
     if saved {
-        S::publish(v);
+        PROFILE_PREFS.put::<S>(write, v);
+        if session::current_seat() == write.seat() {
+            S::publish(v);
+        }
         plx_machine::idle::invalidate();
         S::after_saved(v);
     }

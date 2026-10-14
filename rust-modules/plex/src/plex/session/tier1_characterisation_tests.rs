@@ -156,6 +156,42 @@ fn db8_signout_keeps_install_keys_but_not_pins_recents_or_account_bound_keys() {
     assert_eq!(after.preferences, expected);
 }
 
+/// **P-d2, the DB8 path: after a sign-out and a sign-in every profile reads the frozen legacy values.**
+/// `profile_prefs` is account-bound, so `ClearTenure` drops every profile's own picks with the
+/// credentials; the top-level keys they fell back to are install keys and survive. The profile that
+/// had picked its own values reads the legacy ones in the next sign-in (a new token, so a new stamp,
+/// would hide the records anyway: this is the tenure half). Decided item 17: their own picks are gone.
+#[test]
+fn sign_out_then_in_reads_the_legacy_values() {
+    let mut backend = helper();
+    let mut transport = |request: Request| Ok(backend.dispatch(request));
+    let mut session = rich();
+    let stamp = crate::plex::grant::account_key(&session.account_token);
+    assert!(put_own::<SubtitleSizePref>(&mut session.prefs.profile_prefs, "u-7", &stamp, SubtitleSize::Small));
+    assert!(put_own::<SkipIntervalPref>(&mut session.prefs.profile_prefs, "u-7", &stamp, SkipInterval::Seconds5));
+    assert!(matches!(
+        persistence::commit_session_with(&session, false, SaveAuthority::FreshReauthentication, 4, &mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    let before = stored_public(&mut transport);
+    assert!(before.preferences.get("profile_prefs").is_some(), "control: the picks are stored");
+
+    assert!(matches!(persistence::commit_clear_with(&mut transport), persistence::CanonicalCommit::Durable { .. }));
+    let after = stored_public(&mut transport);
+    assert!(after.preferences.get("profile_prefs").is_none(), "a sign-out drops every profile's own picks");
+    for key in ["subtitle_size", "skip_interval"] {
+        assert_eq!(after.preferences.get(key), before.preferences.get(key), "but the frozen legacy key `{key}` stays");
+    }
+
+    // The next sign-in builds its session from what survived.
+    let kept = serde_json::from_value::<CanonicalSessionPreferences>(after.preferences.clone()).unwrap();
+    let next = Session { account_token: "tier1-account-2".into(), prefs: kept.prefs, ..Default::default() };
+    assert!(next.prefs.profile_prefs.is_empty());
+    let seat = Seat::Seated { user: "u-7".into(), stamp: crate::plex::grant::account_key("tier1-account-2") };
+    assert_eq!(stored_effective::<SubtitleSizePref>(&next, &seat), SubtitleSize::Large,
+        "the profile that picked Small reads the legacy Large");
+    assert_eq!(stored_effective::<SkipIntervalPref>(&next, &seat), SkipInterval::Seconds30);
+}
+
 // ---- item 10: queued edits across a tenure / identity change; revoked writes ----------------
 
 fn signed_in() -> Session {
@@ -459,8 +495,67 @@ fn tier1_legacy_file_extra_top_level_keys_leave_credentials_and_todays_keys_inta
         // DECLARED FLIP (C1): `track_memory` is a modelled `Preferences` field, so this build reads
         // it (a stored value of another shape is parsed softly) instead of carrying it opaque; the
         // frozen `v0` parse above still sees both keys as extensions.
-        assert_eq!(live.extensions.0.keys().collect::<Vec<_>>(), ["profile_prefs"], "{case}");
+        // DECLARED FLIP (P1a): so is `profile_prefs`. The shapes above are ones nothing writes (an
+        // object keyed by user, a string), which the soft list parse reads as no records; the shape
+        // this build writes rides through the previous build in
+        // `tier1_the_real_profile_prefs_shape_rides_through_the_previous_build`.
+        assert!(live.extensions.0.is_empty(), "{case}: {:?}", live.extensions.0.keys().collect::<Vec<_>>());
+        assert!(live.prefs.profile_prefs.is_empty(), "{case}: a shape nothing writes reads as no records");
     }
+}
+
+/// **A0 item 16, the real shape of `profile_prefs`.** The cases above feed tier 1 shapes nothing
+/// writes. This is the shape this build writes (an array of records, each with the profile, the
+/// account stamp and the values it picked), through the platform codec and the PREVIOUS build's
+/// frozen parse: credentials and today's keys intact, the key opaque, and the previous build's own
+/// rewrite of it byte-identical; this build then reads back exactly what it wrote. It also proves the
+/// frozen top-level keys are still the previous build's to read: a profile's pick never rewrote them.
+#[test]
+fn tier1_the_real_profile_prefs_shape_rides_through_the_previous_build() {
+    const STAMP: &str = "00112233445566ff";
+    let mut original = rich();
+    assert!(put_own::<SubtitleSizePref>(&mut original.prefs.profile_prefs, "", STAMP, SubtitleSize::Small));
+    assert!(put_own::<SkipIntervalPref>(&mut original.prefs.profile_prefs, "u-7", STAMP, SkipInterval::Seconds10));
+    assert!(put_own::<AudioEnhancementsPref>(&mut original.prefs.profile_prefs, "u-7", STAMP,
+        crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true }));
+    let (public, auth) = split_canonical(&original).unwrap();
+    let real = public.preferences["profile_prefs"].clone();
+    assert_eq!(real.as_array().map(Vec::len), Some(2), "{real}");
+    assert_eq!(real[0]["user"], serde_json::json!(""), "the owner is the empty user");
+    assert_eq!(real[1]["account"], serde_json::json!(STAMP));
+    assert_eq!(real[1]["prefs"], serde_json::json!({
+        "skip_interval": "10s", "audio_enhancements": {"boost_dialog": false, "normalize_loudness": true}}));
+    // The top-level keys stay what they were: no pick wrote them.
+    assert_eq!(public.preferences["subtitle_size"], serde_json::to_value(SubtitleSize::Large).unwrap());
+    assert_eq!(public.preferences["skip_interval"], serde_json::to_value(SkipInterval::Seconds30).unwrap());
+
+    let bytes = canonical_state(&public, public.preferences.clone()).encode().expect("encode validates");
+    let decoded = state::CanonicalState::decode(&bytes, state::Flavor::Stable).expect("decode validates");
+    assert_eq!(decoded.public.preferences, public.preferences, "the codec keeps it byte for byte");
+
+    // The previous build.
+    let baseline = todays_keys(&v0::CanonicalSessionPreferences::parse(&split_canonical(&rich()).unwrap().0.preferences));
+    let old = v0::CanonicalSessionPreferences::parse(&decoded.public.preferences);
+    assert_eq!(todays_keys(&old), baseline, "today's keys parse as before");
+    assert_eq!(old.extensions.keys().collect::<Vec<_>>(), ["profile_prefs"], "exactly the new key is opaque");
+    assert_eq!(old.extensions.get("profile_prefs"), Some(&real));
+    assert_eq!(serde_json::to_value(&old).unwrap()["profile_prefs"], real, "its own rewrite keeps the value");
+
+    // This build.
+    let joined = join_canonical(&decoded.public, &auth).expect("the credentials still open");
+    assert_credentials_intact(&joined, &original, "real shape");
+    assert_eq!(joined.prefs.profile_prefs, original.prefs.profile_prefs);
+    assert_eq!(joined.prefs.subtitle_size, SubtitleSize::Large, "the TV-wide key is untouched");
+
+    // The legacy file: the previous build's frozen `Session` carries it opaque and keeps the credentials.
+    let file = serde_json::to_value(&original).unwrap();
+    assert_eq!(file["profile_prefs"], real);
+    let old: v0::Session = serde_json::from_value(file.clone()).expect("the previous build still reads the file");
+    assert_eq!(old.extensions.0.get("profile_prefs"), Some(&real));
+    assert_eq!(old.account_token, original.account_token);
+    assert_eq!(serde_json::to_value(&old).unwrap()["profile_prefs"], real);
+    let back: Session = serde_json::from_value(file).unwrap();
+    assert_eq!(back.prefs.profile_prefs, original.prefs.profile_prefs);
 }
 
 /// **Negative control.** The two structural traps the tier-1 rule forbids both FAIL `decode`: an

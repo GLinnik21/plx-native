@@ -702,3 +702,36 @@ fn the_file_backend_keeps_only_the_language_at_sign_out() {
     expected["trailer_autoplay"] = json!(true);
     assert_eq!(legacy(&fresh), expected, "everything else is the fresh-install session");
 }
+
+/// **P-d2 and P-d7, the file backend: after a sign-out and a sign-in every profile reads the DEFAULTS.**
+/// The file backend keeps only the language at sign-out (above), so a profile's own picks go with the
+/// credential file and so do the legacy keys they fell back to. That is today's file-backend behaviour,
+/// unchanged by the per-profile move (N5): nothing a profile picked, and nothing the TV chose before,
+/// outlives a sign-out here.
+#[test]
+fn file_backend_sign_out_then_in_reads_the_defaults() {
+    use plx_platform::i18n::Preference;
+    let _serial = plx_base::testlock::serial();
+    let root = Root::new("signout-profile-prefs");
+    let saved = plx_platform::i18n::saved_preference();
+    redirect_for_test(None);
+    redirect_candidates_for_test(Some(vec![root.dir.join("legacy-auth.json")]));
+
+    let mut session = all_non_default();
+    let stamp = crate::plex::grant::account_key(&session.account_token);
+    assert!(put_own::<SubtitleSizePref>(&mut session.prefs.profile_prefs, "u1", &stamp, SubtitleSize::Small));
+    save(&session);
+    assert_eq!(peek().prefs.profile_prefs.len(), 1, "setup: the profile's pick is stored");
+    assert_eq!(peek().prefs.subtitle_size, SubtitleSize::Large, "setup: and so is the legacy key");
+    assert!(matches!(clear(), ClearOutcome::Durable { .. }));
+
+    redirect_for_test(None);
+    plx_platform::i18n::set_saved_preference(Preference::System);
+    let fresh = load_with_id(|| "new-install-id".into());
+    plx_platform::i18n::set_saved_preference(saved);
+
+    assert!(fresh.prefs.profile_prefs.is_empty(), "the profile's own picks did not survive");
+    let seat = Seat::Seated { user: "u1".into(), stamp: crate::plex::grant::account_key("another-account") };
+    assert_eq!(stored_effective::<SubtitleSizePref>(&fresh, &seat), SubtitleSize::Medium,
+        "the profile reads the default: neither its pick nor the legacy Large is left");
+}

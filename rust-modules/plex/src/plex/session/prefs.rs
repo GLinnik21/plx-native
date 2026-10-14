@@ -1,6 +1,8 @@
 //! **The preference keys, declared once.**
 //!
-//! [`Preferences`] is the nine player scalars, and since A5 every other preference key of the
+//! [`Preferences`] is the nine player scalars (PER PROFILE since the seat work: each is read from
+//! the seated profile's own record in `profile_prefs`, falling back to the frozen install-wide key
+//! beside it, see [`profile_prefs`]), and since A5 every other preference key of the
 //! session (`auto_sign_in`, `trailer_autoplay`, `last_hero_blur`, the two Account-scope lists, the
 //! two per-profile library lists and the two memory-door lists, `track_memory` and
 //! `subtitle_offsets`), that used to be spelled, field for field, in
@@ -40,11 +42,18 @@ use super::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
+mod profile_prefs;
+#[cfg(test)]
+mod profile_prefs_tests;
 mod track_memory;
 #[cfg(test)]
 mod track_memory_document_tests;
 #[cfg(test)]
 mod track_memory_tests;
+pub use profile_prefs::{
+    effective, own_prefs, persist_profile_pref, put_own, stored_effective, ProfilePrefs, ProfilePrefsPref,
+    ProfilePrefsRecord, ProfileSetting, ProfileWrite,
+};
 pub use track_memory::{AudioMemo, SubtitleMemo, SubtitleTrackMemo, TrackMemoryEntry, TrackMemoryPref};
 
 /// Every preference key but `language`, flattened into [`Session`] and into
@@ -54,7 +63,10 @@ pub use track_memory::{AudioMemo, SubtitleMemo, SubtitleTrackMemo, TrackMemoryEn
 /// canonical record's own `Default` therefore sets it explicitly.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct Preferences {
-    /// The install's playback-quality preference. `None` is deliberately distinct from an
+    /// The playback-quality preference every profile reads until it picks its own (per profile in
+    /// `profile_prefs`; this top-level key is the FROZEN install-wide fallback, which a build with
+    /// per-profile settings never writes, except that session creation sets it to the install
+    /// default, [`PlaybackQuality::fresh_default`]). `None` is deliberately distinct from an
     /// explicit value: every session written before this field existed lands there and must keep
     /// the old **Original** behaviour rather than being migrated onto automatic playback.
     ///
@@ -66,51 +78,56 @@ pub struct Preferences {
     /// instead of making the credentials file fail to parse.
     #[serde(default, deserialize_with = "de_soft_playback_quality")]
     pub playback_quality: Option<PlaybackQuality>,
-    /// Install-wide original-stream override; malformed/future values remain automatic.
+    /// Original-stream override every profile reads until it picks its own (the frozen install-wide
+    /// fallback of `profile_prefs`); malformed/future values remain automatic.
     #[serde(default, deserialize_with = "de_soft_direct_play_mode")]
     pub direct_play_mode: DirectPlayMode,
     /// **How bright the client-rendered subtitles are drawn** — white, or a rung of the grey
-    /// ladder under it. Install-wide like [`Preferences::playback_quality`], because it answers a fact
-    /// about the PANEL (an HDR picture maps graphics white to a searing level) rather than about
-    /// whoever is watching. Absence is white, which is what every build before the field drew.
+    /// ladder under it. A frozen install-wide fallback like [`Preferences::playback_quality`]; each
+    /// profile keeps its own pick in `profile_prefs`. (It was install-wide because an HDR picture maps
+    /// graphics white to a searing level, a fact about the PANEL; the owner ruled it a habit of the
+    /// viewer instead.) Absence is white, which is what every build before the field drew.
     /// Soft-parsed: an unknown spelling costs the preference, never the credentials.
     #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
     pub subtitle_tone: SubtitleTone,
-    /// **The client-rendered subtitle caption's text size.** Install-wide like
+    /// **The client-rendered subtitle caption's text size.** A frozen fallback like
     /// [`Preferences::subtitle_tone`]. Absence is Medium — see [`SubtitleSize`]'s own doc. Skipped at
     /// the default so a session predating this field — committed replay fixtures included —
     /// serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_subtitle_size", skip_serializing_if = "is_default_subtitle_size")]
     pub subtitle_size: SubtitleSize,
-    /// **The client-rendered subtitle caption's vertical placement.** Install-wide like
+    /// **The client-rendered subtitle caption's vertical placement.** A frozen fallback like
     /// [`Preferences::subtitle_tone`]. Absence is Low — see [`SubtitlePosition`]'s own doc. Skipped at
     /// the default for the same reason as [`Preferences::subtitle_size`].
     #[serde(default, deserialize_with = "de_soft_subtitle_position", skip_serializing_if = "is_default_subtitle_position")]
     pub subtitle_position: SubtitlePosition,
     /// **What the player does when an episode with a successor reaches its credits** — see
-    /// [`NextEpisodeMode`]. Install-wide like [`Preferences::playback_quality`]. Absence is
+    /// [`NextEpisodeMode`]. A frozen fallback like [`Preferences::playback_quality`]. Absence is
     /// Countdown, which is what every build before the field did. Skipped at the default so a
     /// session predating this field — committed replay fixtures included — serializes exactly as
     /// it did before.
     #[serde(default, deserialize_with = "de_soft_next_episode_mode", skip_serializing_if = "is_default_next_episode_mode")]
     pub next_episode_mode: NextEpisodeMode,
-    /// **How far one Left/Right press jumps in the player** — see [`SkipInterval`]. Install-wide
-    /// like [`Preferences::playback_quality`], one value for both directions. Absence is 10 s, the
+    /// **How far one Left/Right press jumps in the player** — see [`SkipInterval`]. A frozen
+    /// fallback like [`Preferences::playback_quality`], one value for both directions. Absence is 10 s, the
     /// hop every build before the field made. Skipped at the default so a session predating this
     /// field — committed replay fixtures included — serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
     pub skip_interval: SkipInterval,
-    /// **What OK does on a Continue Watching card** — see [`DeckPress`]. Install-wide like
-    /// [`Preferences::playback_quality`]. Absence is Details, so a session written before the field
-    /// existed opens the page on OK. Skipped at the default so a session predating this field —
+    /// **What OK does on a Continue Watching card** — see [`DeckPress`]. A frozen fallback like
+    /// [`Preferences::playback_quality`]: each profile keeps its own pick in `profile_prefs`, and a
+    /// profile that has not picked reads this top-level key. Absence is Details, so a session written
+    /// before the field existed opens the page on OK. Skipped at the default so a session predating this field —
     /// committed replay fixtures included — serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_deck_press", skip_serializing_if = "is_default_deck_press")]
     pub deck_press: DeckPress,
     /// Plex Pass per-track transcoder DSP preference (issue #266): dialog boost / loudness
     /// normalization. `NONE` by default and skipped on write while `NONE`, so every session
     /// persisted before the field existed — and every viewer who never opted in — round-trips
-    /// byte-identical to what it wrote before. Restored into `player::audio_enhancements` at boot
-    /// and at the credentials handoff; written by `player::set_audio_enhancements` through the media door (`route::choose`, which saves via `persist_pref`). Soft-parsed
+    /// byte-identical to what it wrote before. A frozen fallback like [`Preferences::playback_quality`]:
+    /// the seated profile's value is restored into `player::audio_enhancements` when the seat changes;
+    /// written (per profile) by `player::set_audio_enhancements` through the media door (`route::choose`, which saves via
+    /// [`persist_profile_pref`]). Soft-parsed
     /// like every preference in this struct: an unknown shape costs the preference, never the
     /// credentials.
     #[serde(default, deserialize_with = "de_soft_audio_enhancements", skip_serializing_if = "crate::plex::AudioEnhancements::is_none")]
@@ -285,24 +302,45 @@ pub struct Preferences {
     /// that never tuned a subtitle's timing serializes exactly as it did before the field existed.
     #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     pub subtitle_offsets: Vec<SubtitleOffsets>,
+    // ---- per-profile player settings ----
+    /// **Each profile's own value of the nine player settings** — see [`ProfilePrefsRecord`] and the
+    /// module doc of `profile_prefs`. A record per (profile, account stamp), soft-parsed per element so one junk
+    /// record costs only itself, skipped while empty so a session that never picked anything per
+    /// profile serializes exactly as it did before the field existed. Account-bound: a record whose
+    /// stamp is not the signed-in account's reads as nothing, and sign-out drops the whole key
+    /// (`storage::state::ACCOUNT_BOUND_PREFERENCES`). Written only through [`persist_profile_pref`].
+    #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    pub profile_prefs: Vec<ProfilePrefsRecord>,
 }
 
-/// How long a setting's value lives, and who owns the write. The nine player scalars, `auto_sign_in`,
-/// `trailer_autoplay` and `last_hero_blur` are `Install`; the two lists of the account itself are
-/// `Account`; the library lists are `Profile`; `track_memory` is `PerShow` and `subtitle_offsets`
-/// is `PerItem`. Sign-out clears every row that is account-bound, whatever its scope.
+/// How long a setting's value lives, and who owns the write. `auto_sign_in`, `trailer_autoplay` and
+/// `last_hero_blur` are `Install`; the two lists sign-out clears are `Account`; the nine player
+/// scalars (each with its install-wide key as the [`Fallback`]) and the library lists are `Profile`;
+/// `track_memory` is `PerShow` and `subtitle_offsets` is `PerItem`. Sign-out clears every row that
+/// is account-bound, whatever its scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     /// The television: shared by every profile, kept across sign-out, never account-bound.
     Install,
     /// The signed-in account: cleared with the credentials on sign-out.
     Account,
-    /// One Plex Home profile (the record is a list keyed by profile).
+    /// One Plex Home profile (the record is a list keyed by profile and account stamp).
     Profile,
     /// One show, for one profile.
     PerShow,
     /// One item, for one profile.
     PerItem,
+}
+
+/// What a [`Scope::Profile`] setting reads when the profile has no value of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fallback {
+    /// The row has no fallback: it is not a per-profile value with an older install-wide home.
+    None,
+    /// The top-level key of the same name, frozen at the value the TV had when per-profile settings
+    /// arrived (`Setting::get`), then the type's default. It is READ, never copied, so a profile
+    /// created later starts where the TV was.
+    LegacyInstallKey,
 }
 
 /// Which soft-parse policy a row's `deserialize_with` implements.
@@ -329,20 +367,24 @@ pub enum SettingsWrite {
 }
 
 /// What every preference key declares about itself, keyed by a marker type: [`Descriptor`] is these
-/// six facts as data. A `Copy` value is also a [`Setting`]; a list is a [`ListRow`].
+/// seven facts as data. A `Copy` value is also a [`Setting`]; a list is a [`ListRow`].
 pub trait Row: 'static {
     /// The on-disk key (a serde rename is honoured here).
     const KEY: &'static str;
     const SCOPE: Scope;
     /// Cleared with the credentials at sign-out (`storage::state::ACCOUNT_BOUND_PREFERENCES`).
     const ACCOUNT_BOUND: bool;
-    /// The media layer applies the value live (a cell restored at boot and at the handoff).
+    /// The media layer applies the value live: its cell holds the SEATED profile's value, restored by
+    /// `route::restore_profile_rows` when the seat changes and once at process start with nobody
+    /// seated.
     const LIVE: bool;
     /// How a Settings row saves it through the media door's `choose`; `None` when no such row
     /// exists (the player panel owns it, or the Settings screen writes it through its own ticketed
     /// update).
     const SETTINGS: Option<SettingsWrite>;
     const PARSE: Parse;
+    /// What a [`Scope::Profile`] row reads when the seated profile has no value of its own.
+    const FALLBACK: Fallback = Fallback::None;
 }
 
 /// A row whose value is `Copy`: the accessors the write door and the live cells speak.
@@ -368,7 +410,7 @@ pub trait Setting: Row {
 /// schema: the serde attributes stay on the [`Preferences`] field, where rustfmt and a reviewer
 /// can see them.
 macro_rules! setting {
-    ($marker:ident: $ty:ty = $field:ident, $key:literal, $scope:ident,
+    ($marker:ident: $ty:ty = $field:ident, $key:literal, $scope:ident $(fallback $fallback:ident)?,
      account $bound:literal, live $live:literal, settings $settings:expr, parse $parse:ident) => {
         pub struct $marker;
         impl Row for $marker {
@@ -378,6 +420,7 @@ macro_rules! setting {
             const LIVE: bool = $live;
             const SETTINGS: Option<SettingsWrite> = $settings;
             const PARSE: Parse = Parse::$parse;
+            $(const FALLBACK: Fallback = Fallback::$fallback;)?
         }
         impl Setting for $marker {
             type Stored = $ty;
@@ -396,11 +439,12 @@ macro_rules! setting {
 pub struct QualityPref;
 impl Row for QualityPref {
     const KEY: &'static str = "playback_quality";
-    const SCOPE: Scope = Scope::Install;
+    const SCOPE: Scope = Scope::Profile;
     const ACCOUNT_BOUND: bool = false;
     const LIVE: bool = true;
     const SETTINGS: Option<SettingsWrite> = Some(SettingsWrite::Confirm);
     const PARSE: Parse = Parse::OptionalSoft;
+    const FALLBACK: Fallback = Fallback::LegacyInstallKey;
 }
 impl Setting for QualityPref {
     type Stored = Option<PlaybackQuality>;
@@ -411,23 +455,23 @@ impl Setting for QualityPref {
     fn to_stored(v: PlaybackQuality) -> Option<PlaybackQuality> { Some(v) }
 }
 
-setting!(DirectPlayModePref: DirectPlayMode = direct_play_mode, "direct_play_mode", Install,
+setting!(DirectPlayModePref: DirectPlayMode = direct_play_mode, "direct_play_mode", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
-setting!(NextEpisodeModePref: NextEpisodeMode = next_episode_mode, "next_episode_mode", Install,
+setting!(NextEpisodeModePref: NextEpisodeMode = next_episode_mode, "next_episode_mode", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
-setting!(SkipIntervalPref: SkipInterval = skip_interval, "skip_interval", Install,
+setting!(SkipIntervalPref: SkipInterval = skip_interval, "skip_interval", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
-setting!(DeckPressPref: DeckPress = deck_press, "deck_press", Install,
+setting!(DeckPressPref: DeckPress = deck_press, "deck_press", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
-setting!(SubtitleSizePref: SubtitleSize = subtitle_size, "subtitle_size", Install,
+setting!(SubtitleSizePref: SubtitleSize = subtitle_size, "subtitle_size", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
-setting!(SubtitlePositionPref: SubtitlePosition = subtitle_position, "subtitle_position", Install,
+setting!(SubtitlePositionPref: SubtitlePosition = subtitle_position, "subtitle_position", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
 // Tone and enhancements have no Settings row: the player panel is their only writer.
-setting!(SubtitleTonePref: SubtitleTone = subtitle_tone, "subtitle_tone", Install,
+setting!(SubtitleTonePref: SubtitleTone = subtitle_tone, "subtitle_tone", Profile fallback LegacyInstallKey,
     account false, live true, settings None, parse Soft);
 setting!(AudioEnhancementsPref: crate::plex::AudioEnhancements = audio_enhancements,
-    "audio_enhancements", Install, account false, live true, settings None, parse Soft);
+    "audio_enhancements", Profile fallback LegacyInstallKey, account false, live true, settings None, parse Soft);
 
 // ---- A5: the remaining preference keys (a separate block, below the nine) ---------------------
 //
@@ -488,6 +532,7 @@ pub struct Descriptor {
     pub live: bool,
     pub settings: Option<SettingsWrite>,
     pub parse: Parse,
+    pub fallback: Fallback,
 }
 
 impl Descriptor {
@@ -499,6 +544,7 @@ impl Descriptor {
             live: S::LIVE,
             settings: S::SETTINGS,
             parse: S::PARSE,
+            fallback: S::FALLBACK,
         }
     }
 }
@@ -523,44 +569,20 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<ServerKeyPinsRow>(),
     Descriptor::of::<LastLibraryRow>(),
     Descriptor::of::<LibraryViewsRow>(),
+    // The per-profile player settings' own values.
+    Descriptor::of::<ProfilePrefsPref>(),
     // The memory-door tenants (lists with no value API).
     Descriptor::of::<TrackMemoryPref>(),
     Descriptor::of::<SubtitleOffsetsPref>(),
 ];
 
-/// **The persist half of the one write door** (`media::route::prefs::choose` is the live half):
-/// make the record hold `S = v`, as a read-modify-write under the session lock, and say whether the
-/// record holds it afterwards.
-///
-/// The skip compares STORED values, so for quality a legacy absent field (`None`) and a pick of
-/// Original count as different, and the pick writes `Some(Original)`; an absent field stays absent
-/// until an explicit choice. `true` is a `Durable` write, or no write at all because the record
-/// already read the same (`read && unchanged`: there was nothing to refuse). `false` is a refused
-/// or failed write, an unreadable record, and the revocation guard of
-/// [`update_guarded_with_outcome`](super::update_guarded_with_outcome) (sign-out wins over an
-/// install write queued before it).
-pub fn persist_pref<S: Setting>(v: S::Value) -> bool {
-    let (mut read, mut unchanged) = (false, false);
-    let write = super::update_guarded_with_outcome(
-        |cur| {
-            read = true;
-            if S::stored(&cur.prefs) == &S::to_stored(v) {
-                unchanged = true;
-                None
-            } else {
-                Some(cur.with_pref::<S>(v))
-            }
-        },
-        || true,
-    );
-    match write {
-        Some(write) => matches!(write.classify(), super::async_persistence::CompletionOutcome::Durable(_)),
-        None => read && unchanged,
-    }
-}
-
 impl Session {
     /// This session with `S` set to `value`, every other field intact.
+    ///
+    /// It writes the setting's TOP-LEVEL key. For the nine player settings that key is the frozen
+    /// legacy fallback every profile reads until it picks its own, which no pick ever writes (the
+    /// door writes `profile_prefs`: [`persist_profile_pref`]); so this is a test and fixture
+    /// builder ("the install says X"), and `auto_sign_in` (TV-wide) is its only production-shaped row.
     pub fn with_pref<S: Setting>(&self, value: S::Value) -> Self {
         let mut next = self.clone();
         S::put(&mut next.prefs, value);
@@ -602,6 +624,67 @@ pub struct ProfileList<E> {
 impl<E> Default for ProfileList<E> {
     fn default() -> Self {
         ProfileList { user: String::new(), account: String::new(), items: Vec::new(), extensions: OpaqueExtensions::default() }
+    }
+}
+
+/// **A record of a per-profile list**: one profile's data under one account stamp, held in a
+/// `Vec` of them in a [`Session`] field. [`ProfileList`] (the memory door's entries) and
+/// [`ProfilePrefsRecord`] (the nine player settings' own values) are the two shapes, and the
+/// identity rules every such list shares are written once, over this: how a profile's record is
+/// found, what a foreign stamp does to the list, and when an emptied record goes.
+pub trait ProfileKeyed: Sized {
+    /// The Plex Home user's `uuid`, or empty for the account owner.
+    fn user(&self) -> &str;
+    /// The account stamp (`grant::account_key`), else empty.
+    fn account(&self) -> &str;
+    /// Nothing left to remember: the record goes when a write leaves it so.
+    fn is_empty(&self) -> bool;
+    /// The session list this record kind lives in.
+    fn slot(session: &Session) -> &Vec<Self>;
+    fn slot_mut(session: &mut Session) -> &mut Vec<Self>;
+}
+
+/// The identity operations over a list of [`ProfileKeyed`] records.
+pub trait ProfileRecords<R: ProfileKeyed> {
+    /// Where `user`'s record under the stamp `account` is.
+    fn position_of(&self, user: &str, account: &str) -> Option<usize>;
+    /// Drop every record not stamped `account` (another account's, or an unstamped one nobody can
+    /// read): the records of a previous sign-in must not outlive the first write of the next.
+    /// Returns whether any went.
+    fn prune_foreign(&mut self, account: &str) -> bool;
+    /// Drop the records a write left empty.
+    fn prune_empty(&mut self);
+}
+
+impl<R: ProfileKeyed> ProfileRecords<R> for Vec<R> {
+    fn position_of(&self, user: &str, account: &str) -> Option<usize> {
+        self.iter().position(|r| r.user() == user && r.account() == account)
+    }
+    fn prune_foreign(&mut self, account: &str) -> bool {
+        let before = self.len();
+        self.retain(|r| r.account() == account);
+        self.len() != before
+    }
+    fn prune_empty(&mut self) {
+        self.retain(|r| !r.is_empty());
+    }
+}
+
+impl<E: MemoryEntry> ProfileKeyed for ProfileList<E> {
+    fn user(&self) -> &str {
+        &self.user
+    }
+    fn account(&self) -> &str {
+        &self.account
+    }
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+    fn slot(session: &Session) -> &Vec<Self> {
+        E::slot(session)
+    }
+    fn slot_mut(session: &mut Session) -> &mut Vec<Self> {
+        E::slot_mut(session)
     }
 }
 
@@ -707,13 +790,13 @@ impl<E: MemoryEntry> ProfileMemory<E> for Vec<ProfileList<E>> {
         if E::ACCOUNT_BOUND && account.is_empty() && !E::ADOPTS_UNSTAMPED {
             return None;
         }
-        let own = self.iter().find(|r| r.user == user && r.account == account).and_then(|r| r.find(key));
+        let own = self.position_of(user, account).and_then(|at| self[at].find(key));
         // A record not yet adopted is read as this account's own, behind the stamped one.
         own.or_else(|| {
             if !E::ADOPTS_UNSTAMPED {
                 return None;
             }
-            self.iter().find(|r| r.user == user && r.account.is_empty()).and_then(|r| r.find(key))
+            self.position_of(user, "").and_then(|at| self[at].find(key))
         })
     }
 
@@ -726,11 +809,9 @@ impl<E: MemoryEntry> ProfileMemory<E> for Vec<ProfileList<E>> {
             if E::ADOPTS_UNSTAMPED {
                 pruned = adopt_unstamped(self, account);
             }
-            let before = self.len();
-            self.retain(|r| r.account == account);
-            pruned |= self.len() != before;
+            pruned |= self.prune_foreign(account);
         }
-        let at = self.iter().position(|r| r.user == user && r.account == account);
+        let at = self.position_of(user, account);
         let current = at.and_then(|i| self[i].find(key));
         let next = f(current).map(E::normalized).filter(|e| !e.forgets());
         if current == next.as_ref() {
@@ -741,7 +822,7 @@ impl<E: MemoryEntry> ProfileMemory<E> for Vec<ProfileList<E>> {
             self.len() - 1
         });
         self[at].place(key, next);
-        self.retain(|r| !r.items.is_empty());
+        self.prune_empty();
         if let Some(budget) = E::BUDGET {
             let total = list_size(self);
             evict_by_rule(self, Some((user, account)), |freed| total.saturating_sub(freed) > budget);
@@ -798,27 +879,15 @@ pub(super) fn list_size<E: MemoryEntry>(list: &[ProfileList<E>]) -> usize {
 /// [`ProfileList`] is the record of every list that goes through the memory door, and `LibraryViews`
 /// (`library_sorts`, the older list that is not one) is a record of its own; the rule below is
 /// written once, over this, so that neither has a copy of it.
-pub(super) trait EvictionRecord: Serialize {
+pub(super) trait EvictionRecord: Serialize + ProfileKeyed {
     /// What the record holds, in the order it was recorded.
     type Entry: Serialize;
-    /// The Plex Home user's `uuid`, empty for the account owner.
-    fn user(&self) -> &str;
-    /// The account stamp of an account-bound record, else empty.
-    fn account(&self) -> &str {
-        ""
-    }
     fn entries(&self) -> &Vec<Self::Entry>;
     fn entries_mut(&mut self) -> &mut Vec<Self::Entry>;
 }
 
 impl<E: MemoryEntry> EvictionRecord for ProfileList<E> {
     type Entry = E;
-    fn user(&self) -> &str {
-        &self.user
-    }
-    fn account(&self) -> &str {
-        &self.account
-    }
     fn entries(&self) -> &Vec<E> {
         &self.items
     }
@@ -827,11 +896,27 @@ impl<E: MemoryEntry> EvictionRecord for ProfileList<E> {
     }
 }
 
-impl EvictionRecord for super::LibraryViews {
-    type Entry = super::LibraryView;
+/// `library_sorts` is keyed by profile only: its records carry no account stamp.
+impl ProfileKeyed for super::LibraryViews {
     fn user(&self) -> &str {
         &self.user
     }
+    fn account(&self) -> &str {
+        ""
+    }
+    fn is_empty(&self) -> bool {
+        self.libs.is_empty()
+    }
+    fn slot(session: &Session) -> &Vec<Self> {
+        &session.prefs.library_views
+    }
+    fn slot_mut(session: &mut Session) -> &mut Vec<Self> {
+        &mut session.prefs.library_views
+    }
+}
+
+impl EvictionRecord for super::LibraryViews {
+    type Entry = super::LibraryView;
     fn entries(&self) -> &Vec<super::LibraryView> {
         &self.libs
     }

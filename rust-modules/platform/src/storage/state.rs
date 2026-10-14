@@ -170,7 +170,13 @@ pub struct AuthContext {
 /// show (`plex::session::prefs::TrackMemoryEntry`), which name a `machineIdentifier` and a show
 /// and belong to the account that watched it.
 ///
-/// The last three are each profile's own browsing and playback memory, which sign-out forgets with
+/// `profile_prefs` is each profile's own value of the nine player settings
+/// (`plex::session::prefs::ProfilePrefsRecord`); a record carries the stamp of the account that
+/// picked it, and it is a household member's habits, so it goes with the credentials. The
+/// install-wide top-level keys of the same names stay (they are the fallback every profile reads
+/// until it picks its own).
+///
+/// The next three are each profile's own browsing and playback memory, which sign-out forgets with
 /// the account whose profile it was: `subtitle_offsets` (the timing correction a profile tuned for
 /// one item, naming a `machineIdentifier` and a ratingKey), `library_sorts` (how each library was
 /// last browsed) and `last_library` (the library each top tab opened in), the last two naming a
@@ -179,6 +185,7 @@ pub const ACCOUNT_BOUND_PREFERENCES: &[&str] = &[
     "server_key_pins",
     "plaintext_consent",
     "track_memory",
+    "profile_prefs",
     "subtitle_offsets",
     "library_sorts",
     "last_library",
@@ -1895,6 +1902,29 @@ mod tests {
         let clear = Mutation::ClearTenure { auth_generation: generation(4) };
         let (cleared, _) = state.apply(&operation(&state, 3, clear)).unwrap();
         assert_eq!(cleared.public.preferences, json!({"language": "be", "auto_sign_in": true}));
+    }
+
+    /// Sign-out forgets every profile's own player picks (P-d2): `profile_prefs` names a profile of
+    /// the account that made them, so it goes with the credentials. The frozen top-level keys they
+    /// fell back to are install keys and stay.
+    #[test]
+    fn clear_tenure_forgets_the_profile_prefs() {
+        assert!(ACCOUNT_BOUND_PREFERENCES.contains(&"profile_prefs"));
+        let state = initial();
+        let setting = Mutation::UpdatePreferences {
+            public: PublicPayload {
+                preferences: json!({
+                    "language": "be", "subtitle_size": "large",
+                    "profile_prefs": [{"user": "", "account": "0011223344556677",
+                        "prefs": {"subtitle_size": "small"}}],
+                }),
+                ..PublicPayload::default()
+            },
+        };
+        let (state, _) = state.apply(&operation(&state, 2, setting)).unwrap();
+        let clear = Mutation::ClearTenure { auth_generation: generation(4) };
+        let (cleared, _) = state.apply(&operation(&state, 3, clear)).unwrap();
+        assert_eq!(cleared.public.preferences, json!({"language": "be", "subtitle_size": "large"}));
     }
 }
 

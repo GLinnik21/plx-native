@@ -8,6 +8,9 @@
 //! * **T6** — the mirror is reseeded on an account-stamp change under an unchanged tenure, and not
 //!   when neither moved.
 //! * **Revocation** — a write after a sign-out is refused and what the mirror held is invisible.
+//! * **A seat** (P-d11) — the door answers and writes only for the seated profile, so every test
+//!   that remembers seats its profile first (`TempSession::seated`); `offset_tuned_while_unseated_
+//!   is_not_saved` is the one that does not.
 use super::prefs_door_tests::Parked;
 use super::test_support::apply_plan;
 use super::test_support::*;
@@ -56,6 +59,7 @@ fn offset_replayed_before_its_write_lands_is_restored() {
     let _g = fresh_registry(&mut ps);
     let _session = session::TempSession::new("memory-delta-1");
     session::save(&signed_in("acct"));
+    _session.seated("", "acct");
     assert_eq!(session::peek().client_id, "cid-1");
     seed_memory_for_test::<SubtitleOffsetEntry>(&session::peek());
     let sid = playing(&mut ps, "machine-delta-1", "rk-replay");
@@ -90,6 +94,7 @@ fn a_pick_whose_write_the_guard_drops_stays_recalled_and_never_reaches_the_file(
     let _g = fresh_registry(&mut ps);
     let _session = session::TempSession::new("memory-dropped-write");
     session::save(&signed_in("acct"));
+    _session.seated("", "acct");
     assert_eq!(session::peek().client_id, "cid-1");
     seed_memory_for_test::<SubtitleOffsetEntry>(&session::peek());
     let _sid = playing(&mut ps, "machine-dropped", "rk-dropped");
@@ -122,6 +127,7 @@ fn an_offset_reset_to_original_is_forgotten_before_its_write_lands() {
     let _g = fresh_registry(&mut ps);
     let _session = session::TempSession::new("memory-forget");
     session::save(&signed_in("acct"));
+    _session.seated("", "acct");
     let _ = session::peek();
     seed_memory_for_test::<SubtitleOffsetEntry>(&session::peek());
     let sid = playing(&mut ps, "machine-forget", "rk-forget");
@@ -143,18 +149,23 @@ fn an_offset_reset_to_original_is_forgotten_before_its_write_lands() {
 /// A restore seeds the mirror from the record, so what a previous run remembered is found at the
 /// next boot, and a profile's entry is not another profile's.
 #[test]
-fn restore_all_seeds_the_mirror_from_the_record() {
+fn restore_install_rows_seeds_the_mirror_from_the_record() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("memory-restore");
     unseed_memory_for_test::<SubtitleOffsetEntry>();
     let mut record = signed_in("acct");
     record.set_subtitle_offset_for("kid", "m", "rk", Some(-400));
+    record.set_subtitle_offset_for("", "m", "owners", Some(250));
 
+    _session.seated("kid", "acct");
     assert_eq!(recall::<SubtitleOffsetEntry>("kid", &key("m", "rk")), None, "never restored: nothing is answered");
-    restore_all(&record, Overrides::default());
+    restore_install_rows(&record);
     assert_eq!(recall::<SubtitleOffsetEntry>("kid", &key("m", "rk")).map(|e| e.offset_ms), Some(-400));
-    assert_eq!(recall::<SubtitleOffsetEntry>("", &key("m", "rk")), None, "another profile has none");
     assert_eq!(recall::<SubtitleOffsetEntry>("kid", &key("m", "other")), None, "another item has none");
+    assert_eq!(recall::<SubtitleOffsetEntry>("", &key("m", "owners")), None, "another profile is not the seated one");
+    _session.seated("", "acct");
+    assert_eq!(recall::<SubtitleOffsetEntry>("", &key("m", "owners")).map(|e| e.offset_ms), Some(250), "seated, it is found");
+    assert_eq!(recall::<SubtitleOffsetEntry>("", &key("m", "rk")), None, "and it has not the other profile's entry");
     tidy();
 }
 
@@ -176,6 +187,7 @@ fn the_door_stamps_its_writes_adopts_legacy_records_and_drops_another_accounts()
     ]))
     .unwrap();
     session::save(&record);
+    _session.seated("", "acct");
     assert_eq!(session::peek().client_id, "cid-1");
     seed_memory_for_test::<SubtitleOffsetEntry>(&session::peek());
     let _sid = playing(&mut ps, "machine-so", "rk-new");
@@ -211,6 +223,7 @@ fn a_retune_or_a_forget_reaches_the_stamped_record_the_restore_seeded() {
     let mut record = signed_in("acct");
     record.set_subtitle_offset_for("", "machine-x", "rk-k", Some(900));
     session::save(&record);
+    _session.seated("", "acct");
     assert_eq!(session::peek().client_id, "cid-1");
     seed_memory_for_test::<SubtitleOffsetEntry>(&session::peek());
     let _sid = playing(&mut ps, "machine-x", "rk-k");
@@ -253,12 +266,46 @@ fn a_mirror_nobody_restored_refuses_a_write_and_answers_nothing() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("memory-unseeded");
     session::save(&signed_in("acct"));
+    _session.seated("", "acct");
     unseed_memory_for_test::<SubtitleOffsetEntry>();
 
     assert!(!remember::<SubtitleOffsetEntry>("", key("m", "rk"), |_| Some(offset("m", "rk", 5))));
     plx_base::storage_worker::drain_for_test();
     assert_eq!(recall::<SubtitleOffsetEntry>("", &key("m", "rk")), None);
     assert_eq!(session::peek().subtitle_offset_for("", "m", "rk"), None, "and nothing was queued");
+    tidy();
+}
+
+/// **P-d11: an offset tuned while nobody is seated is not saved.** A dev-token run (or a replay) seats
+/// nobody, and `""` is both the account owner and "no profile published": the door asks the seat, so
+/// the pick neither enters the mirror nor reaches the file. On `main` it was written into the owner's
+/// `""` record of whatever account was on disk, which for a test is a real person's record. Once the
+/// owner IS seated, the very same call saves (the control that keeps this from passing for the wrong
+/// reason).
+#[test]
+fn offset_tuned_while_unseated_is_not_saved() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("memory-unseated");
+    session::save(&signed_in("acct"));
+    assert_eq!(session::current_seat(), session::Seat::Unseated, "setup: nobody is seated");
+    seed_memory_for_test::<SubtitleOffsetEntry>(&session::peek());
+    playing(&mut ps, "machine-unseated", "rk-unseated");
+
+    crate::player::set_subtitle_offset(1_800);
+    persist_subtitle_offset(&ps, 1_800);
+    plx_base::storage_worker::drain_for_test();
+    assert_eq!(recall::<SubtitleOffsetEntry>("", &key("machine-unseated", "rk-unseated")), None, "not remembered");
+    assert_eq!(session::peek().subtitle_offset_for("", "machine-unseated", "rk-unseated"), None, "and not written");
+
+    session.seated("", "acct");
+    persist_subtitle_offset(&ps, 1_800);
+    plx_base::storage_worker::drain_for_test();
+    assert_eq!(
+        session::peek().subtitle_offset_for("", "machine-unseated", "rk-unseated"),
+        Some(1_800),
+        "seated as the owner, the same pick is saved"
+    );
     tidy();
 }
 
@@ -270,6 +317,7 @@ fn t6_the_mirror_is_reseeded_on_a_stamp_change_with_the_tenure_unchanged() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("memory-t6");
     session::save(&signed_in("acct-a"));
+    _session.seated("", "acct-a");
     let _ = session::peek();
 
     let mut account_a = signed_in("acct-a");
@@ -284,18 +332,18 @@ fn t6_the_mirror_is_reseeded_on_a_stamp_change_with_the_tenure_unchanged() {
     let seen = |rk: &str| recall::<SubtitleOffsetEntry>("", &key("m", rk)).map(|e| e.offset_ms);
 
     // Neither the tenure nor the stamp moved: the mirror keeps what it is ahead by.
-    restore_all(&account_a, Overrides::default());
+    restore_install_rows(&account_a);
     assert_eq!((seen("from-file-a"), seen("ahead")), (Some(100), Some(300)), "same stamp: not reseeded");
 
     // The stamp moved, the tenure did not: reseeded from the new record.
-    restore_all(&account_b, Overrides::default());
+    restore_install_rows(&account_b);
     assert_eq!(session::tenure(), tenure, "setup: nothing was revoked");
     assert_eq!(seen("from-file-b"), Some(200), "the new account's record is what the mirror holds");
     assert_eq!((seen("from-file-a"), seen("ahead")), (None, None), "and the previous account's is gone");
 
     // Control: the same record again is not a second reseed.
     assert!(remember::<SubtitleOffsetEntry>("", key("m", "ahead-b"), |_| Some(offset("m", "ahead-b", 400))));
-    restore_all(&account_b, Overrides::default());
+    restore_install_rows(&account_b);
     assert_eq!(seen("ahead-b"), Some(400));
     plx_base::storage_worker::drain_for_test();
     tidy();
@@ -311,6 +359,7 @@ fn a_write_after_revocation_is_refused_and_the_mirror_entry_is_invisible() {
     let _g = fresh_registry(&mut ps);
     let _session = session::TempSession::new("memory-revoked");
     session::save(&signed_in("acct"));
+    _session.seated("", "acct");
     assert_eq!(session::peek().client_id, "cid-1");
     seed_memory_for_test::<SubtitleOffsetEntry>(&session::peek());
     let sid = playing(&mut ps, "machine-revoked", "rk-revoked");
@@ -334,7 +383,7 @@ fn a_write_after_revocation_is_refused_and_the_mirror_entry_is_invisible() {
     session::save(&signed_in("acct"));
     plx_base::storage_worker::drain_for_test();
     assert_eq!(recall::<SubtitleOffsetEntry>("", &key("machine-revoked", "rk-new")), None, "still invisible before a restore");
-    restore_all(&session::peek(), Overrides::default());
+    restore_install_rows(&session::peek());
     assert_eq!(recall::<SubtitleOffsetEntry>("", &key("machine-revoked", "rk-new")), None, "the refused pick was never written");
     tidy();
 }
@@ -347,6 +396,7 @@ fn a_repick_keeps_the_entrys_other_keys_and_an_unchanged_one_writes_nothing() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let _session = session::TempSession::new("memory-extensions");
+    _session.seated("", "acct");
     let mut with_extension = signed_in("acct");
     with_extension.prefs.subtitle_offsets = serde_json::from_value(serde_json::json!([
         {"user":"","items":[{"machine_id":"machine-ext","rating_key":"rk-ext","offset_ms":100,"future":"kept"}]}

@@ -1,10 +1,12 @@
-//! The tie test of the live list (T-live), `restore_all`, and the door's clamp-before-persist.
+//! The tie test of the live list (T-live), the seat's restore, and the door's clamp-before-persist.
 //!
 //! T-live is the media half of plex's tie tests (`plex::session::prefs_tests`): plex declares which
 //! settings are LIVE, this module declares which it applies, and a setting present in one list and
-//! forgotten in the other fails here, both ways, by marker KEY.
+//! forgotten in the other fails here, both ways, by marker KEY. Every live row is also a `Profile`
+//! row (the partition by `SCOPE`): a live setting that stayed `Install` would be restored from
+//! nobody's seat.
 use super::*;
-use plx_plex::plex::session::{self as session, prefs::DESCRIPTORS};
+use plx_plex::plex::session::{self as session, prefs::DESCRIPTORS, stored_effective};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn declared_by_plex() -> BTreeMap<&'static str, bool> {
@@ -33,6 +35,22 @@ fn t_live_media_rows_equal_the_settings_plex_declares_live() {
     assert!(LIVE_ROWS.iter().all(|r| r.live), "every row is a LIVE setting");
 }
 
+/// **T-live, the partition by `SCOPE`.** Every setting plex declares live is a `Profile` row, and the
+/// rows media applies carry that scope: the seat restores them all, and a live `Install` row would
+/// be restored from nobody's seat. The descriptors that are NOT live are the ones that stay out.
+#[test]
+fn t_live_every_live_row_is_a_profile_row() {
+    use plx_plex::plex::session::prefs::Scope;
+    for d in DESCRIPTORS.iter().filter(|d| d.live) {
+        assert_eq!(d.scope, Scope::Profile, "`{}` is live, so the seat restores it: it must be a Profile row", d.key);
+    }
+    assert!(LIVE_ROWS.iter().all(|r| r.scope == Scope::Profile));
+    let profile_live: BTreeSet<_> =
+        DESCRIPTORS.iter().filter(|d| d.scope == Scope::Profile && d.live).map(|d| d.key).collect();
+    let media: BTreeSet<_> = LIVE_ROWS.iter().map(|r| r.key).collect();
+    assert_eq!(profile_live, media, "the live Profile rows are exactly the rows the seat restores");
+}
+
 /// The tie test must be able to fail: against a descriptor table whose `live` flag is dropped for
 /// one key, the same comparison reports it.
 #[test]
@@ -52,7 +70,7 @@ fn t_live_catches_a_row_forgotten_in_either_list() {
     assert!(!agrees(&plex), "a setting declared live in plex but missing in media is caught");
 }
 
-/// A record with the nine settings away from every default.
+/// The legacy install-wide keys of a record with the nine settings away from every default.
 fn stored_prefs() -> Preferences {
     let s = session::Session::default()
         .with_pref::<QualityPref>(Quality::P1080High)
@@ -67,9 +85,37 @@ fn stored_prefs() -> Preferences {
     s.prefs
 }
 
-/// A session record holding `prefs` and nothing else, for the restore.
-fn record(prefs: Preferences) -> session::Session {
-    session::Session { prefs, ..Default::default() }
+/// The account the fixtures sign in with, and its stamp: a record is visible only under it.
+const TOKEN: &str = "acct-token";
+
+fn stamp() -> String {
+    plx_plex::plex::grant::account_key(TOKEN)
+}
+
+fn seat(user: &str) -> Seat {
+    Seat::Seated { user: user.into(), stamp: stamp() }
+}
+
+/// What `user` picked, as the file would hold it (parsed from JSON, so the soft parse is in play).
+fn picked(user: &str, under: &str, prefs: serde_json::Value) -> ProfilePrefsRecord {
+    serde_json::from_value(serde_json::json!({"user": user, "account": under, "prefs": prefs})).unwrap()
+}
+
+/// A session record holding `legacy` as its top-level keys and `own` as the profiles' picks.
+fn record(legacy: Preferences, own: Vec<ProfilePrefsRecord>) -> session::Session {
+    session::Session {
+        prefs: Preferences { profile_prefs: own, ..legacy },
+        account_token: TOKEN.into(),
+        ..Default::default()
+    }
+}
+
+/// [`restore_profile_rows`] for a process that has restored nothing yet: the mirror is seeded from
+/// `record` itself. (A restore that finds a mirror already seeded keeps it: see
+/// `restore_profile_rows_reads_the_mirror_because_the_file_is_write_after`.)
+fn restore(record: &session::Session, seat: &Seat, ov: Overrides) {
+    unseed_profile_prefs_for_test();
+    restore_profile_rows(record, seat, ov);
 }
 
 #[derive(Debug, PartialEq)]
@@ -81,8 +127,15 @@ fn cells() -> Cells {
         deck_press(), crate::player::subtitle_tone(), crate::player::audio_enhancements())
 }
 
-/// Put the nine cells back to what they held, on drop. Declared AFTER `serial()` so it drops first,
-/// while the lock `restore_*` asserts is still held.
+/// The nine legacy values of [`stored_prefs`], as the cells hold them once they are restored.
+fn legacy_cells() -> Cells {
+    Cells(Quality::P1080High, DirectPlayMode::Forced, SubtitleSize::Large, SubtitlePosition::High,
+        NextEpisodeMode::AfterCredits, SkipInterval::Seconds30, DeckPress::Play, SubtitleTone::Silver,
+        AudioEnhancements { boost_dialog: true, normalize_loudness: true })
+}
+
+/// Put the nine cells back to what they held, and the mirrors to never-seeded, on drop. Declared
+/// AFTER `serial()` so it drops first, while the lock `restore_*` asserts is still held.
 struct Put(Option<Cells>);
 impl Put {
     fn back(c: Cells) -> Put {
@@ -91,6 +144,7 @@ impl Put {
 }
 impl Drop for Put {
     fn drop(&mut self) {
+        unseed_profile_prefs_for_test();
         let Some(Cells(q, dpm, size, position, next, skip, deck, tone, enh)) = self.0.take() else { return };
         restore_quality(q);
         restore_direct_play_mode(dpm);
@@ -116,32 +170,29 @@ fn scramble() {
     crate::player::restore_audio_enhancements(AudioEnhancements { boost_dialog: false, normalize_loudness: true });
 }
 
-/// **`restore_all` with fixed overrides is the hand list it replaced.** Every cell lands on the
-/// record's value; the quality override replaces only the quality; an absent quality reads as
-/// Original while the record keeps it absent (restore writes nothing).
+/// **Unseated restores the legacy keys, and never an own value.** Nobody is seated, so nobody owns
+/// anything: every cell lands on the record's top-level key even when some profile has a pick of
+/// its own; the quality override replaces only the quality; an absent quality reads as Original while
+/// the record keeps it absent (restore writes nothing).
 #[test]
-fn restore_all_sets_every_cell_from_the_record_and_honours_only_the_quality_override() {
+fn restore_profile_rows_unseated_reads_the_legacy_keys_and_never_an_own_value() {
     let _g = plx_base::testlock::serial();
-    let _session = session::TempSession::new("restore-all");
+    let _session = session::TempSession::new("restore-unseated");
     let _restore = Put::back(cells());
+    let own = vec![picked("u1", &stamp(), serde_json::json!({"subtitle_size": "extra_large", "skip_interval": "60s"}))];
 
     scramble();
-    restore_all(&record(stored_prefs()), Overrides::default());
-    assert_eq!(
-        cells(),
-        Cells(Quality::P1080High, DirectPlayMode::Forced, SubtitleSize::Large, SubtitlePosition::High,
-            NextEpisodeMode::AfterCredits, SkipInterval::Seconds30, DeckPress::Play, SubtitleTone::Silver,
-            AudioEnhancements { boost_dialog: true, normalize_loudness: true })
-    );
+    restore(&record(stored_prefs(), own.clone()), &Seat::Unseated, Overrides::default());
+    assert_eq!(cells(), legacy_cells());
 
     scramble();
-    restore_all(&record(stored_prefs()), Overrides { quality: Some(Quality::P720) });
+    restore(&record(stored_prefs(), own), &Seat::Unseated, Overrides { quality: Some(Quality::P720) });
     assert_eq!(quality(), Quality::P720, "the override replaces the record's quality");
     assert_eq!(direct_play_mode(), DirectPlayMode::Forced, "and nothing else");
     assert_eq!(subtitle_size(), SubtitleSize::Large);
 
     scramble();
-    restore_all(&record(Preferences::default()), Overrides::default());
+    restore(&record(Preferences::default(), vec![]), &Seat::Unseated, Overrides::default());
     assert_eq!(
         cells(),
         Cells(Quality::Original, DirectPlayMode::Auto, SubtitleSize::Medium, SubtitlePosition::Low,
@@ -151,16 +202,218 @@ fn restore_all_sets_every_cell_from_the_record_and_honours_only_the_quality_over
     );
 }
 
-/// **`restore_all` publishes each cell once** (a restore is not a pick, and the publish counter is
-/// what the one-publish tests count).
+/// **A seated profile reads its own value, else the legacy key, per setting.** u1 picked two of the
+/// nine; the other seven read the TV's. Another profile with no record reads the TV's for all nine,
+/// the owner (`""`) has a record of its own, and a record under another sign-in's stamp is not read.
 #[test]
-fn restore_all_publishes_each_live_cell_once() {
+fn restore_profile_rows_seated_reads_the_own_value_and_falls_back_per_setting() {
+    let _g = plx_base::testlock::serial();
+    let _session = session::TempSession::new("restore-seated");
+    let _restore = Put::back(cells());
+    let own = vec![
+        picked("u1", &stamp(), serde_json::json!({"subtitle_size": "extra_large", "skip_interval": "60s"})),
+        picked("", &stamp(), serde_json::json!({"playback_quality": "480p_720_kbps"})),
+        picked("u3", "ffffffffffffffff", serde_json::json!({"subtitle_size": "small"})),
+    ];
+    let rec = record(stored_prefs(), own);
+
+    scramble();
+    restore(&rec, &seat("u1"), Overrides::default());
+    let Cells(q, dpm, _, position, next, _, deck, tone, enh) = legacy_cells();
+    assert_eq!(
+        cells(),
+        Cells(q, dpm, SubtitleSize::ExtraLarge, position, next, SkipInterval::Seconds60, deck, tone, enh),
+        "u1: its two picks over the TV's seven"
+    );
+
+    scramble();
+    restore(&rec, &seat("u2"), Overrides::default());
+    assert_eq!(cells(), legacy_cells(), "u2 picked nothing: all nine are the TV's");
+
+    scramble();
+    restore(&rec, &seat(""), Overrides::default());
+    assert_eq!(quality(), Quality::P480, "the owner's own record");
+    assert_eq!(subtitle_size(), SubtitleSize::Large, "and the TV's for what it did not pick");
+
+    scramble();
+    restore(&rec, &seat("u3"), Overrides::default());
+    assert_eq!(subtitle_size(), SubtitleSize::Large, "a record of another sign-in is invisible");
+
+    scramble();
+    restore(&rec, &seat("u1"), Overrides { quality: Some(Quality::P720) });
+    assert_eq!(quality(), Quality::P720, "the override is forced over the profile's value too");
+    assert_eq!(subtitle_size(), SubtitleSize::ExtraLarge);
+}
+
+/// **A restore publishes each cell once** (a restore is not a pick, and the publish counter is what
+/// the one-publish tests count).
+#[test]
+fn restore_profile_rows_publishes_each_live_cell_once() {
     let _g = plx_base::testlock::serial();
     let _restore = Put::back(cells());
-    let before = (publishes_for_test::<QualityPref>(), publishes_for_test::<SubtitleTonePref>());
-    restore_all(&record(stored_prefs()), Overrides::default());
+    let before = (publishes_for_test::<QualityPref>(), publishes_for_test::<SubtitleTonePref>(),
+        publishes_for_test::<SubtitleSizePref>());
+    restore(&record(stored_prefs(), vec![]), &seat("u1"), Overrides::default());
     assert_eq!(publishes_for_test::<QualityPref>(), before.0 + 1);
     assert_eq!(publishes_for_test::<SubtitleTonePref>(), before.1 + 1);
+    assert_eq!(publishes_for_test::<SubtitleSizePref>(), before.2 + 1);
+}
+
+/// **A restore reads the mirror, not the record it is handed.** `session::peek()` is write-after: a
+/// pick is in the mirror the moment it is made and in the file when the worker lands it. A restore
+/// that read the record would show a switch back to the profile its pre-pick value. The record here
+/// is the stale one a restore would be handed while the write is still queued; the mirror, already
+/// seeded under the same tenure and stamp, is kept.
+#[test]
+fn restore_profile_rows_reads_the_mirror_because_the_file_is_write_after() {
+    let _g = plx_base::testlock::serial();
+    let session = session::TempSession::new("restore-mirror");
+    let _restore = Put::back(cells());
+    let stale = record(Preferences::default(), vec![]);
+    assert_eq!(session.seated("u1", TOKEN), stamp());
+    seed_profile_prefs_for_test(&stale);
+
+    assert!(confirm::<SubtitleSizePref>(SubtitleSize::ExtraLarge));
+    restore_subtitle_size(SubtitleSize::Small);
+    restore_profile_rows(&stale, &seat("u1"), Overrides::default());
+    assert_eq!(subtitle_size(), SubtitleSize::ExtraLarge, "the pick, though `stale` does not have it");
+    restore_profile_rows(&stale, &seat("u2"), Overrides::default());
+    assert_eq!(subtitle_size(), SubtitleSize::Medium, "and it is u1's, not u2's");
+}
+
+/// **Every live row records its pick under the seated profile, and never in the TV's key.** The nine
+/// settings picked through the Confirm door land in the profile's record (the mirror has the same),
+/// the frozen top-level keys are byte for byte what they were, and the cell holds the pick.
+#[test]
+fn every_live_setting_is_picked_into_the_seated_profiles_record() {
+    let _g = plx_base::testlock::serial();
+    let session = session::TempSession::new("pick-every-row");
+    let _restore = Put::back(cells());
+    session.seated("u1", TOKEN);
+    let mut legacy = record(stored_prefs(), vec![]);
+    legacy.client_id = "cid-test".into();
+    session::save(&legacy);
+    seed_profile_prefs_for_test(&session::peek());
+    let top_level = |s: &session::Session| {
+        let mut v = serde_json::to_value(&s.prefs).unwrap();
+        v.as_object_mut().unwrap().remove("profile_prefs");
+        v
+    };
+    let before = top_level(&session::load());
+
+    assert!(confirm::<QualityPref>(Quality::P480));
+    assert!(confirm::<DirectPlayModePref>(DirectPlayMode::Disabled));
+    assert!(confirm::<SubtitleSizePref>(SubtitleSize::ExtraLarge));
+    assert!(confirm::<SubtitlePositionPref>(SubtitlePosition::Middle));
+    assert!(confirm::<NextEpisodeModePref>(NextEpisodeMode::Off));
+    assert!(confirm::<SkipIntervalPref>(SkipInterval::Seconds60));
+    assert!(confirm::<DeckPressPref>(DeckPress::Details));
+    assert!(confirm::<SubtitleTonePref>(SubtitleTone::Grey));
+    assert!(confirm::<AudioEnhancementsPref>(AudioEnhancements::NONE));
+
+    let after = session::load();
+    assert_eq!(top_level(&after), before, "the TV's keys are untouched: no pick writes a legacy key");
+    let own = after.prefs.profile_prefs.iter().find(|r| r.user == "u1").expect("u1's record");
+    assert_eq!(own.account, stamp());
+    assert_eq!(after.prefs.profile_prefs.len(), 1);
+    assert_eq!(profile_prefs_mirror_for_test(), after.prefs.profile_prefs, "the mirror holds exactly what landed");
+    assert_eq!(
+        cells(),
+        Cells(Quality::P480, DirectPlayMode::Disabled, SubtitleSize::ExtraLarge, SubtitlePosition::Middle,
+            NextEpisodeMode::Off, SkipInterval::Seconds60, DeckPress::Details, SubtitleTone::Grey,
+            AudioEnhancements::NONE)
+    );
+}
+
+/// **P-d10: a pick while nobody is seated is refused.** Confirm replies false and publishes nothing,
+/// Optimistic shows the value for this seat only and replies false; neither writes the file.
+#[test]
+fn profile_write_while_unseated_is_refused() {
+    let _g = plx_base::testlock::serial();
+    let _session = session::TempSession::new("pick-unseated");
+    let _restore = Put::back(cells());
+    restore_subtitle_size(SubtitleSize::Medium);
+    restore_deck_press(DeckPress::Details);
+    assert_eq!(session::current_seat(), Seat::Unseated, "setup");
+    let before = serde_json::to_value(session::load()).unwrap();
+
+    assert!(!confirm::<DeckPressPref>(DeckPress::Play), "Confirm replies false");
+    assert_eq!(deck_press(), DeckPress::Details, "and publishes nothing");
+    let (tx, rx) = std::sync::mpsc::channel();
+    choose::<DeckPressPref>(DeckPress::Play, How::Confirm(tx));
+    assert!(!rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), "so does the queued door");
+    assert_eq!(deck_press(), DeckPress::Details);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    choose::<SubtitleSizePref>(SubtitleSize::Large, How::Optimistic(Some(tx)));
+    assert_eq!(subtitle_size(), SubtitleSize::Large, "an optimistic pick still shows, for this seat only");
+    assert!(!rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(), "but it was not saved");
+
+    plx_base::storage_worker::drain_for_test();
+    assert_eq!(serde_json::to_value(session::load()).unwrap(), before, "and the file is untouched");
+}
+
+/// What `user` has picked for `S`, according to `records` under the fixture account's stamp.
+fn own_of<S: session::ProfileSetting>(records: &[ProfilePrefsRecord], user: &str) -> Option<S::Value> {
+    session::own_prefs(records, user, &stamp()).and_then(S::own)
+}
+
+/// Profile `u1` seated and reading the legacy values, its Confirm pick captured, and then the switch
+/// to `u2` (seated and restored) before the pick's write runs: the order a queued Confirm can meet.
+fn confirm_pick_then_switch(session: &session::TempSession) -> ProfileWrite {
+    let mut legacy = record(stored_prefs(), vec![]);
+    legacy.client_id = "cid-test".into();
+    session.seated("u1", TOKEN);
+    session::save(&legacy);
+    seed_profile_prefs_for_test(&session::peek());
+    restore_profile_rows(&session::peek(), &seat("u1"), Overrides::default());
+    assert_eq!(deck_press(), DeckPress::Play, "setup: u1 reads the legacy value");
+    let write = ProfileWrite::capture().expect("u1 is seated");
+    session.seated("u2", TOKEN);
+    restore_profile_rows(&session::peek(), &seat("u2"), Overrides::default());
+    assert_eq!(deck_press(), DeckPress::Play, "setup: u2 reads the legacy value too");
+    write
+}
+
+/// **P-d5: a Confirm reply after a switch does not publish into the new profile's cells.** u1's pick
+/// is captured on the main thread and runs on the worker after the switch seated u2. The write is
+/// durable (the reply is true) and lands in u1's record, but the cell u2 is reading is not touched:
+/// the cell is published only while the profile that picked is still the seated one.
+#[test]
+fn confirm_reply_after_switch_publishes_nothing() {
+    let _g = plx_base::testlock::serial();
+    let session = session::TempSession::new("confirm-after-switch");
+    let _restore = Put::back(cells());
+    let write = confirm_pick_then_switch(&session);
+    let before = publishes_for_test::<DeckPressPref>();
+
+    assert!(confirm_with::<DeckPressPref>(&write, DeckPress::Details), "the write was durable");
+    assert_eq!(deck_press(), DeckPress::Play, "and u2's cell is not u1's pick");
+    assert_eq!(publishes_for_test::<DeckPressPref>(), before, "nothing was published");
+    let records = session::load().prefs.profile_prefs;
+    assert_eq!(own_of::<DeckPressPref>(&records, "u1"), Some(DeckPress::Details), "it landed in u1's record");
+    assert_eq!(own_of::<DeckPressPref>(&records, "u2"), None, "and in nobody else's");
+}
+
+/// **N3: the mirror is updated for the profile that picked, whoever is seated when the write returns.**
+/// The same late Confirm as above: the cell is left alone, but the mirror holds u1's pick, so a switch
+/// back to u1 shows it (a restore reads the mirror, never the possibly older file).
+#[test]
+fn confirm_after_switch_updates_the_mirror_of_the_picking_profile() {
+    let _g = plx_base::testlock::serial();
+    let session = session::TempSession::new("confirm-after-switch-mirror");
+    let _restore = Put::back(cells());
+    let write = confirm_pick_then_switch(&session);
+
+    assert!(confirm_with::<DeckPressPref>(&write, DeckPress::Details));
+    let mirror = profile_prefs_mirror_for_test();
+    assert_eq!(own_of::<DeckPressPref>(&mirror, "u1"), Some(DeckPress::Details), "the mirror has u1's pick");
+    assert_eq!(own_of::<DeckPressPref>(&mirror, "u2"), None, "and u2 has none");
+
+    session.seated("u1", TOKEN);
+    let stale = record(stored_prefs(), vec![]);
+    restore_profile_rows(&stale, &seat("u1"), Overrides::default());
+    assert_eq!(deck_press(), DeckPress::Details, "u1, seated again, finds its pick (a stale record cannot hide it)");
 }
 
 /// What `supported_quality` would do in a build whose adaptive path is not ready: Auto is not
@@ -178,11 +431,14 @@ fn normalize_runs_before_persist_so_the_stored_value_is_the_clamped_one() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("normalize-before-persist");
     let _restore = Put::back(cells());
-    session::save(&session::Session { client_id: "cid".into(), account_token: "acct".into(), ..Default::default() });
+    session::save(&session::Session { client_id: "cid".into(), account_token: TOKEN.into(), ..Default::default() });
+    _session.seated("u1", TOKEN);
+    let seat = session::current_seat();
+    let stored = || stored_effective::<QualityPref>(&session::load(), &seat);
     restore_quality(Quality::P720);
 
     assert!(confirm_via::<QualityPref>(Quality::Auto, gate_closed));
-    assert_eq!(session::load().prefs.playback_quality, Some(Quality::Original), "stored: the clamped rung");
+    assert_eq!(stored(), Quality::Original, "stored: the clamped rung");
     assert_eq!(quality(), Quality::Original, "live: the same rung");
 
     restore_quality(Quality::P720);
@@ -190,7 +446,7 @@ fn normalize_runs_before_persist_so_the_stored_value_is_the_clamped_one() {
     choose_via::<QualityPref>(Quality::Auto, How::Optimistic(Some(tx)), |q| if q == Quality::Auto { Quality::P480 } else { q });
     assert_eq!(quality(), Quality::P480, "published the clamped rung");
     assert!(rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap());
-    assert_eq!(session::load().prefs.playback_quality, Some(Quality::P480), "and persisted the same one");
+    assert_eq!(stored(), Quality::P480, "and persisted the same one");
 }
 
 /// The Settings policy is declared once, on the row: the dispatcher asks the row.

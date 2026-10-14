@@ -658,19 +658,35 @@ pub(super) fn apply_deferred_capture(rec: &mut super::recorder::Recplay,
     Ok(())
 }
 
-/// **Boot's restore**: the nine live player cells from the record, through the one
-/// `route::restore_all` the credentials handoff (`bridge::follow_auth_landing`) calls too. Split
-/// out of [`construct`] so the cells it sets can be graded without an SDL window (`run.rs`'
-/// `lifecycle_regression_tests`).
+/// **Boot's restore**: the mirrors from the record, then the nine live player cells for the seat
+/// the process starts with, `Unseated` (no profile is published yet), through the one
+/// `route::restore_profile_rows` the seat trigger (`bridge::SeatWatch`) calls at every seat change.
+/// Every cell then holds the fallback (the frozen install-wide key, then the default), which is the
+/// value boot always set. Split out of [`construct`] so the cells it sets can be graded without an
+/// SDL window (`run.rs`' `lifecycle_regression_tests`).
 ///
 /// Restored before any route can resolve a stream. A legacy file with no quality resolves to
 /// Original; a new file can choose Auto only through route's explicit readiness gate
 /// (session::load records that decision once). The dev quality override is honoured unless the
 /// harness is `controlled`.
 pub(super) fn restore_player_preferences(session: &plx_plex::plex::session::Session, controlled: bool) {
-    plx_media::route::restore_all(session, plx_media::route::Overrides {
-        quality: if controlled { None } else { crate::dev::playback_quality_override() },
-    });
+    plx_media::route::restore_install_rows(session);
+    plx_media::route::restore_profile_rows(session, &plx_plex::plex::session::Seat::Unseated,
+        plx_media::route::Overrides {
+            quality: if controlled { None } else { crate::dev::playback_quality_override() },
+        });
+}
+
+/// **The stored session resumed, as boot does it**: `ResumeStored` makes the owner seat the stored
+/// profile (`release_held_handoff` publishes it, which is what the seat trigger sees) and emit
+/// `Ready`; the handoff is returned for the caller to install. The same function the stored boot
+/// runs, so a host test grades the boot and not a copy of it.
+pub(super) fn resume_stored(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge, tap: &mut dyn plx_ui::dispatch::Tap<super::bridge::AppHost>)
+    -> Option<plx_session::auth::ReadyCreds> {
+    super::bridge::execute_session_command(pages, plx_session::auth::SessionCmd::ResumeStored);
+    pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(), tap, false);
+    bridge.take_session_ready()
 }
 
 pub(crate) unsafe fn construct(
@@ -1031,11 +1047,11 @@ pub(crate) unsafe fn construct(
         plx_ui::containers::transition::PageDip::new(),
     ));
     restore_player_preferences(&session, controlled);
-    // dev: /tmp/plxnative-audioenh=off|boost|loudness — force the PERSISTED enhancement
-    // preference right after it was restored from whatever the install actually has saved, so a
-    // harness case's starting preference never depends on what an earlier run's pick left behind.
-    // Unlike every other boot override on this page, this one calls the real persisting setter —
-    // see `dev::scenarios::arm_audio_enhancements`'s own doc for why.
+    // dev: /tmp/plxnative-audioenh=off|boost|loudness — force the enhancement preference right after
+    // the restore. Nobody is seated yet, so this sets the live cell alone (the door refuses to save
+    // for nobody), which is all a dev-token boot, which never seats, gets. A boot that seats a
+    // profile runs the arm again, writing THAT profile's record, at the seat change
+    // (`bridge::SeatWatch`). See `dev::scenarios::arm_audio_enhancements`'s own doc.
     if !controlled { crate::dev::scenarios::arm_audio_enhancements(); }
     let primary_binding = initial.as_ref().map(|initial| initial.primary_client);
     let activate_session = |bridge: &mut super::bridge::Bridge,
@@ -1104,10 +1120,7 @@ pub(crate) unsafe fn construct(
             // install_pms can read any per-profile stores. Stored boot does not re-save its
             // credentials. This is the normal bounded dispatcher drain over the same owner
             // and queue later moved into App, not a recursive bootstrap reducer.
-            super::bridge::execute_session_command(pages, plx_session::auth::SessionCmd::ResumeStored);
-            pages.frame_with(bridge, plx_machine::machine::Tick::default(), Vec::new(), Vec::new(),
-                rec, false);
-            if let Some(ready) = bridge.take_session_ready() {
+            if let Some(ready) = resume_stored(pages, bridge, rec) {
                 let endpoints = install_pms_owned(bridge, &ready.origin, &ready.address,
                     &ready.token, ready.tier, ready.pin.as_ref(), &ready.install);
                 super::bridge::execute_endpoint_outcomes(pages, endpoints);

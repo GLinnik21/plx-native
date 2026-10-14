@@ -264,7 +264,37 @@ fn ok_on_the_checked_size_after_a_failed_write_retries_the_write() {
     plx_media::route::restore_subtitle_position(position);
 }
 
-/// Subtitle size and position are LOCAL per-television settings. Opening their picker must not
+/// **A profile's own pick is durable (M4).** The seated profile's size is Large in its own record
+/// while the frozen legacy install-wide key still says Medium, and the restore put Large in the live
+/// cell. OK on the checked Large row is not a change: it pops without a write. Reading the legacy key
+/// for "stored" would call that pick unsaved and write it again on every OK.
+#[test]
+fn ok_on_checked_profile_size_pops() {
+    use plx_plex::plex::session::{put_own, SubtitleSizePref};
+    let _serial = plx_base::testlock::serial();
+    let session = plx_plex::plex::session::TempSession::new("picker-profile-size-durable");
+    let (size, position) = (plx_media::route::subtitle_size(), plx_media::route::subtitle_position());
+    let stamp = session.seated("kid", "picker-account");
+    assert!(plx_plex::plex::session::update(|cur| {
+        let mut next = cur.clone();
+        put_own::<SubtitleSizePref>(&mut next.prefs.profile_prefs, "kid", &stamp, plx_media::route::SubtitleSize::Large);
+        Some(next)
+    }));
+    assert_eq!(plx_plex::plex::session::peek().subtitle_size(), plx_media::route::SubtitleSize::Medium,
+        "the legacy key says Medium");
+    plx_media::route::restore_subtitle_size(plx_media::route::SubtitleSize::Large);
+
+    let mut page = PickerPage::new(EntryId(0), PickerKind::SubtitleSize);
+    let checked = page.state.checked;
+    let emitted = drive(&mut page, ScreenEvent::Activate(checked), checked);
+    assert!(popped(&emitted), "the profile's own Large is stored: OK on it pops");
+    assert_eq!(preference_commands(&emitted), 0, "and writes nothing");
+    plx_media::route::restore_subtitle_size(size);
+    plx_media::route::restore_subtitle_position(position);
+}
+
+/// Subtitle size and position are LOCAL settings (kept on the television, per profile; not Plex
+/// account preferences). Opening their picker must not
 /// start the Plex account load (whose failure puts the Audio page's Retry row under the cursor),
 /// must not read as the Audio & Subtitles page, and must not carry the account note.
 #[test]

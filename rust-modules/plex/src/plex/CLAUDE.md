@@ -477,7 +477,7 @@ a dead source is **absent** from Home and states itself in its own library secti
   reader may now call `session::peek()`, because `peek()` is backed by a live in-memory read
   cache, not a per-call file transaction.
 - **Every preference key but `language` lives in ONE struct, `session/prefs.rs`'s `Preferences`**
-  (the nine player settings, `auto_sign_in`, `trailer_autoplay`, `last_hero_blur`, the account-bound
+  (the nine player settings' FROZEN top-level keys, `profile_prefs` (their per-profile home, below), `auto_sign_in`, `trailer_autoplay`, `last_hero_blur`, the account-bound
   `plaintext_consent` and `server_key_pins`, the per-profile `last_library` and `library_sorts` (cleared
   at sign-out like every `ACCOUNT_BOUND = true` row in `prefs::DESCRIPTORS`, but their records carry no
   account stamp, so the one login that is not a sign-out, a stored session that could not be activated
@@ -489,7 +489,18 @@ a dead source is **absent** from Home and states itself in its own library secti
   row keeps its own soft-parse policy), a marker (`setting!` for a `Copy` value, hand-written when
   `Stored` != `Value` as for quality, `list_row!` for a list) and a line in `prefs::DESCRIPTORS`.
   Callers read `session.prefs.<field>` or the hand-written getter, and change a value with
-  `session.with_pref::<Marker>(v)` (a `Copy` row). `auto_sign_in` is Install and never
+  `session.with_pref::<Marker>(v)` (a `Copy` row; it writes the TOP-LEVEL key, so for the nine
+  player settings it is a fixture builder for the legacy fallback, never what a pick does).
+  **The nine player settings are per profile** (`prefs/profile_prefs.rs`): a profile's own picks sit
+  in `profile_prefs` (`[{user, account, prefs}]`, `account` the `grant::account_key` stamp, the owner
+  `user: ""`), and what a profile reads is `stored_effective` = its own value, else the frozen
+  top-level key (`Setting::get`, a garbage own value included), else the default. The top-level keys
+  are never copied and never written by a pick (`persist_profile_pref` is the only writer; it
+  refuses without a seat, across a tenure or credential change and with an empty stamp, and prunes
+  records of other accounts). `profile_prefs` is account-bound (`ACCOUNT_BOUND_PREFERENCES`, so
+  sign-out drops it and the legacy keys stay). Who is seated is `session::Seat`
+  (`Seat::of(profile, stamp)`, `current_seat()`); the live cells follow it in `plx_media::route`.
+  `auto_sign_in` is Install and never
   account-bound: `boot_shows_picker` reads it before any profile is seated. `trailer_autoplay`'s
   derived default (here and in `Session`) is OFF while an ABSENT key reads on, so the canonical
   record's own `Default` sets it. `plaintext_consent` is written as `[]` in the legacy file but
@@ -503,8 +514,9 @@ a dead source is **absent** from Home and states itself in its own library secti
   `ProfileMemory::upsert_with`. `track_memory` is account-bound (no stamp, no write; a write prunes
   every other account's record), its entry strings are bounded (an over-long one reads as absent, a
   title is cut), and it is capped at 64 entries a profile and held to a 32 KiB HOUSEHOLD budget by
-  eviction, never refusal. It is READ at resolve time (`route::recall_all` into `ResolveEnv::memory`,
-  matched by `route/track_memory.rs`, ranked above the PMS selection by `plan.rs`) and nothing writes
+  eviction, never refusal. It is READ at resolve time (`route::recall_all` into `ResolveEnv::memory`, and
+  only for the SEATED profile: `recall` and `recall_all` ask `session::is_seated_as`, so an unseated
+  boot or a dev token reads none; matched by `route/track_memory.rs`, ranked above the PMS selection by `plan.rs`) and nothing writes
   it yet, so the list stays empty in practice; the menu write comes later.
   `subtitle_offsets` is account-bound as well (since SO) under different rules: a record without a
   stamp is read as the signed-in account's own and is stamped at the list's next write

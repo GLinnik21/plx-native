@@ -68,7 +68,7 @@ pub enum SettingsPage {
     Language,
     /// Translation contribution guide with an offline QR link.
     Contribute,
-    /// Install-wide playback defaults.
+    /// Playback settings: each profile's own picks (a profile that has not chosen reads the install's older value).
     Playback,
     /// Plex account audio and subtitle preferences.
     AudioSubtitles,
