@@ -1,12 +1,12 @@
 # Help translate PlxNative
 
-PlxNative's interface is available in English, Spanish and Belarusian (official Cyrillic
+PlxNative's interface is available in English, Spanish, French and Belarusian (official Cyrillic
 orthography). Help improve a translation or contribute another language through a pull request
 at https://github.com/GLinnik21/plx-native.
 
 ## Translate a message
 
-Catalogs live in `locales/en`, `locales/es` and `locales/be`, split by UI area. English is the
+Catalogs live in `locales/en`, `locales/es`, `locales/fr` and `locales/be`, split by UI area. English is the
 source: each scoped, stable key has a `value`, translator `description`, and optional typed
 `args`. The other languages contain the same keys with translated string or plural values.
 The compiler combines each language's files; file names organize ownership, not message identity.
@@ -39,7 +39,7 @@ Double braces (`{{` and `}}`) render literal braces. A placeholder accepts `str`
 integers are formatted with the TV's regional settings. A plural message's `count` selects a
 CLDR cardinal category for the UI language. Other arguments must appear in every form; count
 may be omitted when the form spells it out. Belarusian needs `one`, `few`, `many`, and `other`;
-Spanish needs `one`, `many`, and `other`; English needs `one` and `other`.
+Spanish and French need `one`, `many`, and `other`; English needs `one` and `other`.
 
 Use readable, natural wording. Belarusian switch labels use `Укл.` and `Выкл.`. Preserve the meaning of consent and privacy disclosures exactly.
 Third-party license texts stay verbatim. Screenshots of the affected screen help reviewers assess
@@ -70,6 +70,18 @@ Open a pull request describing which language and screens changed, and how you c
 wording and layout. Translations ship with app releases; the app does not download language packs.
 New translations and changes remain subject to language review.
 
+### Who reviews a translation
+
+A translation is accepted when a native speaker of that language has read it. Machine or AI-drafted
+translations are welcome as a starting point, but say so in the pull request and name who reviewed
+the wording (the author, or someone they asked). A pull request from a non-native speaker waits
+for a native reviewer before it is merged.
+
+The reviewer does not need to build anything. Send them the catalog files in `locales/<tag>/` and
+screenshots of the affected screens (desktop simulator with `PLXNATIVE_LOCALE=<tag>`, or the TV),
+so they can see each string in its place: the same words read differently in a button, a menu and
+a sentence. Note any wording they changed and why.
+
 ## Adding a language
 
 Add a catalog directory using its BCP-47 language tag, translating all source keys. This currently
@@ -81,7 +93,7 @@ scripts requiring shaping or bidirectional layout need renderer work before bein
 
 ## Runtime behavior
 
-Settings → Language defaults to the television's UI language. Explicit English, Spanish and
+Settings → Language defaults to the television's UI language. Explicit English, Spanish, French and
 Belarusian choices apply the next time the app starts. The running UI and Plex request language
 remain unchanged until then; playback is not interrupted. The contribution action displays this
 guide's URL and QR code for opening on another device.

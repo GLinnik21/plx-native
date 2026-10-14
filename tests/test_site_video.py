@@ -495,6 +495,31 @@ class SizeGate(unittest.TestCase):
             res = {r.name: r for r in sv.gate_sizes(out, site)}
             self.assertEqual(res[f"size/{sv.VIDEOS[0].name}"].status, sv.PASS)
 
+    def test_a_new_storyboard_is_held_to_its_ceilings_not_to_the_ratio(self):
+        budgets = sv.THRESHOLDS["size_new_film_bytes"]
+        self.assertEqual(set(budgets), {v.name for v in sv.VIDEOS})
+        with tempfile.TemporaryDirectory() as tmp:
+            out, site = self.make(tmp, 1000, 1)
+            for name in sv.MEDIA_NAMES:
+                (out / name).write_bytes(b"y" * 5000)
+            # 5x today's: the ratio fails it, the ceiling (megabytes) passes it
+            self.assertEqual({r.status for r in sv.gate_sizes(out, site)}, {sv.FAIL})
+            res = {r.name: r for r in sv.gate_sizes(out, site, new_film=True)}
+            self.assertEqual({res[f"size/{v.name}"].status for v in sv.VIDEOS}, {sv.PASS})
+            # the posters keep the ratio: a new storyboard does not license a heavier still
+            self.assertEqual({res[f"size/{p.name}"].status for p in sv.POSTERS}, {sv.FAIL})
+            with open(out / sv.VIDEOS[0].name, "wb") as f:
+                f.truncate(budgets[sv.VIDEOS[0].name] + 1)
+            res = {r.name: r for r in sv.gate_sizes(out, site, new_film=True)}
+            self.assertEqual(res[f"size/{sv.VIDEOS[0].name}"].status, sv.FAIL)
+
+    def test_storyboard_changed_reads_the_committed_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(sv.storyboard_changed({"storyboard_sha256": "a"}, tmp), "no manifest: the strict ratio")
+            (pathlib.Path(tmp) / sv.MANIFEST_NAME).write_text('{"storyboard_sha256": "a"}')
+            self.assertFalse(sv.storyboard_changed({"storyboard_sha256": "a"}, tmp))
+            self.assertTrue(sv.storyboard_changed({"storyboard_sha256": "b"}, tmp))
+
     def test_a_missing_encode_fails_and_a_missing_site_file_is_reported_not_passed(self):
         with tempfile.TemporaryDirectory() as tmp:
             out, site = self.make(tmp, 1000, 900)
@@ -676,6 +701,21 @@ class EncodeArgv(unittest.TestCase):
             "-pix_fmt", "yuv420p",
             "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
             "-movflags", "+faststart", "/o/feel-1080p60.av1.mp4"])
+
+    def test_the_h264_loop_pins_its_last_frame_with_a_zone_not_a_keyframe(self):
+        plain = dict(sv.encode_plan("/t/ffmpeg", "/m/master.mkv", "/o"))
+        plan = dict(sv.encode_plan("/t/ffmpeg", "/m/master.mkv", "/o", frames=1826))
+        zone = f"zones=1825,1825,q={sv.H264_LAST_FRAME_QP}"
+        for v in sv.VIDEOS:
+            argv = plan[v.name]
+            self.assertNotIn("-force_key_frames", argv, "an IDR on the last frame measured WORSE than none")
+            if v.codec == "h264":
+                params = argv[argv.index("-x264-params") + 1]
+                self.assertTrue(params.startswith("aq-mode=3:deblock=-1,-1:"), params)
+                self.assertTrue(params.endswith(zone), params)
+                self.assertEqual(plain[v.name][plain[v.name].index("-x264-params") + 1], "aq-mode=3:deblock=-1,-1")
+            else:
+                self.assertEqual(argv, plain[v.name], v.name)
 
     def test_the_phone_av1_keeps_a_longer_gop_and_nothing_else_differs(self):
         small, big = self.plan()["feel-720p60.av1.mp4"], self.plan()["feel-1080p60.av1.mp4"]
@@ -1479,11 +1519,13 @@ class StoryboardTests(unittest.TestCase):
         self.assertRegex(sha, r"^[0-9a-f]{64}$")
         plan = sv.compile_storyboard(sb)
         keys = [(int(v), k) for v, k in (part.split(":") for part in plan["keys"].split(","))]
-        self.assertEqual([k for _, k in keys], ["right", "right", "left", "left", "down", "right", "right", "ok", "back",
-                          "up", "up", "right", "right", "ok", "right", "right", "back", "down"])
+        self.assertEqual([k for _, k in keys], ["right", "right", "left", "left", "down", "right", "right", "ok",
+                          "down", "down", "down", "down", "down", "back",
+                          "up", "up", "right", "right", "ok", "down", "down", "down", "down", "down", "down",
+                          "right", "right", "down", "down", "right", "right", *["up"] * 8, "back", "down"])
         self.assertEqual([v for v, _ in keys], sorted(v for v, _ in keys))
         self.assertLess(keys[-1][0] + sv.KEY_DOWN_FRAMES, plan["preroll"] + plan["frames"])
-        self.assertTrue(27 * 60 <= plan["frames"] <= 30 * 60, plan["frames"])
+        self.assertTrue(24 * 60 <= plan["frames"] <= 31 * 60, plan["frames"])
 
     def test_a_beat_that_does_nothing_or_names_a_title_key_is_refused(self):
         import tempfile
@@ -1537,17 +1579,56 @@ class StoryboardTests(unittest.TestCase):
             break
         self.assertIn(len(set(shown)), (2, 3), shown)
         self.assertEqual((page, focus), (0, "continue"), "the hero ends where it began")
-        # The Detail: `down` to the shelf, two `right` to its third card (Tears of Steel), then OK, a long
-        # rest on the Detail, and `back` to the shelf. The hold hint is suppressed, so no rest is capped.
+        # The Detail: `down` to the shelf, two `right` to its third card (Tears of Steel), then OK and a
+        # rest on the Detail; `down` to its Cast & Crew row (a portrait for each performer, the catalog's
+        # `people`), four more `down`s through the title's collection and More Like This to the About
+        # section at the foot of the page, never an OK (every OK there opens something); then `back` to
+        # the shelf. The hold hint is suppressed, so no rest is capped.
         keys = [(b["name"], k) for b in sb["beats"] for k in b.get("keys", ())]
         flat = [k for _, k in keys]
         down = flat.index("down")
-        self.assertEqual(flat[down:down + 5], ["down", "right", "right", "ok", "back"])
-        self.assertGreaterEqual(by["detail"]["rest_ms"], 3500)
+        self.assertEqual(flat[down:down + 10], ["down", "right", "right", "ok", *["down"] * 5, "back"])
+        self.assertGreaterEqual(by["detail"]["rest_ms"], 1200)
         self.assertEqual(by["detail"]["keys"], ["ok"])
+        self.assertEqual(by["detail-cast"]["keys"], ["down"])
+        self.assertGreaterEqual(by["detail-cast"]["rest_ms"], 1200, "long enough to see the faces")
+        self.assertEqual(set(by["detail-about"]["keys"]), {"down"}, "arrows only below the hero")
+        self.assertGreaterEqual(by["detail-about"]["rest_ms"], 1200, "long enough to read the About section")
         self.assertEqual(by["back-shelf"]["keys"], ["back"])
+        self.assertEqual(names[names.index("detail"):names.index("detail") + 4],
+                         ["detail", "detail-cast", "detail-about", "back-shelf"])
+        catalog = json.loads(sv.CATALOG.read_text(encoding="utf-8"))
+        third = next(m for m in catalog["movies"] if m["id"] == catalog["continue_watching"][2]["item"])
+        self.assertNotIn("not_in_video", third)
+        self.assertTrue(all(c["name"] in catalog["people"] for c in third["cast"]), "its Cast & Crew row shows faces")
         self.assertEqual(flat.count("ok"), 2, "one OK on the shelf card and one on the Movies tab")
         self.assertLess(names.index("detail"), names.index("library"))
+
+    def test_the_storyboard_walks_the_movies_page_with_arrows_only_and_leaves_from_its_top(self):
+        # Nothing on the Movies page is opened: a miscounted press there can then change what the film
+        # shows but never open a title, a collection or a menu. It is left from its top: as many `up`s
+        # as `down`s return focus to the first shelf, where one `back` is Home. (A `back` lower down
+        # jumps the page to its top first; that jump failed the hold-injection gate and is not filmed.)
+        # Between the Type chip and the first `down` into the grid there are two `right`s, never three:
+        # the third would leave the toolbar for the letter rail.
+        sb, _ = sv.load_storyboard()
+        flat = [k for b in sb["beats"] for k in b.get("keys", ())]
+        tab = len(flat) - 1 - flat[::-1].index("ok")
+        walk = flat[tab + 1:]
+        self.assertEqual(walk[-2:], ["back", "down"], "Home, then the hero")
+        arrows = walk[:-2]
+        self.assertEqual(arrows.count("up"), arrows.count("down"), "the page is left from the shelf it was entered on")
+        self.assertEqual(arrows[-arrows.count("up"):], ["up"] * arrows.count("up"), "the `up`s come last, together")
+        self.assertEqual(walk.count("back"), 1, "one `back`, from the top of the page")
+        self.assertTrue(set(arrows) <= {"up", "down", "left", "right"}, arrows)
+        self.assertEqual(arrows[:6], ["down"] * 6, "four shelves, two linked headings: the sixth lands on Type")
+        column, widest = 0, 0
+        for key in arrows[6:]:
+            column += {"right": 1, "left": -1}.get(key, 0)
+            widest = max(widest, column)
+            self.assertGreaterEqual(column, 0)
+        self.assertLessEqual(widest, 4, "the sixth column's `right` is the letter rail")
+        self.assertEqual(arrows[6:9], ["right", "right", "down"], "Type to Filter, then into the grid")
 
     def test_a_rest_verdict_tolerates_a_springs_tail_and_a_sliver(self):
         self.assertTrue(sv.rest_verdict(0, 0.0))

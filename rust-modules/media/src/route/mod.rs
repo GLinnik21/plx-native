@@ -13,6 +13,7 @@ mod decision;
 mod flight;
 mod plan;
 mod prefs;
+mod track_memory;
 
 pub use decision::*;
 pub use flight::{
@@ -21,3 +22,4 @@ pub use flight::{
 };
 pub use plan::*;
 pub use prefs::*;
+pub use track_memory::{memo_of_audio, memo_of_subtitle};

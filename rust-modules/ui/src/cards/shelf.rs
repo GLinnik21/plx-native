@@ -355,7 +355,8 @@ impl Shelf {
         true
     }
 
-    /// The page the owner should ask for this tick, if focus is near one edge of the row: one per
+    /// The page the owner should ask for this tick, if focus is near one edge of the row (or, with
+    /// focus elsewhere, the row paints a pending cell in view, [`pending_in_view`](Self::pending_in_view)): one per
     /// window per edge, and the same one again each time it has stood unanswered for a rung of the
     /// [`Retry`](super::Retry) ladder. `wanted` is whether this tick's [`on`](Self::on) returned a
     /// [`CardEvent::Want`](super::CardEvent::Want) (the trailing edge's latch lives there), `offset`
@@ -372,11 +373,11 @@ impl Shelf {
     ) -> Option<PageEdge> {
         self.observe_landing(src);
         let focus = self.engine_focus(cx, src);
-        let before = self.near(PageEdge::Before, focus, src.len(), offset);
+        let before = self.near(PageEdge::Before, focus, src, offset);
         let edge = if self.want_before(offset, active && before) {
             Some(PageEdge::Before)
         } else {
-            let after = self.near(PageEdge::After, focus, src.len(), offset);
+            let after = self.near(PageEdge::After, focus, src, offset);
             (active && wanted && after && !before).then_some(PageEdge::After)
         };
         if edge.is_some() {
@@ -392,12 +393,31 @@ impl Shelf {
         cx.focus.current.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem))
     }
 
-    /// Whether focus index `focus` is inside the zone of `edge` that asks for a page there.
-    fn near(&self, edge: PageEdge, focus: Option<usize>, len: usize, offset: usize) -> bool {
+    /// Whether the row is inside the zone of `edge` that asks for a page there: focus index `focus`
+    /// is near that edge, or (the trailing edge, focus elsewhere) the row paints a pending cell in
+    /// view ([`pending_in_view`](Self::pending_in_view)).
+    fn near<H: Host, S: CardSource<H>>(&self, edge: PageEdge, focus: Option<usize>, src: &S, offset: usize) -> bool {
         match edge {
             PageEdge::Before => offset > 0 && focus.is_some_and(|i| i < self.head.saturating_add(PAGE_EDGE_CARDS)),
-            PageEdge::After => focus.is_some_and(|i| i.saturating_add(PAGE_EDGE_CARDS) >= len),
+            PageEdge::After => match focus {
+                Some(i) => i.saturating_add(PAGE_EDGE_CARDS) >= src.len(),
+                None => self.pending_in_view(src),
+            },
         }
+    }
+
+    /// Whether the cell past the last card falls within the screen's WIDTH at the row's scroll while
+    /// the list goes on there ([`CardSource::more_after`]): the row paints the skeleton of a card
+    /// there ([`paint_pending`](Self::paint_pending)), and that skeleton is a promise the row keeps
+    /// by asking for the page, focused or not. A row whose cards are shorter than the screen would
+    /// otherwise stand on screen with a screenful of skeletons until somebody focused it (Detail's
+    /// Related head, cut short when a member movie's collection takes its previews). Horizontal
+    /// only: the shelf does not know where its owner places it vertically, so a short row below
+    /// the fold asks too (one page, on the page's open). A row whose cards reach past the screen
+    /// has no such cell and still asks only as focus nears its end.
+    fn pending_in_view<H: Host, S: CardSource<H>>(&self, src: &S) -> bool {
+        let x = self.style.margin_x + src.len() as f32 * self.pitch() - self.drawn_scroll(src);
+        src.more_after() && crate::on_axis(x, self.style.w, SCR_W, self.margin)
     }
 
     /// The edge whose page ask the owner must withdraw this tick, if any: one handed out by
@@ -410,12 +430,15 @@ impl Shelf {
     /// [`PAGE_EDGE_CARDS`] from the edge, which leaves that many presses of margin; withdrawing it on
     /// the first press out of the zone keeps a landing that is already on its way (the owner acts on a
     /// view one landing old, and the cancel takes a frame to reach the store) well inside the margin.
-    /// The row asks again when focus returns to the edge.
+    /// The row asks again when focus returns to the edge. An ask sent with focus out of the row
+    /// ([`pending_in_view`](Self::pending_in_view)) stands while focus stays out and the cell is on
+    /// the axis; it is withdrawn if focus enters the row farther than [`PAGE_EDGE_CARDS`] from its
+    /// end, and asked again as focus nears the end. The margin argument covers only the focused kind.
     pub fn page_cancel<H: Host, S: CardSource<H>>(&mut self, cx: &Cx<'_, H>, src: &S, offset: usize, active: bool)
         -> Option<PageEdge> {
         let edge = self.in_flight?;
         let focus = self.engine_focus(cx, src);
-        if active && self.near(edge, focus, src.len(), offset) { return None; }
+        if active && self.near(edge, focus, src, offset) { return None; }
         self.reset_page_requests();
         self.in_flight = None;
         Some(edge)

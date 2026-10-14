@@ -12,8 +12,8 @@
 //! The hold is the *other* half of that interaction, and until it existed Go-to-Show, per-item
 //! Mark-as-Watched and Play-from-Start had nowhere to live (`docs/parity-gaps.md` §1.2/§1.3, §5a).
 //! Under the default, [`DeckPress::Details`], OK opens the page instead and the deck card's menu
-//! leads with the Play row that press gave up (and drops the Go to Movie / Episode row it now
-//! duplicates).
+//! leads with the Play row that press gave up (and drops the Go to Movie row it now duplicates; on
+//! an episode OK opens the show, so Go to Episode stays and Go to Show goes).
 //!
 //! **Every card surface opens it** — a home shelf, the Library browse grid, a Search result shelf,
 //! a person's filmography and the detail page's Related shelf present [`ItemMenuKind::Card`]; the
@@ -226,6 +226,15 @@ impl FormId for ItemRow {
     }
 }
 
+/// **Does OK on this Continue Watching card, while OK does not play, open the SHOW's page?** Only
+/// an episode that names its show. `app::input::activate_deck_card` decides the press with it and
+/// [`build_with`] decides the menu with it, so the card's press and the menu's "Go to Episode" /
+/// "Go to Show" rows cannot disagree about where OK goes. A movie, season or show card, and an
+/// episode whose row arrived without a `grandparentRatingKey`, keep their own page.
+pub fn deck_episode_opens_show(m: &PmsMovie) -> bool {
+    m.kind == 3 && !m.show_rk.is_empty()
+}
+
 /// What every item-menu builder returns: a one-section form of button rows whose action is the
 /// whole of what a press means (no row pushes a page — `Dest` is uninhabited).
 type ItemForm = Form<ItemRow, Action, Infallible>;
@@ -243,9 +252,11 @@ fn build(m: &PmsMovie, from_deck: bool) -> ItemForm {
 /// `deck_press` is the Continue Watching setting. It changes this menu for a card FROM the deck
 /// only, and only while OK there opens the page ([`DeckPress::Details`]): the menu then leads with
 /// Play (the opening row — the press that used to play now lives here) and drops the row that
-/// navigates to the card's own page (Go to Movie / Episode, and for a show or season its Go to
-/// Show / Season), which is what OK on the card already does. Any other card, and a deck
-/// card while OK plays, gets the menu it always had.
+/// navigates to the page OK on the card already opens (Go to Movie, and for a show or season its
+/// Go to Show / Season). **An episode is the exception**: OK on a deck episode opens its SHOW
+/// ([`deck_episode_opens_show`]), so there the menu keeps Go to Episode and drops Go to Show; an
+/// episode with no show row has OK open its own page, and loses Go to Episode as before. Any
+/// other card, and a deck card while OK plays, gets the menu it always had.
 fn build_with(
     m: &PmsMovie,
     from_deck: bool,
@@ -288,10 +299,13 @@ fn build_with(
     let mut nav = Vec::new();
     match m.kind {
         3 => {
-            if !opens_details {
+            // OK on a deck episode opens the show, so the show row would only repeat the press
+            // and the episode's own page is what the menu adds
+            let ok_opens_show = opens_details && deck_episode_opens_show(m);
+            if !opens_details || ok_opens_show {
                 nav.push(go_item(plx_platform::i18n::msg::browse_menu_go_episode()));
             }
-            if has_show {
+            if has_show && !ok_opens_show {
                 nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_show(), &m.show_rk, m.season_index));
             }
         }
@@ -943,17 +957,19 @@ mod tests {
     /// the deck the menu is exactly today's.
     #[test]
     fn a_deck_card_leads_with_play_when_ok_opens_the_page() {
-        // an episode: Play, Go to Show, separator, state, Remove last
+        // an episode: OK opens the SHOW (on the card's season), so the menu offers the episode's
+        // own page instead: Play, Go to Episode, separator, state, Remove last
         let on = build_deck(&item(3, PosterMark::None), true, DeckPress::Details);
         assert_eq!(
             labels(&on),
-            ["Play", "Go to Show", "—", "Mark as Watched", "Play from Start", "Remove from Deck"]
+            ["Play", "Go to Episode", "—", "Mark as Watched", "Play from Start", "Remove from Deck"]
         );
         assert_eq!(
             on.ids(),
-            [ItemRow::Play, ItemRow::GoToShow, ItemRow::MarkWatched, ItemRow::PlayFromStart, ItemRow::RemoveFromDeck]
+            [ItemRow::Play, ItemRow::GoToItem, ItemRow::MarkWatched, ItemRow::PlayFromStart, ItemRow::RemoveFromDeck]
         );
-        assert!(!on.offers(ItemRow::GoToItem), "OK on the card already opens that page");
+        assert!(!on.offers(ItemRow::GoToShow), "OK on the card already opens that page");
+        assert_eq!(on.action(ItemRow::GoToItem), Action::GoToItem("42".into()));
         assert_eq!(on.action(ItemRow::Play), Action::Play("42".into()));
         assert_eq!(
             on.0.opening_key(),
@@ -967,7 +983,8 @@ mod tests {
         assert!(!movie.offers(ItemRow::GoToItem) && !movie.offers(ItemRow::GoToShow));
         assert!(!labels(&movie).iter().any(|l| l == "—"), "{:?}", labels(&movie));
 
-        // an episode with no show row loses its whole group: still no stray separator
+        // an episode with no show row keeps today's rows (OK opens ITS page, so the group is
+        // gone): still no stray separator
         let mut orphan = item(3, PosterMark::None);
         orphan.show_rk.clear();
         let orphan = build_deck(&orphan, true, DeckPress::Details);
@@ -1007,6 +1024,43 @@ mod tests {
                 "{kind}"
             );
         }
+    }
+
+    /// **The predicate the press and the menu share**: only an episode that names its show.
+    #[test]
+    fn only_an_episode_with_a_show_opens_the_show_from_the_deck() {
+        assert!(deck_episode_opens_show(&item(3, PosterMark::None)));
+        for kind in [0, 1, 2, 4] {
+            assert!(!deck_episode_opens_show(&item(kind, PosterMark::None)), "kind {kind}");
+        }
+        let mut orphan = item(3, PosterMark::None);
+        orphan.show_rk.clear();
+        assert!(!deck_episode_opens_show(&orphan), "no show to open: the episode page stays");
+    }
+
+    /// The menu follows the press: a deck episode in Open-details mode leads with the episode's
+    /// page and drops Go to Show, and ONLY that card — every other card and mode is unchanged,
+    /// including a discovery-shelf episode (`from_deck` false), whose OK still opens its own page.
+    #[test]
+    fn the_menu_offers_go_to_episode_exactly_when_ok_opens_the_show() {
+        let ep = item(3, PosterMark::None);
+        let on = build_deck(&ep, true, DeckPress::Details);
+        assert!(on.offers(ItemRow::GoToItem) && !on.offers(ItemRow::GoToShow));
+        // Play mode: OK plays, the menu is the full pair
+        let play = build_deck(&ep, true, DeckPress::Play);
+        assert!(play.offers(ItemRow::GoToItem) && play.offers(ItemRow::GoToShow));
+        // a discovery shelf's episode card: OK opens the episode, whatever the setting
+        for mode in DeckPress::LADDER {
+            let off = build_deck(&ep, false, mode);
+            assert_eq!(
+                labels(&off),
+                ["Go to Episode", "Go to Show", "—", "Mark as Watched", "Play from Start"],
+                "{mode:?}"
+            );
+        }
+        // a deck movie is unchanged by this: no navigation row at all
+        let movie = build_deck(&item(0, PosterMark::None), true, DeckPress::Details);
+        assert!(!movie.offers(ItemRow::GoToItem) && !movie.offers(ItemRow::GoToShow));
     }
 
     #[test]
@@ -1541,7 +1595,7 @@ mod tests {
             fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
         }
         let measure = MenuMeasure;
-        for preference in [Preference::En, Preference::Es, Preference::Be] {
+        for preference in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
             let locale = LocaleContext::resolve(preference, None, None, None, None);
             let mut form: FormTable<ItemRow, Action, Infallible> = FormTable::new(crate::registry::BAND);
             form.table.compact = true;

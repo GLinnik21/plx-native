@@ -757,6 +757,77 @@ class HeroGeometry(unittest.TestCase):
                 tool.check_complete(self.assets, self.catalog)
 
 
+class People(unittest.TestCase):
+    """The catalog's `people`: a credited name, a `headshot` asset and the box of it that is the face."""
+
+    def setUp(self):
+        self.assets, self.catalog = tool.load()
+
+    def refused(self, edit, assets=None):
+        cat = copy.deepcopy(self.catalog)
+        edit(cat["people"])
+        with self.assertRaises(AssertionError):
+            tool.check(assets or self.assets, cat)
+
+    def test_every_portrait_is_an_open_photograph_or_film_frame_of_a_credited_person(self):
+        names = tool.credited_names(self.catalog)
+        self.assertTrue(self.catalog["people"])
+        kinds = set()
+        for _, name, rec in tool.people(self.catalog):
+            with self.subTest(person=name):
+                a = self.assets[rec["photo"]["asset"]]
+                self.assertIn(name, names)
+                self.assertIn(a["kind"], tool.PORTRAIT_KINDS)
+                self.assertIn(a["licence"], tool.LICENCES)
+                self.assertIn(name.split()[0], a["notes"] if a["kind"] != "headshot" else name,
+                              "a frame's notes say whose portrait it is the source of")
+                kinds.add(a["kind"])
+        self.assertEqual(kinds, {"headshot", "still"})
+        tool.check_assets_complete(self.assets)
+
+    def test_the_site_videos_title_has_a_portrait_for_its_whole_cast(self):
+        film = next(m for m in self.catalog["movies"] if m["id"] == self.catalog["continue_watching"][2]["item"])
+        self.assertEqual(film["id"], "tears-of-steel", "the third Continue Watching card, the one the film opens")
+        self.assertEqual([c["name"] for c in film["cast"]], list(self.catalog["people"]))
+        self.assertEqual({c["name"]: c["role"] for c in film["cast"] if "role" in c},
+                         {"Derek de Lint": "Old Thom", "Sergio Hasselbaink": "Barley", "Rogier Schippers": "Captain",
+                          "Vanja Rukavina": "Thom", "Denise Rebergen": "Celia"})
+
+    def test_a_name_nobody_credits_is_refused(self):
+        self.refused(lambda people: people.update({"Nobody Atall": people["Derek de Lint"]}))
+
+    def test_a_portrait_cut_from_a_poster_or_a_missing_asset_is_refused(self):
+        self.refused(lambda people: people["Derek de Lint"]["photo"].update(asset="sintel-poster"))
+        self.refused(lambda people: people["Derek de Lint"]["photo"].update(asset="no-such-asset"))
+
+    def test_a_box_outside_the_source_or_off_the_portrait_shape_is_refused(self):
+        a = self.assets[self.catalog["people"]["Derek de Lint"]["photo"]["asset"]]
+        for box in ([0, 0, a["width"] + 2, (a["width"] + 2) * 3 // 2], [0, 0, 600, 600], [0, 0, 600], [-1, 0, 600, 900]):
+            with self.subTest(box=box):
+                self.refused(lambda people: people["Derek de Lint"]["photo"].update(box=box))
+
+    def test_a_headshot_fills_no_title_role(self):
+        cat = copy.deepcopy(self.catalog)
+        cat["movies"][0]["poster"] = {"asset": self.catalog["people"]["Derek de Lint"]["photo"]["asset"]}
+        with self.assertRaises(AssertionError):
+            tool.check(self.assets, cat)
+
+    def test_a_photograph_derives_to_its_own_file_named_for_the_person(self):
+        rec = self.catalog["people"]["Derek de Lint"]
+        path = tool.derived_file(self.assets, "/cache", tool.person_key("Derek de Lint"), rec, "photo")
+        self.assertEqual(path.parent.name, "person-derek-de-lint")
+        self.assertRegex(path.name, r"^photo-[0-9a-f]{12}\.jpg$")
+        moved = {"photo": dict(rec["photo"], box=[0, 0, 200, 300])}
+        self.assertNotEqual(path, tool.derived_file(self.assets, "/cache", "person-derek-de-lint", moved, "photo"),
+                            "the box is part of the recipe")
+
+    def test_the_credits_list_every_portrait(self):
+        works = {w["title"]: w for w in tool.site_works(self.assets, self.catalog) if w["kind"] == "person"}
+        self.assertEqual(list(works), list(self.catalog["people"]))
+        self.assertIn("face", works["Jody Bhe"]["entries"][0]["changes"][0])
+        self.assertEqual(works["Derek de Lint"]["entries"][0]["licence"], "CC BY 3.0")
+
+
 class TitleFlags(unittest.TestCase):
     """The per-title flags and approval lists the module docstring describes: `not_hero`,
     `not_in_video`, `poster.still_as_poster` with `still_poster_approved`, and the

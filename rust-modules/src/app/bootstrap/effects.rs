@@ -398,6 +398,30 @@ mod tests {
         }
     }
 
+    /// A profile publication that carries no account stamp (no account token, which is every
+    /// controlled bootstrap) encodes to the bytes the committed recordings hold:
+    /// `tests/fixtures/replay/*` pin `{"epoch":1,"profile":null,"scope":1}` for the boot
+    /// publication, and the replay grades a regenerated effect as complete canonical JSON. `stamp`
+    /// joined `ProfilePublication` after they were recorded, so an empty one must not appear on
+    /// the wire (it carried nothing, and writing `"stamp":""` made every fixture diverge by one
+    /// effect). A stamp that names an account still appears, and the old form still reads back.
+    #[test]
+    fn profile_publication_without_a_stamp_keeps_the_recorded_wire_form() {
+        use plx_screens::registry::AppFx;
+        use plx_session::auth::owner::{ProfilePublication, ProfileScope, SessionFx};
+        use serde_json::json;
+        let publish = |stamp: &str| encode(&Fx::App(AppFx::SessionEffect(SessionFx::PublishProfile(
+            ProfilePublication { epoch: 1, profile: None, scope: ProfileScope(1), stamp: stamp.into() }))))
+            .unwrap();
+        assert_eq!(publish(""), json!({"session_effect":{"PublishProfile":
+            {"epoch":1,"profile":null,"scope":1}}}));
+        assert_eq!(publish("0011223344556677"), json!({"session_effect":{"PublishProfile":
+            {"epoch":1,"profile":null,"scope":1,"stamp":"0011223344556677"}}}));
+        let old: ProfilePublication = serde_json::from_value(
+            json!({"epoch":1,"profile":null,"scope":1})).unwrap();
+        assert_eq!(old.stamp, "");
+    }
+
     /// `NavOp::SelectTab` was carved out of the old combined `Root`/`SelectTab` arm (TV
     /// 2026-09-17); this codec already had a `select_tab` case waiting (nothing decoded it —
     /// there is no `decode` here, only recording), and it is now actually reachable from

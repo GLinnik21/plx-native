@@ -293,14 +293,17 @@ fn embedded_default_subtitle_with_enhancement_is_burned() {
 fn embedded_default_subtitle_with_enhancement_logs_applied_on_cold_start() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let log_path = plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::EVENTS);
-    let before = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
-        |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![selected_sub(9, "srt")]),
-        |_, _| {});
+    // A PRIVATE log: the shared one is a single machine-wide file every other test binary (and any
+    // other `make check` beside this one) appends to and the simulator truncates, so slicing "what it
+    // gained" off it by offset can read another run's lines or panic on a file that shrank. The
+    // resolve logs on this thread (`eventlog::with_private_log`).
+    let (r, appended) = plx_base::eventlog::with_private_log(|| {
+        let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+            |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![selected_sub(9, "srt")]),
+            |_, _| {});
+        (r, std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default())
+    });
     assert_eq!(r.plan.enhancement, EnhancementOutcome::Applied, "precondition: cold start is a Burn");
-    let written = std::fs::read(&log_path).unwrap();
-    let appended = String::from_utf8_lossy(&written[before as usize..]);
     assert!(
         appended.contains("enhancement: applied boost=0 loudness=1"),
         "no `enhancement: applied` line from the cold-start branch :: {appended:?}"
@@ -862,4 +865,89 @@ fn aac51_source_outcome_unverified() {
     assert_eq!(classify_outcome(Some(&mc), Some(&not_copyable), PREF), EnhancementOutcome::Unverified);
     assert_eq!(classify_outcome(None, Some(&copyable), PREF), EnhancementOutcome::Unverified);
     assert_eq!(classify_outcome(Some(&mc), Some(&copyable), plx_plex::plex::AudioEnhancements::NONE), EnhancementOutcome::Off);
+}
+
+// ---- Q-TOP (b) beside the enhancement: a remembered subtitle on the forced burn ------------------
+
+/// What the profile remembered for show 4242: the English text track.
+fn remembers_english_subtitle() -> Vec<plx_plex::plex::session::prefs::TrackMemoryEntry> {
+    use plx_plex::plex::session::prefs::{SubtitleMemo, SubtitleTrackMemo, TrackMemoryEntry};
+    let english = SubtitleTrackMemo { lang: "eng".into(), kind: "text".into(), ..Default::default() };
+    vec![TrackMemoryEntry::new("enh-pms", "4242", None, Some(SubtitleMemo::Track(english)))]
+}
+
+/// An episode of show 4242 with one embedded English subtitle the server has NOT selected.
+fn episode_with_an_unselected_subtitle(
+    sid: ServerId, audio: Vec<plx_data::metadata::Stream>,
+) -> plx_data::metadata::PlayingItem {
+    let sub = plx_data::metadata::Stream { selected: false, ..selected_sub(9, "srt") };
+    plx_data::metadata::PlayingItem {
+        kind: "episode".into(),
+        show_rk: "4242".into(),
+        ..fourk_item_with_subs(sid, audio, vec![sub])
+    }
+}
+
+/// M7's forced burn is a route that already re-encodes (it denies the remux), so the remembered pick
+/// rides it: the same wire an embedded server selection gets.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn q_top_b_the_forced_burn_carries_the_remembered_subtitle() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+        |sid| episode_with_an_unselected_subtitle(sid, vec![track(1, "ac3", 2, true)]),
+        |env, _| env.memory = remembers_english_subtitle());
+    assert!(r.plan.url.contains("start.mkv") && !r.plan.contract.remux, "a burn is a re-encode: {}", r.plan.url);
+    assert_eq!(query_param(&r.plan.url, "subtitleStreamID"), Some("9"), "{}", r.plan.url);
+    assert_eq!(query_param(&r.plan.url, "subtitles"), Some("burn"), "{}", r.plan.url);
+    assert_eq!(selection_subtitles(&r.requests), vec!["9"], "{:?}", r.requests);
+    assert_eq!((r.plan.sub_sid, r.plan.memory_note), (9, false));
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// The edge: the server refuses the enhancement and the route falls back to the direct play it
+/// decorated. The burn existed only for the enhancement, so the fallback wire carries none (its MDE
+/// is the direct play's own), the plan draws the remembered track itself, and the menu has no note.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn q_top_b_a_refused_enhancement_falls_back_to_a_direct_play_with_no_burn() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Refuse, 0, MKV, "ac3",
+        |sid| episode_with_an_unselected_subtitle(sid, vec![track(1, "ac3", 2, true)]),
+        |env, _| env.memory = remembers_english_subtitle());
+    assert!(r.plan.url.contains("/library/parts/") && !r.plan.url.contains("start.mkv"), "direct play: {}", r.plan.url);
+    assert_eq!(r.plan.enhancement, EnhancementOutcome::Refused);
+    let after_refusal = r.requests.iter().rposition(|l| l.contains("/decision?") && !l.contains("hasMDE=1"))
+        .expect("the refused transcode decision");
+    assert!(
+        r.requests[after_refusal + 1..].iter().all(|l| !l.contains("subtitles=burn")),
+        "nothing after the refusal burns: {:?}", r.requests,
+    );
+    let fallback_mde = r.requests.last().expect("requests");
+    assert!(fallback_mde.contains("hasMDE=1"), "the direct play's own MDE closes the resolve: {fallback_mde}");
+    assert_eq!(query_param(fallback_mde, "subtitles"), Some("none"), "{fallback_mde}");
+    assert_eq!((r.plan.sub_sid, r.plan.sub_render_ordinal, r.plan.memory_note), (9, Some(0), false));
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// A refused enhancement on an enhanced remux that was a forced burn (no direct play behind it) is
+/// still a re-encode: the rebuilt request keeps the remembered subtitle the plan reports, instead of
+/// dropping to the session's (empty) selection.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn q_top_b_a_refused_forced_burn_keeps_the_remembered_subtitle() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let r = resolve(&mut ps, MDE_TRANSCODE_COPY, EnhMode::Refuse, 0, MKV, "truehd",
+        |sid| episode_with_an_unselected_subtitle(sid, vec![track(1, "truehd", 8, true)]),
+        |env, _| env.memory = remembers_english_subtitle());
+    assert!(r.plan.url.contains("start.mkv"), "setup: the server still encodes: {}", r.plan.url);
+    assert_eq!(r.plan.enhancement, EnhancementOutcome::Refused);
+    assert!(!r.plan.contract.remux, "setup: the forced burn was a re-encode");
+    assert_eq!(r.plan.sub_sid, 9);
+    assert_eq!(query_param(&r.plan.url, "subtitleStreamID"), Some("9"), "{}", r.plan.url);
+    assert_eq!(query_param(&r.plan.url, "subtitles"), Some("burn"), "{}", r.plan.url);
+    plx_plex::plex::reset_servers_for_test();
 }

@@ -260,7 +260,7 @@
                 <div class="demo-card" id="demo-card">
                   <video
                     id="demo-video"
-                    aria-label="PlxNative on a television: the Home screen and its featured titles turning, a film's page, then the Movies library"
+                    aria-label="PlxNative on a television: the Home screen and its featured titles turning, a film's page scrolled from its cast to its details, then the Movies library scrolled past its shelves to the full poster grid and back"
                     controls
                     muted
                     loop
@@ -290,7 +290,7 @@
                 <div class="stand-foot"></div>
               </div>
             </div>
-            <p class="feel-caption">Home, a title page and the Movies library, rendered frame by frame in the webOS simulator from an openly licensed demo library.</p>
+            <p class="feel-caption">Home, a title page and the Movies poster grid, rendered frame by frame in the webOS simulator from an openly licensed demo library.</p>
           </div>
         </section>
 
@@ -414,8 +414,8 @@
           <h2 id="approach-title" data-reveal>Built differently.</h2>
           <p class="approach-statement" data-words>Browsing my Plex library on my 2019 LG TV felt slower than it needed to, even though the picture still looked great.</p>
           <p class="approach-lede" data-reveal>I wanted an interface that felt quick under the remote and enjoyable to spend time in. PlxNative takes a different route: it is written in Rust, and video goes to the TV's own decoder. I use it every day to watch things off my server in the next room.</p>
-          <!-- One stack that changes as it scrolls (site.js sets the progress; pinned on wide
-               screens, in the page's flow on phones): a typical TV app's seven layers, as
+          <!-- One stack that changes as it scrolls (site.js sets the progress; pinned, in the
+               page's flow only in short landscape windows): a typical TV app's seven layers, as
                glass plates under a plain wireframe of a TV app, then its three browser layers slide away, the
                four that stay close up under the app, and a still motion blur of the picture shows it
                dropping straight from the app to the screen; the picture sharpens into PlxNative's

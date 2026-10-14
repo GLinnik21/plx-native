@@ -434,6 +434,8 @@ impl SearchScreen {
     }
     /// Ask the store to slide a row's window when focus is near the edge it can go on past: the
     /// trailing edge on the row's own `Want`, the leading edge when the window has hits before it.
+    /// The trailing edge is also asked for an unfocused row that paints a pending cell on its axis
+    /// (`Shelf::page_ask`): Search's `more()` is not gated on focus, so a short row asks too.
     fn page_rows<H: SearchLike>(&mut self, got: &Option<StackEvent<Sec, u32>>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         let view = H::search(cx);
         for row in 0..self.rows.len() {

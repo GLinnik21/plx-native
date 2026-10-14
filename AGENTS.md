@@ -30,20 +30,13 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - **Trunk-based development, and `main` takes SQUASH merges only.** Work happens on short-lived
   branches or worktrees cut from `main`. Commit as often as is useful on a branch — there is no
   limit on how many commits a branch carries and no need to tidy them. When the work is verified it
-  lands on `main` as ONE squash commit whose message is the change's own account (the PR's squash
-  merge, or `git merge --squash <branch>` on `main` followed by a single commit), never as a
-  fast-forward of a working branch's history and never as a merge commit. A fleet of lanes
+  lands on `main` as ONE squash commit whose message is the change's own account: the PR's squash
+  merge on GitHub, never a squash made locally and pushed, never a fast-forward of a working
+  branch's history and never a merge commit. To bring a moving `main` in, merge it into the branch. A fleet of lanes
   integrates into its integration branch however it likes; what reaches `main` is the squash of the
   whole. The reason is the history itself: `main` is read by `git log`, by the release audit and by
   `git bisect`, and a trunk of "fix typo" / "wip" / merge commits pollutes all three. Push `main`
   only when the user asked for it.
-- **A squash onto a MOVING `main` silently reverts it.** `git reset --soft origin/main` keeps the
-  index, so any commit that landed on `origin/main` after your picks shows up inside your squash as
-  a line-for-line reversal — and the reversal compiles, so every gate stays green. PR #156 undid
-  #153 exactly this way. Before pushing any squash, run `git diff --stat HEAD^ HEAD` and confirm
-  every path is one the branch meant to touch; anything else is `git checkout origin/main --
-  <path>`, amend, re-gate. Prefer squashing onto the same base the picks were made on and rebasing.
-  `git fetch -q` can fail silently, so check `git log HEAD..origin/main` after fetching.
 - **A diff stat is not a measure of change.** `dec32f2e` ran rustfmt over all of `ui/`, so
   `detail.rs` read +2416 lines for +113 characters of content. `git diff -w` does not rescue it —
   that ignores whitespace *within* a line, not one line split into three. Size a change by content
@@ -166,8 +159,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   line in the log before sending any key; never press `ok` on a card whose `ratingKey` you have not
   read from the log; reopen a screen by relaunching with `--screen` rather than walking Home. A
   Continue Watching tile resumes playback on OK whenever Settings > Playback > Continue Watching
-  is "Play" (the default, "Open details", opens the page) — and the setting is saved on the set,
-  so never assume which one a given install has. In the default the card's hold menu opens ON a
+  is "Play" (the default, "Open details", opens the page) — and the setting is saved on the set
+  PER PROFILE (a profile that never chose reads the install's older value), so never assume which
+  one a given install, or a given profile on it, has. In the default the card's hold menu opens ON a
   Play/Continue row, so hold-then-OK plays too. That press is how two separate sessions started
   real playback on the owner's account. Seeding, scrobbling, unscrobbling, marking watched and
   "Remove from Deck" are all writes to a household's actual viewing record — the managed and Guest profiles

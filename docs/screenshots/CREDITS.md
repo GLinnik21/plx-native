@@ -9,7 +9,8 @@ logo (the title art over the home hero) is derived from that film's own poster, 
 poster's licence: its title lettering is cut out onto a transparent ground and nothing is
 redrawn; where the table says so, lettering too dark to read over a backdrop is recoloured.
 Where the table says a logo is the film's own title card, it is that card (or a frame of the
-film) trimmed to its lettering, under its own licence.
+film) trimmed to its lettering, under its own licence. A performer's portrait is cut to the
+face from a photograph of them or a frame of the film, and resized; nothing else is changed.
 
 Written by `make screenshots` with the images; do not edit by hand.
 
@@ -93,6 +94,11 @@ Written by `make screenshots` with the images; do not edit by hand.
 | Night of the Living Dead (clear logo, the film's own title card) | [Night_of_the_Living_Dead_%281968%29_Title_Screen.png](https://commons.wikimedia.org/wiki/File:Night_of_the_Living_Dead_(1968)_Title_Screen.png) | Public domain | George A. Romero |
 | Nosferatu (backdrop) | [Nosferatu_Doorway_Frame.webp](https://commons.wikimedia.org/wiki/File:Nosferatu_Doorway_Frame.webp) | Public domain | Prana Film |
 | Nosferatu (poster) | [Max_Schreck_as_Count_Orlok_in_Nosferatu_%E2%80%93_Eine_Symphonie_des_Grauens_%281922%29.jpg](https://commons.wikimedia.org/wiki/File:Max_Schreck_as_Count_Orlok_in_Nosferatu_%E2%80%93_Eine_Symphonie_des_Grauens_(1922).jpg) | Public domain | F. W. Murnau (screenshot) |
+| Chris Haley (portrait in Cast & Crew) | [Tears_of_Steel_frame_04_5h.jpg](https://commons.wikimedia.org/wiki/File:Tears_of_Steel_frame_04_5h.jpg) | CC BY 3.0 | Blender Foundation / Project Mango |
+| Derek de Lint (portrait in Cast & Crew) | [Derek-de-lint-1340646708.jpg](https://commons.wikimedia.org/wiki/File:Derek-de-lint-1340646708.jpg) | CC BY 3.0 | Jerome de Lint; Jerome de Lint; Wikiportret |
+| Rogier Schippers (portrait in Cast & Crew), Jody Bhe (portrait in Cast & Crew) | [Tears_of_Steel_frame_04_3e.jpg](https://commons.wikimedia.org/wiki/File:Tears_of_Steel_frame_04_3e.jpg) | CC BY 3.0 | Blender Foundation / Project Mango |
+| Sergio Hasselbaink (portrait in Cast & Crew) | [Sergio-hasselbaink.jpg](https://commons.wikimedia.org/wiki/File:Sergio-hasselbaink.jpg) | CC BY 3.0 | Roel Wijnants; Roel Wijnants; Wikiportret |
+| Vanja Rukavina (portrait in Cast & Crew), Denise Rebergen (portrait in Cast & Crew) | [Tears_of_Steel_frame_01_2a.jpg](https://commons.wikimedia.org/wiki/File:Tears_of_Steel_frame_01_2a.jpg) | CC BY 3.0 | Blender Foundation / Project Mango |
 | Plan 9 from Outer Space (poster), Plan 9 from Outer Space (clear logo, derived from this poster, lettering recoloured) | [Plan_9_from_Outer_Space%2C_poster%2C_gtfy.07034.jpg](https://commons.wikimedia.org/wiki/File:Plan_9_from_Outer_Space,_poster,_gtfy.07034.jpg) | Public domain | Reynolds Pictures, Inc. |
 | Plan 9 from Outer Space (backdrop) | [Plan_9_from_Outer_Space_still_1.jpg](https://commons.wikimedia.org/wiki/File:Plan_9_from_Outer_Space_still_1.jpg) | Public domain | Ed Wood Prod. / Valiant Pictures |
 | Safety Last! (poster), Safety Last! (clear logo, derived from this poster) | [Safety_last_poster.jpg](https://commons.wikimedia.org/wiki/File:Safety_last_poster.jpg) | Public domain | Unknown |

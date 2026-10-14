@@ -170,6 +170,7 @@
   "widgets.tracks.enh_reason_refused": "Ваш сервер Plex не змог уключыць гэта для гэтага відэа.",
   "widgets.tracks.sub_burn_audio": "Іх малюе ваш сервер Plex, пакуль канвертуе гук.",
   "widgets.tracks.sub_burn_quality": "Іх малюе ваш сервер Plex пры гэтай якасці.",
+  "widgets.tracks.sub_remembered_note": "Субцітры, якія вы выбралі для гэтага серыяла, нельга паказаць з гэтым відэа.",
   "widgets.tracks.style": "Стыль",
   "widgets.tracks.style_size": "Памер",
   "widgets.tracks.style_position": "Пазіцыя",

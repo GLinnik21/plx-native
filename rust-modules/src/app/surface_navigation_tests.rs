@@ -175,6 +175,35 @@ fn switching_profile_leaves_the_container_holding_nothing_of_the_previous_profil
     );
 }
 
+/// **A profile switch dismisses an open Settings surface, at once.** The Playback page names the
+/// seated profile and lists that profile's own picks, so it must not survive the switch to the next
+/// one: it would say "for Maya" over Noah's values for as long as it stayed up. The surfaces go
+/// in `Navigator::reset_for_profile` (they are dropped first, then the page stack), which is
+/// called before the switch commits. Graded the moment `switch_profile` returns, before any frame
+/// runs: `Root(Profiles)` alone would sweep the surface a frame LATER (it retires the page the
+/// surface stands over), so only the reset itself can make this true immediately, and a frame in
+/// between would be a window in which the old profile's page is still drawn.
+///
+/// Not behind `hostsim`: nothing here needs the desktop simulator, so `make check` runs it.
+#[test]
+fn a_profile_switch_dismisses_an_open_settings_surface() {
+    let _g = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+    open_settings_at(&mut d, SettingsPage::Playback);
+    frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
+    assert!(settings_up(&d), "the Settings surface is up on the Playback page");
+    assert_eq!(overlay_word(&d), Some("playback"));
+
+    switch_profile(&mut d);
+    assert!(!settings_up(&d), "the switch dismissed Settings before any frame ran");
+
+    for i in 0..20u32 { frame(&mut d, &mut rig, AppArg::Profiles, tick(2 + i), vec![]); }
+    assert!(!settings_up(&d), "and it stays gone behind the picker");
+    assert!(d.nav.top_page().is_some_and(|e| e.arg == AppArg::Profiles));
+}
+
 /// **An app switch parks the tree; it does not tear the session's page history down.**
 ///
 /// RED FIRST (D1). The 0x103/0x106 lifecycle used to `suspend()` the tree and then write
@@ -1324,4 +1353,61 @@ fn a_closing_item_menus_opener_lift_stands_down_when_focus_moves_off_the_opener(
     assert_eq!(opener_lift(&d), Some((host, Some(key(7)))), "closing, focus still on the opener: it stays lifted");
     d.set_focus(Some(key(8)));
     assert_eq!(opener_lift(&d), None, "closing, focus moved to the neighbour: the old tile is NOT repainted as focused");
+}
+
+/// **OK on a Continue Watching EPISODE opens the SHOW on the card's season** (Settings > Playback >
+/// Continue Watching = "Open details"): the decision `activate_deck_card` makes from the card, the
+/// shelf's `from_deck` and whether the press plays. The pure half pins every case that must NOT
+/// reroute — a discovery shelf's episode (its OK opens the episode's page), a press that plays
+/// (`DeckPress::Play` arrives as `want_play`), a movie, a show/season card, and an episode whose
+/// row names no show.
+#[test]
+fn a_deck_episode_press_opens_the_show_and_nothing_else_reroutes() {
+    use crate::app::input::deck_press_opens_show;
+    let card = |kind: i32, show_rk: &str| {
+        let mut m = plx_data::pms::PmsMovie::default();
+        m.rk = "ep".into();
+        m.kind = kind;
+        m.show_rk = show_rk.into();
+        m.season_index = 3;
+        m
+    };
+    let episode = card(3, "show");
+    assert!(deck_press_opens_show(&episode, true, false), "deck episode, OK opens details");
+    assert!(!deck_press_opens_show(&episode, false, false), "a discovery shelf's episode keeps its own page");
+    assert!(!deck_press_opens_show(&episode, true, true), "a press that plays plays");
+    assert!(!deck_press_opens_show(&card(3, ""), true, false), "no show row: today's episode page");
+    for kind in [0, 1, 2] {
+        assert!(!deck_press_opens_show(&card(kind, "show"), true, false), "kind {kind} is unchanged");
+    }
+}
+
+/// …and the other half: the page that is actually opened. A deck episode seeds the SHOW's detail
+/// page with the card's season; the same card from a discovery shelf seeds the episode's own page
+/// with no season (`open_detail` writes the seed in the call, before any frame spends it).
+#[test]
+fn activating_a_deck_episode_seeds_the_show_page_on_its_season_and_a_discovery_one_its_own() {
+    let _g = plx_base::testlock::serial();
+    let mut ps = plx_media::route::PlaybackSession::default();
+    let mt = unsafe { plx_base::task::MainThread::assume() };
+    let mut pa = plx_media::player::adapter::PlayerAdapter::new(mt);
+    let mut wait = None;
+    let mut episode = plx_data::pms::PmsMovie::default();
+    episode.sid = plx_plex::plex::ServerId::UNSET;
+    episode.rk = "ep-55".into();
+    episode.kind = 3;
+    episode.show_rk = "show-7".into();
+    episode.season_index = 3;
+
+    for (from_deck, rk, season) in [(true, "show-7", Some(3)), (false, "ep-55", None)] {
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+        unsafe {
+            crate::app::input::activate_deck_card(&mut ps, &mut pa, &episode, from_deck, false, 0, None,
+                &mut d, &mut rig, &mut wait, 0);
+        }
+        let seed = rig.mounter.seed.as_ref().expect("a detail page was opened");
+        assert_eq!((seed.rk.as_str(), seed.spot.season), (rk, season), "from_deck {from_deck}");
+    }
 }

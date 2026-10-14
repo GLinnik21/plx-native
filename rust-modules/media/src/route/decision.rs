@@ -13,6 +13,7 @@
 //! (the claim table, the enhancement step, the plans and the PMS attempts) stay here.
 
 use plx_plex::plex::ServerId;
+use plx_plex::plex::session::prefs::{AudioMemo, SubtitleMemo, TrackMemoryEntry};
 use plx_plex::plex::session::{QualityPref, SubtitleOffsetEntry};
 use plx_data::pms::PmsMovie;
 use std::os::raw::c_char;
@@ -298,6 +299,16 @@ pub struct PlaybackSession {
     /// else the account's — carried straight from [`super::plan::Plan::sub_pref_lang`] so the
     /// Subtitles menu's "yours" grouping (`metadata::sub_layout::sub_sections`) survives a reload.
     cur_sub_pref_lang: Option<String>,
+    /// The show the playing item belongs to (`PlayingItem::show_rk`, empty for anything but an
+    /// episode) and its Plex type (`PlayingItem::kind`), carried from the landing: the key and the
+    /// gate of the track memory, which remembers a pick per SHOW and only for an episode.
+    cur_show_rk: String,
+    cur_kind: String,
+    /// A remembered subtitle was chosen for this play but the route shows none of it
+    /// ([`super::plan::Plan::memory_note`]): the Subtitles menu says why. Set by a landing; cleared
+    /// by the first commit that changes the subtitle shown, because a pick the app draws in place
+    /// runs no landing to clear it.
+    cur_memory_note: bool,
     /// the playing item's Part id (from the part key), so an audio switch can PUT the
     /// server-side stream selection — the transcoder encodes the part's SELECTED audio.
     cur_part_id: i64,
@@ -469,6 +480,9 @@ impl PlaybackSession {
         cur_sub_ordinal: -1,
         side_subs_refused: false,
         cur_sub_pref_lang: None,
+        cur_show_rk: String::new(),
+        cur_kind: String::new(),
+        cur_memory_note: false,
         cur_part_id: 0,
         sess: String::new(),
         machine_id: String::new(),
@@ -544,6 +558,9 @@ impl PlaybackSession {
             cur_sub_ordinal,
             side_subs_refused,
             cur_sub_pref_lang,
+            cur_show_rk,
+            cur_kind,
+            cur_memory_note,
             cur_part_id,
             sess,
             machine_id,
@@ -600,6 +617,9 @@ impl PlaybackSession {
             cur_sub_ordinal: *cur_sub_ordinal,
             side_subs_refused: *side_subs_refused,
             cur_sub_pref_lang: cur_sub_pref_lang.clone(),
+            cur_show_rk: cur_show_rk.clone(),
+            cur_kind: cur_kind.clone(),
+            cur_memory_note: *cur_memory_note,
             cur_part_id: *cur_part_id,
             sess: sess.clone(),
             machine_id: machine_id.clone(),
@@ -5192,6 +5212,21 @@ pub fn cur_sub_sid(ps: &PlaybackSession) -> i64 {
 pub fn cur_sub_pref_lang(ps: &PlaybackSession) -> Option<&str> {
     ps.cur_sub_pref_lang.as_deref()
 }
+/// The show the playing item belongs to (`""` for anything but an episode): the key the track
+/// memory is written under.
+pub fn cur_show_rk(ps: &PlaybackSession) -> &str {
+    &ps.cur_show_rk
+}
+/// The playing item's Plex type (`episode`, `movie`, ...), empty when the server sent none. Track
+/// memory is written for `episode` only.
+pub fn cur_kind(ps: &PlaybackSession) -> &str {
+    &ps.cur_kind
+}
+/// A remembered subtitle was chosen for this play but the route shows none of it, so the
+/// Subtitles menu says why.
+pub fn cur_memory_note(ps: &PlaybackSession) -> bool {
+    ps.cur_memory_note
+}
 /// ratingKey of the currently-playing item (for /:/timeline progress reports).
 pub fn cur_rk(ps: &PlaybackSession) -> String {
     ps.cur_rk.clone()
@@ -6847,11 +6882,13 @@ pub(super) fn forced_server_decision(
 /// default-selected sub, only the PUT does). The direct-play profile advertises text and
 /// client-rendered bitmap codecs; burn is still the remux/re-encode path when we PUT a
 /// positive subtitle id. We PUT subtitleStreamID=0 to keep subs OFF (no burn), or the chosen
-/// id to burn it; audioStreamID only when the user switched (else keep default).
+/// id to burn it; audioStreamID only when the user switched or the profile remembered a track for
+/// the show (else keep default).
 ///
 /// Never `0` for a subtitle the app draws itself: PMS discards a DOWNLOADED subtitle the moment the
-/// selection moves off it (docs/pms-api.md, 2026-10-06), so `0` means the viewer chose Off or nothing
-/// is selected; "do not burn" is the transcode wire's `subtitles=none` alone.
+/// selection moves off it (docs/pms-api.md, 2026-10-06), so `0` means the viewer chose Off (now
+/// or, for a show, earlier: a remembered Off) or nothing is selected; "do not burn" is the
+/// transcode wire's `subtitles=none` alone.
 ///
 /// `sid` names the server that owns `part` — the resolve worker passes the id it was given, and the
 /// in-playback callers pass [`cur_sid`]. A `Part.id` is server-local, so a PUT sent to the wrong
@@ -7109,10 +7146,30 @@ impl ResolveEnv {
             preview: false,
             audio_enhancements: crate::player::audio_enhancements(),
             pass: plx_plex::plex::serverinfo::subscription_of(sid),
+            memory: recalled_track_memory(sid),
+            // Set in exactly one place, `request_env`: nothing else may default it on.
+            fresh_play: false,
+            #[cfg(any(test, feature = "test-support"))]
+            account_subtitles: None,
             #[cfg(any(test, feature = "test-support"))]
             dv_capability: None,
         }
     }
+}
+
+/// **Everything the active profile remembered about its shows on `sid`'s server** (the track
+/// memory), through the memory door's mirror. MAIN THREAD, like the rest of the snapshot: the
+/// resolve worker must not read the mirror. A play raised off a shelf does not know its show until
+/// the item is fetched, so the whole list rides along and `build_stream` picks the entry by
+/// `playing.show_rk`. Empty until the server is registered and has said its machine id.
+fn recalled_track_memory(sid: ServerId) -> Vec<TrackMemoryEntry> {
+    let Some(machine_id) = plx_plex::plex::client_for(sid).map(|c| c.machine_id()).filter(|m| !m.is_empty()) else {
+        return Vec::new();
+    };
+    recall_all::<TrackMemoryEntry>(&plx_plex::plex::session::current_profile_key())
+        .into_iter()
+        .filter(|e| e.machine_id == machine_id)
+        .collect()
 }
 
 pub fn playback_preview(d: &plx_data::metadata::Detail) -> Option<Preview> {
@@ -7419,6 +7476,28 @@ pub fn request_preview(
     )
 }
 
+/// The resolve environment a play REQUEST hands its worker: the snapshot taken AFTER the request
+/// cleared the live selection, the request's own flags, and the retry (if any) applied over it.
+/// MAIN THREAD.
+///
+/// **`fresh_play` is set here and nowhere else (W4).** A viewer's launch is fresh; a retry is not,
+/// whichever of its callers built it (the Retry press, Play Automatically, the start-failure rescue,
+/// the in-flight contract re-resolve all pass `Some(retry)`), and neither is a preview. Only a fresh
+/// play may write a remembered choice back to the server.
+fn request_env(
+    ps: &PlaybackSession, meta: plx_data::metadata::MetadataView<'_>, request: &PlaybackRequest,
+    retry: Option<RetryContext>,
+) -> ResolveEnv {
+    let mut env = ResolveEnv::snapshot(ps, meta, request.sid, &request.rk);
+    env.omit_queue_continuous = plx_data::metadata::context_omits_queue_continuous(&request.ctx);
+    env.set_preview(request.preview);
+    env.fresh_play = retry.is_none() && !request.preview;
+    if let Some(retry) = retry {
+        apply_retry(&mut env, retry);
+    }
+    env
+}
+
 /// Common async request transaction. A retry waits for the real stop's PMS work on THIS worker
 /// before asking the server to start another encoder. Ordinary requests do not synchronously drain;
 /// a replacement timeline lease still waits for any stop announced before its publication.
@@ -7515,12 +7594,7 @@ fn request_play_inner(
     // and makes the landing stale instead of installing an old plan beneath a new checkmark.
     let contract_revision = desired_contract_revision();
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
-    let mut env = ResolveEnv::snapshot(ps, meta.view(), sid, rk);
-    env.omit_queue_continuous = plx_data::metadata::context_omits_queue_continuous(ctx);
-    env.set_preview(request.preview);
-    if let Some(retry) = retry {
-        apply_retry(&mut env, retry);
-    }
+    let env = request_env(ps, meta.view(), &request, retry);
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     if let Some(resume_ns) = retry.map(|r| r.resume_ns).filter(|ns| *ns > 0) {
         *PLAY_RESUME.lock().unwrap_or_else(|e| e.into_inner()) = Some((gen, resume_ns));
@@ -7725,6 +7799,9 @@ fn apply_retry(env: &mut ResolveEnv, retry: RetryContext) {
         env.audio_sid = audio_sid;
         env.sub_sid = sub_sid;
         env.subtitle_override = Some(sub_sid);
+        // That selection is the viewer's own pick of THIS playback and outranks anything the
+        // profile remembered for the show.
+        env.memory.clear();
     }
 }
 
@@ -7992,6 +8069,13 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
     // A REFUSED plan installs too (its verdict feeds the error read-out) but selected nothing, so
     // only a playable one makes the selection below known.
     let selection_known = !plan.url.is_empty();
+    // The playing item moves into the store below; the session keeps the two facts the track
+    // memory is keyed and gated on.
+    let (cur_show_rk, cur_kind) = plan
+        .playing
+        .as_ref()
+        .map(|p| (p.show_rk.clone(), p.kind.clone()))
+        .unwrap_or_default();
     meta.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(
         plan.playing,
     ));
@@ -8091,6 +8175,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             cur_sub_ordinal: plan.sub_render_ordinal.unwrap_or(-1),
             side_subs_refused: false,
             cur_sub_pref_lang: plan.sub_pref_lang,
+            cur_show_rk,
+            cur_kind,
+            cur_memory_note: plan.memory_note,
             cur_part_id: plan.part_id,
             sess: plan.sess,
             machine_id,
@@ -9734,6 +9821,9 @@ pub struct EnhTestFixture {
     /// Part bitrate, with the client able to draw it. Only meaningful with
     /// `subtitle_effect: Embedded` on a remux.
     pub side_reader: bool,
+    /// A remembered subtitle was chosen for this play but the route shows none of it
+    /// ([`cur_memory_note`]): the Subtitles tab says why.
+    pub memory_note: bool,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -9753,6 +9843,7 @@ impl Default for EnhTestFixture {
             applied_burn: false,
             in_flight: false,
             side_reader: false,
+            memory_note: false,
         }
     }
 }
@@ -9790,6 +9881,7 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
     ps.cur_sub_sid = if route.subtitle_effect == SubtitleEffect::None { 0 } else { 999 };
     ps.cur_sub_sidecar = route.subtitle_effect == SubtitleEffect::Sidecar;
     ps.cur_sub_client_drawable = ps.cur_sub_sidecar;
+    ps.cur_memory_note = route.memory_note;
     ps.cur_enhancement = if route.refused {
         EnhancementOutcome::Refused
     } else if route.unverified {
@@ -9868,10 +9960,15 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
 /// direct-playable; else a server re-transcode with that stream selected. `audio.ordinal` is the
 /// CONTAINER audio ordinal (the menu converts its row via metadata::audio_ordinal); `audio` itself
 /// is the frozen `CarriedAudio` snapshot (issue #266) the menu built via `CarriedAudio::from_stream`.
-pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) {
+///
+/// **Returns whether the route accepted the pick**, which is what the track memory is written on: it
+/// is `false` only for the Forced refusal (the pick is not played and the verdict says so). A pick
+/// deferred behind a pending Original handoff, or one the enhancement reconcile re-routes, is
+/// accepted.
+pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
     if forced_direct_play(ps) && !audio_track_direct_plays(ps, &audio.codec, audio.channels) {
         ps.play_verdict = Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion));
-        return;
+        return false;
     }
     if original_recovery_pending() {
         if let Some(pending) = PLAYER_CONTROL
@@ -9883,7 +9980,7 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) {
             pending.deferred_audio = Some(audio);
         }
         crate::player::log("audio: deferred until pending Original handoff commits or rolls back");
-        return;
+        return true;
     }
     // Audio always changes the decoder/server route contract, even when the eventual route stays
     // direct. Fence the old worker before publishing the selected stream or invalidating its
@@ -9935,7 +10032,7 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) {
     if reconcile_enhancement(ps, true) {
         // the reconcile's Retranscode owes this pick its reload
         crate::player::note_audio_pick();
-        return;
+        return true;
     }
     if native {
         crate::player::request_audio_track(ps, ordinal, &codec);
@@ -9944,6 +10041,7 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) {
     }
     // the rebuild now loading is this pick's: the read-out says "Switching audio…"
     crate::player::note_audio_pick();
+    true
 }
 
 /// Apply commands which were attached to one exact Original trial, after either the candidate or
@@ -10025,6 +10123,13 @@ pub fn commit_subtitle_selection(
     // always republishes — keeps what the viewer found.
     if stream_id != ps.cur_sub_sid {
         crate::player::set_subtitle_offset(0);
+        // What the track-memory note explained (the remembered subtitle is not what is shown) ends
+        // with the first commit that changes what is shown. A landing sets the flag afresh from its
+        // plan, but a pick the app draws in place (a sidecar, a track the side reader draws) runs
+        // none, and the note would go on denying a subtitle the viewer can see. Pressing OK on what
+        // is already shown (Off, while the note is up) is not such a commit: the memory still holds
+        // a track the route still cannot show.
+        ps.cur_memory_note = false;
     }
     crate::player::request_subtitle(sub_idx);
     set_subtitle(ps, stream_id);
@@ -10059,6 +10164,90 @@ pub fn commit_subtitle_selection(
     }
     if transcoding && !in_place {
         crate::player::request_transcode_refresh(ps); // retranscode PUTs the selection itself
+    }
+}
+
+/// One half of a show's track memory, as the track menu's pick describes it.
+#[derive(Clone)]
+enum TrackPick {
+    Audio(AudioMemo),
+    Subtitle(SubtitleMemo),
+}
+
+/// **Remember a track pick for the playing show: the track memory's one write.** Gated by the
+/// same predicate the read side applies in `plan::show_memory` (an `episode` with a known show),
+/// so what is written is exactly what a later resolve can read; a movie, a trailer or an item the
+/// server did not place in a show writes nothing. The seat and the tenure are `remember`'s to
+/// refuse: nothing is written for a run that seated nobody (a dev token), and a refused write
+/// leaves the mirror as it was.
+///
+/// The closure keeps the OTHER half of the entry as it is when it runs (against the mirror now,
+/// and against the file's entry when the queued write runs): an audio pick must not erase the
+/// subtitle the viewer chose a minute ago, nor the other way round.
+fn remember_track_pick(ps: &PlaybackSession, pick: TrackPick) -> bool {
+    let show = cur_show_rk(ps);
+    if cur_kind(ps) != "episode" || show.is_empty() {
+        return false;
+    }
+    let Some(machine_id) = plx_plex::plex::client_for(cur_sid(ps)).map(|c| c.machine_id().to_string()) else {
+        return false;
+    };
+    if machine_id.is_empty() {
+        return false;
+    }
+    let show = show.to_string();
+    let user = plx_plex::plex::session::current_profile_key();
+    remember::<TrackMemoryEntry>(&user, (machine_id.clone(), show.clone()), move |current| {
+        let mut entry = current.cloned().unwrap_or_else(|| TrackMemoryEntry::new(&machine_id, &show, None, None));
+        match &pick {
+            TrackPick::Audio(memo) => entry.audio = Some(memo.clone()),
+            TrackPick::Subtitle(memo) => entry.subtitle = Some(memo.clone()),
+        }
+        Some(entry)
+    })
+}
+
+/// **The track menu's audio pick: commit it, and remember it if the route took it.** `memo` is the
+/// descriptor of the picked row ([`memo_of_audio`](super::memo_of_audio)); `None` is a commit that is
+/// not a viewer's choice and remembers nothing. The write is made only when
+/// [`commit_audio_selection`] accepted the pick, so the Forced refusal (a track the route will not
+/// play) is never remembered. Returns whether the route accepted it.
+///
+/// Automatic picks do NOT come through here: the start-of-play auto-pick, a retry, a rescue and
+/// Switch to Auto call [`commit_audio_selection`] or build a plan directly, and write no memory.
+/// A pick deferred behind a pending Original handoff was accepted, and so remembered, when the
+/// viewer made it; [`apply_deferred_original_effects`] only replays it and writes nothing.
+pub fn commit_audio_pick(ps: &mut PlaybackSession, audio: CarriedAudio, memo: Option<AudioMemo>) -> bool {
+    let accepted = commit_audio_selection(ps, audio);
+    if accepted {
+        if let Some(memo) = memo {
+            remember_track_pick(ps, TrackPick::Audio(memo));
+        }
+    }
+    accepted
+}
+
+/// **The track menu's subtitle pick: commit it, and remember it.** `memo` is
+/// [`SubtitleMemo::Off`] for Off, or [`memo_of_subtitle`](super::memo_of_subtitle) of the picked
+/// track (an embedded track, a sidecar, a fresh download); `None` remembers nothing. A subtitle
+/// commit has no refusal, so every one that carries a memo and CHANGES the subtitle is written.
+/// The commit is always made (an OK on the checked row republishes), but a pick of the stream the
+/// route already shows is the menu being closed, not chosen: the route put that stream there
+/// (the ladder, a rescue, an earlier pick), and an automatic pick is never written. Off is stored
+/// as Off: it beats the account's rule and the server's embedded selection next episode (only a
+/// server-selected sidecar the app can draw ranks above memory, `plan::pick_subtitle`).
+pub fn commit_subtitle_pick(
+    ps: &mut PlaybackSession,
+    sub_idx: i32,
+    stream_id: i64,
+    client_renderable: bool,
+    memo: Option<SubtitleMemo>,
+) {
+    // Read before the commit, which writes the stream it was handed.
+    let changed = stream_id != ps.cur_sub_sid;
+    commit_subtitle_selection(ps, sub_idx, stream_id, client_renderable);
+    if let Some(memo) = memo.filter(|_| changed) {
+        remember_track_pick(ps, TrackPick::Subtitle(memo));
     }
 }
 
@@ -10256,3 +10445,7 @@ mod prefs_door_tests;
 #[cfg(test)]
 #[path = "decision_memory_tests.rs"]
 mod memory_tests;
+
+#[cfg(test)]
+#[path = "decision_track_memory_tests.rs"]
+mod track_memory_tests;

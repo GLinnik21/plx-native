@@ -863,9 +863,17 @@ impl PlayerScreen {
             }
             Key::Left { .. } | Key::Right { .. } => {
                 match edge {
-                    Edge::Down => self.key_scrub_fresh(ps, key, now, meta),
+                    Edge::Down => {
+                        // A press that is not the held key coming back settles the hold's
+                        // pending release first, as the `Up` itself used to.
+                        let fwd = matches!(key, consts::Key::Right { .. });
+                        if self.scrub.key.release_pending() && !self.scrub.key.continues(fwd, now) {
+                            self.settle_release(fx);
+                        }
+                        self.key_scrub_fresh(ps, key, now, meta)
+                    }
                     Edge::Repeat => self.key_scrub_repeat(now),
-                    Edge::Up => self.key_scrub_release(now, fx),
+                    Edge::Up => self.key_scrub_release(now),
                 }
                 Handled::Yes
             }
@@ -942,6 +950,17 @@ impl PlayerScreen {
         }
     }
 
+    /// A held scrub's release, once it has survived the bounce window: commit the preview and end
+    /// the gesture. Called from the tick, and from a press that is NOT the key coming back.
+    fn settle_release<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
+        plx_base::eventlog::log(&format!(
+            "scrub: keyup commit (held) {}s",
+            self.scrub.ns / 1_000_000_000
+        ));
+        self.commit_scrub(fx);
+        self.scrub.disengage();
+    }
+
     /// A FRESH LEFT/RIGHT press: port of `key_scrub`'s `ScrubPress` dispatch. It commits NOTHING —
     /// the release does (`key_scrub_release`), on the debounce for a tap and at once for a hold.
     fn key_scrub_fresh(
@@ -953,6 +972,16 @@ impl PlayerScreen {
     ) {
         let fwd = matches!(key, consts::Key::Right { .. });
         let dur = plx_media::player::duration_ns();
+        // **A key-up then a key-down inside the bounce window is one hold, not two gestures.**
+        // The key driver was measured doing exactly that mid-hold, and the old code committed the
+        // seek on the `Up` and began again on the `Down`. Now the pending release is cancelled and
+        // the hold simply goes on: no hop, no commit, the ramp keeps its speed — and the
+        // lost-keyup net is told the remote's repeat delay has restarted.
+        if self.scrub.key.bounce(now, fwd) {
+            self.hud.extend(now, input::HUD_LINGER_MS);
+            plx_base::eventlog::log("scrub: key bounce merged (hold continues)");
+            return;
+        }
         // A key gesture SUPERSEDES a pointer one, and throws its preview away rather than hopping
         // from it — `key_scrub`'s own first act, when the flag was `Pointer::drag`. The pointer's
         // release is never going to arrive as far as this gesture is concerned, so a preview left
@@ -987,16 +1016,15 @@ impl PlayerScreen {
                 // release arms the debounce so that a rapid burst coalesces into one seek. The
                 // commit belonging to the press was this package's first regression.
                 self.scrub.commit_at = 0; // more input → cancel a pending tap commit
-                self.scrub.alive = now;
                 self.scrub.reveal = false; // a visible press is a real gesture whatever raised the HUD
-                if self.scrub.dir == 0 && self.scrub.ns < 0 {
+                if self.scrub.key.dir == 0 && self.scrub.ns < 0 {
                     self.scrub.ns = plx_media::player::intended_pos_ns(ps);
                 }
-                if !self.scrub.hold {
+                if !self.scrub.key.engaged {
                     let step = if fwd { input::scrub_step_ns() } else { -input::scrub_step_ns() };
                     self.scrub.ns = Scrub::clamp_target(self.scrub.ns.max(0) + step, dur);
                 }
-                self.scrub.dir = if fwd { 1 } else { -1 };
+                self.scrub.key.press(now, fwd);
             }
             input::ScrubPress::Nothing => {}
         }
@@ -1007,18 +1035,14 @@ impl PlayerScreen {
     /// `Tick` rather than by the repeat event itself (a held key's repeats and the frame rate are
     /// two different clocks).
     fn key_scrub_repeat(&mut self, now: u32) {
-        if self.hud.nav.focus == 0 && self.scrub.dir != 0 {
-            self.scrub.alive = now;
+        if self.hud.nav.focus == 0 && self.scrub.key.dir != 0 {
             self.scrub.commit_at = 0;
-            if !self.scrub.hold {
-                self.scrub.hold = true;
-                self.scrub.hold_since = now;
-                self.scrub.t = now;
+            if self.scrub.key.repeat(now) {
                 // `reveal` is deliberately NOT cleared here. Engaging the hold is not the same
                 // event as the preview MOVING: `t` is stamped now, so the advance's first pass
-                // computes `sdt ≈ 0` and travels nothing, and at ~10 s/s it takes ~100 ms before
-                // the preview has moved even a second. A firm tap that trips one hardware repeat
-                // and releases inside that window would otherwise commit a seek to the spot
+                // computes `sdt ≈ 0` and travels nothing, and at `SCRUB_BASE` it takes
+                // `1/SCRUB_BASE` of a real second before the preview has moved even a second.
+                // A firm tap that trips one hardware repeat and releases inside that window would otherwise commit a seek to the spot
                 // playback is already sitting on — a full reopen + prime and a visible stall, out
                 // of a press the reveal rule promises moves nothing. `step_scrub_hold` clears it
                 // once there is real travel.
@@ -1033,25 +1057,20 @@ impl PlayerScreen {
     /// Three outcomes, and the ORDER of the first two is load-bearing. A reveal-only gesture
     /// throws the preview away: the press was spent raising the transport and the preview sits on
     /// the seed, so committing it is a full reopen + prime to the spot playback is already on.
-    /// Tested BEFORE `hold`, because a hold that engaged but has not TRAVELLED yet is still that
+    /// Tested BEFORE the key release (`HeldKey::release`), because a hold that engaged but has not TRAVELLED yet is still that
     /// case — the ramp is what retires `reveal`, on real travel. A travelled hold commits now. A
     /// plain tap arms the debounce instead, so that a rapid burst of hops becomes one seek.
-    fn key_scrub_release<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) {
-        if self.scrub.dir == 0 {
+    fn key_scrub_release(&mut self, now: u32) {
+        if self.scrub.key.dir == 0 {
             return;
         }
         if self.scrub.reveal {
             self.scrub.ns = -1;
             self.scrub.disengage();
-        } else if self.scrub.hold {
-            plx_base::eventlog::log(&format!(
-                "scrub: keyup commit (held) {}s",
-                self.scrub.ns / 1_000_000_000
-            ));
-            self.commit_scrub(fx);
-            self.scrub.disengage();
-        } else {
-            // a tap → commit on a short debounce so quick taps accumulate first
+        } else if !self.scrub.key.release(now) {
+            // A hold's release is deferred inside `HeldKey` — the driver bounces keys mid-hold, and
+            // `step_scrub_hold` commits once the window has passed without a re-press. What is
+            // left here is a tap → commit on a short debounce so quick taps accumulate first.
             self.scrub.commit_at = now.wrapping_add(input::TAP_COMMIT_MS).max(1);
         }
     }
@@ -1102,25 +1121,25 @@ impl PlayerScreen {
     /// `app::input::Pointer::drag`; the flag moved onto the gesture with the gesture.
     ///
     /// **The safety commit is not optional.** This remote emits a held key as auto-repeat keydowns
-    /// followed by ONE keyup, and a dropped keyup leaves `hold` armed with the preview slewing at
-    /// up to `SCRUB_MAX` for as long as the page is up. `alive` is stamped by every repeat, so
-    /// `SCRUB_LOST_MS` without one is the release that never arrived.
+    /// followed by ONE keyup, and a dropped keyup leaves the hold engaged with the preview slewing at
+    /// up to `SCRUB_MAX` for as long as the page is up. Every repeat proves the key down, so
+    /// `HeldKey::lost` (`SCRUB_LOST_MS` without one) is the release that never arrived.
     fn step_scrub_hold<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) {
-        if self.scrub.dir == 0 || !self.scrub.hold || self.scrub.ns < 0 || self.scrub.drag {
+        // The release that survived the bounce window is the real one.
+        if self.scrub.key.release_due(now) {
+            self.settle_release(fx);
             return;
         }
-        let held = now.wrapping_sub(self.scrub.hold_since) as f32 / 1000.0;
-        let speed = (input::SCRUB_BASE + input::SCRUB_ACCEL * held).min(input::SCRUB_MAX);
-        let mut sdt = now.wrapping_sub(self.scrub.t) as f32 / 1000.0;
-        if sdt > 0.1 {
-            sdt = 0.1;
+        if self.scrub.key.dir == 0
+            || !self.scrub.key.engaged
+            || self.scrub.ns < 0
+            || self.scrub.drag
+        {
+            return;
         }
         let was = self.scrub.ns;
         let dur = plx_media::player::duration_ns();
-        let s = Scrub::clamp_target(
-            was + (self.scrub.dir as f64 * speed as f64 * sdt as f64 * 1e9) as i64,
-            dur,
-        );
+        let s = Scrub::clamp_target(was + self.scrub.key.advance_ns(now), dur);
         self.scrub.ns = s;
         // Real travel is what turns a reveal into a scrub — not the hold edge, which fires a beat
         // earlier with nothing moved yet. Once the preview has left the seed the release commits
@@ -1129,8 +1148,7 @@ impl PlayerScreen {
             self.scrub.reveal = false;
         }
         self.hud.extend(now, input::HUD_LINGER_MS);
-        self.scrub.t = now;
-        if now.wrapping_sub(self.scrub.alive) > input::SCRUB_LOST_MS {
+        if self.scrub.key.lost(now) {
             plx_base::eventlog::log(&format!("scrub: lost keyup commit {}s", s / 1_000_000_000));
             self.commit_scrub(fx);
             self.scrub.disengage();
@@ -1287,8 +1305,8 @@ impl LogicalState for PlayerScreen {
         c.option(self.hud.last_offer.as_ref(), |c, (kind, at)| {
             c.u32(*kind as u32).u64(*at as u64);
         });
-        c.u32(self.scrub.dir as u32)
-            .bool(self.scrub.hold)
+        c.u32(self.scrub.key.dir as u32)
+            .bool(self.scrub.key.engaged)
             .bool(self.scrub.reveal)
             .bool(self.scrub.drag)
             .u64(self.scrub.ns as u64)
@@ -1339,10 +1357,15 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         let subs_lift = self.subs_lift(ps, now);
         self.render.ass.draw();
         if let Some(message) = self.render.ass.error() {
-            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift);
+            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, f.cx.measure);
         }
         self.draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
-        plx_appkit::player_hud::draw_subtitles(&self.render.captions, subs_lift, plx_media::route::subtitles_burned(ps));
+        plx_appkit::player_hud::draw_subtitles(
+            &self.render.captions,
+            subs_lift,
+            plx_media::route::subtitles_burned(ps),
+            f.cx.measure,
+        );
         // What a pointer can hit is registered AFTER the paint, by `record_stops`, from this
         // screen's own `Focusable` — the rects D-pad focus uses, in the z-order `groups` states.
         // `Hover::Ignore` on the transport's stops: the old pointer path never followed the mouse
@@ -2304,7 +2327,7 @@ mod scrub_ownership_tests {
     /// arrives, on the `SCRUB_LOST_MS` net.
     ///
     /// This remote emits a held key as auto-repeat keydowns followed by ONE keyup, so a dropped
-    /// keyup leaves `hold` armed with the preview slewing at up to `SCRUB_MAX` for as long as the
+    /// keyup leaves the `HeldKey` engaged with the preview slewing at up to `SCRUB_MAX` for as long as the
     /// page is up. The net was `app/run.rs`'s and phase 9 did not reproduce it; it is the screen's
     /// `Tick` now, beside the ramp it guards.
     #[test]
@@ -2316,26 +2339,115 @@ mod scrub_ownership_tests {
         let mut page = page_on_the_bar();
         key(&mut page, SDLK_RIGHT, Edge::Down, 1_000);
         key(&mut page, SDLK_RIGHT, Edge::Repeat, 1_050);
-        assert!(page.scrub.hold, "a hardware repeat engages the continuous scrub");
+        assert!(page.scrub.key.engaged, "a hardware repeat engages the continuous scrub");
         tick(&mut page, 1_400); // the ramp travels
         let travelled = page.scrub.ns;
         assert!(travelled > DEFAULT_HOP, "the ramp advanced past the press's own hop");
         let (_, reqs) = key(&mut page, SDLK_RIGHT, Edge::Up, 1_420);
-        assert_eq!(
-            seeks(reqs),
-            vec![PlayerReq::CommitSeek(travelled)],
-            "a travelled hold commits AT ONCE on release — no debounce, it is not a tap",
+        assert!(seeks(reqs).is_empty(), "the release waits out the key-bounce window first");
+        let (_, reqs) = tick(&mut page, 1_420 + plx_appkit::player_hud::SCRUB_RELEASE_DEBOUNCE_MS + 1);
+        let committed = seeks(reqs);
+        assert_eq!(committed.len(), 1, "…then a travelled hold commits at once — it is not a tap");
+        assert!(
+            matches!(committed[0], PlayerReq::CommitSeek(t) if t >= travelled),
+            "the commit is where the preview got to: {committed:?}",
         );
 
         // …and the release that never does.
         let mut page = page_on_the_bar();
         key(&mut page, SDLK_RIGHT, Edge::Down, 1_000);
         key(&mut page, SDLK_RIGHT, Edge::Repeat, 1_050);
-        let (_, reqs) = tick(&mut page, 1_050 + input::SCRUB_LOST_MS / 2);
+        let (_, reqs) = tick(&mut page, 1_050 + plx_appkit::player_hud::SCRUB_LOST_MS / 2);
         assert!(seeks(reqs).is_empty(), "inside the net's window the ramp just runs");
-        let (_, reqs) = tick(&mut page, 1_050 + input::SCRUB_LOST_MS + 1);
+        let (_, reqs) = tick(&mut page, 1_050 + plx_appkit::player_hud::SCRUB_LOST_MS + 1);
         assert_eq!(seeks(reqs).len(), 1, "the repeats stopped without a keyup: commit and let go");
-        assert_eq!(page.scrub.dir, 0, "…and the gesture is over, not slewing forever");
+        assert_eq!(page.scrub.key.dir, 0, "…and the gesture is over, not slewing forever");
+    }
+
+    /// **A key-up straight followed by a key-down is the SAME hold.** Measured on the television
+    /// 2026-10-13: mid-hold the key driver delivered `Up` and then a fresh `Down` 0-17 ms later (a
+    /// remote that bounces), the player took the `Up` for the release, committed the seek and
+    /// loaded the video while the thumb was still down, and the next repeats only came 500 ms
+    /// later. The release is therefore held back for `SCRUB_RELEASE_DEBOUNCE_MS`; a same-direction
+    /// press inside it continues the hold — no commit, no hop, the ramp is not restarted — and the
+    /// lost-keyup net waits out the repeat delay the re-press restarts.
+    #[test]
+    fn a_key_bounce_mid_hold_continues_the_hold_instead_of_committing() {
+        let _g = plx_base::testlock::serial();
+        let _f = Fixture::new(false);
+        let mut page = page_on_the_bar();
+
+        key(&mut page, SDLK_RIGHT, Edge::Down, 1_000);
+        key(&mut page, SDLK_RIGHT, Edge::Repeat, 1_500);
+        let since = page.scrub.key.since;
+        key(&mut page, SDLK_RIGHT, Edge::Repeat, 1_950);
+        tick(&mut page, 2_000);
+        let before = page.scrub.ns;
+
+        // …the bounce: up, then down 1 ms later.
+        let (_, reqs) = key(&mut page, SDLK_RIGHT, Edge::Up, 2_050);
+        assert!(seeks(reqs).is_empty());
+        let (_, reqs) = key(&mut page, SDLK_RIGHT, Edge::Down, 2_051);
+        assert!(seeks(reqs).is_empty(), "the re-press is not a hop and not a commit");
+        assert!(page.scrub.key.engaged && page.scrub.key.dir == 1, "the hold goes on");
+        assert_eq!(page.scrub.key.since, since, "…and the ramp keeps its speed");
+
+        // The repeats do not resume for ~500 ms. The preview keeps moving, and the lost-keyup net
+        // (400 ms) must not fire inside the restarted repeat delay.
+        let (_, reqs) = tick(&mut page, 2_051 + plx_appkit::player_hud::SCRUB_LOST_MS + 50);
+        assert!(seeks(reqs).is_empty(), "the net waits out the restarted repeat delay");
+        assert!(page.scrub.ns > before, "the preview kept slewing through the gap");
+        key(&mut page, SDLK_RIGHT, Edge::Repeat, 2_560);
+        key(&mut page, SDLK_RIGHT, Edge::Repeat, 2_960);
+        tick(&mut page, 3_000);
+        let travelled = page.scrub.ns;
+
+        // …and the real release, once, after the window.
+        key(&mut page, SDLK_RIGHT, Edge::Up, 3_020);
+        let (_, reqs) = tick(&mut page, 3_020 + plx_appkit::player_hud::SCRUB_RELEASE_DEBOUNCE_MS + 1);
+        assert_eq!(
+            seeks(reqs).len(),
+            1,
+            "ONE commit for the whole hold, however many times the key bounced",
+        );
+        assert!(travelled > before);
+    }
+
+    /// The bounce window is not a licence to wait forever: a re-press that never gets a repeat
+    /// still hits the lost-keyup net, just after the restarted repeat delay instead of before it.
+    #[test]
+    fn a_bounced_hold_whose_repeats_never_resume_still_hits_the_lost_keyup_net() {
+        let _g = plx_base::testlock::serial();
+        let _f = Fixture::new(false);
+        let mut page = page_on_the_bar();
+
+        key(&mut page, SDLK_RIGHT, Edge::Down, 1_000);
+        key(&mut page, SDLK_RIGHT, Edge::Repeat, 1_500);
+        key(&mut page, SDLK_RIGHT, Edge::Repeat, 1_950);
+        tick(&mut page, 2_000);
+        key(&mut page, SDLK_RIGHT, Edge::Up, 2_050);
+        key(&mut page, SDLK_RIGHT, Edge::Down, 2_051);
+        let (_, reqs) = tick(&mut page, 2_051 + plx_appkit::player_hud::SCRUB_REPEAT_RESTART_MS + 1);
+        assert_eq!(seeks(reqs).len(), 1, "no repeat ever came: commit and let go");
+        assert_eq!(page.scrub.key.dir, 0);
+    }
+
+    /// A press in the OTHER direction inside the window is not a bounce of the same key.
+    #[test]
+    fn an_opposite_press_inside_the_window_is_not_a_bounce() {
+        let _g = plx_base::testlock::serial();
+        let _f = Fixture::new(false);
+        let mut page = page_on_the_bar();
+
+        key(&mut page, SDLK_RIGHT, Edge::Down, 1_000);
+        key(&mut page, SDLK_RIGHT, Edge::Repeat, 1_500);
+        key(&mut page, SDLK_RIGHT, Edge::Repeat, 1_950);
+        tick(&mut page, 2_000);
+        key(&mut page, SDLK_RIGHT, Edge::Up, 2_050);
+        let (_, reqs) = key(&mut page, plx_ui::consts::SDLK_LEFT, Edge::Down, 2_051);
+        assert_eq!(seeks(reqs).len(), 1, "the RIGHT hold's release is real and commits first");
+        assert_eq!(page.scrub.key.dir, -1, "the new direction owns the gesture");
+        assert!(!page.scrub.key.engaged, "…as a fresh press, not a continuation");
     }
 
     /// A key gesture SUPERSEDES a pointer one and throws its preview away rather than hopping from

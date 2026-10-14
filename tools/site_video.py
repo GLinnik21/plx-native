@@ -112,6 +112,16 @@ THRESHOLDS = {
     "ssim_min": 0.97,            # spec: per-frame minimum, each deliverable against the master
     "ssim_mean": 0.985,          # spec: mean over frames
     "size_ratio": 1.25,          # spec: each file <= 1.25x today's file of the same name
+    # A film of a DIFFERENT storyboard is not "today's file" with a regression, it is another film, so the ratio says
+    # nothing about it. For the one render that introduces a storyboard (the committed manifest names another
+    # `storyboard_sha256`) each video is held to this ceiling instead, set from the first Linux render of the
+    # 29 s storyboard (9.1 / 10.8 / 16.3 / 19.1 MB) plus about 15 %; once that film is committed the ratio governs again.
+    "size_new_film_bytes": {
+        "feel-720p60.av1.mp4": 10_500_000,
+        "feel-720p60.h264.mp4": 12_500_000,
+        "feel-1080p60.av1.mp4": 19_000_000,
+        "feel-1080p60.h264.mp4": 22_000_000,
+    },
     "seam_ssim": 0.995,          # spec: SSIM(first frame, last frame)
     "vmaf_mean": 93.0,           # provisional (only checked where libvmaf is present)
     "vmaf_min": 80.0,            # provisional
@@ -334,6 +344,7 @@ POSTER_QUALITY = ["-q:v", "3"]  # provisional: the size gate bounds it against t
 # set to what the level's DPB holds (x264 would otherwise lower it with a warning), and `-level` is the field the
 # `avcC` box and the site's `codecs=` string carry. The bitrates (about 1 and 2 Mbit/s) are far under both
 # levels' VBV limits, so no `-maxrate` is needed.
+H264_LAST_FRAME_QP = 10  # the loop's last frame is coded at this fixed QP (see `video_argv`)
 H264_LEVELS = {720: ("3.2", "5"), 1080: ("4.2", "4")}  # height -> (level, refs)
 
 
@@ -351,7 +362,7 @@ AV1_720_GOP = "720"
 AV1_720_CRF = "22"
 
 
-def video_argv(ffmpeg, master, out, video):
+def video_argv(ffmpeg, master, out, video, frames=None):
     codec = AV1_CODEC if video.codec == "av1" else H264_CODEC
     if video.codec == "av1" and video.height == 720:
         override = {"-g": AV1_720_GOP, "-crf": AV1_720_CRF}
@@ -359,6 +370,14 @@ def video_argv(ffmpeg, master, out, video):
     if video.codec == "h264":
         level, refs = H264_LEVELS[video.height]
         codec = codec + ["-level", level, "-refs", refs]
+        if frames:
+            # The loop's join is SSIM(first, last) of the ENCODE. Frame 0 is referenced by hundreds of static frames, so
+            # x264's mbtree gives it a low QP; the last frame is referenced by none, so mbtree gives it a high one
+            # (1080p: 0.9947 on the 29 s film against the 0.995 floor while the master read 1.0000). Forcing an IDR
+            # there made it WORSE (0.9903, and 720p fell from 0.9962 to 0.9882): an intra frame at that QP loses the
+            # detail an inter frame inherits from its references. A one-frame zone pins the last frame's QP instead.
+            i = codec.index("-x264-params") + 1
+            codec = codec[:i] + [f"{codec[i]}:zones={frames - 1},{frames - 1},q={H264_LAST_FRAME_QP}"] + codec[i + 1:]
     return ([str(ffmpeg), "-hide_banner", "-nostdin", "-loglevel", "warning", "-stats", "-y", "-i", str(master),
              "-map", "0:v:0", "-an", "-fps_mode", "passthrough", "-vf", video_filter(video.width, video.height)]
             + codec + COLOR_TAGS + ["-movflags", "+faststart", str(out)])
@@ -370,10 +389,10 @@ def poster_argv(ffmpeg, master, out, poster):
             + POSTER_QUALITY + [str(out)])
 
 
-def encode_plan(ffmpeg, master, out_dir):
+def encode_plan(ffmpeg, master, out_dir, frames=None):
     """[(output name, argv)] for the four videos and two posters; pure, so a test asserts the argv."""
     out_dir = pathlib.Path(out_dir)
-    plan = [(v.name, video_argv(ffmpeg, master, out_dir / v.name, v)) for v in VIDEOS]
+    plan = [(v.name, video_argv(ffmpeg, master, out_dir / v.name, v, frames)) for v in VIDEOS]
     plan += [(p.name, poster_argv(ffmpeg, master, out_dir / p.name, p)) for p in POSTERS]
     return plan
 
@@ -383,7 +402,7 @@ def run_encode(ffmpeg, master, frames_tsv, out_dir, render=None, run=subprocess.
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = parse_frames_tsv(pathlib.Path(frames_tsv).read_text())
     assert_encoders(ffmpeg, run)
-    for name, argv in encode_plan(ffmpeg, master, out_dir):
+    for name, argv in encode_plan(ffmpeg, master, out_dir, len(rows)):
         print(f"site_video: encode {name}", flush=True)
         done = run(argv)
         if done.returncode != 0:
@@ -588,14 +607,29 @@ def gate_hero_pool(record):
                   f"hero-report and none is not_in_video{tail}")
 
 
-def gate_sizes(out_dir, site_media):
-    """Each file no larger than `ratio` times the file of the same name in site/media, read now."""
+def storyboard_changed(record, site_media):
+    """True when the committed manifest names another storyboard than the one this render played."""
+    try:
+        committed = json.loads((pathlib.Path(site_media) / MANIFEST_NAME).read_text())["storyboard_sha256"]
+    except (OSError, ValueError, KeyError):
+        return False
+    return committed != record.get("storyboard_sha256")
+
+
+def gate_sizes(out_dir, site_media, new_film=False):
+    """Each file no larger than `ratio` times the file of the same name in site/media, read now. A `new_film` (another
+    storyboard than the committed one) holds each video to its `size_new_film_bytes` ceiling instead."""
     ratio = THRESHOLDS["size_ratio"]
+    budgets = THRESHOLDS["size_new_film_bytes"] if new_film else {}
     out = []
     for name in MEDIA_NAMES:
         new, old = pathlib.Path(out_dir) / name, pathlib.Path(site_media) / name
         if not new.is_file():
             out.append(Result(f"size/{name}", FAIL, "not encoded"))
+        elif name in budgets:
+            a = new.stat().st_size
+            out.append(Result(f"size/{name}", PASS if a <= budgets[name] else FAIL,
+                              f"{a:,} bytes against {budgets[name]:,} (a new storyboard: the film is not today's)"))
         elif not old.is_file():
             out.append(Result(f"size/{name}", SKIP, "no file of this name in site/media to compare with"))
         else:
@@ -851,7 +885,7 @@ def run_gates(out_dir, master, frames_b=None, ffmpeg=None, site_media=SITE_MEDIA
     results.append(gate_run_twice(tsv_path, frames_b))
     results.append(gate_hero_pool(record))
     results += gate_storyboard_record(record)
-    results += gate_sizes(out_dir, site_media)
+    results += gate_sizes(out_dir, site_media, storyboard_changed(record, site_media))
     vmaf = have_filter(ffmpeg, "libvmaf", run)
     for v in VIDEOS:
         path = out_dir / v.name

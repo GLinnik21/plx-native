@@ -477,7 +477,7 @@ mod tests {
         use plx_ui::fit::HEADROOM;
         use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
             let _guard = language_on_this_thread_for_test(language);
             let answers = [
                 msg::settings_cancel_c(),

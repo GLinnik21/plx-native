@@ -166,6 +166,7 @@
   "widgets.tracks.enh_reason_refused": "Tu servidor Plex no pudo activar esto para este vídeo.",
   "widgets.tracks.sub_burn_audio": "Lo dibuja tu servidor mientras convierte el audio.",
   "widgets.tracks.sub_burn_quality": "Lo dibuja tu servidor con esta calidad.",
+  "widgets.tracks.sub_remembered_note": "Los subtítulos que elegiste para esta serie no se pueden mostrar con este vídeo.",
   "widgets.tracks.style": "Estilo",
   "widgets.tracks.style_size": "Tamaño",
   "widgets.tracks.style_position": "Posición",

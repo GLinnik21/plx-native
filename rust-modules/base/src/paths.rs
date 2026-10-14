@@ -618,6 +618,15 @@ pub fn session_candidates() -> Vec<PathBuf> {
 /// order, as DIRECTORIES. `/media/developer` under the Developer Mode jail, `/media/internal`
 /// under the production one, the app dir as a theory, and a steerable build's instance root
 /// first of all so two simulators never share (or race) one cache.
+///
+/// `/media/developer/temp` comes after both: on a 2016 set running webOS 3.4.3 it is the only
+/// persistent directory a Developer Mode app may write (`/media/developer` is root-owned there and
+/// `/media/internal` is read-only), so without it that set re-downloaded every poster every time.
+/// It shares the partition installed apps live on, which is why `imgcache` sizes its ceiling from
+/// the free space rather than taking its fixed one.
+///
+/// That directory is mode 777, so the cache directory inside it must be created owner-only, or any
+/// other process could read the posters; [`image_cache_dir_is_private`] names it.
 pub fn image_cache_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     if ENV_STEERABLE {
@@ -627,9 +636,16 @@ pub fn image_cache_candidates() -> Vec<PathBuf> {
     v.extend([
         PathBuf::from(format!("/media/developer/{id}-imgcache")),
         PathBuf::from(format!("/media/internal/.{id}-imgcache")),
+        PathBuf::from(format!("/media/developer/temp/{id}-imgcache")),
         in_app_dir("imgcache"),
     ]);
     v
+}
+
+/// Whether `imgcache` must create this candidate owner-only: it sits directly in the world-writable
+/// `/media/developer/temp`. The other candidates keep the mode they are given.
+pub fn image_cache_dir_is_private(path: &Path) -> bool {
+    path.parent() == Some(Path::new("/media/developer/temp"))
 }
 
 /// The spool, beside the decision that authorised it.
@@ -723,6 +739,18 @@ pub fn obsolete_last_place_candidates() -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    /// Only the candidate inside the world-writable `/media/developer/temp` is created owner-only.
+    #[test]
+    fn only_the_shared_temp_image_cache_directory_is_private() {
+        let c = super::image_cache_candidates();
+        let private: Vec<_> = c
+            .iter()
+            .filter(|p| super::image_cache_dir_is_private(p))
+            .collect();
+        assert_eq!(private.len(), 1, "{c:?}");
+        assert!(private[0].starts_with("/media/developer/temp"), "{c:?}");
+    }
+
     /// The runtime root is a path in the shared, sticky `/tmp`, and `ensure_runtime_dir` chmods it
     /// 1777 — so what stands at that name decides what gets widened. A co-resident app that can
     /// create names in `/tmp` can plant a SYMLINK there to a directory this app owns (a plain

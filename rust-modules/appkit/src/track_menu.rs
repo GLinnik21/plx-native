@@ -41,6 +41,14 @@
 //! why the server is drawing it — rather than being found simply gone. An external sidecar over a
 //! remux is drawn by the app (`ClientOverRemux`), so there both rows are live with no reason.
 //!
+//! **A pick is the show's memory, and the menu says when the route cannot honour it.** An explicit
+//! pick in either tab commits its descriptor with the track ([`TrackCommit`]'s `memo`), which the
+//! app's `commit_track` hands to `route::commit_audio_pick` / `commit_subtitle_pick`; they write it to
+//! the show's track memory when the route accepted the pick, and the next episode's plan reads it
+//! back. When the memory chose a subtitle for this play and the route can show none of it (a copy
+//! remux the app cannot draw), Off is on screen, so the first group closes with one inert
+//! reason ([`table_form`]'s `memory_note`, `route::cur_memory_note`), absent everywhere else.
+//!
 //! **Style is a drill-in, and the Subtitles tab is a page stack** (`docs/player-submenus.md`). The
 //! Style row is a [`RowKind::Nav`] onto [`TrackPage::Style`], whose Size, Position and Color rows
 //! each read out their current value and push a picker page ([`TrackPage::Picker`]) of
@@ -360,8 +368,9 @@ impl SubRenderer {
 /// **What the Subtitles root's rows and locks were built from** — the rebuild signature. A live
 /// poll compares it to the current answers and rebuilds when any input changed: the subs list
 /// (stream ids and whether each is offered on this route), the active index, the renderer kind,
-/// whether the route is transcoding, and the enhancement route and subtitle effect (what the Style
-/// lock and Timing's omission read).
+/// whether the route is transcoding, the enhancement route and subtitle effect (what the Style
+/// lock and Timing's omission read), and whether the landing left a remembered subtitle unshown
+/// (the note under the first group).
 #[derive(Clone, Debug, PartialEq)]
 struct SubSig {
     subs: Vec<(i64, bool)>,
@@ -372,6 +381,9 @@ struct SubSig {
     presenter: plx_media::route::SubtitlePresenter,
     enhancement: Option<plx_media::route::EnhancementRoute>,
     effect: plx_media::route::SubtitleEffect,
+    /// the show's remembered subtitle was chosen for this play and the route shows none of it
+    /// ([`plx_media::route::cur_memory_note`]): the root says why
+    memory_note: bool,
 }
 
 impl SubSig {
@@ -501,15 +513,23 @@ pub struct TrackMenuState {
 /// **What the track menu DECIDED**, for the loop to perform (spec §2.2).
 ///
 /// The panel owns its rows and its cursor; it does not own the playback, so it may not call
-/// `route::commit_audio_selection` / `commit_subtitle_selection` itself — those take the session's
+/// `route::commit_audio_pick` / `commit_subtitle_pick` itself — those take the session's
 /// `&mut`, and a screen is only ever shown the frame's publication. `None` means the pick changed
-/// nothing (audio only: a subtitle OK always republishes, because "Off" is a real choice that the
-/// panel cannot distinguish from "unchanged" without knowing what the renderer currently has).
+/// nothing (audio only: a subtitle OK always commits, so the route republishes, though the panel
+/// knows from `active_sub` whether the pick CHANGED the shown subtitle, and only a changed pick
+/// carries a `memo`).
+///
+/// **A track pick also says what to REMEMBER.** `memo` is the descriptor of the row the viewer
+/// picked, built here from the exact `metadata::Stream` the row was drawn from
+/// (`route::memo_of_audio` / `memo_of_subtitle`, the matchers' own predicates), so the loop can
+/// write the show's track memory without ever seeing the item's streams. `None` is a commit that
+/// is not the viewer's choice (a harness setup, or a subtitle OK on the row already checked) and
+/// remembers nothing; the pick commits write only when the route accepted it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrackCommit {
     /// The frozen `CarriedAudio` snapshot for the picked row (issue #266), built via
     /// `CarriedAudio::from_stream` from the exact `metadata::Stream` the row was drawn from.
-    Audio(plx_media::route::CarriedAudio),
+    Audio { carried: plx_media::route::CarriedAudio, memo: Option<plx_plex::plex::session::prefs::AudioMemo> },
     /// The Audio tab's Boost dialog / Normalize loudness toggle rows (issue #266): the full
     /// preference after the flip, so the loop's `player::request_audio_enhancement` has both
     /// bits regardless of which row was pressed. Built from [`TrackMenuState::enhance_shown`],
@@ -520,8 +540,16 @@ pub enum TrackCommit {
     /// on direct play (`metadata::Stream::sidecar_renderable`): it has no demuxer ordinal
     /// (`render_ordinal` is -1), so the loop hands it to `player::sidecar` beside the unchanged
     /// route commit. `sidecar_codec` preserves ASS/SSA on download; a key need not have an
-    /// extension. `None` — Off, or an embedded track — deselects any sidecar.
-    Subtitle { render_ordinal: c_int, stream_id: i64, sidecar_key: Option<String>, sidecar_codec: String },
+    /// extension. `None` — Off, or an embedded track — deselects any sidecar. `memo` is
+    /// `SubtitleMemo::Off` for Off and `Track(..)` for every track, an embedded one, a sidecar or
+    /// a fresh download alike; `None` for an OK on the row that is already checked.
+    Subtitle {
+        render_ordinal: c_int,
+        stream_id: i64,
+        sidecar_key: Option<String>,
+        sidecar_codec: String,
+        memo: Option<plx_plex::plex::session::prefs::SubtitleMemo>,
+    },
     /// The caption's tone. Not a track at all, but it is picked in this panel and it is the
     /// loop that performs it (`player::set_subtitle_tone` saves through the one write door, `route::choose`),
     /// like the two above.
@@ -893,6 +921,7 @@ impl TrackMenuState {
             presenter: plx_media::route::subtitle_presenter(ps),
             enhancement,
             effect,
+            memory_note: plx_media::route::cur_memory_note(ps),
         }
     }
 
@@ -1048,7 +1077,10 @@ impl TrackMenuState {
                                 feature: plx_telemetry::diag::schema::Feature::AudioTrack,
                             });
                             return TrackOk::Commit {
-                                commit: TrackCommit::Audio(plx_media::route::CarriedAudio::from_stream(s, ord)),
+                                commit: TrackCommit::Audio {
+                                    carried: plx_media::route::CarriedAudio::from_stream(s, ord),
+                                    memo: tracks(meta).and_then(|t| plx_media::route::memo_of_audio(&t.audio, i)),
+                                },
                                 keep_open: false,
                             };
                         }
@@ -1096,7 +1128,10 @@ impl TrackMenuState {
     }
 
     /// The subtitle commit behind OK on Off (`-1`) or on a track row: records the pick, and answers
-    /// the commit.
+    /// the commit. The commit is made whether or not the pick changed anything (the route
+    /// republishes), but it carries a memo only when it DID: the panel opens on the checked row, so
+    /// an OK there is closing the menu, not choosing, and an automatic pick (the ladder's Off, or
+    /// its track) must not become the show's memory.
     fn commit_sub(&mut self, new_sub: c_int, meta: metadata::MetadataView<'_>) -> TrackOk {
         let changed = self.active_sub != new_sub;
         self.active_sub = new_sub;
@@ -1122,6 +1157,18 @@ impl TrackMenuState {
                 stream_id: self.sub_stream_id(meta),
                 sidecar_key: sidecar.map(|s| s.key.clone()),
                 sidecar_codec: sidecar.map(|s| s.codec.clone()).unwrap_or_default(),
+                // Off is a choice of its own, remembered as Off; a track is remembered by what it
+                // IS. A row with no stream behind it remembers nothing, and neither does a pick
+                // that changed nothing.
+                memo: if !changed {
+                    None
+                } else if new_sub < 0 {
+                    Some(plx_plex::plex::session::prefs::SubtitleMemo::Off)
+                } else {
+                    tracks(meta)
+                        .and_then(|t| t.subs.get(new_sub as usize))
+                        .map(plx_media::route::memo_of_subtitle)
+                },
             },
             keep_open: false,
         }
@@ -1420,6 +1467,8 @@ impl TrackMenuState {
             stream_id: stream.id,
             sidecar_key: sidecar.then(|| stream.key.clone()),
             sidecar_codec: if sidecar { stream.codec.clone() } else { String::new() },
+            // A subtitle the viewer fetched is the viewer's pick too: remembered by what it is.
+            memo: Some(plx_media::route::memo_of_subtitle(&sub)),
         };
         Some((sub, commit))
     }
@@ -1742,7 +1791,8 @@ impl TrackMenuState {
         let show_timing = !plx_media::route::is_transcoding(ps)
             || presenter != plx_media::route::SubtitlePresenter::None;
         let model = self.sub_model(ps, meta, show_timing);
-        let mut form = table_form(&model, self.active_sub, self.offset_ms, burn);
+        let mut form =
+            table_form(&model, self.active_sub, self.offset_ms, burn, plx_media::route::cur_memory_note(ps));
         if self.search.is_some() {
             // offered on direct play AND during a transcode: a downloaded sidecar is drawn by the
             // client on one and burned by the server on the other, so it reaches the picture either way
@@ -2288,16 +2338,22 @@ fn in_lang_label(t: &SubTrack) -> String {
 /// non-selectable [`FormSection::note`] naming why (by the burn's reason) follows Style, the same "visible, dim, plain
 /// reason" idiom the Audio tab's own Boost dialog / Normalize loudness rows use when THEY are
 /// disabled.
+///
+/// `memory_note` (track memory): the show's remembered subtitle was chosen for this play and the
+/// route shows none of it, so Off is on screen although a track is remembered. One non-selectable
+/// [`FormSection::note`] closes the FIRST group (Off and the tracks), where the viewer's eye is when
+/// the checkmark sits on Off; it is declared only when the flag is set.
 fn table_form(
     model: &SubModel,
     active_sub: c_int,
     offset_ms: i64,
     burn: Option<plx_media::route::BurnReason>,
+    memory_note: bool,
 ) -> TrackForm {
     use plx_platform::i18n::msg;
     let active_other =
         model.other.iter().find(|o| o.tracks.iter().any(|t| active_sub >= 0 && t.i == active_sub as usize));
-    model.sections.iter().fold(Form::new(), |form, sec| {
+    model.sections.iter().enumerate().fold(Form::new(), |form, (at, sec)| {
         let head = match &sec.header {
             SubHeader::Subtitles => Section::new(msg::widgets_tracks_subtitles()),
             SubHeader::Language { name, tracks } => {
@@ -2351,7 +2407,7 @@ fn table_form(
                 }
             }
         });
-        form.section(out)
+        form.section(if at == 0 && memory_note { out.note(msg::widgets_tracks_sub_remembered_note()) } else { out })
     })
 }
 
@@ -2395,7 +2451,7 @@ mod tests {
         let yours: Vec<String> = yours.iter().map(|y| y.to_string()).collect();
         let model = sub_layout::sub_sections(subs, offered, names, &yours, show_timing);
         let mut built = FormTable::new(plx_ui::table_screen::BAND_BASE);
-        built.set(table_form(&model, active_sub, offset_ms, None), None);
+        built.set(table_form(&model, active_sub, offset_ms, None, false), None);
         let ids = (0..built.table.n_rows() as usize).map(|i| built.id_at(i).copied()).collect();
         (std::mem::take(&mut built.table.sections), ids)
     }
@@ -2794,6 +2850,14 @@ mod tests {
                     stream_id: 42,
                     sidecar_key: Some("/library/streams/42.srt".into()),
                     sidecar_codec: "srt".into(),
+                    memo: Some(plx_plex::plex::session::prefs::SubtitleMemo::Track(
+                        plx_plex::plex::session::prefs::SubtitleTrackMemo {
+                            lang: "fre".into(),
+                            kind: "text".into(),
+                            external: true,
+                            ..Default::default()
+                        }
+                    )),
                 },
                 keep_open: false,
             }
@@ -2933,17 +2997,92 @@ mod tests {
         assert_eq!(
             outcome,
             TrackOk::Commit {
-                commit: TrackCommit::Audio(plx_media::route::CarriedAudio {
-                    sid: 20,
-                    ordinal: 1,
-                    codec: "eac3".into(),
-                    channels: 8,
-                    can_normalize_loudness: true,
-                    immersive: true,
-                }),
+                commit: TrackCommit::Audio {
+                    carried: plx_media::route::CarriedAudio {
+                        sid: 20,
+                        ordinal: 1,
+                        codec: "eac3".into(),
+                        channels: 8,
+                        can_normalize_loudness: true,
+                        immersive: true,
+                    },
+                    memo: Some(plx_plex::plex::session::prefs::AudioMemo {
+                        codec: "eac3".into(),
+                        channels: 8,
+                        ..Default::default()
+                    }),
+                },
                 keep_open: false,
             }
         );
+    }
+
+    /// **A subtitle pick says what to remember.** Off commits `SubtitleMemo::Off` (stream 0); a track
+    /// commits its descriptor as the MENU reads it, so a track whose NAME says forced is remembered
+    /// forced although its flag is unset; and the audio pick commits the picked row's descriptor,
+    /// commentary-ness and all.
+    #[test]
+    fn a_pick_commits_the_descriptor_to_remember() {
+        use plx_plex::plex::session::prefs::SubtitleMemo;
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = store_with(vec![
+            plx_data::metadata::Stream { id: 41, index: 0, lang: "English".into(), lang_code: "eng".into(), codec: "srt".into(), ..Default::default() },
+            plx_data::metadata::Stream {
+                id: 42,
+                index: 1,
+                lang: "Spanish".into(),
+                lang_code: "spa".into(),
+                codec: "srt".into(),
+                title: "Forced".into(),
+                ..Default::default()
+            },
+        ]);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into(), "spa".into()]);
+        let commit_of = |menu: &mut TrackMenuState, row: i32| {
+            menu.focus_row(row);
+            match menu.on_ok(store.view()) {
+                TrackOk::Commit { commit: TrackCommit::Subtitle { stream_id, memo, .. }, .. } => (stream_id, memo),
+                other => panic!("row {row} did not commit a subtitle: {other:?}"),
+            }
+        };
+        let (stream_id, memo) = commit_of(&mut menu, 2);
+        assert_eq!(stream_id, 42);
+        let Some(SubtitleMemo::Track(track)) = memo else { panic!("a track is remembered as a Track: {memo:?}") };
+        assert_eq!((track.lang.as_str(), track.kind.as_str(), track.title.as_str()), ("spa", "text", "Forced"));
+        assert!(track.forced, "its name says forced, so the menu badges it FORCED and the memo says forced");
+        assert!(!track.external && !track.sdh);
+        // the picked track is now the checked one, so Off is a change
+        assert_eq!(commit_of(&mut menu, 0), (0, Some(SubtitleMemo::Off)), "Off is remembered as Off");
+    }
+
+    /// **An OK that changes nothing remembers nothing.** A subtitle OK always commits (the route
+    /// republishes), but the descriptor to remember rides only a CHANGED pick, as on the Audio tab:
+    /// the panel opens with the focus on the checked row, so a press to close it on an Off the
+    /// ladder chose, or on a track the ladder chose, is not the viewer's choice and must not become
+    /// the show's absolute memory. The commit itself is still made (the republish stays); a change
+    /// after it is written as before.
+    #[test]
+    fn an_ok_that_changes_no_subtitle_commits_without_a_memo() {
+        use plx_plex::plex::session::prefs::SubtitleMemo;
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        let store = store_with(vec![
+            plx_data::metadata::Stream { id: 41, index: 0, lang: "English".into(), lang_code: "eng".into(), codec: "srt".into(), ..Default::default() },
+            plx_data::metadata::Stream { id: 42, index: 1, lang: "Spanish".into(), lang_code: "spa".into(), codec: "srt".into(), ..Default::default() },
+        ]);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["eng".into(), "spa".into()]);
+        let commit_of = |menu: &mut TrackMenuState, row: i32| {
+            menu.focus_row(row);
+            match menu.on_ok(store.view()) {
+                TrackOk::Commit { commit: TrackCommit::Subtitle { stream_id, memo, .. }, .. } => (stream_id, memo),
+                other => panic!("row {row} did not commit a subtitle: {other:?}"),
+            }
+        };
+        assert_eq!(commit_of(&mut menu, 0), (0, None), "Off is what the route shows: OK on it commits, remembers nothing");
+        let (stream_id, memo) = commit_of(&mut menu, 2);
+        assert_eq!((stream_id, memo.is_some()), (42, true), "control: a changed pick carries its memo");
+        assert_eq!(commit_of(&mut menu, 2), (42, None), "OK on the track that is already checked remembers nothing");
+        assert_eq!(commit_of(&mut menu, 0), (0, Some(SubtitleMemo::Off)), "Off after a track is a change, remembered as Off");
+        assert_eq!(commit_of(&mut menu, 0), (0, None), "and OK on that Off again is not");
     }
 
     /// Re-picking the already-active row is not a change: no commit, same as the pre-refactor
@@ -3832,7 +3971,7 @@ mod enhancement_menu_tests {
             "base layer",
             "hdr10",
         ];
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
             let _guard = language_on_this_thread_for_test(language);
             for (name, value) in [
                 ("enh_note_sidecar", plx_platform::i18n::msg::widgets_tracks_enh_note_sidecar()),
@@ -4207,7 +4346,7 @@ mod enhancement_menu_tests {
     fn subtitles_locked_note_fits_menu_cap_es_be() {
         use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             // the audio-conversion reason (a remux) and the quality reason, as well as the own burn
@@ -4233,6 +4372,168 @@ mod enhancement_menu_tests {
             teardown(&ps);
         }
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// The note rows a Subtitles tab draws, in order.
+    fn notes(menu: &TrackMenuState) -> Vec<String> {
+        flat_rows(menu).into_iter().filter(|r| r.is_note()).map(|r| r.label.clone()).collect()
+    }
+
+    /// **Track memory (C4): a remembered subtitle the route cannot show says so.** On a copy remux
+    /// the app cannot draw, the show's remembered subtitle is not on screen and Off reads checked;
+    /// without a reason the viewer would take the choice for forgotten. The reason is one inert
+    /// note under the first group (Off and the tracks), shown only while the landing set it.
+    #[test]
+    fn a_remembered_subtitle_the_route_cannot_show_is_explained_under_the_first_group() {
+        let _g = plx_base::testlock::serial();
+        let (without, ps_without) = subtitles_tab(EnhTestFixture { remux: Some(true), ..Default::default() });
+        assert!(notes(&without).is_empty(), "no landing note, no row: {:?}", notes(&without));
+        teardown(&ps_without);
+
+        let (menu, ps) =
+            subtitles_tab(EnhTestFixture { remux: Some(true), memory_note: true, ..Default::default() });
+        assert_eq!(notes(&menu), vec![plx_platform::i18n::msg::widgets_tracks_sub_remembered_note()]);
+        let rows = flat_rows(&menu);
+        let note_i = rows.iter().position(|r| r.is_note()).expect("the note row");
+        assert_eq!(menu.form.id_at(note_i), None, "a note is an inert slot with no id");
+        let off_i = menu.form.index_of(&TrackRow::SubOff).expect("Off row present");
+        let sub_i = menu.form.index_of(&TrackRow::Sub(0)).expect("Sub(0) row present");
+        assert!(off_i < sub_i && sub_i < note_i, "the note closes the first group, after Off and the track");
+        assert_eq!(menu.form.index_of(&TrackRow::Timing), None, "an Off remux omits Timing, so the note is last");
+        assert_eq!(note_i, rows.len() - 1);
+        assert!(rows[off_i].checked, "Off is what is on screen, which is what the note explains");
+        teardown(&ps);
+    }
+
+    /// The note follows the landing: a panel opened without it gains it when the poll sees the
+    /// flag ([`SubSig`] carries it), and loses it when the flag clears.
+    #[test]
+    fn the_poll_adds_and_drops_the_remembered_note_with_the_landing() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, _ps_before) = subtitles_tab(EnhTestFixture { remux: Some(true), ..Default::default() });
+        assert!(notes(&menu).is_empty());
+        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
+
+        let (with, _sid) =
+            enhancement_test_session(EnhTestFixture { remux: Some(true), memory_note: true, ..Default::default() });
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &with, store.view());
+        assert_eq!(notes(&menu), vec![plx_platform::i18n::msg::widgets_tracks_sub_remembered_note()]);
+
+        let (without, _sid) = enhancement_test_session(EnhTestFixture { remux: Some(true), ..Default::default() });
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &without, store.view());
+        assert!(notes(&menu).is_empty(), "{:?}", notes(&menu));
+        teardown(&without);
+    }
+
+    /// What OK on `row` of the Subtitles tab commits: the picked stream and the descriptor to
+    /// remember.
+    fn sub_commit_of(
+        menu: &mut TrackMenuState,
+        store: &plx_data::stores::metadata::MetadataStore,
+        row: TrackRow,
+    ) -> (i64, Option<plx_plex::plex::session::prefs::SubtitleMemo>) {
+        let at = menu.form.index_of(&row).expect("the row is on the page");
+        menu.focus_row(at as c_int);
+        match menu.on_ok(store.view()) {
+            TrackOk::Commit { commit: TrackCommit::Subtitle { stream_id, memo, .. }, .. } => (stream_id, memo),
+            other => panic!("{row:?} did not commit a subtitle: {other:?}"),
+        }
+    }
+
+    /// **Closing the menu with OK is not a choice (track memory, an automatic pick is not written).**
+    /// The panel opens on the checked row, so on a show whose ladder landed on Off (the note case:
+    /// the route can show none of the remembered subtitle) one OK on Off would write an absolute Off
+    /// over the very track the note is about. An OK on what is already shown commits, so the route
+    /// republishes, and carries no memo; the control is a change, which does.
+    #[test]
+    fn an_ok_on_what_the_route_already_shows_remembers_nothing() {
+        use plx_plex::plex::session::prefs::SubtitleMemo;
+        let _g = plx_base::testlock::serial();
+        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
+
+        // the note state: Off is on screen because the route could show nothing
+        let (mut menu, ps) =
+            subtitles_tab(EnhTestFixture { remux: Some(true), memory_note: true, ..Default::default() });
+        assert_eq!(sub_commit_of(&mut menu, &store, TrackRow::SubOff), (0, None), "OK on the checked Off under the note");
+        assert!(
+            sub_commit_of(&mut menu, &store, TrackRow::Sub(0)).1.is_some(),
+            "control: a different row is a change and carries its descriptor"
+        );
+        assert_eq!(
+            sub_commit_of(&mut menu, &store, TrackRow::SubOff),
+            (0, Some(SubtitleMemo::Off)),
+            "control: Off after a track is a change, remembered as Off"
+        );
+        teardown(&ps);
+
+        // a track the ladder chose: OK on it is not a choice either
+        let (mut menu, ps) = subtitles_tab(EnhTestFixture {
+            remux: Some(true),
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+            ..Default::default()
+        });
+        assert_eq!(sub_commit_of(&mut menu, &store, TrackRow::Sub(0)), (999, None), "OK on the checked track");
+        teardown(&ps);
+    }
+
+    /// **The note goes when a pick the app draws in place replaces what it explained.** On the copy
+    /// remux the viewer's sidecar is drawn over the stream, so no landing ever runs to clear the
+    /// flag; the note would go on saying the chosen subtitle cannot be shown under a visible
+    /// subtitle. The next poll drops it. The control is the press that changes nothing: Off under
+    /// the note, which the route already shows and which writes nothing, leaves the note true.
+    #[test]
+    fn an_in_place_pick_drops_the_remembered_note_on_the_next_poll() {
+        let _g = plx_base::testlock::serial();
+        let (mut menu, mut ps) =
+            subtitles_tab(EnhTestFixture { remux: Some(true), memory_note: true, ..Default::default() });
+        let store = super::tests::store_with(vec![super::tests::stream(999, 0, "English", "eng", "")]);
+        let note = vec![plx_platform::i18n::msg::widgets_tracks_sub_remembered_note()];
+        assert_eq!(notes(&menu), note, "setup: the note is up");
+
+        plx_media::route::commit_subtitle_pick(&mut ps, -1, 0, false, None);
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store.view());
+        assert_eq!(notes(&menu), note, "control: Off under the note changes nothing on screen, so the note is still true");
+
+        plx_media::route::commit_subtitle_pick(&mut ps, -1, 78, true, None);
+        assert!(!plx_media::route::cur_memory_note(&ps), "a sidecar is on screen now");
+        menu.update(0.016, &plx_ui::fixture::FixtureMeasure, &ps, store.view());
+        assert!(notes(&menu).is_empty(), "{:?}", notes(&menu));
+        teardown(&ps);
+    }
+
+    /// **The remembered-subtitle note fits the Subtitles panel in every shipped language**
+    /// (`i18n::SHIPPED`, so a language added later is graded without touching this test), at the
+    /// shared menu cap and at the hugged width, with the real font measure.
+    #[test]
+    fn the_remembered_note_fits_the_subtitles_panel_in_every_shipped_language() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        let mut out = Vec::new();
+        for language in SHIPPED {
+            let _g = plx_base::testlock::serial();
+            let _guard = language_on_this_thread_for_test(language);
+            let (menu, ps) =
+                subtitles_tab(EnhTestFixture { remux: Some(true), memory_note: true, ..Default::default() });
+            assert_eq!(notes(&menu), vec![plx_platform::i18n::msg::widgets_tracks_sub_remembered_note()], "{language:?}");
+            out.extend(menu.form.table.menu_cap_failure(&plx_base::fontcov::advances::ShippedMeasure, language.tag()));
+            out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
+            out.extend(menu.form.table.app_fit_failures_hugged(language.tag()));
+            teardown(&ps);
+        }
+        plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// The note says what is true in plain words in every shipped language: no engineering term a
+    /// viewer should not have to learn.
+    #[test]
+    fn the_remembered_note_never_uses_jargon() {
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            let note = plx_platform::i18n::msg::widgets_tracks_sub_remembered_note().to_lowercase();
+            for word in ["remux", "transcode", "burn", "re-encode", "reencode", "sidecar"] {
+                assert!(!note.contains(word), "{language:?}: {note:?} uses the banned engineering term {word:?}");
+            }
+        }
     }
 
     /// **The Spanish locked-style note WRAPS instead of running off the panel**: the fit gate now
@@ -4484,6 +4785,7 @@ mod localized_offset_tests {
             (Preference::En, "en-US", "-0.1 s", "+1.3 s"),
             (Preference::Es, "es-ES", "-0,1 s", "+1,3 s"),
             (Preference::Be, "be-BY", "-0,1 с", "+1,3 с"),
+            (Preference::Fr, "fr-FR", "-0,1 s", "+1,3 s"),
         ] {
             let locale = LocaleContext::resolve(preference, None, Some(region), None, None);
             assert_eq!(crate::timing_capsule::offset_seconds_in(-100, true, &locale), negative);
@@ -4929,7 +5231,7 @@ mod style_page_tests {
     fn every_style_page_fits_the_panel_in_every_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             for codec in ["srt", "pgs", "ass"] {
@@ -4960,7 +5262,7 @@ mod style_page_tests {
     fn the_style_note_fits_two_lines_at_the_player_menu_floor() {
         use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             for codec in ["pgs", "ass"] {
@@ -5506,7 +5808,7 @@ mod language_page_tests {
     fn the_language_pages_fit_the_panel_in_every_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             let (mut menu, ps, store) = open(subs_with_vobsub());
@@ -5971,7 +6273,14 @@ mod motion_tests {
         menu.set_search(snap(SearchStatus::Ready, None, vec![hit("rel")], installed));
         let (stream, commit) = menu.take_search_commit().expect("the install is handed over");
         assert_eq!(commit, TrackCommit::Subtitle { render_ordinal: -1, stream_id: 1929519,
-            sidecar_key: Some("/library/streams/1929519".into()), sidecar_codec: "srt".into() });
+            sidecar_key: Some("/library/streams/1929519".into()), sidecar_codec: "srt".into(),
+            // remembered by what it IS: the dutch sidecar's language, kind and title, as the hit
+            // read it (the `hit("rel")` helper's own badges are not forced and not SDH)
+            memo: Some(plx_plex::plex::session::prefs::SubtitleMemo::Track(
+                plx_plex::plex::session::prefs::SubtitleTrackMemo {
+                    lang: "nld".into(), kind: "text".into(), external: true, title: "rel".into(),
+                    ..Default::default()
+                })) });
         assert!(stream.external && stream.sidecar_renderable(), "listed as a drawable sidecar");
         assert_eq!((stream.lang.as_str(), stream.title.as_str()), ("Nederlands", "rel"));
         assert!(menu.take_search_commit().is_none(), "never twice for one stream");

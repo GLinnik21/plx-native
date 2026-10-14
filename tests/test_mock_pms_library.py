@@ -16,6 +16,7 @@ import urllib.request
 from mock_pms import (
     ENHANCEMENT_AAC_51_RK, ENHANCEMENT_AC3_2CH_RK, ENHANCEMENT_DEFAULT_SRT_RK,
     ENHANCEMENT_DV_P8_RK, ENHANCEMENT_EXTERNAL_SRT_RK, EXTRA_MEDIA_RK_BASE, PLEX_DIRECT_HASH,
+    RESUME_ON_DECK_SHOW_RK, RESUME_PLAIN_SHOW_RK,
     CatalogLibrary, Library, MockPms, demo_cache_dir, plaintext_only_lan_resources, serve,
 )
 
@@ -221,6 +222,43 @@ class LibraryRail(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class ResumeFixture(unittest.TestCase):
+    """`--resume-fixture`: a show that has been watched up to S12E14, and one that has not."""
+
+    def test_the_on_deck_show_carries_its_episode_only_when_asked(self):
+        pms = MockPms(Library(resume_fixture=True))
+        show = get(pms, f"/library/metadata/{RESUME_ON_DECK_SHOW_RK}?includeOnDeck=1")["Metadata"][0]
+        deck = show["OnDeck"]["Metadata"]
+        self.assertEqual((deck["parentIndex"], deck["index"], deck["type"]), (12, 14, "episode"))
+        self.assertGreater(deck["viewOffset"], 0)
+        self.assertEqual(show["childCount"], 12)
+        self.assertNotIn("OnDeck", get(pms, f"/library/metadata/{RESUME_ON_DECK_SHOW_RK}")["Metadata"][0])
+
+    def test_the_other_show_has_no_on_deck_and_is_unwatched(self):
+        pms = MockPms(Library(resume_fixture=True))
+        show = get(pms, f"/library/metadata/{RESUME_PLAIN_SHOW_RK}?includeOnDeck=1")["Metadata"][0]
+        self.assertNotIn("OnDeck", show)
+        self.assertEqual(show["viewedLeafCount"], 0)
+
+    def test_the_resume_episode_heads_continue_watching_and_a_season_pages_over_one_screen(self):
+        pms = MockPms(Library(resume_fixture=True))
+        deck = get(pms, "/hubs/continueWatching?count=12")["Hub"][0]["Metadata"]
+        self.assertEqual(deck[0]["grandparentRatingKey"], str(RESUME_ON_DECK_SHOW_RK))
+        seasons = get(pms, f"/library/metadata/{RESUME_ON_DECK_SHOW_RK}/children")["Metadata"]
+        self.assertEqual([s["index"] for s in seasons], list(range(1, 13)))
+        self.assertEqual(len(get(pms, f"/library/metadata/{seasons[11]['ratingKey']}/children")["Metadata"]), 30)
+
+    def test_off_by_default_and_the_generated_library_does_not_move(self):
+        plain, fixture = Library(), Library(resume_fixture=True)
+        self.assertEqual(plain.on_deck, {})
+        self.assertNotIn(RESUME_ON_DECK_SHOW_RK, plain.items)
+        for rk, item in plain.items.items():
+            if item["type"] in ("movie", "show", "season", "episode") and rk < 970000:
+                self.assertEqual(item, {**fixture.items[rk],
+                                        **{k: item[k] for k in ("leafCount", "viewedLeafCount", "childCount")
+                                           if k in item}}, rk)
 
 
 class HomeHubsFlag(unittest.TestCase):
@@ -746,13 +784,34 @@ class CatalogDetailFields(unittest.TestCase):
                 for flat in ("rating", "audienceRating", "ratingImage", "audienceRatingImage"):
                     self.assertNotIn(flat, d)
 
-    def test_no_person_is_served_with_a_photo(self):
-        # Real people's photographs are not in the demo library: the app draws its glyph.
-        for film in ("sintel", "tears-of-steel"):
+    def test_the_related_hub_is_the_whole_list_so_no_row_waits_for_a_page(self):
+        hubs = get(self.pms, f"/library/metadata/{self.rk_of('tears-of-steel')}/related")["Hub"]
+        related = next(h for h in hubs if h["hubIdentifier"] == "related")
+        self.assertFalse(related["more"])
+        self.assertEqual(related["size"], related["totalSize"])
+        self.assertEqual(len(related["Metadata"]), len(self.catalog["movies"]) - 1)
+        self.assertTrue(all(m.get("thumb") for m in related["Metadata"]), "every card has a poster")
+
+    def test_a_person_without_a_catalog_photo_is_served_without_one(self):
+        # Only the catalog's `people` have a portrait; for everyone else the app draws its glyph.
+        for film, jobs in (("sintel", ("Role", "Director", "Writer")), ("tears-of-steel", ("Director", "Writer"))):
             d = self.detail(self.rk_of(film))
-            for job in ("Role", "Director", "Writer"):
+            for job in jobs:
                 for person in d[job]:
                     self.assertNotIn("thumb", person, (film, job, person))
+
+    def test_a_person_with_a_catalog_photo_is_served_it_through_the_transcoder(self):
+        d = self.detail(self.rk_of("tears-of-steel"))
+        people = {p["tag"]: p for p in d["Role"]}
+        self.assertEqual({name for name, p in people.items() if "thumb" in p}, set(self.catalog["people"]))
+        self.assertEqual(len(people), 7, "the whole cast")
+        seen = set()
+        for name in self.catalog["people"]:
+            ctype, body = self.lib.image(people[name]["thumb"], 300, 300)
+            self.assertEqual(ctype, "image/jpeg")
+            self.assertEqual(body[:2], b"\xff\xd8", name)
+            seen.add(body)
+        self.assertEqual(len(seen), len(self.catalog["people"]), "each person has their own picture")
 
     def _temp_library(self, edit):
         """A CatalogLibrary over a copy of the catalog that `edit` has changed."""

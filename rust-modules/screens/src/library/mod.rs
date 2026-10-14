@@ -575,12 +575,25 @@ impl LibraryScreen {
 
     /// The shelf rows with a card on screen, plus two each side and the focused row, as the range the
     /// store holds cards for. Sent only when it changes.
+    ///
+    /// The focused row is found by the focus key's PLACE ([`focused_shelf`]), not only by looking
+    /// for the key among the row's current ones. A row the store gave its cards up to is keyed by
+    /// slot, and the same row holding its cards is keyed by item, so the hold this function sends
+    /// changes the very keys it would otherwise read: BACK from deep in the grid seats focus on the
+    /// first shelf, far off screen, whose cards are released; the row is held because it is
+    /// focused, its cards come back under their item keys, the focus key (still the slot's, until
+    /// the engine reconciles it) is then in no row, the row reads as unfocused and is released, and
+    /// the engine reconciles focus onto a key that has just gone again. Measured on the frame dump:
+    /// focus changed key on every loop iteration for as long as the glide to the top took, the
+    /// store published and withdrew the row each time, and the row's caption band opened on
+    /// whichever iterations happened to find the key present (so the film's frames depended on
+    /// how many iterations a frame took: 76 of 732 differed under `hold-gate`).
     fn send_hold<H: LibraryLike>(&mut self, target: SectionAddress, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         if self.shelves.is_empty() { return; }
         let origin = self.layout.shelf_y(&self.run, 0, self.scroll.pos) - self.run.origin(0);
         let seen = self.run.window(-origin, SCR_H - origin);
         let focused = cx.focus.current.filter(|key| key.entry == self.entry)
-            .and_then(|key| self.shelves.iter().position(|row| row.elems.contains(&key.elem)));
+            .and_then(|key| focused_shelf(&self.shelves, key.elem, self.keys.last_place(key.elem)));
         let (mut lo, mut hi) = (seen.start, seen.end.saturating_sub(1).max(seen.start));
         if let Some(row) = focused { (lo, hi) = (lo.min(row), hi.max(row)); }
         let hold = plx_ui::cards::hold_band((lo, hi), self.shelves.len());
@@ -849,7 +862,7 @@ impl LibraryScreen {
                 LibraryReq::ItemMenu { sid: item.sid, rk: item.rk.clone(), from_deck }
             } else if from_deck && plx_media::route::deck_press().press_plays() {
                 LibraryReq::Play { sid: item.sid, rk: item.rk.clone(), resume_ns: plx_data::metadata::resume_ns(item.resume_ms, item.dur_ns / 1_000_000) }
-            } else { LibraryReq::Detail { sid: item.sid, rk: item.rk.clone() } };
+            } else { LibraryReq::Detail { sid: item.sid, rk: item.rk.clone(), from_deck } };
             fx.push(Fx::App(AppFx::Library(req)));
             return Handled::Yes;
         }
@@ -1482,6 +1495,15 @@ impl HubShelf {
     /// The group a door INTO this shelf from above lands in: its linked heading when it has one.
     fn entry_group(&self) -> GroupId { self.heading.map_or(self.group, |(group, _)| group) }
 }
+/// The shelf focus stands on: the row that holds the focus key now, else the row the key was last
+/// placed in (`last_place`, the key registry's record). The second half is what keeps a row focused
+/// across the publication that re-keys it, slot keys to item keys or back (see `send_hold`); a key
+/// placed in the grid, the toolbar or a heading names no shelf's card group and answers `None`.
+fn focused_shelf(shelves: &[HubShelf], elem: u32, last_place: Option<(GroupId, usize)>) -> Option<usize> {
+    shelves.iter().position(|row| row.elems.contains(&elem))
+        .or_else(|| last_place.and_then(|(group, _)| shelves.iter().position(|row| row.group == group)))
+}
+
 fn row_style(row: &HubShelf) -> &'static RowStyle { hub_style(row.landscape) }
 fn hub_style(landscape: bool) -> &'static RowStyle { if landscape { &RowStyle::EPISODE } else { &RowStyle::HOME } }
 /// A hub shelf's card section. Cards a screen's width off to either side still paint: a popped

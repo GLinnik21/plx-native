@@ -1386,6 +1386,23 @@ fn a_row_with_cards_before_its_head_paints_placeholders_there_and_one_without_pa
     assert!(pending_cells(&short) > one, "and both edges at once paint both");
 }
 
+/// The placeholders past a row's tail are a promise: a row that paints one in view asks for the
+/// page that fills it whether or not focus is in the row, and a row whose cards reach past the
+/// screen asks only as focus nears its end (Detail's Related row, cut to one card under a
+/// collection, stood with a screenful of skeletons until somebody focused it).
+#[test]
+fn a_row_with_placeholders_in_view_asks_for_its_page_without_focus() {
+    let mut short = settled::<Shelf>(2);
+    short.src.more = true;
+    assert!(pending_cells(&short) > 0, "the row paints the cells past its two cards");
+    assert_eq!(short.focus, None, "nobody has focused it");
+    assert_eq!(page_frame(&mut short, 0, true), Some(PageEdge::After), "it asks for them");
+    assert_eq!(cancel_frame(&mut short, 0, true), None, "and the ask stands while they are in view");
+    let mut long = settled::<Shelf>(30);
+    long.src.more = true;
+    assert!((0..60).all(|_| page_frame(&mut long, 0, true).is_none()), "no placeholder in view, no focus: no ask");
+}
+
 /// The card a step from `from` goes to, `None` at the row's edge.
 fn step_to(r: &Rig<Shelf>, from: u32, dir: Dir) -> Option<u32> {
     match r.sect.neighbour(&r.src, r.key(from), dir) {

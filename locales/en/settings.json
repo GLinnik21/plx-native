@@ -68,7 +68,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.about.detail"
   },
   "settings.root.copy": {
-    "value": "Manage this television and your Plex profile. Audio and subtitle language preferences sync with your Plex account; playback defaults and the app language apply to this television.",
+    "value": "Manage this television and your Plex profile. Audio and subtitle language preferences sync with your Plex account; playback settings belong to each profile, and the app language applies to this television.",
     "description": "Settings, account, onboarding or privacy UI: settings.root.copy"
   },
   "settings.libraries.count": {
@@ -697,7 +697,7 @@
   },
   "settings.playback.deck_press.details": {
     "value": "Open details",
-    "description": "Continue Watching picker option (the default): OK on a card opens the movie or episode page."
+    "description": "Continue Watching picker option (the default): OK on a card opens the movie page, or the show page on the card's season for an episode."
   },
   "settings.playback.deck_press.play": {
     "value": "Play",
@@ -745,9 +745,23 @@
     "value": "Saved to this Plex profile and shared with your other Plex apps. Changes may take time to affect playback; selections already made for an item still take priority.",
     "description": "Settings, consent or sign-in UI: settings.audio.account_note"
   },
-  "settings.playback.copy": {
-    "value": "Playback defaults for this television. Changes here apply to the next playback.",
-    "description": "Explanation under the title of the Video & playback page itself. Each picker opened from it has its own explanation (settings.playback.<field>.copy), so this one is about the page as a whole, not about any single setting."
+  "settings.playback.copy_profile": {
+    "value": "Playback settings for {profile}. Changes here apply to the next playback.",
+    "description": "Explanation under the title of the Video & playback page itself while a profile is seated. {profile} is that profile's name exactly as the profile chip shows it (a user-chosen Plex name, any length, never declined or translated), so the sentence must keep it as a bare noun: the Spanish, French and Belarusian strings say 'the profile {profile}' so the name never has to decline or elide. Each picker opened from the page has its own explanation (settings.playback.<field>.copy), so this one is about the page as a whole, not about any single setting.",
+    "args": {
+      "profile": "str"
+    }
+  },
+  "settings.playback.copy_profile_forced": {
+    "value": "Playback settings for {profile}.",
+    "description": "The profile sentence of the Video & playback page's explanation while a profile is seated AND Force Direct Play is on. It is a full sentence ending in a period, and settings.playback.force_note follows it as the next sentence of the same paragraph (the text view draws no line break, so nothing here may rely on one). It is settings.playback.copy_profile without its second sentence, which does not fit the column beside the Force note for a long profile name in the longer languages. It is the only place Settings names the profile under Force. {profile} is the name exactly as the profile chip shows it (a user-chosen Plex name, any length, never declined or translated), so the sentence must keep it as a bare noun: the Spanish, French and Belarusian strings say 'the profile {profile}' so the name never has to decline or elide.",
+    "args": {
+      "profile": "str"
+    }
+  },
+  "settings.playback.unseated": {
+    "value": "Choose a profile to change this",
+    "description": "Explanation under the title of the Video & playback page while NO profile is seated (a normal session always has one, because Settings is opened through a profile; a developer-token run and a controlled replay have none, see session::Seat): replaces settings.playback.copy_profile. The page's rows then show the values every profile starts from, dimmed and unopenable, because a pick must belong to a profile; 'this' is those rows."
   },
   "settings.playback.quality.copy": {
     "value": "The highest quality a video plays at. Larger files are converted by your Plex server to fit. Also available in the player's More menu.",
@@ -770,7 +784,7 @@
     "description": "Explanation under the title of the Next episode picker. It names the three options by their picker labels (Up Next countdown, After credits, Off); keep those words identical to settings.playback.next_episode.countdown, .after_credits and .off. Only credits that run to the end of the item trigger the button."
   },
   "settings.playback.deck_press.copy": {
-    "value": "Open details shows the movie or episode page when you press OK on a Continue Watching card. Play starts or resumes it at once. The card's menu, opened by holding OK, always has the other.",
+    "value": "Open details opens the movie page when you press OK on a Continue Watching card, or the show page for an episode. Play starts or resumes it at once. The card's menu, opened by holding OK, always has the other.",
     "description": "Explanation under the title of the Continue Watching picker. It names the two options by their picker labels (Open details, Play); keep those words identical to settings.playback.deck_press.details and .play."
   },
   "settings.playback.skip_interval.copy": {

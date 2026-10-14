@@ -49,9 +49,10 @@
 //!   cache rather than keep a second copy of the session live.
 use super::origin::Origin;
 use super::probe::Location;
-pub use prefs::{persist_pref, tenure, AudioEnhancementsPref, DeckPressPref, DirectPlayModePref,
-    NextEpisodeModePref, Preferences, QualityPref, Setting, SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref,
-    SubtitleTonePref};
+pub use prefs::{effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
+    DeckPressPref, DirectPlayModePref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
+    ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
+    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref};
 use prefs::ProfileMemory;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -68,11 +69,81 @@ static CURRENT: Mutex<Option<std::sync::Arc<CurrentProfile>>> = Mutex::new(None)
 pub struct CurrentProfile {
     pub user: Option<UserRef>,
     pub generation: u32,
+    /// `grant::account_key` of the account token the owner published this profile under: the half of
+    /// the [`Seat`] that says WHICH sign-in the profile belongs to. Empty before a sign-in and in a
+    /// publication recorded before the field existed.
+    pub stamp: String,
+}
+
+impl CurrentProfile {
+    /// Who this publication seats. A publication with no profile seats nobody, and so does one with
+    /// no stamp (a dev token, an older recording): without a stamp a stored per-profile value cannot
+    /// be told from another sign-in's, so nothing may be read from or written to a record.
+    pub fn seat(&self) -> Seat {
+        Seat::of(self.user.as_ref(), &self.stamp)
+    }
+}
+
+/// **Whose per-profile settings the TV is showing**, as a value that can be compared, captured on the
+/// main thread and carried to a worker. `current_profile_key()` cannot say this: it is `""` for the
+/// account owner AND for "no profile published yet", and it carries no sign-in.
+///
+/// * [`Seat::Unseated`] is the process before a profile is chosen, the boot picker until a choice, a
+///   change-profile, a sign-out, a dev token and a controlled replay. Nothing is restored for it and
+///   nothing may be written for it.
+/// * [`Seat::Seated`] names the Plex Home user's `uuid` (`""` for the account owner) and the
+///   account stamp. Two seats are the same seat only when both match, so a re-login as the same
+///   person with a different token is a new seat.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum Seat {
+    #[default]
+    Unseated,
+    Seated { user: String, stamp: String },
+}
+
+impl Seat {
+    /// The seat a publication of `user` under the account `stamp` occupies. Nobody published seats
+    /// nobody, and so does a profile with no stamp (a dev token, an older recording): without a stamp
+    /// a stored per-profile value cannot be told from another sign-in's, so nothing may be read from
+    /// or written to a record. The unstamped case is logged once, so a field report would show it.
+    pub fn of(user: Option<&UserRef>, stamp: &str) -> Seat {
+        match user {
+            Some(user) if !stamp.is_empty() => Seat::Seated { user: user.uuid.clone(), stamp: stamp.to_string() },
+            Some(_) => {
+                static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    plx_base::eventlog::log("session: a profile was published without an account stamp; unseated");
+                }
+                Seat::Unseated
+            }
+            None => Seat::Unseated,
+        }
+    }
+
+    /// The seated profile's key (`""` for the owner), or `None` while unseated.
+    pub fn user(&self) -> Option<&str> {
+        match self {
+            Seat::Seated { user, .. } => Some(user),
+            Seat::Unseated => None,
+        }
+    }
 }
 
 pub fn current_snapshot() -> std::sync::Arc<CurrentProfile> {
     CURRENT.lock().unwrap_or_else(|e| e.into_inner()).as_ref().cloned()
-        .unwrap_or_else(|| std::sync::Arc::new(CurrentProfile { user: None, generation: 0 }))
+        .unwrap_or_else(|| std::sync::Arc::new(CurrentProfile { user: None, generation: 0, stamp: String::new() }))
+}
+
+/// The seat the published profile occupies — [`CurrentProfile::seat`] of [`current_snapshot`].
+pub fn current_seat() -> Seat {
+    current_snapshot().seat()
+}
+
+/// Whether the profile `user` (`""` for the account owner) is the one seated now: the allocation-free
+/// question the memory door asks on every recall.
+pub fn is_seated_as(user: &str) -> bool {
+    let profile = current_snapshot();
+    !profile.stamp.is_empty() && profile.user.as_ref().is_some_and(|u| u.uuid == user)
 }
 
 /// Resource-side capability; constructing it borrows, but does not duplicate or retain, the
@@ -87,24 +158,31 @@ impl ProfilePublisher {
         Self { scoped: None, _main_thread: std::marker::PhantomData }
     }
     pub fn scoped(_mt: &plx_base::task::MainThread) -> Self {
-        Self { scoped: Some(std::sync::Arc::new(CurrentProfile { user: None, generation: 0 })),
+        Self { scoped: Some(std::sync::Arc::new(CurrentProfile { user: None, generation: 0, stamp: String::new() })),
             _main_thread: std::marker::PhantomData }
     }
     pub fn snapshot(&self) -> std::sync::Arc<CurrentProfile> {
         self.scoped.clone().unwrap_or_else(current_snapshot)
     }
+    /// Whether this publisher keeps its publications to itself (a controlled replay): they never
+    /// reach the process global, so they seat nobody in the process.
+    pub fn is_scoped(&self) -> bool {
+        self.scoped.is_some()
+    }
     /// A user-confirmed exit from recording resumes ordinary live publication, preserving
     /// the last owner-supplied scope. Replay never receives this transition capability.
     pub fn resume_live(&mut self) {
         if let Some(scoped) = self.scoped.take() {
-            self.publish(scoped.user.clone(), scoped.generation);
+            self.publish(scoped.user.clone(), scoped.generation, scoped.stamp.clone());
         }
     }
-    pub fn publish(&mut self, user: Option<UserRef>, generation: u32) {
+    /// Publish `user` as the active profile under the owner's `generation` and the account `stamp`
+    /// (`grant::account_key` of the account token) the owner published it under.
+    pub fn publish(&mut self, user: Option<UserRef>, generation: u32, stamp: String) {
         #[cfg(any(test, feature = "test-support"))]
-        self.publish_with(user, generation, |_, _| {});
+        self.publish_with(user, generation, stamp, |_, _| {});
         #[cfg(not(any(test, feature = "test-support")))]
-        self.publish_with(user, generation, |user, generation| {
+        self.publish_with(user, generation, stamp, |user, generation| {
             super::account::publish_audio_preferences_profile(user.as_ref(), generation);
             let Some(user) = user else { return; };
             let client_id = peek().client_id.clone();
@@ -112,22 +190,22 @@ impl ProfilePublisher {
             super::account::warm_audio_preferences(client_id, credential, user, generation);
         });
     }
-    fn publish_with<W>(&mut self, user: Option<UserRef>, generation: u32, warm: W)
+    fn publish_with<W>(&mut self, user: Option<UserRef>, generation: u32, stamp: String, warm: W)
     where W: FnOnce(Option<UserRef>, u32) {
         if let Some(scoped) = &mut self.scoped {
-            *scoped = std::sync::Arc::new(CurrentProfile { user, generation });
+            *scoped = std::sync::Arc::new(CurrentProfile { user, generation, stamp });
             return;
         }
         {
             *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(
-                CurrentProfile { user: user.clone(), generation }));
+                CurrentProfile { user: user.clone(), generation, stamp }));
         }
         warm(user, generation);
     }
     #[cfg(any(test, feature = "test-support"))]
     fn publish_with_warmer_for_test<W>(&mut self, user: Option<UserRef>, generation: u32, warm: W)
     where W: FnOnce(Option<UserRef>, u32) {
-        self.publish_with(user, generation, warm);
+        self.publish_with(user, generation, String::new(), warm);
     }
 }
 
@@ -135,9 +213,17 @@ impl ProfilePublisher {
 /// This is not a controller or a process-global scope allocator. Caller owns teardown/serial guard.
 #[cfg(any(test, feature = "test-support"))]
 pub fn publish_profile_for_test(user: Option<UserRef>, generation: u32) {
+    publish_seat_for_test(user, generation, String::new());
+}
+
+/// [`publish_profile_for_test`] with the account `stamp`, so the published profile occupies a
+/// [`Seat`]. The plain fixture publishes none (an unstamped publication seats nobody), which keeps
+/// every test that does not care about a seat unseated.
+#[cfg(any(test, feature = "test-support"))]
+pub fn publish_seat_for_test(user: Option<UserRef>, generation: u32, stamp: String) {
     plx_base::testlock::assert_held("profile publication fixture");
     let mt = unsafe { plx_base::task::MainThread::assume() };
-    ProfilePublisher::new(&mt).publish(user, generation);
+    ProfilePublisher::new(&mt).publish(user, generation, stamp);
 }
 /// The active profile (name + avatar), if any. Empty title = the owner with no Plex Home selection.
 pub fn current() -> Option<UserRef> {
@@ -381,6 +467,23 @@ impl TempSession {
             ..Default::default()
         }), current_gen().wrapping_add(1));
     }
+
+    /// **Sign the fixture in and seat `uuid`**: store `account_token` in the scratch record, then
+    /// publish the profile with the stamp of that token, so [`current_seat`] is
+    /// [`Seat::Seated`] and a per-profile write has somewhere to land. [`TempSession::watching`]
+    /// publishes no stamp (an unstamped publication seats nobody), which is what every test that
+    /// does not care about a seat wants. Returns the stamp.
+    pub fn seated(&self, uuid: &str, account_token: &str) -> String {
+        assert!(update(|cur| {
+            let mut next = cur.clone();
+            next.account_token = account_token.into();
+            Some(next)
+        }), "the fixture session takes the account token");
+        let stamp = super::grant::account_key(account_token);
+        publish_seat_for_test(Some(UserRef { uuid: uuid.into(), ..Default::default() }),
+            current_gen().wrapping_add(1), stamp.clone());
+        stamp
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -489,78 +592,6 @@ pub struct Session {
     /// search term would sign the device out on every boot.
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub recent_searches: Vec<RecentSearches>,
-    /// **The library each top tab was last browsed in**, per profile — so a household with two TV
-    /// libraries opens the one it actually watches instead of whichever the server happens to list
-    /// first.
-    ///
-    /// Without it the tab resolves through `browse::section_of_kind` every launch: owned first,
-    /// then table order, which is the server's order and is not a preference anybody expressed.
-    /// Issue #68 is what that costs when the two are not the same library — the reporter's own
-    /// libraries opened in the order their server listed them, every time.
-    ///
-    /// **Per TYPE, not one entry per profile.** The Movies tab and the TV Shows tab are two
-    /// choices; one slot would make picking a film library forget which shows you browse.
-    ///
-    /// Keyed by profile like [`RecentSearches`] and [`HomePins`], and by (machine id, section key)
-    /// like [`PinnedLib`] — never a section INDEX, which the table renumbers on every
-    /// `browse::reset` and on a re-discovery that appends.
-    ///
-    /// Soft-parsed for the reason every list in this struct is: one hand-edited entry costs that
-    /// entry, never the credentials.
-    #[serde(default, deserialize_with = "de_soft_vec")]
-    pub last_library: Vec<LastLibrary>,
-    /// **How each library was last browsed**, per profile — the sort and its direction, the
-    /// Unwatched switch, the genre and the listing type (Movies / Collections, Shows / Seasons /
-    /// Episodes / Collections) — so a library the viewer sorted by Plays, narrowed to Unwatched
-    /// Action films and left there opens that way again after a restart instead of falling back
-    /// to the server's title order with every filter off (GitHub #278 for the sort, #441 for the
-    /// rest).
-    ///
-    /// **Stored on disk as `library_sorts`**, the name it had when it held only the sort: the key
-    /// is what an older build reads back on a rollback, so it stays ([`Session::home_pins`] set
-    /// the precedent) and each entry grows fields beside the old ones instead of replacing them.
-    ///
-    /// Keyed like [`Session::last_library`] and for its reasons: by profile, because a view is a
-    /// person's habit rather than the television's, and by (machine id, section key), never a
-    /// section INDEX. The sort is recorded by its KEY, never by its menu position: the menu is
-    /// the server's (`Meta.Type[].Sort`) and a PMS update may reorder it. `browse` applies a
-    /// recorded sort or genre only once the server has offered it again, so one a server stopped
-    /// advertising falls silently back to the default rather than being sent blind.
-    ///
-    /// Bounded per profile ([`LibraryViews::CAP`], most recent kept), and choosing a library's
-    /// DEFAULT view back removes its entry rather than recording it, so the list holds only the
-    /// libraries somebody actually changed.
-    ///
-    /// Soft-parsed for the reason every list in this struct is; omitted while empty so a session
-    /// that never changed a view serializes exactly as it did before the field existed.
-    #[serde(rename = "library_sorts", default, deserialize_with = "de_soft_vec",
-        skip_serializing_if = "Vec::is_empty")]
-    pub library_views: Vec<LibraryViews>,
-    /// **The sync-timing correction a profile last tuned for an item**, per profile, keyed by
-    /// (machine id, ratingKey) — never a track id: within one playback a track CHANGE still zeros
-    /// the live offset (`route::commit_subtitle_selection`'s own doc), so by the time this is
-    /// restored at the next resume only the item's own correction is left to remember. This is
-    /// deliberately narrower than a raw in-memory offset would suggest: `crate::player::subtitle_offset_ms`
-    /// is about a single live playback (never persisted whole, on purpose — see
-    /// `session_compat_tests::the_session_file_carries_no_subtitle_offset`), while this is a
-    /// per-item memory a profile builds up across resumes of the SAME file, the same way
-    /// [`Session::library_views`] remembers a per-library habit.
-    ///
-    /// Bounded per profile ([`SubtitleOffsets::CAP`], most recent kept), and setting the offset
-    /// back to Original (0) forgets the entry rather than recording a no-op correction.
-    ///
-    /// **The player does not read or write this field directly**: it is the first tenant of the
-    /// memory door (`media::route::{remember, recall}`), which reads a mirror seeded from this list
-    /// at the first restore and reseeded only when the revocation tenure or the account stamp moves
-    /// (`MemoryMirror::reseed`), writes through at once, and queues the file write as a delta merged
-    /// against the list ([`prefs::ProfileMemory::upsert_with`]) under `queue_update`'s tenure and
-    /// credential guard. So this list is what a restart or a handoff re-seeds from, and it can lag
-    /// the mirror by the writes still queued.
-    ///
-    /// Soft-parsed for the reason every list in this struct is; omitted while empty so a session
-    /// that never tuned a subtitle's timing serializes exactly as it did before the field existed.
-    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
-    pub subtitle_offsets: Vec<SubtitleOffsets>,
     /// **Every profile this television has switched to, with the credentials that switch
     /// resolved** — so the who's-watching picker can seat a household member with plex.tv
     /// unreachable. Written by the profile switch on every ONLINE success (replace-by-uuid), read
@@ -580,76 +611,15 @@ pub struct Session {
     /// Soft-parsed like every list in this struct: an entry costs itself, never the credentials.
     #[serde(default, deserialize_with = "de_profile_cache")]
     pub profiles: Vec<ProfileCreds>,
-    /// The install-wide player settings (quality, Direct Play, next episode, skip, deck press,
-    /// subtitle size, position and tone, audio enhancements), flattened so the keys sit at the top
-    /// level of the file under the same keys they always had. Declared before [`Session::extensions`]:
+    /// Every preference key but `language` (`profile_prefs`, the per-profile home of the nine player
+    /// settings and of hero trailer autoplay, and those settings' frozen top-level keys every profile
+    /// falls back to (`trailer_autoplay` among them), `auto_sign_in`,
+    /// `last_hero_blur`, `plaintext_consent`, `server_key_pins`, `last_library`,
+    /// `library_sorts`, `track_memory`, `subtitle_offsets`), flattened so the keys sit at the top level of the file under
+    /// the same keys they always had. Declared before [`Session::extensions`]:
     /// a flattened struct takes its keys first, so the unknown-key map sees only keys nobody models.
     #[serde(flatten)]
     pub prefs: Preferences,
-    /// **Automatically Sign In** — skip the boot who's-watching picker and enter as
-    /// [`Session::user`]. Install-wide, not per profile: the boot gate reads it before anyone is
-    /// seated this run. Absence is **off**, which is today's picker. Enabling it from Settings
-    /// while a profile is already active is an explicit opt-in to skip that profile's PIN on the
-    /// next launch; BACK out of the picker still refuses a protected resume when this is off.
-    ///
-    /// Soft-parsed so a hand-edited or future-shaped value costs the preference, never the
-    /// credentials.
-    #[serde(default, deserialize_with = "de_soft_bool")]
-    pub auto_sign_in: bool,
-    /// **Hero trailer autoplay.** Detail default is on. Absence is on, so a session written
-    /// before this field existed does not silently lose the preview. Explicit `false` stays off.
-    /// Soft-parsed to on rather than failing the credentials file. The bound Starfish surface
-    /// has no mute, so this is also the only sound control.
-    #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
-    pub trailer_autoplay: bool,
-    /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
-    /// rendered on this television, so a route in the Settings/first-run family that opens
-    /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
-    /// profile picker is the case that motivated this — can still seed its frozen ground from
-    /// real light instead of falling all the way to the design system's authored atmosphere
-    /// (`theme::ROUTE_GROUND_FALLBACK`). See `plx_ui::route_screen::RouteGround::draw_home`,
-    /// the only reader, and [`record_last_hero`], its one writer.
-    ///
-    /// Not keyed by profile: it says nothing about content history, only about what colour light
-    /// this SET last showed, which is why it lives beside `client_id` rather than in a per-profile
-    /// section like [`Session::home_pins`].
-    #[serde(default, deserialize_with = "de_soft_hero_blur")]
-    pub last_hero_blur: Option<[[f32; 3]; 4]>,
-    /// **The person's answer to "Connect without encryption?"**, one entry per server
-    /// (`machineIdentifier`) they were asked about. The account half of the key is this file: it
-    /// is the signed-in account's, and it is cleared with the credentials on sign-out, so an
-    /// answer never outlives the account that gave it.
-    ///
-    /// This is a CHOICE, never a transport grant: nothing here says which address was used or
-    /// lets a plaintext origin be reactivated from disk. A credential goes to a plaintext origin
-    /// only under a live `plex::grant::PlaintextGrant`, minted in-process from a FRESH eligible
-    /// probe and this answer together (`docs/shared-servers.md`). An absent entry is "never
-    /// asked".
-    ///
-    /// Soft-parsed for the reason every list in this struct is: a hand-edited entry costs that
-    /// entry — and an entry that cannot be read is "never asked", the closed direction.
-    #[serde(default, deserialize_with = "de_soft_vec")]
-    pub plaintext_consent: Vec<PlaintextConsent>,
-    /// **Each server's remembered public key** (issue #380, for the offline fallback of #378), one
-    /// entry per `machineIdentifier`: the pin of the leaf certificate the server presented the last
-    /// time a connection to it passed STRICT verification and its `/identity` named that machine.
-    /// A television cold-booted with no internet has a wrong clock, so the server's own valid
-    /// certificate fails its date check; the key it had is what lets the next layer tell "the
-    /// server I know" from a stranger. [`Session::server_key_pin`] is the accessor and
-    /// [`project_server_keys`] its reader: `net::keypin` uses the key to recognise the server when
-    /// only the certificate's dates fail (issue #378).
-    ///
-    /// Session-level, not part of [`ServerRef`], [`SourceRef`] or [`ProfileCreds`]: those are
-    /// cloned per profile, while a key is a fact about one machine seen from this television and
-    /// this account. It sits in the PUBLIC preferences, so a pin write is a public-only edit with no
-    /// credential reseal; the price is that sign-out does not take it with the credentials by
-    /// itself. The native `Mutation::ClearTenure` retains public preferences whole EXCEPT the keys
-    /// in `storage::state::ACCOUNT_BOUND_PREFERENCES`, and this field's key is one: sign-out, and
-    /// so "Delete all local data" which follows it, leave the stored record with no learned key. The
-    /// legacy file store drops it with the file. Skipped on write while empty, so a session that never learned one round-trips
-    /// byte-identical to what it wrote before. Soft-parsed: an unreadable entry costs that entry.
-    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
-    pub server_key_pins: Vec<ServerKeyPin>,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub extensions: OpaqueExtensions,
 
@@ -676,27 +646,11 @@ struct CanonicalSessionAuth {
 struct CanonicalSessionPreferences {
     #[serde(default)]
     language: plx_platform::i18n::Preference,
-    /// The nine install-wide player settings, flattened ahead of `extensions` so a flattened
-    /// struct takes its keys first and `extensions` still sees only unknown ones.
+    /// Every flattened preference key (the nine player settings, hero trailer autoplay, the A5 rows and the two memory-door
+    /// lists), flattened ahead of `extensions` so a flattened struct takes its keys first and
+    /// `extensions` still sees only unknown ones.
     #[serde(flatten)]
     prefs: Preferences,
-    #[serde(default, deserialize_with = "de_soft_bool")]
-    auto_sign_in: bool,
-    #[serde(default, deserialize_with = "de_soft_vec")]
-    last_library: Vec<LastLibrary>,
-    #[serde(rename = "library_sorts", default, deserialize_with = "de_soft_vec",
-        skip_serializing_if = "Vec::is_empty")]
-    library_views: Vec<LibraryViews>,
-    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
-    subtitle_offsets: Vec<SubtitleOffsets>,
-    #[serde(default, deserialize_with = "de_soft_hero_blur")]
-    last_hero_blur: Option<[[f32; 3]; 4]>,
-    #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
-    trailer_autoplay: bool,
-    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
-    plaintext_consent: Vec<PlaintextConsent>,
-    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
-    server_key_pins: Vec<ServerKeyPin>,
     /// Parsed only so a future preference does not make the known fields disappear. The shipping
     /// adapter merges these opaque keys from the current DB8 public payload before every rewrite;
     /// they are not promoted into the Session domain object.
@@ -715,15 +669,7 @@ impl Default for CanonicalSessionPreferences {
     fn default() -> Self {
         Self {
             language: plx_platform::i18n::Preference::System,
-            prefs: Preferences::default(),
-            auto_sign_in: false,
-            last_library: Vec::new(),
-            library_views: Vec::new(),
-            subtitle_offsets: Vec::new(),
-            last_hero_blur: None,
-            trailer_autoplay: true,
-            plaintext_consent: Vec::new(),
-            server_key_pins: Vec::new(),
+            prefs: Preferences { trailer_autoplay: true, ..Preferences::default() },
             extensions: BTreeMap::new(),
         }
     }
@@ -757,20 +703,21 @@ pub fn split_canonical(
 }
 
 fn split_public(session: &Session) -> Result<plx_platform::storage::state::PublicPayload, ()> {
-    let preferences = serde_json::to_value(CanonicalSessionPreferences {
+    let mut preferences = serde_json::to_value(CanonicalSessionPreferences {
         language: session.language,
         prefs: session.prefs.clone(),
-        auto_sign_in: session.auto_sign_in,
-        last_library: session.last_library.clone(),
-        library_views: session.library_views.clone(),
-        subtitle_offsets: session.subtitle_offsets.clone(),
-        last_hero_blur: session.last_hero_blur,
-        trailer_autoplay: session.trailer_autoplay,
-        plaintext_consent: session.plaintext_consent.clone(),
-        server_key_pins: session.server_key_pins.clone(),
         extensions: BTreeMap::new(),
     })
     .map_err(|_| ())?;
+    // `plaintext_consent` is written as `[]` in the legacy file (its row has no skip attribute) but
+    // the canonical record has always omitted it while empty: one flattened field carries one
+    // attribute set, so the canonical form drops the empty key here (pinned by
+    // `prefs_characterisation_tests`, the default session's canonical record).
+    if session.prefs.plaintext_consent.is_empty() {
+        if let Some(object) = preferences.as_object_mut() {
+            object.remove("plaintext_consent");
+        }
+    }
     let pins = serde_json::to_value(&session.home_pins).map_err(|_| ())?;
     let recents = serde_json::to_value(&session.recent_searches).map_err(|_| ())?;
     Ok(plx_platform::storage::state::PublicPayload {
@@ -826,14 +773,6 @@ pub fn join_canonical(
         recent_searches,
         language: preferences.language,
         prefs: preferences.prefs,
-        auto_sign_in: preferences.auto_sign_in,
-        last_library: preferences.last_library,
-        library_views: preferences.library_views,
-        subtitle_offsets: preferences.subtitle_offsets,
-        last_hero_blur: preferences.last_hero_blur,
-        trailer_autoplay: preferences.trailer_autoplay,
-        plaintext_consent: preferences.plaintext_consent,
-        server_key_pins: preferences.server_key_pins,
         profiles,
         extensions: auth.extensions,
     })
@@ -851,14 +790,6 @@ fn public_session(public: &plx_platform::storage::state::PublicPayload) -> Sessi
         client_id: public.client_id.clone().unwrap_or_default(),
         language: preferences.language,
         prefs: preferences.prefs,
-        auto_sign_in: preferences.auto_sign_in,
-        last_library: preferences.last_library,
-        library_views: preferences.library_views,
-        subtitle_offsets: preferences.subtitle_offsets,
-        last_hero_blur: preferences.last_hero_blur,
-        trailer_autoplay: preferences.trailer_autoplay,
-        plaintext_consent: preferences.plaintext_consent,
-        server_key_pins: preferences.server_key_pins,
         home_pins, recent_searches,
         ..Default::default()
     }
@@ -912,7 +843,7 @@ fn valid_profiles(profiles: Vec<ProfileCreds>) -> Vec<ProfileCreds> {
     }).collect()
 }
 
-/// Remember the hero envelope Home is showing right now, best-effort, for [`Session::last_hero_blur`].
+/// Remember the hero envelope Home is showing right now, best-effort, for [`Preferences::last_hero_blur`].
 ///
 /// Cheap to call on every route-ground latch: [`update`] is a single read-modify-write, and this
 /// skips the write entirely when the stored envelope already matches, so parking on the same hero
@@ -925,11 +856,11 @@ fn valid_profiles(profiles: Vec<ProfileCreds>) -> Vec<ProfileCreds> {
 /// can grade the skip without inspecting file bytes.
 pub fn record_last_hero(blur: [[f32; 3]; 4]) -> bool {
     update(|cur| {
-        if cur.last_hero_blur == Some(blur) {
+        if cur.prefs.last_hero_blur == Some(blur) {
             return None;
         }
         let mut next = cur.clone();
-        next.last_hero_blur = Some(blur);
+        next.prefs.last_hero_blur = Some(blur);
         Some(next)
     })
 }
@@ -937,7 +868,7 @@ pub fn record_last_hero(blur: [[f32; 3]; 4]) -> bool {
 /// The last hero envelope recorded by [`record_last_hero`], or `None` on a fresh device that has
 /// never rendered one.
 pub fn last_hero() -> Option<[[f32; 3]; 4]> {
-    peek().last_hero_blur
+    peek().prefs.last_hero_blur
 }
 
 /// Persist Automatically Sign In through [`update`], so a concurrent roster/recents write cannot
@@ -945,21 +876,10 @@ pub fn last_hero() -> Option<[[f32; 3]; 4]> {
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_auto_sign_in(on: bool) -> bool {
     update(|cur| {
-        if cur.auto_sign_in == on {
+        if cur.prefs.auto_sign_in == on {
             return None;
         }
         Some(cur.with_auto_sign_in(on))
-    })
-}
-
-/// Persist hero trailer autoplay. Same write door as [`set_auto_sign_in`].
-#[cfg(any(test, feature = "test-support"))]
-pub fn set_trailer_autoplay(on: bool) -> bool {
-    update(|cur| {
-        if cur.trailer_autoplay == on {
-            return None;
-        }
-        Some(cur.with_trailer_autoplay(on))
     })
 }
 
@@ -1116,9 +1036,10 @@ impl SubtitleTone {
     }
 }
 
-/// The persisted subtitle text sizes, smallest first — install-wide like [`SubtitleTone`]: a
-/// legible caption size answers a fact about the PANEL and the couch distance from it, not about
-/// whoever is watching. Absence is `Medium`, which is the caption face every build before this
+/// The persisted subtitle text sizes, smallest first — one per PROFILE, like [`SubtitleTone`]: a
+/// legible caption size is as much about the viewer's eyes as the panel and the couch distance, and
+/// two people on one couch differ. A profile that has not picked reads the install's older key.
+/// Absence is `Medium`, which is the caption face every build before this
 /// preference drew (`appkit::player_hud`'s hardcoded `sz = 36`). Spelling on disk is explicit, like
 /// every other persisted ladder here.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -1154,7 +1075,7 @@ impl SubtitleSize {
     }
 }
 
-/// The persisted subtitle vertical placements, lowest first — install-wide like [`SubtitleTone`].
+/// The persisted subtitle vertical placements, lowest first — one per profile, like [`SubtitleTone`].
 /// Absence is `Low`, which is where every build before this preference drew the caption
 /// (`appkit::player_hud`'s fixed `SUB_BASE_Y`/`SUB_CEIL_Y` baseline). Only the plain-text caption draw
 /// moves with this; image (PGS/VobSub) captions and native ASS/SSA keep their own placement
@@ -1189,7 +1110,7 @@ impl SubtitlePosition {
     }
 }
 
-/// What the player does when an episode that has a successor reaches its credits — install-wide,
+/// What the player does when an episode that has a successor reaches its credits — one per profile,
 /// like [`SubtitleTone`]. Absence is `Countdown`, the Up Next tile and its 10 s countdown every
 /// build before this preference showed. `AfterCredits` shows nothing during the credits and
 /// starts the next episode only when the stream ends; `Off` shows nothing and, at the end of the
@@ -1224,7 +1145,7 @@ impl NextEpisodeMode {
     }
 }
 
-/// How far one Left/Right press jumps in the player (and the trailer transport) — install-wide
+/// How far one Left/Right press jumps in the player (and the trailer transport) — one per profile
 /// like [`SubtitleTone`], the same for both directions. Absence is `Seconds10`, the fixed hop
 /// every build before this preference made. A closed set rather than a free number so the
 /// telemetry code for a pick is a fixed string and a hand-edited file cannot ask for a
@@ -1280,9 +1201,10 @@ impl SkipInterval {
     }
 }
 
-/// What OK does on a Continue Watching card — install-wide, like [`SubtitleTone`]. Absence is
-/// `Details`: OK opens the movie or episode page, exactly as on any other shelf, and the card's
-/// menu leads with Play (and the card draws no amber ▶, which promises a press that plays).
+/// What OK does on a Continue Watching card — one per profile, like [`SubtitleTone`]. Absence is
+/// `Details`: OK opens the movie page, exactly as on any other shelf, or for an episode the SHOW's
+/// page on the card's season; the card's menu leads with Play (and the card draws no amber ▶, which
+/// promises a press that plays).
 /// `Play` is what every build before this preference did: OK plays or resumes at once.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeckPress {
@@ -1706,7 +1628,7 @@ pub struct PinnedLib {
 }
 
 /// The person's answer to "Connect without encryption?" for one server. See
-/// [`Session::plaintext_consent`].
+/// [`Preferences::plaintext_consent`].
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PlaintextChoice {
@@ -1742,7 +1664,7 @@ pub struct PlaintextConsent {
     pub extensions: OpaqueExtensions,
 }
 
-/// One server's remembered leaf public key. See [`Session::server_key_pins`].
+/// One server's remembered leaf public key. See [`Preferences::server_key_pins`].
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ServerKeyPin {
     pub machine_id: String,
@@ -1763,7 +1685,7 @@ fn is_key_pin(pin: &str) -> bool {
     })
 }
 
-/// One profile's last-browsed library per content type. See [`Session::last_library`].
+/// One profile's last-browsed library per content type. See [`Preferences::last_library`].
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct LastLibrary {
@@ -1820,7 +1742,7 @@ impl LastLibrary {
     }
 }
 
-/// One profile's remembered library views. See [`Session::library_views`].
+/// One profile's remembered library views. See [`Preferences::library_views`].
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
 pub struct LibraryViews {
@@ -1930,7 +1852,9 @@ impl LibraryViews {
     /// Libraries remembered per profile. A household changes a handful; the cap exists so a
     /// television that has browsed many shares over the years cannot grow the public payload
     /// (256 KiB for everything, `storage::state`) without bound — ~200 bytes an entry at its
-    /// fullest, so a full list is ~5 KiB per profile.
+    /// fullest, so a full list is ~5 KiB per profile. It bounds ONE profile: past 256 KiB for the
+    /// whole document the document guard (`persistence::fit_document`, `prefs::shed_memory`) may
+    /// also evict this list's oldest entries from the largest record.
     pub const CAP: usize = 24;
     /// Longest sort key recorded. Real keys are a few words (`show.titleSort,episode.index` is
     /// the longest PMS advertises); anything longer is not a key worth carrying across restarts.
@@ -1962,12 +1886,12 @@ impl LibraryViews {
     }
 }
 
-/// One profile's remembered subtitle sync-timing corrections. See [`Session::subtitle_offsets`].
+/// One profile's remembered subtitle sync-timing corrections. See [`Preferences::subtitle_offsets`].
 ///
 /// The first tenant of the memory door ([`prefs::ProfileList`]): `{user, items, extensions}` on
-/// disk exactly as it was before the door existed (`account` is skipped while empty, and this
-/// tenant is not account-bound). Oldest first: a re-tuned item moves to the end and the cap drops
-/// from the front ([`SubtitleOffsetEntry`]'s [`MemoryEntry`] impl names the cap and the key).
+/// disk exactly as it was before the door existed (`account` is skipped while empty; the tenant is
+/// account-bound, so a record carries its account's stamp and sign-out drops the list). Oldest
+/// first: a re-tuned item moves to the end and the cap drops from the front ([`SubtitleOffsetEntry`]'s [`MemoryEntry`] impl names the cap and the key).
 pub type SubtitleOffsets = prefs::ProfileList<SubtitleOffsetEntry>;
 
 /// One item's remembered subtitle sync-timing correction, in milliseconds
@@ -2134,7 +2058,8 @@ fn default_true() -> bool {
 }
 
 /// Same soft parse as [`de_soft_bool`], but garbage and a missing value stay on. Used where the
-/// product default is on ([`Session::trailer_autoplay`]).
+/// product default is on ([`Session::trailer_autoplay`], the frozen install-wide fallback of the
+/// per-profile hero trailer switch).
 fn de_soft_bool_on<'de, D>(d: D) -> Result<bool, D::Error>
 where
     D: Deserializer<'de>,
@@ -2200,30 +2125,27 @@ impl Session {
     }
 
     pub fn auto_sign_in(&self) -> bool {
-        self.auto_sign_in
+        self.prefs.auto_sign_in
     }
 
     /// Record the Settings switch while leaving every unrelated session field intact.
     pub fn with_auto_sign_in(&self, on: bool) -> Self {
         let mut next = self.clone();
-        next.auto_sign_in = on;
+        next.prefs.auto_sign_in = on;
         next
     }
 
+    /// The install-wide hero trailer autoplay key: the FALLBACK every profile reads until it picks
+    /// its own (`prefs::stored_effective::<TrailerAutoplayPref>` is what a profile sees). No pick
+    /// writes it; session creation sets it on.
     pub fn trailer_autoplay(&self) -> bool {
-        self.trailer_autoplay
-    }
-
-    pub fn with_trailer_autoplay(&self, on: bool) -> Self {
-        let mut next = self.clone();
-        next.trailer_autoplay = on;
-        next
+        self.prefs.trailer_autoplay
     }
 
     /// The answer `account` (`plex::grant::account_key`) recorded for one server —
-    /// [`PlaintextChoice::Undecided`] when it was never asked (see [`Session::plaintext_consent`]).
+    /// [`PlaintextChoice::Undecided`] when it was never asked (see [`Preferences::plaintext_consent`]).
     pub fn plaintext_choice(&self, account: &str, machine_id: &str) -> PlaintextChoice {
-        self.plaintext_consent
+        self.prefs.plaintext_consent
             .iter()
             .find(|c| c.account == account && c.machine_id == machine_id)
             .map_or(PlaintextChoice::Undecided, |c| c.choice)
@@ -2234,9 +2156,9 @@ impl Session {
     /// be honoured again while this one answers, and the file keeps only the live account's.
     pub fn with_plaintext_choice(&self, account: &str, machine_id: &str, choice: PlaintextChoice) -> Self {
         let mut next = self.clone();
-        next.plaintext_consent.retain(|c| c.account == account && c.machine_id != machine_id);
+        next.prefs.plaintext_consent.retain(|c| c.account == account && c.machine_id != machine_id);
         if choice != PlaintextChoice::Undecided && !machine_id.is_empty() && !account.is_empty() {
-            next.plaintext_consent.push(PlaintextConsent {
+            next.prefs.plaintext_consent.push(PlaintextConsent {
                 machine_id: machine_id.to_owned(),
                 account: account.to_owned(),
                 choice,
@@ -2249,7 +2171,7 @@ impl Session {
     /// The pin remembered for `machine_id`, or `None` when none was learned (or the stored string
     /// is not a pin). Read by [`project_server_keys`], which hands it to `net::keypin` (issue #378).
     pub fn server_key_pin(&self, machine_id: &str) -> Option<&str> {
-        self.server_key_pins
+        self.prefs.server_key_pins
             .iter()
             .find(|k| k.machine_id == machine_id)
             .map(|k| k.pin.as_str())
@@ -2264,8 +2186,8 @@ impl Session {
             return None;
         }
         let mut next = self.clone();
-        next.server_key_pins.retain(|k| k.machine_id != machine_id);
-        next.server_key_pins.push(ServerKeyPin {
+        next.prefs.server_key_pins.retain(|k| k.machine_id != machine_id);
+        next.prefs.server_key_pins.push(ServerKeyPin {
             machine_id: machine_id.to_owned(),
             pin: pin.to_owned(),
             extensions: Default::default(),
@@ -2319,7 +2241,7 @@ impl Session {
         if automated {
             return false;
         }
-        !(self.auto_sign_in && self.seated_in_roster())
+        !(self.prefs.auto_sign_in && self.seated_in_roster())
     }
 
     /// True when [`Session::user`]'s uuid names someone still on the cached Plex Home roster.
@@ -2538,7 +2460,7 @@ impl Session {
 
     /// One profile's remembered library views — `None` for a profile that never changed one.
     pub fn views_for(&self, user: &str) -> Option<&LibraryViews> {
-        self.library_views.iter().find(|views| views.user == user)
+        self.prefs.library_views.iter().find(|views| views.user == user)
     }
 
     /// Record one library's view for one profile (a view that is the default forgets the entry —
@@ -2546,29 +2468,31 @@ impl Session {
     /// [`Session::set_recents_for`]'s reason. A profile whose last entry is forgotten loses its
     /// record entirely, so the list never carries empties.
     pub fn set_view_for(&mut self, user: &str, view: LibraryView) {
-        match self.library_views.iter_mut().find(|views| views.user == user) {
+        match self.prefs.library_views.iter_mut().find(|views| views.user == user) {
             Some(slot) => slot.set(view),
             None => {
                 let mut fresh = LibraryViews { user: user.to_string(), ..Default::default() };
                 fresh.set(view);
-                self.library_views.push(fresh);
+                self.prefs.library_views.push(fresh);
             }
         }
-        self.library_views.retain(|views| !views.libs.is_empty());
+        self.prefs.library_views.retain(|views| !views.libs.is_empty());
     }
 
     /// One profile's remembered subtitle sync-timing correction for one item, `None` for a
-    /// profile that never tuned one (or a different item/server).
+    /// profile that never tuned one (or a different item/server). Reads the profile's record
+    /// whatever its account stamp: the player's read is [`prefs::ProfileMemory::get`] under the
+    /// signed-in account's stamp, which is what hides another account's record.
     pub fn subtitle_offset_for(&self, user: &str, machine_id: &str, rating_key: &str) -> Option<i64> {
-        self.subtitle_offsets.iter().find(|o| o.user == user)
+        self.prefs.subtitle_offsets.iter().find(|o| o.user == user)
             .and_then(|o| o.get(machine_id, rating_key))
     }
 
     /// Record (or, with `None`, forget) one item's subtitle offset for one profile, leaving every
     /// other profile's alone — [`Session::set_view_for`]'s reason. A profile whose last entry is
     /// forgotten loses its record entirely, so the list never carries empties. The in-memory
-    /// half of the memory door's `upsert_with` ([`prefs::ProfileMemory`]), with the tenant's
-    /// empty account (offsets are not account-bound yet).
+    /// half of the memory door's `upsert_with` ([`prefs::ProfileMemory`]), stamping the record with
+    /// this session's own account (`grant::account_key`; none without an account token).
     pub fn set_subtitle_offset_for(&mut self, user: &str, machine_id: &str, rating_key: &str, offset_ms: Option<i64>) {
         let entry = offset_ms.map(|offset_ms| SubtitleOffsetEntry {
             machine_id: machine_id.to_string(),
@@ -2577,13 +2501,19 @@ impl Session {
             extensions: Default::default(),
         });
         let key = (machine_id.to_string(), rating_key.to_string());
-        self.subtitle_offsets.upsert_with(user, "", &key, |_| entry);
+        let account = super::grant::account_key(&self.account_token);
+        self.prefs.subtitle_offsets.upsert_with(user, &account, &key, |_| entry);
     }
 }
 
 /// Which profile's history is in play: the active Plex Home user's `uuid`, or `""` for the owner
-/// with no Home selection. One accessor, so the reader and the writer cannot key on different
-/// things — which would look exactly like the leak this scoping exists to prevent.
+/// with no Home selection AND for "no profile published yet" (the boot picker, a sign-out), which
+/// this cannot tell apart from the owner. It does not say whether anyone is SEATED either: a profile
+/// published without a sign-in stamp (a dev token) has a key here and seats nobody. Who is seated,
+/// as a comparable value that also names the sign-in, is [`current_seat`] / [`Seat`]; the ten
+/// per-profile settings (the player's nine and trailer autoplay) key on that, never on this. One accessor, so the reader and the
+/// writer cannot key on different things — which would look exactly like the leak this scoping
+/// exists to prevent.
 pub fn current_profile_key() -> String {
     current().map(|u| u.uuid).unwrap_or_default()
 }
@@ -2979,6 +2909,7 @@ fn same_visible_session(previous: &Cached, next: &Cached) -> bool {
 /// a session that is live.
 pub fn project_server_keys(session: &Session, signed_out: bool) {
     let pins: Vec<(String, String)> = session
+        .prefs
         .server_key_pins
         .iter()
         .filter_map(|k| session.server_key_pin(&k.machine_id).map(|p| (k.machine_id.clone(), p.to_owned())))
@@ -3909,8 +3840,9 @@ fn prepare_load(read: &ReadState, mint: impl FnOnce() -> String) -> (Session, bo
         ReadState::Missing | ReadState::Locked { .. } | ReadState::Blocked | ReadState::Cleared { .. } => {
             let mut fresh = session_from_read(read);
             // Product default is on. `Default` for a bool is off, and this is the path that
-            // writes the first file, so set it before that save.
-            fresh.trailer_autoplay = true;
+            // writes the first file, so set it before that save. Like `fresh_default` quality, it
+            // sets the install-wide default the profiles with no value of their own fall back to.
+            fresh.prefs.trailer_autoplay = true;
             fresh
         }
     };
@@ -5600,7 +5532,7 @@ mod audio_enhancements_tests {
     }
 }
 
-/// Issue #380: `Session::server_key_pins` — each server's remembered leaf public key. The reader
+/// Issue #380: `Preferences::server_key_pins` — each server's remembered leaf public key. The reader
 /// is [`project_server_keys`] (issue #378); these pin the storage contract it relies on.
 #[cfg(test)]
 mod server_key_pin_tests {
@@ -5646,7 +5578,7 @@ mod server_key_pin_tests {
     #[test]
     fn an_absent_key_is_no_pins_and_an_empty_list_is_not_written() {
         let old: Session = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert!(old.server_key_pins.is_empty());
+        assert!(old.prefs.server_key_pins.is_empty());
         assert_eq!(old.server_key_pin("m"), None);
         let session = Session::default();
         assert!(!serde_json::to_string(&session).unwrap().contains("server_key_pins"));
@@ -5659,13 +5591,13 @@ mod server_key_pin_tests {
         let session = stored("m1", &pin(1)).with_server_key_pin("m2", &pin(2)).unwrap();
         // Legacy: the whole `Session` serialized directly.
         let round: Session = serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
-        assert_eq!(round.server_key_pins, session.server_key_pins);
+        assert_eq!(round.prefs.server_key_pins, session.prefs.server_key_pins);
         assert_eq!(round.server_key_pin("m1"), Some(pin(1).as_str()));
         // Canonical split/join, and the locked-bundle public snapshot.
         let (public, protected) = split_canonical(&session).unwrap();
         let joined = join_canonical(&public, &protected).unwrap();
-        assert_eq!(joined.server_key_pins, session.server_key_pins);
-        assert_eq!(public_session(&public).server_key_pins, session.server_key_pins);
+        assert_eq!(joined.prefs.server_key_pins, session.prefs.server_key_pins);
+        assert_eq!(public_session(&public).prefs.server_key_pins, session.prefs.server_key_pins);
     }
 
     #[test]
@@ -5681,11 +5613,11 @@ mod server_key_pin_tests {
             ]
         }))
         .unwrap();
-        let machines: Vec<&str> = session.server_key_pins.iter().map(|k| k.machine_id.as_str()).collect();
+        let machines: Vec<&str> = session.prefs.server_key_pins.iter().map(|k| k.machine_id.as_str()).collect();
         assert_eq!(machines, ["m1", "m3"]);
         let not_a_list: Session =
             serde_json::from_value(serde_json::json!({"server_key_pins": {"m1": "x"}})).unwrap();
-        assert!(not_a_list.server_key_pins.is_empty());
+        assert!(not_a_list.prefs.server_key_pins.is_empty());
     }
 
     #[test]
@@ -5707,7 +5639,7 @@ mod server_key_pin_tests {
         let one = stored("m", &pin(1));
         assert!(one.with_server_key_pin("m", &pin(1)).is_none(), "same pin: nothing to write");
         let replaced = one.with_server_key_pin("m", &pin(2)).unwrap();
-        assert_eq!(replaced.server_key_pins.len(), 1);
+        assert_eq!(replaced.prefs.server_key_pins.len(), 1);
         assert_eq!(replaced.server_key_pin("m"), Some(pin(2).as_str()));
         let two = replaced.with_server_key_pin("n", &pin(3)).unwrap();
         assert_eq!(two.server_key_pin("m"), Some(pin(2).as_str()), "another machine's entry is left alone");
@@ -5734,7 +5666,7 @@ mod server_key_pin_tests {
         assert_eq!(peek().account_token, "acct", "the credentials are untouched");
 
         clear();
-        assert!(peek().server_key_pins.is_empty(), "cleared with the credentials");
+        assert!(peek().prefs.server_key_pins.is_empty(), "cleared with the credentials");
     }
 
     // ---- Issue #378: the session → `net::keypin` projection. Each test uses its own machine id and

@@ -225,6 +225,9 @@ struct Index {
     lru: BTreeSet<(u64, String)>,
     bytes: u64,
     sequence: u64,
+    /// The byte ceiling for THIS root, set once it is chosen: [`Limits::bytes`] clamped to the
+    /// space the filesystem can spare (see [`byte_cap`]). `None` before initialization.
+    cap: Option<u64>,
 }
 
 #[derive(Default)]
@@ -263,7 +266,11 @@ impl Cache {
             return;
         }
         index.initialized = true;
-        index.root = self.candidates.iter().find(|p| probe_dir(p)).cloned();
+        index.root = self
+            .candidates
+            .iter()
+            .find(|p| probe_dir(p, plx_base::paths::image_cache_dir_is_private(p)))
+            .cloned();
         let Some(root) = index.root.clone() else {
             plx_base::eventlog::log("imgcache: no writable directory; disk cache unavailable");
             return;
@@ -307,13 +314,23 @@ impl Cache {
         for (mtime, name, size) in found {
             index.insert(name, size, mtime);
         }
+        let Some(cap) = byte_cap(self.limits.bytes, free_bytes(&root), index.bytes) else {
+            plx_base::eventlog::log(&format!(
+                "imgcache: {} has too little free space; disk cache unavailable",
+                root.display()
+            ));
+            index.root = None;
+            return;
+        };
+        index.cap = Some(cap);
         self.make_room(index, None, 0, 0);
         self.publish_size(index);
         plx_base::eventlog::log(&format!(
-            "imgcache: {} entries={} bytes={}",
+            "imgcache: {} entries={} bytes={} cap={}",
             root.display(),
             index.entries.len(),
-            index.bytes
+            index.bytes,
+            index.cap.unwrap_or(self.limits.bytes)
         ));
     }
 
@@ -385,7 +402,7 @@ impl Cache {
             return false;
         };
         let size = (bytes.len() + HEADER_LEN) as u64;
-        if size > self.limits.bytes || self.limits.entries == 0 {
+        if size > self.cap(index) || self.limits.entries == 0 {
             return false;
         }
         // One writer under the gate, and startup removes residue from an interrupted process.
@@ -432,7 +449,7 @@ impl Cache {
         added_bytes: u64,
         added_entries: usize,
     ) -> bool {
-        while index.bytes.saturating_add(added_bytes) > self.limits.bytes
+        while index.bytes.saturating_add(added_bytes) > self.cap(index)
             || index.entries.len() + added_entries > self.limits.entries
         {
             let candidate = index
@@ -610,8 +627,75 @@ fn cache_name(name: &str) -> bool {
         .is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
-fn probe_dir(path: &Path) -> bool {
-    if fs::create_dir_all(path).is_err() {
+impl Cache {
+    fn cap(&self, index: &Index) -> u64 {
+        index.cap.unwrap_or(self.limits.bytes)
+    }
+}
+
+/// Below this much spare space the disk tier is not worth having, and taking any of it risks the
+/// filesystem the television installs apps onto.
+const MIN_CAP: u64 = 8 * 1024 * 1024;
+
+/// The byte ceiling for a root: `limit`, but never more than HALF of what the filesystem could
+/// give the cache (its free space plus what the cache already holds). `None` when that half is
+/// under [`MIN_CAP`], or the free space is unknown and `limit` would then be a guess. The floor
+/// is about the FILESYSTEM, never the configured limit, which may legitimately be small.
+///
+/// A 2016 set on webOS 3.4.3 has exactly one writable persistent directory a Developer Mode app
+/// can reach, `/media/developer/temp`, on the 636 MB partition that also holds installed apps,
+/// with 76.5 MB free: the fixed 128 MiB ceiling would have filled it.
+fn byte_cap(limit: u64, free: Option<u64>, held: u64) -> Option<u64> {
+    let spare = free?.saturating_add(held) / 2;
+    (spare >= MIN_CAP).then_some(limit.min(spare))
+}
+
+/// Bytes an unprivileged process may still write on `path`'s filesystem, or `None` if unknown.
+fn free_bytes(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast)] // the field widths differ between targets
+    Some((st.f_bavail as u64).saturating_mul(st.f_frsize as u64))
+}
+
+/// Creates `path` owner-only, or tightens it to that, and says whether it now is one. What stands
+/// at the name is looked at before anything is chmod'ed: the parent is world-writable, so another
+/// process can plant a symlink there or pre-create the directory under its own uid. So `mkdir`
+/// (never `create_dir_all`, which follows a link at the final component), then open it with
+/// `O_NOFOLLOW` and `fchmod` THAT descriptor once `fstat` says it is a directory `owner` owns.
+fn private_dir(path: &Path, owner: u32) -> bool {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = fs::DirBuilder::new().mode(0o700).create(path);
+    let Ok(dir) = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+    else {
+        return false;
+    };
+    let Ok(meta) = dir.metadata() else {
+        return false;
+    };
+    meta.is_dir()
+        && meta.uid() == owner
+        && (meta.mode() & 0o077 == 0
+            || dir.set_permissions(fs::Permissions::from_mode(0o700)).is_ok())
+}
+
+fn probe_dir(path: &Path, private: bool) -> bool {
+    let made = if private {
+        private_dir(path, unsafe { libc::geteuid() })
+    } else {
+        fs::create_dir_all(path).is_ok()
+    };
+    if !made {
         return false;
     }
     let probe = path.join(".probe");
