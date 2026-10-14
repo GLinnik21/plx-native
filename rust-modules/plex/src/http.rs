@@ -58,8 +58,14 @@
 //! every PMS path carries `X-Plex-Token` in its query string, so an automatic cross-origin follow
 //! would give libcurl permission to replay a token-bearing URL outside the origin we selected and
 //! verified. The plex.tv account wrappers also keep redirects off because their custom headers
-//! carry a token. Only the public, headerless QR-image fetch may follow one: at most five hops,
-//! HTTP(S) only, and never from HTTPS down to HTTP.
+//! carry a token, and `net::request_tls_evidence` enforces the pairing rather than trusting it: a
+//! request that follows redirects and carries ANY caller header is refused before it is dialled.
+//! Only the public, headerless QR-image fetch may follow one: at most five hops, HTTP(S) only, and
+//! never from HTTPS down to HTTP.
+//!
+//! **Headers.** A caller's header lines are checked once, for both transports, by
+//! `plx_net::net::headers`: a line that ends a header, or names one the transport writes itself
+//! (`Host`, `User-Agent`, `Content-Length`, `Transfer-Encoding`), is refused rather than sent.
 //!
 //! **A short body is reported on one arm only.** `stream.rs` logs a line when a response ends
 //! before its `Content-Length` (`note_short_body` — the difference between "the JSON would not
@@ -415,7 +421,7 @@ fn plaintext(
     body_policy: BodyPolicy,
 ) -> RequestOutcome {
     // The raw socket takes ONE `extra` blob, CRLF-terminated per line and CRLF-terminated at the
-    // end — it is spliced straight into the request head. Control-plane is one-shot: send
+    // end — it is spliced straight into the request head, after `net::headers` has checked it. Control-plane is one-shot: send
     // `Connection: close` so PMS does not wait for a second request on an fd we are about to
     // `http_close`. Media sequential GETs call `stream::http_open` directly and omit the header
     // so the demux socket can reuse. A caller that already named Connection keeps their spelling.
@@ -966,6 +972,40 @@ mod tests {
             }
         });
         (port, h)
+    }
+
+    /// **The bytes the control plane's plaintext arm puts on the wire**, pinned before the request
+    /// head is validated: `Connection: close` first, then the caller's lines in order, each
+    /// CRLF-terminated, after the transport's own `Host`, `User-Agent` and default `Accept`. A caller
+    /// that already named `Connection` keeps its own spelling and gets no second one.
+    #[test]
+    fn the_plaintext_arm_sends_its_connection_block_and_the_callers_lines_verbatim() {
+        use std::io::{Read, Write};
+        let capture = |headers: &'static [&'static str]| -> String {
+            let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            let port = srv.local_addr().expect("address").port();
+            let h = std::thread::spawn(move || {
+                let mut req = Vec::new();
+                if let Ok((mut s, _)) = srv.accept() {
+                    let mut buf = [0u8; 2048];
+                    if let Ok(n) = s.read(&mut buf) {
+                        req.extend_from_slice(&buf[..n]);
+                    }
+                    let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                }
+                String::from_utf8_lossy(&req).into_owned()
+            });
+            let got = request(&Origin::http("127.0.0.1", port as i32), "/x", Method::Get, headers, None);
+            assert!(got.is_some_and(|r| r.status == 200));
+            h.join().unwrap()
+        };
+        let head = capture(&["X-Plex-Token: t", "Accept: application/json"]);
+        let tail = "Connection: close\r\nX-Plex-Token: t\r\nAccept: application/json\r\n\r\n";
+        assert!(head.starts_with("GET /x HTTP/1.1\r\nHost: 127.0.0.1:"), "{head:?}");
+        assert!(head.ends_with(tail), "{head:?}");
+        let named = capture(&["Connection: keep-alive", "X-Plex-Token: t"]);
+        assert!(named.ends_with("Connection: keep-alive\r\nX-Plex-Token: t\r\n\r\n"), "{named:?}");
+        assert_eq!(named.matches("onnection:").count(), 1, "{named:?}");
     }
 
     /// `GET /x` at a loopback port through [`request`], the door the control plane uses.

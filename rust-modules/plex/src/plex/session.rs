@@ -4049,7 +4049,12 @@ fn save_locked_with_authority(
     plx_platform::storage::wire::failure::clear();
     CANDIDATE_ERRNOS.with(|slot| slot.set([None; 8]));
     let protected_before = has_protected_authority();
+    let write_started = std::time::Instant::now();
     let commit = persistence::write_session(s, authority);
+    plx_base::eventlog::log(&format!(
+        "session: canonical write took {} ms",
+        write_started.elapsed().as_millis()
+    ));
     // Uncertain helper replies already own their evidence in CanonicalCommit. Only the older
     // StoreError-only failure variants still need this immediate thread-local snapshot.
     let helper_failure = match &commit {

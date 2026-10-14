@@ -98,6 +98,9 @@ impl Drop for TempSession {
     }
 }
 
+/// A stand-in `grant::account_key`: 8 bytes as hex. The account stamp the per-profile tests use.
+pub(super) const STAMP: &str = "00112233445566ff";
+
 pub(super) fn signed_in() -> Session {
     Session {
         client_id: "cid-1".into(),

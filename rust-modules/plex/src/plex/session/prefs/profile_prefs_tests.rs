@@ -10,12 +10,11 @@ use super::super::{
 };
 use super::profile_prefs::*;
 use super::{Fallback, Parse, Preferences, Scope, Setting, DESCRIPTORS};
+use crate::plex::session::test_support::STAMP;
 use crate::plex::AudioEnhancements;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
 
-/// `grant::account_key` is 8 bytes as hex.
-const STAMP: &str = "00112233445566ff";
 const OTHER_STAMP: &str = "ffeeddccbbaa9988";
 
 fn record(user: &str, stamp: &str, prefs: Value) -> Value {

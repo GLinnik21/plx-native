@@ -41,7 +41,9 @@ use plx_plex::plex::session::{
     ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipInterval, SkipIntervalPref, SubtitlePosition,
     SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TrailerAutoplayPref,
 };
-use plx_plex::plex::session::prefs::{MemoryEntry, ProfileKeyed, ProfileList, ProfileMemory, SettingsWrite, TrackMemoryEntry};
+use plx_plex::plex::session::prefs::{
+    MemoryEntry, ProfileKeyed, ProfileList, ProfileMemory, ProfileRecords, SettingsWrite, TrackMemoryEntry,
+};
 use plx_plex::plex::session::{self, Seat, Session, SubtitleOffsetEntry};
 use plx_plex::plex::AudioEnhancements;
 use std::marker::PhantomData;
@@ -593,8 +595,8 @@ impl MemoryTenant for SubtitleOffsetEntry {
 /// stamp (the mirror's, and the file's own `account_key`) and [`recall`] reads under it. `track_memory`
 /// is read through [`recall`] and [`recall_all`] and written here, by `commit_audio_pick` and
 /// `commit_subtitle_pick` (the track menu's pick) and by nothing else but the harness's
-/// `plxnative-trackmemory=clear` (`dev::scenarios::arm_track_memory`), which removes entries through
-/// this same door.
+/// `plxnative-trackmemory=clear` and `=fill` (`dev::scenarios::arm_track_memory`), which remove and
+/// write entries through this same door.
 pub fn remember<E: MemoryTenant>(
     user: &str,
     key: E::Key,
@@ -684,7 +686,7 @@ pub fn recall_all<E: MemoryTenant>(user: &str) -> Vec<E> {
     if E::ACCOUNT_BOUND && account.is_empty() && !E::ADOPTS_UNSTAMPED {
         return Vec::new();
     }
-    state.lists.iter().find(|r| r.user == user && r.account == account).map(|r| r.items.clone()).unwrap_or_default()
+    state.lists.position_of(user, &account).map(|at| state.lists[at].items.clone()).unwrap_or_default()
 }
 
 // ---- the write door -------------------------------------------------------------------------

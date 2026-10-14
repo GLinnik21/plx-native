@@ -23,7 +23,7 @@
 //!   every profile, existing or future, and the fallback writes nothing, so the upgrade cannot fail
 //!   half-way.
 //! * **A garbage own value reads the legacy value, not the default.** Each field is parsed by
-//!   [`de_soft_opt`], which turns anything it cannot read into `None` (the per-type `de_soft_*`
+//!   [`super::de_soft_opt`], which turns anything it cannot read into `None` (the per-type `de_soft_*`
 //!   functions of [`Preferences`] turn garbage into the DEFAULT, which would shadow the fallback).
 //! * **Account-bound.** A record is visible only while its `account` equals the non-empty stamp of
 //!   the signed-in account (`grant::account_key` of the account token). The owner's `""` record of
@@ -42,34 +42,33 @@ use crate::plex::session::{
     SubtitleSize, SubtitleTone,
 };
 use crate::plex::AudioEnhancements;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 /// One profile's own values of the ten settings; `None` is "this profile has no value of its own".
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ProfilePrefs {
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub playback_quality: Option<PlaybackQuality>,
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub direct_play_mode: Option<DirectPlayMode>,
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub subtitle_tone: Option<SubtitleTone>,
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub subtitle_size: Option<SubtitleSize>,
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub subtitle_position: Option<SubtitlePosition>,
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub next_episode_mode: Option<NextEpisodeMode>,
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub skip_interval: Option<SkipInterval>,
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub deck_press: Option<DeckPress>,
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub audio_enhancements: Option<AudioEnhancements>,
     /// Hero trailer autoplay (P1c). An absent value reads the legacy key, which itself reads ON when
     /// absent.
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub trailer_autoplay: Option<bool>,
 }
 
@@ -78,23 +77,6 @@ impl ProfilePrefs {
     pub fn is_empty(&self) -> bool {
         *self == ProfilePrefs::default()
     }
-}
-
-/// Anything this build cannot read is "no value of its own", which reads the fallback.
-fn de_soft_opt<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(serde_json::from_value::<Option<T>>(value).unwrap_or(None))
-}
-
-/// A stamp that is not a string binds to no account, instead of costing the record.
-fn de_soft_stamp<'de, D>(d: D) -> Result<String, D::Error>
-where D: Deserializer<'de> {
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(value.as_str().map(str::to_owned).unwrap_or_default())
 }
 
 /// **One profile's own values under one account stamp** — the record shape of `profile_prefs`, with
@@ -106,7 +88,7 @@ pub struct ProfilePrefsRecord {
     pub user: String,
     /// `grant::account_key` of the account the values were picked under; a record is visible only
     /// while this equals the signed-in account's non-empty stamp.
-    #[serde(deserialize_with = "de_soft_stamp", skip_serializing_if = "String::is_empty")]
+    #[serde(deserialize_with = "super::de_soft_string", skip_serializing_if = "String::is_empty")]
     pub account: String,
     pub prefs: ProfilePrefs,
 }

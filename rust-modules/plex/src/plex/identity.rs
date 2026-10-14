@@ -145,7 +145,8 @@ pub fn device_name() -> &'static str {
 /// What this client offers the network. It plays; it is not a controller and not a server.
 pub const PROVIDES: &str = "player";
 
-/// The HTTP `User-Agent` for the libcurl transport (plex.tv + discover.provider.plex.tv).
+/// The `User-Agent` every request sends: the libcurl requests (plex.tv, discover.provider.plex.tv,
+/// the player's HTTPS source) and the hand-built plaintext request in `net/src/stream.rs`.
 ///
 /// This was `PlexForWebOS/1.0 (LG webOS)` — the same impersonation as the product string and
 /// arguably the worse one, since it is what lands in Plex's own server logs, and it named no
