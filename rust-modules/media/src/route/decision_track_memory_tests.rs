@@ -2115,3 +2115,76 @@ fn a_transcode_landing_owes_no_names_rematch() {
     assert!(plan.url.contains("start.mkv"), "setup: a remux: {}", plan.url);
     assert!(plan.track_ctx.as_ref().is_some_and(|c| c.rematch.is_none()), "no re-match is owed off a direct play");
 }
+
+/// A direct-play landing of E2 under a remembered EXTERNAL English subtitle (C5): the plan names no
+/// subtitle (`sub_sid` 0, the sidecar rides `memory_sidecar`), the landing restores the sidecar, and
+/// the first frame's names re-match is owed with the memo. E2 also has an embedded English track.
+#[cfg(feature = "devtriggers")]
+fn land_with_remembered_sidecar(ps: &mut PlaybackSession) -> ServerId {
+    let sid = plx_plex::plex::register_for_test(MACHINE, "127.0.0.1", 32401, "tok", "cid-tm");
+    let memo = SubtitleMemo::Track(SubtitleTrackMemo {
+        lang: "eng".into(),
+        kind: "text".into(),
+        external: true,
+        ..Default::default()
+    });
+    let item = plx_data::metadata::PlayingItem {
+        kind: "episode".into(),
+        show_rk: SHOW.into(),
+        audio: audio_pair(),
+        subs: vec![srt(55001, 3, "eng", false, false), srt(55002, 4, "spa", false, false), sidecar_stream(55009, "eng")],
+        ..plx_data::metadata::PlayingItem::with_subs(Vec::new())
+    };
+    let mut ctx = TrackContext::of_landing(&item, "eng", Some(&memo));
+    ctx.owe_rematch(Some(&memo), 0);
+    crate::player::sidecar::reset();
+    let plan = Plan {
+        sid,
+        url: "http://fixture.invalid/ep.mkv".into(),
+        playing: Some(item),
+        memory_sidecar: Some(55009),
+        track_ctx: Some(ctx),
+        ..Default::default()
+    };
+    assert_eq!(plan.sub_sid, 0, "setup: the plan names no subtitle for a sidecar");
+    apply_plan(ps, plan, "rk-ep");
+    sid
+}
+
+/// **The owed re-match holds the landing to what the SESSION shows, not to what the plan names.** The
+/// plan names no sidecar (`sub_sid` is 0) and the landing's restore puts the remembered one on screen,
+/// so a re-match owed against the plan's 0 would read the landing's own subtitle as "changed".
+#[test]
+#[cfg(feature = "devtriggers")]
+fn the_owed_rematch_is_held_to_the_subtitle_the_landing_shows() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    land_with_remembered_sidecar(&mut ps);
+    assert_eq!(cur_sub_sid(&ps), 55009, "setup: the restore put the remembered sidecar on screen");
+    let owed = ps.track_ctx.as_ref().and_then(|c| c.rematch.as_ref()).expect("setup: the landing owes the re-match");
+    assert_eq!(owed.landed_sub, 55009, "the comparison is made against what is shown, not the plan's 0");
+    crate::player::sidecar::reset();
+    tidy_write(&mut ps);
+}
+
+/// **A sidecar on screen is not displaced by the names re-match.** The container's names describe its
+/// embedded tracks; the remembered sidecar was matched against the whole list at the resolve, and
+/// outranks E2's embedded English track there. A re-match over the embedded set alone would swap it
+/// for that track (or, finding none, for nothing) on the first frame.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn the_names_rematch_never_replaces_a_remembered_sidecar() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let session = session::TempSession::new("track-memory-names-sidecar");
+    sign_in_and_seat(&session, "");
+    land_with_remembered_sidecar(&mut ps);
+    publish_container_names(&["", ""]);
+    assert_eq!(rematch_subtitle_with_names(&mut ps), None, "nothing to re-match: the sidecar is the best match");
+    assert_eq!(cur_sub_sid(&ps), 55009, "the remembered sidecar stays");
+    assert!(ps.cur_sub_sidecar && ps.cur_sub_client_drawable, "and it is still the one the app draws itself");
+    assert!(ps.track_ctx.as_ref().is_some_and(|c| c.rematch.is_none()), "(and the re-match is spent)");
+    publish_container_names(&[]);
+    crate::player::sidecar::reset();
+    tidy_write(&mut ps);
+}

@@ -267,8 +267,9 @@ impl SubMode {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rematch {
     pub(super) memo: SubtitleMemo,
-    /// The subtitle stream id the landing put on screen (`0` = none). The re-match runs only while
-    /// that is still what is shown: a viewer who picked meanwhile has decided.
+    /// The subtitle stream id the landing put on screen (`0` = none), read from the session once the
+    /// landing is complete (`decision::settle_landing_selection`), not from the plan. The re-match
+    /// runs only while that is still what is shown: a viewer who picked meanwhile has decided.
     pub(super) landed_sub: i64,
 }
 

@@ -2234,7 +2234,10 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         plan.write_back = write_back_of(env, rk, audio_memory.as_ref(), audio_sel.as_ref(), sub_decision.as_ref(), plan.playing.as_ref());
         // Only a direct play has the demuxer's own track names (an MP4 part's PMS streams carry no
         // `title`), and only once the file is open: the first decoded frame re-matches the
-        // remembered subtitle with them (`rematch_subtitle_with_names`).
+        // remembered subtitle with them (`rematch_subtitle_with_names`). The plan's subtitle is only
+        // the placeholder for what the landing shows: `apply_plan` replaces it with the session's own
+        // once the sidecar restore is done (`decision::settle_landing_selection`), because the plan
+        // names no sidecar the restore puts on screen.
         let landed_sub = plan.sub_sid;
         if let Some(ctx) = plan.track_ctx.as_mut() {
             ctx.owe_rematch(consulted_memo, landed_sub);
@@ -2998,7 +3001,11 @@ fn reference_default(tracks: &[plx_data::metadata::Stream], default_acodec: &str
 
 /// The subtitle this app can draw from a resolve's own streams: embedded, keyed, and a codec the
 /// demuxer renders. What a remembered subtitle is matched against ([`memory_subtitle`]) and what
-/// every later re-match of it (`track_memory`) matches against, so the three cannot disagree.
+/// every later re-match of it (`track_memory`) matches against, so the embedded candidates cannot
+/// disagree. One memo is wider at the resolve: a remembered EXTERNAL track also carries this
+/// file's renderable sidecars (`memory_subtitle`), which a re-match over container names never
+/// sees; a landing that shows such a sidecar is therefore left alone by the re-match
+/// (`decision::rematch_subtitle_with_names`).
 pub(super) fn drawable_embedded(s: &plx_data::metadata::Stream) -> bool {
     !s.external && s.id > 0 && embedded_subtitle_renderable(&s.codec)
 }
