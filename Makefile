@@ -1133,7 +1133,7 @@ DEPLOY_FILES = $(filter-out pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(L
 # certificate chains to a newer root stops being reachable on an old firmware. Absent, the fallback
 # simply does not engage. NOT `roots.pem`: that name is `net::post_ca`'s telemetry bundle.
 # appfont-cjk.ttf is the fallback face (Noto Sans CJK KR, tools/cut-noto-cjk.py) and it is the
-# single largest thing in the package — 21 MB raw, ~11 MB of the .ipk. It is PAYLOAD, not an
+# single largest thing in the package — 13.4 MB raw, ~7.5 MB of the .ipk. It is PAYLOAD, not an
 # optional extra: without it a Korean, Japanese or Chinese library renders as tofu end to end, and
 # the television's own DroidSansFallback is present on the sets we have measured but is not
 # something a submission can be graded against. `rust-modules/base/src/fontcov.rs`'s host gate asserts
@@ -1246,7 +1246,7 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	   $(SSH) 'chmod 644 $(APPDIR)/lab.json'; \
 	 else $(SSH) 'rm -f $(APPDIR)/lab.json'; fi
 	# The rest of the payload — appinfo, both icon sizes, the splash/launch image, the three font
-	# files (including the 21 MB CJK fallback face — unconditional now, like everything else in
+	# files (including the 13 MB CJK fallback face — unconditional now, like everything else in
 	# this list: `verify-deploy` below is what makes a stale copy visible instead of a scp that
 	# quietly never ran), the OFL licence and the third-party notices — in ONE scp, ONE connection,
 	# from `DEPLOY_FILES`: the SAME list `ipk` stages via `cp $(APP_FILES) $(STAGE)/`. `scp` to a

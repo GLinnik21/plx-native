@@ -728,7 +728,11 @@ impl Native {
             return Err(Fault::InitFailed);
         }
         let mut native = Self(ptr);
-        for name in ["appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf"] {
+        // Inter only. The CJK face is libass's DEFAULT path (`plx_ass_create`), which maps the file
+        // instead of copying it; as a memory font it was a ~13 MB malloc+copy per renderer (plus a
+        // transient `fs::read`, repeated per windowed-sidecar slide) reachable only by the family
+        // name "Noto Sans CJK KR", while glyph fallback never went through it.
+        for name in ["appfont.ttf", "appfont-bold.ttf"] {
             let bytes = std::fs::read(asset_dir().join(name))
                 .map_err(|_| Fault::FontsUnavailable)?;
             if bytes.len() > MAX_FONT_BYTES {
