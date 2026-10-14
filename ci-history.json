@@ -1,4 +1,4 @@
-{"updated":"2026-10-14T10:48:40Z",
+{"updated":"2026-10-14T10:53:31Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -2413,7 +2413,8 @@
 {"id":38544099611,"at":"2026-10-14T09:40:40Z","sha":"9235b8772","title":"Hero trailer autoplay is a per-profile setting (P1c)","pr":676,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":200,"Windows launcher syntax":19,"macOS simulator build + launch":200,"macOS tests against bundled FFmpeg and ASS":173}},
 {"id":38547069052,"at":"2026-10-14T10:05:10Z","sha":"083665f86","title":"ui: hover moves no focus while the TV keyboard is up","pr":656,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":109,"Windows launcher syntax":38,"macOS simulator build + launch":174,"Linux simulator build + launch":242}},
 {"id":38548041950,"at":"2026-10-14T10:13:23Z","sha":"c7f57bca6","title":"Merge main into subs/wrap-width","pr":682,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":146,"Linux simulator build + launch":262,"macOS simulator build + launch":190,"Windows launcher syntax":16}},
-{"id":38549448709,"at":"2026-10-14T10:25:19Z","sha":"c7f57bca6","title":"Merge main into subs/wrap-width","pr":663,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":165,"Linux simulator build + launch":196,"macOS simulator build + launch":116}}
+{"id":38549448709,"at":"2026-10-14T10:25:19Z","sha":"c7f57bca6","title":"Merge main into subs/wrap-width","pr":663,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":165,"Linux simulator build + launch":196,"macOS simulator build + launch":116}},
+{"id":38552278965,"at":"2026-10-14T10:49:42Z","sha":"f1e30a33a","title":"Subtitles: wrap captions by pixel width, capped at 75% of the screen","pr":663,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"Linux simulator build + launch":217,"macOS simulator build + launch":198,"macOS tests against bundled FFmpeg and ASS":171}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
