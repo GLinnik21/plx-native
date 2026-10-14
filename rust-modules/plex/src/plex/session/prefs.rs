@@ -611,9 +611,9 @@ pub(super) fn evict_by_rule<R: EvictionRecord>(
         } else {
             logical(&list[at]) + usize::from(list.len() > 1)
         };
-        list[at].entries_mut().remove(0);
+        list[at].entries_mut().drain(..1);
         if list[at].entries().is_empty() {
-            list.remove(at);
+            list.drain(at..=at);
         }
         evicted += 1;
     }
