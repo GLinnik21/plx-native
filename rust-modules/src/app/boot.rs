@@ -1842,9 +1842,10 @@ pub(crate) unsafe fn construct(
     let pause_script: Option<(u32, Option<u32>, Option<u32>)> = None;
     let pause_resume_at: Option<u32> = None;
     let prev = 0u32;
-    // Home data refresh, armed on every player exit (Stop/BACK/EOS): the hubs are refetched a
-    // beat later so the final timeline PUT lands first — Continue Watching then shows the new
-    // resume point / next episode instead of the state from boot.
+    // Home data refresh, armed on every player exit (Stop/BACK/EOS): the hubs are refetched once
+    // the stop report has settled (`route::scrobble_settled`), so the `stopped` timeline POST
+    // lands first — Continue Watching then shows the new resume point / next episode instead of
+    // the state from boot.
     let refresh_hubs = false;
 
     let ev = [0u8; 128];
