@@ -3966,10 +3966,17 @@ pub fn replace_after_reauthentication_guarded_with_outcome(
         install_locked(read);
         return Err(());
     }
-    let next = edit(&cur);
+    let mut next = edit(&cur);
     if next.account_token.is_empty() {
         install_locked(read);
         return Ok(None);
+    }
+    // The one login that is not a sign-out: the stored session is still on disk, so no `ClearTenure`
+    // ran. A different account must not open on the previous one's library views, which carry no
+    // account stamp to read as nothing under (`ACCOUNT_BOUND_PREFERENCES` is what sign-out clears).
+    if !cur.account_token.is_empty() && cur.account_token != next.account_token {
+        next.prefs.last_library.clear();
+        next.prefs.library_views.clear();
     }
     if !may_write() { return Err(()); }
     Ok(Some(save_locked_with_authority(&next, SaveAuthority::FreshReauthentication)))

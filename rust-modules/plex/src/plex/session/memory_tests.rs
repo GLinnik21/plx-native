@@ -349,3 +349,38 @@ fn a_session_stamps_the_offsets_it_records_with_its_own_account() {
     assert_eq!(session.prefs.subtitle_offsets[0].account, stamp);
     assert_eq!(session.prefs.subtitle_offsets.get("u", &stamp, &offset_key("rk-1")).map(|e| e.offset_ms), Some(500));
 }
+
+/// **N7: a login over a stored session of another account does not inherit its library views.**
+/// `library_sorts` and `last_library` are per profile and carry no account stamp, so sign-out clears
+/// them (`ACCOUNT_BOUND_PREFERENCES`). The one login that is not a sign-out, a QR sign-in started
+/// with a stored session that could not be activated still on disk, replaces the credentials in place
+/// (`replace_after_reauthentication_guarded_with_outcome`), and the new account used to open on the
+/// previous one's last library and sorts. A different account clears them; the same one keeps them.
+#[test]
+fn a_login_over_another_accounts_session_does_not_inherit_its_library_views() {
+    let _serial = plx_base::testlock::serial();
+    let _root = TempSession::new("relogin-library-views");
+    let mut first = Session { client_id: "cid-1".into(), account_token: "acct-1".into(), ..Default::default() };
+    first.set_view_for("u", LibraryView {
+        machine_id: "m".into(), key: 1, sort: "addedAt".into(), desc: true, ..Default::default()
+    });
+    first.prefs.last_library.push(LastLibrary {
+        user: "u".into(),
+        libs: vec![TypedLib { kind: "movie".into(), machine_id: "m".into(), key: 1, extensions: Default::default() }],
+        extensions: Default::default(),
+    });
+    save(&first);
+    let views = |s: &Session| (s.prefs.library_views.len(), s.prefs.last_library.len());
+    assert_eq!(views(&load()), (1, 1), "control: both lists are stored");
+
+    let login_as = |token: &str| {
+        let token = token.to_string();
+        replace_after_reauthentication_with_outcome(|_| true, move |cur| Session { account_token: token, ..cur.clone() })
+            .expect("not fenced")
+            .expect("written");
+    };
+    login_as("acct-1");
+    assert_eq!(views(&load()), (1, 1), "the same account logging in again keeps its views");
+    login_as("acct-2");
+    assert_eq!(views(&load()), (0, 0), "another account does not inherit them");
+}
