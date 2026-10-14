@@ -1419,10 +1419,12 @@ unsafe fn perform_http_request(
     };
     // `Host:` is the ORIGIN, never the address `connect_any` reached — see `host_header`.
     let host_hdr = host_header(host_s, port);
+    // The process's one name (`net::user_agent`), as the curl paths send it; none before boot.
+    let ua = crate::net::user_agent().map_or(String::new(), |ua| format!("User-Agent: {ua}\r\n"));
     // HTTP/1.1 keep-alive is the default; omitting Connection lets the server reuse this
     // socket for the next HLS segment instead of forcing a fresh TCP handshake each time.
     let req = format!(
-        "{method} {path_s} HTTP/1.1\r\nHost: {host_hdr}\r\nUser-Agent: plxnative/0.1\r\n{accept}{extra_s}\r\n"
+        "{method} {path_s} HTTP/1.1\r\nHost: {host_hdr}\r\n{ua}{accept}{extra_s}\r\n"
     );
     let bytes = req.as_bytes();
     let mut off = 0usize;
@@ -2239,3 +2241,7 @@ mod chunked_drain_tests;
 #[cfg(test)]
 #[path = "stream_checkpoint_tests.rs"]
 mod checkpoint_tests;
+
+#[cfg(test)]
+#[path = "stream_user_agent_tests.rs"]
+mod user_agent_tests;

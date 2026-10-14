@@ -395,10 +395,12 @@ pub fn threaded_tls_ready() -> bool {
     CURL_THREADED_TLS_OK.load(Ordering::Acquire)
 }
 
-/// The `User-Agent` every easy request sends. The transport does not know who the client is — that
-/// is the Plex layer's identity (`plex::identity::user_agent`) — so boot hands it over once, with
-/// [`set_user_agent`] before [`global_init`], instead of this layer naming the one above it. Unset
-/// (a host test that never booted) no `User-Agent` is set, which is all libcurl sends by default.
+/// The `User-Agent` every request sends: each easy request here, the player's HTTPS source
+/// (`curlio`) and its plaintext path (`stream`). The transport does not know who the client is —
+/// that is the Plex layer's identity (`plex::identity::user_agent`) — so boot hands it over once,
+/// with [`set_user_agent`] before [`global_init`], instead of this layer naming the one above it.
+/// Unset (a host test that never booted) no `User-Agent` is set, which is all libcurl sends by
+/// default.
 static USER_AGENT: OnceLock<String> = OnceLock::new();
 
 /// Install the process's `User-Agent`. The first call wins; it is one value per process.
@@ -406,9 +408,15 @@ pub fn set_user_agent(user_agent: String) {
     let _ = USER_AGENT.set(user_agent);
 }
 
+/// The installed `User-Agent`, `None` while none is installed. Read it rather than naming the
+/// client again, so the process sends one name whichever path a request takes.
+pub fn user_agent() -> Option<&'static str> {
+    USER_AGENT.get().map(String::as_str)
+}
+
 /// The installed `User-Agent` as the `CString` curl takes: `Ok(None)` while none is installed.
 fn user_agent_c() -> Result<Option<CString>, std::ffi::NulError> {
-    USER_AGENT.get().map(|ua| CString::new(ua.as_str())).transpose()
+    user_agent().map(CString::new).transpose()
 }
 
 /// One-time process init (call on the main thread at boot before any request; curl's implicit
