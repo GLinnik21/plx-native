@@ -56,8 +56,9 @@
 //!
 //! **A pick is the show's memory, and the menu says when the route cannot honour it.** An explicit
 //! pick in either tab commits its descriptor with the track ([`TrackCommit`]'s `memo`), which the
-//! app's `commit_track` hands to `route::commit_audio_pick` / `commit_subtitle_pick` /
-//! `commit_forced_only_pick`; they write it to
+//! app's `commit_track` hands to `route::commit_audio_pick`, and for the two subtitle arms to
+//! `route::commit_subtitle_and_sidecar` / `commit_forced_only_and_sidecar` (the pick commit plus its
+//! sidecar select or deselect); the `*_pick` commits write it to
 //! the show's track memory when the route accepted the pick, and the next episode's plan reads it
 //! back. When the memory chose a subtitle for this play and the route can show none of it (a copy
 //! remux the app cannot draw), Off is on screen, so the first group closes with one inert

@@ -52,7 +52,7 @@ pub(super) type Miss = &'static str;
 
 /// **The show a playing item's picks belong to**: track memory is kept per episode of a known show,
 /// so a movie, a trailer, an item of no type or an episode the server placed in no show has none.
-/// The one predicate of the read side (`plan::show_memory`) and the write
+/// The one predicate of the read side (`plan::memory::show_memory`) and the write
 /// (`decision::memory::remember_track_pick`), so what is written is exactly what a later resolve can read.
 pub(super) fn memory_show<'a>(kind: &str, show_rk: &'a str) -> Option<&'a str> {
     (kind == "episode" && !show_rk.is_empty()).then_some(show_rk)
