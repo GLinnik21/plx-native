@@ -506,7 +506,10 @@ pub(crate) unsafe fn commit_info_press(
 /// `route::commit_audio_pick`/`commit_subtitle_pick`/`commit_forced_only_pick` take the playback
 /// session's `&mut`, which no screen has (§2.2) — the panel returns a
 /// [`TrackCommit`](plx_appkit::track_menu::TrackCommit) and this is where it lands, from the
-/// overlay's `PlayerReq` and from the headless `plxnative-menupick` trigger alike.
+/// overlay's `PlayerReq` and from the headless `plxnative-menupick` trigger alike. The two subtitle
+/// arms go through `route::commit_subtitle_and_sidecar` / `commit_forced_only_and_sidecar`, which
+/// make the same pick commit and also perform its sidecar half (select or deselect), so the sidecar
+/// policy is the route's and not this file's.
 ///
 /// **This is where a track pick is also REMEMBERED** (the `memo` the panel built from the picked
 /// row): the `*_pick` commits write the show's track memory when, and only when, the route
@@ -529,28 +532,16 @@ pub(crate) fn commit_track(
             plx_media::route::commit_audio_pick(ps, carried, memo);
         }
         TrackCommit::AudioEnhancement(a) => plx_media::player::request_audio_enhancement(ps, a),
+        // The route commits the pick and performs the sidecar half of it too
+        // (`route::commit_subtitle_and_sidecar`): the sidecar policy lives beside the track memory's.
         TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec, memo } => {
-            // What the client can draw itself — an embedded ordinal or an external sidecar — is
-            // what an Original route (issue #266's candidate) can carry without a burn.
-            let client_renderable = render_ordinal >= 0 || sidecar_key.is_some();
-            plx_media::route::commit_subtitle_pick(ps, render_ordinal, stream_id, client_renderable, memo);
-            // An EXTERNAL pick has no demuxer ordinal (`render_ordinal` is -1, so the embedded
-            // renderer is off) — on direct play `player::sidecar` fetches and draws it instead.
-            // While transcoding the commit above already asked for a burn and the sidecar draw
-            // is silenced for as long as that is true, so selecting here is harmless and means
-            // the line survives the playback going BACK to direct play.
-            match sidecar_key {
-                Some(key) => plx_media::player::sidecar::select(plx_media::route::cur_sid(ps), stream_id, key, sidecar_codec),
-                None => plx_media::player::sidecar::deselect(),
-            }
+            plx_media::route::commit_subtitle_and_sidecar(ps, render_ordinal, stream_id, sidecar_key, sidecar_codec, memo);
         }
-        // Forced only (FO): the panel matched the forced track for the
-        // playing audio (or nothing), the route holds the mode and remembers `ForcedOnly { lang }`
-        // when it changed. The track is always an embedded one the demuxer draws, so a sidecar
-        // from an earlier pick is dropped as for Off.
+        // Forced only (FO): the panel matched the forced track for the playing audio (or nothing),
+        // the route holds the mode and remembers `ForcedOnly { lang }` when it changed, and drops
+        // any sidecar (`route::commit_forced_only_and_sidecar`).
         TrackCommit::SubtitleForcedOnly { render_ordinal, stream_id, lang, changed } => {
-            plx_media::route::commit_forced_only_pick(ps, render_ordinal, stream_id, render_ordinal >= 0, &lang, changed);
-            plx_media::player::sidecar::deselect();
+            plx_media::route::commit_forced_only_and_sidecar(ps, render_ordinal, stream_id, &lang, changed);
         }
         TrackCommit::SubtitleTone(tone) => plx_media::player::set_subtitle_tone(tone),
         // live first, persisted after, nothing republished on completion (`route::select_subtitle_size`)

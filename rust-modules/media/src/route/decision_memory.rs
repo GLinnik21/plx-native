@@ -397,6 +397,50 @@ pub fn commit_forced_only_pick(
     }
 }
 
+/// **The track menu's subtitle pick, together with the sidecar it may name**: the route commit and
+/// remembered write of [`commit_subtitle_pick`], then the sidecar draw that goes with it. The app's
+/// `commit_track` hands the menu's `TrackCommit::Subtitle` here field by field (the route cannot name
+/// the track menu above it). `sidecar_key` is `Some` for an EXTERNAL text subtitle the client can
+/// draw on direct play, `sidecar_codec` is its codec (it preserves ASS/SSA on download), and `None`
+/// (Off, or an embedded track) deselects any sidecar.
+pub fn commit_subtitle_and_sidecar(
+    ps: &mut PlaybackSession,
+    render_ordinal: i32,
+    stream_id: i64,
+    sidecar_key: Option<String>,
+    sidecar_codec: String,
+    memo: Option<SubtitleMemo>,
+) {
+    // What the client can draw itself — an embedded ordinal or an external sidecar — is
+    // what an Original route (issue #266's candidate) can carry without a burn.
+    let client_renderable = render_ordinal >= 0 || sidecar_key.is_some();
+    commit_subtitle_pick(ps, render_ordinal, stream_id, client_renderable, memo);
+    // An EXTERNAL pick has no demuxer ordinal (`render_ordinal` is -1, so the embedded
+    // renderer is off) — on direct play `player::sidecar` fetches and draws it instead.
+    // While transcoding the commit above already asked for a burn and the sidecar draw
+    // is silenced for as long as that is true, so selecting here is harmless and means
+    // the line survives the playback going BACK to direct play.
+    match sidecar_key {
+        Some(key) => crate::player::sidecar::select(cur_sid(ps), stream_id, key, sidecar_codec),
+        None => crate::player::sidecar::deselect(),
+    }
+}
+
+/// **The track menu's Forced only pick, together with the sidecar it drops**: [`commit_forced_only_pick`]
+/// and then the deselect of any sidecar an earlier pick drew. The track is always an embedded one
+/// the demuxer draws (a forced track the client cannot demux is not matched), so a sidecar from an
+/// earlier pick is dropped as for Off.
+pub fn commit_forced_only_and_sidecar(
+    ps: &mut PlaybackSession,
+    render_ordinal: i32,
+    stream_id: i64,
+    lang: &str,
+    changed: bool,
+) {
+    commit_forced_only_pick(ps, render_ordinal, stream_id, render_ordinal >= 0, lang, changed);
+    crate::player::sidecar::deselect();
+}
+
 /// A subtitle commit the PLAYBACK derives from the mode, not one the viewer made: the audio follow
 /// and the container-name re-match. It goes through the one commit every pick does (the burn
 /// refresh, the selection PUT, the side reader) and writes no memory; `forced_only` puts the mode

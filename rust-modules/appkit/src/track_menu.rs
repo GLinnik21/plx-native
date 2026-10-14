@@ -570,8 +570,8 @@ pub enum TrackCommit {
     AudioEnhancement(plx_plex::plex::AudioEnhancements),
     /// `sidecar_key` is `Some` when the pick is an EXTERNAL text subtitle the client can draw
     /// on direct play (`metadata::Stream::sidecar_renderable`): it has no demuxer ordinal
-    /// (`render_ordinal` is -1), so the loop hands it to `player::sidecar` beside the unchanged
-    /// route commit. `sidecar_codec` preserves ASS/SSA on download; a key need not have an
+    /// (`render_ordinal` is -1), so `route::commit_subtitle_and_sidecar` hands it to `player::sidecar`
+    /// beside the unchanged route commit. `sidecar_codec` preserves ASS/SSA on download; a key need not have an
     /// extension. `None` — Off, or an embedded track — deselects any sidecar. `memo` is
     /// `SubtitleMemo::Off` for Off and `Track(..)` for every track, an embedded one, a sidecar or
     /// a fresh download alike; `None` for an OK on the row that is already checked (a row that is
