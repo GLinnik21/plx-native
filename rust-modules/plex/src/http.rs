@@ -58,8 +58,14 @@
 //! every PMS path carries `X-Plex-Token` in its query string, so an automatic cross-origin follow
 //! would give libcurl permission to replay a token-bearing URL outside the origin we selected and
 //! verified. The plex.tv account wrappers also keep redirects off because their custom headers
-//! carry a token. Only the public, headerless QR-image fetch may follow one: at most five hops,
-//! HTTP(S) only, and never from HTTPS down to HTTP.
+//! carry a token, and `net::request_tls_evidence` enforces the pairing rather than trusting it: a
+//! request that follows redirects and carries ANY caller header is refused before it is dialled.
+//! Only the public, headerless QR-image fetch may follow one: at most five hops, HTTP(S) only, and
+//! never from HTTPS down to HTTP.
+//!
+//! **Headers.** A caller's header lines are checked once, for both transports, by
+//! `plx_net::net::headers`: a line that ends a header, or names one the transport writes itself
+//! (`Host`, `User-Agent`, `Content-Length`, `Transfer-Encoding`), is refused rather than sent.
 //!
 //! **A short body is reported on one arm only.** `stream.rs` logs a line when a response ends
 //! before its `Content-Length` (`note_short_body` — the difference between "the JSON would not
@@ -415,7 +421,7 @@ fn plaintext(
     body_policy: BodyPolicy,
 ) -> RequestOutcome {
     // The raw socket takes ONE `extra` blob, CRLF-terminated per line and CRLF-terminated at the
-    // end — it is spliced straight into the request head. Control-plane is one-shot: send
+    // end — it is spliced straight into the request head, after `net::headers` has checked it. Control-plane is one-shot: send
     // `Connection: close` so PMS does not wait for a second request on an fd we are about to
     // `http_close`. Media sequential GETs call `stream::http_open` directly and omit the header
     // so the demux socket can reuse. A caller that already named Connection keeps their spelling.

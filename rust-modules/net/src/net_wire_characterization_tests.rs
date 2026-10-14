@@ -1,12 +1,14 @@
 //! What the easy path (`request_tls_evidence`) puts on the wire, pinned as it is today, so that the
-//! handle-ownership and header-validation work that follows can be seen to change nothing it did
-//! not mean to.
+//! header validation of `net::headers` can be seen to change nothing it did not mean to, and what it
+//! did mean to change is graded next to it.
 //!
 //! Which fact is pinned where (the User-Agent tests of `net_user_agent_tests.rs` own the first):
 //!
 //! * exactly one `User-Agent` per request, every hop, every verb: `net_user_agent_tests.rs`;
 //! * the default `Accept: */*`, and the full header-name set of a request: here;
-//! * a caller's empty `Expect:` suppresses libcurl's `Expect: 100-continue` on a large POST: here.
+//! * a caller's empty `Expect:` suppresses libcurl's `Expect: 100-continue` on a large POST: here;
+//! * a caller's block that names a header the transport writes (`User-Agent`, `Host`), breaks a header
+//!   (CR, LF) or rides a request that follows redirects is refused before anything is dialled: here.
 //!
 //! Header ORDER is not asserted anywhere: libcurl's order is version-dependent and not a contract,
 //! so the comparisons are on the set of header names.
@@ -116,4 +118,58 @@ fn an_empty_expect_header_suppresses_the_100_continue_handshake_of_a_large_post(
         "instrument: libcurl asks for 100-continue on a body this size when nothing says otherwise: {without:?}"
     );
     assert!(!header_names(&with).contains(&"expect".to_string()), "no Expect header at all: {with:?}");
+}
+
+/// Run `request` against a loopback listener and report whether it was refused AND nothing was ever
+/// dialled.
+fn refused_without_dialling(headers: &[String], follow_redirects: bool) -> bool {
+    let srv = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    srv.set_nonblocking(true).expect("nonblocking");
+    let port = srv.local_addr().unwrap().port();
+    let got = request(&format!("http://127.0.0.1:{port}/p"), headers, "GET", None, API, follow_redirects, None, None);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    got.is_none() && srv.accept().is_err()
+}
+
+/// libcurl REPLACES the `CURLOPT_USERAGENT` value with a same-named custom header, so a caller's
+/// `User-Agent:` line would have been the one sent (and `net.rs` the "one place that applies it" in
+/// name only). It is refused, and the instrument is a block that is sent.
+#[test]
+fn a_caller_user_agent_or_host_line_is_refused_and_a_plain_block_is_sent() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    install_wire_user_agent();
+    for line in ["User-Agent: other", "user-agent:", "Host: evil.example", "Content-Length: 0", "Transfer-Encoding: chunked"] {
+        assert!(refused_without_dialling(&[line.to_string()], false), "{line:?}");
+    }
+    let got = sent("GET", &["X-Plex-Token: t".to_string()], None);
+    assert_eq!(user_agents(&got), [WIRE_USER_AGENT], "{got:?}");
+}
+
+/// A CR or LF in a header would end it and start another; a NUL would end the C string curl reads.
+#[test]
+fn a_header_line_that_would_split_the_request_is_refused() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    install_wire_user_agent();
+    for line in ["X-A: 1\r\nX-B: 2", "X-A: 1\nX-B: 2", "X-A: 1\0", "no colon", "Bad Name: v"] {
+        assert!(refused_without_dialling(&[line.to_string()], false), "{line:?}");
+    }
+}
+
+/// **The token never rides a redirect.** libcurl re-sends a custom `X-Plex-Token:` line to whatever
+/// host a `Location:` names (it strips only `Authorization` and `Cookie`, and the television's 7.53.1
+/// does not strip even those across hosts), so a request that follows redirects may carry no header of
+/// the caller's at all: it is refused whole, nothing dialled. The same block on a redirect-free
+/// request is sent.
+#[test]
+fn a_request_that_follows_redirects_is_refused_when_it_carries_a_caller_header() {
+    let _serial = plx_base::testlock::serial();
+    if !curl_ready() { return; }
+    install_wire_user_agent();
+    let token = vec!["X-Plex-Token: t".to_string()];
+    assert!(refused_without_dialling(&token, true));
+    assert!(refused_without_dialling(&["Accept: application/json".to_string()], true));
+    let got = sent("GET", &token, None);
+    assert!(got.contains("X-Plex-Token: t"), "{got:?}");
 }

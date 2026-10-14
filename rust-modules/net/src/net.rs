@@ -42,6 +42,9 @@ use std::sync::{Mutex, OnceLock};
 /// Plex layer re-exports (`plex::origin`). They live here so this layer names nothing above it.
 pub mod origin;
 
+/// What a caller may add to a request's headers, for both transports (module doc).
+pub mod headers;
+
 type CURL = c_void;
 pub type curl_slist = c_void;
 
@@ -401,7 +404,9 @@ pub fn threaded_tls_ready() -> bool {
 /// with [`set_user_agent`] before [`global_init`], instead of this layer naming the one above it.
 /// Unset (a host test that never booted, or boot refused the value) no `User-Agent` is set, which
 /// is all libcurl sends by default. This file is the one place that applies it ([`apply_user_agent`] to a curl handle,
-/// [`user_agent_header_line`] to hand-built request text), and `ci/check-user-agent.py` keeps it so. What reaches the
+/// [`user_agent_header_line`] to hand-built request text), and `ci/check-user-agent.py` keeps it so. A caller's own
+/// `User-Agent:` line cannot replace it (libcurl would let a custom header do exactly that): [`headers`] refuses the
+/// line on both transports. What reaches the
 /// socket is graded by loopback tests per transport (`net_user_agent_tests.rs`, `stream_user_agent_tests.rs`,
 /// `curlio_redirect_tests.rs`).
 static USER_AGENT: OnceLock<UserAgent> = OnceLock::new();
@@ -1580,6 +1585,23 @@ fn request_tls_evidence(
         Tls::CaBundle(p) => TlsCfg::CaBundle(CString::new(p).map_err(|_| RequestError::Transport)?),
         Tls::Pinned(p) => TlsCfg::Pinned(CString::new(p).map_err(|_| RequestError::Transport)?),
     };
+    // The caller's header block is checked BEFORE any handle exists ([`headers`]): a line that ends a
+    // header, names one the transport writes itself (the `User-Agent` libcurl would otherwise REPLACE
+    // the installed one with, `Host`, the body's framing) or is not a header is refused, never sent.
+    if let Err(refusal) = headers::check_block(headers) {
+        plx_base::eventlog::log(&format!("net: request refused: {refusal}"));
+        return Err(RequestError::Transport.into());
+    }
+    // **A redirect is followed only by a request that carries no header of the caller's.** libcurl
+    // re-sends custom headers to a redirect's target (it strips only `Authorization` and `Cookie`
+    // when the host changes, and the television's 7.53.1 predates even that), so a `X-Plex-Token:`
+    // line on a request that follows `Location:` would reach whatever host the answer names. The
+    // one caller that follows redirects (`https_get_public`, the QR fetch) sends none; this is what
+    // keeps it so for the next one.
+    if follow_redirects && !headers.is_empty() {
+        plx_base::eventlog::log("net: request refused: a request that follows redirects carries no caller headers");
+        return Err(RequestError::Transport.into());
+    }
     let hdr_owned: Vec<CString> = headers
         .iter()
         .map(|line| CString::new(line.as_str()))

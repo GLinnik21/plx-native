@@ -247,7 +247,8 @@ python3 ci/check-list-caps.py
 # `User-Agent` header in non-test Rust or in src/**/*.c fails, so a fourth transport cannot send its own name, and so does a
 # file with more `curl_easy_init` calls than `apply_user_agent` calls (or more hand-built request lines than
 # `user_agent_header_line` calls), so a new transport cannot forget to send it. Pure lexing,
-# no cargo; the self-test runs on synthetic trees in a private temp dir.
+# no cargo (rust-modules/net/src/net/headers.rs may name the header only to REFUSE a caller's own `User-Agent:` line); the
+# self-test runs on synthetic trees in a private temp dir.
 python3 ci/test_check_user_agent.py
 python3 ci/check-user-agent.py
 

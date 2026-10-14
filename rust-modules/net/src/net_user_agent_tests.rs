@@ -78,7 +78,8 @@ fn every_control_character_is_refused_and_a_plain_value_is_kept_as_written() {
 
 /// The easy path, which every account, PMS control, image, telemetry and lab request passes
 /// (`request_tls_evidence`): the installed value rides the first request AND the hop a redirect
-/// adds, exactly once whatever headers the caller passed, and on the verb the telemetry senders use
+/// adds, exactly once with or without a caller block (a caller's own `User-Agent:` line is refused,
+/// `net_wire_characterization_tests.rs`), and on the verb the telemetry senders use
 /// (a POST with a body, through the shipped-bundle `Tls` mode) as on a GET.
 #[test]
 fn every_hop_and_verb_of_an_easy_request_sends_the_installed_user_agent() {
@@ -98,19 +99,24 @@ fn every_hop_and_verb_of_an_easy_request_sends_the_installed_user_agent() {
     let _watch = keypin::Scoped::watch(&keypin::key_of("127.0.0.1", i32::from(served.port)));
     let base = format!("https://127.0.0.1:{}", served.port);
 
-    let got = request_result_evidence(
-        &format!("{base}/start"),
-        &["X-Plex-Token: t".to_string()],
+    // A request that follows redirects carries no header of the caller's (`headers`' redirect rule),
+    // so the hop is graded headerless; the caller's own block rides the next, redirect-free request.
+    let got = request_result_evidence(&format!("{base}/start"), &[], "GET", None, API, true, None, None, false)
+        .expect("the redirect is followed and answered");
+    assert_eq!(got.status, 200);
+    let with_block = request_result_evidence(
+        &format!("{base}/next"),
+        &["X-Plex-Token: t".to_string(), "Accept: application/json".to_string()],
         "GET",
         None,
         API,
-        true,
+        false,
         None,
         None,
         false,
     )
-    .expect("the redirect is followed and answered");
-    assert_eq!(got.status, 200);
+    .expect("a request with the caller's block is answered");
+    assert_eq!(with_block.status, 200);
     let bundle = test_ca_bundle::get().expect("the guard installed one");
     let posted = request_tls(&format!("{base}/post"), &[], "POST", Some(b"{\"a\":1}"), API, false, Some(4096), Tls::CaBundle(&bundle))
         .expect("the POST is answered");
@@ -118,7 +124,10 @@ fn every_hop_and_verb_of_an_easy_request_sends_the_installed_user_agent() {
 
     let seen = recorded(&served);
     let lines: Vec<&str> = seen.iter().map(|r| r.lines().next().unwrap_or_default()).collect();
-    assert_eq!(lines, ["GET /start HTTP/1.1", "GET /next HTTP/1.1", "POST /post HTTP/1.1"]);
+    assert_eq!(
+        lines,
+        ["GET /start HTTP/1.1", "GET /next HTTP/1.1", "GET /next HTTP/1.1", "POST /post HTTP/1.1"]
+    );
     for request in &seen {
         assert_eq!(user_agents(request), [WIRE_USER_AGENT], "exactly one, the installed one: {request:?}");
     }

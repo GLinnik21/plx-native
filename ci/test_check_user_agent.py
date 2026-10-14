@@ -19,12 +19,14 @@ gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate)
 
 ALLOWED = gate.ALLOWED
+REFUSES = gate.REFUSES
 OTHER = 'rust-modules/media/src/curlio.rs'
 CLEAN = {
     ALLOWED: 'const CURLOPT_USERAGENT: c_int = 10018;\n'
              'fn line() -> String { format!("User-Agent: {}\\r\\n", ua()) }\n',
     'rust-modules/plex/src/plex/identity.rs': '/// The HTTP `User-Agent` for libcurl.\n'
                                               'pub fn user_agent() -> String { format!("PlxNative/{}", V) }\n',
+    REFUSES: 'pub const RESERVED: [&str; 2] = ["host", "user-agent"];\n',
     OTHER: 'fn open() { plx_net::net::apply_user_agent(easy); }\n',
     'src/starfish.c': '/* sets the User-Agent: nothing here */ int x(void) { return 0; }\n',
 }
@@ -102,6 +104,19 @@ class Verdicts(unittest.TestCase):
         self.assertIn('allow-list', problems[0])
         missing = Tree({k: v for k, v in CLEAN.items() if k != ALLOWED}).problems()
         self.assertEqual(len(missing), 1, missing)
+
+    def test_the_header_module_may_name_the_header_it_refuses_and_nothing_else(self):
+        problems = Tree({**CLEAN, REFUSES: 'const R: [&str; 1] = ["user-agent"];\nconst O: c_int = CURLOPT_USERAGENT;\n'}).problems()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn(REFUSES, problems[0])
+        self.assertIn('CURLOPT_USERAGENT', problems[0])
+
+    def test_the_header_module_must_still_refuse_the_user_agent(self):
+        problems = Tree({**CLEAN, REFUSES: 'pub const RESERVED: [&str; 1] = ["host"];\n'}).problems()
+        self.assertEqual(len(problems), 1, problems)
+        self.assertIn(REFUSES, problems[0])
+        gone = Tree({k: v for k, v in CLEAN.items() if k != REFUSES}).problems()
+        self.assertEqual(len(gone), 1, gone)
 
 
 HANDLE = 'let h = plx_net::net::curl_easy_init();\n'
