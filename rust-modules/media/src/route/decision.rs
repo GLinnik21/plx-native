@@ -5360,12 +5360,19 @@ pub fn set_stream_codecs(ps: &mut PlaybackSession, vc: &str, ac: &str) {
 }
 
 /// **The widest raster this session can put through the decoder**, for the Starfish Load's
-/// `adaptiveStreaming` ceiling — `(0, 0)` when nobody said. Three routes, three answers:
+/// `adaptiveStreaming` ceiling — `(0, 0)` when nobody said. The pipeline allocates against the
+/// DECLARED ceiling (issue #665), so it must be what is actually fed. Three routes:
 ///
-/// * direct play / remux (`ProgressiveMkv`): the SOURCE's own coded size (`cur_src`), since the
-///   file's elementary stream is what gets fed;
-/// * a fixed quality's HLS: the source capped by that quality's [`plx_plex::plex::Ceiling`] — PMS
-///   never upscales, so the smaller of the two is the largest picture it can send;
+/// * direct play / remux and the progressive re-encode (`ProgressiveMkv`): the SOURCE's coded
+///   size (`cur_src`), capped by the session's quality ceiling when one is set. Original and
+///   Auto-Original carry no ceiling, so direct play declares the source; a fixed quality's forced
+///   re-encode over `start.mkv` declares `min(source, ceiling)` (PMS never upscales). Direct play
+///   and remux under a fixed quality are safe because the ceiling admits the source there:
+///   `quality_policy` at plan time and `apply_quality_choice`'s `admits && !is_transcoding`
+///   branch mid-play both use `Ceiling::admits` over these same `cur_src` numbers, Forced Direct
+///   Play maps to Original (ceiling `None`), and the Original handoff installs
+///   `EncodeContract::original`;
+/// * a fixed quality's HLS: the same cap;
 /// * Auto: the bounding box of every FEASIBLE actuator (`HlsActuatorCatalog::widest_feasible_raster`),
 ///   because a rung commit never re-issues `Load` and the controller may climb to the 4K point
 ///   inside the one declaration — a ceiling sized to the bootstrap rung (`plan.ceiling`, which is
@@ -5376,24 +5383,23 @@ pub fn sink_max_raster(ps: &PlaybackSession) -> (u16, u16) {
     let s = &*ps;
     let clamp = |v: i64| u16::try_from(v).unwrap_or(u16::MAX);
     let source = (clamp(s.cur_src.1), clamp(s.cur_src.2));
+    // 0 on either side means "nobody said"; the other side's number wins.
+    let axis = |src: u16, cap: i64| match (src, clamp(cap)) {
+        (0, c) => c,
+        (s, 0) => s,
+        (s, c) => s.min(c),
+    };
+    let capped = || match s.cur_contract.ceiling {
+        Some(c) => (axis(source.0, c.max_w), axis(source.1, c.max_h)),
+        None => source,
+    };
     match s.cur_contract.delivery {
-        plx_plex::plex::TranscodeDelivery::ProgressiveMkv => source,
+        plx_plex::plex::TranscodeDelivery::ProgressiveMkv => capped(),
         plx_plex::plex::TranscodeDelivery::FixedHls { .. } => {
             if applied_quality() == Quality::Auto {
                 auto_catalog(ps).widest_feasible_raster()
             } else {
-                match s.cur_contract.ceiling {
-                    Some(c) => {
-                        // 0 on either side means "nobody said"; the other side's number wins.
-                        let axis = |src: u16, cap: i64| match (src, clamp(cap)) {
-                            (0, c) => c,
-                            (s, 0) => s,
-                            (s, c) => s.min(c),
-                        };
-                        (axis(source.0, c.max_w), axis(source.1, c.max_h))
-                    }
-                    None => source,
-                }
+                capped()
             }
         }
     }

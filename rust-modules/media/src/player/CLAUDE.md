@@ -84,7 +84,7 @@ something.
   `num=601 Resource Allocation Error`, while the identical envelope carrying `"H265"` played in the
   same session, and a 1920x1080 H.264 declaration loaded in 117 ms. The rule now is exactly that
   measurement and no more: HEVC keeps 4K60; H.264 declares 1920x1080@60 when the session's widest
-  raster (`route::sink_max_raster` — source for direct play, the ceiling for a fixed quality, the
+  raster (`route::sink_max_raster` — source for direct play, min(source, ceiling) for any fixed-quality delivery (HLS or progressive), the
   catalog's widest feasible actuator for Auto, since a rung commit never re-Loads) fits FHD, and
   stays 4K60 otherwise; the device table's per-codec row (`devcaps::Caps::{h264_row,hevc_row}`,
   frame rate included) clamps it only when the table was actually read. The `load:` line carries
@@ -98,7 +98,7 @@ something.
   declared at 24 or 30 it announces 24 once and holds it — and the sink's displayed-frame counter
   measured the picture: **13.0 fps presented under the 60 declaration, 24.1 under 24**. So H.264
   declares the stream's rate class
-  (`fps_class`), HEVC keeps 60 (4K HEVC under 60 holds 24), and a transcode with no known rate
+  (`fps_class`, with a 1 ms Matroska-timebase tolerance: 30.303 declares 30, issue #665; the esInfo rational stays the raw rate), HEVC keeps 60 (4K HEVC under 60 holds 24), and a transcode with no known rate
   keeps 60. AV1 (only on a set whose codec table lists an AV1 decoder) keeps HEVC's 4K60 rule,
   clamped by `Caps::av1_row`; the clamp is unmeasured (one owner reports AV1 playing on a webOS 10.3.1 set, with no log). `/tmp/plxnative-sinkmax=WxH@F`
   overrides the envelope for the legs still unrun on 10.3.1.
