@@ -503,7 +503,9 @@ a dead source is **absent** from Home and states itself in its own library secti
   `ProfileMemory::upsert_with`. `track_memory` is account-bound (no stamp, no write; a write prunes
   every other account's record), its entry strings are bounded (an over-long one reads as absent, a
   title is cut), and it is capped at 64 entries a profile and held to a 32 KiB HOUSEHOLD budget by
-  eviction, never refusal. Nothing reads or writes it yet; the matchers come later.
+  eviction, never refusal. It is READ at resolve time (`route::recall_all` into `ResolveEnv::memory`,
+  matched by `route/track_memory.rs`, ranked above the PMS selection by `plan.rs`) and nothing writes
+  it yet, so the list stays empty in practice; the menu write comes later.
   `subtitle_offsets` is account-bound as well (since SO) under different rules: a record without a
   stamp is read as the signed-in account's own and is stamped at the list's next write
   (`MemoryEntry::ADOPTS_UNSTAMPED`), a write with no account token is still accepted, kept
