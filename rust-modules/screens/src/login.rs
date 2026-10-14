@@ -31,7 +31,8 @@
 //!
 //! **The calm default.** Until somebody acts (or a standing Yes sends one), the failure is the
 //! design system's `StatusOverlay` failed and nothing else: verdict, reason, *Try again* /
-//! *Details*. A report adds at most ONE short status line under the row ([`report_status`]); a
+//! *Details* — except the no-server verdict, whose primary is *Use another account* (a fresh QR
+//! sign-in, since another discovery with the same token cannot end differently). A report adds at most ONE short status line under the row ([`report_status`]); a
 //! helper save warning uses that line for its photographable storage stage. The
 //! Report ID lives only inside the Details card. A report still on its way carries the shared inline
 //! spinner beside plx_platform::i18n::msg::settings_login_report_sending() wherever that line is drawn — the QR screen's stall line keeps
@@ -2920,8 +2921,8 @@ mod tests {
     }
 
     /// **The failed read-out stands on the page read-out's anchor and never grows.** Its verdict
-    /// hangs from `StatusOverlay::FULL_ANCHOR_TOP` and its row — *Try again* / *Details*, nothing
-    /// else — stacks `space::LG` plus the fixed drop under the reserved two-line reason slot; a report's status line, a sendable offer and a
+    /// hangs from `StatusOverlay::FULL_ANCHOR_TOP` and its row — the primary (*Try again*, or
+    /// *Use another account* on the no-server verdict) / *Details*, nothing else — stacks `space::LG` plus the fixed drop under the reserved two-line reason slot; a report's status line, a sendable offer and a
     /// delivered report all leave the row exactly where it was.
     #[test]
     fn the_failed_readout_stands_on_the_page_lines_and_never_grows() {
