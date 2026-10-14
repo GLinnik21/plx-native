@@ -425,6 +425,12 @@ impl<E: MemoryEntry> MemoryMirror<E> {
     fn valid(state: &MirrorState<E>) -> bool {
         state.seeded.as_ref().is_some_and(|(tenure, _)| *tenure == session::tenure())
     }
+
+    /// The account stamp the mirror was seeded under: the one its reads and writes go through, so
+    /// an account-bound list (offsets) shows this account's records and not another's.
+    fn stamp(state: &MirrorState<E>) -> &str {
+        state.seeded.as_ref().map_or("", |(_, stamp)| stamp)
+    }
 }
 
 /// A mirror as data, so [`restore_all`] can walk them all.
@@ -487,10 +493,16 @@ pub fn remember<E: MemoryTenant>(
             plx_base::eventlog::log(&format!("{}: not remembered — no valid session", E::log_label()));
             return false;
         }
-        state.lists.upsert_with(user, "", &key, f.clone());
+        let stamp = MemoryMirror::stamp(&state).to_string();
+        state.lists.upsert_with(user, &stamp, &key, f.clone());
     }
     let user = user.to_string();
-    session::queue_update(move |cur| cur.with_memory::<E>(|m| m.upsert_with(&user, "", &key, f)))
+    session::queue_update(move |cur| {
+        // The file's own account: the guard has already dropped this edit if it is not the one
+        // the mirror was seeded under.
+        let stamp = plx_plex::plex::grant::account_key(&cur.account_token);
+        cur.with_memory::<E>(|m| m.upsert_with(&user, &stamp, &key, f))
+    })
 }
 
 /// Seed `E`'s mirror from `record` whatever it was seeded under before, so a test does not inherit
@@ -517,7 +529,7 @@ pub fn recall<E: MemoryTenant>(user: &str, key: &E::Key) -> Option<E> {
     if !MemoryMirror::valid(&state) {
         return None;
     }
-    state.lists.get(user, "", key).cloned()
+    state.lists.get(user, MemoryMirror::stamp(&state), key).cloned()
 }
 
 // ---- the write door -------------------------------------------------------------------------

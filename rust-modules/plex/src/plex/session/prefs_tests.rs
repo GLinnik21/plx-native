@@ -235,8 +235,8 @@ fn the_a5_rows_declare_the_scope_and_binding_main_has() {
         ("last_hero_blur", Scope::Install, false, Parse::OptionalSoft),
         ("plaintext_consent", Scope::Account, true, Parse::SoftVec),
         ("server_key_pins", Scope::Account, true, Parse::SoftVec),
-        ("last_library", Scope::Profile, false, Parse::SoftVec),
-        ("library_sorts", Scope::Profile, false, Parse::SoftVec),
+        ("last_library", Scope::Profile, true, Parse::SoftVec),
+        ("library_sorts", Scope::Profile, true, Parse::SoftVec),
     ] {
         let d = row(key);
         assert_eq!((d.scope, d.account_bound, d.parse), (scope, bound, parse), "{key}");
@@ -245,8 +245,8 @@ fn the_a5_rows_declare_the_scope_and_binding_main_has() {
 }
 
 /// The `subtitle_offsets` row is a `Preferences` field under its own key, written only while
-/// non-empty, and its descriptor is the memory-door tenant it was before A5 (per item, not
-/// account-bound yet, no live cell, no Settings row). It is a `Row` and not a `ListRow`: the
+/// non-empty, and its descriptor is the memory-door tenant it was before A5 (per item, account-bound
+/// from SO on, no live cell, no Settings row). It is a `Row` and not a `ListRow`: the
 /// whole-list accessor is exactly what the memory door exists to withhold.
 #[test]
 fn the_subtitle_offsets_row_names_its_own_field() {
@@ -266,7 +266,7 @@ fn the_subtitle_offsets_row_names_its_own_field() {
     let back: Preferences = serde_json::from_value(body).unwrap();
     assert_eq!(back, p);
     let row = DESCRIPTORS.iter().find(|d| d.key == SubtitleOffsetsPref::KEY).expect("the row is in the table");
-    assert_eq!((row.scope, row.account_bound, row.live, row.settings, row.parse), (Scope::PerItem, false, false, None, Parse::SoftVec));
+    assert_eq!((row.scope, row.account_bound, row.live, row.settings, row.parse), (Scope::PerItem, true, false, None, Parse::SoftVec));
 }
 
 /// What garbage a key is fed, per descriptor key. A descriptor with no entry here fails

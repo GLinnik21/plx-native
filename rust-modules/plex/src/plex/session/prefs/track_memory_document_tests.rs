@@ -1197,7 +1197,8 @@ fn a_first_write_onto_no_record_is_guarded_too() {
 // ---- sign-out, and the previous build -----------------------------------------------------------
 
 /// **Sign-out drops the track memory** through the production coordinator (`Mutation::ClearTenure`),
-/// beside the keys that already went, while a per-profile list that is not account-bound stays.
+/// beside the keys that already went, and the offsets with it (SO): every per-profile memory list is
+/// account-bound.
 #[test]
 fn sign_out_drops_the_track_memory() {
     let mut store = store();
@@ -1216,10 +1217,9 @@ fn sign_out_drops_the_track_memory() {
     let mut transport = |request: Request| Ok(store.dispatch(request));
     assert!(matches!(persistence::commit_clear_with(&mut transport), persistence::CanonicalCommit::Durable { .. }));
     let after = stored_preferences(&mut store);
-    for key in ["track_memory", "server_key_pins", "plaintext_consent"] {
+    for key in ["track_memory", "subtitle_offsets", "server_key_pins", "plaintext_consent"] {
         assert!(after.get(key).is_none(), "`{key}` does not survive sign-out: {after}");
     }
-    assert_eq!(after["subtitle_offsets"], before["subtitle_offsets"], "a list that is not account-bound stays (the SO PR's business)");
 }
 
 /// **A0 item 16, the real shape.** A0 feeds tier 1 a track memory in shapes nothing writes. This is

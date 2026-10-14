@@ -1794,9 +1794,9 @@ impl LibraryViews {
 /// One profile's remembered subtitle sync-timing corrections. See [`Preferences::subtitle_offsets`].
 ///
 /// The first tenant of the memory door ([`prefs::ProfileList`]): `{user, items, extensions}` on
-/// disk exactly as it was before the door existed (`account` is skipped while empty, and this
-/// tenant is not account-bound). Oldest first: a re-tuned item moves to the end and the cap drops
-/// from the front ([`SubtitleOffsetEntry`]'s [`MemoryEntry`] impl names the cap and the key).
+/// disk exactly as it was before the door existed (`account` is skipped while empty; the tenant is
+/// account-bound, so a record carries its account's stamp and sign-out drops the list). Oldest
+/// first: a re-tuned item moves to the end and the cap drops from the front ([`SubtitleOffsetEntry`]'s [`MemoryEntry`] impl names the cap and the key).
 pub type SubtitleOffsets = prefs::ProfileList<SubtitleOffsetEntry>;
 
 /// One item's remembered subtitle sync-timing correction, in milliseconds
@@ -2387,7 +2387,9 @@ impl Session {
     }
 
     /// One profile's remembered subtitle sync-timing correction for one item, `None` for a
-    /// profile that never tuned one (or a different item/server).
+    /// profile that never tuned one (or a different item/server). Reads the profile's record
+    /// whatever its account stamp: the player's read is [`prefs::ProfileMemory::get`] under the
+    /// signed-in account's stamp, which is what hides another account's record.
     pub fn subtitle_offset_for(&self, user: &str, machine_id: &str, rating_key: &str) -> Option<i64> {
         self.prefs.subtitle_offsets.iter().find(|o| o.user == user)
             .and_then(|o| o.get(machine_id, rating_key))
@@ -2396,8 +2398,8 @@ impl Session {
     /// Record (or, with `None`, forget) one item's subtitle offset for one profile, leaving every
     /// other profile's alone — [`Session::set_view_for`]'s reason. A profile whose last entry is
     /// forgotten loses its record entirely, so the list never carries empties. The in-memory
-    /// half of the memory door's `upsert_with` ([`prefs::ProfileMemory`]), with the tenant's
-    /// empty account (offsets are not account-bound yet).
+    /// half of the memory door's `upsert_with` ([`prefs::ProfileMemory`]), stamping the record with
+    /// this session's own account (`grant::account_key`; none without an account token).
     pub fn set_subtitle_offset_for(&mut self, user: &str, machine_id: &str, rating_key: &str, offset_ms: Option<i64>) {
         let entry = offset_ms.map(|offset_ms| SubtitleOffsetEntry {
             machine_id: machine_id.to_string(),
@@ -2406,7 +2408,8 @@ impl Session {
             extensions: Default::default(),
         });
         let key = (machine_id.to_string(), rating_key.to_string());
-        self.prefs.subtitle_offsets.upsert_with(user, "", &key, |_| entry);
+        let account = super::grant::account_key(&self.account_token);
+        self.prefs.subtitle_offsets.upsert_with(user, &account, &key, |_| entry);
     }
 }
 

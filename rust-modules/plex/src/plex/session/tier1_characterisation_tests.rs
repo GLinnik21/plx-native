@@ -105,13 +105,13 @@ fn stored_public(transport: &mut dyn client::Transport) -> state::PublicPayload 
     snapshot.state.public
 }
 
-/// **Sign-out on DB8 keeps every INSTALL key and, today, also the per-profile keys that are not
-/// named in `ACCOUNT_BOUND_PREFERENCES`.** `ClearTenure` keeps `public.preferences` whole except
-/// `server_key_pins`, `plaintext_consent` and `track_memory`, and resets every other slot of the public payload
-/// (`client_id`, `pins`, `recents`, ...). So `subtitle_offsets`, `library_sorts` and
-/// `last_library` DO survive a sign-out today. Pinned as it is; the SO PR flips these three.
+/// **Sign-out on DB8 keeps every INSTALL key and drops every key named in
+/// `ACCOUNT_BOUND_PREFERENCES`.** `ClearTenure` keeps `public.preferences` whole except
+/// `server_key_pins`, `plaintext_consent`, `track_memory`, `subtitle_offsets`, `library_sorts` and
+/// `last_library`, and resets every other slot of the public payload (`client_id`, `pins`,
+/// `recents`, ...). DECLARED FLIP (SO, QR3): the last three used to survive a sign-out.
 #[test]
-fn db8_signout_keeps_install_keys_and_per_profile_preferences_but_not_pins_recents_or_account_bound_keys() {
+fn db8_signout_keeps_install_keys_but_not_pins_recents_or_account_bound_keys() {
     let mut backend = helper();
     let mut transport = |request: Request| Ok(backend.dispatch(request));
     let session = rich();
@@ -140,21 +140,17 @@ fn db8_signout_keeps_install_keys_and_per_profile_preferences_but_not_pins_recen
         "deck_press", "audio_enhancements", "last_hero_blur"] {
         assert_eq!(after.preferences.get(key), before.preferences.get(key), "install key `{key}` survives sign-out");
     }
-    // The per-profile keys that ClearTenure does not name survive too (SO flips these).
-    for key in ["subtitle_offsets", "library_sorts", "last_library"] {
-        assert_eq!(after.preferences.get(key), before.preferences.get(key), "`{key}` survives sign-out today");
-    }
-    // The two account-bound keys do not.
-    for key in ["server_key_pins", "plaintext_consent"] {
+    // The account-bound keys do not (SO: the three per-profile keys joined the list).
+    for key in ["server_key_pins", "plaintext_consent", "subtitle_offsets", "library_sorts", "last_library"] {
         assert!(after.preferences.get(key).is_none(), "`{key}` is dropped by sign-out");
     }
     // The other public slots are reset: the account's identity, home pins and recent searches go.
     assert_eq!(after.client_id, None);
     assert!(after.pins.is_null(), "home pins do not survive sign-out");
     assert!(after.recents.is_null(), "recent searches do not survive sign-out");
-    // Exactly the stored keys, minus the two: nothing else appeared or vanished.
+    // Exactly the stored keys, minus the five: nothing else appeared or vanished.
     let mut expected = before.preferences.clone();
-    for key in ["server_key_pins", "plaintext_consent"] {
+    for key in ["server_key_pins", "plaintext_consent", "subtitle_offsets", "library_sorts", "last_library"] {
         expected.as_object_mut().unwrap().remove(key);
     }
     assert_eq!(after.preferences, expected);
@@ -488,4 +484,99 @@ fn tier1_negative_control_a_new_public_slot_or_state_field_fails_decode() {
     assert_eq!(
         state::CanonicalState::decode(&serde_json::to_vec(&top_level).unwrap(), state::Flavor::Stable).unwrap_err(),
         state::StateError::Invalid, "an extra top-level field is refused");
+}
+
+// ---- SO: the real shape of stamped offsets, and the one login that is not a sign-out ------------
+
+/// **Item 16, the real-shape case for stamped offsets (SO).** A's cases above use guessed shapes;
+/// this one serializes a REAL new-build session, whose offset record carries the account stamp it
+/// wrote itself, and feeds it to the old build's parse and to the platform codec. The stamp is a
+/// per-record key the old build keeps opaquely (`extensions`); credentials and today's keys are
+/// intact on both stores.
+#[test]
+fn tier1_real_shape_stamped_offsets_are_read_by_the_old_build_and_the_codec() {
+    let original = rich();
+    let stamp = crate::plex::grant::account_key("tier1-account");
+    assert!(!stamp.is_empty());
+    let (public, auth) = split_canonical(&original).unwrap();
+    assert_eq!(public.preferences["subtitle_offsets"][0]["account"], serde_json::json!(stamp),
+        "the real record is stamped with its own account");
+    assert!(public.preferences["subtitle_offsets"][0]["items"][0].get("account").is_none(), "the entries are not");
+
+    // The DB8 path: the platform codec, then the old build's parse and join.
+    let bytes = canonical_state(&public, public.preferences.clone()).encode().expect("encode validates");
+    let decoded = state::CanonicalState::decode(&bytes, state::Flavor::Stable).expect("decode validates");
+    assert_eq!(decoded.public.preferences, public.preferences, "the codec keeps the preferences byte for byte");
+    let parsed = v0::CanonicalSessionPreferences::parse(&decoded.public.preferences);
+    assert_eq!(parsed.subtitle_offsets.len(), 1);
+    assert_eq!(parsed.subtitle_offsets[0].user, "u-7");
+    assert_eq!(parsed.subtitle_offsets[0].items[0].offset_ms, 1_500);
+    assert_eq!(parsed.subtitle_offsets[0].extensions.0.get("account"), Some(&serde_json::json!(stamp)),
+        "the old build keeps the stamp opaque");
+    let joined = join_canonical(&decoded.public, &auth).expect("the credentials still open");
+    assert_credentials_intact(&joined, &original, "db8");
+    assert_eq!(joined.subtitle_offset_for("u-7", MACHINE, "rk-1"), Some(1_500));
+
+    // The legacy-file path: the same record in the file's top level key, parsed by the frozen `v0`.
+    let file = serde_json::to_value(&original).unwrap();
+    assert_eq!(file["subtitle_offsets"][0]["account"], serde_json::json!(stamp));
+    let parsed: v0::Session = serde_json::from_value(file).expect("the old build still reads the file");
+    assert_eq!(parsed.account_token, original.account_token);
+    assert_eq!(parsed.subtitle_offsets[0].items[0].offset_ms, 1_500);
+    assert_eq!(parsed.subtitle_offsets[0].extensions.0.get("account"), Some(&serde_json::json!(stamp)));
+}
+
+/// **N7: the one login that is not a sign-out keeps today's behaviour.** boot.rs :1105-1107 starts a
+/// QR sign-in with the stored session still on disk, so the new token replaces the old without a
+/// `ClearTenure`. `library_sorts` and `last_library` are cleared by sign-out (SO) but are not
+/// stamped, so this login's account inherits them, as it does today. The stamped offsets do not
+/// pass: they stay in the file under the previous account's stamp, and read as nothing to the new
+/// one.
+#[test]
+fn relogin_without_clear_keeps_library_views() {
+    use super::prefs::ProfileMemory;
+    let mut backend = helper();
+    let mut transport = |request: Request| Ok(backend.dispatch(request));
+    let first = rich();
+    assert!(matches!(
+        persistence::commit_session_with(&first, false, SaveAuthority::FreshReauthentication, 4, &mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    let before = stored_public(&mut transport);
+
+    let mut second = first.clone();
+    second.account_token = "tier1-account-2".into();
+    assert!(matches!(
+        persistence::commit_session_with(&second, false, SaveAuthority::FreshReauthentication, 4, &mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    let after = stored_public(&mut transport);
+
+    for key in ["library_sorts", "last_library"] {
+        assert!(before.preferences.get(key).is_some(), "control: `{key}` was stored");
+        assert_eq!(after.preferences.get(key), before.preferences.get(key), "`{key}` is inherited by the next login");
+    }
+    let offsets: Vec<SubtitleOffsets> = serde_json::from_value(after.preferences["subtitle_offsets"].clone()).unwrap();
+    let key = (MACHINE.to_string(), "rk-1".to_string());
+    assert_eq!(offsets.get("u-7", &crate::plex::grant::account_key("tier1-account"), &key).map(|e| e.offset_ms), Some(1_500),
+        "the previous account's record is still in the file, under its own stamp");
+    assert!(offsets.get("u-7", &crate::plex::grant::account_key("tier1-account-2"), &key).is_none(),
+        "and reads as nothing to the account that logged in over it");
+
+    // The new account's first writes: the view it inherited is still there beside its own, and the
+    // previous account's offsets are pruned by the write to the list.
+    second.set_view_for("u-7", LibraryView {
+        machine_id: MACHINE.into(), key: 2, sort: "titleSort".into(), desc: false, ..Default::default()
+    });
+    second.set_subtitle_offset_for("u-7", MACHINE, "rk-2", Some(900));
+    assert!(matches!(
+        persistence::commit_session_with(&second, false, SaveAuthority::Routine, 4, &mut transport),
+        persistence::CanonicalCommit::Durable { .. }));
+    let written = stored_public(&mut transport);
+    let views = &written.preferences["library_sorts"][0]["libs"];
+    assert_eq!(views.as_array().map(Vec::len), Some(2), "the inherited view stays beside the new one: {views}");
+    assert_eq!(views[0]["sort"], serde_json::json!("addedAt"), "the previous account's view is still there");
+    let offsets: Vec<SubtitleOffsets> = serde_json::from_value(written.preferences["subtitle_offsets"].clone()).unwrap();
+    assert_eq!(offsets.len(), 1, "the previous account's offsets are pruned: {offsets:?}");
+    assert_eq!(offsets[0].account, crate::plex::grant::account_key("tier1-account-2"));
+    assert_eq!(offsets[0].items.len(), 1);
+    assert_eq!(offsets[0].items[0].rating_key, "rk-2");
 }

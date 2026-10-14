@@ -113,7 +113,7 @@ conservative choice) learn nothing. It lives in `Preferences::server_key_pins`, 
 `ProfileCreds`, which are cloned per profile), soft-parsed and skipped while empty.
 **It is in the PUBLIC preferences, so sign-out forgets it by an explicit rule, not with the
 credentials:** `Mutation::ClearTenure` retains `public.preferences` whole except the keys in
-`storage::state::ACCOUNT_BOUND_PREFERENCES` (`server_key_pins` and `plaintext_consent`, issue #385, and the per-show `track_memory`), so sign-out — and "Delete all
+`storage::state::ACCOUNT_BOUND_PREFERENCES` (the account's own lists, `server_key_pins` and `plaintext_consent`, issue #385, and every profile's remembered browsing and playback memory: `track_memory`, `subtitle_offsets`, `library_sorts` and `last_library`; read the constant for the current set), so sign-out — and "Delete all
 local data", which runs it first — leaves the stored record with no learned key, and the next account to sign in opens with none
 (`migration_tests::helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_none`;
 for the answers, `helper_signout_forgets_the_plaintext_answers_and_signing_back_in_asks_again`).
@@ -478,8 +478,10 @@ a dead source is **absent** from Home and states itself in its own library secti
   cache, not a per-call file transaction.
 - **Every preference key but `language` lives in ONE struct, `session/prefs.rs`'s `Preferences`**
   (the nine player settings, `auto_sign_in`, `trailer_autoplay`, `last_hero_blur`, the account-bound
-  `plaintext_consent` and `server_key_pins`, the per-profile `last_library` and `library_sorts`, and
-  the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
+  `plaintext_consent` and `server_key_pins`, the per-profile `last_library` and `library_sorts` (cleared
+  at sign-out like every `ACCOUNT_BOUND = true` row in `prefs::DESCRIPTORS`, but their records carry no
+  account stamp, so the one login that is not a sign-out, a stored session that could not be activated
+  in `app/boot.rs`, leaves them to the next account), and the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
   forms — the legacy file's `Session` and the canonical preference record — declared before each
   form's own `extensions`, so the flatten takes its keys first and the unknown-key map still sees
   only keys nobody models. A new key of that kind is a `Preferences` field (its serde attributes
@@ -502,6 +504,13 @@ a dead source is **absent** from Home and states itself in its own library secti
   every other account's record), its entry strings are bounded (an over-long one reads as absent, a
   title is cut), and it is capped at 64 entries a profile and held to a 32 KiB HOUSEHOLD budget by
   eviction, never refusal. Nothing reads or writes it yet; the matchers come later.
+  `subtitle_offsets` is account-bound as well (since SO) under different rules: a record without a
+  stamp is read as the signed-in account's own and is stamped at the list's next write
+  (`MemoryEntry::ADOPTS_UNSTAMPED`), a write with no account token is still accepted, kept
+  unstamped, and prunes nothing, and a record stamped for another account reads as nothing and is
+  pruned by the next write. The media half (`route/prefs.rs` `remember`) stamps its mirror write with
+  the stamp the mirror was seeded under (`decision_memory_tests`
+  `a_retune_or_a_forget_reaches_the_stamped_record_the_restore_seeded`).
 - **The DB8 document may not pass `MAX_LOGICAL_BYTES` (256 KiB), and per-profile memory is what
   grows it.** Past the cap EVERY write fails (`LogicalTooLarge`, reported as `InvalidSchema`), so
   `persistence::commit_session_with` measures the projected document (platform's own

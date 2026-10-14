@@ -158,6 +158,94 @@ fn restore_all_seeds_the_mirror_from_the_record() {
     tidy();
 }
 
+/// **SO: the door stamps what it writes with the signed-in account.** The mirror reads and writes
+/// under the stamp it was seeded with, and the queued file write under the file's own: a pick lands
+/// in the file as a record stamped for the account, a record a previous build left unstamped is
+/// adopted by that write, and a record stamped for another account is neither recalled nor kept.
+#[test]
+fn the_door_stamps_its_writes_adopts_legacy_records_and_drops_another_accounts() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let _session = session::TempSession::new("memory-so-stamp");
+    let mut record = signed_in("acct");
+    // A legacy (unstamped) record of this profile, and a record of another account's.
+    record.prefs.subtitle_offsets = serde_json::from_value(serde_json::json!([
+        {"user": "", "items": [{"machine_id": "machine-so", "rating_key": "rk-legacy", "offset_ms": 700}]},
+        {"user": "kid", "account": "ffffffffffffffff",
+         "items": [{"machine_id": "machine-so", "rating_key": "rk-foreign", "offset_ms": 800}]},
+    ]))
+    .unwrap();
+    session::save(&record);
+    assert_eq!(session::peek().client_id, "cid-1");
+    seed_memory_for_test::<SubtitleOffsetEntry>(&session::peek());
+    let _sid = playing(&mut ps, "machine-so", "rk-new");
+    let stamp = plx_plex::plex::grant::account_key("acct");
+
+    assert_eq!(recall::<SubtitleOffsetEntry>("", &key("machine-so", "rk-legacy")).map(|e| e.offset_ms), Some(700),
+        "the legacy record is the account's own");
+    assert_eq!(recall::<SubtitleOffsetEntry>("kid", &key("machine-so", "rk-foreign")), None,
+        "another account's record reads as nothing");
+
+    persist_subtitle_offset(&ps, 1_800);
+    plx_base::storage_worker::drain_for_test();
+
+    let stored = session::peek().prefs.subtitle_offsets.clone();
+    assert_eq!(stored.len(), 1, "the foreign record is pruned and the legacy one adopted in place: {stored:?}");
+    assert_eq!((stored[0].user.as_str(), stored[0].account.as_str()), ("", stamp.as_str()));
+    let rks: Vec<_> = stored[0].items.iter().map(|e| (e.rating_key.as_str(), e.offset_ms)).collect();
+    assert_eq!(rks, [("rk-legacy", 700), ("rk-new", 1_800)]);
+    assert_eq!(recall::<SubtitleOffsetEntry>("", &key("machine-so", "rk-new")).map(|e| e.offset_ms), Some(1_800));
+    tidy();
+}
+
+/// **SO: the mirror half of the door stamps too.** A restore seeds the mirror from a file that
+/// already holds a STAMPED record of the item; re-tuning it, or forgetting it, must reach that same
+/// record. A mirror write that dropped the stamp would land in a second, unstamped record, and
+/// `recall` (which reads the stamped record first) would keep answering the old value until a
+/// restart.
+#[test]
+fn a_retune_or_a_forget_reaches_the_stamped_record_the_restore_seeded() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let _session = session::TempSession::new("memory-so-mirror-stamp");
+    let mut record = signed_in("acct");
+    record.set_subtitle_offset_for("", "machine-x", "rk-k", Some(900));
+    session::save(&record);
+    assert_eq!(session::peek().client_id, "cid-1");
+    seed_memory_for_test::<SubtitleOffsetEntry>(&session::peek());
+    let _sid = playing(&mut ps, "machine-x", "rk-k");
+    let stamp = plx_plex::plex::grant::account_key("acct");
+    assert_eq!(
+        recall::<SubtitleOffsetEntry>("", &key("machine-x", "rk-k")).map(|e| e.offset_ms),
+        Some(900),
+        "setup: the seeded mirror holds the stamped pick"
+    );
+
+    let parked = Parked::new();
+    persist_subtitle_offset(&ps, 1_200);
+    assert_eq!(
+        recall::<SubtitleOffsetEntry>("", &key("machine-x", "rk-k")).map(|e| e.offset_ms),
+        Some(1_200),
+        "the re-tune replaces the stamped pick in the mirror, not a second unstamped one beside it"
+    );
+    persist_subtitle_offset(&ps, 0);
+    assert_eq!(
+        recall::<SubtitleOffsetEntry>("", &key("machine-x", "rk-k")),
+        None,
+        "and forgetting it removes the stamped pick"
+    );
+    persist_subtitle_offset(&ps, 1_200);
+    parked.release();
+    plx_base::storage_worker::drain_for_test();
+
+    let stored = session::peek().prefs.subtitle_offsets.clone();
+    assert_eq!(stored.len(), 1, "one record in the file: {stored:?}");
+    assert_eq!((stored[0].user.as_str(), stored[0].account.as_str()), ("", stamp.as_str()));
+    let items: Vec<_> = stored[0].items.iter().map(|e| (e.rating_key.as_str(), e.offset_ms)).collect();
+    assert_eq!(items, [("rk-k", 1_200)]);
+    tidy();
+}
+
 /// A never-restored mirror answers nothing and refuses a write: there is no valid session to
 /// remember into, and the refusal leaves the file alone.
 #[test]

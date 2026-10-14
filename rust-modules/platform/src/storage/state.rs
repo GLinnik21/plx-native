@@ -169,7 +169,20 @@ pub struct AuthContext {
 /// `machineIdentifier`; `track_memory` is each profile's remembered audio and subtitle picks per
 /// show (`plex::session::prefs::TrackMemoryEntry`), which name a `machineIdentifier` and a show
 /// and belong to the account that watched it.
-pub const ACCOUNT_BOUND_PREFERENCES: &[&str] = &["server_key_pins", "plaintext_consent", "track_memory"];
+///
+/// The last three are each profile's own browsing and playback memory, which sign-out forgets with
+/// the account whose profile it was: `subtitle_offsets` (the timing correction a profile tuned for
+/// one item, naming a `machineIdentifier` and a ratingKey), `library_sorts` (how each library was
+/// last browsed) and `last_library` (the library each top tab opened in), the last two naming a
+/// server and a section.
+pub const ACCOUNT_BOUND_PREFERENCES: &[&str] = &[
+    "server_key_pins",
+    "plaintext_consent",
+    "track_memory",
+    "subtitle_offsets",
+    "library_sorts",
+    "last_library",
+];
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", deny_unknown_fields)]
@@ -1842,7 +1855,7 @@ mod tests {
         let setting = Mutation::UpdatePreferences {
             public: PublicPayload {
                 preferences: json!({
-                    "language": "be", "subtitle_offsets": [{"user": "", "items": []}],
+                    "language": "be", "auto_sign_in": true,
                     "track_memory": [{"user": "", "account": "0011223344556677", "items": [
                         {"machine_id": "m", "show_rk": "42", "audio": {"lang": "eng"}}]}],
                 }),
@@ -1853,7 +1866,35 @@ mod tests {
         let clear = Mutation::ClearTenure { auth_generation: generation(4) };
         let (cleared, _) = state.apply(&operation(&state, 3, clear)).unwrap();
         assert_eq!(cleared.public.preferences,
-            json!({"language": "be", "subtitle_offsets": [{"user": "", "items": []}]}));
+            json!({"language": "be", "auto_sign_in": true}));
+    }
+
+    /// Sign-out forgets what each profile remembered of its own browsing and playback with the
+    /// other account-bound preferences (QR3): the subtitle timing corrections (each names a server
+    /// and a ratingKey), how each library was last browsed, and the library each tab opened in.
+    /// The install-wide keys beside them stay.
+    #[test]
+    fn clear_tenure_removes_offsets_library_views_and_last_library() {
+        for key in ["subtitle_offsets", "library_sorts", "last_library"] {
+            assert!(ACCOUNT_BOUND_PREFERENCES.contains(&key), "{key} is account-bound");
+        }
+        let state = initial();
+        let setting = Mutation::UpdatePreferences {
+            public: PublicPayload {
+                preferences: json!({
+                    "language": "be", "auto_sign_in": true,
+                    "subtitle_offsets": [{"user": "", "account": "0011223344556677", "items": [
+                        {"machine_id": "m", "rating_key": "9", "offset_ms": -250}]}],
+                    "library_sorts": [{"user": "", "libs": [{"machine_id": "m", "key": 3, "sort": "plays"}]}],
+                    "last_library": [{"user": "", "libs": [{"kind": "movie", "machine_id": "m", "key": 3}]}],
+                }),
+                ..PublicPayload::default()
+            },
+        };
+        let (state, _) = state.apply(&operation(&state, 2, setting)).unwrap();
+        let clear = Mutation::ClearTenure { auth_generation: generation(4) };
+        let (cleared, _) = state.apply(&operation(&state, 3, clear)).unwrap();
+        assert_eq!(cleared.public.preferences, json!({"language": "be", "auto_sign_in": true}));
     }
 }
 

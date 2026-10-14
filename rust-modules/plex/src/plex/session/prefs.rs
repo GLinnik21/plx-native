@@ -206,6 +206,11 @@ pub struct Preferences {
     /// like [`super::PinnedLib`] — never a section INDEX, which the table renumbers on every
     /// `browse::reset` and on a re-discovery that appends.
     ///
+    /// Cleared with the credentials at sign-out (`storage::state::ACCOUNT_BOUND_PREFERENCES`), so a
+    /// profile's choice does not outlive the account that made it. Its records are not stamped, so
+    /// the one login that is not a sign-out (a stored session that could not be activated, boot.rs)
+    /// leaves them to the next account.
+    ///
     /// Soft-parsed for the reason every list in this struct is: one hand-edited entry costs that
     /// entry, never the credentials.
     #[serde(default, deserialize_with = "super::de_soft_vec")]
@@ -231,6 +236,9 @@ pub struct Preferences {
     /// Bounded per profile ([`super::LibraryViews::CAP`], most recent kept), and choosing a library's
     /// DEFAULT view back removes its entry rather than recording it, so the list holds only the
     /// libraries somebody actually changed.
+    ///
+    /// Cleared with the credentials at sign-out (`storage::state::ACCOUNT_BOUND_PREFERENCES`) and,
+    /// like [`Preferences::last_library`], not stamped.
     ///
     /// Soft-parsed for the reason every list in this struct is; omitted while empty so a session
     /// that never changed a view serializes exactly as it did before the field existed.
@@ -268,6 +276,11 @@ pub struct Preferences {
     /// credential guard. So this list is what a restart or a handoff re-seeds from, and it can lag
     /// the mirror by the writes still queued.
     ///
+    /// Account-bound, like `track_memory`: every record carries the account stamp, a stamp that is
+    /// not the signed-in account's reads as nothing, and sign-out drops the whole key
+    /// (`storage::state::ACCOUNT_BOUND_PREFERENCES`). A record written before the stamp existed is
+    /// adopted (read as the signed-in account's, stamped at the list's next write).
+    ///
     /// Soft-parsed for the reason every list in this struct is; omitted while empty so a session
     /// that never tuned a subtitle's timing serializes exactly as it did before the field existed.
     #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
@@ -275,9 +288,9 @@ pub struct Preferences {
 }
 
 /// How long a setting's value lives, and who owns the write. The nine player scalars, `auto_sign_in`,
-/// `trailer_autoplay` and `last_hero_blur` are `Install`; the two lists sign-out clears are
+/// `trailer_autoplay` and `last_hero_blur` are `Install`; the two lists of the account itself are
 /// `Account`; the library lists are `Profile`; `track_memory` is `PerShow` and `subtitle_offsets`
-/// is `PerItem`.
+/// is `PerItem`. Sign-out clears every row that is account-bound, whatever its scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     /// The television: shared by every profile, kept across sign-out, never account-bound.
@@ -457,12 +470,14 @@ macro_rules! list_row {
     };
 }
 
-// The two lists sign-out clears (`ACCOUNT_BOUND_PREFERENCES`).
+// The two lists of the account itself (`ACCOUNT_BOUND_PREFERENCES`).
 list_row!(PlaintextConsentRow: PlaintextConsent = plaintext_consent, "plaintext_consent", Account, account true);
 list_row!(ServerKeyPinsRow: ServerKeyPin = server_key_pins, "server_key_pins", Account, account true);
-// The per-profile library lists. Sign-out keeps them today (SO makes them account-bound).
-list_row!(LastLibraryRow: LastLibrary = last_library, "last_library", Profile, account false);
-list_row!(LibraryViewsRow: LibraryViews = library_views, "library_sorts", Profile, account false);
+// The per-profile library lists. Sign-out clears them (`ACCOUNT_BOUND_PREFERENCES`), but their
+// records are not stamped: the one login that is not a sign-out (boot.rs, a stored session that
+// could not be activated) leaves them to the next account, as it always has.
+list_row!(LastLibraryRow: LastLibrary = last_library, "last_library", Profile, account true);
+list_row!(LibraryViewsRow: LibraryViews = library_views, "library_sorts", Profile, account true);
 
 /// A setting as data, so a test (and a later generic restore) can walk them all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -559,9 +574,10 @@ impl Session {
 /// list shares (`subtitle_offsets` and `track_memory`). `{user, items, extensions}` is
 /// exactly what `subtitle_offsets` was on disk before the door, so a file is read and written
 /// byte for byte as before; `account` is the stamp of an account-bound list and is skipped while
-/// empty. `subtitle_offsets` and `track_memory` are the two tenants. `subtitle_offsets` is not
-/// account-bound, so its `account` stays empty and writes no key. `track_memory` is account-bound,
-/// so every record carries the stamp.
+/// empty. `subtitle_offsets` and `track_memory` are the two tenants, and both are account-bound, so
+/// every record they write carries the stamp. A `subtitle_offsets` file written before it was bound
+/// holds records with none, which the list adopts ([`MemoryEntry::ADOPTS_UNSTAMPED`]) and so stamps
+/// at its next write; a `track_memory` record without one is nobody's.
 ///
 /// The list as a whole is a `Vec<ProfileList<E>>` held in a [`Session`] field and soft-parsed per
 /// element, so one bad profile record drops only that record; [`ProfileMemory`] is the operations
@@ -600,8 +616,18 @@ pub trait MemoryEntry: Serialize + DeserializeOwned + Clone + PartialEq {
     /// account stamp (`grant::account_key`), a record stamped for another account reads as nothing,
     /// a write is refused without a stamp, and a write prunes every record that is not its own.
     /// Pair it with the key in `storage::state::ACCOUNT_BOUND_PREFERENCES` (`prefs_tests`' T-account
-    /// holds the row to it). `false` leaves a tenant exactly as it was before this knob existed.
+    /// holds the row to it), which is what makes sign-out drop the whole key. `false` leaves a
+    /// tenant exactly as it was before this knob existed.
     const ACCOUNT_BOUND: bool = false;
+    /// For an [`ACCOUNT_BOUND`](Self::ACCOUNT_BOUND) list that was written, unstamped, before it
+    /// was bound (`subtitle_offsets`): a record with NO stamp is read as the signed-in account's
+    /// own, and the first write to the list stamps it ([`ProfileMemory::upsert_with`]). Today's
+    /// visibility is kept, so nothing a viewer sees changes until the sign-out that now clears it.
+    /// A tenant that adopts is also not refused without a stamp (a session with no account token
+    /// never refused it): it reads and writes the unstamped records, prunes nothing and leaves any
+    /// stamped record alone. `track_memory` was bound from its first write, so an unstamped record
+    /// is nobody's and stays `false`.
+    const ADOPTS_UNSTAMPED: bool = false;
     /// The household budget, in logical bytes (platform's counting rule), for the whole list across
     /// every profile. Over it, a write drops the oldest entry of the record holding the most
     /// entries until the list fits (see [`ProfileMemory::upsert_with`]). `None` is no budget.
@@ -659,7 +685,10 @@ pub trait ProfileMemory<E: MemoryEntry> {
     /// **An account-bound tenant** ([`MemoryEntry::ACCOUNT_BOUND`]) is refused without a stamp
     /// (nothing is written, `f` is not called), and a write first PRUNES every record that is not
     /// stamped `account` (another account's, or an unstamped one nobody can read): the record of a
-    /// previous account must not outlive the first write of the next.
+    /// previous account must not outlive the first write of the next. A tenant that
+    /// [adopts](MemoryEntry::ADOPTS_UNSTAMPED) first stamps its unstamped records `account`
+    /// instead (so they are not pruned), and is not refused without a stamp: with none it prunes
+    /// and adopts nothing.
     ///
     /// **A tenant with a budget** ([`MemoryEntry::BUDGET`]) is brought back under it by EVICTION,
     /// never by refusing the write: while the whole list is over, drop the oldest entry of the
@@ -668,27 +697,39 @@ pub trait ProfileMemory<E: MemoryEntry> {
     /// pick always stays.
     ///
     /// Returns whether the list changed. An entry equal to what the list already holds is not a
-    /// change: it is neither rewritten nor moved (pruning a foreign record is a change).
+    /// change: it is neither rewritten nor moved (pruning a foreign record, or adopting an
+    /// unstamped one, is a change).
     fn upsert_with(&mut self, user: &str, account: &str, key: &E::Key, f: impl FnOnce(Option<&E>) -> Option<E>) -> bool;
 }
 
 impl<E: MemoryEntry> ProfileMemory<E> for Vec<ProfileList<E>> {
     fn get(&self, user: &str, account: &str, key: &E::Key) -> Option<&E> {
-        if E::ACCOUNT_BOUND && account.is_empty() {
+        if E::ACCOUNT_BOUND && account.is_empty() && !E::ADOPTS_UNSTAMPED {
             return None;
         }
-        self.iter().find(|r| r.user == user && r.account == account).and_then(|r| r.find(key))
+        let own = self.iter().find(|r| r.user == user && r.account == account).and_then(|r| r.find(key));
+        // A record not yet adopted is read as this account's own, behind the stamped one.
+        own.or_else(|| {
+            if !E::ADOPTS_UNSTAMPED {
+                return None;
+            }
+            self.iter().find(|r| r.user == user && r.account.is_empty()).and_then(|r| r.find(key))
+        })
     }
 
     fn upsert_with(&mut self, user: &str, account: &str, key: &E::Key, f: impl FnOnce(Option<&E>) -> Option<E>) -> bool {
-        if E::ACCOUNT_BOUND && account.is_empty() {
+        if E::ACCOUNT_BOUND && account.is_empty() && !E::ADOPTS_UNSTAMPED {
             return false;
         }
-        let before = self.len();
-        if E::ACCOUNT_BOUND {
+        let mut pruned = false;
+        if E::ACCOUNT_BOUND && !account.is_empty() {
+            if E::ADOPTS_UNSTAMPED {
+                pruned = adopt_unstamped(self, account);
+            }
+            let before = self.len();
             self.retain(|r| r.account == account);
+            pruned |= self.len() != before;
         }
-        let pruned = self.len() != before;
         let at = self.iter().position(|r| r.user == user && r.account == account);
         let current = at.and_then(|i| self[i].find(key));
         let next = f(current).map(E::normalized).filter(|e| !e.forgets());
@@ -707,6 +748,37 @@ impl<E: MemoryEntry> ProfileMemory<E> for Vec<ProfileList<E>> {
         }
         true
     }
+}
+
+/// **Adopt the records nobody stamped** (an [`MemoryEntry::ADOPTS_UNSTAMPED`] list written before it
+/// was bound): each becomes `account`'s own. A profile that already has a record stamped `account`
+/// takes the unstamped one's entries behind its own (the stamped record's entry wins a clash, the
+/// cap drains the oldest), so the list never holds two records for one `(user, account)`. Returns
+/// whether anything changed.
+fn adopt_unstamped<E: MemoryEntry>(list: &mut Vec<ProfileList<E>>, account: &str) -> bool {
+    let mut changed = false;
+    let mut at = 0;
+    while at < list.len() {
+        if !list[at].account.is_empty() {
+            at += 1;
+            continue;
+        }
+        changed = true;
+        let Some(own) = list.iter().position(|r| r.user == list[at].user && r.account == account) else {
+            list[at].account = account.to_string();
+            at += 1;
+            continue;
+        };
+        let legacy = list.remove(at);
+        let own = if own > at { own - 1 } else { own };
+        let target = &mut list[own];
+        let mut items: Vec<E> = legacy.items.into_iter().filter(|e| target.find(&e.key()).is_none()).collect();
+        items.append(&mut target.items);
+        let excess = items.len().saturating_sub(E::CAP);
+        items.drain(..excess);
+        target.items = items;
+    }
+    changed
 }
 
 // ---- the household budget: one eviction rule, shared by the write door and the document guard ----
@@ -886,6 +958,10 @@ impl MemoryEntry for SubtitleOffsetEntry {
     /// 256 KiB for the whole document the document guard (`persistence::fit_document`,
     /// `prefs::shed_memory`) may also evict this list's oldest entries from the largest record.
     const CAP: usize = 24;
+    /// Sign-out drops the whole key (SO), so every record carries the account stamp.
+    const ACCOUNT_BOUND: bool = true;
+    /// Records written before the stamp existed are the signed-in account's own.
+    const ADOPTS_UNSTAMPED: bool = true;
     fn key(&self) -> Self::Key {
         (self.machine_id.clone(), self.rating_key.clone())
     }
@@ -902,15 +978,16 @@ impl MemoryEntry for SubtitleOffsetEntry {
     }
 }
 
-/// The `subtitle_offsets` row: one item, one profile, kept across sign-out today (not account-bound
-/// yet), applied by the player's own restore (not a live cell), with no Settings row. A [`Row`] and
+/// The `subtitle_offsets` row: one item, one profile, bound to the account (sign-out drops it, and
+/// every record carries the account stamp; a record written before the stamp is adopted at its
+/// next write), applied by the player's own restore (not a live cell), with no Settings row. A [`Row`] and
 /// deliberately not a [`ListRow`], like [`TrackMemoryPref`]: a memory-door tenant has no whole-list
 /// accessor, so it is written only through [`ProfileMemory::upsert_with`].
 pub struct SubtitleOffsetsPref;
 impl Row for SubtitleOffsetsPref {
     const KEY: &'static str = "subtitle_offsets";
     const SCOPE: Scope = Scope::PerItem;
-    const ACCOUNT_BOUND: bool = false;
+    const ACCOUNT_BOUND: bool = true;
     const LIVE: bool = false;
     const SETTINGS: Option<SettingsWrite> = None;
     const PARSE: Parse = Parse::SoftVec;
