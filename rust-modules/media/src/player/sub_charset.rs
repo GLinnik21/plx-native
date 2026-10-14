@@ -79,13 +79,18 @@ fn tld_hint(language: &str) -> Option<&'static str> {
     let primary = parts.next().unwrap_or("");
     let region = |r: &str| parts.clone().any(|p| p == r);
     Some(match primary {
+        // An unqualified `chi`/`zho`/`zh` says nothing about the script: Taiwan and Hong Kong
+        // files carry that tag too, and chardetng's "cn" hint pulls a short Big5 cue into GBK
+        // mojibake. Only an explicit script or region narrows it; otherwise the bytes decide.
         "chi" | "zho" | "zh" | "cmn" | "yue" | "chs" | "cht" => {
-            if region("hk") {
+            if region("hk") || region("mo") {
                 "hk"
-            } else if primary == "cht" || region("hant") || region("tw") || region("mo") {
+            } else if primary == "cht" || region("hant") || region("tw") {
                 "tw"
-            } else {
+            } else if primary == "chs" || region("hans") || region("cn") || region("sg") {
                 "cn"
+            } else {
+                return None;
             }
         }
         "jpn" | "ja" => "jp",
@@ -183,14 +188,72 @@ mod tests {
         assert_eq!(subtitle_text(&b, &TrackCharset::new(Some("zh-Hant"))), "你好，這是繁體中文。");
     }
 
+    /// The exact bytes of a real embedded Big5 cue (`iconv -f UTF-8 -t BIG5`), tagged with an
+    /// unqualified Chinese code: the tag must not bias the guess toward GBK.
+    const TW_BIG5_CUE: &[u8] = &[
+        0xc1, 0x63, 0xc5, 0xe9, 0xa4, 0xa4, 0xa4, 0xe5, 0xa6, 0x72, 0xb9, 0xf5, 0xa1, 0x47, 0xc5, 0x77,
+        0xaa, 0xef, 0xc6, 0x5b, 0xac, 0xdd, 0xb3, 0x6f, 0xb3, 0xa1, 0xb9, 0x71, 0xbc, 0x76, 0xa1, 0x43,
+    ];
+
+    #[test]
+    fn an_unqualified_chinese_tag_does_not_turn_a_big5_cue_into_gbk_mojibake() {
+        for lang in ["chi", "zho", "zh"] {
+            assert_eq!(
+                subtitle_text(TW_BIG5_CUE, &TrackCharset::new(Some(lang))),
+                "繁體中文字幕：歡迎觀看這部電影。",
+                "{lang}"
+            );
+        }
+    }
+
+    /// Single short cues of 10-20 Han characters, the shape of one real subtitle line.
+    const SHORT_HANT: [&str; 6] = [
+        "繁體中文字幕：歡迎觀看這部電影。",
+        "你好，這是繁體中文的測試字幕。",
+        "我們今天晚上要去哪裡吃飯呢？",
+        "不要擔心，一切都會好起來的。",
+        "他說他明天會來開會，我不相信。",
+        "這個世界上沒有什麼是永恆的。",
+    ];
+    const SHORT_HANS: [&str; 6] = [
+        "简体中文字幕：欢迎观看这部电影。",
+        "你好，这是简体中文的测试字幕。",
+        "我们今天晚上要去哪里吃饭呢？",
+        "不要担心，一切都会好起来的。",
+        "他说他明天会来开会，我不相信。",
+        "这个世界上没有什么是永恒的。",
+    ];
+
+    #[test]
+    fn short_single_cues_decode_in_both_directions_for_every_unqualified_tag() {
+        for lang in [None, Some("chi"), Some("zho"), Some("zh")] {
+            for (e, cues) in [(BIG5, SHORT_HANT), (GBK, SHORT_HANS)] {
+                for text in cues {
+                    let b = enc(e, text);
+                    assert_eq!(
+                        subtitle_text(&b, &TrackCharset::new(lang)),
+                        text,
+                        "{lang:?} {}",
+                        e.name()
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn language_tags_map_to_tld_hints() {
         for (tag, tld) in [
-            ("chi", Some("cn")),
-            ("zh", Some("cn")),
+            ("chi", None),
+            ("zho", None),
+            ("zh", None),
+            ("zh-Hans", Some("cn")),
+            ("zh-CN", Some("cn")),
+            ("zh-SG", Some("cn")),
             ("zh-TW", Some("tw")),
             ("zh-Hant", Some("tw")),
             ("zh_HK", Some("hk")),
+            ("zh-MO", Some("hk")),
             ("jpn", Some("jp")),
             ("kor", Some("kr")),
             ("rus", Some("ru")),
