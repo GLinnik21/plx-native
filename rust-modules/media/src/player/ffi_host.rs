@@ -116,6 +116,10 @@ pub(super) static FORCE_SEEK_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
 /// flush after it re-anchors the segment at 0).
 #[cfg(any(test, feature = "test-support"))]
 pub(super) static FLUSH_CALLS: AtomicU64 = AtomicU64::new(0);
+/// How many times the Segment path's private-offset verbs (`setTimeToDecode`, `setContentInfo`,
+/// `sendSegmentEvent`) were called: on `VP_EXPORTED` they must never be, whatever the seek's fate.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static SEGMENT_CALLS: AtomicU64 = AtomicU64::new(0);
 
 /// issue #74 D.1 test seam — real (v0.6.0) `sf_load` publishes `SMP_READY(1)` and then calls the
 /// blocking, synchronous Load, so there is a real window during which every OTHER seam verb is
@@ -201,11 +205,17 @@ pub(super) fn reset_seek_probe_for_test(force: Option<c_int>) {
     SEEK_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
     FORCE_SEEK_RESULT.store(force.unwrap_or(i32::MIN), Relaxed);
     FLUSH_CALLS.store(0, Relaxed);
+    SEGMENT_CALLS.store(0, Relaxed);
 }
 /// The millis every `Seek` was called with since [`reset_seek_probe_for_test`].
 #[cfg(test)]
 pub(super) fn seek_log_for_test() -> Vec<i64> {
     SEEK_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+/// How many private-offset Segment verbs ran since [`reset_seek_probe_for_test`].
+#[cfg(test)]
+pub(super) fn segment_calls_for_test() -> u64 {
+    SEGMENT_CALLS.load(Relaxed)
 }
 /// How many times the sink was flushed since [`reset_seek_probe_for_test`].
 #[cfg(test)]
@@ -695,17 +705,26 @@ unsafe fn sf_push_eos() -> c_int {
 }
 unsafe fn sf_set_time_to_decode(_position_ns: i64) -> c_int {
     #[cfg(any(test, feature = "test-support"))]
-    note_dispatch("sf_set_time_to_decode");
+    {
+        note_dispatch("sf_set_time_to_decode");
+        SEGMENT_CALLS.fetch_add(1, Relaxed);
+    }
     c_int::from(enabled())
 }
 unsafe fn sf_set_content_info(_position_ns: i64) -> c_int {
     #[cfg(any(test, feature = "test-support"))]
-    note_dispatch("sf_set_content_info");
+    {
+        note_dispatch("sf_set_content_info");
+        SEGMENT_CALLS.fetch_add(1, Relaxed);
+    }
     c_int::from(enabled())
 }
 unsafe fn sf_send_segment() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
-    note_dispatch("sf_send_segment");
+    {
+        note_dispatch("sf_send_segment");
+        SEGMENT_CALLS.fetch_add(1, Relaxed);
+    }
     c_int::from(enabled())
 }
 

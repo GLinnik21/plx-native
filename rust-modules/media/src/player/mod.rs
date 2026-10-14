@@ -249,7 +249,10 @@ pub const ABR_WHY_SWITCH_COST: u8 = 14;
 ///   the fallback both of the others drop to.
 ///
 /// SCOPE: this is a **per-session mode, not a device-capability latch**, and
-/// `engine::start_bufferfeed` re-selects it for every new session. A downgrade to `Reload` (a
+/// `engine::start_bufferfeed` re-selects it for every new session. The one exception is a refused
+/// native `Seek`: that is remembered for the rest of the SAME playback (`native_seek_refused`,
+/// preserved across `reload_at`, cleared by a fresh play), so a firmware or file that refuses
+/// does not pay a refused `Seek` plus a full `Load` on every seek. A downgrade to `Reload` (a
 /// `sendSegment` that found no pipeline, a refused `Seek`) is a fact about the StarfishMediaAPIs
 /// object, which `sf_load` constructs and teardown's `sf_destroy` destructs once per session — not
 /// about the TV. `sendSegmentEvent` itself returns void, so its 0 NEVER means "the segment event
@@ -286,6 +289,20 @@ impl SeekMode {
 }
 
 static SEEK_MODE: AtomicU8 = AtomicU8::new(SeekMode::Segment.to_u8());
+
+/// Set once a native `Seek` was REFUSED during the current playback, and preserved by `reload_at`
+/// (whose fresh session would otherwise re-select `NativeSeek` and pay a refused `Seek` plus a full
+/// `Load` on every seek). A fresh play (`start_bufferfeed_tracked` with no live Engine) clears it.
+static NATIVE_SEEK_REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// Whether this playback's native `Seek` was refused (see [`NATIVE_SEEK_REFUSED`]).
+pub(crate) fn native_seek_refused() -> bool {
+    NATIVE_SEEK_REFUSED.load(Relaxed)
+}
+
+pub(crate) fn set_native_seek_refused(refused: bool) {
+    NATIVE_SEEK_REFUSED.store(refused, Relaxed);
+}
 
 /// This session's direct-play seek mode.
 pub fn seek_mode() -> SeekMode {
@@ -3948,7 +3965,8 @@ mod native_failure_regressions {
 }
 
 /// The two halves of "the playbar jumps on a seek", reported on an LG C3 (webOS 23), where
-/// in-place seeking is disabled and every seek is a reload.
+/// before #568 every seek was a reload. The guard still applies to `Reload` mode (old-ABI 3.x, a
+/// refused native `Seek`).
 #[cfg(test)]
 mod seek_hud_regressions {
     use super::*;

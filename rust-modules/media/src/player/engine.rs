@@ -1058,6 +1058,11 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     }
     ps.jail_load_blocked = false;
     ps.native_start_refused = false;
+    // A fresh play (not a `reload_at`, which reaches `start_bufferfeed_for` directly) is a new
+    // playback: it gets to try the native Seek again.
+    if pa.engine().is_none() {
+        super::set_native_seek_refused(false);
+    }
     if let Some(existing) = pa.engine().map(|engine| engine.route_start) {
         match crate::route::classify_live_engine_start(existing) {
             crate::route::LiveEngineStartRelation::CurrentAttempt => {
@@ -1566,7 +1571,7 @@ fn start_bufferfeed_inner(
         plx_platform::tv::device::info().major,
         sink().feed_abi_is_cow(),
     );
-    let mode = select_seek_mode(layout_known, sink().window_mode(), dev_seek_mode());
+    let mode = session_seek_mode(layout_known, sink().window_mode(), dev_seek_mode());
     log(&format!("seek mode: {mode:?} (layout_known={layout_known})"));
     super::set_seek_mode(mode);
     pa.install(eng);
@@ -1796,7 +1801,14 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
     Some(start_bufferfeed_for(ps, pa, ticket))
 }
 
+/// Every target `reload_at` was asked for (test probe, #568): proves a refused native Seek reloads
+/// exactly once, at the user's target.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static RELOAD_AT_LOG: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
+
 pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, target_ns: i64) -> ReloadOutcome {
+    #[cfg(any(test, feature = "test-support"))]
+    RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(target_ns);
     if crate::route::url(ps).is_empty() {
         log("reload_at: no url (ignored)");
         settle_missing_route_start();
@@ -2091,7 +2103,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // reload has no transcode session anyway, so the skip only matters for the URL).
     // The DURATION is a fact about the FILE, and a reload plays the same file: keep it across
     // the reset so the playbar has a denominator while the demuxer reopens. Without this every
-    // reload-based seek — which on webOS 5+ is EVERY seek, in-place being disabled there — drew
+    // reload-based seek (old-ABI 3.x, a refused native Seek, a transcode seek) drew
     // the playhead at position ÷ 0, i.e. the far left, for the few hundred ms until `ff.rs`
     // re-published it, while the clock beside it (position alone, seeded by `arm_seek`) read
     // correctly. Reported on an LG C3 (webOS 23). A real stop still zeroes it: the next item is
@@ -2729,9 +2741,13 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                         // set so the audio lane keeps holding and no AU reaches a pipeline that
                         // is rejecting Feed.
                         super::set_seek_mode(SeekMode::Reload);
+                        // Latched across the reload this very seek is about to do, so the fresh
+                        // session's `select_seek_mode` does not offer the same firmware another
+                        // refused Seek on every later seek of this playback.
+                        super::set_native_seek_refused(true);
                         log(
                             "in-place seek DOWNGRADE: native Seek refused -> reload-per-seek for \
-                             the rest of this session",
+                             the rest of this playback",
                         );
                         let tgt = SHARED.seek_target_ns.load(Ordering::Relaxed).max(0);
                         TX.seek_reqs.store(1, Ordering::Release);
@@ -2741,6 +2757,15 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                     }
                     segment_installed = true;
                     eng.flushed = false;
+                } else if eng.flushed && super::seek_mode() != SeekMode::Segment {
+                    // Flushed but not in a mode that anchors in place: a refused native `Seek`
+                    // downgraded the session to `Reload` and the pump's reload (`reload_at`)
+                    // is on its way. The private Segment path (`sf_pipeline`'s decompile-derived
+                    // offsets, proven on webOS 4.5 only) must NEVER run here, so this keyframe
+                    // anchors nothing: drop it and leave `flushed`/`rebase_pending` set, which
+                    // keeps the audio lane holding until the reload replaces the engine.
+                    eng.pending_video = None;
+                    break;
                 } else if eng.flushed {
                     // Kodi IN-PLACE seek (exact): feed the REAL content PTS (no rebase), tell the
                     // pipeline the real decode position, then inject a fresh GStreamer SEGMENT —
@@ -3050,6 +3075,16 @@ pub fn feed_sample(mt: &MainThread, eng: &mut Engine) {
 /// release below 4 is refused too; `major == 0` (release unknown) defers to the Feed evidence.
 fn inplace_layout_known(major: u32, feed_abi_is_cow: bool) -> bool {
     !feed_abi_is_cow && (major == 0 || major >= 4)
+}
+
+/// [`select_seek_mode`] for a session that is starting: a `NativeSeek` this playback already had
+/// REFUSED stays `Reload` (the latch `feed_stream` sets, which `reload_at` preserves and a fresh
+/// play clears), instead of paying reopen + keyframe + refused `Seek` + full `Load` on every seek.
+pub(super) fn session_seek_mode(layout_known: bool, window_mode: c_int, dev: Option<SeekMode>) -> SeekMode {
+    match select_seek_mode(layout_known, window_mode, dev) {
+        SeekMode::NativeSeek if super::native_seek_refused() => SeekMode::Reload,
+        mode => mode,
+    }
 }
 
 /// How a direct-play seek re-anchors the pipeline in a new session (see [`SeekMode`]).

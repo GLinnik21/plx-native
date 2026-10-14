@@ -205,7 +205,8 @@ the literal `0` and says why.
 
 **What webOS 5 keeps:** all 15 mangled `StarfishMediaAPIs` / `CustomPipeline` symbols, unchanged,
 through 11.2.0. The BUFFERSTREAM payload is identical but for that one key. So the engine, the
-pump, the feed loop, seek and `pushEOS` are untouched.
+pump, the feed loop and `pushEOS` are untouched; seek takes LG's public `Seek` (see "The public
+`Seek`" in section 4).
 
 **What it deletes, with no replacement:** `setSinkType`, `setMediaId`,
 `setMediaVideoData(<sourceInfo>)` and the `LOADED`/`PLAYING`/`PAUSED` mirroring. Both reference

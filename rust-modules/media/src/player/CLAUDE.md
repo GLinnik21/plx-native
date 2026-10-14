@@ -267,9 +267,13 @@ something.
   the stale-segment stall); it re-anchors the segment AT the millis passed, so `feed_stream` feeds
   content-time PTS (`pts_shift = 0`) and calls `Seek(max(kf_pts,0) / 1e6)` before feeding the landed
   keyframe — on the main thread, the only Feed caller, so it cannot race a Feed. A refused Seek
-  (rv 0) drops the session to `Reload` and re-posts this seek for the pump's `reload_at`. `Reload`
-  (old-ABI 3.x, and the fallback of both) is a fresh `Load` per seek. The mode is re-selected per
-  session. The evidence is in `docs/webos5-port.md` ("The public `Seek`"). A transcode seek instead
+  (rv 0) drops the session to `Reload`, re-posts this seek for the pump's `reload_at` (the stuck
+  watchdog goes straight to `reload_at` in `Reload` mode, and a flushed keyframe in a non-`Segment`
+  mode anchors nothing: the private Segment offsets never run on webOS 5+), and latches
+  `native_seek_refused` so the reload's fresh session stays `Reload` for the rest of THAT playback;
+  a fresh play (`start_bufferfeed_tracked` with no live Engine) clears the latch. `Reload`
+  (old-ABI 3.x, and the fallback of both) is a fresh `Load` per seek. Otherwise the mode is
+  re-selected per session. The evidence is in `docs/webos5-port.md` ("The public `Seek`"). A transcode seek instead
   restarts the encode at `&offset` with a full fresh `Load`, and the PMS half of that restart is a
   FLIGHT, never frame-thread I/O: `route::dispatch_transcode_seek` plans on the frame, a worker
   registers the replacement encoder, and the drain installs it and reloads (`seek_landing_tail`).
