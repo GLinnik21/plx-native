@@ -68,7 +68,7 @@ pub enum SettingsPage {
     Language,
     /// Translation contribution guide with an offline QR link.
     Contribute,
-    /// Playback settings: each profile's own picks (a profile that has not chosen reads the install's older value).
+    /// Playback settings: each profile's own picks (a profile that has not chosen reads the install's older value). The page names the seated profile; while nobody is seated its rows are read-only.
     Playback,
     /// Plex account audio and subtitle preferences.
     AudioSubtitles,

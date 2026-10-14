@@ -520,7 +520,7 @@ fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_i
 #[test]
 fn playback_picker_seats_the_saved_option_and_restores_its_parent_row() {
     let _g = plx_base::testlock::serial();
-    let _sess = scratch_session("composed-playback-picker-seat");
+    let _sess = seated_scratch_session("composed-playback-picker-seat");
     let previous_quality = plx_media::route::quality();
     let previous_mode = plx_media::route::direct_play_mode();
     plx_media::route::restore_quality(plx_media::route::Quality::P480);
@@ -625,7 +625,7 @@ fn account_preference_landing_seats_the_first_rows_and_retry_landing() {
 fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
     use plx_machine::machine::{Edge, InputKind};
     let _g = plx_base::testlock::serial();
-    let _sess = scratch_session("composed-force-warning");
+    let _sess = seated_scratch_session("composed-force-warning");
     let previous = plx_media::route::direct_play_mode();
     plx_media::route::restore_direct_play_mode(plx_media::route::DirectPlayMode::Auto);
     let ok = |ms| {

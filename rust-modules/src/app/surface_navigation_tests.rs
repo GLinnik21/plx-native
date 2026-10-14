@@ -175,6 +175,35 @@ fn switching_profile_leaves_the_container_holding_nothing_of_the_previous_profil
     );
 }
 
+/// **A profile switch dismisses an open Settings surface, at once.** The Playback page names the
+/// seated profile and lists that profile's own picks, so it must not survive the switch to the next
+/// one: it would say "for Maya" over Noah's values for as long as it stayed up. The surfaces go
+/// in `Navigator::reset_for_profile` (they are dropped first, then the page stack), which is
+/// called before the switch commits. Graded the moment `switch_profile` returns, before any frame
+/// runs: `Root(Profiles)` alone would sweep the surface a frame LATER (it retires the page the
+/// surface stands over), so only the reset itself can make this true immediately, and a frame in
+/// between would be a window in which the old profile's page is still drawn.
+///
+/// Not behind `hostsim`: nothing here needs the desktop simulator, so `make check` runs it.
+#[test]
+fn a_profile_switch_dismisses_an_open_settings_surface() {
+    let _g = plx_base::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+    open_settings_at(&mut d, SettingsPage::Playback);
+    frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
+    assert!(settings_up(&d), "the Settings surface is up on the Playback page");
+    assert_eq!(overlay_word(&d), Some("playback"));
+
+    switch_profile(&mut d);
+    assert!(!settings_up(&d), "the switch dismissed Settings before any frame ran");
+
+    for i in 0..20u32 { frame(&mut d, &mut rig, AppArg::Profiles, tick(2 + i), vec![]); }
+    assert!(!settings_up(&d), "and it stays gone behind the picker");
+    assert!(d.nav.top_page().is_some_and(|e| e.arg == AppArg::Profiles));
+}
+
 /// **An app switch parks the tree; it does not tear the session's page history down.**
 ///
 /// RED FIRST (D1). The 0x103/0x106 lifecycle used to `suspend()` the tree and then write

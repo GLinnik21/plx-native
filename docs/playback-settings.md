@@ -1,8 +1,17 @@
 # Playback settings
 
-Settings has **Video & playback** and **Audio & subtitles** pages. Quality and Direct Play
-are saved on this television; language preferences are saved to the active Plex profile and
-are shared with other Plex clients.
+Settings has **Video & playback** and **Audio & subtitles** pages. The Video & playback
+settings (quality, Direct Play, subtitle size and position, next episode, Continue Watching
+and skip interval) are saved on this television, **per profile**: each Plex Home profile keeps
+its own picks, and a profile that has not chosen yet starts from the value the television held
+before profiles had their own. The page names the profile it shows ("Playback settings for
+Maya") and follows a profile switch (Settings itself closes on one). Settings is reached
+through a profile, so a normal session always has one seated; where none is (a developer-token
+run or a controlled replay; `Seat` in `plex/session.rs` lists the unseated states) the rows show
+those starting values read-only, with the line "Choose a profile to change this", because
+nothing can be saved for nobody.
+Language preferences are saved to the active Plex profile and are shared with other Plex
+clients.
 
 ## Quality and Direct Play
 
@@ -18,7 +27,9 @@ codec implementations or a TrueHD path. It cannot guarantee that the TV accepts 
 Entering Force requires an explicit acknowledgement, initially focused on Cancel. The warning
 names missing sound, incorrect pictures, freezes, crashes and the possibility that the app
 cannot recover gracefully. It instructs the user to enable Force only if they know how to
-restart the app and return to Auto. An enabled-state warning remains visible in Settings;
+restart the app and return to Auto. An enabled-state warning remains visible in Settings
+(on the Video & playback page the explanation names the profile, "Playback settings for Maya.",
+and the warning follows it in the same paragraph);
 the quality controls explain that the saved quality is overridden. Returning to Auto or
 Disabled needs no confirmation.
 

@@ -129,7 +129,7 @@ impl PickerPage {
     fn rebuild(&mut self, seat_current: bool) {
         self.state.quality = plx_media::route::quality();
         self.state.direct_play = plx_media::route::direct_play_mode();
-        self.copy = copy_text(Subject::Picker(self.state.field), &self.state.io.status, self.state.direct_play).into_owned();
+        self.copy = copy_text(Subject::Picker(self.state.field), &self.state.io.status, self.state.direct_play, &Whose::Nobody).into_owned();
         self.state.confirming = self.alert.is_open(); self.state.affirmative = self.alert.choice();
         self.state.alert_scroll = self.alert.scroll_target_bits();
         let current = self.current();
