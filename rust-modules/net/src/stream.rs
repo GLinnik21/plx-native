@@ -1419,7 +1419,7 @@ unsafe fn perform_http_request(
     };
     // `Host:` is the ORIGIN, never the address `connect_any` reached — see `host_header`.
     let host_hdr = host_header(host_s, port);
-    // The process's one name (`net::user_agent`), as the curl paths send it; none before boot.
+    // The process's one name, as the curl paths send it (`net::apply_user_agent`); none before boot.
     let ua = crate::net::user_agent_header_line();
     // HTTP/1.1 keep-alive is the default; omitting Connection lets the server reuse this
     // socket for the next HLS segment instead of forcing a fresh TCP handshake each time.
