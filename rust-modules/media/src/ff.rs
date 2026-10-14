@@ -1416,7 +1416,10 @@ pub fn boot() {
 
 /// Open `url` via libavformat, find streams, and log codec_id/dims/time_base for each —
 /// the on-device confirmation that the FFI struct layout is correct. Uses libavformat's
-/// own HTTP for the probe (the demuxer proper will use a custom AVIO over stream.rs).
+/// own HTTP for the probe (the demuxer proper will use a custom AVIO over stream.rs), so that one
+/// request names libavformat (`Lavf/...`), not the installed `net::user_agent`: it is reachable only with
+/// the `devtriggers` feature, which the shipping set does not have, and it is the one transport
+/// `ci/check-user-agent.py` cannot see.
 fn probe(url: &str) {
     ensure_registered();
     unsafe {

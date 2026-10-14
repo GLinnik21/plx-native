@@ -401,7 +401,9 @@ pub fn threaded_tls_ready() -> bool {
 /// with [`set_user_agent`] before [`global_init`], instead of this layer naming the one above it.
 /// Unset (a host test that never booted, or boot refused the value) no `User-Agent` is set, which
 /// is all libcurl sends by default. This file is the one place that applies it ([`apply_user_agent`] to a curl handle,
-/// [`user_agent_header_line`] to hand-built request text), and `ci/check-user-agent.py` keeps it so.
+/// [`user_agent_header_line`] to hand-built request text), and `ci/check-user-agent.py` keeps it so. What reaches the
+/// socket is graded by loopback tests per transport (`net_user_agent_tests.rs`, `stream_user_agent_tests.rs`,
+/// `curlio_redirect_tests.rs`).
 static USER_AGENT: OnceLock<UserAgent> = OnceLock::new();
 
 /// A value that passed [`UserAgent::new`]: the text, and the same text as the `CString` curl takes.
