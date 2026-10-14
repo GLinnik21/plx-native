@@ -40,8 +40,8 @@
 //! instead would write `forced: false` for a track the menu badges FORCED by its name, and the
 //! next episode's hard constraint would decline that very track.
 use std::borrow::Cow;
-use plx_data::metadata::sub_layout::is_image_sub_codec;
-use plx_data::metadata::track_label::{self, Kind};
+use plx_data::metadata::sub_layout::{is_image_sub_codec, sub_traits, SubTraits};
+use plx_data::metadata::track_label;
 use plx_data::metadata::track_names::TrackNames;
 use plx_data::metadata::{lang_matches, sub_render_ordinal, PlayingItem, Stream};
 use plx_plex::plex::session::prefs::{AudioMemo, SubtitleMemo, SubtitleTrackMemo};
@@ -56,28 +56,6 @@ pub(super) type Miss = &'static str;
 /// (`decision::memory::remember_track_pick`), so what is written is exactly what a later resolve can read.
 pub(super) fn memory_show<'a>(kind: &str, show_rk: &'a str) -> Option<&'a str> {
     (kind == "episode" && !show_rk.is_empty()).then_some(show_rk)
-}
-
-/// What the track menu calls a subtitle, read off the stream the way the menu reads it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct SubTraits {
-    /// `Stream.forced` or the name says forced (`track_label::flags`).
-    pub forced: bool,
-    /// `Stream.sdh` or the name says SDH (`track_label::flags`).
-    pub sdh: bool,
-    /// The name says commentary (`track_label::Kind::Commentary`), whatever the flags say.
-    pub commentary: bool,
-}
-
-/// The menu's own predicate for one subtitle stream: the merged name, parsed, with
-/// the structured flags folded in. The one place "forced" is decided for memory.
-pub(super) fn sub_traits(s: &Stream) -> SubTraits {
-    // The container name arrives only once the demuxer has the file open (`TrackNames`), after the
-    // resolve; here the PMS title is all there is.
-    let name = track_label::track_name(&s.title, "", &s.lang);
-    let label = track_label::parse(&name, &s.lang, s.forced, s.sdh);
-    let (forced, sdh) = track_label::flags(&label, s.forced, s.sdh);
-    SubTraits { forced, sdh, commentary: label.kind == Kind::Commentary }
 }
 
 /// **What a pick of audio track `i` of `tracks` is remembered as**, or `None` for an index that
