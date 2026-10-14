@@ -16,6 +16,12 @@
 //!   stored value already equals the pick; on main before A2 the Confirm rows and size/position
 //!   always wrote (delta 6 changed that).
 //!
+//! **Per profile (P1a).** The nine are a profile's own values now: every test here that picks signs
+//! the scratch session in and seats a profile ([`sign_in`]), because a door that finds nobody seated
+//! refuses the pick (P-d10), and reads the result back from that profile's record ([`picked`], [`read`]) rather
+//! than from the TV's top-level key, which no pick writes any more. The unchanged-skip compares the
+//! profile's OWN value, so a profile's first pick is a write even when it equals the TV's value.
+//!
 //! **A non-Durable outcome without a new seam.** `redirect_for_test(blocker/auth.json)` (what the
 //! older "failed write" tests use) makes the session UNREADABLE, so `update_with_outcome` returns
 //! `None` and no write is ever attempted. The fixture used here, [`Unwritable`], leaves the session
@@ -24,8 +30,10 @@
 //! `Failed` (for an unprivileged uid). The first test pins that the fixture really is that.
 use super::*;
 use plx_plex::plex::session::{
-    self as session, DeckPress, NextEpisodeMode, SkipInterval, SkipIntervalPref, SubtitlePosition, SubtitleSize,
-    SubtitleTone,
+    self as session, own_prefs, stored_effective, AudioEnhancementsPref, DeckPress, DeckPressPref,
+    DirectPlayModePref, NextEpisodeMode, NextEpisodeModePref, ProfileSetting, QualityPref, Seat, SkipInterval,
+    SkipIntervalPref, SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone,
+    SubtitleTonePref,
 };
 use plx_plex::plex::AudioEnhancements;
 use plx_telemetry::diag::schema::{DiagEvent, Feature};
@@ -124,6 +132,28 @@ pub(super) fn stored() -> session::Session {
     s
 }
 
+/// The profile and account every test of the door signs in as.
+pub(super) const PROFILE: &str = "u-char";
+pub(super) const TOKEN: &str = "acct-char";
+
+/// Sign the scratch session in and seat [`PROFILE`]: a pick belongs to somebody.
+pub(super) fn sign_in(session: &session::TempSession) {
+    session.seated(PROFILE, TOKEN);
+}
+
+/// What the seated profile itself picked for `S` (`None` before its first pick), from the stored
+/// record.
+pub(super) fn picked<S: ProfileSetting>() -> Option<S::Value> {
+    let Seat::Seated { user, stamp } = session::current_seat() else { panic!("setup: nobody is seated") };
+    own_prefs(&stored().prefs.profile_prefs, &user, &stamp).and_then(S::own)
+}
+
+/// What the seated profile reads from the stored record for `S`: its own value, else the TV's key,
+/// else the default.
+pub(super) fn read<S: ProfileSetting>() -> S::Value {
+    stored_effective::<S>(&stored(), &session::current_seat())
+}
+
 /// Did running `f` (and every storage-worker job it queued) write the session?
 pub(super) fn writes(f: impl FnOnce()) -> bool {
     session::reset_last_write_authority_for_test();
@@ -202,6 +232,7 @@ fn the_unwritable_fixture_is_a_readable_session_whose_write_is_not_durable() {
 fn confirm_direct_play_mode_publishes_only_a_durable_write() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("prefs-char-confirm-dpm");
+    sign_in(&session);
     let _restore = Restore::take();
     defaults();
 
@@ -211,12 +242,12 @@ fn confirm_direct_play_mode_publishes_only_a_durable_write() {
     assert_eq!(direct_play_mode(), DirectPlayMode::Auto, "a refused write publishes nothing");
     assert!(events.is_empty(), "{events:?}");
     drop(fixture);
-    assert_eq!(stored().prefs.direct_play_mode, DirectPlayMode::Auto);
+    assert_eq!(picked::<DirectPlayModePref>(), None, "nothing was recorded");
 
     let (saved, events) = plx_telemetry::diag::test_events::capture(|| set_direct_play_mode(DirectPlayMode::Forced));
     assert!(saved);
     assert_eq!(direct_play_mode(), DirectPlayMode::Forced);
-    assert_eq!(stored().prefs.direct_play_mode, DirectPlayMode::Forced);
+    assert_eq!(picked::<DirectPlayModePref>(), Some(DirectPlayMode::Forced));
     assert!(events.is_empty(), "this row reports no feature.used: {events:?}");
 }
 
@@ -226,6 +257,7 @@ fn confirm_direct_play_mode_publishes_only_a_durable_write() {
 fn confirm_next_episode_publishes_and_reports_once_only_on_a_durable_write() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("prefs-char-confirm-ne");
+    sign_in(&session);
     let _restore = Restore::take();
     defaults();
 
@@ -235,12 +267,12 @@ fn confirm_next_episode_publishes_and_reports_once_only_on_a_durable_write() {
     assert_eq!(next_episode_mode(), NextEpisodeMode::Countdown);
     assert!(events.is_empty(), "{events:?}");
     drop(fixture);
-    assert_eq!(stored().next_episode_mode(), NextEpisodeMode::Countdown);
+    assert_eq!(picked::<NextEpisodeModePref>(), None);
 
     let (saved, events) = plx_telemetry::diag::test_events::capture(|| set_next_episode_mode(NextEpisodeMode::AfterCredits));
     assert!(saved);
     assert_eq!(next_episode_mode(), NextEpisodeMode::AfterCredits);
-    assert_eq!(stored().next_episode_mode(), NextEpisodeMode::AfterCredits);
+    assert_eq!(picked::<NextEpisodeModePref>(), Some(NextEpisodeMode::AfterCredits));
     assert_eq!(
         events,
         [DiagEvent::FeatureUsed { feature: Feature::NextEpisode(NextEpisodeMode::AfterCredits) }],
@@ -253,6 +285,7 @@ fn confirm_next_episode_publishes_and_reports_once_only_on_a_durable_write() {
 fn confirm_skip_interval_publishes_and_reports_once_only_on_a_durable_write() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("prefs-char-confirm-skip");
+    sign_in(&session);
     let _restore = Restore::take();
     defaults();
 
@@ -262,12 +295,12 @@ fn confirm_skip_interval_publishes_and_reports_once_only_on_a_durable_write() {
     assert_eq!(skip_interval(), SkipInterval::Seconds10);
     assert!(events.is_empty(), "{events:?}");
     drop(fixture);
-    assert_eq!(stored().skip_interval(), SkipInterval::Seconds10);
+    assert_eq!(picked::<SkipIntervalPref>(), None);
 
     let (saved, events) = plx_telemetry::diag::test_events::capture(|| set_skip_interval(SkipInterval::Seconds30));
     assert!(saved);
     assert_eq!(skip_interval(), SkipInterval::Seconds30);
-    assert_eq!(stored().skip_interval(), SkipInterval::Seconds30);
+    assert_eq!(picked::<SkipIntervalPref>(), Some(SkipInterval::Seconds30));
     assert_eq!(
         events,
         [DiagEvent::FeatureUsed { feature: Feature::SkipInterval(SkipInterval::Seconds30) }],
@@ -280,6 +313,7 @@ fn confirm_skip_interval_publishes_and_reports_once_only_on_a_durable_write() {
 fn confirm_deck_press_publishes_only_a_durable_write() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("prefs-char-confirm-deck");
+    sign_in(&session);
     let _restore = Restore::take();
     defaults();
 
@@ -289,12 +323,12 @@ fn confirm_deck_press_publishes_only_a_durable_write() {
     assert_eq!(deck_press(), DeckPress::Details);
     assert!(events.is_empty(), "{events:?}");
     drop(fixture);
-    assert_eq!(stored().deck_press(), DeckPress::Details);
+    assert_eq!(picked::<DeckPressPref>(), None);
 
     let (saved, events) = plx_telemetry::diag::test_events::capture(|| set_deck_press(DeckPress::Play));
     assert!(saved);
     assert_eq!(deck_press(), DeckPress::Play);
-    assert_eq!(stored().deck_press(), DeckPress::Play);
+    assert_eq!(picked::<DeckPressPref>(), Some(DeckPress::Play));
     assert!(events.is_empty(), "{events:?}");
 }
 
@@ -304,6 +338,7 @@ fn confirm_deck_press_publishes_only_a_durable_write() {
 fn confirm_default_quality_publishes_only_a_durable_write() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("prefs-char-confirm-quality");
+    sign_in(&session);
     let _restore = Restore::take();
     defaults();
 
@@ -311,11 +346,11 @@ fn confirm_default_quality_publishes_only_a_durable_write() {
     assert!(!set_default_quality(Quality::P720));
     assert_eq!(quality(), Quality::Original, "a refused write publishes nothing");
     drop(fixture);
-    assert_eq!(stored().prefs.playback_quality, None, "and the legacy absent field stays absent");
+    assert_eq!(picked::<QualityPref>(), None, "and the profile has no value of its own yet");
 
     assert!(set_default_quality(Quality::P720));
     assert_eq!(quality(), Quality::P720);
-    assert_eq!(stored().prefs.playback_quality, Some(Quality::P720));
+    assert_eq!(picked::<QualityPref>(), Some(Quality::P720));
 }
 
 /// **Quality Confirm records an explicit pick of the default**: from an absent field a pick of
@@ -325,28 +360,45 @@ fn confirm_default_quality_publishes_only_a_durable_write() {
 fn confirm_quality_writes_some_q_even_when_unchanged() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("prefs-char-confirm-quality-unchanged");
+    sign_in(&_session);
     let _restore = Restore::take();
     defaults();
-    assert_eq!(stored().prefs.playback_quality, None, "a legacy session has no quality field");
+    assert_eq!(picked::<QualityPref>(), None, "a profile that never picked has no quality of its own");
 
     assert!(writes(|| assert!(set_default_quality(Quality::Original))));
-    assert_eq!(stored().prefs.playback_quality, Some(Quality::Original), "an explicit pick of the default is recorded");
+    assert_eq!(picked::<QualityPref>(), Some(Quality::Original), "an explicit pick of the default is recorded");
 
     // Delta 6, flipped: the same pick again is already the stored value, so it writes nothing and
     // still reports saved.
     assert!(!writes(|| assert!(set_default_quality(Quality::Original))), "the same pick again writes nothing");
-    assert_eq!(stored().prefs.playback_quality, Some(Quality::Original));
+    assert_eq!(picked::<QualityPref>(), Some(Quality::Original));
 }
 
 /// **Delta 6, flipped: an unchanged pick writes nothing and reports saved.** Confirm rows answer
 /// true (the value is durable: it is what is stored); the Optimistic size and position rows answer
-/// true on their reply too. (Before the door, every one of these rewrote the record.)
+/// true on their reply too. (Before the door, every one of these rewrote the record.) Under a
+/// profile "unchanged" means the profile's OWN value: its first pick is recorded even when it equals
+/// the TV's value, and only the repeat writes nothing.
 #[test]
 fn an_unchanged_confirm_or_size_position_pick_writes_nothing_and_reports_saved() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("prefs-char-unchanged-writes");
+    sign_in(&_session);
     let _restore = Restore::take();
     defaults();
+
+    // DECLARED FLIP (P1a, §3.8.4): a pick always records an own value, even one equal to the fallback;
+    // on main the unchanged-skip compared against the TV's top-level key, so these first picks wrote nothing.
+    assert!(writes(|| assert!(set_direct_play_mode(DirectPlayMode::Auto))), "direct play: a first pick is recorded");
+    assert!(writes(|| assert!(set_next_episode_mode(NextEpisodeMode::Countdown))), "next episode");
+    assert!(writes(|| assert!(set_skip_interval(SkipInterval::Seconds10))), "skip interval");
+    assert!(writes(|| assert!(set_deck_press(DeckPress::Details))), "deck press");
+    let (tx, rx) = mpsc::channel();
+    assert!(writes(|| select_subtitle_size(SubtitleSize::Medium, Some(tx))), "size");
+    assert!(recv(&rx));
+    let (tx, rx) = mpsc::channel();
+    assert!(writes(|| select_subtitle_position(SubtitlePosition::Low, Some(tx))), "position");
+    assert!(recv(&rx));
 
     assert!(!writes(|| assert!(set_direct_play_mode(DirectPlayMode::Auto))), "direct play");
     assert!(!writes(|| assert!(set_next_episode_mode(NextEpisodeMode::Countdown))), "next episode");
@@ -372,6 +424,7 @@ fn an_unchanged_confirm_or_size_position_pick_writes_nothing_and_reports_saved()
 fn optimistic_size_and_position_publish_before_the_write() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("prefs-char-opt-before");
+    sign_in(&_session);
     let _restore = Restore::take();
     defaults();
 
@@ -387,8 +440,8 @@ fn optimistic_size_and_position_publish_before_the_write() {
     });
     assert!(recv(&size_rx));
     assert!(recv(&pos_rx));
-    assert_eq!(stored().prefs.subtitle_size, SubtitleSize::Large);
-    assert_eq!(stored().prefs.subtitle_position, SubtitlePosition::High);
+    assert_eq!(picked::<SubtitleSizePref>(), Some(SubtitleSize::Large));
+    assert_eq!(picked::<SubtitlePositionPref>(), Some(SubtitlePosition::High));
 }
 
 /// The same for the three Optimistic rows that take no reply: tone, enhancements, and the player's
@@ -397,6 +450,7 @@ fn optimistic_size_and_position_publish_before_the_write() {
 fn optimistic_tone_enhancements_and_quality_publish_before_the_write() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("prefs-char-opt-before-silent");
+    sign_in(&_session);
     let _restore = Restore::take();
     defaults();
     let boost = AudioEnhancements { boost_dialog: true, normalize_loudness: false };
@@ -410,10 +464,9 @@ fn optimistic_tone_enhancements_and_quality_publish_before_the_write() {
         assert_eq!(quality(), Quality::P720);
     });
     plx_base::storage_worker::drain_for_test();
-    let after = stored();
-    assert_eq!(after.prefs.subtitle_tone, SubtitleTone::Grey);
-    assert_eq!(after.prefs.audio_enhancements, boost);
-    assert_eq!(after.prefs.playback_quality, Some(Quality::P720));
+    assert_eq!(picked::<SubtitleTonePref>(), Some(SubtitleTone::Grey));
+    assert_eq!(picked::<AudioEnhancementsPref>(), Some(boost));
+    assert_eq!(picked::<QualityPref>(), Some(Quality::P720));
 }
 
 /// **A failed write keeps the viewer's pick, replies `false` and logs the line** (size and
@@ -422,6 +475,7 @@ fn optimistic_tone_enhancements_and_quality_publish_before_the_write() {
 fn optimistic_failure_keeps_the_value_replies_false_and_logs() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("prefs-char-opt-failed");
+    sign_in(&session);
     let _restore = Restore::take();
     defaults();
     let _fixture = Unwritable::new(&session);
@@ -446,6 +500,7 @@ fn optimistic_failure_keeps_the_value_replies_false_and_logs() {
 fn optimistic_failure_without_a_reply_still_keeps_and_logs() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("prefs-char-opt-failed-noreply");
+    sign_in(&session);
     let _restore = Restore::take();
     defaults();
     let _fixture = Unwritable::new(&session);
@@ -466,6 +521,7 @@ fn optimistic_failure_without_a_reply_still_keeps_and_logs() {
 fn tone_enhancements_and_quality_failures_keep_the_value_and_log_the_door_line() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("prefs-char-opt-failed-silent");
+    sign_in(&session);
     let _restore = Restore::take();
     defaults();
     let boost = AudioEnhancements { boost_dialog: true, normalize_loudness: false };
@@ -485,10 +541,9 @@ fn tone_enhancements_and_quality_failures_keep_the_value_and_log_the_door_line()
     assert!(log.contains(&format!("audio enhancements: {WRITE_FAILED}")), "{log}");
     assert!(log.contains(&format!("playback quality: {WRITE_FAILED}")), "{log}");
     drop(fixture);
-    let after = stored();
-    assert_eq!(after.prefs.subtitle_tone, SubtitleTone::White, "nothing landed");
-    assert_eq!(after.prefs.audio_enhancements, AudioEnhancements::NONE);
-    assert_eq!(after.prefs.playback_quality, None);
+    assert_eq!(picked::<SubtitleTonePref>(), None, "nothing landed");
+    assert_eq!(picked::<AudioEnhancementsPref>(), None);
+    assert_eq!(picked::<QualityPref>(), None);
 }
 
 /// **The write never republishes over a newer pick.** A second pick is made while the first write
@@ -498,6 +553,7 @@ fn tone_enhancements_and_quality_failures_keep_the_value_and_log_the_door_line()
 fn optimistic_size_and_position_never_republish_over_a_newer_pick() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("prefs-char-opt-newer");
+    sign_in(&_session);
     let _restore = Restore::take();
     defaults();
 
@@ -513,7 +569,7 @@ fn optimistic_size_and_position_never_republish_over_a_newer_pick() {
     assert!(recv(&pos_rx));
     assert_eq!(subtitle_size(), SubtitleSize::Small);
     assert_eq!(subtitle_position(), SubtitlePosition::Low);
-    assert_eq!(stored().prefs.subtitle_size, SubtitleSize::Large, "the older pick is what the record holds");
+    assert_eq!(picked::<SubtitleSizePref>(), Some(SubtitleSize::Large), "the older pick is what the record holds");
 }
 
 /// The same when the completing write FAILS: no revert, no republish.
@@ -521,6 +577,7 @@ fn optimistic_size_and_position_never_republish_over_a_newer_pick() {
 fn optimistic_size_never_republishes_over_a_newer_pick_when_the_write_fails() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("prefs-char-opt-newer-failed");
+    sign_in(&session);
     let _restore = Restore::take();
     defaults();
     let _fixture = Unwritable::new(&session);
@@ -539,6 +596,7 @@ fn optimistic_size_never_republishes_over_a_newer_pick_when_the_write_fails() {
 fn optimistic_tone_enhancements_and_quality_never_republish_over_a_newer_pick() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("prefs-char-opt-newer-silent");
+    sign_in(&_session);
     let _restore = Restore::take();
     defaults();
     let boost = AudioEnhancements { boost_dialog: true, normalize_loudness: false };
@@ -555,31 +613,33 @@ fn optimistic_tone_enhancements_and_quality_never_republish_over_a_newer_pick() 
     assert_eq!(crate::player::subtitle_tone(), SubtitleTone::Silver);
     assert_eq!(crate::player::audio_enhancements(), AudioEnhancements::NONE);
     assert_eq!(quality(), Quality::P480);
-    let after = stored();
-    assert_eq!(after.prefs.subtitle_tone, SubtitleTone::Grey, "while the record holds the older ones");
-    assert_eq!(after.prefs.audio_enhancements, boost);
-    assert_eq!(after.prefs.playback_quality, Some(Quality::P720));
+    assert_eq!(picked::<SubtitleTonePref>(), Some(SubtitleTone::Grey), "while the record holds the older ones");
+    assert_eq!(picked::<AudioEnhancementsPref>(), Some(boost));
+    assert_eq!(picked::<QualityPref>(), Some(Quality::P720));
 }
 
 // =====================================================================================
 // 8. Unchanged-skip
 // =====================================================================================
 
-/// **Tone: a pick equal to the stored tone writes nothing; any other pick writes**, including a
-/// return to the default (the key is written at default).
+/// **Tone: a pick equal to the profile's own tone writes nothing; any other pick writes**, including
+/// the first pick (even of the TV's value) and a return to the default (the key is written at default).
 #[test]
 fn an_unchanged_tone_pick_is_not_written() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("prefs-char-skip-tone");
+    sign_in(&_session);
     let _restore = Restore::take();
     defaults();
 
-    assert!(!writes(|| crate::player::set_subtitle_tone(SubtitleTone::White)), "stored White, picked White");
+    // DECLARED FLIP (P1a, §3.8.4): the first pick is recorded though it equals the TV's White.
+    assert!(writes(|| crate::player::set_subtitle_tone(SubtitleTone::White)), "the first pick, though it is the TV's White");
+    assert!(!writes(|| crate::player::set_subtitle_tone(SubtitleTone::White)), "own White, picked White");
     assert!(writes(|| crate::player::set_subtitle_tone(SubtitleTone::Grey)));
-    assert_eq!(stored().prefs.subtitle_tone, SubtitleTone::Grey);
-    assert!(!writes(|| crate::player::set_subtitle_tone(SubtitleTone::Grey)), "stored Grey, picked Grey");
+    assert_eq!(picked::<SubtitleTonePref>(), Some(SubtitleTone::Grey));
+    assert!(!writes(|| crate::player::set_subtitle_tone(SubtitleTone::Grey)), "own Grey, picked Grey");
     assert!(writes(|| crate::player::set_subtitle_tone(SubtitleTone::White)), "back to the default writes");
-    assert_eq!(stored().prefs.subtitle_tone, SubtitleTone::White);
+    assert_eq!(picked::<SubtitleTonePref>(), Some(SubtitleTone::White));
 }
 
 /// **Enhancements: the same skip**, compared as the pair of switches.
@@ -587,34 +647,38 @@ fn an_unchanged_tone_pick_is_not_written() {
 fn an_unchanged_enhancements_pick_is_not_written() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("prefs-char-skip-enh");
+    sign_in(&_session);
     let _restore = Restore::take();
     defaults();
     let boost = AudioEnhancements { boost_dialog: true, normalize_loudness: false };
 
+    // DECLARED FLIP (P1a, §3.8.4): the first pick is recorded though it equals the TV's value.
+    assert!(writes(|| crate::player::set_audio_enhancements(AudioEnhancements::NONE)), "the first pick, though it is the TV's");
     assert!(!writes(|| crate::player::set_audio_enhancements(AudioEnhancements::NONE)));
     assert!(writes(|| crate::player::set_audio_enhancements(boost)));
-    assert_eq!(stored().prefs.audio_enhancements, boost);
+    assert_eq!(picked::<AudioEnhancementsPref>(), Some(boost));
     assert!(!writes(|| crate::player::set_audio_enhancements(boost)));
     let both = AudioEnhancements { boost_dialog: true, normalize_loudness: true };
     assert!(writes(|| crate::player::set_audio_enhancements(both)), "a second switch is a change");
-    assert_eq!(stored().prefs.audio_enhancements, both);
+    assert_eq!(picked::<AudioEnhancementsPref>(), Some(both));
 }
 
-/// **The player's quality pick: `Some(q)` already stored means no write; an absent field plus a
-/// pick of Original writes `Some(Original)`** (the legacy marker is replaced by an explicit choice).
+/// **The player's quality pick: `Some(q)` already the profile's own means no write; no value of its
+/// own plus a pick of Original writes `Some(Original)`** (the fallback is replaced by an explicit choice).
 #[test]
 fn the_players_quality_pick_skips_only_a_stored_equal_rung() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("prefs-char-skip-quality");
+    sign_in(&_session);
     let _restore = Restore::take();
     defaults();
-    assert_eq!(stored().prefs.playback_quality, None);
+    assert_eq!(picked::<QualityPref>(), None);
 
     assert!(writes(|| set_quality_for_retry(Quality::Original)), "None + Original is a change");
-    assert_eq!(stored().prefs.playback_quality, Some(Quality::Original));
+    assert_eq!(picked::<QualityPref>(), Some(Quality::Original));
     assert!(!writes(|| set_quality_for_retry(Quality::Original)), "Some(Original) + Original is not");
     assert!(writes(|| set_quality_for_retry(Quality::P720)));
-    assert_eq!(stored().prefs.playback_quality, Some(Quality::P720));
+    assert_eq!(picked::<QualityPref>(), Some(Quality::P720));
     assert!(!writes(|| set_quality_for_retry(Quality::P720)));
     assert_eq!(quality(), Quality::P720, "and the live value is the pick either way");
 }
@@ -638,6 +702,7 @@ fn the_players_quality_pick_skips_only_a_stored_equal_rung() {
 fn a_durable_direct_play_write_republishes_over_an_already_published_auto() {
     let _g = plx_base::testlock::serial();
     let _session = session::TempSession::new("prefs-char-play-automatically");
+    sign_in(&_session);
     let _restore = Restore::take();
     defaults();
     restore_direct_play_mode(DirectPlayMode::Forced);
@@ -654,6 +719,7 @@ fn a_durable_direct_play_write_republishes_over_an_already_published_auto() {
 fn a_refused_direct_play_write_does_not_republish_auto() {
     let _g = plx_base::testlock::serial();
     let session = session::TempSession::new("prefs-char-play-automatically-refused");
+    sign_in(&session);
     let _restore = Restore::take();
     defaults();
     restore_direct_play_mode(DirectPlayMode::Forced);

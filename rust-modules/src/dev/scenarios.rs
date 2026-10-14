@@ -342,15 +342,15 @@ pub(crate) fn arm_noidle() {
     }
 }
 
-/// `/tmp/plxnative-audioenh=off|boost|loudness` — force the PERSISTED Boost Dialog / Normalize
-/// Loudness preference (issue #266) at boot, harness-only.
+/// `/tmp/plxnative-audioenh=off|boost|loudness` — force the Boost Dialog / Normalize Loudness
+/// preference (issue #266) at boot, harness-only.
 ///
 /// Every other boot override here (`dev::playback_quality_override`, `arm_glassload`, …) is
 /// deliberately in-memory-only, so a test can never mutate a real person's saved preference. This
 /// one is the one exception, and on purpose: `player::set_audio_enhancements` is the SAME call a
-/// person's own track-menu pick makes (it both updates the live route and re-persists through the
-/// storage worker), and an on-device harness case needs the persisted value itself pinned before
-/// boot, not just the in-memory copy — one case proves the cold-start "a saved preference turns an
+/// person's own track-menu pick makes (it both updates the live route and, for a seated profile,
+/// re-persists through the storage worker), and an on-device harness case needs its starting value
+/// pinned before boot — one case proves the cold-start "a saved preference turns an
 /// otherwise-direct-playable route into a remux" path (`route::plan`'s cold-start audio branch) by
 /// booting with the preference already ON, and the very next boot must not inherit whatever a
 /// FAILED previous case's toggle left behind. A toggle-based reset cannot promise that: if the
@@ -358,6 +358,26 @@ pub(crate) fn arm_noidle() {
 /// Forcing the value at boot, every time, is what makes a case's starting preference a property of
 /// the manifest instead of of history — the same argument `run_case`'s per-case viewOffset reset
 /// already makes for resume position.
+///
+/// **Whose record it forces (P1a).** The preference is a PROFILE's, so the persisted value is the
+/// SEATED profile's, and it only exists once a profile is seated. The arm runs twice, both through
+/// the same setter. Boot runs it with nobody seated, which sets the live cell alone (the door
+/// refuses to save for nobody). The seat trigger (`app::bridge::SeatWatch`) runs it again right
+/// after the restore of the process's first `Unseated` to `Seated` change, which writes that
+/// profile's record. Whether that second run happens depends on how the harness boots:
+///
+/// * A token-injected boot (the default, `--guest` included, since `tools/tv-session.sh` and
+///   `tests/run.py` both write `plxnative-token`) is a dev-token boot that never seats, so the arm
+///   sets the live value only, and the next dev-token boot reads the fallback rather than a previous
+///   run's pick.
+/// * A `session: stored` case (`offline_play`, `offline_play_v6` and `offline_pick_cached` in
+///   `tests/manifest.json`) skips the token and boots the install's own sign-in, which seats.
+///   `triggers_for_case` still writes `plxnative-audioenh` for it (`off` by default), so the second
+///   run writes that real profile's own record, and under §3.8.4 it records an own value even for
+///   `off`: such a case leaves `audio_enhancements: NONE` in the install's signed-in profile.
+///
+/// Either way no boot inherits what a failed case left: the token boots never persist it, and a
+/// seated boot overwrites it.
 ///
 /// `off` clears both flags; `boost`/`loudness` sets exactly one (never both — no case here needs
 /// both at once, and a value this test-only can grow a second name later without breaking the

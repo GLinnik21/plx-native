@@ -54,14 +54,31 @@ fn tears_of_steel_serves_its_full_cast_and_its_writer_director() {
 }
 
 #[test]
-fn neither_title_serves_a_score_or_a_certification_nor_a_headshot() {
+fn neither_title_serves_a_score_or_a_certification() {
     // No cited source exists for either, so the page shows "Unrated" and no ratings row.
     for rk in [102, 105] {
         let it = fixture(rk);
         assert!(it.content_rating.is_empty(), "{rk}: no uncited certification");
         assert!(convert_ratings(&it).is_empty(), "{rk}: no uncited score");
-        for t in it.role.iter().chain(&it.director).chain(&it.writer) {
-            assert!(t.thumb.is_empty(), "{rk}: {} has no photograph", t.tag);
-        }
     }
+}
+
+#[test]
+fn a_headshot_is_served_only_for_a_person_the_catalog_gives_a_portrait() {
+    // The catalog's `people` is the cast of Tears of Steel (an openly licensed photograph of the
+    // actor, or a frame of the film): each of them carries a `thumb`, every other credit carries
+    // none and the page draws its glyph.
+    let sintel = fixture(102);
+    for t in sintel.role.iter().chain(&sintel.director).chain(&sintel.writer) {
+        assert!(t.thumb.is_empty(), "102: {} has no photograph", t.tag);
+    }
+    let tears = fixture(105);
+    for t in &tears.role {
+        assert!(t.thumb.starts_with("/library/metadata/"), "105: {} has a portrait", t.tag);
+    }
+    for t in tears.director.iter().chain(&tears.writer) {
+        assert!(t.thumb.is_empty(), "105: {} has no photograph", t.tag);
+    }
+    assert_eq!(tears.role[3].role, "Thom", "Vanja Rukavina plays the young Thom");
+    assert_eq!(tears.role[4].role, "Celia", "Denise Rebergen plays Celia");
 }

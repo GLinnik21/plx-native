@@ -45,7 +45,7 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
             plx_base::storage_worker::drain_for_test();
             plx_plex::plex::session::update(|current| {
                 let mut next = current.clone();
-                next.library_views.clear();
+                next.prefs.library_views.clear();
                 Some(next)
             });
             let mut fixture = Fixture::new();

@@ -784,13 +784,34 @@ class CatalogDetailFields(unittest.TestCase):
                 for flat in ("rating", "audienceRating", "ratingImage", "audienceRatingImage"):
                     self.assertNotIn(flat, d)
 
-    def test_no_person_is_served_with_a_photo(self):
-        # Real people's photographs are not in the demo library: the app draws its glyph.
-        for film in ("sintel", "tears-of-steel"):
+    def test_the_related_hub_is_the_whole_list_so_no_row_waits_for_a_page(self):
+        hubs = get(self.pms, f"/library/metadata/{self.rk_of('tears-of-steel')}/related")["Hub"]
+        related = next(h for h in hubs if h["hubIdentifier"] == "related")
+        self.assertFalse(related["more"])
+        self.assertEqual(related["size"], related["totalSize"])
+        self.assertEqual(len(related["Metadata"]), len(self.catalog["movies"]) - 1)
+        self.assertTrue(all(m.get("thumb") for m in related["Metadata"]), "every card has a poster")
+
+    def test_a_person_without_a_catalog_photo_is_served_without_one(self):
+        # Only the catalog's `people` have a portrait; for everyone else the app draws its glyph.
+        for film, jobs in (("sintel", ("Role", "Director", "Writer")), ("tears-of-steel", ("Director", "Writer"))):
             d = self.detail(self.rk_of(film))
-            for job in ("Role", "Director", "Writer"):
+            for job in jobs:
                 for person in d[job]:
                     self.assertNotIn("thumb", person, (film, job, person))
+
+    def test_a_person_with_a_catalog_photo_is_served_it_through_the_transcoder(self):
+        d = self.detail(self.rk_of("tears-of-steel"))
+        people = {p["tag"]: p for p in d["Role"]}
+        self.assertEqual({name for name, p in people.items() if "thumb" in p}, set(self.catalog["people"]))
+        self.assertEqual(len(people), 7, "the whole cast")
+        seen = set()
+        for name in self.catalog["people"]:
+            ctype, body = self.lib.image(people[name]["thumb"], 300, 300)
+            self.assertEqual(ctype, "image/jpeg")
+            self.assertEqual(body[:2], b"\xff\xd8", name)
+            seen.add(body)
+        self.assertEqual(len(seen), len(self.catalog["people"]), "each person has their own picture")
 
     def _temp_library(self, edit):
         """A CatalogLibrary over a copy of the catalog that `edit` has changed."""

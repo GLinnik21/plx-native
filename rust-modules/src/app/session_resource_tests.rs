@@ -12,7 +12,7 @@ mod tests {
         fn drop(&mut self) {
             plx_plex::plex::reset_servers_for_test();
             // Publish the neutral test resource value, without allocating another profile scope.
-            session::ProfilePublisher::new(self.0).publish(None, 0);
+            session::ProfilePublisher::new(self.0).publish(None, 0, String::new());
         }
     }
 
@@ -829,6 +829,7 @@ mod tests {
 
         #[test]
         fn a_refresh_reconciles_the_picker_snapshot_before_take_ready_can_save_it() {
+            let _serial = plx_base::testlock::serial();
             let mut init = plx_session::auth::SessionInit::captured(stored_admin());
             init.phase = Phase::Profiles;
             init.epoch = u64::from(u32::MAX) + 160;

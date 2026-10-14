@@ -5,6 +5,7 @@
 //! primitives (they composite directly over the video plane, outside the transport HUD).
 #![allow(dead_code)]
 use plx_gfx::gfx::{delete_tex, upload_rgba};
+use plx_machine::machine::Measure;
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::theme;
 use plx_ui::widgets::{
@@ -109,28 +110,6 @@ impl ClockWarm {
     }
 }
 
-/// naive word-wrap to `max` chars/line (on word boundaries)
-fn wrap(s: &str, max: usize) -> Vec<String> {
-    if s.chars().count() <= max {
-        return vec![s.to_string()];
-    }
-    let mut lines = Vec::new();
-    let mut cur = String::new();
-    for word in s.split_whitespace() {
-        if !cur.is_empty() && cur.chars().count() + 1 + word.chars().count() > max {
-            lines.push(std::mem::take(&mut cur));
-        }
-        if !cur.is_empty() {
-            cur.push(' ');
-        }
-        cur.push_str(word);
-    }
-    if !cur.is_empty() {
-        lines.push(cur);
-    }
-    lines
-}
-
 /// client-rendered subtitle line(s), bottom-center, synced to the video clock. Drawn
 /// every frame independent of the transport HUD; hidden when subtitles are off or no
 /// cue is active at the current position.
@@ -143,8 +122,9 @@ fn wrap(s: &str, max: usize) -> Vec<String> {
 ///
 /// A cue too tall for the area below the Timing capsule is shown a page at a time
 /// ([`CaptionPlan`]); `pager` holds its layout so the wrap and fit run once per cue, not per frame.
-pub fn draw_subtitles(pager: &CaptionPager, hud_up: bool, burned: bool) {
-    let Some(page) = pager.refresh(hud_up, burned) else { return };
+/// `measure` is the frame's text capability, which the wrap measures each line with.
+pub fn draw_subtitles(pager: &CaptionPager, hud_up: bool, burned: bool, measure: &dyn Measure) {
+    let Some(page) = pager.refresh(hud_up, burned, Some(measure)) else { return };
     let slot = pager.slot.borrow();
     if let Some((_, plan)) = slot.as_ref() {
         draw_caption_block(plan.page_lines(page), &plan.page_layout(page));
@@ -153,9 +133,10 @@ pub fn draw_subtitles(pager: &CaptionPager, hud_up: bool, burned: bool) {
 
 /// Which page of the active cue is showing (0 for a cue that fits whole, and for no cue), so the
 /// player's frame fingerprint can owe a frame at the instant a long cue turns its page: nothing
-/// else on the screen changes then.
+/// else on the screen changes then. It reads the plan [`draw_subtitles`] made and never plans one
+/// itself (it has no text capability): a cue the draw has not planned yet is on page 0.
 pub fn caption_page(pager: &CaptionPager, hud_up: bool, burned: bool) -> u32 {
-    pager.refresh(hud_up, burned).unwrap_or(0) as u32
+    pager.refresh(hud_up, burned, None).unwrap_or(0) as u32
 }
 
 /// Shared caption placement for plain text and a styled-renderer failure message. Text size and
@@ -163,9 +144,9 @@ pub fn caption_page(pager: &CaptionPager, hud_up: bool, burned: bool) -> u32 {
 /// `route::subtitle_position`) — native ASS/SSA keeps its authored style instead
 /// (`docs/ass-subtitles.md`). The message is a short fixed string, so it is never paged: a block
 /// taller than the area is drawn whole at the smallest step.
-pub fn draw_subtitle_message(text: &str, hud_up: bool) {
+pub fn draw_subtitle_message(text: &str, hud_up: bool, measure: &dyn Measure) {
     let (scale, baseline, floor) = caption_geometry(hud_up);
-    let lines = caption_wrap(text, scale);
+    let lines = caption_wrap(text, scale, measure);
     if lines.is_empty() {
         return;
     }
@@ -274,7 +255,7 @@ pub struct CaptionPager {
 impl CaptionPager {
     /// Look the active cue up, re-plan it if it is not the one planned, and return the page to
     /// show. `None` for no caption.
-    fn refresh(&self, hud_up: bool, burned: bool) -> Option<usize> {
+    fn refresh(&self, hud_up: bool, burned: bool, measure: Option<&dyn Measure>) -> Option<usize> {
         let now_ns = plx_media::player::playpos_ns();
         // the sidecar is looked up on the SUBTITLE clock (the playhead less the viewer's timing
         // offset); the embedded store applies the same subtraction inside `active_subtitle_span`
@@ -290,16 +271,25 @@ impl CaptionPager {
             text,
             geometry: [scale.to_bits(), baseline.to_bits(), floor.to_bits()],
         };
-        self.page_of(key, (scale, baseline, floor), end, clock)
+        self.page_of(key, (scale, baseline, floor), end, clock, measure)
     }
 
     /// The planning half of [`Self::refresh`], on a cue already looked up (the tests drive it).
-    fn page_of(&self, key: CaptionKey, geometry: (f32, f32, f32), end: i64, clock: i64) -> Option<usize> {
+    /// With no `measure` a cue that is not the planned one is not planned, and reads as page 0.
+    fn page_of(
+        &self,
+        key: CaptionKey,
+        geometry: (f32, f32, f32),
+        end: i64,
+        clock: i64,
+        measure: Option<&dyn Measure>,
+    ) -> Option<usize> {
         let (scale, baseline, floor) = geometry;
         let start = key.start_ns;
         let mut slot = self.slot.borrow_mut();
         if slot.as_ref().map(|(k, _)| k) != Some(&key) {
-            let lines = caption_wrap(&key.text, scale);
+            let Some(measure) = measure else { return Some(0) };
+            let lines = caption_wrap(&key.text, scale, measure);
             if lines.is_empty() {
                 *slot = None;
                 return None;
@@ -312,17 +302,58 @@ impl CaptionPager {
     }
 }
 
-/// The caption's lines: each newline-separated segment word-wrapped at the viewer's size. Every
-/// wrapped line is kept, so a long cue is never cut short; [`caption_layout`] fits the block.
-fn caption_wrap(text: &str, scale: f32) -> Vec<String> {
-    let max_chars = ((42.0 / scale).round() as usize).max(20);
+/// The caption's lines: each newline-separated segment word-wrapped to [`caption_wrap_width`],
+/// measured by `measure` in the bold face it is drawn in. Every wrapped line is kept, so a long cue
+/// is never cut short; [`caption_layout`] fits the block.
+fn caption_wrap(text: &str, scale: f32, measure: &dyn Measure) -> Vec<String> {
+    let face = (CAPTION_FACE * scale).round() as c_int;
+    let measure = |s: &str| measure.width_str(s, face, true);
+    let width = caption_wrap_width(scale);
     let mut lines: Vec<String> = Vec::new();
     for seg in text.split('\n') {
         let seg = seg.trim();
         if seg.is_empty() {
             continue;
         }
-        lines.extend(wrap(seg, max_chars));
+        lines.extend(wrap_px(seg, width, &measure));
+    }
+    lines
+}
+
+/// The caption's face in px at scale 1 (the default Medium size), before [`subtitle_size_scale`].
+/// Subtitle caption: media chrome, a documented carve-out from `theme::size` (see HUD_TITLE_SZ).
+const CAPTION_FACE: f32 = 36.0;
+
+/// The widest a caption line runs at the base face: about 42 characters of bold caption text, the
+/// usual subtitle line length. It grows with the viewer's size, so a larger size draws the SAME
+/// lines bigger rather than more, shorter lines (an Extra large cue used to wrap at 28 characters
+/// and run to twice the lines), up to [`CAPTION_MAX_W`].
+const CAPTION_WRAP_W: f32 = 760.0;
+
+/// The widest a caption line ever runs, at any size: three quarters of the screen (owner's call).
+const CAPTION_MAX_W: f32 = SCR_W * 0.75;
+
+/// The pixel width a caption line wraps at for the viewer's size `scale`.
+fn caption_wrap_width(scale: f32) -> f32 {
+    (CAPTION_WRAP_W * scale).min(CAPTION_MAX_W)
+}
+
+/// Greedy word-wrap of `s` to `width` px as `measure` reports them. A word wider than `width` on
+/// its own keeps a line to itself rather than being cut.
+fn wrap_px(s: &str, width: f32, measure: &impl Fn(&str) -> f32) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        if !cur.is_empty() && measure(&format!("{cur} {word}")) > width {
+            lines.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
     }
     lines
 }
@@ -368,8 +399,7 @@ fn caption_fit(lines: usize, scale: f32, baseline: f32, floor: f32) -> (CaptionL
     let mut fits = false;
     for &step in CAPTION_FIT_STEPS.iter() {
         let s = scale * step;
-        // subtitle caption: media chrome, a documented carve-out from theme::size (see HUD_TITLE_SZ)
-        lay = CaptionLayout { face: (36.0 * s).round() as i32, pitch: CAPTION_LINE_PITCH * s, top, lines };
+        lay = CaptionLayout { face: (CAPTION_FACE * s).round() as i32, pitch: CAPTION_LINE_PITCH * s, top, lines };
         if top + lines as f32 * lay.pitch <= floor {
             fits = true;
             break;
@@ -393,8 +423,9 @@ fn subtitle_ink_for(tone: plx_plex::plex::session::SubtitleTone) -> [f32; 4] {
 }
 
 /// The face-size multiplier for the viewer's Settings > Playback pick, applied to the plain-text
-/// caption's 36 px base face ([`draw_subtitle_message`]) and its line pitch/wrap width together,
-/// so a larger caption still wraps before it runs off either edge.
+/// caption's [`CAPTION_FACE`] ([`draw_subtitle_message`]) and its line pitch and wrap width
+/// ([`caption_wrap_width`]) together, so a larger caption keeps its lines and never runs past the
+/// screen's side margins.
 fn subtitle_size_scale(size: plx_plex::plex::session::SubtitleSize) -> f32 {
     use plx_plex::plex::session::SubtitleSize;
     match size {
@@ -431,8 +462,8 @@ const SUB_CEIL_Y: f32 = SCR_H - 300.0;
 /// anchor's top and grows down ([`caption_layout`]); it never has lines cut — one too tall for
 /// the area at the smallest size is shown a page at a time ([`CaptionPlan`]).
 const CAPTION_ANCHOR_LINES: usize = 3;
-/// The vertical pitch of one caption line in [`draw_subtitle_message`] — its 36 px face plus
-/// leading.
+/// The vertical pitch of one caption line in [`draw_subtitle_message`] at scale 1 — its
+/// [`CAPTION_FACE`] plus leading; it scales with the face.
 const CAPTION_LINE_PITCH: f32 = 48.0;
 /// The Timing capsule's bottom y — [`SUB_BASE_Y`] cleared by the tallest caption block that stays
 /// bottom-anchored ([`CAPTION_ANCHOR_LINES`] at [`CAPTION_LINE_PITCH`]). A taller block grows down
@@ -2166,7 +2197,7 @@ mod tests {
         let cue = "First authored line that is long enough to wrap onto a second row\n\
                    Second authored line that is long enough to wrap onto a second row\n\
                    Third authored line that is long enough to wrap onto a second row";
-        let lines = super::caption_wrap(cue, 1.0);
+        let lines = caption_wrap(cue, 1.0, &FM);
         assert_eq!(lines.len(), 6, "{lines:?}");
         assert!(lines.last().unwrap().ends_with("second row"), "{lines:?}");
     }
@@ -2182,6 +2213,8 @@ mod tests {
     }
 
     use super::*;
+    /// The host tests' text capability (half an em per byte).
+    const FM: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
 
     /// **The transport's clocks are resident before the draw, this second's and the next one's.**
     /// On the TV the draw met each new clock string cold AFTER the back-buffer wait (`clear:12.4 …
@@ -3137,11 +3170,40 @@ mod tests {
     #[test]
     fn a_six_line_cue_wraps_to_six_lines() {
         let text = "one\ntwo\nthree\nfour\nfive\nsix";
-        assert_eq!(caption_wrap(text, 1.0), ["one", "two", "three", "four", "five", "six"]);
+        assert_eq!(caption_wrap(text, 1.0, &FM), ["one", "two", "three", "four", "five", "six"]);
         let long = "word ".repeat(120);
-        let wrapped = caption_wrap(long.trim(), 1.0);
+        let wrapped = caption_wrap(long.trim(), 1.0, &FM);
         assert!(wrapped.len() > 3, "a long cue wraps past the anchor count, got {}", wrapped.len());
         assert_eq!(wrapped.join(" ").split_whitespace().count(), 120, "no word is lost");
+    }
+
+    /// **A larger size widens the line, it does not add lines.** An ordinary two-line cue at Extra
+    /// large wrapped at 28 characters, so it became four lines, stepped down to ~47 px (smaller
+    /// than the viewer asked for) and, before the cue pager, lost its tail at the three-line cap.
+    /// It must stay two lines, drawn at the full Extra large size, on one page.
+    #[test]
+    fn a_two_line_cue_at_extra_large_stays_two_lines_at_full_size() {
+        let xl = subtitle_size_scale(plx_plex::plex::session::SubtitleSize::ExtraLarge);
+        let cue = "I don't know why you came here tonight,\nbut you had better leave right now.";
+        let lines = caption_wrap(cue, xl, &FM);
+        assert_eq!(lines, ["I don't know why you came here tonight,", "but you had better leave right now."]);
+        let plan = CaptionPlan::new(lines, xl, SUB_BASE_Y, CAPTION_FLOOR_Y);
+        assert_eq!((plan.layout.face, plan.pages()), (54, 1), "full Extra large size, one page");
+    }
+
+    /// **No wrapped line is wider than the wrap width, and no size's width passes three quarters
+    /// of the screen**; only a single word wider than the width keeps a line of its own.
+    #[test]
+    fn caption_lines_stay_inside_the_wrap_width() {
+        use plx_plex::plex::session::SubtitleSize;
+        let widths: Vec<f32> = SubtitleSize::LADDER.iter().map(|&s| caption_wrap_width(subtitle_size_scale(s))).collect();
+        assert_eq!(widths, [760.0 * 0.78, 760.0, 950.0, 1140.0]);
+        assert!(widths.iter().all(|&w| w <= 1440.0), "{widths:?}");
+        assert_eq!(caption_wrap_width(10.0), 1440.0, "any size is capped at 75% of 1920");
+        let measure = |s: &str| s.chars().count() as f32 * 10.0;
+        let lines = wrap_px("aa bbb cccc dd eeeeeeeeeeee f", 80.0, &measure);
+        assert_eq!(lines, ["aa bbb", "cccc dd", "eeeeeeeeeeee", "f"]);
+        assert!(lines.iter().all(|l| measure(l) <= 80.0 || !l.contains(' ')), "{lines:?}");
     }
 
     /// **A 1-3 line caption lays out exactly as it did before the fit rule**: 36 px at the
@@ -3224,7 +3286,7 @@ mod tests {
                             text: cue_of(n),
                             geometry: [scale.to_bits(), baseline.to_bits(), floor.to_bits()],
                         };
-                        let page = pager.page_of(key, (scale, baseline, floor), end, frame).expect("a caption");
+                        let page = pager.page_of(key, (scale, baseline, floor), end, frame, Some(&FM)).expect("a caption");
                         let slot = pager.slot.borrow();
                         let plan = &slot.as_ref().unwrap().1;
                         let lay = plan.page_layout(page);

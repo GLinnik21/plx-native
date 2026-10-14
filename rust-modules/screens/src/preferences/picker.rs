@@ -13,7 +13,8 @@
 //! checked option pops without a write (compared against the canonical current value, so a stored
 //! deprecated code is never rewritten by a pick that changed nothing) — except Size and Position,
 //! which publish their live value before the write lands: there the checked row must also match the
-//! STORED value, so OK on it after a failed write retries instead of popping over an unsaved pick. A failed write keeps the
+//! STORED value of the seated profile (`session::stored_effective`: its own value, else the legacy
+//! install-wide key), so OK on it after a failed write retries instead of popping over an unsaved pick. A failed write keeps the
 //! page, shows the status and — for the account fields — a Retry row. BACK is held while an account
 //! write is in flight, so the receipt always lands on a page that can publish it to its parent.
 use super::*;
@@ -84,13 +85,17 @@ impl PickerPage {
     fn current(&self) -> Value {
         resolve_value(self.state.field, self.state.quality, self.state.direct_play, self.txn.prefs())
     }
-    /// Whether the STORED setting already is `value`. Only Size and Position can differ from
-    /// [`Self::current`]: they publish the live value before the write lands, so after a failed
-    /// write the checked row is live but not on disk, and OK on it must retry rather than pop.
+    /// Whether the STORED setting already is `value`, for the profile seated now. Only Size and
+    /// Position can differ from [`Self::current`]: they publish the live value before the write
+    /// lands, so after a failed write the checked row is live but not on disk, and OK on it must
+    /// retry rather than pop. The stored value is the profile's own, else the frozen legacy key it
+    /// falls back to; reading the legacy key alone would call a profile's own pick "not saved" and
+    /// write it again on every OK.
     fn durable(&self, value: &Value) -> bool {
+        use plx_plex::plex::session::{current_seat, peek, stored_effective, SubtitlePositionPref, SubtitleSizePref};
         match value {
-            Value::SubtitleSize(v) => plx_plex::plex::session::peek().subtitle_size() == *v,
-            Value::SubtitlePosition(v) => plx_plex::plex::session::peek().subtitle_position() == *v,
+            Value::SubtitleSize(v) => stored_effective::<SubtitleSizePref>(&peek(), &current_seat()) == *v,
+            Value::SubtitlePosition(v) => stored_effective::<SubtitlePositionPref>(&peek(), &current_seat()) == *v,
             _ => true,
         }
     }
@@ -124,7 +129,7 @@ impl PickerPage {
     fn rebuild(&mut self, seat_current: bool) {
         self.state.quality = plx_media::route::quality();
         self.state.direct_play = plx_media::route::direct_play_mode();
-        self.copy = copy_text(Subject::Picker(self.state.field), &self.state.io.status, self.state.direct_play).into_owned();
+        self.copy = copy_text(Subject::Picker(self.state.field), &self.state.io.status, self.state.direct_play, &Whose::Nobody).into_owned();
         self.state.confirming = self.alert.is_open(); self.state.affirmative = self.alert.choice();
         self.state.alert_scroll = self.alert.scroll_target_bits();
         let current = self.current();
