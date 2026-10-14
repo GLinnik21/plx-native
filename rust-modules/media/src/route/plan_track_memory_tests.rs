@@ -276,15 +276,15 @@ fn the_remembered_audio_track_is_what_a_conversion_names() {
 // ---- the log -----------------------------------------------------------------------------------
 
 /// The line is the plan's grammar (`track-memory-plan.md` §4.2 item 6): the VERB first, the half
-/// after it, so the substrings the Device step, FO's check and C3b's acceptance search for
+/// after it, so the substrings the Device step, FO's check and the Q-TOP (b) tests search for
 /// (`track-memory: applied`, `track-memory: applied forced-only`, `track-memory: no match
-/// (language)`, `track-memory: not shown (copy remux)`) are really in it.
+/// (language)`, `not shown (copy remux)`) are really in it.
 #[test]
 fn the_log_line_says_what_each_half_came_to() {
     let tracks = [audio(41, "jpn", "eac3", false, false)];
     let applied = SubDecision { pick: Some((7, 2)), source: SubPickSource::Memory, miss: None };
     let log = |memo: &SubtitleMemo, d: &SubDecision, audio: Option<&Result<usize, Miss>>| {
-        memory_log(audio, &tracks, Some(memo), Some(d))
+        memory_log(audio, &tracks, Some(memo), Some(d), false)
     };
     assert_eq!(log(&track_memo("eng"), &applied, None).as_deref(), Some("track-memory: applied subtitle (track 7)"));
     let off = SubDecision { pick: None, source: SubPickSource::Memory, miss: None };
@@ -297,9 +297,9 @@ fn the_log_line_says_what_each_half_came_to() {
         log(&track_memo("fra"), &declined, None).as_deref(),
         Some("track-memory: no match (language) subtitle"),
     );
-    assert_eq!(memory_log(Some(&Ok(0)), &tracks, None, None).as_deref(), Some("track-memory: applied audio (track 41, jpn)"));
+    assert_eq!(memory_log(Some(&Ok(0)), &tracks, None, None, false).as_deref(), Some("track-memory: applied audio (track 41, jpn)"));
     assert_eq!(
-        memory_log(Some(&Err("commentary")), &tracks, None, None).as_deref(),
+        memory_log(Some(&Err("commentary")), &tracks, None, None, false).as_deref(),
         Some("track-memory: no match (commentary) audio"),
     );
     let higher = SubDecision { pick: Some((3, 1)), source: SubPickSource::Server, miss: None };
@@ -307,7 +307,7 @@ fn the_log_line_says_what_each_half_came_to() {
         log(&track_memo("eng"), &higher, None).as_deref(),
         Some("track-memory: not used (a higher rung decided) subtitle"),
     );
-    assert_eq!(memory_log(None, &tracks, None, None), None, "nothing remembered, nothing logged");
+    assert_eq!(memory_log(None, &tracks, None, None, false), None, "nothing remembered, nothing logged");
 }
 
 /// Both halves in one line: whatever APPLIED leads (so `track-memory: applied` is the line's prefix
@@ -320,7 +320,7 @@ fn applied_halves_lead_the_line() {
     let declined = SubDecision { pick: None, source: SubPickSource::Account, miss: Some("language") };
     let forced_only = SubtitleMemo::ForcedOnly { lang: String::new() };
     let line = |audio: Option<&Result<usize, Miss>>, memo: &SubtitleMemo, d: &SubDecision| {
-        memory_log(audio, &tracks, Some(memo), Some(d)).expect("something was remembered")
+        memory_log(audio, &tracks, Some(memo), Some(d), false).expect("something was remembered")
     };
 
     let both = line(Some(&Ok(0)), &track_memo("eng"), &applied);
@@ -341,10 +341,34 @@ fn applied_halves_lead_the_line() {
     assert!(neither.starts_with("track-memory: no match (language)"), "the plan's wording for a decline: {neither}");
 }
 
-/// The route's half of the line: a remembered subtitle the route draws nothing of (C3b will burn it
-/// on a re-encode, so only the copy remux stays), with the wording C3b's acceptance searches for.
+/// The route's half of the line, in the SAME line (Q-TOP (b)): a remembered subtitle that a copy remux
+/// neither draws nor burns is `not shown (copy remux)`, not `applied`. It does not lead the line when
+/// something else applied (only what applied leads), and it never speaks for a half that was not a
+/// picked track.
 #[test]
 fn the_route_says_when_a_remembered_subtitle_is_not_shown() {
-    assert_eq!(memory_not_shown_log(55001, true), "track-memory: not shown (copy remux) subtitle 55001");
-    assert_eq!(memory_not_shown_log(55001, false), "track-memory: not shown (re-encode) subtitle 55001");
+    let tracks = [audio(41, "jpn", "eac3", false, false)];
+    let picked = SubDecision { pick: Some((55001, 0)), source: SubPickSource::Memory, miss: None };
+    let log = |audio: Option<&Result<usize, Miss>>, memo: &SubtitleMemo, d: &SubDecision, not_shown: bool| {
+        memory_log(audio, &tracks, Some(memo), Some(d), not_shown)
+    };
+    assert_eq!(
+        log(None, &track_memo("eng"), &picked, true).as_deref(),
+        Some("track-memory: not shown (copy remux) subtitle 55001"),
+        "one line, and `applied subtitle` is not part of it",
+    );
+    assert_eq!(
+        log(None, &SubtitleMemo::ForcedOnly { lang: String::new() }, &picked, true).as_deref(),
+        Some("track-memory: not shown (copy remux) subtitle 55001"),
+    );
+    assert_eq!(
+        log(Some(&Ok(0)), &track_memo("eng"), &picked, true).as_deref(),
+        Some("track-memory: applied audio (track 41, jpn); not shown (copy remux) subtitle 55001"),
+    );
+    let off = SubDecision { pick: None, source: SubPickSource::Memory, miss: None };
+    assert_eq!(
+        log(None, &SubtitleMemo::Off, &off, true).as_deref(),
+        Some("track-memory: applied off"),
+        "nothing was picked, so there is nothing the route could fail to show",
+    );
 }

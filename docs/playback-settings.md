@@ -38,7 +38,10 @@ subtitle language. Order: this playback's own pick, then (subtitles only) a subt
 server has already selected, then what the profile remembered for the show (episodes only), then
 existing PMS item selections, then explicit show preferences, then account defaults. Nothing writes
 the remembered pick yet, so that rung is dormant until the menu write lands. That mode shows subtitles when the audio that will play is not in the subtitle language (`route/plan.rs` compares the two).
-Account defaults do not introduce subtitle burning when playback starts as a transcode.
+Account defaults do not introduce subtitle burning when playback starts as a transcode. A remembered
+pick is burned only where the video is being re-encoded anyway (a fixed quality, a relay, adaptive
+streaming); on a copy remux or a direct play the app draws it if it can, and otherwise it is not
+shown rather than forcing a re-encode (the audio enhancements' own burn rule is a separate matter); the resolve's single `track-memory:` line says `not shown (copy remux) subtitle N` for it (applied halves lead that line, so search for the substring), and the Subtitles menu will say so once the menu note lands.
 
 PMS can keep using an earlier account preference until its own copy updates. The UI explains
 this delay, and the resolver does not guess that an old-language selection was automatic.

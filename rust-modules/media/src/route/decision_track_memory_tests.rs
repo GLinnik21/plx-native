@@ -70,6 +70,15 @@ mod through_build_stream {
         pub mde: &'static [u8],
         /// Requests beyond the PlayQueue, the show-preferences read and `/decision`.
         pub extra: usize,
+        /// `env.quality`; `None` keeps the process default (Original).
+        pub quality: Option<Quality>,
+        /// The link the client is recorded on; `None` leaves it unrecorded.
+        pub link: Option<plx_plex::plex::probe::Location>,
+        /// The Part the resolve is asked to play, and the item's whole-stream bitrate in kbps.
+        pub part: &'static str,
+        pub bitrate: i64,
+        /// A known retry's own pick (`env.sub_sid` and `env.subtitle_override`); `0` is a cold start.
+        pub sub_sid: i64,
     }
 
     impl Case {
@@ -86,6 +95,11 @@ mod through_build_stream {
                 mode: DirectPlayMode::Auto,
                 mde: MDE_DIRECTPLAY,
                 extra: 0,
+                quality: None,
+                link: None,
+                part: "/library/parts/36013/1/file.mkv",
+                bitrate: 48_000,
+                sub_sid: 0,
             }
         }
     }
@@ -99,33 +113,66 @@ mod through_build_stream {
 
     /// Resolve `case` against a loopback PMS: the plan, and every request line the server saw.
     pub(super) fn resolve(case: Case) -> (Plan, Vec<String>) {
+        let (plan, requests, _) = resolve_logged(case);
+        (plan, requests)
+    }
+
+    /// The `track-memory:` lines in `appended` (what the event log gained) that name track `id`. The
+    /// log is a file the whole process writes, so a line is claimed by the track it names.
+    pub(super) fn memory_lines(appended: &str, id: i64) -> Vec<String> {
+        appended
+            .lines()
+            .filter(|l| l.contains("track-memory:") && l.contains(&id.to_string()))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    pub(super) fn resolve_logged(case: Case) -> (Plan, Vec<String>, String) {
         let mut ps = PlaybackSession::IDLE;
         let _g = fresh_registry(&mut ps);
+        resolve_in(&mut ps, case, |_, plan| plan)
+    }
+
+    /// [`resolve_logged`] on a session the caller owns (and has made fresh), for a test that goes on
+    /// to land the plan: `then` gets the plan while the loopback PMS is still up, and what it returns
+    /// comes back beside the requests the server saw and what the event log gained.
+    pub(super) fn resolve_in<T>(
+        ps: &mut PlaybackSession, case: Case, then: impl FnOnce(&mut PlaybackSession, Plan) -> T,
+    ) -> (T, Vec<String>, String) {
         assert!(plx_net::net::global_init());
+        let log_path = plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::EVENTS);
+        let before = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
         let (port, rx, server) = plan_pms(requests_expected(&case), case.mde);
         let sid = plx_plex::plex::register_for_test(MACHINE, "127.0.0.1", port, "token", "tm-client");
-        let mut env = ResolveEnv::snapshot(&ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
+        if let Some(link) = case.link {
+            plx_plex::plex::client_for(sid).expect("registered").set_link(link);
+        }
+        let mut env = ResolveEnv::snapshot(ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
         env.direct_play_mode = case.mode;
+        if let Some(quality) = case.quality {
+            env.quality = quality;
+        }
+        if case.sub_sid > 0 {
+            env.sub_sid = case.sub_sid;
+            env.subtitle_override = Some(case.sub_sid);
+        }
         env.memory = case.memory;
         env.fresh_play = case.fresh_play;
         env.account_subtitles = case.account;
         env.cached_item = Some(plx_data::metadata::PlayingItem {
             kind: case.kind.into(),
             show_rk: case.show_rk.into(),
+            bitrate: case.bitrate,
             ..fourk_item_with_subs(sid, case.audio, case.subs)
         });
-        let plan = build_stream(
-            &plx_base::task::OffFrame::for_test(),
-            "rk-4k",
-            "/library/parts/36013/1/file.mkv",
-            "hevc",
-            "eac3",
-            &env,
-        );
+        let plan = build_stream(&plx_base::task::OffFrame::for_test(), "rk-4k", case.part, "hevc", "eac3", &env);
+        let plan = then(ps, plan);
         let requests = rx.recv_timeout(Duration::from_secs(15)).expect("PMS never saw the resolve");
         server.join().unwrap();
         plx_plex::plex::reset_servers_for_test();
-        (plan, requests)
+        let written = std::fs::read(&log_path).unwrap_or_default();
+        let appended = String::from_utf8_lossy(&written[(before as usize).min(written.len())..]).into_owned();
+        (plan, requests, appended)
     }
 
     pub(super) fn is_direct_play(plan: &Plan) -> bool {
@@ -487,6 +534,245 @@ fn a_remembered_subtitle_a_remux_does_not_show_sets_the_note() {
     assert!(plan.url.contains("start.mkv"), "setup: a remux: {}", plan.url);
     assert!(plan.memory_note, "{requests:?}");
     assert_eq!(plan.write_back, None);
+}
+
+// ---- Q-TOP (b): a remembered subtitle burns only on a route that already re-encodes video ------
+
+/// The request line of the transcode `/decision` (the one that is not the MDE handshake).
+#[cfg(feature = "devtriggers")]
+fn transcode_decision(requests: &[String]) -> &String {
+    requests
+        .iter()
+        .find(|r| r.contains("/decision?") && !r.contains("hasMDE=1"))
+        .unwrap_or_else(|| panic!("no transcode decision was asked: {requests:?}"))
+}
+
+/// The subtitle half of the selection PUT, `None` for a route that sends no PUT.
+#[cfg(feature = "devtriggers")]
+fn put_subtitle(requests: &[String]) -> Option<&str> {
+    requests.iter().find(|r| r.starts_with("PUT ")).and_then(|r| query_param(r, "subtitleStreamID"))
+}
+
+/// A route that BURNS `id`: the decision and the start URL both say `subtitles=burn` with the id, the
+/// selection PUT names it, the plan reports it as the session's subtitle (so a rebuild reads it back),
+/// and the menu has nothing to explain.
+#[cfg(feature = "devtriggers")]
+#[track_caller]
+fn assert_burned(plan: &Plan, requests: &[String], id: i64) {
+    let id_text = id.to_string();
+    assert!(!plan.contract.remux, "a burn is a re-encode, never a copy: {}", plan.url);
+    for line in [transcode_decision(requests).as_str(), plan.url.as_str()] {
+        assert_eq!(query_param(line, "subtitleStreamID"), Some(id_text.as_str()), "{line}");
+        assert_eq!(query_param(line, "subtitles"), Some("burn"), "{line}");
+    }
+    assert_eq!(put_subtitle(requests), Some(id_text.as_str()), "{requests:?}");
+    assert_eq!(plan.sub_sid, id, "N2: the burn is the plan's subtitle");
+    assert!(!plan.memory_note, "the subtitle is shown, so the menu has nothing to say");
+}
+
+fn two_subs() -> Vec<plx_data::metadata::Stream> {
+    vec![srt(55001, 3, "eng", false, false), srt(55002, 4, "spa", false, true)]
+}
+
+/// A video re-encode is already running, so the remembered subtitle rides it. Fixed 720p rung: the
+/// ceiling denies the remux, MDE is not asked, and the encoder is told to burn the track.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn q_top_b_a_fixed_rung_burns_the_remembered_subtitle() {
+    let mut case = Case::episode(two_subs(), memory(None, Some(english_track())));
+    case.quality = Some(Quality::P720);
+    case.mde = MDE_TRANSCODE;
+    case.extra = 1;
+    let (plan, requests, log) = resolve_logged(case);
+    assert!(plan.url.contains("start.mkv"), "setup: a fixed-rung encode: {}", plan.url);
+    assert_burned(&plan, &requests, 55001);
+    assert_eq!(memory_lines(&log, 55001).len(), 1, "one line per resolve: {log}");
+    assert!(memory_lines(&log, 55001)[0].ends_with("track-memory: applied subtitle (track 55001)"), "{log}");
+}
+
+/// A relay cannot carry a copy either; its encode takes the burn.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn q_top_b_a_relay_burns_the_remembered_subtitle() {
+    let mut case = Case::episode(two_subs(), memory(None, Some(english_track())));
+    case.link = Some(plx_plex::plex::probe::Location::Relay);
+    case.mde = MDE_TRANSCODE;
+    case.extra = 1;
+    let (plan, requests, _) = resolve_logged(case);
+    assert!(plan.url.contains("start.mkv"), "setup: a relay encode: {}", plan.url);
+    assert_burned(&plan, &requests, 55001);
+}
+
+/// A copy remux the app cannot draw (Direct Play disabled, a bitrate over the side reader's bound)
+/// stays a copy: no re-encode is forced for a subtitle. The menu is told, the start PUT names no
+/// subtitle (as for any undrawn selection), nothing is written back, and the resolve speaks ONCE.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn q_top_b_a_copy_remux_is_not_re_encoded_for_the_subtitle() {
+    let mut case = Case::episode(two_subs(), memory(None, Some(english_track())));
+    case.mode = DirectPlayMode::Disabled;
+    case.mde = MDE_TRANSCODE_COPY;
+    case.extra = 1;
+    let (plan, requests, log) = resolve_logged(case);
+    assert!(plan.url.contains("start.mkv") && plan.contract.remux, "setup: a copy remux: {}", plan.url);
+    for line in [transcode_decision(&requests).as_str(), plan.url.as_str()] {
+        assert_ne!(query_param(line, "subtitles"), Some("burn"), "{line}");
+        assert_eq!(query_param(line, "subtitleStreamID").unwrap_or("0"), "0", "no subtitle id rides: {line}");
+    }
+    assert_eq!(put_subtitle(&requests), Some("0"), "{requests:?}");
+    assert_eq!(plan.sub_sid, 0);
+    assert!(plan.memory_note);
+    assert_eq!(plan.write_back, None, "the pick is not on screen, so it is not written back");
+    let lines = memory_lines(&log, 55001);
+    assert_eq!(lines.len(), 1, "one truthful line, not `applied` and `not shown`: {log}");
+    assert!(lines[0].ends_with("track-memory: not shown (copy remux) subtitle 55001"), "{}", lines[0]);
+}
+
+/// Where the app draws the track (a local link, a Part the side reader admits, a container the server
+/// must remux), nothing is burned and nothing needs explaining: the wire says `subtitles=none`.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn q_top_b_a_side_reader_remux_draws_the_remembered_subtitle() {
+    let mut case = Case::episode(two_subs(), memory(None, Some(english_track())));
+    case.link = Some(plx_plex::plex::probe::Location::Local);
+    case.part = "/library/parts/36013/1/file.avi";
+    case.bitrate = 7_400;
+    case.mde = MDE_TRANSCODE_COPY;
+    case.extra = 1;
+    let (plan, requests, log) = resolve_logged(case);
+    assert!(plan.contract.remux && plan.url.contains("start.mkv"), "setup: a remux: {}", plan.url);
+    assert_eq!(query_param(&plan.url, "subtitles"), Some("none"), "{}", plan.url);
+    assert_eq!(query_param(&plan.url, "subtitleStreamID"), Some("0"), "{}", plan.url);
+    assert_eq!((plan.sub_sid, plan.sub_render_ordinal), (55001, Some(0)));
+    assert!(!plan.memory_note);
+    assert!(requests.iter().all(|r| !r.contains("subtitles=burn")), "{requests:?}");
+    let lines = memory_lines(&log, 55001);
+    assert_eq!(lines.len(), 1, "{log}");
+    assert!(lines[0].ends_with("track-memory: applied subtitle (track 55001)"), "{}", lines[0]);
+}
+
+/// Direct play draws it too: no burn on any request, no selection PUT (the direct-play return has
+/// none), the write-back names the pick for the first decoded frame, and the menu has no note.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn q_top_b_direct_play_draws_the_remembered_subtitle_and_writes_it_back() {
+    let (plan, requests, log) = resolve_logged(Case::episode(two_subs(), memory(None, Some(english_track()))));
+    assert!(is_direct_play(&plan), "{}", plan.url);
+    assert_eq!((plan.sub_sid, plan.sub_render_ordinal), (55001, Some(0)));
+    assert!(!plan.memory_note);
+    assert_eq!(puts(&requests), 0, "{requests:?}");
+    assert!(requests.iter().all(|r| !r.contains("subtitles=burn")), "{requests:?}");
+    assert_eq!(plan.write_back, Some(WriteBack { audio: None, subtitle: Some(SubWrite::Id(55001)) }));
+    assert_eq!(memory_lines(&log, 55001).len(), 1, "{log}");
+}
+
+/// Adaptive HLS is an encode from its first segment: the remembered subtitle rides the HLS spec.
+/// (A remote Auto whose probe of the Part finds no capacity starts on HLS.)
+#[test]
+#[cfg(feature = "devtriggers")]
+fn q_top_b_adaptive_hls_burns_the_remembered_subtitle() {
+    let mut case = Case::episode(two_subs(), memory(None, Some(english_track())));
+    case.quality = Some(Quality::Auto);
+    case.link = Some(plx_plex::plex::probe::Location::Remote);
+    case.extra = 3;
+    let (plan, requests, _) = resolve_logged(case);
+    assert!(matches!(plan.contract.delivery, plx_plex::plex::TranscodeDelivery::FixedHls { .. }), "setup: HLS: {requests:?}");
+    assert_burned(&plan, &requests, 55001);
+}
+
+/// The commentary stand-in's burn (rule 3): an intended TrueHD the TV cannot decode, only a commentary
+/// to stand in, a subtitle to show. The route is a re-encode, so the remembered pick is what burns.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn q_top_b_the_commentary_stand_in_burn_carries_the_remembered_subtitle() {
+    let truehd = plx_data::metadata::Stream { default: true, selected: true, ..stream(1, 1, "eng", "truehd", 8) };
+    let commentary = plx_data::metadata::Stream { title: "Commentary".into(), ..stream(2, 2, "eng", "ac3", 2) };
+    let mut case = Case::episode(two_subs(), memory(None, Some(english_track())));
+    case.audio = vec![truehd, commentary];
+    case.mde = MDE_TRANSCODE;
+    case.extra = 2; // the selection PUT, and the MDE beside the transcode decision
+    let (plan, requests, _) = resolve_logged(case);
+    assert!(plan.url.contains("start.mkv"), "setup: an encode: {}", plan.url);
+    assert_eq!(plan.audio.as_ref().map(|a| a.sid), Some(1), "setup: the track asked for is converted");
+    assert_burned(&plan, &requests, 55001);
+}
+
+/// The control: what ISN'T a remembered pick keeps main's wire exactly. An account auto-pick on the
+/// same 720p rung is not burned: the PUT names no subtitle and the plan shows none.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn q_top_b_an_account_auto_pick_on_a_fixed_rung_is_still_not_burned() {
+    let mut case = Case::episode(vec![srt(55001, 3, "eng", false, false)], Vec::new());
+    case.account = Some((Some("eng".into()), 2, 0));
+    case.quality = Some(Quality::P720);
+    case.mde = MDE_TRANSCODE;
+    case.extra = 1;
+    let (plan, requests, _) = resolve_logged(case);
+    assert!(plan.url.contains("start.mkv") && !plan.contract.remux, "setup: an encode: {}", plan.url);
+    for line in [transcode_decision(&requests).as_str(), plan.url.as_str()] {
+        assert_ne!(query_param(line, "subtitles"), Some("burn"), "{line}");
+        assert_eq!(query_param(line, "subtitleStreamID").unwrap_or("0"), "0", "no subtitle id rides: {line}");
+    }
+    assert_eq!(put_subtitle(&requests), Some("0"), "{requests:?}");
+    assert_eq!((plan.sub_sid, plan.memory_note), (0, false));
+}
+
+/// U10: a known retry that carries its own subtitle (`env.sub_sid`) on a re-encode burns THAT id, and
+/// the plan says so; the first rebuild would otherwise forget it.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn u10_a_retry_carrying_a_subtitle_on_a_re_encode_reports_it_in_the_plan() {
+    let mut case = Case::episode(two_subs(), Vec::new());
+    case.quality = Some(Quality::P720);
+    case.sub_sid = 55002;
+    case.mde = MDE_TRANSCODE;
+    case.extra = 1;
+    let (plan, requests, _) = resolve_logged(case);
+    assert!(plan.url.contains("start.mkv"), "setup: an encode: {}", plan.url);
+    assert_burned(&plan, &requests, 55002);
+}
+
+/// N2 is scoped to a real re-encode. A retry carrying `env.sub_sid` onto a copy remux the app does
+/// not draw keeps main's plan (`sub_sid` 0): reporting the id would make every later rebuild
+/// (`transcode_spec` rewrites a remux contract's id to `(0, client_subtitles)`) switch the burn off
+/// while the checkmark and the timeline still named it. The remux-carried seek is a follow-up.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn n2_a_carried_subtitle_on_a_copy_remux_is_not_reported_in_the_plan() {
+    let mut case = Case::episode(two_subs(), Vec::new());
+    case.mode = DirectPlayMode::Disabled;
+    case.mde = MDE_TRANSCODE_COPY;
+    case.extra = 1;
+    case.sub_sid = 55002;
+    let (plan, requests) = resolve(case);
+    assert!(plan.url.contains("start.mkv") && plan.contract.remux, "setup: a copy remux: {}", plan.url);
+    assert_eq!(plan.sub_sid, 0, "as on main: a remux plan names no burn: {requests:?}");
+}
+
+/// N2: after a remembered burn the plan's subtitle is the burn, so a seek rebuild (`plan_rebase` reads
+/// `cur_sub_sid`) names the id on the new encoder's decision and URL instead of dropping it.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn n2_a_seek_after_a_remembered_burn_still_names_the_subtitle() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let mut case = Case::episode(two_subs(), memory(None, Some(english_track())));
+    case.quality = Some(Quality::P720);
+    case.mde = MDE_TRANSCODE;
+    case.extra = 2; // the selection PUT, and the seek's own decision
+    let ((installed, seek_url), requests, _) = resolve_in(&mut ps, case, |ps, plan| {
+        assert_eq!(plan.sub_sid, 55001, "setup: the resolve reports the burn");
+        apply_plan(ps, plan, "rk-4k");
+        let installed = cur_sub_sid(ps);
+        (installed, transcode_seek(ps, 90))
+    });
+    assert_eq!(installed, 55001, "the landed session carries the burn");
+    let seek_url = seek_url.expect("the seek rebuilt the encode");
+    assert_eq!(query_param(&seek_url, "subtitleStreamID"), Some("55001"), "{seek_url}");
+    assert_eq!(query_param(&seek_url, "subtitles"), Some("burn"), "{seek_url}");
+    let seek_decision = requests.iter().rfind(|r| r.contains("/decision?")).expect("the seek's decision");
+    assert_eq!(query_param(seek_decision, "subtitleStreamID"), Some("55001"), "{seek_decision}");
+    assert_eq!(query_param(seek_decision, "subtitles"), Some("burn"), "{seek_decision}");
 }
 
 // ---- where the memory comes from: the mirror, at the request -----------------------------------
