@@ -241,7 +241,10 @@ something.
   store — not `SHARED.sub_cues`, which is a window the demuxer refills and a backward seek would
   empty. It is silent where the server burns the selection (a re-encode, or a remux whose embedded
   track the app may not read itself); over a plain remux the app draws it, and draws an embedded
-  track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps.
+  track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps. Which sidecar
+  starts is `sidecar::restore_selection`'s one answer: the server's selected one, else the one the
+  track memory chose for this episode (`Plan::memory_sidecar`, its key and codec read from the
+  playing item).
 - **A seek NEVER interrupts the demuxer.** The pump publishes the target in `seek_to_ns` and the
   demux thread — the only thread that touches the `AVFormatContext` — `av_seek_frame`s on it
   between two reads. Do not reintroduce an interrupt: the pump used to `shutdown(2)` the socket to

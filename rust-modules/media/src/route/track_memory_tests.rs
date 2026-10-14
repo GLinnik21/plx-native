@@ -147,6 +147,38 @@ fn a_sidecar_is_used_only_when_nothing_embedded_matches_and_the_caller_can_carry
     assert_eq!(match_subtitle(&subs, &memo_sub("eng"), |s| !s.external), Err("language"));
 }
 
+/// C5: a remembered EXTERNAL subtitle prefers this file's sidecar of the same language, because the
+/// memo says what kind of file the viewer chose. The embedded track of that language is only the
+/// answer when no sidecar is (an embedded memo, which never sees a sidecar, is unchanged).
+#[test]
+fn an_external_memo_takes_the_same_language_sidecar_before_an_embedded_track() {
+    let mut subs = vec![sub(1, "eng", ""), sub(2, "eng", "")];
+    subs[1].external = true;
+    let external = SubtitleTrackMemo { external: true, ..memo_sub("eng") };
+    assert_eq!(match_subtitle(&subs, &external, anyone), Ok(1), "the sidecar, though the embedded track is first");
+    assert_eq!(match_subtitle(&subs, &memo_sub("eng"), anyone), Ok(0), "an embedded memo still takes the embedded track");
+    assert_eq!(
+        match_subtitle(&subs[..1], &external, anyone),
+        Ok(0),
+        "no sidecar on this file: the same-language embedded track, as before"
+    );
+}
+
+/// C5: language and `forced` stay hard for a sidecar. Another language's file is never the answer,
+/// and a forced sidecar is not the full one (nor the reverse).
+#[test]
+fn an_external_memo_never_takes_another_language_or_the_other_forced_sidecar() {
+    let mut subs = vec![sub(1, "spa", ""), sub(2, "eng", "Forced")];
+    subs[0].external = true;
+    subs[1].external = true;
+    let external = SubtitleTrackMemo { external: true, ..memo_sub("eng") };
+    assert_eq!(match_subtitle(&subs[..1], &external, anyone), Err("language"), "a Spanish sidecar is not English");
+    assert_eq!(match_subtitle(&subs, &external, anyone), Err("forced"), "the forced sidecar is not the full one");
+    let forced = SubtitleTrackMemo { external: true, forced: true, ..memo_sub("eng") };
+    assert_eq!(match_subtitle(&subs, &forced, anyone), Ok(1));
+    assert_eq!(match_subtitle(&subs[..1], &forced, anyone), Err("language"));
+}
+
 #[test]
 fn forced_only_takes_the_forced_track_in_the_playing_audios_language() {
     let mut subs = vec![sub(1, "eng", ""), sub(2, "spa", ""), sub(3, "eng", "")];

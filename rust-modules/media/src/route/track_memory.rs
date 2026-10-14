@@ -10,8 +10,9 @@
 //!   (language, commentary and audio description for audio; language and `forced` for a subtitle)
 //!   is never returned, and a record that matches none of the file's tracks DECLINES: the ladder
 //!   falls through to the rungs below it and the episode plays as it would have, never to Off. The
-//!   soft constraints (codec, channels, tag, title, SDH, kind, embedded first, file order) only
-//!   choose between tracks that already satisfy the hard ones, and the first of the best wins.
+//!   soft constraints (codec, channels, tag, title, SDH, kind, the memo's own embedded-or-sidecar,
+//!   file order) only choose between tracks that already satisfy the hard ones, and the first of
+//!   the best wins.
 //! * **"Forced" is the menu's own word.** A subtitle is forced to a matcher exactly when the track
 //!   menu badges it FORCED: [`sub_traits`] runs the menu's parse over the merged name
 //!   (`track_label::track_name` then `parse`, then `flags`), so a track titled "Forced" with no
@@ -172,8 +173,11 @@ pub(super) fn match_audio(
 
 /// **The subtitle track of this file a remembered Track pick means.** `eligible` is what the caller
 /// can carry at all (a stream it can draw). Hard: the language and `forced` ([`sub_traits`]). Soft,
-/// in order: SDH, commentary-ness, text/image kind, tag, title, an embedded track before a sidecar,
-/// then file order.
+/// in order: SDH, commentary-ness, text/image kind, tag, title, the memo's own kind of file (an
+/// embedded track for an embedded memo, a sidecar for an external one: `memo.external`), then file
+/// order. A caller that can carry only embedded tracks for an embedded memo never sees a sidecar;
+/// one that can carry a sidecar for an external memo gets the sidecar before an embedded track of
+/// the same language.
 pub(super) fn match_subtitle(
     subs: &[Stream], memo: &SubtitleTrackMemo, eligible: impl Fn(&Stream) -> bool,
 ) -> Result<usize, Miss> {
@@ -197,7 +201,7 @@ pub(super) fn match_subtitle(
             agrees(&memo.kind, if is_image_sub_codec(&s.codec) { "image" } else { "text" }),
             agrees(&memo.tag, &s.language_tag),
             title_agrees(&memo.title, &s.title),
-            !s.external,
+            s.external == memo.external,
         )
     };
     best_by(forced.into_iter(), key).ok_or("language")
