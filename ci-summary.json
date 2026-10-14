@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-14T10:55:26Z",
+ "generated": "2026-10-14T10:55:57Z",
  "metrics": [
   {
    "change30_pct": -63.1,
@@ -24,17 +24,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -62.5,
+   "change7_pct": -62.4,
    "d30": null,
    "delta30": null,
-   "delta7": -531,
+   "delta7": -530.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 115,
+   "n_now": 114,
    "n_prev": 95,
-   "now": 319,
+   "now": 319.5,
    "prev7": 850,
    "shown": true,
    "state": "better",
