@@ -70,8 +70,7 @@ impl Virtual {
         let zeros = [0u8; 64 * 1024];
         while at < self.len() {
             let r = if at < head {
-                w.write_all(&self.head[at as usize..])
-                    .map(|_| head - at)
+                w.write_all(&self.head[at as usize..]).map(|_| head - at)
             } else if at < tail_at {
                 let n = (tail_at - at).min(zeros.len() as u64);
                 w.write_all(&zeros[..n as usize]).map(|_| n)
@@ -199,7 +198,9 @@ fn serve_one(mut s: std::net::TcpStream, file: &Virtual, log: &Served) {
 
 /// The fixture body: 64 distinct bytes, so a read at the wrong offset cannot look right.
 fn pattern() -> Vec<u8> {
-    (0..64u8).map(|i| i.wrapping_mul(37).wrapping_add(11)).collect()
+    (0..64u8)
+        .map(|i| i.wrapping_mul(37).wrapping_add(11))
+        .collect()
 }
 
 fn avio_over(src: Src, size: i64, aq: *mut AuQueue) -> AvioState {
@@ -227,7 +228,11 @@ fn seek_to_the_end_is_a_position(server: &StrictServer, st: &mut AvioState, body
     let op = st as *mut AvioState as *mut c_void;
     let n = body.len() as i64;
     let mut dst = [0u8; 16];
-    assert_eq!(read_cb(op, dst.as_mut_ptr(), 4), 4, "fixture: the open reads");
+    assert_eq!(
+        read_cb(op, dst.as_mut_ptr(), 4),
+        4,
+        "fixture: the open reads"
+    );
     let before = server.served().len();
 
     for (offset, whence, what) in [(n, SEEK_SET, "SEEK_SET size"), (0, SEEK_END, "SEEK_END 0")] {
@@ -249,7 +254,10 @@ fn seek_to_the_end_is_a_position(server: &StrictServer, st: &mut AvioState, body
             AVERROR_EOF,
             "at the end ({what}) a read is a clean EOF, not a transport error"
         );
-        assert!(!st.io_failed, "an EOF at the end is not an I/O failure ({what})");
+        assert!(
+            !st.io_failed,
+            "an EOF at the end is not an I/O failure ({what})"
+        );
     }
     assert!(
         server.refused().is_empty(),
@@ -258,11 +266,24 @@ fn seek_to_the_end_is_a_position(server: &StrictServer, st: &mut AvioState, body
     );
 
     // And the source is still a source: the next real seek reopens at the byte asked for.
-    assert_eq!(seek_cb(op, 10, SEEK_SET), 10, "a seek back into the file reopens");
+    assert_eq!(
+        seek_cb(op, 10, SEEK_SET),
+        10,
+        "a seek back into the file reopens"
+    );
     let got = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
     assert!(got > 0, "the reopened source reads, got {got}");
-    assert_eq!(&dst[..got as usize], &body[10..10 + got as usize], "bytes from offset 10");
-    assert_eq!(server.served().last(), Some(&(Some(10), 206)), "{:?}", server.served());
+    assert_eq!(
+        &dst[..got as usize],
+        &body[10..10 + got as usize],
+        "bytes from offset 10"
+    );
+    assert_eq!(
+        server.served().last(),
+        Some(&(Some(10), 206)),
+        "{:?}",
+        server.served()
+    );
 }
 
 /// **The regression, on the transport the reported set used** (plaintext PMS on the LAN). Before
@@ -277,7 +298,11 @@ fn a_socket_seek_to_the_end_answers_the_size_without_a_request() {
     let (src, size) =
         open_plain_progressive(&mut *hs, &origin, "/library/parts/1/file.mp4", &mut *aq)
             .unwrap_or_else(|e| panic!("fixture: the plain open failed: {e:?}"));
-    assert_eq!(size, body.len() as i64, "fixture: the size is the Content-Length");
+    assert_eq!(
+        size,
+        body.len() as i64,
+        "fixture: the size is the Content-Length"
+    );
     let mut st = avio_over(src, size, &mut *aq);
     seek_to_the_end_is_a_position(&server, &mut st, &body);
     drop(st);
@@ -303,7 +328,11 @@ fn a_curl_seek_to_the_end_answers_the_size_without_a_request() {
     let cs = crate::curlio::CurlSource::open(&url, 0)
         .unwrap_or_else(|e| panic!("fixture: the curl open failed: {e:?}"));
     let size = cs.size();
-    assert_eq!(size, body.len() as i64, "fixture: the size is the Content-Length");
+    assert_eq!(
+        size,
+        body.len() as i64,
+        "fixture: the size is the Content-Length"
+    );
     let mut st = avio_over(Src::Curl(cs), size, &mut *aq);
     seek_to_the_end_is_a_position(&server, &mut st, &body);
     drop(st);
@@ -323,7 +352,11 @@ fn an_unsized_source_still_asks_the_transport() {
         .unwrap_or_else(|e| panic!("fixture: the plain open failed: {e:?}"));
     let mut st = avio_over(src, -1, &mut *aq);
     let op = &mut st as *mut AvioState as *mut c_void;
-    assert_eq!(seek_cb(op, 64, SEEK_SET), -1, "the server refuses it, and so does the seek");
+    assert_eq!(
+        seek_cb(op, 64, SEEK_SET),
+        -1,
+        "the server refuses it, and so does the seek"
+    );
     assert_eq!(server.refused(), vec![Some(64)], "{:?}", server.served());
     drop(st);
     plx_net::stream::http_close(&mut *hs);
@@ -382,11 +415,25 @@ fn generate(dir: &Path) -> PathBuf {
     let status = Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y"])
         .args(["-f", "lavfi", "-i", "testsrc=s=320x240:r=25:d=2"])
-        .args(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=2"])
+        .args([
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:sample_rate=48000:duration=2",
+        ])
         .arg("-i")
         .arg(&meta)
         .args(["-map", "0:v", "-map", "1:a", "-map_chapters", "2"])
-        .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", "25"])
+        .args([
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-pix_fmt",
+            "yuv420p",
+            "-g",
+            "25",
+        ])
         .args(["-c:a", "aac", "-b:a", "64k"])
         .arg(&out)
         .status()
@@ -430,7 +477,11 @@ fn as_large_file(file: &[u8], moov_at: u64) -> Virtual {
     head.extend_from_slice(b"mdat");
     head.extend_from_slice(&mdat_size.to_be_bytes());
     head.extend_from_slice(payload);
-    assert_eq!(head.len(), mdat.1 + mdat.2, "fixture: chunk offsets unmoved");
+    assert_eq!(
+        head.len(),
+        mdat.1 + mdat.2,
+        "fixture: chunk offsets unmoved"
+    );
     Virtual {
         gap: moov_at - head.len() as u64,
         head: Arc::new(head),
@@ -442,7 +493,14 @@ fn as_large_file(file: &[u8], moov_at: u64) -> Virtual {
 /// video sample. Measured with ffprobe, not trusted from the command line that wrote it.
 fn assert_chapters_lead_the_video(path: &Path) {
     let probe = Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pos"])
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "packet=pos",
+        ])
         .args(["-of", "csv=p=0"])
         .arg(path)
         .output()
@@ -489,7 +547,17 @@ fn demux_video_aus(file: Virtual, want: usize) -> (usize, Vec<(Option<u64>, u16)
     let origin = plx_plex::plex::Origin::http("127.0.0.1", i32::from(server.port));
     let thread = std::thread::spawn(move || {
         let off = plx_base::task::OffFrame::for_test();
-        demux(&off, origin, "/library/parts/1/file.mp4".into(), "aac".into(), None, None, vp, ap, hp)
+        demux(
+            &off,
+            origin,
+            "/library/parts/1/file.mp4".into(),
+            "aac".into(),
+            None,
+            None,
+            vp,
+            ap,
+            hp,
+        )
     });
     let until = Instant::now() + Duration::from_secs(10);
     let mut aus = 0;
@@ -518,7 +586,10 @@ fn demux_video_aus(file: Virtual, want: usize) -> (usize, Vec<(Option<u64>, u16)
     while !thread.is_finished() && Instant::now() < stop_by {
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(thread.is_finished(), "the demuxer did not stop within 10 s of its lanes aborting");
+    assert!(
+        thread.is_finished(),
+        "the demuxer did not stop within 10 s of its lanes aborting"
+    );
     let _ = thread.join();
     let served = server.served();
     plx_net::stream::http_close(&mut *hs);

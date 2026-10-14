@@ -17,7 +17,10 @@ fn a_remainder_that_is_a_multiple_of_4_gib_is_not_the_end() {
 #[test]
 fn the_reported_film_is_not_finished_at_1_87_gb() {
     let cut = REPORTED_SIZE - 5 * FOUR_GIB;
-    assert_eq!(cut, 1_871_414_262, "fixture: where the truncated count reached zero");
+    assert_eq!(
+        cut, 1_871_414_262,
+        "fixture: where the truncated count reached zero"
+    );
     assert_eq!(body_take(65_536, REPORTED_SIZE - cut), 65_536);
 }
 

@@ -259,9 +259,6 @@ impl ProbeFailure {
     }
 }
 
-/// Strictly grade the one configd shape this decision is allowed to trust. A syntactically valid
-/// service refusal is still uncertainty, and a contradictory `missingConfigs` cannot be rescued
-/// by a boolean elsewhere in the object.
 /// **configd's "supported" is not enough on webOS 3.** A Starfish Load carrying our
 /// `DolbyHdrInfo` node never starts its clock there: the pipeline takes every access unit and
 /// presents none, and the player sits at 0:00. Device-measured 2026-10-14 on an LG OLED C7
@@ -285,6 +282,9 @@ fn platform_gate(probe: DvProbe, webos_major: u32) -> DvProbe {
     probe
 }
 
+/// Strictly grade the one configd shape this decision is allowed to trust. A syntactically valid
+/// service refusal is still uncertainty, and a contradictory `missingConfigs` cannot be rescued
+/// by a boolean elsewhere in the object.
 #[cfg(any(
     test,
     all(target_arch = "arm", target_os = "linux", not(feature = "hostsim"))
@@ -344,15 +344,27 @@ mod tests {
     #[test]
     fn webos4_and_later_keep_configd() {
         for major in [4, 5, 6, 10, 25] {
-            assert_eq!(platform_gate(configd(DvCapability::Supported), major), configd(DvCapability::Supported));
+            assert_eq!(
+                platform_gate(configd(DvCapability::Supported), major),
+                configd(DvCapability::Supported)
+            );
         }
     }
 
     #[test]
     fn an_unknown_version_or_a_non_affirmative_answer_is_untouched() {
-        assert_eq!(platform_gate(configd(DvCapability::Supported), 0), configd(DvCapability::Supported));
-        assert_eq!(platform_gate(configd(DvCapability::Unsupported), 3), configd(DvCapability::Unsupported));
-        assert_eq!(platform_gate(configd(DvCapability::Unknown), 3), configd(DvCapability::Unknown));
+        assert_eq!(
+            platform_gate(configd(DvCapability::Supported), 0),
+            configd(DvCapability::Supported)
+        );
+        assert_eq!(
+            platform_gate(configd(DvCapability::Unsupported), 3),
+            configd(DvCapability::Unsupported)
+        );
+        assert_eq!(
+            platform_gate(configd(DvCapability::Unknown), 3),
+            configd(DvCapability::Unknown)
+        );
     }
 
     #[test]
