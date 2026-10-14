@@ -1307,7 +1307,7 @@ pub struct Plan {
     pub playing: Option<plx_data::metadata::PlayingItem>,
     /// `playing` came from a FRESH `GET /library/metadata/{rk}` this resolve made, not from
     /// `ResolveEnv::cached_item` (a detail page that may predate an earlier write). The write-back
-    /// skips an `Id` half because "PMS already agrees" only on a fresh fetch (§4.8 W7).
+    /// skips an `Id` half because "PMS already agrees" only on a fresh fetch (W7).
     pub playing_fresh: bool,
     /// The server's PRE-FLIGHT refusal (see [`refusal`]), when `/decision` said it can neither
     /// direct play nor convert this item. A plan carrying one has an EMPTY `url` by construction —
@@ -1323,7 +1323,7 @@ pub struct Plan {
     /// only on the direct-play return of a fresh play (the one route that sends no selection PUT of
     /// its own), and only for a memory rung. `None` for a declined memory, a fall-through, a retry
     /// and a preview. `apply_plan` parks it ([`super::decision::ParkedWriteBack`]) and the first
-    /// decoded frame sends it (§4.8 W6).
+    /// decoded frame sends it (W6).
     pub write_back: Option<WriteBack>,
     /// A remembered subtitle was chosen but this route shows none: a copy remux the app cannot draw.
     /// Q-TOP (b) burns only on a route that already re-encodes video, so no burn rides it. The menu
@@ -1331,7 +1331,7 @@ pub struct Plan {
     pub memory_note: bool,
     /// **The remembered sidecar this resolve chose to draw** (C5): the stream id of THIS episode's
     /// same-language external file that the profile's remembered external subtitle meant
-    /// ([`track_memory::memory_subtitle`]). `None` for every other plan, including a remembered
+    /// ([`memory_subtitle`]). `None` for every other plan, including a remembered
     /// embedded track and a server-selected sidecar (which the landing finds on its own). The landing restores it
     /// exactly as it restores the server's selection (`player::sidecar::restore_selection`: the key
     /// and codec are looked up in the playing item), on the routes where the app draws a sidecar.
@@ -1701,7 +1701,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     let ladder_pick = sub_decision.as_ref().and_then(|d| d.pick);
     let sub_pick = ladder_pick.filter(|&(_, ord)| ord >= 0);
     let memory_sidecar = ladder_pick.filter(|&(_, ord)| ord < 0).map(|(id, _)| id);
-    // FO (§4.9): which of the three subtitle states this landing is in, and what the audio follow
+    // FO: which of the three subtitle states this landing is in, and what the audio follow
     // and the first-frame names re-match need of the item (neither can read the metadata store).
     let consulted_memo = plan.playing.as_ref().and_then(|p| {
         consulted_memory(p, env.subtitle_override, memory_sub)
@@ -2996,7 +2996,7 @@ fn reference_default(tracks: &[plx_data::metadata::Stream], default_acodec: &str
 
 /// The subtitle this app can draw from a resolve's own streams: embedded, keyed, and a codec the
 /// demuxer renders. What a remembered subtitle is matched against
-/// ([`track_memory::memory_subtitle`]) and what every later re-match of it (`track_memory`) matches
+/// ([`memory_subtitle`]) and what every later re-match of it (`track_memory`) matches
 /// against, so the embedded candidates cannot disagree. One memo is wider at the resolve: a
 /// remembered EXTERNAL track also carries this file's renderable sidecars
 /// (`track_memory::memory_subtitle`), which a re-match over container names never sees; a landing
@@ -3220,7 +3220,7 @@ fn show_memory<'a>(
 ///   2. a subtitle the SERVER has selected and the app draws itself
 ///      (`metadata::server_selected_sidecar`): memory is not consulted, and the server's pick stands;
 ///   3. what the profile remembered for the show: a track (`track_memory::match_subtitle`; a
-///      remembered sidecar picks this file's same-language sidecar, see [`track_memory::memory_subtitle`]), Off, or
+///      remembered sidecar picks this file's same-language sidecar, see [`memory_subtitle`]), Off, or
 ///      Forced only (`track_memory::match_forced_only`, judged by the language of the audio that
 ///      is PLAYING);
 ///   4-7. PMS's embedded selection, the show's settings, the account's, else Off

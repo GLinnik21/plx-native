@@ -3,8 +3,10 @@
 //! These pure functions turn a descriptor back into a track of THIS file, or say why they cannot.
 //! They know nothing of the ladder they sit in ([`super::plan::pick_subtitle`] and
 //! [`super::plan::audio_intents`] own the rung order) and nothing of the route that will carry the
-//! answer: a matcher decides WHICH track, the carriage decides HOW (`plan::pick_subtitle` and the
-//! route own the carriage).
+//! answer: a matcher decides WHICH track, the carriage decides HOW. The one bridge to what a resolve
+//! can carry is [`memory_subtitle`], the memory rung's answer: which of a file's tracks the app can
+//! draw (an embedded one the demuxer renders, and for a remembered sidecar this file's own), as the
+//! stream id and demuxer ordinal the route builds its plan from.
 //!
 //! * **Hard constraints decline, soft ones only rank.** A track that breaks a hard constraint
 //!   (language, commentary and audio description for audio; language and `forced` for a subtitle)
@@ -67,7 +69,7 @@ pub(super) struct SubTraits {
     pub commentary: bool,
 }
 
-/// The menu's own predicate for one subtitle stream (FO): the merged name, parsed, with
+/// The menu's own predicate for one subtitle stream: the merged name, parsed, with
 /// the structured flags folded in. The one place "forced" is decided for memory.
 pub(super) fn sub_traits(s: &Stream) -> SubTraits {
     // The container name arrives only once the demuxer has the file open (`TrackNames`), after the

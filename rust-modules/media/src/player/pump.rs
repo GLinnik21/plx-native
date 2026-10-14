@@ -1130,8 +1130,8 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     if SHARED.frames.load(Relaxed) > 0 {
         // **The first decoded frame** (`route::on_decoded_frame`, one call per frame, each step once
         // per landing), in the one order its doc fixes: the container-name re-match of a remembered
-        // subtitle (FO, §4.9: the demuxer's track names exist now), the resume confirmation, and
-        // **the write of a remembered choice back to the server** (§4.8 W6): the landing parked it,
+        // subtitle (FO: the demuxer's track names exist now), the resume confirmation, and
+        // **the write of a remembered choice back to the server** (W6): the landing parked it,
         // and a decoded frame is the evidence the television took the direct play with those
         // tracks. A refused direct play never gets here with it parked (its rescue installs a fresh
         // session), and the send only queues, so this frame never waits.
@@ -2252,7 +2252,7 @@ mod flight_tests {
     }
 
     /// The track-memory write-back is sent from the pump's decoded-frame branch and from nowhere
-    /// else (§4.8 W6): a frame before the first decoded picture leaves it parked, the first frame
+    /// else (W6): a frame before the first decoded picture leaves it parked, the first frame
     /// with `frames > 0` takes it. The session is the rig's transcode, so the send drops the value
     /// rather than queueing a PUT; what is graded here is only WHEN the pump takes it.
     #[test]

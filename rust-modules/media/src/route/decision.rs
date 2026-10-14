@@ -313,7 +313,7 @@ pub struct PlaybackSession {
     /// by the first commit that changes the subtitle shown, because a pick the app draws in place
     /// runs no landing to clear it.
     cur_memory_note: bool,
-    /// **A remembered choice this landing applied that the server does not have yet** (§4.8 W6),
+    /// **A remembered choice this landing applied that the server does not have yet** (W6),
     /// parked by [`apply_plan`] and sent by [`send_parked_write_back`] on the landing's first
     /// decoded frame. `take`n by the send, so a play writes at most once; every other landing
     /// (a retry, a rescue, a seek rebuild) installs a session with nothing parked.
@@ -6956,7 +6956,7 @@ fn send_selection(c: &plx_plex::plex::Client, part: i64, aud: i64, sub: Option<i
 /// (`revoke_for_profile_switch` blanks its token and the next profile's grant re-tokens the SAME
 /// slot), so the server id alone cannot say whose request this is. The worker drops the request
 /// when either value moved (W11). `write_back` marks the request an applied remembered choice made
-/// (§4.8), so the drop can say so.
+/// (WB), so the drop can say so.
 struct QueuedSelection {
     sid: ServerId,
     part: i64,
@@ -7863,7 +7863,7 @@ pub fn confirm_resume_presented(ps: &mut PlaybackSession) {
     }
 }
 
-/// **A remembered choice a landing applied and the server has not been told** (§4.8 W6), parked on
+/// **A remembered choice a landing applied and the server has not been told** (W6), parked on
 /// the session until the landing's first decoded frame. Everything the send needs rides here
 /// because the playing item moves into the metadata store at the landing: the identity of the
 /// route it belongs to, the halves (already filtered by W7 against the Part's own streams) and the
@@ -7979,7 +7979,7 @@ fn take_live_parked_write(ps: &mut PlaybackSession) -> Option<ParkedWriteBack> {
     }
 }
 
-/// **Send the parked write-back, once, on the landing's first decoded frame** (§4.8 W6). Called by
+/// **Send the parked write-back, once, on the landing's first decoded frame** (W6). Called by
 /// the pump's decoded-frame branch ([`on_decoded_frame`]); MAIN THREAD, and it only QUEUES (the
 /// serial selection worker does the PUT), so a slow server never stalls the frame.
 ///
@@ -8006,8 +8006,8 @@ pub fn send_parked_write_back(ps: &mut PlaybackSession) {
     queue_selection(parked.sid, parked.part_id, parked.audio.unwrap_or(0), subtitle, true);
 }
 
-/// **Carry the parked write to a subtitle the first frame's re-match put on screen** (§4.8 W6,
-/// §4.9). The container-name re-match runs on the decoded-frame branch BEFORE
+/// **Carry the parked write to a subtitle the first frame's re-match put on screen** (W6,
+/// FO). The container-name re-match runs on the decoded-frame branch BEFORE
 /// [`send_parked_write_back`] and commits a derived subtitle; without this the commit would queue a
 /// PUT of its own, change `cur_sub_sid` under the parked write (whose `landed` check would then drop
 /// it, the remembered audio half with it) and reach PMS through the manual-pick path, which applies
@@ -10288,7 +10288,7 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
 /// deferred behind a pending Original handoff, or one the enhancement reconcile re-routes, is
 /// accepted.
 ///
-/// **While the subtitle mode is Forced only the pick also re-points it** (FO, §4.9): the forced
+/// **While the subtitle mode is Forced only the pick also re-points it** (FO): the forced
 /// track in the language of the audio just chosen is committed as a derived selection
 /// ([`follow_audio_with_forced_only`]), which PUTs like any in-playback subtitle change and writes
 /// NO memory: the memo stays Forced only.
@@ -10701,14 +10701,14 @@ fn follow_audio_with_forced_only(ps: &mut PlaybackSession, audio_sid: i64) {
     }
 }
 
-/// **The first decoded frame's re-match** (FO, §4.9; the pump calls it once per frame, and it does
+/// **The first decoded frame's re-match** (FO; the pump calls it once per frame, and it does
 /// its work once per landing). On a direct play the demuxer's track names are known only once the
 /// file is open, so a remembered subtitle the resolve could not find by name (an MP4 part's PMS
 /// streams carry no `title`) is matched once more with them. When that differs from what the landing
 /// put on screen, it is committed as a derived selection with NO memory write. Skipped when the
 /// viewer picked a subtitle meanwhile ([`commit_subtitle_selection`] ends the owed re-match).
 ///
-/// Runs BEFORE the write-back's send (WB, §4.8): the server is told what is on screen.
+/// Runs BEFORE the write-back's send (WB): the server is told what is on screen.
 ///
 /// **It returns what it committed**: `Some(id)` is the stream now on screen (`0` = nothing: Forced
 /// only came to nothing), `None` that it committed nothing (not owed, nothing found, or the viewer
