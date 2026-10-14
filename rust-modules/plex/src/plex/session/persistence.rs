@@ -582,7 +582,19 @@ pub(super) fn projected_document(
     let worst = Generation([255; 16]);
     let digest = "0".repeat(64);
     let mut next = state.clone();
-    let stand_in = state::PublicPayload { preferences: serde_json::Value::Null, ..public.clone() };
+    // Every field but the preferences, which stay out: a struct update (`..public.clone()`) would
+    // deep-clone the whole payload, preferences included, only to replace them with the `null`.
+    let stand_in = state::PublicPayload {
+        preferences: serde_json::Value::Null,
+        client_id: public.client_id.clone(),
+        profile: public.profile.clone(),
+        pins: public.pins.clone(),
+        recents: public.recents.clone(),
+        consent: public.consent.clone(),
+        scopes: public.scopes.clone(),
+        ids: public.ids.clone(),
+        account_extensions: public.account_extensions.clone(),
+    };
     let envelope = |seal| "x".repeat(sealed_envelope_estimate(state, protected, seal));
     match write {
         DocumentWrite::Update | DocumentWrite::Replace(_) => {

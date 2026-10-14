@@ -31,8 +31,7 @@
 //! picked" while the other half and the rest of the list survive.
 use super::{MemoryEntry, Parse, ProfileList, Row, Scope, SettingsWrite};
 use crate::plex::session::Session;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 /// The most entries one profile keeps (the oldest are dropped first).
 pub const CAP: usize = 64;
@@ -89,14 +88,14 @@ pub struct SubtitleTrackMemo {
     /// `text` or `image`.
     pub kind: String,
     /// A sidecar file rather than an embedded stream. The file differs per episode, so a memo of
-    /// one means the next episode's own same-language sidecar (`route::plan::memory_subtitle`).
+    /// one means the next episode's own same-language sidecar (`route::track_memory::memory_subtitle`).
     pub external: bool,
     pub title: String,
 }
 
 /// **What a profile picked for a show's subtitles**: a specific track, Off, or Forced only. The
 /// mode is the wire tag, so a build that does not know a mode reads that half as absent (see
-/// `de_soft_half`).
+/// `super::de_soft_opt`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum SubtitleMemo {
@@ -132,14 +131,14 @@ pub struct TrackMemoryEntry {
 }
 
 /// The tolerant read shape of a [`TrackMemoryEntry`]: the key strings are required strings (a
-/// wrong type fails the element), the halves are soft (`de_soft_half`).
+/// wrong type fails the element), the halves are soft (`super::de_soft_opt`).
 #[derive(Deserialize)]
 struct TrackMemoryEntryWire {
     machine_id: String,
     show_rk: String,
-    #[serde(default, deserialize_with = "de_soft_half")]
+    #[serde(default, deserialize_with = "super::de_soft_opt")]
     audio: Option<AudioMemo>,
-    #[serde(default, deserialize_with = "de_soft_half")]
+    #[serde(default, deserialize_with = "super::de_soft_opt")]
     subtitle: Option<SubtitleMemo>,
 }
 
@@ -159,16 +158,6 @@ impl TryFrom<TrackMemoryEntryWire> for TrackMemoryEntry {
             Ok(entry)
         }
     }
-}
-
-/// A half this build cannot read reads as never picked, and costs only itself.
-fn de_soft_half<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(serde_json::from_value::<T>(value).ok())
 }
 
 /// Cut `s` to at most `max` bytes at a character boundary.
@@ -255,6 +244,9 @@ impl MemoryEntry for TrackMemoryEntry {
     const BUDGET: Option<usize> = Some(BUDGET_BYTES);
     fn key(&self) -> Self::Key {
         (self.machine_id.clone(), self.show_rk.clone())
+    }
+    fn matches(&self, key: &Self::Key) -> bool {
+        self.machine_id == key.0 && self.show_rk == key.1
     }
     fn forgets(&self) -> bool {
         self.is_blank()

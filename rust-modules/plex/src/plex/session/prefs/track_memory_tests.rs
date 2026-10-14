@@ -12,8 +12,7 @@ use serde_json::{json, Value};
 pub(super) const MACHINE: &str = "0123456789abcdef0123456789abcdef01234567";
 /// A Plex Home user's `uuid` is shorter than this; the worst case is a UUID-length one.
 pub(super) const LONG_USER: &str = "01234567-89ab-cdef-0123-456789abcdef";
-/// `grant::account_key` is 8 bytes as hex.
-pub(super) const STAMP: &str = "00112233445566ff";
+pub(super) use crate::plex::session::test_support::STAMP;
 
 pub(super) fn show(n: u32) -> String {
     format!("{n:016}")

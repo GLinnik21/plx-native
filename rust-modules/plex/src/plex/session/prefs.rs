@@ -717,14 +717,21 @@ pub trait MemoryEntry: Serialize + DeserializeOwned + Clone + PartialEq {
     /// At THIS (plex) layer a tenant that adopts is also not refused without a stamp: its list
     /// reads and writes the unstamped records, prunes nothing and leaves any stamped record alone.
     /// The media door is stricter: it only reads or writes for a seated profile, and a seat needs a
-    /// non-empty stamp, so a write with no account token never reaches the list through it. `track_memory` was bound from its first write, so an unstamped record
-    /// is nobody's and stays `false`.
+    /// non-empty stamp, so a write with no account token never reaches the list through it.
+    /// `track_memory` was bound from its first write, so an unstamped record is nobody's and stays
+    /// `false`.
     const ADOPTS_UNSTAMPED: bool = false;
     /// The household budget, in logical bytes (platform's counting rule), for the whole list across
     /// every profile. Over it, a write drops the oldest entry of the record holding the most
     /// entries until the list fits (see [`ProfileMemory::upsert_with`]). `None` is no budget.
     const BUDGET: Option<usize> = None;
     fn key(&self) -> Self::Key;
+    /// Whether this entry is the one `key` names: [`key`](Self::key) compared, and the scan over a
+    /// list asks it per item, so a tenant whose key is made of its own strings overrides it to
+    /// compare without cloning them.
+    fn matches(&self, key: &Self::Key) -> bool {
+        self.key() == *key
+    }
     /// An entry that says "forget me" (or cannot be recorded): writing it removes the entry for
     /// its key and records nothing (an offset of 0 is Original, which needs no record).
     fn forgets(&self) -> bool;
@@ -745,13 +752,13 @@ impl<E: MemoryEntry> ProfileList<E> {
 
     /// The entry recorded for `key`, if any.
     pub fn find(&self, key: &E::Key) -> Option<&E> {
-        self.items.iter().find(|e| e.key() == *key)
+        self.items.iter().find(|e| e.matches(key))
     }
 
     /// Replace the entry for `key` with `next` as the most recent, or remove it when `next` is
     /// `None` or [`forgets`](MemoryEntry::forgets), then drain the oldest past the cap (T4).
     fn place(&mut self, key: &E::Key, next: Option<E>) {
-        self.items.retain(|e| e.key() != *key);
+        self.items.retain(|e| !e.matches(key));
         let Some(next) = next.filter(|e| !e.forgets()) else { return };
         debug_assert!(next.key() == *key, "an upserted entry keeps the key it was upserted under");
         self.items.push(next);
@@ -854,7 +861,7 @@ fn adopt_unstamped<E: MemoryEntry>(list: &mut Vec<ProfileList<E>>, account: &str
             continue;
         }
         changed = true;
-        let Some(own) = list.iter().position(|r| r.user == list[at].user && r.account == account) else {
+        let Some(own) = list.position_of(&list[at].user, account) else {
             list[at].account = account.to_string();
             at += 1;
             continue;
@@ -1059,6 +1066,9 @@ impl MemoryEntry for SubtitleOffsetEntry {
     fn key(&self) -> Self::Key {
         (self.machine_id.clone(), self.rating_key.clone())
     }
+    fn matches(&self, key: &Self::Key) -> bool {
+        self.machine_id == key.0 && self.rating_key == key.1
+    }
     /// Original (0) needs no record, and an item with no machine id or ratingKey is never recorded
     /// (`LastLibrary::set`'s reason).
     fn forgets(&self) -> bool {
@@ -1133,6 +1143,17 @@ fn de_soft_string<'de, D>(d: D) -> Result<String, D::Error>
 where D: Deserializer<'de> {
     let value = serde_json::Value::deserialize(d)?;
     Ok(value.as_str().map(str::to_owned).unwrap_or_default())
+}
+
+/// Anything this build cannot read is "no value of its own" (`None`), which reads the fallback: the
+/// read of a profile's own setting (`profile_prefs`) and of one half of a show's track memory.
+fn de_soft_opt<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value::<Option<T>>(value).unwrap_or(None))
 }
 
 /// Future or malformed direct-play policies retain the automatic compatibility checks.

@@ -41,7 +41,9 @@ use plx_plex::plex::session::{
     ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipInterval, SkipIntervalPref, SubtitlePosition,
     SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TrailerAutoplayPref,
 };
-use plx_plex::plex::session::prefs::{MemoryEntry, ProfileKeyed, ProfileList, ProfileMemory, SettingsWrite, TrackMemoryEntry};
+use plx_plex::plex::session::prefs::{
+    MemoryEntry, ProfileKeyed, ProfileList, ProfileMemory, ProfileRecords, SettingsWrite, TrackMemoryEntry,
+};
 use plx_plex::plex::session::{self, Seat, Session, SubtitleOffsetEntry};
 use plx_plex::plex::AudioEnhancements;
 use std::marker::PhantomData;
@@ -684,7 +686,7 @@ pub fn recall_all<E: MemoryTenant>(user: &str) -> Vec<E> {
     if E::ACCOUNT_BOUND && account.is_empty() && !E::ADOPTS_UNSTAMPED {
         return Vec::new();
     }
-    state.lists.iter().find(|r| r.user == user && r.account == account).map(|r| r.items.clone()).unwrap_or_default()
+    state.lists.position_of(user, &account).map(|at| state.lists[at].items.clone()).unwrap_or_default()
 }
 
 // ---- the write door -------------------------------------------------------------------------

@@ -8,6 +8,7 @@
 //! * the wire shape: `{user, items}` is byte-equal as a `Value`, an `account` stamp round-trips,
 //!   and an unreadable one costs the stamp, never the record.
 use super::prefs::{MemoryEntry, ProfileList, ProfileMemory};
+use super::test_support::STAMP;
 use super::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -243,8 +244,6 @@ fn the_tenure_moves_when_the_session_is_revoked() {
 }
 
 // ---- SO: offsets are account-bound, with legacy unstamped records adopted -----------------------
-
-const STAMP: &str = "00112233445566ff";
 
 fn offset(rating_key: &str, offset_ms: i64) -> SubtitleOffsetEntry {
     SubtitleOffsetEntry { machine_id: "m".into(), rating_key: rating_key.into(), offset_ms, extensions: Default::default() }
