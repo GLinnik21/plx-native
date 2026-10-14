@@ -10,10 +10,12 @@ import unittest
 import urllib.error
 import urllib.request
 import time
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import link_conditioner as lc  # noqa: E402
+import mock_pms  # noqa: E402
 from mock_pms import serve  # noqa: E402
 
 
@@ -152,10 +154,38 @@ class OnTheMock(unittest.TestCase):
         self.post({"spec": "listing=none:latency=100"})
         urllib.request.urlopen(urllib.request.Request(self.base + "/_mock/wire", method="DELETE"), timeout=5)
         self.timed("/library/sections/1/all?X-Plex-Container-Start=24&X-Plex-Container-Size=24")
-        rows = json.loads(urllib.request.urlopen(self.base + "/_mock/wire", timeout=5).read())["rows"]
-        row = next(r for r in rows if r["path"] == "/library/sections/1/all")
+        row = self.wire_row("/library/sections/1/all")
         self.assertEqual((row["start"], row["size"], row["class"]), ("24", "24", "listing"))
         self.assertGreaterEqual(row["t_done"] - row["t_recv"], 0.09)
+
+    def test_a_wire_row_that_lands_after_the_last_byte_is_still_read(self):
+        """The mock logs a row only once the answer's last byte is written, so a client that has
+        read the whole body can ask for the log before the server thread appends it (CI runners
+        did, intermittently). Hold the row back to make that deterministic."""
+        orig = mock_pms.Handler._wire
+
+        def late(handler, *args):
+            time.sleep(0.2)
+            return orig(handler, *args)
+        self.post({"spec": "listing=none:latency=100"})
+        urllib.request.urlopen(urllib.request.Request(self.base + "/_mock/wire", method="DELETE"), timeout=5)
+        with mock.patch.object(mock_pms.Handler, "_wire", late):
+            self.timed("/library/sections/1/all?X-Plex-Container-Start=0&X-Plex-Container-Size=24")
+            row = self.wire_row("/library/sections/1/all")
+        self.assertEqual((row["start"], row["class"]), ("0", "listing"))
+
+    def wire_row(self, path, deadline_s=5.0):
+        """The first wire-log row for `path`, waiting (bounded) for it: the row is appended just
+        AFTER the response's final write, so it can trail the client's own read of the body."""
+        end = time.monotonic() + deadline_s
+        while True:
+            with urllib.request.urlopen(self.base + "/_mock/wire", timeout=5) as r:
+                rows = json.loads(r.read())["rows"]
+            found = next((r for r in rows if r["path"] == path), None)
+            if found is not None or time.monotonic() >= end:
+                self.assertIsNotNone(found, f"no wire row for {path} within {deadline_s}s; rows={rows}")
+                return found
+            time.sleep(0.01)
 
     def test_a_bad_profile_is_a_400_and_changes_nothing(self):
         before = self.post({"class": "image", "profile": "none"})

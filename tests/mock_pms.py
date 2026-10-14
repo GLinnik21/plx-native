@@ -2468,7 +2468,9 @@ class Handler(BaseHTTPRequestHandler):
     def _wire(self, plan, split, t_recv, nbytes, status, failed):
         """One row of `GET /_mock/wire`: when the request arrived and when its answer finished
         (both `time.monotonic()` seconds on THIS process's clock), so a test reads how long each
-        page spent in flight. Control requests are never logged."""
+        page spent in flight. Control requests are never logged. A row is appended after the
+        answer's last byte is written, so a client that has just read the whole body can see the
+        log before its row: a reader waits for the row (bounded) instead of reading once."""
         if plan is None:
             return
         q = {k: v[-1] for k, v in urllib.parse.parse_qs(split.query).items()}
