@@ -167,7 +167,6 @@ class OnTheMock(unittest.TestCase):
         def late(handler, *args):
             time.sleep(0.2)
             return orig(handler, *args)
-        self.post({"spec": "listing=none:latency=100"})
         urllib.request.urlopen(urllib.request.Request(self.base + "/_mock/wire", method="DELETE"), timeout=5)
         with mock.patch.object(mock_pms.Handler, "_wire", late):
             self.timed("/library/sections/1/all?X-Plex-Container-Start=0&X-Plex-Container-Size=24")
