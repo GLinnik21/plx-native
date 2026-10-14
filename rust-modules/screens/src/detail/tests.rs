@@ -1617,7 +1617,9 @@ fn background_autoplay_recedes_identity_and_ratings_but_holds_the_facts_row_and_
 
 /// **Regression, 2026-09-18: `preview_tick`'s per-frame path must not read the session file every
 /// frame.** `preview::blocked` (called unconditionally from `preview_tick`, hero-focused or not)
-/// calls `preview::enabled()`, which calls `session::peek()` — and `peek` used to take
+/// calls `preview::enabled()`, which called `session::peek()` (since P1c it reads the seated profile's
+/// trailer cell instead, so this test now guards the REST of the per-frame path: any other `peek()`
+/// reached from `preview_tick`) — and `peek` used to take
 /// `session::IO` on every call, which on the television guards a `recv(2)` round trip to the
 /// storage helper, measured at ~27 ms/frame: the whole gap between 60 fps and the 26 fps the
 /// detail page actually drew. The fix is `session::peek()`'s own live read cache (`session::CACHE`,
@@ -1635,7 +1637,7 @@ fn preview_tick_does_not_read_the_session_file_every_frame() {
     let _guard = install(detail(sid, "show"));
     let mut screen = bare(&_guard, sid, "show");
 
-    // A readable session, so `preview::enabled()`'s `peek()` call has real Ready bytes behind it,
+    // A readable session, so a `peek()` anywhere on this path has real Ready bytes behind it,
     // rather than the trivially-cheap Missing/default path.
     let _session = plx_plex::plex::session::TempSession::new("detail-preview-fps");
     plx_plex::plex::session::save(&plx_plex::plex::session::Session {

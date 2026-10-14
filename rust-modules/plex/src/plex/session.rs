@@ -52,7 +52,7 @@ use super::probe::Location;
 pub use prefs::{effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
     DeckPressPref, DirectPlayModePref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
-    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref};
+    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref};
 use prefs::ProfileMemory;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -612,8 +612,9 @@ pub struct Session {
     #[serde(default, deserialize_with = "de_profile_cache")]
     pub profiles: Vec<ProfileCreds>,
     /// Every preference key but `language` (`profile_prefs`, the per-profile home of the nine player
-    /// settings, and those settings' frozen top-level keys every profile falls back to, `auto_sign_in`,
-    /// `trailer_autoplay`, `last_hero_blur`, `plaintext_consent`, `server_key_pins`, `last_library`,
+    /// settings and of hero trailer autoplay, and those settings' frozen top-level keys every profile
+    /// falls back to (`trailer_autoplay` among them), `auto_sign_in`,
+    /// `last_hero_blur`, `plaintext_consent`, `server_key_pins`, `last_library`,
     /// `library_sorts`, `track_memory`, `subtitle_offsets`), flattened so the keys sit at the top level of the file under
     /// the same keys they always had. Declared before [`Session::extensions`]:
     /// a flattened struct takes its keys first, so the unknown-key map sees only keys nobody models.
@@ -645,7 +646,7 @@ struct CanonicalSessionAuth {
 struct CanonicalSessionPreferences {
     #[serde(default)]
     language: plx_platform::i18n::Preference,
-    /// Every flattened preference key (the nine player settings, the A5 rows and the two memory-door
+    /// Every flattened preference key (the nine player settings, hero trailer autoplay, the A5 rows and the two memory-door
     /// lists), flattened ahead of `extensions` so a flattened struct takes its keys first and
     /// `extensions` still sees only unknown ones.
     #[serde(flatten)]
@@ -879,17 +880,6 @@ pub fn set_auto_sign_in(on: bool) -> bool {
             return None;
         }
         Some(cur.with_auto_sign_in(on))
-    })
-}
-
-/// Persist hero trailer autoplay. Same write door as [`set_auto_sign_in`].
-#[cfg(any(test, feature = "test-support"))]
-pub fn set_trailer_autoplay(on: bool) -> bool {
-    update(|cur| {
-        if cur.prefs.trailer_autoplay == on {
-            return None;
-        }
-        Some(cur.with_trailer_autoplay(on))
     })
 }
 
@@ -2068,7 +2058,8 @@ fn default_true() -> bool {
 }
 
 /// Same soft parse as [`de_soft_bool`], but garbage and a missing value stay on. Used where the
-/// product default is on ([`Session::trailer_autoplay`]).
+/// product default is on ([`Session::trailer_autoplay`], the frozen install-wide fallback of the
+/// per-profile hero trailer switch).
 fn de_soft_bool_on<'de, D>(d: D) -> Result<bool, D::Error>
 where
     D: Deserializer<'de>,
@@ -2144,14 +2135,11 @@ impl Session {
         next
     }
 
+    /// The install-wide hero trailer autoplay key: the FALLBACK every profile reads until it picks
+    /// its own (`prefs::stored_effective::<TrailerAutoplayPref>` is what a profile sees). No pick
+    /// writes it; session creation sets it on.
     pub fn trailer_autoplay(&self) -> bool {
         self.prefs.trailer_autoplay
-    }
-
-    pub fn with_trailer_autoplay(&self, on: bool) -> Self {
-        let mut next = self.clone();
-        next.prefs.trailer_autoplay = on;
-        next
     }
 
     /// The answer `account` (`plex::grant::account_key`) recorded for one server —
@@ -2522,8 +2510,8 @@ impl Session {
 /// with no Home selection AND for "no profile published yet" (the boot picker, a sign-out), which
 /// this cannot tell apart from the owner. It does not say whether anyone is SEATED either: a profile
 /// published without a sign-in stamp (a dev token) has a key here and seats nobody. Who is seated,
-/// as a comparable value that also names the sign-in, is [`current_seat`] / [`Seat`]; the nine
-/// per-profile player settings key on that, never on this. One accessor, so the reader and the
+/// as a comparable value that also names the sign-in, is [`current_seat`] / [`Seat`]; the ten
+/// per-profile settings (the player's nine and trailer autoplay) key on that, never on this. One accessor, so the reader and the
 /// writer cannot key on different things — which would look exactly like the leak this scoping
 /// exists to prevent.
 pub fn current_profile_key() -> String {
@@ -3852,7 +3840,8 @@ fn prepare_load(read: &ReadState, mint: impl FnOnce() -> String) -> (Session, bo
         ReadState::Missing | ReadState::Locked { .. } | ReadState::Blocked | ReadState::Cleared { .. } => {
             let mut fresh = session_from_read(read);
             // Product default is on. `Default` for a bool is off, and this is the path that
-            // writes the first file, so set it before that save.
+            // writes the first file, so set it before that save. Like `fresh_default` quality, it
+            // sets the install-wide default the profiles with no value of their own fall back to.
             fresh.prefs.trailer_autoplay = true;
             fresh
         }

@@ -306,7 +306,7 @@ impl ConsentMachine {
 /// **The one trigger of the per-profile player cells**: the seat they were last restored for.
 ///
 /// A seat changes only by a profile publication, so the bridge's `SessionFx::PublishProfile` arm
-/// shows every new seat to [`SeatWatch::arrive`], which restores the nine cells
+/// shows every new seat to [`SeatWatch::arrive`], which restores the ten cells
 /// (`route::restore_profile_rows`) when the seat is not the one already restored. That covers every
 /// path (a stored boot, the boot picker's pick, a change of profile, a fresh sign-in, a sign-out) and
 /// puts the restore before the `Ready` of the same step, which is why `follow_auth_landing` no longer
@@ -358,7 +358,7 @@ pub(crate) struct Bridge {
     session: plx_session::auth::SessionMachine,
     session_adapter: super::adapters::session::SessionAdapter,
     session_ready: Option<(u64, plx_session::auth::owner::ProfileScope, plx_plex::plex::session::ServerRef, String, plx_session::auth::owner::ReadyInstall)>,
-    /// The seat the nine per-profile player cells were last restored for ([`SeatWatch`]).
+    /// The seat the ten per-profile cells (the player settings and trailer autoplay) were last restored for ([`SeatWatch`]).
     seat_watch: SeatWatch,
     consent_adapter: super::adapters::consent::ConsentAdapter,
     stores: plx_data::stores::Stores,
@@ -2793,7 +2793,7 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         // A sign-out followed by a fresh sign-in can replace the session without restarting the
         // process. Re-read only at this one credentials handoff so the old account's in-memory
         // lists (the memory mirrors and the profiles' own player values) cannot leak into the new
-        // session. The nine player cells are not restored here: the seat is
+        // session. The profile's player and trailer cells are not restored here: the seat is
         // (`SeatWatch`, at the `PublishProfile` that precedes this `Ready`).
         let saved = plx_plex::plex::session::peek();
         plx_media::route::restore_install_rows(&saved);

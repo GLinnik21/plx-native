@@ -70,7 +70,7 @@ fn t_live_catches_a_row_forgotten_in_either_list() {
     assert!(!agrees(&plex), "a setting declared live in plex but missing in media is caught");
 }
 
-/// The legacy install-wide keys of a record with the nine settings away from every default.
+/// The legacy install-wide keys of a record with the ten settings away from every default.
 fn stored_prefs() -> Preferences {
     let s = session::Session::default()
         .with_pref::<QualityPref>(Quality::P1080High)
@@ -81,7 +81,8 @@ fn stored_prefs() -> Preferences {
         .with_pref::<SkipIntervalPref>(SkipInterval::Seconds30)
         .with_pref::<DeckPressPref>(DeckPress::Play)
         .with_pref::<SubtitleTonePref>(SubtitleTone::Silver)
-        .with_pref::<AudioEnhancementsPref>(AudioEnhancements { boost_dialog: true, normalize_loudness: true });
+        .with_pref::<AudioEnhancementsPref>(AudioEnhancements { boost_dialog: true, normalize_loudness: true })
+        .with_pref::<TrailerAutoplayPref>(false);
     s.prefs
 }
 
@@ -120,21 +121,22 @@ fn restore(record: &session::Session, seat: &Seat, ov: Overrides) {
 
 #[derive(Debug, PartialEq)]
 struct Cells(Quality, DirectPlayMode, SubtitleSize, SubtitlePosition, NextEpisodeMode, SkipInterval, DeckPress,
-    SubtitleTone, AudioEnhancements);
+    SubtitleTone, AudioEnhancements, bool);
 
 fn cells() -> Cells {
     Cells(quality(), direct_play_mode(), subtitle_size(), subtitle_position(), next_episode_mode(), skip_interval(),
-        deck_press(), crate::player::subtitle_tone(), crate::player::audio_enhancements())
+        deck_press(), crate::player::subtitle_tone(), crate::player::audio_enhancements(),
+        crate::player::preview::TRAILER_AUTOPLAY.get())
 }
 
-/// The nine legacy values of [`stored_prefs`], as the cells hold them once they are restored.
+/// The ten legacy values of [`stored_prefs`], as the cells hold them once they are restored.
 fn legacy_cells() -> Cells {
     Cells(Quality::P1080High, DirectPlayMode::Forced, SubtitleSize::Large, SubtitlePosition::High,
         NextEpisodeMode::AfterCredits, SkipInterval::Seconds30, DeckPress::Play, SubtitleTone::Silver,
-        AudioEnhancements { boost_dialog: true, normalize_loudness: true })
+        AudioEnhancements { boost_dialog: true, normalize_loudness: true }, false)
 }
 
-/// Put the nine cells back to what they held, and the mirrors to never-seeded, on drop. Declared
+/// Put the ten cells back to what they held, and the mirrors to never-seeded, on drop. Declared
 /// AFTER `serial()` so it drops first, while the lock `restore_*` asserts is still held.
 struct Put(Option<Cells>);
 impl Put {
@@ -145,7 +147,7 @@ impl Put {
 impl Drop for Put {
     fn drop(&mut self) {
         unseed_profile_prefs_for_test();
-        let Some(Cells(q, dpm, size, position, next, skip, deck, tone, enh)) = self.0.take() else { return };
+        let Some(Cells(q, dpm, size, position, next, skip, deck, tone, enh, trailer)) = self.0.take() else { return };
         restore_quality(q);
         restore_direct_play_mode(dpm);
         restore_subtitle_size(size);
@@ -155,6 +157,7 @@ impl Drop for Put {
         restore_deck_press(deck);
         crate::player::restore_subtitle_tone(tone);
         crate::player::restore_audio_enhancements(enh);
+        crate::player::preview::restore_trailer_autoplay(trailer);
     }
 }
 
@@ -168,6 +171,7 @@ fn scramble() {
     restore_deck_press(DeckPress::Play);
     crate::player::restore_subtitle_tone(SubtitleTone::Grey);
     crate::player::restore_audio_enhancements(AudioEnhancements { boost_dialog: false, normalize_loudness: true });
+    crate::player::preview::restore_trailer_autoplay(true);
 }
 
 /// **Unseated restores the legacy keys, and never an own value.** Nobody is seated, so nobody owns
@@ -197,13 +201,14 @@ fn restore_profile_rows_unseated_reads_the_legacy_keys_and_never_an_own_value() 
         cells(),
         Cells(Quality::Original, DirectPlayMode::Auto, SubtitleSize::Medium, SubtitlePosition::Low,
             NextEpisodeMode::Countdown, SkipInterval::Seconds10, DeckPress::Details, SubtitleTone::White,
-            AudioEnhancements::NONE),
-        "a record that chose nothing restores every default (an absent quality is Original)"
+            AudioEnhancements::NONE, false),
+        "a record that chose nothing restores every default (an absent quality is Original; the derived \
+         `Preferences::default()` has trailers off: a PARSED record reads them on, see below)"
     );
 }
 
 /// **A seated profile reads its own value, else the legacy key, per setting.** u1 picked two of the
-/// nine; the other seven read the TV's. Another profile with no record reads the TV's for all nine,
+/// ten, three of them here (the trailer switch among them); the rest read the TV's. Another profile with no record reads the TV's for all nine,
 /// the owner (`""`) has a record of its own, and a record under another sign-in's stamp is not read.
 #[test]
 fn restore_profile_rows_seated_reads_the_own_value_and_falls_back_per_setting() {
@@ -211,7 +216,8 @@ fn restore_profile_rows_seated_reads_the_own_value_and_falls_back_per_setting() 
     let _session = session::TempSession::new("restore-seated");
     let _restore = Put::back(cells());
     let own = vec![
-        picked("u1", &stamp(), serde_json::json!({"subtitle_size": "extra_large", "skip_interval": "60s"})),
+        picked("u1", &stamp(), serde_json::json!({"subtitle_size": "extra_large", "skip_interval": "60s",
+            "trailer_autoplay": true})),
         picked("", &stamp(), serde_json::json!({"playback_quality": "480p_720_kbps"})),
         picked("u3", "ffffffffffffffff", serde_json::json!({"subtitle_size": "small"})),
     ];
@@ -219,16 +225,16 @@ fn restore_profile_rows_seated_reads_the_own_value_and_falls_back_per_setting() 
 
     scramble();
     restore(&rec, &seat("u1"), Overrides::default());
-    let Cells(q, dpm, _, position, next, _, deck, tone, enh) = legacy_cells();
+    let Cells(q, dpm, _, position, next, _, deck, tone, enh, _) = legacy_cells();
     assert_eq!(
         cells(),
-        Cells(q, dpm, SubtitleSize::ExtraLarge, position, next, SkipInterval::Seconds60, deck, tone, enh),
-        "u1: its two picks over the TV's seven"
+        Cells(q, dpm, SubtitleSize::ExtraLarge, position, next, SkipInterval::Seconds60, deck, tone, enh, true),
+        "u1: its three picks (trailers ON over the TV's off) over the TV's seven"
     );
 
     scramble();
     restore(&rec, &seat("u2"), Overrides::default());
-    assert_eq!(cells(), legacy_cells(), "u2 picked nothing: all nine are the TV's");
+    assert_eq!(cells(), legacy_cells(), "u2 picked nothing: all ten are the TV's");
 
     scramble();
     restore(&rec, &seat(""), Overrides::default());
@@ -243,6 +249,80 @@ fn restore_profile_rows_seated_reads_the_own_value_and_falls_back_per_setting() 
     restore(&rec, &seat("u1"), Overrides { quality: Some(Quality::P720) });
     assert_eq!(quality(), Quality::P720, "the override is forced over the profile's value too");
     assert_eq!(subtitle_size(), SubtitleSize::ExtraLarge);
+}
+
+/// **Hero trailer autoplay (P1c) follows the seat through the same restore.** The TV's key says off
+/// (the trailer switch a household turned off before profiles had their own): a profile that never
+/// picked reads off, one that picked on reads on, nobody seated reads the TV's. On a PARSED record
+/// that never had the key, everybody reads on (the product default); the cell is what
+/// `preview::enabled` reads, so these are the per-profile answers the Home hero gets.
+#[test]
+fn restore_profile_rows_trailer_autoplay_follows_the_seat_and_falls_back_to_the_tv() {
+    use crate::player::preview::enabled;
+    let _g = plx_base::testlock::serial();
+    let _session = session::TempSession::new("restore-trailer");
+    let _restore = Put::back(cells());
+    let tv_off: session::Session = serde_json::from_value(serde_json::json!({
+        "account_token": TOKEN, "trailer_autoplay": false,
+        "profile_prefs": [{"user": "on", "account": stamp(), "prefs": {"trailer_autoplay": true}},
+                          {"user": "junk", "account": stamp(), "prefs": {"trailer_autoplay": "maybe"}}]
+    })).unwrap();
+
+    restore(&tv_off, &Seat::Unseated, Overrides::default());
+    assert!(!enabled(), "nobody seated: the TV's off");
+    restore(&tv_off, &seat("on"), Overrides::default());
+    assert!(enabled(), "its own pick, on, over the TV's off");
+    restore(&tv_off, &seat("other"), Overrides::default());
+    assert!(!enabled(), "a profile that never picked: the TV's off");
+    restore(&tv_off, &seat("junk"), Overrides::default());
+    assert!(!enabled(), "an unreadable own value reads the TV's, not ON");
+
+    let fresh: session::Session = serde_json::from_value(serde_json::json!({"account_token": TOKEN})).unwrap();
+    restore_profile_rows(&fresh, &Seat::Unseated, Overrides::default());
+    assert!(enabled(), "a record that never had the key: on");
+    restore_profile_rows(&fresh, &seat("anyone"), Overrides::default());
+    assert!(enabled());
+}
+
+/// **The trailer pick is the seated profile's own, and the TV's key is untouched.** An off pick as `a`
+/// publishes off for `a` only: after the switch `b` reads the TV's on, and `a`, seated again, finds its
+/// off. Through the Confirm door the Settings toggle uses.
+#[test]
+fn trailer_pick_is_the_seated_profiles_own() {
+    use crate::player::preview::enabled;
+    let _g = plx_base::testlock::serial();
+    let session = session::TempSession::new("trailer-pick");
+    let _restore = Put::back(cells());
+    let mut base: session::Session = serde_json::from_value(serde_json::json!({"account_token": TOKEN})).unwrap();
+    base.client_id = "cid-test".into();
+    session.seated("a", TOKEN);
+    session::save(&base);
+    seed_profile_prefs_for_test(&session::peek());
+    restore_profile_rows(&session::peek(), &seat("a"), Overrides::default());
+    assert!(enabled(), "setup: on for a");
+
+    assert!(confirm::<TrailerAutoplayPref>(false));
+    assert!(!enabled(), "published for a");
+    let top_level = |s: &session::Session| {
+        let mut v = serde_json::to_value(&s.prefs).unwrap();
+        v.as_object_mut().unwrap().remove("profile_prefs");
+        v
+    };
+    assert_eq!(top_level(&session::load()), top_level(&base), "the TV's key was not written");
+    let stored = session::load();
+    assert_eq!(own_of_trailer(&stored.prefs.profile_prefs, "a"), Some(false));
+
+    session.seated("b", TOKEN);
+    restore_profile_rows(&session::peek(), &seat("b"), Overrides::default());
+    assert!(enabled(), "b picked nothing: the TV's on");
+    assert_eq!(own_of_trailer(&profile_prefs_mirror_for_test(), "b"), None);
+    session.seated("a", TOKEN);
+    restore_profile_rows(&session::peek(), &seat("a"), Overrides::default());
+    assert!(!enabled(), "a finds its off (the mirror, not a stale file)");
+}
+
+fn own_of_trailer(records: &[ProfilePrefsRecord], user: &str) -> Option<bool> {
+    own_of::<TrailerAutoplayPref>(records, user)
 }
 
 /// **A restore publishes each cell once** (a restore is not a pick, and the publish counter is what
@@ -281,7 +361,7 @@ fn restore_profile_rows_reads_the_mirror_because_the_file_is_write_after() {
     assert_eq!(subtitle_size(), SubtitleSize::Medium, "and it is u1's, not u2's");
 }
 
-/// **Every live row records its pick under the seated profile, and never in the TV's key.** The nine
+/// **Every live row records its pick under the seated profile, and never in the TV's key.** The ten
 /// settings picked through the Confirm door land in the profile's record (the mirror has the same),
 /// the frozen top-level keys are byte for byte what they were, and the cell holds the pick.
 #[test]
@@ -310,6 +390,7 @@ fn every_live_setting_is_picked_into_the_seated_profiles_record() {
     assert!(confirm::<DeckPressPref>(DeckPress::Details));
     assert!(confirm::<SubtitleTonePref>(SubtitleTone::Grey));
     assert!(confirm::<AudioEnhancementsPref>(AudioEnhancements::NONE));
+    assert!(confirm::<TrailerAutoplayPref>(true), "over the TV's off: an own value, on");
 
     let after = session::load();
     assert_eq!(top_level(&after), before, "the TV's keys are untouched: no pick writes a legacy key");
@@ -321,7 +402,7 @@ fn every_live_setting_is_picked_into_the_seated_profiles_record() {
         cells(),
         Cells(Quality::P480, DirectPlayMode::Disabled, SubtitleSize::ExtraLarge, SubtitlePosition::Middle,
             NextEpisodeMode::Off, SkipInterval::Seconds60, DeckPress::Details, SubtitleTone::Grey,
-            AudioEnhancements::NONE)
+            AudioEnhancements::NONE, true)
     );
 }
 

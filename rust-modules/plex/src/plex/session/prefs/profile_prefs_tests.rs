@@ -1,4 +1,4 @@
-//! The nine player settings per profile: the record and its soft parse, the fallback read, the
+//! The nine player settings and hero trailer autoplay per profile: the record and its soft parse, the fallback read, the
 //! write that always records an own value and prunes foreign stamps, and the seat a publication
 //! seats. The live half (cells, the door, the restore) is `media::route::prefs_tests`; the seat
 //! trigger is the app's `restore_characterisation_tests`.
@@ -6,7 +6,7 @@ use super::super::{
     current_seat, AudioEnhancementsPref, CurrentProfile, DeckPress, DeckPressPref, DirectPlayMode, DirectPlayModePref,
     NextEpisodeMode, NextEpisodeModePref, PlaybackQuality, QualityPref, Seat, Session, SkipInterval, SkipIntervalPref,
     SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TempSession,
-    UserRef,
+    TrailerAutoplayPref, UserRef,
 };
 use super::profile_prefs::*;
 use super::{Fallback, Parse, Preferences, Scope, Setting, DESCRIPTORS};
@@ -44,8 +44,8 @@ fn the_row_declares_a_profile_scoped_account_bound_soft_list() {
 }
 
 /// **T-fields.** `ProfilePrefs` has a field for exactly the settings whose `FALLBACK` is the legacy
-/// install key, under the same name: the nine, and no more. A tenth Profile row without a field
-/// (or a field without its row) fails here.
+/// install key, under the same name: the nine player settings and `trailer_autoplay` (P1c), and no
+/// more. An eleventh Profile row without a field (or a field without its row) fails here.
 #[test]
 fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
     let full = ProfilePrefs {
@@ -58,6 +58,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         skip_interval: Some(SkipInterval::Seconds30),
         deck_press: Some(DeckPress::Play),
         audio_enhancements: Some(AudioEnhancements { boost_dialog: true, normalize_loudness: true }),
+        trailer_autoplay: Some(false),
     };
     let fields: BTreeSet<String> = serde_json::to_value(&full).unwrap().as_object().unwrap().keys().cloned().collect();
     let rows: BTreeSet<String> = DESCRIPTORS
@@ -65,7 +66,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         .filter(|d| d.fallback == Fallback::LegacyInstallKey)
         .map(|d| d.key.to_string())
         .collect();
-    assert_eq!(rows.len(), 9, "the nine player settings, and nothing else, fall back to a legacy key");
+    assert_eq!(rows.len(), 10, "the nine player settings and hero trailer autoplay fall back to a legacy key");
     assert_eq!(fields, rows, "ProfilePrefs and the rows with a legacy fallback drifted");
     assert!(DESCRIPTORS.iter().filter(|d| d.fallback == Fallback::LegacyInstallKey).all(|d| d.scope == Scope::Profile));
 }
@@ -240,6 +241,64 @@ fn the_published_seat_follows_the_publication() {
     assert_eq!(stamp, crate::plex::grant::account_key("account-token"));
 }
 
+// ---- hero trailer autoplay (P1c) --------------------------------------------------------------
+
+/// **An absent own value reads the legacy key, else ON.** A profile with no record on a file that
+/// never had the key (on, the product default); on a file whose legacy key says off (off: the TV's
+/// old choice is what a profile that never picked sees); a profile with its own pick over a
+/// contrary legacy key; and nobody seated (the legacy key).
+#[test]
+fn trailer_autoplay_own_value_then_legacy_key_then_on() {
+    let seat = Seat::Seated { user: "kid".into(), stamp: STAMP.into() };
+    let sibling = Seat::Seated { user: "sibling".into(), stamp: STAMP.into() };
+    let mut s: Session = serde_json::from_value(json!({})).unwrap();
+    assert!(stored_effective::<TrailerAutoplayPref>(&s, &seat), "a file without the key: on");
+    assert!(stored_effective::<TrailerAutoplayPref>(&s, &Seat::Unseated));
+
+    let mut s_off: Session = serde_json::from_value(json!({"trailer_autoplay": false})).unwrap();
+    assert!(!stored_effective::<TrailerAutoplayPref>(&s_off, &seat), "a profile that never picked reads the TV's off");
+    assert!(!stored_effective::<TrailerAutoplayPref>(&s_off, &Seat::Unseated));
+
+    s_off.prefs.profile_prefs = prefs_with(json!([record("kid", STAMP, json!({ "trailer_autoplay": true }))])).profile_prefs;
+    assert!(stored_effective::<TrailerAutoplayPref>(&s_off, &seat), "its own on beats the TV's off");
+    assert!(!stored_effective::<TrailerAutoplayPref>(&s_off, &sibling), "and the sibling still reads off");
+    assert!(!stored_effective::<TrailerAutoplayPref>(&s_off, &Seat::Unseated), "nobody seated: nobody's pick");
+
+    s.prefs.profile_prefs = prefs_with(json!([record("kid", STAMP, json!({ "trailer_autoplay": false }))])).profile_prefs;
+    assert!(!stored_effective::<TrailerAutoplayPref>(&s, &seat), "its own off beats the TV's (absent, so on)");
+    assert!(stored_effective::<TrailerAutoplayPref>(&s, &sibling), "and the sibling reads on");
+}
+
+/// **A garbage own trailer value reads the legacy key**, not ON: `de_soft_opt` makes it "no value of
+/// its own". The legacy key's own garbage still reads ON (A0, unchanged: `de_soft_bool_on`).
+#[test]
+fn trailer_autoplay_garbage_own_value_reads_the_legacy_key() {
+    let off: Preferences = serde_json::from_value(json!({"trailer_autoplay": false})).unwrap();
+    for garbage in [json!("yes"), json!(7), json!(null), json!([true]), json!({"on": false})] {
+        let p = prefs_with(json!([record("kid", STAMP, json!({ "trailer_autoplay": garbage, "deck_press": "play" }))]));
+        let own = own_prefs(&p.profile_prefs, "kid", STAMP);
+        assert!(own.is_some_and(|o| o.deck_press == Some(DeckPress::Play)), "{garbage}: a good neighbour survives");
+        assert!(!effective::<TrailerAutoplayPref>(&off, own), "{garbage}: reads the legacy off, not ON");
+    }
+    let garbage_legacy: Preferences = serde_json::from_value(json!({"trailer_autoplay": "garbage"})).unwrap();
+    assert!(effective::<TrailerAutoplayPref>(&garbage_legacy, None), "A0 unchanged: a garbage legacy key is ON");
+}
+
+/// **An off pick on profile A is not seen by B, and the TV's key is never written.**
+#[test]
+fn trailer_off_on_profile_a_is_not_seen_by_b_in_the_record() {
+    let mut records: Vec<ProfilePrefsRecord> = Vec::new();
+    assert!(put_own::<TrailerAutoplayPref>(&mut records, "a", STAMP, false));
+    assert!(!put_own::<TrailerAutoplayPref>(&mut records, "a", STAMP, false), "equal: unchanged");
+    let mut tv: Session = serde_json::from_value(json!({})).unwrap();
+    tv.prefs.profile_prefs = records;
+    let a = Seat::Seated { user: "a".into(), stamp: STAMP.into() };
+    let b = Seat::Seated { user: "b".into(), stamp: STAMP.into() };
+    assert!(!stored_effective::<TrailerAutoplayPref>(&tv, &a));
+    assert!(stored_effective::<TrailerAutoplayPref>(&tv, &b), "b picked nothing: the TV's on");
+    assert!(tv.prefs.trailer_autoplay, "and the TV's key is what it was");
+}
+
 // ---- persisting -------------------------------------------------------------------------------
 
 fn stored() -> Session {
@@ -272,6 +331,7 @@ fn profile_choose_never_writes_the_legacy_key() {
     assert!(persist_profile_pref::<SubtitleTonePref>(&w, SubtitleTone::Silver));
     assert!(persist_profile_pref::<SubtitlePositionPref>(&w, SubtitlePosition::High));
     assert!(persist_profile_pref::<AudioEnhancementsPref>(&w, AudioEnhancements { boost_dialog: true, normalize_loudness: false }));
+    assert!(persist_profile_pref::<TrailerAutoplayPref>(&w, false), "turning trailers off records an own value");
 
     let after = stored();
     assert_eq!(without_profile_prefs(&before), without_profile_prefs(&after),
@@ -280,6 +340,8 @@ fn profile_choose_never_writes_the_legacy_key() {
     assert_eq!(own.subtitle_size, Some(SubtitleSize::Large));
     assert_eq!(own.playback_quality, Some(PlaybackQuality::Original));
     assert_eq!(own.audio_enhancements, Some(AudioEnhancements { boost_dialog: true, normalize_loudness: false }));
+    assert_eq!(own.trailer_autoplay, Some(false));
+    assert_eq!(after.prefs.trailer_autoplay, before.prefs.trailer_autoplay, "and the TV's key is what it was: the pick did not write it");
     assert!(!ProfilePrefs { ..own.clone() }.is_empty());
 }
 

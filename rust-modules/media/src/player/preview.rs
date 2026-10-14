@@ -449,12 +449,29 @@ plx_base::devtrig::latched_flag!(
     fn nopreview_armed = "nopreview";
 );
 
+/// The seated profile's hero trailer autoplay switch (P1c). A [`crate::route::LiveCell`] restored by
+/// `route::restore_profile_rows` (at boot for nobody seated, then at every seat change), and saved
+/// through the one write door (`route::choose`, Settings > System). Seeded ON, the product default,
+/// so a read before anything has restored it is what the install did before the setting existed.
+pub(crate) static TRAILER_AUTOPLAY: crate::route::LiveCell<bool> =
+    crate::route::LiveCell::new("hero trailer autoplay preference");
+
+/// Whether the hero may autoplay its trailer: the switch of the SEATED profile (its own pick, else
+/// the TV's older key, else on), unless the dev trigger disarms it.
+///
+/// Read every frame (via `blocked`) while the detail hero holds focus, so it reads a cell: no
+/// lock, no session read. (Before the switch was per profile it read `session::peek()`, which is
+/// cached; the storage-helper round trip that cache exists to avoid cost ~27 ms/frame on the
+/// television in 2026-09, the detail-page 60->26 fps regression. See `session::IO`/`session::CACHE`.)
 pub fn enabled() -> bool {
-    // `peek()` is safe on this every-frame path (via `blocked`) because it is cached now: a hit
-    // never takes `session::IO`, which on the television guards a `recv(2)` round trip to the
-    // storage helper, measured at ~27 ms/frame here before the cache existed (2026-09-18, the
-    // detail-page 60->26 fps regression). See the doc on `session::IO`/`session::CACHE`.
-    !nopreview_armed() && plx_plex::plex::session::peek().trailer_autoplay()
+    !nopreview_armed() && TRAILER_AUTOPLAY.get()
+}
+
+/// Put the switch where a restore says without saving it: what `route::restore_profile_rows`
+/// does, and what a test uses to stand the cell somewhere known.
+#[cfg(any(test, feature = "test-support"))]
+pub fn restore_trailer_autoplay(on: bool) {
+    TRAILER_AUTOPLAY.set(on);
 }
 
 fn slot() -> &'static std::sync::Mutex<Machine> {

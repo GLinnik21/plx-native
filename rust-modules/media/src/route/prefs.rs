@@ -1,4 +1,5 @@
-//! **The nine per-profile player settings, live: one cell each, one restore, one write door.**
+//! **The ten per-profile settings, live: one cell each, one restore, one write door.** (The nine
+//! player settings and hero trailer autoplay.)
 //!
 //! The persisted half of each setting is a [`Setting`] row in `plex::session::prefs`; this is the
 //! other half, the in-memory copy the player reads every frame (a process-global [`LiveCell`], an
@@ -38,7 +39,7 @@ use plx_plex::plex::session::{
     effective, own_prefs, persist_profile_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode,
     DirectPlayModePref, NextEpisodeMode, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsRecord,
     ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipInterval, SkipIntervalPref, SubtitlePosition,
-    SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref,
+    SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TrailerAutoplayPref,
 };
 use plx_plex::plex::session::prefs::{MemoryEntry, ProfileKeyed, ProfileList, ProfileMemory, SettingsWrite, TrackMemoryEntry};
 use plx_plex::plex::session::{self, Seat, Session, SubtitleOffsetEntry};
@@ -155,6 +156,18 @@ impl Packed for DirectPlayMode {
             2 => DirectPlayMode::Disabled,
             _ => DirectPlayMode::Auto,
         }
+    }
+}
+
+/// The hero trailer switch is one byte, 0 or 1. The seed is ON, the product default, so a read before
+/// any restore is what the install did before the setting existed.
+impl Packed for bool {
+    const SEED: u8 = 1;
+    fn to_u8(self) -> u8 {
+        self as u8
+    }
+    fn from_u8(b: u8) -> Self {
+        b != 0
     }
 }
 
@@ -287,6 +300,7 @@ live_setting!(SubtitleSizePref, SUBTITLE_SIZE, "subtitle size");
 live_setting!(SubtitlePositionPref, SUBTITLE_POSITION, "subtitle position");
 live_setting!(SubtitleTonePref, crate::player::SUBTITLE_TONE, "subtitle tone");
 live_setting!(AudioEnhancementsPref, crate::player::AUDIO_ENHANCEMENTS, "audio enhancements");
+live_setting!(TrailerAutoplayPref, crate::player::preview::TRAILER_AUTOPLAY, "hero trailer autoplay");
 live_setting!(NextEpisodeModePref, NEXT_EPISODE_MODE, "next episode mode",
     fn after_saved(mode: NextEpisodeMode) {
         plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
@@ -339,6 +353,7 @@ pub const LIVE_ROWS: &[LiveRow] = &[
     LiveRow::of::<SkipIntervalPref>(),
     LiveRow::of::<DeckPressPref>(),
     LiveRow::of::<AudioEnhancementsPref>(),
+    LiveRow::of::<TrailerAutoplayPref>(),
 ];
 
 // ---- restore --------------------------------------------------------------------------------
@@ -471,7 +486,7 @@ impl<E: MemoryEntry> MemoryMirror<E> {
     }
 }
 
-/// The profiles' own values of the nine settings, as of the last pick (not the last write that
+/// The profiles' own values of the ten settings, as of the last pick (not the last write that
 /// landed): what [`restore_profile_rows`] reads, because `session::peek()` is write-after and a
 /// switch back to a profile must not show a pre-pick value.
 static PROFILE_PREFS: KeyedMirror<ProfilePrefsRecord> = KeyedMirror::new();
@@ -717,6 +732,7 @@ choices! {
     NextEpisode => NextEpisodeModePref,
     SkipInterval => SkipIntervalPref,
     DeckPress => DeckPressPref,
+    TrailerAutoplay => TrailerAutoplayPref,
     SubtitleSize => SubtitleSizePref,
     SubtitlePosition => SubtitlePositionPref,
 }

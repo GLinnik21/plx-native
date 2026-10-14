@@ -1,9 +1,10 @@
 //! **The preference keys, declared once.**
 //!
-//! [`Preferences`] is the nine player scalars (PER PROFILE since the seat work: each is read from
-//! the seated profile's own record in `profile_prefs`, falling back to the frozen install-wide key
-//! beside it, see [`profile_prefs`]), and since A5 every other preference key of the
-//! session (`auto_sign_in`, `trailer_autoplay`, `last_hero_blur`, the two Account-scope lists, the
+//! [`Preferences`] is the nine player scalars and the hero trailer autoplay switch (PER PROFILE
+//! since the seat work: each is read from the seated profile's own record in `profile_prefs`,
+//! falling back to the frozen install-wide key beside it, see [`profile_prefs`]), and since A5
+//! every other preference key of the
+//! session (`auto_sign_in`, `last_hero_blur`, the two Account-scope lists, the
 //! two per-profile library lists and the two memory-door lists, `track_memory` and
 //! `subtitle_offsets`), that used to be spelled, field for field, in
 //! [`Session`] AND in the canonical (DB8) preference record: the struct field, the manual
@@ -151,7 +152,10 @@ pub struct Preferences {
     /// credentials.
     #[serde(default, deserialize_with = "super::de_soft_bool")]
     pub auto_sign_in: bool,
-    /// **Hero trailer autoplay.** Detail default is on. Absence is on, so a session written
+    /// **Hero trailer autoplay** — the install-wide FALLBACK every profile reads until it picks its
+    /// own (per profile in `profile_prefs`; this top-level key is frozen, which a build with
+    /// per-profile settings never writes, except that session creation sets it on, as it always
+    /// has). Detail default is on. Absence is on, so a session written
     /// before this field existed does not silently lose the preview. Explicit `false` stays off.
     /// Soft-parsed to on rather than failing the credentials file. The bound Starfish surface
     /// has no mute, so this is also the only sound control.
@@ -303,7 +307,7 @@ pub struct Preferences {
     #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     pub subtitle_offsets: Vec<SubtitleOffsets>,
     // ---- per-profile player settings ----
-    /// **Each profile's own value of the nine player settings** — see [`ProfilePrefsRecord`] and the
+    /// **Each profile's own value of the nine player settings and of hero trailer autoplay** — see [`ProfilePrefsRecord`] and the
     /// module doc of `profile_prefs`. A record per (profile, account stamp), soft-parsed per element so one junk
     /// record costs only itself, skipped while empty so a session that never picked anything per
     /// profile serializes exactly as it did before the field existed. Account-bound: a record whose
@@ -313,9 +317,10 @@ pub struct Preferences {
     pub profile_prefs: Vec<ProfilePrefsRecord>,
 }
 
-/// How long a setting's value lives, and who owns the write. `auto_sign_in`, `trailer_autoplay` and
+/// How long a setting's value lives, and who owns the write. `auto_sign_in` and
 /// `last_hero_blur` are `Install`; the two lists sign-out clears are `Account`; the nine player
-/// scalars (each with its install-wide key as the [`Fallback`]) and the library lists are `Profile`;
+/// scalars, the hero trailer autoplay switch (each with its install-wide key as the [`Fallback`]) and
+/// the library lists are `Profile`;
 /// `track_memory` is `PerShow` and `subtitle_offsets` is `PerItem`. Sign-out clears every row that
 /// is account-bound, whatever its scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -473,16 +478,19 @@ setting!(SubtitleTonePref: SubtitleTone = subtitle_tone, "subtitle_tone", Profil
 setting!(AudioEnhancementsPref: crate::plex::AudioEnhancements = audio_enhancements,
     "audio_enhancements", Profile fallback LegacyInstallKey, account false, live true, settings None, parse Soft);
 
-// ---- A5: the remaining preference keys (a separate block, below the nine) ---------------------
+// The hero trailer autoplay switch (P1c) is the tenth per-profile scalar: the Settings root page's System
+// section saves it through the `choose` door (Confirm), and `player::preview::enabled` reads its cell every frame.
+setting!(TrailerAutoplayPref: bool = trailer_autoplay, "trailer_autoplay", Profile fallback LegacyInstallKey,
+    account false, live true, settings Some(SettingsWrite::Confirm), parse BoolOn);
+
+// ---- A5: the remaining preference keys (a separate block, below the ten) -----------------------
 //
-// None of these has a `choose` door: the Settings screen writes `auto_sign_in` and
-// `trailer_autoplay` through its own ticketed `queue_update_ticket` (pending UI), `last_hero_blur`
-// and the lists through their own writers, and no media cell applies any of them live.
+// None of these has a `choose` door: the Settings screen writes `auto_sign_in` through its own
+// ticketed `queue_update_ticket` (pending UI), `last_hero_blur` and the lists through their own
+// writers, and no media cell applies any of them live.
 
 setting!(AutoSignInPref: bool = auto_sign_in, "auto_sign_in", Install,
     account false, live false, settings None, parse BoolOff);
-setting!(TrailerAutoplayPref: bool = trailer_autoplay, "trailer_autoplay", Install,
-    account false, live false, settings None, parse BoolOn);
 setting!(LastHeroBlurPref: Option<[[f32; 3]; 4]> = last_hero_blur, "last_hero_blur", Install,
     account false, live false, settings None, parse OptionalSoft);
 
@@ -579,7 +587,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
 impl Session {
     /// This session with `S` set to `value`, every other field intact.
     ///
-    /// It writes the setting's TOP-LEVEL key. For the nine player settings that key is the frozen
+    /// It writes the setting's TOP-LEVEL key. For the nine player settings and hero trailer autoplay that key is the frozen
     /// legacy fallback every profile reads until it picks its own, which no pick ever writes (the
     /// door writes `profile_prefs`: [`persist_profile_pref`]); so this is a test and fixture
     /// builder ("the install says X"), and `auto_sign_in` (TV-wide) is its only production-shaped row.
@@ -629,7 +637,7 @@ impl<E> Default for ProfileList<E> {
 
 /// **A record of a per-profile list**: one profile's data under one account stamp, held in a
 /// `Vec` of them in a [`Session`] field. [`ProfileList`] (the memory door's entries) and
-/// [`ProfilePrefsRecord`] (the nine player settings' own values) are the two shapes, and the
+/// [`ProfilePrefsRecord`] (the nine player settings' and hero trailer autoplay's own values) are the two shapes, and the
 /// identity rules every such list shares are written once, over this: how a profile's record is
 /// found, what a foreign stamp does to the list, and when an emptied record goes.
 pub trait ProfileKeyed: Sized {

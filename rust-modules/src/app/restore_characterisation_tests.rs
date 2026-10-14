@@ -31,7 +31,7 @@ use plx_plex::plex::session::{
     self, put_own, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode, DirectPlayModePref,
     HomeUserRef, NextEpisodeMode, NextEpisodeModePref, PlaybackQuality, ProfileCreds, QualityPref, ServerRef,
     Session, SkipInterval, SkipIntervalPref, SourceRef, SubtitlePosition, SubtitlePositionPref, SubtitleSize,
-    SubtitleSizePref, SubtitleTone, SubtitleTonePref, UserRef,
+    SubtitleSizePref, SubtitleTone, SubtitleTonePref, TrailerAutoplayPref, UserRef,
 };
 use plx_plex::plex::AudioEnhancements;
 use plx_session::auth::owner::{SessionEnvelope, SessionEvent, SessionWork};
@@ -890,4 +890,153 @@ fn forced_mode_does_not_follow_a_profile_switch() {
     assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Auto, "B reads the fallback, not A's Force");
     follow_auth_landing(&mut d, &mut rig);
     assert_eq!(plx_media::route::direct_play_mode(), DirectPlayMode::Auto);
+}
+
+// ---- hero trailer autoplay (P1c) ----------------------------------------------------------------
+
+/// `s` with the profile `uuid`'s OWN hero-trailer switch set to `on`, under the stamp of `s`'s account,
+/// and the TV's older install-wide key set to `legacy`: what a household that turned trailers off
+/// before profiles had their own (`legacy` false) or never touched the setting (`legacy` true) has.
+fn with_own_trailer(mut s: Session, uuid: &str, on: bool, legacy: bool) -> Session {
+    let stamp = plx_plex::plex::grant::account_key(&s.account_token);
+    s.prefs.trailer_autoplay = legacy;
+    assert!(put_own::<TrailerAutoplayPref>(&mut s.prefs.profile_prefs, uuid, &stamp, on));
+    s
+}
+
+/// What the Home hero asks every frame (`preview::enabled`), which is the decision P1c moved onto the
+/// seat: it reads the trailer cell, nothing else.
+fn hero_may_autoplay() -> bool {
+    plx_media::player::preview::enabled()
+}
+
+/// Put the trailer cell back to its seed (on) so the next test starts from a process that restored
+/// nothing.
+struct TrailerCell;
+impl Drop for TrailerCell {
+    fn drop(&mut self) {
+        plx_media::player::preview::restore_trailer_autoplay(true);
+    }
+}
+
+/// **The Home hero's trailer decision follows the seat, in each boot path (plan 3.8.5, P1c).** Each
+/// case is built so that a read at the wrong time is visibly wrong: the answer BEFORE the seat is the TV's
+/// key, the answer AFTER it is the profile's own value, and the two differ. `preview::enabled()` is the
+/// oracle at the point the handoff is consumed, which is where Home mounts and takes its first hero
+/// decision.
+///
+/// 1. **Stored boot, auto sign-in on:** the TV's key says on, the stored profile turned trailers off.
+///    Process start reads on (nobody seated); `ResumeStored` seats the profile in the same drain, so
+///    the first decision Home takes reads off.
+/// 2. **The boot picker:** the stored profile has no value of its own and the chosen one turned trailers
+///    off. While the picker stands, the cell holds what the stored profile reads (on: nothing reads it);
+///    the pick seats the chosen profile before the `Ready` the landing consumes, so Home reads off.
+/// 3. **A fresh sign-in as the owner:** the TV's key says off and the owner has no value of its own. The
+///    cell is forced ON after the boot restore (which had read off), so only the seat's restore can bring
+///    it back: seating the owner reads the TV's off.
+/// 4. **A dev-token boot never seats:** the owner's record says on over a TV key of off, and the cell
+///    reads the TV's off, not the owner's on.
+#[test]
+fn home_trailer_decision_follows_the_seat() {
+    let _serial = plx_base::testlock::serial();
+    let _cell = TrailerCell;
+
+    // 1. Stored boot with auto sign-in.
+    {
+        let mut stored = with_own_trailer(record("profile-b", &["profile-a"]), "profile-b", false, true);
+        stored.prefs.auto_sign_in = true;
+        assert!(!stored.boot_shows_picker(false, false), "auto sign-in on and seated in the roster: no picker");
+        let _fixture = Fixture::new("p1c-boot-auto", &stored);
+        crate::app::boot::restore_player_preferences(&session::load(), false);
+        assert!(hero_may_autoplay(), "process start: nobody is seated, the TV's key says on");
+        let mut rig = Bridge::for_session_test(SessionInit::captured(stored.clone()));
+        let mut d = Dispatcher::<AppHost>::new();
+        assert!(crate::app::boot::resume_stored(&mut d, &mut rig, &mut NoTap).is_some());
+        assert_eq!(rig.seat_watch.restored, seat_of("profile-b"));
+        assert!(!hero_may_autoplay(), "case 1: the stored profile's own off, before Home mounts");
+    }
+
+    // 2. The boot picker.
+    {
+        let stored = with_own_trailer(record("profile-a", &["profile-b"]), "profile-b", false, true);
+        assert!(stored.boot_shows_picker(false, false), "auto sign-in off on a multi-user Home: the picker");
+        let _fixture = Fixture::new("p1c-boot-picker", &stored);
+        crate::app::boot::restore_player_preferences(&session::load(), false);
+        assert!(hero_may_autoplay(), "process start: the TV's on");
+        let mut rig = Bridge::for_session_test(SessionInit::captured(stored.clone()));
+        let mut d = Dispatcher::<AppHost>::new();
+        execute_session_command(&mut d, SessionCmd::StartSwitch(Picker::Boot));
+        drain(&mut rig, &mut d, Vec::new(), 1);
+        assert_eq!(rig.auth_read().0.phase, Phase::Profiles, "Who's watching? is up");
+        assert!(rig.session_ready.is_none(), "and no handoff was released: Home has not mounted");
+        assert!(hero_may_autoplay(), "the stored profile behind the picker has no value of its own: on");
+        pick(&mut rig, &mut d, 1, 3000);
+        assert_eq!(rig.seat_watch.restored, seat_of("profile-b"));
+        assert!(!hero_may_autoplay(), "case 2: the chosen profile's own off, restored before Ready is consumed");
+    }
+
+    // 3. A fresh sign-in as the owner (no Home selection): nobody's own value, so the TV's key.
+    {
+        let mut stored = record("", &[]);
+        stored.prefs.trailer_autoplay = false;
+        let _fixture = Fixture::new("p1c-first-login-owner", &stored);
+        crate::app::boot::restore_player_preferences(&session::load(), false);
+        assert!(!hero_may_autoplay(), "process start: the TV's off");
+        plx_media::player::preview::restore_trailer_autoplay(true); // so only the seat can put it back
+        let mut rig = Bridge::for_session_test(SessionInit::captured(stored.clone()));
+        let mut d = Dispatcher::<AppHost>::new();
+        assert!(crate::app::boot::resume_stored(&mut d, &mut rig, &mut NoTap).is_some());
+        assert_eq!(rig.seat_watch.restored, seat_of(""), "the owner is seated");
+        assert!(!hero_may_autoplay(), "case 3: the owner has no value of its own: the TV's off, restored by the seat");
+    }
+
+    // 4. A dev-token boot never seats: the legacy key, never the owner's own value.
+    {
+        let stored = with_own_trailer(record("", &[]), "", true, false);
+        let _fixture = Fixture::new("p1c-dev-token", &stored);
+        crate::app::boot::restore_player_preferences(&session::load(), false);
+        let mut rig = Bridge::for_session_test(crate::app::boot::captured_session_for_boot(
+            stored.clone(), Some(server("dev-token")), Vec::new()));
+        rig.session_adapter.fixture_resources().disk = stored.clone();
+        let mut d = Dispatcher::<AppHost>::new();
+        execute_session_command(&mut d, SessionCmd::ActivateDevBootstrap);
+        drain(&mut rig, &mut d, Vec::new(), 1);
+        assert_eq!(rig.auth_read().0.phase, Phase::Ready, "the dev token reached Ready");
+        assert_eq!(rig.seat_watch.restored, plx_plex::plex::session::Seat::Unseated, "and nobody was seated");
+        assert!(!hero_may_autoplay(), "case 4: the TV's off, not the owner's own on");
+    }
+}
+
+/// **An off pick on profile A is not seen by profile B (hostsim switch), and the TV's key is never
+/// written.** A turns trailers off through the door Settings uses; the switch seats B, which has picked
+/// nothing, so B reads the TV's on; A, seated again, finds its off. The legacy key stays what it was.
+#[test]
+fn trailer_off_on_profile_a_is_not_seen_by_b() {
+    let _serial = plx_base::testlock::serial();
+    let _cell = TrailerCell;
+    let mut stored = record("profile-a", &["profile-b"]);
+    stored.prefs.trailer_autoplay = true;
+    let _fixture = Fixture::new("p1c-trailer-a-not-b", &stored);
+    let (mut rig, mut d) = resume(&stored);
+    follow_auth_landing(&mut d, &mut rig);
+    settle(&mut rig, &mut d, 100);
+    seat_globally("profile-a");
+    assert!(hero_may_autoplay(), "setup: A reads the TV's on");
+
+    assert!(plx_media::route::confirm::<TrailerAutoplayPref>(false), "A's pick is durable");
+    assert!(!hero_may_autoplay(), "published for A");
+    assert!(session::load().prefs.trailer_autoplay, "the TV's key was not written");
+    assert_eq!(stored_value::<TrailerAutoplayPref>("profile-a"), Some(false));
+
+    open_picker(&mut rig, &mut d, 2000);
+    seat_globally("profile-b");
+    pick(&mut rig, &mut d, 1, 3000);
+    assert!(hero_may_autoplay(), "B reads the TV's on, not A's off");
+    assert_eq!(stored_value::<TrailerAutoplayPref>("profile-b"), None, "and has picked nothing");
+
+    open_picker(&mut rig, &mut d, 4000);
+    seat_globally("profile-a");
+    pick(&mut rig, &mut d, 0, 5000);
+    assert!(!hero_may_autoplay(), "A finds its own off");
+    assert!(session::load().prefs.trailer_autoplay, "and the TV's key is still what it was");
 }

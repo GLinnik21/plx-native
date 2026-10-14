@@ -518,16 +518,22 @@ fn tier1_the_real_profile_prefs_shape_rides_through_the_previous_build() {
     assert!(put_own::<SkipIntervalPref>(&mut original.prefs.profile_prefs, "u-7", STAMP, SkipInterval::Seconds10));
     assert!(put_own::<AudioEnhancementsPref>(&mut original.prefs.profile_prefs, "u-7", STAMP,
         crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true }));
+    // P1c: the hero trailer switch is a field of the same record (an ON pick over the TV's off), so the
+    // shape below holds it too. `rich()`'s legacy top-level key is off, and the pick must not write it.
+    assert!(put_own::<TrailerAutoplayPref>(&mut original.prefs.profile_prefs, "u-7", STAMP, true));
     let (public, auth) = split_canonical(&original).unwrap();
     let real = public.preferences["profile_prefs"].clone();
     assert_eq!(real.as_array().map(Vec::len), Some(2), "{real}");
     assert_eq!(real[0]["user"], serde_json::json!(""), "the owner is the empty user");
     assert_eq!(real[1]["account"], serde_json::json!(STAMP));
     assert_eq!(real[1]["prefs"], serde_json::json!({
-        "skip_interval": "10s", "audio_enhancements": {"boost_dialog": false, "normalize_loudness": true}}));
+        "skip_interval": "10s", "audio_enhancements": {"boost_dialog": false, "normalize_loudness": true},
+        "trailer_autoplay": true}));
     // The top-level keys stay what they were: no pick wrote them.
     assert_eq!(public.preferences["subtitle_size"], serde_json::to_value(SubtitleSize::Large).unwrap());
     assert_eq!(public.preferences["skip_interval"], serde_json::to_value(SkipInterval::Seconds30).unwrap());
+    assert_eq!(public.preferences["trailer_autoplay"], serde_json::json!(original.prefs.trailer_autoplay),
+        "and so is the TV's trailer key (off): the pick did not write it");
 
     let bytes = canonical_state(&public, public.preferences.clone()).encode().expect("encode validates");
     let decoded = state::CanonicalState::decode(&bytes, state::Flavor::Stable).expect("decode validates");

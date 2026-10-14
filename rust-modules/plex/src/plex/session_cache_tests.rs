@@ -1,5 +1,6 @@
-//! [`peek`]'s live [`CACHE`]: the detail page's per-frame preview tick calls it every frame
-//! (`player::preview::enabled`), and repeated calls with no intervening write must not re-read the
+//! [`peek`]'s live [`CACHE`]: the cache exists for readers that call it every frame (the detail
+//! page's preview tick through `player::preview::enabled` was the motivating one, until P1c moved
+//! that decision onto a cell), and repeated calls with no intervening write must not re-read the
 //! session file — that re-read is a `recv(2)` round trip to the storage helper on the television,
 //! measured at ~27 ms/frame and the whole gap between 60 fps and the 26 fps the detail page
 //! actually drew (2026-09-18). A write must still be observed on the very next call, a refused or

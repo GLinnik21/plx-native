@@ -1,7 +1,8 @@
-//! **The nine player settings, per profile.**
+//! **The nine player settings and hero trailer autoplay, per profile.**
 //!
 //! Quality, Direct Play, subtitle size, position and tone, audio enhancements, the next-episode
-//! mode, the skip interval and what OK does on a Continue Watching card used to be one value for
+//! mode, the skip interval, what OK does on a Continue Watching card, and (since P1c) whether the
+//! Home hero autoplays its trailer used to be one value for
 //! the whole television. Each is now a value of the SEATED profile ([`Seat`]), kept in
 //! `profile_prefs`:
 //!
@@ -34,7 +35,7 @@
 use super::{
     Fallback, Parse, ProfileKeyed, ProfileRecords, Preferences, Row, Scope, Setting, SettingsWrite,
     AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, NextEpisodeModePref, QualityPref, SkipIntervalPref,
-    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
+    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref,
 };
 use crate::plex::session::{
     DeckPress, DirectPlayMode, NextEpisodeMode, PlaybackQuality, Seat, Session, SkipInterval, SubtitlePosition,
@@ -44,7 +45,7 @@ use crate::plex::AudioEnhancements;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
-/// One profile's own values of the nine settings; `None` is "this profile has no value of its own".
+/// One profile's own values of the ten settings; `None` is "this profile has no value of its own".
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ProfilePrefs {
@@ -66,6 +67,10 @@ pub struct ProfilePrefs {
     pub deck_press: Option<DeckPress>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
     pub audio_enhancements: Option<AudioEnhancements>,
+    /// Hero trailer autoplay (P1c). An absent value reads the legacy key, which itself reads ON when
+    /// absent.
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "de_soft_opt")]
+    pub trailer_autoplay: Option<bool>,
 }
 
 impl ProfilePrefs {
@@ -138,7 +143,7 @@ impl Row for ProfilePrefsPref {
 }
 
 /// A [`Setting`] a profile can own: the accessors over [`ProfilePrefs`]. Implemented for exactly the
-/// nine rows whose `FALLBACK` is [`Fallback::LegacyInstallKey`].
+/// ten rows whose `FALLBACK` is [`Fallback::LegacyInstallKey`].
 pub trait ProfileSetting: Setting {
     /// The profile's own value, if it has picked one.
     fn own(p: &ProfilePrefs) -> Option<Self::Value>;
@@ -164,6 +169,7 @@ profile_setting!(
     SkipIntervalPref = skip_interval,
     DeckPressPref = deck_press,
     AudioEnhancementsPref = audio_enhancements,
+    TrailerAutoplayPref = trailer_autoplay,
 );
 
 /// The values `user` picked under the stamp `stamp`, if the stamp is one that can be read at all

@@ -477,7 +477,7 @@ a dead source is **absent** from Home and states itself in its own library secti
   reader may now call `session::peek()`, because `peek()` is backed by a live in-memory read
   cache, not a per-call file transaction.
 - **Every preference key but `language` lives in ONE struct, `session/prefs.rs`'s `Preferences`**
-  (the nine player settings' FROZEN top-level keys, `profile_prefs` (their per-profile home, below), `auto_sign_in`, `trailer_autoplay`, `last_hero_blur`, the account-bound
+  (the nine player settings' and `trailer_autoplay`'s FROZEN top-level keys, `profile_prefs` (their per-profile home, below), `auto_sign_in`, `last_hero_blur`, the account-bound
   `plaintext_consent` and `server_key_pins`, the per-profile `last_library` and `library_sorts` (cleared
   at sign-out like every `ACCOUNT_BOUND = true` row in `prefs::DESCRIPTORS`, but their records carry no
   account stamp, so the one login that is not a sign-out, a stored session that could not be activated
@@ -489,9 +489,9 @@ a dead source is **absent** from Home and states itself in its own library secti
   row keeps its own soft-parse policy), a marker (`setting!` for a `Copy` value, hand-written when
   `Stored` != `Value` as for quality, `list_row!` for a list) and a line in `prefs::DESCRIPTORS`.
   Callers read `session.prefs.<field>` or the hand-written getter, and change a value with
-  `session.with_pref::<Marker>(v)` (a `Copy` row; it writes the TOP-LEVEL key, so for the nine
-  player settings it is a fixture builder for the legacy fallback, never what a pick does).
-  **The nine player settings are per profile** (`prefs/profile_prefs.rs`): a profile's own picks sit
+  `session.with_pref::<Marker>(v)` (a `Copy` row; it writes the TOP-LEVEL key, so for the ten
+  per-profile settings it is a fixture builder for the legacy fallback, never what a pick does).
+  **The nine player settings and hero trailer autoplay are per profile** (`prefs/profile_prefs.rs`): a profile's own picks sit
   in `profile_prefs` (`[{user, account, prefs}]`, `account` the `grant::account_key` stamp, the owner
   `user: ""`), and what a profile reads is `stored_effective` = its own value, else the frozen
   top-level key (`Setting::get`, a garbage own value included), else the default. The top-level keys
@@ -501,7 +501,9 @@ a dead source is **absent** from Home and states itself in its own library secti
   sign-out drops it and the legacy keys stay). Who is seated is `session::Seat`
   (`Seat::of(profile, stamp)`, `current_seat()`); the live cells follow it in `plx_media::route`.
   `auto_sign_in` is Install and never
-  account-bound: `boot_shows_picker` reads it before any profile is seated. `trailer_autoplay`'s
+  account-bound: `boot_shows_picker` reads it before any profile is seated. `trailer_autoplay` is
+  NOT Install any more (P1c): the Home hero reads the seated profile's value, the top-level key is its
+  frozen fallback, and `preview::enabled()` reads the cell. Its
   derived default (here and in `Session`) is OFF while an ABSENT key reads on, so the canonical
   record's own `Default` sets it. `plaintext_consent` is written as `[]` in the legacy file but
   omitted from the canonical record while empty (`split_public` drops the key). `prefs_tests` holds
@@ -544,7 +546,7 @@ a dead source is **absent** from Home and states itself in its own library secti
   webOS 4.x is ACL-only; a record that already holds a keymanager envelope still stages.
 - **`session::peek()` is a write-through cache over the persisted session, not a fresh read.** A
   hit is one uncontended `Mutex` lock and an `Arc<Session>` clone — no `IO`, no helper round trip —
-  which is what makes it safe to call every frame (`player::preview::enabled` does). The invariants
+  which is what makes it safe to call every frame. The invariants
   that keep it correct, all in `session.rs`'s module doc and worth knowing before touching either
   the cache or a write path:
   - Cached records come from completed reads or durable writes under `IO`. `Revoked` separately

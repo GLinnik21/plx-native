@@ -658,7 +658,7 @@ pub(super) fn apply_deferred_capture(rec: &mut super::recorder::Recplay,
     Ok(())
 }
 
-/// **Boot's restore**: the mirrors from the record, then the nine live player cells for the seat
+/// **Boot's restore**: the mirrors from the record, then the ten live per-profile cells for the seat
 /// the process starts with, `Unseated` (no profile is published yet), through the one
 /// `route::restore_profile_rows` the seat trigger (`bridge::SeatWatch`) calls at every seat change.
 /// Every cell then holds the fallback (the frozen install-wide key, then the default), which is the

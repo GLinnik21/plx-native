@@ -820,3 +820,74 @@ fn a_pop_after_the_list_changed_reseats_on_the_row_the_page_landed_on() {
         "the stale remembered key reseats on the page's landing (next survivor), not row 0");
     assert_eq!(sel_of(&d, id), root_key(RootId::Language));
 }
+
+/// **P1c: the Settings trailer toggle is the seated profile's, through the one write door.** The row
+/// shows the SEATED profile's switch (here `u-1`'s own ON over the TV's off); OK asks the host for
+/// `Choice::TrailerAutoplay` and shows the pick while the write is out; a refused write (the host
+/// replies false: nobody seated, a failed save) puts the row back on the stored value, and a durable
+/// one keeps the pick, in `u-1`'s record and never in the TV's key (a third press, ON again, writes
+/// `u-1`'s record and leaves the TV's old key off: the screen never writes the legacy key).
+#[test]
+fn the_trailer_toggle_is_the_seated_profiles_and_claims_nothing_until_saved() {
+    use plx_plex::plex::session::{put_own, TrailerAutoplayPref};
+    /// Puts the cell and the profile mirror back even when an assertion fails mid-test.
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            plx_media::route::unseed_profile_prefs_for_test();
+            plx_media::player::preview::restore_trailer_autoplay(true);
+        }
+    }
+    let _g = plx_base::testlock::serial();
+    let sess = multi_user_session("composed-trailer-toggle");
+    let _restore = Restore;
+    let stamp = sess.seated("u-1", "acct");
+    let mut saved: plx_plex::plex::session::Session = (*plx_plex::plex::session::peek()).clone();
+    saved.prefs.trailer_autoplay = false; // the TV's old, frozen key
+    assert!(put_own::<TrailerAutoplayPref>(&mut saved.prefs.profile_prefs, "u-1", &stamp, true));
+    plx_plex::plex::session::save(&saved);
+    plx_media::route::seed_profile_prefs_for_test(&plx_plex::plex::session::peek());
+    let (mut d, mut rig, id) = opened();
+    let mut ms = settle_frames(&mut d, &mut rig, 16);
+    assert!(path(&d, id).contains("trailer_autoplay=true"), "u-1's own ON over the TV's off: {}", path(&d, id));
+    ms = walk_to(&mut d, &mut rig, ms, root_key(RootId::TrailerAutoplay));
+
+    // A refused write: the row shows the pick meanwhile, then goes back.
+    frame(&mut d, &mut rig, ms + 16, vec![key(Key::Ok, tick(ms + 16))]);
+    let Some(registry::PreferenceCmd::Choose(plx_media::route::Choice::TrailerAutoplay(false), reply)) =
+        rig.preference_commands.pop() else { panic!("OK on the switch asks the host to choose it OFF") };
+    assert!(path(&d, id).contains("trailer_autoplay=false"), "the pick shows while the write is out: {}", path(&d, id));
+    reply.send(false).unwrap();
+    ms = settle_frames(&mut d, &mut rig, ms + 16);
+    assert!(path(&d, id).contains("trailer_autoplay=true"), "a refused write claims nothing: {}", path(&d, id));
+    assert!(rig.preference_commands.is_empty());
+
+    // A durable one: the host's door persists for the seated profile, then replies true.
+    frame(&mut d, &mut rig, ms + 16, vec![key(Key::Ok, tick(ms + 16))]);
+    let Some(registry::PreferenceCmd::Choose(plx_media::route::Choice::TrailerAutoplay(false), reply)) =
+        rig.preference_commands.pop() else { panic!("the second OK asks again") };
+    assert!(plx_media::route::confirm::<TrailerAutoplayPref>(false), "the door saves it for u-1");
+    reply.send(true).unwrap();
+    ms = settle_frames(&mut d, &mut rig, ms + 16);
+    assert!(path(&d, id).contains("trailer_autoplay=false"), "a durable write keeps the pick: {}", path(&d, id));
+    plx_base::storage_worker::drain_for_test();
+    let after = plx_plex::plex::session::peek();
+    assert!(!after.prefs.trailer_autoplay, "the TV's key is as it was");
+    let own = plx_plex::plex::session::own_prefs(&after.prefs.profile_prefs, "u-1", &stamp).expect("u-1's record");
+    assert_eq!(own.trailer_autoplay, Some(false));
+
+    // A third press picks ON, which differs from the TV's old OFF key: a write of the legacy key
+    // from the screen would now show there, so this is what pins "the top-level key is never written".
+    frame(&mut d, &mut rig, ms + 16, vec![key(Key::Ok, tick(ms + 16))]);
+    let Some(registry::PreferenceCmd::Choose(plx_media::route::Choice::TrailerAutoplay(true), reply)) =
+        rig.preference_commands.pop() else { panic!("the third OK asks to choose it ON") };
+    assert!(plx_media::route::confirm::<TrailerAutoplayPref>(true), "the door saves it for u-1");
+    reply.send(true).unwrap();
+    settle_frames(&mut d, &mut rig, ms + 16);
+    plx_base::storage_worker::drain_for_test();
+    assert!(path(&d, id).contains("trailer_autoplay=true"), "the third pick is kept: {}", path(&d, id));
+    let after = plx_plex::plex::session::peek();
+    assert!(!after.prefs.trailer_autoplay, "the TV's key is still off: the Settings toggle never writes it");
+    let own = plx_plex::plex::session::own_prefs(&after.prefs.profile_prefs, "u-1", &stamp).expect("u-1's record");
+    assert_eq!(own.trailer_autoplay, Some(true));
+}
