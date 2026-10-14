@@ -613,7 +613,7 @@ pub struct CurlSource {
     /// a chain, whatever a `Location` spelled for a later one. Held for the life of the attempt, as
     /// `range` is.
     hop_url: CString,
-    ua: CString,
+    ua: Option<CString>,
     range: Option<CString>,
     /// The key pin (`net::keypin`) the CURRENT attempt's easy handle was given, held for the life
     /// of that attempt like `range`: `keypin::apply`'s contract is that the string outlives the
@@ -818,7 +818,12 @@ impl CurlSource {
         let (origin, _) = plx_plex::plex::origin::split(url);
         let resolve_entry = resolve_entry_for(&origin)?;
         let url_c = CString::new(url).map_err(|_| OpenErr::Local)?;
-        let ua = CString::new(plx_plex::plex::identity::user_agent()).map_err(|_| OpenErr::Local)?;
+        // The process's one name, installed at boot (`net::set_user_agent`); none in a host test
+        // that never booted, where libcurl then sends none either.
+        let ua = plx_net::net::user_agent()
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| OpenErr::Local)?;
         let multi = unsafe { curl_multi_init() };
         if multi.is_null() {
             return Err(OpenErr::Local);
@@ -1081,11 +1086,13 @@ impl CurlSource {
                 header_cb as *const c_void,
             );
             plx_net::net::curl_easy_setopt_ptr(easy, CURLOPT_HEADERDATA, xp);
-            plx_net::net::curl_easy_setopt_ptr(
-                easy,
-                CURLOPT_USERAGENT,
-                self.ua.as_ptr() as *const c_void,
-            );
+            if let Some(ua) = &self.ua {
+                plx_net::net::curl_easy_setopt_ptr(
+                    easy,
+                    CURLOPT_USERAGENT,
+                    ua.as_ptr() as *const c_void,
+                );
+            }
             if let Some(r) = &self.range {
                 plx_net::net::curl_easy_setopt_ptr(easy, CURLOPT_RANGE, r.as_ptr() as *const c_void);
             }

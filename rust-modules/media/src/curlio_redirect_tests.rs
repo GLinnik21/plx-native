@@ -376,6 +376,8 @@ fn the_body_of_a_redirect_is_not_the_body_the_open_returns() {
 fn the_token_in_the_original_url_never_reaches_a_cross_host_redirect_target_but_the_user_agent_does() {
     let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
+    // Boot's install, which the player reads rather than naming the client itself.
+    plx_net::net::set_user_agent(plx_plex::plex::identity::user_agent());
     // One CA for both hosts: the household's `*.plex.direct` name and the CDN's address.
     let cert = leaf(&[PLEX_DIRECT, "127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "redirect-token");
@@ -396,10 +398,10 @@ fn the_token_in_the_original_url_never_reaches_a_cross_host_redirect_target_but_
     assert_eq!(arrived.len(), 1);
     assert_eq!(arrived[0].lines().next().unwrap_or_default(), "GET /cdn/video.mkv?sig=abc HTTP/1.1", "the hop is the Location, and only the Location");
     assert!(!arrived[0].to_ascii_lowercase().contains("x-plex-token") && !arrived[0].contains(TOKEN), "no trace of the token on the hop: {:?}", arrived[0]);
-    let agent = plx_plex::plex::identity::user_agent();
+    let agent = plx_net::net::user_agent().expect("installed before the open");
     assert!(!agent.is_empty());
-    assert_eq!(header(&asked[0], "user-agent").as_deref(), Some(agent.as_str()));
-    assert_eq!(header(&arrived[0], "user-agent").as_deref(), Some(agent.as_str()), "the User-Agent follows the request to the next host");
+    assert_eq!(header(&asked[0], "user-agent").as_deref(), Some(agent), "the player sends the installed User-Agent");
+    assert_eq!(header(&arrived[0], "user-agent").as_deref(), Some(agent), "the User-Agent follows the request to the next host");
 }
 
 #[test]

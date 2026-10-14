@@ -30,7 +30,7 @@ use super::*;
 /// that gate to click at all).
 pub(crate) struct Pointer {
     pub(crate) dpad_mode: bool,  // D-pad input owns focus; pointer motion below the gate is ignored
-    pub(crate) cur_hidden: bool, // the LG cursor is hidden right now
+    pub(crate) cur_hidden: bool, // the pointer is hidden right now (LG's hide or the transparent cursor)
     pub(crate) mot_accum: f32,   // motion accumulated since D-pad mode was entered, in logical px
     pub(crate) prev_mx: f32,     // last motion's position, for that accumulation (-1 = none yet)
     pub(crate) prev_my: f32,
@@ -918,11 +918,10 @@ pub(crate) unsafe fn begin_fresh_press(
 /// **The two GLOBAL effects of a fresh press, and the guard that decides whether they happen** —
 /// the half of [`begin_fresh_press`] that LG checklist item 40 is about, and its only caller.
 ///
-/// Split out for one blunt reason: `begin_fresh_press` calls `hide_cursor`, which names a
-/// webOS-only SDL symbol, so a host test that reaches it fails at `ld` rather than at an assertion
-/// (the boundary the testing section of `docs/agent-reference.md` describes — the crate links today only
-/// because nothing reachable from a test calls it and the linker dead-strips it). This half touches
-/// no SDL at all, so the invariant is gradeable by `make check` instead of only by a television.
+/// Split out for one blunt reason: `begin_fresh_press` calls `hide_cursor`, which acts on whatever
+/// pointer calls the process's SDL exports (resolved at run time, `app/boot.rs`), so a host test
+/// that reached it would be grading the host's SDL rather than the press. This half touches no SDL
+/// at all, so the invariant is gradeable by `make check` instead of only by a television.
 pub(crate) fn note_global_press(
     ps: &plx_media::route::PlaybackSession,
     sym: c_uint,

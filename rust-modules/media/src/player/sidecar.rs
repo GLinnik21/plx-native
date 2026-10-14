@@ -228,18 +228,30 @@ pub fn reset() {
     st.failed = None;
 }
 
-/// **Honour a sidecar the SERVER already has selected for this part** — picked here in an earlier
-/// session, or on another Plex client. The embedded twin is `route::pick_dp_subtitle`, which
-/// leaves an external selection off because nothing could render it; now something can.
-/// Direct play, or a plain remux start (the caller's gate): a start that burns keeps subtitles off, as before.
-pub fn restore_server_selection(server: plx_plex::plex::ServerId, meta: plx_data::metadata::MetadataView<'_>) -> Option<i64> {
+/// **Honour the sidecar this part shows from the start**: the one the SERVER already has selected
+/// for this part (picked here in an earlier session, or on another Plex client), else
+/// `remembered`, the stream id the profile's track memory chose for this episode
+/// (`Plan::memory_sidecar`). Either way the key and codec are looked up in the PLAYING item, so a
+/// remembered external subtitle uses the file THIS episode has, never the one it was picked on. The
+/// embedded twin is `route::pick_dp_subtitle`, which leaves an external selection off because nothing
+/// could render it; now something can. `remembered` must still be a sidecar the app can draw
+/// (`Stream::sidecar_renderable`) or it is ignored. Direct play, or a plain remux start (the
+/// caller's gate): a start that burns keeps subtitles off, as before.
+pub fn restore_selection(
+    server: plx_plex::plex::ServerId, meta: plx_data::metadata::MetadataView<'_>, remembered: Option<i64>,
+) -> Option<i64> {
     let item = meta.playing()?;
-    if let Some(s) = plx_data::metadata::server_selected_sidecar(item) {
-        super::log(&format!("server-selected sidecar subtitle: sid={}", s.id));
-        select(server, s.id, s.key.clone(), s.codec.clone());
-        return Some(s.id);
-    }
-    None
+    let (s, whose) = match plx_data::metadata::server_selected_sidecar(item) {
+        Some(s) => (s, "server-selected"),
+        None => {
+            let id = remembered?;
+            let s = item.subs.iter().find(|s| s.id == id && s.sidecar_renderable())?;
+            (s, "remembered")
+        }
+    };
+    super::log(&format!("{whose} sidecar subtitle: sid={}", s.id));
+    select(server, s.id, s.key.clone(), s.codec.clone());
+    Some(s.id)
 }
 
 /// The line to draw at `now_ns`, if a sidecar is selected and the server is not burning it.
@@ -929,7 +941,7 @@ mod tests {
             assert_eq!(plx_data::metadata::server_selected_sidecar(&item).map(|s| s.id), want, "{ids:?}");
             let mut store = plx_data::stores::metadata::MetadataStore::default();
             assert!(store.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(Some(item))));
-            assert_eq!(restore_server_selection(plx_plex::plex::ServerId::UNSET, store.view()), want, "{ids:?}");
+            assert_eq!(restore_selection(plx_plex::plex::ServerId::UNSET, store.view(), None), want, "{ids:?}");
             finish_download();
             deselect();
         }

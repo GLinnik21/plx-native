@@ -13,7 +13,7 @@ why `Range` is not optional here (§4 of the spec below).
 
 THE SPEC — what the app actually requires of a server (all read out of the code, not assumed):
 
-  1. Request line is `GET <abs-path> HTTP/1.1` with `Host:`, `User-Agent: plxnative/0.1` and
+  1. Request line is `GET <abs-path> HTTP/1.1` with `Host:`, the `User-Agent` boot installs and
      `Accept: */*` (`stream.rs::http_open`). Media GETs omit `Connection: close` so HTTP/1.1
      keep-alive is the default; sequential HLS/playlist GETs to the same peer reuse the fd.
      Range seeks still close from the client (`ff.rs::seek_cb`). No pipelining.

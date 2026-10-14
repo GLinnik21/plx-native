@@ -1245,6 +1245,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     } else if et == SDL_MOUSEMOTION {
         app.last_input = clock::now();
         app.ptr.last_motion = app.last_input;
+        if app.ptr.cur_hidden {
+            show_cursor_after_motion();
+        }
         app.ptr.cur_hidden = false;
         let (mx, my) = ptr_xy(&app.ev);
         if app.boot_initial.is_none() {

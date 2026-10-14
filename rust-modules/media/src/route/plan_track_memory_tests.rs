@@ -164,6 +164,93 @@ fn forced_only_falls_back_to_the_memos_language_for_untagged_audio() {
     assert_eq!(ladder(&item, "eng", Some(&memo)).pick, Some((1, 0)), "tagged audio wins");
 }
 
+// ---- subtitle rung 3, a remembered EXTERNAL track (C5) -----------------------------------------
+
+/// A sidecar the app can draw: external, with the key it is fetched by, an SRT. Not selected.
+fn sidecar(id: i64, lang: &str, title: &str) -> Stream {
+    Stream { key: format!("/library/streams/{id}"), title: title.into(), ..sub(id, id, lang, true) }
+}
+
+fn external_memo(lang: &str, forced: bool) -> SubtitleMemo {
+    SubtitleMemo::Track(SubtitleTrackMemo {
+        lang: lang.into(),
+        kind: "text".into(),
+        external: true,
+        forced,
+        ..Default::default()
+    })
+}
+
+/// A remembered external English subtitle selects THIS episode's English sidecar, which is a
+/// different stream (id and file) from the one the viewer picked. The pick carries the negative
+/// ordinal of an external (`sub_render_ordinal`), which `build_stream` routes as a sidecar.
+#[test]
+fn a_remembered_external_english_subtitle_selects_this_episodes_english_sidecar() {
+    let item = episode(vec![text_sub(1, "spa", ""), sidecar(77, "eng", "")]);
+    assert_eq!(
+        ladder(&item, "jpn", Some(&external_memo("eng", false))),
+        SubDecision { pick: Some((77, -1)), source: SubPickSource::Memory, miss: None },
+    );
+}
+
+/// With no same-language external file, the memo DECLINES: the ladder falls through to the next
+/// rung (here PMS's own selection), never to Off, and says which hard constraint failed.
+#[test]
+fn with_no_same_language_sidecar_a_remembered_external_subtitle_falls_through() {
+    let item = episode(vec![text_sub(1, "spa", ""), server_selected(text_sub(2, "fra", ""))]);
+    let declined = ladder(&item, "jpn", Some(&external_memo("eng", false)));
+    assert_eq!(
+        declined,
+        SubDecision { pick: Some((2, 1)), source: SubPickSource::Server, miss: Some("language") },
+        "PMS's selection plays as without a record",
+    );
+    let from_mode = pick_subtitle(
+        &episode(vec![text_sub(1, "spa", "")]), &NO_SHOW_RULES(), always_english(), "jpn", None,
+        Some(&external_memo("eng", false)),
+    );
+    assert_eq!((from_mode.pick, from_mode.source), (None, SubPickSource::Account), "the account's rule, Off here");
+}
+
+/// A sidecar in ANOTHER language is not selected, however it is spelled, and neither is the
+/// sidecar of the other `forced`-ness: both are the memo's hard constraints.
+#[test]
+fn a_remembered_external_subtitle_never_takes_another_language_or_the_other_forcedness() {
+    let spanish = episode(vec![sidecar(78, "spa", "")]);
+    let declined = ladder(&spanish, "jpn", Some(&external_memo("eng", false)));
+    assert_eq!((declined.pick, declined.source, declined.miss), (None, SubPickSource::Account, Some("language")));
+
+    let forced_only_file = episode(vec![sidecar(79, "eng", "Forced")]);
+    let full = ladder(&forced_only_file, "jpn", Some(&external_memo("eng", false)));
+    assert_eq!((full.pick, full.miss), (None, Some("forced")), "a full-subtitle memo is not the forced file");
+    let forced = ladder(&forced_only_file, "jpn", Some(&external_memo("eng", true)));
+    assert_eq!((forced.pick, forced.source), (Some((79, -1)), SubPickSource::Memory), "and the forced memo is");
+}
+
+/// What the app cannot draw is not "an existing external file" to pick: a PGS or VobSub sidecar
+/// (`sidecar_renderable` is a text allow-list) and a keyless stream decline like any other
+/// untouchable track, and an EMBEDDED memo never reaches a sidecar at all.
+#[test]
+fn only_a_sidecar_the_app_can_draw_is_selected_and_only_for_an_external_memo() {
+    let pgs = Stream { codec: "pgs".into(), ..sidecar(80, "eng", "") };
+    let keyless = Stream { key: String::new(), ..sidecar(81, "eng", "") };
+    let item = episode(vec![pgs, keyless]);
+    let declined = ladder(&item, "jpn", Some(&external_memo("eng", false)));
+    assert_eq!((declined.pick, declined.miss), (None, Some("language")));
+
+    let item = episode(vec![sidecar(82, "eng", "")]);
+    let embedded_memo = ladder(&item, "jpn", Some(&track_memo("eng")));
+    assert_eq!((embedded_memo.pick, embedded_memo.miss), (None, Some("language")), "embedded memos are unchanged");
+}
+
+/// Both an embedded and an external English track on this episode: the memo's own kind of file is
+/// the answer, so the external memo takes the sidecar and the embedded memo the embedded track.
+#[test]
+fn an_external_memo_prefers_the_sidecar_and_an_embedded_memo_the_embedded_track() {
+    let item = episode(vec![text_sub(1, "eng", ""), sidecar(83, "eng", "")]);
+    assert_eq!(ladder(&item, "jpn", Some(&external_memo("eng", false))).pick, Some((83, -1)));
+    assert_eq!(ladder(&item, "jpn", Some(&track_memo("eng"))).pick, Some((1, 0)));
+}
+
 // ---- the rungs above memory --------------------------------------------------------------------
 
 /// Rung 2: a subtitle the SERVER selected and the app draws itself. Memory is not consulted (a

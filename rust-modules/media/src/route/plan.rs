@@ -732,7 +732,7 @@ pub(super) fn desired_audio(
 
 /// Will a subtitle be on screen for this item, and which way (issue #266 I6)? The explicit pick,
 /// or the sidecar the direct-play landing restores on its own (`metadata::server_selected_sidecar`
-/// — the same predicate `player::sidecar::restore_server_selection` switches it on with).
+/// — the same predicate `player::sidecar::restore_selection` switches it on with).
 /// `sub_pick`'s ordinal is `metadata::sub_render_ordinal`'s own: negative = external sidecar,
 /// non-negative = an embedded demuxer ordinal. Mid-play the fact is read off the session instead
 /// (`route::decision::facts`); this is the resolve-time half.
@@ -1315,6 +1315,13 @@ pub struct Plan {
     /// Q-TOP (b) burns only on a route that already re-encodes video, so no burn rides it. The menu
     /// will say why once C4 reads this; the log says `not shown (copy remux)`.
     pub memory_note: bool,
+    /// **The remembered sidecar this resolve chose to draw** (C5): the stream id of THIS episode's
+    /// same-language external file that the profile's remembered external subtitle meant
+    /// ([`memory_subtitle`]). `None` for every other plan, including a remembered embedded track and
+    /// a server-selected sidecar (which the landing finds on its own). The landing restores it
+    /// exactly as it restores the server's selection (`player::sidecar::restore_selection`: the key
+    /// and codec are looked up in the playing item), on the routes where the app draws a sidecar.
+    pub memory_sidecar: Option<i64>,
 }
 
 /// What a remembered choice would write to the server (`PUT /library/parts`): an audio stream id
@@ -1669,7 +1676,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             memory_entry.and_then(|e| e.subtitle.as_ref()),
         )
     });
-    let sub_pick = sub_decision.as_ref().and_then(|d| d.pick);
+    // The ladder's pick is an EMBEDDED track unless its ordinal is negative: a remembered sidecar
+    // (`memory_subtitle`). A sidecar is never a `sub_pick` below (it has no container ordinal): it
+    // takes the same road as a sidecar the server selected, `sidecar_id`.
+    let ladder_pick = sub_decision.as_ref().and_then(|d| d.pick);
+    let sub_pick = ladder_pick.filter(|&(_, ord)| ord >= 0);
+    let memory_sidecar = ladder_pick.filter(|&(_, ord)| ord < 0).map(|(id, _)| id);
     // The ONE `track-memory:` line of this resolve. What the route did with a remembered subtitle
     // (shown by a direct play, drawn, burned, or not shown on a copy remux) is known only once the
     // route is, so the line is spoken once the plan's subtitle is settled (after `memory_unshown`
@@ -1715,15 +1727,23 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         client.link() == Some(plx_plex::plex::probe::Location::Local),
         source_transport_kbps,
     );
-    // **A sidecar the server has selected and the app will draw itself** over a remux (the landing's
-    // `restore_server_selection`). PMS discards a DOWNLOADED subtitle the moment the part's selection
-    // moves off it (docs/pms-api.md, 2026-10-06), so the selection PUT must keep naming it; "do not
-    // burn" is the wire's `subtitles=none` alone. Not when the viewer's own Off rides this resolve
-    // (`subtitle_override`), a burn is already carried, or an embedded pick took the slot.
-    let server_sidecar_id = (env.sub_sid == 0 && env.subtitle_override.is_none() && sub_pick.is_none())
-        .then(|| plan.playing.as_ref().and_then(plx_data::metadata::server_selected_sidecar).map(|s| s.id))
+    // **A sidecar the app will draw itself** over a remux (the landing's `restore_selection`): the
+    // one the server has selected, or the one the profile's memory chose (`memory_sidecar`; the
+    // ladder consults memory only when the server selected none, so they never both exist). PMS
+    // discards a DOWNLOADED subtitle the moment the part's selection moves off it (docs/pms-api.md,
+    // 2026-10-06), so the selection PUT must keep naming it; "do not burn" is the wire's
+    // `subtitles=none` alone. Not when the viewer's own Off rides this resolve (`subtitle_override`),
+    // a burn is already carried, or an embedded pick took the slot.
+    let sidecar_id = (env.sub_sid == 0 && env.subtitle_override.is_none() && sub_pick.is_none())
+        .then(|| {
+            memory_sidecar.or_else(|| {
+                plan.playing.as_ref().and_then(plx_data::metadata::server_selected_sidecar).map(|s| s.id)
+            })
+        })
         .flatten();
-    let probe_drawn_sub_sid = if side_draws { sub_pick.map_or(0, |(id, _)| id) } else { server_sidecar_id.unwrap_or(0) };
+    // What the landing restores besides the server's own selection.
+    plan.memory_sidecar = memory_sidecar.filter(|&id| sidecar_id == Some(id));
+    let probe_drawn_sub_sid = if side_draws { sub_pick.map_or(0, |(id, _)| id) } else { sidecar_id.unwrap_or(0) };
     // Step 2: the server carries the intended track (no direct-play pick), but a remux carries NO
     // subtitle (M4/M7) and the client's renderer is silent while transcoding. When a subtitle is to
     // be shown, a non-commentary stand-in direct-plays (the client draws the subtitle). That is a
@@ -1731,7 +1751,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // the route is known), else the encoder carries the intended track. With only a commentary to
     // stand in, the subtitle is shown by the Burn shape instead — decided below, once the route is
     // known to be the remux it replaces. A sidecar is never a `sub_pick` (it has no container
-    // ordinal), so it stays on the remux path.
+    // ordinal, remembered or server-selected), so it stays on the remux path.
     let mut stand_in_provisional = false;
     let mut commentary_only_stand_in = false;
     if audio_sel.is_none() && stand_in_retry(copy_blocked, sub_pick.is_some(), side_draws, !tracks.is_empty(), !rk.is_empty()) {
@@ -1882,7 +1902,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // it would play as. `env.sub_sid` is an already-active burn, which reads as Embedded too.
     let subtitle_effect = if env.sub_sid > 0 {
         if env.sub_drawn.is_some() { SubtitleEffect::Sidecar } else { SubtitleEffect::Embedded }
-    } else if side_draws {
+    } else if side_draws || plan.memory_sidecar.is_some() {
         SubtitleEffect::Sidecar
     } else {
         subtitle_effect_of(plan.playing.as_ref(), sub_pick)
@@ -2110,12 +2130,12 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                     source_transport_kbps,
                 )
         });
-    let client_draws = remux && (side_draws || carried_draw || server_sidecar_id.is_some());
+    let client_draws = remux && (side_draws || carried_draw || sidecar_id.is_some());
     // A server transcode that is not a copy (a capped or HLS re-encode) cannot leave the app to draw
     // the sidecar, and moving the selection to 0 would make PMS discard a downloaded one: it stays
     // selected and the encoder burns it (the same request a carried sidecar pick makes).
     let reencodes = reencodes_video(directplay, remux, rk);
-    let reencode_burns_sidecar = server_sidecar_id.is_some() && reencodes;
+    let reencode_burns_sidecar = sidecar_id.is_some() && reencodes;
     // **Q-TOP (b): a remembered subtitle is burned only on a route that already re-encodes video**
     // (`force_burn` and `burn_for_audio` have rebound `remux` above, so they count). It never forces
     // a re-encode for a subtitle: a copy remux the app cannot draw shows nothing and says so below.
@@ -2130,7 +2150,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         subtitle_id
     } else if burn_for_audio && env.sub_sid == 0 {
         sub_pick.map_or(0, |(id, _)| id)
-    } else if let Some(id) = server_sidecar_id.filter(|_| client_draws || reencode_burns_sidecar) {
+    } else if let Some(id) = sidecar_id.filter(|_| client_draws || reencode_burns_sidecar) {
         id
     } else if client_draws && env.sub_sid == 0 {
         // The pick itself, not `subtitle_id`: that is the profile-advertised id the MDE handshake
@@ -2141,7 +2161,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     };
     if client_draws {
         // An embedded track: the landing tells the renderer which ordinal the reader decodes. (A
-        // sidecar is restored from the server selection by the landing itself.)
+        // sidecar is restored by the landing itself: the server's selection, or `memory_sidecar`.)
         let ordinal = if env.sub_sid == 0 { sub_pick.map(|(_, ord)| ord) } else { env.sub_drawn };
         plan.sub_render_ordinal = ordinal.filter(|ord| *ord >= 0);
     }
@@ -2970,7 +2990,7 @@ fn embedded_subtitle_renderable(codec: &str) -> bool {
 ///     still require a server burn.
 ///   - this is the direct-play path only. A transcode start PUTs `subtitleStreamID=0` only when
 ///     the viewer chose Off or nothing is selected; a sidecar the server has selected keeps its
-///     real id (`server_sidecar_id`): the app draws it over a remux (only the decision/start wire
+///     real id (`sidecar_id`): the app draws it over a remux (only the decision/start wire
 ///     says `subtitles=none`) and the server burns it on a re-encode (`reencode_burns_sidecar`),
 ///     because PMS discards a downloaded subtitle once the selection moves off it
 ///     (`docs/pms-api.md` §8). Honouring an EMBEDDED selection on a transcode means a server-side
@@ -3120,7 +3140,9 @@ pub(super) enum SubPickSource {
 }
 
 /// The answer of the subtitle ladder: the track to draw (`sub_pick`'s `(stream id, ordinal)`, `None`
-/// is Off), the rung that decided it, and why a record that was consulted matched nothing.
+/// is Off), the rung that decided it, and why a record that was consulted matched nothing. The
+/// ordinal is `sub_render_ordinal`'s: negative only for a remembered sidecar (the one pick that is
+/// no container track), which `build_stream` routes as a sidecar and never as an embedded pick.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct SubDecision {
     pub pick: Option<(i64, i32)>,
@@ -3140,21 +3162,32 @@ fn show_memory<'a>(
 }
 
 /// What a remembered subtitle half means for this file: the track to draw (`None` is nothing: Off,
-/// or Forced only with no forced track) or the hard constraint that no track satisfied. This
-/// resolve draws embedded tracks only, so a remembered sidecar is matched against them.
+/// or Forced only with no forced track) or the hard constraint that no track satisfied.
+///
+/// A remembered EMBEDDED track is matched against this file's embedded tracks. A remembered
+/// EXTERNAL one (`SubtitleTrackMemo::external`) is also matched against this file's sidecars the app
+/// can draw (`Stream::sidecar_renderable`), and a sidecar of the same language and `forced`-ness
+/// wins over an embedded track of that language ([`match_subtitle`]'s last soft key): the file
+/// differs per episode, so the memo says "an English sidecar" and THIS episode's own file is the
+/// answer. Its pick carries `sub_render_ordinal`'s negative ordinal, which [`build_stream`] routes
+/// as a sidecar (never as an embedded `sub_pick`). Forced only stays embedded: its matcher is not
+/// asked to carry a sidecar.
 fn memory_subtitle(
     subs: &[plx_data::metadata::Stream], memo: &SubtitleMemo, audio_lang: &str,
 ) -> Result<Option<(i64, i32)>, Miss> {
     let drawable = |s: &plx_data::metadata::Stream| !s.external && s.id > 0 && embedded_subtitle_renderable(&s.codec);
     let pick = |i: usize| {
         let ord = plx_data::metadata::sub_render_ordinal(subs, i);
-        (ord >= 0).then_some((subs[i].id, ord))
+        (ord >= 0 || subs[i].external).then_some((subs[i].id, ord))
     };
     match memo {
         SubtitleMemo::Off => Ok(None),
         SubtitleMemo::ForcedOnly { lang } => Ok(match_forced_only(subs, audio_lang, lang, drawable).and_then(pick)),
         SubtitleMemo::Track(track) => {
-            match_subtitle(subs, track, drawable).and_then(|i| pick(i).map(Some).ok_or("unusable"))
+            let carries = |s: &plx_data::metadata::Stream| {
+                drawable(s) || (track.external && s.id > 0 && s.sidecar_renderable())
+            };
+            match_subtitle(subs, track, carries).and_then(|i| pick(i).map(Some).ok_or("unusable"))
         }
     }
 }
@@ -3165,7 +3198,8 @@ fn memory_subtitle(
 ///   1. this playback's own pick (`override_id`, a known retry);
 ///   2. a subtitle the SERVER has selected and the app draws itself
 ///      (`metadata::server_selected_sidecar`): memory is not consulted, and the result is today's;
-///   3. what the profile remembered for the show: a track (`track_memory::match_subtitle`), Off, or
+///   3. what the profile remembered for the show: a track (`track_memory::match_subtitle`; a
+///      remembered sidecar picks this file's same-language sidecar, see [`memory_subtitle`]), Off, or
 ///      Forced only (`track_memory::match_forced_only`, judged by the language of the audio that
 ///      is PLAYING);
 ///   4-7. PMS's embedded selection, the show's settings, the account's, else Off
