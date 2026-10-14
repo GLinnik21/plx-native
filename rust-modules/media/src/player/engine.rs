@@ -676,8 +676,9 @@ fn sink_envelope(
     // displayed-frame counter (callback type 47, see the payload note above) put a number on
     // what the eye saw: declared at 60 the 4K 24p stream was PRESENTED at 13.0 fps mean, worst
     // second 10; declared at 24, 24.1 fps.** The class, not the exact value: 23.976 → 24 keeps
-    // the declaration a ceiling the stream fits under, and a millisecond-timebase 30.303 → 30
-    // (`fps_class`, issue #665). Suspected, NOT yet device-verified: the k6lp SoC's H.264
+    // the declaration a ceiling the stream fits under. The one deliberate exception is a
+    // millisecond-timebase 30.303 → 30 (`fps_class`, issue #665), where the declaration sits
+    // about 1% BELOW the fed rate. Suspected, NOT yet device-verified: the k6lp SoC's H.264
     // decoder is 4K@30-limited, so declaring 50 on a 30p 4K stream is refused with num=601;
     // `pipe_h264_uhd_30p_ms_timebase` and an owner retest on the 60UN7310 are the proof, with a
     // second `/tmp/plxnative-nofps` leg to tell a rate-pair refusal from the 4K@30 limit.
