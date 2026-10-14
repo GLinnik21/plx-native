@@ -200,11 +200,11 @@ impl World {
         apply_plan(&mut self.ps, plan, RK);
     }
 
-    /// A landing's first decoded frame, in the pump's order (`player/pump.rs`): the container-name
-    /// re-match, then the write-back's send, then the queue drained.
+    /// A landing's decoded frame, through the one function the pump calls for it
+    /// ([`on_decoded_frame`]: the container-name re-match, the resume confirmation, then the
+    /// write-back's send), then the queue drained. The order is graded where it runs, not copied.
     fn first_frame(&mut self) {
-        rematch_subtitle_with_names(&mut self.ps);
-        send_parked_write_back(&mut self.ps);
+        on_decoded_frame(&mut self.ps);
         wait_idle();
     }
 
@@ -426,7 +426,7 @@ fn repointing_with_nothing_parked_is_a_no_op() {
     assert!(w.pms.puts().is_empty(), "{:?}", w.pms.puts());
 }
 
-// ---- FO x WB: the first frame's names re-match, through the pump's own order --------------------
+// ---- FO x WB: the first frame's names re-match, through the pump's own call ----------------------
 //
 // An MP4 part: PMS sends no `title` and no `forced` flag, so the resolve cannot find a forced track;
 // the demuxer's names say which track is one. The re-match runs on the first decoded frame BEFORE the
@@ -548,6 +548,93 @@ fn with_nothing_parked_the_rematch_commits_with_its_own_put() {
     assert_eq!(param(&puts[0], "subtitleStreamID"), Some("55001"));
     assert_eq!(w.pms.selection(PART), (36014, 55001));
     assert!(!w.log().contains("track-memory: write-back"), "{}", w.log());
+}
+
+/// **A parked write the send would drop never carries the re-match.** The re-match hands its result
+/// to the parked write only while that write will really be sent; when the route was replaced in
+/// place before the first frame, the parked write is spent (the log says so) and the re-match
+/// commits with its own PUT, as it does with nothing parked. Otherwise NO PUT names the subtitle on
+/// screen: the server keeps the landing's selection while the screen shows the re-matched track.
+#[test]
+fn a_stale_parked_write_does_not_swallow_the_rematchs_put_when_the_route_changed() {
+    let mut w = world(mp4_part(55002));
+    let plan = w.resolve(Resolve { memory: memory(Some(english()), Some(forced_only())), ..Resolve::launch() });
+    w.land(plan);
+    assert!(w.parked(), "setup: the landing parks the write");
+    w.ps.url = format!("{}&replaced=1", w.ps.url);
+
+    publish_container_names(&["Forced", "", ""]);
+    w.first_frame();
+    assert_eq!(cur_sub_sid(&w.ps), 55001, "the name revealed the track: {}", w.log());
+    let puts = w.pms.puts();
+    assert_eq!(puts.len(), 1, "the re-match's own PUT, and nothing else: {puts:?}\n{}", w.log());
+    assert_eq!(param(&puts[0], "subtitleStreamID"), Some("55001"), "{}", puts[0]);
+    assert_eq!(w.pms.selection(PART).1, cur_sub_sid(&w.ps), "the server holds what the screen shows");
+    let log = w.log();
+    assert_eq!(log.matches("write-back dropped (the route changed)").count(), 1, "one drop line: {log}");
+    assert!(!w.parked(), "the stale value is spent");
+}
+
+/// The same when the viewer picked an AUDIO track before the first frame: the pick's own PUT names
+/// the subtitle the landing had, so the parked write is dropped (the selection on screen changed)
+/// and the re-match must write its result itself. The invariant is that the last word the server
+/// hears names the subtitle on screen. A remembered forced TRACK (not Forced only, whose pick
+/// follows the audio's language) is re-matched whatever audio plays, and nothing else ends the
+/// owed re-match.
+#[test]
+fn a_stale_parked_write_does_not_swallow_the_rematchs_put_after_an_audio_pick() {
+    let mut w = world(mp4_part(55002));
+    let forced_english = SubtitleMemo::Track(SubtitleTrackMemo {
+        lang: "eng".into(),
+        kind: "text".into(),
+        forced: true,
+        ..Default::default()
+    });
+    let plan = w.resolve(Resolve { memory: memory(Some(english()), Some(forced_english)), ..Resolve::launch() });
+    w.land(plan);
+    assert!(w.parked(), "setup: the landing parks the write");
+    let japanese_track = w.item_of(&mp4_part(55002)).audio[1].clone();
+    assert_eq!(japanese_track.id, 36015, "setup: the Part's second audio track");
+    assert!(commit_audio_selection(&mut w.ps, CarriedAudio::from_stream(&japanese_track, 1)), "setup: the pick stands");
+    assert_eq!(cur_audio_sid(&w.ps), 36015, "setup: the viewer is on the Japanese audio");
+    assert!(
+        w.ps.track_ctx.as_ref().is_some_and(|c| c.rematch.is_some()),
+        "setup: an audio pick leaves the re-match owed"
+    );
+    wait_idle();
+
+    publish_container_names(&["Forced", "", ""]);
+    w.first_frame();
+    assert_eq!(cur_sub_sid(&w.ps), 55001, "the name revealed the track: {}", w.log());
+    let puts = w.pms.puts();
+    let last = puts.last().unwrap_or_else(|| panic!("no PUT at all\n{}", w.log()));
+    assert_eq!(param(last, "subtitleStreamID"), Some("55001"), "the last write names the screen: {puts:?}\n{}", w.log());
+    assert_eq!(w.pms.selection(PART), (36015, 55001), "the server holds what the screen shows");
+    let log = w.log();
+    assert_eq!(log.matches("write-back dropped (the selection on screen changed)").count(), 1, "one drop line: {log}");
+    assert!(!w.parked(), "the stale value is spent");
+}
+
+/// W5 for the re-match when NOTHING is parked: a subtitle-only memory withholds its subtitle half
+/// under W5 (the Part carries an external stream), so no write is parked, and the re-match's own
+/// commit must not PUT either: a selection move off a downloaded stream is discarded by PMS along
+/// with the download. The re-matched subtitle is still shown on screen.
+#[test]
+fn an_unparked_rematch_writes_nothing_while_the_part_carries_an_external() {
+    let mut model = part(0);
+    model.subs.push((55009, true));
+    let mut w = world(model);
+    let plan = w.resolve(Resolve { memory: memory(None, Some(forced_only())), ..Resolve::launch() });
+    w.land(plan);
+    assert!(!w.parked(), "setup: W5 withheld the only half, so nothing is parked");
+    assert!(w.ps.track_ctx.as_ref().is_some_and(|c| c.rematch.is_some()), "setup: the direct play owes the re-match");
+
+    publish_container_names(&["Forced", "", ""]);
+    w.first_frame();
+    assert_eq!(cur_sub_sid(&w.ps), 55001, "the re-matched track is on screen: {}", w.log());
+    assert!(w.log().contains("track-memory: re-matched with the container's names (track 55001)"), "{}", w.log());
+    assert!(w.pms.puts().is_empty(), "no write moves the selection off the download: {:?}", w.pms.puts());
+    assert_eq!(w.pms.selection(PART), (36014, 0));
 }
 
 // ---- W7: idempotent against this play's own streams ---------------------------------------------

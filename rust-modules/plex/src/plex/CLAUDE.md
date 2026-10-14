@@ -546,7 +546,9 @@ a dead source is **absent** from Home and states itself in its own library secti
   re-match runs BEFORE the write-back's send on the same frame: while a write-back is parked it
   re-points the parked write's subtitle half (`route::repoint_parked_subtitle`, W5 and W7 apply to the
   re-matched id) and queues no PUT of its own, so the server hears one write that names the remembered
-  audio and the re-matched subtitle; with nothing parked it PUTs like any subtitle commit. It never
+  audio and the re-matched subtitle; with nothing parked, or a parked write that went stale first
+  (`decision::parked_write_stale`: the route was replaced, the viewer picked), it PUTs like any subtitle
+  commit, except that over a Part with an external stream (W5) it PUTs nothing. It never
   replaces a sidecar on screen, and compares with what the landing SHOWS (read from the session after
   the sidecar restore, `settle_landing_selection`), not with the plan, which names no sidecar. Leaving
   Forced only is a remembered change even onto the very track it drew.

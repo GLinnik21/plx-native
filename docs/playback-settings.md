@@ -67,8 +67,9 @@ to the server once, on the first decoded frame, so the server's selection for th
 the screen (a forced track that only the container's own track names reveal, found on that frame,
 is the subtitle written, in that one write); a declined or fall-through pick, a retry and a
 transcode write nothing, a Part with a
-downloaded subtitle gets no subtitle write, and a pick the viewer makes first carries its own
-write. A movie's pick, a pick the route refused (Force Direct Play), an automatic choice and an OK on the subtitle already
+downloaded subtitle gets no subtitle write (a forced track found on that frame included), and a
+pick the viewer makes first carries its own write (the forced track found on that frame is then
+written on its own, as any subtitle change during playback is). A movie's pick, a pick the route refused (Force Direct Play), an automatic choice and an OK on the subtitle already
 showing are not remembered. A remembered Off and a remembered Forced only beat the account's rule
 and the server's embedded selection, and unlike a remembered track neither falls through to them
 (Forced only with no forced track shows nothing). A subtitle file the server has selected for the

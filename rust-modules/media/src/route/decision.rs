@@ -7922,7 +7922,7 @@ fn parked_write_back(plan: &Plan) -> Option<ParkedWriteBack> {
         audio,
         subtitle,
         keep_subtitle: selected_sub,
-        external_on_part: external_on_part(playing),
+        external_on_part: external_on_part(&playing.subs),
         landed: (0, 0),
     })
 }
@@ -7945,36 +7945,50 @@ fn settle_landing_selection(ps: &mut PlaybackSession) {
     }
 }
 
+/// Why the parked write no longer describes `ps`, if it does not: the ONE predicate both readers of
+/// a parked write ask ([`send_parked_write_back`] and [`repoint_parked_subtitle`]), so they never
+/// disagree about whether the write will be sent. In this order:
+///   - `"the route changed"`: the route it was parked for is gone, a different URL or any transcode
+///     (a recovery flight or a rebuild replaced it, and that route's own start PUT is the write, W3);
+///   - `"the remembered pick is not shown"`: `cur_memory_note`;
+///   - `"the selection on screen changed"`: the selection on screen is no longer the landed one, the
+///     viewer picked something, and that pick's PUT already carries the live ids.
+fn parked_write_stale(ps: &PlaybackSession, parked: &ParkedWriteBack) -> Option<&'static str> {
+    if is_transcoding(ps) || ps.url != parked.url || cur_sid(ps) != parked.sid || cur_part_id(ps) != parked.part_id {
+        return Some("the route changed");
+    }
+    if ps.cur_memory_note {
+        return Some("the remembered pick is not shown");
+    }
+    ((cur_audio_sid(ps), cur_sub_sid(ps)) != parked.landed).then_some("the selection on screen changed")
+}
+
+/// Take the parked write if it still describes `ps`; otherwise it is spent: dropped, with the reason
+/// logged, and `None`. `Option::take` is the once-per-play guard (W8).
+fn take_live_parked_write(ps: &mut PlaybackSession) -> Option<ParkedWriteBack> {
+    let parked = ps.write_back.take()?;
+    match parked_write_stale(ps, &parked) {
+        None => Some(parked),
+        Some(why) => {
+            crate::player::log(&format!("track-memory: write-back dropped ({why})"));
+            None
+        }
+    }
+}
+
 /// **Send the parked write-back, once, on the landing's first decoded frame** (§4.8 W6). Called by
-/// the pump's decoded-frame branch; MAIN THREAD, and it only QUEUES (the serial selection worker
-/// does the PUT), so a slow server never stalls the frame.
+/// the pump's decoded-frame branch ([`on_decoded_frame`]); MAIN THREAD, and it only QUEUES (the
+/// serial selection worker does the PUT), so a slow server never stalls the frame.
 ///
-/// `Option::take` is the once-per-play guard (W8). The value is dropped, not sent, when:
-///   - the route it was parked for is gone: a different URL, or any transcode (a recovery flight
-///     or a rebuild replaced it, and that route's own start PUT is the write, W3);
-///   - a remembered pick is not shown (`cur_memory_note`);
-///   - the selection on screen is no longer the landed one: the viewer picked something, and that
-///     pick's PUT already carries the live ids.
+/// The value is dropped, not sent, when [`parked_write_stale`] says it no longer describes the
+/// session: the route changed, a remembered pick is not shown, or the viewer picked something.
 ///
 /// The subtitle field is the half's own id (`0` for Off), else the Part's own selected subtitle,
 /// else omitted. It is never `cur_sub_sid`, which on a fall-through can be a pick PMS never had (W2).
 pub fn send_parked_write_back(ps: &mut PlaybackSession) {
-    let Some(parked) = ps.write_back.take() else {
+    let Some(parked) = take_live_parked_write(ps) else {
         return;
     };
-    let live = (cur_audio_sid(ps), cur_sub_sid(ps));
-    if is_transcoding(ps) || ps.url != parked.url || cur_sid(ps) != parked.sid || cur_part_id(ps) != parked.part_id {
-        crate::player::log("track-memory: write-back dropped (the route changed)");
-        return;
-    }
-    if ps.cur_memory_note {
-        crate::player::log("track-memory: write-back dropped (the remembered pick is not shown)");
-        return;
-    }
-    if live != parked.landed {
-        crate::player::log("track-memory: write-back dropped (the selection on screen changed)");
-        return;
-    }
     let subtitle = match parked.subtitle {
         Some(SubWrite::Id(id)) => Some(id),
         Some(SubWrite::Off) => Some(0),
@@ -7996,17 +8010,22 @@ pub fn send_parked_write_back(ps: &mut PlaybackSession) {
 /// it, the remembered audio half with it) and reach PMS through the manual-pick path, which applies
 /// neither W5 nor W7.
 ///
-/// Returns whether a write is parked. If so the parked write now accounts for `sub_sid` and the
-/// caller queues NO PUT of its own: the audio half is untouched, the subtitle half is `sub_sid`
-/// (`0` is Off) under W5 and W7, and the live selection is the landed one again. If not, nothing was
-/// applied at the landing and the caller commits as an ordinary derived selection.
+/// **Returns whether the parked write will carry `sub_sid` to the server**, which is what makes the
+/// caller queue NO PUT of its own: the audio half is untouched, the subtitle half is `sub_sid` (`0`
+/// is Off) under W5 and W7, and the live selection is the landed one again. It is `false`, and the
+/// caller commits as an ordinary derived selection that PUTs for itself, when nothing is parked
+/// (nothing was applied at the landing) or when the parked write is already stale
+/// ([`parked_write_stale`], read BEFORE `landed` is touched): the send would drop it, and a re-match
+/// that had trusted it would leave the server holding the landing's subtitle while the screen shows
+/// the re-matched one. A stale write is spent here (dropped, and logged as the send would).
 ///   - W5: a Part with an external stream keeps its subtitle half withheld (the audio-only write
 ///     then names the Part's own selection); the memory still shows on screen.
 ///   - W7: an Off over a Part with nothing selected would create an explicit Off, so that half is
-///     dropped, and a write left with no half at all is cleared. A re-matched id PMS already holds
-///     is sent anyway: re-selecting it is harmless.
+///     dropped, and a write left with no half at all is cleared (nothing is left to send, and the
+///     server already agrees with the screen). A re-matched id PMS already holds is sent anyway:
+///     re-selecting it is harmless.
 pub fn repoint_parked_subtitle(ps: &mut PlaybackSession, sub_sid: i64) -> bool {
-    let Some(parked) = ps.write_back.as_mut() else {
+    let Some(mut parked) = take_live_parked_write(ps) else {
         return false;
     };
     parked.landed.1 = sub_sid;
@@ -8016,8 +8035,8 @@ pub fn repoint_parked_subtitle(ps: &mut PlaybackSession, sub_sid: i64) -> bool {
             _ => parked.keep_subtitle.map(|_| SubWrite::Off),
         };
     }
-    if parked.audio.is_none() && parked.subtitle.is_none() {
-        ps.write_back = None;
+    if parked.audio.is_some() || parked.subtitle.is_some() {
+        ps.write_back = Some(parked);
     }
     true
 }
@@ -10392,10 +10411,11 @@ pub fn commit_subtitle_selection(
 }
 
 /// [`commit_subtitle_selection`] with the direct-play selection PUT optional. `put == false` is for
-/// the one commit whose server write is already accounted for: the first frame's container-name
-/// re-match while a write-back is parked, which carries the re-matched subtitle itself
-/// ([`repoint_parked_subtitle`]). Everything else a commit does (the burn refresh, the side reader,
-/// the route projection) is unchanged.
+/// the commit whose server write is accounted for or must not happen: the first frame's
+/// container-name re-match while a live write-back is parked, which carries the re-matched subtitle
+/// itself ([`repoint_parked_subtitle`]), and that re-match over a Part that carries an external
+/// stream, where W5 forbids any subtitle write. Everything else a commit does (the burn refresh, the
+/// side reader, the route projection) is unchanged.
 fn commit_subtitle_selection_inner(
     ps: &mut PlaybackSession,
     sub_idx: i32,
@@ -10653,8 +10673,8 @@ pub fn commit_forced_only_pick(
 /// and the container-name re-match. It goes through the one commit every pick does (the burn
 /// refresh, the selection PUT, the side reader) and writes no memory; `forced_only` puts the mode
 /// back, which the ordinary commit settles from the stream alone. `put` is the commit's own
-/// direct-play selection PUT: the audio follow sends it, the re-match does not while a write-back
-/// that carries its result is parked.
+/// direct-play selection PUT: the audio follow sends it, the re-match does not while a live
+/// write-back that carries its result is parked, nor over a Part with an external stream (W5).
 fn commit_derived_subtitle(ps: &mut PlaybackSession, picked: (i64, i32), forced_only: bool, put: bool) {
     let (id, ordinal) = picked;
     commit_subtitle_selection_inner(ps, ordinal, id, ordinal >= 0, put);
@@ -10698,14 +10718,17 @@ fn follow_audio_with_forced_only(ps: &mut PlaybackSession, audio_sid: i64) {
 /// only came to nothing), `None` that it committed nothing (not owed, nothing found, or the viewer
 /// picked first).
 ///
-/// **The server is told once, by the write-back, when one is parked.** The re-match first hands its
-/// result to the parked write ([`repoint_parked_subtitle`]), which keeps the remembered audio half
-/// and applies W5 (no subtitle half while the Part carries an unselected external stream) and W7
-/// (no explicit Off over a Part with nothing selected) to the re-matched subtitle; the commit then
-/// queues no selection PUT of its own, and [`send_parked_write_back`] sends the one write right
-/// after, naming what is on screen. With nothing parked (a retry, a landing that applied no
-/// remembered half, a write PMS already agrees with) the commit is an ordinary one and PUTs as any
-/// subtitle change does.
+/// **The server is told once.** While a live write-back is parked the re-match first hands its
+/// result to it ([`repoint_parked_subtitle`]), which keeps the remembered audio half and applies W5
+/// (no subtitle half while the Part carries an unselected external stream) and W7 (no explicit Off
+/// over a Part with nothing selected) to the re-matched subtitle; the commit then queues no
+/// selection PUT of its own, and [`send_parked_write_back`] sends the one write right after, naming
+/// what is on screen. With nothing parked (a retry, a landing that applied no remembered half, a
+/// write PMS already agrees with), or a parked write that went stale first (the route changed, the
+/// viewer picked), the commit is an ordinary one and PUTs as any subtitle change does, so the server
+/// always hears the subtitle on screen. **W5 holds for that PUT too**: over a Part that carries an
+/// external stream (a download, maybe another Home user's) the commit PUTs nothing, because moving
+/// the selection off a download makes PMS discard it; the re-matched subtitle still shows.
 pub fn rematch_subtitle_with_names(ps: &mut PlaybackSession) -> Option<i64> {
     // Every frame after the first asks: the common answer is no, and costs no lock.
     if !ps.track_ctx.as_ref().is_some_and(|c| c.rematch.is_some()) {
@@ -10732,9 +10755,29 @@ pub fn rematch_subtitle_with_names(ps: &mut PlaybackSession) -> Option<i64> {
         let forced_only = matches!(owed.memo, SubtitleMemo::ForcedOnly { .. });
         // Before the commit, which changes `cur_sub_sid` under the parked write's landed pair.
         let carried_by_write_back = repoint_parked_subtitle(ps, found.id);
-        commit_derived_subtitle(ps, (found.id, found.ordinal), forced_only, !carried_by_write_back);
+        // W5, the Part's own streams: the landing's subtitle half is withheld over any external.
+        let external = ps.track_ctx.as_ref().is_some_and(|c| external_on_part(&c.subs));
+        commit_derived_subtitle(ps, (found.id, found.ordinal), forced_only, !carried_by_write_back && !external);
     }
     rematched.map(|found| found.id)
+}
+
+/// **Everything the session does on a decoded frame, in the order that is its contract** (the pump's
+/// `frames > 0` branch calls it once per frame; every step is once per landing and costs nothing
+/// after). Both the pump and the write-back tests call this one function, so the order is graded
+/// where it runs:
+///   1. [`rematch_subtitle_with_names`]: the demuxer's track names exist only once the file is open,
+///      and the re-match must settle what is on screen BEFORE anything tells the server. While a
+///      write-back is parked it re-points that write's subtitle half and queues no PUT of its own.
+///   2. [`confirm_resume_presented`]: the replacement route shows a frame.
+///   3. [`send_parked_write_back`]: the one write names the remembered audio and the subtitle the
+///      re-match settled on. Swapped with step 1 the send would go first, naming the landing's
+///      subtitle, and the re-match would then PUT again through the manual path (two writes, no W5,
+///      no W7).
+pub fn on_decoded_frame(ps: &mut PlaybackSession) {
+    rematch_subtitle_with_names(ps);
+    confirm_resume_presented(ps);
+    send_parked_write_back(ps);
 }
 
 /// Atomically publish the main-thread session fields a newly spawned timeline reporter may read.

@@ -3353,7 +3353,7 @@ fn write_back_of(
         None => SubWrite::Off,
     });
     let subtitle = subtitle.filter(|_| {
-        let external_on_part = external_on_part(playing);
+        let external_on_part = external_on_part(&playing.subs);
         if external_on_part {
             crate::player::log("write-back: subtitle withheld (external on part)");
         }
@@ -3364,9 +3364,10 @@ fn write_back_of(
 
 /// W5's test: the Part carries an external stream (a sidecar or a download), so no subtitle half is
 /// written for it. One predicate for the resolve ([`write_back_of`]) and for the parked write that
-/// a later re-match re-points (`decision::repoint_parked_subtitle`).
-pub(super) fn external_on_part(playing: &plx_data::metadata::PlayingItem) -> bool {
-    playing.subs.iter().any(|s| s.external)
+/// a later re-match re-points (`decision::repoint_parked_subtitle`), and for the re-match's own commit
+/// when nothing is parked (`decision::rematch_subtitle_with_names`).
+pub(super) fn external_on_part(subs: &[plx_data::metadata::Stream]) -> bool {
+    subs.iter().any(|s| s.external)
 }
 
 /// The one `track-memory:` line of a resolve: what each remembered half came to. `None` when the

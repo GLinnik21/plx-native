@@ -1128,18 +1128,14 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         crate::route::confirm_original_recovery(ps);
     }
     if SHARED.frames.load(Relaxed) > 0 {
-        // The demuxer's track names exist now: re-match the remembered subtitle with them, once
-        // per landing (FO, §4.9). It goes BEFORE anything that tells the server what is on screen
-        // (the write-back's send): while a write-back is parked it re-points that write's subtitle
-        // half at what it settled on and queues no PUT of its own, so the send right below names
-        // the re-matched subtitle together with the remembered audio.
-        crate::route::rematch_subtitle_with_names(ps);
-        crate::route::confirm_resume_presented(ps);
-        // **The same acceptance point writes a remembered choice back to the server** (§4.8 W6):
-        // the landing parked it, and a decoded frame is the evidence the television took the
-        // direct play with those tracks. A refused direct play never gets here with it parked (its
-        // rescue installs a fresh session), and the send only queues, so this frame never waits.
-        crate::route::send_parked_write_back(ps);
+        // **The first decoded frame** (`route::on_decoded_frame`, one call per frame, each step once
+        // per landing), in the one order its doc fixes: the container-name re-match of a remembered
+        // subtitle (FO, §4.9: the demuxer's track names exist now), the resume confirmation, and
+        // **the write of a remembered choice back to the server** (§4.8 W6): the landing parked it,
+        // and a decoded frame is the evidence the television took the direct play with those
+        // tracks. A refused direct play never gets here with it parked (its rescue installs a fresh
+        // session), and the send only queues, so this frame never waits.
+        crate::route::on_decoded_frame(ps);
     }
 
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
