@@ -2455,6 +2455,10 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 None => &mut unarmed,
             };
             let r = match &mut s.src {
+                // At or past a known end the body has nothing left: the clean end, without asking
+                // a transport whose stream may sit elsewhere — `seek_cb` takes that position for a
+                // seek to the end without fetching anything.
+                _ if s.size >= 0 && s.off >= s.size => 0,
                 Src::Socket { hs, .. } => plx_net::stream::http_read_until(
                     *hs,
                     dst as *mut c_uchar,
@@ -2612,6 +2616,20 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         };
         if target < 0 {
             return -1;
+        }
+        // **A seek to the end is a position, not a request.** libavformat restores an
+        // `avio_tell` taken at EOF this way — `mov_read_chapters` does it after reading a chapter
+        // track, and a moov-at-end MP4 leaves the AVIO at exactly the size — and the only answer
+        // a server can give `Range: bytes=<size>-` is 416. Reopening for it closed the live
+        // stream and failed, while libavformat's buffer still held the chapter samples: the first
+        // video sample just past them read a dead transport ("partial file"), and the player sat
+        // at t=0. Nothing here is fetched, so nothing is closed; `read_cb` answers EOF from
+        // `off`, and the next seek into the file reopens as it always has
+        // (`ff_eof_seek_tests.rs`). An unsized source has no end to compare with and still asks.
+        if s.size >= 0 && target >= s.size {
+            s.off = target;
+            s.io_failed = false;
+            return target;
         }
         let aq = s.aq;
         let mut hopped_to_tls = None;
@@ -9172,3 +9190,7 @@ mod redirect_tests;
 #[cfg(test)]
 #[path = "ff_late_audio_tests.rs"]
 mod late_audio_tests;
+
+#[cfg(test)]
+#[path = "ff_eof_seek_tests.rs"]
+mod eof_seek_tests;
