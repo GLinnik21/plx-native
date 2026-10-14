@@ -217,9 +217,9 @@ fn forced_only_shows_the_forced_track_or_nothing() {
     assert_eq!((plan.sub_sid, plan.sub_render_ordinal), (55003, Some(1)));
 
     let only_full = || vec![srt(55001, 3, "eng", false, false)];
-    let mut by_account = Case::episode(only_full(), Vec::new());
-    by_account.account = Some((Some("eng".into()), 2, 0));
-    assert_eq!(resolve(by_account).0.sub_sid, 55001, "control: the account turns the full track on");
+    let mut from_mode = Case::episode(only_full(), Vec::new());
+    from_mode.account = Some((Some("eng".into()), 2, 0));
+    assert_eq!(resolve(from_mode).0.sub_sid, 55001, "control: the account turns the full track on");
     let mut case = Case::episode(only_full(), forced_only());
     case.account = Some((Some("eng".into()), 2, 0));
     let (plan, _) = resolve(case);

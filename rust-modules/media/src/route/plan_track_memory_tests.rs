@@ -72,10 +72,10 @@ fn a_record_that_matches_nothing_gives_todays_pick() {
     assert_eq!(declined.miss, Some("language"));
     // the account's rule is what plays when PMS selected nothing
     let item = episode(vec![text_sub(1, "eng", ""), text_sub(2, "spa", "")]);
-    let by_account = pick_subtitle(
+    let from_mode = pick_subtitle(
         &item, &NO_SHOW_RULES(), always_english(), "jpn", None, Some(&track_memo("fra")),
     );
-    assert_eq!((by_account.pick, by_account.source, by_account.miss), (Some((1, 0)), SubPickSource::Account, Some("language")));
+    assert_eq!((from_mode.pick, from_mode.source, from_mode.miss), (Some((1, 0)), SubPickSource::Account, Some("language")));
 }
 
 /// `forced` is hard in both directions: a full-track record never lands on the forced track.
