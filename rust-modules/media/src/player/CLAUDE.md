@@ -285,6 +285,21 @@ something.
   `frames` in the presented callback, cleared **only** in `reset_session`. The HUD divides its two
   busy indicators on it (`appkit::player_hud::busy_surface`); anything else asking "has this session put
   a picture on the panel" wants `player::seen_frame()`, not `frames() > 0`.
+- **A remembered track choice is written back to PMS on the first decoded frame, never at the
+  landing.** `route::apply_plan` only PARKS it (`PlaybackSession.write_back`: installing a URL is not
+  evidence the television accepted it, and a refused direct play's rescue PUTs its own selection);
+  `pump`'s `frames > 0` branch calls `route::send_parked_write_back`, which `take`s it (one write
+  per play), drops it when the route changed (another URL, any transcode) or the selection on screen
+  moved, and otherwise only QUEUES one `PUT /library/parts` on the serial selection worker, so the
+  frame never waits on the server. The queue stamps each request with the slot client's
+  `(instance_gen, grant_epoch)` and the worker drops it when either moved: a profile switch re-tokens
+  the SAME slot, so without the stamp a request queued under one profile would go out under the next
+  (manual picks share the queue). A failed PUT is logged and never retried. "The selection on screen"
+  is read from the SESSION once the landing has restored the server's sidecar, not from the plan.
+  A subtitle change before the send that is not the viewer's pick (the first-frame container-name
+  re-match, FO) re-points the parked write with `route::repoint_parked_subtitle` and queues no PUT
+  of its own: a PUT of its own would move the selection under the parked write, which would then be
+  dropped, and would reach PMS without W5 and W7.
 - **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine and the
   transport-pause contract are `player/lifecycle.rs`, which `app::lifecycle` re-exports; details in
   the `docs/agent-reference.md` gotchas): OS

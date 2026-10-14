@@ -1129,6 +1129,11 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     }
     if SHARED.frames.load(Relaxed) > 0 {
         crate::route::confirm_resume_presented(ps);
+        // **The same acceptance point writes a remembered choice back to the server** (§4.8 W6):
+        // the landing parked it, and a decoded frame is the evidence the television took the
+        // direct play with those tracks. A refused direct play never gets here with it parked (its
+        // rescue installs a fresh session), and the send only queues, so this frame never waits.
+        crate::route::send_parked_write_back(ps);
     }
 
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
@@ -2242,6 +2247,23 @@ mod flight_tests {
         assert_ne!(crate::route::transcode_session(&rig.ps), before, "the landing installed the replacement encoder");
         assert_eq!(TX.seek_to_ns.load(Relaxed), -1, "the seek was consumed, not re-armed");
         rig.flight.wait_for("the replaced encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// The track-memory write-back is sent from the pump's decoded-frame branch and from nowhere
+    /// else (§4.8 W6): a frame before the first decoded picture leaves it parked, the first frame
+    /// with `frames > 0` takes it. The session is the rig's transcode, so the send drops the value
+    /// rather than queueing a PUT; what is graded here is only WHEN the pump takes it.
+    #[test]
+    fn the_first_decoded_frame_takes_the_parked_write_back_and_an_earlier_frame_does_not() {
+        let mut rig = Rig::new(150);
+        crate::route::park_write_back_for_test(&mut rig.ps);
+        assert_eq!(SHARED.frames.load(Relaxed), 0, "sanity: nothing decoded yet");
+        rig.frame();
+        assert!(crate::route::write_back_parked(&rig.ps), "no decoded frame yet: the write stays parked");
+
+        SHARED.frames.store(1, Relaxed);
+        rig.frame();
+        assert!(!crate::route::write_back_parked(&rig.ps), "the first decoded frame took the parked write");
     }
 
     /// A Home press while a seek flight is out saves the SEEK TARGET (what `app::intended_pos`

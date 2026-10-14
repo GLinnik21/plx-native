@@ -309,6 +309,11 @@ pub struct PlaybackSession {
     /// by the first commit that changes the subtitle shown, because a pick the app draws in place
     /// runs no landing to clear it.
     cur_memory_note: bool,
+    /// **A remembered choice this landing applied that the server does not have yet** (§4.8 W6),
+    /// parked by [`apply_plan`] and sent by [`send_parked_write_back`] on the landing's first
+    /// decoded frame. `take`n by the send, so a play writes at most once; every other landing
+    /// (a retry, a rescue, a seek rebuild) installs a session with nothing parked.
+    write_back: Option<ParkedWriteBack>,
     /// the playing item's Part id (from the part key), so an audio switch can PUT the
     /// server-side stream selection — the transcoder encodes the part's SELECTED audio.
     cur_part_id: i64,
@@ -483,6 +488,7 @@ impl PlaybackSession {
         cur_show_rk: String::new(),
         cur_kind: String::new(),
         cur_memory_note: false,
+        write_back: None,
         cur_part_id: 0,
         sess: String::new(),
         machine_id: String::new(),
@@ -561,6 +567,8 @@ impl PlaybackSession {
             cur_show_rk,
             cur_kind,
             cur_memory_note,
+            // The parked write is the loop's to send, not a screen's to see.
+            write_back: _,
             cur_part_id,
             sess,
             machine_id,
@@ -620,6 +628,7 @@ impl PlaybackSession {
             cur_show_rk: cur_show_rk.clone(),
             cur_kind: cur_kind.clone(),
             cur_memory_note: *cur_memory_note,
+            write_back: None,
             cur_part_id: *cur_part_id,
             sess: sess.clone(),
             machine_id: machine_id.clone(),
@@ -6893,7 +6902,10 @@ pub(super) fn forced_server_decision(
 /// `sid` names the server that owns `part` — the resolve worker passes the id it was given, and the
 /// in-playback callers pass [`cur_sid`]. A `Part.id` is server-local, so a PUT sent to the wrong
 /// one either 404s or, worse, re-selects streams on a stranger's part that happens to share the
-/// number.
+/// number. The queued callers ([`queue_put_selection`], the write-back) also carry the slot's
+/// credential stamp, `(instance_gen, grant_epoch)` of `client_for(sid)` at queue time, and a queued
+/// request is dropped, not sent, if the slot's client or grant moved before the worker ran it
+/// ([`QueuedSelection`], W11).
 pub(super) fn put_selection(_off: &plx_base::task::OffFrame, sid: ServerId, part: i64, aud: i64, sub: i64) {
     if part <= 0 {
         return;
@@ -6902,21 +6914,61 @@ pub(super) fn put_selection(_off: &plx_base::task::OffFrame, sid: ServerId, part
         Some(c) => c,
         None => return,
     };
+    send_selection(c, part, aud, Some(sub));
+}
+
+/// The PUT itself, on a client the CALLER chose: [`put_selection`] resolves it per call, the queue
+/// worker checks the credential it was queued under first and sends on that same `&Client`.
+/// `sub == None` omits `subtitleStreamID` (an audio-only write-back with no subtitle to keep), and
+/// the log line says `-` for it.
+fn send_selection(c: &plx_plex::plex::Client, part: i64, aud: i64, sub: Option<i64>) {
     let st = c.select_streams(&plx_plex::plex::StreamSelection {
         part_id: part,
         audio_stream_id: aud,
         subtitle_stream_id: sub,
     });
+    let sub = sub.map_or_else(|| "-".to_string(), |s| s.to_string());
     crate::player::log(&format!(
         "select streams: part={part} audio={aud} sub={sub} -> HTTP {st}"
     ));
 }
 
+/// One queued selection PUT and WHO it was queued for. `(instance_gen, grant_epoch)` is the
+/// identity of `client_for(sid)` at queue time: the slot is stable across a profile switch
+/// (`revoke_for_profile_switch` blanks its token and the next profile's grant re-tokens the SAME
+/// slot), so the server id alone cannot say whose request this is. The worker drops the request
+/// when either value moved (W11). `write_back` marks the request an applied remembered choice made
+/// (§4.8), so the drop can say so.
 struct QueuedSelection {
     sid: ServerId,
     part: i64,
     aud: i64,
-    sub: i64,
+    sub: Option<i64>,
+    instance_gen: u32,
+    grant_epoch: u32,
+    write_back: bool,
+}
+
+/// `Some` when `queued` may still be sent on `c`: the slot holds the same client incarnation and the
+/// same credential epoch it held when the request was queued. `c` is `client_for(queued.sid)` as the
+/// WORKER resolves it, so a request queued under one profile's token never goes out under the next.
+fn credential_unchanged(queued: &QueuedSelection, c: &plx_plex::plex::Client) -> bool {
+    c.instance_gen() == queued.instance_gen && c.grant_epoch() == queued.grant_epoch
+}
+
+/// Run one dequeued request: the PUT, unless the credential changed since it was queued.
+fn run_queued_selection(_off: &plx_base::task::OffFrame, req: &QueuedSelection) {
+    let Some(c) = plx_plex::plex::client_for(req.sid) else {
+        return;
+    };
+    if !credential_unchanged(req, c) {
+        crate::player::log("select streams: dropped (credential changed since queued)");
+        if req.write_back {
+            crate::player::log("track-memory: write-back dropped (profile changed)");
+        }
+        return;
+    }
+    send_selection(c, req.part, req.aud, req.sub);
 }
 
 /// The pending selection PUTs and whether a worker is draining them. One lock covers both, so the
@@ -6949,13 +7001,37 @@ fn selection_queue_idle() -> bool {
 /// receives last, so two picks made in quick succession (audio, then subtitle) must land on the
 /// server in the order the viewer made them, not in whatever order two independent threads happen
 /// to finish their requests.
+///
+/// Each request is stamped with `client_for(sid)`'s `(instance_gen, grant_epoch)` at queue time and is
+/// dropped, not sent, if either moved before the worker runs it (W11; it logs `select streams:
+/// dropped (credential changed since queued)`), so a request queued behind a slow server never goes
+/// out under the next profile's token.
 pub(super) fn queue_put_selection(sid: ServerId, part: i64, aud: i64, sub: i64) {
+    queue_selection(sid, part, aud, Some(sub), false);
+}
+
+/// [`queue_put_selection`] with the subtitle optional and the request's provenance. The credential
+/// identity is captured HERE, on the thread that knows who is asking, and checked again when the
+/// worker runs the request (W11).
+fn queue_selection(sid: ServerId, part: i64, aud: i64, sub: Option<i64>, write_back: bool) {
     if part <= 0 {
         return;
     }
+    let Some(c) = plx_plex::plex::client_for(sid) else {
+        return;
+    };
+    let request = QueuedSelection {
+        sid,
+        part,
+        aud,
+        sub,
+        instance_gen: c.instance_gen(),
+        grant_epoch: c.grant_epoch(),
+        write_back,
+    };
     let spawn = {
         let mut queue = selection_queue();
-        queue.pending.push_back(QueuedSelection { sid, part, aud, sub });
+        queue.pending.push_back(request);
         !std::mem::replace(&mut queue.worker_running, true)
     };
     if spawn {
@@ -6975,7 +7051,7 @@ fn spawn_selection_worker() {
             };
             req
         };
-        put_selection(off, req.sid, req.part, req.aud, req.sub);
+        run_queued_selection(off, &req);
     });
     if !spawned {
         // The OS refused the thread. Drop the running flag so a later `queue_put_selection` gets a
@@ -7761,6 +7837,183 @@ pub fn confirm_resume_presented(ps: &mut PlaybackSession) {
     }
 }
 
+/// **A remembered choice a landing applied and the server has not been told** (§4.8 W6), parked on
+/// the session until the landing's first decoded frame. Everything the send needs rides here
+/// because the playing item moves into the metadata store at the landing: the identity of the
+/// route it belongs to, the halves (already filtered by W7 against the Part's own streams) and the
+/// selection the viewer was looking at when it landed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ParkedWriteBack {
+    sid: ServerId,
+    part_id: i64,
+    /// The landing's stream URL: the parked write belongs to THAT direct play. A recovery flight, a
+    /// quality change or a rebuild that replaced the route in place does not run [`apply_plan`], so
+    /// it cannot clear this; the URL (and `is_transcoding`) is how the send knows it is stale.
+    url: String,
+    audio: Option<i64>,
+    subtitle: Option<SubWrite>,
+    /// The subtitle the Part already has selected for the viewer (resolve time), if any. An
+    /// audio-only write names it unchanged: re-selecting it moves nothing and keeps a downloaded
+    /// stream alive (W5), and with none selected the field is omitted so no explicit Off is created.
+    keep_subtitle: Option<i64>,
+    /// The Part carries an external stream (W5), so a subtitle half is withheld whatever the
+    /// subtitle on screen becomes; `subtitle: None` alone cannot say that (a declined memory and a
+    /// half PMS already agrees with are `None` too).
+    external_on_part: bool,
+    /// `(audio, subtitle)` stream ids the viewer had on screen at the landing. Any difference at
+    /// the first frame means a pick (or a recovery) took over, and that pick's own PUT carries the
+    /// live selection, so there is nothing left to write.
+    ///
+    /// Read from the SESSION once the landing is complete ([`settle_parked_landing`]), never from
+    /// the plan: the landing restores the server's selected sidecar over the plan's `sub_sid`, and
+    /// on a direct play that is not a remux (Direct Play = Forced, a Dolby Vision base layer that
+    /// cannot stand alone) the plan never names it.
+    landed: (i64, i64),
+}
+
+/// What [`apply_plan`] parks for `plan` (W6, W7): `plan.write_back` less the halves PMS already
+/// agrees with, `None` for a plan that is not a playable landing or has nothing left to write.
+///
+/// W7 compares each half with the Part's streams in `plan.playing`. An `Id` half is skipped only
+/// when that stream is already `selected` AND the playing item was fetched fresh this resolve
+/// (`plan.playing_fresh`): a cached detail page may predate an earlier write, and re-sending the
+/// selection PMS holds is harmless. An `Off` half is skipped whenever the copy shows nothing selected,
+/// fresh or not, so a stale cache can never create an explicit Off.
+fn parked_write_back(plan: &Plan) -> Option<ParkedWriteBack> {
+    let wb = plan.write_back.filter(|_| !plan.url.is_empty() && plan.part_id > 0)?;
+    let playing = plan.playing.as_ref()?;
+    let fresh = plan.playing_fresh;
+    let selected_sub = playing.subs.iter().find(|s| s.selected).map(|s| s.id);
+    let audio = wb.audio.filter(|id| !(fresh && playing.audio.iter().any(|a| a.id == *id && a.selected)));
+    let subtitle = wb.subtitle.filter(|half| match *half {
+        SubWrite::Id(id) => !(fresh && playing.subs.iter().any(|s| s.id == id && s.selected)),
+        SubWrite::Off => selected_sub.is_some(),
+    });
+    if audio.is_none() && subtitle.is_none() {
+        return None;
+    }
+    Some(ParkedWriteBack {
+        sid: plan.sid,
+        part_id: plan.part_id,
+        url: plan.url.clone(),
+        audio,
+        subtitle,
+        keep_subtitle: selected_sub,
+        external_on_part: external_on_part(playing),
+        landed: (0, 0),
+    })
+}
+
+/// Record what the finished landing has on screen as the selection the parked write belongs to
+/// (see [`ParkedWriteBack::landed`]). [`apply_plan`] calls it after the restore of the server's
+/// sidecar, the last step that can change `cur_audio` or `cur_sub_sid` before the first frame.
+fn settle_parked_landing(ps: &mut PlaybackSession) {
+    let live = (cur_audio_sid(ps), cur_sub_sid(ps));
+    if let Some(parked) = ps.write_back.as_mut() {
+        parked.landed = live;
+    }
+}
+
+/// **Send the parked write-back, once, on the landing's first decoded frame** (§4.8 W6). Called by
+/// the pump's decoded-frame branch; MAIN THREAD, and it only QUEUES (the serial selection worker
+/// does the PUT), so a slow server never stalls the frame.
+///
+/// `Option::take` is the once-per-play guard (W8). The value is dropped, not sent, when:
+///   - the route it was parked for is gone: a different URL, or any transcode (a recovery flight
+///     or a rebuild replaced it, and that route's own start PUT is the write, W3);
+///   - a remembered pick is not shown (`cur_memory_note`);
+///   - the selection on screen is no longer the landed one: the viewer picked something, and that
+///     pick's PUT already carries the live ids.
+///
+/// The subtitle field is the half's own id (`0` for Off), else the Part's own selected subtitle,
+/// else omitted. It is never `cur_sub_sid`, which on a fall-through can be a pick PMS never had (W2).
+pub fn send_parked_write_back(ps: &mut PlaybackSession) {
+    let Some(parked) = ps.write_back.take() else {
+        return;
+    };
+    let live = (cur_audio_sid(ps), cur_sub_sid(ps));
+    if is_transcoding(ps) || ps.url != parked.url || cur_sid(ps) != parked.sid || cur_part_id(ps) != parked.part_id {
+        crate::player::log("track-memory: write-back dropped (the route changed)");
+        return;
+    }
+    if ps.cur_memory_note {
+        crate::player::log("track-memory: write-back dropped (the remembered pick is not shown)");
+        return;
+    }
+    if live != parked.landed {
+        crate::player::log("track-memory: write-back dropped (the selection on screen changed)");
+        return;
+    }
+    let subtitle = match parked.subtitle {
+        Some(SubWrite::Id(id)) => Some(id),
+        Some(SubWrite::Off) => Some(0),
+        None => parked.keep_subtitle,
+    };
+    crate::player::log(&format!(
+        "track-memory: write-back part={} audio={} sub={}",
+        parked.part_id,
+        parked.audio.map_or_else(|| "-".to_string(), |a| a.to_string()),
+        subtitle.map_or_else(|| "-".to_string(), |s| s.to_string()),
+    ));
+    queue_selection(parked.sid, parked.part_id, parked.audio.unwrap_or(0), subtitle, true);
+}
+
+/// **Carry the parked write to a subtitle the first frame's re-match put on screen** (§4.8 W6,
+/// §4.9). The container-name re-match runs on the decoded-frame branch BEFORE
+/// [`send_parked_write_back`] and commits a derived subtitle; without this the commit would queue a
+/// PUT of its own, change `cur_sub_sid` under the parked write (whose `landed` check would then drop
+/// it, the remembered audio half with it) and reach PMS through the manual-pick path, which applies
+/// neither W5 nor W7.
+///
+/// Returns whether a write is parked. If so the parked write now accounts for `sub_sid` and the
+/// caller queues NO PUT of its own: the audio half is untouched, the subtitle half is `sub_sid`
+/// (`0` is Off) under W5 and W7, and the live selection is the landed one again. If not, nothing was
+/// applied at the landing and the caller commits as an ordinary derived selection.
+///   - W5: a Part with an external stream keeps its subtitle half withheld (the audio-only write
+///     then names the Part's own selection); the memory still shows on screen.
+///   - W7: an Off over a Part with nothing selected would create an explicit Off, so that half is
+///     dropped, and a write left with no half at all is cleared. A re-matched id PMS already holds
+///     is sent anyway: re-selecting it is harmless.
+pub fn repoint_parked_subtitle(ps: &mut PlaybackSession, sub_sid: i64) -> bool {
+    let Some(parked) = ps.write_back.as_mut() else {
+        return false;
+    };
+    parked.landed.1 = sub_sid;
+    if !parked.external_on_part {
+        parked.subtitle = match sub_sid {
+            id if id > 0 => Some(SubWrite::Id(id)),
+            _ => parked.keep_subtitle.map(|_| SubWrite::Off),
+        };
+    }
+    if parked.audio.is_none() && parked.subtitle.is_none() {
+        ps.write_back = None;
+    }
+    true
+}
+
+/// Test-only: park a write-back on `ps` as a landing would, naming the session's own route and
+/// selection, so a test of the PUMP can grade that the decoded-frame branch (and no earlier frame)
+/// takes it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn park_write_back_for_test(ps: &mut PlaybackSession) {
+    ps.write_back = Some(ParkedWriteBack {
+        sid: cur_sid(ps),
+        part_id: cur_part_id(ps),
+        url: ps.url.clone(),
+        audio: Some(cur_audio_sid(ps)),
+        subtitle: None,
+        keep_subtitle: None,
+        external_on_part: false,
+        landed: (cur_audio_sid(ps), cur_sub_sid(ps)),
+    });
+}
+
+/// Test-only: a write-back is still parked on `ps`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn write_back_parked(ps: &PlaybackSession) -> bool {
+    ps.write_back.is_some()
+}
+
 fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     RetryContext {
         resume_ns: resume_ns.max(0),
@@ -8076,6 +8329,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         .as_ref()
         .map(|p| (p.show_rk.clone(), p.kind.clone()))
         .unwrap_or_default();
+    // The remembered choice this landing applied and the server may not have (W6). Computed here
+    // because the playing item moves into the store just below, and only for a playable landing.
+    let write_back = parked_write_back(&plan);
     meta.run(plx_data::stores::metadata::MetadataCmd::InstallPlaying(
         plan.playing,
     ));
@@ -8178,6 +8434,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             cur_show_rk,
             cur_kind,
             cur_memory_note: plan.memory_note,
+            write_back,
             cur_part_id: plan.part_id,
             sess: plan.sess,
             machine_id,
@@ -8227,6 +8484,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             ps.cur_sub_client_drawable = true;
         }
     }
+    settle_parked_landing(ps);
     let start = prepare_playback_landing(ps, !ps.url.is_empty());
     // SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
     if let Some(ord) = plan.feed_audio_ordinal {
@@ -10020,8 +10278,9 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) -> 
         // record the pick: the timeline then reports the stream that actually plays, and a
         // later transcode event (subtitle burn refresh / transcode seek) keeps this track.
         // persist the USER's pick server-side (official-client behavior): /status/sessions'
-        // selected-stream display keys on the part selection, not the timeline report. Only
-        // user picks persist — the start-of-play auto-pick (eng preference) reports only. Reached
+        // selected-stream display keys on the part selection, not the timeline report. User picks
+        // persist here; an applied remembered pick is written once, on its first decoded frame
+        // (`send_parked_write_back`); a fall-through auto-pick still only reports. Reached
         // from `app/playback.rs::commit_track` inside the run-loop's `FrameScope`, so this PUT runs
         // on the serial selection worker instead of blocking the frame thread.
         queue_put_selection(cur_sid(ps), cur_part_id(ps), cur_audio_sid(ps), cur_sub_sid(ps));
@@ -10449,3 +10708,7 @@ mod memory_tests;
 #[cfg(test)]
 #[path = "decision_track_memory_tests.rs"]
 mod track_memory_tests;
+
+#[cfg(test)]
+#[path = "decision_write_back_tests.rs"]
+mod write_back_tests;

@@ -621,6 +621,9 @@ a dead source is **absent** from Home and states itself in its own library secti
 - **Track selection is server-side, via `PUT /library/parts/{id}`** (set the chosen audio/subtitle
   stream + subtitle burn), **not** query params on the stream URL. The server re-selects for the next
   decision; the client re-requests the part. See `[[audio-subtitle-track-switching]]`.
+  `StreamSelection.subtitle_stream_id` is an `Option<i64>`: `Some(0)` is Off, `None` omits the
+  parameter, which an audio-only write-back uses so it never creates an explicit Off (PMS deletes a
+  downloaded subtitle once the selection moves off it, `docs/pms-api.md`).
 - **Subtitles: assume client rendering, not the server.** WebVTT sidecars do **not** deliver on our
   progressive-MKV pipeline (they come back empty / 501), so during a transcode the only server option
   is **burn** — which is why direct-play + our own subtitle renderer (see `player/`) is the real

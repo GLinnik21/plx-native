@@ -288,15 +288,18 @@ impl Client {
 
     /// PUT /library/parts/{id} — select the part's audio/subtitle streams SERVER-side (the
     /// transcoder encodes the SELECTED audio and burns the SELECTED subtitle; a query-param
-    /// on the stream URL does NOT change them, only this PUT does). `subtitleStreamID` is
-    /// always sent — 0 keeps subs OFF (suppresses a default-selected burn); `audioStreamID`
-    /// only when the user switched. Returns the HTTP status (route logs it).
+    /// on the stream URL does NOT change them, only this PUT does). `subtitleStreamID` is sent
+    /// whenever the selection names one — `Some(0)` keeps subs OFF (suppresses a default-selected
+    /// burn) — and omitted for `None` (an audio-only write that must not move the subtitle);
+    /// `audioStreamID` only when the user switched, or when an applied remembered audio is written
+    /// back. Returns the HTTP status (route logs it).
     #[track_caller]
     pub fn select_streams(&self, sel: &StreamSelection) -> i32 {
-        let q = QueryBuilder::new(format!("/library/parts/{}", sel.part_id))
-            .int("allParts", 1)
-            .int("subtitleStreamID", sel.subtitle_stream_id)
-            .opt_int("audioStreamID", sel.audio_stream_id);
+        let mut q = QueryBuilder::new(format!("/library/parts/{}", sel.part_id)).int("allParts", 1);
+        if let Some(subtitle) = sel.subtitle_stream_id {
+            q = q.int("subtitleStreamID", subtitle);
+        }
+        let q = q.opt_int("audioStreamID", sel.audio_stream_id);
         self.put(&q.build())
     }
 
@@ -442,6 +445,63 @@ mod tests {
             client.sidecar_subtitle_detailed("/library/streams/1?x=1", "srt").unwrap_err(),
             "key refused (not /library/streams/<id>[.ext])"
         );
+    }
+
+    /// **The selection PUT's wire shape** (write-back, W5): `subtitleStreamID` rides the PUT only
+    /// when the selection names one — `0` is the viewer's Off and is still sent — and an
+    /// audio-only write that has no subtitle to keep omits it, so it cannot create an explicit Off.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn select_streams_sends_the_subtitle_only_when_the_selection_names_one() {
+        use std::io::{Read, Write};
+        use std::time::{Duration, Instant};
+        let cases: [(i64, Option<i64>, &[(&str, &str)], &[&str]); 4] = [
+            (36015, Some(55001), &[("audioStreamID", "36015"), ("subtitleStreamID", "55001")], &[]),
+            (36015, Some(0), &[("audioStreamID", "36015"), ("subtitleStreamID", "0")], &[]),
+            (36015, None, &[("audioStreamID", "36015")], &["subtitleStreamID"]),
+            (0, Some(55001), &[("subtitleStreamID", "55001")], &["audioStreamID"]),
+        ];
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let expected = cases.len();
+        let server = std::thread::spawn(move || {
+            let (mut requests, deadline) = (Vec::new(), Instant::now() + Duration::from_secs(5));
+            while requests.len() < expected && Instant::now() < deadline {
+                let Ok((mut socket, _)) = plx_base::testnet::accept(&listener) else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut request = [0; 8192];
+                let n = socket.read(&mut request).unwrap();
+                let request = String::from_utf8_lossy(&request[..n]).into_owned();
+                write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                requests.push(request.lines().next().unwrap_or("").to_owned());
+            }
+            requests
+        });
+        let client = Client::new(
+            crate::plex::ServerId::UNSET, "fixture",
+            crate::plex::Origin::http("127.0.0.1", port as i32), "", "cid",
+        );
+        for (audio, subtitle, _, _) in cases {
+            let status = client.select_streams(&StreamSelection { part_id: 77, audio_stream_id: audio, subtitle_stream_id: subtitle });
+            assert_eq!(status, 200);
+        }
+        let requests = server.join().unwrap();
+        assert_eq!(requests.len(), cases.len(), "{requests:?}");
+        for (line, (_, _, present, absent)) in requests.iter().zip(cases) {
+            assert!(line.starts_with("PUT /library/parts/77?"), "{line}");
+            assert!(line.contains("allParts=1"), "{line}");
+            let query = line.split_once('?').unwrap().1.split_whitespace().next().unwrap();
+            for (key, value) in present {
+                assert!(query.split('&').any(|pair| pair == format!("{key}={value}")), "{key}={value} missing: {line}");
+            }
+            for key in absent {
+                assert!(!query.split('&').any(|pair| pair.starts_with(&format!("{key}="))), "{key} must be omitted: {line}");
+            }
+        }
     }
 
     #[test]

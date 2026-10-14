@@ -287,8 +287,12 @@ pub struct StreamSelection {
     pub part_id: i64,
     /// 0 = keep the server default (the PUT omits audioStreamID).
     pub audio_stream_id: i64,
-    /// Always sent: 0 = subtitles OFF (suppresses a default-selected burn), else burn this id.
-    pub subtitle_stream_id: i64,
+    /// `Some(0)` = subtitles OFF (suppresses a default-selected burn), `Some(id)` = select (burn)
+    /// this id, `None` = the PUT omits `subtitleStreamID` and says nothing about subtitles. The
+    /// spec marks the field optional (docs/plex-openapi.json, `PUT /library/parts/{partId}`); every
+    /// start and manual pick sends `Some`, and only an audio-only write-back on a Part with no
+    /// selected subtitle sends `None`, so it cannot create an explicit Off.
+    pub subtitle_stream_id: Option<i64>,
 }
 
 /// One agent-backed subtitle search (`GET /library/metadata/{rk}/subtitles`, `docs/pms-api.md` §8).

@@ -1225,6 +1225,22 @@ names the real selected id and "do not burn" is carried only by the transcode de
 sent `0` at every transcode start until 2026-10-06, which is how a freshly searched subtitle was
 lost at the next playback.
 
+**The track-memory write-back follows that rule and is UNMEASURED against a real server.** When a
+viewer's fresh play of an episode applied a remembered audio or subtitle on a DIRECT PLAY, the app
+sends one `PUT /library/parts/<part>?allParts=1[&audioStreamID=<A>][&subtitleStreamID=<S>]` on the
+landing's first decoded frame (`route::send_parked_write_back`), so the selection the server holds
+matches the screen. Nothing else changes: no watch state, no show- or account-level preference, no
+stream offset. `<S>` is the remembered track, `0` only for a remembered Off over a Part that has a
+subtitle selected; an audio-only write names the Part's own selected subtitle unchanged (which keeps
+a download alive) and omits the field when none is selected, so it never creates an explicit Off.
+Nothing is written for a declined memory, a fall-through pick, a retry or preview, a refused direct
+play, a transcode (its start PUT is the write) or a pick not on screen, and the subtitle selection
+is never moved for a Part that carries a downloaded or external subtitle. That the write lands on the VIEWER's
+own selection (not a household-wide one), that it spares another user's download, and that
+omitting `subtitleStreamID` leaves the subtitle selection alone all rest on the OpenAPI spec and
+the in-tree fake (`selection_pms`) alone; `tests/mock_pms.py`'s selection is global. A real-server
+Guest check is still owed.
+
 The same loss, second sequence (2026-10-06): a download installed and selected mid-playback, playback
 stopped and restarted two seconds later, and the start's `PUT .../parts/<part>?allParts=1&subtitleStreamID=<E>&audioStreamID=<A>`
 named the part's EMBEDDED English track `<E>` (re-picked from the page's pre-playback copy of the

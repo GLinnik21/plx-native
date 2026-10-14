@@ -288,8 +288,10 @@ pub fn all_leaves(&self, rating_key: &str) -> Option<MediaContainer>;
 /// GET /library/metadata/{rating_key}/related  → `.hub[]`
 pub fn related(&self, rating_key: &str) -> Option<MediaContainer>;
 
-/// PUT /library/parts/{part_id}?allParts=1&subtitleStreamID=…[&audioStreamID=…]
-/// The correct server-side stream selection (catalog #8). Returns the HTTP status.
+/// PUT /library/parts/{part_id}?allParts=1[&subtitleStreamID=…][&audioStreamID=…]
+/// The correct server-side stream selection (catalog #8). Returns the HTTP status. Both ids are
+/// optional on the wire: `subtitle_stream_id: None` omits the field (an audio-only write-back with
+/// no subtitle selected), `Some(0)` is Off.
 pub fn select_streams(&self, sel: &StreamSelection) -> i32;
 
 /// Direct-play target: http://host:port{part_key}?X-Plex-Token — for stream::http_open.
@@ -354,7 +356,7 @@ pub fn timeline(&self, report: &TimelineReport);
 pub struct StreamSelection {
     pub part_id: i64,
     pub audio_stream_id: i64,    // 0 = keep server default (omit from query)
-    pub subtitle_stream_id: i64, // 0 = subs OFF (always sent; 0 disables burn)
+    pub subtitle_stream_id: Option<i64>, // Some(0) = subs OFF, Some(id) = select, None = field omitted from the PUT (audio-only write-back)
     pub all_parts: bool,         // true → allParts=1
 }
 

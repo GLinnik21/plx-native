@@ -1296,6 +1296,10 @@ pub struct Plan {
     pub sub_pref_lang: Option<String>,
     /// the playing item's track store, fetched off-thread and installed by apply_plan
     pub playing: Option<plx_data::metadata::PlayingItem>,
+    /// `playing` came from a FRESH `GET /library/metadata/{rk}` this resolve made, not from
+    /// `ResolveEnv::cached_item` (a detail page that may predate an earlier write). The write-back
+    /// skips an `Id` half because "PMS already agrees" only on a fresh fetch (§4.8 W7).
+    pub playing_fresh: bool,
     /// The server's PRE-FLIGHT refusal (see [`refusal`]), when `/decision` said it can neither
     /// direct play nor convert this item. A plan carrying one has an EMPTY `url` by construction —
     /// that is how it fails, on the same path as every other unresolvable plan — and the sentence
@@ -1309,7 +1313,8 @@ pub struct Plan {
     /// **What a remembered choice applied here that the server does not have yet** (W1-W3): set
     /// only on the direct-play return of a fresh play (the one route that sends no selection PUT of
     /// its own), and only for a memory rung. `None` for a declined memory, a fall-through, a retry
-    /// and a preview. Nothing acts on it yet; the write-back does.
+    /// and a preview. `apply_plan` parks it ([`super::decision::ParkedWriteBack`]) and the first
+    /// decoded frame sends it (§4.8 W6).
     pub write_back: Option<WriteBack>,
     /// A remembered subtitle was chosen but this route shows none: a copy remux the app cannot draw.
     /// Q-TOP (b) burns only on a route that already re-encodes video, so no burn rides it. The menu
@@ -1410,6 +1415,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         .cached_item
         .clone()
         .or_else(|| plx_data::metadata::fetch_playing_item(env.sid, rk));
+    plan.playing_fresh = env.cached_item.is_none() && plan.playing.is_some();
     if let (Some(id), Some(item)) = (env.subtitle_override, plan.playing.as_mut()) {
         // The retry's explicit selection owns both embedded and sidecar restoration; a stale
         // server-side selection must not turn subtitles back on after the viewer chose Off.
@@ -2982,6 +2988,9 @@ fn embedded_subtitle_renderable(codec: &str) -> bool {
 ///     path: an item that starts as a transcode with an embedded PMS selection (or an account
 ///     rule's pick) still PUTs `subtitleStreamID=0`, which suppresses the burn and moves the
 ///     server's selection off that track for everyone, unless one of the burns below applies.
+///     A direct play is the other direction: a remembered pick it applies is written to the server
+///     once, on the landing's first decoded frame (`send_parked_write_back`, `track-memory-plan.md`
+///     §4.8).
 ///     Cold starts DO burn an embedded track through `burn_sub_sid`'s arms in `build_stream`: the
 ///     Burn shape's own (a subtitle to show, the intended audio one the TV cannot decode, a
 ///     direct-playable commentary the only stand-in, and a route that would otherwise have been the
@@ -3236,13 +3245,20 @@ fn write_back_of(
         None => SubWrite::Off,
     });
     let subtitle = subtitle.filter(|_| {
-        let external_on_part = playing.subs.iter().any(|s| s.external);
+        let external_on_part = external_on_part(playing);
         if external_on_part {
             crate::player::log("write-back: subtitle withheld (external on part)");
         }
         !external_on_part
     });
     (audio.is_some() || subtitle.is_some()).then_some(WriteBack { audio, subtitle })
+}
+
+/// W5's test: the Part carries an external stream (a sidecar or a download), so no subtitle half is
+/// written for it. One predicate for the resolve ([`write_back_of`]) and for the parked write that
+/// a later re-match re-points (`decision::repoint_parked_subtitle`).
+pub(super) fn external_on_part(playing: &plx_data::metadata::PlayingItem) -> bool {
+    playing.subs.iter().any(|s| s.external)
 }
 
 /// The one `track-memory:` line of a resolve: what each remembered half came to. `None` when the
