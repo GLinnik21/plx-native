@@ -5,7 +5,7 @@ use super::engine::{
     arm_live_clock_prime, drain_aq, feed_both_lanes, feed_sample, Engine, Source,
 };
 use super::shared::{HlsPauseCompletion, HlsPrimeKind, HlsSeekPause, Stage};
-use super::{ACB_OK, SHARED, TX};
+use super::{seek_mode, SeekMode, ACB_OK, SHARED, TX};
 use plx_base::task::MainThread;
 use std::os::raw::c_char;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
@@ -96,6 +96,13 @@ fn set_state(s: super::shared::PlaybackState) {
 /// by whichever of two paths wins a race with the stuck-watchdog, which log different lines.
 /// Counting either line therefore measures PMS latency, not merging — `coalesced=` measures
 /// merging directly, and both paths report it.
+/// Whether a direct-play seek in `mode` is a full fresh `Load` (`engine::reload_at`) rather than an
+/// in-place one. Only `Reload` is: `Segment` and `NativeSeek` (LG's public `Seek`, issue #568) both
+/// seek in place.
+pub(super) fn seek_reloads(mode: SeekMode) -> bool {
+    mode == SeekMode::Reload
+}
+
 fn take_coalesced() -> u32 {
     TX.seek_reqs.swap(0, Relaxed).saturating_sub(1)
 }
@@ -1479,7 +1486,9 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         && t >= 0
         && !crate::route::original_recovery_pending()
         && !crate::route::flight_outstanding() // see the SEEK_STUCK_MS branch's doc above
-        && !(eng.flushed && eng.rebase_pending) // coalesce: don't stack in-place seeks
+        // coalesce: don't stack in-place seeks. Not in `Reload` mode: a refused native `Seek`
+        // leaves the engine flushed and re-posts the target for exactly this branch to reload at.
+        && !(eng.flushed && eng.rebase_pending && !seek_reloads(seek_mode()))
         && eng.stage >= Stage::Playing
         && SHARED.duration_ns.load(Relaxed) > 0
         && (is_transcode || SHARED.file_size.load(Relaxed) > 0)
@@ -1500,16 +1509,17 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             start_transcode_seek_flight(ps, pa, t, false);
             return;
         }
-        // DIRECT-PLAY seek: Kodi IN-PLACE seek — flush + av_seek the demuxer, and
-        // (in feed_stream, on the first post-flush keyframe) setTimeToDecode + sendSegmentEvent
-        // to re-anchor the GStreamer segment WITHOUT a reload/decoder re-init (no A/V-resync
-        // glitch). A plain flush()+refeed with NO fresh segment left a STALE GStreamer segment
-        // → the HW sink stops draining ~48 s later → permanent BufferFull + "Playing error"
-        // (root-caused by decompiling libpipeline/lxvideosink; see engine::reload_at). Falls
-        // back to reload-per-seek if the pipeline isn't reachable (INPLACE_SEEK_OK cleared by
-        // feed_stream when sendSegmentEvent can't find it). reload_at REPLACES the ENGINE, so
-        // `eng` dangles after it: return immediately.
-        if !super::INPLACE_SEEK_OK.load(Relaxed) {
+        // DIRECT-PLAY seek: IN-PLACE — pause, av_seek the demuxer and, in feed_stream on the first
+        // post-seek keyframe, re-anchor the GStreamer segment WITHOUT a reload/decoder re-init (no
+        // A/V-resync glitch): `Segment` = flush here + setTimeToDecode + sendSegmentEvent (Kodi),
+        // `NativeSeek` = LG's public Seek(millis), which flushes by itself. A plain flush()+refeed
+        // with NO fresh segment left a STALE GStreamer segment → the HW sink stops draining ~48 s
+        // later → permanent BufferFull + "Playing error" (root-caused by decompiling
+        // libpipeline/lxvideosink; see engine::reload_at). `Reload` mode — selected for old-ABI
+        // libraries, or set by feed_stream when sendSegmentEvent can't find the pipeline or a
+        // native Seek is refused — is reload-per-seek. reload_at REPLACES the ENGINE, so `eng`
+        // dangles after it: return immediately.
+        if seek_reloads(seek_mode()) {
             crate::route::commit_user_seek();
             settle_reload(super::engine::reload_at(ps, pa, t), "direct seek reload");
             return;
@@ -1565,8 +1575,13 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // Advancing earlier would strand the live worker when PMS/native refused; advancing later
         // would let pre-seek ABR evidence publish while queues are already being reset.
         crate::route::commit_user_seek();
-        unsafe {
-            super::sink().flush(mt); // drop decoded/queued frames only after the clock is really held
+        // `NativeSeek` does not flush here: LG's public `Seek` flushes the pipeline itself when
+        // `feed_stream` calls it on the landed keyframe, and a `flush()` is itself a seek to 0, so
+        // flushing after (or instead of re-anchoring) leaves the stale segment at 0 (#568).
+        if seek_mode() != SeekMode::NativeSeek {
+            unsafe {
+                super::sink().flush(mt); // drop decoded/queued frames only after the clock is really held
+            }
         }
         drain_aq(eng);
         // in-place direct-play seek: publish the target and let the DEMUX THREAD av_seek_frame

@@ -136,7 +136,7 @@ pub fn seed_dev_track_names() {
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_long, c_uint};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering::Relaxed};
 
 pub static SHARED: Shared = Shared::new();
 pub static TX: Transport = Transport::new();
@@ -229,33 +229,73 @@ pub const ABR_WHY_RESPONSE_LIMITED: u8 = 13;
 /// less than the interruption. Decays on its own (`AbrPolicy::visible_switch_decay_ms`), so it is
 /// never a terminal state.
 pub const ABR_WHY_SWITCH_COST: u8 = 14;
-// Kodi in-place seek (flush + reopen + re-anchor the decode position + sendSegmentEvent, NO
-// reload/decoder re-init → no HDR-mode popup, no A/V-resync glitch). On webOS<11 (this 4.5)
-// setTimeToDecode returns 0, so feed_stream falls back to the content-info path
-// (loadSpi_getInfo + setContentInfo(ptsToDecode) — the same path the official app uses).
-// Cleared to false if the pipeline can't be reached (sf_send_segment == 0), which drops seeks
-// back to the robust reload-per-seek path.
-//
-// SCOPE: this is a **per-session probe, not a device-capability latch**, and
-// `engine::start_bufferfeed` re-arms it to true for every new session. What `sf_send_segment`
-// reports is whether `sf_pipeline()` could reach the CustomPipeline behind the CURRENT
-// StarfishMediaAPIs object: `SMP_READY()` (dispatch admission set after construction, and cleared
-// by destruction or quarantine) plus two non-null shared_ptr hops, `object+0x4c` -> `player+0x04`
-// (src/starfish.c). A cleared ready bit does not prove that object storage is unconstructed: the
-// safety path retains a quarantined object forever. Every one of these tests is a property of the
-// current dispatchable object, not a device capability. `sendSegmentEvent` itself returns
-// void, so a 0 here NEVER means "the segment event was rejected", only "there was nothing to
-// call it on" — a liveness/timing condition by construction.
-// Latching it for the process was therefore a bug with a very long tail: one teardown-window
-// race downgraded every later seek of every later item to a ~1 s reload until the app was
-// restarted. Re-arming per session is self-healing rather than oscillating, too: the fallback
-// the clear selects (`reload_at`) builds a fresh Starfish object, so the exact condition that
-// produced the 0 cannot survive into the session that re-arms — and if a fresh session really
-// can't reach its pipeline either, it re-clears after one seek and stays on the reload path.
-// It remains a static rather than an `Engine` field only because `pump.rs` reads it without an
-// Engine borrow at hand; its LIFETIME is the Engine's, since `start_bufferfeed` is the sole
-// constructor and the flag is only ever read while a session is live.
-pub static INPLACE_SEEK_OK: AtomicBool = AtomicBool::new(true);
+/// How a direct-play seek re-anchors the pipeline for THIS session (issue #568).
+///
+/// - [`Segment`](SeekMode::Segment) — Kodi's in-place seek: flush + reopen + `av_seek`, then on the
+///   first post-seek keyframe `setTimeToDecode` / `setContentInfo` + the private `sendSegmentEvent`.
+///   No reload, no decoder re-init, so no HDR-mode popup and no A/V-resync glitch. It reaches
+///   LG-private C++ objects through decompile-derived offsets (`src/starfish.c`'s `sf_pipeline`:
+///   object+0x4c, then player+0x04, plus `MEDIA_CUSTOM_CONTENT_INFO`'s `ptsToDecode`), proven on
+///   webOS 4.5 only, so it is used only where `inplace_layout_known` holds and the window is not
+///   `VP_EXPORTED`. On webOS<11 (this 4.5) `setTimeToDecode` returns 0, so `feed_stream` falls
+///   back to the content-info path (`loadSpi_getInfo` + `setContentInfo(ptsToDecode)`).
+/// - [`NativeSeek`](SeekMode::NativeSeek) — LG's PUBLIC `StarfishMediaAPIs::Seek(const char*)`
+///   (`_ZN17StarfishMediaAPIs4SeekEPKc`, present on every firmware 1.2 to 11.2): a flushing
+///   `gst_element_seek` whose segment starts at the millis passed. No private offset, no
+///   `flush()` (Seek flushes itself, and a `flush()` after it re-anchors the segment at 0 — the
+///   stale-segment stall), no decoder re-init. This is what `VP_EXPORTED` (webOS 5+) uses.
+/// - [`Reload`](SeekMode::Reload) — a full fresh Starfish `Load` per seek (`engine::reload_at`),
+///   built out of Load/Play alone and assuming no layout at all: the old-ABI (3.x) libraries, and
+///   the fallback both of the others drop to.
+///
+/// SCOPE: this is a **per-session mode, not a device-capability latch**, and
+/// `engine::start_bufferfeed` re-selects it for every new session. A downgrade to `Reload` (a
+/// `sendSegment` that found no pipeline, a refused `Seek`) is a fact about the StarfishMediaAPIs
+/// object, which `sf_load` constructs and teardown's `sf_destroy` destructs once per session — not
+/// about the TV. `sendSegmentEvent` itself returns void, so its 0 NEVER means "the segment event
+/// was rejected", only "there was nothing to call it on": a liveness/timing condition by
+/// construction. Latching it for the process was a bug with a very long tail (one teardown-window
+/// race downgraded every later seek of every later item to a ~1 s reload until restart).
+/// Re-selecting per session is self-healing rather than oscillating, too: `reload_at` builds a
+/// fresh Starfish object, so the condition that produced the downgrade cannot survive into the
+/// session that re-selects. It remains a static rather than an `Engine` field only because
+/// `pump.rs` reads it without an Engine borrow at hand; its LIFETIME is the Engine's, since
+/// `start_bufferfeed` is the sole constructor and the mode is only read while a session is live.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SeekMode {
+    Segment,
+    NativeSeek,
+    Reload,
+}
+
+impl SeekMode {
+    const fn to_u8(self) -> u8 {
+        match self {
+            SeekMode::Segment => 0,
+            SeekMode::NativeSeek => 1,
+            SeekMode::Reload => 2,
+        }
+    }
+    const fn from_u8(v: u8) -> SeekMode {
+        match v {
+            0 => SeekMode::Segment,
+            1 => SeekMode::NativeSeek,
+            _ => SeekMode::Reload,
+        }
+    }
+}
+
+static SEEK_MODE: AtomicU8 = AtomicU8::new(SeekMode::Segment.to_u8());
+
+/// This session's direct-play seek mode.
+pub fn seek_mode() -> SeekMode {
+    SeekMode::from_u8(SEEK_MODE.load(Relaxed))
+}
+
+/// Set this session's direct-play seek mode (`start_bufferfeed` selects it, `feed_stream` downgrades it).
+pub(crate) fn set_seek_mode(mode: SeekMode) {
+    SEEK_MODE.store(mode.to_u8(), Relaxed);
+}
 static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 
 // ---- API app.rs calls (were extern "C" fns in playback.h) ----
