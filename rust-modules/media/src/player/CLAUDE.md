@@ -291,10 +291,11 @@ something.
 - **A remembered track choice is written back to PMS on the first decoded frame, never at the
   landing.** `route::apply_plan` only PARKS it (`PlaybackSession.write_back`: installing a URL is not
   evidence the television accepted it, and a refused direct play's rescue PUTs its own selection);
-  `pump`'s `frames > 0` branch calls `route::send_parked_write_back`, which `take`s it (one write
-  per play), drops it when the route changed (another URL, any transcode) or the selection on screen
-  moved, and otherwise only QUEUES one `PUT /library/parts` on the serial selection worker, so the
-  frame never waits on the server. The queue stamps each request with the slot client's
+  `pump`'s `frames > 0` branch calls `route::on_decoded_frame`, whose last step is
+  `route::send_parked_write_back`: it `take`s the value (one write per play), drops it when
+  `parked_write_stale` says so (the route changed: another URL, any transcode; or the selection on
+  screen moved), and otherwise only QUEUES one `PUT /library/parts` on the serial selection worker,
+  so the frame never waits on the server. The queue stamps each request with the slot client's
   `(instance_gen, grant_epoch)` and the worker drops it when either moved: a profile switch re-tokens
   the SAME slot, so without the stamp a request queued under one profile would go out under the next
   (manual picks share the queue). A failed PUT is logged and never retried. "The selection on screen"
@@ -302,7 +303,22 @@ something.
   A subtitle change before the send that is not the viewer's pick (the first-frame container-name
   re-match, FO) re-points the parked write with `route::repoint_parked_subtitle` and queues no PUT
   of its own: a PUT of its own would move the selection under the parked write, which would then be
-  dropped, and would reach PMS without W5 and W7.
+  dropped, and would reach PMS without W5 and W7. That re-match is
+  `route::rematch_subtitle_with_names`, and the order of the `frames > 0` steps is load-bearing:
+  re-match FIRST (the demuxer's track names exist only once the file is open), `send_parked_write_back`
+  second, so one PUT names the remembered audio and the re-matched subtitle together. The order lives
+  in ONE function, `route::on_decoded_frame`, which the pump and the write-back tests both call, so
+  a swap there is graded (the two-step tests go red); do not re-inline the steps in `pump`.
+  `repoint_parked_subtitle` runs BEFORE the commit, because the commit changes `cur_sub_sid` under the
+  parked pair, and it asks the SAME staleness predicate the send asks (`parked_write_stale`) before it
+  touches the write: a write the send would drop (route replaced in place, an audio pick before the
+  first frame) is dropped there and logged, `repoint_parked_subtitle` returns `false`, and the re-match
+  commits with its own PUT, so the server always hears the subtitle on screen. That PUT, parked or not,
+  is W5-gated: over a Part that carries an external stream the re-match commit PUTs nothing (the
+  selection moving off a download makes PMS discard it). With nothing parked it otherwise commits with
+  its own PUT as before. It holds itself to the
+  subtitle the landing put on screen (`owed.landed_sub`, settled from the session by
+  `settle_landing_selection`), so it never replaces a remembered sidecar the restore drew.
 - **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine and the
   transport-pause contract are `player/lifecycle.rs`, which `app::lifecycle` re-exports; details in
   the `docs/agent-reference.md` gotchas): OS

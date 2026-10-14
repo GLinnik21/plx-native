@@ -1234,6 +1234,23 @@ fn http_open_with_timeouts(
             close_owned(hs);
             return Err(HttpOpenError::Aborted);
         }
+        // The caller's header block is request text, so it is checked before anything is dialled or
+        // sent ([`crate::net::headers`]): a line that ends a header or the head, or names one this
+        // function writes itself (`Host`, the installed `User-Agent`), is refused.
+        let extra_s: String = if extra.is_null() {
+            String::new()
+        } else {
+            CStr::from_ptr(extra).to_string_lossy().into_owned()
+        };
+        let caller_accept = match crate::net::headers::check_wire_block(&extra_s) {
+            Ok(lines) => crate::net::headers::names_header(&lines, "accept"),
+            Err(refusal) => {
+                plx_base::eventlog::log(&format!("stream: {method} request refused: {refusal}"));
+                close_owned(hs);
+                return Err(HttpOpenError::Transport);
+            }
+        };
+        let extra = extra_s.as_str();
         let reuse = can_reuse(hs, &host_s, port);
         if !reuse {
             close_owned(hs);
@@ -1255,6 +1272,7 @@ fn http_open_with_timeouts(
                 port,
                 &path_s,
                 extra,
+                caller_accept,
                 method,
                 open_deadline,
                 restore_media_timeouts,
@@ -1386,6 +1404,7 @@ fn http_open_with_timeouts(
             port,
             &path_s,
             extra,
+            caller_accept,
             method,
             open_deadline,
             restore_media_timeouts,
@@ -1400,27 +1419,25 @@ unsafe fn perform_http_request(
     host_s: &str,
     port: c_int,
     path_s: &str,
-    extra: *const c_char,
+    extra_s: &str,
+    caller_accept: bool,
     method: &str,
     open_deadline: Option<Instant>,
     restore_media_timeouts: bool,
     pacer: &mut Pacer,
 ) -> Result<(), HttpOpenError> {
-    // build + send the request (default Accept only if caller set none)
-    let extra_s: String = if extra.is_null() {
-        String::new()
-    } else {
-        CStr::from_ptr(extra).to_string_lossy().into_owned()
-    };
-    let accept = if extra_s.to_ascii_lowercase().contains("accept:") {
+    // build + send the request. `extra_s` passed `headers::check_wire_block` in the caller; the
+    // default Accept goes only when no line of it is named `Accept` (the NAME, not a substring: an
+    // `X-Accept:` line is not one).
+    let accept = if caller_accept {
         ""
     } else {
         "Accept: */*\r\n"
     };
     // `Host:` is the ORIGIN, never the address `connect_any` reached — see `host_header`.
     let host_hdr = host_header(host_s, port);
-    // The process's one name (`net::user_agent`), as the curl paths send it; none before boot.
-    let ua = crate::net::user_agent().map_or(String::new(), |ua| format!("User-Agent: {ua}\r\n"));
+    // The process's one name, as the curl paths send it (`net::apply_user_agent`); none before boot.
+    let ua = crate::net::user_agent_header_line();
     // HTTP/1.1 keep-alive is the default; omitting Connection lets the server reuse this
     // socket for the next HLS segment instead of forcing a fresh TCP handshake each time.
     let req = format!(
@@ -2232,7 +2249,7 @@ mod body_take_tests;
 
 #[cfg(test)]
 #[path = "stream_test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;
 
 #[cfg(test)]
 #[path = "stream_deadline_connect_tests.rs"]
@@ -2261,3 +2278,8 @@ mod checkpoint_tests;
 #[cfg(test)]
 #[path = "stream_user_agent_tests.rs"]
 mod user_agent_tests;
+
+/// The plaintext request head's bytes, pinned as they are before request validation.
+#[cfg(test)]
+#[path = "stream_wire_characterization_tests.rs"]
+mod wire_characterization_tests;

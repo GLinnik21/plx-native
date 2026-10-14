@@ -169,7 +169,7 @@ pub(super) fn open_host_against(host: &str, port: u16) -> (Box<HttpStream>, c_in
 
 /// A one-shot server that hands the REQUEST back to the test as well as answering it — the
 /// only way to grade a header we emit rather than one we parse.
-pub(super) fn one_shot_echo(
+pub(crate) fn one_shot_echo(
     bind: &str,
     resp: Vec<u8>,
 ) -> std::io::Result<(u16, std::thread::JoinHandle<Vec<u8>>)> {

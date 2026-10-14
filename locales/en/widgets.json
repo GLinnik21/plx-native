@@ -55,6 +55,10 @@
     "value": "Off",
     "description": "Label or formatted fact in the media track information sheet or track selector."
   },
+  "widgets.tracks.forced_only": {
+    "value": "Forced only",
+    "description": "Subtitles tab of the player's track selector. The row directly after Off: show only the forced subtitle in the language of the audio that is playing (the lines that translate foreign speech or on-screen text), or nothing when the episode has none. Remembered per show, like Off or a chosen track. While it is the choice, the row reads out the language it shows or looked for, so keep it short enough to share the line with a language name. Same words as the account-wide Forced Subtitles setting's short value (settings.audio.only_forced.short)."
+  },
   "widgets.tracks.mono": {
     "value": "Mono",
     "description": "Label or formatted fact in the media track information sheet or track selector."

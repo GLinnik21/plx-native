@@ -10,7 +10,7 @@
 
 use plx_data::metadata::lang_matches;
 use plx_plex::plex::session::prefs::{SubtitleMemo, TrackMemoryEntry};
-use super::track_memory::{match_audio, match_forced_only, match_subtitle, Miss};
+use super::track_memory::{blank_lang, match_audio, memory_show, memory_subtitle, Miss, SubMode, TrackContext};
 use plx_plex::plex::ServerId;
 use std::sync::atomic::Ordering;
 
@@ -1074,6 +1074,15 @@ pub struct ResolveEnv {
     /// A retry whose selection was KNOWN (`RetryContext::selection`) carries the viewer's explicit
     /// Off as well as a positive subtitle id; a retry with nothing landed leaves this `None`.
     pub subtitle_override: Option<i64>,
+    /// The subtitle MODE the retry's selection was in ([`SubMode`]), so a re-resolve of Forced only
+    /// stays Forced only: `subtitle_override` alone is a stream id, which cannot say so. `Track`
+    /// for a fresh play, and meaningful only beside an override.
+    pub sub_mode: SubMode,
+    /// The language Forced only fell back to on the landing this resolve replaces
+    /// ([`TrackContext`]'s `forced_lang`, read at the request). A retry of Forced only (`sub_mode`
+    /// beside an override) consults no memory, so the memo that supplied the language is not in the
+    /// resolve; this seeds the new landing's context with it. Read only for such a retry.
+    pub forced_lang: String,
     /// the loaded detail's streams when it IS this item — saves the worker a GET
     pub cached_item: Option<plx_data::metadata::PlayingItem>,
     /// The user's pick off the quality ladder, captured at the press like everything else here.
@@ -1298,7 +1307,7 @@ pub struct Plan {
     pub playing: Option<plx_data::metadata::PlayingItem>,
     /// `playing` came from a FRESH `GET /library/metadata/{rk}` this resolve made, not from
     /// `ResolveEnv::cached_item` (a detail page that may predate an earlier write). The write-back
-    /// skips an `Id` half because "PMS already agrees" only on a fresh fetch (§4.8 W7).
+    /// skips an `Id` half because "PMS already agrees" only on a fresh fetch (W7).
     pub playing_fresh: bool,
     /// The server's PRE-FLIGHT refusal (see [`refusal`]), when `/decision` said it can neither
     /// direct play nor convert this item. A plan carrying one has an EMPTY `url` by construction —
@@ -1314,7 +1323,7 @@ pub struct Plan {
     /// only on the direct-play return of a fresh play (the one route that sends no selection PUT of
     /// its own), and only for a memory rung. `None` for a declined memory, a fall-through, a retry
     /// and a preview. `apply_plan` parks it ([`super::decision::ParkedWriteBack`]) and the first
-    /// decoded frame sends it (§4.8 W6).
+    /// decoded frame sends it (W6).
     pub write_back: Option<WriteBack>,
     /// A remembered subtitle was chosen but this route shows none: a copy remux the app cannot draw.
     /// Q-TOP (b) burns only on a route that already re-encodes video, so no burn rides it. The menu
@@ -1322,11 +1331,17 @@ pub struct Plan {
     pub memory_note: bool,
     /// **The remembered sidecar this resolve chose to draw** (C5): the stream id of THIS episode's
     /// same-language external file that the profile's remembered external subtitle meant
-    /// ([`memory_subtitle`]). `None` for every other plan, including a remembered embedded track and
-    /// a server-selected sidecar (which the landing finds on its own). The landing restores it
+    /// ([`memory_subtitle`]). `None` for every other plan, including a remembered
+    /// embedded track and a server-selected sidecar (which the landing finds on its own). The landing restores it
     /// exactly as it restores the server's selection (`player::sidecar::restore_selection`: the key
     /// and codec are looked up in the playing item), on the routes where the app draws a sidecar.
     pub memory_sidecar: Option<i64>,
+    /// Which of the three subtitle states this landing is in ([`SubMode`]): Forced only when the
+    /// profile remembered it for the show (or a retry carried it), so an audio switch re-points it.
+    pub sub_mode: SubMode,
+    /// What the audio follow and the first-frame names re-match need of the playing item (they
+    /// cannot read the store), with the re-match owed on a direct play. `None` without an item.
+    pub track_ctx: Option<TrackContext>,
 }
 
 /// What a remembered choice would write to the server (`PUT /library/parts`): an audio stream id
@@ -1600,6 +1615,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // **What this profile remembered for the show** (track memory, the read path): only an episode
     // of a known show has any, and the env of a known retry carries none (`apply_retry`).
     let memory_entry = plan.playing.as_ref().and_then(|p| show_memory(&env.memory, p));
+    let memory_sub = memory_entry.and_then(|e| e.subtitle.as_ref());
     let audio_memory = memory_entry
         .and_then(|e| e.audio.as_ref())
         .map(|memo| match_audio(tracks, memo, |i| audio_is_commentary(tracks, i)));
@@ -1677,25 +1693,34 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         let account = account_subtitles.as_ref().map(|(language, mode, forced)| SubtitleLangPrefs {
             language: language.as_deref(), mode: *mode, forced: *forced,
         }).unwrap_or_default();
-        pick_subtitle(
-            p, &show_prefs, account, &audio_lang, env.subtitle_override,
-            memory_entry.and_then(|e| e.subtitle.as_ref()),
-        )
+        pick_subtitle(p, &show_prefs, account, &audio_lang, env.subtitle_override, memory_sub)
     });
     // The ladder's pick is an EMBEDDED track unless its ordinal is negative: a remembered sidecar
-    // (`memory_subtitle`). A sidecar is never a `sub_pick` below (it has no container ordinal): it
-    // takes the same road as a sidecar the server selected, `sidecar_id`.
+    // (`track_memory::memory_subtitle`). A sidecar is never a `sub_pick` below (it has no container
+    // ordinal): it takes the same road as a sidecar the server selected, `sidecar_id`.
     let ladder_pick = sub_decision.as_ref().and_then(|d| d.pick);
     let sub_pick = ladder_pick.filter(|&(_, ord)| ord >= 0);
     let memory_sidecar = ladder_pick.filter(|&(_, ord)| ord < 0).map(|(id, _)| id);
+    // FO: which of the three subtitle states this landing is in, and what the audio follow
+    // and the first-frame names re-match need of the item (neither can read the metadata store).
+    let consulted_memo = plan.playing.as_ref().and_then(|p| {
+        consulted_memory(p, env.subtitle_override, memory_sub)
+    });
+    plan.sub_mode = landed_sub_mode(sub_decision.as_ref(), consulted_memo, env);
+    plan.track_ctx = plan.playing.as_ref().map(|p| {
+        let mut ctx = TrackContext::of_landing(p, &audio_lang, consulted_memo);
+        if env.subtitle_override.is_some() && env.sub_mode == SubMode::ForcedOnly {
+            ctx.keep_forced_lang(&env.forced_lang);
+        }
+        ctx
+    });
     // The ONE `track-memory:` line of this resolve. What the route did with a remembered subtitle
     // (shown by a direct play, drawn, burned, or not shown on a copy remux) is known only once the
     // route is, so the line is spoken once the plan's subtitle is settled (after `memory_unshown`
     // below) or at the earlier forced-failure exit.
     let log_memory = |not_shown: bool| {
         if let Some(line) = memory_log(
-            audio_memory.as_ref(), tracks, memory_entry.and_then(|e| e.subtitle.as_ref()), sub_decision.as_ref(),
-            not_shown,
+            audio_memory.as_ref(), tracks, memory_sub, sub_decision.as_ref(), not_shown,
         ) {
             crate::player::log(&line);
         }
@@ -2103,7 +2128,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // — the ordinary enhanced remux drops it (M4). `enhancement_policy`'s `remux` half denies the
     // uncapped-remux flavour on exactly this route, same as it already denies direct play whenever
     // any enhancement is wanted.
-    let force_burn = matches!(route, Some(EnhancementRoute::Burn));
+    // `route` is what the enhancement WOULD take where it is offered, whether or not the viewer
+    // turned one on, so the forced re-encode is spent only when an audio param is actually asked for
+    // (`audio.any()`, the same condition `OriginalRecoveryPlan::force_burn_for` applies): with both
+    // toggles off the route stays the remux it was, rather than demoting a copy to a burn.
+    let force_burn = audio.any() && matches!(route, Some(EnhancementRoute::Burn));
     // Remembered for the fallback: a refused enhancement restores the route it decorated.
     let enhanced_from_direct = audio.any() && directplay;
     if audio.any() {
@@ -2204,6 +2233,16 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         // so the one where a remembered choice is something the server does not have yet (W3).
         // The enhancement fallback's direct play below follows that route's PUT and sets nothing.
         plan.write_back = write_back_of(env, rk, audio_memory.as_ref(), audio_sel.as_ref(), sub_decision.as_ref(), plan.playing.as_ref());
+        // Only a direct play has the demuxer's own track names (an MP4 part's PMS streams carry no
+        // `title`), and only once the file is open: the first decoded frame re-matches the
+        // remembered subtitle with them (`rematch_subtitle_with_names`). The plan's subtitle is only
+        // the placeholder for what the landing shows: `apply_plan` replaces it with the session's own
+        // once the sidecar restore is done (`decision::settle_landing_selection`), because the plan
+        // names no sidecar the restore puts on screen.
+        let landed_sub = plan.sub_sid;
+        if let Some(ctx) = plan.track_ctx.as_mut() {
+            ctx.owe_rematch(consulted_memo, landed_sub);
+        }
         return plan;
     }
     if forced {
@@ -2793,8 +2832,7 @@ fn pick_dp_audio_eligible(
 /// way, or an untagged / `und` side (an unlabelled copy is assumed to be a copy of the same
 /// audio — [`lang_matches`] alone matches nothing on an empty tag).
 fn same_audio_language(a: &str, b: &str) -> bool {
-    let blank = |l: &str| l.trim().is_empty() || l.trim().eq_ignore_ascii_case("und");
-    blank(a) || blank(b) || lang_matches(a, b) || lang_matches(b, a)
+    blank_lang(a) || blank_lang(b) || lang_matches(a, b) || lang_matches(b, a)
 }
 
 /// Whether track `i` is a commentary: titled one AND not the only track of its language (a film
@@ -2960,6 +2998,17 @@ fn reference_default(tracks: &[plx_data::metadata::Stream], default_acodec: &str
     })
 }
 
+/// The subtitle this app can draw from a resolve's own streams: embedded, keyed, and a codec the
+/// demuxer renders. What a remembered subtitle is matched against
+/// ([`memory_subtitle`]) and what every later re-match of it (`track_memory`) matches
+/// against, so the embedded candidates cannot disagree. One memo is wider at the resolve: a
+/// remembered EXTERNAL track also carries this file's renderable sidecars
+/// (`track_memory::memory_subtitle`), which a re-match over container names never sees; a landing
+/// that shows such a sidecar is therefore left alone by the re-match
+/// (`decision::rematch_subtitle_with_names`).
+pub(super) fn drawable_embedded(s: &plx_data::metadata::Stream) -> bool {
+    !s.external && s.id > 0 && embedded_subtitle_renderable(&s.codec)
+}
 
 /// Whether the client can render this embedded subtitle codec.
 fn embedded_subtitle_renderable(codec: &str) -> bool {
@@ -3009,14 +3058,14 @@ fn embedded_subtitle_renderable(codec: &str) -> bool {
 ///     rule's pick) still PUTs `subtitleStreamID=0`, which suppresses the burn and moves the
 ///     server's selection off that track for everyone, unless one of the burns below applies.
 ///     A direct play is the other direction: a remembered pick it applies is written to the server
-///     once, on the landing's first decoded frame (`send_parked_write_back`, `track-memory-plan.md`
-///     §4.8).
+///     once, on the landing's first decoded frame (`send_parked_write_back`, WB;
+///     `media/src/player/CLAUDE.md`).
 ///     Cold starts DO burn an embedded track through `burn_sub_sid`'s arms in `build_stream`: the
 ///     Burn shape's own (a subtitle to show, the intended audio one the TV cannot decode, a
 ///     direct-playable commentary the only stand-in, and a route that would otherwise have been the
 ///     plain remux: `burn_for_audio`), M7's forced burn (`force_burn`: the audio enhancement plus
-///     an embedded subtitle), and a REMEMBERED pick (Q-TOP (b), `track-memory-plan.md` §4.6) on a
-///     route that already re-encodes video (`reencodes_video`: a fixed rung, a relay, HLS, a Dolby
+///     an embedded subtitle), and a REMEMBERED pick (Q-TOP (b)) on a route that already re-encodes
+///     video (`reencodes_video`: a fixed rung, a relay, HLS, a Dolby
 ///     Vision base layer, a forced burn): the overlay rides an encode that runs anyway. The memory
 ///     rung itself never asks for a re-encode; on a copy remux it is not shown, `Plan::memory_note`
 ///     is set for the Subtitles menu to say why, and the log says `not shown (copy remux)`. (The
@@ -3131,13 +3180,12 @@ fn pick_dp_subtitle_account(
     })
 }
 
-/// Which rung of the subtitle ladder decided what is on screen ([`pick_subtitle`]). Only
-/// [`Memory`](Self::Memory) is new; the rest name today's sources.
+/// Which rung of the subtitle ladder decided what is on screen ([`pick_subtitle`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SubPickSource {
     /// Rung 1: this playback's own pick (a known retry).
     Override,
-    /// Rungs 3, 3a and 3b: what the profile remembered for the show.
+    /// Rung 3: what the profile remembered for the show (a track, Off, or Forced only).
     Memory,
     /// Rungs 2 and 4: what PMS has selected on the part (a sidecar the landing restores itself, or
     /// an embedded track).
@@ -3165,48 +3213,16 @@ pub(super) struct SubDecision {
 fn show_memory<'a>(
     memory: &'a [TrackMemoryEntry], playing: &plx_data::metadata::PlayingItem,
 ) -> Option<&'a TrackMemoryEntry> {
-    (playing.kind == "episode" && !playing.show_rk.is_empty())
-        .then(|| memory.iter().find(|e| e.show_rk == playing.show_rk))
-        .flatten()
-}
-
-/// What a remembered subtitle half means for this file: the track to draw (`None` is nothing: Off,
-/// or Forced only with no forced track) or the hard constraint that no track satisfied.
-///
-/// A remembered EMBEDDED track is matched against this file's embedded tracks. A remembered
-/// EXTERNAL one (`SubtitleTrackMemo::external`) is also matched against this file's sidecars the app
-/// can draw (`Stream::sidecar_renderable`), and a sidecar of the same language and `forced`-ness
-/// wins over an embedded track of that language ([`match_subtitle`]'s last soft key): the file
-/// differs per episode, so the memo says "an English sidecar" and THIS episode's own file is the
-/// answer. Its pick carries `sub_render_ordinal`'s negative ordinal, which [`build_stream`] routes
-/// as a sidecar (never as an embedded `sub_pick`). Forced only stays embedded: its matcher is not
-/// asked to carry a sidecar.
-fn memory_subtitle(
-    subs: &[plx_data::metadata::Stream], memo: &SubtitleMemo, audio_lang: &str,
-) -> Result<Option<(i64, i32)>, Miss> {
-    let drawable = |s: &plx_data::metadata::Stream| !s.external && s.id > 0 && embedded_subtitle_renderable(&s.codec);
-    let pick = |i: usize| {
-        let ord = plx_data::metadata::sub_render_ordinal(subs, i);
-        (ord >= 0 || subs[i].external).then_some((subs[i].id, ord))
-    };
-    match memo {
-        SubtitleMemo::Off => Ok(None),
-        SubtitleMemo::ForcedOnly { lang } => Ok(match_forced_only(subs, audio_lang, lang, drawable).and_then(pick)),
-        SubtitleMemo::Track(track) => {
-            let carries = |s: &plx_data::metadata::Stream| {
-                drawable(s) || (track.external && s.id > 0 && s.sidecar_renderable())
-            };
-            match_subtitle(subs, track, carries).and_then(|i| pick(i).map(Some).ok_or("unusable"))
-        }
-    }
+    memory_show(&playing.kind, &playing.show_rk).and_then(|show| memory.iter().find(|e| e.show_rk == show))
 }
 
 /// **The subtitle ladder**, read top-down; a rung applies when its record exists and matches, and
-/// otherwise falls through to the next. Never to Off, except a remembered Off (absolute) and Forced
-/// only (the forced track or nothing).
+/// otherwise falls through to the next. Never to Off, except a remembered Off and Forced only (the
+/// forced track or nothing): those two never fall through themselves, but they are memory like a
+/// remembered track, so rungs 1 and 2 outrank all three alike.
 ///   1. this playback's own pick (`override_id`, a known retry);
 ///   2. a subtitle the SERVER has selected and the app draws itself
-///      (`metadata::server_selected_sidecar`): memory is not consulted, and the result is today's;
+///      (`metadata::server_selected_sidecar`): memory is not consulted, and the server's pick stands;
 ///   3. what the profile remembered for the show: a track (`track_memory::match_subtitle`; a
 ///      remembered sidecar picks this file's same-language sidecar, see [`memory_subtitle`]), Off, or
 ///      Forced only (`track_memory::match_forced_only`, judged by the language of the audio that
@@ -3229,8 +3245,7 @@ pub(super) fn pick_subtitle(
         return SubDecision { pick, source: SubPickSource::Override, miss: None };
     }
     let mut miss = None;
-    let memory = memory.filter(|_| plx_data::metadata::server_selected_sidecar(item).is_none());
-    if let Some(memo) = memory {
+    if let Some(memo) = consulted_memory(item, override_id, memory) {
         match memory_subtitle(subs, memo, audio_lang) {
             Ok(pick) => return SubDecision { pick, source: SubPickSource::Memory, miss: None },
             Err(reason) => miss = Some(reason),
@@ -3246,6 +3261,30 @@ pub(super) fn pick_subtitle(
     SubDecision { pick: pick_dp_subtitle_account(subs, prefs, account, audio_lang), source, miss }
 }
 
+/// The remembered subtitle [`pick_subtitle`] actually consulted: none for this playback's own pick
+/// (a retry) or when the server has a sidecar selected, which outranks memory. What a later
+/// re-match may hold the landing to.
+fn consulted_memory<'a>(
+    item: &plx_data::metadata::PlayingItem, override_id: Option<i64>, memo: Option<&'a SubtitleMemo>,
+) -> Option<&'a SubtitleMemo> {
+    memo.filter(|_| override_id.is_none() && plx_data::metadata::server_selected_sidecar(item).is_none())
+}
+
+/// **Which of the three subtitle states a landing is in** ([`SubMode`]). A retry carries the mode
+/// its selection was in (`env.sub_mode`: the override is a stream id, which cannot say Forced only);
+/// otherwise Forced only exactly when the remembered Forced only decided the landing, else the
+/// state the picked stream itself implies.
+fn landed_sub_mode(decision: Option<&SubDecision>, consulted: Option<&SubtitleMemo>, env: &ResolveEnv) -> SubMode {
+    let of_pick = || SubMode::of_stream(decision.and_then(|d| d.pick).map_or(0, |(id, _)| id));
+    if env.subtitle_override.is_some() {
+        return if env.sub_mode == SubMode::ForcedOnly { SubMode::ForcedOnly } else { of_pick() };
+    }
+    match (decision, consulted) {
+        (Some(d), Some(SubtitleMemo::ForcedOnly { .. })) if d.source == SubPickSource::Memory => SubMode::ForcedOnly,
+        _ => of_pick(),
+    }
+}
+
 /// The stream id of a remembered subtitle the ladder chose to draw.
 fn memory_subtitle_id(decision: Option<&SubDecision>) -> Option<i64> {
     decision.filter(|d| d.source == SubPickSource::Memory).and_then(|d| d.pick).map(|(id, _)| id)
@@ -3255,12 +3294,12 @@ fn memory_subtitle_id(decision: Option<&SubDecision>) -> Option<i64> {
 /// choice that were APPLIED and are what is on screen, on a fresh play only.
 ///   - audio: the remembered track is the one the direct play carries (a sibling or stand-in
 ///     chosen for its codec is not the choice, and writing it would record the stand-in);
-///   - subtitle: rung 3, 3a or 3b decided (`Id`, or `Off` when nothing is to show), and the Part
-///     carries NO external stream at all. An external may be another Home user's download (U24), or
-///     the viewer's own selected one that rung 2 cannot take (`server_selected_sidecar` wants a
-///     renderable sidecar: a PGS `.sup`, a VobSub, a format outside the allow-list, a keyless
-///     stream, all of which fall through to memory), and moving the selection off a download makes
-///     PMS discard it (W5).
+///   - subtitle: the remembered subtitle (rung 3: a track, Off or Forced only) decided (`Id`, or
+///     `Off` when nothing is to show), and the Part carries NO external stream at all. An external
+///     may be another Home user's download (U24), or the viewer's own selected one that rung 2
+///     cannot take (`server_selected_sidecar` wants a renderable sidecar: a PGS `.sup`, a VobSub, a
+///     format outside the allow-list, a keyless stream, all of which fall through to memory), and
+///     moving the selection off a download makes PMS discard it (W5).
 ///
 /// A declined memory, a fall-through, a retry and a preview write nothing.
 fn write_back_of(
@@ -3279,7 +3318,7 @@ fn write_back_of(
         None => SubWrite::Off,
     });
     let subtitle = subtitle.filter(|_| {
-        let external_on_part = external_on_part(playing);
+        let external_on_part = external_on_part(&playing.subs);
         if external_on_part {
             crate::player::log("write-back: subtitle withheld (external on part)");
         }
@@ -3290,15 +3329,16 @@ fn write_back_of(
 
 /// W5's test: the Part carries an external stream (a sidecar or a download), so no subtitle half is
 /// written for it. One predicate for the resolve ([`write_back_of`]) and for the parked write that
-/// a later re-match re-points (`decision::repoint_parked_subtitle`).
-pub(super) fn external_on_part(playing: &plx_data::metadata::PlayingItem) -> bool {
-    playing.subs.iter().any(|s| s.external)
+/// a later re-match re-points (`decision::repoint_parked_subtitle`), and for the re-match's own commit
+/// when nothing is parked (`decision::rematch_subtitle_with_names`).
+pub(super) fn external_on_part(subs: &[plx_data::metadata::Stream]) -> bool {
+    subs.iter().any(|s| s.external)
 }
 
 /// The one `track-memory:` line of a resolve: what each remembered half came to. `None` when the
 /// profile remembered nothing for this show.
 ///
-/// The grammar is the plan's (`track-memory-plan.md` §4.2 item 6), the VERB first and the half after
+/// The grammar is fixed, the VERB first and the half after
 /// it, because the Device step, FO's check and the Q-TOP (b) tests search for those substrings:
 /// `applied audio (track N, lang)`, `applied subtitle (track N)`, `applied off`,
 /// `applied forced-only (track N)` / `applied forced-only:none`, `no match (<reason>) <half>`,

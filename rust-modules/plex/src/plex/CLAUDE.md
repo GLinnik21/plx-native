@@ -523,9 +523,36 @@ a dead source is **absent** from Home and states itself in its own library secti
   (`TrackCommit`'s `memo`), `route::commit_audio_pick` / `commit_subtitle_pick` call `route::remember`
   when the route accepted the pick, and nothing else writes it (a movie, an unseated boot, an
   automatic choice and a harness setup commit remember nothing; the harness's
-  `plxnative-trackmemory=clear` removes entries through the same door). A remembered Off beats the
+  `plxnative-trackmemory=clear` removes entries through the same door, and `=fill[:N]` writes N worst-case
+  shows through it to read the DB8 write cost at the budget). A remembered Off beats the
   account's rule and PMS's embedded selection, but not a server-selected sidecar the app can draw
   (`plan.rs` `pick_subtitle` withholds the memory from the ladder while the item has one).
+  The subtitle half is one of THREE states (`SubtitleMemo`: `Track`, `Off`, `ForcedOnly { lang }`);
+  **Forced only** is the Subtitles menu's second row (`TrackCommit::SubtitleForcedOnly`,
+  `route::commit_forced_only_pick`), written on an explicit change of mode and never on an OK on the
+  row that already holds it (which recommits what is on screen), with the drawn track's language
+  (else the playing audio's, else the one the session fell back to). It ranks exactly as a remembered
+  Off does: a retry's own pick and a server-selected sidecar the app can draw still outrank it (the
+  withholding in `pick_subtitle` is of the memory, whichever of the three it is), and below those the
+  next episode shows its forced, non-commentary, renderable subtitle in the
+  language of the audio that PLAYS (`route::track_memory::match_forced_only`), or nothing, and never
+  falls to a full track or to the lower rungs. `PlaybackSession::sub_mode` (`SubMode`) holds which
+  state the playback is in, because a stream id cannot say it (a retry carries it in
+  `RetryContext::sub_mode`, and the language the mode falls back to for audio that names none in
+  `ResolveEnv::forced_lang`, since a retry consults no memory). Two derived commits keep the mode true, both through the one commit every
+  pick goes through and neither writing memory: a new audio re-points it (`commit_audio_selection`),
+  and, on a direct play, the first decoded frame re-matches the remembered subtitle once with the
+  container's track names (`route::rematch_subtitle_with_names`, called from `player/pump.rs`; an MP4
+  part's PMS streams carry no `title`, so only the demuxer's tag says which track is forced). That
+  re-match runs BEFORE the write-back's send on the same frame: while a write-back is parked it
+  re-points the parked write's subtitle half (`route::repoint_parked_subtitle`, W5 and W7 apply to the
+  re-matched id) and queues no PUT of its own, so the server hears one write that names the remembered
+  audio and the re-matched subtitle; with nothing parked, or a parked write that went stale first
+  (`decision::parked_write_stale`: the route was replaced, the viewer picked), it PUTs like any subtitle
+  commit, except that over a Part with an external stream (W5) it PUTs nothing. It never
+  replaces a sidecar on screen, and compares with what the landing SHOWS (read from the session after
+  the sidecar restore, `settle_landing_selection`), not with the plan, which names no sidecar. Leaving
+  Forced only is a remembered change even onto the very track it drew.
   `subtitle_offsets` is account-bound as well (since SO) under different rules: a record without a
   stamp is read as the signed-in account's own and is stamped at the list's next write
   (`MemoryEntry::ADOPTS_UNSTAMPED`), at the plex list a write with no account token is still
