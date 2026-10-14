@@ -377,7 +377,8 @@ fn the_token_in_the_original_url_never_reaches_a_cross_host_redirect_target_but_
     let _serial = plx_base::testlock::serial();
     if !curl_ready() { return; }
     // Boot's install, which the player reads rather than naming the client itself.
-    plx_net::net::set_user_agent(plx_plex::plex::identity::user_agent());
+    plx_net::net::set_user_agent(plx_plex::plex::identity::user_agent())
+        .expect("the client's own name");
     // One CA for both hosts: the household's `*.plex.direct` name and the CDN's address.
     let cert = leaf(&[PLEX_DIRECT, "127.0.0.1"]);
     let _ca = TestCaGuard::install(&cert.pem, "redirect-token");

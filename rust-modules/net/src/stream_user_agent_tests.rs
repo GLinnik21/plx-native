@@ -11,7 +11,7 @@ use super::test_support::*;
 #[test]
 fn a_plaintext_request_sends_the_installed_user_agent() {
     const INSTALLED: &str = "PlxNativeTest/1.2.3 (stream)";
-    crate::net::set_user_agent(INSTALLED.to_string());
+    crate::net::set_user_agent(INSTALLED.to_string()).expect("a plain value");
     let (port, h) = one_shot_echo(
         "127.0.0.1:0",
         b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec(),

@@ -400,23 +400,61 @@ pub fn threaded_tls_ready() -> bool {
 /// that is the Plex layer's identity (`plex::identity::user_agent`) — so boot hands it over once,
 /// with [`set_user_agent`] before [`global_init`], instead of this layer naming the one above it.
 /// Unset (a host test that never booted) no `User-Agent` is set, which is all libcurl sends by
-/// default.
-static USER_AGENT: OnceLock<String> = OnceLock::new();
+/// default. This file is the one place that applies it ([`apply_user_agent`] to a curl handle,
+/// [`user_agent_header_line`] to hand-built request text), and `ci/check-user-agent.py` keeps it so.
+static USER_AGENT: OnceLock<UserAgent> = OnceLock::new();
 
-/// Install the process's `User-Agent`. The first call wins; it is one value per process.
-pub fn set_user_agent(user_agent: String) {
+/// A value that passed [`UserAgent::new`]: the text, and the same text as the `CString` curl takes.
+/// It lives for the process, so the pointer handed to curl never outlives its string.
+struct UserAgent {
+    text: String,
+    c_string: CString,
+}
+
+/// A `User-Agent` holding a control character: CR or LF would end the header and start another in
+/// the plaintext request, and a NUL ends the C string curl reads.
+#[derive(Debug, PartialEq, Eq)]
+pub struct InvalidUserAgent;
+
+impl UserAgent {
+    fn new(text: String) -> Result<Self, InvalidUserAgent> {
+        if text.chars().any(char::is_control) {
+            return Err(InvalidUserAgent);
+        }
+        let c_string = CString::new(text.as_str()).map_err(|_| InvalidUserAgent)?;
+        Ok(UserAgent { text, c_string })
+    }
+}
+
+/// Install the process's `User-Agent`. The first call wins; it is one value per process. A value
+/// holding any control character (CR, LF, NUL, tab, ...) is refused and nothing is installed, so
+/// no request path is handed a value that injects a header or works on one path and not another.
+#[must_use = "a refused User-Agent leaves none installed"]
+pub fn set_user_agent(user_agent: String) -> Result<(), InvalidUserAgent> {
+    let user_agent = UserAgent::new(user_agent)?;
     let _ = USER_AGENT.set(user_agent);
+    Ok(())
 }
 
-/// The installed `User-Agent`, `None` while none is installed. Read it rather than naming the
-/// client again, so the process sends one name whichever path a request takes.
+/// The installed `User-Agent`, `None` while none is installed.
 pub fn user_agent() -> Option<&'static str> {
-    USER_AGENT.get().map(String::as_str)
+    USER_AGENT.get().map(|ua| ua.text.as_str())
 }
 
-/// The installed `User-Agent` as the `CString` curl takes: `Ok(None)` while none is installed.
-fn user_agent_c() -> Result<Option<CString>, std::ffi::NulError> {
-    user_agent().map(CString::new).transpose()
+/// Set the installed `User-Agent` on a curl easy handle; nothing while none is installed.
+///
+/// # Safety
+/// `easy` is a live easy handle of the television's libcurl.
+pub unsafe fn apply_user_agent(easy: *mut CURL) {
+    if let Some(ua) = USER_AGENT.get() {
+        curl_easy_setopt_ptr(easy, CURLOPT_USERAGENT, ua.c_string.as_ptr() as *const c_void);
+    }
+}
+
+/// The installed `User-Agent` as a request-header line, CRLF included, for the plaintext path that
+/// builds its request text by hand; empty while none is installed.
+pub fn user_agent_header_line() -> String {
+    user_agent().map_or(String::new(), |ua| format!("User-Agent: {ua}\r\n"))
 }
 
 /// One-time process init (call on the main thread at boot before any request; curl's implicit
@@ -1551,9 +1589,6 @@ fn request_tls_evidence(
     if !available() {
         return Err(RequestError::Transport.into());
     }
-    // Read only past that gate: boot installs the User-Agent before `global_init` publishes
-    // `CURL_OK` (`app::boot::construct`), so a request that gets this far always finds it.
-    let ua = user_agent_c().map_err(|_| RequestError::Transport)?;
     // A legacy OpenSSL whose callback API is unexpectedly hidden can still support HTTPS control,
     // but only one easy request at a time. The normal installed/existing-callback path never takes
     // this mutex, and curlio remains disabled in the degraded state.
@@ -1745,9 +1780,9 @@ fn request_tls_evidence(
             }
             curl_easy_setopt_long(easy.0, CURLOPT_LOW_SPEED_LIMIT, t.low_speed_bps);
             curl_easy_setopt_long(easy.0, CURLOPT_LOW_SPEED_TIME, t.low_speed_s);
-            if let Some(ua) = &ua {
-                curl_easy_setopt_ptr(easy.0, CURLOPT_USERAGENT, ua.as_ptr() as *const c_void);
-            }
+            // Boot installs the User-Agent before `global_init` publishes `CURL_OK`
+            // (`app::boot::construct`), so a request past the `available()` gate finds it.
+            apply_user_agent(easy.0);
 
             // request headers — keep the CStrings alive until after perform.
             let mut slist = HeaderList(ptr::null_mut());
@@ -3761,6 +3796,11 @@ mod request_tests {
 #[cfg(test)]
 #[path = "net_roots_tests.rs"]
 mod roots_tests;
+
+/// The `User-Agent` the transport installs: one header value, whichever path sends it.
+#[cfg(test)]
+#[path = "net_user_agent_tests.rs"]
+mod user_agent_tests;
 
 /// The latch's clock, through the `*_at` seam: it lapses after [`keypin::LATCH`] and a later key-mode
 /// success inside the interval does not slide it.
