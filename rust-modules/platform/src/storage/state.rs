@@ -166,8 +166,10 @@ pub struct AuthContext {
 /// learned public key of each server the account reached (`plex::session::Session::server_key_pins`);
 /// `plaintext_consent` is that account's answer, per server, to "Connect without encryption?"
 /// (`plex::session::Session::plaintext_consent`), which carries an account fingerprint and a
-/// `machineIdentifier`.
-pub const ACCOUNT_BOUND_PREFERENCES: &[&str] = &["server_key_pins", "plaintext_consent"];
+/// `machineIdentifier`; `track_memory` is each profile's remembered audio and subtitle picks per
+/// show (`plex::session::prefs::TrackMemoryEntry`), which name a `machineIdentifier` and a show
+/// and belong to the account that watched it.
+pub const ACCOUNT_BOUND_PREFERENCES: &[&str] = &["server_key_pins", "plaintext_consent", "track_memory"];
 
 #[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type", deny_unknown_fields)]
@@ -771,39 +773,31 @@ fn valid_digest(digest: &str) -> bool {
 /// Logical JSON bytes count UTF-8 content before escaping, with JSON structural overhead.
 /// The bound includes metadata, public data, the protected envelope, imports, and the ledger.
 fn check_logical_size(value: &Value) -> Result<(), StateError> {
-    fn count(value: &Value, left: &mut usize) -> Result<(), StateError> {
-        fn consume(left: &mut usize, n: usize) -> Result<(), StateError> {
-            *left = left.checked_sub(n).ok_or(StateError::LogicalTooLarge)?;
-            Ok(())
+    if logical_size(value) > MAX_LOGICAL_BYTES {
+        return Err(StateError::LogicalTooLarge);
+    }
+    Ok(())
+}
+
+/// **The counting rule behind [`MAX_LOGICAL_BYTES`]**, exported so a writer can size a payload
+/// before it asks for the write (`plex::session::persistence`'s document guard): the bytes of
+/// every string's UTF-8 content (no escapes), `null`/`true`/`false` as 4/4/5, a number as its
+/// decimal text, 2 for each pair of brackets or braces with a comma between members, and
+/// `"key":` as the key's length plus 3.
+pub fn logical_size(value: &Value) -> usize {
+    match value {
+        Value::Null => 4,
+        Value::Bool(value) => if *value { 4 } else { 5 },
+        Value::Number(value) => value.to_string().len(),
+        Value::String(value) => 2 + value.len(),
+        Value::Array(values) => {
+            2 + values.len().saturating_sub(1) + values.iter().map(logical_size).sum::<usize>()
         }
-        match value {
-            Value::Null => consume(left, 4),
-            Value::Bool(value) => consume(left, if *value { 4 } else { 5 }),
-            Value::Number(value) => consume(left, value.to_string().len()),
-            Value::String(value) => {
-                consume(left, 2)?;
-                consume(left, value.len())
-            }
-            Value::Array(values) => {
-                consume(left, 2 + values.len().saturating_sub(1))?;
-                for value in values {
-                    count(value, left)?;
-                }
-                Ok(())
-            }
-            Value::Object(values) => {
-                consume(left, 2 + values.len().saturating_sub(1))?;
-                for (key, value) in values {
-                    consume(left, 3)?;
-                    consume(left, key.len())?;
-                    count(value, left)?;
-                }
-                Ok(())
-            }
+        Value::Object(values) => {
+            2 + values.len().saturating_sub(1)
+                + values.iter().map(|(key, value)| 3 + key.len() + logical_size(value)).sum::<usize>()
         }
     }
-    let mut remaining = MAX_LOGICAL_BYTES;
-    count(value, &mut remaining)
 }
 
 fn sorted_json(value: Value) -> Value {
@@ -1811,6 +1805,55 @@ mod tests {
         assert!(active.public.scopes.is_null());
         assert!(active.public.ids.is_null());
         assert_eq!(active.migrations.consent, cleared.migrations.consent);
+    }
+
+    /// The exported counter is the cap's own rule, value by value, and the cap is exactly "the
+    /// counter exceeds `MAX_LOGICAL_BYTES`" (a writer that sizes a payload with it agrees with
+    /// `encode`).
+    #[test]
+    fn logical_size_is_the_documented_counting_rule_and_the_cap_is_that_count() {
+        assert_eq!(logical_size(&json!(null)), 4);
+        assert_eq!(logical_size(&json!(true)), 4);
+        assert_eq!(logical_size(&json!(false)), 5);
+        assert_eq!(logical_size(&json!(-120)), 4);
+        assert_eq!(logical_size(&json!("h\u{e9}llo")), 2 + "h\u{e9}llo".len());
+        assert_eq!(logical_size(&json!([])), 2);
+        assert_eq!(logical_size(&json!([1, 22, 333])), 2 + 2 + 1 + 2 + 3);
+        assert_eq!(logical_size(&json!({})), 2);
+        // `{"ab":1,"c":true}`: the braces, one comma, then `"ab":` + 1 and `"c":` + true.
+        assert_eq!(logical_size(&json!({"ab": 1, "c": true})), 2 + 1 + (3 + 2 + 1) + (3 + 1 + 4));
+        let mut state = initial();
+        state.auth_envelope = Some(String::new());
+        let overhead = logical_size(&serde_json::to_value(&state).unwrap());
+        state.auth_envelope = Some("a".repeat(MAX_LOGICAL_BYTES - overhead));
+        assert_eq!(logical_size(&serde_json::to_value(&state).unwrap()), MAX_LOGICAL_BYTES);
+        assert!(state.encode().is_ok());
+        state.auth_envelope.as_mut().unwrap().push('a');
+        assert_eq!(logical_size(&serde_json::to_value(&state).unwrap()), MAX_LOGICAL_BYTES + 1);
+        assert_eq!(state.encode().unwrap_err(), StateError::LogicalTooLarge);
+    }
+
+    /// Sign-out forgets a profile's track memory with the other account-bound preferences: the
+    /// list names a server and a show, and belongs to the account that watched it.
+    #[test]
+    fn clear_tenure_forgets_the_track_memory() {
+        assert!(ACCOUNT_BOUND_PREFERENCES.contains(&"track_memory"));
+        let state = initial();
+        let setting = Mutation::UpdatePreferences {
+            public: PublicPayload {
+                preferences: json!({
+                    "language": "be", "subtitle_offsets": [{"user": "", "items": []}],
+                    "track_memory": [{"user": "", "account": "0011223344556677", "items": [
+                        {"machine_id": "m", "show_rk": "42", "audio": {"lang": "eng"}}]}],
+                }),
+                ..PublicPayload::default()
+            },
+        };
+        let (state, _) = state.apply(&operation(&state, 2, setting)).unwrap();
+        let clear = Mutation::ClearTenure { auth_generation: generation(4) };
+        let (cleared, _) = state.apply(&operation(&state, 3, clear)).unwrap();
+        assert_eq!(cleared.public.preferences,
+            json!({"language": "be", "subtitle_offsets": [{"user": "", "items": []}]}));
     }
 }
 

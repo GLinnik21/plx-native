@@ -107,7 +107,7 @@ fn stored_public(transport: &mut dyn client::Transport) -> state::PublicPayload 
 
 /// **Sign-out on DB8 keeps every INSTALL key and, today, also the per-profile keys that are not
 /// named in `ACCOUNT_BOUND_PREFERENCES`.** `ClearTenure` keeps `public.preferences` whole except
-/// `server_key_pins` and `plaintext_consent`, and resets every other slot of the public payload
+/// `server_key_pins`, `plaintext_consent` and `track_memory`, and resets every other slot of the public payload
 /// (`client_id`, `pins`, `recents`, ...). So `subtitle_offsets`, `library_sorts` and
 /// `last_library` DO survive a sign-out today. Pinned as it is; the SO PR flips these three.
 #[test]
@@ -460,7 +460,10 @@ fn tier1_legacy_file_extra_top_level_keys_leave_credentials_and_todays_keys_inta
         let live: Session = serde_json::from_value(file).expect("main reads it too");
         assert_eq!(live.account_token, original.account_token, "{case}");
         assert_eq!(live.subtitle_offset_for("u-7", MACHINE, "rk-1"), Some(1_500), "{case}");
-        assert_eq!(live.extensions.0.len(), 2, "{case}");
+        // DECLARED FLIP (C1): `track_memory` is a modelled `Preferences` field, so this build reads
+        // it (a stored value of another shape is parsed softly) instead of carrying it opaque; the
+        // frozen `v0` parse above still sees both keys as extensions.
+        assert_eq!(live.extensions.0.keys().collect::<Vec<_>>(), ["profile_prefs"], "{case}");
     }
 }
 

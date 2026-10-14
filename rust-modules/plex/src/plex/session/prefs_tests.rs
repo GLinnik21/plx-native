@@ -108,8 +108,10 @@ fn every_marker_names_its_own_field() {
     check_row::<SkipIntervalPref>(SkipInterval::Seconds30);
     check_row::<DeckPressPref>(DeckPress::Play);
     check_row::<AudioEnhancementsPref>(crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false });
-    // The table lists exactly these nine: a tenth row needs its line here too.
-    assert_eq!(DESCRIPTORS.len(), 9);
+    // The table lists exactly these nine scalars and the one list row (`TrackMemoryPref`, whose
+    // field check is `track_memory_tests::the_list_row_names_its_own_field`): an eleventh row needs
+    // its line here too.
+    assert_eq!(DESCRIPTORS.len(), 10);
 }
 
 /// Quality is the one row whose stored and spoken types differ: absent reads as Original, and an
@@ -186,6 +188,7 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("skip_interval", generic()),
         ("deck_press", generic()),
         ("audio_enhancements", generic()),
+        ("track_memory", generic()),
     ]
 }
 
@@ -217,7 +220,11 @@ fn t_parse_each_row_keeps_its_declared_policy() {
                         assert_eq!(parsed, &default_prefs, "{} in {host}: {value}", d.key);
                         assert_eq!(parsed.playback_quality, None, "{host}: {value}");
                     }
-                    Parse::SoftVec | Parse::BoolOn | Parse::BoolOff => {
+                    // a list that is not a list, or whose elements are all junk, reads as no
+                    // list, i.e. as an absent key (the per-element policy has its own fixtures in
+                    // `track_memory_tests`)
+                    Parse::SoftVec => assert_eq!(parsed, &default_prefs, "{} in {host}: {value}", d.key),
+                    Parse::BoolOn | Parse::BoolOff => {
                         panic!("{}: no Preferences row has this policy yet; add its fixture with the row", d.key)
                     }
                 }

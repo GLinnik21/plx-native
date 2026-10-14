@@ -19,6 +19,11 @@
 //! media layer applies it live, how a Settings row saves it, and its parse policy. [`DESCRIPTORS`]
 //! lists them, and the tests hold that table to the struct and to platform's account-bound list,
 //! both ways, so a field without a row (or a row without a field) fails instead of drifting.
+//!
+//! **The tenth row is a LIST, not a scalar**: `track_memory`, each profile's remembered audio and
+//! subtitle picks per show ([`TrackMemoryEntry`], in the memory door below). A list has no `Copy`
+//! value to hand `persist_pref`, so it states its facts through [`ListSetting`] and its writes go
+//! through [`ProfileMemory::upsert_with`], never through `put`.
 use super::{
     DeckPress, DirectPlayMode, NextEpisodeMode, OpaqueExtensions, PlaybackQuality, Session, SkipInterval,
     SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone,
@@ -26,9 +31,16 @@ use super::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
+mod track_memory;
+#[cfg(test)]
+mod track_memory_document_tests;
+#[cfg(test)]
+mod track_memory_tests;
+pub use track_memory::{AudioMemo, SubtitleMemo, SubtitleTrackMemo, TrackMemoryEntry, TrackMemoryPref};
+
 /// The nine install-wide player settings, flattened into [`Session`] and into the canonical
-/// preference record. Defaults are each type's own `Default`, which A0 pins as equal to the soft
-/// parse's fallback.
+/// preference record, and the per-show track memory beside them (a list, see the module doc).
+/// Defaults are each type's own `Default`, which A0 pins as equal to the soft parse's fallback.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct Preferences {
     /// The install's playback-quality preference. `None` is deliberately distinct from an
@@ -92,11 +104,21 @@ pub struct Preferences {
     /// credentials.
     #[serde(default, deserialize_with = "de_soft_audio_enhancements", skip_serializing_if = "crate::plex::AudioEnhancements::is_none")]
     pub audio_enhancements: crate::plex::AudioEnhancements,
+    // ---- per-profile memory lists (a list row, not a scalar: see `ListSetting`) ----
+    /// **Each profile's remembered audio and subtitle picks, per show** — see [`TrackMemoryEntry`].
+    /// A [`ProfileList`] per profile, soft-parsed per element so one junk record or entry costs
+    /// only itself, and skipped while empty so a session that never remembered anything serializes
+    /// exactly as it did before the field existed. Account-bound: the record carries the account
+    /// stamp, a stamp that is not the signed-in account's reads as nothing, and sign-out drops the
+    /// whole key (`storage::state::ACCOUNT_BOUND_PREFERENCES`). Written only through
+    /// [`ProfileMemory::upsert_with`], which prunes foreign stamps and holds the household budget.
+    #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    pub track_memory: Vec<ProfileList<TrackMemoryEntry>>,
 }
 
-/// How long a setting's value lives, and who owns the write. Every row today is `Install`; the
-/// other scopes are declared so the descriptor vocabulary is complete before the rows that need
-/// them land.
+/// How long a setting's value lives, and who owns the write. Nine of the ten rows are `Install`.
+/// `track_memory` is `PerShow` and account-bound, and the `Profile`, `Account` and `PerItem` scopes
+/// are still declared with no row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
     /// The television: shared by every profile, kept across sign-out, never account-bound.
@@ -224,6 +246,24 @@ setting!(SubtitleTonePref: SubtitleTone = subtitle_tone, "subtitle_tone", Instal
 setting!(AudioEnhancementsPref: crate::plex::AudioEnhancements = audio_enhancements,
     "audio_enhancements", Install, account false, live true, settings None, parse Soft);
 
+/// **The facts of a row whose field is a LIST.** [`Setting`] reads and writes a `Copy` value
+/// through `put`/`get`, and a list has none: handing `put` a whole `Vec` would let a caller replace
+/// every profile's memory with one assignment, which is exactly what the memory door exists to
+/// prevent (`upsert_with` merges, prunes and budgets). So a list row declares only what the
+/// descriptor table and the tie tests read, and has no value API at all.
+pub trait ListSetting: 'static {
+    /// The on-disk key (a serde rename is honoured here).
+    const KEY: &'static str;
+    const SCOPE: Scope;
+    /// Cleared with the credentials at sign-out (`storage::state::ACCOUNT_BOUND_PREFERENCES`).
+    const ACCOUNT_BOUND: bool;
+    /// The media layer applies the value live (a cell restored at boot and at the handoff).
+    const LIVE: bool;
+    /// How a Settings row saves it; `None` when no Settings row exists.
+    const SETTINGS: Option<SettingsWrite>;
+    const PARSE: Parse;
+}
+
 /// A setting as data, so a test (and a later generic restore) can walk them all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Descriptor {
@@ -237,6 +277,18 @@ pub struct Descriptor {
 
 impl Descriptor {
     pub const fn of<S: Setting>() -> Self {
+        Descriptor {
+            key: S::KEY,
+            scope: S::SCOPE,
+            account_bound: S::ACCOUNT_BOUND,
+            live: S::LIVE,
+            settings: S::SETTINGS,
+            parse: S::PARSE,
+        }
+    }
+
+    /// The descriptor of a list row ([`ListSetting`]).
+    pub const fn of_list<S: ListSetting>() -> Self {
         Descriptor {
             key: S::KEY,
             scope: S::SCOPE,
@@ -260,6 +312,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<SkipIntervalPref>(),
     Descriptor::of::<DeckPressPref>(),
     Descriptor::of::<AudioEnhancementsPref>(),
+    Descriptor::of_list::<TrackMemoryPref>(),
 ];
 
 /// **The persist half of the one write door** (`media::route::prefs::choose` is the live half):
@@ -305,10 +358,12 @@ impl Session {
 // ---- the memory door: per-profile, per-item lists ---------------------------------------------
 
 /// **One profile's remembered entries of one kind**, oldest first: the record shape a per-profile
-/// list shares (today `subtitle_offsets`; track memory follows). `{user, items, extensions}` is
+/// list shares. `{user, items, extensions}` is
 /// exactly what `subtitle_offsets` was on disk before the door, so a file is read and written
 /// byte for byte as before; `account` is the stamp of an account-bound list and is skipped while
-/// empty (the first tenant is not bound, so it stays empty and writes no key).
+/// empty. `subtitle_offsets` and `track_memory` are the two tenants. `subtitle_offsets` is not
+/// account-bound, so its `account` stays empty and writes no key. `track_memory` is account-bound,
+/// so every record carries the stamp.
 ///
 /// The list as a whole is a `Vec<ProfileList<E>>` held in a [`Session`] field and soft-parsed per
 /// element, so one bad profile record drops only that record; [`ProfileMemory`] is the operations
@@ -343,10 +398,26 @@ pub trait MemoryEntry: Serialize + DeserializeOwned + Clone + PartialEq {
     type Key: PartialEq + Clone + Send + 'static;
     /// The most entries one profile keeps; the oldest are dropped first.
     const CAP: usize;
+    /// The list belongs to the signed-in ACCOUNT, not to the television: its records carry the
+    /// account stamp (`grant::account_key`), a record stamped for another account reads as nothing,
+    /// a write is refused without a stamp, and a write prunes every record that is not its own.
+    /// Pair it with the key in `storage::state::ACCOUNT_BOUND_PREFERENCES` (`prefs_tests`' T-account
+    /// holds the row to it). `false` leaves a tenant exactly as it was before this knob existed.
+    const ACCOUNT_BOUND: bool = false;
+    /// The household budget, in logical bytes (platform's counting rule), for the whole list across
+    /// every profile. Over it, a write drops the oldest entry of the record holding the most
+    /// entries until the list fits (see [`ProfileMemory::upsert_with`]). `None` is no budget.
+    const BUDGET: Option<usize> = None;
     fn key(&self) -> Self::Key;
     /// An entry that says "forget me" (or cannot be recorded): writing it removes the entry for
     /// its key and records nothing (an offset of 0 is Original, which needs no record).
     fn forgets(&self) -> bool;
+    /// The entry as the list may hold it: strings cut to their bounds, an unusable value dropped.
+    /// `upsert_with` runs every written entry through it, and a tenant with bounds parses through
+    /// the same function, so a hand-edited file cannot break the budget arithmetic.
+    fn normalized(self) -> Self {
+        self
+    }
     /// The session list this entry kind lives in.
     fn slot(session: &Session) -> &Vec<ProfileList<Self>>;
     fn slot_mut(session: &mut Session) -> &mut Vec<ProfileList<Self>>;
@@ -387,22 +458,44 @@ pub trait ProfileMemory<E: MemoryEntry> {
     /// A changed entry moves to the end and the cap drains from the front; a profile record whose
     /// items become empty is dropped (T4), so the list never carries empties.
     ///
+    /// **An account-bound tenant** ([`MemoryEntry::ACCOUNT_BOUND`]) is refused without a stamp
+    /// (nothing is written, `f` is not called), and a write first PRUNES every record that is not
+    /// stamped `account` (another account's, or an unstamped one nobody can read): the record of a
+    /// previous account must not outlive the first write of the next.
+    ///
+    /// **A tenant with a budget** ([`MemoryEntry::BUDGET`]) is brought back under it by EVICTION,
+    /// never by refusing the write: while the whole list is over, drop the oldest entry of the
+    /// record holding the MOST entries; on a tie a record other than the writer's goes first (then
+    /// the earlier record). A light viewer is never evicted by a heavy one, and the writer's newest
+    /// pick always stays.
+    ///
     /// Returns whether the list changed. An entry equal to what the list already holds is not a
-    /// change: it is neither rewritten nor moved.
+    /// change: it is neither rewritten nor moved (pruning a foreign record is a change).
     fn upsert_with(&mut self, user: &str, account: &str, key: &E::Key, f: impl FnOnce(Option<&E>) -> Option<E>) -> bool;
 }
 
 impl<E: MemoryEntry> ProfileMemory<E> for Vec<ProfileList<E>> {
     fn get(&self, user: &str, account: &str, key: &E::Key) -> Option<&E> {
+        if E::ACCOUNT_BOUND && account.is_empty() {
+            return None;
+        }
         self.iter().find(|r| r.user == user && r.account == account).and_then(|r| r.find(key))
     }
 
     fn upsert_with(&mut self, user: &str, account: &str, key: &E::Key, f: impl FnOnce(Option<&E>) -> Option<E>) -> bool {
+        if E::ACCOUNT_BOUND && account.is_empty() {
+            return false;
+        }
+        let before = self.len();
+        if E::ACCOUNT_BOUND {
+            self.retain(|r| r.account == account);
+        }
+        let pruned = self.len() != before;
         let at = self.iter().position(|r| r.user == user && r.account == account);
         let current = at.and_then(|i| self[i].find(key));
-        let next = f(current).filter(|e| !e.forgets());
+        let next = f(current).map(E::normalized).filter(|e| !e.forgets());
         if current == next.as_ref() {
-            return false;
+            return pruned;
         }
         let at = at.unwrap_or_else(|| {
             self.push(ProfileList { user: user.to_string(), account: account.to_string(), ..ProfileList::default() });
@@ -410,14 +503,190 @@ impl<E: MemoryEntry> ProfileMemory<E> for Vec<ProfileList<E>> {
         });
         self[at].place(key, next);
         self.retain(|r| !r.items.is_empty());
+        if let Some(budget) = E::BUDGET {
+            let total = list_size(self);
+            evict_by_rule(self, Some((user, account)), |freed| total.saturating_sub(freed) > budget);
+        }
         true
     }
+}
+
+// ---- the household budget: one eviction rule, shared by the write door and the document guard ----
+
+/// The logical size (platform's counting rule) of anything serializable: the unit every byte
+/// figure in this section is in.
+fn logical<T: Serialize + ?Sized>(value: &T) -> usize {
+    serde_json::to_value(value).map(|v| plx_platform::storage::state::logical_size(&v)).unwrap_or(0)
+}
+
+/// The logical size of a whole memory list as it serializes into the preferences.
+pub(super) fn list_size<E: MemoryEntry>(list: &[ProfileList<E>]) -> usize {
+    logical(list)
+}
+
+/// **A per-profile record the eviction rule works on**: the entries of one profile, oldest first.
+/// [`ProfileList`] is the record of every list that goes through the memory door, and `LibraryViews`
+/// (`library_sorts`, the older list that is not one) is a record of its own; the rule below is
+/// written once, over this, so that neither has a copy of it.
+pub(super) trait EvictionRecord: Serialize {
+    /// What the record holds, in the order it was recorded.
+    type Entry: Serialize;
+    /// The Plex Home user's `uuid`, empty for the account owner.
+    fn user(&self) -> &str;
+    /// The account stamp of an account-bound record, else empty.
+    fn account(&self) -> &str {
+        ""
+    }
+    fn entries(&self) -> &Vec<Self::Entry>;
+    fn entries_mut(&mut self) -> &mut Vec<Self::Entry>;
+}
+
+impl<E: MemoryEntry> EvictionRecord for ProfileList<E> {
+    type Entry = E;
+    fn user(&self) -> &str {
+        &self.user
+    }
+    fn account(&self) -> &str {
+        &self.account
+    }
+    fn entries(&self) -> &Vec<E> {
+        &self.items
+    }
+    fn entries_mut(&mut self) -> &mut Vec<E> {
+        &mut self.items
+    }
+}
+
+impl EvictionRecord for super::LibraryViews {
+    type Entry = super::LibraryView;
+    fn user(&self) -> &str {
+        &self.user
+    }
+    fn entries(&self) -> &Vec<super::LibraryView> {
+        &self.libs
+    }
+    fn entries_mut(&mut self) -> &mut Vec<super::LibraryView> {
+        &mut self.libs
+    }
+}
+
+/// The record to take from next: the one holding the MOST entries; on a tie a record other than the
+/// writer's goes first, then the earlier record. `None` when only the writer's newest pick is left
+/// (it always stays).
+fn victim<R: EvictionRecord>(list: &[R], writer: Option<(&str, &str)>) -> Option<usize> {
+    let is_writer = |r: &R| writer.is_some_and(|(u, a)| r.user() == u && r.account() == a);
+    let mut best: Option<usize> = None;
+    for (i, r) in list.iter().enumerate() {
+        let better = best.is_none_or(|b| {
+            let held = &list[b];
+            r.entries().len() > held.entries().len()
+                || (r.entries().len() == held.entries().len() && is_writer(held) && !is_writer(r))
+        });
+        if better {
+            best = Some(i);
+        }
+    }
+    best.filter(|&i| !(is_writer(&list[i]) && list[i].entries().len() == 1))
+}
+
+/// **The eviction rule**: drop the oldest entry of the record holding the most entries (ties: see
+/// [`victim`]) for as long as `still_over(freed)` says the list must shrink, `freed` being the
+/// logical bytes the evictions so far took out of the list. Returns `(entries evicted, bytes
+/// freed)`.
+///
+/// The bytes are counted as the list's own serialization loses them, without re-serializing it per
+/// step: an entry that leaves a record with other entries takes its size and one comma with it; the
+/// last entry of a record takes the whole record (its size, and one comma unless it was the only
+/// record). `evict_exactness` in the tests holds this to a fresh measurement after every step.
+pub(super) fn evict_by_rule<R: EvictionRecord>(
+    list: &mut Vec<R>,
+    writer: Option<(&str, &str)>,
+    mut still_over: impl FnMut(usize) -> bool,
+) -> (usize, usize) {
+    let (mut evicted, mut freed) = (0, 0);
+    while still_over(freed) {
+        let Some(at) = victim(list, writer) else { break };
+        freed += if list[at].entries().len() > 1 {
+            logical(&list[at].entries()[0]) + 1
+        } else {
+            logical(&list[at]) + usize::from(list.len() > 1)
+        };
+        list[at].entries_mut().remove(0);
+        if list[at].entries().is_empty() {
+            list.remove(at);
+        }
+        evicted += 1;
+    }
+    (evicted, freed)
+}
+
+/// **What the document guard may shed**, in the order it sheds it: the per-profile memory lists in
+/// the preferences payload about to be written (`persistence::commit_session_with`). Each list is
+/// brought back through its typed form and shed by the SAME rule as the write door's budget
+/// ([`evict_by_rule`]; `library_sorts`, which is not a [`ProfileList`], through the same function
+/// over its own record type, [`EvictionRecord`]), so "by the same rule" is the same code, not a copy
+/// of it.
+///
+/// `still_over(freed)` is asked before every step with the logical bytes this call has taken out of
+/// `preferences` so far, and the call stops as soon as it says no. Returns the lists that lost
+/// entries and how many each lost. A list that empties leaves the payload (all three skip
+/// themselves while empty), and a payload that does not hold a list as its typed form leaves it
+/// alone: shedding is for data this build wrote, never a reason to rewrite what it cannot read.
+pub(super) fn shed_memory(
+    preferences: &mut serde_json::Value,
+    mut still_over: impl FnMut(usize) -> bool,
+) -> Vec<(&'static str, usize)> {
+    let Some(object) = preferences.as_object_mut() else { return Vec::new() };
+    let freed_total = std::cell::Cell::new(0usize);
+    let mut shed = Vec::new();
+    let mut note = |name: &'static str, (evicted, freed): (usize, usize)| {
+        freed_total.set(freed_total.get() + freed);
+        if evicted > 0 {
+            shed.push((name, evicted));
+        }
+    };
+    note("track_memory", shed_list::<ProfileList<TrackMemoryEntry>>(object, "track_memory", freed_total.get(), &mut still_over));
+    note(
+        "subtitle_offsets",
+        shed_list::<ProfileList<SubtitleOffsetEntry>>(object, "subtitle_offsets", freed_total.get(), &mut still_over),
+    );
+    note("library_sorts", shed_list::<super::LibraryViews>(object, "library_sorts", freed_total.get(), &mut still_over));
+    shed
+}
+
+/// One list of the payload, brought back through its typed form `R`, shed by [`evict_by_rule`] and
+/// written back (or removed, when it empties). A value that is not a list of `R` is left alone.
+fn shed_list<R: EvictionRecord + DeserializeOwned>(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    freed_before: usize,
+    still_over: &mut impl FnMut(usize) -> bool,
+) -> (usize, usize) {
+    let Some(mut list) = object.get(key).and_then(|v| serde_json::from_value::<Vec<R>>(v.clone()).ok()) else {
+        return (0, 0);
+    };
+    let (evicted, freed) = evict_by_rule(&mut list, None, |f| still_over(freed_before + f));
+    if evicted > 0 {
+        match list.is_empty() {
+            true => {
+                object.remove(key);
+            }
+            false => {
+                if let Ok(value) = serde_json::to_value(&list) {
+                    object.insert(key.to_string(), value);
+                }
+            }
+        }
+    }
+    (evicted, freed)
 }
 
 impl MemoryEntry for SubtitleOffsetEntry {
     type Key = (String, String);
     /// A household corrects a handful of mistimed files; the cap keeps the public payload bounded
-    /// the same way `LibraryViews::CAP` does, for the same reason.
+    /// the same way `LibraryViews::CAP` does, for the same reason. It bounds ONE profile: past
+    /// 256 KiB for the whole document the document guard (`persistence::fit_document`,
+    /// `prefs::shed_memory`) may also evict this list's oldest entries from the largest record.
     const CAP: usize = 24;
     fn key(&self) -> Self::Key {
         (self.machine_id.clone(), self.rating_key.clone())

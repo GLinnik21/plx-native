@@ -113,7 +113,7 @@ conservative choice) learn nothing. It lives in `Session::server_key_pins`, one 
 `ProfileCreds`, which are cloned per profile), soft-parsed and skipped while empty.
 **It is in the PUBLIC preferences, so sign-out forgets it by an explicit rule, not with the
 credentials:** `Mutation::ClearTenure` retains `public.preferences` whole except the keys in
-`storage::state::ACCOUNT_BOUND_PREFERENCES` (`server_key_pins` and `plaintext_consent`, issue #385), so sign-out — and "Delete all
+`storage::state::ACCOUNT_BOUND_PREFERENCES` (`server_key_pins` and `plaintext_consent`, issue #385, and the per-show `track_memory`), so sign-out — and "Delete all
 local data", which runs it first — leaves the stored record with no learned key, and the next account to sign in opens with none
 (`migration_tests::helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_none`;
 for the answers, `helper_signout_forgets_the_plaintext_answers_and_signing_back_in_asks_again`).
@@ -487,6 +487,29 @@ a dead source is **absent** from Home and states itself in its own library secti
   getter, and change a value with `session.with_pref::<Marker>(v)`. `prefs_tests` holds the table to
   the struct (T-fields), to platform's `ACCOUNT_BOUND_PREFERENCES` (T-account) and to each row's
   parse policy (T-parse), both ways; a field with no row, or a row with no field, fails there.
+  The struct also holds one LIST beside the nine, `track_memory` (each profile's remembered audio and
+  subtitle picks per show, `prefs/track_memory.rs`): it has no `Copy` value, so its row is a
+  `ListSetting` (`Descriptor::of_list`), and it is written only through `ProfileMemory::upsert_with`
+  (account-bound: no stamp, no write; a write prunes every other account's record). Its entry
+  strings are bounded (an over-long one reads as absent, a title is cut), it is capped at 64 entries
+  a profile and held to a 32 KiB HOUSEHOLD budget by eviction, never refusal. Nothing reads or
+  writes it yet; the matchers come later.
+- **The DB8 document may not pass `MAX_LOGICAL_BYTES` (256 KiB), and per-profile memory is what
+  grows it.** Past the cap EVERY write fails (`LogicalTooLarge`, reported as `InvalidSchema`), so
+  `persistence::commit_session_with` measures the projected document (platform's own
+  `state::logical_size`, with the stored envelope, ledger, consent and future keys in hand, for the
+  write it is really about to send: update, one-put replace, or the strict staged write; a first
+  write onto an ABSENT record, a sign-in or a legacy import, is measured against the fresh state the
+  helper starts from; the sealed credentials are sized as the helper will seal them, `Seal`: ACL-only,
+  keymanager, or whichever of the two is larger when a fallback is permitted) and, if it
+  would not fit, sheds from the payload `track_memory`, then `subtitle_offsets`, then
+  `library_sorts` (`prefs::shed_memory`; the same oldest-from-the-largest-record rule as the
+  household budget), only as far as it needs, and logs `prefs: evicted <n> <list> entries to fit
+  the 256 KiB document`. The live session keeps what the payload lost until the next load. It never
+  refuses a write: with nothing sheddable left the platform still does, as before. The file backend
+  has no cap and no guard. A stored document already AT the cap leaves no room for the strict tier's
+  second copy (old and new halves side by side), which the guard cannot create. A record created on
+  webOS 4.x is ACL-only; a record that already holds a keymanager envelope still stages.
 - **`session::peek()` is a write-through cache over the persisted session, not a fresh read.** A
   hit is one uncontended `Mutex` lock and an `Arc<Session>` clone — no `IO`, no helper round trip —
   which is what makes it safe to call every frame (`player::preview::enabled` does). The invariants

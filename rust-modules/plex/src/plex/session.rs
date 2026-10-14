@@ -676,8 +676,8 @@ struct CanonicalSessionAuth {
 struct CanonicalSessionPreferences {
     #[serde(default)]
     language: plx_platform::i18n::Preference,
-    /// The nine install-wide player settings, flattened ahead of `extensions` so a flattened
-    /// struct takes its keys first and `extensions` still sees only unknown ones.
+    /// The nine install-wide player settings and the per-show track memory list, flattened ahead of
+    /// `extensions` so a flattened struct takes its keys first and `extensions` still sees only unknown ones.
     #[serde(flatten)]
     prefs: Preferences,
     #[serde(default, deserialize_with = "de_soft_bool")]
@@ -1931,7 +1931,9 @@ impl LibraryViews {
     /// Libraries remembered per profile. A household changes a handful; the cap exists so a
     /// television that has browsed many shares over the years cannot grow the public payload
     /// (256 KiB for everything, `storage::state`) without bound — ~200 bytes an entry at its
-    /// fullest, so a full list is ~5 KiB per profile.
+    /// fullest, so a full list is ~5 KiB per profile. It bounds ONE profile: past 256 KiB for the
+    /// whole document the document guard (`persistence::fit_document`, `prefs::shed_memory`) may
+    /// also evict this list's oldest entries from the largest record.
     pub const CAP: usize = 24;
     /// Longest sort key recorded. Real keys are a few words (`show.titleSort,episode.index` is
     /// the longest PMS advertises); anything longer is not a key worth carrying across restarts.
