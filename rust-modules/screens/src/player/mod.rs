@@ -849,6 +849,18 @@ impl PlayerScreen {
             // by `PlayerOverlayScreen::key` before this screen ever sees the press, since the
             // overlay is a SURFACE and owns input while it is up) both perform the same ritual
             // `key_back`/the Stop arm did.
+            //
+            // …except a BACK that finds the transport ON SCREEN: that one hides it, the way an
+            // UP-hide does, and the film keeps playing. A second BACK, now over a bare picture,
+            // leaves. `visible_at_press` and not `hud_up`, for the reason its own doc gives.
+            Key::Back if edge == Edge::Down && self.hud.visible_at_press => {
+                self.hud.nav.focus = 0;
+                self.scrub.ns = -1;
+                self.scrub.disengage();
+                self.hud.dismissed = true;
+                self.publish();
+                Handled::Yes
+            }
             Key::Stop | Key::Back => {
                 if edge == Edge::Down {
                     Self::ask(fx, PlayerReq::Exit);
