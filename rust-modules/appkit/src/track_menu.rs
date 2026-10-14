@@ -56,8 +56,9 @@
 //!
 //! **A pick is the show's memory, and the menu says when the route cannot honour it.** An explicit
 //! pick in either tab commits its descriptor with the track ([`TrackCommit`]'s `memo`), which the
-//! app's `commit_track` hands to `route::commit_audio_pick` / `commit_subtitle_pick` /
-//! `commit_forced_only_pick`; they write it to
+//! app's `commit_track` hands to `route::commit_audio_pick`, and for the two subtitle arms to
+//! `route::commit_subtitle_and_sidecar` / `commit_forced_only_and_sidecar` (the pick commit plus its
+//! sidecar select or deselect); the `*_pick` commits write it to
 //! the show's track memory when the route accepted the pick, and the next episode's plan reads it
 //! back. When the memory chose a subtitle for this play and the route can show none of it (a copy
 //! remux the app cannot draw), Off is on screen, so the first group closes with one inert
@@ -570,8 +571,8 @@ pub enum TrackCommit {
     AudioEnhancement(plx_plex::plex::AudioEnhancements),
     /// `sidecar_key` is `Some` when the pick is an EXTERNAL text subtitle the client can draw
     /// on direct play (`metadata::Stream::sidecar_renderable`): it has no demuxer ordinal
-    /// (`render_ordinal` is -1), so the loop hands it to `player::sidecar` beside the unchanged
-    /// route commit. `sidecar_codec` preserves ASS/SSA on download; a key need not have an
+    /// (`render_ordinal` is -1), so `route::commit_subtitle_and_sidecar` hands it to `player::sidecar`
+    /// beside the unchanged route commit. `sidecar_codec` preserves ASS/SSA on download; a key need not have an
     /// extension. `None` — Off, or an embedded track — deselects any sidecar. `memo` is
     /// `SubtitleMemo::Off` for Off and `Track(..)` for every track, an embedded one, a sidecar or
     /// a fresh download alike; `None` for an OK on the row that is already checked (a row that is
@@ -1240,7 +1241,7 @@ impl TrackMenuState {
         // Leaving Forced only is a change even onto the stream it drew (the forced track's own row)
         // or onto nothing (Off while no forced track matched): the index is the same, the state is
         // not.
-        let changed = self.active_sub != new_sub || self.forced_only;
+        let changed = plx_media::route::subtitle_pick_changed(self.active_sub, new_sub, self.forced_only);
         self.active_sub = new_sub;
         self.forced_only = false;
         // the client renderer takes the EMBEDDED-subtitle ordinal (what the demuxer

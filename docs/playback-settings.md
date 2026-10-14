@@ -68,8 +68,9 @@ the screen (a forced track that only the container's own track names reveal, fou
 is the subtitle written, in that one write); a declined or fall-through pick, a retry and a
 transcode write nothing, a Part with a
 downloaded subtitle gets no subtitle write (a forced track found on that frame included), and a
-pick the viewer makes first carries its own write (the forced track found on that frame is then
-written on its own, as any subtitle change during playback is). A movie's pick, a pick the route refused (Force Direct Play), an automatic choice and an OK on the subtitle already
+pick the viewer makes first carries its own write (after an audio pick, the forced track found on that
+frame is then written on its own, as any subtitle change during playback is, unless the Part carries a
+downloaded subtitle; a subtitle pick has no track left to find and writes nothing more). A movie's pick, a pick the route refused (Force Direct Play), an automatic choice and an OK on the subtitle already
 showing are not remembered. A remembered Off and a remembered Forced only beat the account's rule
 and the server's embedded selection, and unlike a remembered track neither falls through to them
 (Forced only with no forced track shows nothing). A subtitle file the server has selected for the

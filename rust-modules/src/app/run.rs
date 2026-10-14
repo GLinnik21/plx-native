@@ -4899,6 +4899,84 @@ mod lifecycle_regression_tests {
         assert!(rig.app.refresh_detail.is_none(), "the re-read is asked for once, not left owed");
     }
 
+    /// **Issue #680**: a show's Detail page, an episode played to its end, and the episode strip
+    /// must show what the server now holds (watched), not what the page read when it opened.
+    #[test]
+    fn issue_680_an_episode_played_to_its_end_is_watched_on_the_detail_page_it_returns_to() {
+        let _serial = plx_base::testlock::serial();
+        let played = Arc::new(AtomicBool::new(false));
+        let flag = played.clone();
+        let Some(mut rig) = Rig::serving_with(move |request: &str| {
+            let watched = flag.load(Ordering::SeqCst);
+            if request.contains("/decision?") {
+                return r#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#.into();
+            }
+            if request.contains("/library/metadata/200/children") {
+                return format!(r#"{{"MediaContainer":{{"size":2,"totalSize":2,"Metadata":[
+                  {{"ratingKey":"1","type":"episode","index":1,"parentIndex":1,"title":"First","duration":60000{}}},
+                  {{"ratingKey":"2","type":"episode","index":2,"parentIndex":1,"title":"Next","duration":60000}}]}}}}"#,
+                  if watched { r#","viewCount":1"# } else { "" });
+            }
+            if request.contains("/library/metadata/100/children") {
+                return r#"{"MediaContainer":{"Metadata":[{"ratingKey":"200","type":"season","index":1,"title":"Season 1","leafCount":2}]}}"#.into();
+            }
+            if request.contains("/related") || request.contains("/extras") || request.contains("/:/timeline") {
+                return r#"{"MediaContainer":{}}"#.into();
+            }
+            if request.contains("/library/metadata/100") {
+                return r#"{"MediaContainer":{"Metadata":[{"ratingKey":"100","type":"show","title":"Show","childCount":1,"leafCount":2}]}}"#.into();
+            }
+            // the play queue: one episode, nothing after it
+            if request.contains("playQueue") { flag.store(true, Ordering::SeqCst); }
+            r#"{"MediaContainer":{"machineIdentifier":"lifecycle-fixture","size":1,
+            "playQueueID":1,"playQueueSelectedItemID":11,"playQueueTotalCount":1,
+            "Metadata":[
+            {"ratingKey":"1","playQueueItemID":11,"type":"episode","title":"First",
+             "grandparentRatingKey":"100","parentIndex":1,"index":1,"duration":60000,
+             "Media":[{"videoCodec":"h264","audioCodec":"aac","width":1280,"height":720,
+             "Part":[{"id":1,"key":"/library/parts/1/file.mkv","Stream":[
+             {"id":1,"streamType":1,"codec":"h264"},
+             {"id":2,"streamType":2,"codec":"aac","selected":true}]}]}]}]}}"#.into()
+        }) else { return };
+        // Nothing parks: the first request (the page's own read) answers at once.
+        rig.release.send(()).unwrap();
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "100", None, None);
+        settle(&mut rig.app, &mut t);
+        rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+        rig.app.bridge.metadata_mut().pump_detail();
+        settle(&mut rig.app, &mut t);
+        let watched = |rig: &mut Rig| rig.app.bridge.metadata_view().current()
+            .filter(|d| d.rk == "100")
+            .and_then(|d| d.episodes.get(0).map(|e| (e.rk.clone(), e.watched)));
+        assert_eq!(watched(&mut rig), Some(("1".into(), false)), "premise: the page opened on an unwatched episode");
+        let origin = rig.app.pages.nav.top_page().unwrap().id;
+        assert!(matches!(rig.app.pages.nav.top_page().unwrap().arg,
+            AppArg::Content(plx_screens::registry::ContentArg::Detail { .. })));
+        rig.request();
+        rig.accept_start();
+        poll_until("the plan did not land through update", || {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            fr.now = t;
+            unsafe { update(&mut rig.app, &mut fr); }
+            rig.app.adapters.player.is_live()
+        });
+        settle(&mut rig.app, &mut t);
+        assert!(super::super::bridge::player(&rig.app.pages).is_some(), "the player is on top");
+        assert!(played.load(Ordering::SeqCst), "premise: the server saw the play");
+        plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        settle(&mut rig.app, &mut t);
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin), "EOS returned to the page");
+        plx_media::route::drain_scrobble();
+        step(&mut rig.app, &mut t, vec![]);
+        rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+        rig.app.bridge.metadata_mut().pump_detail();
+        settle(&mut rig.app, &mut t);
+        assert_eq!(watched(&mut rig), Some(("1".into(), true)),
+            "the episode strip still shows the read the page opened with");
+    }
+
     /// The same session drained to its end with nothing queued after it: `finish_playback` leaves
     /// through `exit_player`, so an end of stream lands where BACK and Stop do — the page the
     /// session was launched from (§5.1), not Home.

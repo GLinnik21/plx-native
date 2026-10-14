@@ -481,7 +481,8 @@ a dead source is **absent** from Home and states itself in its own library secti
   `plaintext_consent` and `server_key_pins`, the per-profile `last_library` and `library_sorts` (cleared
   at sign-out like every `ACCOUNT_BOUND = true` row in `prefs::DESCRIPTORS`, but their records carry no
   account stamp, so the one login that is not a sign-out, a stored session that could not be activated
-  in `app/boot.rs`, leaves them to the next account), and the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
+  in `app/boot.rs`, would leave them to the next account: `replace_after_reauthentication_guarded_with_outcome`
+  clears both when the login's account token differs from the stored one), and the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
   forms — the legacy file's `Session` and the canonical preference record — declared before each
   form's own `extensions`, so the flatten takes its keys first and the unknown-key map still sees
   only keys nobody models. A new key of that kind is a `Preferences` field (its serde attributes
@@ -548,7 +549,7 @@ a dead source is **absent** from Home and states itself in its own library secti
   re-points the parked write's subtitle half (`route::repoint_parked_subtitle`, W5 and W7 apply to the
   re-matched id) and queues no PUT of its own, so the server hears one write that names the remembered
   audio and the re-matched subtitle; with nothing parked, or a parked write that went stale first
-  (`decision::parked_write_stale`: the route was replaced, the viewer picked), it PUTs like any subtitle
+  (`decision::memory::parked_write_stale`: the route was replaced, the viewer picked), it PUTs like any subtitle
   commit, except that over a Part with an external stream (W5) it PUTs nothing. It never
   replaces a sidecar on screen, and compares with what the landing SHOWS (read from the session after
   the sidecar restore, `settle_landing_selection`), not with the plan, which names no sidecar. Leaving

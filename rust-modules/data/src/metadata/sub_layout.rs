@@ -9,6 +9,10 @@
 //! [`SubRow::target`]. The model deliberately carries no checked track, offset or tone: those are
 //! read-outs, so changing one never re-groups the list.
 //!
+//! [`sub_traits`] is the same parse (`track_label::track_name` then `parse` and `flags`) read as a
+//! predicate of one stream, forced / SDH / commentary: the rule `route`'s track memory matches and
+//! remembers a subtitle by, so a memo written from a row is a memo the matchers find that row by.
+//!
 //! The shape: Off, Forced only (the third remembered subtitle state, [`SubRow::ForcedOnly`]) and
 //! every single-track "yours" language sit under one "Subtitles" header; a
 //! "yours" language with several tracks gets its own section, ranked full < SDH < forced <
@@ -316,6 +320,28 @@ fn sub_tracks(
         }
     }
     out
+}
+
+/// What the track menu calls a subtitle, read off the stream the way the menu reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubTraits {
+    /// `Stream.forced` or the name says forced (`track_label::flags`).
+    pub forced: bool,
+    /// `Stream.sdh` or the name says SDH (`track_label::flags`).
+    pub sdh: bool,
+    /// The name says commentary (`track_label::Kind::Commentary`), whatever the flags say.
+    pub commentary: bool,
+}
+
+/// The menu's own predicate for one subtitle stream: the merged name, parsed, with
+/// the structured flags folded in. The one place "forced" is decided for memory.
+pub fn sub_traits(s: &Stream) -> SubTraits {
+    // The container name arrives only once the demuxer has the file open (`TrackNames`), after the
+    // resolve; here the PMS title is all there is.
+    let name = track_label::track_name(&s.title, "", &s.lang);
+    let label = track_label::parse(&name, &s.lang, s.forced, s.sdh);
+    let (forced, sdh) = track_label::flags(&label, s.forced, s.sdh);
+    SubTraits { forced, sdh, commentary: label.kind == Kind::Commentary }
 }
 
 /// **Group and order the Subtitles panel's rows.**

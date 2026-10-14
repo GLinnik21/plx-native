@@ -40,8 +40,8 @@
 //! instead would write `forced: false` for a track the menu badges FORCED by its name, and the
 //! next episode's hard constraint would decline that very track.
 use std::borrow::Cow;
-use plx_data::metadata::sub_layout::is_image_sub_codec;
-use plx_data::metadata::track_label::{self, Kind};
+use plx_data::metadata::sub_layout::{is_image_sub_codec, sub_traits, SubTraits};
+use plx_data::metadata::track_label;
 use plx_data::metadata::track_names::TrackNames;
 use plx_data::metadata::{lang_matches, sub_render_ordinal, PlayingItem, Stream};
 use plx_plex::plex::session::prefs::{AudioMemo, SubtitleMemo, SubtitleTrackMemo};
@@ -52,32 +52,21 @@ pub(super) type Miss = &'static str;
 
 /// **The show a playing item's picks belong to**: track memory is kept per episode of a known show,
 /// so a movie, a trailer, an item of no type or an episode the server placed in no show has none.
-/// The one predicate of the read side (`plan::show_memory`) and the write
-/// (`decision::remember_track_pick`), so what is written is exactly what a later resolve can read.
+/// The one predicate of the read side (`plan::memory::show_memory`) and the write
+/// (`decision::memory::remember_track_pick`), so what is written is exactly what a later resolve can read.
 pub(super) fn memory_show<'a>(kind: &str, show_rk: &'a str) -> Option<&'a str> {
     (kind == "episode" && !show_rk.is_empty()).then_some(show_rk)
 }
 
-/// What the track menu calls a subtitle, read off the stream the way the menu reads it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct SubTraits {
-    /// `Stream.forced` or the name says forced (`track_label::flags`).
-    pub forced: bool,
-    /// `Stream.sdh` or the name says SDH (`track_label::flags`).
-    pub sdh: bool,
-    /// The name says commentary (`track_label::Kind::Commentary`), whatever the flags say.
-    pub commentary: bool,
-}
-
-/// The menu's own predicate for one subtitle stream: the merged name, parsed, with
-/// the structured flags folded in. The one place "forced" is decided for memory.
-pub(super) fn sub_traits(s: &Stream) -> SubTraits {
-    // The container name arrives only once the demuxer has the file open (`TrackNames`), after the
-    // resolve; here the PMS title is all there is.
-    let name = track_label::track_name(&s.title, "", &s.lang);
-    let label = track_label::parse(&name, &s.lang, s.forced, s.sdh);
-    let (forced, sdh) = track_label::flags(&label, s.forced, s.sdh);
-    SubTraits { forced, sdh, commentary: label.kind == Kind::Commentary }
+/// **Did a subtitle pick change what is shown?** The one rule of the menu's memo gate and the
+/// route's memory write: a pick is a change when it names another track than the one shown, and
+/// ALSO when the mode being left is Forced only, whatever it lands on (the forced track's own row,
+/// or Off while no forced track matched: the same track, a different state). `shown` and `picked`
+/// are the caller's own notion of "which track" (the menu compares its rows, the route stream ids),
+/// so the rule is generic over it. An OK on the checked row is not a change: the menu closes, it
+/// does not choose.
+pub fn subtitle_pick_changed<T: PartialEq>(shown: T, picked: T, forced_only: bool) -> bool {
+    shown != picked || forced_only
 }
 
 /// **What a pick of audio track `i` of `tracks` is remembered as**, or `None` for an index that
@@ -293,7 +282,7 @@ impl SubMode {
 pub struct Rematch {
     pub(super) memo: SubtitleMemo,
     /// The subtitle stream id the landing put on screen (`0` = none), read from the session once the
-    /// landing is complete (`decision::settle_landing_selection`), not from the plan. The re-match
+    /// landing is complete (`decision::memory::settle_landing_selection`), not from the plan. The re-match
     /// runs only while that is still what is shown: a viewer who picked meanwhile has decided.
     pub(super) landed_sub: i64,
 }
