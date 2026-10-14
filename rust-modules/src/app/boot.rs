@@ -400,8 +400,8 @@ mod seam_order_tests {
 /// Hide the Magic Remote's on-screen pointer. A webOS-only concept: there is no such cursor to
 /// hide on a desktop, and `SDL_webOSCursorVisibility` exists in no SDL but LG's fork.
 ///
-/// One door rather than a branch at each of the five call sites, so the platform question is
-/// asked once and the call sites read the same on both.
+/// One door rather than a branch at each caller, so the platform question is asked once
+/// and the callers read the same on LG's extension and on the transparent-cursor path.
 ///
 /// Resolved at runtime rather than linked: webOS 3.4 ships SDL 2.0.3, which has none of LG's
 /// `SDL_webOS*` extensions, and a strong reference there is a lazily-bound PLT slot that kills
