@@ -141,11 +141,14 @@ fn run_transport(started: Instant) {
     match reply {
         Ok(reply) => match parse_dv_reply(&reply) {
             Ok(capability) => publish(
-                DvProbe {
-                    capability,
-                    source: ProbeSource::Configd,
-                    reason: "configd",
-                },
+                platform_gate(
+                    DvProbe {
+                        capability,
+                        source: ProbeSource::Configd,
+                        reason: "configd",
+                    },
+                    crate::tv::device::info().major,
+                ),
                 started,
                 None,
                 None,
@@ -256,6 +259,29 @@ impl ProbeFailure {
     }
 }
 
+/// **configd's "supported" is not enough on webOS 3.** A Starfish Load carrying our
+/// `DolbyHdrInfo` node never starts its clock there: the pipeline takes every access unit and
+/// presents none, and the player sits at 0:00. Device-measured 2026-10-14 on an LG OLED C7
+/// (webOS 3.9.3, m16p) with a Profile 8.1 film: configd answers `true`, the declared Load
+/// wedged, and the same build with the declaration removed played. So a webOS 3 set reports
+/// Dolby Vision as unsupported to the route, which plays a cross-compatible base layer (Profile
+/// 8.1) as HDR and refuses one that has none (Profile 5) — the same answer an unsupported set
+/// gets. `major == 0` is an unknown version and keeps configd's answer; webOS 4+ is untouched.
+#[cfg(any(
+    test,
+    all(target_arch = "arm", target_os = "linux", not(feature = "hostsim"))
+))]
+fn platform_gate(probe: DvProbe, webos_major: u32) -> DvProbe {
+    if probe.capability == DvCapability::Supported && (1..=3).contains(&webos_major) {
+        return DvProbe {
+            capability: DvCapability::Unsupported,
+            source: ProbeSource::Platform,
+            reason: "webos3",
+        };
+    }
+    probe
+}
+
 /// Strictly grade the one configd shape this decision is allowed to trust. A syntactically valid
 /// service refusal is still uncertainty, and a contradictory `missingConfigs` cannot be rescued
 /// by a boolean elsewhere in the object.
@@ -295,7 +321,51 @@ fn parse_dv_reply(reply: &str) -> Result<DvCapability, ProbeFailure> {
 
 #[cfg(test)]
 mod tests {
-    use super::{override_capability, parse_dv_reply, DvCapability, ProbeFailure};
+    use super::{override_capability, parse_dv_reply, platform_gate, DvCapability, ProbeFailure};
+    use crate::devcaps::dv::{DvProbe, ProbeSource};
+
+    fn configd(capability: DvCapability) -> DvProbe {
+        DvProbe {
+            capability,
+            source: ProbeSource::Configd,
+            reason: "configd",
+        }
+    }
+
+    /// The C7 (webOS 3.9.3): configd says supported, and a declared Load never starts its clock.
+    #[test]
+    fn webos3_supported_is_reported_unsupported() {
+        let gated = platform_gate(configd(DvCapability::Supported), 3);
+        assert_eq!(gated.capability, DvCapability::Unsupported);
+        assert_eq!(gated.source, ProbeSource::Platform);
+        assert_eq!(gated.provenance(), "webos3");
+    }
+
+    #[test]
+    fn webos4_and_later_keep_configd() {
+        for major in [4, 5, 6, 10, 25] {
+            assert_eq!(
+                platform_gate(configd(DvCapability::Supported), major),
+                configd(DvCapability::Supported)
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_version_or_a_non_affirmative_answer_is_untouched() {
+        assert_eq!(
+            platform_gate(configd(DvCapability::Supported), 0),
+            configd(DvCapability::Supported)
+        );
+        assert_eq!(
+            platform_gate(configd(DvCapability::Unsupported), 3),
+            configd(DvCapability::Unsupported)
+        );
+        assert_eq!(
+            platform_gate(configd(DvCapability::Unknown), 3),
+            configd(DvCapability::Unknown)
+        );
+    }
 
     #[test]
     fn dv_caps_override_precedence() {
