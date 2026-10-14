@@ -301,11 +301,12 @@ Verified Continue Watching item (movie, trimmed):
 per-string translation coverage for a tag is partial, which this app now papers over for every
 STANDARD hub rather than forwarding it as-is** (issue #12, investigated 2026-09-28: a Belarusian
 UI showed some hub titles in Belarusian and others in Russian/English on one Home screen).
-`plex::client::headers`/`pms_headers` still send the literal selected UI tag (`en`/`es`/`be` —
+`plex::client::headers`/`pms_headers` still send the literal selected UI tag (`Language::tag()` of each language in
+`i18n::SHIPPED` —
 `identity::language()` → `i18n::current().language().tag()`) on **every** PMS operation, hubs
 included (`rust-modules/plex/src/plex/client.rs`'s
-`pms_headers_carry_the_literal_selected_ui_language_be_included` test pins that for all three
-shipped tags) — that part of the earlier record stands. What changed is that neither
+`pms_headers_carry_the_literal_selected_ui_language_be_included` test pins that for every
+shipped tag) — that part of the earlier record stands. What changed is that neither
 `screens/home/mod.rs` nor a library's own browse grid renders `hub.title` unconditionally:
 `plex::hub_title::localized_hub_title` sits between a PMS `Hub` and the row the screen draws, at
 BOTH call sites — Home's whole-catalog merge (`pms.rs::project`, one row per source, `/hubs`) and

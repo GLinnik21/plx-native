@@ -46,7 +46,7 @@ pub(super) fn dialable_home(users: usize, uuid: &str, auto: bool) -> Session {
             ..Default::default()
         },
         home_users,
-        auto_sign_in: auto,
+        prefs: Preferences { auto_sign_in: auto, ..Default::default() },
         ..Default::default()
     }
 }

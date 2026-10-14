@@ -233,7 +233,20 @@ type PlanPms = (
 /// [`plan_pms_within`] with `exact = false`. A count that is too LOW is caught by the caller's own assertions, because
 /// the server stops answering at `n`.
 pub(super) fn plan_pms(n: usize, mde_body: &'static [u8]) -> PlanPms {
-    serve_plan_pms(n, mde_body, None, PLAN_PMS_DEADLINE, true)
+    serve_plan_pms(n, mde_body, None, PLAN_PMS_DEADLINE, true, None)
+}
+
+/// What a loopback PMS answers a `/decision` with, chosen by the request line (U8): the body for
+/// the ratingKey the line names, or `None` for the scenario's default. One server can then play two
+/// episodes whose items the server answers differently, which is how a test follows one viewer
+/// from one episode to the next without a server per episode.
+pub(super) type Respond = fn(&str) -> Option<&'static [u8]>;
+
+/// [`plan_pms`] whose `/decision` answers come from `respond` first (the ratingKey-keyed responder),
+/// `mde_body` for any line it does not name.
+#[cfg(feature = "devtriggers")]
+pub(super) fn plan_pms_keyed(n: usize, mde_body: &'static [u8], respond: Respond) -> PlanPms {
+    serve_plan_pms(n, mde_body, None, PLAN_PMS_DEADLINE, true, Some(respond))
 }
 
 /// Same as [`plan_pms`], plus a bounded `start.mkv` body so Remote Auto can probe a remux.
@@ -244,7 +257,7 @@ pub(super) fn plan_pms_with_start_mkv(
     mde_body: &'static [u8],
     start_bytes: usize,
 ) -> PlanPms {
-    serve_plan_pms(n, mde_body, Some(start_bytes), PLAN_PMS_DEADLINE, true)
+    serve_plan_pms(n, mde_body, Some(start_bytes), PLAN_PMS_DEADLINE, true, None)
 }
 
 /// [`plan_pms`] with its own deadline and its own say on the guard: `exact = false` is the
@@ -257,7 +270,7 @@ pub(super) fn plan_pms_within(
     deadline: std::time::Duration,
     exact: bool,
 ) -> PlanPms {
-    serve_plan_pms(n, mde_body, None, deadline, exact)
+    serve_plan_pms(n, mde_body, None, deadline, exact, None)
 }
 
 fn serve_plan_pms(
@@ -266,6 +279,7 @@ fn serve_plan_pms(
     start_bytes: Option<usize>,
     deadline: std::time::Duration,
     exact: bool,
+    respond: Option<Respond>,
 ) -> PlanPms {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().unwrap().port() as i32;
@@ -303,7 +317,7 @@ fn serve_plan_pms(
                         .expect("400");
                     } else {
                         let body = if first.contains("/decision?") {
-                            mde_body
+                            respond.and_then(|r| r(&first)).unwrap_or(mde_body)
                         } else {
                             EMPTY_MC
                         };

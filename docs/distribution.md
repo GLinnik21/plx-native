@@ -1873,7 +1873,7 @@ section closed anything at all.
 **Superseded: the UI is localized now.** When this section was written the UI was English-only,
 with ~203 display literals across 45 files and no string ownership story, and the native UI was
 locale-blind apart from a best-effort `X-Plex-Language` read from the POSIX locale environment.
-Both are gone. The app's own text comes from bundled catalogs (English, Spanish, Belarusian), the
+Both are gone. The app's own text comes from bundled catalogs (English, Spanish, French, Belarusian), the
 UI language resolves from a saved Settings → Language override, then the TV UI language reported
 by the native Settings Service, then the process locale, then English, and
 `plex::identity::language` now sends that resolved language as `X-Plex-Language`.

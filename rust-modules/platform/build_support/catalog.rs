@@ -203,7 +203,7 @@ fn read_locale(root: &Path, locale: &str) -> Result<BTreeMap<String, Value>, Str
     }
     Ok(all)
 }
-pub fn compile(catalogs: &[BTreeMap<String, Value>; 3]) -> Result<String, String> {
+pub fn compile(catalogs: &[BTreeMap<String, Value>; 4]) -> Result<String, String> {
     let keys: BTreeSet<_> = catalogs[0].keys().collect();
     for (i, c) in catalogs.iter().enumerate() {
         if c.keys().collect::<BTreeSet<_>>() != keys {
@@ -265,6 +265,7 @@ pub fn compile(catalogs: &[BTreeMap<String, Value>; 3]) -> Result<String, String
             )?,
             forms(&catalogs[1][key])?,
             forms(&catalogs[2][key])?,
+            forms(&catalogs[3][key])?,
         ];
         let plural = !values[0].contains_key("");
         if plural && args.get("count").map(String::as_str) != Some("i64") {
@@ -280,6 +281,7 @@ pub fn compile(catalogs: &[BTreeMap<String, Value>; 3]) -> Result<String, String
                     vec!["one", "other"],
                     vec!["one", "many", "other"],
                     vec!["one", "few", "many", "other"],
+                    vec!["one", "many", "other"],
                 ][i]
                     .iter()
                 {
@@ -323,8 +325,8 @@ pub fn compile(catalogs: &[BTreeMap<String, Value>; 3]) -> Result<String, String
             params.trim_start_matches(", ")
         ));
         out.push_str(&format!("pub fn {name}_in(cx: &LocaleContext{params}) -> {result} {{ match cx.language() {{\n"));
-        for (i, lang) in ["En", "Es", "Be", "Pseudo"].iter().enumerate() {
-            let vals = if i == 3 {
+        for (i, lang) in ["En", "Es", "Be", "Fr", "Pseudo"].iter().enumerate() {
+            let vals = if i == 4 {
                 values[0]
                     .iter()
                     .map(|(k, v)| (k.clone(), pseudo(v)))
@@ -373,8 +375,8 @@ pub fn compile(catalogs: &[BTreeMap<String, Value>; 3]) -> Result<String, String
         out.push_str("} }\n");
         if args.is_empty() {
             out.push_str(&format!("pub fn {name}_c() -> &'static std::ffi::CStr {{ {name}_c_in(super::current()) }}\npub fn {name}_c_in(cx: &LocaleContext) -> &'static std::ffi::CStr {{ match cx.language() {{\n"));
-            for (i, lang) in ["En", "Es", "Be", "Pseudo"].iter().enumerate() {
-                let v = if i == 3 {
+            for (i, lang) in ["En", "Es", "Be", "Fr", "Pseudo"].iter().enumerate() {
+                let v = if i == 4 {
                     pseudo(&values[0][""])
                 } else {
                     values[i][""].clone()
@@ -403,13 +405,14 @@ pub fn build(root: &Path, out: &Path) -> Result<(), String> {
         read_locale(root, "en")?,
         read_locale(root, "es")?,
         read_locale(root, "be")?,
+        read_locale(root, "fr")?,
     ];
     std::fs::write(out.join("messages.rs"), compile(&catalogs)?).map_err(|e| e.to_string())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn catalogs() -> [BTreeMap<String, Value>; 3] {
+    fn catalogs() -> [BTreeMap<String, Value>; 4] {
         [
             BTreeMap::from([(
                 "test.label".into(),
@@ -417,6 +420,7 @@ mod tests {
             )]),
             BTreeMap::from([("test.label".into(), serde_json::json!("Hola {name}"))]),
             BTreeMap::from([("test.label".into(), serde_json::json!("Вітаем, {name}"))]),
+            BTreeMap::from([("test.label".into(), serde_json::json!("Bonjour {name}"))]),
         ]
     }
     #[test]
@@ -470,6 +474,10 @@ mod tests {
         cs[2].insert(
             "test.label".into(),
             serde_json::json!({"one":"{count}","few":"{count}","many":"{count}","other":"{count}"}),
+        );
+        cs[3].insert(
+            "test.label".into(),
+            serde_json::json!({"one":"{count}","many":"{count}","other":"{count}"}),
         );
         assert!(compile(&cs).is_ok());
         cs[2]

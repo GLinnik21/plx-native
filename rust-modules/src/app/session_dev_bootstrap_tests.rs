@@ -262,7 +262,7 @@ fn dev_retry_is_inert_outside_error_and_restart_wait_remains_account_only() {
 impl Drop for Cleanup<'_> {
     fn drop(&mut self) {
         plx_plex::plex::reset_servers_for_test();
-        plx_plex::plex::session::ProfilePublisher::new(self.0).publish(None, 0);
+        plx_plex::plex::session::ProfilePublisher::new(self.0).publish(None, 0, String::new());
     }
 }
 

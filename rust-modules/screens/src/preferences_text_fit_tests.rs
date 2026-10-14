@@ -18,13 +18,13 @@ fn frame_w() -> f32 {
 }
 
 fn playback(quality: Quality, direct_play: DirectPlayMode) -> FieldListInputs<'static> {
-    FieldListInputs { kind: Kind::Playback, quality, direct_play, prefs: None, busy: false, show_retry: false }
+    FieldListInputs { kind: Kind::Playback, quality, direct_play, prefs: None, busy: false, show_retry: false, read_only: false }
 }
 
 fn audio(prefs: Option<&AudioPreferences>) -> FieldListInputs<'_> {
     FieldListInputs {
         kind: Kind::AudioSubtitles, quality: Quality::Original, direct_play: DirectPlayMode::Auto,
-        prefs, busy: false, show_retry: false,
+        prefs, busy: false, show_retry: false, read_only: false,
     }
 }
 
@@ -93,6 +93,10 @@ fn every_field_readout_and_detail_fits_its_column_in_every_language() {
             check_field_section(&format!("{tag} skip_interval={interval:?}"), &playback(Quality::Original, DirectPlayMode::Auto), &mut out);
         }
         plx_media::route::restore_skip_interval(plx_media::route::SkipInterval::Seconds10);
+
+        // Nobody seated: the same rows, read-only (dimmed).
+        check_field_section(&format!("{tag} read-only"), &FieldListInputs { read_only: true, ..playback(Quality::Original, DirectPlayMode::Auto) }, &mut out);
+        check_field_section(&format!("{tag} read-only forced"), &FieldListInputs { read_only: true, ..playback(Quality::Original, DirectPlayMode::Forced) }, &mut out);
 
         check_field_section(&format!("{tag} retry row"), &FieldListInputs { show_retry: true, ..audio(None) }, &mut out);
 
@@ -198,6 +202,7 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
         let want = match language.tag() {
             "en" => "When audio isn't in the subtitle language",
             "es" => "Audio fuera del idioma de subtítulos",
+            "fr" => "Audio hors langue des sous-titres",
             _ => "Калі гук не на мове субцітраў",
         };
         assert_eq!(readouts[1], want, "{}", language.tag());
@@ -209,6 +214,12 @@ fn copy_view<'a>(copy: &'a str) -> plx_ui::text_view::TextView<'a> {
     let size = theme::size::LABEL;
     plx_ui::text_view::TextView::new(copy, size, theme::TEXT_READING)
         .leading(size as f32 + theme::space::XS).max_lines(12).with_measure(&M)
+}
+
+/// A profile name as long as the Plex profile-name field lets a viewer make one (unbroken, so the
+/// copy cannot wrap at a space inside it): the name is user data, so a short one proves nothing.
+fn long_profile() -> Whose {
+    Whose::Profile("Maximilian-Alexander Hartwell-Pennington".to_string())
 }
 
 /// Every explanation a field list or a picker can show under its title fits the left column
@@ -235,23 +246,53 @@ fn every_explanation_under_a_title_fits_the_column_in_every_language() {
                 Subject::Page(kind) => kind.title(),
                 Subject::Picker(field) => field.title(),
             };
-            for direct_play in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+            for (direct_play, whose) in [DirectPlayMode::Auto, DirectPlayMode::Forced].into_iter()
+                .flat_map(|mode| [(mode, Whose::Nobody), (mode, long_profile())]) {
                 for status in ["", plx_platform::i18n::msg::settings_playback_save_failed()] {
-                    let copy = copy_text(subject, status, direct_play);
+                    let copy = copy_text(subject, status, direct_play, &whose);
                     let view = copy_view(&copy);
                     let top = layout.narrative_copy_frame(true, title, layout.action.y, &M).y;
                     let room = layout.action.y - theme::space::XL - top;
                     let (lines, h) = (view.line_count(layout.narrative.w), view.measure_h(layout.narrative.w));
-                    let at = format!("{tag} {subject:?} direct_play={direct_play:?} status={status:?}");
+                    let at = format!("{tag} {subject:?} direct_play={direct_play:?} whose={whose:?} status={status:?}");
                     if view.truncates(layout.narrative.w) { out.push(format!("{at}: the copy is cut at the line cap")); }
                     if h > room { out.push(format!("{at}: the copy is {h}px tall, the column has {room}px")); }
                     // A status line is the failure text, not an explanation: only the explanation is held to the note length.
-                    if status.is_empty() && lines > MAX_COPY_LINES { out.push(format!("{at}: {lines} lines, more than {MAX_COPY_LINES}")); }
+                    // The seated Playback page under Force is the profile line plus the Force note: one line more than a note.
+                    let named_under_force = subject == Subject::Page(Kind::Playback) && direct_play == DirectPlayMode::Forced && matches!(whose, Whose::Profile(_));
+                    let allowed = MAX_COPY_LINES + usize::from(named_under_force);
+                    if status.is_empty() && lines > allowed { out.push(format!("{at}: {lines} lines, more than {allowed}")); }
                 }
             }
         }
     }
     assert!(out.is_empty(), "{}", out.join("\n"));
+}
+
+/// The Playback page's two own explanations, in every shipped language: the profile line carries
+/// the name whole (and no leftover placeholder), the unseated line is a different sentence, and
+/// neither is the retired "for this television" blurb. The fit sweep above judges the widths.
+#[test]
+fn the_playback_page_names_its_profile_or_asks_for_one_in_every_language() {
+    let _serial = plx_base::testlock::serial();
+    for language in SHIPPED {
+        let _guard = language_on_this_thread_for_test(language);
+        let tag = language.tag();
+        let named = copy_text(Subject::Page(Kind::Playback), "", DirectPlayMode::Auto, &Whose::Profile("Maya".into())).into_owned();
+        let unseated = copy_text(Subject::Page(Kind::Playback), "", DirectPlayMode::Auto, &Whose::Nobody).into_owned();
+        assert!(named.contains("Maya") && !named.contains('{'), "{tag}: {named:?}");
+        assert!(!unseated.is_empty() && !unseated.contains("Maya") && !unseated.contains('{') && unseated != named, "{tag}: {unseated:?}");
+        // Force Direct Play does not take the name away: Settings has no other place that names the profile.
+        let named_forced = copy_text(Subject::Page(Kind::Playback), "", DirectPlayMode::Forced, &Whose::Profile("Maya".into())).into_owned();
+        assert!(named_forced.contains("Maya") && named_forced.contains(plx_platform::i18n::msg::settings_playback_force_note()), "{tag}: {named_forced:?}");
+        // The text view draws every newline as a space, so the layout must not lean on one: the profile
+        // line is a full sentence, and the Force note follows it in the same paragraph.
+        let force_note = plx_platform::i18n::msg::settings_playback_force_note();
+        let profile_line = named_forced.strip_suffix(force_note).unwrap_or(&named_forced).trim_end();
+        assert!(!named_forced.contains('\n') && profile_line.ends_with('.'), "{tag}: {named_forced:?}");
+        let unseated_forced = copy_text(Subject::Page(Kind::Playback), "", DirectPlayMode::Forced, &Whose::Nobody).into_owned();
+        assert_eq!(unseated_forced, unseated, "{tag}");
+    }
 }
 
 /// Each local picker explains ITS setting: no two of the six read the same, none is the page's
@@ -266,8 +307,8 @@ fn each_local_picker_has_its_own_explanation_in_every_language() {
     for language in SHIPPED {
         let _guard = language_on_this_thread_for_test(language);
         let tag = language.tag();
-        let page = copy_text(Subject::Page(Kind::Playback), "", DirectPlayMode::Auto).into_owned();
-        let copies: Vec<String> = fields.iter().map(|&f| copy_text(Subject::Picker(f), "", DirectPlayMode::Auto).into_owned()).collect();
+        let page = copy_text(Subject::Page(Kind::Playback), "", DirectPlayMode::Auto, &Whose::Nobody).into_owned();
+        let copies: Vec<String> = fields.iter().map(|&f| copy_text(Subject::Picker(f), "", DirectPlayMode::Auto, &Whose::Nobody).into_owned()).collect();
         for (i, copy) in copies.iter().enumerate() {
             assert!(!copy.is_empty(), "{tag} {:?}", fields[i]);
             assert_ne!(*copy, page, "{tag} {:?} must not repeat the page blurb", fields[i]);
@@ -275,22 +316,25 @@ fn each_local_picker_has_its_own_explanation_in_every_language() {
         }
         assert_eq!(copies[0], plx_platform::i18n::msg::settings_playback_quality_copy(), "{tag}");
         // Force Direct Play overrides only what it changes: the page list, Quality and Direct Play.
-        let forced = |subject| copy_text(subject, "", DirectPlayMode::Forced).into_owned();
-        for subject in [Subject::Page(Kind::Playback), Subject::Picker(PickerKind::Quality), Subject::Picker(PickerKind::DirectPlay)] {
+        let forced = |subject| copy_text(subject, "", DirectPlayMode::Forced, &Whose::Nobody).into_owned();
+        for subject in [Subject::Picker(PickerKind::Quality), Subject::Picker(PickerKind::DirectPlay)] {
             assert_eq!(forced(subject), plx_platform::i18n::msg::settings_playback_force_note(), "{tag} {subject:?}");
         }
+        // The page keeps its own line under Force: nobody seated says the rows are read-only (the
+        // Force advice cannot be acted on from them), a seated profile is named above the Force note.
+        assert_eq!(forced(Subject::Page(Kind::Playback)), plx_platform::i18n::msg::settings_playback_unseated(), "{tag}");
         for (i, &field) in fields.iter().enumerate().skip(2) {
             assert_eq!(forced(Subject::Picker(field)), copies[i], "{tag} {field:?} is untouched by Force");
         }
         // The account pickers keep the account note under every mode.
         for field in [PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles] {
-            assert_eq!(copy_text(Subject::Picker(field), "", DirectPlayMode::Forced), plx_platform::i18n::msg::settings_audio_account_note(), "{tag} {field:?}");
+            assert_eq!(copy_text(Subject::Picker(field), "", DirectPlayMode::Forced, &Whose::Nobody), plx_platform::i18n::msg::settings_audio_account_note(), "{tag} {field:?}");
         }
         // A status wins, with the Force note appended only where Force matters.
         let status = plx_platform::i18n::msg::settings_playback_save_failed();
-        assert_eq!(copy_text(Subject::Picker(PickerKind::SkipInterval), status, DirectPlayMode::Forced), status, "{tag}");
-        assert_eq!(copy_text(Subject::Picker(PickerKind::DirectPlay), status, DirectPlayMode::Forced),
+        assert_eq!(copy_text(Subject::Picker(PickerKind::SkipInterval), status, DirectPlayMode::Forced, &Whose::Nobody), status, "{tag}");
+        assert_eq!(copy_text(Subject::Picker(PickerKind::DirectPlay), status, DirectPlayMode::Forced, &Whose::Nobody),
             format!("{status}\n\n{}", plx_platform::i18n::msg::settings_playback_force_note()), "{tag}");
-        assert_eq!(copy_text(Subject::Picker(PickerKind::DirectPlay), status, DirectPlayMode::Auto), status, "{tag}");
+        assert_eq!(copy_text(Subject::Picker(PickerKind::DirectPlay), status, DirectPlayMode::Auto, &Whose::Nobody), status, "{tag}");
     }
 }

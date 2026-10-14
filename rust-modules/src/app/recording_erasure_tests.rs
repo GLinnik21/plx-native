@@ -111,7 +111,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
             usize::from(partial),
             "missing files are idempotent; an unremoved control directory remains reported"
         );
-        session::ProfilePublisher::new(&mt).publish(None, 0);
+        session::ProfilePublisher::new(&mt).publish(None, 0, String::new());
         plx_plex::plex::reset_servers_for_test();
     }
 }

@@ -1003,7 +1003,10 @@ pub struct RootPage {
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
     session_snapshot: std::sync::Arc<plx_plex::plex::session::Session>,
     pending_auto: Option<(bool, plx_base::storage_worker::TypedTicket<bool>)>,
-    pending_trailer: Option<(bool, plx_base::storage_worker::TypedTicket<bool>)>,
+    /// The hero trailer switch picked here and not yet answered: the value the row shows meanwhile,
+    /// and the receipt of its `route::choose` (Confirm) write. A `false` (or dropped) receipt means
+    /// the pick was not saved, and the row goes back to the stored value.
+    pending_trailer: Option<(bool, std::sync::mpsc::Receiver<bool>)>,
     /// The servers the signed-in account answered plx_platform::i18n::msg::settings_plaintext_question() for, then the
     /// ones discovery offers it for and nobody has answered, by row — the `(machine_id, allowed)`
     /// each switch shows.
@@ -1233,7 +1236,11 @@ impl RootPage {
         let sess = &self.session_snapshot;
         let signed_in = sess.account(plx_plex::plex::session::current().as_ref()).signed_in;
         let auto_sign_in = self.pending_auto.as_ref().map_or_else(|| sess.auto_sign_in(), |(value, _)| *value);
-        let trailer_autoplay = self.pending_trailer.as_ref().map_or_else(|| sess.trailer_autoplay(), |(value, _)| *value);
+        // The SEATED profile's own switch, else the TV's older key, else on (`stored_effective`).
+        let trailer_autoplay = self.pending_trailer.as_ref().map_or_else(|| {
+            plx_plex::plex::session::stored_effective::<plx_plex::plex::session::TrailerAutoplayPref>(
+                sess, &plx_plex::plex::session::current_seat())
+        }, |(value, _)| *value);
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
@@ -1266,7 +1273,7 @@ impl RootPage {
     fn plaintext_inputs(&mut self) -> Vec<PlaintextRowInput> {
         use plx_plex::plex::session::PlaintextChoice;
         let sess = &self.session_snapshot;
-        let answered = plx_plex::plex::grant::choices(&sess.plaintext_consent, &sess.account_token);
+        let answered = plx_plex::plex::grant::choices(&sess.prefs.plaintext_consent, &sess.account_token);
         let mut rows: Vec<(String, bool)> = answered
             .iter()
             .filter(|(_, choice)| *choice != PlaintextChoice::Undecided)
@@ -1339,11 +1346,13 @@ impl RootPage {
                 self.rebuild(directory);
             }
             Action::TrailerAutoplay => {
+                // The seated profile's own pick, through the one write door (Confirm: nothing is
+                // claimed until the write is durable). The app executes it.
                 let on = !self.state.trailer_autoplay;
-                if let Ok(ticket) = plx_plex::plex::session::queue_update_ticket(move |current|
-                    (current.trailer_autoplay() != on).then(|| current.with_trailer_autoplay(on))) {
-                    self.pending_trailer = Some((on, ticket));
-                }
+                let (reply, receipt) = std::sync::mpsc::channel();
+                fx.push(Fx::App(AppFx::Preferences(super::registry::PreferenceCmd::Choose(
+                    plx_media::route::Choice::TrailerAutoplay(on), reply))));
+                self.pending_trailer = Some((on, receipt));
                 self.rebuild(directory);
             }
             Action::Plaintext(ServerMachineId(machine)) => {
@@ -1414,17 +1423,26 @@ impl Machine<InnerHost> for RootPage {
             }
             ScreenEvent::Tick(t) => {
                 let mut landed = self.session_watch.changed();
-                for pending in [&mut self.pending_auto, &mut self.pending_trailer] {
-                    if pending.as_ref().is_some_and(|(_, ticket)| !matches!(ticket.try_recv(),
-                        Err(std::sync::mpsc::TryRecvError::Empty))) {
-                        // Read AFTER the receipt: the worker may have installed Locked/Blocked
-                        // while this Tick was polling. Retain a consumed receipt's local value
-                        // until authority settles; subsequent polls see Disconnected.
-                        if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
-                            self.session_snapshot = snapshot;
-                            *pending = None;
-                            landed = true;
-                        }
+                if self.pending_auto.as_ref().is_some_and(|(_, ticket)| !matches!(ticket.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty))) {
+                    // Read AFTER the receipt: the worker may have installed Locked/Blocked
+                    // while this Tick was polling. Retain a consumed receipt's local value
+                    // until authority settles; subsequent polls see Disconnected.
+                    if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
+                        self.session_snapshot = snapshot;
+                        self.pending_auto = None;
+                        landed = true;
+                    }
+                }
+                if self.pending_trailer.as_ref().is_some_and(|(_, receipt)| !matches!(receipt.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty))) {
+                    // Answered (saved, refused or dropped): the row reads the stored value again,
+                    // which holds the pick only if the write was durable. Same wait for a settled
+                    // session as above.
+                    if let Some(snapshot) = plx_plex::plex::session::peek_settled() {
+                        self.session_snapshot = snapshot;
+                        self.pending_trailer = None;
+                        landed = true;
                     }
                 }
                 // An offer or an answer landed (`grant::revision`): the switches re-read.
@@ -1584,9 +1602,10 @@ fn preference_name(preference: plx_platform::i18n::Preference) -> &'static str {
     }
 }
 
-const LANGUAGES: [plx_platform::i18n::Preference; 4] = [
+const LANGUAGES: [plx_platform::i18n::Preference; 5] = [
     plx_platform::i18n::Preference::System, plx_platform::i18n::Preference::En,
     plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be,
+    plx_platform::i18n::Preference::Fr,
 ];
 
 /// A Language row's identity: the preference a `Choice` row saves, or the contribution guide.
@@ -1604,6 +1623,7 @@ impl FormId for LangId {
             LangId::Choice(P::En) => 1,
             LangId::Choice(P::Es) => 2,
             LangId::Choice(P::Be) => 3,
+            LangId::Choice(P::Fr) => 5,
             LangId::Contribute => 4,
         })
     }

@@ -180,7 +180,9 @@ pub(crate) fn retry_failed_playback(
 /// A PERSISTENT switch, deliberately, not a one-shot: Force is what made this play fail, and it
 /// would make the next unsupported file fail the same way. The preference moves to Auto now (the
 /// in-memory value every later resolve reads) and is saved on the storage worker behind it, both
-/// by the one write door (`route::choose`, `How::Optimistic`): the frame may not block on storage,
+/// by the one write door (`route::choose`, `How::Optimistic`), as the SEATED profile's own pick: it
+/// resets that profile's Direct Play mode and no other's, and with nobody seated the door refuses
+/// the save and the pick stands live only. The frame may not block on storage,
 /// the cell is published ONCE, and a failed save is logged by the door while the pick stands for
 /// this session. The retry resolves under Auto explicitly rather than inheriting the failed
 /// attempt's Force, which a plain retry keeps on purpose.
@@ -506,23 +508,34 @@ pub(crate) unsafe fn commit_info_press(
 #[allow(clippy::too_many_arguments)]
 /// **Perform the track menu's pick.**
 ///
-/// `route::commit_audio_selection`/`commit_subtitle_selection` take the playback session's `&mut`,
+/// `route::commit_audio_pick`/`commit_subtitle_pick` take the playback session's `&mut`,
 /// which no screen has (§2.2) — the panel returns a
 /// [`TrackCommit`](plx_appkit::track_menu::TrackCommit) and this is where it lands, from the
 /// overlay's `PlayerReq` and from the headless `plxnative-menupick` trigger alike.
+///
+/// **This is where a track pick is also REMEMBERED** (the `memo` the panel built from the picked
+/// row): the two `*_pick` commits write the show's track memory when, and only when, the route
+/// accepted the pick, an episode is playing and the seat is the viewer's. A subtitle OK that
+/// changes nothing (the menu closed on the row already shown) commits without a memo and writes
+/// nothing. No other door writes it:
+/// an automatic pick (the ladder at start, a retry or a rescue) goes through the bare
+/// `*_selection` commits and remembers nothing, and an audio pick deferred behind an Original
+/// handoff was remembered when the viewer made it, so its later replay writes nothing.
 pub(crate) fn commit_track(
     ps: &mut plx_media::route::PlaybackSession,
     commit: plx_appkit::track_menu::TrackCommit,
 ) {
     use plx_appkit::track_menu::TrackCommit;
     match commit {
-        TrackCommit::Audio(audio) => plx_media::route::commit_audio_selection(ps, audio),
+        TrackCommit::Audio { carried, memo } => {
+            plx_media::route::commit_audio_pick(ps, carried, memo);
+        }
         TrackCommit::AudioEnhancement(a) => plx_media::player::request_audio_enhancement(ps, a),
-        TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec } => {
+        TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec, memo } => {
             // What the client can draw itself — an embedded ordinal or an external sidecar — is
             // what an Original route (issue #266's candidate) can carry without a burn.
             let client_renderable = render_ordinal >= 0 || sidecar_key.is_some();
-            plx_media::route::commit_subtitle_selection(ps, render_ordinal, stream_id, client_renderable);
+            plx_media::route::commit_subtitle_pick(ps, render_ordinal, stream_id, client_renderable, memo);
             // An EXTERNAL pick has no demuxer ordinal (`render_ordinal` is -1, so the embedded
             // renderer is off) — on direct play `player::sidecar` fetches and draws it instead.
             // While transcoding the commit above already asked for a burn and the sidecar draw

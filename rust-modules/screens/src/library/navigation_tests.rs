@@ -730,6 +730,39 @@ fn down_right_up_on_the_shelves_lands_on_the_tile_above() {
         "DOWN lands under the cursor, not on the lower shelf's previous focus");
 }
 
+/// **The frame dump, 2026-10-13: BACK from deep in the grid made focus change key on every loop
+/// iteration until the glide to the top arrived.** The store holds cards only for the rows near the
+/// screen and the focused row, and a row is keyed by slot while its cards are released and by item
+/// while it holds them. Finding the focused row by "which row holds the focus key now" therefore
+/// read the row as unfocused in the iteration after its cards came back (the focus key was still
+/// the slot's), which released the cards again. The focused row is the one the key was last PLACED
+/// in, whichever keys the row holds at the moment.
+#[test]
+fn the_focused_shelf_is_found_by_the_keys_place_when_the_row_has_been_rekeyed() {
+    let _guard = plx_base::testlock::serial();
+    let fixture = Fixture::new(1, 24, 2);
+    let mut page = fixture.screen();
+    page.initial = false;
+    assert_eq!(page.shelves.len(), 2);
+    let (upper, lower) = (page.shelves[0].elems.clone(), page.shelves[1].elems.clone());
+    let (upper_group, lower_group) = (page.shelves[0].group, page.shelves[1].group);
+    // a key the row holds now: the row, whatever the registry says
+    assert_eq!(focused_shelf(&page.shelves, upper[1], None), Some(0));
+    assert_eq!(focused_shelf(&page.shelves, lower[0], Some((upper_group, 0))), Some(1));
+    // the registry's own record of a key the row holds agrees with the row
+    assert_eq!(page.keys.last_place(lower[2]).map(|(group, _)| group), Some(lower_group));
+    // the row re-keyed under the focus (its cards came back, or were released): the key is in no
+    // row any more, and its last place still names the row
+    let stale = upper[0];
+    page.shelves[0].elems.clear();
+    assert_eq!(focused_shelf(&page.shelves, stale, page.keys.last_place(stale)), Some(0),
+        "a re-keyed row keeps its focus, so the hold that re-keyed it is not withdrawn");
+    // a key placed outside every shelf's card group (the grid, the toolbar) is no shelf's focus
+    let grid = page.pair.groups_config().detail;
+    assert_eq!(focused_shelf(&page.shelves, stale, Some((grid, 3))), None);
+    assert_eq!(focused_shelf(&page.shelves, stale, None), None);
+}
+
 /// The poster wall under the heading closes the same square: DOWN from a heading chip lands on
 /// the grid tile under that chip, not on a remembered cell rows away (which dragged the page deep
 /// into All from its heading).

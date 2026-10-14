@@ -525,15 +525,33 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   workflow above for the full sequence). A macOS render is a preview; only the Linux workflow's
   artifact is adoptable. The film is `tests/video/feel.json`: positions and durations, never titles
   (the demo catalog's order, `tests/demo_library/catalog.json`, decides what is under each position).
-  It is the Home hero held, `right` to the hero's Info button, `right` again (the carousel turns
-  forward to the second page), `left` to Continue and `left` again (back to the first page), `down`
-  onto the Continue Watching row, `right` twice to its third card and `ok` for that title's Detail
-  held about 4 s (the shelf's `ok` opens details, the default Continue Watching setting; nothing
-  plays), `back` (the shelf, that card focused), `up` `up` to the profile chip and on to the Movies
-  tab, `ok` for the Movies library (hub shelves), two `right`s, `back`, then `down` onto Continue,
-  about 27 s: the last frame equals the first to within 1/255 per channel (`storyboard.loop` in `render.json` and `feel.manifest.json` counts the pixels that differ). Every
+  It is the Home hero held under a second, `right` to the hero's Info button, `right` again (the
+  carousel turns forward to the second page), `left` to Continue and `left` again (back to the first
+  page), `down` onto the Continue Watching row, `right` twice to its third card and `ok` for that
+  title's Detail (the shelf's `ok` opens details, the default Continue Watching setting; nothing
+  plays), `down` to its Cast & Crew row (a portrait for each of the seven performers, from the
+  catalog's `people`: an openly licensed photograph of the actor or a frame of the film,
+  `tools/demo_library.py`, "People"), four more `down`s through the rest of the page (the title's
+  collection, its linked heading a stop of its own, then More Like This) to the About section at its
+  foot, with no `ok` anywhere on the page (each one there opens another page or a reader), `back`
+  (the shelf, that card focused; Detail's `back` leaves the page from wherever it is scrolled), `up` `up` to the profile chip and
+  on to the Movies tab, `ok` for the Movies library, six quick `down`s through its four shelves (the
+  two collection shelves' linked headings are stops of their own) to the All heading's Type chip,
+  `right` `right` to Filter, `down` into the poster grid and three more moves inside its columns 2 to
+  4, eight `up`s back to the first shelf (as many as there were `down`s: the page is left from its
+  top), `back` (Home), then `down` onto Continue, about 30 s. A `back` pressed lower on the Movies
+  page jumps it to its top first; that jump is NOT filmed, because its first Linux render wrote
+  different frames under the hold-injection gate (104 of 1734, from the press to the end of the
+  return Home), so it is a motion the dump cannot yet vouch for. Keys of one
+  gesture share a beat and are pressed 230 to 380 ms apart, faster than the springs settle: only a
+  beat's END is held to rest. The Movies page is walked with arrows only (no `ok`, so a miscounted
+  press cannot open anything there) and never reaches the grid's sixth column, whose `right` is the
+  letter rail. The beat rests were set from
+  the settle times measured on the previous film's frames (a hero page turn about 1.15 s, a page
+  scroll about 1.1 s, a card move about 0.7 s, a page push about 0.9 s) plus a quarter second; the
+  grid's and the Detail's scrolls are new and unmeasured until their first render. The last frame equals the first to within 1/255 per channel (`storyboard.loop` in `render.json` and `feel.manifest.json` counts the pixels that differ). Every
   hero page it shows passes `demo_library.py hero-report` and is not `not_in_video`, and the title
-  whose Detail it opens is not one whose hero page it shows. NOT filmed: scrolling on Detail, any
+  whose Detail it opens is not one whose hero page it shows. NOT filmed: anything opened from Detail, any
   popover or modal, any title flagged `not_in_video` opened (`gates` checks the mock's request log,
   and that no stream, transcode, timeline, scrobble or play-queue request was made), and the
   hold-hint capsule: the film is shot with the hint taught. The capsule is a one-time teaching
@@ -554,6 +572,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   the first by at most 1/255 in every channel; `storyboard.loop` in the manifest records the count) and `hero-pool` (fail closed: every hero page the film SHOWED, read from the app's event log
   (`home: hero page slot N rk=R`, one line per page turn, plus the pinned page), is in the
   hero-report pass set and not `not_in_video`; `render.json` records them under `hero_pool`).
+  The size gate compares each file with the committed one (1.25x); a render whose `storyboard_sha256` differs from the committed manifest's is another film, so its four videos are held to the `size_new_film_bytes` ceilings instead, once, and the ratio governs again after that film is committed. The H.264 encodes pin the last frame's QP with a one-frame x264 zone (`zones=LAST,LAST,q=H264_LAST_FRAME_QP`): mbtree gives the never-referenced last frame a coarse QP and `seam/*` compares it with the heavily referenced first frame (0.9947 against the 0.995 floor on the 29 s film; forcing an IDR there measured worse, 0.9903).
   A page push or pop dips through about three flat frames of the backdrop between the outgoing fade
   and the incoming one: that is the app's own page transition, not a hold. The AV1 encodes use CRF 22 with a keyframe every 8 s (`AV1_CODEC`; the 720p one every 12 s,
   `AV1_720_GOP`, to stay under the 1.25x size limit). They were re-tuned for HEADROOM

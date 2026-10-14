@@ -1170,8 +1170,10 @@ fn eac3_joc_to_ac3_release_immersive_false() {
         can_normalize_loudness: true,
         ..Default::default()
     };
-    // `app::playback::commit_track`'s `TrackCommit::Audio` arm is exactly this call (that arm only
-    // forwards the frozen snapshot); route tests cannot name the app or the track menu above it.
+    // `app::playback::commit_track`'s `TrackCommit::Audio` arm is this call plus the track memory's
+    // write (`commit_audio_pick`, which a pick with no descriptor skips); the route tests under
+    // `decision_track_memory_tests` grade the write, and this one the route, which cannot name the
+    // app or the track menu above it.
     commit_audio_selection(&mut ps, CarriedAudio::from_stream(&stream, 3));
     assert!(toggle(&mut ps, NONE));
     let (_, tail) = claim(&mut ps);

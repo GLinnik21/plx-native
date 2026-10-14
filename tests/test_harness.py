@@ -1798,6 +1798,9 @@ class PipelineTier(unittest.TestCase):
             # issue #266 PR4 review: EVERY case forces the persisted audio-enhancement preference
             # too, default "off" -- see test_audio_enhancement_boot_trigger_defaults_off_and_is_overridable.
             ("plxnative-audioenh", "off"),
+            # track memory: EVERY case forgets what a menu pick on an episode remembered -- see
+            # test_every_case_forgets_track_memory_at_the_seat.
+            ("plxnative-trackmemory", "clear"),
         ])
 
     def test_an_integration_case_can_explicitly_grade_auto(self):
@@ -3347,6 +3350,20 @@ class AbrTraceMetrics(unittest.TestCase):
             "rk": "1", "audio_enhancements_boot": "loudness", "operations": [{"op": "play"}],
         })
         self.assertIn(("plxnative-audioenh", "loudness"), files)
+
+    def test_every_case_forgets_track_memory_at_the_seat(self):
+        """A `menupick` is a viewer's pick, and a pick on an episode is remembered for its show by
+        the SEATED profile; without a per-case `clear` the next case that plays that show would start
+        from the previous case's tracks. Both tiers write it, and a case cannot opt out of it."""
+        for case in ({"rk": "1", "operations": [{"op": "play"}]},
+                     {"rk": "1", "operations": [{"op": "play"}, {"op": "subtitle", "tab": 1, "track": 0}]},
+                     {"rk": "1", "operations": [{"op": "play"}, {"op": "audio_switch", "tab": 0, "row": 1}]}):
+            files = run.triggers_for_case(case)
+            self.assertEqual([f for f in files if f[0] == "plxnative-trackmemory"],
+                             [("plxnative-trackmemory", "clear")], case)
+        pipeline = run.triggers_for_case({"fixture": "x.mkv", "operations": [{"op": "play"}]},
+                                         url_base="http://192.0.2.10:8020")
+        self.assertIn(("plxnative-trackmemory", "clear"), pipeline)
 
     def test_audio_enhancement_op_grades_applied_remux_and_ac3(self):
         """A live Normalize Loudness pick that took effect: the server ran the DSP params

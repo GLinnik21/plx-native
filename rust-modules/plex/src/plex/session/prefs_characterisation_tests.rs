@@ -178,11 +178,11 @@ fn canonical_public_json_of_an_all_non_default_session() {
 /// `true` is written out. A refactor that "unifies" these changes someone's boot.
 #[test]
 fn trailer_autoplay_has_a_derived_off_default_and_an_absent_key_that_reads_on() {
-    assert!(!Session::default().trailer_autoplay, "the derived Default is off");
-    assert!(legacy_from(json!({})).trailer_autoplay, "a file without the key reads on");
-    assert!(CanonicalSessionPreferences::default().trailer_autoplay, "the manual Default is on");
-    assert!(canonical_from(json!({})).trailer_autoplay, "an empty preferences object reads on");
-    assert!(canonical_from(Value::Null).trailer_autoplay, "absent preferences fall back to the manual Default");
+    assert!(!Session::default().prefs.trailer_autoplay, "the derived Default is off");
+    assert!(legacy_from(json!({})).prefs.trailer_autoplay, "a file without the key reads on");
+    assert!(CanonicalSessionPreferences::default().prefs.trailer_autoplay, "the manual Default is on");
+    assert!(canonical_from(json!({})).prefs.trailer_autoplay, "an empty preferences object reads on");
+    assert!(canonical_from(Value::Null).prefs.trailer_autoplay, "absent preferences fall back to the manual Default");
 
     let on = legacy_from(json!({"trailer_autoplay":true}));
     assert_eq!(legacy_key(&on, "trailer_autoplay"), Some(json!(true)), "an on value is written, not skipped");
@@ -239,12 +239,12 @@ fn scalar_garbage_null_and_future_spellings_read_todays_fallback() {
 #[test]
 fn the_three_named_garbage_corners_and_a_valid_value_that_still_wins() {
     let s = legacy_from(json!({"trailer_autoplay":"garbage","auto_sign_in":"garbage","playback_quality":"garbage"}));
-    assert!(s.trailer_autoplay);
-    assert!(!s.auto_sign_in);
+    assert!(s.prefs.trailer_autoplay);
+    assert!(!s.prefs.auto_sign_in);
     assert_eq!(s.prefs.playback_quality, None);
     let s = legacy_from(json!({"trailer_autoplay":false,"auto_sign_in":true,"playback_quality":"auto"}));
-    assert!(!s.trailer_autoplay);
-    assert!(s.auto_sign_in);
+    assert!(!s.prefs.trailer_autoplay);
+    assert!(s.prefs.auto_sign_in);
     assert_eq!(s.prefs.playback_quality, Some(PlaybackQuality::Auto));
 }
 
@@ -375,11 +375,11 @@ fn nested_lists_are_soft_for_offsets_and_views_and_strict_for_last_library() {
         "last_library":[{"user":"u1","libs":[{"kind":"movie","machine_id":"m","key":1}, 9]},
                         {"user":"u2","libs":[{"kind":"show","machine_id":"m","key":2}]}]
     }));
-    assert_eq!(s.subtitle_offsets.len(), 1);
-    assert_eq!(s.subtitle_offsets[0].items.len(), 2, "two of the four items survive");
-    assert_eq!(s.library_views[0].libs.len(), 1, "one of the three views survives");
-    assert_eq!(s.last_library.len(), 1, "the profile with a bad library is dropped whole");
-    assert_eq!(s.last_library[0].user, "u2");
+    assert_eq!(s.prefs.subtitle_offsets.len(), 1);
+    assert_eq!(s.prefs.subtitle_offsets[0].items.len(), 2, "two of the four items survive");
+    assert_eq!(s.prefs.library_views[0].libs.len(), 1, "one of the three views survives");
+    assert_eq!(s.prefs.last_library.len(), 1, "the profile with a bad library is dropped whole");
+    assert_eq!(s.prefs.last_library[0].user, "u2");
 }
 
 /// `language` is not soft-parsed with a custom function, but a bad spelling still reads System.
@@ -398,12 +398,12 @@ fn a_bad_language_reads_system_in_the_legacy_file() {
 fn a_canonical_preferences_value_that_is_not_an_object_falls_back_to_the_manual_default() {
     for not_an_object in [json!("x"), json!(3), json!([]), Value::Null] {
         let s = canonical_from(not_an_object.clone());
-        assert!(s.trailer_autoplay, "{not_an_object}");
+        assert!(s.prefs.trailer_autoplay, "{not_an_object}");
         assert_eq!(s.prefs.direct_play_mode, DirectPlayMode::Auto);
         assert_eq!(s.prefs.playback_quality, None);
     }
     let s = canonical_from(json!({"subtitle_size":"huge","auto_sign_in":true,"skip_interval":"60s"}));
-    assert!(s.auto_sign_in, "a sibling of a bad key is kept");
+    assert!(s.prefs.auto_sign_in, "a sibling of a bad key is kept");
     assert_eq!(s.prefs.skip_interval, SkipInterval::Seconds60);
     assert_eq!(s.prefs.subtitle_size, SubtitleSize::Medium);
 }
@@ -540,17 +540,17 @@ fn skip_rows() -> Vec<SkipRow> {
             set: |s| s.set_subtitle_offset_for("", "m", "1", Some(500)),
             reset: |s| s.set_subtitle_offset_for("", "m", "1", None) },
         SkipRow { key: "library_sorts",
-            set: |s| s.library_views = vec![LibraryViews { user: String::new(),
+            set: |s| s.prefs.library_views = vec![LibraryViews { user: String::new(),
                 libs: vec![LibraryView { machine_id: "m".into(), key: 1, sort: "plays".into(), ..Default::default() }],
                 extensions: Default::default() }],
-            reset: |s| s.library_views.clear() },
+            reset: |s| s.prefs.library_views.clear() },
         SkipRow { key: "server_key_pins",
-            set: |s| s.server_key_pins = vec![ServerKeyPin { machine_id: "m".into(), pin: PIN.into(), extensions: Default::default() }],
-            reset: |s| s.server_key_pins.clear() },
+            set: |s| s.prefs.server_key_pins = vec![ServerKeyPin { machine_id: "m".into(), pin: PIN.into(), extensions: Default::default() }],
+            reset: |s| s.prefs.server_key_pins.clear() },
         SkipRow { key: "plaintext_consent",
-            set: |s| s.plaintext_consent = vec![PlaintextConsent { machine_id: "m".into(), account: "a".into(),
+            set: |s| s.prefs.plaintext_consent = vec![PlaintextConsent { machine_id: "m".into(), account: "a".into(),
                 choice: PlaintextChoice::Allowed, extensions: Default::default() }],
-            reset: |s| s.plaintext_consent.clear() },
+            reset: |s| s.prefs.plaintext_consent.clear() },
     ]
 }
 
@@ -625,22 +625,22 @@ fn forgetting_a_profiles_last_offset_removes_the_profile_record() {
     s.set_subtitle_offset_for("u1", "m", "1", Some(100));
     s.set_subtitle_offset_for("u1", "m", "2", Some(200));
     s.set_subtitle_offset_for("u2", "m", "1", Some(300));
-    assert_eq!(s.subtitle_offsets.len(), 2);
+    assert_eq!(s.prefs.subtitle_offsets.len(), 2);
 
     s.set_subtitle_offset_for("u1", "m", "1", None);
-    assert_eq!(s.subtitle_offsets.len(), 2, "u1 still has an item");
+    assert_eq!(s.prefs.subtitle_offsets.len(), 2, "u1 still has an item");
     assert_eq!(s.subtitle_offset_for("u1", "m", "2"), Some(200));
 
     s.set_subtitle_offset_for("u1", "m", "2", None);
-    assert_eq!(s.subtitle_offsets.len(), 1, "u1's record is gone with its last item");
-    assert_eq!(s.subtitle_offsets[0].user, "u2");
+    assert_eq!(s.prefs.subtitle_offsets.len(), 1, "u1's record is gone with its last item");
+    assert_eq!(s.prefs.subtitle_offsets[0].user, "u2");
     assert_eq!(s.subtitle_offset_for("u2", "m", "1"), Some(300), "u2 is untouched");
 
     s.set_subtitle_offset_for("u2", "m", "1", Some(0));
-    assert!(s.subtitle_offsets.is_empty(), "an offset of 0 is a forget");
+    assert!(s.prefs.subtitle_offsets.is_empty(), "an offset of 0 is a forget");
 
     s.set_subtitle_offset_for("nobody", "m", "1", None);
-    assert!(s.subtitle_offsets.is_empty(), "forgetting for an unknown profile creates no record");
+    assert!(s.prefs.subtitle_offsets.is_empty(), "forgetting for an unknown profile creates no record");
     assert_eq!(legacy_key(&s, "subtitle_offsets"), None, "and the key is skipped while empty");
 }
 
@@ -701,4 +701,37 @@ fn the_file_backend_keeps_only_the_language_at_sign_out() {
     expected["playback_quality"] = json!("auto");
     expected["trailer_autoplay"] = json!(true);
     assert_eq!(legacy(&fresh), expected, "everything else is the fresh-install session");
+}
+
+/// **P-d2 and P-d7, the file backend: after a sign-out and a sign-in every profile reads the DEFAULTS.**
+/// The file backend keeps only the language at sign-out (above), so a profile's own picks go with the
+/// credential file and so do the legacy keys they fell back to. That is today's file-backend behaviour,
+/// unchanged by the per-profile move (N5): nothing a profile picked, and nothing the TV chose before,
+/// outlives a sign-out here.
+#[test]
+fn file_backend_sign_out_then_in_reads_the_defaults() {
+    use plx_platform::i18n::Preference;
+    let _serial = plx_base::testlock::serial();
+    let root = Root::new("signout-profile-prefs");
+    let saved = plx_platform::i18n::saved_preference();
+    redirect_for_test(None);
+    redirect_candidates_for_test(Some(vec![root.dir.join("legacy-auth.json")]));
+
+    let mut session = all_non_default();
+    let stamp = crate::plex::grant::account_key(&session.account_token);
+    assert!(put_own::<SubtitleSizePref>(&mut session.prefs.profile_prefs, "u1", &stamp, SubtitleSize::Small));
+    save(&session);
+    assert_eq!(peek().prefs.profile_prefs.len(), 1, "setup: the profile's pick is stored");
+    assert_eq!(peek().prefs.subtitle_size, SubtitleSize::Large, "setup: and so is the legacy key");
+    assert!(matches!(clear(), ClearOutcome::Durable { .. }));
+
+    redirect_for_test(None);
+    plx_platform::i18n::set_saved_preference(Preference::System);
+    let fresh = load_with_id(|| "new-install-id".into());
+    plx_platform::i18n::set_saved_preference(saved);
+
+    assert!(fresh.prefs.profile_prefs.is_empty(), "the profile's own picks did not survive");
+    let seat = Seat::Seated { user: "u1".into(), stamp: crate::plex::grant::account_key("another-account") };
+    assert_eq!(stored_effective::<SubtitleSizePref>(&fresh, &seat), SubtitleSize::Medium,
+        "the profile reads the default: neither its pick nor the legacy Large is left");
 }

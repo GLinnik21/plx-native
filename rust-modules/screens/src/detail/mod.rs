@@ -3967,20 +3967,20 @@ impl DetailScreen {
         use trailer::TrailerKey;
         if let TrailerKey::Scrub(fwd) = act {
             let commit = match edge {
-                Edge::Down => {
-                    self.trailer_ctl.scrub_fresh(
-                        fwd,
-                        now,
-                        plx_media::player::duration_ns(),
-                        plx_media::player::playpos_ns(),
-                    );
-                    None
-                }
+                Edge::Down => self.trailer_ctl.scrub_fresh(
+                    fwd,
+                    now,
+                    plx_media::player::duration_ns(),
+                    plx_media::player::playpos_ns(),
+                ),
                 Edge::Repeat => {
                     self.trailer_ctl.scrub_repeat(now);
                     None
                 }
-                Edge::Up => self.trailer_ctl.scrub_release(now),
+                Edge::Up => {
+                    self.trailer_ctl.scrub_release(now);
+                    None
+                }
             };
             if let Some(target_ns) = commit {
                 self.content(fx, ContentReq::PreviewSeek(target_ns));

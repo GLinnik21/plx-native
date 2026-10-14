@@ -159,8 +159,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   line in the log before sending any key; never press `ok` on a card whose `ratingKey` you have not
   read from the log; reopen a screen by relaunching with `--screen` rather than walking Home. A
   Continue Watching tile resumes playback on OK whenever Settings > Playback > Continue Watching
-  is "Play" (the default, "Open details", opens the page) — and the setting is saved on the set,
-  so never assume which one a given install has. In the default the card's hold menu opens ON a
+  is "Play" (the default, "Open details", opens the page) — and the setting is saved on the set
+  PER PROFILE (a profile that never chose reads the install's older value), so never assume which
+  one a given install, or a given profile on it, has. In the default the card's hold menu opens ON a
   Play/Continue row, so hold-then-OK plays too. That press is how two separate sessions started
   real playback on the owner's account. Seeding, scrobbling, unscrobbling, marking watched and
   "Remove from Deck" are all writes to a household's actual viewing record — the managed and Guest profiles

@@ -881,6 +881,28 @@ per-op assertions from the `op`/`mode`. Track-menu row semantics: **audio tab** 
 metadata audio index (0-based, file order); **subtitles tab** row 0 = *Off*, row *r* = subtitle
 index *r−1*.
 
+**Track memory.** A track-menu pick on an episode (what `audio_switch` and `subtitle` emulate) is
+remembered for its show by the SEATED profile, and the next episode plays it. So `run.py` arms
+`plxnative-trackmemory=clear` for every case, beside `plxnative-audioenh`: the app forgets the seated
+profile's remembered shows at the first seat, and a case's starting memory is the manifest's rather
+than whatever the previous case's pick left. Only a seated boot (`"session": "stored"`, or a picker
+boot) remembers anything or has anything to clear; a boot that injects a token (the default, `--guest`
+included, since both write `plxnative-token`) never seats, so its picks write no memory. A case that
+grades the memory itself (E1's pick shows on E2) must boot seated; `ui-sim` does, against `mock_pms`
+with a stored mock session and `plxnative-pickuser`. For that walk, `mock_pms.py --media DIR
+--media-next-episode` serves the verification show with a second episode (ratingKey 900005) of the
+same tracks, under its own part id so a selection PUT on episode 1 never reaches it, and a
+continuous PlayQueue over the show. Boot episode 1 (`plxnative-play=900003`,
+`plxnative-menupick=<tab>,<row>`, `plxnative-autoseek=<s>`), let Up Next run, and the log's
+`track-memory: applied …` line on episode 2 is the read. Add `--media-next-episode-remux` and
+episode 2 is a copy remux the app's subtitle side reader is not admitted on (its decision says
+`transcode`/`copy` and its bitrate reads 32000 kbps): a subtitle remembered ON from episode 1 is then
+one episode 2 cannot show, the log says `not shown (copy remux)` and the Subtitles tab carries the
+note line. Serve `--transcode-fixture <the mockverify mkv>` so the remux's start.mkv has bytes, and add
+`--no-plex-pass` (or `--no-loudness-analysis`): on a server with Plex Pass and an analysed audio track the
+plan demotes the remux to a burn re-encode, which draws the remembered subtitle in the picture and
+leaves nothing to note.
+
 A **synthetic** case is a `pipeline_cases` entry instead, and its `expect` keys are the ones listed
 under *Assertions* below. Two are worth naming here because they are recent and easy to miss:
 **`video_size`** (`"1920x1080"`) grades the demuxed raster EXACTLY and is what the resolution
