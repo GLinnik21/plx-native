@@ -331,6 +331,22 @@ static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 // `crate::route::cancel_play`'s `clear_play_verdict` (the same ritual that retires a `/decision`
 // refusal on leaving the player, called from `app.rs`'s `exit_player`) retires it precisely the
 // same way. See `engine.rs`'s `start_bufferfeed`/`start_bufferfeed_tracked` for the gate itself.
+/// `type=18`'s `num` when the pipeline releases the video decoder from an established session
+/// (`"VDEC resource is released by policy action"`). See `Shared::decoder_revoked`.
+const DECODER_REVOKED_BY_POLICY: i64 = 600;
+
+/// Did the pipeline take this session's video decoder back since the last ask? Consumes the
+/// answer: the app loop parks the session once per release.
+pub fn take_decoder_revoked() -> bool {
+    SHARED.decoder_revoked.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
+/// The pipeline's decoder release as the app loop sees it, for a test with no native session.
+#[cfg(any(test, feature = "test-support"))]
+pub fn note_decoder_revoked_for_test() {
+    SHARED.decoder_revoked.store(true, std::sync::atomic::Ordering::Release);
+}
+
 pub use engine::{
     acb_init, begin_resume, land_resume, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
     suspend_bufferfeed, suspend_bufferfeed_if_attempt, BufferfeedStartOutcome, ResumeOutcome, ResumeStart,
@@ -2234,14 +2250,24 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
         // player/CLAUDE.md, "`frames` is SEEK-scoped"). A `loadCompleted` already received is NOT
         // an exemption: a completed Load is the pipeline accepting a declaration, and a refusal
         // that lands after it but before any picture is still a session that never started. A
-        // type=18 after a picture stays diagnostic-only here: whether that shape exists, and what
-        // it means mid-play, is unmeasured, and the lab could not say whether 18 is the only
-        // refusal type either — so the `num` is logged rather than filtered on.
+        // type=18 after a picture stays diagnostic-only here except for the one number that has
+        // been measured (the decoder release, below): what the others mean mid-play is unmeasured,
+        // and the lab could not say whether 18 is the only refusal type either — so their `num` is
+        // logged rather than filtered on.
         if ty == 18 && !SHARED.seen_frame.load(Relaxed) {
             log(&format!(
                 "smp: Load refused by the pipeline before any picture (type=18 num={num}) — failing the source"
             ));
             SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
+        } else if ty == 18 && num == DECODER_REVOKED_BY_POLICY {
+            // **After a picture, ONE number is measured: the decoder taken back.** A paused direct
+            // play left until the screensaver came on (dev set, 2026-10-13) got exactly this, with
+            // no app-switch edge, and the pipeline refused every Play after it for good — so this
+            // is not a statistic either. The app loop parks the session the way an app switch does
+            // and rebuilds it on the viewer's next press (`take_decoder_revoked`). Every other
+            // number after a picture stays diagnostic-only, as above.
+            log("smp: the pipeline released the video decoder (type=18 num=600) — parking the session");
+            SHARED.decoder_revoked.store(true, std::sync::atomic::Ordering::Release);
         }
     }
     if ty == 0 {
@@ -2627,6 +2653,41 @@ mod tests {
             !failed(),
             "a seek zeroes `frames`; the refusal predicate must read `seen_frame`, not that"
         );
+        SHARED.retire_native_session(epoch);
+        SHARED.reset_session();
+    }
+
+    /// **The decoder taken back from an established session is the one `type=18` after a picture
+    /// that acts.** Device log, 2026-10-13: a paused direct play under the screensaver got
+    /// `type=18 num=600 "VDEC resource is released by policy action"`, no app-switch edge, and
+    /// `Starfish refused Play` on every press after it. It raises `decoder_revoked` once, for the
+    /// app loop to park the session; before a picture it is still a Load refusal, and any other
+    /// number after a picture is still diagnostic only.
+    #[test]
+    fn a_decoder_released_after_a_picture_is_reported_once_and_nothing_else_is() {
+        let _guard = plx_base::testlock::serial();
+        let released = c"{\"errorCode\":600,\"errorText\":\"VDEC resource is released by policy action\"}".as_ptr();
+        let failed = || SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire);
+
+        SHARED.reset_session();
+        let _ = take_decoder_revoked();
+        let epoch = SHARED.begin_native_session().expect("session");
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
+        sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
+        assert!(!take_decoder_revoked(), "another number after a picture stays diagnostic");
+        sf_on_event(epoch, 18, 600, released);
+        assert!(!failed(), "an established session is not a Load refusal");
+        assert!(take_decoder_revoked(), "the release is reported");
+        assert!(!take_decoder_revoked(), "…once");
+        sf_on_event(epoch, 18, 600, released);
+        SHARED.retire_native_session(epoch);
+        SHARED.reset_session();
+        assert!(!take_decoder_revoked(), "a reset session forgets an unread release");
+
+        let epoch = SHARED.begin_native_session().expect("session");
+        sf_on_event(epoch, 18, 600, released);
+        assert!(failed(), "before any picture it is still the Load refusal it always was");
+        assert!(!take_decoder_revoked());
         SHARED.retire_native_session(epoch);
         SHARED.reset_session();
     }

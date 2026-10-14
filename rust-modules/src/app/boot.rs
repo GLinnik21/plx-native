@@ -1877,6 +1877,7 @@ pub(crate) unsafe fn construct(
         player,
         adapters,
         repause_at,
+        decoder_parked: false,
         ok_armed,
         last_route_reported,
         ptr,

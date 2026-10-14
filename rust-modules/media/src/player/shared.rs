@@ -606,6 +606,13 @@ pub struct Shared {
     /// `error_shape` tell a k5lp-style hang apart from an ordinary firmware refusal on the wire,
     /// as `FailureKind::LoadTimeout` rather than the generic `FailureKind::TvPipeline`.
     pub load_timed_out: AtomicBool,
+    /// The pipeline took the video decoder back from an ESTABLISHED session: `type=18 num=600`
+    /// (`"VDEC resource is released by policy action"`) after a picture. Measured on the dev set
+    /// (webOS 4, 2026-10-13): a direct play left paused until the screensaver came on got this
+    /// with NO `LIFECYCLE: background`, and every later Play was refused for good. Set on the
+    /// callback thread, taken once by the app loop ([`super::take_decoder_revoked`]), which parks
+    /// the session exactly as an app switch does and rebuilds it on the viewer's next press.
+    pub decoder_revoked: AtomicBool,
     /// issue #74 D.1: the epoch this session last logged "native: loadCompleted while Load in
     /// flight — deferring" for — 0 = never. `epoch` is monotonic and never 0 for a real session
     /// ([`NativeSessionState::next`] skips 0 on wraparound), so comparing against this is enough
@@ -988,6 +995,7 @@ impl Shared {
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
             load_timed_out: AtomicBool::new(false),
+            decoder_revoked: AtomicBool::new(false),
             native_load_deferred_logged_epoch: AtomicU32::new(0),
             native_load_elapsed_ms: AtomicU64::new(0),
             playback_trace: Mutex::new(super::report::PlaybackTrace::new()),
@@ -1609,6 +1617,7 @@ impl Shared {
         self.demux_no_video.store(false, Ordering::Relaxed);
         self.load_failed.store(false, Ordering::Relaxed);
         self.load_timed_out.store(false, Ordering::Relaxed);
+        self.decoder_revoked.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
         // item (player::reset_subtitle). ASS packets are immutable file facts, not

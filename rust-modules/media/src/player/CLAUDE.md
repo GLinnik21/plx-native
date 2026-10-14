@@ -92,6 +92,13 @@ something.
   grades both (`load_max`, `sink_echo`). **Also since 2026-09-03: a `type=18` before any picture
   publishes `load_failed`** (`sf_on_event_inner`), so an asynchronous refusal reaches the failure
   read-out instead of parking the player in Connecting on a black screen (lab report §3.5).
+  **After a picture, one number acts too (2026-10-13): `type=18 num=600`, "VDEC resource is
+  released by policy action".** A paused direct play left until the screensaver came on got it with
+  no `LIFECYCLE: background`, and the dead pipeline refused every Play after it. It raises
+  `decoder_revoked`; the app loop parks the session exactly as an app switch does
+  (`run::park_on_decoder_release`) and the viewer's next key or click is spent on the foreground
+  claim that rebuilds it at the saved spot and clock. Every other `type=18` after a picture is
+  still only logged.
   **And the frame rate IS a discriminator, measured on the dev set the same day:** a 4K H.264 24p
   direct play declared at 60 makes the pipeline announce `frameRate:24` and then `:30` for the same
   stream (a 24p picture on a 30 fps lattice — the judder the maintainer saw on the Auto 4K rung);

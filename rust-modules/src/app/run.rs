@@ -895,29 +895,10 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
                 || plx_media::route::has_url(&app.player.session))
             && !app.player.lifecycle.awaiting_load()
         {
-            // INTENDED, not published: this snapshot is the only thing the foreground
-            // restore has, and `suspend_bufferfeed` below drops the pending seek target
-            // with the session — so a background that lands while a seek is still
-            // resolving would otherwise save (and restore to) the spot the user just
-            // seeked AWAY from, with nothing left to correct it. See `intended_pos`.
-            let saved_ns = intended_pos(&mut app.player.session);
-            let clock = super::lifecycle::clock_for_suspend_now(&app.player.lifecycle);
-            app.player.lifecycle.suspend(saved_ns, clock);
+            park_playback(app);
             // The OS took the screen; whatever the pointer was doing, its button-up is never
             // going to arrive here.
             app.ptr.button_down = false;
-            // The session is preserved for the foreground reload, so
-            // this is the RELOAD half of the reset — the in-flight gesture goes, the transport's
-            // timer and the countdown stay. It is spelled as a delivery to the owner because
-            // `player::TX::reset_for_reload` no longer clears `scrub_ns` from under it (§2.3).
-            if let Some(player) = super::bridge::player_mut(&mut app.pages) {
-                player.transport_reset(true);
-            }
-            close_player_overlays(&mut app.pages);
-            plx_media::player::suspend_bufferfeed(&mut app.player.session, &mut app.adapters.player);
-            // Also retire the resolve generation: its worker may finish after backgrounding,
-            // including before the accepted start's Player page has ever mounted.
-            plx_media::route::cancel_play(&mut app.player.session);
             // **The PAGE STACK is deliberately not touched**, which is the whole of what a park
             // is: the OS is taking the screen away, not the user navigating, and the foreground
             // arm below reloads straight back into the player. It USED to write
@@ -961,6 +942,8 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // Reacquire only on DID foreground, before playback restoration and rendering.
             restore_window(app.win);
             plx_machine::idle::invalidate();
+            // A decoder-release park is claimed by this edge like any other park.
+            app.decoder_parked = false;
             let activation = drive_foreground(
                 &mut app.player.lifecycle,
                 &mut app.player.session,
@@ -1056,7 +1039,15 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         }
         // From here down this IS a fresh press, whatever the driver stamped on it.
         app.last_input = clock::now();
-        begin_fresh_press(&mut app.player.session, 
+        if claim_press_after_decoder_release(app) {
+            // `down_sym` is unconditional for every fresh press (`begin_fresh_press`'s own
+            // doc), and this press never reaches that function: skipping it here left a key
+            // still physically held after the restore read as a FRESH press on its next
+            // hardware auto-repeat, firing the input ladder for real a tick after the restore.
+            app.down_sym = sym;
+            return;
+        }
+        begin_fresh_press(&mut app.player.session,
             key,
             sym,
             wcode,
@@ -1348,6 +1339,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             app.input.press.cancel();
             app.ok_armed = false;
         }
+        if claim_press_after_decoder_release(app) {
+            return;
+        }
         // Rule 11's click half, and the same one arm the hover path takes. The three it
         // replaces each spelled out the two activation shapes by hand — a control FACE
         // dips and commits on the spring-back, a table row commits on the button-down —
@@ -1505,6 +1499,98 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     }
 }
 
+/// Park the playing session for a later restore at the same spot: save its intended position and
+/// clock, drop the Engine, keep the session and the page stack. An app switch does this, and so
+/// does the pipeline taking the video decoder back ([`park_on_decoder_release`]); the restore is
+/// the foreground lifecycle's claim either way.
+fn park_playback(app: &mut App) {
+    // INTENDED, not published: this snapshot is the only thing the foreground
+    // restore has, and `suspend_bufferfeed` below drops the pending seek target
+    // with the session — so a background that lands while a seek is still
+    // resolving would otherwise save (and restore to) the spot the user just
+    // seeked AWAY from, with nothing left to correct it. See `intended_pos`.
+    let saved_ns = intended_pos(&mut app.player.session);
+    let clock = super::lifecycle::clock_for_suspend_now(&app.player.lifecycle);
+    app.player.lifecycle.suspend(saved_ns, clock);
+    // The session is preserved for the foreground reload, so
+    // this is the RELOAD half of the reset — the in-flight gesture goes, the transport's
+    // timer and the countdown stay. It is spelled as a delivery to the owner because
+    // `player::TX::reset_for_reload` no longer clears `scrub_ns` from under it (§2.3).
+    if let Some(player) = super::bridge::player_mut(&mut app.pages) {
+        player.transport_reset(true);
+    }
+    close_player_overlays(&mut app.pages);
+    plx_media::player::suspend_bufferfeed(&mut app.player.session, &mut app.adapters.player);
+    // Also retire the resolve generation: its worker may finish after backgrounding,
+    // including before the accepted start's Player page has ever mounted.
+    plx_media::route::cancel_play(&mut app.player.session);
+}
+
+/// **The pipeline took the video decoder back** (`player::take_decoder_revoked`): park the session
+/// as an app switch would, and leave the restore to the viewer's next press
+/// ([`claim_press_after_decoder_release`]). Measured 2026-10-13 on the dev set: a paused direct play
+/// left until the screensaver came on lost its decoder with NO `LIFECYCLE: background`, and the
+/// dead pipeline refused every Play after it, so the only way back was closing the app. Not
+/// rebuilt at once: whatever took the decoder (the screensaver) may still hold it, and a Load it
+/// refuses ends on the failure read-out.
+fn park_on_decoder_release(app: &mut App) {
+    if !plx_media::player::take_decoder_revoked() {
+        return;
+    }
+    if plx_media::route::preview_request(&app.player.session) {
+        // A trailer is never parked (an app switch ends it too): restoring it would bring the
+        // trailer back as ordinary playback.
+        super::content::halt_preview_now(&mut app.player.session, &mut app.adapters.player);
+        return;
+    }
+    if !app.adapters.player.is_live() || app.player.lifecycle.awaiting_load() {
+        return;
+    }
+    log("player: decoder released by the pipeline — parked until the next press");
+    park_playback(app);
+    app.decoder_parked = true;
+    plx_machine::idle::invalidate();
+}
+
+/// The first key or click after [`park_on_decoder_release`] rebuilds the picture at the saved spot
+/// in its saved clock (a paused session comes back paused), through the same claim the DID
+/// foreground edge makes. The press is spent on that, like a press that finds the HUD hidden: the
+/// viewer cannot see what it would have acted on. `false` when nothing is parked this way.
+///
+/// **A surface gets first refusal.** `park_on_decoder_release` parks without asking whether
+/// something other than the player owns input, because the dead pipeline has to be dropped either
+/// way; this is the one check that matters for INPUT. If a `ModalStack` surface (Settings, a track
+/// menu, …) is open over the parked player, its press is its own — stealing it for the restore
+/// would answer a key the viewer aimed at the surface. The park stays pending (not stale: only a
+/// superseded session below clears it) for a later press with nothing in front of it.
+fn claim_press_after_decoder_release(app: &mut App) -> bool {
+    if !app.decoder_parked {
+        return false;
+    }
+    if !app.player.lifecycle.awaiting_load() {
+        app.decoder_parked = false;
+        return false;
+    }
+    if app.pages.surface_up() {
+        return false;
+    }
+    app.decoder_parked = false;
+    let activation = drive_foreground(
+        &mut app.player.lifecycle,
+        &mut app.player.session,
+        ForegroundInput::DidForeground,
+        &mut PlayerForegroundActuator {
+            pa: &mut app.adapters.player,
+            repause_at: &mut app.repause_at,
+        },
+    );
+    if matches!(activation, ForegroundActivation::Launched) {
+        finish_foreground_launch(app);
+    }
+    plx_machine::idle::invalidate();
+    true
+}
+
 /// A foreground Load launched — straight from the DID edge, or from the frame that landed a flight
 /// the restore was waiting on (`poll_foreground_flight`): mount the player and pin its transport.
 fn finish_foreground_launch(app: &mut App) {
@@ -1532,6 +1618,7 @@ fn playback_may_run(app: &App) -> bool {
 /// poll, the reporter, EOS / Up Next, the hub refresh, the held key, the scrubber and the paused
 /// seek — everything that reads `fr.now` and no `dt`.
 pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
+        park_on_decoder_release(app);
         if playback_may_run(app) {
             if is_started() {
                 plx_media::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
@@ -3187,6 +3274,7 @@ mod lifecycle_regression_tests {
                 }),
             },
             repause_at: -1,
+            decoder_parked: false,
             ok_armed: Default::default(),
             last_route_reported: Default::default(),
             ptr: Pointer::IDLE,
@@ -4448,6 +4536,79 @@ mod lifecycle_regression_tests {
             rig.app.player.lifecycle.state, suspended,
             "duplicate background must not resnapshot"
         );
+    }
+
+    /// **A decoder the pipeline takes back parks the session, and the next press brings it back.**
+    /// Device log, 2026-10-13: a paused direct play under the screensaver got `type=18 num=600`
+    /// with no app-switch edge, and every Play after it was refused until the app was closed. The
+    /// release now parks exactly as an app switch does (session and page kept, Engine dropped),
+    /// and the first press is spent on the foreground claim that rebuilds it; the press after
+    /// that is an ordinary one again.
+    #[test]
+    fn a_decoder_released_by_the_pipeline_parks_until_the_next_press_restores_it() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED a_decoder_released_by_the_pipeline_parks_until_the_next_press_restores_it: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
+        rig.request();
+        rig.resolve();
+        rig.accept_start();
+        assert!(rig.app.adapters.player.is_live(), "fixture must create the actual Engine");
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+
+        plx_media::player::note_decoder_revoked_for_test();
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+        assert!(!rig.app.adapters.player.is_live(), "the dead pipeline is dropped");
+        assert!(rig.app.player.lifecycle.awaiting_load(), "…and the session parked for a restore");
+        assert!(plx_media::route::has_url(&rig.app.player.session), "the park keeps the session");
+        let parked = rig.app.player.lifecycle.state;
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+        assert_eq!(rig.app.player.lifecycle.state, parked, "nothing rebuilds it before a press");
+
+        rig.app.ev = encode_key(plx_ui::consts::SDLK_DOWN, 0, true);
+        event(&mut rig.app, &mut fr, SDL_KEYDOWN);
+        assert!(!rig.app.player.lifecycle.awaiting_load(), "the press claimed the restore");
+        assert!(rig.app.inputs.is_empty(), "…and was spent on it, not handed to the page");
+        assert!(!claim_press_after_decoder_release(&mut rig.app), "the next press is ordinary");
+    }
+
+    /// **A surface open over the parked player gets its own press, not the restore.**
+    /// `park_on_decoder_release` parks without asking whether a `ModalStack` surface owns input
+    /// (the dead pipeline has to be dropped either way), so the claim itself is the one check that
+    /// matters for input: Settings opening while the decoder is parked must still see the next key,
+    /// and the restore must stay pending rather than being spent on a press the surface never got.
+    #[test]
+    fn a_surface_open_over_a_parked_decoder_release_keeps_its_own_press() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED a_surface_open_over_a_parked_decoder_release_keeps_its_own_press: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
+        rig.request();
+        rig.resolve();
+        rig.accept_start();
+        frame(&mut rig.app, 0); // settle the pending Player page mount before opening a surface
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+
+        plx_media::player::note_decoder_revoked_for_test();
+        unsafe { playback_tick(&mut rig.app, &mut fr); }
+        assert!(rig.app.player.lifecycle.awaiting_load(), "the session is parked for a restore");
+
+        super::super::bridge::open_settings(&mut rig.app.pages);
+        frame(&mut rig.app, fr.now);
+        assert!(rig.app.pages.surface_up(), "Settings must mount as a ModalStack surface");
+
+        rig.app.ev = encode_key(plx_ui::consts::SDLK_DOWN, 0, true);
+        event(&mut rig.app, &mut fr, SDL_KEYDOWN);
+        assert!(!rig.app.inputs.is_empty(), "the open surface must get this press");
+        assert!(rig.app.player.lifecycle.awaiting_load(), "…and the restore must stay pending");
     }
 
     #[test]

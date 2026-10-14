@@ -271,6 +271,9 @@ pub(crate) struct App {
     /// `player::engine::ENGINE` together with the main-thread token that confines it.
     pub(crate) adapters: Adapters,
     repause_at: i64,
+    /// The playing session is parked because the pipeline took its video decoder back, not
+    /// because the app left the screen; the next press restores it (`run::park_on_decoder_release`).
+    decoder_parked: bool,
     pub(crate) ok_armed: bool,
     last_route_reported: &'static str,
     pub(crate) ptr: Pointer,
