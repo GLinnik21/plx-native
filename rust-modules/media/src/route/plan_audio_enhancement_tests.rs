@@ -293,14 +293,17 @@ fn embedded_default_subtitle_with_enhancement_is_burned() {
 fn embedded_default_subtitle_with_enhancement_logs_applied_on_cold_start() {
     let mut ps = PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    let log_path = plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::EVENTS);
-    let before = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-    let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
-        |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![selected_sub(9, "srt")]),
-        |_, _| {});
+    // A PRIVATE log: the shared one is a single machine-wide file every other test binary (and any
+    // other `make check` beside this one) appends to and the simulator truncates, so slicing "what it
+    // gained" off it by offset can read another run's lines or panic on a file that shrank. The
+    // resolve logs on this thread (`eventlog::with_private_log`).
+    let (r, appended) = plx_base::eventlog::with_private_log(|| {
+        let r = resolve(&mut ps, MDE_DIRECTPLAY, EnhMode::Honor("ac3"), 0, MKV, "ac3",
+            |sid| fourk_item_with_subs(sid, vec![track(1, "ac3", 2, true)], vec![selected_sub(9, "srt")]),
+            |_, _| {});
+        (r, std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default())
+    });
     assert_eq!(r.plan.enhancement, EnhancementOutcome::Applied, "precondition: cold start is a Burn");
-    let written = std::fs::read(&log_path).unwrap();
-    let appended = String::from_utf8_lossy(&written[before as usize..]);
     assert!(
         appended.contains("enhancement: applied boost=0 loudness=1"),
         "no `enhancement: applied` line from the cold-start branch :: {appended:?}"

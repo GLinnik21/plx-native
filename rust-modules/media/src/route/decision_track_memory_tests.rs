@@ -120,7 +120,9 @@ mod through_build_stream {
     }
 
     /// The `track-memory:` lines in `appended` (what the event log gained) that name track `id`. The
-    /// log is a file the whole process writes, so a line is claimed by the track it names.
+    /// log [`resolve_in`] captures is private to the resolve (`eventlog::with_private_log`), so every
+    /// line in it is this resolve's own; a line is still claimed by the track it names, because the
+    /// one resolve logs lines about both halves.
     pub(super) fn memory_lines(appended: &str, id: i64) -> Vec<String> {
         appended
             .lines()
@@ -138,12 +140,29 @@ mod through_build_stream {
     /// [`resolve_logged`] on a session the caller owns (and has made fresh), for a test that goes on
     /// to land the plan: `then` gets the plan while the loopback PMS is still up, and what it returns
     /// comes back beside the requests the server saw and what the event log gained.
+    ///
+    /// **The log it returns is this resolve's alone.** A host test run resolves the event log to the
+    /// bare `/tmp/plxnative-events.log` (only `hostsim` can steer it), one file for the whole machine:
+    /// every test binary of this `make check`, and of the other run beside it or another checkout's,
+    /// appends to it, and `serial()` is one process's lock. Slicing "what the file gained" off that
+    /// file therefore also returned a second run's `track-memory: applied subtitle (track 55001)` (the
+    /// same fixtures name the same stream ids in every run), and "one line per resolve" read 3. The
+    /// whole resolve and `then` run on THIS thread, which `eventlog::with_private_log` points at a
+    /// fresh private file; a line from any other thread or process cannot land in it.
     pub(super) fn resolve_in<T>(
         ps: &mut PlaybackSession, case: Case, then: impl FnOnce(&mut PlaybackSession, Plan) -> T,
     ) -> (T, Vec<String>, String) {
+        plx_base::eventlog::with_private_log(|| {
+            let (out, requests) = resolve_on_this_thread(ps, case, then);
+            let appended = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+            (out, requests, appended)
+        })
+    }
+
+    fn resolve_on_this_thread<T>(
+        ps: &mut PlaybackSession, case: Case, then: impl FnOnce(&mut PlaybackSession, Plan) -> T,
+    ) -> (T, Vec<String>) {
         assert!(plx_net::net::global_init());
-        let log_path = plx_base::paths::in_runtime_dir(plx_base::paths::runtime_file::EVENTS);
-        let before = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
         let (port, rx, server) = plan_pms(requests_expected(&case), case.mde);
         let sid = plx_plex::plex::register_for_test(MACHINE, "127.0.0.1", port, "token", "tm-client");
         if let Some(link) = case.link {
@@ -172,9 +191,7 @@ mod through_build_stream {
         let requests = rx.recv_timeout(Duration::from_secs(15)).expect("PMS never saw the resolve");
         server.join().unwrap();
         plx_plex::plex::reset_servers_for_test();
-        let written = std::fs::read(&log_path).unwrap_or_default();
-        let appended = String::from_utf8_lossy(&written[(before as usize).min(written.len())..]).into_owned();
-        (plan, requests, appended)
+        (plan, requests)
     }
 
     pub(super) fn is_direct_play(plan: &Plan) -> bool {
@@ -590,6 +607,36 @@ fn q_top_b_a_fixed_rung_burns_the_remembered_subtitle() {
     assert_burned(&plan, &requests, 55001);
     assert_eq!(memory_lines(&log, 55001).len(), 1, "one line per resolve: {log}");
     assert!(memory_lines(&log, 55001)[0].ends_with("track-memory: applied subtitle (track 55001)"), "{log}");
+}
+
+/// **The log a resolve returns is that resolve's alone.** The event log of a host test run is one file
+/// for the whole machine (`/tmp/plxnative-events.log`; only `hostsim` can steer it), and a second
+/// `make check`, another checkout or another lane appends to it from its own process while this one
+/// resolves, in the same fixtures' words: `q_top_b_a_fixed_rung_burns_the_remembered_subtitle` read
+/// three `track 55001` lines for its one resolve. `serial()` is one process's lock, so it cannot keep
+/// them out; the capture has to be a file they do not write. The foreign writer is a thread spawned
+/// inside the capture window (the redirect is per thread, so its line lands in the shared file just as
+/// another process's does) that logs a line `memory_lines` claims: the interleave a second process
+/// produces by timing alone, made deterministic.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn the_log_a_resolve_returns_is_not_the_file_other_writers_append_to() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let case = Case::episode(two_subs(), memory(None, Some(english_track())));
+    let ((captured, shared), _, log) = resolve_in(&mut ps, case, |_, _plan| {
+        let captured = plx_base::eventlog::events_log();
+        let shared = std::thread::spawn(|| {
+            plx_base::eventlog::log("track-memory: applied subtitle (track 55001) [a foreign writer, regression test]");
+            plx_base::eventlog::events_log()
+        })
+        .join()
+        .unwrap();
+        (captured, shared)
+    });
+    assert_eq!(memory_lines(&log, 55001).len(), 1, "the foreign writer's line is not this resolve's: {log}");
+    assert!(!log.contains("foreign writer"), "{log}");
+    assert_ne!(captured, shared, "setup: the foreign writer appended to a different file than the capture");
 }
 
 /// A relay cannot carry a copy either; its encode takes the burn.
