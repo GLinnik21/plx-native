@@ -4,7 +4,7 @@
 use plx_media::route::{choose, Choice, How};
 use plx_plex::plex::account::{PreferenceError, PreferenceRequest};
 use plx_plex::plex::session::{DeckPressPref, DirectPlayModePref, NextEpisodeModePref, QualityPref,
-    SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref};
+    SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref, TrailerAutoplayPref};
 use plx_screens::registry::{AccountPreferenceReply, PreferenceCmd};
 use std::sync::mpsc::Sender;
 
@@ -17,6 +17,7 @@ fn choose_setting(choice: Choice, reply: Sender<bool>) {
         Choice::NextEpisode(v) => choose::<NextEpisodeModePref>(v, How::settings::<NextEpisodeModePref>(reply)),
         Choice::SkipInterval(v) => choose::<SkipIntervalPref>(v, How::settings::<SkipIntervalPref>(reply)),
         Choice::DeckPress(v) => choose::<DeckPressPref>(v, How::settings::<DeckPressPref>(reply)),
+        Choice::TrailerAutoplay(v) => choose::<TrailerAutoplayPref>(v, How::settings::<TrailerAutoplayPref>(reply)),
         Choice::SubtitleSize(v) => choose::<SubtitleSizePref>(v, How::settings::<SubtitleSizePref>(reply)),
         Choice::SubtitlePosition(v) => choose::<SubtitlePositionPref>(v, How::settings::<SubtitlePositionPref>(reply)),
     }

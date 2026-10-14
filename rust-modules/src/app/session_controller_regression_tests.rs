@@ -214,6 +214,7 @@ mod tests {
 
     #[test]
     fn a_cancel_mid_flight_cannot_be_overtaken_by_an_in_flight_success() {
+        let _serial = plx_base::testlock::serial();
         let mut rig = rig(stored(false));
         let mut d = Dispatcher::<AppHost>::new();
         let mut records = waiting(&mut rig, &mut d);

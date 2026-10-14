@@ -1,5 +1,5 @@
 {
- "comment": "The demo library for the documentation screenshots. Every asset is openly licensed or public domain; tests/demo_library/assets.json records where each came from. Times are PINNED (now = 1790000000) so every run of the mock answers byte-identically. `collection_order` pins a collection's custom order (a real server's Custom sort for a collection); a collection without one lists newest addition first. Blender Open Movies is pinned so the website's glass close-up (tests/screenshots/scenes.json, site-glass) has the brightest posters of the collection under the tab bar: Wing It! behind Home and Movies, then Spring and Sprite Fright. `added_order` and `continue_watching` put the strongest posters first and keep the titles whose art is weak out of the app's hero pool (the first HERO_MAX movies of Continue Watching, then Recently Added): Continue Watching's first seven movies and Recently Added's first seven are two different sets of real posters, so Home and the Movies tab never show the same poster twice in the visible part of two rows. Sprite Fright, which has no still that clears the hero zones, stays out of the pool as Recently Added's third card, between Big Buck Bunny and Coffee Run, because the site's tiles close-up (tests/screenshots/scenes.json, site-tiles) is focused on that card.",
+ "comment": "The demo library for the documentation screenshots. Every asset is openly licensed or public domain; tests/demo_library/assets.json records where each came from. Times are PINNED (now = 1790000000) so every run of the mock answers byte-identically. `collection_order` pins a collection's custom order (a real server's Custom sort for a collection); a collection without one lists newest addition first. Blender Open Movies is pinned so the website's glass close-up (tests/screenshots/scenes.json, site-glass) has the brightest posters of the collection under the tab bar: Wing It! behind Home and Movies, then Spring and Sprite Fright. `added_order` and `continue_watching` put the strongest posters first and keep the titles whose art is weak out of the app's hero pool (the first HERO_MAX movies of Continue Watching, then Recently Added): Continue Watching's first seven movies and Recently Added's first seven are two different sets of real posters, so Home and the Movies tab never show the same poster twice in the visible part of two rows. Sprite Fright, which has no still that clears the hero zones, stays out of the pool as Recently Added's third card, between Big Buck Bunny and Coffee Run, because the site's tiles close-up (tests/screenshots/scenes.json, site-tiles) is focused on that card. `people` gives a credited person a portrait (name -> an asset and the box of it that is the face): the seven performers of Tears of Steel, whose page the site video opens. Two are photographs of the actor from Wikimedia Commons (Wikiportret, CC BY 3.0); the other five have no photograph there and are cut from frames of the film itself (CC BY 3.0, like the rest of it), each frame's file page naming who is in it. Everyone else is served without one and the app draws its glyph.",
  "now": 1790000000,
  "server": {
   "friendlyName": "Demo Library",
@@ -484,6 +484,14 @@
      "url": "https://mango.blender.org/about/",
      "note": "Blender Institute project page; facts only",
      "retrieved": "2026-10-07"
+    },
+    {
+     "fields": [
+      "cast"
+     ],
+     "url": "https://en.wikipedia.org/wiki/Tears_of_Steel",
+     "note": "Wikipedia plot section; which performer plays which character, no prose copied",
+     "retrieved": "2026-10-13"
     }
    ],
    "cast": [
@@ -501,10 +509,11 @@
     },
     {
      "name": "Vanja Rukavina",
-     "role": "Celia"
+     "role": "Thom"
     },
     {
-     "name": "Denise Rebergen"
+     "name": "Denise Rebergen",
+     "role": "Celia"
     },
     {
      "name": "Jody Bhe"
@@ -2946,6 +2955,15 @@
   "the-general",
   "the-cabinet-of-dr-caligari"
  ],
+ "people": {
+  "Derek de Lint": {"photo": {"asset": "derek-de-lint-2012", "box": [150, 80, 2400, 3600]}},
+  "Sergio Hasselbaink": {"photo": {"asset": "sergio-hasselbaink-2012", "box": [1070, 150, 1640, 2460]}},
+  "Rogier Schippers": {"photo": {"asset": "tears-of-steel-frame-04", "box": [1480, 0, 800, 1200]}},
+  "Vanja Rukavina": {"photo": {"asset": "tears-of-steel-frame-01", "box": [1000, 90, 420, 630]}},
+  "Denise Rebergen": {"photo": {"asset": "tears-of-steel-frame-01", "box": [1770, 150, 440, 660]}},
+  "Jody Bhe": {"photo": {"asset": "tears-of-steel-frame-04", "box": [2887, 420, 720, 1080]}},
+  "Chris Haley": {"photo": {"asset": "tears-of-steel-frame-04b", "box": [1410, 0, 1060, 1590]}}
+ },
  "continue_watching": [
   {
    "item": "sintel",

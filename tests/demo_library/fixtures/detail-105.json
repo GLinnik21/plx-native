@@ -109,40 +109,48 @@
       "id": 16,
       "role": "Old Thom",
       "tag": "Derek de Lint",
-      "tagKey": "demo-person-16"
+      "tagKey": "demo-person-16",
+      "thumb": "/library/metadata/9000016/thumb/1790000000"
      },
      {
       "id": 17,
       "role": "Barley",
       "tag": "Sergio Hasselbaink",
-      "tagKey": "demo-person-17"
+      "tagKey": "demo-person-17",
+      "thumb": "/library/metadata/9000017/thumb/1790000000"
      },
      {
       "id": 18,
       "role": "Captain",
       "tag": "Rogier Schippers",
-      "tagKey": "demo-person-18"
+      "tagKey": "demo-person-18",
+      "thumb": "/library/metadata/9000018/thumb/1790000000"
      },
      {
       "id": 19,
-      "role": "Celia",
+      "role": "Thom",
       "tag": "Vanja Rukavina",
-      "tagKey": "demo-person-19"
+      "tagKey": "demo-person-19",
+      "thumb": "/library/metadata/9000019/thumb/1790000000"
      },
      {
       "id": 20,
+      "role": "Celia",
       "tag": "Denise Rebergen",
-      "tagKey": "demo-person-20"
+      "tagKey": "demo-person-20",
+      "thumb": "/library/metadata/9000020/thumb/1790000000"
      },
      {
       "id": 21,
       "tag": "Jody Bhe",
-      "tagKey": "demo-person-21"
+      "tagKey": "demo-person-21",
+      "thumb": "/library/metadata/9000021/thumb/1790000000"
      },
      {
       "id": 22,
       "tag": "Chris Haley",
-      "tagKey": "demo-person-22"
+      "tagKey": "demo-person-22",
+      "thumb": "/library/metadata/9000022/thumb/1790000000"
      }
     ],
     "UltraBlurColors": {

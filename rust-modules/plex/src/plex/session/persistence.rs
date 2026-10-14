@@ -413,6 +413,290 @@ fn str_value(value: &serde_json::Value) -> Option<&str> {
     value.as_str()
 }
 
+/// What shape of write the document guard is sizing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DocumentWrite {
+    /// `UpdatePreferences`: the stored public half is REPLACED, the ledger grows by one entry, and a
+    /// pending strict refresh is cancelled (`CanonicalState::apply`).
+    Update,
+    /// A `ReplaceAuth` or a migration completion that is written in ONE put (a fresh login, the
+    /// ACL-only tier, a legacy import): the public half AND the envelope are replaced, the ledger
+    /// grows by one entry, and the independently committed consent stays. The [`Seal`] is how the
+    /// helper will protect the credentials, which decides how big the envelope is.
+    Replace(Seal),
+    /// A strict (`KeymanagerRequired`) `ReplaceAuth`. The helper STAGES it (`stage_strict`): the
+    /// active state stays as it is, old public half and old envelope included, and the new `public`
+    /// rides in `pending_auth` beside a freshly sealed envelope, so for a moment the document carries
+    /// both. That is the largest the document gets. Always sealed by the keymanager.
+    Staged,
+}
+
+/// How the helper will protect the credentials of a write: the three rows of [`ProtectionRequest`]
+/// (which is not `Copy`), as far as the SIZE of the sealed envelope goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Seal {
+    /// `Db8AclOnlyExplicit`: the plaintext itself, JSON-escaped, in an ACL-protected envelope.
+    Acl,
+    /// `KeymanagerRequired`: AES-GCM ciphertext, base64.
+    Keymanager,
+    /// `KeymanagerWithAclFallback`: the keymanager envelope, or the ACL one (with the failure record)
+    /// when the seal fails; which of the two is not known until the write is made.
+    Either,
+}
+
+impl Seal {
+    fn of(request: &ProtectionRequest) -> Self {
+        match request {
+            ProtectionRequest::Db8AclOnlyExplicit => Seal::Acl,
+            ProtectionRequest::KeymanagerRequired => Seal::Keymanager,
+            ProtectionRequest::KeymanagerWithAclFallback => Seal::Either,
+        }
+    }
+}
+
+/// The write a credential protection request makes: a strict one is STAGED, the rest are one put.
+fn credential_write(request: &ProtectionRequest) -> DocumentWrite {
+    match request {
+        ProtectionRequest::KeymanagerRequired => DocumentWrite::Staged,
+        other => DocumentWrite::Replace(Seal::of(other)),
+    }
+}
+
+/// Which shape of write `commit_session_with` is about to send, or `None` when it sends none (a
+/// locked bundle refuses a routine credential write before anything leaves). It mirrors the
+/// mutation that function picks, branch for branch and through the same `protection_for_auth_write`;
+/// `the_guard_sizes_the_mutation_that_is_actually_sent` holds the two together.
+pub(super) fn document_write(
+    snapshot: &client::Snapshot,
+    migration: bool,
+    authority: super::SaveAuthority,
+    unchanged: bool,
+    major: u32,
+) -> Option<DocumentWrite> {
+    if migration {
+        return Some(DocumentWrite::Replace(Seal::of(&protection_for_auth_write(major, true, false, false))));
+    }
+    if authority == super::SaveAuthority::PublicOnly
+        || (unchanged && authority != super::SaveAuthority::FreshReauthentication)
+    {
+        return Some(DocumentWrite::Update);
+    }
+    let fresh = authority == super::SaveAuthority::FreshReauthentication;
+    if !fresh && matches!(snapshot.auth, AuthLoad::Locked { .. }) {
+        return None;
+    }
+    let envelope = snapshot.state.auth_envelope.as_deref();
+    Some(credential_write(&protection_for_auth_write(
+        major,
+        fresh,
+        envelope.is_some_and(acl_only_envelope),
+        envelope.is_some(),
+    )))
+}
+
+/// The document the helper starts from when there is no record yet (`Backend::load` builds one
+/// before it applies the first write), at the widest a random auth generation prints and under the
+/// longest flavor name (it is printed in the state, and again in an envelope's context).
+pub(super) fn fresh_state() -> state::CanonicalState {
+    state::CanonicalState::new(state::Flavor::Nightly, Generation([255; 16]))
+}
+
+/// The same for a first write onto an absent record (a fresh sign-in, or a legacy file migrating
+/// in), or `None` when `commit_session_with` sends nothing (a public-only write has no record to
+/// update and is refused before it leaves).
+pub(super) fn missing_write(migration: bool, authority: super::SaveAuthority, major: u32) -> Option<DocumentWrite> {
+    if migration {
+        return Some(DocumentWrite::Replace(Seal::of(&protection_for_auth_write(major, true, false, false))));
+    }
+    if authority == super::SaveAuthority::PublicOnly {
+        return None;
+    }
+    let may_fallback = authority == super::SaveAuthority::FreshReauthentication;
+    Some(credential_write(&protection_for_auth_write(major, may_fallback, false, false)))
+}
+
+/// The bytes of the failure record an ACL envelope carries when it is the fallback of a keymanager
+/// seal (`fallback` and `fallback_context`: seven names from closed vocabularies and a service
+/// code, about 250 bytes at the longest). An allowance, not a measure: it only matters beside a
+/// keymanager envelope that is smaller than it, i.e. for a near-empty credential bundle.
+const ACL_FALLBACK_RECORD: usize = 512;
+/// The longest key name (`Generation::key_name`), and a generous initialisation vector (a 12-byte
+/// GCM one prints as 16 base64 characters), for the keymanager envelope's own fields.
+const KEY_NAME_LEN: usize = 24;
+const IV_LEN: usize = 24;
+/// What AES-GCM adds to the plaintext it seals.
+const GCM_TAG: usize = 16;
+
+/// The size, in logical bytes, of the `auth_envelope` string the helper seals `plaintext` into
+/// under `seal`, for a write onto `state` (`Backend::protect`). Each envelope is built from the
+/// same parts the helper uses, with the plaintext's real JSON escapes:
+///
+/// * **ACL** (`acl_envelope`): `{"format", "context", "plaintext"}`: the plaintext embedded as a
+///   JSON string, beside the auth context of the state (the new generation at its widest).
+/// * **keymanager** (`keymanager::seal`): `{"format", "key_name", "iv", "ciphertext", "context"}`,
+///   the ciphertext being base64 of the inner `{"context", "payload"}` document (the payload again
+///   the escaped plaintext) and the GCM tag. About a third bigger than the plaintext.
+/// * **either**: the larger of the keymanager one and the ACL one with its failure record.
+///
+/// The two were once folded into one "whichever is larger, plus 512" figure, which overstated an
+/// ACL write (every credential change on a 4.x set) by the base64 expansion, and so evicted memory
+/// from a write the platform would have stored.
+pub(super) fn sealed_envelope_estimate(state: &state::CanonicalState, plaintext: &str, seal: Seal) -> usize {
+    use serde_json::{json, Value};
+    let mut context = state.auth_context();
+    context.auth_generation = Generation([255; 16]);
+    let context = serde_json::to_value(context).unwrap_or_default();
+    // the plaintext as a JSON string without its quotes: `"` and `\` and control characters escaped
+    let payload = Value::from(plaintext).to_string().len().saturating_sub(2);
+    let acl = || json!({"format": "db8-acl-only-v1", "context": &context, "plaintext": ""}).to_string().len() + payload;
+    let keymanager = || {
+        let inner = json!({"context": &context, "payload": ""}).to_string().len() + payload;
+        let ciphertext = (inner + GCM_TAG).div_ceil(3) * 4;
+        let fields = json!({
+            "format": "keymanager3-aes256-gcm-v1",
+            "key_name": "k".repeat(KEY_NAME_LEN),
+            "iv": "i".repeat(IV_LEN),
+            "ciphertext": "",
+            "context": &context,
+        });
+        fields.to_string().len() + ciphertext
+    };
+    match seal {
+        Seal::Acl => acl(),
+        Seal::Keymanager => keymanager(),
+        Seal::Either => keymanager().max(acl() + ACL_FALLBACK_RECORD),
+    }
+}
+
+/// The document as it will stand after `write`, with the NEW preferences payload left out (a
+/// `null` stands in, 4 logical bytes) so the same projection serves every shedding step. Built at
+/// its LARGEST: a freshly drawn id or credential generation is 16 bytes that print as up to three
+/// digits each (an array of numbers, not a hex string), a full ledger, and the 64-hex plaintext
+/// digest the helper stamps on the ledger entry of every auth write.
+pub(super) fn projected_document(
+    state: &state::CanonicalState,
+    public: &state::PublicPayload,
+    write: DocumentWrite,
+    protected: &str,
+) -> state::CanonicalState {
+    let worst = Generation([255; 16]);
+    let digest = "0".repeat(64);
+    let mut next = state.clone();
+    let stand_in = state::PublicPayload { preferences: serde_json::Value::Null, ..public.clone() };
+    let envelope = |seal| "x".repeat(sealed_envelope_estimate(state, protected, seal));
+    match write {
+        DocumentWrite::Update | DocumentWrite::Replace(_) => {
+            next.pending_auth = None;
+            // `apply` stamps the next revision on the document, and `revision + 1` can be a digit
+            // wider than `revision` (9 -> 10, 99 -> 100). A staged write leaves the active state,
+            // revision included, as it is.
+            next.revision = state.revision.saturating_add(1);
+            if let DocumentWrite::Replace(seal) = write {
+                let consent = (next.public.consent.clone(), next.public.scopes.clone(), next.public.ids.clone());
+                next.public = stand_in;
+                (next.public.consent, next.public.scopes, next.public.ids) = consent;
+                next.auth_envelope = Some(envelope(seal));
+                next.auth_generation = worst;
+                // an explicit sign-in supersedes a legacy import still waiting beside it
+                next.migrations.session =
+                    state::DomainMigration { progress: MigrationProgress::Complete, pending_import: None };
+            } else {
+                next.public.preferences = stand_in.preferences;
+                next.public.client_id = stand_in.client_id;
+                next.public.profile = stand_in.profile;
+                next.public.pins = stand_in.pins;
+                next.public.recents = stand_in.recents;
+                next.public.account_extensions = stand_in.account_extensions;
+            }
+            next.operations.push(state::LedgerEntry {
+                id: worst,
+                digest,
+                result: state::Applied {
+                    revision: state.revision.saturating_add(1),
+                    epoch: state.epoch,
+                    auth_generation: next.auth_generation,
+                },
+                verification: Some(if matches!(write, DocumentWrite::Replace(_)) {
+                    state::ReceiptVerification::Auth { plaintext_digest: Some("0".repeat(64)) }
+                } else {
+                    state::ReceiptVerification::Public
+                }),
+            });
+            if next.operations.len() > state::LEDGER_CAPACITY {
+                next.operations.remove(0);
+            }
+        }
+        DocumentWrite::Staged => {
+            next.pending_auth = Some(state::PendingAuth {
+                operation: state::Operation {
+                    id: worst,
+                    digest: digest.clone(),
+                    expected: state.expected(),
+                    mutation: state::Mutation::ReplaceAuth {
+                        auth_generation: worst,
+                        auth_envelope: envelope(Seal::Keymanager),
+                        public: stand_in,
+                    },
+                },
+                plaintext_digest: digest,
+            });
+        }
+    }
+    next
+}
+
+/// **The document guard.** DB8 keeps the whole state in one document that may not pass
+/// `MAX_LOGICAL_BYTES`, and past it EVERY write fails (`LogicalTooLarge`): quality, pins, consent,
+/// all of it, because per-profile memory grew. So before a write that carries `public` is sent, its
+/// projected document is measured with the platform's own counting rule (`state::logical_size`;
+/// the loaded envelope, ledger and any pending refresh are in hand, and future preference keys
+/// preserved above count), and if it would not fit, per-profile memory is shed from the payload —
+/// `track_memory`, then `subtitle_offsets`, then `library_sorts`, each oldest-first from the record
+/// holding the most entries (`prefs::shed_memory`) — only as far as the document needs.
+///
+/// Returns the lists that lost entries and how many. Nothing is ever refused here: if everything
+/// sheddable is gone and the document still does not fit, the write goes out as it would have and
+/// the platform refuses it as before. A stored document already over the cap never reaches this
+/// (it fails to load), and the file backend has no cap and no guard.
+pub(super) fn fit_document(
+    state: &state::CanonicalState,
+    public: &mut state::PublicPayload,
+    write: DocumentWrite,
+    protected: &str,
+) -> Vec<(&'static str, usize)> {
+    let Some(total) = projected_size(state, public, write, protected) else {
+        return Vec::new();
+    };
+    if total <= state::MAX_LOGICAL_BYTES {
+        return Vec::new();
+    }
+    super::prefs::shed_memory(&mut public.preferences, |freed| {
+        total.saturating_sub(freed) > state::MAX_LOGICAL_BYTES
+    })
+}
+
+/// The logical size of the document after `write` carrying `public`: the projection with the new
+/// preferences left out, plus exactly one copy of them (the projection holds a `null`, 4 bytes, in
+/// their place).
+pub(super) fn projected_size(
+    state: &state::CanonicalState,
+    public: &state::PublicPayload,
+    write: DocumentWrite,
+    protected: &str,
+) -> Option<usize> {
+    let size = |write| {
+        let projected = serde_json::to_value(projected_document(state, public, write, protected)).ok()?;
+        Some(state::logical_size(&projected).saturating_sub(4) + state::logical_size(&public.preferences))
+    };
+    let projected = size(write)?;
+    if write == DocumentWrite::Staged {
+        // The platform also validates the document the pending refresh WOULD become
+        // (`pending_candidate`), and that is what stands once it is promoted.
+        return Some(projected.max(size(DocumentWrite::Replace(Seal::Keymanager))?));
+    }
+    Some(projected)
+}
+
 fn protection_for_auth_write(
     major: u32,
     may_fallback: bool,
@@ -490,6 +774,20 @@ pub fn commit_session_with(
     } else {
         String::new()
     };
+    // The document guard sits here rather than beside `preserve_unknown_preferences` because the
+    // shape of the write (and the size of the credentials it reseals) is only known now.
+    let fresh = fresh_state();
+    let sizing = match &loaded {
+        HelperLoad::Present(snapshot) => {
+            document_write(snapshot, migration, authority, unchanged, major).map(|write| (&snapshot.state, write))
+        }
+        HelperLoad::Missing => missing_write(migration, authority, major).map(|write| (&fresh, write)),
+    };
+    if let Some((state, write)) = sizing {
+        for (list, evicted) in fit_document(state, &mut public, write, &protected) {
+            plx_base::eventlog::log(&format!("prefs: evicted {evicted} {list} entries to fit the 256 KiB document"));
+        }
+    }
     let may_fallback = migration || authority == super::SaveAuthority::FreshReauthentication;
     let mutation = match &loaded {
         HelperLoad::Missing if migration => WireMutation::AdvanceMigration {

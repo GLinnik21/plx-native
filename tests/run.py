@@ -1121,10 +1121,12 @@ def triggers_for_case(case, url_base=None):
     gst_debug = case.get("gst_trace", {}).get("debug")
     if gst_debug:
         files.append(("plxnative-gstlog", gst_debug))
-    # issue #266 PR4 review: force the PERSISTED Boost Dialog / Normalize Loudness preference at
-    # boot on EVERY case, not just the two that exercise it — `dev::scenarios::arm_audio_enhancements`
-    # calls the real persisting setter, so a case's starting preference is a property of the
-    # manifest instead of of whatever a PREVIOUS case's (or a real person's) toggle left behind. A
+    # issue #266 PR4 review: force the Boost Dialog / Normalize Loudness preference at boot on EVERY
+    # case, not just the two that exercise it — `dev::scenarios::arm_audio_enhancements` calls the
+    # real setter (it sets the live preference and, for a seated profile, saves it; the injected dev
+    # token never seats one, so a token boot sets the live preference alone), so a case's starting
+    # preference is a property of the manifest instead of of whatever a PREVIOUS case's (or a real
+    # person's) toggle left behind. A
     # case opts into a non-off start with `"audio_enhancements_boot": "loudness"` (used by the
     # reset case below to prove the cold-start "a saved preference forces a remux" path);
     # everything else gets `"off"`.
@@ -3832,16 +3834,18 @@ def op_audio_enhancement(lines):
 
 def op_audio_enhancement_release(lines):
     """The `audio_enhancement_normalize_reset` case's own settle grade: this case boots with
-    `plxnative-audioenh=loudness` forcing the PERSISTED preference ON before the first frame (via
+    `plxnative-audioenh=loudness` forcing the preference ON before the first frame (via
     `dev::scenarios::arm_audio_enhancements` -> `player::set_audio_enhancements`, the SAME real
-    setter a person's pick calls) — proving the cold-start `route/plan.rs` path (a saved
+    setter a person's pick calls; the injected dev token never seats a profile, so this sets the LIVE
+    preference and saves nothing) — proving the cold-start `route/plan.rs` path (a saved
     preference turns an otherwise direct-playable candidate into an enhanced remux before route
     ever runs) — then picks the SAME row `op_audio_enhancement` picks, which `on_ok` TOGGLES: from
     ON, that reconciles the preference back to NONE. `enhancement_step` releases a directly-
     playable candidate straight back to it (`route/decision.rs`'s `EnhancementStep::ReleaseToDirect`
     -> `plan_original_recovery(.. EnhancementReleased)` on the frame, `run_original_recovery` on a flight worker). Because the toggle goes through the
-    ordinary commit path (not a second boot trigger), it also re-persists the preference as OFF for
-    real — the case ends idempotent with no second op needed.
+    ordinary commit path (not a second boot trigger), it also puts the live preference back to OFF
+    for real — the case ends idempotent with no second op needed (under the dev token the toggle is
+    live-only too: the write door refuses to save for nobody).
 
     Graded on where the release actually LANDED, not on the line announcing it: `enhancement:
     released to Original direct play`, then the next `stream: .. path=` is the item's

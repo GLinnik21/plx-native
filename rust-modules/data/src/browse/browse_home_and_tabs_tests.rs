@@ -1254,7 +1254,7 @@ fn the_movies_tab_prefers_the_households_library_over_a_friends() {
     plx_plex::plex::session::update(|session| {
         let mut next = session.clone();
         let user = plx_plex::plex::session::current_profile_key();
-        next.last_library.retain(|l| l.user != user);
+        next.prefs.last_library.retain(|l| l.user != user);
         let mut libs = plx_plex::plex::session::LastLibrary { user, ..Default::default() };
         libs.libs.push(plx_plex::plex::session::TypedLib {
             kind: SecKind::Movie.wire().to_string(),
@@ -1262,7 +1262,7 @@ fn the_movies_tab_prefers_the_households_library_over_a_friends() {
             key: 1,
             extensions: Default::default(),
         });
-        next.last_library.push(libs);
+        next.prefs.last_library.push(libs);
         Some(next)
     });
     browse.state.resolve_pins();

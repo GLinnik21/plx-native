@@ -2354,7 +2354,8 @@ fn a_subtitle_offset_survives_a_resume_of_the_same_item() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let session = plx_plex::plex::session::TempSession::new("subtitle-offset-resume");
-    session.watching("u-resume");
+    // The memory door needs a seat (P-d11): a profile signed in and published under its account stamp.
+    session.seated("u-resume", "acct-resume");
     // The memory the player reads is seeded at a restore (boot, the credentials handoff).
     seed_memory_for_test::<SubtitleOffsetEntry>(&plx_plex::plex::session::peek());
     let sid = plx_plex::plex::register_for_test("machine-resume", "10.0.0.9", 32400, "tok", "cid-resume");

@@ -108,12 +108,12 @@ place the rule is spelled. The dashed `*.plex.direct` names are the only origins
 can ever apply to, and a custom server-access URL behind a proxy with its own certificate would
 otherwise rewrite the machine's single entry on every discovery. Plaintext, a failed verification,
 a mismatched `machineIdentifier`, an origin without a pin and a relay route (skipped as a
-conservative choice) learn nothing. It lives in `Session::server_key_pins`, one entry per
+conservative choice) learn nothing. It lives in `Preferences::server_key_pins`, one entry per
 `machineIdentifier`, session-level like `plaintext_consent` (NOT in `ServerRef`/`SourceRef`/
 `ProfileCreds`, which are cloned per profile), soft-parsed and skipped while empty.
 **It is in the PUBLIC preferences, so sign-out forgets it by an explicit rule, not with the
 credentials:** `Mutation::ClearTenure` retains `public.preferences` whole except the keys in
-`storage::state::ACCOUNT_BOUND_PREFERENCES` (`server_key_pins` and `plaintext_consent`, issue #385), so sign-out — and "Delete all
+`storage::state::ACCOUNT_BOUND_PREFERENCES` (the account's own lists, `server_key_pins` and `plaintext_consent`, issue #385, and every profile's remembered browsing and playback memory: `track_memory`, `subtitle_offsets`, `library_sorts` and `last_library`; read the constant for the current set), so sign-out — and "Delete all
 local data", which runs it first — leaves the stored record with no learned key, and the next account to sign in opens with none
 (`migration_tests::helper_signout_forgets_the_learned_server_keys_and_the_next_account_inherits_none`;
 for the answers, `helper_signout_forgets_the_plaintext_answers_and_signing_back_in_asks_again`).
@@ -476,20 +476,77 @@ a dead source is **absent** from Home and states itself in its own library secti
   across the write's `sync_all`, so **nothing per-frame may take it directly** — but a per-frame
   reader may now call `session::peek()`, because `peek()` is backed by a live in-memory read
   cache, not a per-call file transaction.
-- **The nine install-wide player settings live in ONE struct, `session/prefs.rs`'s `Preferences`,
-  flattened (`#[serde(flatten)] prefs`) into BOTH on-disk forms** — the legacy file's `Session` and
-  the canonical preference record — declared before each form's own `extensions`, so the flatten
-  takes its keys first and the unknown-key map still sees only keys nobody models. A new setting of
-  that kind is a `Preferences` field (its serde attributes written out where rustfmt and a reviewer
-  see them, copied from a neighbour, never unified: each row keeps its own soft-parse policy), a
-  `Setting` marker (`setting!` for the plain shape; hand-written when `Stored` ≠ `Value`, as for
-  quality) and a line in `prefs::DESCRIPTORS`. Callers read `session.prefs.<field>` or the hand-written
-  getter, and change a value with `session.with_pref::<Marker>(v)`. `prefs_tests` holds the table to
-  the struct (T-fields), to platform's `ACCOUNT_BOUND_PREFERENCES` (T-account) and to each row's
-  parse policy (T-parse), both ways; a field with no row, or a row with no field, fails there.
+- **Every preference key but `language` lives in ONE struct, `session/prefs.rs`'s `Preferences`**
+  (the nine player settings' and `trailer_autoplay`'s FROZEN top-level keys, `profile_prefs` (their per-profile home, below), `auto_sign_in`, `last_hero_blur`, the account-bound
+  `plaintext_consent` and `server_key_pins`, the per-profile `last_library` and `library_sorts` (cleared
+  at sign-out like every `ACCOUNT_BOUND = true` row in `prefs::DESCRIPTORS`, but their records carry no
+  account stamp, so the one login that is not a sign-out, a stored session that could not be activated
+  in `app/boot.rs`, leaves them to the next account), and the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
+  forms — the legacy file's `Session` and the canonical preference record — declared before each
+  form's own `extensions`, so the flatten takes its keys first and the unknown-key map still sees
+  only keys nobody models. A new key of that kind is a `Preferences` field (its serde attributes
+  written out where rustfmt and a reviewer see them, copied from a neighbour, never unified: each
+  row keeps its own soft-parse policy), a marker (`setting!` for a `Copy` value, hand-written when
+  `Stored` != `Value` as for quality, `list_row!` for a list) and a line in `prefs::DESCRIPTORS`.
+  Callers read `session.prefs.<field>` or the hand-written getter, and change a value with
+  `session.with_pref::<Marker>(v)` (a `Copy` row; it writes the TOP-LEVEL key, so for the ten
+  per-profile settings it is a fixture builder for the legacy fallback, never what a pick does).
+  **The nine player settings and hero trailer autoplay are per profile** (`prefs/profile_prefs.rs`): a profile's own picks sit
+  in `profile_prefs` (`[{user, account, prefs}]`, `account` the `grant::account_key` stamp, the owner
+  `user: ""`), and what a profile reads is `stored_effective` = its own value, else the frozen
+  top-level key (`Setting::get`, a garbage own value included), else the default. The top-level keys
+  are never copied and never written by a pick (`persist_profile_pref` is the only writer; it
+  refuses without a seat, across a tenure or credential change and with an empty stamp, and prunes
+  records of other accounts). `profile_prefs` is account-bound (`ACCOUNT_BOUND_PREFERENCES`, so
+  sign-out drops it and the legacy keys stay). Who is seated is `session::Seat`
+  (`Seat::of(profile, stamp)`, `current_seat()`); the live cells follow it in `plx_media::route`.
+  `auto_sign_in` is Install and never
+  account-bound: `boot_shows_picker` reads it before any profile is seated. `trailer_autoplay` is
+  NOT Install any more (P1c): the DETAIL page's hero reads the seated profile's value, the top-level key
+  is its frozen fallback, and `preview::enabled()` reads the cell (seeded ON). The `trailer_autoplay`
+  FIELD's derived default (here and in `Session`) is OFF while an ABSENT key reads on, so the canonical
+  record's own `Default` sets it. `plaintext_consent` is written as `[]` in the legacy file but
+  omitted from the canonical record while empty (`split_public` drops the key). `prefs_tests` holds
+  the table to the struct (T-fields), to platform's `ACCOUNT_BOUND_PREFERENCES` (T-account) and to
+  each row's parse policy (T-parse), both ways; a field with no row, or a row with no field, fails
+  there.
+  The two memory-door lists (`track_memory`: each profile's remembered audio and subtitle picks per
+  show, `prefs/track_memory.rs`; `subtitle_offsets`) have no `Copy` value and no whole-list accessor:
+  their markers implement `Row` only (not `ListRow`), and they are written only through
+  `ProfileMemory::upsert_with`. `track_memory` is account-bound (no stamp, no write; a write prunes
+  every other account's record), its entry strings are bounded (an over-long one reads as absent, a
+  title is cut), and it is capped at 64 entries a profile and held to a 32 KiB HOUSEHOLD budget by
+  eviction, never refusal. It is READ at resolve time (`route::recall_all` into `ResolveEnv::memory`, and
+  only for the SEATED profile: `recall` and `recall_all` ask `session::is_seated_as`, so an unseated
+  boot or a dev token reads none; matched by `route/track_memory.rs`, ranked above the PMS selection by `plan.rs`) and nothing writes
+  it yet, so the list stays empty in practice; the menu write comes later.
+  `subtitle_offsets` is account-bound as well (since SO) under different rules: a record without a
+  stamp is read as the signed-in account's own and is stamped at the list's next write
+  (`MemoryEntry::ADOPTS_UNSTAMPED`), at the plex list a write with no account token is still
+  accepted, kept unstamped, and prunes nothing (the media door refuses it: a seat needs a non-empty
+  stamp), and a record stamped for another account reads as nothing and is
+  pruned by the next write. The media half (`route/prefs.rs` `remember`) stamps its mirror write with
+  the stamp the mirror was seeded under (`decision_memory_tests`
+  `a_retune_or_a_forget_reaches_the_stamped_record_the_restore_seeded`).
+- **The DB8 document may not pass `MAX_LOGICAL_BYTES` (256 KiB), and per-profile memory is what
+  grows it.** Past the cap EVERY write fails (`LogicalTooLarge`, reported as `InvalidSchema`), so
+  `persistence::commit_session_with` measures the projected document (platform's own
+  `state::logical_size`, with the stored envelope, ledger, consent and future keys in hand, for the
+  write it is really about to send: update, one-put replace, or the strict staged write; a first
+  write onto an ABSENT record, a sign-in or a legacy import, is measured against the fresh state the
+  helper starts from; the sealed credentials are sized as the helper will seal them, `Seal`: ACL-only,
+  keymanager, or whichever of the two is larger when a fallback is permitted) and, if it
+  would not fit, sheds from the payload `track_memory`, then `subtitle_offsets`, then
+  `library_sorts` (`prefs::shed_memory`; the same oldest-from-the-largest-record rule as the
+  household budget), only as far as it needs, and logs `prefs: evicted <n> <list> entries to fit
+  the 256 KiB document`. The live session keeps what the payload lost until the next load. It never
+  refuses a write: with nothing sheddable left the platform still does, as before. The file backend
+  has no cap and no guard. A stored document already AT the cap leaves no room for the strict tier's
+  second copy (old and new halves side by side), which the guard cannot create. A record created on
+  webOS 4.x is ACL-only; a record that already holds a keymanager envelope still stages.
 - **`session::peek()` is a write-through cache over the persisted session, not a fresh read.** A
   hit is one uncontended `Mutex` lock and an `Arc<Session>` clone — no `IO`, no helper round trip —
-  which is what makes it safe to call every frame (`player::preview::enabled` does). The invariants
+  which is what makes it safe to call every frame. The invariants
   that keep it correct, all in `session.rs`'s module doc and worth knowing before touching either
   the cache or a write path:
   - Cached records come from completed reads or durable writes under `IO`. `Revoked` separately

@@ -680,6 +680,30 @@ fn the_system_keyboard_is_an_input_owner() {
     assert_eq!(elem(&d), Some(2), "keyboard down: the engine answers again");
 }
 
+/// While the television keyboard is up, hover moves no focus: the keyboard is drawn over the
+/// page, so reaching its keys crosses the page's stops, and the search field puts the keyboard
+/// away when focus leaves it. A click still focuses; with the keyboard down, hover is back.
+#[test]
+fn hover_moves_no_focus_while_the_system_keyboard_is_up() {
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    d.set_focus(Some(FocusKey { entry: home, elem: 0 }));
+    d.frame(&mut rig, tick(16), vec![
+        ev(InputKind::SystemKeyboard(true), tick(16)),
+        pointer(290.0, 190.0, tick(16)),
+    ], vec![], &mut NoTap);
+    assert_eq!(elem(&d), Some(0), "a pointer behind the keyboard edge in the same batch sees it up");
+    d.frame(&mut rig, tick(32), vec![pointer(290.0, 190.0, tick(32))], vec![], &mut NoTap);
+    assert_eq!(elem(&d), Some(0), "hover under a raised keyboard moves nothing");
+    d.frame(&mut rig, tick(48), vec![click(290.0, 190.0, tick(48))], vec![], &mut NoTap);
+    assert_eq!(elem(&d), Some(1), "a click still focuses what it hit");
+    d.frame(&mut rig, tick(64), vec![
+        ev(InputKind::SystemKeyboard(false), tick(64)),
+        pointer(90.0, 190.0, tick(64)),
+    ], vec![], &mut NoTap);
+    assert_eq!(elem(&d), Some(0), "keyboard down: hover focuses again");
+}
+
 #[test]
 fn keyboard_ownership_changes_take_effect_in_input_delivery_order() {
     let (mut d, mut rig, _) = booted();

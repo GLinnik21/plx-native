@@ -118,7 +118,7 @@ fn every_root_nav_item_pushes_exactly_its_dest_signed_in() {
 #[test]
 fn every_playback_field_pushes_its_picker() {
     let _g = plx_base::testlock::serial();
-    let _sess = scratch_session("nav-structure-playback");
+    let _sess = seated_scratch_session("nav-structure-playback");
     let items = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::Playback, None);
     assert_eq!(items.iter().map(|(_, d)| *d).collect::<Vec<_>>(),
         [SettingsPage::Picker(PickerKind::Quality), SettingsPage::Picker(PickerKind::DirectPlay),

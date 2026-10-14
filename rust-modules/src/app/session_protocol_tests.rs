@@ -201,6 +201,7 @@ mod carry_matrix {
 
     #[test]
     fn seating_cancels_obsolete_interests_and_busy_pump_reschedules_late_roster_after_handoff_ack() {
+        let _serial = plx_base::testlock::serial();
         use std::sync::mpsc::{sync_channel, SyncSender};
         use std::time::Duration;
         struct Producer { release: SyncSender<()>, worker: Option<std::thread::JoinHandle<()>> }
