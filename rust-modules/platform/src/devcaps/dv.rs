@@ -45,6 +45,9 @@ impl DvCapability {
 #[allow(dead_code)] // Configd is native-ARM-only; host/release checks still render the other sources.
 pub enum ProbeSource {
     Configd,
+    /// configd answered, and a platform rule overrode it (`webos::caps::platform_gate`); the
+    /// probe's `reason` names the rule.
+    Platform,
     Override,
     Host,
     Failure,
@@ -69,7 +72,7 @@ impl DvProbe {
             ProbeSource::Configd => "configd",
             ProbeSource::Override => "forced",
             ProbeSource::Host => "host",
-            ProbeSource::Failure => self.reason,
+            ProbeSource::Platform | ProbeSource::Failure => self.reason,
         }
     }
 

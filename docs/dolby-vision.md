@@ -18,6 +18,12 @@ The declaration is conditional on one boot-time configd answer. Only an exact bo
 `tv.config.supportDolbyHDRContents` is support; a refusal, timeout, malformed answer or an answer
 still pending is `Unknown` and follows the unsupported column.
 
+**On webOS 3 a configd `true` is overridden to unsupported** (`webos::caps::platform_gate`, logged
+as `webos-caps: … answer=unsupported source=webos3`). Device-measured 2026-10-14 on an LG OLED C7
+(webOS 3.9.3, m16p) with a P8.1 film: configd answers `true`, the declared Load accepts every
+access unit and never starts its clock (0:00 forever), and the same build with the declaration
+removed plays. One set measured; webOS 4+ and an unreadable version keep configd's answer.
+
 | Source | Confirmed supported | Unsupported / unknown |
 |---|---|---|
 | **P8 single-layer, CCID 1/2/4** | declare + direct play | no node; direct-play the HDR10/SDR/HLG base |
