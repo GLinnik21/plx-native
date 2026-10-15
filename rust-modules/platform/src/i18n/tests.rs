@@ -132,3 +132,162 @@ fn pseudo_locale_exercises_expansion_without_changing_arguments() {
     assert!(!msg::settings_language_contribute_body_in(&cx).contains("github.com"),
         "only the guide caption belongs to the translated catalog, never its address");
 }
+
+const MONTHS_EN_MEDIUM: [&str; 12] =
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS_EN_LONG: [&str; 12] = [
+    "January", "February", "March", "April", "May", "June", "July", "August", "September",
+    "October", "November", "December",
+];
+const MONTHS_ES_MEDIUM: [&str; 12] =
+    ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sept", "oct", "nov", "dic"];
+const MONTHS_ES_LONG: [&str; 12] = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre",
+    "octubre", "noviembre", "diciembre",
+];
+const MONTHS_FR_MEDIUM: [&str; 12] =
+    ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+const MONTHS_FR_LONG: [&str; 12] = [
+    "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre",
+    "octobre", "novembre", "décembre",
+];
+const MONTHS_BE_GENITIVE: [&str; 12] = [
+    "студзеня", "лютага", "сакавіка", "красавіка", "траўня", "чэрвеня", "ліпеня", "жніўня",
+    "верасня", "кастрычніка", "лістапада", "снежня",
+];
+
+fn month_captions(preference: Preference) -> Vec<(String, String)> {
+    let cx = LocaleContext::resolve(preference, None, None, None, None);
+    (1..=12)
+        .map(|m| {
+            (
+                cx.month_day(m, 12, MonthWidth::Medium).unwrap(),
+                cx.month_day(m, 12, MonthWidth::Long).unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn english_month_day_captions_cover_every_month_at_both_widths() {
+    let captions = month_captions(Preference::En);
+    for (i, (medium, long)) in captions.iter().enumerate() {
+        assert_eq!(medium, &format!("12 {}", MONTHS_EN_MEDIUM[i]));
+        assert_eq!(long, &format!("12 {}", MONTHS_EN_LONG[i]));
+    }
+    assert_eq!(captions[2], ("12 Mar".to_string(), "12 March".to_string()));
+}
+
+#[test]
+fn spanish_month_day_captions_use_de_only_in_the_long_width() {
+    let captions = month_captions(Preference::Es);
+    for (i, (medium, long)) in captions.iter().enumerate() {
+        assert_eq!(medium, &format!("12 {}", MONTHS_ES_MEDIUM[i]));
+        assert_eq!(long, &format!("12 de {}", MONTHS_ES_LONG[i]));
+    }
+    assert_eq!(captions[2].1, "12 de marzo");
+}
+
+#[test]
+fn french_month_day_captions_cover_every_month_at_both_widths() {
+    let captions = month_captions(Preference::Fr);
+    for (i, (medium, long)) in captions.iter().enumerate() {
+        assert_eq!(medium, &format!("12 {}", MONTHS_FR_MEDIUM[i]));
+        assert_eq!(long, &format!("12 {}", MONTHS_FR_LONG[i]));
+    }
+    assert_eq!(captions[0].0, "12 janv.");
+}
+
+#[test]
+fn belarusian_long_month_day_captions_take_the_genitive() {
+    let captions = month_captions(Preference::Be);
+    for (i, (_, long)) in captions.iter().enumerate() {
+        assert_eq!(long, &format!("12 {}", MONTHS_BE_GENITIVE[i]));
+    }
+    assert_eq!(captions[2].1, "12 сакавіка");
+    let cx = LocaleContext::resolve(Preference::Be, None, None, None, None);
+    assert_eq!(cx.month_day(1, 1, MonthWidth::Long).as_deref(), Some("1 студзеня"));
+    assert_eq!(cx.month_day(12, 31, MonthWidth::Long).as_deref(), Some("31 снежня"));
+    // The abbreviated form is a dotted stem, not the nominative word.
+    assert_eq!(cx.month_day(3, 12, MonthWidth::Medium).as_deref(), Some("12 сак."));
+    assert!(captions.iter().all(|(medium, _)| medium.ends_with('.')));
+}
+
+#[test]
+fn pseudo_locale_month_day_captions_follow_english() {
+    let pseudo = LocaleContext::pseudo_for_test();
+    assert_eq!(pseudo.month_day(3, 12, MonthWidth::Medium).as_deref(), Some("12 Mar"));
+    assert_eq!(pseudo.month_day(3, 12, MonthWidth::Long).as_deref(), Some("12 March"));
+}
+
+#[test]
+fn month_day_rejects_days_the_calendar_does_not_have() {
+    let cx = LocaleContext::resolve(Preference::En, None, None, None, None);
+    for (month, day) in [(0, 1), (13, 1), (1, 0), (1, 32), (2, 30), (4, 31), (6, 31)] {
+        assert_eq!(cx.month_day(month, day, MonthWidth::Long), None, "{month}/{day}");
+    }
+    // The year is unknown, so 29 February is a real caption.
+    assert_eq!(cx.month_day(2, 29, MonthWidth::Long).as_deref(), Some("29 February"));
+}
+
+#[test]
+fn watchlist_strings_render_in_every_shipped_language() {
+    let be = LocaleContext::resolve(Preference::Be, None, None, None, None);
+    assert_eq!(msg::watchlist_action_add_in(&be), "Дадаць у спіс для прагляду");
+    assert_eq!(msg::watchlist_action_on_list_in(&be), "У спісе для прагляду");
+    let date = be.month_day(3, 12, MonthWidth::Long).unwrap();
+    assert_eq!(msg::watchlist_state_coming_on_in(&be, &date), "Выйдзе 12 сакавіка");
+    let es = LocaleContext::resolve(Preference::Es, None, None, None, None);
+    let date = es.month_day(3, 12, MonthWidth::Long).unwrap();
+    assert_eq!(msg::watchlist_state_coming_on_in(&es, &date), "Estreno el 12 de marzo");
+    assert_eq!(msg::watchlist_action_remove_show_in(&es), "Quitar serie…");
+    let fr = LocaleContext::resolve(Preference::Fr, None, None, None, None);
+    let date = fr.month_day(3, 12, MonthWidth::Medium).unwrap();
+    assert_eq!(msg::watchlist_state_releasing_on_in(&fr, &date), "Sortie le 12 mars");
+    let en = LocaleContext::resolve(Preference::En, None, None, None, None);
+    assert_eq!(msg::watchlist_page_sort_filter_summary_in(&en, "Default"), "Sort & Filter · Default");
+    for preference in SHIPPED {
+        let cx = LocaleContext::resolve(preference, None, None, None, None);
+        assert!(!msg::watchlist_page_title_in(&cx).is_empty());
+        assert!(!msg::watchlist_empty_list_in(&cx).is_empty());
+        assert!(!msg::watchlist_empty_filtered_in(&cx).is_empty());
+    }
+}
+
+/// Every Watchlist key the English catalog declares is present, non-empty and carries a
+/// translator description, in all four shipped catalogs. The compiler already refuses a key
+/// set that differs between languages; this also pins the shape of the files themselves.
+#[test]
+fn every_watchlist_key_exists_in_all_four_catalogs() {
+    let catalogs = [
+        ("en", include_str!("../../../../locales/en/watchlist.json")),
+        ("es", include_str!("../../../../locales/es/watchlist.json")),
+        ("be", include_str!("../../../../locales/be/watchlist.json")),
+        ("fr", include_str!("../../../../locales/fr/watchlist.json")),
+    ];
+    let parse = |text: &str| -> serde_json::Map<String, serde_json::Value> {
+        serde_json::from_str(text).expect("valid watchlist catalog")
+    };
+    let english = parse(catalogs[0].1);
+    assert!(english.len() >= 30, "the Watchlist catalog shrank to {}", english.len());
+    for (key, source) in &english {
+        assert!(key.starts_with("watchlist."), "{key} is outside the Watchlist scope");
+        assert!(
+            source["description"].as_str().is_some_and(|d| !d.trim().is_empty()),
+            "{key} has no translator description"
+        );
+    }
+    for (tag, text) in &catalogs[1..] {
+        let catalog = parse(text);
+        let keys = |m: &serde_json::Map<String, serde_json::Value>| {
+            m.keys().cloned().collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(keys(&catalog), keys(&english), "{tag} watchlist keys differ from English");
+        for (key, value) in &catalog {
+            assert!(
+                value.as_str().is_some_and(|s| !s.trim().is_empty()),
+                "{tag} {key} is empty"
+            );
+        }
+    }
+}
