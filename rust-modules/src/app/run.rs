@@ -2316,6 +2316,11 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // unconditional for the same reason as the two pumps around it — the user can walk off
         // Home or off the detail page between pressing and the server answering, and the refresh
         // is owed either way. Invalidates from inside, per landing.
+        // The player is on top: the reconcile reads stay owed until it leaves (an Up Next chain
+        // costs one batch at its exit); the patches below are not held.
+        app.bridge.hold_network(matches!(app.route(), AppArg::Player));
+        // Stops first: the resume patch lands before any read of the item is asked for.
+        app.bridge.stops_pump();
         let endpoints = app.bridge.viewstate_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
         // …and the read-back it owes: what the server now says about the item(s) just written, on
@@ -5083,6 +5088,189 @@ mod lifecycle_regression_tests {
             refetches, before + 1,
             "the hubs waited for the server-side encoder stop, though `stopped` had landed",
         );
+    }
+
+    // ---- layer-1 view state, item 6: what a stop tells the screens -----------------------------
+
+    /// A server for the stop tests. Item `1` reads back as watched once a `stopped` timeline has
+    /// arrived and `ends` is set (the stream reached its end), else with a resume point of 30 s.
+    /// Metadata reads park while `hold_reads` is set, so a test can look at the screens between the
+    /// stop and the server's answer.
+    struct StopServer {
+        stopped: Arc<AtomicBool>,
+        hold_reads: Arc<AtomicBool>,
+    }
+
+    impl StopServer {
+        fn new() -> Self {
+            Self { stopped: Arc::new(AtomicBool::new(false)), hold_reads: Arc::new(AtomicBool::new(false)) }
+        }
+
+        fn rig(&self, ends: bool) -> Option<Rig> {
+            let (stopped, hold) = (self.stopped.clone(), self.hold_reads.clone());
+            Rig::serving_with(move |request: &str| {
+                if request.contains("/decision?") {
+                    return r#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#.into();
+                }
+                if request.contains("/:/timeline") {
+                    if request.contains("state=stopped") { stopped.store(true, Ordering::SeqCst); }
+                    return r#"{"MediaContainer":{}}"#.into();
+                }
+                if request.contains("/:/scrobble") {
+                    return "{}".into();
+                }
+                if request.starts_with("GET /library/metadata/") {
+                    let parked = std::time::Instant::now();
+                    while hold.load(Ordering::SeqCst) && parked.elapsed() < Duration::from_secs(10) {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    let seen = stopped.load(Ordering::SeqCst);
+                    let facts = match (seen, ends) {
+                        (true, true) => r#","viewCount":1"#,
+                        (true, false) => r#","viewOffset":30000"#,
+                        (false, _) => "",
+                    };
+                    return format!(r#"{{"MediaContainer":{{"Metadata":[{{"ratingKey":"1","type":"movie","title":"First","duration":60000{facts}}}]}}}}"#);
+                }
+                queue_body(request, false).to_owned()
+            })
+        }
+    }
+
+    fn requests_matching(rig: &Rig, needle: &str, from: usize) -> usize {
+        rig.requests.lock().unwrap().iter().skip(from).filter(|r| r.contains(needle)).count()
+    }
+
+    /// The Library page on top of a grid holding `items` unwatched items of the rig's server.
+    fn library_with_grid(rig: &mut Rig, t: &mut u32, items: usize) {
+        rig.release.send(()).unwrap(); // nothing parks: the first request answers at once
+        rig.app.bridge.seed_library_grid_for_test(rig.sid, items);
+        super::super::bridge::nav_select_tab(&mut rig.app.pages, AppArg::Library);
+        settle(&mut rig.app, t);
+        assert!(matches!(rig.app.route(), AppArg::Library), "premise: the Library is on top");
+    }
+
+    /// Play item 1 from the page on top (the fixture's first request is already released) and wait
+    /// for the player to be mounted.
+    fn play_from_here(rig: &mut Rig, t: &mut u32) {
+        rig.request();
+        rig.accept_start();
+        poll_until("the plan did not land through update", || {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            fr.now = *t;
+            unsafe { update(&mut rig.app, &mut fr); }
+            rig.app.adapters.player.is_live()
+        });
+        settle(&mut rig.app, t);
+        assert!(super::super::bridge::player(&rig.app.pages).is_some(), "premise: the player is on top");
+    }
+
+    /// **The plan's headline test.** Library -> play -> the stream reaches its end -> back on the
+    /// Library: the grid tile reads watched, without the page being re-opened, and the origin
+    /// server was not scrobbled a second time (the stop it reported made the view count).
+    #[test]
+    fn library_play_to_the_end_returns_with_the_tile_watched() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(true) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        library_with_grid(&mut rig, &mut t, 1);
+        assert_eq!(rig.app.bridge.grid_tile_for_test(0), Some((false, false, 0)), "premise: an untouched tile");
+        let origin = rig.app.pages.nav.top_page().unwrap().id;
+        play_from_here(&mut rig, &mut t);
+        plx_media::player::SHARED.ended.store(true, Ordering::Relaxed);
+        settle(&mut rig.app, &mut t);
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin), "the end returned to the Library");
+        // the rig has no engine, so teardown posts no `stopped`: the engine's own call, at the end
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 60_000, 60_000)), None);
+        plx_media::route::drain_scrobble();
+        poll_until("the grid tile never read watched", || {
+            step(&mut rig.app, &mut t, vec![]);
+            rig.app.bridge.grid_tile_for_test(0) == Some((true, false, 0))
+        });
+        assert_eq!(requests_matching(&rig, "/:/scrobble", 0), 0, "no second scrobble on the origin");
+    }
+
+    /// A stop in the middle: the tile shows the new resume point on the frame the stop lands, with
+    /// the server's answer still parked, and the answer then agrees with it.
+    #[test]
+    fn a_stop_in_the_middle_shows_its_resume_point_before_the_server_answers() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(false) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        library_with_grid(&mut rig, &mut t, 1);
+        play_from_here(&mut rig, &mut t);
+        server.hold_reads.store(true, Ordering::SeqCst); // the play's own reads are done
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
+        plx_media::route::drain_scrobble();
+        poll_until("the tile never showed the resume point", || {
+            step(&mut rig.app, &mut t, vec![]);
+            rig.app.bridge.grid_tile_for_test(0).is_some_and(|tile| tile.2 == 30_000)
+        });
+        server.hold_reads.store(false, Ordering::SeqCst);
+        for _ in 0..8 { step(&mut rig.app, &mut t, vec![]); }
+        assert_eq!(rig.app.bridge.grid_tile_for_test(0).map(|tile| tile.2), Some(30_000));
+    }
+
+    /// Network reconcile work is held while the player is on top: a mark-watched that lands under
+    /// the player owes a read-back and a hubs refetch, and neither goes out until the player leaves.
+    #[test]
+    fn no_reconcile_read_goes_out_while_the_player_is_on_top() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(false) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        library_with_grid(&mut rig, &mut t, 1);
+        play_from_here(&mut rig, &mut t);
+        let (reads_from, refetches) = (rig.requests.lock().unwrap().len(), rig.app.bridge.hub_refetches_for_test());
+        assert!(rig.app.bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
+            sid: rig.sid, rk: "1".into(), write: plx_data::viewstate::Write::Watched,
+            scope: plx_data::viewstate::Scope::Leaf, detail: None, guid: String::new(),
+        }));
+        poll_until("the write never reached the server", || {
+            step(&mut rig.app, &mut t, vec![]);
+            requests_matching(&rig, "/:/scrobble", reads_from) == 1
+        });
+        for _ in 0..12 { step(&mut rig.app, &mut t, vec![]); }
+        assert!(super::super::bridge::player(&rig.app.pages).is_some(), "premise: still under the player");
+        assert_eq!(requests_matching(&rig, "GET /library/metadata/", reads_from), 0, "a read-back went out under the player");
+        assert_eq!(rig.app.bridge.hub_refetches_for_test(), refetches, "a hubs refetch started under the player");
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        poll_until("the read-back never went out after the player left", || {
+            step(&mut rig.app, &mut t, vec![]);
+            requests_matching(&rig, "GET /library/metadata/", reads_from) >= 1
+        });
+        for _ in 0..12 { step(&mut rig.app, &mut t, vec![]); }
+        assert_eq!(requests_matching(&rig, "GET /library/metadata/", reads_from), 1, "one batch, at the exit");
+    }
+
+    /// An Up Next chain stops one episode after another with no frame between them (the previous
+    /// worker may be stalled, and the main thread joins it before the next stop): every episode
+    /// still gets its own patch.
+    #[test]
+    fn two_stops_with_no_frame_between_them_each_patch_their_own_tile() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(false) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        library_with_grid(&mut rig, &mut t, 2);
+        play_from_here(&mut rig, &mut t);
+        server.hold_reads.store(true, Ordering::SeqCst); // the play's own reads are done
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("2".into(), 20_000, 60_000)), None);
+        plx_media::route::drain_scrobble();
+        step(&mut rig.app, &mut t, vec![]);
+        let resumes = |rig: &Rig| [0, 1].map(|i| rig.app.bridge.grid_tile_for_test(i).map(|tile| tile.2));
+        assert_eq!(resumes(&rig), [Some(30_000), Some(20_000)], "an episode's stop was lost");
+        server.hold_reads.store(false, Ordering::SeqCst);
     }
 
     /// The same session drained to its end with nothing queued after it: `finish_playback` leaves

@@ -1200,6 +1200,28 @@ impl Bridge {
         self.stores.viewstate_run(cmd, self.directory.view())
     }
 
+    /// Keep the view-state reconcile network work owed while the player is on top
+    /// (`Stores::hold_network`); the patches are not held.
+    pub(crate) fn hold_network(&mut self, player_on_top: bool) {
+        self.stores.hold_network(player_on_top);
+    }
+
+    /// Take the stops whose `stopped` POST was attempted or abandoned, patch each item's resume
+    /// point at once, and owe it a read-back (`Stores::stops_landed`). Route-unconditional: an Up
+    /// Next chain stops one episode after another without ever leaving the player.
+    pub(crate) fn stops_pump(&mut self) {
+        let stops = plx_data::stores::take_landings_owed(
+            &self.stores.landgate,
+            plx_data::stores::StoreId::ViewState,
+            |got: &[plx_data::viewstate::StopRecord]| got.is_empty() && plx_media::route::stops_owed(),
+            plx_media::route::take_landed_stops,
+        );
+        if !stops.is_empty() {
+            self.stores.stops_landed(stops, self.directory.view());
+            plx_machine::idle::invalidate();
+        }
+    }
+
     pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         self.stores.viewstate_pump(self.directory.view())
     }
@@ -1209,6 +1231,9 @@ impl Bridge {
     pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         if self.stores.reconcile_pump(self.directory.view()) {
             plx_machine::idle::invalidate();
+        }
+        if self.stores.network_held() {
+            return Default::default(); // a membership re-query is a network read
         }
         let mut browse = self.stores.browse.borrow_mut();
         if browse.requery_owed() {
@@ -1302,6 +1327,23 @@ impl Bridge {
     ) {
         self.stores.browse.borrow_mut().seed_registered_table_for_test(sids);
         self.refresh_browse_directory();
+    }
+
+    /// The Library grid holds `count` items of `sid` (ratingKeys "1"...), none watched, on a
+    /// registered two-source table.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn seed_library_grid_for_test(&mut self, sid: plx_plex::plex::ServerId, count: usize) {
+        self.seed_registered_browse_for_test([sid, sid]);
+        self.stores.browse.borrow_mut().seed_items_for_test(count);
+    }
+
+    /// `(watched, unwatched, resume_ms)` of the Library grid's `index`th tile.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn grid_tile_for_test(&self, index: usize) -> Option<(bool, bool, i64)> {
+        let mut browse = self.stores.browse.borrow_mut();
+        let snapshot = browse.listing_snapshot();
+        let view = snapshot.view();
+        view.item(index).map(|m| (m.watched, m.unwatched, m.resume_ms))
     }
 
     /// Test hook: seed this owner's Hubs store directly — `stores` is private outside this file's

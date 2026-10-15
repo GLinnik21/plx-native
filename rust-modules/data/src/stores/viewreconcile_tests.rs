@@ -46,6 +46,10 @@ fn serve_connection(mut conn: std::net::TcpStream, truth: Arc<Truth>) {
         if path.starts_with("/:/scrobble") { watched.insert("1".into()); } else { watched.remove("1"); }
         return reply(&mut conn, "200 OK", "{}");
     }
+    if path.starts_with("/library/all?") {
+        // the guid lookup a fan-out resolves the title's copies with: every server holds it as `1`
+        return reply(&mut conn, "200 OK", r#"{"MediaContainer":{"size":1,"Metadata":[{"ratingKey":"1","type":"movie","title":"t","guid":"plex://movie/x"}]}}"#);
+    }
     if path.starts_with("/library/metadata/") {
         truth.reads.fetch_add(1, Ordering::SeqCst);
         let seen = truth.watched.lock().unwrap().contains("1"); // the body is the truth ON ARRIVAL
@@ -56,7 +60,7 @@ fn serve_connection(mut conn: std::net::TcpStream, truth: Arc<Truth>) {
         }
         let count = if seen { r#","viewCount":1"# } else { "" };
         return reply(&mut conn, "200 OK", &format!(
-            r#"{{"MediaContainer":{{"size":1,"Metadata":[{{"ratingKey":"1","type":"movie","title":"t"{count}}}]}}}}"#));
+            r#"{{"MediaContainer":{{"size":1,"Metadata":[{{"ratingKey":"1","type":"movie","title":"t","guid":"plex://movie/x"{count}}}]}}}}"#));
     }
     reply(&mut conn, "200 OK", r#"{"MediaContainer":{"size":0}}"#);
 }
@@ -239,5 +243,137 @@ fn a_read_is_not_spawned_while_a_write_is_queued_so_the_press_survives_it() {
 
     drive(&mut stores, |s| settled(s) && pms.truth.reads.load(Ordering::SeqCst) >= 1);
     assert_eq!(tile(&stores), (true, false), "the read that follows the write confirms it");
+    drop(stores);
+}
+
+// ---- a stopped playback (the StopRecord) ---------------------------------------------------------
+
+fn stop(sid: ServerId, pos_ms: i64, was_watched: bool, ok: bool) -> crate::viewstate::StopRecord {
+    crate::viewstate::StopRecord {
+        sid, rk: "1".into(), show_rk: String::new(), season_index: 0, pos_ms, dur_ms: 60_000, ok, was_watched,
+    }
+}
+
+fn tile_resume(stores: &Stores) -> i64 {
+    let mut browse = stores.browse.borrow_mut();
+    let snapshot = browse.listing_snapshot();
+    snapshot.view().item(0).unwrap().resume_ms
+}
+
+/// Two servers holding the same title (`1` on each); the Library grid shows A's copy.
+fn two_servers(a: &Pms, b: &Pms) -> (Stores, ServerId, ServerId) {
+    assert!(plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready());
+    plx_plex::plex::reset_servers_for_test();
+    let sid_a = plx_plex::plex::register_for_test("reconcile-a", "127.0.0.1", a.port, "token", "reconcile-a");
+    let sid_b = plx_plex::plex::register_for_test("reconcile-b", "127.0.0.1", b.port, "token", "reconcile-b");
+    for sid in [sid_a, sid_b] {
+        plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+    }
+    let stores = Stores::default();
+    stores.browse.borrow_mut().seed_registered_table_for_test([sid_a, sid_b]);
+    stores.browse.borrow_mut().seed_items_for_test(1);
+    (stores, sid_a, sid_b)
+}
+
+/// The tile reads the position the stop reported before any read has been asked for, and the
+/// read-back that follows confirms it.
+#[test]
+fn a_stop_patches_the_resume_point_before_the_read_back_is_asked() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    pms.truth.hold_next_read.store(true, Ordering::SeqCst);
+    let (mut stores, sid) = library_holding_item(&pms);
+    let directory = DirectorySnapshot::default();
+    stores.stops_landed(vec![stop(sid, 30_000, true, true)], directory.view());
+    assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0, "nothing has been read yet");
+    assert_eq!(tile_resume(&stores), 30_000, "the tile already shows where the viewer stopped");
+    drive(&mut stores, |_| pms.truth.holding.load(Ordering::SeqCst));
+    assert_eq!(tile_resume(&stores), 30_000, "the patch stands while the read is out");
+    drop(stores);
+}
+
+/// A stop the server did not take still shows the position, and asks for no read: the answer
+/// would be the server's old resume point and would undo what the viewer watched.
+#[test]
+fn a_stop_the_server_refused_patches_the_tile_and_reads_nothing_back() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library_holding_item(&pms);
+    let directory = DirectorySnapshot::default();
+    stores.stops_landed(vec![stop(sid, 30_000, true, false)], directory.view());
+    drive(&mut stores, |s| settled(s));
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(tile_resume(&stores), 30_000);
+    drop(stores);
+}
+
+/// The player is on top: the stop still patches the tile, but its read-back waits for the player to
+/// leave, then goes out once.
+#[test]
+fn the_read_back_of_a_stop_waits_while_the_network_is_held() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library_holding_item(&pms);
+    let directory = DirectorySnapshot::default();
+    stores.hold_network(true);
+    stores.stops_landed(vec![stop(sid, 30_000, true, true)], directory.view());
+    for _ in 0..40 {
+        let _ = stores.viewstate_pump(directory.view());
+        stores.reconcile_pump(directory.view());
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    }
+    assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0, "no read under the player");
+    assert_eq!(tile_resume(&stores), 30_000);
+    stores.hold_network(false);
+    drive(&mut stores, |s| settled(s) && pms.truth.reads.load(Ordering::SeqCst) == 1);
+    drop(stores);
+}
+
+/// **Owner decision 4.** The stream reached its end on A (A's own scrobble made the title watched);
+/// B's copy of the title is scrobbled too, and A is NOT scrobbled a second time.
+#[test]
+fn an_end_of_stream_scrobbles_the_other_servers_copy_but_not_the_origin_again() {
+    let _g = plx_base::testlock::serial();
+    let (a, b) = (serve(), serve());
+    a.truth.watched.lock().unwrap().insert("1".into()); // what A holds once the stream has ended
+    let (mut stores, sid_a, _sid_b) = two_servers(&a, &b);
+    let directory = DirectorySnapshot::default();
+    stores.stops_landed(vec![stop(sid_a, 60_000, false, true)], directory.view());
+    drive(&mut stores, |s| settled(s) && b.truth.scrobbles.load(Ordering::SeqCst) == 1);
+    assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 0, "the origin already counted the view");
+    assert_eq!(tile(&stores), (true, false), "A's tile reads watched");
+    drop(stores);
+}
+
+/// A rewatch (already watched when the play began) does not inflate the other servers' counts.
+#[test]
+fn a_rewatch_does_not_fan_out() {
+    let _g = plx_base::testlock::serial();
+    let (a, b) = (serve(), serve());
+    a.truth.watched.lock().unwrap().insert("1".into());
+    let (mut stores, sid_a, _sid_b) = two_servers(&a, &b);
+    let directory = DirectorySnapshot::default();
+    stores.stops_landed(vec![stop(sid_a, 60_000, true, true)], directory.view());
+    drive(&mut stores, |s| settled(s) && a.truth.reads.load(Ordering::SeqCst) == 1);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let _ = stores.viewstate_pump(directory.view());
+    assert_eq!(b.truth.scrobbles.load(Ordering::SeqCst), 0);
+    assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 0);
+    drop(stores);
+}
+
+/// A stop in the middle of a film (still unwatched on the read-back) is not an end of stream.
+#[test]
+fn a_stop_in_the_middle_does_not_fan_out() {
+    let _g = plx_base::testlock::serial();
+    let (a, b) = (serve(), serve());
+    let (mut stores, sid_a, _sid_b) = two_servers(&a, &b);
+    let directory = DirectorySnapshot::default();
+    stores.stops_landed(vec![stop(sid_a, 30_000, false, true)], directory.view());
+    drive(&mut stores, |s| settled(s) && a.truth.reads.load(Ordering::SeqCst) == 1);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    let _ = stores.viewstate_pump(directory.view());
+    assert_eq!(b.truth.scrobbles.load(Ordering::SeqCst), 0);
     drop(stores);
 }
