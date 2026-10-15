@@ -10,7 +10,7 @@
 //! - `draw_scrims()` runs inside the PAGE PASS, so the dim is on the framebuffer before the
 //!   surface's own glass looks through it — see its doc for the two hand-placed calls it replaces.
 //!   Every dim is painted through the stack's ONE inherited field ([`ModalUnderlay`]), latched
-//!   from the undimmed host page (or the playing item's corners over the video plane) at the head
+//!   from the undimmed host page (over the video plane: unlatched, the flat neutral ink) at the head
 //!   of that call, re-latched when the host snapshot is re-taken, reset with the last surface.
 //! - `prune()` is the ONLY place Closing clears, so Closing surfaces step unconditionally (the
 //!   fade must finish whatever the host is doing) — `the_closing_phase_is_stepped_even_when_the_host_is_frozen`.
