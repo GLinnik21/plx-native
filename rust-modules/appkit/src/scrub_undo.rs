@@ -36,17 +36,73 @@ pub const CHIP_A: f32 = 0.60;
 /// Clearance between the chip and the knob clock, the transport mark or the remaining-time label.
 const CHIP_GAP: f32 = 14.0;
 
-/// An open undo window: where BACK returns to, and the instant it closes.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// An open undo window: where BACK returns to, the instant it closes, and the chip it is drawn
+/// with.
+#[derive(Clone, PartialEq, Debug)]
 pub struct Undo {
     origin_ns: i64,
     until: u32,
+    chip: Option<Chip>,
+}
+
+/// The chip's text, formatted and made a C string ONCE when the window opens, and its width as
+/// the first live-font draw measured it. A window is drawn for [`UNDO_MS`] + [`UNDO_FADE_MS`] —
+/// over three hundred frames — and the text cannot change in that time, so the per-frame draw
+/// only reads it back.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Chip {
+    text: String,
+    c: std::ffi::CString,
+    /// `(size, width)` as measured; kept only when the measure is the process's live font
+    /// (`Measure::live_font`), so a recording or replay still sees every query it is graded on.
+    width: Option<(i32, f32)>,
+}
+
+impl Chip {
+    /// `None` when the text cannot be a C string (an embedded NUL, which no shipped word has).
+    fn new(back_word: &str, origin_ns: i64) -> Option<Self> {
+        let text = chip_text(back_word, origin_ns);
+        let c = std::ffi::CString::new(text.as_str()).ok()?;
+        Some(Self { text, c, width: None })
+    }
+
+    /// The text, for `Painter::text`.
+    pub fn c_str(&self) -> &std::ffi::CStr {
+        &self.c
+    }
+
+    /// The chip's width at `sz`, measured once per window on the live font.
+    pub fn width(&mut self, sz: i32, measure: &dyn plx_machine::machine::Measure) -> f32 {
+        if let Some((s, w)) = self.width {
+            if s == sz {
+                return w;
+            }
+        }
+        let w = measure.width_str(&self.text, sz, false);
+        // `text_width` reads 0 until the font is up: never keep that
+        if w > 0.0 && measure.live_font() {
+            self.width = Some((sz, w));
+        }
+        w
+    }
 }
 
 impl Undo {
     /// A window opened by a scrub that committed at `now`, having started from `origin_ns`.
+    /// It draws no chip until [`with_chip`](Self::with_chip) gives it one.
     pub fn open(origin_ns: i64, now: u32) -> Self {
-        Self { origin_ns, until: now.wrapping_add(UNDO_MS) }
+        Self { origin_ns, until: now.wrapping_add(UNDO_MS), chip: None }
+    }
+
+    /// The window with its chip built, from the word for Back in the current language.
+    pub fn with_chip(mut self, back_word: &str) -> Self {
+        self.chip = Chip::new(back_word, self.origin_ns);
+        self
+    }
+
+    /// The chip, to draw and measure; `None` when the window has none.
+    pub fn chip_mut(&mut self) -> Option<&mut Chip> {
+        self.chip.as_mut()
     }
 
     /// The position BACK returns to.
@@ -231,6 +287,51 @@ mod tests {
         let r = tick_rect(500.0, 100.0);
         assert_eq!((r.w, r.h), (2.0, 14.0));
         assert_eq!((r.x + r.w * 0.5, r.y + r.h * 0.5), (500.0, 100.0));
+    }
+
+    /// A counting measure: how many times the draw asked the font.
+    struct Counting(std::cell::Cell<u32>, bool);
+    impl plx_machine::machine::Measure for Counting {
+        fn width(&self, s: &std::ffi::CStr, _sz: i32, _bold: bool) -> f32 {
+            self.0.set(self.0.get() + 1);
+            s.to_bytes().len() as f32
+        }
+        fn cap_h(&self, sz: i32) -> f32 {
+            sz as f32
+        }
+        fn line_h(&self, sz: i32) -> f32 {
+            sz as f32
+        }
+        fn live_font(&self) -> bool {
+            self.1
+        }
+    }
+
+    #[test]
+    fn the_chip_is_built_once_and_measured_once_on_the_live_font() {
+        let mut u = Undo::open(83_000_000_000, 0).with_chip("Back");
+        let live = Counting(std::cell::Cell::new(0), true);
+        let chip = u.chip_mut().expect("a window with a chip");
+        assert_eq!(chip.c_str().to_str(), Ok("BACK · 1:23"));
+        let first = chip.width(22, &live);
+        assert!(first > 0.0);
+        for _ in 0..300 {
+            assert_eq!(chip.width(22, &live), first);
+        }
+        assert_eq!(live.0.get(), 1, "one measurement for the whole window");
+        assert!(chip.width(24, &live) > 0.0);
+        assert_eq!(live.0.get(), 2, "another size is another question");
+    }
+
+    #[test]
+    fn a_recording_measure_still_sees_every_query() {
+        let mut u = Undo::open(0, 0).with_chip("Back");
+        let recorded = Counting(std::cell::Cell::new(0), false);
+        let chip = u.chip_mut().unwrap();
+        for _ in 0..5 {
+            chip.width(22, &recorded);
+        }
+        assert_eq!(recorded.0.get(), 5, "a non-live font is asked every time");
     }
 
     #[test]

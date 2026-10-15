@@ -579,7 +579,7 @@ impl TransportRow {
         self.preview.motion.step_live(live, now);
         self.spring.step(scrub_ns, now);
         // a closed window that has finished fading is forgotten
-        if self.undo.is_some_and(|u| !u.visible(now)) {
+        if self.undo.as_ref().is_some_and(|u| !u.visible(now)) {
             self.undo = None;
         }
         let f = (focus == 1)
@@ -600,13 +600,14 @@ impl TransportRow {
     pub fn scrub_motion_animating(&self, now: u32) -> bool {
         self.preview.motion.animating(now)
             || self.spring.busy(now)
-            || self.undo.is_some_and(|u| u.phase(now) == 2)
+            || self.undo.as_ref().is_some_and(|u| u.phase(now) == 2)
     }
 
     /// **Open the undo window**: a scrub that started from `origin_ns` while the film was playing
     /// has just committed at `now`. Replaces any window already open.
     pub fn open_undo(&mut self, origin_ns: i64, now: u32) {
-        self.undo = Some(Undo::open(origin_ns, now));
+        // the chip's text is formatted here, once, and drawn from for the window's whole life
+        self.undo = Some(Undo::open(origin_ns, now).with_chip(plx_platform::i18n::msg::settings_back()));
     }
 
     /// Close the window at once, with no fade: it was used, or what it would undo is no longer on
@@ -617,13 +618,13 @@ impl TransportRow {
 
     /// Where BACK returns to, while the window is armed at `now`.
     pub fn undo_origin(&self, now: u32) -> Option<i64> {
-        self.undo.filter(|u| u.armed(now)).map(|u| u.origin_ns())
+        self.undo.as_ref().filter(|u| u.armed(now)).map(|u| u.origin_ns())
     }
 
     /// The window's state as a frame depends on it (0 gone, 1 open, 2 fading): folded into the
     /// player's `clock_fingerprint`, so the deadline and the fade each owe a frame.
     pub fn undo_phase(&self, now: u32) -> u8 {
-        self.undo.map_or(0, |u| u.phase(now))
+        self.undo.as_ref().map_or(0, |u| u.phase(now))
     }
 
     /// Control `i`'s focus pop this frame — the read half of the row's springs, for the two
@@ -2000,7 +2001,7 @@ pub fn draw_hud(
         // a cancelled scrub's knob returns to the playhead rather than jumping to it
         bar.pos_ns = row.spring.apply(bar.pos_ns, now);
         let line = draw_playbar(p, bar, measure);
-        draw_undo(p, row.undo.filter(|u| u.visible(now)), bar, line, now, measure);
+        draw_undo(p, row.undo.as_mut().filter(|u| u.visible(now)), bar, line, now, measure);
         // last, so the still floats over the title block and the control row as well
         draw_scrub_preview(p, ps, row, bar);
     } // end `if transport`
@@ -2037,7 +2038,7 @@ pub fn draw_hud(
 /// side of the tick. Both at the window's opacity, so they leave together.
 fn draw_undo(
     p: Painter,
-    undo: Option<Undo>,
+    undo: Option<&mut Undo>,
     bar: Playbar,
     line: LineExtents,
     now: u32,
@@ -2053,13 +2054,13 @@ fn draw_undo(
     let white = theme::TINT_WHITE;
     p.alpha(a * scrub_undo::TICK_A)
         .rect(scrub_undo::tick_rect(ox, SB_Y + SB_H * 0.5), 0.0, white, white, 0.0);
-    let text = scrub_undo::chip_text(plx_platform::i18n::msg::settings_back(), u.origin_ns());
     let sz = theme::size::MICRO;
-    let w = measure.width_str(&text, sz, false);
-    let (Some(x), Ok(cs)) = (scrub_undo::chip_x(&line, ox, w), CString::new(text)) else { return };
+    let Some(chip) = u.chip_mut() else { return };
+    let w = chip.width(sz, measure);
+    let Some(x) = scrub_undo::chip_x(&line, ox, w) else { return };
     // the clock's line, aligned on its baseline (the clock is CAPTION, bold)
     let y = plx_gfx::text::baseline_y(sz, 0, theme::size::CAPTION, 1, SB_Y + 30.0);
-    p.alpha(a * scrub_undo::CHIP_A).text(cs.as_ptr(), x, y, sz, white, 0, 0);
+    p.alpha(a * scrub_undo::CHIP_A).text(chip.c_str().as_ptr(), x, y, sz, white, 0, 0);
 }
 
 /// **The scrub preview** ([`crate::scrub_preview`]): while a live scrub preview is up, the still
