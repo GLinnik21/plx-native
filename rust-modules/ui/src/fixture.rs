@@ -555,8 +555,8 @@ pub struct FixtureModal {
     pub last_navigation: super::screen::NavPresentation,
     /// The peak alpha this surface asks its host page to dim to (`Screen::scrim`). 0 = none.
     pub scrim_alpha: f32,
-    /// When set the dim is over the video plane and inherits this envelope (`Scrim::over_video`).
-    pub scrim_corners: Option<[[f32; 3]; 4]>,
+    /// When set the dim is over the video plane (`Scrim::over_video`).
+    pub scrim_over_video: bool,
     /// Optional lifted element callback for exercising the dispatcher's borrowed frame context.
     pub scrim_lift: Option<super::screen::ScrimLift>,
     /// The [`draw_order`] tick at which the container ASKED for that dim, and the one at which
@@ -607,7 +607,7 @@ impl FixtureModal {
             last_draw_alpha: 0.0,
             last_navigation: Default::default(),
             scrim_alpha: 0.0,
-            scrim_corners: None,
+            scrim_over_video: false,
             scrim_lift: None,
             scrim_at: std::cell::Cell::new(0),
             draw_at: 0,
@@ -800,8 +800,8 @@ impl Screen<FixtureHost> for FixtureModal {
     }
     fn scrim(&self) -> super::screen::Scrim {
         self.scrim_at.set(draw_order());
-        if let Some(c) = self.scrim_corners {
-            return super::screen::Scrim::over_video(self.scrim_alpha, Some(c));
+        if self.scrim_over_video {
+            return super::screen::Scrim::over_video(self.scrim_alpha);
         }
         match self.scrim_lift {
             Some(lift) => super::screen::Scrim::lifting(self.scrim_alpha, lift),
@@ -987,19 +987,6 @@ impl Screen<FixtureHost> for VideoPlaneScreen {
     fn render(&self) -> RenderStrategy {
         RenderStrategy::VideoPlane
     }
-    fn underlay_corners(&self, _cx: &Cx<'_, FixtureHost>) -> Option<[[f32; 3]; 4]> {
-        VIDEO_PLANE_CORNERS.with(|c| c.get())
-    }
-}
-
-thread_local! {
-    /// What [`VideoPlaneScreen::underlay_corners`] answers: a test's stand-in for the playing
-    /// item's envelope (`None`: no envelope to preload).
-    static VIDEO_PLANE_CORNERS: std::cell::Cell<Option<[[f32; 3]; 4]>> = const { std::cell::Cell::new(None) };
-}
-
-pub fn set_video_plane_corners(c: Option<[[f32; 3]; 4]>) {
-    VIDEO_PLANE_CORNERS.with(|v| v.set(c));
 }
 
 pub struct FixtureRig {
