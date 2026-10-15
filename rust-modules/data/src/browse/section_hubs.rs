@@ -73,15 +73,20 @@ const HUB_FETCH_COUNT: i64 = 12;
 /// is. The one conversion in this module is [`backoff_frames`].
 const FIRST_PAINT_FRAMES: u32 = 240;
 
+/// Seconds to this module's unit (frames at 60 fps; the same truncating conversion everywhere).
+const fn secs_to_frames(secs: f32) -> u32 {
+    (secs * 60.0) as u32
+}
+
+/// The least spacing between two notification-driven reads of one section: the quiet Home
+/// refetch's ([`crate::pms::QUIET_SPACING_S`]), in frames.
+const NOTIFY_SPACING_FRAMES: u32 = secs_to_frames(crate::pms::QUIET_SPACING_S);
+
 /// [`crate::pms::backoff_secs`]' 2/4/8/16/30s ladder in this module's unit. The ladder is shared —
 /// hoisted as a PURE function only, deliberately: `pms`'s `landed_ok`/`landed_fail` beside it carry
 /// Home-specific logging, stale-build retention and endpoint-refresh policy that mean nothing here.
-/// The least spacing between two notification-driven reads of one section: the quiet Home
-/// refetch's ([`crate::pms::QUIET_SPACING_S`]), in frames.
-const NOTIFY_SPACING_FRAMES: u32 = (crate::pms::QUIET_SPACING_S * 60.0) as u32;
-
 fn backoff_frames(fails: u32) -> u32 {
-    (crate::pms::backoff_secs(fails) * 60.0) as u32
+    secs_to_frames(crate::pms::backoff_secs(fails))
 }
 
 /// One published shelf: the owner's own row, with its items already filtered and capped.
@@ -2391,7 +2396,7 @@ mod tests {
             state.hubs_invalidate_server(SERVER_A, &adapter); // …and a burst follows inside the spacing
         }
         assert_eq!(owed_by_server(&state, SERVER_A), [false, false], "coalesced, not read again at once");
-        let spacing = (crate::pms::QUIET_SPACING_S * 60.0) as usize;
+        let spacing = NOTIFY_SPACING_FRAMES as usize;
         for _ in 0..spacing - 1 {
             state.hubs_tick_all(&adapter);
         }
