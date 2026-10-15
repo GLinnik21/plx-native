@@ -4899,3 +4899,86 @@ fn a_window_that_slid_is_paging_not_a_replacement() {
     land_following(&mut s, &state, focus);
     assert_ne!(s.rows[0].elems[2], before[2], "a card of the same show in a slid window does not inherit");
 }
+
+// ---- review round: the return half, order, and the existing tile ----
+
+fn memory_of(s: &HomeScreen) -> HomeMemory {
+    let PageMemory::Home(memory) = <HomeScreen as Screen<TestHost>>::memory(s) else { unreachable!() };
+    memory
+}
+
+/// A Home evicted while the player ran and mounted again on the CURRENT catalog, then handed its
+/// memory (`ScreenEvent::RestoreMemory`): the path every return to an evicted page takes.
+fn remount(state: &plx_data::pms::PmsState, memory: HomeMemory) -> HomeScreen {
+    let snapshot = plx_data::pms::hubs_snapshot(state);
+    let mut s = screen(snapshot.view());
+    step(&mut s, snapshot.view(), None, &ScreenEvent::RestoreMemory(PageMemory::Home(memory)));
+    s
+}
+
+#[test]
+fn an_evicted_home_remounted_on_the_next_episode_keeps_the_remembered_tile() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, s) = show_home(6);
+    let before = s.rows[0].elems.clone();
+    let memory = memory_of(&s);
+    plx_data::pms::edit_test_item(&mut state, "3", &|m| m.rk = "31".into());
+    let back = remount(&state, memory);
+    assert_eq!(back.rows[0].elems, before, "the tile that held episode 3 holds episode 31 on the same element");
+    assert!(back.find_item(&HomeItemIdentity::Item { hub: HomeHubIdentity::ContinueWatching,
+        sid: plx_plex::plex::ServerId::UNSET, rk: "3".into() }).is_none(), "the old episode's key is retired, not re-added");
+}
+
+#[test]
+fn an_evicted_home_remounted_after_a_card_left_recovers_its_cursor_without_a_collision() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, s) = show_home(6);
+    let memory = memory_of(&s);
+    // the movie-less, show-less case: card 3 left the row and nothing replaced it, so the fresh
+    // page numbers its cards from 1 again and the remembered numbers name different cards
+    plx_data::pms::remove_test_item(&mut state, "3");
+    let back = remount(&state, memory);
+    assert_eq!(back.rows[0].elems.len(), 5);
+    let mut seen = std::collections::HashSet::new();
+    assert!(back.items.iter().all(|k| seen.insert(k.elem)), "no element names two cards");
+}
+
+#[test]
+fn the_remembered_shows_are_in_column_order() {
+    let _guard = plx_base::testlock::serial();
+    let (_state, s) = show_home(6);
+    let memory = memory_of(&s);
+    let elems: Vec<u32> = memory.cw_shows.iter().map(|(elem, ..)| *elem).collect();
+    assert_eq!(elems, s.rows[0].elems, "row order, never a hash map's");
+}
+
+#[test]
+fn a_next_episode_that_is_already_in_the_row_takes_the_focus_of_the_finished_one() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = show_home(6);
+    // card 5 is another episode of card 3's show
+    plx_data::pms::edit_test_item(&mut state, "5", &|m| m.show_rk = "show3".into());
+    let first = plx_data::pms::hubs_snapshot(&state);
+    s.sync_catalog(&cx(first.view(), None));
+    tick_n(&mut s, first.view(), None, 0, 6);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    plx_data::pms::remove_test_item(&mut state, "3");
+    let seated = land_following(&mut s, &state, focus);
+    assert_eq!(seated.elem, before[4], "focus follows the show to its next episode, not to the same index");
+}
+
+#[test]
+fn a_next_episode_that_jumps_to_column_zero_keeps_the_element_and_the_focus() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = show_home(6);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    // Continue Watching is ordered by last viewed: the next episode comes first
+    plx_data::pms::edit_test_item(&mut state, "3", &|m| m.rk = "31".into());
+    plx_data::pms::promote_test_item(&mut state, "31");
+    let seated = land_following(&mut s, &state, focus);
+    assert_eq!(card_rk(&state, 0), "31", "premise: the next episode is first");
+    assert_eq!(s.rows[0].elems[0], before[2], "the element moved to column 0 with its card");
+    assert_eq!(seated, focus, "and the focus is still on it");
+}

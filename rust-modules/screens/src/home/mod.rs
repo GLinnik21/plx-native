@@ -475,6 +475,10 @@ pub struct HomeScreen {
     /// The server offset of the window `cw_cards` was taken from: a rebind (`rebind_shows`) is a
     /// replacement inside one window, never a window that slid. Not canon.
     cw_offset: usize,
+    /// Elements `rebind_shows` / `adopt_shows` handed on to the card that replaced their episode.
+    /// The one reason a restored key may find its element already held (`restore`), spent there.
+    /// Not canon.
+    rebound: HashSet<u32>,
     /// The cards the Continue Watching row removed, by [`ui_cards::elem_key`], kept while its
     /// landing is pending (a later publication adds to them and cannot change one) and let go
     /// once nothing fades. Not canon.
@@ -546,6 +550,7 @@ impl HomeScreen {
             projected_generation: None,
             cw_cards: HashMap::new(),
             cw_offset: 0,
+            rebound: HashSet::new(),
             ghost_cards: HashMap::new(),
             restored_scroll: Vec::new(),
             restore_reveal: false,
@@ -592,14 +597,19 @@ impl HomeScreen {
                     existing.last_col = saved.last_col;
                 }
             } else {
-                // An element a fresh key already holds is either one `adopt_shows` handed on to the
-                // card that replaced this one, or a card that took the number while the page was
-                // away: this key's card is not in the row, and the remembered cursor recovers.
                 if taken_elems.insert(saved.elem) {
                     self.push_item(saved.clone());
+                } else if !self.rebound.contains(&saved.elem) {
+                    // Not one a rebind handed on: the number is held by a fresh key for another
+                    // card (this page numbered its cards from the current catalog, and the
+                    // remembered number belongs to a card that has since left). The remembered
+                    // cursor recovers through `reconcile`; the key itself is not kept.
+                    plx_base::eventlog::log(&format!(
+                        "home: restored element {} is held by another card; its key is dropped", saved.elem));
                 }
             }
         }
+        self.rebound.clear();
         self.next_group = self.next_group.max(memory.next_group).max(FIRST_HUB_GROUP);
         self.next_elem = self.next_elem.max(memory.next_elem).max(FIRST_ITEM_ELEM);
         self.carousel = memory.carousel.clone();
@@ -890,9 +900,23 @@ impl HomeScreen {
         for (elem, sid, rk) in inherited {
             if let Some(key) = keys.iter_mut().find(|key| key.elem == elem) {
                 key.identity = HomeItemIdentity::Item { hub: hub.clone(), sid, rk };
+                self.rebound.insert(elem);
             }
         }
         self.rebuild_indexes();
+    }
+
+    /// **The finished episode's focus goes to the show's next episode when it is already in the
+    /// row** (owner rule: "the next-episode tile, else the same index"). A tile the row removed
+    /// (a ghost while its landing plays) names an episode; if the Continue Watching row holds
+    /// another card of the same show on the same server, that tile is where focus goes.
+    /// `rebind_shows` covers the other case, where the next episode is new and inherits the element.
+    fn next_episode_of(&self, gone: u32) -> Option<u32> {
+        let (_, card) = self.ghost_cards.values().find(|(elem, _)| *elem == gone)?;
+        let show = show_of(card)?;
+        let row = self.rows.iter().find(|r| r.identity == HomeHubIdentity::ContinueWatching)?;
+        row.elems.iter().copied().find(|elem| self.cw_cards.get(elem)
+            .is_some_and(|held| held.sid == card.sid && show_of(held) == Some(show)))
     }
 
     /// The return half of [`Self::rebind_shows`]. A page that was left and comes back is mounted
@@ -927,6 +951,7 @@ impl HomeScreen {
             let displaced = keys[mine].elem;
             if let Some(other) = other { keys[other].elem = displaced; }
             keys[mine].elem = elem;
+            self.rebound.insert(elem);
             changed = true;
         }
         if changed { self.rebuild_indexes(); }
@@ -2118,7 +2143,7 @@ impl LogicalState for HomeScreen {
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
             // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
-            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold_sent: _, carousel: _,
+            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold_sent: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
@@ -2400,6 +2425,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
             if valid {
                 return want;
             }
+        }
+        if let Some(elem) = self.next_episode_of(want.elem) {
+            return FocusKey { entry: want.entry, elem };
         }
         if let Some(saved) = self.items.iter().find(|k| k.elem == want.elem) {
             let hub_identity = match &saved.identity {
@@ -2839,9 +2867,14 @@ impl<H: HomeLike> Screen<H> for HomeScreen {
             row_scroll: self.rows.iter().enumerate()
                 .map(|(index, row)| (row.group.0, self.grid.scroll_x(index)))
                 .chain(self.restored_scroll.iter().copied()).collect(),
-            cw_shows: self.cw_cards.iter()
-                .filter_map(|(&elem, card)| Some((elem, card.sid, card.rk.clone(), show_of(card)?.to_owned())))
-                .collect(),
+            // Column order: a hash map's order would make two memories of one page differ.
+            cw_shows: self.rows.iter().find(|r| r.identity == HomeHubIdentity::ContinueWatching)
+                .map_or_else(Vec::new, |row| row.elems.iter()
+                    .filter_map(|&elem| {
+                        let card = self.cw_cards.get(&elem)?;
+                        Some((elem, card.sid, card.rk.clone(), show_of(card)?.to_owned()))
+                    })
+                    .collect()),
             cw_offset: self.cw_offset,
         })
     }

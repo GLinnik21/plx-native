@@ -3436,6 +3436,25 @@ pub fn edit_test_item(state: &mut PmsState, rk: &str, edit: &dyn Fn(&mut PmsMovi
     commit(state, build);
 }
 
+/// Test hook: move the shelf item `rk` to the front of its shelf and republish: Continue Watching
+/// is ordered by last viewed, so the next episode of a show just watched arrives in column 0.
+#[cfg(any(test, feature = "test-support"))]
+pub fn promote_test_item(state: &mut PmsState, rk: &str) {
+    plx_base::testlock::assert_held("the pms hub catalog (promote_test_item)");
+    for source in state.srcs.iter_mut() {
+        if let Some(build) = source.last.as_mut() {
+            for shelf in &mut build.shelves {
+                if let Some(at) = shelf.items.iter().position(|item| item.rk == rk) {
+                    let item = shelf.items.remove(at);
+                    shelf.items.insert(0, item);
+                }
+            }
+        }
+    }
+    let build = merge(&state.srcs);
+    commit(state, build);
+}
+
 /// Test hook: the server offset every shelf's window now starts at (a window that slid under the
 /// cards it held), republished.
 #[cfg(any(test, feature = "test-support"))]

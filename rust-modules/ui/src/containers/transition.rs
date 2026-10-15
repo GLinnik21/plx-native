@@ -278,7 +278,9 @@ impl Transition for PageDip {
                 }
             }
             DipPhase::Hold => {
-                // exactly one frame: a route gates no fetch (every screen owns its own data wait).
+                // exactly one frame, AFTER any floor wait (the `Out` arm above, which a caller may arm
+                // to let a fetch land under the dip): once the op is applied this arm waits for
+                // nothing, since a route gates no fetch (every screen owns its own data wait).
                 // One FRAME, not one tick call: a frame dump repeats an iteration at the same
                 // virtual time while debt clears (`plx_gfx::dump::held_repeat`), and a repeat must
                 // not spend the floor frame.
