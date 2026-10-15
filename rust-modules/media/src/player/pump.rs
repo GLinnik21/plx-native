@@ -1077,6 +1077,10 @@ fn own_seek_under_pause(target_ns: i64) {
     }
 }
 
+/// Test-only: how many times `settle_paused_seek` took the "viewer paused mid-seek" branch.
+#[cfg(test)]
+static MID_SEEK_CLAIMS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// The pump's half of "a paused film stays paused across a scrub", run at the head of every tick:
 ///
 /// * a viewer Pause pressed AFTER a playing seek was dispatched shut the feed gate under it, so
@@ -1099,12 +1103,18 @@ fn settle_paused_seek(pa: &mut super::adapter::PlayerAdapter, now: u32) {
     {
         let target = SHARED.seek_target_ns.load(Relaxed);
         let target = if target >= 0 { target } else { SHARED.playpos_ns.load(Relaxed) };
-        if let Some(eng) = pa.engine() {
+        // Only a seek the pump already DISPATCHED and that is still in flight: no newer tap waiting
+        // (`request_seek` sets `SHARED.seeking` and `TX.seek_to_ns` together, ahead of the
+        // dispatcher, and the dispatcher's `own_seek_under_pause` owns THAT seek at its own target),
+        // and the Engine flushed or awaiting its keyframe's rebase.
+        if let Some(eng) = pa.engine().filter(|e| TX.seek_to_ns.load(Relaxed) < 0 && (e.flushed || e.rebase_pending)) {
             // The Pause marked the clock the seek prime owns as the viewer's, which fences the
             // prime's Play: give the hold back to the prime first (it Plays one frame, then
             // `finish_paused_seek` re-pauses).
             if SHARED.hand_hold_to_seek_prime() && TX.own_paused_seek(target) {
                 eng.seek_armed_at = now;
+                #[cfg(test)]
+                MID_SEEK_CLAIMS.fetch_add(1, Relaxed);
                 super::log("seek: viewer paused mid-seek; the pump opened the preroll");
             }
         }
@@ -3387,6 +3397,34 @@ mod native_seek_pump_tests {
     }
 
     #[test]
+    fn a_bare_paused_request_seek_is_owned_by_the_dispatcher_not_the_mid_seek_branch() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        rig.viewer_pause();
+        SHARED.seek_target_ns.store(123_000_000_000, Relaxed); // a stale target from an earlier seek
+        MID_SEEK_CLAIMS.store(0, Relaxed);
+        crate::player::request_seek(TARGET_NS);
+        rig.frame();
+        assert_eq!(
+            MID_SEEK_CLAIMS.load(Relaxed),
+            0,
+            "a seek not yet dispatched is not a seek the viewer paused mid-flight"
+        );
+        assert_eq!(TX.owned_paused_seek(), Some(TARGET_NS), "first owned at the request's own target");
+    }
+
+    #[test]
+    fn a_pause_pressed_mid_flight_takes_the_mid_seek_branch() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        rig.arm(TARGET_NS);
+        MID_SEEK_CLAIMS.store(0, Relaxed);
+        assert!(crate::player::pause(&mut rig.pa));
+        rig.frame();
+        assert_eq!(MID_SEEK_CLAIMS.load(Relaxed), 1);
+    }
+
+    #[test]
     fn a_gate_shut_under_an_armed_seek_is_reopened_and_the_watchdog_counts_from_the_reopen() {
         let _serial = plx_base::testlock::serial();
         let mut rig = Rig::new(None);
@@ -3518,6 +3556,27 @@ mod native_seek_pump_tests {
         assert!(plays >= 1, "the prime Play fired through the reopened gate before the frame was presented");
         assert_eq!(reloads(), vec![TARGET_NS], "no second reload");
         assert_ended_paused();
+    }
+
+    #[test]
+    fn two_consecutive_paused_reload_mode_seeks_each_open_the_preroll_and_end_paused() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        crate::player::set_seek_mode(SeekMode::Reload);
+        rig.viewer_pause();
+        for target in [TARGET_NS, NEXT_NS] {
+            super::super::engine::RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            super::super::engine::RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            SHARED.frames.store(0, Relaxed);
+            crate::player::request_seek(target);
+            rig.frame_until_reload();
+            assert_eq!(reloads(), vec![target]);
+            assert_eq!(preroll_at_reload(), vec![true], "the reload at {target} is dispatched with the gate open");
+            rig.complete_reload(target);
+            assert!(rig.land_and_present(target) >= 1, "the prime Play fired through the reopened gate");
+            assert_eq!(reloads(), vec![target], "no second reload");
+            assert_ended_paused();
+        }
     }
 
     #[test]
