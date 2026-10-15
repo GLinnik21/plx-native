@@ -208,10 +208,10 @@ fn a_windowed_slide_costs_one_job_per_boundary() {
     sim.slide = Some(5000);
     sim.tick(0);
     let mut per_edge = Vec::new();
-    let mut before = sim.jobs().0 + sim.jobs().1;
+    let mut before = sim.normal.len() + sim.ahead.len();
     for now in (16..30_000).step_by(16) {
         sim.tick(now);
-        let total = sim.jobs().0 + sim.jobs().1;
+        let total = sim.normal.len() + sim.ahead.len();
         assert!(total - before <= 1, "at most one job per tick at {now}");
         if total != before {
             per_edge.push(now);
