@@ -149,10 +149,6 @@ impl Scope {
 pub struct StopRecord {
     pub sid: ServerId,
     pub rk: String,
-    /// The show's key for an episode, empty for a movie. The read-back takes its season and show
-    /// from the server's own answer instead, so the pair is not read from here.
-    pub show_rk: String,
-    pub season_index: i64,
     pub pos_ms: i64,
     pub dur_ms: i64,
     /// The server took the POST. A refused or abandoned one still patches the tile (the viewer did

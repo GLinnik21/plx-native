@@ -40,7 +40,8 @@
 //!   The extra rows are published and followed no further. Their facts are the server's own word
 //!   (`parse_item`: watched is `viewedLeafCount >= leafCount`), each addressed to its exact
 //!   `(server, ratingKey)`, so another server's show of the same key is not touched. Read-backs of
-//!   a burst share the extra batch; the pair of rounds is the ceiling however many episodes moved.
+//!   a burst share the extra batch: one extra batch per server per leaf batch (a burst of more than
+//!   [`BATCH_KEYS`] leaves is several leaf batches, and each can name its own parents).
 //! * **Results reach the stores as edits carrying facts**: `publish_view` of a
 //!   [`crate::viewstate::ViewFact::Facts`] at `Scope::Leaf` (a show's facts describe the show row,
 //!   never its episodes). Facts are the server's word, so they are not recorded in the ledger. They
@@ -273,8 +274,8 @@ impl ViewReconcileStore {
                     client.metadata_many(&refs).map(|mc| {
                         mc.metadata.iter().map(|m| ReadRow {
                             movie: crate::pms::parse_item(m, sid),
-                            parent: m.parent_rating_key.clone(),
-                            grandparent: m.grandparent_rating_key.clone(),
+                            parent: crate::pms::clean(&m.parent_rating_key),
+                            grandparent: crate::pms::clean(&m.grandparent_rating_key),
                         }).collect::<Vec<_>>()
                     })
                 })).unwrap_or(None);
@@ -282,17 +283,23 @@ impl ViewReconcileStore {
             });
             if !spawned {
                 // Nothing will ever land. Keep the items and wait out the ladder.
-                let leaves = keys.len() - parents.len();
-                let mut keys = keys.into_iter();
-                self.pending.extend(keys.by_ref().take(leaves).map(|rk| (sid, rk)));
-                self.pending_parents.extend(keys.map(|rk| (sid, rk)));
-                self.retry_cd = RETRY_FRAMES;
+                self.requeue_unspawned(sid, keys, parents.len());
                 return;
             }
             plx_base::eventlog::log(&format!(
                 "viewreconcile: {} item(s) → server {} (off-thread)", keys.len(), sid.raw()));
             self.flights.push(Flight { id, sid, keys, parents, stamp });
         }
+    }
+
+    /// A batch that could not be spawned goes back where it came from: its leaves into `pending`,
+    /// its trailing `parent_count` keys into `pending_parents`, and the retry wait starts.
+    fn requeue_unspawned(&mut self, sid: ServerId, keys: Vec<String>, parent_count: usize) {
+        let leaves = keys.len() - parent_count;
+        let mut keys = keys.into_iter();
+        self.pending.extend(keys.by_ref().take(leaves).map(|rk| (sid, rk)));
+        self.pending_parents.extend(keys.map(|rk| (sid, rk)));
+        self.retry_cd = RETRY_FRAMES;
     }
 
     /// Land what arrived, hand each surviving row to `publish` as a facts change, re-queue the

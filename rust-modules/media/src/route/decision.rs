@@ -5824,8 +5824,6 @@ pub fn scrobble_stop(
         PendingStop::new(plx_data::viewstate::StopRecord {
             sid,
             rk: rk.clone(),
-            show_rk: row.map(|r| r.show_rk.clone()).unwrap_or_default(),
-            season_index: row.map_or(0, |r| r.season),
             pos_ms: *pos_ms,
             dur_ms: *dur_ms,
             ok: false,

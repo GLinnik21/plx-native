@@ -53,7 +53,8 @@ fetch. Facts are not recorded in the ledger (they are the server's word). `Bridg
 after `viewstate_pump` every frame, and also pumps Browse while a Browse section is owed a membership
 re-query (below): a Library page with another page pushed over it is not ticked.
 Browse marks a section whose membership depends on viewing (Unwatched filter, `lastViewedAt` sort) stale
-when a Facts edit lands in it. The Library screen asks for the re-query (`LibraryWork::Requery`) only once a
+when a Facts edit covers one of its rows, whether or not the row already agrees (the server's answer marks
+staleness; the optimistic press alone does not). The Library screen asks for the re-query (`LibraryWork::Requery`) only once a
 PAGE has been pushed over it (`WillLeave(Deeper)`, then `Cover`), never while it is visible and never under a
 modal such as a compact menu (Sort, Filter, the item menu), which leaves the page visible and ticking; so tiles
 do not leave under the cursor. The re-query is a refresh of the SAME query: the fetch generation moves (a page
