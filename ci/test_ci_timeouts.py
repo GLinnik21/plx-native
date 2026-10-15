@@ -133,11 +133,13 @@ class CheckersGoRed(unittest.TestCase):
         self.assertTrue(apt_update_problems("x", "        run: |\n          sudo apt-get update\n"))
 
     def test_unbounded_curl_is_caught(self):
-        text = (GITHUB / "workflows/ci.yml").read_text()
-        self.assertEqual(curl_problems("ci.yml", text), [])
-        mutated = text.replace("--max-time 120 ", "")
-        self.assertNotEqual(mutated, text)
-        self.assertTrue(curl_problems("ci.yml", mutated))
+        # No workflow calls curl itself any more (ci/deps.py does, with its own bounds), so the
+        # checker is exercised on a synthetic step.
+        bounded = "        run: |\n          curl -fsSL --connect-timeout 20 --max-time 120 -o x https://example.invalid/x\n"
+        self.assertEqual(curl_problems("x.yml", bounded), [])
+        mutated = bounded.replace("--max-time 120 ", "")
+        self.assertNotEqual(mutated, bounded)
+        self.assertTrue(curl_problems("x.yml", mutated))
 
 
 if __name__ == "__main__":

@@ -175,6 +175,15 @@ jobs:
         # raise one deliberately: ci/build-budgets.json, docs/agent-reference.md.
         run: python3 ci/check-build-budgets.py --graph --src rust-modules/src --src rust-modules/base/src --src rust-modules/machine/src --src rust-modules/net/src --src rust-modules/platform/src --src rust-modules/gfx/src --src rust-modules/ui/src --src rust-modules/plex/src --src rust-modules/telemetry/src --src rust-modules/data/src --src rust-modules/session/src --src rust-modules/media/src --src rust-modules/appkit/src --src rust-modules/screens/src
 
+      - name: Third-party notices vs the ARM runtime graph
+        # `make check` runs only the OFFLINE half of this (ci/gen-third-party-notices.py --check), which
+        # classifies lock packages by name. `not_shipped` holds common crates that dev/build deps pull in,
+        # so a bump that makes a shipping crate depend on one passes it with no licence row. This compares
+        # the data file with `cargo tree` for the ARM graph. `--locked` resolves and compiles nothing and
+        # runs no build script, so it is cheap here. (The Dependabot auto-fix job cannot run cargo: see
+        # dependabot-notices.yml; this is its backstop.)
+        run: python3 ci/gen-third-party-notices.py --check --verify-graph
+
       - name: Type-check the simulator feature set
         # The host simulator is a real build configuration with real users (the `ui-sim` skill, and
         # `make macapp`, which ships `--release --no-default-features --features hostsim` to
@@ -392,6 +401,9 @@ jobs:
           # The crate's own deps still cache; std is rebuilt each run and that is expected.
           key: armv7-build-std
 
+      - name: Cache the pinned downloads
+        uses: ./.github/actions/deps-cache
+
       - id: ndk
         uses: ./.github/actions/webos-ndk
 
@@ -413,7 +425,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/plxnative/ffmpeg
-          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', '.github/actions/webos-ndk/action.yml') }}
+          key: ffmpeg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/deps.py', 'ci/dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', '.github/actions/webos-ndk/action.yml') }}
 
       - name: Build
         run: make WEBOS_SDK='${{ steps.ndk.outputs.sdk-dir }}' -j"$(nproc)"
@@ -462,7 +474,7 @@ jobs:
           ./tools/font-hint-audit.py
 
       - name: webosbrew compatibility check
-        # Step-level bound: the curl downloads and the apt install of the local .debs (which pulls
+        # Step-level bound: the ci/deps.py downloads and the apt install of the local .debs (which pulls
         # their dependencies from the network) are the only network phases of this step.
         timeout-minutes: 15
         # THE gate that matters for distribution: resolves the ELF's DT_NEEDED and symbols against
@@ -477,17 +489,11 @@ jobs:
         # from the only people who can settle it.
         run: |
           set -euo pipefail
-          TAG=v20260731-e1bb0c0
-          declare -A SHA256=(
-            [fw-symbols]=639721a0c2248b13e5984930b53729cc201f022725954086aca35e2ccae515b5
-            [ipk-verify]=2868b4b2efc097939ab11117c9266d796f0326ee48c90f80070766814fb174d9
-          )
-          for p in fw-symbols ipk-verify; do
-            file="webosbrew-toolbox-${p}_0.4.0-1_arm64.deb"
-            curl -fsSL --connect-timeout 20 --max-time 120 --retry 3 --retry-delay 5 -o "$file" "https://github.com/webosbrew/dev-toolbox-cli/releases/download/${TAG}/$file"
-            echo "${SHA256[$p]}  $file" | sha256sum -c -
-          done
-          sudo apt-get install -y ./webosbrew-toolbox-*.deb
+          # The release, each package's URL and its sha256 are pinned in ci/dependencies.json
+          # (entry webosbrew-toolbox); ci/deps.py downloads and verifies, and the download
+          # cache step restores them so an outage of the host does not fail this step.
+          debs=$(python3 ci/deps.py fetch webosbrew-toolbox --asset fw-symbols --asset ipk-verify)
+          sudo apt-get install -y $debs
           webosbrew-ipk-verify --details --format markdown \
             --fw-releases '>=4.0' pkg/*.ipk | tee -a "$GITHUB_STEP_SUMMARY"
 

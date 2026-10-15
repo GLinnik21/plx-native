@@ -18,7 +18,6 @@ on:
       - 'src/ass_internal.h'
       - 'include/ass.h'
       - 'assets/icons/**'
-      - 'vendor/nanosvg/**'
       - 'pkg/appfont*.ttf'
       - 'pkg/fonts/subs/**'
       - 'tools/cut-noto-subs.py'
@@ -30,8 +29,9 @@ on:
       - 'ci/stage-host-ffmpeg.sh'
       - 'ci/build-libass.sh'
       - 'ci/build-libass.py'
-      - 'ci/libass-dependencies.json'
-      - 'ci/libass-patches/0001-grow-font-faces.patch'
+      - 'ci/dependencies.json'
+      - 'ci/deps.py'
+      - 'ci/patches/libass-0001-grow-font-faces.patch'
       - 'ci/ffabi-assert.c'
       - 'tests/fixtures/mkv_zlib_subs.mkv'
       - 'tests/fixtures/replay/**'
@@ -77,12 +77,9 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: vendor/libass-prefix-host
-          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/libass-patches/0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
-      - name: Cache the libass source tarballs
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: vendor/libass-sources
-          key: host-libass-sources-${{ hashFiles('ci/libass-dependencies.json') }}
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/dependencies.json', 'ci/deps.py', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/patches/libass-0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
+      - name: Cache the pinned downloads
+        uses: ./.github/actions/deps-cache
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: rust-modules -> target-sim-ci
@@ -169,7 +166,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/plxnative/ffmpeg
-          key: host-ffmpeg-work-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/arm-cc.py', 'ci/check-link-evidence.py') }}
+          key: host-ffmpeg-work-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/deps.py', 'ci/dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py') }}
       - name: Cache the host libass stack
         # `ci/build-libass.py` stamps `vendor/libass-prefix-host/.dependencies-key` with a content
         # key (pins, the script, the compiler, the flags, the two helper scripts) and skips the
@@ -180,16 +177,14 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: vendor/libass-prefix-host
-          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/libass-patches/0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
-      - name: Cache the libass source tarballs
-        # The script verifies and fetches all five archives BEFORE it looks at its stamp, so
-        # without these a prefix hit still downloaded ~25 MB from five hosts. Pinned by SHA-256 (the
-        # script re-checks every file), so the entry moves only with the pins and is shared by every
-        # OS. The fetch logic and its mirror fallback are untouched.
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: vendor/libass-sources
-          key: host-libass-sources-${{ hashFiles('ci/libass-dependencies.json') }}
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/dependencies.json', 'ci/deps.py', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/patches/libass-0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
+      - name: Cache the pinned downloads
+        # The libass script verifies and fetches its archives BEFORE it looks at its stamp, so
+        # without this a prefix hit still downloaded ~25 MB from five hosts. The entry is keyed on
+        # the manifest alone and holds every pinned download (the action fetches them all on a
+        # miss, so no job freezes a partial set), is re-checked by ci/deps.py against each sha256,
+        # and is shared by every OS and job.
+        uses: ./.github/actions/deps-cache
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: rust-modules -> target-sim-ci
@@ -264,19 +259,16 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/plxnative/ffmpeg
-          key: host-ffmpeg-work-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/arm-cc.py', 'ci/check-link-evidence.py') }}
+          key: host-ffmpeg-work-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-ffmpeg.sh', 'ci/deps.py', 'ci/dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py') }}
       - name: Cache the host libass stack
         # The same entry as the `macos` job's (same key), which explains it. Likewise the bundled
         # libass built from the pinned sources, restored instead of rebuilt when no input moved.
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: vendor/libass-prefix-host
-          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/libass-patches/0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
-      - name: Cache the libass source tarballs
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        with:
-          path: vendor/libass-sources
-          key: host-libass-sources-${{ hashFiles('ci/libass-dependencies.json') }}
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/dependencies.json', 'ci/deps.py', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/patches/libass-0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
+      - name: Cache the pinned downloads
+        uses: ./.github/actions/deps-cache
       - name: Install nightly Rust
         # `make check-ffmpeg` runs the host suite's FFmpeg-backed tests on the toolchain `make
         # check` uses; the simulator job builds on the runner's default one. `rust-src` is not

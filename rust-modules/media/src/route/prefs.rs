@@ -1,4 +1,4 @@
-//! **The ten per-profile settings, live: one cell each, one restore, one write door.** (The nine
+//! **The eleven per-profile settings, live: one cell each, one restore, one write door.** (The ten
 //! player settings and hero trailer autoplay.)
 //!
 //! The persisted half of each setting is a [`Setting`] row in `plex::session::prefs`; this is the
@@ -37,7 +37,7 @@
 use super::plan::{supported_quality, Quality, QUALITY_LADDER};
 use plx_plex::plex::session::{
     effective, own_prefs, persist_profile_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode,
-    DirectPlayModePref, NextEpisodeMode, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsRecord,
+    DirectPlayModePref, HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsRecord,
     ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipInterval, SkipIntervalPref, SubtitlePosition,
     SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TrailerAutoplayPref,
 };
@@ -141,7 +141,7 @@ macro_rules! packed_by_index {
         }
     )*};
 }
-packed_by_index!(NextEpisodeMode = 0, SkipInterval = 1, DeckPress = 0, SubtitleSize = 1, SubtitlePosition = 0, SubtitleTone = 0);
+packed_by_index!(NextEpisodeMode = 0, SkipInterval = 1, DeckPress = 0, SubtitleSize = 1, SubtitlePosition = 0, SubtitleTone = 0, HdrOverlayBrightness = 1);
 
 impl Packed for DirectPlayMode {
     const SEED: u8 = 0;
@@ -248,6 +248,11 @@ live_cell!(
     pub(super) SUBTITLE_POSITION: SubtitlePosition, "subtitle position preference"
 );
 live_cell!(
+    /// How bright the player's overlay and captions are drawn while the picture is HDR. Read once per
+    /// frame by the app's player draw (`route::overlay_gain`).
+    pub(super) HDR_OVERLAY_BRIGHTNESS: HdrOverlayBrightness, "HDR overlay brightness preference"
+);
+live_cell!(
     /// The seated profile's current quality pick. An atomic rather than a field on `Session` because it
     /// OUTLIVES a playback (it is a preference, not session state) and because `appkit::more_menu`
     /// reads it to draw the checkmark while `ResolveEnv::snapshot` reads it to hand the worker a
@@ -300,6 +305,7 @@ live_setting!(DirectPlayModePref, DIRECT_PLAY_MODE, "direct play mode");
 live_setting!(DeckPressPref, DECK_PRESS, "deck press");
 live_setting!(SubtitleSizePref, SUBTITLE_SIZE, "subtitle size");
 live_setting!(SubtitlePositionPref, SUBTITLE_POSITION, "subtitle position");
+live_setting!(HdrOverlayBrightnessPref, HDR_OVERLAY_BRIGHTNESS, "HDR overlay brightness");
 live_setting!(SubtitleTonePref, crate::player::SUBTITLE_TONE, "subtitle tone");
 live_setting!(AudioEnhancementsPref, crate::player::AUDIO_ENHANCEMENTS, "audio enhancements");
 live_setting!(TrailerAutoplayPref, crate::player::preview::TRAILER_AUTOPLAY, "hero trailer autoplay");
@@ -351,6 +357,7 @@ pub const LIVE_ROWS: &[LiveRow] = &[
     LiveRow::of::<SubtitleTonePref>(),
     LiveRow::of::<SubtitleSizePref>(),
     LiveRow::of::<SubtitlePositionPref>(),
+    LiveRow::of::<HdrOverlayBrightnessPref>(),
     LiveRow::of::<NextEpisodeModePref>(),
     LiveRow::of::<SkipIntervalPref>(),
     LiveRow::of::<DeckPressPref>(),
@@ -488,7 +495,7 @@ impl<E: MemoryEntry> MemoryMirror<E> {
     }
 }
 
-/// The profiles' own values of the ten settings, as of the last pick (not the last write that
+/// The profiles' own values of the eleven settings, as of the last pick (not the last write that
 /// landed): what [`restore_profile_rows`] reads, because `session::peek()` is write-after and a
 /// switch back to a profile must not show a pre-pick value.
 static PROFILE_PREFS: KeyedMirror<ProfilePrefsRecord> = KeyedMirror::new();
@@ -739,6 +746,7 @@ choices! {
     TrailerAutoplay => TrailerAutoplayPref,
     SubtitleSize => SubtitleSizePref,
     SubtitlePosition => SubtitlePositionPref,
+    HdrOverlayBrightness => HdrOverlayBrightnessPref,
 }
 
 /// **The one write door for a live setting.** `v` is normalized first, so the clamp happens before
@@ -875,6 +883,31 @@ pub fn restore_subtitle_position(position: SubtitlePosition) { restore_live::<Su
 /// [`select_subtitle_size`] for the caption's vertical placement.
 pub fn select_subtitle_position(position: SubtitlePosition, reply: Option<Sender<bool>>) {
     choose::<SubtitlePositionPref>(position, How::Optimistic(reply));
+}
+
+pub fn hdr_overlay_brightness() -> HdrOverlayBrightness { HdrOverlayBrightnessPref::live() }
+pub fn restore_hdr_overlay_brightness(brightness: HdrOverlayBrightness) {
+    restore_live::<HdrOverlayBrightnessPref>(brightness)
+}
+/// [`select_subtitle_size`] for the HDR overlay brightness.
+pub fn select_hdr_overlay_brightness(brightness: HdrOverlayBrightness, reply: Option<Sender<bool>>) {
+    choose::<HdrOverlayBrightnessPref>(brightness, How::Optimistic(reply));
+}
+
+/// Whether the picture the viewer SEES is HDR, given the playing item's HDR flag and the route.
+///
+/// The flag is the source's. A direct play or a remux (`transcoding && remux`) keeps the video
+/// stream as it is, so the TV is shown HDR; a server re-encode (`transcoding && !remux`) is
+/// tone-mapped to SDR by the server's default, so the overlay needs no dimming.
+pub fn hdr_picture(source_hdr: bool, transcoding: bool, remux: bool) -> bool {
+    source_hdr && (!transcoding || remux)
+}
+
+/// The RGB multiplier the player's overlay and subtitles are drawn with: `1.0` unless the picture
+/// is HDR (see [`hdr_picture`]), else the viewer's [`HdrOverlayBrightness`] rung. The pure core of
+/// [`overlay_gain`], so the rule is testable without a session.
+pub fn overlay_gain_for(source_hdr: bool, transcoding: bool, remux: bool, pick: HdrOverlayBrightness) -> f32 {
+    if hdr_picture(source_hdr, transcoding, remux) { pick.factor() } else { 1.0 }
 }
 
 /// The selected ceiling. Safe from any thread; the resolve worker gets a COPY through

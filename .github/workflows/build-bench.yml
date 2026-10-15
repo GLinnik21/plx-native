@@ -133,6 +133,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Stage the nanosvg headers (untimed)
+        if: steps.plan.outputs.only != ''
+        # The host build's build scripts fetch them when absent. Doing it here keeps a download out
+        # of every timed run; no deps-cache on purpose, so the cold-build measurement is unchanged.
+        run: python3 ci/deps.py stage nanosvg --into vendor/nanosvg
+
       - name: Install what the host build links
         if: steps.plan.outputs.only != ''
         # Same packages as the macOS simulator job; bounded because macOS runners have no timeout(1).
@@ -187,6 +193,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Stage the nanosvg headers (untimed)
+        # See the same step in the base/top legs: a download must not land inside the timed gate.
+        run: python3 ci/deps.py stage nanosvg --into vendor/nanosvg
 
       - name: Install what the host build links
         timeout-minutes: 15

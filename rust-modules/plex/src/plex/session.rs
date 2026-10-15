@@ -50,7 +50,7 @@
 use super::origin::Origin;
 use super::probe::Location;
 pub use prefs::{effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
-    DeckPressPref, DirectPlayModePref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
+    DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
     SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref};
 use prefs::ProfileMemory;
@@ -611,7 +611,7 @@ pub struct Session {
     /// Soft-parsed like every list in this struct: an entry costs itself, never the credentials.
     #[serde(default, deserialize_with = "de_profile_cache")]
     pub profiles: Vec<ProfileCreds>,
-    /// Every preference key but `language` (`profile_prefs`, the per-profile home of the nine player
+    /// Every preference key but `language` (`profile_prefs`, the per-profile home of the ten player
     /// settings and of hero trailer autoplay, and those settings' frozen top-level keys every profile
     /// falls back to (`trailer_autoplay` among them), `auto_sign_in`,
     /// `last_hero_blur`, `plaintext_consent`, `server_key_pins`, `last_library`,
@@ -646,7 +646,7 @@ struct CanonicalSessionAuth {
 struct CanonicalSessionPreferences {
     #[serde(default)]
     language: plx_platform::i18n::Preference,
-    /// Every flattened preference key (the nine player settings, hero trailer autoplay, the A5 rows and the two memory-door
+    /// Every flattened preference key (the ten player settings, hero trailer autoplay, the A5 rows and the two memory-door
     /// lists), flattened ahead of `extensions` so a flattened struct takes its keys first and
     /// `extensions` still sees only unknown ones.
     #[serde(flatten)]
@@ -1240,6 +1240,58 @@ impl DeckPress {
     /// triangle, its press and its menu's Play row are all derived from.
     pub fn press_plays(self) -> bool {
         self == DeckPress::Play
+    }
+}
+
+/// **How bright the player's overlay and captions are drawn while the picture is HDR** — one per
+/// profile, like [`SubtitleTone`]. A television maps graphics white in an HDR picture to a far
+/// brighter level than the same white in SDR (the HUD and the captions are graphics; the panel
+/// treats them as part of the HDR scene), so a viewer in a dark room is dazzled by the transport
+/// and the subtitles. This is how far RGB is scaled down then; it never applies to an SDR picture.
+/// Absence is `ThreeQuarters`: the overlay is dimmed to 75% in an HDR picture unless the viewer
+/// chose otherwise (`Full` turns the dim off). The factor is a plain linear multiplier on the sRGB-encoded values (alpha is untouched), which is
+/// the same multiply the painter's `rgb` cascade already is.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HdrOverlayBrightness {
+    #[serde(rename = "full")]
+    Full,
+    #[default]
+    #[serde(rename = "three_quarters")]
+    ThreeQuarters,
+    #[serde(rename = "half")]
+    Half,
+}
+
+impl HdrOverlayBrightness {
+    /// Every rung, brightest first — the order the picker lists them in.
+    pub const LADDER: [HdrOverlayBrightness; 3] = [
+        HdrOverlayBrightness::Full,
+        HdrOverlayBrightness::ThreeQuarters,
+        HdrOverlayBrightness::Half,
+    ];
+
+    /// An in-memory index back to a rung — out of range is the default, never a neighbouring rung, for
+    /// the reason [`SubtitleTone::from_index`] gives: the ladder can grow or shrink.
+    pub fn from_index(i: u8) -> HdrOverlayBrightness {
+        Self::LADDER.get(i as usize).copied().unwrap_or_default()
+    }
+
+    pub fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&b| b == self).unwrap_or(0) as u8
+    }
+
+    /// The RGB multiplier this rung applies to an HDR picture's overlay, `1.0` for `Full`.
+    pub fn factor(self) -> f32 {
+        match self {
+            HdrOverlayBrightness::Full => 1.0,
+            HdrOverlayBrightness::ThreeQuarters => 0.75,
+            HdrOverlayBrightness::Half => 0.5,
+        }
+    }
+
+    /// The rung's percentage, for its label.
+    pub fn percent(self) -> i64 {
+        (self.factor() * 100.0).round() as i64
     }
 }
 
@@ -2224,6 +2276,10 @@ impl Session {
 
     pub fn deck_press(&self) -> DeckPress {
         self.prefs.deck_press
+    }
+
+    pub fn hdr_overlay_brightness(&self) -> HdrOverlayBrightness {
+        self.prefs.hdr_overlay_brightness
     }
 
     pub fn audio_enhancements(&self) -> crate::plex::AudioEnhancements {
