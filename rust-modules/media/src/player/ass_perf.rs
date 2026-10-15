@@ -379,13 +379,23 @@ mod tests {
         let line = close_cycle(&mut a, t0 + WINDOW, cycle(10, false, 0), &uploaded, &hits).unwrap();
         assert!(line.contains("up_bytes=4096 "), "{line}");
         assert_eq!(uploaded.load(Ordering::Relaxed), 0, "next window starts at 0");
-        hits.fetch_add(2, Ordering::Relaxed);
-        let line = close_cycle(&mut a, t0 + 2 * WINDOW, cycle(10, false, 0), &uploaded, &hits);
-        assert!(line.is_none() || line.unwrap().contains("ahead_hit=2 "));
         uploaded.fetch_add(7, Ordering::Relaxed);
         assert!(close_cycle(&mut a, t0 + 3 * WINDOW, cycle(10, false, 0), &uploaded, &hits).is_none());
         let line = close_cycle(&mut a, t0 + 5 * WINDOW, cycle(10, false, 0), &uploaded, &hits).unwrap();
         assert!(line.contains("up_bytes=7 "), "{line}");
+    }
+
+    #[test]
+    fn closing_a_window_reports_and_restarts_the_ahead_hits() {
+        let t0 = Instant::now();
+        let (uploaded, hits) = (AtomicU64::new(0), AtomicU64::new(0));
+        let mut a = Aggregator::new();
+        hits.fetch_add(2, Ordering::Relaxed);
+        let line = close_cycle(&mut a, t0, cycle(10, true, 1), &uploaded, &hits);
+        assert!(line.is_none() && hits.load(Ordering::Relaxed) == 2, "mid-window: kept");
+        let line = close_cycle(&mut a, t0 + WINDOW, cycle(10, false, 0), &uploaded, &hits).unwrap();
+        assert!(line.contains("ahead_hit=2 "), "{line}");
+        assert_eq!(hits.load(Ordering::Relaxed), 0);
     }
 
     #[test]
