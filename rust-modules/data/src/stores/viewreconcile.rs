@@ -12,9 +12,11 @@
 //!
 //! ## What it does
 //!
-//! * **Triggered by a landed write, whatever the outcome.** `ViewStateState` hands over the
+//! * **Triggered by a landed write, whatever the outcome, and by a stopped playback the server
+//!   took** (`enqueue_stop`, from `Stores::stops_landed`; it involves no write). `ViewStateState` hands over the
 //!   `(server, ratingKey)` of the item and of every copy the fan-out took
-//!   ([`crate::viewstate::ViewStateState::take_reread`]) once its burst is idle. On success the
+//!   ([`crate::viewstate::ViewStateState::take_reread`]) once its burst is idle. No read is spawned while the player is on top
+//!   (`Stores::hold_network`) either: the items stay owed. On success the
 //!   answer confirms the optimistic edit; on refusal it is the only thing that returns the tile to
 //!   what the server holds, because the ledger entry of a refused write is retired. Only the rows
 //!   it reads are put right: a refused Show- or Season-scope press re-reads the show or season row,

@@ -173,7 +173,8 @@ pub enum ViewFact {
     /// the three fields of its watch state, as `pms::parse_item` reads them.
     Facts { watched: bool, unwatched: bool, resume_ms: i64 },
     /// A stopped playback reported this position (`ms` of `dur_ms`) for the item: the resume point
-    /// the server was just told. Our own word, not the server's, until the read-back answers.
+    /// the server was just told. Our own word, not the server's: a read-back corrects it when the server
+    /// took the stop, and a refused or abandoned stop leaves it until the item is next read.
     Offset { ms: i64, dur_ms: i64 },
 }
 
@@ -199,7 +200,8 @@ pub enum ViewEdit {
     Facts { watched: bool, unwatched: bool, resume_ms: i64 },
     /// Set the resume point and nothing else: a stop below the server's watched threshold leaves
     /// `viewCount` alone (so `watched`/`unwatched` stand), and one past it is corrected by the
-    /// read-back that follows every stop. Like `Facts`, never recorded in the ledger.
+    /// read-back that follows every stop the server TOOK (`StopRecord::ok`; a refused or abandoned
+    /// POST owes no read). Like `Facts`, never recorded in the ledger.
     Offset { ms: i64 },
 }
 
