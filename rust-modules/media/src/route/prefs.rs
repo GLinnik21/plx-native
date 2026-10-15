@@ -1,4 +1,4 @@
-//! **The ten per-profile settings, live: one cell each, one restore, one write door.** (The nine
+//! **The eleven per-profile settings, live: one cell each, one restore, one write door.** (The ten
 //! player settings and hero trailer autoplay.)
 //!
 //! The persisted half of each setting is a [`Setting`] row in `plex::session::prefs`; this is the
@@ -249,7 +249,7 @@ live_cell!(
 );
 live_cell!(
     /// How bright the player's overlay and captions are drawn while the picture is HDR. Read once per
-    /// frame by the app's player draw (`route::hdr_overlay_gain`).
+    /// frame by the app's player draw (`route::overlay_gain`).
     pub(super) HDR_OVERLAY_BRIGHTNESS: HdrOverlayBrightness, "HDR overlay brightness preference"
 );
 live_cell!(
@@ -495,7 +495,7 @@ impl<E: MemoryEntry> MemoryMirror<E> {
     }
 }
 
-/// The profiles' own values of the ten settings, as of the last pick (not the last write that
+/// The profiles' own values of the eleven settings, as of the last pick (not the last write that
 /// landed): what [`restore_profile_rows`] reads, because `session::peek()` is write-after and a
 /// switch back to a profile must not show a pre-pick value.
 static PROFILE_PREFS: KeyedMirror<ProfilePrefsRecord> = KeyedMirror::new();
