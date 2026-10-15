@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T04:27:05Z",
+ "generated": "2026-10-15T04:31:15Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -45,17 +45,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -19.2,
+   "change7_pct": -20.0,
    "d30": null,
    "delta30": null,
-   "delta7": -86.5,
+   "delta7": -90.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 128,
-   "now": 364.5,
+   "now": 361,
    "prev7": 451.0,
    "shown": true,
    "state": "better",
@@ -288,17 +288,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -9.3,
+   "change7_pct": -9.5,
    "d30": null,
    "delta30": null,
-   "delta7": -22.0,
+   "delta7": -22.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 110,
-   "now": 215.5,
+   "now": 215,
    "prev7": 237.5,
    "shown": true,
    "state": "flat",
@@ -317,9 +317,9 @@
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 110,
-   "now": 188.0,
+   "now": 188,
    "prev7": 526.0,
    "shown": true,
    "state": "better",
@@ -393,17 +393,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -21.1,
+   "change7_pct": -21.7,
    "d30": null,
    "delta30": null,
-   "delta7": -37.0,
+   "delta7": -38.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 60,
-   "now": 138.0,
+   "now": 137,
    "prev7": 175.0,
    "shown": true,
    "state": "better",
@@ -487,9 +487,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 110,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 31.4,
    "commits": [
     {
-     "pr": 712,
-     "sha": "777bf726d",
-     "title": "locales(be): the choose verb is \u0430\u0431\u0440\u0430\u0446\u044c everywhere"
-    },
-    {
      "pr": 713,
      "sha": "a724e3aee",
      "title": "player: seek in place on webOS 5+ through LG's public Seek, no reload per seek (#568)"
@@ -615,6 +610,11 @@
      "pr": 724,
      "sha": "7466f3618",
      "title": "media: Source.origin, Text track headers, restyle and published alignment classes (libass text subs, PR 6a)"
+    },
+    {
+     "pr": 726,
+     "sha": "87813128c",
+     "title": "screens: ass_subtitles renders Text-origin frames full-screen and lifts bottom regions with the HUD (libass text subs, P"
     }
    ],
    "from": 221.5,
@@ -655,7 +655,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 215.5
+   "now": 215
   }
  ],
  "slowest_local": [
