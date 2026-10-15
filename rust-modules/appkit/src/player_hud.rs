@@ -2589,6 +2589,14 @@ mod tests {
         assert_eq!(busy_surface_with(&ps, S::Buffering, true, true), Busy::Transport);
     }
 
+    /// A paused session that is doing no work publishes `Playing` before its first frame
+    /// (`pump::paused_and_idle`): no centred read-out, no transport spinner, just the paused HUD.
+    #[test]
+    fn a_paused_idle_session_with_no_picture_draws_no_busy_surface() {
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        assert_eq!(busy_surface_with(&ps, S::Playing, false, false), Busy::None);
+    }
+
     /// No picture yet → the wait is about the whole panel. With the captions, which locks the
     /// kind↔caption pairing the enum carries (both are chosen once, by this function).
     #[test]

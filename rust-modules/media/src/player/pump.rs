@@ -1155,6 +1155,19 @@ fn settle_paused_seek(pa: &mut super::adapter::PlayerAdapter, now: u32) {
     }
 }
 
+/// The viewer is paused and the pump is doing no work for a picture: the feed gate is shut (no
+/// preroll open), no claim or seek flight is out and no seek is waiting. "Buffering…" over a player
+/// in that state is a spinner for nothing; the ladder reports the normal paused transport instead.
+/// A Load still opening (`Stage::Loading` -> Connecting) and an HLS rebuffer are real work and are
+/// decided before this is asked.
+fn paused_and_idle() -> bool {
+    TX.paused.load(Acquire)
+        && !TX.feed_allowed()
+        && !super::claim_hold::active()
+        && !crate::route::flight_outstanding()
+        && TX.seek_to_ns.load(Relaxed) < 0
+}
+
 pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
     use super::shared::PlaybackState;
     settle_paused_seek(pa, now);
@@ -1978,7 +1991,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         PlaybackState::Seeking
     } else if eng.stage == Stage::Loading {
         PlaybackState::Connecting
-    } else if SHARED.hls_rebuffering.load(Relaxed) || SHARED.frames.load(Relaxed) == 0 {
+    } else if SHARED.hls_rebuffering.load(Relaxed) || (SHARED.frames.load(Relaxed) == 0 && !paused_and_idle()) {
         PlaybackState::Buffering
     } else {
         PlaybackState::Playing
@@ -3767,6 +3780,38 @@ mod native_seek_pump_tests {
         assert!(plays >= 1, "the prime Play fired through the opened gate before the frame was presented");
         assert_eq!(reloads(), vec![pos], "no second reload");
         assert_ended_paused();
+    }
+
+    /// The owner's framing: "Buffering…" while the player does NO work is a lie. A viewer-paused
+    /// session with no picture, the feed gate shut, and nothing in flight (no claim flight, no seek,
+    /// no preroll, the Engine loaded) publishes a state the HUD draws as the normal paused
+    /// transport, not the centred spinner. (The clock is left un-held here so the preroll rule
+    /// cannot open: this grades the readout rule on its own.)
+    #[test]
+    fn a_paused_idle_session_with_no_picture_does_not_read_buffering() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        SHARED.reset_hls_clock_for_test(); // Running: not a clock the preroll rule can take over
+        TX.commit_paused(true);
+        assert_eq!(SHARED.frames.load(Relaxed), 0);
+        rig.frame();
+        assert!(!TX.seek_preroll_active(), "sanity: nothing is working, no preroll");
+        assert!(!TX.feed_allowed(), "sanity: the feed gate is shut");
+        let st = crate::player::state(&rig.ps);
+        assert_ne!(st, crate::player::PlaybackState::Buffering, "a spinner over an idle paused player");
+        assert_ne!(st, crate::player::PlaybackState::Connecting);
+        assert!(!st.is_busy(), "the HUD's busy surface (`Busy::None`) follows `is_busy`");
+    }
+
+    /// ...and the same session with real work pending still reads Buffering: a seek preroll open.
+    #[test]
+    fn a_paused_session_with_a_preroll_open_still_reads_buffering() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        TX.commit_paused(true);
+        assert!(TX.begin_paused_seek());
+        rig.frame();
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Buffering);
     }
 
     #[test]

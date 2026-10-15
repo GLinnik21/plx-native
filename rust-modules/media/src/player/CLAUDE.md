@@ -153,7 +153,9 @@ something.
   session with `frames == 0` behind a shut feed gate; `pump::settle_paused_seek` opens the bounded
   paused-seek preroll for exactly that state (paused, no claim-hold pause, no flight, no pending
   seek, no frame yet), whichever route reloaded, so the stream presents one frame and re-pauses
-  instead of showing "Buffering…" over a blank plane. An engine failure during the flight publishes `Failed` at once
+  instead of showing "Buffering…" over a blank plane. Where the preroll cannot open (the clock is
+  not held yet), the pump ladder still never publishes Buffering for a paused, idle player with no
+  picture (`pump::paused_and_idle`): Buffering means work is happening. An engine failure during the flight publishes `Failed` at once
   (`fail_current_engine`) and clears the hold, so the error read-out shows instead of a spinner.
   The encoder a claim replaces is NOT stopped by the worker: the pump retires it
   (`route::retire_superseded_encoder`) after the reload.
