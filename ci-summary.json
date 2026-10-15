@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T11:30:11Z",
+ "generated": "2026-10-15T11:32:04Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -1.5,
+   "change7_pct": -1.9,
    "d30": null,
    "delta30": null,
-   "delta7": -6.0,
+   "delta7": -7.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 113,
+   "n_now": 114,
    "n_prev": 128,
-   "now": 392,
+   "now": 390.5,
    "prev7": 398.0,
    "shown": true,
    "state": "flat",
@@ -288,17 +288,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -8.9,
+   "change7_pct": -8.7,
    "d30": null,
    "delta30": null,
-   "delta7": -21.5,
+   "delta7": -21.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 103,
+   "n_now": 104,
    "n_prev": 110,
-   "now": 220,
+   "now": 220.5,
    "prev7": 241.5,
    "shown": true,
    "state": "flat",
@@ -309,17 +309,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -63.9,
+   "change7_pct": -63.8,
    "d30": null,
    "delta30": null,
-   "delta7": -327.0,
+   "delta7": -326.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 103,
+   "n_now": 104,
    "n_prev": 110,
-   "now": 185,
+   "now": 185.5,
    "prev7": 512.0,
    "shown": true,
    "state": "better",
@@ -375,14 +375,14 @@
    "change7_pct": -11.9,
    "d30": null,
    "delta30": null,
-   "delta7": -19,
+   "delta7": -19.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 103,
+   "n_now": 104,
    "n_prev": 63,
-   "now": 140,
+   "now": 140.0,
    "prev7": 159,
    "shown": true,
    "state": "flat",
@@ -487,9 +487,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 103,
+   "n_now": 104,
    "n_prev": 110,
-   "now": 17,
+   "now": 17.0,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 57.0,
    "commits": [
     {
-     "pr": 746,
-     "sha": "f62c5c507",
-     "title": "Tests: make the sidecar restyle test wait on its worker, not the clock"
-    },
-    {
      "pr": 728,
      "sha": "2d9a5f77d",
      "title": "View state 5: stop record, immediate resume patch, held reconcile under the player, EOS fan-out"
@@ -615,6 +610,11 @@
      "pr": 751,
      "sha": "b147e132a",
      "title": "Server updates L2-5: re-read covered pages and on resume"
+    },
+    {
+     "pr": 752,
+     "sha": "d186532bc",
+     "title": "gfx: remove the unused bucketed subtitle upload"
     }
    ],
    "from": 220.0,
@@ -628,11 +628,6 @@
    "change_pct": 32.9,
    "commits": [
     {
-     "pr": 746,
-     "sha": "f62c5c507",
-     "title": "Tests: make the sidecar restyle test wait on its worker, not the clock"
-    },
-    {
      "pr": 728,
      "sha": "2d9a5f77d",
      "title": "View state 5: stop record, immediate resume patch, held reconcile under the player, EOS fan-out"
@@ -676,6 +671,11 @@
      "pr": 751,
      "sha": "b147e132a",
      "title": "Server updates L2-5: re-read covered pages and on resume"
+    },
+    {
+     "pr": 752,
+     "sha": "d186532bc",
+     "title": "gfx: remove the unused bucketed subtitle upload"
     }
    ],
    "from": 277.0,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 220
+   "now": 220.5
   }
  ],
  "slowest_local": [
