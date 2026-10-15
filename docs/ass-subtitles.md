@@ -6,12 +6,25 @@ selected subtitle on the server; over a remux the app draws a sidecar, and an em
 the link is local and the Part is 1..=30000 kbps, and otherwise the server burns it. The simple caption size/wrapping rules apply to plain text;
 ASS/SSA retains its authored layout. The viewer's existing tone and timing controls still apply.
 
-`ci/build-libass.py` builds a pinned libass with private FreeType, FriBidi and HarfBuzz. The
+`ci/build-libass.py` builds a pinned libass with private FreeType, FriBidi, HarfBuzz and
+libunibreak (Unicode line breaking, so a line with no spaces, as in Chinese or Japanese, can
+still wrap). libass carries one local patch, `ci/libass-patches/0001-grow-font-faces.patch`,
+which lets each font hold more than the upstream ten faces; it is pinned by digest in
+`ci/libass-dependencies.json` and the build fails unless it applied. The
 application loads its own `libass-plx` by absolute path. Only the versioned `plx_ass_*` facade is
 exported; dependency symbols cannot collide with the firmware's font stack. `src/ass.c` reads
 libass structures through the same headers used to compile that library. No firmware libass or
 new Starfish API is required. Pins, checksums, license notices and corresponding source archives
 are part of the normal package/source-bundle workflow.
+
+The facade's ABI is 3 (`plx_ass_abi_version()`; `include/ass.h`): besides the load/render calls
+it sets track features (`plx_ass_set_features`, Unicode line breaking), the libass cache bounds
+(`plx_ass_set_cache_limits`) and extra line spacing (`plx_ass_set_line_spacing`), reports counters
+(`plx_ass_stats`), and replaces the loaded track in place (`plx_ass_replace_track`). The renderer
+scans its fonts (`ass_set_fonts`) only on its first load; a replaced track keeps every opened face
+and does not extract its own `[Fonts]` section again. The engine uses the replace for exactly one
+case so far, sliding the window of a long sidecar script. Any other change of source either re-feeds the
+same renderer (the same embedded source with the same header and fonts) or opens a new one. `tests/fixtures/make_ass_faces.py` regenerates the 14 one-glyph test faces.
 
 The demuxer copies ASS headers, complete timed packets and font attachments out of FFmpeg.
 The source store removes trailing zero terminators from headers and packets. A zero byte

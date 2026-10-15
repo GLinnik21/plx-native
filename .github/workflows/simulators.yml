@@ -14,6 +14,8 @@ on:
       - 'src/svg.c'
       - 'src/ass.c'
       - 'src/ass_composite.h'
+      - 'src/ass_fonts.c'
+      - 'src/ass_internal.h'
       - 'include/ass.h'
       - 'assets/icons/**'
       - 'vendor/nanosvg/**'
@@ -27,6 +29,7 @@ on:
       - 'ci/build-libass.sh'
       - 'ci/build-libass.py'
       - 'ci/libass-dependencies.json'
+      - 'ci/libass-patches/0001-grow-font-faces.patch'
       - 'ci/ffabi-assert.c'
       - 'tests/fixtures/mkv_zlib_subs.mkv'
       - 'tests/fixtures/replay/**'
@@ -67,12 +70,12 @@ jobs:
         name: Identify the host toolchain
         run: echo "id=$(./ci/host-toolchain-id.sh)" >> "$GITHUB_OUTPUT"
       - name: Cache the host libass stack
-        # This job builds only libass (FreeType, FriBidi, HarfBuzz, libass: ~1-2 minutes of the
+        # This job builds only libass (FreeType, FriBidi, HarfBuzz, libunibreak, libass: ~1-2 minutes of the
         # job); see the `macos` job for how the two entries below work and what keys them.
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: vendor/libass-prefix-host
-          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'src/ass.c', 'src/ass_composite.h', 'include/ass.h') }}
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/libass-patches/0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
       - name: Cache the libass source tarballs
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -175,10 +178,10 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: vendor/libass-prefix-host
-          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'src/ass.c', 'src/ass_composite.h', 'include/ass.h') }}
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/libass-patches/0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
       - name: Cache the libass source tarballs
-        # The script verifies and fetches all four archives BEFORE it looks at its stamp, so
-        # without these a prefix hit still downloaded ~25 MB from four hosts. Pinned by SHA-256 (the
+        # The script verifies and fetches all five archives BEFORE it looks at its stamp, so
+        # without these a prefix hit still downloaded ~25 MB from five hosts. Pinned by SHA-256 (the
         # script re-checks every file), so the entry moves only with the pins and is shared by every
         # OS. The fetch logic and its mirror fallback are untouched.
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -266,7 +269,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: vendor/libass-prefix-host
-          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'src/ass.c', 'src/ass_composite.h', 'include/ass.h') }}
+          key: host-libass-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.id }}-${{ hashFiles('ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json', 'ci/arm-cc.py', 'ci/check-link-evidence.py', 'ci/stage-link-evidence.py', 'ci/libass-patches/0001-grow-font-faces.patch', 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h', 'src/ass_composite.h', 'include/ass.h') }}
       - name: Cache the libass source tarballs
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:

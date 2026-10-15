@@ -77,19 +77,29 @@ uses `libass-plx-host.so.0`.
 | FreeType | 2.14.3 | Elected FreeType License; contributed MIT and Zlib code (`licenses/FreeType.txt`, `licenses/Zlib.txt`) |
 | FriBidi | 1.0.17 | LGPL-2.1-or-later (`licenses/LGPL-2.1.txt`) |
 | HarfBuzz | 14.5.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
+| libunibreak | 8.0 | zlib (`licenses/libunibreak-Zlib.txt`) |
 
 Portions of this software are copyright © 2026 The FreeType Project
 (https://freetype.org). All rights reserved. Its built-in gzip reader contains
 zlib 1.3.1, Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler. FriBidi is
 Copyright (C) 1999, 2000, 2017-2019 Dov Grobgeld; 2001, 2002, 2004, 2005 Behdad Esfahbod;
 2004 Sharif FarsiWeb, Inc.; and other contributors;
-the complete per-file notices accompany its source. libass and HarfBuzz copyright
-notices are retained in their licence files above.
+the complete per-file notices accompany its source. libunibreak is Copyright (C) Wu Yongwei,
+Tom Hacohen, Petr Filipsky and Andreas Roever; its licence file is the upstream `LICENCE`,
+verbatim. The library is used unaltered.
+libass and HarfBuzz copyright notices are retained in their licence files above.
 
 The exact upstream archives, checksums and licences are recorded in
 `ci/libass-dependencies.json`. Each versioned PlxNative source release contains all
-four archives, the facade (`src/ass.c`, `include/ass.h`), and its complete build
-recipe (`ci/build-libass.sh`, `ci/build-libass.py`). Upstream sources are unmodified.
+five archives, the facade (`src/ass.c`, `src/ass_fonts.c`, `src/ass_internal.h`,
+`include/ass.h`), its complete build recipe (`ci/build-libass.sh`, `ci/build-libass.py`) and the
+one local patch to libass. **libass carries that local patch; every other archive is unmodified.**
+`ci/libass-patches/0001-grow-font-faces.patch` replaces the fixed table of ten font faces that
+libass keeps for each font (`ASS_FONT_MAX_FACES`) with arrays that grow on demand, so a subtitle
+track that uses many scripts is not cut off at the tenth face. It touches `libass/ass_font.c` and
+`libass/ass_font.h` only, is applied to the pinned, checksum-verified libass 0.17.5 release by
+`ci/build-libass.py` (which fails the build unless the files then match the digests pinned in
+`ci/libass-dependencies.json`), and is released under libass's own ISC licence.
 The library is built without system font providers or external font-library
 dependencies. FreeType's optional external compression/image libraries are disabled;
 HarfBuzz uses FreeType and its built-in Unicode data, without ICU or platform shapers.
@@ -481,6 +491,7 @@ runtime notices listed below:
 | `licenses/libass-ISC.txt` | libass (§1.2), including its copyright notice |
 | `licenses/FreeType.txt` | FreeType's elected FTL and contributed module notices (§1.2) |
 | `licenses/HarfBuzz-Old-MIT.txt` | HarfBuzz and its copyright holders (§1.2) |
+| `licenses/libunibreak-Zlib.txt` | libunibreak, complete upstream licence with its copyright holders (§1.2) |
 
 `OFL.txt` (SIL Open Font License 1.1, for **Inter and Noto Sans CJK KR** — §2.3) already ships at
 the root of this package. Keep it there; do not add a second copy under `licenses/`, and do not
