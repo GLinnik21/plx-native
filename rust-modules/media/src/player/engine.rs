@@ -2826,6 +2826,10 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
         else {
             return;
         };
+        // A paused preroll plays one picture for a viewer who is paused: keep that window silent.
+        if TX.seek_preroll_active() {
+            super::mute_for_preroll(mt);
+        }
         let played = unsafe { sink().play(mt) };
         match SHARED.complete_hls_prime_play(play_token, played != 0) {
             HlsPlayCompletion::Accepted { resume_acb } => {

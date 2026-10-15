@@ -37,8 +37,9 @@
 //! `player::pause`/`resume` on a live engine, and `TX.reset()` on a real stop clears the flag, so
 //! a collapsed or ended preview cannot strand it.
 //!
-//! Sound stays on. The bound Starfish surface has no mute. The Settings toggle is the only
-//! sound control, and that is a platform limit.
+//! Sound stays on. A preview has no mute control: the per-pipeline `setVolume` the sink exposes is
+//! used for one thing only, the silent paused-seek preroll (`player::mute_for_preroll`), and is not
+//! a preview or UI feature. The Settings toggle is the only sound control.
 //!
 //! **Cycle budget is source arithmetic, not a measured leak.** Spike 0a never produced a delta.
 //! `sf_load` keeps a 64 KiB slot (`src/starfish.c`) and the conservative RSS headroom cited by
