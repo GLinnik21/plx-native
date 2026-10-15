@@ -338,18 +338,67 @@ fn refresh_obligation_is_logical_state_without_a_restore_intent() {
 /// nor sends the page back to the top.
 #[test]
 fn a_reconcile_owes_the_re_read_but_moves_neither_focus_nor_scroll() {
-    let guard = plx_base::testlock::serial();
+    let sid = ServerId::UNSET;
+    let guard = install(detail(sid, "show"));
     for phase in [DetailRefreshPhase::Deferred, DetailRefreshPhase::Requested] {
-        let mut screen = bare(&guard, ServerId::UNSET, "show");
+        let mut screen = bare(&guard, sid, "show");
+        screen.sync_keys(test_store().view());
+        let focus = episode_key(&screen, 1, episodes::Row::Still).expect("the second episode is keyed");
+        let want = FocusKey { entry: EntryId(7), elem: focus };
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let held = |screen: &DetailScreen| Focusable::<TestHost>::reconcile(screen, want, &cx(&measure, Some(focus))).elem;
         screen.scroll_target = 480.0;
         screen.scroll.pos = 480.0;
-        let _ = step(&mut screen, &ScreenEvent::App(AppMsg::DetailReconcile { refresh: phase }), None);
+        let _ = step(&mut screen, &ScreenEvent::App(AppMsg::DetailReconcile { refresh: phase }), Some(focus));
         assert_eq!(screen.refresh, phase);
         assert!(screen.restore_intent.is_none(), "no focus is re-seated ({phase:?})");
         assert!(!screen.return_pending, "nothing was queued to move focus ({phase:?})");
         assert_eq!(screen.scroll_target, 480.0, "the page does not scroll to the top ({phase:?})");
         assert_eq!(screen.scroll.pos, 480.0);
+        assert_eq!(held(&screen), focus, "the obligation leaves the focus where it was ({phase:?})");
+
+        // …and neither does the re-read it asks for, when it lands
+        let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
+        {
+            let (state, adapter) = test_store().split_for_test();
+            plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, Some(detail(sid, "show")));
+        }
+        test_store().pump_detail();
+        let _ = step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_667 }), Some(focus));
+        assert_eq!(episode_key(&screen, 1, episodes::Row::Still), Some(focus), "the episode keeps its key ({phase:?})");
+        assert_eq!(held(&screen), focus, "the landing leaves the focus where it was ({phase:?})");
+        assert!(screen.restore_intent.is_none() && !screen.return_pending, "and seats nothing ({phase:?})");
+        assert_eq!((screen.scroll_target, screen.scroll.pos), (480.0, 480.0), "the landing does not scroll ({phase:?})");
     }
+    clear();
+}
+
+#[test]
+fn a_reconcile_landing_holds_the_focus_on_an_episode_past_the_first_page() {
+    let total = 150;
+    let guard = install(long_season(total, &[0, 1]));
+    let sid = ServerId::UNSET;
+    let mut screen = bare(&guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let focus = episode_key(&screen, 70, episodes::Row::Still).expect("page 1 is keyed");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let want = FocusKey { entry: EntryId(7), elem: focus };
+    let held = |screen: &DetailScreen| Focusable::<TestHost>::reconcile(screen, want, &cx(&measure, Some(focus))).elem;
+    assert_eq!(held(&screen), focus);
+
+    let _ = step(&mut screen, &ScreenEvent::App(AppMsg::DetailReconcile { refresh: DetailRefreshPhase::Requested }), Some(focus));
+    assert_eq!(held(&screen), focus, "the obligation alone moves nothing");
+
+    // the re-read lands: the server's page 0 of the same season
+    let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
+    {
+        let (state, adapter) = test_store().split_for_test();
+        plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, Some(long_season(total, &[0])));
+    }
+    test_store().pump_detail();
+    screen.sync_keys(test_store().view());
+    assert_eq!(episode_key(&screen, 70, episodes::Row::Still), Some(focus), "episode 70 keeps the key it had");
+    assert_eq!(held(&screen), focus, "the landing left the focus on episode 70, not on the hero");
     clear();
 }
 

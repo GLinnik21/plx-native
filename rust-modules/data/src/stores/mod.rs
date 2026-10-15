@@ -265,7 +265,8 @@ impl Stores {
     /// Playbacks that stopped. Each gets an immediate resume patch ([`crate::viewstate::ViewFact::Offset`])
     /// on the stores that show the item, so a tile reads the new resume point before any read; and,
     /// when the server took the `stopped` POST, a read-back through the reconcile worker (which
-    /// stays queued while the network is held). MAIN THREAD, route-unconditional.
+    /// stays queued while the network is held); when it did not, only the Detail pages' own re-read
+    /// is owed. MAIN THREAD, route-unconditional.
     pub fn stops_landed(&mut self, stops: Vec<crate::viewstate::StopRecord>, directory: browse::DirectoryView<'_>) {
         for stop in stops {
             self.publish(crate::viewstate::ViewChange {
@@ -276,6 +277,10 @@ impl Stores {
             }, directory);
             if stop.ok {
                 self.reconcile.enqueue_stop((stop.sid, stop.rk), stop.was_watched);
+            } else {
+                // No read-back (it would undo the patch), but the Detail pages that show the item
+                // were patched too and re-read themselves from the server.
+                self.reconcile.owe_page((stop.sid, stop.rk));
             }
         }
     }

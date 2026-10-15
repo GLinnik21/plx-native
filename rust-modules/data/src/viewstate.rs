@@ -149,10 +149,6 @@ impl Scope {
 pub struct StopRecord {
     pub sid: ServerId,
     pub rk: String,
-    /// The show's key for an episode, empty for a movie. The read-back takes its season and show
-    /// from the server's own answer instead, so the pair is not read from here.
-    pub show_rk: String,
-    pub season_index: i64,
     pub pos_ms: i64,
     pub dur_ms: i64,
     /// The server took the POST. A refused or abandoned one still patches the tile (the viewer did
@@ -573,8 +569,8 @@ pub fn publish_view(
     // The Library's own deck is a different shelf on a different screen, and the one place a
     // deck removal is reachable from besides Home; no other store has a deck. Watched, Facts and
     // Offset reach every store that can be drawing the item; Detail's own item, episodes and
-    // seasons take no Facts: the application re-reads the page whole when the read-back lands
-    // (`app::content::reconcile_details`).
+    // seasons take no Facts (the application re-reads the page whole when the read-back lands,
+    // `app::content::reconcile_details`), only the Offset, on the loaded item and its episode.
     if !matches!(edit, ViewEdit::LeftDeck) {
         metadata(crate::stores::metadata::MetadataCmd::ApplyView { at: at.clone(), edit });
         search(crate::stores::search::SearchCmd::ApplyView { at: at.clone(), edit });

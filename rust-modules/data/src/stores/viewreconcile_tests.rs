@@ -256,7 +256,7 @@ fn a_read_is_not_spawned_while_a_write_is_queued_so_the_press_survives_it() {
 
 fn stop(sid: ServerId, pos_ms: i64, was_watched: bool, ok: bool) -> crate::viewstate::StopRecord {
     crate::viewstate::StopRecord {
-        sid, rk: "1".into(), show_rk: String::new(), season_index: 0, pos_ms, dur_ms: 60_000, ok, was_watched,
+        sid, rk: "1".into(), pos_ms, dur_ms: 60_000, ok, was_watched,
     }
 }
 
@@ -311,6 +311,26 @@ fn a_stop_the_server_refused_patches_the_tile_and_reads_nothing_back() {
     std::thread::sleep(std::time::Duration::from_millis(50));
     assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0);
     assert_eq!(tile_resume(&stores), 30_000);
+    drop(stores);
+}
+
+/// The same refused stop still owes the Detail pages that show the item a re-read of THEIR own: the
+/// page was patched with the position the viewer reached, and only a read of the page puts the
+/// server's word back, which for a refused write is the old resume point. The re-read is the page's
+/// (`take_landed_views`), not a read-back through the reconcile worker, which stays unasked.
+#[test]
+fn a_stop_the_server_refused_still_owes_the_detail_pages_a_re_read() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library_holding_item(&pms);
+    let directory = DirectorySnapshot::default();
+    stores.stops_landed(vec![stop(sid, 30_000, true, false)], directory.view());
+    let owed = stores.take_landed_views();
+    assert_eq!(owed.len(), 1, "one page re-read for the one refused stop");
+    assert!(plx_plex::plex::same_item((owed[0].0, &owed[0].1), (sid, "1")));
+    assert!(stores.take_landed_views().is_empty(), "owed once");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0, "and no read-back undoes the patch");
     drop(stores);
 }
 

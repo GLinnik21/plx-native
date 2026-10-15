@@ -43,7 +43,7 @@ and re-queued once), stamps the batch from the ledger, drops any row a newer pre
 the rest as `ViewFact::Facts` edits at leaf scope, which, like the stop's `Offset`, patch Home's hubs, Browse's listing, the rows Search, Person and
 Collection hold, and a Detail page's Related and collection-member tiles. Each store counts a Facts
 or Offset row as a hit (a merge, a commit, a notice) only when it differs from the row (`ViewEdit::changes`); a Detail page's own
-item, episodes and seasons, and Browse's section shelves, take neither yet (they are re-read). The read-back never spawns a
+item, episodes and seasons take no Facts (they are re-read), only a stop's Offset, which also lands on the loaded item and its episode (exact key); Browse's section shelves take neither (they are re-read). A stop the server refused asks for no read-back, but it lists its item for the Detail pages' own re-read. The read-back never spawns a
 read while a view-state write is queued or out (the stamp is taken at spawn, so a press whose write had not
 landed would otherwise sit before it and be undone by the read's older body); queued items wait for the
 burst to be idle, and for the player to leave the top (`Stores::hold_network`). A refused scrobble returns the tile to what the server holds, for the item (and the
@@ -53,7 +53,8 @@ fetch. Facts are not recorded in the ledger (they are the server's word). `Bridg
 after `viewstate_pump` every frame, and also pumps Browse while a Browse section is owed a membership
 re-query (below): a Library page with another page pushed over it is not ticked.
 Browse marks a section whose membership depends on viewing (Unwatched filter, `lastViewedAt` sort) stale
-when a Facts edit lands in it. The Library screen asks for the re-query (`LibraryWork::Requery`) only once a
+when a Facts edit covers one of its rows, whether or not the row already agrees (the server's answer marks
+staleness; the optimistic press alone does not). The Library screen asks for the re-query (`LibraryWork::Requery`) only once a
 PAGE has been pushed over it (`WillLeave(Deeper)`, then `Cover`), never while it is visible and never under a
 modal such as a compact menu (Sort, Filter, the item menu), which leaves the page visible and ticking; so tiles
 do not leave under the cursor. The re-query is a refresh of the SAME query: the fetch generation moves (a page

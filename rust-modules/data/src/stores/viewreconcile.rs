@@ -40,17 +40,22 @@
 //!   The extra rows are published and followed no further. Their facts are the server's own word
 //!   (`parse_item`: watched is `viewedLeafCount >= leafCount`), each addressed to its exact
 //!   `(server, ratingKey)`, so another server's show of the same key is not touched. Read-backs of
-//!   a burst share the extra batch; the pair of rounds is the ceiling however many episodes moved.
+//!   a burst share the extra batch: one extra batch per server per leaf batch (a burst of more than
+//!   [`BATCH_KEYS`] leaves is several leaf batches, and each can name its own parents).
 //! * **Results reach the stores as edits carrying facts**: `publish_view` of a
 //!   [`crate::viewstate::ViewFact::Facts`] at `Scope::Leaf` (a show's facts describe the show row,
 //!   never its episodes). Facts are the server's word, so they are not recorded in the ledger. They
 //!   reach Home's hubs, Browse's listing, Search, Person, Collection and Detail's Related and
 //!   collection-member tiles, each only where `ViewEdit::changes` says the row differs. Browse's
 //!   section shelves (re-read whole after a burst) and Detail's own item, episodes and seasons
-//!   take neither: they cannot be patched from a facts row (the season tabs' counts and the hero's
+//!   take no `Facts` (a stop's `Offset` does reach the loaded item and its episode): they cannot be patched from a facts row (the season tabs' counts and the hero's
 //!   on-deck episode are the server's numbers). Every row a read-back publishes is also listed for
 //!   the application ([`ViewReconcileStore::take_landed`]), which re-reads each Detail page whose
 //!   item, season or show it is.
+//!   A stop the server REFUSED asks for no read-back (it would answer with the old resume point and
+//!   undo the patches), but it too lists its item there ([`ViewReconcileStore::owe_page`]): the
+//!   Detail pages were patched with the position the viewer reached (`Offset` reaches the loaded
+//!   item and its episode), and their own re-read puts the server's word back.
 //! * **A failed read is not re-queued**, and the optimistic patch stands (the same "a failure never
 //!   blanks a populated screen" rule as every other read here). A refused spawn is retried after
 //!   [`RETRY_FRAMES`].
@@ -200,6 +205,16 @@ impl ViewReconcileStore {
         std::mem::take(&mut self.watched_ends)
     }
 
+    /// Owe the Detail pages that show `key` a re-read of their own, once ([`Self::take_landed`]).
+    /// A published row does it, and so does a stop the server refused: the page was patched with
+    /// the position the viewer reached, no read-back is asked (it would answer with the old resume
+    /// point and undo the tile patches), and the page's re-read is what puts the server's word back.
+    pub fn owe_page(&mut self, key: Key) {
+        if !self.landed.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1))) {
+            self.landed.push(key);
+        }
+    }
+
     /// The rows read-backs have published since the last call, each once.
     pub fn take_landed(&mut self) -> Vec<Key> {
         std::mem::take(&mut self.landed)
@@ -273,8 +288,8 @@ impl ViewReconcileStore {
                     client.metadata_many(&refs).map(|mc| {
                         mc.metadata.iter().map(|m| ReadRow {
                             movie: crate::pms::parse_item(m, sid),
-                            parent: m.parent_rating_key.clone(),
-                            grandparent: m.grandparent_rating_key.clone(),
+                            parent: crate::pms::clean(&m.parent_rating_key),
+                            grandparent: crate::pms::clean(&m.grandparent_rating_key),
                         }).collect::<Vec<_>>()
                     })
                 })).unwrap_or(None);
@@ -282,17 +297,23 @@ impl ViewReconcileStore {
             });
             if !spawned {
                 // Nothing will ever land. Keep the items and wait out the ladder.
-                let leaves = keys.len() - parents.len();
-                let mut keys = keys.into_iter();
-                self.pending.extend(keys.by_ref().take(leaves).map(|rk| (sid, rk)));
-                self.pending_parents.extend(keys.map(|rk| (sid, rk)));
-                self.retry_cd = RETRY_FRAMES;
+                self.requeue_unspawned(sid, keys, parents.len());
                 return;
             }
             plx_base::eventlog::log(&format!(
                 "viewreconcile: {} item(s) → server {} (off-thread)", keys.len(), sid.raw()));
             self.flights.push(Flight { id, sid, keys, parents, stamp });
         }
+    }
+
+    /// A batch that could not be spawned goes back where it came from: its leaves into `pending`,
+    /// its trailing `parent_count` keys into `pending_parents`, and the retry wait starts.
+    fn requeue_unspawned(&mut self, sid: ServerId, keys: Vec<String>, parent_count: usize) {
+        let leaves = keys.len() - parent_count;
+        let mut keys = keys.into_iter();
+        self.pending.extend(keys.by_ref().take(leaves).map(|rk| (sid, rk)));
+        self.pending_parents.extend(keys.map(|rk| (sid, rk)));
+        self.retry_cd = RETRY_FRAMES;
     }
 
     /// Land what arrived, hand each surviving row to `publish` as a facts change, re-queue the
@@ -362,9 +383,7 @@ impl ViewReconcileStore {
                                 self.watched_ends.push(key);
                             }
                         }
-                        if !self.landed.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (m.sid, &m.rk))) {
-                            self.landed.push((m.sid, m.rk.clone()));
-                        }
+                        self.owe_page((m.sid, m.rk.clone()));
                         publish(ViewChange {
                             sid: m.sid,
                             rk: m.rk.clone(),

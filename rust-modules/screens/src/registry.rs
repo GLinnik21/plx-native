@@ -1173,9 +1173,6 @@ pub enum AppMsg {
     DetailRestore {
         spot: plx_data::metadata::Spot,
         episode: Option<String>,
-        /// Deferred retains the obligation while covered; Requested tells the visible Detail to
-        /// synchronously start the request before publishing that phase as logical state.
-        refresh: DetailRefreshPhase,
     },
     /// The server said something new about this Detail page's item, its season or its show (a
     /// read-back landed, `app::content::reconcile_details`): owe it a re-read. **Obligation only** -

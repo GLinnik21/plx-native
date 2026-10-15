@@ -101,6 +101,23 @@ impl EpisodeList {
         }
     }
 
+    /// Puts the pages `old` holds, and this list lacks, onto this one. For a fresh read of the SAME
+    /// season (the caller has checked that): the read brings page 0 alone, and the pages the strip
+    /// had reached stay in place so the episode under the focus is still there. A list of another
+    /// length is another listing, and carries nothing.
+    pub fn carry_pages_from(&mut self, old: &EpisodeList) {
+        if old.len() != self.len() {
+            return;
+        }
+        for page in 0..self.cache.page_count() {
+            if self.cache.page_rows(page).is_none() {
+                if let Some(rows) = old.cache.page_rows(page) {
+                    self.set_page(page, rows.to_vec());
+                }
+            }
+        }
+    }
+
     /// How many pages have landed.
     pub fn loaded_pages(&self) -> usize {
         self.cache.loaded_pages()

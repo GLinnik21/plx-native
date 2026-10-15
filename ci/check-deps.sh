@@ -42,7 +42,7 @@
 #              the only door BY CONSTRUCTION, not by nobody having tried the other one yet. The
 #              two gates are independent and both must be green: a name absent from
 #              `mutators-visibility`'s per-file list (a PUMP/landing door like `pump`/`tick`/
-#              `land`/`discover_pump`/`take_detail_refresh`, which stays `pub(crate)` BY DESIGN as
+#              `land`/`discover_pump`/`take_landed_views`/`take_landed`, which stays `pub(crate)` BY DESIGN as
 #              the sanctioned door between a store and its owning module — see
 #              `docs/stores-as-machines.md`) can still be caught calling FROM a screen by the
 #              call-site half, and a name whose declaration IS private can still, in principle, be
@@ -461,8 +461,8 @@ fi
 # viewstate-owner: ViewState's physical state, Arc transport and notice live on ViewStateStore.
 # Zero tolerance, no allowlist: a free facade or storage/transport static can only select process
 # state, which would silently reconnect separate Bridges and let a retired worker cross reset.
-viewstate_facades='apply|run|run_with_browse|run_with_owners|pump|pump_with_owners|is_busy|take_detail_refresh|request|request_with_browse|request_with_owners|reset|hold_inflight_for_test|owe_hubs_refresh_for_test|seed_ownership_fixture_for_test|ownership_fixture_for_test|late_completion_for_test|seed_post_reset_flight_for_test'
-viewstate_selectors='ACTIVE|OWNER|QUEUE|SENT|RETRY_CD|WANT_HUBS|WANT_DETAIL|MAIL|VIEWSTATE|VIEW_STATE|LEGACY_ADAPTER'
+viewstate_facades='apply|run|run_with_browse|run_with_owners|pump|pump_with_owners|is_busy|take_landed_views|take_landed|request|request_with_browse|request_with_owners|reset|hold_inflight_for_test|owe_hubs_refresh_for_test|seed_ownership_fixture_for_test|ownership_fixture_for_test|late_completion_for_test|seed_post_reset_flight_for_test'
+viewstate_selectors='ACTIVE|OWNER|QUEUE|SENT|RETRY_CD|WANT_HUBS|LANDED|MAIL|VIEWSTATE|VIEW_STATE|LEGACY_ADAPTER'
 viewstate_owner_matches=$({
   owner_declarations "$viewstate_facades" "$viewstate_selectors" \
     'ViewStateState|ViewStateAdapter|ViewStateStore|Req|Completion|Done' \
@@ -626,8 +626,8 @@ if [ -n "$(grep_code '\bEffect::' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFO
 # names are `save_cursor`/`set_unwatched`), and `load_detail_now` for a function D1 deleted
 # outright — and added every real mutator the census found missing entirely: `alt_install`,
 # `alt_restamp_owners`, `alt_prune_inactive`, `alt_stand_in`, `record_pins`, `retry_source`,
-# `apply_landing`, `take_detail_refresh`.
-MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_cursor|set_sort_by_key|set_sort|set_unwatched|set_genre_by_id|set_genre|retry_cur_source|retry_source|recheck_shares|apply_pins|toggle_pin|record_pins|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|clear|load_season|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|alt_install|alt_restamp_owners|alt_prune_inactive|alt_stand_in|request_refetch_hubs|request_retry|edit_item|apply_landing|take_detail_refresh)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
+# `apply_landing`, `take_landed_views`/`take_landed`.
+MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_cursor|set_sort_by_key|set_sort|set_unwatched|set_genre_by_id|set_genre|retry_cur_source|retry_source|recheck_shares|apply_pins|toggle_pin|record_pins|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|clear|load_season|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|alt_install|alt_restamp_owners|alt_prune_inactive|alt_stand_in|request_refetch_hubs|request_retry|edit_item|apply_landing|take_landed_views|take_landed)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
 # The spelling is matched WITHOUT a `crate::` prefix (a `use crate::metadata;` makes it
 # `metadata::load_season(`), and every `#[cfg(test)] mod … { … }` block is skipped by brace depth
 # wherever it sits in the file — the first version cut at the FIRST such block and let ~700
@@ -660,7 +660,7 @@ if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(
 # a bare `pub`/`pub(crate)`, so a `pub(super)` declaration is correctly invisible to it.
 #
 # Deliberately EXCLUDED, both documented here rather than silently absent:
-#   - PUMP/landing doors (`pump`, `tick`, `land`, `discover_pump`, `take_detail_refresh`) stay
+#   - PUMP/landing doors (`pump`, `tick`, `land`, `discover_pump`, `take_landed_views`/`take_landed`) stay
 #     `pub(crate)` BY DESIGN — the sanctioned door between a store and the module `stores::<store>`
 #     wraps, not a mutator a screen has any business calling (`docs/stores-as-machines.md`).
 #   - `metadata::alt_stand_in` — the census flagged it as "MUTATOR-adjacent" by name alone; it
