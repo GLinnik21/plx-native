@@ -751,4 +751,24 @@ mod tests {
         assert_eq!(spaced, 1, "only the sentinel's own definition may spell #FF00FE");
         assert_eq!(packed, 1, "only the sentinel's own doc line may spell #FF00FE");
     }
+
+    /// **DS3: every read-out's verdict is bright, and its body is secondary.** The verdict line of
+    /// an empty, failed or filtered read-out (`StatusOverlay`, anchor 540) is inked
+    /// `TEXT_PRIMARY`; the body under it is `TEXT_SECONDARY`. Neither is ever the danger token,
+    /// and the Working caption keeps its secondary ink (it is progress copy, not a verdict).
+    /// Source: the Design artifact boards WatchlistEmpty and WatchlistFiltered (verdict
+    /// `--text-primary`, body `--text-secondary`). Shipped size and weight are kept.
+    #[test]
+    fn a_read_out_verdict_is_bright_and_its_body_secondary() {
+        use crate::widgets::{StatusKind, StatusOverlay};
+        for kind in [StatusKind::Failed, StatusKind::Empty] {
+            let (_, _, verdict) = StatusOverlay::verdict_face(kind);
+            assert_eq!(verdict, theme::TEXT_PRIMARY, "{kind:?} verdict");
+            let (_, body) = StatusOverlay::reason_face(kind);
+            assert_eq!(body, theme::TEXT_SECONDARY, "{kind:?} body");
+            assert_ne!(verdict, theme::DANGER, "{kind:?} verdict never scolds");
+        }
+        assert_eq!(StatusOverlay::verdict_face(StatusKind::Working).2, theme::TEXT_SECONDARY);
+        assert_eq!(StatusOverlay::reason_face(StatusKind::Working).1, theme::TEXT_SECONDARY);
+    }
 }
