@@ -1314,6 +1314,17 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // 6/7/10): all three are owned screens or surfaces now, so their hover was already taken
         // by `owns_input()` above.
     } else if et == SDL_MOUSEBUTTONDOWN {
+        // OK on a set whose pointer the app can only make transparent: see `click_is_ok`. Pushed
+        // as an OK key-down, so it reaches the focused control by the key path.
+        if super::input::click_is_ok(
+            app.ptr.dpad_mode,
+            app.ptr.cur_hidden,
+            unsafe { super::boot::cursor_is_transparent() },
+        ) {
+            app.ptr.ok_from_click = true;
+            super::events::remote_synth_key_edge(SDLK_RETURN, 0, true);
+            return;
+        }
         app.last_input = clock::now();
         {
             let (cx, cy) = ptr_xy(&app.ev);
@@ -1394,6 +1405,10 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // both are owned screens now, so a click on either was already taken by
         // `owns_input()`'s click arm above and never reaches this chain.
     } else if et == SDL_MOUSEBUTTONUP {
+        if std::mem::take(&mut app.ptr.ok_from_click) {
+            super::events::remote_synth_key_edge(SDLK_RETURN, 0, false);
+            return;
+        }
         app.last_input = clock::now();
         {
             let (cx, cy) = ptr_xy(&app.ev);
