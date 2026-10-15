@@ -157,6 +157,59 @@ class BundleTests(unittest.TestCase):
         self.refresh()
         self.check()
 
+    PATCH_PATH = 'ci/libass-patches/0001-fixture.patch'
+    PATCH = b'diff --git a/libass/x.c b/libass/x.c\n'
+
+    def pin_a_patch(self, listed=True, present=True, wrong_bytes=False):
+        """A PR 4-shaped bundle: the libass pin names a patch, the bundle carries (or not) the file."""
+        self.test_ass_source_requires_every_static_dependency()
+        pins = json.loads(self.contents['ci/libass-dependencies.json'][0])
+        for pin in pins:
+            if pin['id'] == 'libass':
+                pin['patches'] = [{'path': self.PATCH_PATH, 'sha256': digest(self.PATCH), 'result': {}}]
+        self.contents['ci/libass-dependencies.json'] = json.dumps(pins).encode(), 0o644
+        if present:
+            self.contents[self.PATCH_PATH] = (self.PATCH + b'tampered' if wrong_bytes else self.PATCH), 0o644
+        for dep in self.manifest['dependencies']:
+            if dep['id'] == 'libass':
+                dep['patches'] = [self.PATCH_PATH] if listed else []
+        self.refresh()
+
+    def test_ass_patch_pinned_and_carried_passes(self):
+        self.pin_a_patch()
+        self.check()
+
+    def test_a_bundle_without_the_pinned_ass_patch_is_refused(self):
+        self.pin_a_patch(present=False)
+        with self.assertRaisesRegex(ValueError, 'missing ASS renderer patch: ' + self.PATCH_PATH):
+            self.check()
+
+    def test_a_bundle_whose_libass_entry_does_not_list_the_patch_is_refused(self):
+        self.pin_a_patch(listed=False)
+        with self.assertRaisesRegex(ValueError, 'missing ASS renderer patch'):
+            self.check()
+
+    def test_a_bundle_with_different_patch_bytes_is_refused(self):
+        self.pin_a_patch(wrong_bytes=True)
+        with self.assertRaisesRegex(ValueError, 'missing ASS renderer patch'):
+            self.check()
+
+    def test_the_font_count_probe_source_is_required_when_the_facade_includes_it(self):
+        self.test_ass_source_requires_every_static_dependency()
+        for name in ['ci/build-libass.sh', 'ci/build-libass.py', 'include/ass.h']:
+            self.contents[name] = b'fixture recipe', 0o644
+        self.contents['src/ass.c'] = b'#include "ass_internal.h"\n', 0o644
+        self.refresh()
+        with self.assertRaisesRegex(ValueError, 'missing ASS renderer source: src/ass_internal.h'):
+            self.check()
+        self.contents['src/ass_internal.h'] = b'fixture', 0o644
+        self.refresh()
+        with self.assertRaisesRegex(ValueError, 'missing ASS renderer source: src/ass_fonts.c'):
+            self.check()
+        self.contents['src/ass_fonts.c'] = b'fixture', 0o644
+        self.refresh()
+        self.check()
+
     def test_corrupt_compression_requires_exact_reviewed_hash(self):
         data = b'\x1f\x8bintentionally invalid gzip fixture'
         self.contents['dependencies/ffmpeg/corrupt.bin'] = data, 0o644

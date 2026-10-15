@@ -1,5 +1,7 @@
 # libavformat demuxer plan — replacing `mkv.rs`
 
+> Superseded for text subtitles: every text track now renders through libass; see `docs/ass-subtitles.md`.
+
 **Status: EXECUTED (all phases A–E landed; 2026-07-18).** `ff.rs` is the only demuxer;
 `mkv.rs`, the `cues_thread`/Cue-index apparatus, the second HTTP connection (`hs2`), and the
 `/tmp/plxnative-demux=mkv` bisect trigger are all deleted. Two knowing deviations from the spec

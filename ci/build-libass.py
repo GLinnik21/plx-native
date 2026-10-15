@@ -96,6 +96,68 @@ def extract(path, folder):
         contents.extractall(folder)
 
 
+def patch_pins(dep, root=ROOT):
+    """The pinned patches of one dependency, each verified against its pinned digest."""
+    patches = dep.get('patches', [])
+    if not isinstance(patches, list):
+        raise ValueError('patches of ' + dep['id'] + ' must be a list')
+    for patch in patches:
+        if not isinstance(patch, dict) or not all(key in patch for key in ('path', 'sha256', 'result')):
+            raise ValueError('every patch of ' + dep['id'] + ' needs path, sha256 and result')
+        path = root / patch['path']
+        if not path.is_file():
+            raise ValueError('libass patch missing: ' + patch['path'])
+        if digest(path) != patch['sha256']:
+            raise ValueError('libass patch digest mismatch: ' + patch['path'])
+    return patches
+
+
+def check_patch_set(pins, root=ROOT):
+    """Every pinned patch exists with its pinned digest, and no patch file goes unpinned: an
+    absent file can no longer mean "no patch", and a stray file can no longer mean "applied"."""
+    pinned = set()
+    for dep in pins:
+        pinned.update(patch['path'] for patch in patch_pins(dep, root))
+    folder = root / 'ci/libass-patches'
+    present = {path.relative_to(root).as_posix() for path in folder.glob('*.patch')} if folder.is_dir() else set()
+    if present - pinned:
+        raise ValueError('libass patch not named by any pin: ' + ', '.join(sorted(present - pinned)))
+
+
+def apply_patches(dep, source_dir, root=ROOT):
+    """Apply the dependency's pinned patches to its extracted `source_dir`, then prove they took.
+
+    `git apply` is a strict plain-patch tool only when it does not discover a repository: `source_dir`
+    sits inside this work tree (gitignored), so without GIT_CEILING_DIRECTORIES git resolves the
+    patch paths against the enclosing repository and skips what that repository ignores. The ceiling
+    stops discovery at `source_dir`; GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE (set by a hook or a
+    wrapper) would defeat it, so they are removed. `patch(1)` is not used: it accepts fuzz.
+    The result hashes are checked independently of git, so a patch that silently skipped fails."""
+    source_dir = Path(source_dir).resolve()
+    patches = patch_pins(dep, root)
+    if not patches:
+        return
+    if shutil.which('git') is None:
+        raise ValueError('git is required to apply the ' + dep['id'] + ' patches (see setup-environment)')
+    env = os.environ.copy()
+    for name in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'):
+        env.pop(name, None)
+    env['GIT_CEILING_DIRECTORIES'] = str(source_dir.parent)
+    for patch in patches:
+        path = (root / patch['path']).resolve()
+        for check in (['--check'], []):
+            result = subprocess.run(['git', 'apply', *check, str(path)], cwd=source_dir, env=env,
+                                    capture_output=True, text=True)
+            if result.returncode != 0:
+                raise ValueError('libass patch does not apply: ' + patch['path'] + ': ' + result.stderr.strip())
+        for relative, expected in sorted(patch['result'].items()):
+            target = source_dir / relative
+            if not target.is_file() or digest(target) != expected:
+                raise ValueError('libass patch not applied: ' + patch['path'] + ' left ' + relative +
+                                 ' different from its pinned result')
+    print('libass: ' + dep['id'] + ' patched (' + str(len(patches)) + ')', flush=True)
+
+
 def verify_library(path, darwin, readelf=None):
     """Prove the bundled font stack stayed private and needs no C++ runtime."""
     if darwin:
@@ -140,6 +202,7 @@ def build():
 
 def build_locked(host, darwin, target, prefix, work, sources):
     pins = json.loads(PINS.read_text())
+    check_patch_set(pins)
     archives = {d['id']: archive(d, sources) for d in pins}
     env = os.environ.copy()
     # Avoid package auto-detection and caller-supplied flags changing the stack.
@@ -199,10 +262,12 @@ def build_locked(host, darwin, target, prefix, work, sources):
                     '-DCMAKE_CXX_FLAGS=' + shlex.join(flags)]
     key = hashlib.sha256(PINS.read_bytes() + Path(__file__).read_bytes() + identity +
                          json.dumps([target, platform.machine(), cmake_flags, configure_flags]).encode() +
+                         b''.join((ROOT / patch['path']).read_bytes()
+                                  for dep in pins for patch in dep.get('patches', [])) +
                          (ROOT / 'ci/arm-cc.py').read_bytes() +
                          (ROOT / 'ci/check-link-evidence.py').read_bytes()).hexdigest()
     stamp = prefix / '.dependencies-key'
-    static_names = ['libass.a', 'libharfbuzz.a', 'libfribidi.a', 'libfreetype.a']
+    static_names = ['libass.a', 'libunibreak.a', 'libharfbuzz.a', 'libfribidi.a', 'libfreetype.a']
     if not stamp.is_file() or stamp.read_text() != key or not all((prefix / 'lib' / n).is_file() for n in static_names):
         for name in ['source', 'objects']:
             shutil.rmtree(work / name, ignore_errors=True)
@@ -213,6 +278,8 @@ def build_locked(host, darwin, target, prefix, work, sources):
         for dep in pins:
             extract(archives[dep['id']], work / 'source')
         by_id = {d['id']: work / 'source' / (d['id'] + '-' + d['version']) for d in pins}
+        for dep in pins:
+            apply_patches(dep, by_id[dep['id']])
         jobs = os.environ.get('JOBS', str(min(os.cpu_count() or 4, 8)))
 
         def cmake_build(name, options):
@@ -244,9 +311,19 @@ def build_locked(host, darwin, target, prefix, work, sources):
                                 '-DHB_HAVE_CORETEXT=OFF', '-DHB_BUILD_UTILS=OFF',
                                 '-DHB_BUILD_SUBSET=OFF', '-DHB_BUILD_RASTER=OFF',
                                 '-DHB_BUILD_VECTOR=OFF', '-DHB_BUILD_GPU=OFF'])
+        # Line breaking by Unicode rules (ASS_FEATURE_WRAP_UNICODE); required, so a missing
+        # library fails the configure instead of quietly building without it.
+        autotools_build('libunibreak', [])
         autotools_build('libass', ['--disable-fontconfig', '--disable-coretext', '--disable-directwrite',
-                                  '--disable-require-system-font-provider', '--disable-libunibreak',
+                                  '--disable-require-system-font-provider', '--enable-libunibreak',
                                   '--disable-test', '--disable-compare', '--disable-profile'])
+        # src/ass_fonts.c reads one field of libass's private library struct (the font count a
+        # test needs). The facade is relinked without this source tree, so the two headers it
+        # needs are kept beside the other build outputs, from the same hashed archive.
+        private = prefix / 'include/plx-libass-private'
+        private.mkdir(parents=True)
+        for header in ['ass_library.h', 'ass_filesystem.h']:
+            shutil.copy2(by_id['libass'] / 'libass' / header, private / header)
         stamp.write_text(key)
     # The facade changes more often than the upstream stack; relinking it does not
     # require a clean FreeType/HarfBuzz rebuild.
@@ -255,7 +332,8 @@ def build_locked(host, darwin, target, prefix, work, sources):
     objects = [prefix / 'lib' / n for n in static_names]
     wrapper_flags = [f for f in flags if f != '-fvisibility=hidden']
     command = [cc, *wrapper_flags, '-I' + str(ROOT / 'include'), '-I' + str(prefix / 'include'),
-               str(ROOT / 'src/ass.c'), *map(str, objects), '-lm']
+               '-I' + str(prefix / 'include/plx-libass-private'),
+               str(ROOT / 'src/ass.c'), str(ROOT / 'src/ass_fonts.c'), *map(str, objects), '-lm']
     if darwin:
         symbols = sorted(set(re.findall(r'\b(plx_ass_\w+)\s*\(', (ROOT / 'include/ass.h').read_text())))
         if not symbols:
