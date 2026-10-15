@@ -1513,6 +1513,8 @@ class CatalogLibrary(Library):
         — a clearLogo as a transparent PNG, the rest as JPEG; None when the item has no such image
         — a 404, as for a real item without art."""
         segs = [s for s in urllib.parse.urlsplit(url).path.split("/") if s]
+        if len(segs) == 6 and segs[:2] == ["library", "parts"] and segs[3:5] == ["indexes", "sd"]:
+            return self.bif_still(segs[2], segs[5], width)
         if len(segs) >= 4 and segs[:2] == ["library", "collections"] and segs[3] == "composite":
             return self.composite(segs[2], width, height)
         if len(segs) < 4 or segs[:2] != ["library", "metadata"] or not segs[2].isdigit():
@@ -1536,6 +1538,34 @@ class CatalogLibrary(Library):
                     f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos",
                     "-bitexact", *encode, "-"])
             return ctype, self._scaled[key]
+
+    # PMS keeps one BIF still per `GenerateBIFFrameInterval` (10 s by default) and answers
+    # `/library/parts/<part>/indexes/sd/<ms>` with the NEAREST one, as a 320-wide JPEG in the film's
+    # own aspect. A part with no file on disk has no index: a 404, exactly like a library whose
+    # preview thumbnails are off.
+    BIF_INTERVAL_MS = 10_000
+
+    def bif_still(self, part, ms, width):
+        """`(content type, bytes)` for the BIF still of part `part` nearest to `ms`; None (a 404) when
+        the part has no media file, the offset is not a number, or it lies past the end."""
+        path = getattr(self, "media_files", {}).get(int(part)) if part.isdigit() else None
+        if path is None or not ms.isdigit():
+            return None
+        at = round(int(ms) / self.BIF_INTERVAL_MS) * self.BIF_INTERVAL_MS // 1000
+        try:
+            w = max(2, min(int(width), 1920)) // 2 * 2
+        except (TypeError, ValueError):
+            w = 320
+        key = ("bif", str(path), w, at)
+        with self._lock:
+            if key not in self._scaled:
+                self._scaled[key] = subprocess.run([
+                    "ffmpeg", "-v", "error", "-threads", "1", "-ss", str(at), "-i", str(path),
+                    "-frames:v", "1", "-vf", f"scale={w}:-2:flags=lanczos", "-q:v", "3",
+                    "-bitexact", "-f", "image2pipe", "-vcodec", "mjpeg", "-"],
+                    capture_output=True).stdout
+            data = self._scaled[key]
+        return ("image/jpeg", data) if data else None
 
     # Collections whose names exercise the collection tile's name fitting
     # (`ui/collection_tile.rs::fit_name`): one short line, a balanced three, and one too long for
