@@ -33,6 +33,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github/workflows"
+sys.path.insert(0, str(ROOT / "ci"))
+import deps  # noqa: E402
 
 
 def text(name):
@@ -278,7 +280,7 @@ class HostLibraryCaches(unittest.TestCase):
     LIBASS_JOBS = ("linux", "macos", "macos-host-tests")
     FFMPEG_WORK = "~/.cache/plxnative/ffmpeg"
     LIBASS_PREFIX = "vendor/libass-prefix-host"
-    LIBASS_SOURCES = "vendor/libass-sources"
+    DOWNLOADS = "vendor/downloads"
 
     def test_no_cache_stores_a_prefix_make_would_judge_by_mtime(self):
         # A restored prefix is OLDER than the checkout's script, so make re-runs the script. Cache
@@ -299,13 +301,14 @@ class HostLibraryCaches(unittest.TestCase):
         self.assertIn('CACHED_TAR="$CACHE_ROOT/ffmpeg/ffmpeg-$VERSION-', sh)
         py = (ROOT / "ci/build-libass.py").read_text()
         self.assertIn(f"ROOT / ('{self.LIBASS_PREFIX}' if host", py)
-        self.assertIn(f"sources = ROOT / '{self.LIBASS_SOURCES}'", py)
+        self.assertIn("sources = deps.cache_dir()", py)
+        self.assertEqual(deps.cache_dir(), ROOT / self.DOWNLOADS)
         self.assertIn("stamp = prefix / '.dependencies-key'", py)
         for job in self.MACOS_JOBS:
             cache_of(job, self.FFMPEG_WORK)
         for job in self.LIBASS_JOBS:
             cache_of(job, self.LIBASS_PREFIX)
-            cache_of(job, self.LIBASS_SOURCES)
+            self.assertIn("uses: ./.github/actions/deps-cache", job_body("simulators.yml", job), job)
 
     def test_the_ffmpeg_key_names_every_input_the_script_keys_on(self):
         sh = (ROOT / "ci/build-ffmpeg.sh").read_text()
@@ -314,7 +317,7 @@ class HostLibraryCaches(unittest.TestCase):
         self.assertEqual(inherited, {"ci/arm-cc.py", "ci/check-link-evidence.py"})
         for job in self.MACOS_JOBS:
             key = cache_of(job, self.FFMPEG_WORK)["key"]
-            self.assertEqual(hashed(key), {"ci/build-ffmpeg.sh", *inherited}, job)
+            self.assertEqual(hashed(key), {"ci/build-ffmpeg.sh", "ci/deps.py", "ci/dependencies.json", *inherited}, job)
             self.assertIn("runner.os", key)
             self.assertIn("runner.arch", key)
             # The compiler, SDK and build environment are inputs the script reads from the machine.
@@ -327,10 +330,11 @@ class HostLibraryCaches(unittest.TestCase):
         py = (ROOT / "ci/build-libass.py").read_text()
         # Everything build-libass.py folds into its own `.dependencies-key`, besides the toolchain.
         # The pinned patches are folded into the key too (their bytes), by the path the pins name.
-        pins = json.loads((ROOT / "ci/libass-dependencies.json").read_text())
-        patches = {patch["path"] for dep in pins for patch in dep.get("patches", [])}
+        pins = json.loads((ROOT / "ci/dependencies.json").read_text())
+        patches = {patch["path"] for dep in pins if dep.get("group") == "libass"
+                   for patch in dep.get("patches", [])}
         self.assertTrue(patches, "the font-face patch is pinned")
-        read = {"ci/build-libass.py", "ci/libass-dependencies.json", *patches,
+        read = {"ci/build-libass.py", "ci/dependencies.json", "ci/deps.py", *patches,
                 *re.findall(r"ROOT / '(ci/[\w.-]+)'\)\.read_bytes", py)}
         listed = set(makefile_list("LIBASS_INPUTS"))
         self.assertTrue(read <= listed, read - listed)
@@ -340,11 +344,6 @@ class HostLibraryCaches(unittest.TestCase):
             self.assertIn("runner.os", key)
             self.assertIn("runner.arch", key)
             self.assertIn("steps.toolchain.outputs.id", key)
-            # The tarballs are pinned by checksum, so their entry is shared by every OS and moves
-            # only with the pins; a facade edit must not re-save 25 MB of sources.
-            sources = cache_of(job, self.LIBASS_SOURCES)["key"]
-            self.assertEqual(hashed(sources), {"ci/libass-dependencies.json"}, job)
-            self.assertNotIn("runner.os", sources)
         self.assertEqual(len({cache_of(j, self.LIBASS_PREFIX)["key"] for j in self.LIBASS_JOBS}), 1)
 
     def test_the_simulator_path_filter_names_every_libass_input_but_the_cache_keys_files(self):
@@ -352,7 +351,7 @@ class HostLibraryCaches(unittest.TestCase):
         text = (ROOT / ".github/workflows/simulators.yml").read_text()
         filter_ = text[:text.index("\njobs:")]
         for path in makefile_list("LIBASS_INPUTS"):
-            if path.startswith(("src/", "include/", "ci/libass-", "ci/build-libass")):
+            if path.startswith(("src/", "include/", "ci/patches/libass-", "ci/build-libass")):
                 self.assertIn("'" + path + "'", filter_, path)
 
     def test_the_toolchain_is_identified_before_any_cache_is_restored(self):
@@ -388,6 +387,65 @@ class HostLibraryCaches(unittest.TestCase):
         self.assertIn("make check-ass", job_body("simulators.yml", "macos-host-tests"))
         self.assertIn("make sim-macos", job_body("simulators.yml", "macos"))
         self.assertIn("make sim-linux", job_body("simulators.yml", "linux"))
+
+
+class DependabotNotices(unittest.TestCase):
+    """`dependabot-notices.yml` runs on `pull_request_target` with a write token, which is safe only while
+    it executes nothing from the pull request: gated on the bot and a same-repository head, the PR
+    checked out as data beside the trusted base-branch generator, no credential persisted, write
+    permissions on the one job only."""
+
+    NAME = "dependabot-notices.yml"
+
+    def test_trigger_is_scoped_to_the_cargo_files(self):
+        body = code(self.NAME)
+        self.assertRegex(body, r"(?m)^  pull_request_target:\n    types: \[opened, synchronize, reopened\]\n    paths:")
+        self.assertNotRegex(body, r"(?m)^  (push|pull_request|workflow_run|issue_comment|schedule):")
+        self.assertRegex(body, r"(?m)^permissions: \{\}$")
+
+    def test_the_job_is_gated_on_the_bot_and_a_same_repository_head(self):
+        job = job_body(self.NAME, "regenerate")
+        for clause in ("github.actor == 'dependabot[bot]'", "github.event.pull_request.user.login == 'dependabot[bot]'",
+                       "github.event.pull_request.head.repo.full_name == github.repository",
+                       "github.event.pull_request.base.ref == github.event.repository.default_branch"):
+            self.assertIn(clause, job)
+        self.assertEqual(re.findall(r"(?m)^      (\w+): write$", job), ["contents", "actions"])
+        self.assertIn("timeout-minutes:", job)
+
+    def test_pull_request_code_is_data_never_executed(self):
+        job = job_body(self.NAME, "regenerate")
+        checkouts = re.findall(r"actions/checkout@[0-9a-f]{40} # v\d+\n        with:\n((?:          .*\n)+)", job)
+        self.assertEqual(len(checkouts), 2)
+        for block in checkouts:
+            self.assertIn("persist-credentials: false", block)
+        self.assertIn("path: trusted", checkouts[0])
+        self.assertIn("path: pr", checkouts[1])
+        self.assertNotIn("ref:", checkouts[0])   # the base branch
+        self.assertIn("ref: ${{ github.event.pull_request.head.sha }}", checkouts[1])
+        # the single code path: the base branch's generator, isolated, pointed at the PR's files
+        self.assertIn("python3 -I trusted/ci/gen-third-party-notices.py --root pr", job)
+        self.assertNotRegex(job, r"(?m)^\s+(?:make|cargo|\./|bash pr|python3 pr|sh pr)\b")
+        self.assertNotIn("uses: ./", job)
+        # PR-controlled strings reach the shell only through env:, never `${{ }}` inside a script
+        for run in re.findall(r"(?ms)^        run: \|\n(.*?)(?=^      - |\Z)", job):
+            self.assertNotIn("${{", run)
+
+    def test_a_new_crate_stops_the_job_before_anything_is_committed(self):
+        job = job_body(self.NAME, "regenerate")
+        refusal = job[job.index("\n            2)"):job.index("\n            *)")]
+        self.assertIn("exit 1", refusal)
+        self.assertIn("licence decision", refusal)
+        self.assertLess(job.index("exit 1"), job.index("git -C pr commit"))
+
+    def test_cargo_never_runs_here_and_the_backstop_is_in_ci(self):
+        # A PR's .cargo/config.toml can name a credential-provider program, so cargo on its files with a
+        # write token is refused; ci.yml's host-lint job proves the crate set with cargo instead.
+        self.assertNotRegex(code(self.NAME), r"(?m)^\s+(?:run: )?.*\bcargo\b")
+        lint = job_body("ci.yml", "host-lint")
+        self.assertIn("python3 ci/gen-third-party-notices.py --check --verify-graph", lint)
+        header = (WORKFLOWS / self.NAME).read_text()
+        self.assertIn("@dependabot recreate", header)
+        self.assertNotIn("`@dependabot rebase` or", header)
 
 
 class BuildBenchWorkflow(unittest.TestCase):

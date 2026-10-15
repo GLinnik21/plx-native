@@ -24,6 +24,11 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Cache the pinned downloads
+      # build.rs fetches the pinned nanosvg headers (ci/deps.py); a hit keeps an upstream outage
+      # from failing every host job.
+      uses: ./.github/actions/deps-cache
+
     - name: Install the desktop SDL/GL libraries the unit suites LINK against
       # The apt logic (actions-cache of the .debs, bounded fetch/update, https timeout) lives in
       # ./apt-install, shared with simulators.yml; its measured comments live there too.

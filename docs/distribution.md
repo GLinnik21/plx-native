@@ -856,9 +856,9 @@ Inter if you're willing to re-tune the size ladder.
 | `libgcc_s` | GPL-3 + Runtime Library Exception 3.1 | None (exception covers it, dynamically linked). |
 | SDL2, SDL2_ttf | Zlib *(SDL_ttf since **2.0.11**, not 2.20)* | None — clause 3 is a source-distribution clause. Listing is courtesy. |
 | FreeType | FTL / GPLv2 | **Not triggered** — not in `DT_NEEDED`; it's transitive inside the TV's SDL2_ttf. Include the credit line anyway, it's one line. |
-| nanosvg (vendored) | **Zlib**, Mikko Mononen | Keep the header intact (it is). **`src/svg.c:1` mislabels it "public domain" — wrong**, and a NOTICES file generated from that comment would omit Mononen and the AGG/Shemanarev credit. |
+| nanosvg (fetched at a pinned commit by `ci/deps.py`; not in the repository) | **Zlib**, Mikko Mononen | The fetched header is sha256-pinned, so its notice stays intact. `src/svg.c:1` once mislabelled it "public domain" (fixed); a NOTICES file generated from that comment would have omitted Mononen and the AGG/Shemanarev credit. |
 | libjpeg-turbo 2.1.4 | IJG + BSD-3 + Zlib | Currently **not** in the ipk (only `make deploy`-ed). The moment it ships: IJG attribution + the complete Modified BSD text. |
-| jsmpeg (`tools/jsmpeg.min.js`) | MIT, Dominic Szablewski | **Live breach** — the minifier stripped the banner; 138 KB with no notice, and it's served over HTTP by two tools. Two-line fix. |
+| jsmpeg (fetched by `ci/deps.py` for `tools/stream-screen.py`) | MIT, Dominic Szablewski | Not in the repository (it was a banner-less copy at `tools/jsmpeg.min.js`); upstream licence text is `licenses/jsmpeg.txt`. |
 | Rust crates (30 third-party) | 100% permissive, **zero copyleft** | Standard MIT/Apache notices. `moxcms` and `pxfm` are `BSD-3-Clause OR Apache-2.0` — elect Apache to avoid BSD-3's binary-reproduction clause. |
 | Rust std via `-Z build-std` | MIT OR Apache-2.0 | One notices entry. **Plus `compiler_builtins 0.1.160`, whose licence is a *conjunction*: `MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)`** — the LLVM-exception text must be reproduced. This is the most-missed entry in Rust NOTICES files. |
 | `include/SDL2/*` | Zlib (stock upstream 2.0.4, **not** an LG fork) + Mesa MIT + Khronos MIT/Apache | Notices. |

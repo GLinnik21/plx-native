@@ -3,7 +3,7 @@
 
 The build downloads FreeType from a single host that has been unreachable for hours at a time
 (download.savannah.gnu.org, 2026-10-05/06), which reddened every CI run that missed the libass
-cache. The pins in ci/libass-dependencies.json may now carry `mirrors`; whichever source answers,
+cache. The pins in ci/dependencies.json may now carry `mirrors`; whichever source answers,
 the bytes must match the pinned sha256, and a wrong answer is a hard failure that names its source.
 
 No real network: sources are a local HTTP server and a closed loopback port.
@@ -76,6 +76,10 @@ class Fetch(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name)
+        # The machine-wide store must not remember (or serve) a fixture across tests.
+        patch = mock.patch.dict(os.environ, {'PLX_BUILD_CACHE': str(self.folder / 'machine')})
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def dep(self, url, mirrors=None):
         dep = {'id': 'fixture', 'version': '1', 'archive': 'fixture-1.tar.xz',
@@ -150,7 +154,7 @@ class Fetch(unittest.TestCase):
 
 class Manifest(unittest.TestCase):
     def test_freetype_carries_a_sourceforge_mirror_behind_its_canonical_url(self):
-        deps = {d['id']: d for d in json.loads((ROOT / 'ci/libass-dependencies.json').read_text())}
+        deps = {d['id']: d for d in json.loads((ROOT / 'ci/dependencies.json').read_text())}
         freetype = deps['freetype']
         self.assertTrue(freetype['url'].startswith('https://download.savannah.gnu.org/'))
         self.assertEqual(build_libass.sources_of(freetype)[0], freetype['url'])
@@ -159,7 +163,7 @@ class Manifest(unittest.TestCase):
         self.assertEqual(freetype['sha256'], '36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f')
 
     def test_every_mirror_is_https_and_names_the_pinned_archive(self):
-        for dep in json.loads((ROOT / 'ci/libass-dependencies.json').read_text()):
+        for dep in build_libass.stack(json.loads((ROOT / 'ci/dependencies.json').read_text())):
             for url in dep.get('mirrors', []):
                 self.assertTrue(url.startswith('https://'), url)
                 self.assertTrue(url.split('?')[0].endswith('/' + dep['archive']), url)
@@ -195,7 +199,7 @@ class ApplyPatches(unittest.TestCase):
         self.source = self.repo / 'vendor/libass-build/source/libass-9.9'
         (self.source / 'libass').mkdir(parents=True)
         (self.source / 'libass/f.c').write_bytes(BEFORE)
-        self.patch = 'ci/libass-patches/0001-fixture.patch'
+        self.patch = 'ci/patches/libass-0001-fixture.patch'
         (self.repo / self.patch).parent.mkdir(parents=True)
         (self.repo / self.patch).write_bytes(GIT_PATCH)
         self.dep = {'id': 'libass', 'patches': [{
@@ -277,25 +281,25 @@ class ApplyPatches(unittest.TestCase):
             self.apply({'id': 'freetype'})
 
     def test_a_patch_file_no_pin_names_fails_the_build(self):
-        stray = self.repo / 'ci/libass-patches/0002-stray.patch'
+        stray = self.repo / 'ci/patches/libass-0002-stray.patch'
         stray.write_bytes(GIT_PATCH)
-        with self.assertRaisesRegex(ValueError, 'not named by any pin: ci/libass-patches/0002-stray.patch'):
+        with self.assertRaisesRegex(ValueError, 'not named by any pin: ci/patches/libass-0002-stray.patch'):
             build_libass.check_patch_set([self.dep], root=self.repo)
         build_libass.check_patch_set([self.dep, {'id': 'x', 'patches': [
-            {'path': 'ci/libass-patches/0002-stray.patch', 'sha256': sha(GIT_PATCH), 'result': {}}]}],
+            {'path': 'ci/patches/libass-0002-stray.patch', 'sha256': sha(GIT_PATCH), 'result': {}}]}],
             root=self.repo)
 
 
 class PinnedPatches(unittest.TestCase):
     def pins(self):
-        return json.loads((ROOT / 'ci/libass-dependencies.json').read_text())
+        return json.loads((ROOT / 'ci/dependencies.json').read_text())
 
     def test_the_real_pins_name_every_patch_file_with_its_digest(self):
         build_libass.check_patch_set(self.pins())
 
     def test_the_font_face_patch_is_pinned_on_libass_alone(self):
-        by_id = {d['id']: d['patches'] for d in self.pins()}
-        self.assertEqual([p['path'] for p in by_id['libass']], ['ci/libass-patches/0001-grow-font-faces.patch'])
+        by_id = {d['id']: d['patches'] for d in build_libass.stack(self.pins())}
+        self.assertEqual([p['path'] for p in by_id['libass']], ['ci/patches/libass-0001-grow-font-faces.patch'])
         self.assertEqual({k for k, v in by_id.items() if v}, {'libass'})
         self.assertEqual(set(by_id['libass'][0]['result']), {'libass/ass_font.c', 'libass/ass_font.h'})
 
@@ -310,7 +314,7 @@ class PinnedPatches(unittest.TestCase):
 
     def test_the_real_patch_applies_to_the_real_libass_release_and_reaches_its_result_hashes(self):
         dep = {d['id']: d for d in self.pins()}['libass']
-        archive = ROOT / 'vendor/libass-sources' / dep['archive']
+        archive = ROOT / 'vendor/downloads' / dep['archive']
         if not archive.is_file() or sha(archive.read_bytes()) != dep['sha256']:
             self.skipTest('libass source archive not downloaded')
         with tempfile.TemporaryDirectory() as folder:

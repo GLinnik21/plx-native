@@ -25,9 +25,9 @@ draws itself is the failure notice (`sidecar::notice()`, drawn by `draw_subtitle
 
 `ci/build-libass.py` builds a pinned libass with private FreeType, FriBidi, HarfBuzz and
 libunibreak (Unicode line breaking, so a line with no spaces, as in Chinese or Japanese, can
-still wrap). libass carries one local patch, `ci/libass-patches/0001-grow-font-faces.patch`,
+still wrap). libass carries one local patch, `ci/patches/libass-0001-grow-font-faces.patch`,
 which lets each font hold more than the upstream ten faces; it is pinned by digest in
-`ci/libass-dependencies.json` and the build fails unless it applied. The
+`ci/dependencies.json` and the build fails unless it applied. The
 application loads its own `libass-plx` by absolute path. Only the versioned `plx_ass_*` facade is
 exported; dependency symbols cannot collide with the firmware's font stack. `src/ass.c` reads
 libass structures through the same headers used to compile that library. No firmware libass or

@@ -43,6 +43,26 @@ identifies nobody and removing it would break the loop for key-less machines. Ap
 install, `com.beb.plxnative.debug`, can sit beside it on the same set (`FLAVOR`, below;
 `docs/two-installs.md`).
 
+## Non-Rust dependencies (`ci/dependencies.json`)
+
+Every non-Rust input (FFmpeg, Sentry Native, the libass font stack, nanosvg, jsmpeg, the webOS NDK,
+the webosbrew toolbox) is declared once in `ci/dependencies.json`: version, URLs (plus transport-only
+mirrors), sha256, pinned patches, licence, and an `update` object saying where its releases come from
+(`github-release`, `github-tags`, `github-commit`, `listing`, `manual`; an optional `hold` string freezes
+the entry and is the reason). `ci/deps.py` reads and fetches it; nothing else writes a version or digest.
+
+Dependabot cannot read that file, so `ci/deps-update.py` does its job: `--report` prints pinned vs
+latest per entry, `--bump NAME` downloads the new asset, recomputes the sha256 and rewrites
+the entry's version, URLs and digest (never a patch; a patch that no longer applies exits 3 and
+the PR says so). `.github/workflows/deps-update.yml` runs weekly, opens one PR per outdated
+dependency on `deps/<name>-<version>` and dispatches `ci.yml` on it (a `GITHUB_TOKEN` push starts no
+CI by itself). Reviewing such a PR: FFmpeg, Sentry Native, curl-adjacent and NDK bumps need the
+`fw-compat-reviewer` agent, and every bump needs a `THIRD-PARTY-NOTICES.md` check. The same workflow
+submits the manifest to GitHub's dependency graph on every push that changes it
+(`deps-update.py --snapshot`). Held today: `webos-ndk` (pinned to the TV firmware ABI) and
+`webosbrew-toolbox` (independent release tag, package version and firmware symbol data). A new
+entry needs an `update` object; `ci/test_deps_update.py` fails without one.
+
 ## Build / deploy / run
 
 The `Makefile` is the entire dev loop. Requires the **webOS NDK** (install with `make
@@ -373,7 +393,12 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `Cargo.lock`, `build.rs`, `build_support/`, a `.cargo/config.toml`, `.github/workflows/`, or the
   module layout (moving, splitting or merging files under `rust-modules/src/`) pastes the table from
   `make build-bench` taken on the base commit and on the change, on the same machine in the same
-  sitting. **Reading noise:** before every run the script samples the 1-minute load average
+  sitting. Dependabot PRs are exempt (a bot cannot run it): the maintainer who merges a grouped bump
+  measures first when it moves the toolchain or the compiled dependency set, and a bump of the Cargo
+  dependencies also needs `make notices` (THIRD-PARTY-NOTICES.md section 2.4 is generated from
+  `Cargo.lock`; `make check` fails until it is regenerated; on a Dependabot PR
+  `.github/workflows/dependabot-notices.yml` does it and pushes the commit when only versions moved, and leaves
+  the PR red naming the crate when the bump added one that needs a row or a `not_shipped` entry). **Reading noise:** before every run the script samples the 1-minute load average
   (`uptime`) and swap (`sysctl vm.swapusage`) and prints `WARNING: <scenario> run N: load X > <cores>
   cores` or `swap N% used` when load exceeds the core count or swap is over 90% full; this Mac is
   shared with other sessions and its swap is often full, so such numbers are noisy. A warning does
@@ -1451,7 +1476,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   both) and the pointer-width stack reads that make the walk safe on a 32-bit target are now
   **upstream** (getsentry/sentry-native#2052 and #2053, contributed from this repo, merged
   2026-09-03/04, released in 0.16.6) — the patch beside the pin
-  (`vendor/sentry-native/webos-arm32.patch`) carries neither any more and is down to what upstream
+  (`ci/patches/sentry-native-0001-webos-arm32.patch`) carries neither any more and is down to what upstream
   still does not do: a `process_vm_readv` wrapper for glibc 2.12, the 32-frame cap for non-crashed
   threads, the 30 s handler budget, and two webOS-only escapes in the signal handler (no in-process
   libunwind, no SDK hooks — both reproduced a recursive SIGSEGV through `getenv`).
