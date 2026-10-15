@@ -5612,7 +5612,7 @@ mod lifecycle_regression_tests {
         let hole_open = Arc::new(AtomicBool::new(true));
         let open = hole_open.clone();
         // Accepts and holds every connection without a word until the test is over.
-        let holder = std::thread::spawn(move || {
+        let holder = plx_base::task::spawn_small_keeping("return-hold-silent-server", move || {
             let mut held = Vec::new();
             while open.load(Ordering::SeqCst) {
                 match plx_base::testnet::accept(&hole) {
@@ -5641,7 +5641,7 @@ mod lifecycle_regression_tests {
         assert!(t - at_floor < 150, "the slow source did not hold the return ({} ms past the floor, bound 300)", t - at_floor);
         assert_eq!(first_cw_rk(&rig.app), "2");
         hole_open.store(false, Ordering::SeqCst);
-        holder.join().unwrap();
+        holder.expect("the silent server's thread").join().unwrap();
     }
 
     /// **10b/10c, the next episode comes first.** Continue Watching is ordered by last viewed, so
