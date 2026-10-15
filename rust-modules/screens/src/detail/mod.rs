@@ -4234,6 +4234,12 @@ impl DetailScreen {
                         StoreCmd::ViewState(ViewStateCmd::Request {
                             sid: d.sid,
                             rk: d.rk.clone(),
+                            // a show's hero toggle changes every episode of it, wherever held
+                            scope: if d.is_show {
+                                plx_data::viewstate::Scope::Show
+                            } else {
+                                plx_data::viewstate::Scope::Leaf
+                            },
                             write: if ctl == hero::HeroCtl::MarkWatched {
                                 plx_data::viewstate::Write::Watched
                             } else {

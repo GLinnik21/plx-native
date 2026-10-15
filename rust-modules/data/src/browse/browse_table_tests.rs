@@ -95,9 +95,9 @@ fn retained_pages_copy_only_changed_page_and_keep_sparse_holes() {
     let old = items.clone();
     assert!(super::Arc::ptr_eq(&old.pages, &items.pages));
     assert_eq!(items.pages.iter().flatten().count(), 2);
-    assert!(!items.set_watched(sid, "missing", false));
+    assert!(!items.set_watched(&crate::viewstate::ViewAt::leaf(sid, "missing"), false));
     assert!(super::Arc::ptr_eq(&old.pages, &items.pages));
-    assert!(items.set_watched(sid, "7", false));
+    assert!(items.set_watched(&crate::viewstate::ViewAt::leaf(sid, "7"), false));
     assert!(!super::Arc::ptr_eq(&old.pages, &items.pages));
     assert!(!super::Arc::ptr_eq(
         old.pages[0].as_ref().unwrap(),

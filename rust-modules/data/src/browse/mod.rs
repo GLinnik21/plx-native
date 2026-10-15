@@ -683,8 +683,8 @@ impl SecItems {
         }
     }
     /// A read scan first: an optimistic edit must not clone unrelated retained pages.
-    fn set_watched(&mut self, sid: ServerId, rk: &str, on: bool) -> bool {
-        let matches = |m: &PmsMovie| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk));
+    fn set_watched(&mut self, at: &crate::viewstate::ViewAt, on: bool) -> bool {
+        let matches = |m: &PmsMovie| at.covers(m);
         let mut hit = false;
         for p in 0..self.pages.len() {
             if !self.pages[p]
@@ -699,7 +699,7 @@ impl SecItems {
                 .flatten()
                 .filter(|m| matches(m))
             {
-                crate::pms::set_watched(m, on);
+                crate::viewstate::ViewEdit::Watched(on).apply(m);
                 hit = true;
             }
         }
@@ -1184,10 +1184,10 @@ impl BrowseState {
             },
         }
     }
-    fn set_watched_local(&mut self, sid: ServerId, rk: &str, on: bool) -> bool {
+    fn set_watched_local(&mut self, at: &crate::viewstate::ViewAt, on: bool) -> bool {
         let mut hit = false;
         for state in &mut self.states {
-            hit |= state.items.set_watched(sid, rk, on);
+            hit |= state.items.set_watched(at, on);
         }
         hit
     }
@@ -2316,12 +2316,14 @@ impl BrowseState {
                 self.hubs_invalidate_all(adapter);
                 true
             }
-            BrowseCmd::SetWatchedLocal { sid, rk, on } => {
-                let listing = self.set_watched_local(sid, &rk, on);
-                let hubs = self.hubs_set_watched_local(sid, &rk, on);
-                listing || hubs
-            }
-            BrowseCmd::LeftTheDeck { sid, rk } => self.hubs_left_the_deck(sid, &rk),
+            BrowseCmd::ApplyView { at, edit } => match edit {
+                crate::viewstate::ViewEdit::Watched(on) => {
+                    let listing = self.set_watched_local(&at, on);
+                    let hubs = self.hubs_set_watched_local(&at, on);
+                    listing || hubs
+                }
+                crate::viewstate::ViewEdit::LeftDeck => self.hubs_left_the_deck(at.sid, &at.rk),
+            },
         }
     }
     fn maybe_discover_owned(

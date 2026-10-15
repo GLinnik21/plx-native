@@ -656,8 +656,12 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // detail page is holding belongs to the SHOW when this rk is one of its episodes. A
             // guid that is merely close marks a DIFFERENT title watched on every other source, so
             // `viewstate` looks the right one up from `(sid, rk)` on its own worker instead.
+            // A show or season row also changes every episode row under it, wherever one is held
+            // (a Search result, a Continue Watching card): the scope is read off the row in hand.
+            let scope = item.as_ref().filter(|m| m.rk == *rk)
+                .map_or(plx_data::viewstate::Scope::Leaf, plx_data::viewstate::Scope::of_row);
             bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
-                sid, rk: rk.to_string(), write: w, detail, guid: String::new(),
+                sid, rk: rk.to_string(), write: w, scope, detail, guid: String::new(),
             });
         }
         Action::RemoveFromDeck(rk) => {
@@ -666,7 +670,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // left off. That is why this is NOT `unscrobble`, which would throw the position
             // away. See `plex::Client::remove_from_continue_watching`.
             //
-            // The card leaves the deck on THIS frame (`pms::LocalEdit::LeftTheDeck` — it must
+            // The card leaves the deck on THIS frame (`ViewEdit::LeftDeck` — it must
             // not still sit under the user's cursor after they removed it) and the refetch
             // follows the write. The shelf is sourced from `/hubs/continueWatching`, which is
             // the hub this action actually affects — built from `/hubs`'s `home.continue` it
@@ -678,7 +682,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // row is yours, and hiding a friend's item from it is not a claim about their deck.
             bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
                 sid, rk: rk.to_string(), write: plx_data::viewstate::Write::RemoveFromDeck,
-                detail: None, guid: String::new(),
+                scope: plx_data::viewstate::Scope::Leaf, detail: None, guid: String::new(),
             });
         }
         // The deck card's Play row (OK opens the page): the same captured-row launch as Play from

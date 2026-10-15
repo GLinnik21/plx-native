@@ -1188,7 +1188,10 @@ fn shelf_return_follows_the_film_then_its_last_published_slot() {
             let memory = page.page_memory();
             let item = fixture.hubs.view().shelves()[0].items[if remove_focused { 3 } else { 0 }].clone();
             let stores = fixture.stores.as_ref().unwrap();
-            assert!(stores.browse_run(BrowseCmd::LeftTheDeck { sid: item.sid, rk: item.rk }));
+            assert!(stores.browse_run(BrowseCmd::ApplyView {
+                at: plx_data::viewstate::ViewAt::leaf(item.sid, &item.rk),
+                edit: plx_data::viewstate::ViewEdit::LeftDeck,
+            }));
             let publication = stores.capture_browse(&mut fixture.directory);
             fixture.hubs = publication.section_hubs;
             if evict {

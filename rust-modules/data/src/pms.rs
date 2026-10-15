@@ -24,6 +24,7 @@
 //! outside `pms`/`stores::hubs` spells the old direct-call form; this is the part that
 //! keyword-level `pub(super)` genuinely cannot add on top of that count.
 use crate::stores::{deck, paging};
+use crate::viewstate::{ViewAt, ViewEdit};
 use plx_plex::plex::ServerId;
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
@@ -679,19 +680,7 @@ fn request_refetch_hubs_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapte
     endpoints
 }
 
-/// A local, **optimistic** edit to what the shelves say about one item — applied before the write
-/// that justifies it has left the machine, so a press lands on the panel at once however far away
-/// the item's server is. See [`edit_item_with_scope`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LocalEdit {
-    /// The item is now watched (`true`) or unwatched (`false`), everywhere it appears.
-    Watched(bool),
-    /// The item has been hidden from Continue Watching (`removeFromContinueWatching`) — it leaves
-    /// the deck and NOTHING else about it changes, which is exactly what that endpoint does.
-    LeftTheDeck,
-}
-
-/// Apply `edit` to every shelf row naming `(sid, rk)` and re-commit Home under the retained Browse
+/// Apply `edit` ([`ViewEdit`]) to every shelf row `at` covers and re-commit Home under the retained Browse
 /// scope. Returns whether anything
 /// matched. **MAIN THREAD** — it rebuilds the catalog the UI holds `&'static` rows out of.
 ///
@@ -705,15 +694,14 @@ pub enum LocalEdit {
 /// This is one half of a pair and is useless alone: it is what the user SEES, and the refetch the
 /// write's landing kicks is what the server SAYS. Where they disagree the refetch wins, silently.
 #[cfg(test)]
-fn edit_item(state: &mut PmsState, sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
-    edit_item_with_scope(state, sid, rk, edit, &BrowseScope::standalone())
+fn edit_item(state: &mut PmsState, at: &ViewAt, edit: ViewEdit) -> bool {
+    edit_item_with_scope(state, at, edit, &BrowseScope::standalone())
 }
 
 fn edit_item_with_scope(
     state: &mut PmsState,
-    sid: ServerId,
-    rk: &str,
-    edit: LocalEdit,
+    at: &ViewAt,
+    edit: ViewEdit,
     scope: &BrowseScope,
 ) -> bool {
     // Same test-only catalog guard as `request_refetch_hubs` — the catalog is `PmsState`, a
@@ -723,9 +711,9 @@ fn edit_item_with_scope(
     let mut hit = false;
     for s in state.srcs.iter_mut() {
         if let Some(b) = s.last.as_mut() {
-            let matched = apply_edit(b, sid, rk, edit);
+            let matched = apply_edit(b, at, edit);
             // A read in flight will land from before this edit; keep it to be made again there.
-            if matched && s.fetching { s.edits.push((sid, rk.to_string(), edit)); }
+            if matched && s.fetching { s.edits.push((at.clone(), edit)); }
             hit |= matched;
         }
     }
@@ -740,27 +728,31 @@ fn edit_item_with_scope(
 
 /// [`edit_item_with_scope`] on ONE source's projection. Pure — no statics, no I/O — so the rule is
 /// graded on the host rather than inferred from a screenshot.
-fn apply_edit(b: &mut SourceBuild, sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
-    let mine = |m: &PmsMovie| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk));
+fn apply_edit(b: &mut SourceBuild, at: &ViewAt, edit: ViewEdit) -> bool {
+    // A deck removal is about the one row pressed; a watched change reaches what the scope names.
+    let mine = |m: &PmsMovie| match edit {
+        ViewEdit::Watched(_) => at.covers(m),
+        ViewEdit::LeftDeck => at.is_item(m.sid, &m.rk),
+    };
     match edit {
-        LocalEdit::Watched(on) => {
+        ViewEdit::Watched(on) => {
             let mut hit = false;
             for c in b.cw.iter_mut().chain(b.lane.rows.iter_mut()) {
                 if mine(&*c.m) {
-                    set_watched(Arc::make_mut(&mut c.m), on);
+                    ViewEdit::Watched(on).apply(Arc::make_mut(&mut c.m));
                     hit = true;
                 }
             }
             for m in b.shelves.iter_mut().flat_map(|s| s.items.iter_mut()) {
                 // test the shared card first: `make_mut` clones only the card that matches
                 if mine(&**m) {
-                    set_watched(Arc::make_mut(m), on);
+                    ViewEdit::Watched(on).apply(Arc::make_mut(m));
                     hit = true;
                 }
             }
             hit
         }
-        LocalEdit::LeftTheDeck => {
+        ViewEdit::LeftDeck => {
             let before = b.cw.len();
             b.cw.retain(|c| !mine(&*c.m));
             b.lane.remove(|row| mine(&*row.m)) || b.cw.len() != before
@@ -1121,7 +1113,7 @@ fn deck_ready(ask: &DeckAsk, srcs: &[Src]) -> bool {
 /// on what it brought: a removed card stays out and a marked one stays marked.
 fn land_lane(source: &mut Src, mut build: SourceBuild) -> bool {
     let Some(last) = source.last.as_mut() else { return false };
-    for (sid, rk, edit) in std::mem::take(&mut source.edits) { apply_edit(&mut build, sid, &rk, edit); }
+    for (at, edit) in std::mem::take(&mut source.edits) { apply_edit(&mut build, &at, edit); }
     last.lane = build.lane;
     true
 }
@@ -1911,7 +1903,7 @@ struct Src {
     /// landing describes the server from before them, so it is given them again (see
     /// [`land_lane`]); the record ends with the read, and a read issued after an edit carries the
     /// edit already.
-    edits: Vec<(ServerId, String, LocalEdit)>,
+    edits: Vec<(ViewAt, ViewEdit)>,
     /// The projection this source last ANSWERED with, kept across a failure. This is what makes a
     /// failure never blank a populated Home; `None` (never answered) is what makes a dead source
     /// contribute nothing at all — no heading, no empty shelf, no spinner row.
@@ -2811,8 +2803,8 @@ fn run_with_scope(
             let mut launch = |request| spawn_fetch(adapter, request);
             controlled_work_with_scope(state, adapter, Some(cmd), 0.0, scope, &mut launch)
         },
-        HubsCmd::EditItem { sid, rk, edit } => crate::stores::StoreOutcome::changed(
-            edit_item_with_scope(state, sid, &rk, edit, scope)),
+        HubsCmd::ApplyView { at, edit } => crate::stores::StoreOutcome::changed(
+            edit_item_with_scope(state, &at, edit, scope)),
         HubsCmd::Reset => {
             reset_with_scope(state, adapter, scope);
             crate::stores::StoreOutcome::changed(true)

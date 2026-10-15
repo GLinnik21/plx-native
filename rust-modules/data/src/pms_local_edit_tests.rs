@@ -28,7 +28,7 @@ fn marking_an_item_watched_flips_every_row_that_names_it_and_retires_its_resume_
         )],
     };
 
-    assert!(apply_edit(&mut b, sid(0), "7", LocalEdit::Watched(true)));
+    assert!(apply_edit(&mut b, &ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)));
 
     assert!(b.cw[0].m.watched && !b.cw[0].m.unwatched, "the deck card");
     assert_eq!(b.cw[0].m.resume_ms, 0, "…and its bar retires with the flag");
@@ -39,7 +39,7 @@ fn marking_an_item_watched_flips_every_row_that_names_it_and_retires_its_resume_
     assert!(!b.shelves[0].items[1].watched, "and nothing else on it");
 
     // …and the reverse toggle is the exact inverse, on a container as much as on a leaf
-    assert!(apply_edit(&mut b, sid(0), "7", LocalEdit::Watched(false)));
+    assert!(apply_edit(&mut b, &ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(false)));
     assert!(!b.cw[0].m.watched && b.cw[0].m.unwatched);
     reset(&mut o.state, &o.adapter);
 }
@@ -58,7 +58,7 @@ fn an_edit_never_reaches_the_same_rating_key_on_another_server() {
         shelves: vec![shelf(1, "Theirs", "h", &["7"])],
     };
     assert!(
-        !apply_edit(&mut b, sid(0), "7", LocalEdit::Watched(true)),
+        !apply_edit(&mut b, &ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)),
         "nothing matched"
     );
     assert!(!b.shelves[0].items[0].watched);
@@ -97,7 +97,7 @@ fn a_deck_removal_leaves_the_deck_only_and_keeps_the_resume_point() {
         }],
     };
 
-    assert!(apply_edit(&mut b, sid(0), "7", LocalEdit::LeftTheDeck));
+    assert!(apply_edit(&mut b, &ViewAt::leaf(sid(0), "7"), ViewEdit::LeftDeck));
 
     assert_eq!(b.cw.len(), 1, "only the one asked for leaves");
     assert_eq!(b.cw[0].m.rk, "8");
@@ -148,7 +148,7 @@ fn a_removed_deck_card_leaves_the_shelves_behind_it_correctly_addressed() {
     assert_eq!(rks(&o.state, 0), vec!["7", "8"], "the deck as it stands");
     assert_eq!(rks(&o.state, 1), vec!["a", "b"]);
 
-    assert!(edit_item(&mut o.state, sid(0), "7", LocalEdit::LeftTheDeck));
+    assert!(edit_item(&mut o.state, &ViewAt::leaf(sid(0), "7"), ViewEdit::LeftDeck));
 
     assert_eq!(rks(&o.state, 0), vec!["8"], "the card is gone from the deck");
     assert_eq!(
@@ -170,7 +170,7 @@ fn an_item_on_no_shelf_reports_no_edit_and_recommits_nothing() {
     let mut o = Owner::default();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, vec![src(0, "", HubState::Ready, Some(build_test(2)))]);
-    assert!(!edit_item(&mut o.state, sid(0), "not-on-home", LocalEdit::Watched(true)));
+    assert!(!edit_item(&mut o.state, &ViewAt::leaf(sid(0), "not-on-home"), ViewEdit::Watched(true)));
     assert_eq!(hub_len(&o.state, 0), 2, "Home is exactly as it was");
     reset(&mut o.state, &o.adapter);
 }
@@ -188,17 +188,16 @@ fn scoped_optimistic_edit_cannot_restore_an_unpinned_sibling_library() {
     let outcome = run_with_directory(
         &mut o.state,
         &o.adapter,
-        crate::stores::hubs::HubsCmd::EditItem {
-            sid,
-            rk: "alpha".into(),
-            edit: LocalEdit::Watched(true),
+        crate::stores::hubs::HubsCmd::ApplyView {
+            at: ViewAt::leaf(sid, "alpha"),
+            edit: ViewEdit::Watched(true),
         },
         directory.view(),
     );
 
     assert!(outcome.changed);
     assert_eq!(rks(&o.state, 0), ["alpha"],
-        "EditItem must re-merge through the retained one-pinned directory");
+        "ApplyView must re-merge through the retained one-pinned directory");
     assert!(hub_item(&o.state, 0, 0).unwrap().watched);
     reset(&mut o.state, &o.adapter);
 }
@@ -237,7 +236,7 @@ fn a_watched_edit_clones_exactly_one_card() {
         vec![shelf(0, "Recently Added", "home.movies.recent", &["8", "9", "10"])],
     );
     let before = b.clone(); // shares every card with `b`
-    assert!(apply_edit(&mut b, sid(0), "8", LocalEdit::Watched(true)));
+    assert!(apply_edit(&mut b, &ViewAt::leaf(sid(0), "8"), ViewEdit::Watched(true)));
 
     // "8" is on the deck and on the shelf: those two cards (and only those) were copied
     let changed = |a: &Arc<PmsMovie>, c: &Arc<PmsMovie>| !Arc::ptr_eq(a, c);
@@ -252,4 +251,51 @@ fn a_watched_edit_clones_exactly_one_card() {
         );
     }
     assert!(!before.cw[1].m.watched, "the source's own card is untouched");
+}
+
+/// A show-scoped change reaches the episode rows of that show wherever the hubs hold one (a
+/// Continue Watching card, a Recently Aired shelf) and nothing else; a deck removal stays on the
+/// one row pressed whatever the scope.
+#[test]
+fn a_show_scoped_edit_reaches_its_episode_rows_and_a_deck_removal_stays_on_one_row() {
+    let _g = plx_base::testlock::serial();
+    let episode = |rk: &str, show: &str, season: i32| {
+        let mut m = (*started(0, rk)).clone();
+        m.kind = 3;
+        m.show_rk = show.into();
+        m.season_index = season;
+        Arc::new(m)
+    };
+    let mut b = SourceBuild {
+        lane: Default::default(),
+        cw: vec![
+            CwItem { last_viewed_at: 9, m: episode("e11", "S", 1), position: 0 },
+            CwItem { last_viewed_at: 8, m: episode("t11", "T", 1), position: 1 },
+        ],
+        shelves: vec![{
+            let mut sh = shelf(0, "Recently Aired", "home.tv.recent", &[]);
+            sh.items = vec![episode("e21", "S", 2), episode("e12", "S", 1)];
+            sh.positions = vec![0, 1];
+            sh
+        }],
+    };
+    let show = ViewAt { sid: sid(0), rk: "S".into(), scope: crate::viewstate::Scope::Show };
+    assert!(apply_edit(&mut b, &show, ViewEdit::Watched(true)));
+    assert!(b.cw[0].m.watched && b.cw[0].m.resume_ms == 0, "the show's card on the deck");
+    assert!(!b.cw[1].m.watched, "another show's card");
+    assert!(b.shelves[0].items.iter().all(|m| m.watched), "every episode on the shelf");
+
+    let season = ViewAt {
+        sid: sid(0),
+        rk: "S2".into(),
+        scope: crate::viewstate::Scope::Season { show_rk: "S".into(), index: 2 },
+    };
+    assert!(apply_edit(&mut b, &season, ViewEdit::Watched(false)));
+    let by_rk = |rk: &str| b.shelves[0].items.iter().find(|m| m.rk == rk).unwrap().watched;
+    assert!(!by_rk("e21"), "season 2 is unmarked");
+    assert!(by_rk("e12"), "season 1 stays marked");
+
+    assert!(!apply_edit(&mut b, &show, ViewEdit::LeftDeck),
+        "a deck removal names the one row pressed, never the episodes under a show");
+    assert_eq!(b.cw.len(), 2);
 }
