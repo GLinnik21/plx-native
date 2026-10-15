@@ -434,7 +434,7 @@ pub(crate) fn settle_release(slot: &mut Option<PendingRelease>, mt: &MainThread,
     sp.mark(if finished { "join" } else { "wait_unload" });
     finish_unloaded_object(mt, p.epoch, &mut sp);
     destroy_native_window(mt, &mut sp);
-    sp.log("release");
+    sp.emit("release");
     log(&format!(
         "native lifecycle: off-frame Unload epoch={} released {} ms after the stop{}",
         p.epoch,
@@ -477,7 +477,7 @@ impl TeardownSpans {
         let _ = write!(self.out, "{}{label}:{ms:.1}", if self.out.is_empty() { "" } else { "," });
     }
 
-    pub(crate) fn log(&self, what: &str) {
+    pub(crate) fn emit(&self, what: &str) {
         log(&format!(
             "teardown spans: {what} total={:.1} {}",
             self.t0.elapsed().as_secs_f64() * 1000.0,
@@ -2318,7 +2318,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         crate::route::finish_engine_teardown();
     }
     sp.mark("reset");
-    sp.log(if for_reload { "reload" } else { "stop" });
+    sp.emit(if for_reload { "reload" } else { "stop" });
     match unload_th {
         Some(unload_th) => {
             log(&format!(
