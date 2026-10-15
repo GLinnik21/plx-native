@@ -121,11 +121,11 @@ impl ClockWarm {
 /// every frame independent of the transport HUD; hidden when subtitles are off or no
 /// cue is active at the current position.
 ///
-/// TWO producers, one renderer: an external (sidecar) selection is asked first — it is no
-/// demuxer track, so `desired_sub_idx` is -1 while one is up and the embedded store answers
-/// nothing — then the embedded cue store. `burned` (`route::subtitles_burned`) silences the sidecar, because
-/// a server that BURNS the selection into the picture (a re-encode, or a remux the app may not
-/// draw over) would otherwise show the line twice.
+/// The sidecar half of this path is now only its failure notice (`sidecar::active_span`): the
+/// cues of an external file render through libass (`sidecar::ass_source`), and the embedded cue
+/// store is dead until the plan's PR 10. `burned` (`route::subtitles_burned`) silences the notice,
+/// because a server that BURNS the selection into the picture (a re-encode, or a remux the app may
+/// not draw over) has no file of ours to explain.
 ///
 /// A cue too tall for the area below the Timing capsule is shown a page at a time
 /// ([`CaptionPlan`]); `pager` holds its layout so the wrap and fit run once per cue, not per frame.
