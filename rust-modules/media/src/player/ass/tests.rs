@@ -1098,23 +1098,18 @@ fn native_every_shipped_script_latin_and_cjk_render_on_one_renderer() {
             text.chars().filter(|c| !c.is_whitespace()).map(move |c| (script.as_str(), c.to_string()))
         })
         .collect();
-    let build = |text: &dyn Fn(&str) -> String| {
-        let rows: Vec<(i64, i64, String)> = letters
-            .iter()
-            .enumerate()
-            .map(|(i, (_, s))| (i as i64 * 1000, i as i64 * 1000 + 900, text(s)))
-            .collect();
-        let borrowed: Vec<(i64, i64, &str)> = rows.iter().map(|(a, b, s)| (*a, *b, s.as_str())).collect();
-        sub_script("PlxSubs", 40, &borrowed)
-    };
-    let mut real = native_with(&[], &build(&|s| s.to_string()));
-    let mut boxes = native_with(&[], &build(&|_| "\u{10FFFD}".to_string()));
+    let rows: Vec<(i64, i64, &str)> = letters
+        .iter()
+        .enumerate()
+        .map(|(i, (_, s))| (i as i64 * 1000, i as i64 * 1000 + 900, s.as_str()))
+        .collect();
+    let mut real = native_with(&[], &sub_script("PlxSubs", 40, &rows));
+    let tofu = drawn("PlxSubs", 40, "\u{10FFFD}");
     for (i, (script, text)) in letters.iter().enumerate() {
         let now = i as i64 * 1000 + 500;
         let a = native_frame(&mut real, now).expect("a new cue");
-        let b = native_frame(&mut boxes, now).expect("a new cue");
         assert!(!ink(&a).bands.is_empty(), "{script}: {text:?} drew nothing");
-        assert_ne!(a, b, "{script}: {text:?} (U+{:04X}) drew as a missing-glyph box", text.chars().next().unwrap() as u32);
+        assert_ne!(a, tofu, "{script}: {text:?} (U+{:04X}) drew as a missing-glyph box", text.chars().next().unwrap() as u32);
     }
     assert_eq!(
         real.stats().library_fonts,
