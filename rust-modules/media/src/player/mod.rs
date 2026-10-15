@@ -42,6 +42,7 @@ mod foreground_flight_tests;
 mod resume_tests;
 mod shared;
 pub mod sidecar;
+pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
 pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
 #[cfg(feature = "hostsim")]
 pub mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)

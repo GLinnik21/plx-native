@@ -457,6 +457,27 @@ fn native_script_font_revision_and_cjk_fallback_use_real_glyphs() {
     );
 }
 
+/// The CJK face is the renderer's default path, not an `ass_add_font` memory font, so a line whose
+/// style names a family nothing carries must still reach it and draw real glyphs.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_cjk_line_in_an_unknown_family_style_still_renders() {
+    let mut engine = Engine::default();
+    let line = |text: &str| {
+        script(&format!(
+            "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\fnNoSuchFamily\\pos(20,40)}}{text}\n"
+        ))
+    };
+    let korean = render(&mut engine, &line("한"), 100);
+    let chinese = render(&mut engine, &line("中"), 100);
+    assert!(!korean.rects.is_empty(), "an unknown family still falls back to the CJK face");
+    assert!(!chinese.rects.is_empty());
+    assert_ne!(
+        korean.rects, chinese.rects,
+        "distinct glyphs, not identical missing-glyph boxes"
+    );
+}
+
 /// The TV stress fixture regressed from 60 to 52 UI FPS when distant captions
 /// were uploaded as one mostly transparent rectangle. Bound the useful pixels
 /// independently of the empty distance between authored signs.

@@ -23,8 +23,8 @@ it sets track features (`plx_ass_set_features`, Unicode line breaking), the liba
 (`plx_ass_stats`), and replaces the loaded track in place (`plx_ass_replace_track`). The renderer
 scans its fonts (`ass_set_fonts`) only on its first load; a replaced track keeps every opened face
 and does not extract its own `[Fonts]` section again. The engine uses the replace for exactly one
-case so far, sliding the window of a long sidecar script. Any other change of source opens a new
-renderer. `tests/fixtures/make_ass_faces.py` regenerates the 14 one-glyph test faces.
+case so far, sliding the window of a long sidecar script. Any other change of source either re-feeds the
+same renderer (the same embedded source with the same header and fonts) or opens a new one. `tests/fixtures/make_ass_faces.py` regenerates the 14 one-glyph test faces.
 
 The demuxer copies ASS headers, complete timed packets and font attachments out of FFmpeg.
 The source store removes trailing zero terminators from headers and packets. A zero byte

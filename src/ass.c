@@ -138,7 +138,7 @@ static int read_track(PlxAss *ctx, const uint8_t *data, size_t len, int script)
 
 int plx_ass_load(PlxAss *ctx, const uint8_t *data, size_t len, int script)
 {
-    if (!ctx || ctx->track) return -1;
+    if (!ctx || ctx->track || ctx->fonts_set) return -1;
     if (read_track(ctx, data, len, script) < 0) return -1;
     /* Inter is the shipped Latin family. With provider NONE libass tries the
      * exact authored family, this family, then default_font (our CJK face).

@@ -1511,12 +1511,12 @@ pub(crate) unsafe fn key_ok(
 pub(crate) fn key_back(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
-    refresh_hubs_at: &mut u32,
+    refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     if super::bridge::nav_cancel(pages) {
     } else if super::bridge::player(pages).is_some() {
-        exit_player(ps, pa, refresh_hubs_at, pages);
+        exit_player(ps, pa, refresh_hubs, pages);
     } else if matches!(pages.top_arg(), Some(AppArg::Content(_))) {
         // The two stacking screens, through the page transition. All three
         // halves of the pop — the outgoing page's teardown, the trail move and

@@ -18,9 +18,9 @@ use super::*;
 /// menu's desired_sub_idx stays aligned with the metadata subs list.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum SubKind {
-    Plain,   // SRT / subrip / text / webvtt: packet payload is UTF-8 text
+    Plain,   // SRT / subrip / text / webvtt: packet payload is text, UTF-8 or (see `sub_charset`) a legacy encoding
     Ass,     // ASS / SSA: dialogue line; text is the field after the 8th comma
-    MovText, // mp4 tx3g: 2-byte big-endian text-length prefix, then UTF-8 text
+    MovText, // mp4 tx3g: 2-byte big-endian text-length prefix, then text (UTF-8 or legacy, as Plain)
     Bitmap,  // PGS / VobSub / DVB / teletext: image subtitle, not renderable here
 }
 
@@ -256,7 +256,8 @@ pub(super) unsafe fn decode_bitmap_cue(
 /// One cue produced from one subtitle packet, in the stream's clock (`pts_ns`), not yet delivered.
 pub(super) enum SubCue<'a> {
     /// SRT / WebVTT / mov_text payload (mov_text's length prefix already dropped) for the text store.
-    Text { track: i32, start: i64, end: i64, payload: &'a [u8] },
+    /// `payload` is always UTF-8 here: [`SubTracks::decode`] ran the track's charset step.
+    Text { track: i32, start: i64, end: i64, payload: std::borrow::Cow<'a, [u8]> },
     /// An ASS/SSA dialogue line for `ass_source`.
     Ass { track: i32, start: i64, end: i64, payload: &'a [u8] },
     /// A decoded image display set (every rect, indexed) on its authoring canvas.
@@ -300,7 +301,7 @@ impl SubCue<'_> {
     pub(super) fn push(self, ass_generation: u64) {
         match self {
             SubCue::Text { track, start, end, payload } => {
-                crate::player::push_subtitle_cue(track, start, end, payload);
+                crate::player::push_subtitle_cue(track, start, end, &payload);
             }
             SubCue::Ass { track, start, end, payload } => {
                 crate::player::ass_source::push(ass_generation, track, start, end, payload);
@@ -337,12 +338,19 @@ pub(super) struct SubTracks {
     /// (ffmpeg stream index, kind, decoder ctx). The decoder is non-null only for Bitmap tracks
     /// (PGS/VobSub/DVB), which are software-decoded to pixels; text tracks carry a null ctx.
     streams: Vec<(c_int, SubKind, *mut AVCodecContext)>,
+    /// Per track (same order as `streams`): the language-derived text charset, fixed by the first
+    /// non-UTF-8 packet (`player::sub_charset`).
+    charsets: Vec<crate::player::sub_charset::TrackCharset>,
 }
 
 impl SubTracks {
     /// Enumerate `fmt`'s subtitle streams and open a decoder for each image one.
     pub(super) unsafe fn open(fmt: *mut AVFormatContext, streams: *mut *mut AVStream) -> Self {
+        if fmt.is_null() || streams.is_null() {
+            return Self::empty();
+        }
         let mut out: Vec<(c_int, SubKind, *mut AVCodecContext)> = Vec::new();
+        let mut charsets = Vec::new();
         for i in 0..(*fmt).nb_streams {
             let cp = stream_codecpar(*streams.add(i as usize));
             if (*cp).codec_type == AVMEDIA_TYPE_SUBTITLE {
@@ -353,14 +361,17 @@ impl SubTracks {
                     std::ptr::null_mut()
                 };
                 out.push((i as c_int, k, dec));
+                charsets.push(crate::player::sub_charset::TrackCharset::new(
+                    stream_language(*streams.add(i as usize)).as_deref(),
+                ));
             }
         }
-        SubTracks { streams: out }
+        SubTracks { streams: out, charsets }
     }
 
     /// No tracks: what the main demuxer holds while a side reader owns the subtitles.
     pub(super) fn empty() -> Self {
-        SubTracks { streams: Vec::new() }
+        SubTracks { streams: Vec::new(), charsets: Vec::new() }
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -444,6 +455,11 @@ impl SubTracks {
         Some(if kind == SubKind::Ass {
             SubCue::Ass { track, start, end, payload }
         } else {
+            // Text is UTF-8 by the spec and legacy-encoded (GBK, Big5, ...) in practice (#628).
+            let payload = match crate::player::sub_charset::subtitle_text(payload, &self.charsets[pos]) {
+                std::borrow::Cow::Borrowed(text) => std::borrow::Cow::Borrowed(text.as_bytes()),
+                std::borrow::Cow::Owned(text) => std::borrow::Cow::Owned(text.into_bytes()),
+            };
             SubCue::Text { track, start, end, payload }
         })
     }
@@ -555,9 +571,9 @@ mod tests {
     #[test]
     fn shifted_moves_every_variant() {
         let by = -2_500_000_000;
-        match (SubCue::Text { track: 1, start: 10_000_000_000, end: 12_000_000_000, payload: b"x" }).shifted(by) {
+        match (SubCue::Text { track: 1, start: 10_000_000_000, end: 12_000_000_000, payload: b"x"[..].into() }).shifted(by) {
             SubCue::Text { track, start, end, payload } => {
-                assert_eq!((track, start, end, payload), (1, 7_500_000_000, 9_500_000_000, &b"x"[..]));
+                assert_eq!((track, start, end, &payload[..]), (1, 7_500_000_000, 9_500_000_000, &b"x"[..]));
             }
             _ => panic!("a text cue stays a text cue"),
         }

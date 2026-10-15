@@ -39,7 +39,8 @@ int plx_ass_load(PlxAss *ctx, const uint8_t *data, size_t len, int script);
  * renderer has opened. Fonts cannot change here: the new track's own [Fonts] section is NOT
  * extracted, so it must repeat the first track's (a synthesized header has none; a window of the
  * same script repeats the same section). Needs a first plx_ass_load. The next render returns a
- * full frame, never 0 "unchanged". -1 leaves the context without a track. */
+ * full frame, never 0 "unchanged". -1 leaves the context without a track; such a context takes only
+ * another plx_ass_replace_track (plx_ass_load refuses once the fonts are scanned). */
 int plx_ass_replace_track(PlxAss *ctx, const uint8_t *data, size_t len, int script);
 /* Track features the facade re-applies on every load and replace. wrap_unicode: break lines by
  * the Unicode line-breaking rules (ASS_FEATURE_WRAP_UNICODE) rather than at spaces only.

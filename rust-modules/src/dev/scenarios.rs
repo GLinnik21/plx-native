@@ -9,7 +9,7 @@
 //! the ONE struct, owned by `App` as `app.scenarios`, that gathers every arm's own retry counter,
 //! oscillator phase and boot-time latch, so a field used by no production code has exactly one
 //! home instead of living beside `route`/`trail`/`pages` on `App` itself. A field genuine
-//! production code also reads (`t0`, `refresh_hubs_at`) stayed on `App`, as the phase's own
+//! production code also reads (`t0`, `refresh_hubs`) stayed on `App`, as the phase's own
 //! instructions require.
 //!
 //! **Entry points, called from the loop at the exact positions the arms used to sit at:**

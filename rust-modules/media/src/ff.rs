@@ -637,26 +637,30 @@ unsafe fn container_hdr(cp: *const AVCodecParameters) -> crate::player::vp9_hdr:
 /// The returned `String` is a COPY. The entry points into the stream's dictionary, which
 /// `avformat_close_input` frees.
 unsafe fn stream_name(s: *mut AVStream) -> String {
+    [c"title", c"name"].into_iter().find_map(|key| stream_tag(s, key)).unwrap_or_default()
+}
+
+/// The stream's `language` tag (ISO 639-2 in Matroska/MP4: `chi`, `jpn`, `und`), or None when it
+/// has none. A COPY, like [`stream_name`]. Only used to pick a legacy text-subtitle charset.
+unsafe fn stream_language(s: *mut AVStream) -> Option<String> {
+    stream_tag(s, c"language")
+}
+
+/// One metadata tag of the stream, trimmed, or None when absent or empty. A COPY: the entry
+/// points into the stream's dictionary, which `avformat_close_input` frees.
+unsafe fn stream_tag(s: *mut AVStream, key: &std::ffi::CStr) -> Option<String> {
     let dict = *((s as *const u8).add(OFF_STREAM_METADATA) as *const *const AVDictionary);
     if dict.is_null() {
-        return String::new();
+        return None;
     }
-    for key in [c"title", c"name"] {
-        let e = av_dict_get(dict, key.as_ptr(), std::ptr::null(), 0);
-        if e.is_null() || (*e).value.is_null() {
-            continue;
-        }
-        // `to_string_lossy` rather than a strict decode: these are user-authored tags off a
-        // stranger's file, and a mis-encoded byte must cost that character, not the whole name.
-        let v = std::ffi::CStr::from_ptr((*e).value)
-            .to_string_lossy()
-            .trim()
-            .to_string();
-        if !v.is_empty() {
-            return v;
-        }
+    let e = av_dict_get(dict, key.as_ptr(), std::ptr::null(), 0);
+    if e.is_null() || (*e).value.is_null() {
+        return None;
     }
-    String::new()
+    // `to_string_lossy` rather than a strict decode: these are user-authored tags off a
+    // stranger's file, and a mis-encoded byte must cost that character, not the whole value.
+    let v = std::ffi::CStr::from_ptr((*e).value).to_string_lossy().trim().to_string();
+    (!v.is_empty()).then_some(v)
 }
 
 /// Every track's container name, by TYPE, in file order — the two lists
@@ -9192,6 +9196,10 @@ mod stall_guard_tests;
 #[cfg(test)]
 #[path = "ff_image_subtitle_tests.rs"]
 mod image_subtitle_tests;
+
+#[cfg(test)]
+#[path = "ff_subtitle_charset_tests.rs"]
+mod subtitle_charset_tests;
 
 #[cfg(test)]
 #[path = "ff_redirect_tests.rs"]
