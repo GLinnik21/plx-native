@@ -5120,8 +5120,9 @@ mod lifecycle_regression_tests {
                     return "{}".into();
                 }
                 if request.starts_with("GET /library/metadata/") {
-                    let parked = std::time::Instant::now();
-                    while hold.load(Ordering::SeqCst) && parked.elapsed() < Duration::from_secs(10) {
+                    // Bounded by count, not by a clock: a failing test must not hang.
+                    for _ in 0..5_000 {
+                        if !hold.load(Ordering::SeqCst) { break; }
                         std::thread::sleep(Duration::from_millis(2));
                     }
                     let seen = stopped.load(Ordering::SeqCst);
