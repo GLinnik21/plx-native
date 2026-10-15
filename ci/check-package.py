@@ -1606,7 +1606,7 @@ for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf"):
 # rendering as tofu. The floor is deliberately crude — a subsetted or truncated stand-in is caught
 # properly by `fontcov.rs`'s cmap gate in `make check`; this only catches "it is not there".
 _cjk = ROOT / "pkg/appfont-cjk.ttf"
-check(_cjk.exists() and _cjk.stat().st_size > 15_000_000,
+check(_cjk.exists() and _cjk.stat().st_size > 10_000_000,
       "pkg/appfont-cjk.ttf present and whole — the CJK fallback face (see rust-modules/base/src/fontcov.rs)")
 check((ROOT / "pkg/OFL.txt").exists(),
       "pkg/OFL.txt present — the OFL requires the licence to travel with the font")

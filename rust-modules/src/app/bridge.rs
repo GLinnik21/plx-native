@@ -1298,6 +1298,12 @@ impl Bridge {
         self.stores.hubs.seed_for_test(items, hub_state);
     }
 
+    /// How many hub refetches Home's store has started.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn hub_refetches_for_test(&self) -> u32 {
+        self.stores.hubs.refetch_count_for_test()
+    }
+
     /// [`seed_hubs_for_test`](Self::seed_hubs_for_test) as a grid of `rows` shelves of `items` cards.
     #[cfg(all(test, feature = "hostsim"))]
     pub(crate) fn seed_hub_grid_for_test(&mut self, rows: usize, items: usize) {

@@ -469,10 +469,9 @@ impl Subtitles {
         if bytes.len() > plx_plex::plex::SIDECAR_MAX_BYTES {
             return Self::empty();
         }
-        let mut text = match String::from_utf8(bytes) {
-            Ok(text) => text,
-            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-        };
+        // A sidecar file is whole-file text of unknown language here: the charset step is the BOM,
+        // valid UTF-8, else the encoding `chardetng` guesses from the whole file (`sub_charset`).
+        let mut text = super::sub_charset::subtitle_text_whole(&bytes, &super::sub_charset::TrackCharset::unknown()).into_owned();
         let bom = text.len() - text.trim_start_matches('\u{feff}').len();
         text.drain(..bom);
         if is_ass_script(&text) {
