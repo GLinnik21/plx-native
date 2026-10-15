@@ -133,7 +133,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   previous major, and — since 2026-09-02 — **everything else in ONE scp from `DEPLOY_FILES`**,
   which is `APP_FILES` (the exact list `ipk` stages into the `.ipk`) minus those three carve-outs:
   this flavour's `appinfo.json`, both icon sizes, `pkg/splash.png`, the three font files
-  (UNCONDITIONALLY, including the 21 MB CJK face — the old `test -f || scp` guard on the fonts
+  (UNCONDITIONALLY, including the 13 MB CJK face — the old `test -f || scp` guard on the fonts
   meant a changed one could never reach the TV, and a separate md5 guard on the CJK face alone had
   the same failure mode by omission: it kept `pkg/splash.png`, both icons, `pkg/OFL.txt` and
   `THIRD-PARTY-NOTICES.md` off the deploy path for as long as this recipe spelled its file list out
@@ -957,7 +957,7 @@ video shows through.
 context. All UI is drawn with two tiny shaders — an SDF rounded-rect/triangle shader (cards, focus
 glow, HUD widgets, seven-segment FPS) and a text shader that samples SDL2_ttf-rendered glyph
 textures (cached by string+size). Critically-damped springs animate focus scale and shelf scroll.
-Fonts are `appfont.ttf` / `appfont-bold.ttf` deployed next to the binary. (Wayland surface setup +
+Fonts are `appfont.ttf` / `appfont-bold.ttf` deployed next to the binary; the subtitle renderer additionally loads the per-script Noto faces from `fonts/subs/` (`docs/ass-subtitles.md`, cut by `tools/cut-noto-subs.py`, staged by `SUBS_FONT_FILES` in the Makefile). (Wayland surface setup +
 input decoding live in `system.rs` / `app/events.rs` + `app/input.rs`, not the C shim — see the gotchas below.)
 
 **Video playback (summary — `rust-modules/media/src/player/CLAUDE.md` is the deep-dive: pipeline,

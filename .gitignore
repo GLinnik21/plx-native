@@ -164,6 +164,8 @@ tests/fixtures/fixtures.json
 # and the NUL-terminated ASS header and packets (`make_ass_header_fixture.py`).
 !tests/fixtures/mkv_zlib_subs.mkv
 !tests/fixtures/ass-terminated-header.mkv
+# ...and the 588-byte GBK subrip track of `ff_subtitle_charset_tests.rs` (issue #628).
+!tests/fixtures/gbk-subrip.mkv
 
 # Python bytecode from the host-side test/tooling scripts.
 __pycache__/
