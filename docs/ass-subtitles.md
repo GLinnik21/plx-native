@@ -16,7 +16,12 @@ and the screen lifts its bottom-anchored cues clear of the transport. A change o
 pick re-synthesizes the header of the selected track lazily (the revision bumps once; the renderer swaps
 the track in place). The track's events are a newest-wins view of the cues: a cue's end is clipped to
 the start of the next cue of the same alignment class, so an overlap never leaves the old text up beside
-the new one. External SRT/VTT files are still drawn by the bespoke caption path (`player_hud::draw_subtitles`).
+the new one. External SRT/VTT files take the same road: `player::sidecar` charset-decodes the file,
+`text_ass::script_from_srt`/`script_from_vtt` convert it to one script (WebVTT `line:0` puts a cue at the
+top), and `sidecar::ass_source` serves it as an `Origin::Text` source, restyled lazily like an embedded
+track. A long or large converted script is fed to libass a window at a time (`ass_script`: at most 8192
+lines and 8 MiB per window); only a script loaded whole is bound by 8 MiB. The one thing the sidecar still
+draws itself is the failure notice (`sidecar::active_span`).
 
 `ci/build-libass.py` builds a pinned libass with private FreeType, FriBidi, HarfBuzz and
 libunibreak (Unicode line breaking, so a line with no spaces, as in Chinese or Japanese, can

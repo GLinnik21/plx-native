@@ -235,18 +235,25 @@ something.
   its dedup identity, so a seek re-read changes nothing, and the track's events are a newest-wins view
   of those raw cues), over the bundled Inter and per-script Noto faces (`ass/fonts.rs`, `docs/ass-subtitles.md`).
   Nothing produces into `SHARED.sub_cues` any more (a text cue goes to `ass_source`); the store stays,
-  dead, until the plan's PR 10, while `active_subtitle*` and the screen's `draw_subtitles` still
-  serve the external sidecar until PR 8/10 remove them. Sidecar ASS keeps the complete script rather than requesting
-  a SubRip conversion. Don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
+  dead, until the plan's PR 10, as are `active_subtitle*` and the screen's `draw_subtitles` (PR 8/10
+  remove them). Sidecar ASS keeps the complete script rather than requesting a SubRip conversion. Don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
   soft-subs note. An image sub's rect coords are in **the subtitle stream's own authoring canvas** —
   1920×1080 for Blu-ray PGS but 720×480/576 for a DVD VobSub rip — so `ff::sub_canvas` reads that
   canvas off the decoder (via `avcodec_parameters_from_context`, no raw struct offset; the ABI proof
   is in its doc comment) and `appkit::player_hud::sub_screen_rect` scales the whole display set into the
   video rect. Assuming 1080p unconditionally is what made VobSub render as a corner postage stamp.
   **An EXTERNAL text subtitle (the `.srt` beside the film) is a third producer, `sidecar.rs`:** the
-  demuxer never sees it, so it is fetched whole from PMS, parsed, and looked up by time from its OWN
-  store (it is still drawn by the bespoke caption path; its libass switch is plan PR 7b) — not
-  `SHARED.sub_cues`, which is a window the demuxer refills and a backward seek would empty. It is silent where the server burns the selection (a re-encode, or a remux whose embedded
+  demuxer never sees it, so it is fetched whole from PMS and kept in its OWN store — not
+  `SHARED.sub_cues`, which is a window the demuxer refills and a backward seek would empty. SubRip
+  and WebVTT are charset-decoded (`sub_charset`) and converted on the fetch worker by
+  `text_ass::script_from_srt`/`_vtt` to one ASS script (the synthesized header, `Origin::Text`, then
+  the `Dialogue:` lines), which `sidecar::ass_source` hands to the same libass worker as an embedded
+  text track; a pick change re-synthesizes the header lazily there (revision bump, identity kept). A
+  script past `ass_script::WINDOW_EVENTS` lines OR `WINDOW_BYTES` is fed to libass a window at a time,
+  and a script loaded in windows is exempt from the 8 MiB whole-script bound (a 4 MiB TIS-620 file is
+  ~12 MiB once decoded to UTF-8); each window stays within it. What `sidecar::active_span` still
+  returns is only the on-screen failure notice (`notice()`, `notice_shown()`; 6 s), drawn by the
+  bespoke caption path until PR 8. It is silent where the server burns the selection (a re-encode, or a remux whose embedded
   track the app may not read itself); over a plain remux the app draws it, and draws an embedded
   track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps. Which sidecar
   starts is `sidecar::restore_selection`'s one answer: the server's selected one, else the one the

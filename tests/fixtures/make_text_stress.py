@@ -24,6 +24,8 @@ Sidecars: `tests/mock_pms.py --extra-media <video>` exposes the sibling `<video 
 `.vtt` as external subtitle streams, so a sidecar needs a video beside it:
   sidecar-latin2.mkv + .srt + .vtt     sidecar-thai2.mkv + .srt
   sidecar-topbottom.mkv + .vtt         (the first cue, a sign, is placed at the top by `line:0`)
+  sidecar-thai-tis620.mkv + .srt       the Thai cues as TIS-620 (cp874) bytes, not UTF-8: the charset
+                                       step of the sidecar reader must pick them up
   The sources of the embedded cases above sit beside their containers under the same stem, so
   `--extra-media srt-latin2.mkv` also offers the same cues as an external stream.
 Samples FFmpeg cannot mux into a container (no muxer or Matroska codec id for them), written
@@ -142,10 +144,10 @@ def srt_time(seconds, sep=","):
     return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d}{sep}{ms % 1000:03d}"
 
 
-def write_srt(path, cues):
+def write_srt(path, cues, encoding="utf-8"):
     path.write_text("".join(
         f"{n}\n{srt_time(a)} --> {srt_time(b)}\n{t}\n\n" for n, (a, b, t) in enumerate(cues, 1)
-    ), encoding="utf-8")
+    ), encoding=encoding)
 
 
 def write_vtt(path, cues, settings=None):
@@ -178,7 +180,7 @@ def mux(out, av, name, sub_file, codec, ext="mkv"):
     target = out / f"{name}.{ext}"
     run(["ffmpeg", "-v", "error", "-y", "-i", str(av), "-i", str(sub_file),
          "-map", "0:v", "-map", "0:a", "-map", "1:s", "-c", "copy", "-c:s", codec,
-         "-t", str(DURATION), str(target)])
+         "-disposition:s:0", "default", "-t", str(DURATION), str(target)])
     return target
 
 
@@ -245,6 +247,7 @@ def main():
                             ("vtt", two_line(LATIN, 2), write_vtt, None)]),
         ("sidecar-thai2", [("srt", two_line(THAI, 2), write_srt, None)]),
         ("sidecar-topbottom", [("vtt", topbottom_cues(""), write_vtt, {0: " line:0 align:center"})]),
+        ("sidecar-thai-tis620", [("srt", two_line(THAI, 2), write_srt, "cp874")]),
     ]
     for stem, files in sidecars:
         video = out / f"{stem}.mkv"
@@ -252,9 +255,14 @@ def main():
              "-c", "copy", "-t", str(DURATION), str(video)])
         assert probe_streams(video) == {"video", "audio"}, f"{video.name}: expected no subtitle"
         rows.append((video.name, "-", 0))
-        for extension, cues, writer, settings in files:
+        for extension, cues, writer, settings in files:  # settings: VTT cue settings, or an SRT charset
             path = out / f"{stem}.{extension}"
-            writer(path, cues, settings) if writer is write_vtt else writer(path, cues)
+            if writer is write_vtt:
+                writer(path, cues, settings)
+            elif settings:  # SubRip: the extra field names the file's charset
+                writer(path, cues, settings)
+            else:
+                writer(path, cues)
             codec, durations = probe_subtitle(path)
             assert len(durations) == len(cues), f"{path.name}: {len(durations)} != {len(cues)} cues"
             rows.append((path.name, codec, len(durations)))

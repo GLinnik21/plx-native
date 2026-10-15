@@ -161,3 +161,62 @@ fn alive_at_finds_exactly_the_lines_a_full_scan_finds() {
         assert_eq!(got, expect, "at {now}");
     }
 }
+
+#[test]
+fn a_window_stays_within_the_byte_budget_even_when_a_few_lines_are_enormous() {
+    // twelve lines of 900 KiB: fewer than WINDOW_EVENTS, but more bytes than one window may hold
+    let pad = "x".repeat(900 * 1024);
+    let mut s = String::from(HEADER);
+    for i in 0..12i64 {
+        s.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,{{{pad}}},line{i}\n", stamp(i * 2000), stamp(i * 2000 + 1000)));
+    }
+    let index = ScriptIndex::parse(&Arc::from(s.into_bytes())).unwrap();
+    assert!(index.len() <= WINDOW_EVENTS && index.windowed(), "windowed by its bytes alone");
+    let (mut now, mut seen) = (0, vec![false; 12]);
+    loop {
+        let w = index.window(now);
+        assert!(w.text.len() <= WINDOW_BYTES, "a {} byte window", w.text.len());
+        assert!(w.covers(now) && has(&w, (now / 2000) as usize), "the playhead's own line is held");
+        (0..12).for_each(|i| seen[i] |= has(&w, i));
+        if w.hi_ms == i64::MAX {
+            break;
+        }
+        now = w.hi_ms;
+    }
+    assert!(seen.iter().all(|s| *s), "every line was in some window");
+    // a single line bigger than the budget is still taken: a window is never empty of its own line
+    let big = format!("{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{}\n", "q".repeat(WINDOW_BYTES + 1));
+    let index = ScriptIndex::parse(&Arc::from(big.into_bytes())).unwrap();
+    assert_eq!(index.window(0).text.iter().filter(|&&b| b == b'q').count(), WINDOW_BYTES + 1);
+}
+
+#[test]
+fn a_script_under_both_bounds_is_not_windowed() {
+    assert!(!ScriptIndex::parse(&script(WINDOW_EVENTS)).unwrap().windowed());
+    assert!(ScriptIndex::parse(&script(WINDOW_EVENTS + 1)).unwrap().windowed());
+}
+
+#[test]
+fn lines_already_over_make_room_for_the_one_on_screen_when_the_budget_is_reached() {
+    // twenty 900 KiB lines 100 ms apart, each up 90 ms: all within BACK_MS of the playhead, so the
+    // bytes of the older ones must not crowd out the line alive now
+    let pad = "x".repeat(900 * 1024);
+    let mut s = String::from(HEADER);
+    for i in 0..20i64 {
+        s.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,{{{pad}}},line{i}\n", stamp(i * 100), stamp(i * 100 + 90)));
+    }
+    let index = ScriptIndex::parse(&Arc::from(s.into_bytes())).unwrap();
+    let w = index.window(1_950);
+    assert!(w.text.len() <= WINDOW_BYTES);
+    assert!(w.covers(1_950) && has(&w, 19), "the line alive at 1950 ms is held");
+    assert!(w.lo_ms > 1_950 - BACK_MS, "and the window no longer claims to answer for what it let go of");
+    assert!(!w.covers(w.lo_ms - 1));
+    // every playhead a window claims has its alive line in it
+    for now in (0..2_000).step_by(37) {
+        let w = index.window(now);
+        let alive = (now / 100) as usize;
+        if now % 100 < 90 {
+            assert!(has(&w, alive), "line {alive} at {now} ms");
+        }
+    }
+}

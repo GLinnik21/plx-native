@@ -2128,8 +2128,10 @@ pub fn bitmap_by_key(key: i64) -> Option<(i32, i32, Vec<SubRect>)> {
         .find(|c| c.track == sel && c.start_ns == key)
         .map(|c| (c.cw, c.ch, c.rects.clone()))
 }
-/// Extract plain caption text, stripping markup and normalizing line breaks.
-/// ASS/SSA never enters this path: the native renderer receives its complete script/events.
+/// Extract plain caption text, stripping markup and normalizing line breaks. Nothing draws with it
+/// any more (every text track is libass's); it is the reference the `text_ass` floor tests grade
+/// the converter against, and goes with the rest of the bespoke caption path in the plan's PR 10.
+#[cfg(test)]
 fn sub_text(payload: &[u8]) -> String {
     let s = String::from_utf8_lossy(payload);
     let mut out = String::with_capacity(s.len());

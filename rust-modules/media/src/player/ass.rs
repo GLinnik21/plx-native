@@ -10,7 +10,7 @@ mod mailbox;
 use mailbox::{Job, Kind, Mailbox, Rendered};
 use super::ass_timing::{self, Validity};
 
-const MAX_SCRIPT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SCRIPT_BYTES: usize = super::ass_script::WINDOW_BYTES;
 const MAX_EVENT_BYTES: usize = 256 * 1024;
 // No event-count bound here: `ass_source` holds an embedded track, and `ass_script` a long sidecar
 // script, to a window far under the native library's own guard (`plx_ass_chunk` refuses past
@@ -402,7 +402,12 @@ fn worker() {
 pub(super) fn validate(source: &Source) -> Result<(), Fault> {
     match &source.content {
         Content::Script { bytes, .. } => {
-            if bytes.is_empty() || bytes.len() > MAX_SCRIPT_BYTES || bytes.contains(&0) {
+            // The whole-script bound is for a script loaded whole; one past it is fed in windows
+            // (`ScriptIndex::windowed`), each within the same bound, and is bounded by its source.
+            if bytes.is_empty()
+                || (bytes.len() > MAX_SCRIPT_BYTES && !super::ass_script::ScriptIndex::indexable(bytes.len()))
+                || bytes.contains(&0)
+            {
                 return Err(Fault::InvalidFile);
             }
         }

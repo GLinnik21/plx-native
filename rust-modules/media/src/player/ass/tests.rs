@@ -1586,4 +1586,37 @@ fn native_script_window_clamps_validity_and_non_windowed_scripts_have_timings() 
     assert!(engine.script.as_ref().unwrap().window.is_none());
 }
 
+/// A Text-origin sidecar script past the 8 MiB a script loaded whole may be (twelve events of 900 KiB:
+/// a few lines, many bytes) is not refused: it is fed in windows within the bound, and each cue is drawn
+/// when the playhead reaches it, including after a seek back.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_text_script_past_the_whole_script_bound_renders_through_its_windows() {
+    let style = TextStyle::default();
+    let mut text = text_ass::header(&style);
+    let pad = "x".repeat(900 * 1024);
+    for k in 0..12i64 {
+        text.push_str(&format!(
+            "Dialogue: 0,{},{},Default,,0,0,0,,{{\\an7\\pos(10,10)\\p1{pad}}}m 0 0 l 50 0 50 50 0 50\n",
+            ass_time(k * 2000), ass_time(k * 2000 + 1000)));
+    }
+    assert!(text.len() > MAX_SCRIPT_BYTES);
+    let source = Arc::new(Source {
+        id: next_source_id(),
+        revision: 1,
+        origin: Origin::Text(style),
+        content: Content::Script { bytes: text.into_bytes().into(), fonts: Arc::from([]) },
+    });
+    assert_eq!(validate(&source), Ok(()), "a windowed script is bounded by its source");
+    let mut engine = Engine::default();
+    for now in [500, 10_500, 22_500, 4_500] {
+        let (frame, _) = validity_at(&mut engine, &source, now);
+        assert!(!frame.rects.is_empty(), "the cue alive at {now} ms is drawn");
+        let (lo, hi) = engine.script.as_ref().unwrap().window.expect("fed in windows");
+        assert!((lo..hi).contains(&now));
+    }
+    let (frame, _) = validity_at(&mut engine, &source, 1_500);
+    assert!(frame.rects.is_empty(), "and nothing between two cues");
+}
+
 mod synth;

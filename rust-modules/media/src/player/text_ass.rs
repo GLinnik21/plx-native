@@ -15,9 +15,8 @@
 //! - [`event_payload`]: the Matroska packet an embedded cue becomes (what `ass_source::push`
 //!   takes).
 //!
-//! The embedded switch is wired: `ass_source::push_text` converts every embedded text cue here. The
-//! sidecar files ([`script_from_srt`], [`script_from_vtt`]) are not read yet; the module and its items
-//! are `pub` so the dead-code lint does not fire before the sidecar switch uses them.
+//! Both switches are wired: `ass_source::push_text` converts every embedded text cue here, and
+//! `sidecar::decode` converts a sidecar file with [`script_from_srt`] / [`script_from_vtt`].
 
 use super::text_style::{self, TextStyle};
 
