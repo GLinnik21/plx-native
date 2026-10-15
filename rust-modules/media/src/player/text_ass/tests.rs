@@ -163,9 +163,9 @@ fn subrip_markup() {
         ("<i>\nfoo", "{\\i1}foo"),
         ("a\n<i>b", "a\\N{\\i1}b"),
         ("a <i>b", "a {\\i1}b"),
-        ("a <", "a <"),
-        ("1 < 2", "1 < 2"),
-        ("x<3 y", "x<3 y"),
+        ("a <", "a"),
+        ("1 < 2", "1"),
+        ("x<3 y", "x"),
         ("&amp;", "&amp;"),
     ]);
 }
@@ -211,7 +211,7 @@ fn sami_and_realtext_honour_br() {
             ("<font color=red>x</font>", "x"),
             ("<i>x</i>", "x"),
             ("&lt;b&gt;", "<b>"),
-            ("a <", "a <"),
+            ("a <", "a"),
         ]);
     }
 }
@@ -340,6 +340,80 @@ fn braces_survive_libass_reading() {
     for (input, want) in [("a{b", "a{b"), ("a}b", "a}b"), ("{{x}", "")] {
         let got = convert(input, TextDialect::Plain).map(|c| libass_reads(&c.body).into_iter().collect::<String>());
         assert_eq!(got.as_deref().unwrap_or(""), want, "{input:?}");
+    }
+}
+
+#[test]
+fn plain_text_matches_the_bespoke_sub_text_over_every_small_string() {
+    // `sub_text` (the draw this replaces) is the reference for the floor: every string over its
+    // special characters must read the same once the ASS escapes are undone and each line is
+    // trimmed. Strings with an unmatched `{` are skipped: showing it is the deliberate change.
+    fn unmatched_brace(chars: &[char]) -> bool {
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '{' {
+                match chars[i + 1..].iter().position(|&c| c == '}') {
+                    Some(k) => i += k + 1,
+                    None => return true,
+                }
+            }
+            i += 1;
+        }
+        false
+    }
+    fn lines(s: &str) -> Vec<String> {
+        s.split('\n').map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect()
+    }
+    fn undo(body: &str) -> String {
+        libass_reads(body).into_iter().map(|c| match c {
+            '\u{1}' => '\n',
+            '\u{a0}' => ' ',
+            c => c,
+        }).collect()
+    }
+    let alphabet = ['\\', 'N', 'n', 'h', 'x', ' ', '<', '>', '{', '}', '\n'];
+    let mut compared = 0;
+    for len in 1..=5usize {
+        for n in 0..alphabet.len().pow(len as u32) {
+            let chars: Vec<char> = (0..len).map(|k| alphabet[n / alphabet.len().pow(k as u32) % alphabet.len()]).collect();
+            if unmatched_brace(&chars) {
+                continue;
+            }
+            let input: String = chars.iter().collect();
+            let want = lines(&super::super::sub_text(input.as_bytes()));
+            let got = convert(&input, TextDialect::Plain).map(|c| lines(&undo(&c.body))).unwrap_or_default();
+            assert_eq!(got, want, "{input:?}");
+            compared += 1;
+        }
+    }
+    assert!(compared > 100_000, "{compared}");
+}
+
+/// The sidecar reader's own cases (`sidecar.rs` tests), through the new converter.
+#[test]
+fn the_sidecar_readers_cases_survive_the_conversion() {
+    let srt = "\u{feff}1\r\n00:00:01,000 --> 00:00:03,500\r\n<i>Hello</i>\r\nthere\r\n\r\n\
+               2\r\n00:01:00,250 --> 00:01:02,000\r\n{\\an8}Second line\r\n";
+    assert_eq!(
+        script_from_srt(srt).events,
+        "Dialogue: 0,0:00:01.00,0:00:03.50,Default,,0,0,0,,{\\i1}Hello{\\i0}\\Nthere\n\
+         Dialogue: 0,0:01:00.25,0:01:02.00,An8,,0,0,0,,Second line\n"
+    );
+    let vtt = "WEBVTT\n\nNOTE made by hand\n\n01:02.500 --> 01:05.000 line:0 position:50%\nHi\n\n\
+               1:00:00.000 --> 1:00:01.000\nAn hour in\n";
+    assert_eq!(
+        script_from_vtt(vtt).events,
+        "Dialogue: 0,0:01:02.50,0:01:05.00,An8,,0,0,0,,Hi\n\
+         Dialogue: 0,1:00:00.00,1:00:01.00,Default,,0,0,0,,An hour in\n"
+    );
+    let unsorted = "2\n00:00:10,000 --> 00:00:11,000\nlater\n\n1\n00:00:01,000 --> 00:00:02,000\nsooner\n\n\
+                    3\n00:00:05,000 --> 00:00:04,000\nbackwards\n\n4\n00:00:20,000 --> 00:00:21,000\n<i></i>\n";
+    let script = script_from_srt(unsorted);
+    let texts: Vec<&str> = script.events.lines().map(|l| l.rsplit(",,").next().unwrap()).collect();
+    assert_eq!(texts, ["sooner", "later"]);
+    for garbage in ["<html><body>501 Not Implemented</body></html>", "", "1\n99:99:99,999 --> nonsense\ntext\n"] {
+        assert_eq!(script_from_srt(garbage).cues, 0, "{garbage:?}");
+        assert_eq!(script_from_vtt(garbage).cues, 0, "{garbage:?}");
     }
 }
 

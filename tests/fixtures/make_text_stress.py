@@ -20,8 +20,12 @@ Embedded (MKV unless noted; 60 s of 1080p24 h264 still image + silent AAC, ONE s
   overlap-topbottom     a `{\\an8}` sign for 10 s over bottom dialogue every 2 s (both must show)
   webvtt                WebVTT in MKV
   movtext.mp4           mov_text in MP4
-Sidecars (served beside the item: tests/mock_pms.py --extra-media <file>):
-  latin2.srt latin2.vtt thai2.srt topbottom.vtt (`line:0` cues over bottom ones)
+Sidecars: `tests/mock_pms.py --extra-media <video>` exposes the sibling `<video stem>.srt` and
+`.vtt` as external subtitle streams, so a sidecar needs a video beside it:
+  sidecar-latin2.mkv + .srt + .vtt     sidecar-thai2.mkv + .srt
+  sidecar-topbottom.mkv + .vtt         (the first cue, a sign, is placed at the top by `line:0`)
+  The sources of the embedded cases above sit beside their containers under the same stem, so
+  `--extra-media srt-latin2.mkv` also offers the same cues as an external stream.
 Samples FFmpeg cannot mux into a container (no muxer or Matroska codec id for them), written
 by hand and checked only to demux with the right codec name:
   sample.smi (SAMI)   sample.sub (MicroDVD)
@@ -188,6 +192,11 @@ def probe_subtitle(path):
     return subs[0]["codec_name"], [p.get("duration_time") for p in packets["packets"]]
 
 
+def probe_streams(path):
+    info = json.loads(run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(path)]))
+    return {s["codec_type"] for s in info["streams"]}
+
+
 def verify(path, codec, cues, nodur=False):
     got_codec, durations = probe_subtitle(path)
     assert got_codec == codec, f"{path.name}: codec {got_codec} != {codec}"
@@ -231,21 +240,24 @@ def main():
         n = verify(container, want, cues, nodur=name == "overlap-nodur")
         rows.append((container.name, want, n))
 
-    sidecars = [
-        ("latin2.srt", two_line(LATIN, 2), write_srt, None),
-        ("latin2.vtt", two_line(LATIN, 2), write_vtt, None),
-        ("thai2.srt", two_line(THAI, 2), write_srt, None),
-        # The first cue (the sign) is placed at the top by `line:0`.
-        ("topbottom.vtt", topbottom_cues(""), write_vtt, {0: " line:0 align:center"}),
+    sidecars = [  # video stem, [(extension, cues, writer, vtt settings)]
+        ("sidecar-latin2", [("srt", two_line(LATIN, 2), write_srt, None),
+                            ("vtt", two_line(LATIN, 2), write_vtt, None)]),
+        ("sidecar-thai2", [("srt", two_line(THAI, 2), write_srt, None)]),
+        ("sidecar-topbottom", [("vtt", topbottom_cues(""), write_vtt, {0: " line:0 align:center"})]),
     ]
-    for name, cues, writer, settings in sidecars:
-        if writer is write_vtt:
-            writer(out / name, cues, settings)
-        else:
-            writer(out / name, cues)
-        codec, durations = probe_subtitle(out / name)
-        assert len(durations) == len(cues), f"{name}: {len(durations)} packets != {len(cues)} cues"
-        rows.append((name, codec, len(durations)))
+    for stem, files in sidecars:
+        video = out / f"{stem}.mkv"
+        run(["ffmpeg", "-v", "error", "-y", "-i", str(av), "-map", "0:v", "-map", "0:a",
+             "-c", "copy", "-t", str(DURATION), str(video)])
+        assert probe_streams(video) == {"video", "audio"}, f"{video.name}: expected no subtitle"
+        rows.append((video.name, "-", 0))
+        for extension, cues, writer, settings in files:
+            path = out / f"{stem}.{extension}"
+            writer(path, cues, settings) if writer is write_vtt else writer(path, cues)
+            codec, durations = probe_subtitle(path)
+            assert len(durations) == len(cues), f"{path.name}: {len(durations)} != {len(cues)} cues"
+            rows.append((path.name, codec, len(durations)))
 
     # Not containable: no muxer (SAMI) and no Matroska codec id (both). Hand-written, demux-checked.
     (out / "sample.smi").write_text(

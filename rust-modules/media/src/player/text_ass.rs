@@ -112,13 +112,6 @@ impl TextDialect {
         })
     }
 
-    /// A dialect whose `<…>` tags are markup: an unmatched `<` there is a literal `<`. The others
-    /// keep the rule the bespoke draw had, where `<` hides everything up to the next `>`, or the
-    /// end of the cue.
-    fn is_markup(self) -> bool {
-        matches!(self, Self::Srt | Self::WebVtt | Self::Sami | Self::RealText)
-    }
-
     fn decodes_entities(self) -> bool {
         matches!(self, Self::WebVtt | Self::Sami | Self::RealText)
     }
@@ -238,10 +231,7 @@ impl Parser {
                         p.tag(&inner);
                         i += k + 2;
                     }
-                    None if dialect.is_markup() => {
-                        p.push(Piece::Ch('<'));
-                        i += 1;
-                    }
+                    // Unmatched: hides the rest of the cue, as the bespoke draw did in every dialect.
                     None => i = chars.len(),
                 },
                 '&' if dialect.decodes_entities() => {
