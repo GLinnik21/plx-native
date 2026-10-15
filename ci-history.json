@@ -1,4 +1,4 @@
-{"updated":"2026-10-15T22:38:32Z",
+{"updated":"2026-10-15T22:39:31Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -2831,6 +2831,7 @@
 {"id":38814524697,"at":"2026-10-15T22:22:25Z","sha":"552a3d8c1","title":"Dependencies: freetype -> 2.15.0","pr":788,"event":"pull_request","conclusion":"failure","attempt":2,"jobs":{"Linux simulator build + launch":249,"Windows launcher syntax":24},"wall":1636,"failed":["macOS simulator build + launch","macOS tests against bundled FFmpeg and ASS"]},
 {"id":38814498062,"at":"2026-10-15T22:22:44Z","sha":"f1c0db8ad","title":"Dependencies: sentry-native -> 0.17.3","pr":787,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS tests against bundled FFmpeg and ASS":337,"macOS simulator build + launch":316,"Windows launcher syntax":17,"Linux simulator build + launch":319},"wall":1810},
 {"id":38814476264,"at":"2026-10-15T22:22:54Z","sha":"bc6847539","title":"Dependencies: ffmpeg -> 9.0.2","pr":786,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS tests against bundled FFmpeg and ASS":348,"Windows launcher syntax":20,"macOS simulator build + launch":374,"Linux simulator build + launch":350},"wall":1897},
+{"id":38817682673,"at":"2026-10-15T22:31:23Z","sha":"a3b63b4f8","title":"Dependencies: harfbuzz -> 14.6.0","pr":789,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":369,"macOS simulator build + launch":341,"Windows launcher syntax":18,"Linux simulator build + launch":316}},
 {"id":38817113864,"at":"2026-10-15T22:31:53Z","sha":"beacdf592","title":"Merge upstream main into Italian localization","pr":783,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"Windows launcher syntax":17,"Linux simulator build + launch":237,"macOS simulator build + launch":207,"macOS tests against bundled FFmpeg and ASS":190},"wall":713}
 ],
 "nightly":[
