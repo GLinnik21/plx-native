@@ -143,3 +143,54 @@ fn a_field_keeps_its_dither_through_every_motion() {
     begin_frame(true);
     assert_eq!(plx_gfx::gfx::dither_for_field(700.0, 700.0), plx_gfx::gfx::DITHER_LSB, "page motion is not a field's business");
 }
+
+/// DS7: the morph open style on a real `Popover`, beside the unchanged fade+slide.
+#[test]
+fn a_morphing_popover_never_shows_glass_without_rows_and_settles_both_ways() {
+    use crate::popover_morph::PANEL_RADIUS;
+    let _g = plx_base::testlock::serial();
+    let (pill, panel) = (crate::Rect::new(1500.0, 40.0, 196.0, 38.0), crate::Rect::new(1380.0, 40.0, 316.0, 400.0));
+    let mut pop = crate::popover::Popover::new().morphing();
+    assert_eq!(pop.open_style(), crate::popover::OpenStyle::Morph);
+    pop.open();
+    let mut seen = 0;
+    for _ in 0..240 {
+        pop.update(1.0 / 60.0);
+        let f = pop.morph_frame(Some(pill), panel).unwrap();
+        assert!(f.content_alpha >= f.ground_alpha, "rows lead the glass");
+        seen += 1;
+    }
+    assert!(seen > 0 && pop.appear_settled(), "the open settles, morph included");
+    let f = pop.morph_frame(Some(pill), panel).unwrap();
+    assert!((f.radius - PANEL_RADIUS).abs() < 0.05 && (f.rect.h - panel.h).abs() < 0.5);
+    pop.dismiss();
+    let mut last = f.rect.h;
+    for _ in 0..240 {
+        pop.update(1.0 / 60.0);
+        if !pop.visible() {
+            break;
+        }
+        let f = pop.morph_frame(Some(pill), panel).unwrap();
+        assert!(f.content_alpha >= f.ground_alpha, "rows lead the glass on the way out too");
+        assert!(f.rect.h <= last + 1e-3, "the close only shrinks");
+        last = f.rect.h;
+    }
+    assert!(!pop.visible(), "the close lands and the panel is gone");
+    pop.close();
+}
+
+/// DS7: every popover that does not opt in keeps the shared fade+slide, byte for byte.
+#[test]
+fn the_default_popover_keeps_the_shared_fade_and_slide() {
+    let _g = plx_base::testlock::serial();
+    let mut pop = crate::popover::Popover::new();
+    assert_eq!(pop.open_style(), crate::popover::OpenStyle::Appear);
+    assert_eq!(crate::popover::Opener::NONE.open_style, crate::popover::OpenStyle::Appear);
+    assert!(pop.morph_frame(None, crate::Rect::FULL).is_none());
+    pop.open();
+    pop.update(1.0 / 60.0);
+    let mut reference = crate::Spring::at(0.0);
+    reference.step(1.0, crate::popover::K_APPEAR, 1.0 / 60.0);
+    assert_eq!(pop.appear(), reference.pos, "the appear spring is the crate::popover::K_APPEAR one");
+    pop.close();
+}
