@@ -574,7 +574,7 @@ fn every_installed_related_landing_reports_a_change_even_when_the_window_is_the_
     assert!(pump_related_pages(test_state(), test_adapter()), "the same window, landed, is still a landing");
     assert_eq!((detail().related_tail.offset, detail().related_tail.end), at);
     test_adapter().rel_pages.lock().unwrap().landed.push(RelLanded {
-        sid: detail().sid, rk: detail().rk.clone(), from: at, window: None });
+        sid: detail().sid, rk: detail().rk.clone(), from: at, window: None, stamp: 0 });
     assert!(!pump_related_pages(test_state(), test_adapter()), "a failed read changes nothing and is not announced");
 }
 
@@ -642,4 +642,29 @@ fn a_collection_that_fills_the_preview_leaves_a_one_card_head_that_goes_on() {
     let head: Vec<&str> = rows.related.iter().map(|m| m.rk.as_str()).collect();
     assert_eq!(head, ["1-7"], "the members are not also Related tiles");
     assert_eq!((rows.tail.head, rows.tail.more, rows.tail.hubs.len()), (1, true, 1), "and the hub goes on past its preview");
+}
+
+/// A Related window is asked for long after the page was installed. Its read describes the server
+/// from ITS request: an edit published before that request is not made again, one published while
+/// it was out is. Driven through `want_related`, the real request site.
+#[test]
+fn a_related_window_replays_only_the_edits_published_after_its_own_request() {
+    use crate::viewstate::{ViewAt, ViewEdit};
+    let _serial = plx_base::testlock::serial();
+    let server = serve(vec![(1, 112)], plain);
+    let mc = related_response(&[(1, 12, 112, true)], "");
+    open(&server, &mc);
+    let (sid, ledger) = (detail().sid, test_state().ledger.clone());
+    let seen = (detail().related_tail.offset, detail().related_tail.end);
+
+    ledger.record(&ViewAt::leaf(sid, &plain(1, 12)), ViewEdit::Watched(true)); // before the request
+    assert!(want_related(test_state(), test_adapter(), false, seen), "a request starts");
+    ledger.record(&ViewAt::leaf(sid, &plain(1, 13)), ViewEdit::Watched(true)); // while it is out
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while (detail().related_tail.offset, detail().related_tail.end) == seen && std::time::Instant::now() < until {
+        pump_related_pages(test_state(), test_adapter());
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let watched = |rk: &str| detail().related.iter().find(|m| m.rk == rk).map(|m| m.watched);
+    assert_eq!((watched(&plain(1, 12)), watched(&plain(1, 13))), (Some(false), Some(true)));
 }

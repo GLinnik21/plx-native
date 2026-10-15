@@ -53,6 +53,11 @@ impl Default for ViewStateStore {
 }
 
 impl ViewStateStore {
+    /// Join the owner's view-state publish order (`Stores::view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.ledger = ledger.clone();
+    }
+
     fn bump(&self) -> u32 {
         self.notice_dirty.store(true, Ordering::Relaxed);
         self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1
@@ -121,6 +126,37 @@ impl ViewStateStore {
 
     pub fn take_detail_refresh(&mut self) -> Option<DetailRefresh> {
         self.state.take_detail_refresh()
+    }
+
+    /// Hold the terminal hub refetch while the player is on top; see
+    /// [`crate::viewstate::ViewStateState::hold_refresh`].
+    pub fn set_hold_refresh(&mut self, on: bool) {
+        self.state.hold_refresh = on;
+    }
+
+    /// Fan an end-of-stream watch out to the title's other copies; see
+    /// [`crate::viewstate::ViewStateState::fan_out_origin_watched`].
+    pub fn fan_out_origin_watched(&mut self, sid: ServerId, rk: &str) -> bool {
+        let queued = self.state.fan_out_origin_watched(&self.adapter, sid, rk);
+        if queued {
+            self.bump();
+        }
+        queued
+    }
+
+    /// Items whose landed write is owed a read-back (`stores::viewreconcile`).
+    pub fn take_reread(&mut self) -> Vec<(ServerId, String)> {
+        self.state.take_reread()
+    }
+
+    /// Is a write queued or in flight?
+    pub fn is_busy(&self) -> bool {
+        self.state.is_busy()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_busy_for_test(&self) -> bool {
+        self.state.is_busy()
     }
 
     #[cfg(any(test, feature = "test-support"))]

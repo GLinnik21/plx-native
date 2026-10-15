@@ -466,7 +466,7 @@ impl Bridge {
         let preferences = initial.session.persisted.clone();
         let (state, adapter) = initial.home.restore(mt).expect("validated Home initial state");
         let mut stores = plx_data::stores::Stores::default();
-        stores.hubs = plx_data::stores::hubs::HubsStore::from_parts(state, adapter);
+        stores.hubs = plx_data::stores::hubs::HubsStore::from_parts(state, adapter, &stores.view_ledger);
         let hubs = stores.hubs.snapshot();
         // Arms controlled-content recording/replay's admission ledger over detail terminals —
         // exactly the decision the retired crate-global `record::reset(initial.content.is_some())`
@@ -1200,8 +1200,46 @@ impl Bridge {
         self.stores.viewstate_run(cmd, self.directory.view())
     }
 
+    /// Keep the view-state reconcile network work owed while the player is on top
+    /// (`Stores::hold_network`); the patches are not held.
+    pub(crate) fn hold_network(&mut self, player_on_top: bool) {
+        self.stores.hold_network(player_on_top);
+    }
+
+    /// Take the stops whose `stopped` POST was attempted or abandoned, patch each item's resume
+    /// point at once, and owe it a read-back (`Stores::stops_landed`). Route-unconditional: an Up
+    /// Next chain stops one episode after another without ever leaving the player.
+    pub(crate) fn stops_pump(&mut self) {
+        let stops = plx_data::stores::take_landings_owed(
+            &self.stores.landgate,
+            plx_data::stores::StoreId::ViewStop,
+            |got: &[plx_data::viewstate::StopRecord]| got.is_empty() && plx_media::route::stops_owed(),
+            plx_media::route::take_landed_stops,
+        );
+        if !stops.is_empty() {
+            self.stores.stops_landed(stops, self.directory.view());
+            plx_machine::idle::invalidate();
+        }
+    }
+
     pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         self.stores.viewstate_pump(self.directory.view())
+    }
+
+    /// The read-back worker's pass (`stores::viewreconcile`), and the Browse pump a membership
+    /// re-query needs while a page is pushed over the Library page and so it is not ticked to pump its own store.
+    pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
+        if self.stores.reconcile_pump(self.directory.view()) {
+            plx_machine::idle::invalidate();
+        }
+        if self.stores.network_held() {
+            return Default::default(); // a membership re-query is a network read
+        }
+        let mut browse = self.stores.browse.borrow_mut();
+        if browse.requery_owed() {
+            return browse.pump_with_gate(&self.stores.landgate).endpoints;
+        }
+        Default::default()
     }
 
     pub(crate) fn take_detail_refresh(&self) -> Option<plx_data::stores::viewstate::DetailRefresh> {
@@ -1291,6 +1329,23 @@ impl Bridge {
         self.refresh_browse_directory();
     }
 
+    /// The Library grid holds `count` items of `sid` (ratingKeys "1"...), none watched, on a
+    /// registered two-source table.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn seed_library_grid_for_test(&mut self, sid: plx_plex::plex::ServerId, count: usize) {
+        self.seed_registered_browse_for_test([sid, sid]);
+        self.stores.browse.borrow_mut().seed_items_for_test(count);
+    }
+
+    /// `(watched, unwatched, resume_ms)` of the Library grid's `index`th tile.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn grid_tile_for_test(&self, index: usize) -> Option<(bool, bool, i64)> {
+        let mut browse = self.stores.browse.borrow_mut();
+        let snapshot = browse.listing_snapshot();
+        let view = snapshot.view();
+        view.item(index).map(|m| (m.watched, m.unwatched, m.resume_ms))
+    }
+
     /// Test hook: seed this owner's Hubs store directly — `stores` is private outside this file's
     /// own descendant modules, so a fixture built outside `app::bridge` (`app::recorder`'s own
     /// `mod tests`) reaches its owned `(state, adapter)` pair through here rather than the deleted
@@ -1298,6 +1353,12 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn seed_hubs_for_test(&mut self, items: usize, hub_state: plx_data::pms::HubState) {
         self.stores.hubs.seed_for_test(items, hub_state);
+    }
+
+    /// Is a view-state write queued or in flight?
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn viewstate_busy_for_test(&self) -> bool {
+        self.stores.viewstate.borrow().is_busy_for_test()
     }
 
     /// How many hub refetches Home's store has started.

@@ -45,6 +45,11 @@ impl Default for PersonStore {
 }
 
 impl PersonStore {
+    /// Join the owner's view-state publish order (`Stores::view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.ledger = ledger.clone();
+    }
+
     fn bump(&self) -> u32 {
         self.notice_dirty.store(true, Ordering::Relaxed);
         self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1

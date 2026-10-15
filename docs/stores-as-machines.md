@@ -26,17 +26,58 @@ surface directly; its deleted Browse migration allowlist is distinct from the re
 `ci/allow/mutators.txt` gate allowlist (currently empty).
 `Stores::viewstate` likewise owns the write queue, in-flight request, retry/refresh latches, rotated
 `Arc` mailbox and notice. Its zero-tolerance `viewstate-owner` gate has no allowlist.
+`Stores::view_ledger` is the one cross-store piece of state: the publish order of view-state edits
+(`viewledger`), recorded into by `viewstate` and held by every store that reads. A read stamps the
+ledger when it is requested and, when it lands, is given every edit whose number is above that
+stamp. An edit is numbered at the press and RENUMBERED when the server takes its write (a refused
+write is retired), so a press survives every read requested before its write landed, including one
+the server answered before the write arrived; a read requested after the landing is the server's own
+word and is left alone. `ViewState`'s reset (sign-in, profile or server switch) clears the table.
+It is a main-thread `Rc` handle, and the stamp travels into a worker as a plain number. A store
+built after `Stores::default` (`HubsStore::from_parts` at boot) takes the ledger as an argument.
+`Stores::reconcile` (`stores::viewreconcile`, `StoreId::ViewReconcile`, appended after the earlier
+ordinals) is the read-back of a view-state write. ViewState hands it the `(server, ratingKey)` of every
+item whose write landed, taken or refused, once its burst is idle (a stopped playback the server took enqueues its item directly); it reads them with one
+`metadata_many` per server per round (an episode's answer names its season and show, which ride in a second round; one in flight per server, an item asked for again meanwhile is marked dirty
+and re-queued once), stamps the batch from the ledger, drops any row a newer press covers, and publishes
+the rest as `ViewFact::Facts` edits at leaf scope, which, like the stop's `Offset`, patch Home's hubs, Browse's listing, the rows Search, Person and
+Collection hold, and a Detail page's Related and collection-member tiles. Each store counts a Facts
+or Offset row as a hit (a merge, a commit, a notice) only when it differs from the row (`ViewEdit::changes`); a Detail page's own
+item, episodes and seasons, and Browse's section shelves, take neither yet (they are re-read). The read-back never spawns a
+read while a view-state write is queued or out (the stamp is taken at spawn, so a press whose write had not
+landed would otherwise sit before it and be undone by the read's older body); queued items wait for the
+burst to be idle, and for the player to leave the top (`Stores::hold_network`). A refused scrobble returns the tile to what the server holds, for the item (and the
+copies the fan-out took) a read-back asks about: a refused Show- or Season-scope press re-reads only the show
+or season row, and the episode rows the optimistic edit flipped in Browse listings stand until their next
+fetch. Facts are not recorded in the ledger (they are the server's word). `Bridge::reconcile_pump` runs it
+after `viewstate_pump` every frame, and also pumps Browse while a Browse section is owed a membership
+re-query (below): a Library page with another page pushed over it is not ticked.
+Browse marks a section whose membership depends on viewing (Unwatched filter, `lastViewedAt` sort) stale
+when a Facts edit covers one of its rows, whether or not the row already agrees (the server's answer marks
+staleness; the optimistic press alone does not). The Library screen asks for the re-query (`LibraryWork::Requery`) only once a
+PAGE has been pushed over it (`WillLeave(Deeper)`, then `Cover`), never while it is visible and never under a
+modal such as a compact menu (Sort, Filter, the item menu), which leaves the page visible and ticking; so tiles
+do not leave under the cursor. The re-query is a refresh of the SAME query: the fetch generation moves (a page
+still out for the old fetch is dropped) but `ListingId::query` does not, so the Library screen sees no query
+edit and keeps its scroll and its focus on the reader's tile (the bookmark names the item). A stale section
+that is not the current one is not refreshed in place: it forgets its pages and its cursor (like a first
+visit), so when the reader switches back to it the listing is fetched afresh and opens at the top.
 `Stores::person` owns the open model, generation, retry ladders and dev-seed latch alongside a
 rotated `Arc<PersonAdapter>` containing the unchanged indexed fetch claims/mailboxes. `AppViews`
 lends its `PersonView` to Person, Filmography and PersonBio; `person-owner` rejects every old free
 read/mutation facade and storage selector with no allowlist.
+
+`StoreId::ViewStop` (appended last) is no store: it is the landing gate's slot for the stop mailbox
+(`route::take_landed_stops`), because the gate keeps one mailbox per ordinal and `ViewState`'s is taken. The
+mailbox belongs to one identity: `route::retire_pending_stops` (from `activate_server_owned`, before the
+stores reset) drops the records posted and the ones a stalled `stopped` POST posts later.
 
 ## 1. What a store is, today
 
 Seven data modules own the application's server-derived state: `browse` (the Library table and its
 per-section paged listing), `pms` (Home's hub catalog, behind the `stores::hubs` machine),
 `metadata` (the detail page's item, seasons and episodes, the playing item), `search`, `person`,
-`collection`, and `viewstate` (the view-state WRITE queue). All seven now own their state per `Bridge` (Metadata
+`collection`, and `viewstate` (the view-state WRITE queue; `viewreconcile`, its read-back, is an eighth store). The first seven now own their state per `Bridge` (Metadata
 was the last to complete its port): each `Bridge` owns one of each store. `BrowseStore`'s
 state/adapter/notice, `HubsStore`'s `PmsState`/`Arc<PmsAdapter>`/notice, `SearchStore`'s
 state/adapter/notice, `MetadataStore`'s state/`Arc<MetadataAdapter>`/notice and `ViewStateStore`'s

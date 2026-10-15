@@ -30,7 +30,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         season_loading(test_adapter()),
         "a bumped generation with DONE behind it reads as in flight"
     );
-    land_season(test_adapter(), gen, SRV_A, "show-1".to_string(), 1, prev, None);
+    land_season(test_adapter(), gen, SRV_A, "show-1".to_string(), 1, prev, None, 0);
     assert!(!pump_season(test_state(), test_adapter()), "a failed fetch is not a new episode list");
     assert_eq!(
         listed_eps(),
@@ -52,7 +52,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
     // the new one is empty" fix passes the block above and leaves THIS one showing the
     // previous season's episodes under the new season's tab.
     let (gen, prev) = begin_switch(1);
-    land_season(test_adapter(), gen, SRV_A, "show-1".to_string(), 1, prev, Some(Vec::new().into()));
+    land_season(test_adapter(), gen, SRV_A, "show-1".to_string(), 1, prev, Some(Vec::new().into()), 0);
     assert!(
         pump_season(test_state(), test_adapter()),
         "an empty season is a successful fetch — the row did change"
@@ -76,6 +76,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         0,
         prev,
         Some(vec![episode("s1e1")].into()),
+        0,
     );
     assert!(pump_season(test_state(), test_adapter()));
     assert_eq!(listed_eps(), ["s1e1"]);
@@ -92,6 +93,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         1,
         prev,
         Some(vec![episode("s2e1")].into()),
+        0,
     );
     assert!(
         !pump_season(test_state(), test_adapter()),
@@ -115,6 +117,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         1,
         prev,
         Some(vec![episode("fresh")].into()),
+        0,
     );
     land_season(test_adapter(), 
         old,
@@ -123,6 +126,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         1,
         prev,
         Some(vec![episode("stale")].into()),
+        0,
     );
     assert!(pump_season(test_state(), test_adapter()), "the newest season lands");
     assert_eq!(
@@ -143,6 +147,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         1,
         prev,
         Some(vec![episode("s2e1")].into()),
+        0,
     );
     assert!(
         !pump_season(test_state(), test_adapter()),
@@ -179,6 +184,7 @@ fn a_season_landing_for_another_servers_show_with_the_same_key_is_refused() {
         1,
         prev,
         Some(vec![episode("ours-s2e1")].into()),
+        0,
     );
 
     assert!(
@@ -205,6 +211,7 @@ fn a_season_landing_for_another_servers_show_with_the_same_key_is_refused() {
         1,
         prev,
         Some(vec![episode("ours-s2e1")].into()),
+        0,
     );
     assert!(pump_season(test_state(), test_adapter()));
     assert_eq!(listed_eps(), ["ours-s2e1"]);
@@ -271,4 +278,52 @@ fn menu_play_season_load_inside_a_frame_needs_no_blocking_exception() {
     assert_eq!(listed_eps(), ["ep-menu"], "the season lands through the async mailbox");
     assert_eq!(selected_tab(), 1);
     assert!(!season_loading(test_adapter()));
+}
+
+/// A season is asked for long after the page was installed. Its read describes the server from ITS
+/// request, so an edit published before that request (the server had it) is not made again, and
+/// one published while the read was out is. Driven through `load_season`, the real request site.
+#[test]
+fn a_season_read_replays_only_the_edits_published_after_its_own_request() {
+    use std::io::{Read, Write};
+    use crate::viewstate::{ViewAt, ViewEdit};
+    let _serial = plx_base::testlock::serial();
+    assert!(plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port() as i32;
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut conn = loop {
+            match listener.accept() {
+                Ok((conn, _)) => break conn,
+                Err(_) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(2)),
+                Err(_) => return,
+            }
+        };
+        conn.set_nonblocking(false).unwrap();
+        let mut buf = [0u8; 2048];
+        let _ = conn.read(&mut buf);
+        let body = r#"{"MediaContainer":{"size":2,"Metadata":[{"ratingKey":"ea","type":"episode","title":"A"},{"ratingKey":"eb","type":"episode","title":"B"}]}}"#;
+        let _ = write!(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    });
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("season-ledger", "127.0.0.1", port, "token", "season-ledger-client");
+    plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+    install_show_on(sid, "show-1", 0, &["stale"]);
+    let ledger = test_state().ledger.clone();
+
+    ledger.record(&ViewAt::leaf(sid, "ea"), ViewEdit::Watched(true)); // before the request: the server has it
+    load_season(test_state(), test_adapter(), 1);
+    ledger.record(&ViewAt::leaf(sid, "eb"), ViewEdit::Watched(true)); // while the read is out
+
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !pump_season(test_state(), test_adapter()) && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    server.join().unwrap();
+    let marks: Vec<(String, bool)> = current(test_state()).unwrap().episodes.iter_loaded()
+        .map(|(_, e)| (e.rk.clone(), e.watched)).collect();
+    plx_plex::plex::reset_servers_for_test();
+    assert_eq!(marks, [("ea".to_string(), false), ("eb".to_string(), true)]);
 }

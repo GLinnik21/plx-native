@@ -22,7 +22,8 @@ pub struct AssSubtitles {
     uploaded: u64,
     viewport: Viewport,
     /// The origin `frame` was requested under. The source's current origin can already differ
-    /// (a restyle bumps the revision at once; the worker's re-render follows), and the lift is
+    /// (a restyle bumps the revision when its worker publishes; the libass worker's re-render
+    /// follows), and the lift is
     /// decided by the frame on screen (plan `libass-text-subs` §2.4).
     frame_origin: ass::Origin,
     /// The alignment classes of the cues in one frame, by its serial (Text origin only).

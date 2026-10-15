@@ -265,7 +265,7 @@ fn an_optimistic_watch_flip_reaches_the_collection_shelf() {
     set_current_for_test(test_state(), Some(Detail {
         sid: SRV_A,
         rk: "m1".into(),
-        collection: Some(crate::metadata::CollectionShelf {
+        collection: Some(CollectionShelf {
             title: "A Pair".into(),
             section: 1,
             tag: 5,
@@ -505,4 +505,99 @@ fn unmarking_one_season_of_a_watched_show_clears_the_shows_own_watched_flag() {
     assert!(!d.watched, "a show with an unwatched season is not watched");
     assert_eq!((d.seasons[0].viewed_leaf_count, d.seasons[1].viewed_leaf_count), (0, 2));
     clear(test_state(), test_adapter());
+}
+
+/// The detail read was requested, the user pressed Mark Watched on a related tile while it was out,
+/// and the read installs the page as the server described it before the press. The ledger makes
+/// the press again, through the same edit the press used. The stamp is taken by the REAL request
+/// (`MetadataCmd::RequestDetail`), not assigned.
+#[test]
+fn a_detail_read_in_flight_across_a_watched_edit_installs_with_it_made_again() {
+    use crate::stores::metadata::MetadataCmd;
+    let _serial = plx_base::testlock::serial();
+    let mut state = MetadataState::default();
+    let adapter = test_adapter();
+    let sid = plx_plex::plex::ServerId::UNSET;
+    let tile = || related_tile(sid, "rel");
+    let fresh = || Detail { sid, rk: "42".into(), related: vec![tile()], ..Default::default() };
+    let tile_state = |state: &MetadataState| state.current.as_ref().map(|d| (d.related[0].watched, d.related[0].resume_ms));
+    let at = crate::viewstate::ViewAt::leaf(sid, "rel");
+
+    // an older press, before the request: the server has it, so the read must not undo the server
+    let older = state.ledger.record(&crate::viewstate::ViewAt::leaf(sid, "older"), crate::viewstate::ViewEdit::Watched(true));
+    state.ledger.landed(older);
+    assert!(run(&mut state, adapter, MetadataCmd::RequestDetail { sid, rk: "42".into() })); // the read goes out…
+    let pressed = state.ledger.record(&at, crate::viewstate::ViewEdit::Watched(true)); // …then the press
+    assert!(install_landed_detail(&mut state, adapter, Some(fresh())));
+    assert_eq!(tile_state(&state), Some((true, 0)));
+
+    // a read requested after the press's write LANDED: the server has it, its answer stands
+    state.ledger.landed(pressed);
+    assert!(run(&mut state, adapter, MetadataCmd::RequestDetail { sid, rk: "42".into() }));
+    assert!(install_landed_detail(&mut state, adapter, Some(fresh())));
+    assert_eq!(tile_state(&state), Some((false, 4)), "the server's answer stands");
+}
+
+/// The season count steps only when the episode row's own watched state flips, so making the same
+/// edit again (a ledger replay of a press the row already shows) leaves the count alone.
+#[test]
+fn replaying_a_single_episode_edit_does_not_step_the_season_count_twice() {
+    use crate::viewstate::ViewAt;
+    let _serial = plx_base::testlock::serial();
+    set_current_for_test(test_state(), Some(Detail {
+        sid: SRV_A,
+        rk: "show".into(),
+        is_show: true,
+        kind: "show".into(),
+        seasons: vec![Season { rk: "sk1".into(), index: 1, title: "S1".into(), leaf_count: 3, viewed_leaf_count: 0 }],
+        episodes: vec![Episode { rk: "e1".into(), season: 1, ..Default::default() }].into(),
+        ..Default::default()
+    }));
+    let count = || current(test_state()).unwrap().seasons[0].viewed_leaf_count;
+    let ep = ViewAt::leaf(SRV_A, "e1");
+    set_watched_local(test_state(), &ep, true);
+    set_watched_local(test_state(), &ep, true);
+    assert_eq!(count(), 1, "the second, identical edit changes nothing");
+    set_watched_local(test_state(), &ep, false);
+    set_watched_local(test_state(), &ep, false);
+    assert_eq!(count(), 0);
+    clear(test_state(), test_adapter());
+}
+
+fn related_tile(sid: plx_plex::plex::ServerId, rk: &str) -> crate::pms::PmsMovie {
+    crate::pms::PmsMovie { sid, rk: rk.into(), unwatched: true, resume_ms: 4, ..Default::default() }
+}
+
+/// The server's word (`Facts`, `Offset`) reaches the other items' tiles on a Detail page, the
+/// Related shelf and the collection shelf's members, in place and only where it differs. The loaded
+/// item, its episodes and its seasons are not patched here (they re-read themselves until the Detail
+/// fold takes Facts).
+#[test]
+fn the_servers_facts_and_offset_patch_related_and_collection_tiles_only_where_they_differ() {
+    use crate::stores::metadata::MetadataCmd;
+    use crate::viewstate::{ViewAt, ViewEdit};
+    let _serial = plx_base::testlock::serial();
+    let tile = |rk: &str| Related { sid: SRV_A, rk: rk.into(), resume_ms: 3_510_000, unwatched: true, ..Default::default() };
+    set_current_for_test(test_state(), Some(Detail {
+        sid: SRV_A,
+        rk: "show".into(),
+        resume_ms: 11,
+        related: vec![tile("r0"), tile("r1")],
+        collection: Some(CollectionShelf { members: vec![tile("m0")], ..Default::default() }),
+        ..Default::default()
+    }));
+    let adapter = std::sync::Arc::new(MetadataAdapter::default());
+    let run = |rk: &str, sid, edit| super::run(test_state(), &adapter, MetadataCmd::ApplyView { at: ViewAt::leaf(sid, rk), edit });
+    let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+    assert!(run("r1", SRV_A, facts));
+    assert!(!run("r1", SRV_A, facts), "facts that agree with the tile change nothing");
+    assert!(!run("r0", SRV_B, facts), "another server's r0 names nothing here");
+    assert!(run("m0", SRV_A, ViewEdit::Offset { ms: 42 }));
+    assert!(!run("m0", SRV_A, ViewEdit::Offset { ms: 42 }));
+    let d = current(test_state()).unwrap();
+    assert_eq!((d.related[1].watched, d.related[1].unwatched, d.related[1].resume_ms), (true, false, 0));
+    assert_eq!(d.related[0].resume_ms, 3_510_000, "no other tile moved");
+    let m = &d.collection.as_ref().unwrap().members[0];
+    assert_eq!((m.watched, m.unwatched, m.resume_ms), (false, true, 42), "an offset leaves the watched state alone");
+    assert_eq!(d.resume_ms, 11, "the loaded item is the fold's, not this patch's");
 }

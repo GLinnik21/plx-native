@@ -299,3 +299,83 @@ fn a_show_scoped_edit_reaches_its_episode_rows_and_a_deck_removal_stays_on_one_r
         "a deck removal names the one row pressed, never the episodes under a show");
     assert_eq!(b.cw.len(), 2);
 }
+
+/// Whatever a source's read brings — a hub shelf, not only the deck lane — describes the server
+/// from when it was issued, so what was pressed since is made again on it: a marked card stays
+/// marked and a card taken off Continue Watching stays off.
+#[test]
+fn a_source_read_in_flight_across_edits_lands_with_them_made_again() {
+    let _g = plx_base::testlock::serial();
+    let mut s = Src::new(sid(0), String::new());
+    s.stamp = s.ledger.stamp(); // the read goes out…
+    let p7 = s.ledger.record(&ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)); // …then two presses
+    let p8 = s.ledger.record(&ViewAt::leaf(sid(0), "8"), ViewEdit::LeftDeck);
+    let mut brought = SourceBuild { lane: Default::default(),
+        cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7"), position: 0 },
+            CwItem { last_viewed_at: 8, m: started(0, "8"), position: 1 }],
+        shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])] };
+
+    replay_since_request(&s, &mut brought);
+
+    assert!(brought.shelves[0].items[0].watched, "the pressed card is marked on a shelf too");
+    assert!(!brought.shelves[0].items[1].watched, "and nothing else");
+    assert!(brought.cw[0].m.watched, "…and in the deck");
+    assert_eq!(brought.cw.iter().map(|c| c.m.rk.as_str()).collect::<Vec<_>>(), ["7"],
+        "a card taken off the deck while the read was out stays off");
+
+    s.ledger.landed(p7); // both writes reach the server…
+    s.ledger.landed(p8);
+    s.stamp = s.ledger.stamp(); // …and a read issued after that carries them already
+    let mut later = SourceBuild { lane: Default::default(), cw: Vec::new(),
+        shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7"])] };
+    replay_since_request(&s, &mut later);
+    assert!(!later.shelves[0].items[0].watched, "its answer stands");
+}
+
+/// The stamp is taken by the request itself (`Src::begin_request`), not assigned: an edit published
+/// before the request is on the server by then and is not made again, one published while the read
+/// is out is.
+#[test]
+fn a_source_request_takes_its_ledger_stamp_at_the_request() {
+    let _g = plx_base::testlock::serial();
+    plx_plex::plex::reset_servers_for_test();
+    let registered = plx_plex::plex::register_for_test("pms-ledger", "127.0.0.1", 9, "t", "cid");
+    assert_eq!(registered, sid(0));
+    let client = plx_plex::plex::client_for(registered).unwrap();
+    let mut s = Src::new(sid(0), String::new());
+    s.ledger.record(&ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)); // before the request
+    assert!(s.begin_request(client, 1, || 1).is_some());
+    s.ledger.record(&ViewAt::leaf(sid(0), "8"), ViewEdit::Watched(true)); // while it is out
+    let mut brought = SourceBuild { lane: Default::default(), cw: Vec::new(),
+        shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])] };
+    replay_since_request(&s, &mut brought);
+    assert!(!brought.shelves[0].items[0].watched, "the server already had the first press");
+    assert!(brought.shelves[0].items[1].watched, "the second was made while the read was out");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// The read-back answers for every item a write touched, mostly agreeing with what the optimistic
+/// edit already put on the row. Facts that change nothing are not a hit: a hit forces a full merge,
+/// a Home commit and a notice, for rows that look exactly as before.
+#[test]
+fn facts_that_change_no_row_are_not_a_hit_but_facts_that_differ_are() {
+    let _g = plx_base::testlock::serial();
+    let mut o = Owner::default();
+    reset(&mut o.state, &o.adapter);
+    let mut b = SourceBuild {
+        lane: Default::default(),
+        cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7"), position: 0 }],
+        shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])],
+    };
+    let leaf = ViewAt::leaf(sid(0), "7");
+    let eight = b.shelves[0].items[1].clone();
+    let equal = ViewEdit::Facts { watched: eight.watched, unwatched: eight.unwatched, resume_ms: eight.resume_ms };
+    assert!(!apply_edit(&mut b, &ViewAt::leaf(sid(0), "8"), equal), "facts equal to the row: no hit");
+    // "7" is a started card on the deck and a plain card on the shelf: facts that differ from either edit it
+    let watched = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+    assert!(apply_edit(&mut b, &leaf, watched), "facts that differ from the row edit it");
+    assert!(b.cw[0].m.watched && b.shelves[0].items[0].watched);
+    assert_eq!(b.cw[0].m.resume_ms, 0);
+    assert!(!apply_edit(&mut b, &leaf, watched), "the same facts again change nothing: no hit");
+    reset(&mut o.state, &o.adapter);
+}

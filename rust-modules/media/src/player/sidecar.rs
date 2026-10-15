@@ -21,8 +21,8 @@
 //!
 //! A sidecar's timestamps are file time, and on DIRECT PLAY `playpos_ns` is file time too (the
 //! rebase keeps it so across seeks). Where the server BURNS the selection into the picture (a
-//! re-encode, or a remux the app may not draw over) [`ass_source`] and [`active`] answer nothing
-//! while their caller says the selection is burned (`route::subtitles_burned`) — otherwise a direct play that becomes
+//! re-encode, or a remux the app may not draw over) [`ass_source`] answers nothing, and the caller
+//! draws no [`notice`], while it says the selection is burned (`route::subtitles_burned`) — otherwise a direct play that becomes
 //! a burn mid-film (a DTS audio pick) would show the line twice. Over a plain remux nothing is
 //! burned and a sidecar is drawn from here. The fact is PASSED IN rather than read: the playback session is
 //! the frame's publication, and the draw that calls this already holds it.
@@ -114,6 +114,10 @@ static STATE: Mutex<State> = Mutex::new(State {
     failed: None,
 });
 
+/// Signalled, under [`STATE`], whenever the download worker goes idle or a restyle worker has
+/// finished: what the tests wait on instead of the clock.
+static SETTLED: std::sync::Condvar = std::sync::Condvar::new();
+
 /// How long a [`Failure`] stays on screen.
 const FAILURE_SHOWN: Duration = Duration::from_secs(6);
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -162,6 +166,7 @@ fn select_with_fetch(
             let mut st = state();
             let Some(request) = st.pending.take() else {
                 st.running = false;
+                SETTLED.notify_all();
                 return;
             };
             request
@@ -197,6 +202,7 @@ fn select_with_fetch(
         st.running = false;
         st.pending = None;
         st.failed = Some((selection, Failure::Fetch, Instant::now()));
+        SETTLED.notify_all();
     }
 }
 
@@ -277,25 +283,11 @@ pub fn restore_selection(
     Some(s.id)
 }
 
-/// The failure notice to draw at `now_ns`, if a sidecar is selected and the server is not burning
-/// it. The cues themselves are libass's ([`ass_source`]); what is left here is the one thing the
-/// renderer cannot say, that a picked file produced nothing.
-pub fn active(now_ns: i64, burned: bool) -> Option<String> {
-    active_span(now_ns, burned).map(|(text, _, _)| text)
-}
-
-/// [`active`] with the `(start_ns, end_ns)` the text is shown over: the notice has no cue span, so
-/// it comes back as `(0, i64::MAX)`. The clock plays no part in a notice, which expires on the wall
-/// clock after [`FAILURE_SHOWN`].
-pub fn active_span(_now_ns: i64, burned: bool) -> Option<(String, i64, i64)> {
-    if burned {
-        return None; // the server BURNS the selection; drawing it too would double the line
-    }
-    notice().map(|message| (message.to_string(), 0, i64::MAX))
-}
-
-/// Why nothing is being drawn for the selected sidecar, while that is worth saying on screen: for
-/// [`FAILURE_SHOWN`] after its fetch or conversion failed. The caller applies the burned rule.
+/// The failure notice to draw, if a sidecar is selected: why nothing is being drawn for it, while
+/// that is worth saying on screen — for [`FAILURE_SHOWN`] after its fetch or conversion failed. The
+/// cues themselves are libass's ([`ass_source`]); this is the one thing the renderer cannot say,
+/// that a picked file produced nothing. The caller applies the burned rule (the server BURNS the
+/// selection; drawing the notice too would double the line).
 pub fn notice() -> Option<&'static str> {
     let st = state();
     let want = st.want.as_ref()?;
@@ -313,8 +305,9 @@ pub fn notice_shown() -> bool {
 
 /// The selected script, unless the server burns it. It is the same immutable source through seeks
 /// and Off→On; render requests carry the current clock, so no cue is lost on a backward seek. A
-/// converted SubRip/WebVTT file is restyled here, lazily, when the viewer's picks changed since its
-/// header was synthesized (an unselected file is never restyled).
+/// converted SubRip/WebVTT file whose header was synthesized for other picks than the viewer's now
+/// has its restyle started here, lazily, on a worker; the old look stays up until the worker
+/// publishes the restyled script (an unselected file is never restyled).
 pub fn ass_source(burned: bool) -> Option<Arc<super::ass::Source>> {
     ass_source_styled(burned, TextStyle::current())
 }
@@ -368,12 +361,14 @@ fn start_restyle(content: &mut Content, style: TextStyle) {
         if let Some((_, content)) = st.loaded.as_mut() {
             publish_restyle(content, id, base_generation, style, header.len(), script);
         }
+        SETTLED.notify_all();
         drop(st);
         plx_machine::present::wake_from_worker();
     });
     if !started {
         super::log("sidecar: restyle worker refused");
         hold.restyling = false;
+        SETTLED.notify_all();
     }
 }
 
@@ -476,12 +471,26 @@ mod tests {
     use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
     use std::sync::atomic::Ordering::Relaxed;
 
+    /// A backstop against a hung worker only: the waits below end on the worker's own signal, so a
+    /// loaded runner just takes longer. Hitting it means the worker never finished.
+    const WORKER_HUNG: Duration = Duration::from_secs(120);
+
+    /// Block until the download worker has gone idle ([`SETTLED`]), however long the host takes.
     fn finish_download() {
-        let until = Instant::now() + Duration::from_secs(2);
-        while state().running && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(!state().running, "sidecar worker finished");
+        let (st, timeout) = SETTLED
+            .wait_timeout_while(state(), WORKER_HUNG, |st| st.running)
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(!timeout.timed_out() && !st.running, "sidecar worker finished");
+    }
+
+    /// Block until no restyle worker is building a script for the loaded file ([`SETTLED`]).
+    fn finish_restyle() {
+        let (_st, timeout) = SETTLED
+            .wait_timeout_while(state(), WORKER_HUNG, |st| {
+                st.loaded.as_ref().and_then(|(_, c)| c.text.as_ref()).is_some_and(|hold| hold.restyling)
+            })
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(!timeout.timed_out(), "sidecar restyle worker finished");
     }
 
     const STYLED_SCRIPT: &[u8] = b"[Script Info]\nScriptType: v4.00+\n[Events]\n\
@@ -527,8 +536,8 @@ mod tests {
         let first = ass_source(false).expect("native script available");
         assert_eq!(first.origin, Origin::Authored, "an authored script keeps its own look");
         assert!(ass_source(true).is_none(), "a server burn silences the native script");
-        for clock in [2_000_000_000, 80_000_000_000, 1_000_000_000] {
-            assert_eq!(active(clock, false), None, "a script has no notice");
+        for _seek in 0..3 {
+            assert_eq!(notice(), None, "a script has no notice");
             assert_eq!(ass_source(false).unwrap().id, first.id, "seek keeps the whole script");
         }
         deselect();
@@ -619,10 +628,7 @@ mod tests {
             let ass::Content::Script { bytes, .. } = &s.content else { panic!() };
             String::from_utf8_lossy(bytes).into_owned()
         });
-        let until = Instant::now() + Duration::from_secs(2);
-        while text_of().is_none() && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        finish_download();
         let script = text_of().expect("the latest pick landed");
         assert!(script.ends_with(",new\n"), "{script}");
         assert!(!script.contains(",old\n"));
@@ -838,14 +844,8 @@ mod tests {
 
     /// The source for `picks`, once the worker that builds a restyled script has published it.
     fn restyled_source(picks: TextStyle) -> Arc<ass::Source> {
-        let until = Instant::now() + Duration::from_secs(5);
-        loop {
-            let source = ass_source_styled(false, picks).expect("the converted file");
-            if source.origin == Origin::Text(picks) || Instant::now() > until {
-                return source;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        finish_restyle();
+        ass_source_styled(false, picks).expect("the converted file")
     }
 
     /// A pick change must cost the frame thread nothing in proportion to the file: the call that
@@ -894,10 +894,10 @@ mod tests {
         println!("the byte-wise join it replaced: {:?} ({} bytes)", t0.elapsed(), bytewise.len());
     }
 
-    /// The failure notice is all that is left of the old caption path in `active_span`: shown for
-    /// six seconds in the caption's own place, silent where the server burns the selection.
+    /// The failure notice is all that is left of the old caption path: shown for six seconds in
+    /// the caption's own place (the caller silences it where the server burns the selection).
     #[test]
-    fn the_failure_notice_is_returned_by_active_span_for_six_seconds() {
+    fn the_failure_notice_is_shown_for_six_seconds() {
         let _guard = plx_base::testlock::serial();
         reset();
         finish_download();
@@ -908,9 +908,6 @@ mod tests {
         let message = plx_platform::i18n::msg::widgets_sidecar_empty();
         assert_eq!(notice(), Some(message));
         assert!(notice_shown());
-        assert_eq!(active_span(5_000_000_000, false), Some((message.to_string(), 0, i64::MAX)));
-        assert_eq!(active(0, false).as_deref(), Some(message));
-        assert_eq!(active_span(0, true), None, "the server burns the selection: no second notice");
         assert!(ass_source(false).is_none(), "and no script");
         // six seconds on
         {
@@ -918,7 +915,7 @@ mod tests {
             let (_, _, at) = st.failed.as_mut().unwrap();
             *at = Instant::now().checked_sub(FAILURE_SHOWN + Duration::from_millis(1)).unwrap();
         }
-        assert_eq!((notice(), notice_shown(), active(0, false)), (None, false, None));
+        assert_eq!((notice(), notice_shown()), (None, false));
         // a fetch failure says its own thing
         select_with_fetch(plx_plex::plex::ServerId::from_raw(0), 10, "/library/streams/10".into(), "srt".into(),
             |_, _, _| None);

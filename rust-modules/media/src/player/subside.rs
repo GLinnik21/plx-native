@@ -183,7 +183,6 @@ fn stop_locked(reason: &str, keep_anchor: bool) -> Option<i64> {
     if super::desired_sub_idx() == r.ordinal {
         super::request_subtitle(r.prev_selection);
     }
-    crate::player::SHARED.sub_cues.lock().unwrap_or_else(|e| e.into_inner()).clear();
     crate::player::SHARED.sub_bitmaps.lock().unwrap_or_else(|e| e.into_inner()).clear();
     plx_base::eventlog::log(&format!(
         "subside: stop reason={reason} join_ms={}",
@@ -411,7 +410,6 @@ mod tests {
             *crate::player::SHARED.side_anchor.lock().unwrap() = Some(Anchor::of(0, &[1, 2, 3]));
             assert!(start(spec(port)));
             let epoch = EPOCH.load(Ordering::Acquire);
-            crate::player::SHARED.sub_cues.lock().unwrap().clear();
             // another track: replaced, still active, anchor kept
             apply(epoch, Some(Spec { ordinal: 3, ..spec(port) }));
             assert!(active());

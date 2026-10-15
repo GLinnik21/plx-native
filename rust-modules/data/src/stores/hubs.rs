@@ -29,6 +29,15 @@ pub enum HubsCmd {
 impl HubsCmd {
     /// Page requests move a window, not the catalog, so they do not bump the notice generation.
     pub fn is_paging(&self) -> bool { matches!(self, HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }) }
+
+    /// Does this command raise the notice whatever it changed? Paging does not (see above), and a
+    /// report of what the server holds (`Facts`, `Offset`) raises it only through the rows it
+    /// altered: one every row already agrees with relays nothing out.
+    fn always_notifies(&self) -> bool {
+        !self.is_paging() && !matches!(self, HubsCmd::ApplyView {
+            edit: crate::viewstate::ViewEdit::Facts { .. } | crate::viewstate::ViewEdit::Offset { .. }, ..
+        })
+    }
 }
 
 pub use crate::pms::Landing as HubsResult;
@@ -53,6 +62,11 @@ impl Default for HubsStore {
 }
 
 impl HubsStore {
+    /// Join the owner's view-state publish order (`Stores::view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.share_ledger(ledger);
+    }
+
     /// Retire the mailbox at the store command boundary, including when recording controls how
     /// subsequent work is launched. Every command entry point shares this identity-reset rule.
     fn prepare_command(&mut self, cmd: Option<&HubsCmd>) {
@@ -63,7 +77,12 @@ impl HubsStore {
 
     /// Seed a fresh owner from restored boot initial conditions (`pms::initial::Initial::restore`),
     /// before any `Bridge`/`Stores` exists.
-    pub fn from_parts(state: crate::pms::PmsState, adapter: crate::pms::PmsAdapter) -> Self {
+    ///
+    /// Takes the owner's [`crate::viewledger::ViewLedger`] (`Stores::view_ledger`) so a store built
+    /// this way cannot be left outside the view-state publish order: there is no second step to forget.
+    pub fn from_parts(mut state: crate::pms::PmsState, adapter: crate::pms::PmsAdapter,
+        ledger: &crate::viewledger::ViewLedger) -> Self {
+        state.share_ledger(ledger);
         Self { state, adapter: Arc::new(adapter), notice_gen: AtomicU32::new(0), notice_dirty: AtomicBool::new(false) }
     }
 
@@ -219,7 +238,7 @@ impl HubsStore {
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
         plx_base::testlock::assert_held("controlled hubs store");
         self.prepare_command(cmd.as_ref());
-        let command = cmd.as_ref().is_some_and(|cmd| !cmd.is_paging());
+        let command = cmd.as_ref().is_some_and(HubsCmd::always_notifies);
         let outcome = crate::pms::controlled_work(&mut self.state, &self.adapter, cmd, dt, launch);
         if command || outcome.changed { self.bump(); }
         outcome
@@ -233,7 +252,7 @@ impl HubsStore {
         #[cfg(any(test, feature = "test-support"))]
         plx_base::testlock::assert_held("controlled hubs store with Browse owner");
         self.prepare_command(cmd.as_ref());
-        let command = cmd.as_ref().is_some_and(|cmd| !cmd.is_paging());
+        let command = cmd.as_ref().is_some_and(HubsCmd::always_notifies);
         let outcome = crate::pms::controlled_work_with_directory(&mut self.state, &self.adapter, cmd, dt, directory, launch);
         if command || outcome.changed { self.bump(); }
         outcome
@@ -244,7 +263,7 @@ impl HubsStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn run(&mut self, cmd: HubsCmd) -> super::StoreOutcome {
         self.prepare_command(Some(&cmd));
-        let notice = !cmd.is_paging();
+        let notice = cmd.always_notifies();
         let answer = crate::pms::run(&mut self.state, &self.adapter, cmd);
         if notice || answer.changed { self.bump(); }
         answer
@@ -259,7 +278,7 @@ impl HubsStore {
         directory: crate::stores::browse::DirectoryView<'_>,
     ) -> super::StoreOutcome {
         self.prepare_command(Some(&cmd));
-        let notice = !cmd.is_paging();
+        let notice = cmd.always_notifies();
         let answer = crate::pms::run_with_directory(&mut self.state, &self.adapter, cmd, directory);
         if notice || answer.changed { self.bump(); }
         answer
