@@ -298,7 +298,7 @@ pub fn ass_source(burned: bool) -> Option<Arc<super::ass::Source>> {
             if *font_generation != Some(generation) {
                 let super::ass::Content::Script { bytes, .. } = &source.content else { return None; };
                 *source = Arc::new(super::ass::Source {
-                    id: source.id, revision: source.revision.wrapping_add(1),
+                    id: source.id, revision: source.revision.wrapping_add(1), origin: source.origin,
                     content: super::ass::Content::Script { bytes: bytes.clone(), fonts },
                 });
                 *font_generation = Some(generation);
@@ -323,7 +323,7 @@ fn decode(bytes: Vec<u8>, codec: &str) -> Result<Content, Failure> {
         // style/format declarations, overlapping dialogue and vector drawing events.
         return Ok(Content::Ass {
             source: Arc::new(super::ass::Source {
-                id: super::ass::next_source_id(), revision: 1,
+                id: super::ass::next_source_id(), revision: 1, origin: super::ass::Origin::Authored,
                 content: super::ass::Content::Script { bytes: bytes.into(), fonts: Arc::from([]) },
             }),
             font_generation: None,

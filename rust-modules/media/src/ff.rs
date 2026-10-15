@@ -1228,7 +1228,7 @@ unsafe fn begin_ass_sources(
         } else {
             std::slice::from_raw_parts((*cp).extradata, len)
         };
-        headers.push((track as i32, header.to_vec()));
+        headers.push((track as i32, ass_source::TrackHeader::Authored(header.to_vec())));
     }
     let mut fonts = Vec::new();
     let mut font_budget = crate::player::ass::FontBudget::default();

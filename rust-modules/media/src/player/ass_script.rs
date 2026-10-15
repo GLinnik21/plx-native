@@ -92,6 +92,14 @@ impl ScriptIndex {
         self.lines.len()
     }
 
+    /// The `Dialogue:` lines alive at `now_ms` (`start <= now < end`), as they stand in the script.
+    pub fn alive_at(&self, now_ms: i64) -> impl Iterator<Item = &[u8]> + '_ {
+        self.lines
+            .iter()
+            .filter(move |line| line.start_ms <= now_ms && now_ms < line.end_ms)
+            .map(|line| &self.raw[line.off as usize..(line.off + line.len) as usize])
+    }
+
     /// The window for a playhead at `now_ms`: the header and, in file order, the first
     /// [`WINDOW_EVENTS`] lines (by start) that had not ended `BACK_MS` before it. Every line alive
     /// at a playhead the window answers for is in it: lines are taken by start, so a line that
