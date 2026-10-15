@@ -522,6 +522,10 @@ pub struct TransportRow {
     /// without this a session that ended paused would hand the next one a spurious resume edge on
     /// its first frame and flash `Play` over a start nobody pressed play for.
     pause_seen: Option<bool>,
+    /// **The scrub preview's memo** — a RENDER memo like `widths`: which BIF still the draw can
+    /// show and which one is in flight. Stepped where that art is probed, in [`draw_hud`]; see
+    /// [`crate::scrub_preview`].
+    preview: crate::scrub_preview::ScrubPreview,
 }
 
 impl Default for TransportRow {
@@ -537,6 +541,7 @@ impl TransportRow {
             widths: Vec::new(),
             play_at: None,
             pause_seen: None,
+            preview: crate::scrub_preview::ScrubPreview::new(),
         }
     }
 
@@ -1906,7 +1911,10 @@ pub fn draw_hud(
             }
         }
 
-        draw_playbar(p, Playbar::live(ps, busy, focus, row.since_play_ms(now), now), measure);
+        let bar = Playbar::live(ps, busy, focus, row.since_play_ms(now), now);
+        draw_playbar(p, bar, measure);
+        // last, so the still floats over the title block and the control row as well
+        draw_scrub_preview(p, ps, row, bar);
     } // end `if transport`
 
     // bottom tabs as pills — Chapters only appears when the item actually has chapters
@@ -1934,6 +1942,40 @@ pub fn draw_hud(
         }
         px += pw + 16.0;
     }
+}
+
+/// **The scrub preview** ([`crate::scrub_preview`]): while a live scrub preview is up, the still
+/// at the knob's position, floated above the knob. Draws nothing for a part with no BIF index, and
+/// nothing until the first still lands.
+fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, row: &mut TransportRow, bar: Playbar) {
+    use crate::scrub_preview::{card_rect, still_ms, still_path, Look, REQ_H, REQ_W};
+    if plx_media::player::TX.scrub_ns.load(Relaxed) < 0 || bar.dur_ns <= 0 {
+        return;
+    }
+    let part = plx_media::route::part_id(ps);
+    let sid = plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw();
+    let generation = plx_media::route::sess(ps);
+    let target = still_ms(bar.pos_ns, scrub_step_ns());
+    let look = |ms: i64| {
+        let path = still_path(part, ms);
+        if plx_ui::tex::resolve_on(sid, &path, REQ_W, REQ_H, false) != 0 {
+            Look::Ready
+        } else if plx_ui::tex::failed_on(sid, &path, REQ_W, REQ_H, false) {
+            Look::Failed
+        } else {
+            Look::Waiting
+        }
+    };
+    let Some(ms) = row.preview.step((part, &generation), target, bar.now, look) else {
+        return;
+    };
+    let (tex, tw, th) = plx_ui::tex::resolve_wh_on(sid, &still_path(part, ms), REQ_W, REQ_H, false);
+    if tex == 0 || tw <= 0.0 || th <= 0.0 {
+        return;
+    }
+    let frac = (bar.pos_ns as f64 / bar.dur_ns as f64).clamp(0.0, 1.0);
+    let knob_x = SB_X + (sb_w() as f64 * frac) as f32;
+    crate::scrub_preview::draw(p, card_rect(knob_x, SB_X, sb_w(), SB_Y), tex, tw, th);
 }
 
 /// **The transport's outermost drawn chrome, for the overscan audit**
