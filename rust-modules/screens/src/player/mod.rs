@@ -1367,7 +1367,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         // capsule is the exception: it HIDES the transport rather than sharing its read time, so
         // captions stay at their normal `SUB_BASE_Y` even while it is up (`Self::subs_lift`).
         let subs_lift = self.subs_lift(ps, now);
-        self.render.ass.draw();
+        self.render.ass.draw(subs_lift);
         if let Some(message) = self.render.ass.error() {
             plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, f.cx.measure);
         }
