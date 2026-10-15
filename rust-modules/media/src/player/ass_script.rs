@@ -7,6 +7,7 @@
 //! Format orders and timestamp rules are libass's; this module only decides WHICH `Dialogue:` lines
 //! go in with the header. The lines are kept in file order, which libass uses to stack overlapping
 //! events of one layer.
+use super::ass_timing::{effect_animated, libass_clock_ms, text_animated, Motion, Span};
 use std::sync::Arc;
 
 /// Dialogue lines in one window: the embedded tracks' forward window (`ass_source`), far under the
@@ -23,6 +24,9 @@ struct Line {
     end_ms: i64,
     off: u32,
     len: u32,
+    /// Its picture depends on the clock (an animation tag or an Effect), so a frame showing it
+    /// is valid for one time only.
+    animated: bool,
 }
 
 pub struct ScriptIndex {
@@ -53,14 +57,18 @@ impl ScriptIndex {
             return None;
         }
         let (mut start_at, mut end_at, mut fields) = (1usize, 2usize, 10usize);
+        let mut effect_at: Option<usize> = Some(8);
         let (mut header, mut lines) = (Vec::new(), Vec::new());
         let mut off = 0usize;
         for line in raw.split_inclusive(|&b| b == b'\n') {
             let text = String::from_utf8_lossy(line);
             let trimmed = text.trim_start_matches('\u{feff}').trim_start();
             if trimmed.get(..9).is_some_and(|p| p.eq_ignore_ascii_case("Dialogue:")) {
-                let (start_ms, end_ms) = times(&trimmed[9..], start_at, end_at, fields).unwrap_or(ALWAYS);
-                lines.push(Line { start_ms, end_ms, off: off as u32, len: line.len() as u32 });
+                let body = &trimmed[9..];
+                let (start_ms, end_ms) = times(body, start_at, end_at, fields).unwrap_or(ALWAYS);
+                let effect = effect_at.and_then(|at| body.splitn(fields.max(1), ',').nth(at));
+                let animated = effect.is_some_and(|e| effect_animated(e.as_bytes())) || text_animated(body.as_bytes());
+                lines.push(Line { start_ms, end_ms, off: off as u32, len: line.len() as u32, animated });
             } else {
                 if trimmed.get(..7).is_some_and(|p| p.eq_ignore_ascii_case("Format:")) {
                     let names: Vec<String> =
@@ -72,6 +80,7 @@ impl ScriptIndex {
                         names.iter().position(|f| f == "end"),
                     ) {
                         (start_at, end_at, fields) = (s, e, names.len());
+                        effect_at = names.iter().position(|f| f == "effect");
                     }
                 }
                 header.extend_from_slice(line);
@@ -81,6 +90,16 @@ impl ScriptIndex {
         let mut by_start: Vec<u32> = (0..lines.len() as u32).collect();
         by_start.sort_by_key(|&i| lines[i as usize].start_ms);
         Some(Self { raw: raw.clone(), header, lines, by_start })
+    }
+
+    /// Every line's timing, kept whether or not the script is windowed: what a rendered frame is
+    /// valid for (`ass_timing::validity`) depends on all of them, not only the held window.
+    pub fn spans(&self) -> impl Iterator<Item = Span<'_>> {
+        self.lines.iter().map(|l| Span {
+            start_ms: l.start_ms,
+            end_ms: l.end_ms,
+            motion: Motion::Known(l.animated),
+        })
     }
 
     /// More lines than one window holds: the script must be fed in windows.
@@ -125,30 +144,11 @@ impl ScriptIndex {
     }
 }
 
-/// The start and end of a `Dialogue:` body whose Format names `fields` columns, in milliseconds.
+/// The start and end of a `Dialogue:` body whose Format names `fields` columns, in milliseconds as
+/// libass reads them (`libass_clock_ms`: a malformed stamp is 0, as it is for libass).
 fn times(body: &str, start_at: usize, end_at: usize, fields: usize) -> Option<(i64, i64)> {
     let cols: Vec<&str> = body.splitn(fields.max(1), ',').collect();
-    Some((clock_ms(cols.get(start_at)?)?, clock_ms(cols.get(end_at)?)?))
-}
-
-/// `H:MM:SS.cc` (libass accepts fewer fraction digits and none).
-fn clock_ms(s: &str) -> Option<i64> {
-    let mut parts = s.trim().split(':');
-    let h: i64 = parts.next()?.parse().ok()?;
-    let m: i64 = parts.next()?.parse().ok()?;
-    let sec = parts.next()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    let (whole, frac) = sec.split_once('.').unwrap_or((sec, ""));
-    let whole: i64 = whole.parse().ok()?;
-    let frac_ms: i64 = if frac.is_empty() {
-        0
-    } else {
-        let digits: String = frac.chars().take(3).collect();
-        digits.parse::<i64>().ok()? * 10i64.pow(3 - digits.len() as u32)
-    };
-    Some(((h * 60 + m) * 60 + whole) * 1000 + frac_ms)
+    Some((libass_clock_ms(cols.get(start_at)?), libass_clock_ms(cols.get(end_at)?)))
 }
 
 #[cfg(test)]

@@ -67,7 +67,6 @@ fn request_key(source: &Source) -> Key {
         epoch: 1,
         source_id: source.id,
         revision: source.revision,
-        now_ms: 100,
         width: 320,
         height: 180,
         storage_width: 320,
@@ -91,15 +90,11 @@ fn off_retires_a_racing_publication_and_pending_source_outside_the_mailbox_lock(
     runtime.source_id.store(source.id, Ordering::Release);
     {
         let mut mailbox = runtime.mailbox.lock().unwrap();
-        mailbox.pending = Some(Request {
-            key,
-            source: source.clone(),
-        });
-        mailbox.requested = Some(key);
+        mailbox.request(key, 100, &source);
         // The worker owns the lock and has already accepted this epoch. Cancel
         // must return while the lock is held; the old publication then races in.
         clear_runtime(&runtime);
-        mailbox.published = Some((key.epoch, frame.clone()));
+        mailbox.publish_error(key, frame.clone());
     }
     drop(source);
     drop(frame);
@@ -115,13 +110,8 @@ fn off_retires_a_racing_publication_and_pending_source_outside_the_mailbox_lock(
     {
         let mailbox = runtime.mailbox.lock().unwrap();
         assert!(
-            mailbox.pending.is_none(),
-            "retire stale work before considering it for rendering"
-        );
-        assert!(mailbox.requested.is_none());
-        assert!(
-            mailbox.published.is_none(),
-            "a publication after cancellation must not be retained"
+            mailbox.is_empty(),
+            "retire stale work, requests and publications before considering them for rendering"
         );
     }
     assert!(source_witness.upgrade().is_some());
@@ -147,7 +137,7 @@ fn cancellation_before_worker_parks_is_remembered_and_releases_resources() {
     let frame = error_frame(key, Fault::RenderFailed);
     let witness = Arc::downgrade(&frame);
     runtime.source_id.store(source.id, Ordering::Release);
-    runtime.mailbox.lock().unwrap().published = Some((key.epoch, frame.clone()));
+    runtime.mailbox.lock().unwrap().publish_error(key, frame.clone());
     let observed_idle = Arc::new(AtomicBool::new(false));
     let may_park = Arc::new(AtomicBool::new(false));
     let (done_tx, done_rx) = mpsc::channel();
@@ -164,7 +154,7 @@ fn cancellation_before_worker_parks_is_remembered_and_releases_resources() {
             };
             {
                 let mailbox = runtime.mailbox.lock().unwrap();
-                assert!(mailbox.pending.is_none());
+                assert!(mailbox.is_empty() || mailbox.published.is_some());
                 assert_ne!(runtime.source_id.load(Ordering::Acquire), 0);
             }
             // Main will cancel only AFTER the idle observation and BEFORE park.
@@ -222,20 +212,27 @@ fn script(lines: &str) -> Arc<Source> {
     })
 }
 
-fn render(engine: &mut Engine, source: &Arc<Source>, now_ms: i64) -> Arc<Frame> {
-    let frame = engine.render(&Request {
-        source: source.clone(),
+fn job(source: &Arc<Source>, now_ms: i64, width: i32, height: i32, storage_width: i32, storage_height: i32) -> Job {
+    Job {
+        kind: Kind::Normal,
         key: Key {
             epoch: 1,
             source_id: source.id,
             revision: source.revision,
-            now_ms,
-            width: 320,
-            height: 180,
-            storage_width: 320,
-            storage_height: 180,
+            width,
+            height,
+            storage_width,
+            storage_height,
         },
-    });
+        now_ms,
+        seq: 1,
+        source: source.clone(),
+        queued: None,
+    }
+}
+
+fn render(engine: &mut Engine, source: &Arc<Source>, now_ms: i64) -> Arc<Frame> {
+    let (frame, _) = engine.render(&job(source, now_ms, 320, 180, 320, 180));
     assert_eq!(
         frame.error, None,
         "native fixture requires the built host library in pkg"
@@ -269,19 +266,7 @@ fn native_pixels_preserve_position_layers_alpha_motion_karaoke_and_readorder() {
     assert_eq!(pixel(&first, 25, 25), [255, 0, 0, 255]);
     assert_eq!(pixel(&first, 45, 35), [128, 0, 127, 255]);
     assert_eq!(pixel(&first, 75, 35), [0, 0, 255, 127]);
-    let coded = engine.render(&Request {
-        source: source.clone(),
-        key: Key {
-            epoch: 1,
-            source_id: source.id,
-            revision: source.revision,
-            now_ms: 100,
-            width: 320,
-            height: 180,
-            storage_width: 720,
-            storage_height: 480,
-        },
-    });
+    let (coded, _) = engine.render(&job(&source, 100, 320, 180, 720, 480));
     assert_eq!(coded.error, None);
     assert_eq!(pixel(&coded, 25, 25), [255, 0, 0, 255]);
     assert_eq!(
@@ -543,19 +528,7 @@ fn native_fragmented_script_stays_bounded_without_dropping_signs() {
             "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\an7\\pos({x},{y})\\p1}}m 0 0 l 4 0 4 4 0 4\n"));
     }
     let source = script(&lines);
-    let frame = Engine::default().render(&Request {
-        source: source.clone(),
-        key: Key {
-            epoch: 1,
-            source_id: source.id,
-            revision: 1,
-            now_ms: 100,
-            width: 1920,
-            height: 1080,
-            storage_width: 1920,
-            storage_height: 1080,
-        },
-    });
+    let (frame, _) = Engine::default().render(&job(&source, 100, 1920, 1080, 1920, 1080));
     assert_eq!(frame.error, None);
     assert!(frame.rects.len() <= MAX_REGIONS);
     for i in 0..70 {
@@ -607,4 +580,160 @@ fn native_a_thirty_thousand_event_sidecar_renders_around_the_playhead_and_after_
         assert_eq!(pixel(&frame, 20, 20)[3], 255, "the sign is up at {now} ms");
     }
     assert_eq!(pixel(&render(&mut engine, &source, 20_000_950), 20, 20), [0; 4], "and gone between lines");
+}
+
+fn open_calls() -> u32 {
+    OPEN_DATA_CALLS.with(|c| c.get())
+}
+
+const RED: &str = r"{\an7\pos(20,20)\c&H0000FF&\p1}m 0 0 l 40 0 40 40 0 40";
+const BLUE: &str = r"{\an7\pos(100,100)\c&HFF0000&\p1}m 0 0 l 40 0 40 40 0 40";
+
+/// An embedded track with `header`, one event `(start, duration, drawing)` per entry.
+fn track(header: &str, events: &[(i64, i64, &str)]) -> Arc<Source> {
+    Arc::new(Source {
+        id: next_source_id(),
+        revision: 1,
+        content: Content::Embedded {
+            header: header.as_bytes().into(),
+            fonts: Arc::from([]),
+            events: events
+                .iter()
+                .enumerate()
+                .map(|(n, (start_ms, duration_ms, text))| Event {
+                    start_ms: *start_ms,
+                    duration_ms: *duration_ms,
+                    payload: format!("{n},0,Default,,0,0,0,,{text}").into_bytes().into(),
+                })
+                .collect::<Vec<_>>()
+                .into(),
+        },
+    })
+}
+
+/// D12 part 1: a seek (new id, same header and fonts) and a switch between tracks that share a
+/// header reuse the renderer; only a different header or font set makes a new one.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_reuse_counts_renderers_for_seek_switch_and_authored_change() {
+    let mut engine = Engine::default();
+    let a = track(HEADER, &[(0, 2000, RED)]);
+    assert_eq!(pixel(&render(&mut engine, &a, 100), 25, 25), [255, 0, 0, 255]);
+    assert_eq!(open_calls(), 1, "the first track opens a renderer");
+
+    let seek = track(HEADER, &[(0, 2000, RED), (2000, 1000, BLUE)]);
+    let frame = render(&mut engine, &seek, 100);
+    assert_eq!(frame.source_id, seek.id);
+    assert_eq!(pixel(&frame, 25, 25), [255, 0, 0, 255]);
+    assert_eq!(open_calls(), 1, "a seek (new id, same header) opens no renderer");
+
+    let other = track(HEADER, &[(0, 2000, BLUE)]);
+    let frame = render(&mut engine, &other, 100);
+    assert_eq!(frame.source_id, other.id);
+    assert_eq!(pixel(&frame, 25, 25), [0; 4], "only the new track's events are shown");
+    assert_eq!(pixel(&frame, 105, 105), [0, 0, 255, 255]);
+    assert_eq!(open_calls(), 1, "a switch between identical headers opens no renderer");
+
+    let styled = HEADER.replace("&H0000FF00", "&H000000FF");
+    let authored = track(&styled, &[(0, 2000, RED)]);
+    assert_eq!(render(&mut engine, &authored, 100).source_id, authored.id);
+    assert_eq!(open_calls(), 2, "a different authored header opens a new renderer");
+}
+
+/// libass says "unchanged" when the renderer keeps showing what it showed before a reuse. The
+/// frame it answers with must name the source it now answers for, or `request` never returns it.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_unchanged_picture_after_a_switch_carries_the_new_source_id() {
+    // both blank at 5 s
+    let mut engine = Engine::default();
+    let a = track(HEADER, &[(0, 1000, RED)]);
+    let b = track(HEADER, &[(0, 1000, BLUE)]);
+    render(&mut engine, &a, 5000);
+    let frame = render(&mut engine, &b, 5000);
+    assert_eq!(frame.source_id, b.id, "blank to blank");
+    assert!(frame.rects.is_empty());
+    // the same picture on both
+    let c = track(HEADER, &[(0, 9000, RED)]);
+    let d = track(HEADER, &[(0, 9000, RED)]);
+    let shown = render(&mut engine, &c, 100);
+    let frame = render(&mut engine, &d, 100);
+    assert_eq!(frame.source_id, d.id, "same picture");
+    assert_eq!(frame.rects, shown.rects);
+    assert_eq!(open_calls(), 1);
+}
+
+fn validity_at(engine: &mut Engine, source: &Arc<Source>, now_ms: i64) -> (Arc<Frame>, Validity) {
+    let out = engine.render(&job(source, now_ms, 320, 180, 320, 180));
+    assert_eq!(out.0.error, None, "native fixture requires the built host library in pkg");
+    out
+}
+
+/// The window must agree with what libass really draws, for the odd stamps `string2timecode`
+/// reads its own way (a fraction is centiseconds; no fraction is 0).
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_validity_boundaries_are_where_libass_draws() {
+    let line = |start: &str, end: &str| {
+        format!("Dialogue: 0,{start},{end},Default,,0,0,0,,{{\\an7\\pos(20,20)\\p1}}m 0 0 l 40 0 40 40 0 40\n")
+    };
+    // 1 s + 5 cs .. 2 s + 50 cs; the second line has no fractions at all: libass reads 0..0
+    let source = script(&format!("{}{}", line("0:00:01.5", "0:00:02.50"), line("0:00:03", "0:00:05")));
+    let mut engine = Engine::default();
+    let (frame, v) = validity_at(&mut engine, &source, 500);
+    assert!(frame.rects.is_empty());
+    assert_eq!((v.from_ms, v.until_ms), (i64::MIN, 1050));
+    // rendering exactly at each computed boundary shows the change
+    assert!(validity_at(&mut engine, &source, 1049).0.rects.is_empty());
+    let (frame, v) = validity_at(&mut engine, &source, 1050);
+    assert_eq!(pixel(&frame, 25, 25), [0, 255, 0, 255], "visible from 1050 ms");
+    assert_eq!((v.from_ms, v.until_ms), (1050, 2500));
+    assert_eq!(pixel(&validity_at(&mut engine, &source, 2499).0, 25, 25)[3], 255);
+    let (frame, v) = validity_at(&mut engine, &source, 2500);
+    assert!(frame.rects.is_empty(), "gone at 2500 ms");
+    assert_eq!((v.from_ms, v.until_ms), (2500, i64::MAX));
+    assert!(validity_at(&mut engine, &source, 4000).0.rects.is_empty(), "the stamp-less line never shows");
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_karaoke_and_motion_are_animated_only_while_active() {
+    let source = script(concat!(
+        "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(20,100)}{\\kf100}AAAA\n",
+        "Dialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,{\\an7\\pos(20,20)\\p1}m 0 0 l 4 0 4 4 0 4\n",
+    ));
+    let mut engine = Engine::default();
+    assert!(validity_at(&mut engine, &source, 500).1.animated);
+    let (frame, v) = validity_at(&mut engine, &source, 3500);
+    assert!(!v.animated && !frame.rects.is_empty());
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_script_window_clamps_validity_and_non_windowed_scripts_have_timings() {
+    // 30 000 lines a second apart, with a two-minute hole after the 15 000th
+    let t = |ms: i64| format!("{}:{:02}:{:02}.{:02}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000 / 10);
+    let mut lines = String::new();
+    for i in 0..30_000i64 {
+        let at = i * 1000 + if i >= 15_000 { 120_000 } else { 0 };
+        lines.push_str(&format!(
+            "Dialogue: 0,{},{},Default,,0,0,0,,{{\\an7\\pos(10,10)\\p1}}m 0 0 l 50 0 50 50 0 50\n",
+            t(at), t(at + 900)));
+    }
+    let source = script(&lines);
+    let mut engine = Engine::default();
+    let now = 15_060_000;
+    let (frame, v) = validity_at(&mut engine, &source, now);
+    assert!(frame.rects.is_empty(), "in the hole");
+    let (lo, hi) = engine.script.as_ref().unwrap().window.unwrap();
+    assert_eq!(lo, now - 10_000);
+    assert_eq!(v.from_ms, lo, "the raw boundary is older than the window, which only reaches back to lo");
+    assert_eq!(v.until_ms, 15_120_000);
+    assert!(v.until_ms <= hi);
+
+    // a script that is loaded whole keeps its timings too
+    let small = script("Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(10,10)\\p1}m 0 0 l 5 0 5 5 0 5\n");
+    let (_, v) = validity_at(&mut engine, &small, 500);
+    assert_eq!((v.from_ms, v.until_ms), (i64::MIN, 1000));
+    assert!(engine.script.as_ref().unwrap().window.is_none());
 }
