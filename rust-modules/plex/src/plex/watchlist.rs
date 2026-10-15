@@ -57,6 +57,9 @@ pub struct WatchPage {
     pub total: Option<u32>,
     /// The `start` this page was requested at.
     pub start: u32,
+    /// The raw entry count on the wire. Paging advances by this, not by `items.len()`: an entry
+    /// with no usable id is dropped from `items` but still occupied a slot.
+    pub raw: u32,
 }
 
 /// `GET .../{hex}/userState`: `watchlisted_at` is `Some` only while the item is on the list.
@@ -269,7 +272,7 @@ fn list_from(response: &WatchResponse, start: u32) -> Result<(WatchPage, usize),
     let entries: &[Value] = c.get("Metadata").and_then(Value::as_array).map_or(&[], Vec::as_slice);
     let items = entries.iter().filter_map(|e| item_from(e, None)).collect();
     let total = int(c, "totalSize").and_then(|t| u32::try_from(t).ok());
-    Ok((WatchPage { items, total, start }, entries.len()))
+    Ok((WatchPage { items, total, start, raw: u32::try_from(entries.len()).unwrap_or(u32::MAX) }, entries.len()))
 }
 
 impl AccountClient {
@@ -443,6 +446,20 @@ mod tests {
         assert_eq!(page.items[0].added_at, Some(1_700_000_000));
         assert_eq!(page.items[0].year, Some(1999));
         assert_eq!(page.items[0].kind, Some(WatchKind::Movie));
+    }
+
+    #[test]
+    fn the_raw_count_counts_entries_the_decoder_dropped() {
+        // 100 entries, one without any usable id, no totalSize: paging must still see 100.
+        let mut entries: Vec<String> = (1..100).map(|i| format!(
+            r#"{{"ratingKey":"{i:024x}","guid":"plex://movie/{i:024x}","type":"movie","title":"T"}}"#)).collect();
+        entries.push(r#"{"type":"movie","title":"No id"}"#.to_owned());
+        let body = format!(r#"{{"MediaContainer":{{"size":100,"Metadata":[{}]}}}}"#, entries.join(","));
+        let (page, _) = run(vec![ok(&body)], |c, t| c.watchlist_page(0, 100, t));
+        let page = page.unwrap();
+        assert_eq!(page.total, None);
+        assert_eq!(page.items.len(), 99);
+        assert_eq!(page.raw, 100);
     }
 
     #[test]

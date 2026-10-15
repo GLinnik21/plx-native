@@ -618,17 +618,32 @@ impl WatchlistStore {
         }
     }
 
+    /// The guids the table already holds an answer for from every reachable server, so a reread
+    /// matches only the new ones (the worker ignores this when the roster has moved since).
+    fn matched_guids(&self) -> HashSet<String> {
+        let asked: Vec<ServerId> = self.io.roster().into_iter().filter(|s| self.io.reachable(*s)).collect();
+        self.state
+            .table
+            .by_guid
+            .iter()
+            .filter(|(_, answers)| asked.iter().all(|s| answers.iter().any(|(a, _)| a == s)))
+            .map(|(g, _)| g.clone())
+            .collect()
+    }
+
     fn spawn_list(&mut self, auth: &WatchlistAuth) {
         self.state.req += 1;
         let tag = self.current_tag(auth);
         self.state.read_stamp = self.state.ledger.stamp();
+        let known = self.matched_guids();
+        let known_gen = self.state.table.roster_gen;
         let (adapter, io, auth) = (Arc::clone(&self.adapter), Arc::clone(&self.io), auth.clone());
         adapter.list_busy.store(true, Ordering::SeqCst);
         let guard = Release(Arc::clone(&adapter), |a| &a.list_busy);
         let spawned = (self.spawn)("wlist", Box::new(move || {
             let _guard = guard;
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_list(&*io, &auth, tag, &mut |l| adapter.post(l));
+                run_list(&*io, &auth, tag, (&known, known_gen), &mut |l| adapter.post(l));
             }));
             if outcome.is_err() {
                 adapter.post(Landed { tag, what: What::PageFailed { start: 0, why: Failure::Other } });
@@ -827,6 +842,11 @@ mod tests {
         fail_pages_from: AtomicU32,
         /// Copy preference per server (0 current, 1 owned, 2 share); absent = 2.
         ranks: Mutex<HashMap<ServerId, u8>>,
+        /// Page starts requested, in order.
+        starts: Mutex<Vec<u32>>,
+        /// Entries per page the decoder "dropped": counted in `raw`, absent from `items`; also
+        /// withholds `totalSize` while non-zero.
+        dropped: AtomicU32,
     }
 
     impl Mock {
@@ -848,6 +868,8 @@ mod tests {
                 pages: AtomicUsize::new(0),
                 fail_pages_from: AtomicU32::new(u32::MAX),
                 ranks: Mutex::new(HashMap::new()),
+                starts: Mutex::new(Vec::new()),
+                dropped: AtomicU32::new(0),
             })
         }
     }
@@ -882,8 +904,13 @@ mod tests {
                 return Err(WatchlistError::Transport);
             }
             let all = self.items.lock().unwrap();
-            let items = all.iter().skip(start as usize).take(size as usize).cloned().collect();
-            Ok(WatchPage { items, total: Some(all.len() as u32), start })
+            self.starts.lock().unwrap().push(start);
+            let mut items: Vec<WatchItem> = all.iter().skip(start as usize).take(size as usize).cloned().collect();
+            let raw = items.len() as u32;
+            let dropped = self.dropped.load(Ordering::SeqCst) as usize;
+            let total = (dropped == 0).then_some(all.len() as u32);
+            items.truncate(items.len().saturating_sub(dropped));
+            Ok(WatchPage { items, total, start, raw })
         }
         fn released(&self, _: &WatchlistAuth) -> Result<Vec<WatchItem>, WatchlistError> {
             self.released.lock().unwrap().clone().ok_or(WatchlistError::Transport)
@@ -1291,6 +1318,46 @@ mod tests {
             s.pump();
         }
         assert_eq!(titles(&s), ["Bravo", "Charlie"]);
+    }
+
+    #[test]
+    fn a_reread_matches_only_the_guids_the_table_lacks() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        let first = mock.finds.load(Ordering::SeqCst);
+        assert!(first > 0);
+        s.run(WatchlistCmd::Reread);
+        for _ in 0..4 {
+            s.pump();
+        }
+        assert_eq!(mock.finds.load(Ordering::SeqCst), first, "an unchanged list asks no server again");
+        mock.items.lock().unwrap().push(item(4, "Delta"));
+        s.run(WatchlistCmd::Reread);
+        for _ in 0..4 {
+            s.pump();
+        }
+        assert_eq!(mock.finds.load(Ordering::SeqCst), first + 1, "one new movie guid: one chunk, one server");
+        assert_eq!(titles(&s).len(), 4);
+        // A roster move is a full re-match.
+        mock.roster_gen.fetch_add(1, Ordering::SeqCst);
+        s.run(WatchlistCmd::Reread);
+        for _ in 0..4 {
+            s.pump();
+        }
+        assert_eq!(mock.finds.load(Ordering::SeqCst), first + 2);
+        assert_eq!(s.state.table.roster_gen, mock.roster_gen.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn paging_advances_by_the_wire_count_not_the_decoded_count() {
+        // A full page of 100 entries whose decoder kept 99, and no totalSize.
+        let items: Vec<WatchItem> = (1..=100u8).map(|n| item(n, "T")).collect();
+        let mock = Mock::new(items);
+        mock.dropped.store(1, Ordering::SeqCst);
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(*mock.starts.lock().unwrap(), [0, 100]);
     }
 
     #[test]

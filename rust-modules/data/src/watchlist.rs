@@ -307,7 +307,15 @@ pub fn match_rows(io: &dyn WatchlistIo, rows: &[(String, Kind)]) -> Vec<Answer> 
 /// WORKER THREAD: read the list. Page 0, then the released set, then the remaining pages up to
 /// [`MAX_PAGES`]; each page is matched against the servers before it is posted so a tile arrives
 /// with its state. Stops at the first page that fails. Always ends with [`What::ListDone`].
-pub fn run_list(io: &dyn WatchlistIo, auth: &WatchlistAuth, tag: Tag, post: &mut dyn FnMut(Landed)) {
+/// `known` is the guids already matched against every reachable server under roster generation
+/// `known.1`; they are skipped while the roster has not moved (a new roster is a full re-match).
+pub fn run_list(
+    io: &dyn WatchlistIo,
+    auth: &WatchlistAuth,
+    tag: Tag,
+    known: (&HashSet<String>, u32),
+    post: &mut dyn FnMut(Landed),
+) {
     let mut start = 0u32;
     for page_no in 0..MAX_PAGES {
         let page = match io.page(auth, start, MAX_PAGE) {
@@ -317,11 +325,17 @@ pub fn run_list(io: &dyn WatchlistIo, auth: &WatchlistAuth, tag: Tag, post: &mut
                 break;
             }
         };
-        let got = page.items.len() as u32;
+        // Paging follows the wire: an entry the decoder dropped still held a slot.
+        let got = page.raw;
         let rows: Vec<WatchRow> =
             page.items.iter().enumerate().filter_map(|(i, it)| row_of(it, start + i as u32)).collect();
-        let keys: Vec<(String, Kind)> = rows.iter().map(|r| (r.guid.clone(), r.kind)).collect();
         let roster_gen = io.roster_gen();
+        let skip_known = known.1 == roster_gen;
+        let keys: Vec<(String, Kind)> = rows
+            .iter()
+            .filter(|r| !(skip_known && known.0.contains(&r.guid)))
+            .map(|r| (r.guid.clone(), r.kind))
+            .collect();
         let answers = match_rows(io, &keys);
         let total = page.total;
         post(Landed { tag, what: What::Page { start, total, rows, answers, roster_gen } });
