@@ -24,6 +24,7 @@ fn a_gbk_subrip_track_reads_as_chinese_not_replacement_characters() {
         assert!(avformat_open_input(&mut fmt, path.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) >= 0);
         let mut pkt = av_packet_alloc();
         assert!(!pkt.is_null());
+        assert!(!fmt.is_null());
         let mut subs = SubTracks::open(fmt, (*fmt).streams);
         assert_eq!(subs.entries().len(), 1, "the fixture has one subtitle track");
         let mut pushed = 0;

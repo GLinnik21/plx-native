@@ -346,6 +346,9 @@ pub(super) struct SubTracks {
 impl SubTracks {
     /// Enumerate `fmt`'s subtitle streams and open a decoder for each image one.
     pub(super) unsafe fn open(fmt: *mut AVFormatContext, streams: *mut *mut AVStream) -> Self {
+        if fmt.is_null() || streams.is_null() {
+            return Self::empty();
+        }
         let mut out: Vec<(c_int, SubKind, *mut AVCodecContext)> = Vec::new();
         let mut charsets = Vec::new();
         for i in 0..(*fmt).nb_streams {
