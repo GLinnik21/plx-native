@@ -9,7 +9,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 
-use super::landing::Landing;
+use super::landing::{Landing, Scene};
 use super::pool::{self, Drawn, RowPool};
 use super::{CardEvent, CardSource, Landed, Retry, SectionFrame, Seen, Tile};
 use crate::card_row::{self, CardRow, RowStyle};
@@ -132,23 +132,43 @@ impl Shelf {
         self
     }
 
-    /// A landing is playing or waiting for the page image to go: an owner that keeps the
-    /// previous source for [`paint_ghosts`](Self::paint_ghosts) keeps it while this holds.
+    /// A landing is playing: an owner that keeps the cards it removed for
+    /// [`paint_ghosts`](Self::paint_ghosts) keeps them while this holds.
     pub fn landing_pending(&self) -> bool {
         self.landing.pending()
     }
 
-    /// What a landing is doing to card `i` of `n` right now: `(x offset px, alpha)`; and the
-    /// previous-source indexes of the ghosts with their alpha.
+    /// What a landing is doing to card `i` of `n` right now: `(x offset px, alpha)`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn landing_probe(&self, n: usize, i: usize) -> (f32, f32) {
         (self.landing.offset(n, i), self.landing.alpha(n, i))
     }
 
-    /// The ghosts a landing is fading out, as indexes into the previous source, and their alpha.
+    /// The ghosts a landing is fading out, as the indexes they had before it, and the most opaque
+    /// one's alpha.
     #[cfg(any(test, feature = "test-support"))]
     pub fn ghost_probe(&self) -> (Vec<usize>, f32) {
-        (self.landing.ghosts().iter().map(|g| g.was).collect(), self.landing.ghost_alpha())
+        let a = self.landing.ghosts().iter().map(|g| g.alpha.pos.clamp(0.0, 1.0)).fold(0.0, f32::max);
+        (self.landing.ghosts().iter().map(|g| g.was).collect(), a)
+    }
+
+    /// Each ghost's alpha right now, in [`ghost_keys`](Self::ghost_keys) order.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_alphas(&self) -> Vec<f32> {
+        self.landing.ghosts().iter().map(|g| g.alpha.pos.clamp(0.0, 1.0)).collect()
+    }
+
+    /// Each ghost's pop scale right now, in [`ghost_keys`](Self::ghost_keys) order.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn ghost_scales(&self) -> Vec<f32> {
+        self.landing.ghosts().iter().map(|g| g.lift.pos).collect()
+    }
+
+    /// The elements ([`elem_key`](super::elem_key)) of the cards a landing is fading out, in the
+    /// order [`paint_ghosts`](Self::paint_ghosts) reads its ghost source by: the owner looks each
+    /// removed card up and hands the lot back.
+    pub fn ghost_keys(&self) -> impl Iterator<Item = u64> + '_ {
+        self.landing.ghosts().iter().map(|g| g.key)
     }
 
     /// Whether [`paint_ghosts`](Self::paint_ghosts) has a card to draw this frame.
@@ -204,6 +224,10 @@ impl Shelf {
                 self.retry.tick(t.ms);
                 self.observe_landing(src);
                 self.tick(t.dt(), cx, src);
+                if self.landing.held() {
+                    // a landing waits under a held page image: a frame must follow its release
+                    fx.invalidate(Provenance::Lifecycle);
+                }
                 self.warm_ahead(cx, src);
                 self.want(cx, src)
             }
@@ -242,6 +266,9 @@ impl Shelf {
             .filter(|_| !self.dormant);
         self.landed = None;
         let sx0 = self.row.scroll_x();
+        // what the focused card was drawn at before this tick lets it go: if the landing removes
+        // it, its ghost starts there
+        let lifted = self.prev().map(|p| (p, self.row.scale(p)));
         if self.dormant {
             // nothing is lifted under the fade, and whatever was lets go like an unfocused shelf's
             self.slept = true;
@@ -319,7 +346,9 @@ impl Shelf {
         self.seen = Seen::Nothing;
         self.left = false;
         // after the landing rule above: the offsets are taken against the focused card's own move
-        self.landing.observe(src, self.row.scroll_x() - sx0, self.pitch(), false);
+        let (scroll, w, margin) = (self.row.scroll_x(), self.style.w, self.margin);
+        let on = |x: f32| crate::on_axis(x - scroll, w, SCR_W, margin);
+        self.landing.observe(src, &Scene { shift: scroll - sx0, pitch: self.pitch(), margin_x: self.style.margin_x, on: &on, lifted });
         self.landing.step(dt, (self.style.k_scroll, self.style.k_scale));
         if focus.is_some() || !self.row.at_exact_rest() {
             self.row.update(src.len(), focus, self.style, dt);
@@ -729,24 +758,32 @@ impl Shelf {
 
     /// The cards a landing removed, fading out where they stood: paint them BEFORE
     /// [`paint_resting`](Self::paint_resting), so the cards that slid in over their slots cover
-    /// them. `ghosts` is the source the section showed before the landing, indexed as it was
-    /// then (only `art`, `progress`, `loaded` and `overlay` are read; a ghost is never lifted,
-    /// captioned or registered as a stop). Nothing is drawn when no landing is playing.
-    pub fn paint_ghosts<H: Host, G: CardSource<H> + ?Sized>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, ghosts: &G, at: SectionFrame) {
-        let a = self.landing.ghost_alpha();
-        if self.dormant || a <= 0.0 {
+    /// them. `ghosts` holds the removed cards in [`ghost_keys`](Self::ghost_keys) order (only `art`,
+    /// `progress`, `loaded` and `overlay` are read; a ghost is never captioned or registered as a
+    /// stop; one that was the focused card eases from its lifted scale to rest while it fades).
+    /// `src` is the section's current source, for the dive's sweep, which a ghost follows like
+    /// every other card. Nothing is drawn when no landing is playing, and only what is on-axis.
+    pub fn paint_ghosts<H: Host, S: CardSource<H>, G: CardSource<H> + ?Sized>(
+        &self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, ghosts: &G, at: SectionFrame,
+    ) {
+        if self.dormant {
             return;
         }
-        let pr = p.translate(-self.row.scroll_x(), 0.0).alpha(a);
-        for g in self.landing.ghosts().iter().filter(|g| g.was < ghosts.len() && ghosts.loaded(g.was)) {
-            let x = self.style.margin_x + g.was as f32 * self.pitch() + g.shift;
-            if !crate::on_axis(x - self.row.scroll_x(), self.style.w, SCR_W, self.margin) {
+        let sweep = src.sweep();
+        let sx = self.drawn_scroll(src);
+        let pr = p.translate(-sx, 0.0);
+        for (j, g) in self.landing.ghosts().iter().enumerate().filter(|(j, _)| *j < ghosts.len() && ghosts.loaded(*j)) {
+            let a = g.alpha.pos.clamp(0.0, 1.0);
+            let x = self.style.margin_x + g.was as f32 * self.pitch() + g.shift * sweep;
+            if a <= 0.0 || !crate::on_axis(x - sx, self.style.w, SCR_W, self.margin) {
                 continue;
             }
-            let rect = Rect::new(x, at.y - pr.dy(), self.style.w, self.style.h);
-            card_row::draw_tile(pr, ghosts.art(g.was), rect, 1.0, self.style, ghosts.progress(g.was));
-            let tile = Tile { rect, scale: 1.0, radius: self.style.tile_radius(rect, 1.0), focused: false };
-            ghosts.overlay(pr, g.was, &tile, f.measure);
+            let s = g.lift.pos;
+            let pr = pr.alpha(a);
+            let rect = Rect::new(x, at.y - pr.dy(), self.style.w, self.style.h).scaled(s);
+            card_row::draw_tile(pr, ghosts.art(j), rect, s, self.style, ghosts.progress(j));
+            let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused: false };
+            ghosts.overlay(pr, j, &tile, f.measure);
         }
     }
 

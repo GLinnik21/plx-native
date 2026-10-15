@@ -344,6 +344,25 @@ pub struct PageImage {
     last: Option<PagePaint>,
 }
 
+thread_local! {
+    /// The page was shown as a held image on the last frame the dispatcher painted.
+    static PAGE_IMAGE_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The dispatcher's statement about the page it painted this frame: `held` is whether it was shown
+/// as a captured image rather than drawn live (a dip's Out and In halves and the hold after it). A
+/// screen reads it through [`page_image_held`] on its NEXT tick, so a layout animation it started
+/// is not stepped under an image that hides it and then stretches the hold (`cards::Shelf`'s
+/// animated landings).
+pub(crate) fn set_page_image_held(held: bool) {
+    PAGE_IMAGE_HELD.with(|h| h.set(held));
+}
+
+/// Was the page a held image on the last frame the dispatcher painted ([`set_page_image_held`])?
+pub(crate) fn page_image_held() -> bool {
+    PAGE_IMAGE_HELD.with(|h| h.get())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PagePaint {
     Live,

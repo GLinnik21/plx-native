@@ -4675,12 +4675,33 @@ fn a_continue_watching_card_that_leaves_fades_out_as_a_ghost_of_the_previous_sna
     plx_data::pms::remove_test_item(&mut state, "2");
     let after = plx_data::pms::hubs_snapshot(&state);
     tick_n(&mut s, after.view(), None, 10, 2);
-    assert!(s.grid.shelves[0].has_ghosts(), "the removed card is still drawn, from the old snapshot");
-    assert!(s.ghosts.is_some());
+    assert!(s.grid.shelves[0].has_ghosts(), "the removed card is still drawn, from the card the screen kept");
+    assert_eq!(s.ghost_cards.len(), 1, "the removed card is kept, by element");
     assert_eq!(s.rows[0].elems.len(), 5);
     tick_n(&mut s, after.view(), None, 20, 120);
     assert!(!s.grid.shelves[0].landing_pending(), "the landing settled");
-    assert!(s.ghosts.is_none(), "the previous snapshot is let go once nothing draws from it");
+    assert!(s.ghost_cards.is_empty(), "the removed cards are let go once nothing fades");
+}
+
+/// A ghost is the card that was removed, not a position in some publication: a later generation
+/// that lands while it fades neither replaces it nor makes it show another card.
+#[test]
+fn a_ghost_keeps_its_own_card_when_another_publication_lands_mid_fade() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = landing_home(6);
+    plx_data::pms::remove_test_item(&mut state, "2");
+    let first = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, first.view(), None, 10, 2);
+    plx_data::pms::remove_test_item(&mut state, "5");
+    let second = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, second.view(), None, 20, 2);
+    let shelf = &s.grid.shelves[0];
+    let ghosts = s.ghost_source(shelf);
+    let mut rks: Vec<String> = (0..CardSource::<TestHost>::len(&ghosts)).map(|i| ghosts.item(i).expect("a kept card").rk.to_string()).collect();
+    rks.sort();
+    assert_eq!(rks, ["2", "5"], "each ghost is still the card that left");
+    tick_n(&mut s, second.view(), None, 30, 200);
+    assert!(s.ghost_cards.is_empty() && !s.grid.shelves[0].landing_pending());
 }
 
 #[test]

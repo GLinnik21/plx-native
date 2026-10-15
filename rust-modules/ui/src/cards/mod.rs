@@ -113,6 +113,11 @@ pub fn clamp_slot(slot: usize, len: usize) -> Option<usize> {
     len.checked_sub(1).map(|last| slot.min(last))
 }
 
+/// `e`'s identity as the number a landing's ghosts are named by ([`Shelf::ghost_keys`]).
+pub fn elem_key<E: std::hash::Hash>(e: &E) -> u64 {
+    pool::key(e)
+}
+
 /// The read-only content a section draws. The screen implements it over its own store view; the
 /// component never owns or copies content.
 pub trait CardSource<H: Host> {
@@ -190,6 +195,13 @@ pub trait CardSource<H: Host> {
     /// its length).
     fn page_epoch(&self) -> u32 {
         0
+    }
+    /// A number that moves whenever the list of cards (their elements, order or length) may have
+    /// changed, or `None` for a source that cannot say: an animated landing
+    /// ([`Shelf::animate_landings`]) then compares every card each tick instead of only when the
+    /// length or this moved.
+    fn revision(&self) -> Option<u64> {
+        None
     }
     /// Whether the list goes on past the LAST card, for the placeholders a [`Shelf`] draws there
     /// until the page lands. [`more`](Self::more) unless the source gates that on where focus is
