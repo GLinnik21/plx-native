@@ -13,6 +13,7 @@
 //! `/library/sections/watchlist/released`; `userState` answers an ARRAY on discover and an OBJECT
 //! on metadata.provider; add/remove are `PUT /actions/addToWatchlist?ratingKey=<hex>` /
 //! `removeFromWatchlist`. Discover ratingKeys are 24-char hex, NOT PMS ratingKeys.
+use super::paging::{paged_path, PageReq};
 use super::account::{endpoint_shape, loopback_http, note_response_contact, AccountClient};
 use serde_json::Value;
 
@@ -377,10 +378,10 @@ impl AccountClient {
     {
         let size = size.clamp(1, MAX_PAGE);
         let order = if variant == "all" { "&sort=watchlistedAt:desc" } else { "" };
-        let url = format!(
-            "{}/library/sections/watchlist/{variant}?includeCollections=1&includeExternalMedia=1{order}\
-             &X-Plex-Container-Start={start}&X-Plex-Container-Size={size}",
-            discover());
+        let path = format!(
+            "/library/sections/watchlist/{variant}?includeCollections=1&includeExternalMedia=1{order}");
+        let url = format!("{}{}", discover(),
+            paged_path(&path, PageReq { start: start as usize, size: size as usize }));
         list_from(&call(req, "GET", url)?, start)
     }
 }
