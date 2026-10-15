@@ -13,6 +13,7 @@ use plx_media::player::text_style::{
     position_lift, size_scale, wrap_width, CAPTION_ANCHOR_LINES, CAPTION_FACE, CAPTION_FLOOR_Y,
     CAPTION_LINE_PITCH, CAPTION_TEXT_INSET, HUD_CONTROLS_TOP_Y, SUB_BASE_Y, SUB_CEIL_Y,
 };
+use crate::scrub_undo::{self, KnobSpring, LineExtents, Undo};
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::theme;
 use plx_ui::widgets::{
@@ -526,6 +527,12 @@ pub struct TransportRow {
     /// show and which one is in flight. Stepped where that art is probed, in [`draw_hud`]; see
     /// [`crate::scrub_preview`].
     preview: crate::scrub_preview::ScrubPreview,
+    /// **The undo window** a committed scrub opened, if one is open: the ghost tick at the origin
+    /// and the `BACK · m:ss` chip are drawn from it, and the player screen's BACK reads it
+    /// ([`Self::undo_origin`]). Its deadline is the wall clock's, so it is stepped by nothing.
+    undo: Option<Undo>,
+    /// The knob's return to the playhead when a scrub is cancelled ([`crate::scrub_undo`]).
+    spring: KnobSpring,
 }
 
 impl Default for TransportRow {
@@ -542,6 +549,8 @@ impl TransportRow {
             play_at: None,
             pause_seen: None,
             preview: crate::scrub_preview::ScrubPreview::new(),
+            undo: None,
+            spring: KnobSpring::new(),
         }
     }
 
@@ -562,11 +571,17 @@ impl TransportRow {
         self.note_transport(now);
         // Here and not in the draw: a scrub can end with the transport hidden (UP-hide), when
         // nothing draws, and the next one must not open on this one's last still.
-        let live = plx_media::player::TX.scrub_ns.load(Relaxed) >= 0;
+        let scrub_ns = plx_media::player::TX.scrub_ns.load(Relaxed);
+        let live = scrub_ns >= 0;
         if !live {
             self.preview.release();
         }
         self.preview.motion.step_live(live, now);
+        self.spring.step(scrub_ns, now);
+        // a closed window that has finished fading is forgotten
+        if self.undo.is_some_and(|u| !u.visible(now)) {
+            self.undo = None;
+        }
         let f = (focus == 1)
             .then(|| usize::try_from(btn).ok())
             .flatten()
@@ -584,6 +599,31 @@ impl TransportRow {
     /// frame for as long as it does.
     pub fn scrub_motion_animating(&self, now: u32) -> bool {
         self.preview.motion.animating(now)
+            || self.spring.busy(now)
+            || self.undo.is_some_and(|u| u.phase(now) == 2)
+    }
+
+    /// **Open the undo window**: a scrub that started from `origin_ns` while the film was playing
+    /// has just committed at `now`. Replaces any window already open.
+    pub fn open_undo(&mut self, origin_ns: i64, now: u32) {
+        self.undo = Some(Undo::open(origin_ns, now));
+    }
+
+    /// Close the window at once, with no fade: it was used, or what it would undo is no longer on
+    /// screen.
+    pub fn close_undo(&mut self) {
+        self.undo = None;
+    }
+
+    /// Where BACK returns to, while the window is armed at `now`.
+    pub fn undo_origin(&self, now: u32) -> Option<i64> {
+        self.undo.filter(|u| u.armed(now)).map(|u| u.origin_ns())
+    }
+
+    /// The window's state as a frame depends on it (0 gone, 1 open, 2 fading): folded into the
+    /// player's `clock_fingerprint`, so the deadline and the fade each owe a frame.
+    pub fn undo_phase(&self, now: u32) -> u8 {
+        self.undo.map_or(0, |u| u.phase(now))
     }
 
     /// Control `i`'s focus pop this frame — the read half of the row's springs, for the two
@@ -1664,7 +1704,7 @@ impl Playbar {
 
 /// The playbar: scrubber, playhead knob, elapsed/remaining clocks and the state read-out. The
 /// player HUD and the detail page's full-trailer transport both draw it, so the two cannot drift.
-pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine::Measure) {
+pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine::Measure) -> LineExtents {
     let e = hud_env();
     let white = theme::TEXT_PRIMARY;
     let dim = theme::TEXT_SECONDARY;
@@ -1774,6 +1814,7 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
     // the clock's line box; drops to the clock's LEFT when the right side is against the remaining
     // label / screen edge.
     let mark = bar.mark;
+    let mut mark_x = None;
     if mark != TransportMark::None {
         // pause bars under-fill their viewBox (14/24 tall) — a 30px box renders ~17px of ink,
         // matching the CAPTION clock's cap height so the glyph reads as the label's size. The two
@@ -1821,6 +1862,11 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
         } else {
             el_r + GAP - ink.0 * bs
         };
+        // …and where its INK landed, for whatever else the clock line carries ([`LineExtents`])
+        mark_x = Some(match glyph {
+            Some(_) => (bx + ink.0 * bs, bx + ink.1 * bs),
+            None => (bx, bx + isz),
+        });
         match glyph {
             Some(id) => {
                 plx_ui::icons::draw(p, id, Rect::new(bx, icy - bs * 0.5, bs, bs), white)
@@ -1832,6 +1878,7 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
                 .draw(&e, p),
         }
     }
+    LineExtents { clock: (el_l, el_r), mark: mark_x, rem_l: rem_shown.then_some(rem_l), lo: sx, hi: sx + sw }
 }
 
 /// The transport HUD, composed from retui widgets through a root `Painter`.
@@ -1950,7 +1997,10 @@ pub fn draw_hud(
 
         let mut bar = Playbar::live(ps, busy, focus, row.since_play_ms(now), now);
         bar.clock_sz = row.preview.motion.clock_size(theme::size::CAPTION, now);
-        draw_playbar(p, bar, measure);
+        // a cancelled scrub's knob returns to the playhead rather than jumping to it
+        bar.pos_ns = row.spring.apply(bar.pos_ns, now);
+        let line = draw_playbar(p, bar, measure);
+        draw_undo(p, row.undo.filter(|u| u.visible(now)), bar, line, now, measure);
         // last, so the still floats over the title block and the control row as well
         draw_scrub_preview(p, ps, row, bar);
     } // end `if transport`
@@ -1980,6 +2030,36 @@ pub fn draw_hud(
         }
         px += pw + 16.0;
     }
+}
+
+/// **The undo window's marks** ([`crate::scrub_undo`]): a ghost tick on the bar at the position the
+/// last committed scrub started from, and the chip `BACK · m:ss` on the knob clock's line, on the
+/// side of the tick. Both at the window's opacity, so they leave together.
+fn draw_undo(
+    p: Painter,
+    undo: Option<Undo>,
+    bar: Playbar,
+    line: LineExtents,
+    now: u32,
+    measure: &dyn plx_machine::machine::Measure,
+) {
+    let Some(u) = undo else { return };
+    if bar.dur_ns <= 0 {
+        return;
+    }
+    let a = u.alpha(now);
+    let frac = (u.origin_ns() as f64 / bar.dur_ns as f64).clamp(0.0, 1.0);
+    let ox = SB_X + (sb_w() as f64 * frac) as f32;
+    let white = theme::TINT_WHITE;
+    p.alpha(a * scrub_undo::TICK_A)
+        .rect(scrub_undo::tick_rect(ox, SB_Y + SB_H * 0.5), 0.0, white, white, 0.0);
+    let text = scrub_undo::chip_text(plx_platform::i18n::msg::settings_back(), u.origin_ns());
+    let sz = theme::size::MICRO;
+    let w = measure.width_str(&text, sz, false);
+    let (Some(x), Ok(cs)) = (scrub_undo::chip_x(&line, ox, w), CString::new(text)) else { return };
+    // the clock's line, aligned on its baseline (the clock is CAPTION, bold)
+    let y = plx_gfx::text::baseline_y(sz, 0, theme::size::CAPTION, 1, SB_Y + 30.0);
+    p.alpha(a * scrub_undo::CHIP_A).text(cs.as_ptr(), x, y, sz, white, 0, 0);
 }
 
 /// **The scrub preview** ([`crate::scrub_preview`]): while a live scrub preview is up, the still
