@@ -34,7 +34,7 @@ order. Each Noto face answers to "PlxSubs" and "Inter" too, carries nothing Inte
 has Inter Bold's win-metric proportions, so authored ASS naming an unknown family falls to a face
 that has the script instead of the CJK default's missing-glyph boxes. Add order is load-bearing
 (Inter first). The files are read at each create and not kept. `tools/cut-noto-subs.py` cuts them
-and records in the manifest a bucket for EVERY language of the picker (a face, the CJK default,
+and accounts for EVERY language of the picker (a face, the CJK default,
 Inter, or uncovered with its reason), which a test checks against the shipped cmaps. Three scripts
 are uncovered because Noto Sans ships them in Regular only: Yi (`ii`), Avestan (`ae`) and
 traditional Mongolian (`mn`, whose Cyrillic form is Inter's). U+2060 is not carried by any face:

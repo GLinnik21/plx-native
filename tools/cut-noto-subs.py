@@ -359,8 +359,9 @@ def cut_face(script: str, block: tuple, rtl: bool, src: Path, inter: tuple) -> t
 
 
 def language_buckets(faces: list) -> dict:
-    """code -> [bucket, detail] for EVERY language in languages.rs: ["face", script], ["cjk", ""],
-    ["uncovered", script] or ["inter", ""] (the native name is wholly in Inter Bold's cmap). A
+    """Every language in languages.rs lands in exactly one bucket: a face (`faces[].languages`),
+    `uncovered`, the CJK default, or Inter (the native name is wholly in Inter Bold's cmap). Returns
+    the two buckets the manifest does not already hold, {"inter": [codes], "cjk": [codes]}. A
     language that fits none is an error: the gap is a decision to be written down, never silence."""
     import re
     rows = re.findall(r'code: "([A-Za-z-]+)", name: "([^"]*)"', LANGUAGES_RS.read_text())
@@ -369,27 +370,22 @@ def language_buckets(faces: list) -> dict:
     by_code = dict(rows)
     inter_cps = inter_bold_facts()[0]
     cjk_cps = cmap_of(TTFont(CJK_FACE, lazy=True))
-    explicit = {}
-    for face in faces:
-        for code in face["languages"]:
-            explicit[code] = ["face", face["script"]]
-    for entry in UNCOVERED:
-        for code in entry["languages"]:
-            explicit[code] = ["uncovered", entry["script"]]
-    for code in CJK_LANGUAGES:
-        explicit[code] = ["cjk", ""]
+    explicit = {code for face in faces for code in face["languages"]}
+    explicit |= {code for entry in UNCOVERED for code in entry["languages"]}
+    explicit |= set(CJK_LANGUAGES)
     for code in explicit:
         if code not in by_code:
-            raise SystemExit(f"{code}: named in FACES/UNCOVERED but not in languages.rs")
-    buckets = {}
+            raise SystemExit(f"{code}: named in FACES/UNCOVERED/CJK_LANGUAGES but not in languages.rs")
+    buckets = {"inter": [], "cjk": list(CJK_LANGUAGES)}
     for code, name in rows:
         wanted = {ord(c) for c in name if not c.isspace()}
-        if code in explicit:
-            buckets[code] = explicit[code]
-            if explicit[code][0] == "cjk" and not wanted <= cjk_cps:
+        if code in CJK_LANGUAGES:
+            if not wanted <= cjk_cps:
                 raise SystemExit(f"{code}: name {name!r} is not wholly in the CJK face")
+        elif code in explicit:
+            continue
         elif wanted <= inter_cps:
-            buckets[code] = ["inter", ""]
+            buckets["inter"].append(code)
         else:
             lacking = sorted(f"U+{cp:04X}" for cp in wanted - inter_cps)
             raise SystemExit(f"{code} ({name!r}): no bucket - Inter Bold lacks {lacking}; add a face "

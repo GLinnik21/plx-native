@@ -1932,765 +1932,156 @@
   }
  ],
  "buckets": {
-  "ab": [
-   "inter",
-   ""
-  ],
-  "om": [
-   "inter",
-   ""
-  ],
-  "aa": [
-   "inter",
-   ""
-  ],
-  "af": [
-   "inter",
-   ""
-  ],
-  "ak": [
-   "inter",
-   ""
-  ],
-  "am": [
-   "face",
-   "Ethiopic"
-  ],
-  "an": [
-   "inter",
-   ""
-  ],
-  "as": [
-   "face",
-   "Bengali"
-  ],
-  "ig": [
-   "inter",
-   ""
-  ],
-  "gn": [
-   "inter",
-   ""
-  ],
-  "ae": [
-   "uncovered",
-   "Avestan"
-  ],
-  "ay": [
-   "inter",
-   ""
-  ],
-  "az": [
-   "inter",
-   ""
-  ],
-  "id": [
-   "inter",
-   ""
-  ],
-  "ms": [
-   "inter",
-   ""
-  ],
-  "bm": [
-   "inter",
-   ""
-  ],
-  "jv": [
-   "inter",
-   ""
-  ],
-  "su": [
-   "inter",
-   ""
-  ],
-  "bn": [
-   "face",
-   "Bengali"
-  ],
-  "bi": [
-   "inter",
-   ""
-  ],
-  "bs": [
-   "inter",
-   ""
-  ],
-  "br": [
-   "inter",
-   ""
-  ],
-  "my": [
-   "face",
-   "Myanmar"
-  ],
-  "ca": [
-   "inter",
-   ""
-  ],
-  "cs": [
-   "inter",
-   ""
-  ],
-  "ch": [
-   "inter",
-   ""
-  ],
-  "ny": [
-   "inter",
-   ""
-  ],
-  "sn": [
-   "inter",
-   ""
-  ],
-  "co": [
-   "inter",
-   ""
-  ],
-  "cy": [
-   "inter",
-   ""
-  ],
-  "da": [
-   "inter",
-   ""
-  ],
-  "se": [
-   "inter",
-   ""
-  ],
-  "de": [
-   "inter",
-   ""
-  ],
-  "nv": [
-   "inter",
-   ""
-  ],
-  "dv": [
-   "face",
-   "Thaana"
-  ],
-  "et": [
-   "inter",
-   ""
-  ],
-  "na": [
-   "inter",
-   ""
-  ],
-  "en": [
-   "inter",
-   ""
-  ],
-  "en-GB": [
-   "inter",
-   ""
-  ],
-  "es": [
-   "inter",
-   ""
-  ],
-  "eo": [
-   "inter",
-   ""
-  ],
-  "eu": [
-   "inter",
-   ""
-  ],
-  "ee": [
-   "inter",
-   ""
-  ],
-  "to": [
-   "inter",
-   ""
-  ],
-  "fo": [
-   "inter",
-   ""
-  ],
-  "fr": [
-   "inter",
-   ""
-  ],
-  "fr-CA": [
-   "inter",
-   ""
-  ],
-  "fy": [
-   "inter",
-   ""
-  ],
-  "ff": [
-   "inter",
-   ""
-  ],
-  "ga": [
-   "inter",
-   ""
-  ],
-  "gv": [
-   "inter",
-   ""
-  ],
-  "sm": [
-   "inter",
-   ""
-  ],
-  "gd": [
-   "inter",
-   ""
-  ],
-  "gl": [
-   "inter",
-   ""
-  ],
-  "ki": [
-   "inter",
-   ""
-  ],
-  "ho": [
-   "inter",
-   ""
-  ],
-  "hr": [
-   "inter",
-   ""
-  ],
-  "io": [
-   "inter",
-   ""
-  ],
-  "rw": [
-   "inter",
-   ""
-  ],
-  "ia": [
-   "inter",
-   ""
-  ],
-  "ie": [
-   "inter",
-   ""
-  ],
-  "ik": [
-   "inter",
-   ""
-  ],
-  "nr": [
-   "inter",
-   ""
-  ],
-  "nd": [
-   "inter",
-   ""
-  ],
-  "xh": [
-   "inter",
-   ""
-  ],
-  "zu": [
-   "inter",
-   ""
-  ],
-  "is": [
-   "inter",
-   ""
-  ],
-  "it": [
-   "inter",
-   ""
-  ],
-  "mh": [
-   "inter",
-   ""
-  ],
-  "kl": [
-   "inter",
-   ""
-  ],
-  "kr": [
-   "inter",
-   ""
-  ],
-  "kw": [
-   "inter",
-   ""
-  ],
-  "km": [
-   "face",
-   "Khmer"
-  ],
-  "kg": [
-   "inter",
-   ""
-  ],
-  "rn": [
-   "inter",
-   ""
-  ],
-  "sw": [
-   "inter",
-   ""
-  ],
-  "ht": [
-   "inter",
-   ""
-  ],
-  "kj": [
-   "inter",
-   ""
-  ],
-  "ku": [
-   "inter",
-   ""
-  ],
-  "lo": [
-   "face",
-   "Lao"
-  ],
-  "la": [
-   "inter",
-   ""
-  ],
-  "lv": [
-   "inter",
-   ""
-  ],
-  "lb": [
-   "inter",
-   ""
-  ],
-  "lt": [
-   "inter",
-   ""
-  ],
-  "li": [
-   "inter",
-   ""
-  ],
-  "ln": [
-   "inter",
-   ""
-  ],
-  "lu": [
-   "inter",
-   ""
-  ],
-  "lg": [
-   "inter",
-   ""
-  ],
-  "hu": [
-   "inter",
-   ""
-  ],
-  "mg": [
-   "inter",
-   ""
-  ],
-  "ml": [
-   "face",
-   "Malayalam"
-  ],
-  "mt": [
-   "inter",
-   ""
-  ],
-  "mo": [
-   "inter",
-   ""
-  ],
-  "nl": [
-   "inter",
-   ""
-  ],
-  "no": [
-   "inter",
-   ""
-  ],
-  "nb": [
-   "inter",
-   ""
-  ],
-  "nn": [
-   "inter",
-   ""
-  ],
-  "oc": [
-   "inter",
-   ""
-  ],
-  "uz": [
-   "inter",
-   ""
-  ],
-  "oj": [
-   "face",
-   "CanadianAboriginal"
-  ],
-  "or": [
-   "face",
-   "Oriya"
-  ],
-  "hz": [
-   "inter",
-   ""
-  ],
-  "ng": [
-   "inter",
-   ""
-  ],
-  "pl": [
-   "inter",
-   ""
-  ],
-  "pt": [
-   "inter",
-   ""
-  ],
-  "pb": [
-   "inter",
-   ""
-  ],
-  "pt-BR": [
-   "inter",
-   ""
-  ],
-  "ty": [
-   "inter",
-   ""
-  ],
-  "ro": [
-   "inter",
-   ""
-  ],
-  "rm": [
-   "inter",
-   ""
-  ],
-  "qu": [
-   "inter",
-   ""
-  ],
-  "sc": [
-   "inter",
-   ""
-  ],
-  "za": [
-   "inter",
-   ""
-  ],
-  "st": [
-   "inter",
-   ""
-  ],
-  "tn": [
-   "inter",
-   ""
-  ],
-  "sq": [
-   "inter",
-   ""
-  ],
-  "si": [
-   "face",
-   "Sinhala"
-  ],
-  "ss": [
-   "inter",
-   ""
-  ],
-  "sk": [
-   "inter",
-   ""
-  ],
-  "sl": [
-   "inter",
-   ""
-  ],
-  "so": [
-   "inter",
-   ""
-  ],
-  "fi": [
-   "inter",
-   ""
-  ],
-  "sv": [
-   "inter",
-   ""
-  ],
-  "mi": [
-   "inter",
-   ""
-  ],
-  "te": [
-   "face",
-   "Telugu"
-  ],
-  "vi": [
-   "inter",
-   ""
-  ],
-  "ti": [
-   "face",
-   "Ethiopic"
-  ],
-  "ve": [
-   "inter",
-   ""
-  ],
-  "tr": [
-   "inter",
-   ""
-  ],
-  "tk": [
-   "inter",
-   ""
-  ],
-  "tw": [
-   "inter",
-   ""
-  ],
-  "ug": [
-   "face",
-   "Arabic"
-  ],
-  "vo": [
-   "inter",
-   ""
-  ],
-  "fj": [
-   "inter",
-   ""
-  ],
-  "wa": [
-   "inter",
-   ""
-  ],
-  "tl": [
-   "inter",
-   ""
-  ],
-  "wo": [
-   "inter",
-   ""
-  ],
-  "ts": [
-   "inter",
-   ""
-  ],
-  "sg": [
-   "inter",
-   ""
-  ],
-  "yo": [
-   "inter",
-   ""
-  ],
-  "el": [
-   "inter",
-   ""
-  ],
-  "av": [
-   "inter",
-   ""
-  ],
-  "ba": [
-   "inter",
-   ""
-  ],
-  "be": [
-   "inter",
-   ""
-  ],
-  "bg": [
-   "inter",
-   ""
-  ],
-  "os": [
-   "inter",
-   ""
-  ],
-  "kv": [
-   "inter",
-   ""
-  ],
-  "ky": [
-   "inter",
-   ""
-  ],
-  "kk": [
-   "inter",
-   ""
-  ],
-  "mk": [
-   "inter",
-   ""
-  ],
-  "mn": [
-   "uncovered",
-   "Mongolian"
-  ],
-  "ce": [
-   "inter",
-   ""
-  ],
-  "ru": [
-   "inter",
-   ""
-  ],
-  "sr": [
-   "inter",
-   ""
-  ],
-  "tt": [
-   "inter",
-   ""
-  ],
-  "tg": [
-   "inter",
-   ""
-  ],
-  "uk": [
-   "inter",
-   ""
-  ],
-  "cv": [
-   "inter",
-   ""
-  ],
-  "cu": [
-   "inter",
-   ""
-  ],
-  "ka": [
-   "face",
-   "Georgian"
-  ],
-  "hy": [
-   "face",
-   "Armenian"
-  ],
-  "yi": [
-   "face",
-   "Hebrew"
-  ],
-  "he": [
-   "face",
-   "Hebrew"
-  ],
-  "ur": [
-   "face",
-   "Arabic"
-  ],
-  "ar": [
-   "face",
-   "Arabic"
-  ],
-  "ps": [
-   "face",
-   "Arabic"
-  ],
-  "fa": [
-   "face",
-   "Arabic"
-  ],
-  "ha": [
-   "face",
-   "Arabic"
-  ],
-  "ks": [
-   "face",
-   "Devanagari"
-  ],
-  "ne": [
-   "face",
-   "Devanagari"
-  ],
-  "pi": [
-   "face",
-   "Devanagari"
-  ],
-  "bh": [
-   "face",
-   "Devanagari"
-  ],
-  "mr": [
-   "face",
-   "Devanagari"
-  ],
-  "sa": [
-   "face",
-   "Devanagari"
-  ],
-  "sd": [
-   "face",
-   "Devanagari"
-  ],
-  "hi": [
-   "face",
-   "Devanagari"
-  ],
-  "pa": [
-   "face",
-   "Gurmukhi"
-  ],
-  "gu": [
-   "face",
-   "Gujarati"
-  ],
-  "ta": [
-   "face",
-   "Tamil"
-  ],
-  "kn": [
-   "face",
-   "Kannada"
-  ],
-  "th": [
-   "face",
-   "Thai"
-  ],
-  "bo": [
-   "face",
-   "Tibetan"
-  ],
-  "dz": [
-   "face",
-   "Tibetan"
-  ],
-  "iu": [
-   "face",
-   "CanadianAboriginal"
-  ],
-  "cr": [
-   "face",
-   "CanadianAboriginal"
-  ],
-  "ko": [
-   "cjk",
-   ""
-  ],
-  "ii": [
-   "uncovered",
-   "Yi"
-  ],
-  "zh": [
-   "cjk",
-   ""
-  ],
-  "ja": [
-   "cjk",
-   ""
-  ],
-  "zh-TW": [
-   "cjk",
-   ""
+  "inter": [
+   "ab",
+   "om",
+   "aa",
+   "af",
+   "ak",
+   "an",
+   "ig",
+   "gn",
+   "ay",
+   "az",
+   "id",
+   "ms",
+   "bm",
+   "jv",
+   "su",
+   "bi",
+   "bs",
+   "br",
+   "ca",
+   "cs",
+   "ch",
+   "ny",
+   "sn",
+   "co",
+   "cy",
+   "da",
+   "se",
+   "de",
+   "nv",
+   "et",
+   "na",
+   "en",
+   "en-GB",
+   "es",
+   "eo",
+   "eu",
+   "ee",
+   "to",
+   "fo",
+   "fr",
+   "fr-CA",
+   "fy",
+   "ff",
+   "ga",
+   "gv",
+   "sm",
+   "gd",
+   "gl",
+   "ki",
+   "ho",
+   "hr",
+   "io",
+   "rw",
+   "ia",
+   "ie",
+   "ik",
+   "nr",
+   "nd",
+   "xh",
+   "zu",
+   "is",
+   "it",
+   "mh",
+   "kl",
+   "kr",
+   "kw",
+   "kg",
+   "rn",
+   "sw",
+   "ht",
+   "kj",
+   "ku",
+   "la",
+   "lv",
+   "lb",
+   "lt",
+   "li",
+   "ln",
+   "lu",
+   "lg",
+   "hu",
+   "mg",
+   "mt",
+   "mo",
+   "nl",
+   "no",
+   "nb",
+   "nn",
+   "oc",
+   "uz",
+   "hz",
+   "ng",
+   "pl",
+   "pt",
+   "pb",
+   "pt-BR",
+   "ty",
+   "ro",
+   "rm",
+   "qu",
+   "sc",
+   "za",
+   "st",
+   "tn",
+   "sq",
+   "ss",
+   "sk",
+   "sl",
+   "so",
+   "fi",
+   "sv",
+   "mi",
+   "vi",
+   "ve",
+   "tr",
+   "tk",
+   "tw",
+   "vo",
+   "fj",
+   "wa",
+   "tl",
+   "wo",
+   "ts",
+   "sg",
+   "yo",
+   "el",
+   "av",
+   "ba",
+   "be",
+   "bg",
+   "os",
+   "kv",
+   "ky",
+   "kk",
+   "mk",
+   "ce",
+   "ru",
+   "sr",
+   "tt",
+   "tg",
+   "uk",
+   "cv",
+   "cu"
+  ],
+  "cjk": [
+   "ja",
+   "zh",
+   "zh-TW",
+   "ko"
   ]
  }
 }

@@ -290,54 +290,44 @@ fn shaped_scripts_keep_their_layout_tables() {
     }
 }
 
-/// What the picker offers and what is left out is derived, not remembered: the manifest assigns
-/// EVERY language of `languages.rs` to exactly one bucket (a face, the CJK default, Inter, or
-/// uncovered with a reason), and each claim is checked against the shipped cmaps. A language added
-/// to the picker without a decision here fails this test.
+/// What the picker offers and what is left out is derived, not remembered: every language of
+/// `languages.rs` is in exactly one bucket (a face's `languages`, `uncovered`, the manifest's `cjk`
+/// or `inter` list), and each claim is checked against the shipped cmaps. A language added to the
+/// picker without a decision here fails this test.
 #[test]
 fn every_language_has_exactly_one_bucket_and_the_claim_holds() {
     use plx_plex::plex::languages::LANGUAGES;
     let m = manifest();
-    let buckets = m["buckets"].as_object().expect("a buckets table");
-    assert_eq!(buckets.len(), LANGUAGES.len(), "a language without a bucket, or a bucket without a language");
+    let codes = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()).collect()
+    };
     let (inter, cjk) = (cov("appfont-bold.ttf"), cov("appfont-cjk.ttf"));
-    let face_of = |script: &str| faces().into_iter().find(|f| f["script"] == script).expect("a face for the bucket");
-    let uncovered = m["uncovered"].as_array().unwrap();
-    for lang in LANGUAGES {
-        let entry = buckets.get(lang.code).unwrap_or_else(|| panic!("{}: no bucket", lang.code));
-        let (kind, detail) = (entry[0].as_str().unwrap(), entry[1].as_str().unwrap());
-        let name: Vec<u32> = lang.name.chars().filter(|c| !c.is_whitespace()).map(|c| c as u32).collect();
-        match kind {
-            "inter" => assert!(name.iter().all(|&c| inter.contains(c)), "{}: {:?} is not Inter's", lang.code, lang.name),
-            "cjk" => assert!(name.iter().all(|&c| cjk.contains(c)), "{}: {:?} is not the CJK face's", lang.code, lang.name),
-            "face" => {
-                let face = face_of(detail);
-                assert!(face["languages"].as_array().unwrap().iter().any(|c| c == lang.code), "{}", lang.code);
-                let c = subs_cov(&face);
-                assert!(
-                    name.iter().all(|&cp| inter.contains(cp) || c.contains(cp)),
-                    "{}: {:?} is in neither Inter nor {detail}",
-                    lang.code,
-                    lang.name
-                );
-            }
-            "uncovered" => {
-                let row = uncovered.iter().find(|u| u["script"] == detail).expect("the uncovered row");
-                assert!(row["languages"].as_array().unwrap().iter().any(|c| c == lang.code), "{}", lang.code);
-                assert!(row["reason"].as_str().unwrap().len() > 10, "{detail}: say why");
-            }
-            other => panic!("{}: bucket {other}", lang.code),
+    let mut seen: Vec<String> = Vec::new();
+    let mut claim = |bucket: &str, listed: Vec<String>, covered: &dyn Fn(u32) -> bool| {
+        for code in listed {
+            let lang = LANGUAGES.iter().find(|l| l.code == code).unwrap_or_else(|| panic!("{bucket}: unknown language {code}"));
+            let missing: Vec<char> = lang.name.chars().filter(|c| !c.is_whitespace() && !covered(*c as u32)).collect();
+            assert!(missing.is_empty(), "{bucket}/{code}: {:?} lacks {missing:?}", lang.name);
+            seen.push(code);
         }
+    };
+    claim("inter", codes(&m["buckets"]["inter"]), &|cp| inter.contains(cp));
+    claim("cjk", codes(&m["buckets"]["cjk"]), &|cp| cjk.contains(cp));
+    for f in faces() {
+        let c = subs_cov(&f);
+        claim(f["script"].as_str().unwrap(), codes(&f["languages"]), &|cp| inter.contains(cp) || c.contains(cp));
     }
-    // every row of `faces` / `uncovered` names real languages, and no codepoint of an uncovered
-    // script is carried by a face (a face that gains one means the row is stale).
-    for u in uncovered {
-        for code in u["languages"].as_array().unwrap() {
-            assert_eq!(buckets[code.as_str().unwrap()][0], "uncovered", "{code}");
-        }
+    for u in m["uncovered"].as_array().unwrap() {
+        assert!(u["reason"].as_str().unwrap().len() > 10, "{}: say why", u["script"]);
+        claim("uncovered", codes(&u["languages"]), &|_| true);
     }
-    assert!(buckets.values().any(|b| b[0] == "uncovered" && b[1] == "Yi"), "Yi is the standing example");
-    for cp in [0xA288u32, 0x10B00 /* Avestan */, 0x1820 /* Mongolian */] {
+    seen.sort();
+    let mut every: Vec<String> = LANGUAGES.iter().map(|l| l.code.to_string()).collect();
+    every.sort();
+    assert_eq!(seen, every, "a language in no bucket, or in two");
+    // A script left uncovered stays so: no shipped face carries a codepoint of Yi, Avestan or
+    // Mongolian (a face that gains one means the row is stale).
+    for cp in [0xA288u32, 0x10B00, 0x1820] {
         assert!(!inter.contains(cp), "U+{cp:04X}");
         assert!(faces().iter().all(|f| !subs_cov(f).contains(cp)), "a face covers U+{cp:04X}; update `uncovered`");
     }
