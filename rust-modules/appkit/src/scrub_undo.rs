@@ -323,4 +323,27 @@ mod tests {
         assert_eq!(s.apply(42, 0), 42);
         assert!(!s.busy(0));
     }
+
+    /// The chip is drawn in every shipped language, at the longest clock a film can show, wherever
+    /// the origin is: the Back word is the one thing that varies, and it is measured with the
+    /// device's own advances rather than guessed at.
+    #[test]
+    fn the_chip_is_drawn_in_every_shipped_language() {
+        use plx_machine::machine::Measure;
+        use plx_platform::i18n::{language_on_this_thread_for_test, msg, SHIPPED};
+        let measure = plx_base::fontcov::advances::ShippedMeasure;
+        let line = LineExtents { clock: (900.0, 980.0), mark: None, rem_l: Some(1700.0), lo: 96.0, hi: 1824.0 };
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            let text = chip_text(msg::settings_back(), 35_999 * 1_000_000_000);
+            let w = measure.width_str(&text, plx_ui::theme::size::MICRO, false);
+            for ox in [120.0, 500.0, 940.0, 1400.0, 1800.0] {
+                assert!(
+                    chip_x(&line, ox, w).is_some(),
+                    "{}: {text:?} ({w:.0} px) fits nowhere with the origin at {ox}",
+                    language.tag(),
+                );
+            }
+        }
+    }
 }
