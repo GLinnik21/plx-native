@@ -77,20 +77,16 @@ pub(crate) fn seek_pending() -> i64 {
 pub(crate) fn request_seek(x: i64) {
     plx_media::player::request_seek(x)
 }
-/// Commit a scrub to `target` and clear the preview. If we were PAUSED, STAY logically paused: a
-/// dedicated seek-preroll feed override lets the synchronized native clock decode one landed frame
-/// without publishing a false viewer Resume. `resume_pend` asks the per-frame loop to close that
-/// bounded override. `repause_at` is the landed-frame wait target.
-pub(crate) fn commit_seek(target: i64, repause_at: &mut i64) {
+/// Commit a scrub to `target` and clear the preview. This is a bare seek: if the film is PAUSED
+/// the media layer keeps it logically paused — the pump opens the bounded seek-preroll feed
+/// override when it arms the seek, lets the landed frame decode with the transport still saying
+/// Paused, and re-pauses on the landing (its `settle_paused_seek`), so no
+/// caller has to know about the gate.
+pub(crate) fn commit_seek(target: i64) {
     plx_telemetry::diag::event(plx_telemetry::diag::schema::DiagEvent::FeatureUsed {
         feature: plx_telemetry::diag::schema::Feature::Seek,
     });
     request_seek(target);
-    if paused() {
-        *repause_at = target;
-        set_resume_pend(true);
-        plx_media::player::TX.begin_paused_seek();
-    }
 }
 #[inline]
 pub(crate) fn is_started() -> bool {
@@ -570,7 +566,6 @@ pub(crate) fn player_requests(
     bridge: &mut super::bridge::Bridge,
     ok_armed: &mut bool,
     press: &mut plx_ui::press::Press,
-    repause_at: &mut i64,
 ) {
     use plx_screens::registry::PlayerReq;
     for req in reqs {
@@ -613,8 +608,8 @@ pub(crate) fn player_requests(
                 resume_if_paused(pa);
             }
             // …and its twin, which does NOT resume: the scrub bar is how a paused film is moved.
-            // `repause_at` is an `App` field, which is exactly why this is a request.
-            PlayerReq::CommitSeek(ns) => commit_seek(ns, repause_at),
+            // The pump keeps the pause across it (see `commit_seek`).
+            PlayerReq::CommitSeek(ns) => commit_seek(ns),
             PlayerReq::More(action) => apply_more_action(ps, pa, bridge, action),
             PlayerReq::CommitTrack(commit) => commit_track(ps, commit),
             PlayerReq::ArmInfoPress => {
@@ -1173,66 +1168,36 @@ pub(crate) fn land_play_then_observe<S: ?Sized>(
     observe(state);
 }
 
-/// **The loop's half of the scrub commit: a paused film stays paused across the seek.**
+/// **The scrub commit is a bare seek: the media layer owns "a paused film stays paused".**
 ///
-/// `PlayerReq::CommitSeek` promises this and `screens::player`'s own
-/// `a_scrub_seek_taken_while_paused_holds_the_pause` grades that the screen ASKS for it; this
-/// grades what the arm then does, which is the half no screen test can reach — `repause_at` is an
-/// `App` field, `resume_pend` and the seek-preroll override are the pipeline's, and none of the
-/// three is nameable from `screens/` (`ci/check-deps.sh`'s `layer` gate).
+/// `PlayerReq::CommitSeek` promises that a paused film stays paused; the pump keeps it
+/// (`pump::native_seek_pump_tests` grades the arm, the landing and the re-pause). What is graded
+/// here is the app's half of that contract: the commit asks for the seek and nothing else, so no
+/// preroll, `resume_pend` or re-pause target is left for a caller to forget.
 #[cfg(test)]
 mod paused_seek_tests {
     use super::*;
 
     /// Every state this touches is a crate global, so the body holds `testlock::serial()`.
     #[test]
-    fn a_scrub_commit_taken_while_paused_arms_the_repause_instead_of_resuming() {
+    fn a_scrub_commit_is_a_bare_seek_whether_or_not_the_film_is_paused() {
         let _g = plx_base::testlock::serial();
         let was_paused = plx_media::player::TX.paused.load(Relaxed);
         let (was_seek, was_resume, was_seeking) = (seek_pending(), resume_pend(), plx_media::player::SHARED.seeking.load(Relaxed));
-        plx_media::player::TX.paused.store(true, Relaxed);
-        let mut repause_at = 0i64;
-
-        commit_seek(42_000_000_000, &mut repause_at);
-
-        assert_eq!(seek_pending(), 42_000_000_000, "the seek really was requested");
-        assert_eq!(repause_at, 42_000_000_000, "…and the landed-frame wait target is its own");
-        assert!(resume_pend(), "the per-frame loop is asked to close the bounded override");
-        assert!(
-            plx_media::player::seek_preroll_active(),
-            "…which is what lets the pipeline decode the landed frame with the transport still \
-             saying Paused — the whole difference from PlayerReq::SeekTo",
-        );
-
-        plx_media::player::TX.finish_seek_preroll();
+        set_resume_pend(false);
+        for paused in [true, false] {
+            plx_media::player::TX.paused.store(paused, Relaxed);
+            commit_seek(42_000_000_000);
+            assert_eq!(seek_pending(), 42_000_000_000, "the seek really was requested");
+            assert!(!resume_pend());
+            assert!(
+                !plx_media::player::seek_preroll_active(),
+                "the pump opens the preroll when it arms the seek; the commit does not",
+            );
+        }
         plx_media::player::TX.paused.store(was_paused, Relaxed);
         // Restore what the commit wrote: a seek left in flight reads as `Seeking` to every
-        // later test of this binary, which used to be cleaned up by the player's own tests that ran
-        // in the same binary before the media layer became a crate of its own.
-        plx_media::player::TX.seek_to_ns.store(was_seek, Relaxed);
-        plx_media::player::SHARED.seeking.store(was_seeking, Relaxed);
-        set_resume_pend(was_resume);
-    }
-
-    /// …and the complement: while PLAYING there is nothing to hold, so the commit is a bare seek
-    /// and arms no re-pause at all. Without this the case above passes for a `commit_seek` that
-    /// armed the override unconditionally, which would re-pause a film nobody had paused.
-    #[test]
-    fn a_scrub_commit_taken_while_playing_arms_no_repause() {
-        let _g = plx_base::testlock::serial();
-        let was_paused = plx_media::player::TX.paused.load(Relaxed);
-        let (was_seek, was_resume, was_seeking) = (seek_pending(), resume_pend(), plx_media::player::SHARED.seeking.load(Relaxed));
-        plx_media::player::TX.paused.store(false, Relaxed);
-        set_resume_pend(false);
-        let mut repause_at = 7i64;
-
-        commit_seek(11_000_000_000, &mut repause_at);
-
-        assert_eq!(seek_pending(), 11_000_000_000);
-        assert_eq!(repause_at, 7, "untouched: there is no pause to hold");
-        assert!(!resume_pend());
-        assert!(!plx_media::player::seek_preroll_active());
-        plx_media::player::TX.paused.store(was_paused, Relaxed);
+        // later test of this binary.
         plx_media::player::TX.seek_to_ns.store(was_seek, Relaxed);
         plx_media::player::SHARED.seeking.store(was_seeking, Relaxed);
         set_resume_pend(was_resume);

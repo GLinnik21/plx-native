@@ -493,7 +493,6 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
             &mut app.bridge,
             &mut app.ok_armed,
             &mut app.input.press,
-            &mut app.repause_at,
         );
     }
     // …and the item context menu's committed row, for the same reason and at the same moment: it

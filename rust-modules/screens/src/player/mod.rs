@@ -489,9 +489,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
     ///    seeks are what race the demux.) With the loop also arming that same field, the interim
     ///    behaviour was worse than either: one tap issued TWO seeks.
     /// 2. A committed scrub asks for [`PlayerReq::CommitSeek`], which holds a paused film paused,
-    ///    rather than [`PlayerReq::SeekTo`], which resumes it. `App::repause_at` is still the
-    ///    loop's — the screen states the INTENT and the loop performs it, which is what a request
-    ///    is for.
+    ///    rather than [`PlayerReq::SeekTo`], which resumes it. The screen states the INTENT and
+    ///    the pump keeps the pause across the seek, which is what a request is for.
     /// 3. The lost-keyup safety commit is reproduced, on the same `Tick` as the ramp it guards.
     ///
     /// The POINTER half is here for the same reason. A click on the scrubber's registered stop
@@ -2303,9 +2302,8 @@ mod scrub_ownership_tests {
     /// [`PlayerReq::SeekTo`] is the Chapters strip's request — seek and RESUME — and it is the
     /// wrong one for a scrub: the loop's arm for it calls `resume_if_paused`, so paused scrubbing
     /// started the film. The scrub commit's own request is [`PlayerReq::CommitSeek`], whose arm is
-    /// `app::playback::commit_seek` — a seek-preroll override that decodes the landed frame
-    /// without publishing a viewer Resume (`repause_at`, `resume_pend`, `TX::begin_paused_seek`,
-    /// all three of them the loop's to hold).
+    /// `app::playback::commit_seek` — a bare seek; the pump opens the seek-preroll override
+    /// that decodes the landed frame without publishing a viewer Resume, and re-pauses on landing.
     #[test]
     fn a_scrub_seek_taken_while_paused_holds_the_pause() {
         let _g = plx_base::testlock::serial();

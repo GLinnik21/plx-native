@@ -273,7 +273,15 @@ something.
   `native_seek_refused` so the reload's fresh session stays `Reload` for the rest of THAT playback;
   a fresh play (`start_bufferfeed_tracked` with no live Engine) clears the latch. `Reload`
   (old-ABI 3.x, and the fallback of both) is a fresh `Load` per seek. Otherwise the mode is
-  re-selected per session. The evidence is in `docs/webos5-port.md` ("The public `Seek`"). A transcode seek instead
+  re-selected per session. The evidence is in `docs/webos5-port.md` ("The public `Seek`").
+  **An in-place seek armed under a viewer Pause is owned by the pump, not its caller:** the feed
+  gate (`TX.feed_allowed()` = `!paused || seek_preroll`) is shut while paused, so a keyframe could
+  never be fed and the stuck watchdog would reload into the same shut gate. At the arm the pump
+  opens the paused-seek preroll itself (`Engine::paused_seek_owned`) and `pump::settle_paused_seek`
+  closes it on the landing (`frames() >= 1` after the keyframe's rebase → `finish_paused_seek`: a
+  brief prime Play, then Pause again). So a bare `request_seek` is correct from any caller; a
+  preroll a caller opened first (the foreground restore) stays that caller's to close. The watchdog
+  also re-bases `seek_armed_at` on every tick the gate is shut. A transcode seek instead
   restarts the encode at `&offset` with a full fresh `Load`, and the PMS half of that restart is a
   FLIGHT, never frame-thread I/O: `route::dispatch_transcode_seek` plans on the frame, a worker
   registers the replacement encoder, and the drain installs it and reloads (`seek_landing_tail`).
