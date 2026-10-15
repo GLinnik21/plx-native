@@ -176,9 +176,8 @@ struct Parser {
     in_rt: bool,
     /// Nothing but a break or the start of the cue precedes the cursor on its line.
     line_start: bool,
-    /// An MPL2 line that began with `/` is italic until its end.
-    mpl2_italic: bool,
-    /// MicroDVD `{y:i}`: italic to the end of this line (uppercase `{Y:i}` covers the cue).
+    /// Italic until the end of this line: an MPL2 line that began with `/`, or MicroDVD `{y:i}`
+    /// (uppercase `{Y:i}` covers the cue).
     line_italic: bool,
 }
 
@@ -189,7 +188,6 @@ impl Parser {
             out: Parsed { pieces: Vec::new(), align: None },
             in_rt: false,
             line_start: true,
-            mpl2_italic: false,
             line_italic: false,
         };
         let chars: Vec<char> = text.chars().collect();
@@ -247,7 +245,7 @@ impl Parser {
                     i += 1;
                 }
                 '/' if dialect == TextDialect::Mpl2 && p.line_start => {
-                    p.mpl2_italic = true;
+                    p.line_italic = true;
                     p.push(Piece::Tag("\\i1".into()));
                     i += 1;
                 }
@@ -271,8 +269,7 @@ impl Parser {
     }
 
     fn line_break(&mut self) {
-        if self.mpl2_italic || self.line_italic {
-            self.mpl2_italic = false;
+        if self.line_italic {
             self.line_italic = false;
             self.push(Piece::Tag("\\i0".into()));
         }
