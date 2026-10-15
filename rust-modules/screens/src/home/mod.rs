@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
 use std::sync::Arc;
 
-use plx_data::pms::{HeroRef, HubIdentity, HubRef, HubsView, PmsMovie};
+use plx_data::pms::{HeroRef, HubIdentity, HubRef, HubsSnapshot, HubsView, PmsMovie};
 use plx_data::stores::hubs::HubsCmd;
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_ui::cards::{self as ui_cards, RowStyle};
@@ -468,6 +468,11 @@ pub struct HomeScreen {
     item_index: HashMap<HomeHubIdentity, HubKeys>,
     group_index: HashMap<HomeHubIdentity, usize>,
     projected_generation: Option<u32>,
+    /// The publication the rows were last projected from, retained (one Arc clone) so the NEXT
+    /// publication can draw the cards it removes while they fade out. Not canon.
+    retained: Option<HubsSnapshot>,
+    /// The publication before the latest one, while a row animates its landing. Not canon.
+    ghosts: Option<Ghosts>,
     restored_scroll: Vec<(u32, f32)>,
     restore_reveal: bool,
     /// The rows last sent to the store as held (`HubsCmd::Hold`), so the command goes out only when
@@ -533,6 +538,8 @@ impl HomeScreen {
             item_index: HashMap::new(),
             group_index: HashMap::new(),
             projected_generation: None,
+            retained: None,
+            ghosts: None,
             restored_scroll: Vec::new(),
             restore_reveal: false,
             hold_sent: None,
@@ -787,7 +794,8 @@ impl HomeScreen {
         self.grid.shelves = Vec::with_capacity(rows.len());
         for row in &rows {
             let kept = old_at.get(&row.identity).and_then(|&old| old_shelves.get_mut(old)?.take());
-            let mut shelf = kept.unwrap_or_else(|| Shelf::new(self.entry, &RowStyle::HOME).cull_margin(GLOW_PAD));
+            let mut shelf = kept.unwrap_or_else(|| Shelf::new(self.entry, &RowStyle::HOME).cull_margin(GLOW_PAD)
+                .animate_landings(row.identity == HomeHubIdentity::ContinueWatching));
             if let Some(&(_, scroll)) = self.restored_scroll.iter().find(|(group, _)| *group == row.group.0) {
                 shelf.restore_scroll(scroll, row.elems.len());
             }
@@ -798,6 +806,8 @@ impl HomeScreen {
         // `Uncover`) as well as on the `Tick` whose `update_grid` lays the grid out. A frame drawn
         // between the two showed the new rows at the top of the screen, over the billboard.
         self.layout_grid();
+        // where each row stood in the publication that is being replaced, for the cards it removes
+        let ghost_rows: Vec<Option<usize>> = rows.iter().map(|row| old_at.get(&row.identity).copied()).collect();
         let was = std::mem::take(&mut self.elem_at);
         for (row, hub) in rows.iter().enumerate() {
             for (col, &elem) in hub.elems.iter().enumerate() {
@@ -811,6 +821,10 @@ impl HomeScreen {
                 && !self.rows.iter().any(|row| row.group.0 == *group)
         });
         self.projected_generation = Some(view.generation);
+        if let Some(before) = self.retained.take_if(|held| held.view().generation != view.generation) {
+            self.ghosts = Some(Ghosts { snap: before, rows: ghost_rows });
+        }
+        self.retained.get_or_insert_with(|| view.retain());
         self.prune_keys(&was, view.generation, cx.focus.current.map(|key| key.elem), &cx.focus.remembered);
         self.reconcile_carousel(view);
     }
@@ -1111,6 +1125,9 @@ impl HomeScreen {
             }
         }
         self.grid.shelves = shelves;
+        if self.ghosts.is_some() && !self.grid.shelves.iter().any(Shelf::landing_pending) {
+            self.ghosts = None;
+        }
         // The store holds cards for the rows in view and two either side; the rest keep a descriptor.
         if !self.rows.is_empty() {
             let (lo, hi) = on_screen.unwrap_or((0, 0));
@@ -1762,6 +1779,9 @@ impl HomeScreen {
                 );
             }
             if let Some(shelf) = self.grid.shelves.get(row) {
+                if let Some(ghosts) = shelf.has_ghosts().then(|| self.ghost_cards(row)).flatten() {
+                    shelf.paint_ghosts(f, p, &ghosts, self.section(row));
+                }
                 shelf.paint_resting(f, p, &self.cards(view, row), self.section(row));
             }
         }
@@ -1779,6 +1799,13 @@ impl HomeScreen {
             y: self.grid.base_y(row) + CARD_DY,
             clip: Rect::new(0.0, plx_ui::widgets::TOP_BAR_BOTTOM, SCR_W, SCR_H - plx_ui::widgets::TOP_BAR_BOTTOM),
         }
+    }
+
+    /// Row `row` as the publication before the latest one held it, for the cards a landing removed.
+    fn ghost_cards(&self, row: usize) -> Option<GhostCards<'_>> {
+        let ghosts = self.ghosts.as_ref()?;
+        let hub = ghosts.snap.view().hub((*ghosts.rows.get(row)?)?)?;
+        Some(GhostCards { items: hub.items })
     }
 
     /// Row `row`'s cards as `cards::Shelf` reads them.
@@ -1973,7 +2000,7 @@ impl LogicalState for HomeScreen {
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
             // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
-            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, restored_scroll: _, restore_reveal: _, hold_sent: _, carousel: _,
+            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, retained: _, ghosts: _, restored_scroll: _, restore_reveal: _, hold_sent: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
@@ -3067,6 +3094,43 @@ fn deck_label(is_deck: bool, title: &str) -> ui_cards::TileLabel {
         ui_cards::TileLabel::played(title)
     } else {
         ui_cards::TileLabel::title(title)
+    }
+}
+
+/// The publication before the latest one and where each current row stood in it (`None`: a row
+/// that was not there), kept while a row animates a landing so its removed cards can fade out.
+struct Ghosts {
+    snap: HubsSnapshot,
+    rows: Vec<Option<usize>>,
+}
+
+/// A row of the previous publication, read only for the cards a landing removed (`Shelf::paint_ghosts`).
+struct GhostCards<'a> {
+    items: &'a [Arc<PmsMovie>],
+}
+
+impl<H: HomeLike> CardSource<H> for GhostCards<'_> {
+    fn len(&self) -> usize {
+        self.items.len().min(MAX_ITEMS)
+    }
+    /// A ghost is never focused, pressed or registered: nothing asks for its element.
+    fn elem(&self, _i: usize) -> u32 {
+        0
+    }
+    fn index_of(&self, _e: &u32) -> Option<usize> {
+        None
+    }
+    fn art(&self, i: usize) -> Art<'_> {
+        Art::Poster(self.items.get(i).map(|item| tile_facts::of(item)))
+    }
+    fn label(&self, _i: usize) -> ui_cards::TileLabel {
+        ui_cards::TileLabel::default()
+    }
+    fn progress(&self, i: usize) -> Option<f32> {
+        self.items.get(i).and_then(|item| item.resume_frac())
+    }
+    fn loaded(&self, i: usize) -> bool {
+        self.items.get(i).is_some_and(|item| !item.rk.is_empty())
     }
 }
 

@@ -1392,6 +1392,8 @@ where
         } else { super::containers::transition::PagePaint::Live };
         if !source_pass && (pages || host_render != HostRender::Live || video_plane) {
             self.page_image = image;
+            plx_machine::idle::set_page_image(
+                !matches!(paint, super::containers::transition::PagePaint::Live), paint.captures_page());
             if matches!(paint, super::containers::transition::PagePaint::Live) {
                 self.page_snapshot.release();
                 self.page_image = Default::default();

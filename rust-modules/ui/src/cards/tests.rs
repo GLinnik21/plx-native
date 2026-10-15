@@ -3009,3 +3009,248 @@ fn a_shelfs_probe_reports_the_listing_position_apart_from_the_window_slot() {
         assert_eq!((seen.index, seen.len, seen.global), (11, 12, want), "window starting at {first}");
     }
 }
+
+// ---- animated landings (`landing.rs`) ----------------------------------------------------
+
+/// A forty-card row with landings animated, focus on card 112 (index 12) and everything at rest.
+fn landing_rig() -> Rig<Shelf> {
+    plx_machine::idle::set_page_image(false, false);
+    let mut r = Rig::<Shelf>::new(40);
+    r.sect = Shelf::new(ENTRY, &RowStyle::HOME).animate_landings(true);
+    r.run(2);
+    r.land_focus(112, By::Restore);
+    r.run(240);
+    r
+}
+
+fn drawn_x(r: &Rig<Shelf>, e: u32) -> f32 {
+    r.sect.place(&r.cx(), &r.src, &e, SHELF_AT, At::Drawn).unwrap().rect.x
+}
+
+/// The ghosts of a landing, painted from `prev` through a recording painter: the previous cards
+/// the section really drew, with their screen rects.
+fn ghost_paint(r: &Rig<Shelf>, prev: &Cards) -> Vec<(u32, Rect)> {
+    let cx = r.cx();
+    let f = DrawFrame::new(&cx, Painter::recording());
+    prev.drawn.borrow_mut().clear();
+    r.sect.paint_ghosts(&f, f.painter, prev, SHELF_AT);
+    prev.drawn.take()
+}
+
+fn pitch() -> f32 {
+    RowStyle::HOME.w + RowStyle::HOME.gap
+}
+
+/// A removed card is a ghost drawn from the PREVIOUS source at the slot it stood in on screen,
+/// fading out at rest, and the shelf is quiet again once it is gone.
+#[test]
+fn a_removed_card_fades_out_as_a_ghost_of_the_previous_source() {
+    let mut r = landing_rig();
+    let prev = Cards::new(r.src.elems.clone(), false);
+    let was = r.sect.place(&r.cx(), &r.src, &111, SHELF_AT, At::Drawn).unwrap().rect;
+    r.src.elems.remove(11);
+    r.run(1);
+    let (ghosts, a0) = r.sect.ghost_probe();
+    assert_eq!(ghosts, vec![11], "the card's index in the previous source");
+    assert!(a0 < 1.0 && a0 > 0.0, "fading already, not gone: {a0}");
+    let drawn = ghost_paint(&r, &prev);
+    let (e, rect) = drawn.iter().copied().find(|&(e, _)| e == 111).expect("the ghost is painted from the previous source");
+    assert_eq!(e, 111);
+    assert!((rect.x - was.x).abs() < 0.5 && (rect.w - was.w).abs() < 0.01, "at the slot it stood in, at rest: {was:?} {rect:?}");
+    let mut last = a0;
+    for _ in 0..8 {
+        r.run(1);
+        let (_, a) = r.sect.ghost_probe();
+        assert!(a < last, "fades monotonically: {a} after {last}");
+        last = a;
+    }
+    r.run(600);
+    assert!(r.sect.ghost_probe().0.is_empty(), "gone once faded");
+    assert!(ghost_paint(&r, &prev).is_empty(), "nothing painted after");
+    assert!(!r.sect.landing_pending() && !r.run(1), "and the shelf is quiet");
+}
+
+/// An inserted card fades in from nothing; the others do not fade.
+#[test]
+fn an_inserted_card_fades_in() {
+    let mut r = landing_rig();
+    r.src.elems.insert(13, 900);
+    r.run(1);
+    let n = r.src.elems.len();
+    let (_, a0) = r.sect.landing_probe(n, 13);
+    assert!(a0 > 0.0 && a0 < 0.5, "starts from nothing: {a0}");
+    assert_eq!(r.sect.landing_probe(n, 12).1, 1.0, "a card that was there does not fade");
+    let mut last = a0;
+    for _ in 0..12 {
+        r.run(1);
+        let (_, a) = r.sect.landing_probe(n, 13);
+        assert!(a > last, "fades in monotonically");
+        last = a;
+    }
+    r.run(600);
+    assert_eq!(r.sect.landing_probe(n, 13), (0.0, 1.0));
+    assert!(!r.sect.landing_pending() && !r.run(1), "and the shelf is quiet");
+}
+
+/// The cards that stay start where they stood on screen and slide to their new slot, offset
+/// decaying to 0; the focused tile's rect never changes, its pop never drops and at most one tile
+/// is lifted in any frame.
+#[test]
+fn survivors_slide_and_the_focused_tile_stays_put() {
+    let mut r = landing_rig();
+    let focus_at = r.sect.place(&r.cx(), &r.src, &112, SHELF_AT, At::Drawn).unwrap().rect;
+    let left_was = drawn_x(&r, 110);
+    let right_was = drawn_x(&r, 114);
+    r.src.elems.remove(11);
+    r.run(1);
+    let full = RowStyle::HOME.focus_scale;
+    let mut prev_off = f32::INFINITY;
+    for frame in 0..90 {
+        let now = r.sect.place(&r.cx(), &r.src, &112, SHELF_AT, At::Drawn).unwrap().rect;
+        assert!((now.x - focus_at.x).abs() < 0.5 && (now.w - focus_at.w).abs() < 0.01, "frame {frame}: the focused rect moved: {focus_at:?} -> {now:?}");
+        assert_eq!(r.scale(112), Some(full), "frame {frame}: the pop dropped");
+        assert!(lifted(&r) <= 1, "frame {frame}: more than one tile lifted");
+        let off = r.sect.landing_probe(r.src.elems.len(), 10).0.abs();
+        assert!(off <= prev_off + 1e-3, "the offset decays: {off} after {prev_off}");
+        prev_off = off;
+        r.run(1);
+    }
+    assert!((drawn_x(&r, 114) - right_was).abs() < 0.5, "a card right of the focus never moved on screen");
+    assert!((drawn_x(&r, 110) - left_was - pitch()).abs() < 0.5, "the card left of the gap closed it: {left_was} -> {}", drawn_x(&r, 110));
+    assert_eq!(r.sect.landing_probe(r.src.elems.len(), 10).0, 0.0, "settled at exactly its slot");
+}
+
+/// Right after the landing the sliding card is still where it stood, the stop it registers is the
+/// rect it is drawn at, and the slide is a real distance (a pitch, not a nudge).
+#[test]
+fn a_sliding_card_starts_where_it_stood_and_its_stop_follows() {
+    let mut r = landing_rig();
+    let was = drawn_x(&r, 110);
+    r.src.elems.remove(11);
+    r.run(1);
+    let first = drawn_x(&r, 110);
+    assert!((first - was).abs() < 0.25 * pitch(), "starts from where it stood: {was} -> {first}");
+    let at = r.stops(1.0).into_iter().find(|s| s.key.elem == 110).unwrap().rect.x;
+    assert!((at - first).abs() < 0.01, "the stop is the drawn rect: {at} vs {first}");
+    r.run(1);
+    assert!(drawn_x(&r, 110) > first, "and moves toward its slot");
+}
+
+/// The first appearance of a shelf's cards is not a landing, and neither is a row of placeholders
+/// becoming cards: nothing is there to change.
+#[test]
+fn nothing_animates_on_the_first_load() {
+    plx_machine::idle::set_page_image(false, false);
+    let mut r = Rig::<Shelf>::new(0);
+    r.sect = Shelf::new(ENTRY, &RowStyle::HOME).animate_landings(true);
+    r.run(2);
+    r.src.elems = (100..108).collect();
+    r.run(1);
+    for i in 0..8 {
+        assert_eq!(r.sect.landing_probe(8, i), (0.0, 1.0));
+    }
+    assert!(r.sect.ghost_probe().0.is_empty() && !r.sect.landing_pending());
+
+    let mut p = Rig::<Shelf>::new(8);
+    p.sect = Shelf::new(ENTRY, &RowStyle::HOME).animate_landings(true);
+    p.src.unloaded = 0..8;
+    p.run(2);
+    p.src.elems = (200..208).collect();
+    p.src.unloaded = 0..0;
+    p.run(1);
+    for i in 0..8 {
+        assert_eq!(p.sect.landing_probe(8, i), (0.0, 1.0), "placeholders landing as cards cut");
+    }
+    assert!(p.sect.ghost_probe().0.is_empty());
+}
+
+/// A section that did not ask for animated landings cuts, as it always did.
+#[test]
+fn landings_are_off_unless_asked_for() {
+    let mut r = settled::<Shelf>(40);
+    r.land_focus(112, By::Restore);
+    r.run(240);
+    r.src.elems.remove(11);
+    r.run(1);
+    assert!(r.sect.ghost_probe().0.is_empty());
+    assert_eq!(r.sect.landing_probe(r.src.elems.len(), 10), (0.0, 1.0));
+}
+
+/// A dormant shelf draws no ghosts and snaps: the change is adopted whole, nothing plays after
+/// it wakes either.
+#[test]
+fn a_dormant_shelf_snaps_a_landing() {
+    let mut r = landing_rig();
+    r.sect.dormant(true);
+    r.src.elems.remove(11);
+    r.src.elems.insert(13, 900);
+    r.run(3);
+    assert!(r.sect.ghost_probe().0.is_empty());
+    r.sect.dormant(false);
+    r.run(2);
+    let n = r.src.elems.len();
+    assert_eq!(r.sect.landing_probe(n, 13), (0.0, 1.0));
+    assert_eq!(r.sect.landing_probe(n, 10), (0.0, 1.0));
+    assert!(r.sect.ghost_probe().0.is_empty());
+}
+
+/// A landing that arrives while the page is a held image is never played under it. When the image
+/// is released it animates live if the image still shows the old cards, and snaps if a capture was
+/// taken after the landing (the image already shows the new ones).
+#[test]
+fn a_landing_under_a_held_page_image_animates_live_after_release() {
+    let mut r = landing_rig();
+    plx_machine::idle::set_page_image(true, false);
+    r.src.elems.remove(11);
+    r.run(6);
+    let n = r.src.elems.len();
+    assert!(r.sect.ghost_probe().0.is_empty(), "nothing plays under the image");
+    assert_eq!(r.sect.landing_probe(n, 10), (0.0, 1.0));
+    assert!(r.sect.landing_pending(), "but the change is remembered");
+    plx_machine::idle::set_page_image(false, false);
+    r.run(1);
+    assert_eq!(r.sect.ghost_probe().0, vec![11], "released: the ghost fades live");
+    assert!(r.sect.landing_probe(n, 10).0.abs() > 1.0, "and the cards slide");
+    r.run(600);
+    assert!(!r.sect.landing_pending() && !r.run(1), "and the shelf is quiet");
+}
+
+#[test]
+fn a_landing_the_held_image_already_shows_is_a_snap_on_release() {
+    let mut r = landing_rig();
+    plx_machine::idle::set_page_image(true, false);
+    r.src.elems.remove(11);
+    r.run(3);
+    // the replacement capture is taken after the landing
+    plx_machine::idle::set_page_image(true, true);
+    r.run(2);
+    plx_machine::idle::set_page_image(false, false);
+    r.run(2);
+    assert!(r.sect.ghost_probe().0.is_empty(), "the image showed the new cards: no animation");
+    assert_eq!(r.sect.landing_probe(r.src.elems.len(), 10), (0.0, 1.0));
+    assert!(!r.sect.landing_pending());
+}
+
+/// When the focused card is the one removed it fades as a ghost at rest (never lifted), and the
+/// card the screen then seats focus on (the slot it held, `clamp_slot`) is adopted whole: one lifted
+/// tile in every frame.
+#[test]
+fn a_removed_focused_card_fades_at_rest_and_focus_is_reseated_by_the_slot_rule() {
+    let mut r = landing_rig();
+    let prev = Cards::new(r.src.elems.clone(), false);
+    r.src.elems.remove(12);
+    r.run(1);
+    assert_eq!(r.sect.ghost_probe().0, vec![12]);
+    assert_eq!(lifted(&r), 0, "nothing is lifted while the engine has no focus here");
+    let drawn = ghost_paint(&r, &prev);
+    let ghost = drawn.iter().find(|&&(e, _)| e == 112).expect("the focused card's ghost is painted").1;
+    assert!((ghost.w - RowStyle::HOME.w).abs() < 0.01, "at rest, unscaled: {ghost:?}");
+    let slot = super::clamp_slot(12, r.src.elems.len()).unwrap();
+    let to = r.src.elems[slot];
+    r.land_focus(to, By::Reconcile);
+    for _ in 0..30 {
+        r.run(1);
+        assert!(lifted(&r) <= 1);
+    }
+    assert_eq!(r.scale(to), Some(RowStyle::HOME.focus_scale), "adopted whole");
+}

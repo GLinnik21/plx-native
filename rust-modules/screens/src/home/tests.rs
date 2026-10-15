@@ -4643,3 +4643,87 @@ fn a_held_right_along_the_first_row_re_renders_the_chrome_glass_source_only_for_
     assert!(stale <= 17, "{stale} stale frames of {}", frames.len());
     assert!(frames[frames.len() / 2..].iter().all(|f| !f.0), "the source is still churning half-way through the run");
 }
+
+// ---- animated card landings (the Continue Watching row) ----
+
+fn tick_n(s: &mut HomeScreen, view: HubsView<'_>, focus: Option<FocusKey<u32>>, from: u32, frames: u32) {
+    for f in 0..frames {
+        step(s, view, focus, &ScreenEvent::Tick(Tick { ms: (from + f) * 16, dt_us: 16_667 }));
+    }
+}
+
+/// A Home on the shelves (snap at 1) showing `items` Continue Watching cards, settled.
+fn landing_home(items: usize) -> (plx_data::pms::PmsState, HomeScreen) {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, items, plx_data::pms::HubState::Ready);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    assert_eq!(s.rows[0].identity, HomeHubIdentity::ContinueWatching);
+    tick_n(&mut s, snapshot.view(), None, 0, 6);
+    (state, s)
+}
+
+#[test]
+fn a_continue_watching_card_that_leaves_fades_out_as_a_ghost_of_the_previous_snapshot() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = landing_home(6);
+    assert!(!s.grid.shelves[0].landing_pending(), "premise: the first load played nothing");
+    plx_data::pms::remove_test_item(&mut state, "2");
+    let after = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, after.view(), None, 10, 2);
+    assert!(s.grid.shelves[0].has_ghosts(), "the removed card is still drawn, from the old snapshot");
+    assert!(s.ghosts.is_some());
+    assert_eq!(s.rows[0].elems.len(), 5);
+    tick_n(&mut s, after.view(), None, 20, 120);
+    assert!(!s.grid.shelves[0].landing_pending(), "the landing settled");
+    assert!(s.ghosts.is_none(), "the previous snapshot is let go once nothing draws from it");
+}
+
+#[test]
+fn a_continue_watching_card_that_arrives_fades_in() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = landing_home(5);
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_for_test(&mut state, &adapter, 6, plx_data::pms::HubState::Ready);
+    let after = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, after.view(), None, 10, 2);
+    assert_eq!(s.rows[0].elems.len(), 6);
+    assert!(s.grid.shelves[0].landing_pending(), "the arrival is playing");
+    tick_n(&mut s, after.view(), None, 20, 120);
+    assert!(!s.grid.shelves[0].landing_pending());
+}
+
+#[test]
+fn a_dormant_home_adopts_a_landing_without_playing_it() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, mut s) = landing_home(6);
+    s.snap.jump(0.0);
+    s.snap_target = 0.0;
+    plx_data::pms::remove_test_item(&mut state, "2");
+    let after = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, after.view(), None, 10, 3);
+    assert!(!s.grid.shelves[0].landing_pending());
+    assert!(!s.grid.shelves[0].has_ghosts());
+}
+
+#[test]
+fn a_row_that_is_not_continue_watching_cuts() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 2, 6);
+    let before = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(before.view());
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    tick_n(&mut s, before.view(), None, 0, 6);
+    plx_data::pms::remove_test_item(&mut state, "2");
+    let after = plx_data::pms::hubs_snapshot(&state);
+    tick_n(&mut s, after.view(), None, 10, 3);
+    assert!(s.grid.shelves.iter().all(|sh| !sh.landing_pending() && !sh.has_ghosts()));
+}

@@ -30,6 +30,12 @@
 //!   A non-deliberate `FocusMoved` adopts the new card whole and snaps the old one to rest; only a
 //!   deliberate move lets the old tile go over frames. At most one tile reads lifted in any frame,
 //!   including the one between the landing and the tick.)
+//! - **Animated landings.** A [`Shelf`] built with [`Shelf::animate_landings`] plays a content change
+//!   that no focus move announced (a card leaves, a card arrives) instead of cutting: the removed
+//!   card fades out as a ghost painted from the PREVIOUS source ([`Shelf::paint_ghosts`]), the
+//!   cards that stay slide to their slots (the focused tile does not move), the new ones fade in.
+//!   Off by default; first loads and [`dormant`](Shelf::dormant) shelves never animate; the springs are
+//!   frame-time and count as layout motion. See `landing.rs`. [`Grid`] does not animate landings.
 //! - **The pop rule.** A tile the engine reports focused that no deliberate move (`By::Dir` /
 //!   `By::Pointer`) announced draws at FULL focus scale at once — a restore or reconcile is adopted
 //!   whole, a page returns exactly as it was left. An unfocused tile draws at rest (or the live
@@ -63,6 +69,7 @@ use crate::{Painter, Rect};
 
 mod avatars;
 mod grid;
+mod landing;
 mod pool;
 mod shelf;
 mod stack;

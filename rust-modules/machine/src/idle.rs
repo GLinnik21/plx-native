@@ -144,6 +144,11 @@ thread_local! {
     /// How many [`decorative`] regions are open right now.
     static DECOR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 
+    /// The page is being shown as a held image this frame (see [`set_page_image`]).
+    static PAGE_IMAGE_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// How many page captures the dispatcher has taken (see [`set_page_image`]).
+    static PAGE_CAPTURES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+
     /// This frame's `dt`, stamped once by [`frame_begin`]. [`note_spring`] needs it to convert a
     /// velocity into "distance this frame", which is the only form in which a velocity can be
     /// judged visible. Same thread-local rationale as `MOVING`.
@@ -687,6 +692,32 @@ pub fn present_dirty() -> bool {
 #[inline]
 pub fn present_moving() -> bool {
     MOVING.with(|m| m.get())
+}
+
+/// The dispatcher's statement about the page it painted this frame: `held` is whether the page was
+/// shown as a captured image rather than drawn live (a dip's Out and In halves and the hold after
+/// it), `captured` whether this frame took a capture of it. A screen reads them through
+/// [`page_image_held`] / [`page_captures`] on its NEXT tick, so a layout animation it would start
+/// is not played under an image that hides it and then stretches the hold (`cards::Shelf`'s
+/// animated landings: a landing the image already contains is a snap, one it does not is
+/// animated once the image is released).
+pub fn set_page_image(held: bool, captured: bool) {
+    PAGE_IMAGE_HELD.with(|h| h.set(held));
+    if captured {
+        PAGE_CAPTURES.with(|c| c.set(c.get().wrapping_add(1)));
+    }
+}
+
+/// Was the page a held image on the last frame the dispatcher painted ([`set_page_image`])?
+#[inline]
+pub fn page_image_held() -> bool {
+    PAGE_IMAGE_HELD.with(|h| h.get())
+}
+
+/// Captures of the page the dispatcher has taken so far, wrapping ([`set_page_image`]).
+#[inline]
+pub fn page_captures() -> u32 {
+    PAGE_CAPTURES.with(|c| c.get())
 }
 
 /// Did a spring OUTSIDE every [`MotionScope`] report motion this frame — i.e. the page's own, not a
