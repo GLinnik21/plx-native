@@ -1620,3 +1620,32 @@ fn native_a_text_script_past_the_whole_script_bound_renders_through_its_windows(
 }
 
 mod synth;
+
+/// A paused playhead whose subtitle offset moves both ways (2 s cues back to back: 20-22, 22-24,
+/// 24-26): every new clock gets the frame for ITS cue, whatever the worker was doing (an
+/// ahead render armed by the previous frame, or nothing) when the offset changed.
+#[test]
+fn a_changed_offset_on_a_paused_playhead_publishes_the_frame_of_the_new_clock() {
+    use super::mailbox::{Mailbox, Rendered};
+    let source = Arc::new(source(vec![event(0, 20_000, 2000), event(1, 22_000, 2000), event(2, 24_000, 2000)]));
+    let key = request_key(&source);
+    let cue_of = |now: i64| (now / 2000) * 2000;
+    let validity_of = |now: i64| ass_timing::Validity { from_ms: cue_of(now), until_ms: cue_of(now) + 2000, animated: false };
+    let mut mailbox = Mailbox::new();
+    // The worker drains its mailbox: the frame is `error_frame` (any frame), the validity the cue's.
+    let drain = |mailbox: &mut Mailbox| {
+        while let Some(job) = mailbox.take() {
+            let rendered = Rendered { frame: error_frame(job.key, Fault::RenderFailed), validity: validity_of(job.now_ms), aligns: None };
+            mailbox.finish(&job, Some(rendered));
+        }
+    };
+    // Paused at 23.0 s, the offset 0, then +2.5 s, then -2.5 s, then back, each one a frame step.
+    for clock in [23_000, 20_500, 25_500, 20_500, 25_500, 23_000] {
+        mailbox.request(key, clock, &source);
+        drain(&mut mailbox);
+        mailbox.request(key, clock, &source);
+        let shown = mailbox.view(&key).expect("a frame");
+        let published = mailbox.published.as_ref().map(|p| p.validity).expect("published");
+        assert!(published.contains(clock), "clock {clock}: the frame on screen covers {published:?} ({:?})", shown.serial);
+    }
+}
