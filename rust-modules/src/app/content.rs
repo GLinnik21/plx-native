@@ -951,6 +951,21 @@ mod library_publication_tests {
                 .map(|(spot, episode)| (spot, episode, screen.refresh_for_test())))
     }
 
+    /// What a COVERED Detail page's entry holds for its return: the seeded `Spot` and focus. A
+    /// reconcile moves neither, so a test that seeded them compares them after the reconcile and
+    /// after the landing.
+    fn retained_return(
+        pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
+        entry: EntryId,
+    ) -> (Option<plx_data::metadata::Spot>, Option<plx_machine::machine::FocusKey<u32>>) {
+        let ret = &pages.nav.entry(entry).expect("the Detail entry is on the stack").ret;
+        let spot = match &ret.memory {
+            PageMemory::Detail(memory) => Some(memory.spot.clone()),
+            _ => None,
+        };
+        (spot, ret.focus)
+    }
+
     fn detail_refresh_phase(
         pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
         entry: EntryId,
@@ -1668,7 +1683,7 @@ mod library_publication_tests {
         bridge::nav_push(&mut pages, b.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == b));
-        let (_, focus) = seed_detail_return(&mut pages, a_entry, sid, "episode-a");
+        let (spot, focus) = seed_detail_return(&mut pages, a_entry, sid, "episode-a");
 
         // Retire the constructors' real worker requests, then hold B in the same global metadata
         // slot the product uses while A's ViewState completion arrives.
@@ -1692,8 +1707,9 @@ mod library_publication_tests {
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), None,
             "A's fetch stays deferred while B owns the shared slot");
         assert_eq!(detail_refresh_phase(&pages, a_entry),
-            plx_screens::registry::DetailRefreshPhase::Deferred,
-            "covered A retains the addressed episode and focus spot");
+            plx_screens::registry::DetailRefreshPhase::Deferred);
+        assert_eq!(retained_return(&pages, a_entry), (Some(spot.clone()), Some(focus)),
+            "covered A retains the addressed episode and focus spot: the reconcile moved neither");
 
         assert!(land_detail_for_test(&mut rig, sid, "detail-b", b_request,
             Some(plx_data::metadata::Detail {
@@ -1712,9 +1728,9 @@ mod library_publication_tests {
             "A starts its deferred metadata refresh only after Back uncovers it");
         assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), generation + 2,
             "B closes its request and A starts exactly one replacement request");
-        assert_eq!(detail_refresh_phase(&pages, a_entry),
-            plx_screens::registry::DetailRefreshPhase::Requested,
-            "RestoreMemory must not overwrite the addressed episode/focus intent");
+        assert_eq!(detail_restore_target(&pages, a_entry),
+            Some((spot.clone(), None, plx_screens::registry::DetailRefreshPhase::Requested)),
+            "Back restores the seeded spot (the episode is the focus key's, not the intent's), and the reconcile changed neither");
         // EVIDENCE, so nobody re-derives it: this assertion is NOT stale. It fails on unmodified
         // Stage C1 too — it was simply never reached there, because the `detail_generation_for_test`
         // assertion above panicked first (9 vs 8, the double teardown `Clear`). Fix that alone and this
@@ -1760,7 +1776,7 @@ mod library_publication_tests {
         bridge::nav_push(&mut pages, person.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == person));
-        let (_, focus) = seed_detail_return(&mut pages, a_entry, sid, "episode-a");
+        let (spot, focus) = seed_detail_return(&mut pages, a_entry, sid, "episode-a");
 
         drain_detail_workers(&mut rig);
         rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
@@ -1787,6 +1803,8 @@ mod library_publication_tests {
             "the pre-write A fetch remains in flight while its page is covered");
         assert_eq!(detail_refresh_phase(&pages, a_entry),
             plx_screens::registry::DetailRefreshPhase::Deferred);
+        assert_eq!(retained_return(&pages, a_entry), (Some(spot.clone()), Some(focus)),
+            "the reconcile of a covered page moved neither its spot nor its focus");
 
         let ret = pages.return_state();
         bridge::nav_pop_with_return(&mut pages, ret);
@@ -1809,9 +1827,9 @@ mod library_publication_tests {
             "the stale landing cannot undo A's optimistic watched state");
         assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
             "rejecting the stale landing cannot replace the reconciliation generation");
-        assert_eq!(detail_refresh_phase(&pages, a_entry),
-            plx_screens::registry::DetailRefreshPhase::Requested,
-            "RestoreMemory preserves the ViewState episode/focus intent");
+        assert_eq!(detail_restore_target(&pages, a_entry),
+            Some((spot, None, plx_screens::registry::DetailRefreshPhase::Requested)),
+            "Back restores the seeded spot, and neither the reconcile nor the stale landing changed it");
         assert_eq!(pages.focus(), Some(focus));
         let generation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         frame(&mut pages, &mut rig, &mut frame_no);
@@ -1965,6 +1983,12 @@ mod library_publication_tests {
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(true));
         assert_eq!(detail_refresh_phase(&pages, a_entry),
             plx_screens::registry::DetailRefreshPhase::Requested);
+        // …and the reconcile moved nothing on the page it re-reads: the same focus, the same spot,
+        // and no restore intent seated (that is the Back path's alone)
+        assert_eq!(pages.focus(), Some(focus), "the reconcile left the focus where it was");
+        let PageMemory::Detail(held) = pages.return_state().memory else { unreachable!() };
+        assert_eq!(held.spot, spot, "the reconcile left the page's spot where it was");
+        assert_eq!(detail_restore_target(&pages, a_entry), None, "a reconcile seats no restore intent");
 
         let mut return_focus = focus;
         if navigate {
@@ -2023,9 +2047,9 @@ mod library_publication_tests {
         let reconciliation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(true));
         if !navigate {
-            assert_eq!(detail_refresh_phase(&pages, a_entry),
-            plx_screens::registry::DetailRefreshPhase::Requested,
-                "the retry preserves the episode and focus intent");
+            assert_eq!(detail_restore_target(&pages, a_entry),
+                Some((spot.clone(), None, plx_screens::registry::DetailRefreshPhase::Requested)),
+                "the retry preserves the page's spot");
         }
         assert_eq!(pages.focus(), Some(return_focus));
         assert_eq!(detail_refresh_phase(&pages, a_entry),
@@ -2145,6 +2169,8 @@ mod library_publication_tests {
         let reconciliation = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
         assert_eq!(detail_refresh_phase(&pages, a_entry),
             plx_screens::registry::DetailRefreshPhase::Requested);
+        assert_eq!(pages.focus(), Some(focus), "the reconcile left the focus on the addressed episode");
+        assert_eq!(detail_restore_target(&pages, a_entry), None, "a reconcile seats no restore intent");
 
         bridge::nav_push(&mut pages, person.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
@@ -2232,6 +2258,8 @@ mod library_publication_tests {
         let reconciliation = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
         assert_eq!(detail_refresh_phase(&pages, a_entry),
             plx_screens::registry::DetailRefreshPhase::Requested);
+        assert_eq!(pages.focus(), Some(focus), "the reconcile left the focus on the addressed episode");
+        assert_eq!(detail_restore_target(&pages, a_entry), None, "a reconcile seats no restore intent");
 
         bridge::nav_push(&mut pages, person.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
@@ -2335,7 +2363,6 @@ pub(crate) fn restore_played_entry(app: &mut App) {
             Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore {
                 spot,
                 episode,
-                refresh: plx_screens::registry::DetailRefreshPhase::None,
             }))));
     }
 }

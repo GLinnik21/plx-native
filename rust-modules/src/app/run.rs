@@ -3158,7 +3158,7 @@ mod lifecycle_regression_tests {
             menu_play_await: Default::default(),
             prev: Default::default(),
             refresh_hubs: Default::default(),
-                plaintext_upgrade: Default::default(),
+            plaintext_upgrade: Default::default(),
             ev: [0; 128],
             remote: Default::default(),
             win: Default::default(),
@@ -3817,7 +3817,12 @@ mod lifecycle_regression_tests {
                         let _ = wait.recv_timeout(Duration::from_secs(5));
                     }
                     let body = respond(&request);
-                    let _ = write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    // a handler answers `!503` for a refusal: a 5xx with an empty body
+                    let (status, body) = match body.as_str() {
+                        "!503" => ("503 Service Unavailable", String::new()),
+                        _ => ("200 OK", body),
+                    };
+                    let _ = write!(socket, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                 }
             }) {
                 Some(h) => h,
@@ -5241,6 +5246,8 @@ mod lifecycle_regression_tests {
         hold_reads: Arc<AtomicBool>,
         /// While set, the `stopped` timeline POST parks before it is answered.
         hold_stop: Arc<AtomicBool>,
+        /// While set, the `stopped` timeline POST is answered 503 and the server keeps nothing.
+        refuse_stop: Arc<AtomicBool>,
     }
 
     impl StopServer {
@@ -5249,11 +5256,13 @@ mod lifecycle_regression_tests {
                 stopped: Arc::new(AtomicBool::new(false)),
                 hold_reads: Arc::new(AtomicBool::new(false)),
                 hold_stop: Arc::new(AtomicBool::new(false)),
+                refuse_stop: Arc::new(AtomicBool::new(false)),
             }
         }
 
         fn rig(&self, ends: bool) -> Option<Rig> {
             let (stopped, hold, hold_stop) = (self.stopped.clone(), self.hold_reads.clone(), self.hold_stop.clone());
+            let refuse = self.refuse_stop.clone();
             Rig::serving_with(move |request: &str| {
                 if request.contains("/decision?") {
                     return r#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#.into();
@@ -5263,6 +5272,9 @@ mod lifecycle_regression_tests {
                         for _ in 0..5_000 {
                             if !hold_stop.load(Ordering::SeqCst) { break; }
                             std::thread::sleep(Duration::from_millis(2));
+                        }
+                        if refuse.load(Ordering::SeqCst) {
+                            return "!503".into();
                         }
                         stopped.store(true, Ordering::SeqCst);
                     }
@@ -5408,6 +5420,47 @@ mod lifecycle_regression_tests {
         assert!(plx_media::route::take_landed_stops().is_empty(), "the old identity's stop reached the mailbox");
         for _ in 0..12 { step(&mut rig.app, &mut t, vec![]); }
         assert_eq!(requests_matching(&rig, "GET /library/metadata/", from), 0, "the old identity's stop was read back");
+    }
+
+    /// **A stop the server refused still reaches the page it returns to** (a #575 regression the
+    /// read-back alone cannot fix: a refused stop asks for none). The Detail page shows the
+    /// position the viewer reached the frame the stop lands, with its own re-read still out, and
+    /// that re-read, asked for by the stop itself, then puts the server's word back (nothing was
+    /// stored, so the resume point is the one the server holds).
+    #[test]
+    fn a_refused_stop_patches_the_detail_page_and_the_page_then_re_reads_itself() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(false) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        rig.release.send(()).unwrap(); // nothing parks: the first request answers at once
+        super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "1", None, None);
+        settle(&mut rig.app, &mut t);
+        land_detail_reads(&mut rig, &mut t);
+        let resume = |rig: &Rig| rig.app.bridge.metadata_view().current().map(|d| (d.rk.clone(), d.resume_ms));
+        assert_eq!(resume(&rig), Some(("1".into(), 0)), "premise: the Detail page is loaded, unplayed");
+        play_from_here(&mut rig, &mut t);
+        server.refuse_stop.store(true, Ordering::SeqCst);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        settle(&mut rig.app, &mut t);
+        assert!(rig.app.route().same_instance(&detail_arg(rig.sid)), "premise: Back returned to the Detail page");
+        // Back re-requests the page it uncovers; that read is out (held) when the stop lands
+        let asked = plx_data::metadata::detail_generation_for_test(rig.app.bridge.metadata_mut().adapter_ref());
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 150_000, 600_000)), None);
+        plx_media::route::drain_scrobble();
+        poll_until("the Detail page never showed the position the viewer reached", || {
+            step(&mut rig.app, &mut t, vec![]);
+            resume(&rig) == Some(("1".into(), 150_000))
+        });
+        assert!(!server.stopped.load(Ordering::SeqCst), "premise: the server kept nothing");
+        assert!(plx_data::metadata::detail_generation_for_test(rig.app.bridge.metadata_mut().adapter_ref()) > asked,
+            "the refused stop asked the page for a re-read of its own");
+        let from = rig.requests.lock().unwrap().len();
+        land_detail_reads(&mut rig, &mut t);
+        assert!(requests_matching(&rig, "GET /library/metadata/1", from) >= 1, "the page read the server");
+        assert_eq!(resume(&rig), Some(("1".into(), 0)), "and settled on the server's word");
     }
 
     /// Network reconcile work is held while the player is on top: a mark-watched that lands under

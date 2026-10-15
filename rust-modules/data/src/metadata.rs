@@ -1819,10 +1819,11 @@ pub fn install_for_test(state: &mut MetadataState, d: Option<Detail>) {
 /// THREE things can be about the item, and all three are updated:
 /// * **the loaded item itself** — a movie, or the show whose hero toggle was pressed;
 /// * **one EPISODE of the loaded season** — the filmstrip's context menu, whose rk is a leaf of the
-///   show `CURRENT` holds. Only the episode's `watched` and `resume_ms` change here: its season's
-///   `viewedLeafCount` is deliberately NOT stepped, because one flip says nothing certain about the
-///   season. The read-back lands the season's row, `app::content::reconcile_details` re-reads this
-///   page, and the server's count arrives from that read.
+///   show `CURRENT` holds. Its season's `viewedLeafCount` steps by one with a real flip, because the
+///   season tab's tick is derived from that count ([`Season::watched`]) and a tick that disagreed
+///   with the episode row beneath it is the "two surfaces describing one item two ways" this page
+///   refuses elsewhere. The step is a guess: the re-read the read-back asks for replaces it with
+///   the server's number.
 /// * **a tile of the RELATED shelf** — a different item entirely, which is what makes it the odd
 ///   one out: it is matched on its OWN `sid` (each row carries one, see [`Related`]) rather than on
 ///   the page's, and it is checked unconditionally rather than as one arm of a chain. Since
@@ -1913,17 +1914,26 @@ fn set_watched_local(state: &mut MetadataState, at: &crate::viewstate::ViewAt, o
         }
         return hit || !rks.is_empty();
     }
-    if d.episodes.position(&at.rk).is_none() {
+    let Some(was) = d.episodes.position(&at.rk).and_then(|i| d.episodes.get(i)).map(|e| e.watched) else {
         return hit;
-    }
+    };
     d.episodes.edit(&at.rk, |e| {
         e.watched = on;
         e.resume_ms = 0;
     });
-    // The season tab's count is NOT stepped here: one episode's flip says nothing certain about
-    // the season (the server may already count it, or count others this page has not loaded). The
-    // read-back of the episode lands the season's row, which re-reads this page
-    // (`app::content::reconcile_details`), and the count comes from that read.
+    // The OPTIMISTIC layer of the season tab's count, so the tab and the hero read the press before
+    // any answer: stepped only on a real FLIP (a repeat or a replay of the same press moves
+    // nothing) and clamped to the season's own leaf count. A server that sent none leaves that 0,
+    // and `Season::watched` reads `leaf_count > 0` first, so an unknown season stays unknown. It is
+    // a guess about one season: the read-back's re-read of this page (`app::content::
+    // reconcile_details`) lands the server's number over it.
+    if was != on {
+        let cur = d.cur_season;
+        if let Some(s) = d.seasons.get_mut(cur) {
+            let step = if on { 1 } else { -1 };
+            s.viewed_leaf_count = (s.viewed_leaf_count + step).clamp(0, s.leaf_count.max(0));
+        }
+    }
     true
 }
 
@@ -1942,6 +1952,21 @@ fn patch_tiles(state: &mut MetadataState, at: &crate::viewstate::ViewAt, edit: c
         }
     }
     hit
+}
+
+/// A stop's resume point on the LOADED item, or on the loaded show's episode, whose (server, key)
+/// is exactly the edit's. Only a value that differs counts, so a read-back that agrees raises no
+/// notice. Episodes are matched on the page's server (`Episode` carries no `sid`). **MAIN THREAD.**
+fn patch_loaded_offset(state: &mut MetadataState, at: &crate::viewstate::ViewAt, ms: i64) -> bool {
+    let Some(d) = state.current.as_mut() else { return false };
+    if plx_plex::plex::same_item((d.sid, &d.rk), (at.sid, &at.rk)) {
+        return std::mem::replace(&mut d.resume_ms, ms) != ms;
+    }
+    if d.sid != at.sid || d.episodes.position(&at.rk).and_then(|i| d.episodes.get(i)).is_none_or(|e| e.resume_ms == ms) {
+        return false;
+    }
+    d.episodes.edit(&at.rk, |e| e.resume_ms = ms);
+    true
 }
 
 /// drop the loaded detail (on leaving the detail page). Also supersedes any in-flight async
@@ -3880,9 +3905,14 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             crate::viewstate::ViewEdit::LeftDeck => false,
             // The server's word reaches the other items' tiles on this page (Related, the
             // collection shelf). The loaded item, its episodes and seasons are re-read whole by
-            // the application when the read-back lands (`app::content::reconcile_details`).
-            crate::viewstate::ViewEdit::Facts { .. } | crate::viewstate::ViewEdit::Offset { .. } => {
-                patch_tiles(state, &at, edit)
+            // the application when the read-back lands (`app::content::reconcile_details`); only
+            // a stop's Offset (below) also lands on the item and episode itself.
+            crate::viewstate::ViewEdit::Facts { .. } => patch_tiles(state, &at, edit),
+            // A stop's position also reaches the loaded item and its episode, matched exactly:
+            // whether the server took the stop or not, the page must not wait for a read.
+            crate::viewstate::ViewEdit::Offset { ms } => {
+                let tiles = patch_tiles(state, &at, edit);
+                patch_loaded_offset(state, &at, ms) | tiles
             }
         },
         MetadataCmd::InstallPlaying(p) => {
@@ -3992,6 +4022,7 @@ fn install_landed_detail(state: &mut MetadataState, adapter: &std::sync::Arc<Met
     let mut d = d;
     if let Some(old) = state.current.as_ref() {
         carry_related_window(old, &mut d);
+        carry_episode_window(old, &mut d);
     }
     state.current = Some(d);
     // The read describes the server from when it was requested: the edits published since are
@@ -4040,6 +4071,21 @@ fn carry_related_window(old: &Detail, d: &mut Detail) {
     (t.positions, t.hubs, t.row) = (positions, was.hubs.clone(), was.row.clone());
     (t.offset, t.end, t.total, t.more) = (was.offset, was.end, was.total, was.more);
     d.related.extend(cards);
+}
+
+/// The EPISODE twin of [`carry_related_window`]: a long season keeps only the 60-row pages the
+/// strip reached, and a re-read of the page lands with page 0 alone, so the episode the viewer
+/// stands on (page 1 and beyond) would lose its row, and the focus its key, until that page is
+/// asked for and lands again. Held only for the same item AND the same season (same rk, same
+/// length); anything else starts at page 0 as a first load does. The rows carried are the ones last
+/// read: the watched edits published since are made again on them by [`replay_views`], a stop's
+/// position reaches them as an `Offset`, and the next slide of the strip evicts and re-reads what it
+/// no longer needs.
+fn carry_episode_window(old: &Detail, d: &mut Detail) {
+    if !plx_plex::plex::same_item((old.sid, &old.rk), (d.sid, &d.rk)) { return; }
+    let season = |x: &Detail| x.seasons.get(x.cur_season).map(|s| s.rk.clone());
+    if season(old).is_none() || season(old) != season(d) { return; }
+    d.episodes.carry_pages_from(&old.episodes);
 }
 
 // ---- "Also available": the same film on the OTHER sources ------------------------------------

@@ -569,8 +569,8 @@ pub fn publish_view(
     // The Library's own deck is a different shelf on a different screen, and the one place a
     // deck removal is reachable from besides Home; no other store has a deck. Watched, Facts and
     // Offset reach every store that can be drawing the item; Detail's own item, episodes and
-    // seasons take no Facts: the application re-reads the page whole when the read-back lands
-    // (`app::content::reconcile_details`).
+    // seasons take no Facts (the application re-reads the page whole when the read-back lands,
+    // `app::content::reconcile_details`), only the Offset, on the loaded item and its episode.
     if !matches!(edit, ViewEdit::LeftDeck) {
         metadata(crate::stores::metadata::MetadataCmd::ApplyView { at: at.clone(), edit });
         search(crate::stores::search::SearchCmd::ApplyView { at: at.clone(), edit });

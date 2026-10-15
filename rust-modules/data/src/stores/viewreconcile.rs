@@ -48,10 +48,14 @@
 //!   reach Home's hubs, Browse's listing, Search, Person, Collection and Detail's Related and
 //!   collection-member tiles, each only where `ViewEdit::changes` says the row differs. Browse's
 //!   section shelves (re-read whole after a burst) and Detail's own item, episodes and seasons
-//!   take neither: they cannot be patched from a facts row (the season tabs' counts and the hero's
+//!   take no `Facts` (a stop's `Offset` does reach the loaded item and its episode): they cannot be patched from a facts row (the season tabs' counts and the hero's
 //!   on-deck episode are the server's numbers). Every row a read-back publishes is also listed for
 //!   the application ([`ViewReconcileStore::take_landed`]), which re-reads each Detail page whose
 //!   item, season or show it is.
+//!   A stop the server REFUSED asks for no read-back (it would answer with the old resume point and
+//!   undo the patches), but it too lists its item there ([`ViewReconcileStore::owe_page`]): the
+//!   Detail pages were patched with the position the viewer reached (`Offset` reaches the loaded
+//!   item and its episode), and their own re-read puts the server's word back.
 //! * **A failed read is not re-queued**, and the optimistic patch stands (the same "a failure never
 //!   blanks a populated screen" rule as every other read here). A refused spawn is retried after
 //!   [`RETRY_FRAMES`].
@@ -199,6 +203,16 @@ impl ViewReconcileStore {
     /// The stopped items whose read-back found them watched having not been before.
     pub fn take_watched_ends(&mut self) -> Vec<Key> {
         std::mem::take(&mut self.watched_ends)
+    }
+
+    /// Owe the Detail pages that show `key` a re-read of their own, once ([`Self::take_landed`]).
+    /// A published row does it, and so does a stop the server refused: the page was patched with
+    /// the position the viewer reached, no read-back is asked (it would answer with the old resume
+    /// point and undo the tile patches), and the page's re-read is what puts the server's word back.
+    pub fn owe_page(&mut self, key: Key) {
+        if !self.landed.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1))) {
+            self.landed.push(key);
+        }
     }
 
     /// The rows read-backs have published since the last call, each once.
@@ -369,9 +383,7 @@ impl ViewReconcileStore {
                                 self.watched_ends.push(key);
                             }
                         }
-                        if !self.landed.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (m.sid, &m.rk))) {
-                            self.landed.push((m.sid, m.rk.clone()));
-                        }
+                        self.owe_page((m.sid, m.rk.clone()));
                         publish(ViewChange {
                             sid: m.sid,
                             rk: m.rk.clone(),

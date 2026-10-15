@@ -2192,25 +2192,24 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 }
                 Handled::No
             }
-            ScreenEvent::App(AppMsg::DetailRestore { spot, episode, refresh }) => {
+            // The deliberate re-seat after playback: focus and spot only. A server obligation is
+            // `DetailReconcile`'s alone.
+            ScreenEvent::App(AppMsg::DetailRestore { spot, episode }) => {
                 self.restore_episode(spot, episode.as_deref(), meta);
-                // A focus-only restore (including navigation memory) cannot discharge a newer
-                // write's server obligation. `Requested` on this message means the sender ALREADY
-                // admitted the request (the contract `DetailReconcile` below is built on:
-                // `app::content::reconcile_details` runs `RequestDetail` through
-                // `Bridge::metadata_run` in the same synchronous step that emits it), so
-                // recording the phase here is a pure observation, not a start. Issuing
-                // the command again from this arm would run the non-idempotent request twice — a
-                // second `begin_detail_request` generation — and reopen the very T2 window the
-                // caller closed. A covered page keeps Deferred until Enter gives it ownership of
-                // the shared Metadata slot.
-                self.owe_refresh(*refresh, meta);
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
             }
             // The server's word about this page's item changed: the obligation alone. Nothing is
             // re-seated and nothing scrolls - the focus key is an identity that survives the
             // re-read, which `reconcile` resolves against the landed page.
+            //
+            // `Requested` means the sender ALREADY admitted the request
+            // (`app::content::reconcile_details` runs `RequestDetail` through
+            // `Bridge::metadata_run` in the same synchronous step that emits this), so recording
+            // the phase is a pure observation, not a start. Issuing the command again from here
+            // would run the non-idempotent request twice - a second `begin_detail_request`
+            // generation - and reopen the T2 window the caller closed. A covered page keeps
+            // `Deferred` until Enter gives it ownership of the shared Metadata slot.
             ScreenEvent::App(AppMsg::DetailReconcile { refresh }) => {
                 self.owe_refresh(*refresh, meta);
                 fx.invalidate(Provenance::Landing(fx.from()));
@@ -2290,7 +2289,7 @@ impl DetailScreen {
     /// drain reaches this effect. The one caller that IS a same-turn application boundary —
     /// `app::content::reconcile_details`, which holds the `Bridge` — therefore does not come
     /// through here at all: it runs `RequestDetail` through `Bridge::metadata_run` and hands this
-    /// screen an already-backed `Requested` (see the `DetailRestore` arm). What is left on this
+    /// screen an already-backed `Requested` (see the `DetailReconcile` arm). What is left on this
     /// path is the `Enter` promotion of an obligation the page has carried while covered, whose
     /// one observable consequence — the restored focus key — `reconcile` holds on `self.refresh`.
     fn start_reconciliation<H: crate::registry::MetadataLike>(
@@ -2314,7 +2313,7 @@ impl DetailScreen {
 
     /// Record a server obligation the sender has already backed (`Requested`) or that must wait
     /// for this page to own the Metadata slot again (`Deferred`). The one place the phase is set
-    /// from outside, shared by `DetailRestore` and `DetailReconcile`.
+    /// from outside, by `DetailReconcile`.
     fn owe_refresh(&mut self, refresh: DetailRefreshPhase, meta: plx_data::metadata::MetadataView<'_>) {
         match refresh {
             DetailRefreshPhase::None => {}
