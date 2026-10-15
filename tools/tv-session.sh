@@ -66,7 +66,8 @@
 #                     loopback, deliberately). Implies --no-token; pair it with `--screen login`:
 #                     the QR sign-in authorizes itself on the 2nd poll and the mock's server arrives
 #                     OWNED, so the owned-only rules (server updates) run unmodified. Refuses
-#                     --guest/--owner, and a mock whose identity is not the synthetic one. The
+#                     --guest/--owner, any screen but login, --server, --keep, and a mock whose
+#                     identity is not the synthetic one. The
 #                     tunnel lives in `.tv-plextv.pid`; `down` (and the next `up`) closes it.
 #   --keep            do not clear existing triggers first (rarely what you want)
 #
@@ -751,6 +752,12 @@ cmd_up() {
       bad "--mock-plextv signs in through the mock's plex.tv; it cannot be combined with --guest or --owner"; exit 2
     fi
     if [ "$FLAVOR" != debug ]; then bad "--mock-plextv requires the debug install"; exit 2; fi
+    # The mock identity is pinned only by the QR sign-in on a boot with no stored session. Any
+    # other screen, --server (stored roster) or --keep (triggers left by an earlier boot) would
+    # reach the owner's stored session beside a mock plex.tv, so each is refused, not dropped.
+    if [ "$screen" != login ]; then bad "--mock-plextv requires --screen login (the mock sign-in is the only boot it pins)"; exit 2; fi
+    if [ "$server_set" = 1 ]; then bad "--mock-plextv cannot be combined with --server (that boots the stored roster)"; exit 2; fi
+    if [ "$keep" = 1 ]; then bad "--mock-plextv cannot be combined with --keep (leftover triggers could select another identity)"; exit 2; fi
     no_token=1
     extra_arm+=("plextv=http://127.0.0.1:$mock_plextv")
   fi

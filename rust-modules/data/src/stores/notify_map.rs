@@ -43,12 +43,16 @@ pub const MAX_SESSIONS: usize = 64;
 
 type Key = (ServerId, String);
 
-/// One line per pump that delivered sessions: how many, by state. Counts only: a session names
-/// another household member's playback, so no key, title or client id is ever logged.
-fn log_arrivals(out: &NotifyOut) {
-    let mut by = [0usize; 5];
-    for s in out.plays.iter().flat_map(|p| &p.sessions) {
-        by[match s.state {
+/// Sessions whose state CHANGED this pump (what `observe` accepted), by state. A steady `playing`
+/// frame repeats every few seconds for the length of a film and is no news, so it is not counted
+/// and not logged. Counts only: a session names another household member's playback, so no key,
+/// title or client id is ever logged.
+#[derive(Default)]
+struct Transitions([usize; 5]);
+
+impl Transitions {
+    fn note(&mut self, state: PlayState) {
+        self.0[match state {
             PlayState::Playing => 0,
             PlayState::Paused => 1,
             PlayState::Buffering => 2,
@@ -56,10 +60,18 @@ fn log_arrivals(out: &NotifyOut) {
             PlayState::Other => 4,
         }] += 1;
     }
-    plx_base::eventlog::log(&format!(
-        "notify: sessions playing={} paused={} buffering={} stopped={} other={}",
-        by[0], by[1], by[2], by[3], by[4]
-    ));
+
+    /// One line per pump that saw a transition; nothing otherwise.
+    fn log(&self) {
+        if self.0.iter().all(|n| *n == 0) {
+            return;
+        }
+        let by = self.0;
+        plx_base::eventlog::log(&format!(
+            "notify: sessions playing={} paused={} buffering={} stopped={} other={}",
+            by[0], by[1], by[2], by[3], by[4]
+        ));
+    }
 }
 
 /// What one [`Stores::notify_map`] call actually spent.
@@ -242,7 +254,7 @@ impl Stores {
             self.notify_map.forget_server(*sid);
         }
         if !out.plays.is_empty() {
-            log_arrivals(out);
+            let mut changed = Transitions::default();
             let held = self.held(pages, shown);
             for plays in &out.plays {
                 for s in &plays.sessions {
@@ -256,6 +268,7 @@ impl Stores {
                     if !self.notify_map.observe(plays.sid, &session, rk, s.state) {
                         continue;
                     }
+                    changed.note(s.state);
                     let detail = held.detail(plays.sid, rk);
                     let is_held = detail || held.card(plays.sid, rk);
                     let owed = &mut self.notify_map.owed;
@@ -270,6 +283,7 @@ impl Stores {
                     }
                 }
             }
+            changed.log();
         }
         self.spend_notify_owed(directory)
     }

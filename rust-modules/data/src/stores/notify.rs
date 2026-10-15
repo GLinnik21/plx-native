@@ -5,7 +5,9 @@
 //! **It ships ON, for owned servers only.** [`NOTIFY_ENABLED`] is `true` and a connection opens
 //! only to a server this account OWNS: a friend's share, a household member's server and a server
 //! nothing has described yet all stay dark. The feed names other people's playback, so that rule is
-//! the one that must not loosen. The TV checks in `docs/pms-api.md` §9 passed before it was turned on.
+//! the one that must not loosen. `docs/pms-api.md` §9 records what the mock-TV run verified (connect,
+//! idle, backoff, a tile, a detail page) and what is still owed to the set (background/foreground,
+//! a profile switch, a real network loss).
 //!
 //! **A notification here is a hint, never a playback event.** Nothing in this module calls
 //! `enqueue_stop`, adds an end-of-stream candidate or publishes an Offset: a stranger's `stopped`
@@ -30,7 +32,7 @@ use plx_plex::plex::ServerId;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Ships `true`, after the TV checks (`docs/pms-api.md` §9). The owned-only rule is separate and
+/// Ships `true`. `docs/pms-api.md` §9 lists what was checked on the mock TV and what is still owed. The owned-only rule is separate and
 /// unconditional; `notify_tests::enabled_const_connects_to_an_owned_server` and
 /// `non_owned_never_connects` pin both halves.
 pub const NOTIFY_ENABLED: bool = true;

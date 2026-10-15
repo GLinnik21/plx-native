@@ -1,7 +1,7 @@
 //! The streaming HTTPS read, [`stream_tls`], against a scripted loopback TLS server
 //! (`spawn_streaming`): bytes forwarded in order while the response is still open, cancel and idle
 //! latency, a failed strict handshake, no retry once a body byte has been delivered, a non-2xx
-//! answer reported before any byte, and the refusal under the serialised-TLS fallback.
+//! answer reported before any byte, and the `Unsupported` answer under the serialised-TLS fallback.
 //!
 //! Every test that needs libcurl skips (loudly) when none binds, as the sibling suites do; the
 //! instrument check at the top is the line that says whether they ran.
@@ -270,7 +270,7 @@ fn consumer_false_ends_the_stream() {
 }
 
 #[test]
-fn refused_under_serial_tls() {
+fn unsupported_under_serial_tls() {
     let _serial = plx_base::testlock::serial();
     if !curl_ready() {
         return;
@@ -281,9 +281,9 @@ fn refused_under_serial_tls() {
     assert!(!threaded_tls_ready());
     let cancel = AtomicBool::new(false);
     let (end, seen) = run(&srv, &cert, "serial", Duration::from_secs(5), &cancel);
-    assert_eq!(end, StreamEnd::Refused);
+    assert_eq!(end, StreamEnd::Unsupported, "a device that cannot stream is not a state of the moment: it must park, not back off");
     assert!(seen.is_empty());
-    assert_eq!(srv.accepted(), 0, "a refused stream must not even dial");
+    assert_eq!(srv.accepted(), 0, "an unsupported stream must not even dial");
 }
 
 /// Key mode lowers `VERIFYPEER`, so the sink re-checks the peer's key itself before the first byte

@@ -1274,8 +1274,16 @@ Measured against a local server with a Guest token:
   twin is `/:/websockets/notifications` on the server and `/:/websocket/notifications` in the spec.
   The measurements win.
 - **A Guest token receives only `playing` events** (session key, the playing client's
-  `clientIdentifier`, `ratingKey`, `viewOffset`, `state`). `filters=playing` is requested anyway; whether
-  a non-Guest token honours it, and which other types arrive, is owed to the TV checks (watch only).
+  `clientIdentifier`, `ratingKey`, `viewOffset`, `state`). `filters=playing` is requested anyway.
+- **An owner token, watched read-only from the host over loopback HTTP** (one stream at a time, the
+  app's identity headers' client identifier, token in a header, no other request): with
+  `filters=playing`, 601 s: HTTP 200 `text/event-stream`, 60 frames, every one an SSE `ping`
+  (6.0 per minute, about 10 s apart), largest frame 20 bytes, 1320 bytes in all; no `playing` and no
+  other type arrived. Without `filters`, 180 s: 18 frames, again only `ping` (6.0 per minute, largest
+  frame 20 bytes). The server was idle for both windows, so this shows the owner token is accepted,
+  the stream is quiet at rest and no unfiltered type (activity, timeline, status, update) arrived
+  unprompted. It does NOT show whether `filters` suppresses anything, or whether the parser sees a
+  non-`playing` type, because nothing but pings was ever sent; that needs library activity.
 - **A ping about every 10 seconds**, and **no replay**: events missed while disconnected are gone,
   so a reconnect after a live stream must re-read what the screens show (`resync_epoch`).
 - **Scrobble and unscrobble emit nothing.** The feed does not tell a client that an item became
@@ -1316,8 +1324,8 @@ other servers.
 
 Connection policy: idle 25 s ends a stream as `Silent`; `Silent`, `Closed`, a transport failure and a
 5xx retry after 2, 4, 8 ... 60 s counted in frames; a 401 parks the server until its token changes; any
-other 4xx, a build that cannot stream, and a request the credential gate refused park it for the
-session; a background cancels every stream and a foreground reopens them.
+other 4xx and a build that cannot stream (libcurl unbound or only serialised HTTPS) park it for the
+session, while a request the credential gate refused (status 0, a state of the moment) backs off; a background cancels every stream and a foreground reopens them.
 
 TV checks (debug install signed in through `tests/mock_pms.py`'s own plex.tv, so the mock's server
 arrives OWNED and the owned-only rule runs unmodified; `tools/tv-session.sh up --mock-plextv`):

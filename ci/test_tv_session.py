@@ -469,6 +469,25 @@ class GuestIdentity(unittest.TestCase):
         self.assertNotIn("AFTER:", out)  # cmd_up's `exit 1` must end the process, not just return
         self.assertIn("cannot be combined", out)
 
+    def test_mock_plextv_is_refused_unless_the_boot_is_the_mock_sign_in(self):
+        # --mock-plextv pins the identity to the mock ONLY on the login screen with no stored
+        # session: another screen, --server (stored roster) or --keep (leftover triggers) would
+        # boot the owner's stored session next to a mock plex.tv. Each refuses before any TV contact.
+        for args, why in (
+            ("--screen home", "login"),
+            ("", "login"),
+            ("--screen login --server 1", "--server"),
+            ("--screen login --keep", "--keep"),
+        ):
+            with self.subTest(args=args):
+                rc, out = self._run(
+                    f'cmd_up --mock-plextv=8765 {args}\necho "AFTER:$?"\n',
+                    guest_ok="1",
+                )
+                self.assertEqual(rc, 2, out)
+                self.assertNotIn("AFTER:", out)
+                self.assertIn(why, out)
+
 
 class HeartbeatWords(unittest.TestCase):
     """`assert_route` reads the heartbeat's TWO words, not just the page's.

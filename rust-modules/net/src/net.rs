@@ -1904,8 +1904,9 @@ extern "C" fn stream_progress_cb(clientp: *mut c_void, _dltotal: f64, _dlnow: f6
 /// re-sends the request only while no body byte has reached the consumer ([`StreamSink::may_retry`]).
 ///
 /// * A non-2xx answer is [`StreamEnd::Status`], reported before `on_bytes` is called.
-/// * [`StreamEnd::Refused`] without dialling when libcurl is unbound or only serialised HTTPS is
+/// * [`StreamEnd::Unsupported`] without dialling when libcurl is unbound or only serialised HTTPS is
 ///   safe ([`threaded_tls_ready`]): a stream would hold the one fallback lock for its whole life.
+///   It is a fact of the device, not of the moment, so the consumer parks instead of retrying.
 /// * Cancel and idle are noticed by libcurl's progress callback, which runs about once a second
 ///   while no bytes arrive, so they take up to about a second; [`StreamEnd::Unsupported`] when this
 ///   libcurl takes neither progress callback.
@@ -1924,7 +1925,7 @@ pub fn stream_tls(
     on_bytes: &mut dyn FnMut(&[u8]) -> bool,
 ) -> StreamEnd {
     if !available() || !threaded_tls_ready() {
-        return StreamEnd::Refused;
+        return StreamEnd::Unsupported;
     }
     if cancel.load(Ordering::Acquire) {
         return StreamEnd::Cancelled;
