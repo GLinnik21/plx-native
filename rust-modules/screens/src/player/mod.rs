@@ -84,8 +84,6 @@ pub struct PlayerRender {
     /// The decoded image-subtitle display set and its cache key (`player_hud`'s `SET`/`KEY`/`SEL`).
     pub subs: SubtitleBitmaps,
     pub ass: ass_subtitles::AssSubtitles,
-    /// The text cue on screen, wrapped and fitted once, and which page of it is showing.
-    pub captions: player_hud::CaptionPager,
 }
 
 /// **What the surfaces over the player page do to the transport this frame** — one value
@@ -347,8 +345,10 @@ impl PlayerScreen {
     ///   the playhead knob, both clocks and the accelerating hold-to-scrub ramp: the MEDIA CLOCK
     ///   class. Conditional because none of it is drawn with the HUD hidden, which is ~99% of a
     ///   playback; reporting it there would present every frame for a picture nobody draws.
-    /// * `subtitle_cue_id` and `active_bitmap_key` — text and image subtitles, a whole-screen
-    ///   content change with no spring behind it, drawn on every frame of the route.
+    /// * `ass.fingerprint()`, `sidecar::notice_shown()` and `active_bitmap_key` — text subtitles
+    ///   (libass's frame serial), the sidecar failure notice and its 6 s expiry, and image
+    ///   subtitles: a whole-screen content change with no spring behind it, drawn on every frame
+    ///   of the route.
     /// * `hud_up` — the auto-hide DEADLINE. At `now == until` the entire transport disappears.
     /// * `since_play_ms < PLAY_MARK_MS` — the two-second `Play` mark, plus `paused`: the transport
     ///   MARK class, which is otherwise pure arithmetic on the same clocks.
@@ -380,13 +380,9 @@ impl PlayerScreen {
         // …subtitles are NOT conditional: they are drawn on every frame of the route, HUD or no
         // HUD, which is exactly why a cue appearing had to become a report.
         mix(self.render.ass.fingerprint());
-        mix(plx_media::player::subtitle_cue_id(pos) as u64);
-        // a cue too tall for one screen turns pages within its own span: the page is a change
-        mix(u64::from(plx_appkit::player_hud::caption_page(
-            &self.render.captions,
-            self.subs_lift(ps, now),
-            plx_media::route::subtitles_burned(ps),
-        )));
+        // the sidecar failure notice lapsing on the wall clock: nothing else on the screen moves
+        // then, so the instant it expires still owes a frame
+        mix(u64::from(plx_media::player::sidecar::notice_shown()));
         mix(plx_media::player::active_bitmap_key(pos).unwrap_or(0) as u64);
         mix(u64::from(hud_up));
         mix(u64::from(
@@ -489,9 +485,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
     ///    seeks are what race the demux.) With the loop also arming that same field, the interim
     ///    behaviour was worse than either: one tap issued TWO seeks.
     /// 2. A committed scrub asks for [`PlayerReq::CommitSeek`], which holds a paused film paused,
-    ///    rather than [`PlayerReq::SeekTo`], which resumes it. `App::repause_at` is still the
-    ///    loop's — the screen states the INTENT and the loop performs it, which is what a request
-    ///    is for.
+    ///    rather than [`PlayerReq::SeekTo`], which resumes it. The screen states the INTENT and
+    ///    the pump keeps the pause across the seek, which is what a request is for.
     /// 3. The lost-keyup safety commit is reproduced, on the same `Tick` as the ramp it guards.
     ///
     /// The POINTER half is here for the same reason. A click on the scrubber's registered stop
@@ -849,6 +844,18 @@ impl PlayerScreen {
             // by `PlayerOverlayScreen::key` before this screen ever sees the press, since the
             // overlay is a SURFACE and owns input while it is up) both perform the same ritual
             // `key_back`/the Stop arm did.
+            //
+            // …except a BACK that finds the transport ON SCREEN: that one hides it, the way an
+            // UP-hide does, and the film keeps playing. A second BACK, now over a bare picture,
+            // leaves. `visible_at_press` and not `hud_up`, for the reason its own doc gives.
+            Key::Back if edge == Edge::Down && self.hud.visible_at_press => {
+                self.hud.nav.focus = 0;
+                self.scrub.ns = -1;
+                self.scrub.disengage();
+                self.hud.dismissed = true;
+                self.publish();
+                Handled::Yes
+            }
             Key::Stop | Key::Back => {
                 if edge == Edge::Down {
                     Self::ask(fx, PlayerReq::Exit);
@@ -1078,7 +1085,10 @@ impl PlayerScreen {
     /// Ask the loop to perform the scrub, and retire the preview that asked for it.
     ///
     /// [`PlayerReq::CommitSeek`] and not [`PlayerReq::SeekTo`]: the scrub bar is how a PAUSED film
-    /// is moved, and the loop's arm for it holds that pause across the seek. Clearing `ns` here
+    /// is moved, and the pump holds that pause across the seek (it opens the seek preroll when it
+    /// dispatches the seek under a viewer Pause and re-pauses on the landing,
+    /// `plx_media::player::pump::settle_paused_seek`); the loop's arm for it is a bare
+    /// `request_seek`. Clearing `ns` here
     /// rather than in the loop is the §2.3 half of the same change — `app::playback::commit_seek`
     /// used to reach into this gesture and blank it, which is a write to another owner's state.
     fn commit_scrub<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
@@ -1355,17 +1365,18 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         // capsule is the exception: it HIDES the transport rather than sharing its read time, so
         // captions stay at their normal `SUB_BASE_Y` even while it is up (`Self::subs_lift`).
         let subs_lift = self.subs_lift(ps, now);
-        self.render.ass.draw();
+        self.render.ass.draw(subs_lift);
         if let Some(message) = self.render.ass.error() {
             plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, f.cx.measure);
         }
+        // a sidecar that produced nothing says so for a few seconds; the server burning the
+        // selection draws it already, so no second notice then
+        if let Some(message) = plx_media::player::sidecar::notice()
+            .filter(|_| !plx_media::route::subtitles_burned(ps))
+        {
+            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, f.cx.measure);
+        }
         self.draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
-        plx_appkit::player_hud::draw_subtitles(
-            &self.render.captions,
-            subs_lift,
-            plx_media::route::subtitles_burned(ps),
-            f.cx.measure,
-        );
         // What a pointer can hit is registered AFTER the paint, by `record_stops`, from this
         // screen's own `Focusable` — the rects D-pad focus uses, in the z-order `groups` states.
         // `Hover::Ignore` on the transport's stops: the old pointer path never followed the mouse
@@ -1742,6 +1753,44 @@ mod step_ladder_tests {
         }
     }
 
+    /// **The failure notice expiring owes a frame.** Nothing else on the screen changes when the
+    /// 6 s notice lapses (the cues are libass's, whose own fingerprint is unchanged), so
+    /// `clock_fingerprint` must move on `sidecar::notice_shown()` alone — before it did, the
+    /// notice's text stayed on the last presented frame until something else drew.
+    #[test]
+    fn the_failure_notice_expiring_changes_the_clock_fingerprint() {
+        let _g = plx_base::testlock::serial();
+        let page = PlayerScreen::new(ENTRY);
+        let cx = cx();
+        let ps = TestHost::session(&cx);
+        plx_media::player::sidecar::reset();
+        let quiet = page.clock_fingerprint(ps, 1_000);
+        plx_media::player::sidecar::fail_for_test(9, std::time::Duration::ZERO);
+        assert!(plx_media::player::sidecar::notice_shown());
+        let shown = page.clock_fingerprint(ps, 1_000);
+        assert_ne!(shown, quiet, "the notice appearing is a change");
+        plx_media::player::sidecar::fail_for_test(9, std::time::Duration::from_secs(7));
+        assert!(!plx_media::player::sidecar::notice_shown());
+        let expired = page.clock_fingerprint(ps, 1_000);
+        assert_ne!(expired, shown, "the notice lapsing is a change");
+        assert_eq!(expired, quiet, "and nothing else moved");
+        plx_media::player::sidecar::reset();
+    }
+
+    /// A text cue appearing or clearing reaches the frame gate through libass's own fingerprint
+    /// (`AssSubtitles::fingerprint`), the only subtitle term besides the notice and the bitmaps.
+    #[test]
+    fn a_libass_cue_change_changes_the_clock_fingerprint() {
+        let _g = plx_base::testlock::serial();
+        let mut page = PlayerScreen::new(ENTRY);
+        let cx = cx();
+        let ps = TestHost::session(&cx);
+        let before = page.clock_fingerprint(ps, 1_000);
+        assert_eq!(before, page.clock_fingerprint(ps, 1_000), "a quiet screen is stable");
+        page.render.ass.set_frame_serial_for_test(7);
+        assert_ne!(before, page.clock_fingerprint(ps, 1_000));
+    }
+
     /// **`HudPolicy::Hidden` withholds everything a lift would draw** (plan
     /// `subtitle-menu-capsule` §4): no caption lift, no transport and no scrub/row/tab stop, even
     /// with the transport otherwise up. The policy is pushed BY HAND here — no frame loop runs in
@@ -1948,6 +1997,44 @@ mod step_ladder_tests {
             assert_eq!(handled, Handled::Yes);
             assert_eq!(reqs, vec![PlayerReq::Exit], "wcode {wcode}");
         }
+    }
+
+    /// **BACK over the transport hides it; BACK over a bare picture leaves.** The first press finds
+    /// the transport on screen (`visible_at_press`), so it dismisses it the way an UP-hide does —
+    /// ring parked on the scrubber, scrub disengaged, no `Exit` — and the film keeps playing. The
+    /// second finds nothing on screen and leaves. STOP is not part of this: it always leaves.
+    #[test]
+    fn back_over_the_transport_hides_it_and_a_second_back_leaves() {
+        let _g = plx_base::testlock::serial();
+        let mut page = PlayerScreen::new(ENTRY);
+        fresh(&mut page);
+        page.hud.nav.focus = 2; // parked on the tabs row, to see the ring come home
+        let (handled, reqs) = press(&mut page, 0, WCODE_BACK, Edge::Down);
+        assert_eq!(handled, Handled::Yes);
+        assert!(reqs.is_empty(), "the first BACK only hides the transport: {reqs:?}");
+        assert!(page.hud.dismissed, "the transport is dismissed");
+        assert_eq!(page.hud.nav.focus, 0, "ring parked on the scrubber");
+        assert_eq!(page.scrub.ns, -1, "no scrub target left behind");
+        // A bound key un-dismisses; BACK itself is bound, so the second press must sample the
+        // dismissed state BEFORE that, which is what `visible_at_press` is for.
+        page.hud.note_fresh_press(TestHost::session(&cx()), 1_000, false);
+        assert!(!page.hud.visible_at_press, "a hand-hidden transport is not on screen at the press");
+        let (_, reqs) = press(&mut page, 0, WCODE_BACK, Edge::Down);
+        assert_eq!(reqs, vec![PlayerReq::Exit], "the second BACK leaves");
+    }
+
+    /// STOP leaves even with the transport up, and BACK's key-up edge does nothing either way.
+    #[test]
+    fn stop_still_leaves_over_the_transport_and_back_acts_on_the_down_edge_only() {
+        let _g = plx_base::testlock::serial();
+        let mut page = PlayerScreen::new(ENTRY);
+        fresh(&mut page);
+        let (_, reqs) = press(&mut page, 0, WCODE_STOP, Edge::Down);
+        assert_eq!(reqs, vec![PlayerReq::Exit], "STOP over the transport");
+        let mut page = PlayerScreen::new(ENTRY);
+        fresh(&mut page);
+        let (_, reqs) = press(&mut page, 0, WCODE_BACK, Edge::Up);
+        assert!(reqs.is_empty() && !page.hud.dismissed, "the release edge neither hides nor leaves");
     }
 
     /// Port of `key_player_updown`: from the scrubber, UP walks to the control row and DOWN to the
@@ -2303,9 +2390,8 @@ mod scrub_ownership_tests {
     /// [`PlayerReq::SeekTo`] is the Chapters strip's request — seek and RESUME — and it is the
     /// wrong one for a scrub: the loop's arm for it calls `resume_if_paused`, so paused scrubbing
     /// started the film. The scrub commit's own request is [`PlayerReq::CommitSeek`], whose arm is
-    /// `app::playback::commit_seek` — a seek-preroll override that decodes the landed frame
-    /// without publishing a viewer Resume (`repause_at`, `resume_pend`, `TX::begin_paused_seek`,
-    /// all three of them the loop's to hold).
+    /// `app::playback::commit_seek` — a bare seek; the pump opens the seek-preroll override
+    /// that decodes the landed frame without publishing a viewer Resume, and re-pauses on landing.
     #[test]
     fn a_scrub_seek_taken_while_paused_holds_the_pause() {
         let _g = plx_base::testlock::serial();

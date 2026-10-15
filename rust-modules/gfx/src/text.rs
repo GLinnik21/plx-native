@@ -54,7 +54,7 @@
 //! lines this feature exists to draw.
 //!
 //! **The fallback face is NOT emboldened for bold runs.** It ships at one weight (a second is
-//! ~21 MB), and SDL_ttf's synthetic bold is `FT_Outline_Embolden` at ppem/10 — 2.2 px at
+//! ~13 MB), and SDL_ttf's synthetic bold is `FT_Outline_Embolden` at ppem/10 — 2.2 px at
 //! `size::MICRO`. Rendered against this face that fills 電視劇, 曇天 and 鬱 into solid blocks at
 //! **every** size in the ladder, 22 through 40. A weight mismatch beside bold Latin is a
 //! typographic compromise; an illegible ideograph is a defect, so bold runs use the regular
@@ -870,7 +870,7 @@ unsafe fn link_covers(link: Link, cp: u32) -> bool {
 /// which is also what halves the memory below.
 ///
 /// **Cost, and why it is lazy.** SDL_ttf 2.0.x opens one `FT_Face` per (file, ptsize) — there is
-/// no size sharing — and this face has 65535 glyphs, so its `loca`, `hmtx` and `cmap` are large.
+/// no size sharing — and this face has 44097 glyphs, so its `loca`, `hmtx` and `cmap` are large.
 /// Host-measured through the same FreeType: **~2.1 MB resident per opened size**, ~17 MB if a
 /// library exercises all eight rungs of `theme::size`. Nothing here opens until a string actually
 /// needs it, so a Latin or Cyrillic library pays exactly zero — and sharing one face between
@@ -2154,7 +2154,7 @@ mod tests {
 
     /// Anything Inter fully covers must return `None`, which is the caller's signal to take the
     /// single-render path byte for byte. This is the performance contract of the whole feature:
-    /// an English or Russian library pays nothing, and never even opens the 21 MB fallback.
+    /// an English or Russian library pays nothing, and never even opens the 13 MB fallback.
     #[test]
     fn strings_the_base_face_covers_take_the_untouched_fast_path() {
         for s in [

@@ -80,10 +80,18 @@ def main():
         if digest(data) != dep['sha256']:
             fail('pinned source archive checksum mismatch: ' + filename)
         (output / filename).write_bytes(data)
+        # The pinned local patches ride with the recipe, each checked against its pinned digest.
+        patches = []
+        for patch in dep.get('patches', []):
+            patch_data, _ = read_regular(root, patch['path'])
+            if digest(patch_data) != patch['sha256']:
+                fail('pinned patch checksum mismatch: ' + patch['path'])
+            patches.append(patch['path'])
         deps.append({'id': dep['id'], 'version': dep['version'], 'license': dep['license'],
                      'sources': [{'path': filename, 'sha256': dep['sha256']}],
                      'recipes': ['ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json',
-                                 'src/ass.c', 'src/ass_composite.h', 'include/ass.h'], 'patches': []})
+                                 'src/ass.c', 'src/ass_fonts.c', 'src/ass_internal.h',
+                                 'src/ass_composite.h', 'include/ass.h'], 'patches': patches})
     with tempfile.TemporaryDirectory(prefix='collect-', dir=output) as temp:
         vendor = Path(temp) / 'cargo-vendor'
         # Only Cargo's explicitly selected locked sources are read, never a whole private cache.

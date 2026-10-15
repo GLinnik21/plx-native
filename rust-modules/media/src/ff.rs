@@ -637,26 +637,30 @@ unsafe fn container_hdr(cp: *const AVCodecParameters) -> crate::player::vp9_hdr:
 /// The returned `String` is a COPY. The entry points into the stream's dictionary, which
 /// `avformat_close_input` frees.
 unsafe fn stream_name(s: *mut AVStream) -> String {
+    [c"title", c"name"].into_iter().find_map(|key| stream_tag(s, key)).unwrap_or_default()
+}
+
+/// The stream's `language` tag (ISO 639-2 in Matroska/MP4: `chi`, `jpn`, `und`), or None when it
+/// has none. A COPY, like [`stream_name`]. Only used to pick a legacy text-subtitle charset.
+unsafe fn stream_language(s: *mut AVStream) -> Option<String> {
+    stream_tag(s, c"language")
+}
+
+/// One metadata tag of the stream, trimmed, or None when absent or empty. A COPY: the entry
+/// points into the stream's dictionary, which `avformat_close_input` frees.
+unsafe fn stream_tag(s: *mut AVStream, key: &std::ffi::CStr) -> Option<String> {
     let dict = *((s as *const u8).add(OFF_STREAM_METADATA) as *const *const AVDictionary);
     if dict.is_null() {
-        return String::new();
+        return None;
     }
-    for key in [c"title", c"name"] {
-        let e = av_dict_get(dict, key.as_ptr(), std::ptr::null(), 0);
-        if e.is_null() || (*e).value.is_null() {
-            continue;
-        }
-        // `to_string_lossy` rather than a strict decode: these are user-authored tags off a
-        // stranger's file, and a mis-encoded byte must cost that character, not the whole name.
-        let v = std::ffi::CStr::from_ptr((*e).value)
-            .to_string_lossy()
-            .trim()
-            .to_string();
-        if !v.is_empty() {
-            return v;
-        }
+    let e = av_dict_get(dict, key.as_ptr(), std::ptr::null(), 0);
+    if e.is_null() || (*e).value.is_null() {
+        return None;
     }
-    String::new()
+    // `to_string_lossy` rather than a strict decode: these are user-authored tags off a
+    // stranger's file, and a mis-encoded byte must cost that character, not the whole value.
+    let v = std::ffi::CStr::from_ptr((*e).value).to_string_lossy().trim().to_string();
+    (!v.is_empty()).then_some(v)
 }
 
 /// Every track's container name, by TYPE, in file order — the two lists
@@ -1214,7 +1218,15 @@ unsafe fn begin_ass_sources(
 ) -> u64 {
     use crate::player::{ass::Font, ass_source};
     let mut headers = Vec::new();
+    let mut text_tracks = 0;
     for (track, (si, kind, _)) in subs.iter().enumerate() {
+        // A text track has no header in the file: the store synthesizes one and converts its cues
+        // by the dialect (plan `libass-text-subs` §1.5).
+        if let SubKind::Text(dialect) = kind {
+            headers.push((track as i32, ass_source::TrackHeader::Text(*dialect)));
+            text_tracks += 1;
+            continue;
+        }
         if *kind != SubKind::Ass { continue; }
         let cp = stream_codecpar(*streams.add(*si as usize));
         let len = (*cp).extradata_size.max(0) as usize;
@@ -1224,8 +1236,9 @@ unsafe fn begin_ass_sources(
         } else {
             std::slice::from_raw_parts((*cp).extradata, len)
         };
-        headers.push((track as i32, header.to_vec()));
+        headers.push((track as i32, ass_source::TrackHeader::Authored(header.to_vec())));
     }
+    let authored_tracks = headers.len() - text_tracks;
     let mut fonts = Vec::new();
     let mut font_budget = crate::player::ass::FontBudget::default();
     let mut font_bytes = 0;
@@ -1254,7 +1267,10 @@ unsafe fn begin_ass_sources(
             fonts.push(Font { name, data: data.into() });
         }
         if !headers.is_empty() || !fonts.is_empty() {
-            crate::player::log(&format!("ass: embedded tracks={} fonts={} font_bytes={font_bytes}", headers.len(), fonts.len()));
+            crate::player::log(&format!(
+                "ass: embedded tracks={authored_tracks} text_tracks={text_tracks} fonts={} font_bytes={font_bytes}",
+                fonts.len()
+            ));
         }
     }
     ass_source::begin(media_key, headers, fonts)
@@ -2641,6 +2657,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         s.parked_at_end = false;
         let aq = s.aq;
         let mut hopped_to_tls = None;
+        let reopen_began = std::time::Instant::now();
         let ok = match &mut s.src {
             // Redirects are followed here too (`stream::redirect`), and the effective target is
             // written back so the NEXT seek starts from it rather than replaying the chain. A hop
@@ -2703,6 +2720,11 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         if let Some(cs) = hopped_to_tls {
             s.src = Src::Curl(cs);
         }
+        // One line per reopen (a seek into the file, or libavformat healing a failed read).
+        crate::player::log(&format!(
+            "ff: seek_cb reopen off={target} ok={ok} ms={}",
+            reopen_began.elapsed().as_millis()
+        ));
         if !ok {
             return -1;
         }
@@ -8370,6 +8392,7 @@ pub fn demux(
                 // redirected to https, which `open_plain_progressive` hands to curl. Both arms publish the same two diagnostics (`dg_http_status`, `file_size`)
                 // before anything else can fail, because the read-out panel is the first thing anybody
                 // looks at when a part will not play and it must mean the same thing either way.
+                let open_began = std::time::Instant::now();
                 let (src, size) = if origin.is_tls() {
                     let reservation = curl_open
                         .take()
@@ -8407,6 +8430,8 @@ pub fn demux(
                         }
                     }
                 };
+
+                crate::player::log(&format!("ff: open ms={}", open_began.elapsed().as_millis()));
 
                 let mut state = Box::new(AvioState {
                     src,
@@ -8783,10 +8808,13 @@ pub fn demux(
                         let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
                         // Fence completed renders from the old position before new packets arrive.
                         crate::player::ass_source::seek(ass_generation);
+                        crate::player::log(&format!("ff: seek begin {}s", seek_ns / 1_000_000_000));
+                        let seek_began = std::time::Instant::now();
                         let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
                         crate::player::log(&format!(
-                            "ff: seek {}s rv={sr}",
-                            seek_ns / 1_000_000_000
+                            "ff: seek {}s rv={sr} ms={}",
+                            seek_ns / 1_000_000_000,
+                            seek_began.elapsed().as_millis()
                         ));
                         headroom.restart(aq_p);
                         SHARED.first_audio_pts.store(i64::MIN, Ordering::Release);
@@ -9192,6 +9220,10 @@ mod stall_guard_tests;
 #[cfg(test)]
 #[path = "ff_image_subtitle_tests.rs"]
 mod image_subtitle_tests;
+
+#[cfg(test)]
+#[path = "ff_subtitle_charset_tests.rs"]
+mod subtitle_charset_tests;
 
 #[cfg(test)]
 #[path = "ff_redirect_tests.rs"]

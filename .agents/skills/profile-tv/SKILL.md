@@ -44,6 +44,13 @@ symbolizing against the wrong build. `wchan` distinguishes a blocked
 sleep/lock from an on-CPU stack; frequency is statistical evidence, not proof that a waiting frame
 consumed CPU.
 
+## Styled-subtitle (libass) cost
+
+With an ASS/SSA track rendering, the event log carries `assperf:` lines (`window_ms` the span the counts cover, render and whole-job p95/max, bytes
+published and uploaded in that window, Normal+Ahead `jobs`, `ahead_hit`, `nwait`, and `worker tid=`) and `FRAMEDROP spans=` gains `assup` (the
+UI-thread GL upload; needs `/tmp/plxnative-framedrop` armed). Read these before attributing a late frame to subtitles; follow the worker
+with `tools/tv-sched-trace.sh --tid <tid>`. See `docs/ass-subtitles.md`.
+
 ## Three graphics layers
 
 For an already-running screen, observe its current present heartbeat and active Mali IRQ rate:
