@@ -113,12 +113,11 @@ acquire or drive the TV.
 
 ## SDL ABI and firmware review
 
-The tracked `include/SDL2/SDL_events.h` mouse-button struct and the NDK sysroot's matching
-declaration contain four `Uint32` fields, four `Uint8` fields, then two `Sint32` coordinates.
+The NDK sysroot's `SDL_events.h` mouse-button struct (and stock SDL's) contain four `Uint32` fields, four `Uint8` fields, then two `Sint32` coordinates.
 `SDL_stdinc.h` defines those through `uint32_t`, `uint8_t`, and `int32_t`. Therefore on ARM32,
 button is at 16, state at 17, x at 20 and y at 24; the motion struct's x/y offsets also match.
 `SDL_mouse.h` defines left-button as 1; `SDL_events.h` defines pressed/released as 1/0.
-The NDK GCC was run with its explicit `--sysroot`, `-std=c11 -fsyntax-only -Iinclude` and
+The NDK GCC was run with its explicit `--sysroot`, `-std=c11 -fsyntax-only` and
 `_Static_assert`s for all six offsets, the button/state constants, and `sizeof(void *) == 4`:
 all passed without producing an object or building the app. This source/target-compiler proof is
 separate from the host SDL queue test.

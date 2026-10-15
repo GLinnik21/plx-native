@@ -50,7 +50,7 @@ runs:
           --component clippy --component rust-src
         rustup run "$RUST_NIGHTLY" rustc --version
 
-    - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # The cache key already carries the calling job's id, so the three Rust jobs each keep their
       # own `target/` instead of racing to save one.
       with:

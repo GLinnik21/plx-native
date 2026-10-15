@@ -843,34 +843,6 @@ fn valid_profiles(profiles: Vec<ProfileCreds>) -> Vec<ProfileCreds> {
     }).collect()
 }
 
-/// Remember the hero envelope Home is showing right now, best-effort, for [`Preferences::last_hero_blur`].
-///
-/// Cheap to call on every route-ground latch: [`update`] is a single read-modify-write, and this
-/// skips the write entirely when the stored envelope already matches, so parking on the same hero
-/// for minutes costs nothing beyond the initial read. A session with no `client_id` yet (nothing
-/// signed in) is a deliberate no-op — see [`update`]'s doc — which is fine here: there is no
-/// pre-Home route to seed before an account exists.
-///
-/// Returns whether the file was actually rewritten — `false` both when nothing is signed in yet
-/// ([`update`]'s own no-op rule) and when the stored envelope already matches, which is how a test
-/// can grade the skip without inspecting file bytes.
-pub fn record_last_hero(blur: [[f32; 3]; 4]) -> bool {
-    update(|cur| {
-        if cur.prefs.last_hero_blur == Some(blur) {
-            return None;
-        }
-        let mut next = cur.clone();
-        next.prefs.last_hero_blur = Some(blur);
-        Some(next)
-    })
-}
-
-/// The last hero envelope recorded by [`record_last_hero`], or `None` on a fresh device that has
-/// never rendered one.
-pub fn last_hero() -> Option<[[f32; 3]; 4]> {
-    peek().prefs.last_hero_blur
-}
-
 /// Persist Automatically Sign In through [`update`], so a concurrent roster/recents write cannot
 /// lose the switch. Returns whether the file was rewritten.
 #[cfg(any(test, feature = "test-support"))]

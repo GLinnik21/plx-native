@@ -1,7 +1,7 @@
 //! **Favorite libraries, as one screen mounted twice** (restructure spec §6.2 "Onboard ×2",
 //! phase 5b; the words, the draft model and the design argument are `ui/onboard.rs`'s, moved).
 //! First run mounts it as a PAGE (`AppArg::Onboard`, between the picker and Home, on the
-//! hero-keyed ground, crumb *Who's watching?*, one action *Start watching*); Settings mounts the
+//! default ambient ground, crumb *Who's watching?*, one action *Start watching*); Settings mounts the
 //! same type as a page of the surface's own stack (crumb *Settings*, *Done* only once the draft
 //! differs). The type is generic over the bundle's host, which is what lets one impl serve both.
 //!
@@ -21,7 +21,7 @@ use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key, LogicalState, Machine, NavOp,
 };
 use plx_ui::route_screen::RouteLayout;
-use super::family::SessionGround as RouteGround;
+use plx_ui::route_screen::RouteGround;
 use plx_ui::screen::{DrawFrame, Enter, FocusSource, FocusTarget, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
 use plx_ui::form::{FormTable, RowKey};
 use plx_appkit::source_list::{self, Level, SrcTarget, Tail};
@@ -166,8 +166,8 @@ fn snapshot_pins(directory: DirectoryView<'_>) -> Vec<(usize, bool)> {
 
 impl OnboardScreen {
     /// First run's page.
-    pub fn first_run(entry: EntryId, directory: DirectoryView<'_>, hubs: plx_data::pms::HubsView<'_>) -> Self {
-        Self::new(entry, false, directory, super::family::pre_home_ground(hubs))
+    pub fn first_run(entry: EntryId, directory: DirectoryView<'_>) -> Self {
+        Self::new(entry, false, directory, RouteGround::authored())
     }
     /// The Settings editor.
     pub fn settings(entry: EntryId, directory: DirectoryView<'_>) -> Self {
@@ -523,9 +523,6 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             ScreenEvent::Tick(t) => {
-                if self.ground.refresh() {
-                    fx.invalidate(plx_machine::present::Provenance::Landing(plx_machine::machine::MachineId::Session));
-                }
                 let dt = t.dt();
                 fx.push(Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
                 let directory = H::directory(cx);
@@ -813,12 +810,27 @@ mod tests {
     fn the_home_sources_editor_names_one_word_in_both_mountings() {
         use plx_ui::screen::Screen;
         let directory = plx_data::stores::browse::DirectoryView::empty_for_test();
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-        let first = OnboardScreen::first_run(EntryId(0), directory, hubs_snap.view());
+        let first = OnboardScreen::first_run(EntryId(0), directory);
         let inside = OnboardScreen::settings(EntryId(0), directory);
         assert_eq!(Screen::<InnerHost>::name(&first), super::word::ONBOARD);
         assert_eq!(Screen::<InnerHost>::name(&inside), super::word::ONBOARD);
         assert_ne!(Screen::<InnerHost>::name(&inside), super::word::SETTINGS);
+    }
+
+    /// **First run sits on the authored default ambient, never on a hero's light.** A persisted
+    /// `last_hero_blur` (or a Home hero's `UltraBlur` corners) used to key this page's ground; on
+    /// the mock server those corners are random colours and the page read as a rainbow. The page
+    /// must paint exactly what an artwork-less route paints.
+    #[test]
+    fn first_run_ground_ignores_a_persisted_hero_envelope() {
+        let _serial = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("onboard-default-ambient");
+        let mut saved = (*plx_plex::plex::session::peek()).clone();
+        saved.prefs.last_hero_blur = Some([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 1.0]]);
+        plx_plex::plex::session::save(&saved);
+        let directory = plx_data::stores::browse::DirectoryView::empty_for_test();
+        let s = OnboardScreen::first_run(EntryId(0), directory);
+        assert_eq!(s.ground.palette(), plx_ui::route_screen::RouteGround::authored().palette());
     }
 
     use super::*;
@@ -937,8 +949,7 @@ mod tests {
         let mut browse = BrowseFixture::new();
         let sid = plx_plex::plex::register_for_test("endpoint-onboard", "127.0.0.1", 9, "synthetic", "cid");
         let client = plx_plex::plex::client_for(sid).unwrap();
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         browse.stores.browse.borrow_mut().queue_discovery_for_test(
             client, client.token_gen(), false);
         let outcome = browse.stores.browse_discover_pump();
@@ -1030,9 +1041,8 @@ mod tests {
     fn the_band_expresses_forward_back_and_commit_as_distinct_states() {
         let _g = plx_base::testlock::serial();
         let mut browse = BrowseFixture::new();
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
         assert!(
-            OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view()).has_band(),
+            OnboardScreen::first_run(EntryId(0), browse.capture()).has_band(),
             "first run always offers its commit"
         );
 
@@ -1069,8 +1079,7 @@ mod tests {
         let _t = TempSession::new("draft");
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
 
         s.toggle_row(SrcTarget::Library(0), browse.capture());
         assert!(
@@ -1093,8 +1102,7 @@ mod tests {
         // rather than dropping the fresh instance and continuing with the stale one, so the toggle
         // below starts from a draft that matches the live table again rather than from the first
         // draft's already-toggled-off state (which would net the two toggles to a no-op).
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         assert!(browse.pinned(0), "a discarded draft leaves the live pin exactly where BACK found it");
 
         // Toggling and THEN committing is what actually queues the write.
@@ -1316,8 +1324,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, false]);
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         assert!(s.draft_rows(browse.capture())[0].pinned, "section 0 starts as the only pinned library");
 
         s.toggle_row(SrcTarget::Library(0), browse.capture()); // the only pinned library refuses to turn off
@@ -1343,8 +1350,7 @@ mod tests {
 
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         s.toggle_row(SrcTarget::Library(0), browse.capture());
         let (handled, effs) = step_ev(&mut s, &key_back_down(), None, browse.capture());
         assert_eq!(handled, Handled::Yes, "first run's BACK is its own answer to the key");
@@ -1393,8 +1399,7 @@ mod tests {
         // doc is the full account of why the guard exists.
         let _t = TempSession::new("armed-verb");
         let mut browse = BrowseFixture::new();
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         assert_eq!(s.action_kind(browse.capture()), ActionKind::Retry, "nothing discovered yet");
 
         let band = band_elem(0);
@@ -1474,8 +1479,7 @@ mod tests {
         ] {
             let _g = plx_base::testlock::serial();
             let mut browse = BrowseFixture::new();
-            let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-            let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+            let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
             let (handled, effs) = step_ev(&mut s, &default_seat, None, browse.capture());
             assert_eq!(handled, Handled::Yes, "default seat shape: {label}");
             assert!(
@@ -1550,8 +1554,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let _t = TempSession::new("no-library-yet-spinner");
         let mut browse = BrowseFixture::new();
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         assert_eq!(s.form.table.n_rows(), 0, "a reset browse store starts with no rows");
         let m = plx_ui::fixture::FixtureMeasure;
         let cxv = test_cx(&m, None, browse.capture());
@@ -1586,11 +1589,10 @@ mod tests {
         }
         let _g = plx_base::testlock::serial();
         let _t = TempSession::new("nothing-to-choose");
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
 
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true]);
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         let effs = tick(&mut s, browse.capture());
         assert!(leaves(&effs), "one server, one library: nothing to choose, so the screen leaves");
         assert!(
@@ -1604,12 +1606,12 @@ mod tests {
 
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         assert!(!leaves(&tick(&mut s, browse.capture())), "two libraries on one server is a real choice");
 
         let mut browse = BrowseFixture::new();
         browse.seed_two_sources();
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         assert!(!leaves(&tick(&mut s, browse.capture())), "two sources is a real choice");
 
         let mut browse = BrowseFixture::new();
@@ -1628,8 +1630,7 @@ mod tests {
         // shape — "the skip is honest precisely because it records what the screen was showing
         // rather than deferring the question to a prompt that never comes" — and that skip is
         // BACK's alone; the pill itself must never treat an empty roster as an answered question.
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         let effs = commit_now(&mut s, browse.capture());
         assert!(
             effs.iter().any(|st| matches!(
@@ -1802,8 +1803,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let mut browse = BrowseFixture::new();
         browse.seed_pins(&[true, true]);
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-        let s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let s = OnboardScreen::first_run(EntryId(0), browse.capture());
         let m = plx_ui::fixture::FixtureMeasure;
         let cx = test_cx(&m, None, browse.capture());
         let mut groups: Vec<plx_ui::screen::GroupSpec> = Vec::new();
@@ -1881,8 +1881,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let mut browse = BrowseFixture::new();
         browse.seed_two_sources();
-        let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture());
         assert_eq!(s.action_kind(browse.capture()), ActionKind::Start, "two sources are seeded");
         s.armed_kind = Some(ActionKind::Start); // stands in for the pill's still-bouncing arm
 
@@ -1925,8 +1924,7 @@ mod tests {
             let _guard = language_on_this_thread_for_test(language);
             let mut browse = BrowseFixture::new();
             browse.seed_two_sources();
-            let hubs_snap = plx_data::pms::HubsSnapshot::empty_for_test();
-            let first = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+            let first = OnboardScreen::first_run(EntryId(0), browse.capture());
             let inside = OnboardScreen::settings(EntryId(0), browse.capture());
             for (mounting, screen) in [("first run", &first), ("settings", &inside)] {
                 assert!(screen.form.table.n_rows() > 0, "the fixture must put rows in the table");
