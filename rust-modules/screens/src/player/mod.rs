@@ -1242,8 +1242,12 @@ impl PlayerScreen {
         }
         let target = self.scrub.ns;
         Self::ask(fx, PlayerReq::CommitSeek(target));
-        if !self.scrub.paused && target != self.scrub.origin_ns {
-            self.row.open_undo(self.scrub.origin_ns, now);
+        // The undo returns to where the scrub started, clamped like any target: a scrub that began
+        // inside the last three seconds cannot be returned to (the pipeline cannot prime there),
+        // and the window, its tick and its chip all name the spot BACK will really seek to.
+        let origin = Scrub::clamp_target(self.scrub.origin_ns, plx_media::player::duration_ns());
+        if !self.scrub.paused && target != origin {
+            self.row.open_undo(origin, now);
             self.hud.extend(
                 now,
                 plx_appkit::scrub_undo::UNDO_MS + plx_appkit::scrub_undo::UNDO_FADE_MS,
@@ -3160,6 +3164,33 @@ mod scrub_ownership_tests {
         }
     }
 
+    /// **A.4 — the undo lands where a seek legally can.** A scrub that began inside the last three
+    /// seconds (where the pipeline cannot prime) has an origin BACK cannot return to as it stands:
+    /// the undo is clamped like any target, and a window whose clamped origin IS the commit's
+    /// target is not opened at all, since BACK would seek to where the film already is.
+    #[test]
+    fn the_undo_target_is_clamped_like_any_scrub_target() {
+        use plx_ui::consts::SDLK_LEFT;
+        let _g = plx_base::testlock::serial();
+        let _f = Fixture::new(false);
+        playhead(98 * S); // DUR is 100 s: the last 3 s start at 97 s
+        let mut page = page_on_the_bar();
+        key(&mut page, SDLK_LEFT, Edge::Down, 1_000);
+        key(&mut page, SDLK_LEFT, Edge::Up, 1_020);
+        let at = 1_020 + input::TAP_COMMIT_MS + 1;
+        assert_eq!(seeks(tick(&mut page, at).1), vec![PlayerReq::CommitSeek(88 * S)]);
+        playhead(88 * S);
+        let (_, reqs) = back(&mut page, at + 500);
+        assert_eq!(reqs, vec![PlayerReq::CommitSeek(97 * S)], "the last primable second, not 98 s");
+
+        // 99 s, one tap forward: clamps to 97 s, which is also where BACK would go
+        playhead(99 * S);
+        let mut page = page_on_the_bar();
+        let (at, commit) = tap_and_commit(&mut page, 10_000);
+        assert_eq!(commit, vec![PlayerReq::CommitSeek(97 * S)]);
+        assert_eq!(page.row.undo_origin(at), None, "nothing to return to: no window");
+    }
+
     /// **A.4 — a HOLD's commit is undoable too**, back to the playhead the hold started from.
     #[test]
     fn back_undoes_a_committed_hold() {
@@ -3218,9 +3249,10 @@ mod scrub_ownership_tests {
         assert_eq!(reqs, vec![PlayerReq::CommitSeek(60 * S)], "the second scrub's origin, not the first's");
     }
 
-    /// A BACK that cancels a live scrub does not also spend an undo window that is still open from
-    /// an earlier commit — but a new scrub has already closed it, so there is none to spend. The
-    /// window belongs to the last COMMITTED scrub only while no new one has begun.
+    /// **The undo window ends with the transport it is drawn on**: hiding the transport by hand
+    /// (UP from the control row) closes it, and so does a teardown or reload
+    /// (`transport_reset`). A window that outlived its tick and chip would undo a seek nothing on
+    /// screen still offers.
     #[test]
     fn the_undo_window_ends_with_the_transport_it_is_drawn_on() {
         let _g = plx_base::testlock::serial();
