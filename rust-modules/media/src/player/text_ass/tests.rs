@@ -363,7 +363,7 @@ fn braces_survive_libass_reading() {
 
 #[test]
 fn plain_text_matches_the_bespoke_sub_text_over_every_small_string() {
-    // `sub_text` (the draw this replaces) is the reference for the floor: every string over its
+    // `sub_text` (the draw this replaced, kept below as the oracle) is the reference for the floor: every string over its
     // special characters must read the same once the ASS escapes are undone and each line is
     // trimmed. Strings with an unmatched `{` are skipped: showing it is the deliberate change.
     fn unmatched_brace(chars: &[char]) -> bool {
@@ -398,7 +398,7 @@ fn plain_text_matches_the_bespoke_sub_text_over_every_small_string() {
                 continue;
             }
             let input: String = chars.iter().collect();
-            let want = lines(&super::super::sub_text(input.as_bytes()));
+            let want = lines(&sub_text(input.as_bytes()));
             let got = convert(&input, TextDialect::Plain).map(|c| lines(&undo(&c.body))).unwrap_or_default();
             assert_eq!(got, want, "{input:?}");
             compared += 1;
@@ -744,4 +744,44 @@ fn visible_chars_counts_what_the_cue_shows() {
     assert!(visible_chars(&escaped) >= 3);
     assert_eq!(visible_chars(&body("a\\", TextDialect::Plain)), 2, "a trailing backslash shows");
     assert_eq!(visible_chars("a\\\u{200B}Nb"), 4, "the ZWSP that keeps `\\N` apart is not shown");
+}
+
+/// The plain-text reduction the bespoke caption draw used (markup stripped, line breaks
+/// normalized), kept here only as the oracle the converter is graded against below.
+fn sub_text(payload: &[u8]) -> String {
+    let s = String::from_utf8_lossy(payload);
+    let mut out = String::with_capacity(s.len());
+    let mut ch = s.chars().peekable();
+    while let Some(c) = ch.next() {
+        match c {
+            '<' => {
+                while let Some(x) = ch.next() {
+                    if x == '>' {
+                        break;
+                    }
+                }
+            } // <i></i>
+            '{' => {
+                while let Some(x) = ch.next() {
+                    if x == '}' {
+                        break;
+                    }
+                }
+            } // {\an8}
+            '\\' => match ch.peek() {
+                Some('N') | Some('n') => {
+                    ch.next();
+                    out.push('\n');
+                }
+                Some('h') => {
+                    ch.next();
+                    out.push(' ');
+                }
+                _ => out.push('\\'),
+            },
+            '\r' => {}
+            _ => out.push(c),
+        }
+    }
+    out.trim().to_string()
 }

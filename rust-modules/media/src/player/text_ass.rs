@@ -5,7 +5,7 @@
 //!
 //! - [`convert`]: one cue's text, in one of the [`TextDialect`]s, to the body of an ASS event plus
 //!   the cue's numpad alignment. It ports the semantics of the `sub_text` the bespoke caption draw
-//!   used and then escapes the result for libass, which reads `\N`, `\n`, `\h`, `\{` and `\}` as
+//!   used (kept in `tests.rs` as the oracle) and then escapes the result for libass, which reads `\N`, `\n`, `\h`, `\{` and `\}` as
 //!   escapes, so a literal backslash must never be allowed to form one by accident.
 //! - [`header`]: the synthesized `[Script Info]`/`[V4+ Styles]` for the viewer's size and position
 //!   ([`TextStyle`](super::text_style::TextStyle)), one style per numpad alignment so the position

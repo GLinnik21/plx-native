@@ -346,17 +346,6 @@ struct AbrSeed {
     observed_at: Instant,
 }
 
-/// one client-rendered subtitle cue (content-time ns). `track` is the 0-based subtitle-stream
-/// index it belongs to; the demuxer pushes cues for ALL text tracks and the render filters by
-/// the selected `desired_sub_idx`, so switching tracks is instant (no re-demux of the buffered
-/// region). Content-time ns matches the fed video PTS timeline (see active_subtitle).
-pub struct SubCue {
-    pub track: i32,
-    pub start_ns: i64,
-    pub end_ns: i64,
-    pub text: String,
-}
-
 /// one rect of a decoded image-subtitle display set: `w`×`h` at position (`x`,`y`) **in the
 /// subtitle stream's own authoring canvas** (see [`SubBitmap::cw`]) — NOT in screen pixels; the
 /// renderer scales it into the video rect.
@@ -650,7 +639,6 @@ pub struct Shared {
     /// picker's rows are the only place this reaches, and only on DIRECT PLAY: a transcode is a
     /// remux the server built, and its tags are whatever the server put there.
     pub track_names: Mutex<TrackNames>,
-    pub sub_cues: Mutex<Vec<SubCue>>,
     pub ass_sources: Mutex<super::ass_source::Store>,
     pub ass_renderer: super::ass::Runtime,
     pub sub_bitmaps: Mutex<Vec<SubBitmap>>, // image-sub cues (every image track while subs are on)
@@ -1005,7 +993,6 @@ impl Shared {
             playback_trace: Mutex::new(super::report::PlaybackTrace::new()),
             desired_sub_idx: AtomicI32::new(-1),
             track_names: Mutex::new(TrackNames::new()),
-            sub_cues: Mutex::new(Vec::new()),
             ass_sources: Mutex::new(super::ass_source::Store::new()),
             ass_renderer: super::ass::Runtime::new(),
             sub_bitmaps: Mutex::new(Vec::new()),
@@ -1631,8 +1618,7 @@ impl Shared {
             let mut sources = self.ass_sources.lock().unwrap_or_else(|e| e.into_inner());
             if for_reload { sources.retain_for_reload(); } else { sources.reset(); }
         }
-        // These decoded cue/bitmap stores are transient render state and refill on read.
-        self.sub_cues.lock().unwrap().clear();
+        // The decoded bitmap store is transient render state and refills on read.
         self.sub_bitmaps.lock().unwrap().clear();
         // Cleared with them, and for the same reason: they describe the FILE the last demuxer had
         // open. A reload-based seek re-opens the same part and re-publishes the same names, but a
