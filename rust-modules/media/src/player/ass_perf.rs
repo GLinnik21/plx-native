@@ -171,4 +171,32 @@ mod tests {
             "{line}"
         );
     }
+
+    #[test]
+    fn finish_without_a_render_is_a_no_op() {
+        // Idle (no native call this cycle): nothing is recorded, nothing logged.
+        finish_call(true, 99);
+        AGG.with(|a| assert_eq!(a.borrow().calls, 0));
+    }
+
+    #[test]
+    fn render_then_finish_counts_one_call() {
+        record_render(Duration::from_micros(1234));
+        finish_call(true, 64);
+        AGG.with(|a| {
+            let a = a.borrow();
+            assert_eq!((a.calls, a.changed, a.max_us, a.pub_bytes), (1, 1, 1234, 64));
+        });
+        // The slot was consumed: a second finish does not double count.
+        finish_call(false, 0);
+        AGG.with(|a| assert_eq!(a.borrow().calls, 1));
+    }
+
+    #[test]
+    fn uploads_accumulate() {
+        let before = UPLOADED.load(Ordering::Relaxed);
+        note_upload(10);
+        note_upload(5);
+        assert!(UPLOADED.load(Ordering::Relaxed) >= before + 15);
+    }
 }

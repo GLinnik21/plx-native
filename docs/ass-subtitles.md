@@ -85,6 +85,16 @@ Boot the fixture with `tools/tv-session.sh up --guest --mock --screen player=990
 `--mock` verifies the configured server’s synthetic identity and supplies a fabricated guest token;
 it never resolves a real Plex account. Configure and build the developer app against that mock first.
 
+Libass cost on the TV is read from the event log, not guessed. While a styled source renders,
+`player::ass_perf` writes one `assperf: calls=.. changed=.. p95_us=.. max_us=.. pub_bytes=..
+up_bytes=..` line per second (FFI render time on the worker, bytes published and bytes uploaded) and
+one `assperf: worker tid=<n>` line when the worker starts, which `tools/tv-sched-trace.sh --tid <n>`
+follows. The UI-thread texture upload is the `assup` span on `FRAMEDROP spans=`. Nothing is
+logged while no styled source is selected, and a render costs one clock pair. `python3
+tests/fixtures/make_ass_stress.py <dir>` builds the stress MKVs (Latin, CJK, Thai, Devanagari,
+Arabic, rapid, karaoke, long, 4K60; host `ffmpeg`/`ffprobe` only) to serve with `mock_pms.py
+--extra-media`.
+
 Device checks must hold the TV lease and keep both the panel and sound off. Release the lease
 while building or reviewing captures. Compare the unchanged
 build and the candidate on the same media: styles and overlap, moving/karaoke cues, track changes,
