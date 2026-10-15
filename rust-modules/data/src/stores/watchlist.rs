@@ -1361,6 +1361,31 @@ mod tests {
     }
 
     #[test]
+    fn paging_ends_at_total_size_with_no_page_count_cap() {
+        // 2100 entries is 21 pages: past the old 20-page cap.
+        let items: Vec<WatchItem> = (0..2100u32).map(|i| item((i % 250) as u8 + 1, "T")).collect();
+        let mock = Mock::new(items);
+        let mut s = store(&mock);
+        s.run(WatchlistCmd::Open);
+        for _ in 0..40 {
+            s.pump();
+        }
+        let starts = mock.starts.lock().unwrap().clone();
+        assert_eq!(starts.len(), 21);
+        assert_eq!(starts.last(), Some(&2000));
+    }
+
+    #[test]
+    fn paging_ends_on_a_short_page_when_the_server_gives_no_total() {
+        let items: Vec<WatchItem> = (1..=150u8).map(|n| item(n, "T")).collect();
+        let mock = Mock::new(items);
+        mock.dropped.store(1, Ordering::SeqCst);
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(*mock.starts.lock().unwrap(), [0, 100]);
+    }
+
+    #[test]
     fn a_failed_first_read_is_a_failure_and_a_failed_reread_keeps_the_rows() {
         let mock = three();
         let mut s = store(&mock);

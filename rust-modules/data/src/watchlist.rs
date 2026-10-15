@@ -22,9 +22,6 @@ use plx_plex::plex::watchlist::{WatchItem, WatchKind, WatchPage, WatchlistError,
 use plx_plex::plex::{GuidKind, GuidLookupError, GuidMatch, ServerId, GUIDS_PER_REQUEST};
 use std::collections::HashSet;
 
-/// Pages the list read folds before it stops (plan §1.3: cap 20 pages of 100).
-pub const MAX_PAGES: u32 = 20;
-
 /// Who a worker acts for, captured on the MAIN thread at spawn (`session::plex_tv_credential`) and
 /// owned by the worker: it never reads the session itself. `generation` is the profile generation
 /// at capture; a landing tagged with an older one is dropped.
@@ -304,9 +301,9 @@ pub fn match_rows(io: &dyn WatchlistIo, rows: &[(String, Kind)]) -> Vec<Answer> 
     out
 }
 
-/// WORKER THREAD: read the list. Page 0, then the released set, then the remaining pages up to
-/// [`MAX_PAGES`]; each page is matched against the servers before it is posted so a tile arrives
-/// with its state. Stops at the first page that fails. Always ends with [`What::ListDone`].
+/// WORKER THREAD: read the list. Page 0, then the released set, then the remaining pages until
+/// the server's own end (`start` reaches `totalSize`, a short page, or an empty one); each page is
+/// matched against the servers before it is posted so a tile arrives with its state. Stops at the first page that fails. Always ends with [`What::ListDone`].
 /// `known` is the guids already matched against every reachable server under roster generation
 /// `known.1`; they are skipped while the roster has not moved (a new roster is a full re-match).
 pub fn run_list(
@@ -317,7 +314,8 @@ pub fn run_list(
     post: &mut dyn FnMut(Landed),
 ) {
     let mut start = 0u32;
-    for page_no in 0..MAX_PAGES {
+    let mut page_no = 0u32;
+    loop {
         let page = match io.page(auth, start, MAX_PAGE) {
             Ok(p) => p,
             Err(e) => {
@@ -348,9 +346,13 @@ pub fn run_list(
             Some(t) => start < t,
             None => got >= MAX_PAGE,
         };
+        // Ends on the server's answer (`start` at `totalSize`, or a short page). A page that
+        // carried no entries advances nothing, so it also ends the loop: that is loop safety
+        // against a misbehaving server, not a bound on the list.
         if got == 0 || !more {
             break;
         }
+        page_no += 1;
     }
     post(Landed { tag, what: What::ListDone });
 }

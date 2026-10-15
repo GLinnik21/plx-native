@@ -91,7 +91,7 @@ Nothing names webOS. Screens never name a sibling screen or app.
 
 ### 1.3 Reads
 - ONE list in default order (`sort=watchlistedAt:desc&includeCollections=1&includeExternalMedia=1`),
-  paged Start/Size=100 (101 → 400), remaining pages in the background, cap 20 pages; skeleton
+  paged Start/Size=100 (101 → 400), remaining pages in the background until the server's own end (`totalSize`, a short or empty page; no page cap); skeleton
   cells past the loaded tail. Plus the `released` list as a guid set. Membership from the
   default list only.
 - Sort/type/Show filtering client-side over stored rows: no requests on a Sort & Filter change.

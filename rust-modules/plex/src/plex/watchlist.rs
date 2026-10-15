@@ -123,9 +123,6 @@ pub type WatchTransport<'a> = &'a mut dyn FnMut(&WatchRequest) -> Result<WatchRe
 
 const DISCOVER: &str = "https://discover.provider.plex.tv";
 
-/// Pages `watchlist_released` will fold before it stops (plan §1.3: cap 20 pages).
-const MAX_RELEASED_PAGES: u32 = 20;
-
 /// The discover provider's base URL: `https://discover.provider.plex.tv`, or, in a dev build
 /// only, the loopback stand-in named by `/tmp/plxnative-discover` (guarded exactly like
 /// `account::plex_tv()`: plain `http://` to `127.0.0.1`/`localhost` or it is refused and logged,
@@ -312,11 +309,14 @@ impl AccountClient {
         self.list_page("all", start, size, req).map(|(page, _)| page)
     }
 
-    /// The `released` variant of the list (items already released), all pages folded in.
+    /// The `released` variant of the list (items already released), all pages folded in. The
+    /// server's own answer ends it: `start` reaching `totalSize`, a short page, or an empty one
+    /// (an empty page is also the loop-safety stop: `start` advances by the raw count, so a page
+    /// that advances nothing never repeats).
     pub fn watchlist_released(&self, req: WatchTransport) -> Result<Vec<WatchItem>, WatchlistError> {
         let mut out = Vec::new();
         let mut start = 0;
-        for _ in 0..MAX_RELEASED_PAGES {
+        loop {
             let (page, raw) = self.list_page("released", start, MAX_PAGE, &mut *req)?;
             let total = page.total;
             out.extend(page.items);
@@ -484,15 +484,29 @@ mod tests {
         assert!(seen[1].url.contains("X-Plex-Container-Start=100&X-Plex-Container-Size=100"));
     }
 
+    fn full_page() -> Vec<String> {
+        (0..100).map(|i| format!("{i:024x}")).collect()
+    }
+
     #[test]
-    fn the_released_list_stops_at_the_page_cap() {
-        let full: Vec<String> = (0..100).map(|i| format!("{i:024x}")).collect();
+    fn the_released_list_follows_total_size_past_any_fixed_page_count() {
+        let full = full_page();
         let refs: Vec<&str> = full.iter().map(String::as_str).collect();
-        let body = list_body(&refs, 100_000);
-        let replies = (0..30).map(|_| ok(&body)).collect();
+        let body = list_body(&refs, 2500);
+        let replies = (0..25).map(|_| ok(&body)).collect();
         let (out, seen) = run(replies, |c, t| c.watchlist_released(t));
-        assert!(out.is_ok());
-        assert_eq!(seen.len(), MAX_RELEASED_PAGES as usize);
+        assert_eq!(out.unwrap().len(), 2500);
+        assert_eq!(seen.len(), 25, "stops exactly when start reaches totalSize");
+    }
+
+    #[test]
+    fn the_released_list_stops_on_an_empty_page_even_when_total_size_lies() {
+        let full = full_page();
+        let refs: Vec<&str> = full.iter().map(String::as_str).collect();
+        let (out, seen) = run(vec![ok(&list_body(&refs, 100_000)), ok(&list_body(&[], 100_000))],
+            |c, t| c.watchlist_released(t));
+        assert_eq!(out.unwrap().len(), 100);
+        assert_eq!(seen.len(), 2);
     }
 
     #[test]
