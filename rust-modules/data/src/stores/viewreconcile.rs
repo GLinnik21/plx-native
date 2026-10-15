@@ -187,13 +187,17 @@ impl ViewReconcileStore {
         !self.pending.is_empty() || !self.pending_parents.is_empty() || !self.flights.is_empty()
     }
 
+    /// Is a read of `key` in flight?
+    fn is_out(&self, key: &Key) -> bool {
+        self.flights.iter()
+            .any(|f| f.sid == key.0 && f.keys.iter().any(|k| plx_plex::plex::same_item((f.sid, k), (key.0, &key.1))))
+    }
+
     /// Owe a read of each `(server, ratingKey)`. An item whose read is out is marked dirty instead.
     pub fn enqueue(&mut self, keys: impl IntoIterator<Item = Key>) {
         for key in keys {
             self.quiet.retain(|k| !plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1)));
-            let out = self.flights.iter()
-                .any(|f| f.sid == key.0 && f.keys.iter().any(|k| plx_plex::plex::same_item((f.sid, k), (key.0, &key.1))));
-            let list = if out { &mut self.dirty } else { &mut self.pending };
+            let list = if self.is_out(&key) { &mut self.dirty } else { &mut self.pending };
             if !list.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1))) {
                 list.push(key);
             }
@@ -205,12 +209,10 @@ impl ViewReconcileStore {
     /// the sake of the page under it. A key already queued or out is left to its own owner: a
     /// quiet ask never downgrades an owing one.
     pub fn enqueue_reread(&mut self, keys: impl IntoIterator<Item = Key>) {
-        let held = |s: &Self, key: &Key| s.pending.iter().chain(&s.pending_parents).chain(&s.dirty)
-            .any(|k| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1)))
-            || s.flights.iter().any(|f| f.sid == key.0
-                && f.keys.iter().any(|k| plx_plex::plex::same_item((f.sid, k), (key.0, &key.1))));
         for key in keys {
-            let fresh = !held(self, &key);
+            let fresh = !(self.pending.iter().chain(&self.pending_parents).chain(&self.dirty)
+                .any(|k| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1)))
+                || self.is_out(&key));
             self.enqueue([key.clone()]);
             if fresh {
                 self.quiet.push(key);

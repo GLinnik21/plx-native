@@ -389,6 +389,65 @@ class HostLibraryCaches(unittest.TestCase):
         self.assertIn("make sim-linux", job_body("simulators.yml", "linux"))
 
 
+class DependabotNotices(unittest.TestCase):
+    """`dependabot-notices.yml` runs on `pull_request_target` with a write token, which is safe only while
+    it executes nothing from the pull request: gated on the bot and a same-repository head, the PR
+    checked out as data beside the trusted base-branch generator, no credential persisted, write
+    permissions on the one job only."""
+
+    NAME = "dependabot-notices.yml"
+
+    def test_trigger_is_scoped_to_the_cargo_files(self):
+        body = code(self.NAME)
+        self.assertRegex(body, r"(?m)^  pull_request_target:\n    types: \[opened, synchronize, reopened\]\n    paths:")
+        self.assertNotRegex(body, r"(?m)^  (push|pull_request|workflow_run|issue_comment|schedule):")
+        self.assertRegex(body, r"(?m)^permissions: \{\}$")
+
+    def test_the_job_is_gated_on_the_bot_and_a_same_repository_head(self):
+        job = job_body(self.NAME, "regenerate")
+        for clause in ("github.actor == 'dependabot[bot]'", "github.event.pull_request.user.login == 'dependabot[bot]'",
+                       "github.event.pull_request.head.repo.full_name == github.repository",
+                       "github.event.pull_request.base.ref == github.event.repository.default_branch"):
+            self.assertIn(clause, job)
+        self.assertEqual(re.findall(r"(?m)^      (\w+): write$", job), ["contents", "actions"])
+        self.assertIn("timeout-minutes:", job)
+
+    def test_pull_request_code_is_data_never_executed(self):
+        job = job_body(self.NAME, "regenerate")
+        checkouts = re.findall(r"actions/checkout@[0-9a-f]{40} # v\d+\n        with:\n((?:          .*\n)+)", job)
+        self.assertEqual(len(checkouts), 2)
+        for block in checkouts:
+            self.assertIn("persist-credentials: false", block)
+        self.assertIn("path: trusted", checkouts[0])
+        self.assertIn("path: pr", checkouts[1])
+        self.assertNotIn("ref:", checkouts[0])   # the base branch
+        self.assertIn("ref: ${{ github.event.pull_request.head.sha }}", checkouts[1])
+        # the single code path: the base branch's generator, isolated, pointed at the PR's files
+        self.assertIn("python3 -I trusted/ci/gen-third-party-notices.py --root pr", job)
+        self.assertNotRegex(job, r"(?m)^\s+(?:make|cargo|\./|bash pr|python3 pr|sh pr)\b")
+        self.assertNotIn("uses: ./", job)
+        # PR-controlled strings reach the shell only through env:, never `${{ }}` inside a script
+        for run in re.findall(r"(?ms)^        run: \|\n(.*?)(?=^      - |\Z)", job):
+            self.assertNotIn("${{", run)
+
+    def test_a_new_crate_stops_the_job_before_anything_is_committed(self):
+        job = job_body(self.NAME, "regenerate")
+        refusal = job[job.index("\n            2)"):job.index("\n            *)")]
+        self.assertIn("exit 1", refusal)
+        self.assertIn("licence decision", refusal)
+        self.assertLess(job.index("exit 1"), job.index("git -C pr commit"))
+
+    def test_cargo_never_runs_here_and_the_backstop_is_in_ci(self):
+        # A PR's .cargo/config.toml can name a credential-provider program, so cargo on its files with a
+        # write token is refused; ci.yml's host-lint job proves the crate set with cargo instead.
+        self.assertNotRegex(code(self.NAME), r"(?m)^\s+(?:run: )?.*\bcargo\b")
+        lint = job_body("ci.yml", "host-lint")
+        self.assertIn("python3 ci/gen-third-party-notices.py --check --verify-graph", lint)
+        header = (WORKFLOWS / self.NAME).read_text()
+        self.assertIn("@dependabot recreate", header)
+        self.assertNotIn("`@dependabot rebase` or", header)
+
+
 class BuildBenchWorkflow(unittest.TestCase):
     """The daily build-time measurement (build-bench.yml): a schedule that can only ever run main's tip.
 
