@@ -875,7 +875,7 @@ fn resettle(p: &mut Person) {
 /// Returns whether anything matched. **MAIN THREAD.**
 fn apply_view(state: &mut PersonState, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
     // A person's tiles have no deck: a removal from Continue Watching changes nothing here.
-    let crate::viewstate::ViewEdit::Watched(_) = edit else { return false };
+    if let crate::viewstate::ViewEdit::LeftDeck = edit { return false }
     let Some(p) = state.current.as_mut() else {
         return false;
     };
@@ -886,7 +886,8 @@ fn apply_view(state: &mut PersonState, at: &crate::viewstate::ViewAt, edit: crat
         .flat_map(|s| s.shelves.iter_mut())
         .flat_map(|sh| sh.items.iter_mut())
     {
-        if at.covers(m) {
+        // `changes`: the server's `Facts`/`Offset` that agree with the tile touch nothing
+        if at.covers(m) && edit.changes(m) {
             edit.apply(m);
             hit = true;
         }
@@ -2461,6 +2462,39 @@ mod tests {
         assert_eq!(landed(&owner), [("3".to_string(), false), ("4".to_string(), true)],
             "the pressed tile stays watched; the server's own earlier answer is not made again");
         plx_base::task::drain_workers_for_test();
+        owner.reset();
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// The server's word (`Facts`, `Offset`) patches a filmography tile in place, only where it
+    /// differs from what is drawn.
+    #[test]
+    fn the_servers_facts_and_offset_patch_a_filmography_tile_only_where_they_differ() {
+        use crate::viewstate::{ViewAt, ViewEdit};
+        let mut owner = Owner::default();
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        owner.reset();
+        let a = plx_plex::plex::register_for_test("person-facts", "127.0.0.1", 1, "a", "cid");
+        owner.open(a, "7", "plex://person/7", "Actor", "");
+        owner.state.install_for_test(
+            vec![PmsMovie { unwatched: true, resume_ms: 9, ..movie_on(a, "3") }, PmsMovie { unwatched: true, ..movie_on(a, "4") }],
+            Vec::new());
+        let run = |owner: &mut Owner, rk: &str, edit| {
+            let (adapter, at) = (owner.adapter.clone(), ViewAt::leaf(a, rk));
+            owner.state.run(&adapter, crate::stores::person::PersonCmd::ApplyView { at, edit })
+        };
+        let marks = |owner: &Owner| {
+            owner.current().unwrap().srcs[0].shelves[0].items.iter()
+                .map(|m| (m.rk.clone(), m.watched, m.unwatched, m.resume_ms)).collect::<Vec<_>>()
+        };
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        assert!(run(&mut owner, "3", facts));
+        assert!(!run(&mut owner, "3", facts), "facts that agree with the tile change nothing");
+        assert_eq!(marks(&owner), [("3".into(), true, false, 0), ("4".into(), false, true, 0)]);
+        assert!(run(&mut owner, "4", ViewEdit::Offset { ms: 777 }));
+        assert!(!run(&mut owner, "4", ViewEdit::Offset { ms: 777 }));
+        assert_eq!(marks(&owner)[1], ("4".into(), false, true, 777), "an offset leaves the watched state alone");
         owner.reset();
         plx_plex::plex::reset_servers_for_test();
     }

@@ -1848,6 +1848,37 @@ fn deck_press_is(mode: plx_media::route::DeckPress) -> DeckPressGuard {
     prior
 }
 
+/// **Play carries the resume a stop left.** The stop's `Offset` patch reaches the Continue Watching
+/// card, and OK on it under the Play setting asks for that point, not for the one the card was
+/// drawn with before the stop (G8: a Play taken from a stale row resumed at the old offset).
+#[test]
+fn a_cards_play_carries_the_resume_point_a_stop_patched_in() {
+    use plx_data::stores::hubs::HubsCmd;
+    use plx_data::viewstate::{ViewAt, ViewEdit};
+    let _guard = plx_base::testlock::serial();
+    let _press = deck_press_is(plx_media::route::DeckPress::Play);
+    let mut hubs = plx_data::stores::hubs::HubsStore::default();
+    hubs.seed_for_test(2, plx_data::pms::HubState::Ready);
+    let play = |hubs: &plx_data::stores::hubs::HubsStore| {
+        let snapshot = hubs.snapshot();
+        let mut s = screen(snapshot.view());
+        let card = first_card(&s);
+        let (_, out, _) = step(&mut s, snapshot.view(), Some(card),
+            &ScreenEvent::PressCommit(plx_machine::machine::PressId(1)));
+        out.into_iter().find_map(|e| match e.fx {
+            Fx::App(AppFx::Home(HomeReq::Play { rk, resume_ns, .. })) => Some((rk, resume_ns)),
+            _ => None,
+        })
+    };
+    assert_eq!(play(&hubs), Some(("1".to_string(), 0)), "premise: the card has no resume point");
+    let edit = hubs.run(HubsCmd::ApplyView {
+        at: ViewAt::leaf(plx_plex::plex::ServerId::UNSET, "1"),
+        edit: ViewEdit::Offset { ms: 150_000 },
+    });
+    assert!(edit.changed, "the stop's offset reached the card");
+    assert_eq!(play(&hubs), Some(("1".to_string(), 150_000 * 1_000_000)));
+}
+
 #[test]
 fn continue_watching_commit_follows_the_setting_while_an_ordinary_shelf_opens_detail() {
     use plx_media::route::DeckPress;

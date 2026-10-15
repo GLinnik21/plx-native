@@ -346,6 +346,38 @@ fn an_end_of_stream_scrobbles_the_other_servers_copy_but_not_the_origin_again() 
     drop(stores);
 }
 
+/// The same end of stream, seen from the other server's Search screen: B's copy of the title is
+/// scrobbled by the fan-out, and the tile Search holds for it reads watched without a search being
+/// run again.
+#[test]
+fn after_an_end_of_stream_the_other_servers_search_tile_reads_watched() {
+    use crate::search::{Item, Kind, Shelf};
+    let _g = plx_base::testlock::serial();
+    let (a, b) = (serve(), serve());
+    a.truth.watched.lock().unwrap().insert("1".into());
+    let (mut stores, sid_a, sid_b) = two_servers(&a, &b);
+    stores.search.publish_shelves_for_test(vec![Shelf {
+        epoch: 0, window: Default::default(), kind: Kind::Movie,
+        items: vec![Item::Media(crate::pms::PmsMovie {
+            sid: sid_b, rk: "1".into(), unwatched: true, resume_ms: 20_000, ..Default::default()
+        })],
+    }]);
+    let search_tile = |stores: &Stores| {
+        let directory = DirectorySnapshot::default();
+        let snap = stores.search_snapshot(directory.view());
+        snap.view().shelves().iter().flat_map(|s| &s.items).find_map(|it| match it {
+            Item::Media(m) if m.sid == sid_b => Some((m.watched, m.unwatched, m.resume_ms)),
+            _ => None,
+        })
+    };
+    assert_eq!(search_tile(&stores), Some((false, true, 20_000)), "premise: B's copy is unwatched");
+    let directory = DirectorySnapshot::default();
+    stores.stops_landed(vec![stop(sid_a, 60_000, false, true)], directory.view());
+    drive(&mut stores, |s| settled(s) && b.truth.scrobbles.load(Ordering::SeqCst) == 1);
+    assert_eq!(search_tile(&stores), Some((true, false, 0)), "B's Search tile reads watched");
+    drop(stores);
+}
+
 /// A rewatch (already watched when the play began) does not inflate the other servers' counts.
 #[test]
 fn a_rewatch_does_not_fan_out() {

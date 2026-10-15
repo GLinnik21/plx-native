@@ -1932,6 +1932,23 @@ fn set_watched_local(state: &mut MetadataState, at: &crate::viewstate::ViewAt, o
     true
 }
 
+/// The server's `Facts`/`Offset` for the Related shelf and the collection shelf's members: other
+/// items' tiles, edited in place. Only a row the edit would CHANGE counts, so a read-back that
+/// agrees with what is drawn raises no notice; the shelves keep their order and length, so nothing
+/// moves under the cursor. Returns whether any tile changed. **MAIN THREAD.**
+fn patch_tiles(state: &mut MetadataState, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
+    let Some(d) = state.current.as_mut() else { return false };
+    let members = d.collection.iter_mut().flat_map(|c| c.members.iter_mut());
+    let mut hit = false;
+    for m in d.related.iter_mut().chain(members) {
+        if at.covers(m) && edit.changes(m) {
+            edit.apply(m);
+            hit = true;
+        }
+    }
+    hit
+}
+
 /// drop the loaded detail (on leaving the detail page). Also supersedes any in-flight async
 /// fetch — otherwise a load requested on the way in lands after the page closed and silently
 /// repopulates CURRENT (and NOW, via `sync_now_playing`) behind whatever screen is now mounted.
@@ -3866,8 +3883,12 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             crate::viewstate::ViewEdit::Watched(on) => set_watched_local(state, &at, on),
             // the loaded item has no deck to leave
             crate::viewstate::ViewEdit::LeftDeck => false,
-            // Detail re-reads itself (`DetailRefresh`); a facts patch is not published to it yet
-            crate::viewstate::ViewEdit::Facts { .. } | crate::viewstate::ViewEdit::Offset { .. } => false,
+            // The server's word reaches the other items' tiles on this page (Related, the
+            // collection shelf). The loaded item, its episodes and seasons still re-read
+            // themselves (`DetailRefresh`) until the Detail fold takes Facts.
+            crate::viewstate::ViewEdit::Facts { .. } | crate::viewstate::ViewEdit::Offset { .. } => {
+                patch_tiles(state, &at, edit)
+            }
         },
         MetadataCmd::InstallPlaying(p) => {
             install_playing(state, p);

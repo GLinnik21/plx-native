@@ -40,8 +40,10 @@ ordinals) is the read-back of a view-state write. ViewState hands it the `(serve
 item whose write landed, taken or refused, once its burst is idle (a stopped playback the server took enqueues its item directly); it reads them with one
 `metadata_many` per server (one in flight per server, an item asked for again meanwhile is marked dirty
 and re-queued once), stamps the batch from the ledger, drops any row a newer press covers, and publishes
-the rest as `ViewFact::Facts` edits at leaf scope, which patch Home's hubs and Browse. Home counts a Facts
-row as a hit (a merge, a commit, a notice) only when it differs from the row. The read-back never spawns a
+the rest as `ViewFact::Facts` edits at leaf scope, which patch Home's hubs and Browse's listing, and (with the stop's
+`Offset`) the rows Search, Person, Collection and a Detail page's Related and collection-member tiles hold. Each store counts a Facts
+or Offset row as a hit (a merge, a commit, a notice) only when it differs from the row (`ViewEdit::changes`); a Detail page's own
+item, episodes and seasons, and Browse's section shelves, take neither yet (they are re-read). The read-back never spawns a
 read while a view-state write is queued or out (the stamp is taken at spawn, so a press whose write had not
 landed would otherwise sit before it and be undone by the read's older body); queued items wait for the
 burst to be idle, and for the player to leave the top (`Stores::hold_network`). A refused scrobble returns the tile to what the server holds, for the item (and the
