@@ -423,7 +423,7 @@ pub(super) fn transcode_spec_carrying_burn<'a>(
 }
 
 
-pub use plx_plex::plex::session::{PlaybackQuality as Quality, DeckPress, DirectPlayMode, NextEpisodeMode, SkipInterval, SubtitleSize, SubtitlePosition};
+pub use plx_plex::plex::session::{PlaybackQuality as Quality, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, SkipInterval, SubtitleSize, SubtitlePosition};
 
 
 /// The ladder IN ORDER, best first. The ONE place row order lives, so the picker's index mapping

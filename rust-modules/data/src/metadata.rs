@@ -2614,6 +2614,10 @@ pub struct PlayingItem {
     /// so this is the one honest source of "the light under the panel" there
     /// (`screen::Scrim::over_video`).
     pub blur: Option<[[f32; 3]; 4]>,
+    /// The played leaf's video stream is HDR: a PQ or HLG transfer, or Dolby Vision
+    /// (`convert_streams`' `hdr`). The SOURCE's fact, not the picture's: a server re-encode to SDR
+    /// keeps it true, so the HDR overlay dim also asks the route (`route::overlay_gain`).
+    pub hdr: bool,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -2636,6 +2640,7 @@ impl PlayingItem {
             markers: Vec::new(),
             chapters: Vec::new(),
             blur: None,
+            hdr: false,
         }
     }
 }
@@ -2684,6 +2689,7 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
             markers: d.markers.clone(),
             chapters: d.chapters.clone(),
             blur: d.has_blur.then_some(d.blur),
+            hdr: d.hdr,
         })
 }
 
@@ -2717,7 +2723,7 @@ fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_pl
         .as_ref()
         .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
-    let (audio, subs, video_fps, dovi) = (st.audio, st.subs, st.fps, st.dovi);
+    let (audio, subs, video_fps, dovi, hdr) = (st.audio, st.subs, st.fps, st.dovi, st.hdr);
     let show_rk = it
         .as_ref()
         .map(|it| it.grandparent_rating_key.clone())
@@ -2748,6 +2754,7 @@ fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_pl
         markers,
         chapters,
         blur,
+        hdr,
     }
 }
 

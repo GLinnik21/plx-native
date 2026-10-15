@@ -11,12 +11,12 @@
 use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Scope, Setting, SettingsWrite, DESCRIPTORS};
 use super::prefs::{AudioEnhancementsPref, AutoSignInPref, DeckPressPref, DirectPlayModePref, LastHeroBlurPref,
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
-    SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
+    HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
     TrailerAutoplayPref};
 use super::{
     CanonicalSessionPreferences, DeckPress, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
     PlaintextChoice, PlaintextConsent, PlaybackQuality, Preferences, ServerKeyPin, Session, SkipInterval,
-    SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone,
+    HdrOverlayBrightness, SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone,
 };
 use serde::de::{self, Deserializer, Visitor};
 use serde_json::{json, Value};
@@ -107,6 +107,7 @@ fn every_marker_names_its_own_field() {
     check_row::<SubtitleTonePref>(SubtitleTone::Grey);
     check_row::<SubtitleSizePref>(SubtitleSize::Large);
     check_row::<SubtitlePositionPref>(SubtitlePosition::High);
+    check_row::<HdrOverlayBrightnessPref>(HdrOverlayBrightness::Half);
     check_row::<NextEpisodeModePref>(NextEpisodeMode::Off);
     check_row::<SkipIntervalPref>(SkipInterval::Seconds30);
     check_row::<DeckPressPref>(DeckPress::Play);
@@ -115,13 +116,13 @@ fn every_marker_names_its_own_field() {
     check_row::<AutoSignInPref>(true);
     check_row::<TrailerAutoplayPref>(true);
     check_row::<LastHeroBlurPref>(Some([[0.5, 0.25, 0.125]; 4]));
-    // The table lists exactly these twelve `Setting` rows, the four list rows below, the two
+    // The table lists exactly these thirteen `Setting` rows, the four list rows below, the two
     // memory-door rows (`TrackMemoryPref`, whose field check is
     // `track_memory_tests::the_list_row_names_its_own_field`, and `SubtitleOffsetsPref`, checked by
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
     // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
     // its line in one of the four places.
-    assert_eq!(DESCRIPTORS.len(), 12 + 4 + 2 + 1);
+    assert_eq!(DESCRIPTORS.len(), 13 + 4 + 2 + 1);
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -216,13 +217,14 @@ fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
         ("deck_press", Some(Confirm)),
         ("subtitle_size", Some(Optimistic)),
         ("subtitle_position", Some(Optimistic)),
+        ("hdr_overlay_brightness", Some(Optimistic)),
         ("subtitle_tone", None),
         ("audio_enhancements", None),
         ("trailer_autoplay", Some(Confirm)),
     ] {
         let d = row(key);
         assert_eq!(d.settings, settings, "{key}");
-        assert!(d.live, "{key}: every one of the ten has a live cell in media");
+        assert!(d.live, "{key}: every one of the eleven has a live cell in media");
         assert_eq!(d.scope, Scope::Profile, "{key}: DECLARED FLIP (P1a, and P1c for trailer_autoplay, where live and settings flipped too): it was Install on main");
         assert_eq!(d.fallback, Fallback::LegacyInstallKey, "{key}: a profile with no value of its own reads the TV's");
         assert!(!d.account_bound, "{key}: the top-level key is the TV's, the profile's own value is `profile_prefs`");
@@ -284,6 +286,7 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("subtitle_tone", generic()),
         ("subtitle_size", generic()),
         ("subtitle_position", generic()),
+        ("hdr_overlay_brightness", generic()),
         ("next_episode_mode", generic()),
         ("skip_interval", generic()),
         ("deck_press", generic()),

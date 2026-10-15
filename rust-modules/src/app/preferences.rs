@@ -3,7 +3,7 @@
 //! here, never in a screen constructor or step.
 use plx_media::route::{choose, Choice, How};
 use plx_plex::plex::account::{PreferenceError, PreferenceRequest};
-use plx_plex::plex::session::{DeckPressPref, DirectPlayModePref, NextEpisodeModePref, QualityPref,
+use plx_plex::plex::session::{DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, QualityPref,
     SkipIntervalPref, SubtitlePositionPref, SubtitleSizePref, TrailerAutoplayPref};
 use plx_screens::registry::{AccountPreferenceReply, PreferenceCmd};
 use std::sync::mpsc::Sender;
@@ -20,6 +20,7 @@ fn choose_setting(choice: Choice, reply: Sender<bool>) {
         Choice::TrailerAutoplay(v) => choose::<TrailerAutoplayPref>(v, How::settings::<TrailerAutoplayPref>(reply)),
         Choice::SubtitleSize(v) => choose::<SubtitleSizePref>(v, How::settings::<SubtitleSizePref>(reply)),
         Choice::SubtitlePosition(v) => choose::<SubtitlePositionPref>(v, How::settings::<SubtitlePositionPref>(reply)),
+        Choice::HdrOverlayBrightness(v) => choose::<HdrOverlayBrightnessPref>(v, How::settings::<HdrOverlayBrightnessPref>(reply)),
     }
 }
 

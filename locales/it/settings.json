@@ -679,6 +679,22 @@
     "value": "Alta",
     "description": "Subtitle position picker option: the caption sits near the top of the safe area."
   },
+  "settings.playback.hdr_overlay": {
+    "value": "Luminosità dell'interfaccia in HDR",
+    "description": "Settings row title and picker title: how bright the player's controls and subtitles are drawn while the picture is HDR or Dolby Vision."
+  },
+  "settings.playback.hdr_overlay.full": {
+    "value": "100%",
+    "description": "HDR overlay brightness picker option: the controls and subtitles are drawn at full brightness during HDR, as in SDR (no dimming)."
+  },
+  "settings.playback.hdr_overlay.three_quarters": {
+    "value": "75%",
+    "description": "HDR overlay brightness picker option (the default): the controls and subtitles are drawn at three quarters of full brightness during HDR."
+  },
+  "settings.playback.hdr_overlay.half": {
+    "value": "50%",
+    "description": "HDR overlay brightness picker option: the controls and subtitles are drawn at half brightness during HDR."
+  },
   "settings.playback.next_episode": {
     "value": "Prossimo episodio",
     "description": "Settings, consent or sign-in UI: what the player does at an episode's credits when another episode is queued."
@@ -782,6 +798,10 @@
   "settings.playback.subtitle_position.copy": {
     "value": "L'altezza a cui si posizionano i sottotitoli sul video. I sottotitoli in formato immagine e stilizzati mantengono la propria posizione. Disponibile anche alla voce Stile nel menu Sottotitoli del lettore.",
     "description": "Explanation under the title of the Subtitle position picker. Picture subtitles (PGS, VobSub) and styled (ASS/SSA) subtitles carry their own geometry, so the setting does not reach them; the same control is the Position row under Style on the Subtitles tab of the player's track menu."
+  },
+  "settings.playback.hdr_overlay.copy": {
+    "value": "Quanto sono luminosi i controlli e i sottotitoli del lettore con HDR e Dolby Vision, quando il televisore li mostra molto più luminosi. Abbassala se abbagliano. Con 100% restano come sono.",
+    "description": "Explanation under the title of the HDR overlay brightness picker. A television raises graphics white in an HDR picture, so the on-screen controls and the subtitles look far brighter than in SDR; this scales their colours down, only while the playing picture is HDR or Dolby Vision. It never changes an SDR picture."
   },
   "settings.playback.next_episode.copy": {
     "value": "Il conto alla rovescia A seguire mostra un pulsante Episodio successivo all'avvio dei titoli di coda. Dopo i titoli di coda lascia che vengano riprodotti, quindi avvia l'episodio successivo. Disattivato chiude invece il lettore.",

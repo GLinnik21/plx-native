@@ -67,7 +67,7 @@ DEPS="$ROOT/ci/deps.py"
 # FFMPEG_VERSION + FFMPEG_SHA256 (+ FFMPEG_TARBALL, an absolute or relative path to the tarball) replace the
 # manifest lookup: the copy of this script attached to a release is run from a source checkout or
 # the source bundle with the attached tarball, e.g.
-#   FFMPEG_VERSION=9.0 FFMPEG_SHA256=<the sha256 of the tarball> FFMPEG_TARBALL=ffmpeg-9.0.tar.xz ci/build-ffmpeg.sh
+#   FFMPEG_VERSION=<version> FFMPEG_SHA256=<the sha256 of the tarball> FFMPEG_TARBALL=ffmpeg-<version>.tar.xz ci/build-ffmpeg.sh
 # and needs neither ci/deps.py nor a network. The sha256 is still checked against the tarball.
 if [ -n "${FFMPEG_VERSION-}" ] && [ -n "${FFMPEG_SHA256-}" ]; then
   VERSION=$FFMPEG_VERSION
