@@ -20,8 +20,8 @@
 
 use super::text_style::{self, TextStyle};
 
-/// The family every synthesized style names. The shipped Inter Bold answers to it
-/// (plan §3.2); until that alias ships libass falls back to the default family, "Inter".
+/// The family every synthesized style names. The shipped Inter Bold answers to it (plan §3.2); a
+/// libass without that alias would fall back to the default family, "Inter", and pick Inter Regular.
 pub const STYLE_FONT: &str = "PlxSubs";
 
 /// A cue's numpad alignment, 1-9 (2 is the default, bottom centre).
