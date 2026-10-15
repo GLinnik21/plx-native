@@ -1390,6 +1390,17 @@ pub fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     text_bounds(s,sz,bold).0
 }
 
+/// [`text_width`] with `letter_spacing` px added after every glyph but the last (tracking). A
+/// spacing of 0 is exactly [`text_width`].
+pub fn text_width_tracked(s: *const c_char, sz: c_int, bold: c_int, letter_spacing: f32) -> f32 {
+    let w = text_width(s, sz, bold);
+    if letter_spacing == 0.0 || s.is_null() {
+        return w;
+    }
+    let n = unsafe { std::ffi::CStr::from_ptr(s) }.to_string_lossy().chars().count();
+    w + letter_spacing * n.saturating_sub(1) as f32
+}
+
 /// CPU-only layout bounds, using the same baseline/descent composition as `render_runs`.
 /// A declaration pass needs the height too: an assumed em multiple can miss a linked face.
 /// This does not render or upload a glyph and does not spend the text-prewarm budget.
@@ -2024,6 +2035,45 @@ pub fn draw_text(
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         p.w
     }
+}
+
+/// [`draw_text`] with `letter_spacing` px of tracking between glyphs. Contract freeze: the
+/// signature is final, the body is DS8's; at `letter_spacing == 0.0` this IS [`draw_text`] (byte
+/// identical), and until DS8 lands any other value is drawn untracked.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_tracked(
+    s: *const c_char,
+    x: f32,
+    y: f32,
+    sz: c_int,
+    col: *const f32,
+    align: c_int,
+    bold: c_int,
+    zoom: crate::gfx::Zoom,
+    letter_spacing: f32,
+) -> f32 {
+    let _ = letter_spacing; // DS8
+    draw_text(s, x, y, sz, col, align, bold, zoom)
+}
+
+/// [`draw_text_fade`] with tracking; same freeze contract as [`draw_text_tracked`].
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_fade_tracked(
+    s: *const c_char,
+    x: f32,
+    y: f32,
+    sz: c_int,
+    col: *const f32,
+    align: c_int,
+    bold: c_int,
+    hfade: Option<(f32, f32)>,
+    vfade_top: Option<(f32, f32)>,
+    vfade_bot: Option<(f32, f32)>,
+    zoom: crate::gfx::Zoom,
+    letter_spacing: f32,
+) -> f32 {
+    let _ = letter_spacing; // DS8
+    draw_text_fade(s, x, y, sz, col, align, bold, hfade, vfade_top, vfade_bot, zoom)
 }
 
 /// [`draw_text`] with up to three independent fades (its OWN GL program, so plain text pays no

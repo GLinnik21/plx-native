@@ -250,6 +250,21 @@ pub struct Opener {
     /// painter, because which alpha it belongs on is the host's business: a page element rides
     /// `nav::page_alpha`, a piece of the shared top bar rides `nav::chrome_alpha`.
     pub redraw: fn(),
+    /// How the panel arrives. [`OpenStyle::Appear`] (the default of [`Opener::NONE`] and
+    /// [`Opener::drawn`], so every existing opener is unchanged) is the shared [`K_APPEAR`]
+    /// fade+slide; [`OpenStyle::Morph`] is the glass opener's pill-to-panel morph
+    /// ([`crate::popover_morph`]). Contract freeze: the selector exists, the morph body is DS7's.
+    pub open_style: OpenStyle,
+}
+
+/// The two ways a popover panel can arrive; see [`Opener::open_style`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OpenStyle {
+    /// The shared fade+slide on [`K_APPEAR`] — what every popover did before the morph existed.
+    #[default]
+    Appear,
+    /// The glass opener's morph (`popover_morph`): the panel grows out of the opener's rect.
+    Morph,
 }
 
 /// The [`Opener::redraw`] of a popover with nothing to lift — a named fn rather than a closure, so
@@ -262,13 +277,14 @@ impl Opener {
     pub const NONE: Opener = Opener {
         rect: None,
         redraw: draw_nothing,
+        open_style: OpenStyle::Appear,
     };
 
     /// An opener that is only a DRAW — for a panel whose placement is its own. The Library's chip
     /// menus are anchored on the toolbar rather than on the chip's measured rect, so they have a
     /// thing to lift and no rect to hand over.
     pub const fn drawn(redraw: fn()) -> Opener {
-        Opener { rect: None, redraw }
+        Opener { rect: None, redraw, open_style: OpenStyle::Appear }
     }
 }
 
