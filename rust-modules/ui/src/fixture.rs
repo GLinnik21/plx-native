@@ -1021,7 +1021,7 @@ pub struct FixtureRig {
     pub clears: u32,
     scrim_name: std::ffi::CString,
     scrim_initial: std::ffi::CString,
-    scrim_labels: Vec<String>,
+    scrim_labels: Vec<super::widgets::TabFace>,
     scrim_expand: f32,
     scrim_chrome: bool,
     us: u64,
@@ -1058,7 +1058,7 @@ impl FixtureRig {
     pub fn seed_scrim_chrome_for_test(&mut self, name: &str, initial: &str, labels: &[&str], expand: f32) {
         self.scrim_name = std::ffi::CString::new(name).unwrap();
         self.scrim_initial = std::ffi::CString::new(initial).unwrap();
-        self.scrim_labels = labels.iter().map(|s| (*s).to_owned()).collect();
+        self.scrim_labels = labels.iter().map(|s| super::widgets::TabFace::Label((*s).to_owned())).collect();
         self.scrim_expand = expand;
         self.scrim_chrome = true;
     }
@@ -1086,7 +1086,7 @@ impl Rig<FixtureHost> for FixtureRig {
                 name: &self.scrim_name,
                 name_w: 0.0,
             },
-            labels: super::widgets::TabLabels { generation: 1, labels: &self.scrim_labels },
+            labels: super::widgets::TabLabels { generation: 1, faces: &self.scrim_labels },
             chip_expand: self.scrim_expand,
         })
     }

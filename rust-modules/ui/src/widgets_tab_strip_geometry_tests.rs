@@ -50,9 +50,10 @@ fn tab_geometry_is_shared_by_paint_members_and_clipping() {
 #[test]
 fn captured_tab_labels_measure_words_and_keep_the_search_mark_square() {
     use super::*;
-    let labels = vec!["Home".into(), "Фильмы".into(), String::new()];
-    let (words, widths) = tab_metrics_from(&labels, |s| s.to_bytes().len() as f32 * 7.0);
-    assert_eq!(words.len(), labels.len());
+    let faces = vec![TabFace::Label("Home".into()), TabFace::Label("Фильмы".into()),
+        TabFace::Icon(crate::icons::Icon::Search)];
+    let (words, widths) = tab_metrics_from(&faces, |s| s.to_bytes().len() as f32 * 7.0);
+    assert_eq!(words.len(), faces.len());
     assert_eq!(widths[0], 4.0 * 7.0 + 2.0 * TAB_PILL_PAD);
     assert_eq!(widths[1], "Фильмы".len() as f32 * 7.0 + 2.0 * TAB_PILL_PAD);
     assert_eq!(widths[2], TAB_ICON_PILL_W);
@@ -62,14 +63,20 @@ fn captured_tab_labels_measure_words_and_keep_the_search_mark_square() {
 #[test]
 fn tab_metrics_cache_rejects_different_captured_labels_even_at_the_same_generation() {
     use super::*;
-    let labels = vec!["Home".into(), "Movies".into(), String::new()];
-    let (words, widths) = tab_metrics_from(&labels, |_| 42.0);
-    let cache = (7, words, widths);
-    assert!(tab_cache_matches(&cache, TabLabels { generation: 7, labels: &labels }));
-    assert!(!tab_cache_matches(&cache, TabLabels { generation: 8, labels: &labels }));
-    let changed = vec!["Home".into(), "TV Shows".into(), String::new()];
-    assert!(!tab_cache_matches(&cache, TabLabels { generation: 7, labels: &changed }));
-    assert!(!tab_cache_matches(&cache, TabLabels { generation: 7, labels: &labels[..2] }));
+    let faces = vec![TabFace::Label("Home".into()), TabFace::Label("Movies".into()),
+        TabFace::Icon(crate::icons::Icon::Search)];
+    let (words, widths) = tab_metrics_from(&faces, |_| 42.0);
+    let cache = (7, faces.clone(), words, widths);
+    assert!(tab_cache_matches(&cache, TabLabels { generation: 7, faces: &faces }));
+    assert!(!tab_cache_matches(&cache, TabLabels { generation: 8, faces: &faces }));
+    let changed = vec![TabFace::Label("Home".into()), TabFace::Label("TV Shows".into()),
+        TabFace::Icon(crate::icons::Icon::Search)];
+    assert!(!tab_cache_matches(&cache, TabLabels { generation: 7, faces: &changed }));
+    assert!(!tab_cache_matches(&cache, TabLabels { generation: 7, faces: &faces[..2] }));
+    let mark_as_word = vec![TabFace::Label("Home".into()), TabFace::Label("Movies".into()),
+        TabFace::Label(String::new())];
+    assert!(!tab_cache_matches(&cache, TabLabels { generation: 7, faces: &mark_as_word }),
+        "an empty word is not the Search mark: the face kind is part of the captured vocabulary");
 }
 
 #[test]

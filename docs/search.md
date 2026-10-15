@@ -39,8 +39,12 @@ as "0 post-warmup samples", which is indistinguishable from a real regression.
 
 ### The pill goes LAST
 
-`ui/widgets.rs::search_pill()` is `tab_count() - 1` — Search is always the LAST pill, and since
-2026-09-05 that is the only thing about its position that holds still. The row is
+Search is always the LAST pill: `app/chrome.rs` builds the strip's faces as `Home`, the type pills,
+then `TabFace::Icon(Icon::Search)`, and `Pill::Search` resolves to that last index. Since 2026-09-05
+that position is the only thing about Search's pill that holds still, and nothing reads the last face
+as "the Search pill" any more: the strip's destinations are found by KEY (`widgets::TAB_KEY_SEARCH`,
+`STRIP_BASE + 3`, and `TAB_KEY_CHIP` at `+4`), and the library and search pages map a pressed key to
+its destination with those constants. The row is
 `Home`, then one pill per type that has a FAVOURITE library, then Search: two to four stops, because
 `browse::tab_count()` now counts `tab_kinds()`, and a type whose last favourite is switched off
 draws no pill. Movies and TV Shows are still type destinations whose concrete owned/shared section
@@ -54,9 +58,9 @@ type that has no pill today. Every positional cursor in the app was converted fo
 `HomeCmd::FocusStrip` delivered when Home MOUNTS, since phase 12 folded `Nav`'s four variants into
 `app::bridge::nav_tab`).
 
-It is also the one pill that is a **mark instead of a word**, so it is square (60×60) and skips the
-label padding, inked through the same `TabPill::mixed_ink` the labels use so it travels under the
-focus capsule with them instead of being a separate colour story.
+It is also the one pill whose face is an **icon instead of a word** (`TabFace::Icon`), so it is square
+(60×60) and skips the label padding, inked through the same `TabPill::mixed_ink` the labels use so it
+travels under the focus capsule with them instead of being a separate colour story.
 
 ### The layout is dictated by the keyboard
 
