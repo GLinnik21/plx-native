@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T16:00:30Z",
+ "generated": "2026-10-15T16:04:04Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -44,18 +44,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -50.0,
-   "change7_pct": -14.9,
+   "change30_pct": -49.8,
+   "change7_pct": -14.5,
    "d30": 928.5,
-   "delta30": -464.5,
-   "delta7": -81,
+   "delta30": -462.5,
+   "delta7": -79,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 253,
    "n_prev": 215,
-   "now": 464,
+   "now": 466,
    "prev7": 545,
    "shown": true,
    "state": "flat",
