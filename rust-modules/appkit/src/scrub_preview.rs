@@ -61,11 +61,13 @@ pub struct ScrubPreview {
     pending: Option<(i64, u32)>,
 }
 
-/// The still a scrub at `pos_ns` shows: the position floored to the scrub step, so each press
-/// asks for exactly one new still and a held scrub asks once per step it crosses.
-pub fn still_ms(pos_ns: i64, step_ns: i64) -> i64 {
-    let step_ms = (step_ns / 1_000_000).max(1);
-    (pos_ns.max(0) / 1_000_000) / step_ms * step_ms
+/// The still a scrub at `pos_ns` asks for: the knob's own position, to the nearest second. PMS
+/// answers with its NEAREST still (one per `GenerateBIFFrameInterval`, from the nearest keyframe),
+/// so rounding here would only add error on top of the index's own spacing. The second is enough
+/// to keep a resting knob on one key; how many keys a held scrub crosses is bounded by the one
+/// request in flight, not by this.
+pub fn still_ms(pos_ns: i64) -> i64 {
+    (pos_ns.max(0) + 500_000_000) / 1_000_000_000 * 1_000
 }
 
 /// The still's server path — what the poster source turns into a transcode request.
@@ -191,14 +193,14 @@ mod tests {
     }
 
     #[test]
-    fn a_still_is_the_position_floored_to_the_scrub_step() {
-        let step = 10_000_000_000; // 10 s
-        assert_eq!(still_ms(0, step), 0);
-        assert_eq!(still_ms(9_999_000_000, step), 0);
-        assert_eq!(still_ms(10_000_000_000, step), 10_000);
-        assert_eq!(still_ms(605_400_000_000, step), 600_000);
-        assert_eq!(still_ms(-5, step), 0, "a negative preview clamps to the start");
-        assert_eq!(still_ms(1_500_000_000, 0), 1_500, "a zero step degrades to the millisecond");
+    fn a_still_is_asked_for_at_the_knob_to_the_nearest_second() {
+        // Seen on the set: flooring to the 10 s scrub step showed 12:40 for a knob at 12:44 — the
+        // server already answers with its NEAREST still, so the request carries the position.
+        assert_eq!(still_ms(764_000_000_000), 764_000);
+        assert_eq!(still_ms(764_499_000_000), 764_000);
+        assert_eq!(still_ms(764_500_000_000), 765_000);
+        assert_eq!(still_ms(0), 0);
+        assert_eq!(still_ms(-5), 0, "a negative preview clamps to the start");
         assert_eq!(still_path(7459, 600_000), "/library/parts/7459/indexes/sd/600000");
     }
 

@@ -1955,7 +1955,7 @@ fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, row: &
     let part = plx_media::route::part_id(ps);
     let sid = plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw();
     let generation = plx_media::route::sess(ps);
-    let target = still_ms(bar.pos_ns, scrub_step_ns());
+    let target = still_ms(bar.pos_ns);
     let look = |ms: i64| {
         let path = still_path(part, ms);
         if plx_ui::tex::resolve_on(sid, &path, REQ_W, REQ_H, false) != 0 {
