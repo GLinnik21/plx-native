@@ -71,7 +71,7 @@ pub fn draw(p: Painter, r: Rect, radius: f32) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -88,10 +88,56 @@ mod tests {
         assert_eq!(FACE.rim_w, 1.0, "the board's 1 px");
     }
 
-    /// The face fades with the panel: scrim and rim alphas scale by the opacity (the finding: they
-    /// were drawn at full strength while the rows were near 0). Red if `draw` hands `FACE` as is.
+    /// Run `f` inside a backdrop DISCOVERY pass and return the glass commands it declared, in the
+    /// order declared. `None` if the pass could not run live (then the test would prove nothing).
+    pub(crate) fn declared_glass(f: impl FnOnce()) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
+        use crate::frame::backdrop::{discover, Sources};
+        use std::{cell::RefCell, rc::Rc};
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        {
+            let _walk = discover(sources.clone());
+            f();
+        }
+        let glass = sources.borrow().paints.iter().filter(|p| p.glass.is_some()).cloned().collect();
+        glass
+    }
+
+    /// The glass the board's panel should declare at `r`, built straight from the pieces (no
+    /// `draw`): the shared `Glass` door, the menu rim, the face at opacity `a`.
+    pub(crate) fn expected(p: Painter, r: Rect, rad: f32, face: GlassFace) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
+        declared_glass(|| {
+            let g = crate::widgets::Glass::DYNAMIC_BACKDROP;
+            let t = [1.0, 1.0, 1.0, 1.0];
+            let _ = match p.rest_lift() {
+                Some(dy) => g.backdrop_rising(p, r, dy, rad, t, GlassRim::Menu, face, theme::PANEL_MATERIAL),
+                None => g.backdrop(p, r, 0.0, rad, t, GlassRim::Menu, face, theme::PANEL_MATERIAL),
+            };
+        })
+    }
+
+    /// The face fades with the panel, through `draw` itself: the declared glass command at opacity
+    /// `a` equals the one built from `face_at(a)` and differs from the unfaded `FACE` one. Red if
+    /// `draw` hands `FACE` as is (the finding: a ~.8-opaque face over rows still near 0).
     #[test]
-    fn the_face_fades_with_the_panel() {
+    fn draw_declares_the_face_at_the_panels_opacity() {
+        let _g = plx_base::testlock::serial();
+        let r = Rect::new(100.0, 100.0, 300.0, 200.0);
+        for a in [0.1_f32, 0.5] {
+            let p = Painter::root().alpha(a);
+            let drawn = declared_glass(|| assert!(draw(p, r, 24.0), "a live discovery pass takes the glass"));
+            assert_eq!(drawn.len(), 1, "one glass command per panel");
+            assert!(drawn[0] == expected(p, r, 24.0, face_at(a))[0], "the face rides the opacity {a}");
+            assert!(drawn[0] != expected(p, r, 24.0, FACE)[0], "an unfaded face is a different command");
+        }
+        let p = Painter::root();
+        let full = declared_glass(|| assert!(draw(p, r, 24.0)));
+        assert!(full[0] == expected(p, r, 24.0, FACE)[0], "at full opacity the face is FACE");
+    }
+
+    /// The tint arithmetic itself: scrim and rim alphas scale by the opacity.
+    #[test]
+    fn the_face_scales_every_alpha() {
         let f = face_at(0.1);
         assert!((f.scrim_top[3] - 0.78 * 0.1).abs() < 1e-6);
         assert!((f.scrim_bot[3] - 0.86 * 0.1).abs() < 1e-6);

@@ -195,28 +195,52 @@ fn the_default_popover_keeps_the_shared_fade_and_slide() {
 }
 
 /// A morphing popover's `panel` draws the GROUND at the morphing rect, never ahead of its rows.
+/// Graded on what `Popover::panel` really DECLARES (a discovery pass, the glass command), against
+/// the command built from the morph frame's own rect, radius and alpha ratio.
 #[test]
 fn a_morphing_panel_grows_from_the_pill_and_its_ground_never_leads_its_rows() {
+    use crate::popover_glass::{face_at, tests::{declared_glass, expected}};
     let _g = plx_base::testlock::serial();
+    let _reset = Reset::new(false);
     let (pill, panel) = (crate::Rect::new(1500.0, 40.0, 196.0, 38.0), crate::Rect::new(1380.0, 40.0, 316.0, 400.0));
     let mut pop = crate::popover::Popover::new().morphing();
     pop.open_from(Some(pill));
+    let root = crate::Painter::root();
     // Frame 0: the ground is not down yet (pill only) -- no empty glass frame.
-    assert!(pop.ground(panel, 26.0).is_none());
-    let mut grew = false;
+    assert!(declared_glass(|| pop.panel(root, panel, 26.0, None)).is_empty());
+    let (mut grew, mut painted) = (false, 0);
     for _ in 0..240 {
         pop.update(1.0 / 60.0);
-        let content = pop.morph_frame(Some(pill), panel).unwrap().content_alpha;
-        if let Some((r, _rad, mul)) = pop.ground(panel, 26.0) {
-            assert!(mul <= 1.0 + 1e-6 && mul * content <= content + 1e-6, "ground alpha <= content alpha");
-            if r != panel {
-                grew = true;
-                assert!(r.w <= panel.w + 1e-3 && r.h <= panel.h + 1e-3 && r.w >= pill.w - 1e-3);
+        let f = pop.morph_frame(Some(pill), panel).unwrap();
+        let declared = declared_glass(|| pop.panel(root, panel, 26.0, None));
+        if f.ground_alpha <= 0.0 || f.content_alpha <= 0.0 {
+            assert!(declared.is_empty(), "no ground before there are rows");
+            continue;
+        }
+        assert_eq!(declared.len(), 1);
+        painted += 1;
+        let mul = (f.ground_alpha / f.content_alpha).min(1.0);
+        assert!(mul <= 1.0 && f.ground_alpha <= f.content_alpha + 1e-6, "ground alpha <= content alpha");
+        let want = |r, rad, face| expected(root.alpha(mul), r, rad, face);
+        if f.rect == panel {
+            assert!(declared[0] == want(panel, 26.0, face_at(mul))[0], "settled: the caller's own rect");
+        } else {
+            let morph = declared[0] == want(f.rect, f.radius, face_at(mul))[0];
+            // The morph hands over to the caller's own rect once it has settled (a sub-pixel
+            // tolerance in `popover_morph`), so the last frames may legitimately be the settled one.
+            let snapped = declared[0] == want(panel, 26.0, face_at(mul))[0];
+            assert!(morph || (snapped && mul == 1.0 && (panel.h - f.rect.h).abs() < 8.0), "mid-open: the morph rect, radius and faded face");
+            if !morph {
+                continue;
             }
+            assert!(declared[0] != want(panel, 26.0, face_at(mul))[0], "not the settled rect");
+            grew = true;
+            assert!(f.rect.w <= panel.w + 1e-3 && f.rect.h <= panel.h + 1e-3 && f.rect.w >= pill.w - 1e-3);
         }
     }
-    assert!(grew, "mid-open the ground is the morphing rect, not the settled one");
-    assert_eq!(pop.ground(panel, 26.0), Some((panel, 26.0, 1.0)), "settled: the caller's own rect");
+    assert!(painted > 0 && grew, "mid-open the ground is the morphing rect, not the settled one");
+    let settled = declared_glass(|| pop.panel(root, panel, 26.0, None));
+    assert_eq!(settled.len(), 1, "settled: the glass stands");
     pop.close();
 }
 
