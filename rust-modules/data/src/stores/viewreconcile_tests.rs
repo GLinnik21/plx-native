@@ -463,3 +463,34 @@ fn a_stop_in_the_middle_does_not_fan_out() {
     assert_eq!(b.truth.scrobbles.load(Ordering::SeqCst), 0);
     drop(stores);
 }
+
+/// **A landing settles only a candidate its own flight could have seen.** A read spawned BEFORE the
+/// stop was enqueued describes the server from before the stop; it must neither drop the candidate
+/// (our own fan-out would be lost) nor decide it. The dirty re-read spawned after the stop does, and
+/// the other server's copy is then scrobbled.
+#[test]
+fn a_flight_spawned_before_the_candidate_does_not_settle_it() {
+    let _g = plx_base::testlock::serial();
+    let (a, b) = (serve(), serve());
+    a.truth.hold_next_read.store(true, Ordering::SeqCst);
+    let (mut stores, sid, _sid_b) = two_servers(&a, &b);
+    let directory = DirectorySnapshot::default();
+    let key = (sid, "1".to_string());
+    stores.reconcile.enqueue([key.clone()]);
+    drive(&mut stores, |_| a.truth.holding.load(Ordering::SeqCst)); // the early read is out, held
+    stores.reconcile.enqueue_stop(key.clone(), false); // the stop arrives after it was spawned
+    a.truth.watched.lock().unwrap().insert("1".into()); // the stream ended: later reads see it
+    stores.hold_network(true); // landings are taken, the re-read waits: the stale landing is observed alone
+    a.truth.release.store(true, Ordering::SeqCst); // the early read answers with its OLD body
+    for _ in 0..1000 {
+        stores.reconcile_pump(directory.view());
+        if stores.reconcile.flights_for_test() == 0 { break; }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(stores.reconcile.candidates_for_test(), [key.clone()], "the stale landing kept the candidate");
+    stores.hold_network(false);
+    drive(&mut stores, |s| settled(s) && b.truth.scrobbles.load(Ordering::SeqCst) == 1);
+    assert!(stores.reconcile.candidates_for_test().is_empty(), "the later flight settled it");
+    assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 0, "the origin already counted the view");
+    drop(stores);
+}

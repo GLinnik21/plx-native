@@ -123,8 +123,11 @@ pub struct ViewReconcileStore {
     dirty: Vec<Key>,
     /// Stopped items that were NOT watched when their play began: when the read-back finds one
     /// watched, the stream reached its end and the title is owed a fan-out (`take_watched_ends`).
-    /// Dropped when their read lands, fails or is overtaken, and on reset.
-    candidates: Vec<Key>,
+    /// Dropped when their read lands, fails or is overtaken, and on reset. Each carries the id the
+    /// NEXT flight will be minted with when the stop was enqueued: only a flight with an id at or
+    /// past it was spawned after the stop, and only its body can settle the candidate. A read that
+    /// was already out describes the server from before the stop.
+    candidates: Vec<(Key, u64)>,
     watched_ends: Vec<Key>,
     /// Rows published since the last [`Self::take_landed`]: the application's cue to re-read the
     /// Detail pages that show them.
@@ -218,8 +221,13 @@ impl ViewReconcileStore {
     /// Owe a read of a stopped item. A first watch (`was_watched` false) is remembered, so that a
     /// read-back finding it watched reports an end of stream.
     pub fn enqueue_stop(&mut self, key: Key, was_watched: bool) {
-        if !was_watched && !self.candidates.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1))) {
-            self.candidates.push(key.clone());
+        if !was_watched {
+            // Re-stamped when the item stops again: the newest stop is the one a read must follow.
+            let born = self.next_id;
+            match self.candidates.iter_mut().find(|(k, _)| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1))) {
+                Some((_, at)) => *at = born,
+                None => self.candidates.push((key.clone(), born)),
+            }
         }
         self.enqueue([key]);
     }
@@ -410,9 +418,9 @@ impl ViewReconcileStore {
                             }
                         }
                         if let Some(i) = self.candidates.iter()
-                            .position(|k| plx_plex::plex::same_item((k.0, &k.1), (m.sid, &m.rk)))
+                            .position(|(k, born)| *born <= flight.id && plx_plex::plex::same_item((k.0, &k.1), (m.sid, &m.rk)))
                         {
-                            let key = self.candidates.remove(i);
+                            let (key, _) = self.candidates.remove(i);
                             if m.watched {
                                 self.watched_ends.push(key);
                             }
@@ -434,8 +442,9 @@ impl ViewReconcileStore {
                 }
             }
             // a candidate this read did not settle (no answer, no row, overtaken) is dropped: no
-            // fan-out on a guess
-            self.candidates.retain(|k| !(k.0 == flight.sid && flight.keys.iter()
+            // fan-out on a guess. One enqueued after the read was spawned is not this read's to
+            // drop: its item is dirty and the re-read spawned after the stop decides it.
+            self.candidates.retain(|(k, born)| *born > flight.id || !(k.0 == flight.sid && flight.keys.iter()
                 .any(|f| plx_plex::plex::same_item((flight.sid, f), (k.0, &k.1)))));
             // Asked for again while this was out: once more, now.
             let again: Vec<Key> = self.dirty.iter()
@@ -461,7 +470,7 @@ impl ViewReconcileStore {
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn candidates_for_test(&self) -> Vec<Key> {
-        self.candidates.clone()
+        self.candidates.iter().map(|(k, _)| k.clone()).collect()
     }
 
     /// Is `key` owed a QUIET read (no Detail page is owed a re-read when it lands)?

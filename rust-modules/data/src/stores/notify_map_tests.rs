@@ -217,3 +217,94 @@ fn notify_never_mutates_detail_directly() {
     assert_eq!(stores.metadata.gen(), gen, "the Metadata store (the Detail's slot) is untouched");
     assert!(stores.take_landed_views().is_empty(), "only a landed read-back owes the page");
 }
+
+#[test]
+fn buffering_is_playing_and_other_is_ignored() {
+    let _g = plx_base::testlock::serial();
+    let mut stores = holding(&["s1"]);
+    map(&mut stores, &one("1", "s1", PlayState::Playing), &[]);
+    assert_eq!(pending(&stores), ["s1"], "the first report is news");
+    stores.reconcile.reset();
+    let mut reads = 0;
+    for i in 0..10 {
+        let state = if i % 2 == 0 { PlayState::Buffering } else { PlayState::Playing };
+        map(&mut stores, &one("1", "s1", state), &[]);
+        if i % 3 == 0 {
+            map(&mut stores, &one("1", "s1", PlayState::Other), &[]);
+        }
+        reads += pending(&stores).len();
+        stores.reconcile.reset();
+    }
+    assert_eq!(reads, 0, "a stalled stream flipping playing/buffering/other is the same state: no further read");
+    map(&mut stores, &one("1", "s1", PlayState::Paused), &[]);
+    assert_eq!(pending(&stores), ["s1"], "a real change after the flips is still news");
+}
+
+#[test]
+fn a_new_session_reporting_other_first_is_not_tracked() {
+    let _g = plx_base::testlock::serial();
+    let mut stores = holding(&["s1"]);
+    map(&mut stores, &one("1", "s1", PlayState::Other), &[]);
+    assert!(pending(&stores).is_empty(), "an unknown state names nothing to read");
+    assert_eq!(stores.notify_tracked_for_test(), 0);
+}
+
+fn n_live_sessions(stores: &mut Stores, from: usize, to: usize) {
+    for i in from..to {
+        map(stores, &one(&format!("k{i}"), "zzz", PlayState::Playing), &[]);
+    }
+}
+
+#[test]
+fn an_updated_session_moves_to_the_back_and_survives_the_bound() {
+    let _g = plx_base::testlock::serial();
+    let mut stores = holding(&["s1"]);
+    let max = super::notify_map::MAX_SESSIONS;
+    map(&mut stores, &one("k0", "s1", PlayState::Playing), &[]);
+    n_live_sessions(&mut stores, 1, max);
+    map(&mut stores, &one("k0", "s1", PlayState::Paused), &[]); // the oldest session speaks again
+    n_live_sessions(&mut stores, max, max + 1); // one more than fits
+    stores.reconcile.reset();
+    map(&mut stores, &one("k0", "s1", PlayState::Paused), &[]);
+    assert!(pending(&stores).is_empty(), "the session that just spoke was not the one evicted");
+}
+
+#[test]
+fn a_stopped_session_is_evicted_before_a_live_one() {
+    let _g = plx_base::testlock::serial();
+    let mut stores = holding(&["s1"]);
+    let max = super::notify_map::MAX_SESSIONS;
+    map(&mut stores, &one("live", "s1", PlayState::Playing), &[]);
+    map(&mut stores, &one("gone", "s1", PlayState::Stopped), &[]);
+    n_live_sessions(&mut stores, 0, max - 2); // exactly full
+    assert_eq!(stores.notify_tracked_for_test(), max);
+    n_live_sessions(&mut stores, max, max + 1); // one more than fits
+    stores.reconcile.reset();
+    map(&mut stores, &one("live", "s1", PlayState::Playing), &[]);
+    assert!(pending(&stores).is_empty(), "the oldest LIVE session is still known: the stopped one made room");
+}
+
+fn sessionless(client: &str, rk: &str, state: PlayState) -> PlaySession {
+    PlaySession {
+        session_key: None,
+        client_identifier: Some(client.into()),
+        rating_key: Some(rk.into()),
+        key: None,
+        view_offset_ms: None,
+        state,
+    }
+}
+
+#[test]
+fn two_sessionless_clients_on_one_item_do_not_collide() {
+    let _g = plx_base::testlock::serial();
+    let mut stores = holding(&["s1"]);
+    let round = || plays(vec![sessionless("a", "s1", PlayState::Paused), sessionless("b", "s1", PlayState::Playing)]);
+    map(&mut stores, &round(), &[]);
+    assert_eq!(pending(&stores), ["s1"]);
+    stores.reconcile.reset();
+    for _ in 0..4 {
+        map(&mut stores, &round(), &[]);
+    }
+    assert!(pending(&stores).is_empty(), "each client's steady state is no news, not a flip-flop between them");
+}

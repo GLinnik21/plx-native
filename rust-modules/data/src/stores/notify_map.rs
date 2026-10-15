@@ -25,7 +25,7 @@
 //! recording or replay is armed). Until then it is queued, not dropped, and coalesced.
 //!
 //! `last_state` remembers each session's `(ratingKey, state)` so a steady `playing` ping is no news.
-//! It is bounded ([`MAX_SESSIONS`], oldest dropped) and a server's entries are cleared when its feed
+//! It is bounded ([`MAX_SESSIONS`], the longest-quiet session dropped, a stopped one first) and a server's entries are cleared when its feed
 //! comes back after a gap: nothing said before the gap is known to still hold, so the first
 //! report after it is news again.
 
@@ -78,7 +78,7 @@ impl Owed {
 
 #[derive(Default)]
 pub struct NotifyMap {
-    /// `((server, sessionKey), (ratingKey, state))`, oldest first.
+    /// `((server, sessionKey), (ratingKey, state))`, least recently seen first.
     last_state: Vec<((ServerId, String), (String, PlayState))>,
     owed: Owed,
 }
@@ -98,19 +98,27 @@ impl NotifyMap {
     }
 
     /// Record the session's latest state; `true` when that is news (a new session, or a changed
-    /// item or state).
+    /// item or state). `Buffering` is `Playing` (a stalled stream flips between them on its own and
+    /// the item is the same one), and `Other` is no state at all: neither is news, and an `Other`
+    /// report neither creates nor changes an entry. The entry just seen moves to the back, so the
+    /// bound evicts the session that has been quiet longest, and prefers a `Stopped` one to any
+    /// live one (it is over; the dedupe of its repeated reports is all it still buys).
     fn observe(&mut self, sid: ServerId, session: &str, rk: &str, state: PlayState) -> bool {
+        let state = match state {
+            PlayState::Other => return false,
+            PlayState::Buffering => PlayState::Playing,
+            other => other,
+        };
         let id = (sid, session.to_owned());
         if let Some(at) = self.last_state.iter().position(|(k, _)| *k == id) {
-            let entry = &mut self.last_state[at].1;
-            if entry.0 == rk && entry.1 == state {
-                return false;
-            }
-            *entry = (rk.to_owned(), state);
-            return true;
+            let (key, (was_rk, was)) = self.last_state.remove(at);
+            let news = was_rk != rk || was != state;
+            self.last_state.push((key, (rk.to_owned(), state)));
+            return news;
         }
         if self.last_state.len() >= MAX_SESSIONS {
-            self.last_state.remove(0);
+            let victim = self.last_state.iter().position(|(_, (_, st))| *st == PlayState::Stopped).unwrap_or(0);
+            self.last_state.remove(victim);
         }
         self.last_state.push((id, (rk.to_owned(), state)));
         true
@@ -182,11 +190,14 @@ impl Stores {
             let held = self.held(pages);
             for plays in &out.plays {
                 for s in &plays.sessions {
-                    // Without a rating key there is no item to read; without a session key the item
-                    // stands in (one report per item, which is all the cache needs).
+                    // Without a rating key there is no item to read. Without a session key the
+                    // client and the item stand in: two clients playing one item are two sessions.
                     let Some(rk) = s.rating_key.as_deref().filter(|rk| !rk.is_empty()) else { continue };
-                    let session = s.session_key.as_deref().unwrap_or(rk);
-                    if !self.notify_map.observe(plays.sid, session, rk, s.state) {
+                    let session = match s.session_key.as_deref().filter(|k| !k.is_empty()) {
+                        Some(key) => key.to_owned(),
+                        None => format!("{}\u{1f}{rk}", s.client_identifier.as_deref().unwrap_or("")),
+                    };
+                    if !self.notify_map.observe(plays.sid, &session, rk, s.state) {
                         continue;
                     }
                     let detail = held.detail(plays.sid, rk);
