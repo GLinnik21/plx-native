@@ -96,18 +96,29 @@ jobs:
             fi
             git add ci/dependencies.json
             git commit -q -m "Dependencies: ${name} -> ${version}"
+            # A branch someone else has pushed to (a person rebasing a patch on it) is never overwritten.
+            if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+              git fetch -q origin "$branch"
+              author=$(git log -1 --format=%an FETCH_HEAD)
+              if [ "$author" != "github-actions[bot]" ]; then
+                echo "::warning title=Branch left alone::${branch} has commits by ${author}; not overwriting it"
+                continue
+              fi
+            fi
             git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" \
               push --force origin "HEAD:refs/heads/${branch}"
             title="Dependencies: ${name} -> ${version}"
             if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
               gh pr edit "$branch" --title "$title" --body-file "$RUNNER_TEMP/body.md"
+              if [ "$status" -eq 3 ]; then gh pr ready "$branch" --undo || true; fi
             else
               gh pr create --head "$branch" --base "$DEFAULT_BRANCH" --title "$title" --body-file "$RUNNER_TEMP/body.md" "${draft[@]}"
             fi
             # A GITHUB_TOKEN push starts no pull_request run; workflow_dispatch is the exception (see the header).
             gh workflow run ci.yml --ref "$branch"
             # An open PR for an older version of this dependency is superseded.
-            for old in $(gh pr list --state open --search "head:deps/${name}-" --json number,headRefName --jq ".[] | select(.headRefName != \"${branch}\") | .number"); do
+            for old in $(gh pr list --state open --limit 100 --json number,headRefName \
+                --jq ".[] | select(.headRefName | startswith(\"deps/${name}-\")) | select(.headRefName != \"${branch}\") | .number"); do
               gh pr close "$old" --delete-branch --comment "Superseded by ${branch}."
             done
           done < outdated.tsv

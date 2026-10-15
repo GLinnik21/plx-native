@@ -309,7 +309,10 @@ def check_patches(dep, root=ROOT):
         download_to(dep['url'], archive)
         tree = Path(scratch) / 'src'
         with tarfile.open(archive) as tar:
-            tar.extractall(tree)  # an upstream release tarball, into a throwaway directory
+            if hasattr(tarfile, 'data_filter'):
+                tar.extractall(tree, filter='data')  # an upstream tarball, into a throwaway directory
+            else:
+                tar.extractall(tree)
         tops = [p for p in tree.iterdir()]
         source = tops[0] if len(tops) == 1 and tops[0].is_dir() else tree
         for patch in patches:
