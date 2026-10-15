@@ -530,7 +530,7 @@ impl HubsSnapshot {
 }
 
 /// Frame-borrowed Home data. Every reference is tied to the retained publication, not a static
-/// catalog that an effect could replace. The bridge owns the snapshot; a screen reads this, and keeps a publication past the frame only by `retain()`ing it (one Arc clone), as Home does for the previous publication's removed cards.
+/// catalog that an effect could replace. The bridge owns the snapshot; a screen reads this and keeps nothing of the publication past the frame (Home keeps the `Arc` of each card a landing removes, not the catalog).
 #[derive(Clone, Copy)]
 pub struct HubsView<'a> {
     data: &'a Arc<HomeCatalog>,
@@ -584,11 +584,6 @@ pub struct HeroRef<'a> {
 }
 
 impl<'a> HubsView<'a> {
-    /// This publication as a retained snapshot (one Arc clone): what a screen keeps to draw the
-    /// cards a later publication removes while they fade out.
-    pub fn retain(self) -> HubsSnapshot {
-        HubsSnapshot { data: Arc::clone(self.data), generation: self.generation, state: self.state }
-    }
     pub fn hub_count(self) -> usize { self.data.hubs.len() }
     pub fn hero_count(self) -> usize { self.data.heroes.len() }
     pub fn hub(self, index: usize) -> Option<HubRef<'a>> {
