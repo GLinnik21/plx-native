@@ -1397,8 +1397,31 @@ pub fn text_width_tracked(s: *const c_char, sz: c_int, bold: c_int, letter_spaci
     if letter_spacing == 0.0 || s.is_null() {
         return w;
     }
-    let n = unsafe { std::ffi::CStr::from_ptr(s) }.to_string_lossy().chars().count();
-    w + letter_spacing * n.saturating_sub(1) as f32
+    let text = unsafe { std::ffi::CStr::from_ptr(s) }.to_string_lossy();
+    w + letter_spacing * cluster_starts(&text).len().saturating_sub(1) as f32
+}
+
+/// Queue the per-cluster strings a live [`draw_text_tracked`] of `s` will rasterize, so the
+/// recording pass prewarms what the tracked draw actually draws (it draws each cluster as its own
+/// string, which a prewarm of the whole string does not cover). Whitespace-only clusters are not
+/// drawn and are not queued.
+pub fn queue_prewarm_tracked(s: *const c_char, sz: c_int, bold: c_int) {
+    if s.is_null() {
+        return;
+    }
+    let Ok(text) = (unsafe { CStr::from_ptr(s) }).to_str() else {
+        return;
+    };
+    let starts = cluster_starts(text);
+    for (k, &from) in starts.iter().enumerate() {
+        let to = starts.get(k + 1).copied().unwrap_or(text.len());
+        if text[from..to].chars().all(char::is_whitespace) {
+            continue;
+        }
+        if let Ok(c) = std::ffi::CString::new(&text[from..to]) {
+            queue_prewarm(c.as_ptr(), sz, bold);
+        }
+    }
 }
 
 /// CPU-only layout bounds, using the same baseline/descent composition as `render_runs`.
@@ -2050,6 +2073,18 @@ fn attaches_to_previous(c: char) -> bool {
         | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F | 0x200D | 0x200C | 0xE0100..=0xE01EF)
 }
 
+/// Byte offsets where each cluster (a char plus the marks that attach to it) starts: the ONE
+/// cluster rule, shared by the width (gaps = clusters - 1) and the draw.
+fn cluster_starts(s: &str) -> Vec<usize> {
+    let mut starts: Vec<usize> = Vec::new();
+    for (i, c) in s.char_indices() {
+        if starts.is_empty() || !attaches_to_previous(c) {
+            starts.push(i);
+        }
+    }
+    starts
+}
+
 /// Pure layout of a tracked string: for every drawable cluster, its byte range in `s` and its
 /// x offset from the string's left edge. The offset is the measured width of everything before the
 /// cluster (`prefix_width`, so kerning and mixed-font runs keep their native advances) plus
@@ -2060,12 +2095,7 @@ fn tracked_clusters(
     mut prefix_width: impl FnMut(&str) -> f32,
 ) -> Vec<(std::ops::Range<usize>, f32)> {
     let mut out = Vec::new();
-    let mut starts: Vec<usize> = Vec::new();
-    for (i, c) in s.char_indices() {
-        if starts.is_empty() || !attaches_to_previous(c) {
-            starts.push(i);
-        }
-    }
+    let starts = cluster_starts(s);
     for (k, &from) in starts.iter().enumerate() {
         let to = starts.get(k + 1).copied().unwrap_or(s.len());
         if s[from..to].chars().all(char::is_whitespace) {
@@ -2261,6 +2291,22 @@ mod tests {
         assert_eq!(tight, w + TRACKING_TITLE_TIGHT * 8.0);
         let one = std::ffi::CString::new("W").unwrap();
         assert_eq!(text_width_tracked(one.as_ptr(), 20, 0, 3.0), text_width(one.as_ptr(), 20, 0));
+    }
+
+    /// The recording pass queues what the tracked draw rasterizes: one string per cluster.
+    #[test]
+    fn tracked_prewarm_queues_the_clusters_the_draw_will_use() {
+        let s = std::ffi::CString::new("ab e\u{301}").unwrap();
+        let got = capture_text_runs_for_test(|| queue_prewarm_tracked(s.as_ptr(), 20, 0));
+        assert_eq!(got, vec!["a", "b", "e\u{301}"]);
+    }
+
+    /// One gap per CLUSTER: a combining mark attaches to its base and adds no gap.
+    #[test]
+    fn tracked_width_counts_clusters_not_code_points() {
+        let s = std::ffi::CString::new("e\u{301}x").unwrap();
+        let plain = text_width(s.as_ptr(), 20, 0);
+        assert_eq!(text_width_tracked(s.as_ptr(), 20, 0, -0.5), plain - 0.5);
     }
 
     #[test]

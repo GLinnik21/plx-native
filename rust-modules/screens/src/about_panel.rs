@@ -61,11 +61,11 @@
 //! it spends whatever is left inside the screen's glass keep-out and never less than one line. Prose
 //! beyond that budget scrolls (see above) rather than being cut.
 //!
-//! **Its ground is the latched underlay field, not glass** (`widgets::panel_ground`): the page
+//! **Its ground is `widgets::panel_ground`, which is glass since DS6** whenever a live backdrop
+//! exists: a live blur whose region grows with the panel (unmeasured past the menus' fixed sizes;
+//! a TV-phase item). Only a frame without one falls back to the latched underlay field: the page
 //! under it sampled once into the 15×8 field the modal dim already latched, windowed to the
-//! panel's own rect and graded toward the panel material, under the frost. So it reads no
-//! framebuffer, pays no blur region however far it grows, and the page behind it standing still is
-//! a property of the host snapshot rather than a condition of the material. It still clears the
+//! panel's own rect and graded toward the panel material, under the frost. It still clears the
 //! design's `--glass-edge-clear` 68 on all four sides ([`EDGE_CLEAR`]) — a layout margin now.
 
 use plx_ui::consts::{SCR_H, SCR_W};

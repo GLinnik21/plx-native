@@ -20,25 +20,16 @@
 //! always was. The board's top highlight is white .24; the shipped `theme::GLASS_RIM_LIGHT` is .28
 //! and stays. The board's `saturate(1.6)` has no counterpart in the blur chain and is not drawn.
 use crate::{theme, Painter, Rect};
-use plx_gfx::gfx::tokens::rgb8;
 use plx_gfx::gfx::{GlassFace, GlassRim};
 
-/// The face gradient's top stop: the board's `rgba(58,58,64,.78)`. A neutral a touch cooler and
-/// lighter than the opaque `PANEL_TOP`, because it sits over a live blur rather than being its own
-/// ground.
-pub const FACE_TOP: [f32; 4] = theme::with_a(rgb8(58, 58, 64), 0.78);
-/// The face gradient's bottom stop: the board's `rgba(40,40,46,.86)`.
-pub const FACE_BOT: [f32; 4] = theme::with_a(rgb8(40, 40, 46), 0.86);
-/// The panel's drop shadow: the board's `0 24px 60px rgba(0,0,0,.45)` — offset, blur and weight.
-pub const SHADOW_DY: f32 = 24.0;
-/// See [`SHADOW_DY`].
-pub const SHADOW_BLUR: f32 = 60.0;
-/// See [`SHADOW_DY`]; the ink is the card shadow's black, only the weight differs.
-pub const SHADOW: [f32; 4] = theme::with_a(theme::CARD_SHADOW, 0.45);
+/// The face gradient's top stop: [`theme::MENU_GLASS_TOP`], the board's `rgba(58,58,64,.78)`.
+pub const FACE_TOP: [f32; 4] = theme::MENU_GLASS_TOP;
+/// The face gradient's bottom stop: [`theme::MENU_GLASS_BOT`], the board's `rgba(40,40,46,.86)`.
+pub const FACE_BOT: [f32; 4] = theme::MENU_GLASS_BOT;
 
-/// What the glass wears over its backdrop: the gradient face, the 1 px perimeter and the lit top
-/// edge — the board's `inset 0 0 0 1px` and `inset 0 1px 0`, as the shader draws them in the
-/// surface's own coverage.
+/// What the glass wears over its backdrop at full strength: the gradient face, the 1 px perimeter
+/// and the lit top edge — the board's `inset 0 0 0 1px` and `inset 0 1px 0`, as the shader draws
+/// them in the surface's own coverage.
 pub const FACE: GlassFace = GlassFace {
     scrim_top: FACE_TOP,
     scrim_bot: FACE_BOT,
@@ -47,25 +38,35 @@ pub const FACE: GlassFace = GlassFace {
     rim_w: theme::CARD_SHEEN_W,
 };
 
-/// Draw the glass panel at `r` with corner `radius`. `false` = no live backdrop, nothing drawn.
+/// The face at opacity `a`. Only the tint rides the painter's alpha cascade; a [`GlassFace`] does
+/// not, so a panel that fades (appear, close, a route change's page dip) fades its face by hand
+/// the way the hold hint does — otherwise a ~.8-opaque gradient and a full rim stand over rows
+/// that are still near 0, which is the empty glass frame the morph forbids.
+pub(crate) fn face_at(a: f32) -> GlassFace {
+    crate::widgets::chip_face(FACE, a.clamp(0.0, 1.0))
+}
+
+/// Draw the glass panel at `r` with corner `radius`, at the opacity and appear-slide the painter
+/// carries ([`Painter::opacity`], [`Painter::rest_lift`]). `false` = no live backdrop, nothing drawn.
 #[must_use]
 pub fn draw(p: Painter, r: Rect, radius: f32) -> bool {
-    if !crate::widgets::Glass::DYNAMIC_BACKDROP.backdrop(
-        p,
-        r,
-        0.0,
-        radius,
-        [1.0, 1.0, 1.0, 1.0],
-        GlassRim::Menu,
-        FACE,
-        theme::PANEL_MATERIAL,
-    ) {
+    let a = p.opacity();
+    let glass = crate::widgets::Glass::DYNAMIC_BACKDROP;
+    let (tint, rim, face, mat) =
+        ([1.0, 1.0, 1.0, 1.0], GlassRim::Menu, face_at(a), theme::PANEL_MATERIAL);
+    // A sliding panel's region keeps the slide margin and its snapshot is grabbed around the REST
+    // rect (`backdrop_rising`), so the open/close slide does not re-run the blur chain per frame.
+    let drew = match p.rest_lift() {
+        Some(dy) => glass.backdrop_rising(p, r, dy, radius, tint, rim, face, mat),
+        None => glass.backdrop(p, r, 0.0, radius, tint, rim, face, mat),
+    };
+    if !drew {
         return false;
     }
     // After the glass, not before: `shadow_outside` cuts the panel's own rounded shape out of the
     // penumbra, so a translucent face has no ink under it, and the grab the rim refracts is taken
-    // before the shadow is down.
-    p.shadow_outside(r, radius, SHADOW_BLUR, SHADOW_DY, SHADOW);
+    // before the shadow is down. The shadow rides the painter's cascade (alpha and slide) itself.
+    p.shadow_outside(r, radius, theme::MENU_SHADOW_BLUR, theme::MENU_SHADOW_DY, theme::MENU_SHADOW);
     true
 }
 
@@ -85,6 +86,19 @@ mod tests {
         assert_eq!(FACE.rim, theme::GLASS_RIM);
         assert_eq!(FACE.rim_lit, theme::GLASS_RIM_LIGHT);
         assert_eq!(FACE.rim_w, 1.0, "the board's 1 px");
+    }
+
+    /// The face fades with the panel: scrim and rim alphas scale by the opacity (the finding: they
+    /// were drawn at full strength while the rows were near 0). Red if `draw` hands `FACE` as is.
+    #[test]
+    fn the_face_fades_with_the_panel() {
+        let f = face_at(0.1);
+        assert!((f.scrim_top[3] - 0.78 * 0.1).abs() < 1e-6);
+        assert!((f.scrim_bot[3] - 0.86 * 0.1).abs() < 1e-6);
+        assert!((f.rim[3] - theme::GLASS_RIM[3] * 0.1).abs() < 1e-6);
+        assert!((f.rim_lit[3] - theme::GLASS_RIM_LIGHT[3] * 0.1).abs() < 1e-6);
+        assert_eq!(face_at(1.0).scrim_top, FACE.scrim_top);
+        assert_eq!(face_at(0.0).rim_lit[3], 0.0);
     }
 
     /// The compact-menu dim is the board's 30% scrim.

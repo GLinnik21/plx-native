@@ -1,7 +1,8 @@
 //! The **morph** open style: a glass opener (a pill) grows into its panel instead of fading and
 //! sliding in on [`crate::popover::K_APPEAR`]. Selected per popover (see
-//! [`crate::popover::Popover::morphing`]) and named on the opener by
-//! [`crate::popover::Opener::open_style`] = [`crate::popover::OpenStyle::Morph`]. The item hold
+//! [`crate::popover::Popover::morphing`], the ONE selector; open it with
+//! [`crate::popover::Popover::open_from`] and the opener's rect, and `Popover::panel` draws the
+//! ground at the morphing rect and radius at the ground's alpha). The item hold
 //! menu is not a morph: it keeps the opener lift and the shared appear.
 //!
 //! Source: design board `Motion`, card "Sort & Filter" (end state `WatchlistOptions`): the label
