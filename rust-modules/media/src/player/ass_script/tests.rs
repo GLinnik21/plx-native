@@ -137,3 +137,27 @@ fn spans_know_which_lines_animate() {
     let flags: Vec<bool> = index.spans().map(|s| matches!(s.motion, Motion::Known(true))).collect();
     assert_eq!(flags, [true, true, false]);
 }
+
+#[test]
+fn alive_at_finds_exactly_the_lines_a_full_scan_finds() {
+    // a long line among many short ones, out of start order in the file
+    let mut s = String::from(HEADER);
+    s.push_str("Dialogue: 0,0:00:30.00,0:00:35.00,Default,,0,0,0,,late\n");
+    s.push_str("Dialogue: 0,0:00:01.00,0:02:00.00,Default,,0,0,0,,long\n");
+    for i in 0..50i64 {
+        s.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,short{i}\n", stamp(i * 1000), stamp(i * 1000 + 1500)));
+    }
+    let index = ScriptIndex::parse(&Arc::<[u8]>::from(s.into_bytes())).unwrap();
+    for now in [0, 500, 1000, 1700, 29_999, 30_000, 34_999, 35_000, 49_500, 100_000, 120_000, 200_000] {
+        let mut got: Vec<&[u8]> = index.alive_at(now).collect();
+        got.sort();
+        let mut expect: Vec<&[u8]> = index
+            .lines
+            .iter()
+            .filter(|l| l.start_ms <= now && now < l.end_ms)
+            .map(|l| &index.raw[l.off as usize..(l.off + l.len) as usize])
+            .collect();
+        expect.sort();
+        assert_eq!(got, expect, "at {now}");
+    }
+}

@@ -12,6 +12,7 @@ fn source(events: Vec<Event>) -> Source {
     Source {
         id: 1,
         revision: 1,
+        origin: Origin::Authored,
         content: Content::Embedded {
             header: Arc::from(&b"[Script Info]\n"[..]),
             events: events.into(),
@@ -205,6 +206,7 @@ fn script(lines: &str) -> Arc<Source> {
     Arc::new(Source {
         id: next_source_id(),
         revision: 1,
+        origin: Origin::Authored,
         content: Content::Script {
             bytes: format!("{HEADER}{lines}").into_bytes().into(),
             fonts: Arc::from([]),
@@ -232,7 +234,7 @@ fn job(source: &Arc<Source>, now_ms: i64, width: i32, height: i32, storage_width
 }
 
 fn render(engine: &mut Engine, source: &Arc<Source>, now_ms: i64) -> Arc<Frame> {
-    let (frame, _) = engine.render(&job(source, now_ms, 320, 180, 320, 180));
+    let frame = engine.render(&job(source, now_ms, 320, 180, 320, 180)).frame;
     assert_eq!(
         frame.error, None,
         "native fixture requires the built host library in pkg"
@@ -266,7 +268,7 @@ fn native_pixels_preserve_position_layers_alpha_motion_karaoke_and_readorder() {
     assert_eq!(pixel(&first, 25, 25), [255, 0, 0, 255]);
     assert_eq!(pixel(&first, 45, 35), [128, 0, 127, 255]);
     assert_eq!(pixel(&first, 75, 35), [0, 0, 255, 127]);
-    let (coded, _) = engine.render(&job(&source, 100, 320, 180, 720, 480));
+    let coded = engine.render(&job(&source, 100, 320, 180, 720, 480)).frame;
     assert_eq!(coded.error, None);
     assert_eq!(pixel(&coded, 25, 25), [255, 0, 0, 255]);
     assert_eq!(
@@ -292,6 +294,7 @@ fn native_pixels_preserve_position_layers_alpha_motion_karaoke_and_readorder() {
     let embedded = Arc::new(Source {
         id: next_source_id(),
         revision: 1,
+        origin: Origin::Authored,
         content: Content::Embedded {
             header: HEADER.as_bytes().into(),
             fonts: Arc::from([]),
@@ -418,6 +421,7 @@ fn native_script_font_revision_and_cjk_fallback_use_real_glyphs() {
     let attached = Arc::new(Source {
         id: plain.id,
         revision: 2,
+        origin: Origin::Authored,
         content: Content::Script {
             bytes: bytes.clone(),
             fonts: vec![Font {
@@ -528,7 +532,7 @@ fn native_fragmented_script_stays_bounded_without_dropping_signs() {
             "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\an7\\pos({x},{y})\\p1}}m 0 0 l 4 0 4 4 0 4\n"));
     }
     let source = script(&lines);
-    let (frame, _) = Engine::default().render(&job(&source, 100, 1920, 1080, 1920, 1080));
+    let frame = Engine::default().render(&job(&source, 100, 1920, 1080, 1920, 1080)).frame;
     assert_eq!(frame.error, None);
     assert!(frame.rects.len() <= MAX_REGIONS);
     for i in 0..70 {
@@ -812,6 +816,7 @@ fn font_script(font_name: &str, face: usize, events: usize) -> Arc<Source> {
     Arc::new(Source {
         id: next_source_id(),
         revision: 1,
+        origin: Origin::Authored,
         content: Content::Script { bytes: text.into_bytes().into(), fonts: Arc::from([]) },
     })
 }
@@ -899,6 +904,36 @@ fn native_fourteen_faces_of_one_family_all_render() {
     }
     // Back to the first: the faces stay for the renderer's lifetime.
     assert_eq!(ink(&native_frame(&mut native, 500).unwrap()).bands.len(), 1);
+}
+
+// ---- Source.origin, the restyle branch and the alignment classes (plan §2.4, §2.5, §4.6 case 3) ----
+
+use crate::player::text_ass::{self, AlignClass};
+use crate::player::text_style::{self, TextStyle};
+use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
+
+/// A Text-origin embedded track with the synthesized header for `style` and the `(start, end,
+/// Style, text)` cues, as a Store holds one. A restyle keeps `id` and bumps `revision`.
+fn text_source(id: u64, revision: u64, style: &TextStyle, cues: &[(i64, i64, &str, &str)]) -> Arc<Source> {
+    let events: Vec<Event> = cues
+        .iter()
+        .enumerate()
+        .map(|(n, (start, end, style_name, body))| Event {
+            start_ms: *start,
+            duration_ms: end - start,
+            payload: format!("{n},0,{style_name},,0,0,0,,{body}").into_bytes().into(),
+        })
+        .collect();
+    Arc::new(Source {
+        id,
+        revision,
+        origin: Origin::Text(*style),
+        content: Content::Embedded {
+            header: text_ass::header(style).into_bytes().into(),
+            events: events.into(),
+            fonts: Arc::from([]),
+        },
+    })
 }
 
 // ---- the bundled subtitle faces (plan D6): scripts reached by family name ----
@@ -1154,6 +1189,7 @@ fn track(header: &str, events: &[(i64, i64, &str)]) -> Arc<Source> {
     Arc::new(Source {
         id: next_source_id(),
         revision: 1,
+        origin: Origin::Authored,
         content: Content::Embedded {
             header: header.as_bytes().into(),
             fonts: Arc::from([]),
@@ -1169,6 +1205,258 @@ fn track(header: &str, events: &[(i64, i64, &str)]) -> Arc<Source> {
                 .into(),
         },
     })
+}
+
+fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
+    TextStyle { size, position }
+}
+
+/// Render a Text-origin source into the full logical screen, as the screen asks for it.
+fn text_render(engine: &mut Engine, source: &Arc<Source>, now_ms: i64) -> Arc<Frame> {
+    let frame = engine
+        .render(&job(source, now_ms, 1920, 1080, 1920, 1080))
+        .frame;
+    assert_eq!(frame.error, None, "native fixture requires the built host library in pkg");
+    frame
+}
+
+fn no_cues_style() -> TextStyle {
+    style(SubtitleSize::Medium, SubtitlePosition::Low)
+}
+
+#[test]
+fn restyle_applies_to_text_origin_tracks_of_equal_fonts_and_a_different_header_only() {
+    let medium = text_source(1, 1, &no_cues_style(), &[]);
+    let large = text_source(1, 2, &style(SubtitleSize::Large, SubtitlePosition::Low), &[]);
+    assert!(restyles(&medium, &large), "a new size is a restyle");
+    assert!(!restyles(&medium, &medium), "an equal header is the flush path, not a restyle");
+    // Another seek's id does not matter: the renderer is kept by resources, not identity.
+    let seek = text_source(7, 1, &style(SubtitleSize::Large, SubtitlePosition::High), &[]);
+    assert!(restyles(&medium, &seek));
+
+    let authored = |header: &'static [u8]| Source {
+        id: 1,
+        revision: 1,
+        origin: Origin::Authored,
+        content: Content::Embedded { header: Arc::from(header), events: Arc::from([]), fonts: Arc::from([]) },
+    };
+    assert!(!restyles(&authored(b"a"), &authored(b"b")), "an authored header change is a new renderer");
+    assert!(!restyles(&medium, &authored(b"b")) && !restyles(&authored(b"b"), &medium), "origins must both be Text");
+
+    let font = |data: &'static [u8]| -> Arc<[Font]> { Arc::from([Font { name: "f.ttf".into(), data: Arc::from(data) }]) };
+    let mut other_fonts = (*large).clone();
+    other_fonts.content = match &large.content {
+        Content::Embedded { header, events, .. } => {
+            Content::Embedded { header: header.clone(), events: events.clone(), fonts: font(b"x") }
+        }
+        script => script.clone(),
+    };
+    assert!(!restyles(&medium, &other_fonts), "different fonts need their own renderer");
+    let script = |bytes: &'static [u8]| Source {
+        id: 1,
+        revision: 1,
+        origin: Origin::Text(no_cues_style()),
+        content: Content::Script { bytes: Arc::from(bytes), fonts: Arc::from([]) },
+    };
+    assert!(restyles(&script(b"a"), &script(b"b")));
+    assert!(!restyles(&medium, &script(b"b")), "an embedded track and a script are different kinds");
+}
+
+#[test]
+fn aligns_are_read_from_the_style_name_of_each_active_embedded_event() {
+    let cues = [
+        (0, 1000, "Default", "bottom"),
+        (0, 3000, "An8", "top"),
+        (2000, 3000, "An5", "middle"),
+        (2000, 3000, "An1", "bottom left"),
+    ];
+    let source = text_source(1, 1, &no_cues_style(), &cues);
+    let mut engine = Engine::default();
+    let at = |engine: &mut Engine, now| engine.aligns(&source, now).unwrap();
+    assert_eq!(at(&mut engine, 500), AlignSet { bottom: true, middle: false, top: true });
+    assert_eq!(at(&mut engine, 1500), AlignSet { bottom: false, middle: false, top: true }, "the bottom cue ended");
+    assert_eq!(at(&mut engine, 2500), AlignSet { bottom: true, middle: true, top: true });
+    assert_eq!(at(&mut engine, 3000), AlignSet::default(), "end is exclusive, as libass reads it");
+    assert!(at(&mut engine, 3000).is_empty());
+    assert!(at(&mut engine, 2500).contains(AlignClass::Middle));
+}
+
+#[test]
+fn aligns_are_read_from_the_style_name_of_each_active_script_line() {
+    let lines = |n: usize| -> Arc<Source> {
+        let mut text = text_ass::header(&no_cues_style());
+        text.push_str("Dialogue: 0,0:00:00.00,0:00:02.00,An7,,0,0,0,,top\n");
+        text.push_str("Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,low\n");
+        text.push_str("Dialogue: 0,0:00:02.50,0:00:04.00,An4,,0,0,0,,mid\n");
+        Arc::new(Source {
+            id: n as u64,
+            revision: 1,
+            origin: Origin::Text(no_cues_style()),
+            content: Content::Script { bytes: text.into_bytes().into(), fonts: Arc::from([]) },
+        })
+    };
+    let source = lines(1);
+    let mut engine = Engine::default();
+    assert_eq!(engine.aligns(&source, 500), Some(AlignSet { bottom: false, middle: false, top: true }));
+    assert_eq!(engine.aligns(&source, 1500), Some(AlignSet { bottom: true, middle: false, top: true }));
+    assert_eq!(engine.aligns(&source, 2700), Some(AlignSet { bottom: true, middle: true, top: false }));
+    assert_eq!(engine.aligns(&source, 4000), Some(AlignSet::default()));
+    // A new revision is parsed again, not answered from the previous parse.
+    let mut next = (*source).clone();
+    next.revision = 2;
+    next.content = match &lines(1).content {
+        Content::Script { bytes, fonts } => {
+            let mut b = bytes.to_vec();
+            b.extend_from_slice(b"Dialogue: 0,0:00:03.50,0:00:05.00,An9,,0,0,0,,more top\n");
+            Content::Script { bytes: b.into(), fonts: fonts.clone() }
+        }
+        other => other.clone(),
+    };
+    assert_eq!(engine.aligns(&Arc::new(next), 4200), Some(AlignSet { bottom: false, middle: false, top: true }));
+}
+
+#[test]
+fn renderer_settings_follow_the_origin_and_the_picks_it_carries() {
+    assert_eq!(Origin::Authored.renderer_settings(), None);
+    for size in [SubtitleSize::Medium, SubtitleSize::Large] {
+        let picks = style(size, SubtitlePosition::Low);
+        assert_eq!(Origin::Text(picks).renderer_settings(), Some((text_style::line_spacing(picks.scale()), true)));
+    }
+    let spacing = |size| Origin::Text(style(size, SubtitlePosition::Low)).renderer_settings().unwrap().0;
+    assert_ne!(spacing(SubtitleSize::Large), spacing(SubtitleSize::Medium));
+}
+
+#[test]
+fn an_authored_source_publishes_no_aligns() {
+    let mut engine = Engine::default();
+    assert_eq!(engine.aligns(&Arc::new(source(vec![event(0, 0, 1000)])), 500), None);
+    assert_eq!(engine.aligns(&script("Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,x\n"), 500), None);
+}
+
+/// One restyle is no new renderer: the held one keeps its faces, takes the new size at once, and
+/// takes the new size's line spacing.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_one_restyle_opens_no_new_renderer_and_renders_the_new_size_and_spacing() {
+    let _guard = plx_base::testlock::serial();
+    let one = [(0, 60_000, "Default", "HELLO")];
+    let two = [(0, 60_000, "Default", "HELLO\\NHELLO")];
+    let pick = |size, position| {
+        crate::route::restore_subtitle_size(size);
+        crate::route::restore_subtitle_position(position);
+        style(size, position)
+    };
+    let mut engine = Engine::default();
+    let medium = pick(SubtitleSize::Medium, SubtitlePosition::Low);
+    let a = text_render(&mut engine, &text_source(1, 1, &medium, &one), 500);
+    let a_ink = ink(&a.rects);
+    assert_eq!(a_ink.bands.len(), 1);
+    let opened = engine.native.as_ref().unwrap().stats();
+    assert_eq!((opened.font_scans, opened.tracks), (1, 1));
+
+    // Larger: the same renderer, a replaced track, a bigger letter.
+    let large = pick(SubtitleSize::Large, SubtitlePosition::Low);
+    let b = text_render(&mut engine, &text_source(1, 2, &large, &one), 500);
+    let b_ink = ink(&b.rects);
+    let (a_h, b_h) = (a_ink.bands[0].1 - a_ink.bands[0].0 + 1, b_ink.bands[0].1 - b_ink.bands[0].0 + 1);
+    assert!(
+        (f64::from(b_h) / f64::from(a_h) - 1.25).abs() < 0.08,
+        "Large draws 1.25x the letter height of Medium: {a_h} -> {b_h}"
+    );
+    let restyled = engine.native.as_ref().unwrap().stats();
+    assert_eq!(
+        (restyled.font_scans, restyled.library_fonts, restyled.tracks),
+        (1, opened.library_fonts, 2),
+        "the held renderer's track was replaced; no renderer was created and no face reopened"
+    );
+
+    // Higher: the baseline moves up by the Position's lift (320 px), nothing else changes.
+    let high = pick(SubtitleSize::Large, SubtitlePosition::High);
+    let c = text_render(&mut engine, &text_source(1, 3, &high, &one), 500);
+    let c_ink = ink(&c.rects);
+    assert!(
+        (b_ink.bands[0].1 - c_ink.bands[0].1 - 320).abs() <= 2,
+        "High lifts the baseline 320 px above Low: {} -> {}",
+        b_ink.bands[0].1,
+        c_ink.bands[0].1
+    );
+
+    // The line spacing follows the size: a two-line cue's pitch is 48 px x scale (Large: 60 px).
+    let d = text_render(&mut engine, &text_source(1, 4, &large, &two), 500);
+    let d_ink = ink(&d.rects);
+    assert_eq!(d_ink.bands.len(), 2, "two lines");
+    let pitch = d_ink.bands[1].0 - d_ink.bands[0].0;
+    assert!((pitch - 60).abs() <= 1, "Large keeps the 48 x 1.25 line pitch, got {pitch}");
+    let last = engine.native.as_ref().unwrap().stats();
+    assert_eq!((last.font_scans, last.tracks), (1, 4), "four tracks on one renderer");
+
+    // Back to Medium: 48 px.
+    let again = pick(SubtitleSize::Medium, SubtitlePosition::Low);
+    let e = text_render(&mut engine, &text_source(1, 5, &again, &two), 500);
+    let e_ink = ink(&e.rects);
+    assert_eq!(e_ink.bands.len(), 2);
+    let pitch = e_ink.bands[1].0 - e_ink.bands[0].0;
+    assert!((pitch - 48).abs() <= 1, "Medium keeps the 48 px pitch, got {pitch}");
+    assert_eq!(engine.native.as_ref().unwrap().stats().font_scans, 1);
+}
+
+/// A renderer reached by a fresh open takes the same settings as one reached by a restyle (plan
+/// §4.6): the line pitch of the size its header was built for, never the viewer's picks now.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_fresh_open_of_a_text_track_has_the_line_spacing_of_its_own_size() {
+    let _guard = plx_base::testlock::serial();
+    let two = [(0, 60_000, "Default", "HELLO\\NHELLO")];
+    let pitch_of = |engine: &mut Engine, picked: &TextStyle, built_for: &TextStyle| {
+        crate::route::restore_subtitle_size(picked.size);
+        crate::route::restore_subtitle_position(picked.position);
+        let frame = text_render(engine, &text_source(next_source_id(), 1, built_for, &two), 500);
+        let bands = ink(&frame.rects).bands;
+        assert_eq!(bands.len(), 2, "two lines");
+        bands[1].0 - bands[0].0
+    };
+    let medium = style(SubtitleSize::Medium, SubtitlePosition::Low);
+    let large = style(SubtitleSize::Large, SubtitlePosition::Low);
+    let pitch = pitch_of(&mut Engine::default(), &medium, &medium);
+    assert!((pitch - 48).abs() <= 1, "Medium opens at the 48 px pitch, got {pitch}");
+    let pitch = pitch_of(&mut Engine::default(), &large, &large);
+    assert!((pitch - 60).abs() <= 1, "Large opens at the 60 px pitch, got {pitch}");
+    // The picks moved on after the header was built: the header's own size still decides.
+    let pitch = pitch_of(&mut Engine::default(), &medium, &large);
+    assert!((pitch - 60).abs() <= 1, "a Large header keeps 60 px under Medium picks, got {pitch}");
+    let mut engine = Engine::default();
+    pitch_of(&mut engine, &large, &medium);
+    let pitch = pitch_of(&mut engine, &medium, &large);
+    assert!((pitch - 60).abs() <= 1, "and so does a restyle to it, got {pitch}");
+}
+
+/// The worker publishes the classes beside the frame, and `published_aligns` reads them back for
+/// that frame only, for a Text-origin source only.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_the_worker_publishes_aligns_beside_a_text_frame_and_none_for_authored() {
+    let _guard = plx_base::testlock::serial();
+    let cues = [(0, 4000, "An8", "TOP"), (2000, 4000, "Default", "LOW")];
+    let text = text_source(next_source_id(), 1, &no_cues_style(), &cues);
+    // Ask until the worker has answered for `now`: the aligns it published for the frame it
+    // returned (asked for by that frame's serial) are what `expect` names (`None`: nothing published for it).
+    let until = |source: &Arc<Source>, now: i64, expect: Option<AlignSet>| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let frame = request(source.clone(), now, 1920, 1080, 1920, 1080);
+            let got = frame.as_ref().and_then(|f| published_aligns(f.serial));
+            if frame.is_some() && got == expect {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "worker never published {expect:?}, last {got:?}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+    until(&text, 1000, Some(AlignSet { bottom: false, middle: false, top: true }));
+    until(&text, 3000, Some(AlignSet { bottom: true, middle: false, top: true }));
+    let authored = script("Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,x\n");
+    until(&authored, 500, None);
+    clear();
 }
 
 /// D12 part 1: a seek (new id, same header and fonts) and a switch between tracks that share a
@@ -1225,8 +1513,8 @@ fn native_unchanged_picture_after_a_switch_carries_the_new_source_id() {
 
 fn validity_at(engine: &mut Engine, source: &Arc<Source>, now_ms: i64) -> (Arc<Frame>, Validity) {
     let out = engine.render(&job(source, now_ms, 320, 180, 320, 180));
-    assert_eq!(out.0.error, None, "native fixture requires the built host library in pkg");
-    out
+    assert_eq!(out.frame.error, None, "native fixture requires the built host library in pkg");
+    (out.frame, out.validity)
 }
 
 /// The window must agree with what libass really draws, for the odd stamps `string2timecode`

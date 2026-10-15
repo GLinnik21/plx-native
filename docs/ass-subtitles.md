@@ -22,9 +22,15 @@ it sets track features (`plx_ass_set_features`, Unicode line breaking), the liba
 (`plx_ass_set_cache_limits`) and extra line spacing (`plx_ass_set_line_spacing`), reports counters
 (`plx_ass_stats`), and replaces the loaded track in place (`plx_ass_replace_track`). The renderer
 scans its fonts (`ass_set_fonts`) only on its first load; a replaced track keeps every opened face
-and does not extract its own `[Fonts]` section again. The engine uses the replace for exactly one
-case so far, sliding the window of a long sidecar script. Any other change of source either re-feeds the
-same renderer (the same embedded source with the same header and fonts) or opens a new one. `tests/fixtures/make_ass_faces.py` regenerates the 14 one-glyph test faces.
+and does not extract its own `[Fonts]` section again. The engine uses the replace for two
+cases: sliding the window of a long sidecar script, and a restyle (a Text-origin source whose
+synthesized header or script changed with the viewer's text size or position, same fonts): the
+track is replaced, the held events are appended again and the line spacing of the new header's size
+is set. Any other change of source either re-feeds the
+same renderer (the same embedded source with the same header and fonts) or opens a new one. A
+Text-origin renderer, however it was reached, breaks lines by the Unicode rules and carries the line
+spacing of the size its header was built for (`Origin::Text` holds those picks); an authored one
+keeps libass's own pitch and breaking. `tests/fixtures/make_ass_faces.py` regenerates the 14 one-glyph test faces.
 
 Fonts. libass runs with no font provider, so it finds a face by family name among the faces the
 engine adds when a renderer is created (`ass/fonts.rs`): `appfont.ttf` and `appfont-bold.ttf`

@@ -3,7 +3,9 @@
 //! receives immutable snapshots, never a pointer into FFmpeg's storage.
 //! Selection does not discard read-ahead. A seek replaces each source identity so a completed
 //! render from the old position cannot land in the new playback epoch.
-use super::ass::{self, Content, Event, Font, Source};
+use super::ass::{self, Content, Event, Font, Origin, Source};
+use super::text_ass::{self, TextDialect};
+use super::text_style::TextStyle;
 use std::collections::BTreeMap;
 use std::sync::{Arc, MutexGuard};
 
@@ -31,6 +33,21 @@ fn trim_terminators(mut bytes: &[u8]) -> &[u8] {
     bytes
 }
 
+/// What the demuxer registers for one subtitle track in [`begin`].
+pub enum TrackHeader {
+    /// An ASS/SSA track: the codec-private header, as the file wrote it.
+    Authored(Vec<u8>),
+    /// A text track (SubRip, WebVTT, mov_text, ...): there is no header in the file. The store
+    /// synthesizes one from the viewer's size and position picks and remembers the dialect its
+    /// cues are written in.
+    Text(TextDialect),
+}
+
+/// A text track the store holds: its cues are converted by `dialect`.
+struct TextTrack {
+    dialect: TextDialect,
+}
+
 #[derive(Default)]
 pub struct Store {
     generation: u64,
@@ -38,6 +55,8 @@ pub struct Store {
     media_key: Option<String>,
     awaiting_reopen: bool,
     tracks: BTreeMap<i32, Arc<Source>>,
+    // The tracks of `tracks` that are Text origin, by track.
+    text: BTreeMap<i32, TextTrack>,
     fonts: Option<Arc<[Font]>>,
     // Dedup index: the events held per track, so a reread after a seek is an O(1) lookup.
     seen: BTreeMap<i32, std::collections::HashSet<Event>>,
@@ -58,6 +77,7 @@ impl Store {
             media_key: None,
             awaiting_reopen: false,
             tracks: BTreeMap::new(),
+            text: BTreeMap::new(),
             fonts: None,
             seen: BTreeMap::new(),
             selected_track: None,
@@ -69,6 +89,7 @@ impl Store {
         self.media_key = None;
         self.awaiting_reopen = false;
         self.tracks.clear();
+        self.text.clear();
         self.seen.clear();
         self.fonts = None;
     }
@@ -87,24 +108,37 @@ impl Store {
         (!self.awaiting_reopen).then(|| self.tracks.get(&track).cloned()).flatten()
     }
 
-    fn begin(&mut self, media_key: &str, headers: Vec<(i32, Vec<u8>)>, fonts: Vec<Font>) -> u64 {
+    fn begin(&mut self, media_key: &str, headers: Vec<(i32, TrackHeader)>, fonts: Vec<Font>) -> u64 {
         let headers: Vec<_> = headers
             .into_iter()
-            .filter_map(|(track, mut header)| {
-                if header.len() > MAX_HEADER_BYTES {
-                    return None;
+            .filter_map(|(track, header)| match header {
+                TrackHeader::Authored(mut header) => {
+                    if header.len() > MAX_HEADER_BYTES {
+                        return None;
+                    }
+                    header.truncate(trim_terminators(&header).len());
+                    Some((track, TrackHeader::Authored(header)))
                 }
-                header.truncate(trim_terminators(&header).len());
-                Some((track, header))
+                // The synthesized header is ours, so the bound on a file's own header is not.
+                text @ TrackHeader::Text(_) => Some((track, text)),
             })
             .collect();
+        // The same file: its tracks match one for one. An authored track matches by header bytes;
+        // a text track by dialect, since its header follows the viewer's settings, not the file.
         let same_file = !media_key.is_empty()
             && self.media_key.as_deref() == Some(media_key)
             && headers.len() == self.tracks.len()
-            && headers.iter().all(|(track, bytes)| {
-                self.tracks.get(track).is_some_and(|source| {
-                    matches!(&source.content, Content::Embedded { header, .. }
-                        if header.as_ref() == bytes.as_slice())
+            && headers.iter().all(|(track, registered)| {
+                self.tracks.get(track).is_some_and(|source| match registered {
+                    TrackHeader::Authored(bytes) => {
+                        source.origin == Origin::Authored
+                            && matches!(&source.content, Content::Embedded { header, .. }
+                                if header.as_ref() == bytes.as_slice())
+                    }
+                    TrackHeader::Text(dialect) => {
+                        source.origin.is_text()
+                            && self.text.get(track).is_some_and(|t| t.dialect == *dialect)
+                    }
                 })
             });
         let previous = if same_file {
@@ -125,19 +159,30 @@ impl Store {
             .collect::<Vec<_>>()
             .into();
         self.fonts = Some(fonts.clone());
-        for (track, header) in headers {
+        for (track, registered) in headers {
+            let (origin, header) = match registered {
+                TrackHeader::Authored(header) => (Origin::Authored, header),
+                TrackHeader::Text(dialect) => {
+                    self.text.insert(track, TextTrack { dialect });
+                    let style = TextStyle::current();
+                    (Origin::Text(style), text_ass::header(&style).into_bytes())
+                }
+            };
             // An unchanged inventory also preserves the per-track/global byte budgets.
             // A demux reopen seeks to a video cue and may never resend a long sign.
             let events = previous.get(&track).and_then(|source| match &source.content {
                 Content::Embedded { events, .. } => Some(events.clone()),
                 _ => None,
             }).unwrap_or_else(|| Arc::from([]));
+            // Until `push_text` lands (it keeps a text track's cues apart from packets), `push`
+            // dedups every track against `seen`, so a kept Text event must be in it too.
             self.seen.insert(track, events.iter().cloned().collect());
             self.tracks.insert(
                 track,
                 Arc::new(Source {
                     id: ass::next_source_id(),
                     revision: 0,
+                    origin,
                     content: Content::Embedded {
                         header: header.into(),
                         events,
@@ -232,6 +277,7 @@ impl Store {
         let source = Source {
             id: old.id,
             revision: old.revision.wrapping_add(1),
+            origin: old.origin,
             content: Content::Embedded {
                 header: header.clone(),
                 events: events.into(),
@@ -257,6 +303,7 @@ impl Store {
             *source = Arc::new(Source {
                 id: ass::next_source_id(),
                 revision: 0,
+                origin: source.origin,
                 content: Content::Embedded {
                     header: header.clone(),
                     fonts: fonts.clone(),
@@ -269,7 +316,7 @@ impl Store {
     }
 }
 
-pub fn begin(media_key: &str, headers: Vec<(i32, Vec<u8>)>, fonts: Vec<Font>) -> u64 {
+pub fn begin(media_key: &str, headers: Vec<(i32, TrackHeader)>, fonts: Vec<Font>) -> u64 {
     store().begin(media_key, headers, fonts)
 }
 pub fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, payload: &[u8]) {
@@ -356,7 +403,7 @@ mod tests {
         let mut s = Store::default();
         s.begin(
             "fixture",
-            vec![(0, vec![]), (1, vec![0; 3]), (2, vec![0; MAX_HEADER_BYTES + 1])],
+            vec![(0, TrackHeader::Authored(vec![])), (1, TrackHeader::Authored(vec![0; 3])), (2, TrackHeader::Authored(vec![0; MAX_HEADER_BYTES + 1]))],
             vec![],
         );
         for track in [0, 1] {
@@ -376,10 +423,10 @@ mod tests {
         let generation = begin(
             "fixture",
             vec![
-                (0, b"[Script Info]\n\0\0".to_vec()),
-                (1, b"[Script Info]\0\n".to_vec()),
-                (2, vec![]),
-                (3, vec![0; 4]),
+                (0, TrackHeader::Authored(b"[Script Info]\n\0\0".to_vec())),
+                (1, TrackHeader::Authored(b"[Script Info]\0\n".to_vec())),
+                (2, TrackHeader::Authored(vec![])),
+                (3, TrackHeader::Authored(vec![0; 4])),
             ],
             vec![],
         );
@@ -431,6 +478,7 @@ mod tests {
         let forged = Source {
             id: ass::next_source_id(),
             revision: 0,
+            origin: Origin::Authored,
             content: Content::Embedded {
                 header: Arc::from(&b"[Script Info]\n"[..]),
                 events: Arc::from([Event {
@@ -448,10 +496,10 @@ mod tests {
     #[test]
     fn begin_normalizes_headers_before_reopen_identity_checks() {
         let mut s = Store::default();
-        let generation = s.begin("fixture", vec![(0, b"header\0\0".to_vec())], vec![]);
+        let generation = s.begin("fixture", vec![(0, TrackHeader::Authored(b"header\0\0".to_vec()))], vec![]);
         s.push(generation, 0, event("caption", 1000), 0);
         s.retain_for_reload();
-        s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
+        s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
         let source = s.selected(0).unwrap();
         let Content::Embedded { header, events, .. } = &source.content else {
             panic!()
@@ -463,7 +511,7 @@ mod tests {
     #[test]
     fn resetting_another_playback_owner_cannot_retire_the_live_subtitles() {
         let _guard = plx_base::testlock::serial();
-        begin("fixture", vec![(0, b"header".to_vec())], vec![]);
+        begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
         let id = selected(0).unwrap().id;
         let other = crate::player::Shared::new();
         other.reset_session();
@@ -482,7 +530,7 @@ mod tests {
     #[test]
     fn an_in_place_seek_preserves_a_known_sign_spanning_the_target() {
         let mut s = Store::default();
-        let generation = s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
+        let generation = s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
         let sign = Event {
             start_ms: 0,
             duration_ms: 120_000,
@@ -513,7 +561,7 @@ mod tests {
     #[test]
     fn backward_seek_packets_survive_until_the_presentation_clock_rebases() {
         let mut s = Store::default();
-        let generation = s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
+        let generation = s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
         // The demuxer is reading the requested ten-second position, while the native
         // presentation callback still reports ninety seconds until the first new picture.
         let floor_ms =
@@ -539,13 +587,13 @@ mod tests {
         };
         let before = {
             let mut s = shared.ass_sources.lock().unwrap();
-            let generation = s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
+            let generation = s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
             s.push(generation, 0, sign.clone(), 0);
             s.tracks[&0].id
         };
         shared.reset_session_for_reload();
         let mut s = shared.ass_sources.lock().unwrap();
-        s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
+        s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
         let source = &s.tracks[&0];
         assert_ne!(source.id, before, "retire the old raster across a fresh native Load");
         let Content::Embedded { events, .. } = &source.content else { panic!() };
@@ -554,11 +602,11 @@ mod tests {
     #[test]
     fn demux_reopen_keeps_known_events_and_rejects_the_old_producer() {
         let mut s = Store::new();
-        let old_generation = s.begin("part-A", vec![(0, b"header".to_vec())], vec![]);
+        let old_generation = s.begin("part-A", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
         let cue = event("known", 1000);
         s.push(old_generation, 0, cue.clone(), 0);
         let old_id = s.tracks[&0].id;
-        let generation = s.begin("part-A", vec![(0, b"header".to_vec())], vec![]);
+        let generation = s.begin("part-A", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
         assert_ne!(old_generation, generation);
         assert_ne!(old_id, s.tracks[&0].id);
         s.push(old_generation, 0, event("stale producer", 1000), 0);
@@ -570,14 +618,14 @@ mod tests {
     #[test]
     fn cached_reload_sources_stay_hidden_until_the_demuxer_revalidates_them() {
         let mut s = Store::new();
-        let generation = s.begin("part-A", vec![(0, b"header".to_vec())], vec![]);
+        let generation = s.begin("part-A", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
         s.push(generation, 0, event("known", 1000), 0);
         assert!(s.selected(0).is_some());
         s.retain_for_reload();
         assert!(s.selected(0).is_none());
         assert!(s.fonts.is_none());
         s.push(generation, 0, event("late", 1000), 0);
-        s.begin("part-A", vec![(0, b"header".to_vec())], vec![]);
+        s.begin("part-A", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
         let source = s.selected(0).unwrap();
         let Content::Embedded { events, .. } = &source.content else { panic!() };
         assert_eq!(events.len(), 1);
@@ -587,15 +635,15 @@ mod tests {
     #[test]
     fn new_playback_or_changed_file_inventory_cannot_inherit_subtitle_events() {
         for (fresh, key, headers) in [
-            (true, "part-A", vec![(0, b"header".to_vec())]),
-            (false, "part-B", vec![(0, b"header".to_vec())]),
-            (false, "part-A", vec![(0, b"different style sheet".to_vec())]),
-            (false, "part-A", vec![(0, b"header".to_vec()), (1, b"new track".to_vec())]),
+            (true, "part-A", vec![(0, TrackHeader::Authored(b"header".to_vec()))]),
+            (false, "part-B", vec![(0, TrackHeader::Authored(b"header".to_vec()))]),
+            (false, "part-A", vec![(0, TrackHeader::Authored(b"different style sheet".to_vec()))]),
+            (false, "part-A", vec![(0, TrackHeader::Authored(b"header".to_vec())), (1, TrackHeader::Authored(b"new track".to_vec()))]),
         ] {
             let shared = crate::player::Shared::new();
             {
                 let mut s = shared.ass_sources.lock().unwrap();
-                let generation = s.begin("part-A", vec![(0, b"header".to_vec())], vec![]);
+                let generation = s.begin("part-A", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
                 s.push(generation, 0, event("belongs to previous source", 1000), 0);
             }
             if fresh { shared.reset_session(); } else { shared.reset_session_for_reload(); }
@@ -608,7 +656,7 @@ mod tests {
     #[test]
     fn overlapping_ass_events_and_headers_survive_without_flattening() {
         let mut s = Store::default();
-        let g = s.begin("fixture", vec![(0, b"[V4+ Styles]\nStyle: Sign".to_vec())], vec![]);
+        let g = s.begin("fixture", vec![(0, TrackHeader::Authored(b"[V4+ Styles]\nStyle: Sign".to_vec()))], vec![]);
         let sign = r"0,1,Sign,,0,0,0,,{\pos(120,80)\c&H0000FF&}sign";
         let dialogue = r"1,0,Default,,0,0,0,,{\k20}dialogue";
         s.push(g, 0, event(sign, 1000), 0);
@@ -626,7 +674,7 @@ mod tests {
         let mut s = Store::default();
         let g = s.begin(
             "fixture",
-            vec![(0, b"header".to_vec())],
+            vec![(0, TrackHeader::Authored(b"header".to_vec()))],
             vec![Font {
                 name: "font.ttf".into(),
                 data: Arc::from(&b"font"[..]),
@@ -664,7 +712,7 @@ mod tests {
     #[test]
     fn the_seventieth_track_renders_styled_when_selected() {
         let mut s = Store::new();
-        let headers = (0..70).map(|t| (t, format!("header {t}").into_bytes())).collect();
+        let headers = (0..70).map(|t| (t, TrackHeader::Authored(format!("header {t}").into_bytes()))).collect();
         let g = s.begin("fixture", headers, vec![]);
         for t in [0, 63, 64, 69] {
             s.push(g, t, event(&format!("track {t}"), 1000), 0);
@@ -685,7 +733,7 @@ mod tests {
         let fonts = (0..200)
             .map(|i| Font { name: format!("f{i}.ttf"), data: Arc::from(vec![i as u8; 2048]) })
             .collect();
-        s.begin("fixture", vec![(0, b"header".to_vec())], fonts);
+        s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], fonts);
         let held = s.fonts.clone().unwrap();
         assert_eq!(held.len(), 200);
         assert!(held.iter().any(|f| f.name == "f199.ttf"), "a font late in the list is found");
@@ -699,7 +747,7 @@ mod tests {
             data: Arc::from(vec![1u8; mib * 1024 * 1024]),
         };
         let fonts = vec![big("a.ttf", 20), big("b.ttf", 20), big("c.ttf", 4), big("d.ttf", 1)];
-        s.begin("fixture", vec![(0, b"header".to_vec())], fonts);
+        s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], fonts);
         let held = s.fonts.clone().unwrap();
         let names: Vec<_> = held.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, ["a.ttf", "c.ttf", "d.ttf"], "b does not fit; smaller later fonts still do");
@@ -719,7 +767,7 @@ mod tests {
     #[test]
     fn a_backward_seek_after_a_deep_read_keeps_the_events_at_the_target() {
         let mut s = Store::new();
-        let g = s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
+        let g = s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
         // A typeset-heavy file read 30 000 events in; the window holds the latest 8 192.
         for n in 0..30_000 {
             s.push(g, 0, timed(n), 0);
@@ -740,7 +788,7 @@ mod tests {
     #[test]
     fn duplicates_after_a_seek_are_not_doubled_and_the_index_tracks_evictions() {
         let mut s = Store::new();
-        let g = s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
+        let g = s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
         for n in 0..20_000 {
             s.push(g, 0, timed(n), 0);
         }
@@ -759,7 +807,7 @@ mod tests {
     #[test]
     fn held_event_bytes_stay_within_the_budgets() {
         let mut s = Store::new();
-        let headers = (0..4).map(|t| (t, b"header".to_vec())).collect();
+        let headers = (0..4).map(|t| (t, TrackHeader::Authored(b"header".to_vec()))).collect();
         let g = s.begin("fixture", headers, vec![]);
         let heavy = |n: i64| Event {
             start_ms: n,
@@ -798,5 +846,135 @@ mod tests {
         assert_eq!(c.sample(1_000_000_000, 2000, false), 1000);
         assert_eq!(c.sample(20_000_000_000, 2100, true), 20000);
         assert_eq!(c.sample(2_000_000_000, 2200, true), 2000);
+    }
+
+    // ---- Source.origin and TrackHeader::{Authored, Text(dialect)} (plan §1.5) ----
+
+    #[test]
+    fn a_text_track_is_a_text_origin_source_with_the_synthesized_header() {
+        let mut s = Store::default();
+        s.begin(
+            "fixture",
+            vec![(0, TrackHeader::Authored(b"[Script Info]".to_vec())), (1, TrackHeader::Text(TextDialect::Srt))],
+            vec![],
+        );
+        let authored = s.selected(0).unwrap();
+        assert_eq!(authored.origin, Origin::Authored);
+        let text = s.selected(1).unwrap();
+        assert!(text.origin.is_text());
+        let Content::Embedded { header, events, .. } = &text.content else { panic!() };
+        let header = std::str::from_utf8(header).unwrap();
+        assert!(header.starts_with("[Script Info]") && header.contains("PlayResX: 1920"));
+        assert!(header.contains("Style: An8,"), "one style per numpad alignment");
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn origin_survives_a_push_and_a_seek() {
+        let mut s = Store::default();
+        let generation = s.begin(
+            "fixture",
+            vec![(0, TrackHeader::Authored(b"header".to_vec())), (1, TrackHeader::Text(TextDialect::WebVtt))],
+            vec![],
+        );
+        s.push(generation, 0, event("authored", 1000), 0);
+        s.push(generation, 1, event("text", 1000), 0);
+        s.seek(generation);
+        assert_eq!(s.selected(0).unwrap().origin, Origin::Authored);
+        let text = s.selected(1).unwrap();
+        assert!(text.origin.is_text());
+        let Content::Embedded { events, .. } = &text.content else { panic!() };
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn a_cue_redelivered_after_a_same_file_reopen_is_not_appended_twice() {
+        let mut s = Store::default();
+        let generation = s.begin("fixture", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![]);
+        s.push(generation, 0, event("cue", 1000), 0);
+        s.retain_for_reload();
+        let generation = s.begin("fixture", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![]);
+        s.push(generation, 0, event("cue", 1000), 0);
+        let source = s.selected(0).unwrap();
+        let Content::Embedded { events, .. } = &source.content else { panic!() };
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn a_text_origin_carries_the_picks_its_header_was_built_for() {
+        let mut s = Store::default();
+        s.begin("fixture", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![]);
+        assert_eq!(s.selected(0).unwrap().origin, Origin::Text(TextStyle::current()));
+    }
+
+    #[test]
+    fn the_same_file_check_compares_a_text_track_by_dialect_not_by_header_bytes() {
+        let held = |s: &Store| {
+            let source = s.selected(0).unwrap();
+            let Content::Embedded { events, .. } = &source.content else { panic!() };
+            events.len()
+        };
+        let mut s = Store::default();
+        let generation = s.begin("fixture", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![]);
+        s.push(generation, 0, event("cue", 1000), 0);
+        assert_eq!(held(&s), 1);
+
+        // The viewer changed the size meanwhile: the stored header is for the old picks. The
+        // reopened demuxer registers the same dialect, so the file is the same and the cue stays.
+        s.tracks.insert(
+            0,
+            Arc::new(Source {
+                id: s.tracks[&0].id,
+                revision: 1,
+                origin: Origin::Text(TextStyle::current()),
+                content: Content::Embedded {
+                    header: Arc::from(&b"an older header"[..]),
+                    events: Arc::from([event("cue", 1000)]),
+                    fonts: Arc::from([]),
+                },
+            }),
+        );
+        s.retain_for_reload();
+        s.begin("fixture", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![]);
+        assert_eq!(held(&s), 1, "same dialect: the held cue is kept across the reopen");
+
+        // Another dialect is another track, and so is an authored one.
+        s.begin("fixture", vec![(0, TrackHeader::Text(TextDialect::WebVtt))], vec![]);
+        assert_eq!(held(&s), 0, "a changed dialect is not the same file");
+        let generation = s.generation;
+        s.push(generation, 0, event("cue", 1000), 0);
+        s.begin("fixture", vec![(0, TrackHeader::Authored(b"header".to_vec()))], vec![]);
+        assert_eq!(held(&s), 0, "a text track registered as authored is not the same file");
+        assert_eq!(s.selected(0).unwrap().origin, Origin::Authored);
+        assert!(s.text.is_empty(), "and the dialect is forgotten with it");
+        let generation = s.generation;
+        s.push(generation, 0, event("cue", 1000), 0);
+        s.begin("fixture", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![]);
+        assert_eq!(held(&s), 0, "an authored track registered as text is not the same file");
+        assert!(s.selected(0).unwrap().origin.is_text());
+    }
+
+    #[test]
+    fn a_different_file_forgets_its_text_tracks() {
+        let mut s = Store::default();
+        s.begin("a", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![]);
+        assert_eq!(s.text.len(), 1);
+        s.begin("b", Vec::new(), vec![]);
+        assert!(s.text.is_empty());
+    }
+
+    #[test]
+    fn the_header_size_bound_is_for_a_files_own_header_not_the_synthesized_one() {
+        let mut s = Store::default();
+        s.begin(
+            "fixture",
+            vec![
+                (0, TrackHeader::Authored(vec![b'x'; MAX_HEADER_BYTES + 1])),
+                (1, TrackHeader::Text(TextDialect::Plain)),
+            ],
+            vec![],
+        );
+        assert!(s.selected(0).is_none(), "an oversized file header is refused");
+        assert!(s.selected(1).is_some());
     }
 }

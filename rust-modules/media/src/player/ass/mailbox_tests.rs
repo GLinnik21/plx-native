@@ -48,6 +48,7 @@ impl Sim {
             source: Arc::new(Source {
                 id: 1,
                 revision: 1,
+                origin: Origin::Authored,
                 content: Content::Embedded {
                     header: Arc::from(&b"[Script Info]\n"[..]),
                     events: Arc::from([]),
@@ -70,7 +71,7 @@ impl Sim {
         self.cues.iter().filter(|c| (c.start..c.end).contains(&now)).next_back().map_or(0, |c| c.tag)
     }
 
-    fn render(&mut self, job: &Job) -> (Arc<Frame>, Validity) {
+    fn render(&mut self, job: &Job) -> mailbox::Rendered {
         match job.kind {
             Kind::Normal => self.normal.push(job.now_ms),
             Kind::Ahead { .. } => self.ahead.push(job.now_ms),
@@ -113,7 +114,7 @@ impl Sim {
             validity.from_ms = validity.from_ms.max(lo);
             validity.until_ms = validity.until_ms.min(hi);
         }
-        (frame, validity)
+        mailbox::Rendered { frame, validity, aligns: None }
     }
 
     fn complete(&mut self, job: Job) {
@@ -170,7 +171,7 @@ fn error_frame_requests_once() {
         while let Some(job) = mb.take() {
             jobs += 1;
             let frame = error_frame(job.key, Fault::RenderFailed);
-            mb.finish(&job, Some((frame, Validity::ALWAYS)));
+            mb.finish(&job, Some(mailbox::Rendered { frame, validity: Validity::ALWAYS, aligns: None }));
         }
         assert_eq!(mb.view(&key).unwrap().error, Some(Fault::RenderFailed));
     }
@@ -552,4 +553,28 @@ fn a_replaced_normal_job_keeps_the_stamp_of_its_wait() {
     let since = sim.mb.pending_queued().expect("waits behind the Ahead job");
     sim.request(5000); // a jump replaces the pending Normal job
     assert_eq!(sim.mb.pending_queued(), Some(since), "the wait began with the first one");
+}
+
+#[test]
+fn aligns_are_read_for_the_published_frames_serial_only_and_follow_a_promotion() {
+    let mut sim = Sim::new(vec![cue(0, 1000, 1), cue(1000, 2000, 2)]);
+    sim.request(100);
+    let normal = sim.mb.take().unwrap();
+    let mut first = sim.render(&normal);
+    first.aligns = Some(AlignSet { bottom: true, middle: false, top: false });
+    let serial = first.frame.serial;
+    sim.mb.finish(&normal, Some(first));
+    assert_eq!(sim.mb.aligns_of(serial), Some(AlignSet { bottom: true, middle: false, top: false }));
+    assert_eq!(sim.mb.aligns_of(serial + 1), None, "another frame's classes are never handed out");
+
+    // The frame rendered ahead brings its own, and the promotion makes them the published ones.
+    let ahead = sim.mb.take().unwrap();
+    let mut next = sim.render(&ahead);
+    next.aligns = Some(AlignSet { bottom: false, middle: false, top: true });
+    let next_serial = next.frame.serial;
+    sim.mb.finish(&ahead, Some(next));
+    assert_eq!(sim.mb.aligns_of(next_serial), None, "held ahead, not published yet");
+    assert!(sim.mb.request(sim.key, 1100, &sim.source).promoted);
+    assert_eq!(sim.mb.aligns_of(next_serial), Some(AlignSet { bottom: false, middle: false, top: true }));
+    assert_eq!(sim.mb.aligns_of(serial), None);
 }

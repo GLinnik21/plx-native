@@ -36,6 +36,9 @@ pub struct ScriptIndex {
     lines: Vec<Line>,
     /// `lines` by start time (ties in file order).
     by_start: Vec<u32>,
+    /// The longest `end - start` of any line: no line starting earlier than `now - max_span` is
+    /// alive at `now`, which bounds [`ScriptIndex::alive_at`].
+    max_span_ms: i64,
 }
 
 /// One window's script text and the playheads it answers for: `lo_ms <= now < hi_ms`.
@@ -89,7 +92,8 @@ impl ScriptIndex {
         }
         let mut by_start: Vec<u32> = (0..lines.len() as u32).collect();
         by_start.sort_by_key(|&i| lines[i as usize].start_ms);
-        Some(Self { raw: raw.clone(), header, lines, by_start })
+        let max_span_ms = lines.iter().map(|l| l.end_ms.saturating_sub(l.start_ms)).max().unwrap_or(0);
+        Some(Self { raw: raw.clone(), header, lines, by_start, max_span_ms })
     }
 
     /// Every line's timing, kept whether or not the script is windowed: what a rendered frame is
@@ -109,6 +113,18 @@ impl ScriptIndex {
 
     pub fn len(&self) -> usize {
         self.lines.len()
+    }
+
+    /// The `Dialogue:` lines alive at `now_ms` (`start <= now < end`), as they stand in the script.
+    pub fn alive_at(&self, now_ms: i64) -> impl Iterator<Item = &[u8]> + '_ {
+        let started = self.by_start.partition_point(|&i| self.lines[i as usize].start_ms <= now_ms);
+        self.by_start[..started]
+            .iter()
+            .rev()
+            .map(|&i| &self.lines[i as usize])
+            .take_while(move |line| line.start_ms.saturating_add(self.max_span_ms) > now_ms)
+            .filter(move |line| now_ms < line.end_ms)
+            .map(|line| &self.raw[line.off as usize..(line.off + line.len) as usize])
     }
 
     /// The window for a playhead at `now_ms`: the header and, in file order, the first

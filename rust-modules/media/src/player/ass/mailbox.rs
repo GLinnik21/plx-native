@@ -6,7 +6,7 @@
 //!
 //! Pure bookkeeping: no thread, no native call, no clock but the one stamp behind [`Job::queued`].
 //! `Runtime` owns the lock and the wake; the worker loop owns the rendering.
-use super::{Frame, Key, Source};
+use super::{AlignSet, Frame, Key, Source};
 use crate::player::ass_timing::Validity;
 use std::sync::Arc;
 use std::time::Instant;
@@ -42,6 +42,17 @@ pub(super) struct Published {
     pub key: Key,
     pub frame: Arc<Frame>,
     pub validity: Validity,
+    /// The alignment classes of the cues active at the playhead the frame was rendered for; only
+    /// a Text-origin source has them (plan §2.4). Held beside the frame, so a promoted ahead frame
+    /// carries its own and the two are never read from different frames.
+    pub aligns: Option<AlignSet>,
+}
+
+/// What the worker made of a job.
+pub(super) struct Rendered {
+    pub frame: Arc<Frame>,
+    pub validity: Validity,
+    pub aligns: Option<AlignSet>,
 }
 
 pub(super) struct Mailbox {
@@ -236,6 +247,12 @@ impl Mailbox {
         out
     }
 
+    /// The alignment classes of the published frame whose `serial` is asked for; `None` when the
+    /// published frame is another one, or has none.
+    pub fn aligns_of(&self, serial: u64) -> Option<AlignSet> {
+        self.published.as_ref().filter(|p| p.frame.serial == serial)?.aligns
+    }
+
     /// The frame to show under today's epoch/source/size test.
     pub fn view(&self, key: &Key) -> Option<Arc<Frame>> {
         let p = self.published.as_ref()?;
@@ -260,6 +277,7 @@ impl Mailbox {
             key,
             frame: frame.clone(),
             validity: Validity::ALWAYS,
+            aligns: None,
         });
         frame
     }
@@ -283,12 +301,12 @@ impl Mailbox {
 
     /// WORKER, under the lock: R3 and R5. `outcome` is `None` when the job did not render or
     /// its epoch ended; the job is finished either way, so no counter can stick.
-    pub fn finish(&mut self, job: &Job, outcome: Option<(Arc<Frame>, Validity)>) -> Finished {
+    pub fn finish(&mut self, job: &Job, outcome: Option<Rendered>) -> Finished {
         self.in_flight = None;
         match job.kind {
             Kind::Normal => {
                 self.answered = self.answered.max(job.seq);
-                let Some((frame, validity)) = outcome else { return Finished::default() };
+                let Some(Rendered { frame, validity, aligns }) = outcome else { return Finished::default() };
                 let latest = self.requested.is_some_and(|(key, _, seq)| key == job.key && seq == job.seq);
                 if job.seq == self.withdrawn || !latest {
                     return Finished::default();
@@ -301,13 +319,14 @@ impl Mailbox {
                     key: job.key,
                     frame,
                     validity,
+                    aligns,
                 });
                 self.next = None;
                 self.arm_ahead(&job.source);
                 Finished { wake: changed, changed, pub_bytes }
             }
             Kind::Ahead { after } => {
-                let Some((frame, validity)) = outcome else { return Finished::default() };
+                let Some(Rendered { frame, validity, aligns }) = outcome else { return Finished::default() };
                 let current = self.published.as_ref().is_some_and(|p| p.pub_id == after && p.key == job.key)
                     && self.requested_key() == Some(job.key)
                     && self.next.is_none();
@@ -322,6 +341,7 @@ impl Mailbox {
                     key: job.key,
                     frame,
                     validity,
+                    aligns,
                 });
                 // Nothing to show yet: the promotion on the UI thread is what the screen sees.
                 Finished { wake: false, changed, pub_bytes }

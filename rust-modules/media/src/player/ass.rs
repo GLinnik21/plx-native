@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 mod mailbox;
-use mailbox::{Job, Kind, Mailbox};
+use mailbox::{Job, Kind, Mailbox, Rendered};
 use super::ass_timing::{self, Validity};
 
 const MAX_SCRIPT_BYTES: usize = 8 * 1024 * 1024;
@@ -21,6 +21,9 @@ pub const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
 const FONT_OVERHEAD_BYTES: usize = 1024;
 const MAX_PIXELS: usize = 3840 * 2160;
 const MAX_REGIONS: usize = 64;
+
+mod aligns;
+pub use aligns::AlignSet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Event {
@@ -69,6 +72,36 @@ pub enum Content {
     },
 }
 
+/// Where a source's styling comes from, which decides the geometry it renders in (plan
+/// `libass-text-subs` §2.1) and whether the viewer's text settings restyle it (§2.5).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Origin {
+    /// Written by the file's author: the video viewport, and the header is never ours to change.
+    #[default]
+    Authored,
+    /// Synthesized from a text subtitle (`text_ass::header`): the full logical screen, and the
+    /// header follows the viewer's size and position picks. The picks the header was synthesized
+    /// for travel with it, so the worker sets the line spacing of the header it loads, not of
+    /// whatever the viewer has picked since.
+    Text(super::text_style::TextStyle),
+}
+
+impl Origin {
+    pub fn is_text(self) -> bool {
+        matches!(self, Origin::Text(_))
+    }
+
+    /// Extra pixels between lines the origin's renderer is set to, and whether it breaks lines by
+    /// the Unicode rules (plan §4.6, D8). An authored script gets libass's own pitch and the
+    /// breaking it always had.
+    fn renderer_settings(self) -> Option<(f64, bool)> {
+        match self {
+            Origin::Authored => None,
+            Origin::Text(style) => Some((super::text_style::line_spacing(style.scale()), true)),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Source {
     /// Identity of one timeline, independent of packet revision. Embedded seeks
@@ -77,6 +110,7 @@ pub struct Source {
     pub id: u64,
     /// Packet append changes this revision without hiding the current frame.
     pub revision: u64,
+    pub origin: Origin,
     pub content: Content,
 }
 
@@ -252,6 +286,16 @@ pub fn request(
         runtime().wake();
     }
     mailbox.view(&key)
+}
+
+/// MAIN THREAD: the alignment classes (bottom, middle, top) of the cues active in the frame
+/// [`request`] returned with this `serial`, or `None` when that frame is not the published one any
+/// more, is not a Text-origin one, or the mailbox is busy this tick (the caller keeps what it
+/// had). The screen reads it to decide which regions the HUD lifts (plan `libass-text-subs`
+/// §2.4); asking by serial means another frame's classes are never applied to this one.
+pub fn published_aligns(serial: u64) -> Option<AlignSet> {
+    let mailbox = runtime().mailbox.try_lock().ok()?;
+    mailbox.aligns_of(serial)
 }
 
 /// MAIN THREAD: cancellation is immediate even while libass is rendering.
@@ -448,6 +492,25 @@ fn same_embedded_resources(old: &Source, new: &Source) -> bool {
     ) if oh == nh && of == nf)
 }
 
+/// The synthesized header (or whole script) of a source: what a restyle replaces.
+fn track_text(source: &Source) -> &[u8] {
+    match &source.content {
+        Content::Embedded { header, .. } => header,
+        Content::Script { bytes, .. } => bytes,
+    }
+}
+
+/// A settings change (plan §2.5, §4.6 case 3): both sources are Text-origin tracks of one kind with
+/// equal fonts and a different synthesized header. Everything else a header change means is a new
+/// renderer.
+fn restyles(old: &Source, new: &Source) -> bool {
+    old.origin.is_text()
+        && new.origin.is_text()
+        && std::mem::discriminant(&old.content) == std::mem::discriminant(&new.content)
+        && source_fonts(old) == source_fonts(new)
+        && track_text(old) != track_text(new)
+}
+
 /// A sidecar script's timings, kept whether or not it is windowed: what a rendered frame is valid
 /// for depends on every line. A script with more lines than one window holds also records the
 /// window the renderer holds now, `lo..hi`; a playhead outside it is fed again ([`super::ass_script`]).
@@ -461,6 +524,8 @@ struct Engine {
     source: Option<Arc<Source>>,
     native: Option<Native>,
     script: Option<Scripted>,
+    /// The parse behind [`Engine::aligns`] for a Text script that is not windowed.
+    aligns_index: Option<aligns::ScriptAligns>,
     frame: Option<Arc<Frame>>,
     error: Option<Fault>,
 }
@@ -478,19 +543,81 @@ impl Engine {
     fn open(&mut self, source: &Source, now_ms: i64) -> Result<(), Fault> {
         self.native = None;
         self.script = None;
+        let mut windowed = None;
         if let Content::Script { bytes, fonts } = &source.content {
             if let Some(index) = super::ass_script::ScriptIndex::parse(bytes) {
                 if index.windowed() {
                     let window = index.window(now_ms);
-                    self.native = Some(Native::open_data(fonts, &window.text, 1)?);
+                    windowed = Some(Native::open_data(fonts, &window.text, 1)?);
                     self.script = Some(Scripted { index, window: Some((window.lo_ms, window.hi_ms)) });
-                    return Ok(());
+                } else {
+                    self.script = Some(Scripted { index, window: None });
                 }
-                self.script = Some(Scripted { index, window: None });
             }
         }
-        self.native = Some(Native::open(source)?);
+        let mut native = match windowed {
+            Some(native) => native,
+            None => Native::open(source)?,
+        };
+        // A Text track's renderer breaks lines by the Unicode rules and spaces them for the size
+        // its header was synthesized for (plan §4.6); an authored one keeps libass's defaults.
+        if let Some((spacing, wrap)) = source.origin.renderer_settings() {
+            if !(native.set_wrap_unicode(wrap) && native.set_line_spacing(spacing)) {
+                return Err(Fault::InitFailed);
+            }
+        }
+        self.native = Some(native);
         Ok(())
+    }
+
+    /// The alignment classes active at `now_ms` in a Text-origin `source`; `None` for an Authored
+    /// one, which the screen never lifts.
+    fn aligns(&mut self, source: &Source, now_ms: i64) -> Option<AlignSet> {
+        if !source.origin.is_text() || self.error.is_some() {
+            return None;
+        }
+        Some(match &source.content {
+            Content::Embedded { events, .. } => aligns::of_events(events, now_ms),
+            Content::Script { .. } => match &self.script {
+                Some(scripted) => aligns::of_script(&scripted.index, now_ms),
+                None => aligns::ScriptAligns::at(&mut self.aligns_index, source, now_ms),
+            },
+        })
+    }
+
+    /// The viewer changed the text size or position: `source` is the synthesized track for the new
+    /// picks, of the same fonts. Swap the track in place on the held renderer (every opened face
+    /// stays), put the held events back, and set the line spacing the new size needs.
+    fn restyle(&mut self, source: &Source, now_ms: i64) -> Result<(), Fault> {
+        let Some(native) = self.native.as_mut() else {
+            return self.open(source, now_ms);
+        };
+        match &source.content {
+            Content::Embedded { header, .. } => {
+                native.replace_track(header, 0)?;
+                native.append(source, 0)?;
+            }
+            Content::Script { bytes, .. } => {
+                self.script = None;
+                match super::ass_script::ScriptIndex::parse(bytes) {
+                    Some(index) if index.windowed() => {
+                        let window = index.window(now_ms);
+                        native.replace_track(&window.text, 1)?;
+                        self.script = Some(Scripted { index, window: Some((window.lo_ms, window.hi_ms)) });
+                    }
+                    parsed => {
+                        native.replace_track(bytes, 1)?;
+                        self.script = parsed.map(|index| Scripted { index, window: None });
+                    }
+                }
+            }
+        }
+        // The spacing of the header being loaded, not of the viewer's picks now: they may have moved
+        // again since the header was built, and then another restyle is already on its way.
+        match source.origin.renderer_settings() {
+            Some((spacing, _)) if !native.set_line_spacing(spacing) => Err(Fault::InitFailed),
+            _ => Ok(()),
+        }
     }
 
     /// Feed a windowed script again when the playhead has left the window it holds (a seek either
@@ -519,14 +646,15 @@ impl Engine {
     }
 
     /// The frame for `job` and the window of playheads it stays right for.
-    fn render(&mut self, job: &Job) -> (Arc<Frame>, Validity) {
+    fn render(&mut self, job: &Job) -> Rendered {
         let frame = self.render_frame(job);
         let validity = if frame.error.is_some() {
             Validity::ALWAYS
         } else {
             self.validity(&job.source, job.now_ms)
         };
-        (frame, validity)
+        let aligns = self.aligns(&job.source, job.now_ms);
+        Rendered { frame, validity, aligns }
     }
 
     /// The window at `now_ms` from every event's timing, clamped to the script window held.
@@ -584,6 +712,8 @@ impl Engine {
                     let native = self.native.as_mut().unwrap();
                     unsafe { plx_ass_flush_events(native.0) };
                     native.append(&request.source, 0)
+                } else if self.source.as_ref().is_some_and(|old| restyles(old, &request.source)) {
+                    self.restyle(&request.source, request.now_ms)
                 } else {
                     self.open(&request.source, request.now_ms)
                 };
@@ -850,13 +980,11 @@ impl Native {
     }
 
     /// Break lines by the Unicode rules (libunibreak) in the loaded track and every later one.
-    #[cfg(test)]
     fn set_wrap_unicode(&mut self, on: bool) -> bool {
         unsafe { plx_ass_set_features(self.0, i32::from(on)) >= 0 }
     }
 
     /// Extra pixels between lines at the render size; negative tightens.
-    #[cfg(test)]
     fn set_line_spacing(&mut self, spacing: f64) -> bool {
         unsafe { plx_ass_set_line_spacing(self.0, spacing) >= 0 }
     }
