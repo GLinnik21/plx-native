@@ -11,7 +11,7 @@ read-out anchor 540 (#337), bookmark tab = shipped 60×60 Search-pill geometry.
 ---
 
 ## Design source (owner decision 2026-10-15: the canvas is the visual source of truth)
-Canvas: https://claude.ai/artifact/QBFG5q83M4r9U4u83uhApw (Design artifact "Watchlist", version 41
+Canvas: https://claude.ai/artifact/QBFG5q83M4r9U4u83uhApw (Design artifact "Watchlist", version 42
 or later). Each board is `project/<Board>.dc.html`; `project/canvas.json` lists them. The board
 HTML carries the exact values inline: px positions and sizes, colours (DS tokens), copy, icon
 paths and DS component props. The prose in this plan and in INPUT 1 paraphrases these boards;
@@ -37,9 +37,8 @@ where the two differ, the board wins.
 | 3 | TileStates | unplayable tile marks (clock, server-slash, no-server wash, veil) |
 | 3 | Motion | animated: the Remove card replays the #737 landing springs; the Sort & Filter card holds the morph spring values (numbers also in INPUT 1 "Motion") |
 
-Known board artefact: the `renderVals()` TABS array in Main/Detail lists "Watchlist" as a second
-LABEL tab; it is stale script data. The drawn markup (the bookmark ICON tab before Search) is the
-design.
+Version 42 or later: every board's `renderVals()` TABS matches the drawn strip (Home, Movies, TV
+Shows, bookmark icon, search icon).
 
 ### Hard rule for every implementing agent (UI PRs)
 1. Before writing UI code, read that PR's boards from the artifact (Artifact tool, `action:"read"`
