@@ -723,3 +723,25 @@ fn assembled_scripts_declare_each_dialogue_field() {
     assert_eq!(dialogue.splitn(fields, ',').count(), fields);
     assert_eq!(dialogue.splitn(fields, ',').last(), Some("Hi, there"), "commas in the text stay in the text field");
 }
+
+// ---- visible_chars: the `len=` of the `sub cue` log line ---------------------------------------
+
+#[test]
+fn visible_chars_counts_what_the_cue_shows() {
+    for (body, want) in [
+        ("", 0),
+        ("Hello", 5),
+        ("{\\i1}Hello{\\i0}", 5),
+        ("two\\Nlines", 9),
+        ("a\\hb", 3),
+        ("a\\{b\\}", 4),
+        ("你好，世界", 5),
+        ("{\\an8", 0),
+    ] {
+        assert_eq!(visible_chars(body), want, "{body:?}");
+    }
+    let escaped = body("C:\\new", TextDialect::Plain);
+    assert!(visible_chars(&escaped) >= 3);
+    assert_eq!(visible_chars(&body("a\\", TextDialect::Plain)), 2, "a trailing backslash shows");
+    assert_eq!(visible_chars("a\\\u{200B}Nb"), 4, "the ZWSP that keeps `\\N` apart is not shown");
+}

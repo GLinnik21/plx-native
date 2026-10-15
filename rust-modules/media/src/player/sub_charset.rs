@@ -177,6 +177,31 @@ mod tests {
         }
     }
 
+    /// Every legacy-encoded sample comes out of the converter as the same UTF-8 text, line breaks
+    /// as ASS breaks: what the renderer is given for a cue of a GBK, Big5, Shift_JIS, EUC-KR ...
+    /// track is the text the viewer should read (issue #628).
+    #[test]
+    fn decoded_legacy_samples_convert_to_ass_event_bodies_with_the_same_text() {
+        use super::super::text_ass::{convert, TextDialect};
+        let cases: [(&'static Encoding, &str); 8] = [
+            (GB18030, ZH_HANS),
+            (BIG5, ZH_HANT),
+            (SHIFT_JIS, JA),
+            (EUC_KR, KO),
+            (WINDOWS_1251, RU),
+            (WINDOWS_1252, FR),
+            (ISO_8859_7, EL),
+            (WINDOWS_874, TH),
+        ];
+        for (e, text) in cases {
+            let bytes = enc(e, text);
+            let decoded = subtitle_text_whole(&bytes, &TrackCharset::unknown());
+            let converted = convert(&decoded, TextDialect::Srt).unwrap_or_else(|| panic!("{} converts", e.name()));
+            assert_eq!(converted.body, text.replace('\n', "\\N"), "{}", e.name());
+            assert_eq!(converted.align, 2);
+        }
+    }
+
     #[test]
     fn the_language_hint_settles_what_the_bytes_leave_open() {
         // A single short cue is ambiguous between several CJK encodings; the hint decides.

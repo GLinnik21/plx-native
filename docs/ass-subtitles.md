@@ -3,8 +3,20 @@
 Direct playback preserves the authored script: styles, positioned signs, overlapping dialogue,
 drawings, font attachments, movement and karaoke. A re-encode still burns the
 selected subtitle on the server; over a remux the app draws a sidecar, and an embedded track when
-the link is local and the Part is 1..=30000 kbps, and otherwise the server burns it. The simple caption size/wrapping rules apply to plain text;
-ASS/SSA retains its authored layout. The viewer's existing tone and timing controls still apply.
+the link is local and the Part is 1..=30000 kbps, and otherwise the server burns it. ASS/SSA retains its authored layout.
+The viewer's existing tone and timing controls still apply to every subtitle.
+
+Embedded TEXT tracks (SubRip, WebVTT, mov_text, SAMI and the other text codecs) render through the same
+libass worker. They have no header in the file, so `player::ass_source` synthesizes one
+(`player::text_ass::header`) from the viewer's size and position picks and keeps each cue as it arrived;
+`player::text_ass::convert` turns the cue's text into an ASS event body in the track's dialect (italic,
+bold, underline, colour and `{\an}` placement honoured, everything else shown as plain text). Such a
+source has `Origin::Text`: it renders into the full 1920x1080 logical screen, not the video viewport,
+and the screen lifts its bottom-anchored cues clear of the transport. A change of the size or position
+pick re-synthesizes the header of the selected track lazily (the revision bumps once; the renderer swaps
+the track in place). The track's events are a newest-wins view of the cues: a cue's end is clipped to
+the start of the next cue of the same alignment class, so an overlap never leaves the old text up beside
+the new one. External SRT/VTT files are still drawn by the bespoke caption path (`player_hud::draw_subtitles`).
 
 `ci/build-libass.py` builds a pinned libass with private FreeType, FriBidi, HarfBuzz and
 libunibreak (Unicode line breaking, so a line with no spaces, as in Chinese or Japanese, can
@@ -50,6 +62,14 @@ The demuxer copies ASS headers, complete timed packets and font attachments out 
 The source store removes trailing zero terminators from headers and packets. A zero byte
 inside a header makes the track invalid. The raw byte limits apply before trimming.
 Direct playback and the subtitle side reader use the same source store.
+A text track keeps its raw cues (the start, end and text as the demuxer delivered them) apart from the
+events it publishes, each with a ReadOrder from a per-track counter that only increases: libass drops an
+event whose ReadOrder it has seen, so a number is never reused after its cue is pruned. A packet the demuxer
+delivers again after a seek or a demux reopen finds its raw cue and changes nothing (no revision bump),
+and the raw cues are carried across a reopen of the same file (the exact delivery identity, the
+track inventory and each track's dialect all match), so a long cue the reopened demuxer does not resend
+stays up. The window follows the same floor as the other cue stores (the playhead less the longest
+subtitle delay and 2 s) and the same event and byte bounds as the ASS tracks.
 An empty normalized header or a missing header reports an invalid track. The source store drops
 empty normalized packets and packets with an internal zero byte. These packets cannot prevent
 valid captions on the same track from rendering. External ASS files retain their existing
@@ -139,11 +159,16 @@ window, an animated cue) and renders the next boundary ahead of its time, so a s
 job at all between boundaries (no line is written then), not one per UI frame. `python3
 tests/fixtures/make_ass_stress.py <dir>` builds the stress MKVs (Latin, CJK, Thai, Devanagari,
 Arabic, rapid, karaoke, long, 4K60; host `ffmpeg`/`ffprobe` only) to serve with `mock_pms.py
---extra-media`.
+--extra-media`, and the text-codec ones: `srt-*` (the scripts, rapid and long as SubRip in MKV,
+plus `srt-markup` and `srt-overlap`), `mov_text-mixed.mp4` and `webvtt-mixed.mkv`. A text cue logs
+`sub cue [a..bms] len=N` (the length, never the words) for the selected track.
 
 Device checks must hold the TV lease and keep both the panel and sound off. Release the lease
 while building or reviewing captures. Compare the unchanged
 build and the candidate on the same media: styles and overlap, moving/karaoke cues, track changes,
-Off, pause, backward/forward seek, external ASS and plain subtitles. Capture and inspect the
+Off, pause, backward/forward seek, external ASS and plain subtitles, and every text codec
+(`tests/fixtures/make_ass_stress.py` also builds SubRip, mov_text and WebVTT fixtures, each with the
+default subtitle disposition so the player selects the track by itself; SAMI and the other codecs the
+bundled FFmpeg's demuxers cannot carry are covered by the converter's host tests). Capture and inspect the
 output, and compare the UI heartbeat and hardware displayed-frame counters with capture disabled
 during performance measurement.

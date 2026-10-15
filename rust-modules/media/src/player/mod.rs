@@ -1962,8 +1962,10 @@ pub fn push_subtitle_text(track: i32, start_ns: i64, end_ns: i64, text: String) 
         text,
     });
 }
-/// demux (D-thread) pushes a subtitle cue (content-time ns) for track `track`. Called for
-/// EVERY plain-text track so a mid-play switch is instant; only the selected track's cues are logged.
+/// A subtitle cue (content-time ns) for track `track` into the bespoke caption store. The embedded
+/// demuxer no longer calls it: its text tracks go to `ass_source::push_text` and libass. Nothing
+/// produces into this store now; it stays, with `active_subtitle*` and `sub_text`, until the plan's
+/// PR 10 deletes the bespoke caption path.
 pub fn push_subtitle_cue(
     track: i32,
     start_ns: i64,

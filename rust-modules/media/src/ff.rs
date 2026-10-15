@@ -1218,7 +1218,15 @@ unsafe fn begin_ass_sources(
 ) -> u64 {
     use crate::player::{ass::Font, ass_source};
     let mut headers = Vec::new();
+    let mut text_tracks = 0;
     for (track, (si, kind, _)) in subs.iter().enumerate() {
+        // A text track has no header in the file: the store synthesizes one and converts its cues
+        // by the dialect (plan `libass-text-subs` §1.5).
+        if let SubKind::Text(dialect) = kind {
+            headers.push((track as i32, ass_source::TrackHeader::Text(*dialect)));
+            text_tracks += 1;
+            continue;
+        }
         if *kind != SubKind::Ass { continue; }
         let cp = stream_codecpar(*streams.add(*si as usize));
         let len = (*cp).extradata_size.max(0) as usize;
@@ -1230,6 +1238,7 @@ unsafe fn begin_ass_sources(
         };
         headers.push((track as i32, ass_source::TrackHeader::Authored(header.to_vec())));
     }
+    let authored_tracks = headers.len() - text_tracks;
     let mut fonts = Vec::new();
     let mut font_budget = crate::player::ass::FontBudget::default();
     let mut font_bytes = 0;
@@ -1258,7 +1267,10 @@ unsafe fn begin_ass_sources(
             fonts.push(Font { name, data: data.into() });
         }
         if !headers.is_empty() || !fonts.is_empty() {
-            crate::player::log(&format!("ass: embedded tracks={} fonts={} font_bytes={font_bytes}", headers.len(), fonts.len()));
+            crate::player::log(&format!(
+                "ass: embedded tracks={authored_tracks} text_tracks={text_tracks} fonts={} font_bytes={font_bytes}",
+                fonts.len()
+            ));
         }
     }
     ass_source::begin(media_key, headers, fonts)

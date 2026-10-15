@@ -11,6 +11,28 @@ Fixtures: latin2 cjk2 thai2 deva2 arab2 rapid karaoke long, plus rapid-4k60 (384
 Serve one with `tests/mock_pms.py --extra-media <output-dir>/<name>.mkv` (docs/ass-subtitles.md)
 and read the `assperf:` event-log lines (rust-modules/media/src/player/ass_perf.rs).
 
+TEXT fixtures (the same A/V, ONE text track each, rendered by libass through the converter in
+rust-modules/media/src/player/text_ass.rs; plan libass-text-subs section 7):
+
+  srt-latin2 srt-cjk2 srt-thai2 srt-deva2 srt-arab2 srt-rapid srt-long   SRT (subrip) in MKV, the
+                                  text of the ASS case of the same name
+  srt-markup.mkv                  <i> <b> <u> <font color>, {\\an8} {\\an5} {\\an1} {\\an3}, three
+                                  lines, a literal backslash and an unmatched brace
+  srt-overlap.mkv                 a 1-frame overlap, two cues with one start, a top sign over bottom
+                                  dialogue
+  mov_text-mixed.mp4              mov_text in MP4: Latin, CJK, Thai, Devanagari and Arabic in turn
+  webvtt-mixed.mkv                WebVTT in MKV, the same cues plus <v>/<c> tags, an entity and a
+                                  `line:0` setting (embedded settings are ignored: plan Q4)
+
+Every generated subtitle track (these and the ASS ones) carries the DEFAULT disposition, so the
+player selects it without a menu pick; `verify` checks it with ffprobe, and checks that the markup
+survived the mux by dumping the track's packets. SAMI (and MicroDVD, MPL2, RealText ...) cannot be
+muxed: the bundled FFmpeg demuxes only matroska, mov and mpegts, and matroska/mp4/mpegts cannot
+carry a sami codec id ("Subtitle codec sami is not supported" from the matroska muxer, "Could not
+find tag for codec sami" from mp4). Those dialects are covered by the converter's host tests only.
+Matroska blocks without a duration (the "no-duration packet" case, start + 4 s) cannot be written
+by ffmpeg either: its muxer always writes BlockDuration for a subtitle packet.
+
 Needs host ffmpeg and ffprobe only (no mkvmerge): the A/V is encoded once per resolution and every
 fixture remuxes it with `-c copy`, so the subtitle track is never subject to the encoder's sparse
 subtitle scheduling; the packet count is checked against the script's event count anyway.
@@ -145,6 +167,166 @@ def long_events():
     return out
 
 
+# ---- text (SRT / WebVTT / mov_text) fixtures ---------------------------------------------------
+
+LANG = {"latin": "eng", "cjk": "chi", "thai": "tha", "deva": "hin", "arab": "ara"}
+FRAME = 1 / 24
+
+
+def text_of(events):
+    """The ASS-case events as plain cue text: ASS `\\N` becomes a real line break."""
+    return [(a, b, t.replace("\\N", "\n")) for a, b, t in events]
+
+
+def srt_time(seconds):
+    ms = round(seconds * 1000)
+    return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+
+
+def vtt_time(seconds):
+    return srt_time(seconds).replace(",", ".")
+
+
+def srt_file(events):
+    return "".join(f"{i}\n{srt_time(a)} --> {srt_time(b)}\n{t}\n\n"
+                   for i, (a, b, t) in enumerate(events, 1))
+
+
+def vtt_file(events):
+    """`events` are (start, end, text) or (start, end, text, settings)."""
+    out = ["WEBVTT\n\n"]
+    for e in events:
+        a, b, t = e[:3]
+        settings = f" {e[3]}" if len(e) > 3 else ""
+        out.append(f"{vtt_time(a)} --> {vtt_time(b)}{settings}\n{t}\n\n")
+    return "".join(out)
+
+
+def markup_events():
+    """Every override the converter honours, and the cases that must show literally."""
+    return [
+        (0, 4, '<i>Italic</i>, <b>bold</b>, <u>underline</u>\n'
+               '<font color="#ff8800">orange</font> and <font color="red">red</font> text'),
+        (4, 8, "{\\an8}Top-aligned cue (an8)"),
+        (8, 12, "Bottom line one\nBottom line two\nBottom line three"),
+        (12, 16, "{\\an5}Middle-aligned cue (an5)"),
+        (16, 20, "{\\an1}Bottom-left (an1)"),
+        (20, 24, "{\\an3}Bottom-right (an3)"),
+        (24, 28, "<i>ital</i> <font color=\"#00ccff\">cyan</font> {\\i1}brace italic{\\i0} plain"),
+        (28, 32, "C:\\temp\\new, a{b unmatched, 1 } 2, <unknown>tag</unknown>"),
+        (32, 36, "{\\an8}<i>Top italic</i>\nsecond top line"),
+    ]
+
+
+def overlap_events():
+    return [
+        (0, 4, "A: runs to 4.000 s"),
+        (4 - FRAME, 8, "B: starts ONE FRAME before A ends"),
+        (10, 14, "C: starts at 10 s, 4 s long"),
+        (10, 13, "D: the same start as C, shorter (newest wins)"),
+        (16, 24, "E: bottom dialogue, 8 s long"),
+        (18, 22, "{\\an8}F: a top sign over E (both show)"),
+        (26, 30, "G: a cue that is overlapped at its END"),
+        (29, 33, "H: begins before G ends (G is clipped)"),
+    ]
+
+
+def mixed_events():
+    """Latin, CJK, Thai, Devanagari and Arabic in turn, two cues each, 4 s apart."""
+    out = []
+    for i, pool in enumerate((LATIN, CJK, THAI, DEVA, ARAB)):
+        for j in range(2):
+            n = 2 * i + j
+            out.append((n * 4, n * 4 + 3.5, f"{pool[2 * j]}\n{pool[2 * j + 1]}"))
+    return out
+
+
+def vtt_mixed_events():
+    out = mixed_events()
+    t = out[-1][1] + 0.5
+    out.append((t, t + 3.5, "<v Narrator>Speaker tag, <c.red>class tag</c> and <i>italic</i> &amp; &lt;an entity&gt;"))
+    out.append((t + 4, t + 7.5, "Cue setting line:0 (embedded settings are ignored)", "line:0"))
+    return out
+
+
+def mux_text(out, av, name, sub_path, container, codec, lang):
+    """Remux `av` with the text file `sub_path` as its one subtitle track, default disposition."""
+    mux = out / f"{name}.{container}"
+    run(["ffmpeg", "-v", "error", "-y", "-i", str(av), "-i", str(sub_path),
+         "-map", "0:v", "-map", "0:a", "-map", "1:s", "-c:v", "copy", "-c:a", "copy",
+         "-c:s", codec, "-disposition:s:0", "default", "-metadata:s:s:0", f"language={lang}",
+         "-t", str(DURATION), str(mux)])
+    return mux
+
+
+def packet_blob(path, index):
+    """The raw bytes of every packet of stream `index`, concatenated."""
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-map", f"0:{index}", "-c", "copy",
+                        "-f", "data", "-"], capture_output=True)
+    if r.returncode:
+        sys.exit(f"{path.name}: packet dump failed:\n{r.stderr.decode(errors='replace')[-1000:]}")
+    return r.stdout
+
+
+def verify_text(path, codec, events, markers=()):
+    """One subtitle stream of `codec`, the default disposition, one packet per cue, and every byte
+    string in `markers` still in the packets (the mux did not rewrite the markup)."""
+    info = json.loads(run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json",
+                           str(path)]))
+    subs = [s for s in info["streams"] if s["codec_type"] == "subtitle"]
+    assert len(subs) == 1 and subs[0]["codec_name"] == codec, f"{path.name}: want one {codec} stream"
+    assert subs[0]["disposition"]["default"] == 1, f"{path.name}: not the default track"
+    packets = run(["ffprobe", "-v", "error", "-select_streams", f"{subs[0]['index']}",
+                   "-show_entries", "packet=pts_time,size", "-of", "csv=p=0", str(path)]).split()
+    if codec == "mov_text":
+        # MP4 has no gaps: the muxer fills each one with an empty sample (just the 2-byte length
+        # prefix), which the player skips as a cue with no text.
+        packets = [p for p in packets if int(p.split(",")[1]) > 2]
+    assert len(packets) == events, f"{path.name}: {len(packets)} packets != {events} cues"
+    blob = packet_blob(path, subs[0]["index"])
+    for m in markers:
+        assert m.encode() in blob, f"{path.name}: {m!r} did not survive the mux"
+    return float(info["format"]["duration"])
+
+
+def text_fixtures(out, av):
+    """Build every text fixture; returns the table rows (file, duration, cues, codec)."""
+    ascii_markers = {"srt-markup": ["<i>Italic</i>", "<b>bold</b>", '<font color="#ff8800">',
+                                    "{\\an8}", "{\\an5}", "{\\an1}", "{\\an3}", "{\\i1}"],
+                     "srt-overlap": ["{\\an8}"]}
+    srt_cases = [
+        ("srt-latin2", "latin", text_of(two_line(LATIN, 2))),
+        ("srt-cjk2", "cjk", text_of(two_line(CJK, 2))),
+        ("srt-thai2", "thai", text_of(two_line(THAI, 2))),
+        ("srt-deva2", "deva", text_of(two_line(DEVA, 2))),
+        ("srt-arab2", "arab", text_of(two_line(ARAB, 2))),
+        ("srt-rapid", "latin", text_of(rapid_events())),
+        ("srt-long", "latin", text_of(long_events())),
+        ("srt-markup", "latin", markup_events()),
+        ("srt-overlap", "latin", overlap_events()),
+    ]
+    rows = []
+    for name, script_key, events in srt_cases:
+        srt = out / f"{name}.srt"
+        srt.write_text(srt_file(events), encoding="utf-8")
+        mkv = mux_text(out, av, name, srt, "mkv", "copy", LANG[script_key])
+        rows.append((mkv.name, verify_text(mkv, "subrip", len(events), ascii_markers.get(name, ())),
+                     len(events), "subrip"))
+    mixed = mixed_events()
+    srt = out / "movtext-mixed.srt"
+    srt.write_text(srt_file(mixed), encoding="utf-8")
+    mp4 = mux_text(out, av, "mov_text-mixed", srt, "mp4", "mov_text", "eng")
+    rows.append((mp4.name, verify_text(mp4, "mov_text", len(mixed), [CJK[0], THAI[0], DEVA[0], ARAB[0]]),
+                 len(mixed), "mov_text"))
+    vtt_events = vtt_mixed_events()
+    vtt = out / "webvtt-mixed.vtt"
+    vtt.write_text(vtt_file(vtt_events), encoding="utf-8")
+    mkv = mux_text(out, av, "webvtt-mixed", vtt, "mkv", "copy", "eng")
+    rows.append((mkv.name, verify_text(mkv, "webvtt", len(vtt_events), ["<v Narrator>", "<c.red>", "&amp;"]),
+                 len(vtt_events), "webvtt"))
+    return rows
+
+
 def run(cmd):
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
@@ -188,7 +370,8 @@ def mux(out, av, name, ass_text, font):
     cmd = ["ffmpeg", "-v", "error", "-y", "-i", str(av), "-i", str(ass)]
     if font:
         cmd += ["-attach", str(font)]
-    cmd += ["-map", "0:v", "-map", "0:a", "-map", "1:s", "-c", "copy", "-t", str(DURATION)]
+    cmd += ["-map", "0:v", "-map", "0:a", "-map", "1:s", "-c", "copy",
+            "-disposition:s:0", "default", "-t", str(DURATION)]
     if font:
         cmd += ["-metadata:s:t:0", "mimetype=font/ttf",
                 "-metadata:s:t:0", f"filename={pathlib.Path(font).name}"]
@@ -204,6 +387,7 @@ def verify(mkv, events, attached):
     subs = [s for s in streams if s["codec_type"] == "subtitle"]
     atts = [s for s in streams if s["codec_type"] == "attachment"]
     assert len(subs) == 1 and subs[0]["codec_name"] == "ass", f"{mkv.name}: ASS stream missing"
+    assert subs[0]["disposition"]["default"] == 1, f"{mkv.name}: not the default track"
     if attached:
         assert len(atts) == 1 and atts[0]["tags"].get("mimetype") == "font/ttf", \
             f"{mkv.name}: font attachment missing"
@@ -242,9 +426,10 @@ def main():
         mkv = mux(out, source, name, script(family, events, wrap), font)
         duration = verify(mkv, len(events), font is not None)
         rows.append((mkv.name, duration, len(events), family))
-    print(f"{'file':<16}{'duration_s':>11}{'events':>8}  font")
-    for r in rows:
-        print(f"{r[0]:<16}{r[1]:>11.1f}{r[2]:>8}  {r[3]}")
+    text_rows = text_fixtures(out, av)
+    print(f"{'file':<22}{'duration_s':>11}{'events':>8}  font / codec")
+    for r in rows + text_rows:
+        print(f"{r[0]:<22}{r[1]:>11.1f}{r[2]:>8}  {r[3]}")
     print(f"\noutput: {out}")
 
 

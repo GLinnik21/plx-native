@@ -15,8 +15,9 @@
 //! - [`event_payload`]: the Matroska packet an embedded cue becomes (what `ass_source::push`
 //!   takes).
 //!
-//! Nothing in here is wired to the player yet; the callers arrive with the embedded and sidecar
-//! switches. The module and its items are `pub` so the dead-code lint does not fire before then.
+//! The embedded switch is wired: `ass_source::push_text` converts every embedded text cue here. The
+//! sidecar files ([`script_from_srt`], [`script_from_vtt`]) are not read yet; the module and its items
+//! are `pub` so the dead-code lint does not fire before the sidecar switch uses them.
 
 use super::text_style::{self, TextStyle};
 
@@ -148,6 +149,33 @@ pub fn convert_aligned(text: &str, dialect: TextDialect, default_align: Option<A
 /// MarginV,Effect,Text`. Every event margin is 0, so the style's own margins apply.
 pub fn event_payload(read_order: u32, align: Align, body: &str) -> String {
     format!("{read_order},0,{},,0,0,0,,{body}", style_name(align))
+}
+
+/// How many characters of text a converted body shows: override blocks (`{...}`) count nothing, an
+/// escape (`\N`, `\h`, `\{`, `\}`) counts as the one thing it stands for, and the ZWSP that keeps
+/// a literal backslash apart from the next letter (see [`convert`]) counts nothing. This is the
+/// `len=` of the `sub cue` log line: a length, never the dialogue.
+pub fn visible_chars(body: &str) -> usize {
+    let mut n = 0;
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' => {
+                for c in chars.by_ref() {
+                    if c == '}' {
+                        break;
+                    }
+                }
+            }
+            '\\' if matches!(chars.peek(), Some('N' | 'n' | 'h' | '{' | '}')) => {
+                chars.next();
+                n += 1;
+            }
+            '\u{200B}' => {}
+            _ => n += 1,
+        }
+    }
+    n
 }
 
 // ---- parsing ----------------------------------------------------------------------------------

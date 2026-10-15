@@ -11,6 +11,7 @@
 //! this context's clock and the playhead.
 
 use super::*;
+use crate::player::text_ass::TextDialect;
 /// How a subtitle stream's payload turns into displayable text — classified by the codec's
 /// name (avcodec_get_name is already linked, so we avoid hardcoding the n3.3 subtitle codec-id
 /// block, which the ABI probe never verified). Bitmap subs (PGS/VobSub/DVB/teletext) carry no
@@ -18,21 +19,21 @@ use super::*;
 /// menu's desired_sub_idx stays aligned with the metadata subs list.
 #[derive(Clone, Copy, PartialEq)]
 pub(super) enum SubKind {
-    Plain,   // SRT / subrip / text / webvtt: packet payload is text, UTF-8 or (see `sub_charset`) a legacy encoding
-    Ass,     // ASS / SSA: dialogue line; text is the field after the 8th comma
-    MovText, // mp4 tx3g: 2-byte big-endian text-length prefix, then text (UTF-8 or legacy, as Plain)
-    Bitmap,  // PGS / VobSub / DVB / teletext: image subtitle, not renderable here
+    /// SRT / subrip / webvtt / sami / text / mov_text ...: the packet payload is text, UTF-8 or (see
+    /// `sub_charset`) a legacy encoding, converted to ASS by the dialect (`player::text_ass`) and
+    /// rendered by libass like an authored track. mov_text (mp4 tx3g) also carries a 2-byte
+    /// big-endian text-length prefix before the text.
+    Text(TextDialect),
+    Ass,    // ASS / SSA: dialogue line; text is the field after the 8th comma
+    Bitmap, // PGS / VobSub / DVB / teletext: image subtitle, not renderable here
 }
 
 pub(super) unsafe fn sub_kind(codec_id: c_int) -> SubKind {
     let name = std::ffi::CStr::from_ptr(avcodec_get_name(codec_id)).to_string_lossy();
-    match name.as_ref() {
-        "ass" | "ssa" => SubKind::Ass,
-        "mov_text" => SubKind::MovText,
-        "subrip" | "srt" | "text" | "webvtt" | "vplayer" | "pjs" | "jacosub" | "microdvd"
-        | "sami" | "realtext" | "subviewer" | "subviewer1" | "stl" | "mpl2" => SubKind::Plain,
-        _ => SubKind::Bitmap,
+    if matches!(name.as_ref(), "ass" | "ssa") {
+        return SubKind::Ass;
     }
+    TextDialect::from_codec_name(&name).map_or(SubKind::Bitmap, SubKind::Text)
 }
 
 /// Open a software decoder for an image-subtitle stream (PGS/VobSub/DVB). Returns a
@@ -255,7 +256,8 @@ pub(super) unsafe fn decode_bitmap_cue(
 
 /// One cue produced from one subtitle packet, in the stream's clock (`pts_ns`), not yet delivered.
 pub(super) enum SubCue<'a> {
-    /// SRT / WebVTT / mov_text payload (mov_text's length prefix already dropped) for the text store.
+    /// SRT / WebVTT / mov_text ... payload (mov_text's length prefix already dropped), converted to
+    /// ASS by the track's dialect in `ass_source::push_text`.
     /// `payload` is always UTF-8 here: [`SubTracks::decode`] ran the track's charset step.
     Text { track: i32, start: i64, end: i64, payload: std::borrow::Cow<'a, [u8]> },
     /// An ASS/SSA dialogue line for `ass_source`.
@@ -296,12 +298,13 @@ impl<'a> SubCue<'a> {
 }
 
 impl SubCue<'_> {
-    /// Hand the cue to the render store. `ass_generation` is the `ass_source::begin` token an
-    /// `Ass` cue is pushed under; the other kinds ignore it.
+    /// Hand the cue to the render store. `ass_generation` is the `ass_source::begin` token a
+    /// `Text` or `Ass` cue is pushed under; the image kinds ignore it.
     pub(super) fn push(self, ass_generation: u64) {
         match self {
             SubCue::Text { track, start, end, payload } => {
-                crate::player::push_subtitle_cue(track, start, end, &payload);
+                let text = String::from_utf8_lossy(&payload);
+                crate::player::ass_source::push_text(ass_generation, track, start, end, &text);
             }
             SubCue::Ass { track, start, end, payload } => {
                 crate::player::ass_source::push(ass_generation, track, start, end, payload);
@@ -399,8 +402,8 @@ impl SubTracks {
             .map(|(si, k, _)| {
                 let kn = match k {
                     SubKind::Ass => "ass",
-                    SubKind::MovText => "mov_text",
-                    SubKind::Plain => "text",
+                    SubKind::Text(TextDialect::MovText) => "mov_text",
+                    SubKind::Text(_) => "text",
                     SubKind::Bitmap => "image",
                 };
                 format!("#{si}:{kn}")
@@ -445,7 +448,7 @@ impl SubTracks {
         }
         let raw: &'p [u8] = std::slice::from_raw_parts((*pkt).data, sz);
         // mp4 tx3g: drop the 2-byte big-endian text-length prefix.
-        let payload: &[u8] = if kind == SubKind::MovText && sz >= 2 {
+        let payload: &[u8] = if kind == SubKind::Text(TextDialect::MovText) && sz >= 2 {
             let tl = ((raw[0] as usize) << 8) | raw[1] as usize;
             &raw[2..2 + tl.min(sz - 2)]
         } else {
