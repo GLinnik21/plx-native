@@ -117,7 +117,7 @@ impl ClockWarm {
     }
 }
 
-/// Shared caption placement for plain text and a styled-renderer failure message. Text size and
+/// Shared caption placement for the libass fault message and the sidecar failure notice. Text size and
 /// vertical placement follow the viewer's Settings > Playback picks (`route::subtitle_size`,
 /// `route::subtitle_position`) — native ASS/SSA keeps its authored style instead
 /// (`docs/ass-subtitles.md`). The message is a short fixed string, so it is never paged: a block
@@ -2945,9 +2945,8 @@ mod tests {
     }
 
     /// A resume the user asked for while the playhead is also travelling: the travel is the newer
-    /// fact and the slot is one glyph, so it wins. (A Play pressed while a seek is still travelling;
-    /// a paused scrub is not this frame, it keeps `paused` set throughout — the pump opens a
-    /// bounded seek preroll for the new position and re-pauses on the landing.)
+    /// fact and the slot is one glyph, so it wins. (This is the frame after a paused scrub commits
+    /// — `commit_seek` drops `paused` to let the pipeline prime the new position.)
     #[test]
     fn travel_outranks_the_resume_mark() {
         assert_eq!(

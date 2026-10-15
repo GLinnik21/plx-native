@@ -979,6 +979,23 @@ cleartext. So **libcurl is used by two modules for two jobs** — `net.rs` for p
 control calls, `curlio.rs` for the media bytes — and each binds its own `dynlib!` table,
 which the linking section explains is load-bearing rather than tidy.
 
+**Subtitles (summary — `docs/ass-subtitles.md` is the deep-dive; `rust-modules/media/src/player/CLAUDE.md`
+has the producers).** The client draws subtitles itself; the TV's subtitle engine is unreachable in
+buffer-feed. Every TEXT subtitle renders through the one bundled libass worker (`player::ass`),
+whether it is authored ASS/SSA, an embedded SubRip/WebVTT/mov_text/SAMI track or a sidecar `.srt`/`.vtt`:
+a text track gets a header `text_ass::header` synthesizes from the viewer's size and position picks, and
+its cues become ASS events (`text_ass::convert`, `ass_source::push_text`). Such a source has
+`Origin::Text`: it renders into the full logical screen, the screen lifts its bottom-anchored regions
+clear of the transport, and a change of the size or position pick restyles it. An authored ASS source is
+never moved. The old caption path is gone (`CaptionPlan`, `draw_subtitles`, the `SHARED.sub_cues`
+store, `active_subtitle*`): do not look for a second text renderer. Image subtitles
+(PGS/VobSub) keep their bitmap path. The one text the sidecar still draws itself is its failure notice
+(`sidecar::notice()`), drawn by the player screen with `appkit::player_hud::draw_subtitle_message`.
+Fonts are bundled Inter plus per-script Noto Bold faces; because libass runs with no font provider, a
+missing or unloadable libass removes every text subtitle and the screen draws the libass fault message
+(`ass::Fault::message`, via `AssSubtitles::error`) instead; the sidecar's own failure notice
+(`sidecar::notice()`) is only for a sidecar that fetched or converted to nothing.
+
 ### Module-cycle ratchet (`ci/check-module-cycle.py`)
 
 The intended layering is gfx/text/i18n < ui < screens < app and plex < route/player < app

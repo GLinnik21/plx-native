@@ -234,9 +234,8 @@ something.
   `text_ass::convert` turns into events (`ass_source::push_text`, `Origin::Text`; the cue's raw key is
   its dedup identity, so a seek re-read changes nothing, and the track's events are a newest-wins view
   of those raw cues), over the bundled Inter and per-script Noto faces (`ass/fonts.rs`, `docs/ass-subtitles.md`).
-  Nothing produces into `SHARED.sub_cues` any more (a text cue goes to `ass_source`); the store stays,
-  dead, until the plan's PR 10, as are `active_subtitle*`; the screen no longer calls appkit's
-  `draw_subtitles`/`caption_page` (PR 8), which PR 9 deletes. Sidecar ASS keeps the complete script rather than requesting a SubRip conversion. Don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
+  The old caption path is gone: there is no `SHARED.sub_cues`, no `active_subtitle*` and no appkit
+  `draw_subtitles`/`caption_page`; every text cue lives in `ass_source`. Sidecar ASS keeps the complete script rather than requesting a SubRip conversion. Don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
   soft-subs note. An image sub's rect coords are in **the subtitle stream's own authoring canvas** —
   1920×1080 for Blu-ray PGS but 720×480/576 for a DVD VobSub rip — so `ff::sub_canvas` reads that
   canvas off the decoder (via `avcodec_parameters_from_context`, no raw struct offset; the ABI proof
@@ -244,15 +243,15 @@ something.
   video rect. Assuming 1080p unconditionally is what made VobSub render as a corner postage stamp.
   **An EXTERNAL text subtitle (the `.srt` beside the film) is a third producer, `sidecar.rs`:** the
   demuxer never sees it, so it is fetched whole from PMS and kept in its OWN store — not
-  `SHARED.sub_cues`, which is a window the demuxer refills and a backward seek would empty. SubRip
+  `ass_source`'s window of demuxer cues, which the demuxer refills and a backward seek would empty. SubRip
   and WebVTT are charset-decoded (`sub_charset`) and converted on the fetch worker by
   `text_ass::script_from_srt`/`_vtt` to one ASS script (the synthesized header, `Origin::Text`, then
   the `Dialogue:` lines), which `sidecar::ass_source` hands to the same libass worker as an embedded
   text track; a pick change re-synthesizes the header lazily there (revision bump, identity kept). A
   script past `ass_script::WINDOW_EVENTS` lines OR `WINDOW_BYTES` is fed to libass a window at a time,
   and a script loaded in windows is exempt from the 8 MiB whole-script bound (a 4 MiB TIS-620 file is
-  ~12 MiB once decoded to UTF-8); each window stays within it, except a single line larger than the bound, which the renderer refuses. What `sidecar::active_span` still
-  returns is only the on-screen failure notice (`notice()`, `notice_shown()`; 6 s), drawn by the
+  ~12 MiB once decoded to UTF-8); each window stays within it, except a single line larger than the bound, which the renderer refuses. The only thing the sidecar still
+  draws itself is the on-screen failure notice (`sidecar::notice()`, `notice_shown()`; 6 s), drawn by the
   player screen with `draw_subtitle_message` (and `notice_shown()` is a term of its `clock_fingerprint`, so
   the expiry owes a frame). It is silent where the server burns the selection (a re-encode, or a remux whose embedded
   track the app may not read itself); over a plain remux the app draws it, and draws an embedded
@@ -288,32 +287,7 @@ something.
   `native_seek_refused` so the reload's fresh session stays `Reload` for the rest of THAT playback;
   a fresh play (`start_bufferfeed_tracked` with no live Engine) clears the latch. `Reload`
   (old-ABI 3.x, and the fallback of both) is a fresh `Load` per seek. Otherwise the mode is
-  re-selected per session. The evidence is in `docs/webos5-port.md` ("The public `Seek`").
-  **A seek dispatched under a viewer Pause is owned by the pump, on EVERY route:** the feed gate
-  (`TX.feed_allowed()` = `!paused || seek_preroll`) is shut while paused, so no keyframe could be
-  fed, no fresh Load could prime, and the stuck watchdog would reload into the same shut gate. The
-  pump opens the paused-seek preroll itself (`own_seek_under_pause` -> `TX.own_paused_seek(target)`)
-  at the in-place arm, before `reload_at` on `Reload` mode and on every reload fallback (native
-  Pause refused / stale, retired epoch), and before `reload_transcode` on a transcode flight's
-  landing (the viewer's Pause only: a pause the claim hold took is given back by the hold). The
-  ownership lives in `Transport` beside `seek_preroll` (`seek_preroll_owned`, the target), NOT on
-  the `Engine`, because `reload_at` / the stuck watchdog / a refused native `Seek` replace the Engine
-  and `reset_for_reload` keeps both the Pause and the preroll; `arm_initial_clock_hold(user_held,
-  preroll)` then hands the fresh session's Initial prime the open gate. `pump::settle_paused_seek`
-  runs at the head of every tick on whichever Engine is live: when the seek has landed (not
-  `flushed`/`rebase_pending`, no newer tap pending, no flight, `frames() >= 1` — zeroed by the arm
-  and by every session reset — and `playpos + 15 s >= target`) it calls `finish_paused_seek`: a
-  brief prime Play, then Pause again. A REFUSED re-pause leaves the preroll and the ownership in
-  place, so the next tick retries; `TX.finish_seek_preroll` is the only thing that clears the
-  ownership (Resume and `abandon_seek` go through it, `TX.reset` clears it on stop). A Pause pressed AFTER a
-  playing seek was dispatched is noticed by the same function (`SHARED.seeking` with `TX.paused` and
-  no preroll, no flight, no claim-hold pause, AND the seek already in flight: no newer tap in
-  `TX.seek_to_ns` and the Engine `flushed` or `rebase_pending` — a bare paused `request_seek` not
-  yet dispatched is the dispatcher's, owned at its own target by `own_seek_under_pause`): it hands the clock hold back to the seek prime
-  (`SHARED.hand_hold_to_seek_prime`: the Pause marked it `user_held`, which fences the prime's Play),
-  opens the preroll and re-bases the watchdog. So a bare `request_seek` is correct from any caller;
-  a preroll a caller opened first (the foreground restore) stays that caller's to close. The stuck
-  watchdog also re-bases `seek_armed_at` on every tick the gate is shut. A transcode seek instead
+  re-selected per session. The evidence is in `docs/webos5-port.md` ("The public `Seek`"). A transcode seek instead
   restarts the encode at `&offset` with a full fresh `Load`, and the PMS half of that restart is a
   FLIGHT, never frame-thread I/O: `route::dispatch_transcode_seek` plans on the frame, a worker
   registers the replacement encoder, and the drain installs it and reloads (`seek_landing_tail`).

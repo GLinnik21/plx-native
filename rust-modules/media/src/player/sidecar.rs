@@ -299,8 +299,9 @@ pub fn notice_shown() -> bool {
 
 /// The selected script, unless the server burns it. It is the same immutable source through seeks
 /// and Off→On; render requests carry the current clock, so no cue is lost on a backward seek. A
-/// converted SubRip/WebVTT file is restyled here, lazily, when the viewer's picks changed since its
-/// header was synthesized (an unselected file is never restyled).
+/// converted SubRip/WebVTT file whose header was synthesized for other picks than the viewer's now
+/// has its restyle started here, lazily, on a worker; the old look stays up until the worker
+/// publishes the restyled script (an unselected file is never restyled).
 pub fn ass_source(burned: bool) -> Option<Arc<super::ass::Source>> {
     ass_source_styled(burned, TextStyle::current())
 }
