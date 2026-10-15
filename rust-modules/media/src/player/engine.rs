@@ -1806,9 +1806,23 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
 #[cfg(any(test, feature = "test-support"))]
 pub(super) static RELOAD_AT_LOG: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
 
+/// Whether the paused-seek preroll was open as each `reload_at` / `reload_transcode` was entered,
+/// before its teardown (test probe): the reload keeps it, so what the fresh session's feed gate and
+/// prime see is whatever the dispatcher left open here.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static RELOAD_PREROLL_LOG: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(any(test, feature = "test-support"))]
+fn note_reload_preroll() {
+    RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(TX.seek_preroll_active());
+}
+
 pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, target_ns: i64) -> ReloadOutcome {
     #[cfg(any(test, feature = "test-support"))]
-    RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(target_ns);
+    {
+        RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(target_ns);
+        note_reload_preroll();
+    }
     if crate::route::url(ps).is_empty() {
         log("reload_at: no url (ignored)");
         settle_missing_route_start();
@@ -1846,6 +1860,8 @@ pub fn switch_audio_native(ps: &mut crate::route::PlaybackSession, pa: &mut supe
 /// start.mkv is already 0-based at `&offset`, so no av_seek — just set disp_base to the offset.
 /// route::retranscode has already set the URL + session + STREAM_VCODEC=h264 before this call.
 pub fn reload_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, offset_ns: i64) -> ReloadOutcome {
+    #[cfg(any(test, feature = "test-support"))]
+    note_reload_preroll();
     if crate::route::url(ps).is_empty() {
         // The other abandonment path with the same hole: `request_seek` armed the spinner and
         // nothing here would ever disarm it. See `player::abandon_seek`.
@@ -3963,7 +3979,7 @@ mod prime_livelock_tests {
             rebase_drops: 0,
             seek_armed_at: 0,
             seek_retries: 0,
-            flushed: false,
+                flushed: false,
             presentation_rearm_pending: false,
             max_fed_video_pts: 0,
             max_fed_audio_pts: 0,

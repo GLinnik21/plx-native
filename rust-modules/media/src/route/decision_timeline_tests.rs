@@ -271,6 +271,93 @@ fn replacement_timeline_waits_for_the_announced_old_stop_boundary() {
     reset_player_control_for_test(&ps);
 }
 
+/// The refetch gate waits for the resume point to be committed, not for the whole stop worker.
+/// The worker posts `stopped`, THEN asks the server to stop the encoder (a second round trip that
+/// a slow PMS holds for ~17 s). `timeline_stop_landed` must read true between the two while
+/// `scrobble_settled` (the whole worker) still reads false.
+#[test]
+fn timeline_stop_landed_reads_true_once_stopped_was_posted_while_the_encoder_stop_is_held() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    drain_scrobble();
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+
+    // One connection per request, in order: the 1st (the `stopped` timeline) waits on `gate_stopped`,
+    // the 2nd (the encoder stop) on `gate_encoder`. Every request line is reported on `seen`.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port() as i32;
+    let (seen_tx, seen_rx) = mpsc::channel::<String>();
+    let (gate_stopped_tx, gate_stopped_rx) = mpsc::channel::<()>();
+    let (gate_encoder_tx, gate_encoder_rx) = mpsc::channel::<()>();
+    let server = std::thread::spawn(move || {
+        for gate in [gate_stopped_rx, gate_encoder_rx] {
+            let Some(Ok(mut socket)) = listener.incoming().next() else { return };
+            let mut line = String::new();
+            let _ = BufReader::new(&socket).read_line(&mut line);
+            let _ = seen_tx.send(line);
+            let _ = gate.recv();
+            let _ = socket.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+    let sid = plx_plex::plex::register_for_test(
+        "timeline-stop-landed",
+        "127.0.0.1",
+        port,
+        "tok",
+        "timeline-client",
+    );
+    apply_plan(
+        &mut ps,
+        Plan {
+            sid,
+            sess: "logical-landed".into(),
+            ..Default::default()
+        },
+        "rk-landed",
+    );
+    install_active_encoder("wire-landed");
+
+    scrobble_stop(&mut ps, Some(("rk-landed".into(), 11_000, 20_000)), None);
+    let first = seen_rx.recv_timeout(Duration::from_secs(5)).expect("no stopped POST");
+    assert!(first.contains("state=stopped"), "first request was not stopped: {first}");
+    assert!(
+        !timeline_stop_landed() && !scrobble_settled(),
+        "premise: the stop is announced and the worker has not finished"
+    );
+
+    gate_stopped_tx.send(()).unwrap();
+    let second = seen_rx.recv_timeout(Duration::from_secs(5)).expect("no encoder stop");
+    assert!(second.contains("/transcode/universal/stop"), "second request: {second}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !timeline_stop_landed() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        timeline_stop_landed(),
+        "the stopped POST was answered, so the resume point is committed"
+    );
+    assert!(
+        !scrobble_settled(),
+        "the worker is still inside the held encoder stop"
+    );
+
+    gate_encoder_tx.send(()).unwrap();
+    drain_scrobble();
+    assert!(scrobble_settled() && timeline_stop_landed());
+    server.join().unwrap();
+    plx_plex::plex::reset_servers_for_test();
+    reset_session(&mut ps);
+    install_active_encoder("");
+    reset_player_control_for_test(&ps);
+}
+
 #[test]
 fn every_concurrent_scrobble_drain_waits_for_the_same_taken_handle() {
     use std::time::Duration;

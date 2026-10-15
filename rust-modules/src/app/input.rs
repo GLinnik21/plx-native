@@ -816,7 +816,7 @@ mod item_menu_player_return_tests;
 /// answering `HitSource::Engine`, and which arms its own `TAP_COMMIT_MS` debounce on
 /// `Edge::Up` — so the two together issued TWO seeks for one tap. The commit, the debounce and
 /// the reveal-cancel are `screens::player::PlayerScreen::key_scrub_release`'s now, and
-/// `repause_at` reaches `commit_seek` through `PlayerReq::CommitSeek` instead of through here.
+/// the commit reaches `commit_seek` through `PlayerReq::CommitSeek` instead of through here.
 pub(crate) fn on_key_up(
     sym: c_uint,
     ok_armed: bool,

@@ -287,8 +287,9 @@ pub(crate) struct App {
     pub(crate) menu_play_await: Option<MenuPlayAwait>,
     pub(crate) prev: u32,
     /// A playback exit is owed a re-read of Home's hubs and every library's shelves. Armed by
-    /// `exit_player`; spent by `playback_tick` once the stop report has settled and the player is off
-    /// the route (never by a timer: a read that beats the stop's POST sees the old resume point).
+    /// `exit_player`; spent by `playback_tick` once the stop's `stopped` POST has landed
+    /// (`route::timeline_stop_landed`) and the player is off the route (never by a timer: a read
+    /// that beats the stop's POST sees the old resume point).
     pub(crate) refresh_hubs: bool,
     /// The Detail page a playback returned to, waiting for the stop report to land so it can
     /// re-read the item (`content::refresh_after_playback`).
