@@ -319,10 +319,16 @@ pub struct Popover {
     host_held: bool,
     /// Counted in [`HOST_CLOSING`]: held AND dismissed. Cleared by a re-open or by the release.
     host_closing: bool,
+    /// How the panel arrives: the shared fade+slide, or the glass opener's morph.
+    style: OpenStyle,
+    /// The morph's springs; stepped only under [`OpenStyle::Morph`].
+    morph: crate::popover_morph::Morph,
 }
 impl Popover {
     pub const fn new() -> Self {
         Popover {
+            style: OpenStyle::Appear,
+            morph: crate::popover_morph::Morph::new(),
             open: false,
             closing: false,
             appear: Spring::at(0.0),
@@ -344,9 +350,30 @@ impl Popover {
         self.host = HostPolicy::Cached;
         self
     }
+    /// Arrive by the glass opener's MORPH ([`crate::popover_morph`]) instead of the shared
+    /// fade+slide. Opt-in like [`caching_host`](Self::caching_host); the scrim still ramps on the
+    /// appear spring, and every popover that does not call this is unchanged.
+    pub const fn morphing(mut self) -> Self {
+        self.style = OpenStyle::Morph;
+        self
+    }
+    /// This popover's open style.
+    pub const fn open_style(&self) -> OpenStyle {
+        self.style
+    }
+    /// The morph's draw state for the opener rect `from` and the settled `panel` rect; `None` for
+    /// a popover that is not [`morphing`](Self::morphing).
+    pub fn morph_frame(
+        &self,
+        from: Option<Rect>,
+        panel: Rect,
+    ) -> Option<crate::popover_morph::Frame> {
+        (self.style == OpenStyle::Morph).then(|| self.morph.frame(from, panel))
+    }
     /// (re)open: restart the fade+slide from 0.
     pub fn open(&mut self) {
         self.appear = Spring::at(0.0);
+        self.morph.reset();
         self.closing = false;
         // A re-open DURING the fade-out: the held user stops being a closing one.
         self.leave_closing();
@@ -376,6 +403,7 @@ impl Popover {
         self.release_host();
         self.closing = false;
         self.appear = Spring::at(0.0);
+        self.morph.reset();
     }
     /// The bookkeeping half of a close: input modality ends NOW, whether the
     /// panel then vanishes or fades. The host freeze is NOT in here — see
@@ -434,6 +462,9 @@ impl Popover {
     fn step_appear(&mut self, target: f32, dt: f32) -> bool {
         let scope = plx_machine::idle::MotionScope::open();
         self.appear.step(target, K_APPEAR, dt);
+        if self.style == OpenStyle::Morph {
+            self.morph.step(target > 0.5, dt);
+        }
         scope.close()
     }
     /// Close with the appear choreography played backwards: the panel stops being OPEN this frame
@@ -468,9 +499,10 @@ impl Popover {
         } else if self.closing {
             self.step_appear(0.0, dt);
             // the same visual-arrival tolerance as `appear_settled`, at the other end
-            if self.appear.pos <= 0.001 {
+            if self.appear.pos <= 0.001 && (self.style != OpenStyle::Morph || self.morph.closed()) {
                 self.closing = false;
                 self.appear = Spring::at(0.0);
+                self.morph.reset();
                 self.release_host();
             }
         }
@@ -488,12 +520,18 @@ impl Popover {
     /// Its callers: [`ground_done`](Self::ground_done), which captures the host's GROUND stage only
     /// once the ramp is over, and `DecisionAlert::settled`, which gates pointer hits on it.
     pub fn appear_settled(&self) -> bool {
-        self.appear.pos >= 0.999
+        (self.style != OpenStyle::Morph || self.morph.settled()) && self.appear.pos >= 0.999
     }
 
     /// The panel painter without a full-screen scrim. Pair with [`scrim`](Self::scrim), for a
     /// caller that draws the dim as part of its host page — see that method for why one does.
     pub fn content_painter(&self, rise: f32) -> Painter {
+        if self.style == OpenStyle::Morph {
+            // The morph owns the panel's arrival: the rows' alpha leads the glass's (never an
+            // empty glass frame) and nothing slides; `rise` is the appear style's.
+            let a = self.morph.frame(None, Rect::default()).content_alpha;
+            return Painter::root().alpha(a * crate::nav::page_alpha());
+        }
         let a = self.appear();
         Painter::root()
             .alpha(a * crate::nav::page_alpha())
