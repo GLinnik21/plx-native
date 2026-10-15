@@ -172,7 +172,7 @@
   "widgets.tracks.enh_reason_quality": "Даступна толькі пры якасці Original.",
   "widgets.tracks.enh_reason_converting": "Недаступна, пакуль ваш сервер Plex канвертуе гэта відэа.",
   "widgets.tracks.enh_reason_forced": "Недаступна, пакуль уключана прымусовае прамое прайграванне. Вярніце для «Прамое прайграванне» рэжым «Аўтаматычна» ў наладах, каб выкарыстаць гэта.",
-  "widgets.tracks.enh_reason_not_copyable": "Ваш сервер Plex не можа дадаць гэта да гэтага відэа.",
+  "widgets.tracks.enh_reason_not_copyable": "Ваш сервер Plex не можа зараз дадаць гэта да гэтага відэа.",
   "widgets.tracks.enh_reason_refused": "Ваш сервер Plex не змог уключыць гэта для гэтага відэа.",
   "widgets.tracks.sub_burn_audio": "Іх малюе ваш сервер Plex, пакуль канвертуе гук.",
   "widgets.tracks.sub_burn_quality": "Іх малюе ваш сервер Plex пры гэтай якасці.",

@@ -863,7 +863,7 @@ mod tests {
     }
 
     /// The text a row reads out as its value (a Nav row's current setting).
-    fn value_of(st: &mut MoreMenuState, id: MoreRow) -> Option<String> {
+    pub(super) fn value_of(st: &mut MoreMenuState, id: MoreRow) -> Option<String> {
         let i = st.form.index_of(&id)?;
         st.form.table.row_mut(i as i32).and_then(|r| r.value.clone())
     }
@@ -1430,11 +1430,6 @@ mod focus_tests {
         plx_ui::table::assert_no_fit_failures(&out);
     }
 
-    fn value_at(st: &mut MoreMenuState, id: MoreRow) -> Option<String> {
-        let i = st.form.index_of(&id)?;
-        st.form.table.row_mut(i as i32).and_then(|r| r.value.clone())
-    }
-
     fn detail_at(st: &mut MoreMenuState, id: MoreRow) -> String {
         let i = st.form.index_of(&id).expect("a row");
         st.form.table.row_mut(i as i32).map(|r| r.detail.clone()).unwrap()
@@ -1445,7 +1440,7 @@ mod focus_tests {
         let (ps, _) = plx_media::route::enhancement_test_session(plx_media::route::EnhTestFixture { rung, ..fixture });
         let current = plx_media::route::quality();
         let mut root = MoreMenuState::new(&ps);
-        let value = value_at(&mut root, MoreRow::OpenQuality).expect("a value");
+        let value = super::tests::value_of(&mut root, MoreRow::OpenQuality).expect("a value");
         let mut page = MoreMenuState::new(&ps);
         page.rows = rows_for(false);
         page.focus_key(MoreRow::OpenQuality.key().0);

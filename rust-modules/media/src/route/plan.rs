@@ -714,28 +714,25 @@ pub(super) fn enhancement_availability(f: &EnhancementFacts, target: RouteFamily
     // force is not Original (a fixed rung, Auto on HLS) — saying it under "Quality: Original"
     // contradicts the Quality row. A missing candidate names why it is missing.
     let converting = f.quality == Quality::Original && !matches!(target, RouteFamily::Direct | RouteFamily::Remux);
+    let not_original = f.quality != Quality::Original;
     let unreachable = || {
         Disabled(match f.declined {
             Some(OriginalDeclined::ForcedDirectPlay) => DisabledReason::ForcedDirectPlay,
             _ if converting => DisabledReason::ServerConverting,
             // A pick the Original route could not follow dropped the candidate; under Auto or a
             // rung the quality in force is the honest thing to name.
-            Some(OriginalDeclined::TrackPickDropped) if f.quality != Quality::Original => {
-                DisabledReason::NotOriginalQuality
-            }
-            Some(_) => DisabledReason::NotCopyable,
-            None if f.quality != Quality::Original => DisabledReason::NotOriginalQuality,
-            None => DisabledReason::NotCopyable,
+            Some(OriginalDeclined::TrackPickDropped) | None if not_original => DisabledReason::NotOriginalQuality,
+            _ => DisabledReason::NotCopyable,
         })
     };
     let Some(base) = f.base else {
         return unreachable();
     };
     if !matches!(target, RouteFamily::Direct | RouteFamily::Remux) {
-        return Disabled(if f.quality != Quality::Original {
-            DisabledReason::NotOriginalQuality
-        } else {
+        return Disabled(if converting {
             DisabledReason::ServerConverting
+        } else {
+            DisabledReason::NotOriginalQuality
         });
     }
     // I7: an unusable Dolby Vision base layer is never copied at all — nothing to decorate.
