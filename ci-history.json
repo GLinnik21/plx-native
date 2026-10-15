@@ -1,4 +1,4 @@
-{"updated":"2026-10-15T10:20:47Z",
+{"updated":"2026-10-15T10:21:18Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -2693,7 +2693,8 @@
 {"id":38717505807,"at":"2026-10-15T10:03:27Z","sha":"ae77e664b","title":"Merge main's squash of #733 (its content is already here)","pr":736,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":138,"Windows launcher syntax":33,"macOS simulator build + launch":196,"Linux simulator build + launch":243}},
 {"id":38717936728,"at":"2026-10-15T10:06:54Z","sha":"32c0404b5","title":"Merge main into view-state/l2-1-stream","pr":747,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":125,"macOS tests against bundled FFmpeg and ASS":166,"Linux simulator build + launch":203,"Windows launcher syntax":22}},
 {"id":38718655056,"at":"2026-10-15T10:12:54Z","sha":"b0232cb7b","title":"View state 8: Detail folds into the view-state system (DetailReconcile)","pr":736,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":169,"macOS tests against bundled FFmpeg and ASS":107,"Windows launcher syntax":22,"Linux simulator build + launch":184}},
-{"id":38718743728,"at":"2026-10-15T10:13:38Z","sha":"255eeef62","title":"Merge remote-tracking branch 'origin/main' into libass-simplify","pr":749,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":241,"Windows launcher syntax":18,"macOS simulator build + launch":256,"Linux simulator build + launch":320}}
+{"id":38718743728,"at":"2026-10-15T10:13:38Z","sha":"255eeef62","title":"Merge remote-tracking branch 'origin/main' into libass-simplify","pr":749,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":241,"Windows launcher syntax":18,"macOS simulator build + launch":256,"Linux simulator build + launch":320}},
+{"id":38718785095,"at":"2026-10-15T10:13:59Z","sha":"822ae55aa","title":"Merge main's squash of #736 (its content is already here)","pr":737,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":81,"Linux simulator build + launch":204,"macOS simulator build + launch":190,"Windows launcher syntax":17}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
