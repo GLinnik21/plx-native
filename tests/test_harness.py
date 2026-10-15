@@ -6518,7 +6518,10 @@ class FpsMock(unittest.TestCase):
 
     # --- scene selection --------------------------------------------------------------
     def test_under_mock_only_scenes_with_a_mock_block_run(self):
-        runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), True)
+        # the #665 scene's generated fixtures live outside the repo (present on a dev host, absent
+        # on a CI runner): treat them as built so the selection does not depend on the host
+        with mock.patch.object(self.mf, "missing_mock_fixtures", return_value=None):
+            runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), True)
         names = {s["name"] for s in runnable}
         self.assertEqual(names, {"home-grid", "home-grid-deep", "home-recent-paging", "home-recent-paging-held", "home-recent-paging-held-3g",
                                  "home-recent-paging-held-remote-wan", "home-hint",
