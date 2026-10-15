@@ -4990,6 +4990,138 @@ mod lifecycle_regression_tests {
             "the episode strip still shows the read the page opened with");
     }
 
+    /// A show (100) of one season (200) of two episodes, served as the server holds it: nothing is
+    /// watched until a `/:/scrobble` arrives, then everything is (the show's and the season's
+    /// `viewedLeafCount` included). `marked` is that flag; `reads` counts the metadata reads the
+    /// server answered after it, so a test can see a re-read go out.
+    /// `partial`: the server takes the write but only gets as far as the first episode, so what it
+    /// then holds (one of two watched) differs from what the optimistic patch drew (both).
+    fn marked_show_server(marked: Arc<AtomicBool>, partial: bool) -> impl Fn(&str) -> String + Send + 'static {
+        move |request: &str| {
+            let done = marked.load(Ordering::SeqCst);
+            let (count, viewed) = if done { (r#","viewCount":1"#, if partial { 1 } else { 2 }) } else { ("", 0) };
+            let second = if done && !partial { count } else { "" };
+            if request.contains("/:/scrobble") {
+                marked.store(true, Ordering::SeqCst);
+                return "{}".into();
+            }
+            if request.contains("/library/metadata/200/children") {
+                return format!(r#"{{"MediaContainer":{{"size":2,"totalSize":2,"Metadata":[
+                  {{"ratingKey":"1","type":"episode","index":1,"parentIndex":1,"title":"First","duration":60000{count}}},
+                  {{"ratingKey":"2","type":"episode","index":2,"parentIndex":1,"title":"Next","duration":60000{second}}}]}}}}"#);
+            }
+            if request.contains("/library/metadata/100/children") {
+                return format!(r#"{{"MediaContainer":{{"Metadata":[{{"ratingKey":"200","type":"season","index":1,"title":"Season 1","leafCount":2,"viewedLeafCount":{viewed}}}]}}}}"#);
+            }
+            if request.contains("/related") || request.contains("/extras") || request.contains("/:/timeline") {
+                return r#"{"MediaContainer":{}}"#.into();
+            }
+            if request.contains("/library/metadata/100") {
+                return format!(r#"{{"MediaContainer":{{"Metadata":[{{"ratingKey":"100","type":"show","title":"Show","childCount":1,"leafCount":2,"viewedLeafCount":{viewed}}}]}}}}"#);
+            }
+            r#"{"MediaContainer":{}}"#.into()
+        }
+    }
+
+    /// The show page open and landed (the fixture parks its first request until released).
+    fn open_marked_show(rig: &mut Rig, t: &mut u32) {
+        rig.release.send(()).unwrap();
+        settle(&mut rig.app, t);
+        super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "100", None, None);
+        settle(&mut rig.app, t);
+        land_detail_reads(rig, t);
+    }
+
+    /// Run the held detail fetches (tests do not race a worker) and install what they brought.
+    fn land_detail_reads(rig: &mut Rig, t: &mut u32) {
+        rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+        rig.app.bridge.metadata_mut().pump_detail();
+        settle(&mut rig.app, t);
+    }
+
+    /// A Person page pushed over the page on top (a cast member opened from it).
+    fn cover_with_person(rig: &mut Rig, t: &mut u32) {
+        let below = rig.app.pages.nav.top_page().unwrap().id;
+        super::super::bridge::nav_push(&mut rig.app.pages, AppArg::Content(plx_screens::registry::ContentArg::Person {
+            sid: rig.sid, key: "9".into(), guid: "tag://9".into(), name: String::new(), thumb: String::new(),
+        }));
+        settle(&mut rig.app, t);
+        assert_ne!(rig.app.pages.nav.top_page().map(|e| e.id), Some(below), "premise: the Person page covers it");
+    }
+
+    /// The filmography menu's Mark watched on the show (a Show-scope press from a catalog row), run
+    /// until the server has taken it and been asked what it now holds.
+    fn mark_show_and_read_back(rig: &mut Rig, t: &mut u32) {
+        assert!(rig.app.bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
+            sid: rig.sid, rk: "100".into(), write: plx_data::viewstate::Write::Watched,
+            scope: plx_data::viewstate::Scope::Show, detail: None, guid: String::new(),
+        }));
+        poll_until("the write and its read-back never finished", || {
+            step(&mut rig.app, t, vec![]);
+            let seen = rig.requests.lock().unwrap();
+            seen.iter().position(|r| r.contains("/:/scrobble"))
+                .is_some_and(|at| seen.iter().skip(at).any(|r| r.contains("GET /library/metadata/100") && !r.contains("children")))
+        });
+        for _ in 0..12 { step(&mut rig.app, t, vec![]); }
+    }
+
+    /// The loaded show's episodes as `(rk, watched)`, and its season's `viewedLeafCount`.
+    fn strip(rig: &Rig) -> (Vec<(String, bool)>, Option<i64>) {
+        let view = rig.app.bridge.metadata_view();
+        let Some(d) = view.current().filter(|d| d.rk == "100") else { return (Vec::new(), None) };
+        let eps = (0..2).filter_map(|i| d.episodes.get(i).map(|e| (e.rk.clone(), e.watched))).collect();
+        (eps, d.seasons.first().map(|s| s.viewed_leaf_count))
+    }
+
+    /// **Plan item 9**: Detail(show S) -> Person -> mark S watched from the filmography menu ->
+    /// Back. The Detail page was COVERED when the server's answer came back, and the only thing
+    /// that reached it was the optimistic patch; the page it returns to must show what the server
+    /// now holds for every episode, season tab included.
+    #[test]
+    fn a_show_marked_watched_under_a_covered_detail_page_is_all_watched_on_return() {
+        let _serial = plx_base::testlock::serial();
+        let marked = Arc::new(AtomicBool::new(false));
+        let Some(mut rig) = Rig::serving_with(marked_show_server(marked.clone(), false)) else { return };
+        let mut t = product_transition(&mut rig.app);
+        open_marked_show(&mut rig, &mut t);
+        assert_eq!(strip(&rig), (vec![("1".into(), false), ("2".into(), false)], Some(0)),
+            "premise: the page opened on an unwatched show");
+        let detail = rig.app.pages.nav.top_page().unwrap().id;
+        cover_with_person(&mut rig, &mut t);
+        mark_show_and_read_back(&mut rig, &mut t);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        settle(&mut rig.app, &mut t);
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(detail), "premise: Back returned to the show");
+        land_detail_reads(&mut rig, &mut t);
+        assert_eq!(strip(&rig), (vec![("1".into(), true), ("2".into(), true)], Some(2)),
+            "the strip is not all watched on return");
+    }
+
+    /// The same covered page when what the server holds is NOT what the optimistic patch drew:
+    /// the write is taken but only the first episode got marked. The patch is all a covered page
+    /// ever received, so without a re-read of its own it comes back showing a lie.
+    #[test]
+    fn a_covered_detail_page_shows_what_the_server_holds_after_a_partial_write() {
+        let _serial = plx_base::testlock::serial();
+        let marked = Arc::new(AtomicBool::new(false));
+        let Some(mut rig) = Rig::serving_with(marked_show_server(marked.clone(), true)) else { return };
+        let mut t = product_transition(&mut rig.app);
+        open_marked_show(&mut rig, &mut t);
+        let detail = rig.app.pages.nav.top_page().unwrap().id;
+        cover_with_person(&mut rig, &mut t);
+        mark_show_and_read_back(&mut rig, &mut t);
+        assert_eq!(strip(&rig), (vec![("1".into(), true), ("2".into(), true)], Some(2)),
+            "premise: the covered page holds the optimistic patch");
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        settle(&mut rig.app, &mut t);
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(detail), "premise: Back returned to the show");
+        land_detail_reads(&mut rig, &mut t);
+        assert_eq!(strip(&rig), (vec![("1".into(), true), ("2".into(), false)], Some(1)),
+            "the page came back showing the optimistic patch, not the server's word");
+    }
+
     /// **Layer-1 view state, G1**: Home's hubs (Continue Watching) are re-read after a playback
     /// only once the stop has reached the server, not 800 ms after the exit. The `stopped`
     /// timeline reply is held, the frame clock runs far past the old timer, and no refetch may
