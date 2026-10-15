@@ -49,6 +49,10 @@ impl UnloadTicket {
 /// a payload or id pointer must be a valid NUL-terminated string for the call, and `feed`'s
 /// `p`/`size` a readable buffer. Apart from `load` and `unload`, the verbs must be called on the
 /// main thread (which `&MainThread` witnesses), in the order the player's pump drives them.
+/// The volume a freshly loaded pipeline starts at (libpf's `CustomPipeline::getVolume` defaults to
+/// 100 when the property is absent): what the paused preroll restores after muting.
+pub const PIPELINE_DEFAULT_VOLUME: c_int = 100;
+
 pub trait VideoSink: Sync {
     /// # Safety
     /// Unlike every other verb, `load` runs off the main thread (the media worker calls it, after
@@ -60,11 +64,10 @@ pub trait VideoSink: Sync {
     unsafe fn play(&self, mt: &MainThread) -> c_int;
     unsafe fn pause(&self, mt: &MainThread) -> c_int;
     /// This pipeline's output volume, 0..100 (`StarfishMediaAPIs::setVolume`), applied at once. The
-    /// paused-preroll mute: the library's bool proves nothing, so a caller reads `get_volume`
-    /// back. Per pipeline, so a fresh `load` starts at the default again.
+    /// paused-preroll mute; the library's bool proves nothing. Per pipeline, so a fresh `load`
+    /// starts at [`PIPELINE_DEFAULT_VOLUME`] again. There is no getter: `getVolume` returns an int
+    /// on 4.5 against the NDK header's `const char *` (see `src/starfish.c`), so it is not bound.
     unsafe fn set_volume(&self, mt: &MainThread, volume: c_int) -> c_int;
-    /// The volume read back from the pipeline, `-1` when nothing is loaded or it is unreadable.
-    unsafe fn get_volume(&self, mt: &MainThread) -> c_int;
     unsafe fn flush(&self, mt: &MainThread) -> c_int;
     unsafe fn push_eos(&self, mt: &MainThread) -> c_int;
     unsafe fn set_time_to_decode(&self, mt: &MainThread, position_ns: i64) -> c_int;
@@ -127,7 +130,6 @@ impl VideoSink for NoSink {
     unsafe fn play(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn pause(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn set_volume(&self, _mt: &MainThread, _volume: c_int) -> c_int { 0 }
-    unsafe fn get_volume(&self, _mt: &MainThread) -> c_int { -1 }
     unsafe fn flush(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn push_eos(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn set_time_to_decode(&self, _mt: &MainThread, _position_ns: i64) -> c_int { 0 }

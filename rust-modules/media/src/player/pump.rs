@@ -4068,8 +4068,12 @@ mod native_seek_pump_tests {
         let at = |v: &str| verbs.iter().position(|x| x == v).unwrap_or_else(|| panic!("no {v} in {verbs:?}"));
         assert!(at("volume:0") < at("play"), "muted before the Play: {verbs:?}");
         assert!(at("play") < at("pause"), "{verbs:?}");
-        assert!(at("pause") < at("volume:100"), "restored after the re-pause: {verbs:?}");
-        assert_eq!(ffi_host::host_volume_for_test(), 100);
+        // No getVolume is bound (it returns an int on 4.5, not the header's string), so the restore
+        // is the pipeline default by construction, not a value read back.
+        let default = plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME;
+        assert_eq!(default, 100, "libpf CustomPipeline::getVolume's default");
+        assert!(at("pause") < at(&format!("volume:{default}")), "restored after the re-pause: {verbs:?}");
+        assert_eq!(ffi_host::host_volume_for_test(), default);
         assert!(!TX.preroll_muted());
     }
 

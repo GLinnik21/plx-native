@@ -243,13 +243,19 @@ extern int  SMP_flush(void *self) __asm__("_ZN17StarfishMediaAPIs5flushEv");
  * it parses the argument, takes the Play() mutex and runs a FLUSH|KEY_UNIT gst_element_seek whose
  * segment starts at the millis passed - no private offset, no decoder re-init. */
 extern int  SMP_Seek(void *self, const char *millis) __asm__("_ZN17StarfishMediaAPIs4SeekEPKc");
-/* Per-pipeline output volume (the paused-preroll mute): bool setVolume(const char *json) and
- * const char *getVolume(). Both present on every firmware 4.4.2-11.2.0 (fwsym inventory) and
- * declared in the NDK header. Decompiled on 4.x: setVolume parses {"volume":<int>} and, without an
- * "ease" block, applies it at once. Its bool proves nothing (it returns 1 for a null element), so
- * the caller reads getVolume back. Not setAudioMute (absent on 4.4.2 / 4.10.0). */
+/* Per-pipeline output volume (the paused-preroll mute): bool setVolume(const char *json). Present on
+ * every firmware 4.4.2-11.2.0 (fwsym inventory) and declared in the NDK header. Decompiled on 4.x:
+ * setVolume parses {"volume":<int>} and, without an "ease" block, applies it at once; its bool
+ * proves nothing (it returns 1 for a null element). Not setAudioMute (absent on 4.4.2 / 4.10.0).
+ *
+ * getVolume is DELIBERATELY NOT BOUND. The NDK header says `const char *getVolume()`, but the 4.5
+ * libplayerAPIs tail-calls the pipeline's vtable slot 0xc8 (`ldr r0,[r0,#0x4c]; ldr r3,[r0];
+ * ldr r3,[r3,#0xc8]; bx r3`), and libpf's implementations (mediapipeline::AbstractPlayer::getVolume,
+ * CustomPipeline::getVolume) return a plain int: the g_object_get "volume" value, 100 when the
+ * property is absent, -1 from the base class. Reading that int as a char* crashed the TV (SIGSEGV,
+ * r0=0x64 into strstr). The mangled name carries no return type and only one firmware was
+ * decompiled, so no readback is declared: the preroll restores the pipeline default (100). */
 extern int  SMP_setVolume(void *self, const char *json) __asm__("_ZN17StarfishMediaAPIs9setVolumeEPKc");
-extern const char *SMP_getVolume(void *self) __asm__("_ZN17StarfishMediaAPIs9getVolumeEv");
 /* Kodi-parity: signal true end-of-stream so the pipeline drains the last frames instead of
  * hanging on them. Verified present on webOS 4.5 (nm: _ZN17StarfishMediaAPIs7pushEOSEv, defined). */
 extern int  SMP_pushEOS(void *self) __asm__("_ZN17StarfishMediaAPIs7pushEOSEv");
@@ -572,21 +578,6 @@ int sf_set_volume(int volume) {
     char json[32];
     snprintf(json, sizeof json, "{\"volume\":%d}", volume);
     return SMP_setVolume(object, json) & 0xff;   /* bool in r0: only the low byte is defined */
-}
-/* The pipeline's current volume: the first integer after the "volume" key in getVolume()'s string, -1 when nothing is
- * loaded or the library returns no digits. */
-int sf_get_volume(void) {
-    void *object = sf_ready_object();
-    if (!object) return -1;
-    const char *s = SMP_getVolume(object);
-    if (!s) return -1;
-    /* Skip to the "volume" key when the string is a JSON object, so a number in front of it (an
-     * "ease" block) cannot be read as the volume; a bare number has no key and is read as is. */
-    const char *key = strstr(s, "volume");
-    if (key) s = key + 6;
-    for (; *s; s++)
-        if (*s >= '0' && *s <= '9') return atoi(s);
-    return -1;
 }
 int sf_pause(void) {
     void *object = sf_ready_object();

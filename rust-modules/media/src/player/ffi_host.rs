@@ -104,9 +104,9 @@ pub(super) static FORCE_PLAY_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
 pub(super) static PLAY_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(test, feature = "test-support"))]
 pub(super) static FORCE_PAUSE_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
-/// The host pipeline's volume (`setVolume` / `getVolume`); 100 is a fresh pipeline's default.
+/// The host pipeline's volume (`setVolume`); a fresh pipeline starts at `PIPELINE_DEFAULT_VOLUME`.
 #[cfg(any(test, feature = "test-support"))]
-pub(super) static HOST_VOLUME: AtomicI32 = AtomicI32::new(100);
+pub(super) static HOST_VOLUME: AtomicI32 = AtomicI32::new(plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME);
 /// Every Play / Pause / `set_volume(n)` the sink saw, in order, as `"play"`, `"pause"`,
 /// `"volume:n"`: what a test reads to prove the paused preroll mutes BEFORE its Play and restores
 /// AFTER its re-pause. Cleared by [`reset_volume_probe_for_test`].
@@ -746,16 +746,6 @@ unsafe fn sf_set_volume(volume: c_int) -> c_int {
     let _ = volume;
     c_int::from(enabled())
 }
-unsafe fn sf_get_volume() -> c_int {
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        note_dispatch("sf_get_volume");
-        if enabled() {
-            return HOST_VOLUME.load(Relaxed);
-        }
-    }
-    -1
-}
 unsafe fn sf_flush() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
     {
@@ -1025,9 +1015,6 @@ impl VideoSink for HostSink {
     }
     unsafe fn set_volume(&self, _: &MainThread, volume: c_int) -> c_int {
         sf_set_volume(volume)
-    }
-    unsafe fn get_volume(&self, _: &MainThread) -> c_int {
-        sf_get_volume()
     }
     unsafe fn flush(&self, _: &MainThread) -> c_int {
         sf_flush()

@@ -2707,7 +2707,7 @@ impl Transport {
 
     /// The paused preroll muted the sink; `saved` (0..=100) is what [`take_preroll_volume`]
     /// returns. A second mute (a reload's fresh pipeline inside one open preroll) keeps the first
-    /// saved value: the pipeline's own readback is the already-muted one only on the SAME pipeline.
+    /// saved value (always the pipeline default today: the volume is never read back).
     ///
     /// [`take_preroll_volume`]: Transport::take_preroll_volume
     pub fn note_preroll_muted(&self, saved: i32) {

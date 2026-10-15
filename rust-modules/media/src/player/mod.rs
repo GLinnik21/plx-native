@@ -438,15 +438,14 @@ pub fn pause(pa: &mut adapter::PlayerAdapter) -> bool {
 /// Mute the sink for a paused preroll's Play window (`engine::try_prime`, immediately before that
 /// Play): the preroll plays ONE picture for a viewer who is paused, and the ~0.2-0.3 s until the
 /// plane binds is audible. The mute is the pipeline's own `setVolume` (per pipeline: the next Load
-/// starts at the default), the previous volume is read back first and kept for
-/// [`restore_preroll_volume`]. Both readbacks are logged: `setVolume`'s bool proves nothing.
+/// starts at the default); [`restore_preroll_volume`] sets that default back. The volume is never
+/// read: `getVolume` is not bound (it returns an int on 4.5 where the NDK header says a string, and
+/// the wrong guess killed the app), so the log says what was SET, not what the pipeline reports.
 pub(crate) fn mute_for_preroll(mt: &plx_base::task::MainThread) {
-    let prev = unsafe { sink().get_volume(mt) };
     unsafe { sink().set_volume(mt, 0) };
-    let readback = unsafe { sink().get_volume(mt) };
-    // A readback that failed (-1) is restored as the full volume the pipeline starts at.
-    TX.note_preroll_muted(if prev < 0 { 100 } else { prev });
-    log(&format!("preroll: volume {prev} -> 0 (readback {readback})"));
+    let default = plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME;
+    TX.note_preroll_muted(default);
+    log(&format!("preroll: volume set 0 (pipeline default {default} is restored later; no readback)"));
 }
 
 /// Give back the volume [`mute_for_preroll`] took. Idempotent (nothing muted: nothing happens), so
@@ -457,8 +456,7 @@ pub(crate) fn mute_for_preroll(mt: &plx_base::task::MainThread) {
 pub(crate) fn restore_preroll_volume(mt: &plx_base::task::MainThread) {
     let Some(volume) = TX.take_preroll_volume() else { return };
     unsafe { sink().set_volume(mt, volume) };
-    let readback = unsafe { sink().get_volume(mt) };
-    log(&format!("preroll: volume restored {volume} (readback {readback})"));
+    log(&format!("preroll: volume set {volume} (restored; no readback)"));
 }
 
 pub fn resume(pa: &mut adapter::PlayerAdapter) -> bool {

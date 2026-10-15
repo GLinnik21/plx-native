@@ -194,9 +194,10 @@ something.
   `acb_mirror_playstate` does nothing below `Streaming`. So the re-pause waits for the bind plus
   one tick after it (`Engine::bound_at_frames`), and, while a preroll is open, the bind gate is one
   tick instead of the normal two (`acb_bind_frames_needed`; the preroll's Play window is audible,
-  so `try_prime` mutes the pipeline first: `mute_for_preroll` reads `getVolume`, calls
-  `setVolume({"volume":0})` and logs `preroll: volume <prev> -> 0 (readback <n>)`; the volume is
-  restored (`preroll: volume restored <v> (readback <n>)`) by `restore_preroll_volume` from `resume`
+  so `try_prime` mutes the pipeline first: `mute_for_preroll` calls
+  `setVolume({"volume":0})` and logs `preroll: volume set 0 ...`; `getVolume` is NOT bound (it
+  returns an int on 4.5 where the NDK header says `const char *`: SIGSEGV), so the volume is
+  restored to the pipeline default 100 (`preroll: volume set 100 (restored; no readback)`) by `restore_preroll_volume` from `resume`
   (before its Play), the accepted re-pause in `finish_paused_seek`, and the pump's per-tick sweep
   for a preroll closed with no adapter in hand (`abandon_seek`). A stop or reload needs none: the
   volume is per pipeline and `TX.reset` forgets the mute. Never `setAudioMute` (absent on 4.4.2 /
