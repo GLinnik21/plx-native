@@ -259,7 +259,10 @@ pub fn parse_registry(text: &str) -> Result<Vec<LanguageSpec>, Vec<String>> {
             errors.push(format!(
                 "{here}: tag must be 2-3 lower-case letters; a region- or script-qualified UI language (pt-BR) needs matcher work, see {GUIDE}"
             ));
-        } else if RESERVED_TAGS.contains(&tag.as_str()) {
+            // Nothing below may touch a tag that is not plain ASCII (the variant name slices it).
+            continue;
+        }
+        if RESERVED_TAGS.contains(&tag.as_str()) {
             errors.push(format!("{here}: tag is reserved"));
         }
         if specs.iter().any(|s| s.tag == tag) {
@@ -305,7 +308,7 @@ pub fn parse_registry(text: &str) -> Result<Vec<LanguageSpec>, Vec<String>> {
                 errors.push(format!("{here}: entries are listed in row order (Settings display order); row {row} follows {}", last.row));
             }
         }
-        let variant = tag[..tag.len().min(1)].to_uppercase() + tag.get(1..).unwrap_or("");
+        let variant = tag[..1].to_uppercase() + &tag[1..];
         specs.push(LanguageSpec {
             tag,
             variant,
@@ -872,6 +875,13 @@ mod tests {
         assert!(bad("\"row\":3", "\"row\":9").contains("row order"));
         assert!(parse_registry(&REGISTRY.replace("\"tag\":\"en\"", "\"tag\":\"nl\"")).err().unwrap().join("\n").contains("English"));
         assert_eq!(specs()[3].variant, "Fr");
+    }
+    #[test]
+    fn a_non_ascii_tag_is_an_error_not_a_panic() {
+        let text = REGISTRY.replace("\"tag\":\"fr\"", "\"tag\":\"é\"").replace("\"row\":3", "\"row\":0");
+        let errors = parse_registry(&text).err().expect("rejected").join("\n");
+        assert!(errors.contains("tag must be 2-3 lower-case letters"), "{errors}");
+        assert!(errors.contains("row 0 is System"), "{errors}");
     }
     #[test]
     fn duplicate_keys_are_errors_at_every_depth() {
