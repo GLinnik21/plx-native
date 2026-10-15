@@ -47,6 +47,9 @@ tools/tv-session.sh shot [out.png]          # panel capture (video plane include
 tools/tv-session.sh log [--flavor <f>] [regex]   # the on-device event log
 tools/tv-session.sh screen off|on           # blank/restore the PANEL only (app keeps running)
 tools/tv-session.sh sound off|on|status     # mute/unmute the TELEVISION (independent of the panel)
+tools/tv-session.sh background [APPID]      # launch a full-screen app over ours: WILL/DID background (0x103/0x104)
+tools/tv-session.sh foreground              # launch ours again, no close-first: WILL/DID foreground (0x105/0x106)
+tools/tv-session.sh fg                      # read-only: the foreground app id
 tools/tv-session.sh wan off [TTL]|on|status  # cut the SET's uplink (LAN intact), self-restoring
 tools/tv-session.sh down [--flavor <f>]     # hand the TV back
 ```
@@ -78,6 +81,13 @@ v4 packet leaving the LAN and every DNS query, an `unreachable 2000::/3` route c
 (the firmware has no `ip6tables` filter table), and a watchdog on the set restores both after the
 TTL whatever happens to your shell. Read what the APP saw from its own log (`net: curl
 rc=6`, `pinned: … name resolved locally`), not from this command's status lines.
+
+`background`/`foreground` are the sanctioned way to drive the app's lifecycle edges (the Home/launcher
+ribbon is an overlay on this set and delivers none, see the traps below). `background` launches
+`org.webosbrew.hbchannel` (or the id you pass, or `PLX_BG_APP`) through the application manager, refuses
+unless our app is the foreground one, and asserts the launched app took the foreground with our pid
+unchanged; `foreground` launches our own id again WITHOUT closing first and asserts the same. Read the
+edges from the app's log (`suspend`, `resume`, `network changed`), not from this command's lines.
 
 `down` hands back the APP (triggers cleared, app closed and NOT relaunched); `tools/tv-lock.sh release` hands
 back the TELEVISION. Do both, in that order — a released lock with an automated app still on

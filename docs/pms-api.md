@@ -1332,9 +1332,26 @@ arrives OWNED and the owned-only rule runs unmodified; `tools/tv-session.sh up -
 connects and goes live on an owned server (passed); ten idle minutes with no churn (0 reconnects, 0
 ends in 600 s; passed); the mock stopped and restarted: `Transport` end, escalating Backoff, reconnect,
 exactly one resync (passed); another client's `playing` then `stopped` refetches Continue Watching
-once, and an open Detail re-reads in place with its layout and focus unchanged (passed). NOT
-determined: background and foreground on the set, a profile switch (no sanctioned driver), and
-whether Home focus stays put under a tile update (only the Detail page was captured).
+once, and an open Detail re-reads in place with its layout and focus unchanged (passed). Background and foreground
+on the set (2026-10-16; `tv-session.sh background` launches a full-screen app over ours, `foreground`
+launches ours again with the pid unchanged): two WILL/DID background edges each logged one `notify:
+suspend conns=1`; the foreground logged `network changed conns=1`, `resume conns=1`, then ONE
+`connecting` and `live`, with no `resync`, no `ended` and no park line (the page re-read comes from
+`reread.resume`, not from a feed gap) (passed, twice). A profile switch through the who's-watching
+picker on a three-profile mock household: `auth: switch ... ok (per-user server token)`, `plex: 1
+server(s) revoked - profile changed`, then `roster`, `connecting`, `live`: the feed reopened on the
+new profile with no `ended` and no refused-credential line; the empty-token and old-mailbox rules are
+pinned by `notify_tests` (`empty_token_never_connects`, `token_change_reconnects_and_drops_old_mailbox`),
+and the log cannot show which token the stream carried (the mock accepts any non-empty one), so the
+on-set evidence is that it reconnected, not what it sent. Roster rebuilds right after a switch can
+show a second `connecting` before the first `live` (the first connection is cancelled by the new
+key). A silent peer (the mock process SIGSTOPped for 60 s with its socket open, nothing sent):
+two `ended Silent -> Backoff` with their reconnects in 60 s, then on SIGCONT one `resync` and `live`
+(passed). NOT determined: a real network loss. Making the set's route fail needs either the set's
+firewall (`tv-session.sh wan off`, which edits the television's network configuration) or a host
+packet filter (root); neither was used, and stopping or silencing the mock is not a loss of the
+link. Also not determined: whether Home focus stays put under a tile update (only the Detail page
+was captured).
 
 ---
 
