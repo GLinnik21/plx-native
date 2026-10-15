@@ -220,3 +220,36 @@ fn lines_already_over_make_room_for_the_one_on_screen_when_the_budget_is_reached
         }
     }
 }
+
+#[test]
+fn a_byte_windowed_window_keeps_its_look_back_when_only_later_lines_overflow() {
+    // twelve 900 KiB lines ten seconds apart: the bytes run out on lines that start after the
+    // playhead, and those must be cut off rather than evict the look-back before the playhead
+    let pad = "x".repeat(900 * 1024);
+    let mut s = String::from(HEADER);
+    for i in 0..12i64 {
+        s.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,{{{pad}}},line{i}\n", stamp(i * 10_000), stamp(i * 10_000 + 1_000)));
+    }
+    let index = ScriptIndex::parse(&Arc::from(s.into_bytes())).unwrap();
+    assert!(index.windowed());
+    let w = index.window(5_000);
+    assert!(w.text.len() <= WINDOW_BYTES);
+    assert_eq!(w.lo_ms, 5_000 - BACK_MS, "the look-back is the full BACK_MS");
+    assert!(has(&w, 0), "the line that ended 4 s ago is still held");
+    assert!(w.covers(5_000) && w.covers(0));
+}
+
+#[test]
+fn the_look_back_survives_a_byte_window_until_lines_before_the_playhead_need_the_room() {
+    // lines before the playhead alone overflow: look-back is let go of from the oldest, no further
+    let pad = "x".repeat(900 * 1024);
+    let mut s = String::from(HEADER);
+    for i in 0..12i64 {
+        s.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,{{{pad}}},line{i}\n", stamp(i * 100), stamp(i * 100 + 90)));
+    }
+    let index = ScriptIndex::parse(&Arc::from(s.into_bytes())).unwrap();
+    let w = index.window(1_150);
+    assert!(w.text.len() <= WINDOW_BYTES);
+    assert!(has(&w, 11), "the line alive now is held");
+    assert!(w.lo_ms > 1_150 - BACK_MS && w.lo_ms <= 1_150, "some look-back is let go of, not all");
+}

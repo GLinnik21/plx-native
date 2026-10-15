@@ -251,7 +251,7 @@ something.
   text track; a pick change re-synthesizes the header lazily there (revision bump, identity kept). A
   script past `ass_script::WINDOW_EVENTS` lines OR `WINDOW_BYTES` is fed to libass a window at a time,
   and a script loaded in windows is exempt from the 8 MiB whole-script bound (a 4 MiB TIS-620 file is
-  ~12 MiB once decoded to UTF-8); each window stays within it. What `sidecar::active_span` still
+  ~12 MiB once decoded to UTF-8); each window stays within it, except a single line larger than the bound, which the renderer refuses. What `sidecar::active_span` still
   returns is only the on-screen failure notice (`notice()`, `notice_shown()`; 6 s), drawn by the
   bespoke caption path until PR 8. It is silent where the server burns the selection (a re-encode, or a remux whose embedded
   track the app may not read itself); over a plain remux the app draws it, and draws an embedded

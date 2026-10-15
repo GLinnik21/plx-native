@@ -325,11 +325,9 @@ fn ass_source_styled(burned: bool, style: TextStyle) -> Option<Arc<super::ass::S
         let (bytes, origin) = match &mut content.text {
             Some(hold) if restyled => {
                 let header = text_ass::header(&style);
-                let mut script = Vec::with_capacity(header.len() + bytes.len() - hold.header_len);
-                script.extend_from_slice(header.as_bytes());
-                script.extend_from_slice(&bytes[hold.header_len..]);
+                let script = joined(header.as_bytes(), &bytes[hold.header_len..]);
                 (hold.header_len, hold.style_generation) = (header.len(), style.generation());
-                (Arc::from(script), super::ass::Origin::Text(style))
+                (script, super::ass::Origin::Text(style))
             }
             _ => (bytes.clone(), content.source.origin),
         };
@@ -340,6 +338,12 @@ fn ass_source_styled(burned: bool, style: TextStyle) -> Option<Arc<super::ass::S
         content.font_generation = Some(generation);
     }
     Some(content.source.clone())
+}
+
+/// `head` then `tail` as one shared buffer, allocated once at its exact size (the iterator is
+/// exact-sized, so no intermediate `Vec` is built and copied).
+fn joined(head: &[u8], tail: &[u8]) -> Arc<[u8]> {
+    head.iter().chain(tail).copied().collect()
 }
 
 fn is_ass_script(text: &str) -> bool {
@@ -357,8 +361,9 @@ fn is_webvtt(text: &str, codec: &str) -> bool {
 
 fn decode(bytes: Vec<u8>, codec: &str) -> Result<Content, Failure> {
     if bytes.len() > plx_plex::plex::SIDECAR_MAX_BYTES { return Err(Failure::Empty); }
-    let text = String::from_utf8_lossy(&bytes);
-    if is_ass_script(&text) {
+    // The check's lossy copy (a whole file when it is not UTF-8) is gone before anything else is built.
+    let authored = { let text = String::from_utf8_lossy(&bytes); is_ass_script(&text) };
+    if authored {
         // Validate only the presence of events. libass owns the script grammar, including
         // style/format declarations, overlapping dialogue and vector drawing events.
         return Ok(Content {
@@ -377,23 +382,27 @@ fn decode(bytes: Vec<u8>, codec: &str) -> Result<Content, Failure> {
     // A sidecar file is whole-file text of unknown language here: the charset step is the BOM,
     // valid UTF-8, else the encoding `chardetng` guesses from the whole file (`sub_charset`).
     let text = super::sub_charset::subtitle_text_whole(&bytes, &super::sub_charset::TrackCharset::unknown());
-    let text = text.trim_start_matches('\u{feff}');
-    if is_ass_script(text) {
+    // A NUL is never subtitle text: padding is dropped, as the line readers always did.
+    let text = if text.contains('\0') { std::borrow::Cow::Owned(text.replace('\0', "")) } else { text };
+    let text_ref = text.trim_start_matches('\u{feff}');
+    if is_ass_script(text_ref) {
         return Err(Failure::Empty);
     }
-    let converted = if is_webvtt(text, codec) { text_ass::script_from_vtt(text) } else { text_ass::script_from_srt(text) };
+    let converted = if is_webvtt(text_ref, codec) { text_ass::script_from_vtt(text_ref) } else { text_ass::script_from_srt(text_ref) };
+    // Only the converted events are needed from here: the decoded text and the file go first.
+    drop(text);
+    drop(bytes);
     if converted.cues == 0 {
         return Err(Failure::Empty);
     }
     let style = TextStyle::current();
     let header = text_ass::header(&style);
-    let mut script = Vec::with_capacity(header.len() + converted.events.len());
-    script.extend_from_slice(header.as_bytes());
-    script.extend_from_slice(converted.events.as_bytes());
+    let script = joined(header.as_bytes(), converted.events.as_bytes());
+    drop(converted.events);
     Ok(Content {
         source: Arc::new(super::ass::Source {
             id: super::ass::next_source_id(), revision: 1, origin: super::ass::Origin::Text(style),
-            content: super::ass::Content::Script { bytes: script.into(), fonts: Arc::from([]) },
+            content: super::ass::Content::Script { bytes: script, fonts: Arc::from([]) },
         }),
         font_generation: None,
         text: Some(TextHold { header_len: header.len(), style_generation: style.generation(), cues: converted.cues }),
@@ -438,6 +447,13 @@ mod tests {
 
     fn converted(body: &str) -> Content {
         decode(body.as_bytes().to_vec(), "srt").expect("a usable file")
+    }
+
+    #[test]
+    fn nul_bytes_in_a_text_sidecar_do_not_fail_the_whole_file() {
+        let body = "1\n00:00:01,000 --> 00:00:02,000\nHel\0lo\n\n2\n00:00:03,000 --> 00:00:04,000\nWorld\n\0\0\0";
+        let content = converted(body);
+        assert_eq!(texts(&content), ["Hello", "World"]);
     }
 
     #[test]

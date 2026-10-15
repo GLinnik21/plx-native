@@ -144,8 +144,11 @@ impl ScriptIndex {
     /// fewer than one) that had not ended `BACK_MS` before it. Every line alive at a playhead the
     /// window answers for is in it: lines are taken by start, so a line that starts before the cut
     /// is taken before any that starts after it, and when the bound is reached the lines already
-    /// over before the playhead are let go of first (only for bytes: a count that is reached cuts) (the window then answers from the end of the
-    /// last one it let go, not from `BACK_MS` back).
+    /// over before the playhead are let go of first, and only to make room for a line that starts by
+    /// the playhead (a later line that does not fit is cut off instead; a count that is reached
+    /// cuts too). The window then answers from the end of the last one it let go, not from
+    /// `BACK_MS` back. Every window is within [`WINDOW_BYTES`] except a single line larger than the
+    /// bound, which the renderer refuses.
     pub fn window(&self, now_ms: i64) -> Window {
         let mut lo_ms = now_ms.saturating_sub(BACK_MS);
         let mut taken: VecDeque<u32> = VecDeque::new();
@@ -159,7 +162,9 @@ impl ScriptIndex {
             let over_bytes = |taken: &VecDeque<u32>, bytes: usize| {
                 !taken.is_empty() && bytes.saturating_add(line.len as usize) > WINDOW_BYTES
             };
-            while over_bytes(&taken, bytes) {
+            // Look-back is let go of only to make room for a line that starts by the playhead; a
+            // later line that does not fit is cut off (`hi_ms`) and the window keeps its `BACK_MS`.
+            while line.start_ms <= now_ms && over_bytes(&taken, bytes) {
                 match taken.front().map(|&f| &self.lines[f as usize]) {
                     Some(old) if old.end_ms <= now_ms => {
                         bytes -= old.len as usize;

@@ -20,7 +20,7 @@ the new one. External SRT/VTT files take the same road: `player::sidecar` charse
 `text_ass::script_from_srt`/`script_from_vtt` convert it to one script (WebVTT `line:0` puts a cue at the
 top), and `sidecar::ass_source` serves it as an `Origin::Text` source, restyled lazily like an embedded
 track. A long or large converted script is fed to libass a window at a time (`ass_script`: at most 8192
-lines and 8 MiB per window); only a script loaded whole is bound by 8 MiB. The one thing the sidecar still
+lines and 8 MiB per window, except a single line larger than that, which the renderer refuses); only a script loaded whole is bound by 8 MiB. The one thing the sidecar still
 draws itself is the failure notice (`sidecar::active_span`).
 
 `ci/build-libass.py` builds a pinned libass with private FreeType, FriBidi, HarfBuzz and

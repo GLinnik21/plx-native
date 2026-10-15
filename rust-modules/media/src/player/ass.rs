@@ -403,7 +403,8 @@ pub(super) fn validate(source: &Source) -> Result<(), Fault> {
     match &source.content {
         Content::Script { bytes, .. } => {
             // The whole-script bound is for a script loaded whole; one past it is fed in windows
-            // (`ScriptIndex::windowed`), each within the same bound, and is bounded by its source.
+            // (`ScriptIndex::windowed`), each within the same bound except a single line larger than it,
+            // which the renderer refuses.
             if bytes.is_empty()
                 || (bytes.len() > MAX_SCRIPT_BYTES && !super::ass_script::ScriptIndex::indexable(bytes.len()))
                 || bytes.contains(&0)
