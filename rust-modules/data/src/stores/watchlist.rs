@@ -257,14 +257,21 @@ impl WatchlistStore {
         keys
     }
 
-    /// The copy a matched tile reads and opens: the first held copy on a Reachable server, in
-    /// roster order.
+    /// The copy a matched tile reads and opens (plan §1.5): a held copy on a Reachable server,
+    /// the current server first, then an owned one, then a share; ties keep roster order.
     fn copy_of(&self, ri: usize) -> Option<ServerMatch> {
         let row = self.state.rows.get(ri)?;
-        self.state.table.by_guid.get(&row.guid)?.iter().find_map(|(sid, asked)| match asked {
-            Asked::Held(m) if self.io.reachable(*sid) => Some(*m),
-            _ => None,
-        })
+        self.state
+            .table
+            .by_guid
+            .get(&row.guid)?
+            .iter()
+            .filter_map(|(sid, asked)| match asked {
+                Asked::Held(m) if self.io.reachable(*sid) => Some((self.io.copy_rank(*sid), *m)),
+                _ => None,
+            })
+            .min_by_key(|(rank, _)| *rank)
+            .map(|(_, m)| m)
     }
 
     /// The ViewChange patch: a watched/unwatched, `Facts` or `Offset` fact about a matched
@@ -399,7 +406,20 @@ impl WatchlistStore {
     fn rederive(&mut self) {
         let s = &mut self.state;
         let io = &*self.io;
-        s.states = s.rows.iter().map(|r| tile_state(r, &s.table, io)).collect();
+        // Released read failed and the row's date cannot say (none, or no clock): its release is
+        // unknown, so a row every server answered absent stays Unknown (plan §1.3), not washed.
+        let release_blind = s.released.is_none();
+        let today = io.today();
+        s.states = s
+            .rows
+            .iter()
+            .map(|r| match tile_state(r, &s.table, io) {
+                TileState::NotOnAnyServer if release_blind && (r.release.is_none() || today.is_none()) => {
+                    TileState::Unknown
+                }
+                state => state,
+            })
+            .collect();
         s.facts_seen = io.facts_gen();
         self.refresh();
     }
@@ -460,11 +480,13 @@ impl WatchlistStore {
                 true
             }
             What::PageFailed { start, why } => {
-                self.state.incoming = None;
+                let had_rows = self.state.incoming.take().is_some();
                 if start == 0 && self.state.rows.is_empty() {
                     self.state.status = Status::Failed(why);
                 } else {
-                    self.state.truncated = start > 0;
+                    // A reread's later page failing keeps the old complete rows: only a list
+                    // that is itself being built from pages is cut short.
+                    self.state.truncated = start > 0 && !had_rows;
                 }
                 true
             }
@@ -789,6 +811,10 @@ mod tests {
         facts_gen: AtomicU32,
         finds: AtomicUsize,
         pages: AtomicUsize,
+        /// Pages starting at or after this offset fail.
+        fail_pages_from: AtomicU32,
+        /// Copy preference per server (0 current, 1 owned, 2 share); absent = 2.
+        ranks: Mutex<HashMap<ServerId, u8>>,
     }
 
     impl Mock {
@@ -808,6 +834,8 @@ mod tests {
                 facts_gen: AtomicU32::new(1),
                 finds: AtomicUsize::new(0),
                 pages: AtomicUsize::new(0),
+                fail_pages_from: AtomicU32::new(u32::MAX),
+                ranks: Mutex::new(HashMap::new()),
             })
         }
     }
@@ -818,6 +846,9 @@ mod tests {
         }
         fn roster(&self) -> Vec<ServerId> {
             self.roster.lock().unwrap().clone()
+        }
+        fn copy_rank(&self, s: ServerId) -> u8 {
+            self.ranks.lock().unwrap().get(&s).copied().unwrap_or(2)
         }
     }
 
@@ -835,6 +866,9 @@ mod tests {
         }
         fn page(&self, _: &WatchlistAuth, start: u32, size: u32) -> Result<WatchPage, WatchlistError> {
             self.pages.fetch_add(1, Ordering::SeqCst);
+            if start >= self.fail_pages_from.load(Ordering::SeqCst) {
+                return Err(WatchlistError::Transport);
+            }
             let all = self.items.lock().unwrap();
             let items = all.iter().skip(start as usize).take(size as usize).cloned().collect();
             Ok(WatchPage { items, total: Some(all.len() as u32), start })
@@ -901,6 +935,7 @@ mod tests {
     #[test]
     fn the_list_lands_in_server_order_with_its_matches() {
         let mock = three();
+        *mock.released.lock().unwrap() = Some(mock.items.lock().unwrap().clone());
         mock.held.lock().unwrap().insert((ServerId::from_raw(0), guid(2)), "42".into());
         let mut s = store(&mock);
         load(&mut s);
@@ -911,23 +946,34 @@ mod tests {
         assert_eq!(s.view().copy(1).map(|c| c.rating_key), Some(42));
     }
 
+    /// A one-row page that would append "Ghost" if it were applied.
+    fn ghost_page() -> What {
+        What::Page {
+            start: 100,
+            total: Some(4),
+            rows: vec![crate::watchlist::row_of(&item(9, "Ghost"), 0).unwrap()],
+            answers: vec![],
+            roster_gen: 1,
+        }
+    }
+
     #[test]
     fn a_landing_for_another_profile_generation_is_dropped() {
         let mock = three();
         let mut s = store(&mock);
-        s.run(WatchlistCmd::Open);
+        load(&mut s);
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
+        // Ready and nothing owed: no real list can land after this and supersede the ghost, so
+        // an applied stale landing would show.
         let auth = s.state.auth.clone().unwrap();
         let stale = Tag { profile_gen: auth.generation + 1, epoch: s.state.epoch, req: 99 };
-        s.adapter_for_test().post_for_test(Landed {
-            tag: stale,
-            what: What::Page { start: 0, total: Some(1), rows: vec![
-                crate::watchlist::row_of(&item(9, "Ghost"), 0).unwrap()], answers: vec![], roster_gen: 1 },
-        });
-        for _ in 0..3 {
-            s.pump();
-        }
-        assert!(!titles(&s).contains(&"Ghost".to_string()), "a stale generation never lands");
-        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "the real list did");
+        s.adapter_for_test().post_for_test(Landed { tag: stale, what: ghost_page() });
+        s.pump();
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "a stale generation never lands");
+        let fresh = Tag { profile_gen: auth.generation, epoch: s.state.epoch, req: 99 };
+        s.adapter_for_test().post_for_test(Landed { tag: fresh, what: ghost_page() });
+        s.pump();
+        assert!(titles(&s).contains(&"Ghost".to_string()), "the same landing with the live tag does");
     }
 
     #[test]
@@ -954,16 +1000,13 @@ mod tests {
         let old_tag = Tag { profile_gen: 1, epoch: s.state.epoch, req: 1 };
         let old_mailbox = s.adapter_for_test();
         s.run(WatchlistCmd::Reset);
-        s.run(WatchlistCmd::Open);
-        let ghost = || What::Page { start: 0, total: Some(1), rows: vec![
-            crate::watchlist::row_of(&item(9, "Ghost"), 0).unwrap()], answers: vec![], roster_gen: 1 };
+        load(&mut s);
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
         // A worker of the retired epoch lands late into the mailbox it captured.
-        old_mailbox.post_for_test(Landed { tag: old_tag, what: ghost() });
+        old_mailbox.post_for_test(Landed { tag: old_tag, what: ghost_page() });
         // And one that somehow reaches the new mailbox still carries the old epoch.
-        s.adapter_for_test().post_for_test(Landed { tag: old_tag, what: ghost() });
-        for _ in 0..3 {
-            s.pump();
-        }
+        s.adapter_for_test().post_for_test(Landed { tag: old_tag, what: ghost_page() });
+        s.pump();
         assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "only the new epoch's own list");
     }
 
@@ -1081,6 +1124,7 @@ mod tests {
     #[test]
     fn a_roster_move_rematches_every_row() {
         let mock = three();
+        *mock.released.lock().unwrap() = Some(mock.items.lock().unwrap().clone());
         let b = ServerId::from_raw(1);
         let mut s = store(&mock);
         load(&mut s);
@@ -1267,5 +1311,80 @@ mod tests {
     fn the_ordinal_of_the_watchlist_store_is_appended_after_every_other() {
         assert_eq!(super::super::StoreId::Watchlist.ord().0, 10);
         assert_eq!(super::super::StoreId::ViewStop.ord().0, 9);
+    }
+
+    #[test]
+    fn the_copy_is_the_current_server_then_owned_then_a_share_not_roster_order() {
+        let (a, b, c) = (ServerId::from_raw(0), ServerId::from_raw(1), ServerId::from_raw(2));
+        let mock = three();
+        *mock.roster.lock().unwrap() = vec![a, b, c];
+        *mock.up.lock().unwrap() = vec![a, b, c];
+        for (sid, rk) in [(a, "10"), (b, "20"), (c, "30")] {
+            mock.held.lock().unwrap().insert((sid, guid(2)), rk.into());
+        }
+        let mut s = store(&mock);
+        // All shares: roster order decides.
+        load(&mut s);
+        assert_eq!(s.view().copy(1).map(|m| m.rating_key), Some(10));
+        // The owned server is second in the roster and wins over the first share.
+        mock.ranks.lock().unwrap().insert(b, 1);
+        assert_eq!(s.view().copy(1).map(|m| m.rating_key), Some(20), "owned beats a share");
+        // The current server is last in the roster and wins over both.
+        mock.ranks.lock().unwrap().insert(c, 0);
+        assert_eq!(s.view().copy(1).map(|m| m.rating_key), Some(30), "current beats owned");
+        // An unreachable preferred copy is never chosen.
+        mock.up.lock().unwrap().retain(|x| *x != c);
+        assert_eq!(s.view().copy(1).map(|m| m.rating_key), Some(20));
+    }
+
+    #[test]
+    fn a_failed_released_read_leaves_an_undated_absent_row_unknown_not_washed() {
+        let mock = three();
+        // The released read fails (the mock's default); every server answers absent.
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(s.view().state(0), Some(TileState::Unknown), "no date, no released set: not NotOnAnyServer");
+    }
+
+    #[test]
+    fn a_reread_whose_later_page_fails_keeps_the_whole_old_list_untruncated() {
+        let mock = Mock::new((1..=150).map(|n| item(n, &format!("T{n:03}"))).collect());
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(s.view().len(), 150);
+        assert!(!s.view().truncated());
+        mock.fail_pages_from.store(100, Ordering::SeqCst);
+        s.run(WatchlistCmd::Reread);
+        for _ in 0..3 {
+            s.pump();
+        }
+        assert_eq!(s.view().len(), 150, "the old rows stay");
+        assert!(!s.view().truncated(), "a complete old list is not reported as cut short");
+    }
+
+    #[test]
+    fn a_first_read_whose_later_page_fails_is_truncated() {
+        let mock = Mock::new((1..=150).map(|n| item(n, &format!("T{n:03}"))).collect());
+        mock.fail_pages_from.store(100, Ordering::SeqCst);
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(s.view().len(), 100);
+        assert!(s.view().truncated());
+    }
+
+    #[test]
+    fn the_drawn_state_holds_until_the_pump_that_rederives_it() {
+        let mock = three();
+        mock.held.lock().unwrap().insert((ServerId::from_raw(0), guid(2)), "42".into());
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(s.view().state(1), Some(TileState::Available));
+        // The server drops and the facts move, but no pump has run: a press in this tick routes
+        // on what is drawn.
+        mock.up.lock().unwrap().clear();
+        mock.facts_gen.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(s.view().state(1), Some(TileState::Available), "the committed state, not the live one");
+        s.pump();
+        assert_eq!(s.view().state(1), Some(TileState::ServerOffline), "the pump re-derives it");
     }
 }

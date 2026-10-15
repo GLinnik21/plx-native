@@ -98,6 +98,15 @@ impl Reach for LiveIo {
     fn roster(&self) -> Vec<ServerId> {
         plx_plex::plex::server_ids().collect()
     }
+    fn copy_rank(&self, server: ServerId) -> u8 {
+        if plx_plex::plex::current_server() == server {
+            0
+        } else if plx_plex::plex::server_facts(server).is_some_and(|f| f.owned) {
+            1
+        } else {
+            2
+        }
+    }
 }
 
 impl WatchlistIo for LiveIo {

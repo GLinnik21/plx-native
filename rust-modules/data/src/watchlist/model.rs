@@ -61,6 +61,12 @@ pub trait Reach {
     fn reachable(&self, server: ServerId) -> bool;
     /// Every server the match table was asked, in roster order.
     fn roster(&self) -> Vec<ServerId>;
+    /// How early a held copy on this server is preferred (plan §1.5): `0` the current server,
+    /// `1` a server this account owns, `2` a share. Ties keep roster order; the default ranks every
+    /// server alike.
+    fn copy_rank(&self, _server: ServerId) -> u8 {
+        2
+    }
 }
 
 /// The six drawn states (plan §1.9 table). OK and hold read the committed `row.state`.
