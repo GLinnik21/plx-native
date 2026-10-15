@@ -1665,6 +1665,7 @@ NEEDED_LICENCES = {
     "libass-ISC.txt": "the bundled native ASS renderer",
     "FreeType.txt": "FreeType's elected FTL and its contributed modules",
     "HarfBuzz-Old-MIT.txt": "the bundled text shaper",
+    "libunibreak-Zlib.txt": "the bundled Unicode line-breaking library",
 }
 for name, why in NEEDED_LICENCES.items():
     p = ROOT / "licenses" / name

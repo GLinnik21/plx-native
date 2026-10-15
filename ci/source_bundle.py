@@ -299,10 +299,22 @@ def validate(path, expected_snapshot=None, private_values=()):
         if re.search(rb'^\s*#\s*include\s*"ass_composite\.h"', contents['src/ass.c'], re.M):
             if 'src/ass_composite.h' not in contents:
                 fail('missing ASS renderer source: src/ass_composite.h')
+        # Facades from the ABI 3 bump on read libass's private font count in a second file.
+        if re.search(rb'^\s*#\s*include\s*"ass_internal\.h"', contents['src/ass.c'], re.M):
+            for required in ['src/ass_internal.h', 'src/ass_fonts.c']:
+                if required not in contents:
+                    fail('missing ASS renderer source: ' + required)
     if 'ci/libass-dependencies.json' in contents:
         for required in json.loads(contents['ci/libass-dependencies.json']):
             if required['id'] not in ids:
                 fail('missing dependency source mapping: ' + required['id'])
+            # A pinned patch is part of the corresponding source: present, byte-exact, and named by
+            # the dependency's own entry. Pins published before the patches field have none.
+            listed = next(dep for dep in dependencies if dep['id'] == required['id']).get('patches', [])
+            for patch in required.get('patches', []):
+                if (patch['path'] not in contents or digest(contents[patch['path']]) != patch['sha256']
+                        or patch['path'] not in listed):
+                    fail('missing ASS renderer patch: ' + patch['path'])
     for dep in dependencies:
         for key in ['id', 'version', 'license']:
             if not dep.get(key) or dep[key] in {'UNKNOWN', 'NOASSERTION'}:
