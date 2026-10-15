@@ -47,14 +47,6 @@ impl AlignSet {
     }
 }
 
-/// The classes held by `PublishedAligns::set` for the frame whose `serial` it names.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PublishedAligns {
-    /// `Frame::serial` of the frame these were read for.
-    pub serial: u64,
-    pub set: AlignSet,
-}
-
 /// The `field`th comma-separated field of `bytes`.
 fn field(bytes: &[u8], field: usize) -> Option<&[u8]> {
     bytes.split(|&b| b == b',').nth(field)

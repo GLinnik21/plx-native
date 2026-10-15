@@ -3,19 +3,26 @@
 //!
 //! ```text
 //! assperf: worker tid=1234
-//! assperf: calls=60 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456
+//! assperf: window_ms=1000 calls=3 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456 jobs=2+1 ahead_hit=1 nwait_p95_us=0 nwait_max_us=0
 //! ```
 //!
-//! `calls` is how many times the worker ran `plx_ass_render` (one per UI frame while a source is
-//! selected), `changed` how many of those published a new frame, `p95_us`/`max_us` the wall time
+//! `window_ms` is the span the counts cover: from the previous line (or the session's first job)
+//! to this one. Jobs are rare while a cue is steady, so a line can follow a long idle stretch and
+//! the counts are only comparable as rates over `window_ms`. `calls` is how many times the worker ran `plx_ass_render` (one per job: a frame is rendered
+//! when the screen needs one, and the next boundary is rendered ahead of its time, not once per UI
+//! frame), `changed` how many of those produced a frame whose pixels differ from the one on screen
+//! (published at once, or held ahead for the next boundary), `p95_us`/`max_us` the wall time
 //! of the FFI call alone (nearest-rank 95th percentile over a fixed ring), `job_p95_us`/`job_max_us`
 //! the same for the whole worker job (source load, event append, flush-and-reload, window slide
 //! and the draw call: the cost a cue change or seek pays), `pub_bytes` the RGBA
-//! bytes of the frames published, and `up_bytes` the bytes the UI thread uploaded with
-//! `glTexImage2D` in the same second ([`note_upload`]). The upload's own time is the `assup`
+//! bytes of the frames published or held ahead, and `up_bytes` the bytes the UI thread uploaded with
+//! `glTexImage2D` in the same window ([`note_upload`]). `jobs=N+A` counts the worker's Normal and
+//! Ahead jobs separately, `ahead_hit` how many times the UI thread promoted an ahead frame
+//! ([`note_ahead_hit`]) and `nwait_*` how long a Normal job waited behind an Ahead job that was
+//! already rendering ([`note_nwait`]; native rendering cannot be cancelled). The upload's own time is the `assup`
 //! span on `FRAMEDROP spans=` (spans print only on `FRAMEDROP` lines and only while the frame
-//! instrument is armed, `/tmp/plxnative-framedrop`). A window closes on the first render at least a
-//! second after it opened, and [`flush`] emits the partial window when the source is deselected.
+//! instrument is armed, `/tmp/plxnative-framedrop`). A window closes on the first job at least a
+//! second after it opened (an idle stretch emits no line, hence `window_ms`), and [`flush`] emits the partial window when the source is deselected.
 //! `tools/tv-sched-trace.sh --tid <tid>` follows the worker.
 //!
 //! Always compiled; the cost is one clock pair per render and a fixed 256-slot ring.
@@ -28,10 +35,16 @@ const RING: usize = 256;
 const WINDOW: Duration = Duration::from_secs(1);
 
 static UPLOADED: AtomicU64 = AtomicU64::new(0);
+static AHEAD_HITS: AtomicU64 = AtomicU64::new(0);
 
 /// UI thread: RGBA bytes handed to `glTexImage2D` for a styled-subtitle region.
 pub fn note_upload(bytes: usize) {
     UPLOADED.fetch_add(bytes as u64, Ordering::Relaxed);
+}
+
+/// UI thread: the ahead frame was promoted without a worker job.
+pub fn note_ahead_hit() {
+    AHEAD_HITS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Fixed ring of the latest samples with a nearest-rank percentile.
@@ -76,17 +89,33 @@ pub(super) struct Cycle {
     pub job_us: u32,
     pub changed: bool,
     pub pub_bytes: u64,
+    /// An Ahead job (rendered early) rather than a Normal one.
+    pub ahead: bool,
+}
+
+/// Counters other threads keep, read when a window closes.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Shared {
+    pub up_bytes: u64,
+    pub ahead_hits: u64,
 }
 
 pub(super) struct Aggregator {
     started: Option<Instant>,
     render: Ring,
     job: Ring,
+    nwait: Ring,
+    normal_jobs: u32,
+    ahead_jobs: u32,
+    nwait_max_us: u32,
     calls: u32,
     changed: u32,
     max_us: u32,
     job_max_us: u32,
     pub_bytes: u64,
+    /// When the counters (these and the cross-thread ones) last restarted: the previous line, or
+    /// the first job of a session. Survives a line so `window_ms` spans the idle gap too.
+    counting_since: Option<Instant>,
 }
 
 impl Aggregator {
@@ -95,40 +124,65 @@ impl Aggregator {
             started: None,
             render: Ring::new(),
             job: Ring::new(),
+            nwait: Ring::new(),
+            normal_jobs: 0,
+            ahead_jobs: 0,
+            nwait_max_us: 0,
             calls: 0,
             changed: 0,
             max_us: 0,
             job_max_us: 0,
             pub_bytes: 0,
+            counting_since: None,
         }
     }
 
     /// Record one cycle; returns the finished window's line once a second has passed.
-    pub(super) fn push(&mut self, now: Instant, cycle: Cycle, up_bytes: u64) -> Option<String> {
+    pub(super) fn push(&mut self, now: Instant, cycle: Cycle, shared: Shared) -> Option<String> {
         let started = *self.started.get_or_insert(now);
+        self.counting_since.get_or_insert(now);
         if let Some(us) = cycle.render_us {
             self.render.push(us);
             self.calls += 1;
             self.max_us = self.max_us.max(us);
         }
         self.job.push(cycle.job_us);
+        if cycle.ahead {
+            self.ahead_jobs += 1;
+        } else {
+            self.normal_jobs += 1;
+        }
         self.job_max_us = self.job_max_us.max(cycle.job_us);
         self.changed += u32::from(cycle.changed);
         self.pub_bytes += cycle.pub_bytes;
         if now.saturating_duration_since(started) < WINDOW {
             return None;
         }
-        Some(self.take_line(up_bytes))
+        Some(self.take_line(now, shared))
+    }
+
+    /// A Normal job waited `us` behind an Ahead job that was already rendering.
+    pub(super) fn note_nwait(&mut self, us: u32) {
+        self.nwait.push(us);
+        self.nwait_max_us = self.nwait_max_us.max(us);
     }
 
     /// The open window as a line (and reset), or `None` if nothing was recorded.
-    pub(super) fn take_partial(&mut self, up_bytes: u64) -> Option<String> {
-        (self.job.pushed > 0).then(|| self.take_line(up_bytes))
+    pub(super) fn take_partial(&mut self, now: Instant, shared: Shared) -> Option<String> {
+        (self.job.pushed > 0).then(|| {
+            let line = self.take_line(now, shared);
+            self.counting_since = None;
+            line
+        })
     }
 
-    fn take_line(&mut self, up_bytes: u64) -> String {
+    fn take_line(&mut self, now: Instant, shared: Shared) -> String {
+        let window_ms = self
+            .counting_since
+            .map_or(0, |since| now.saturating_duration_since(since).as_millis());
         let line = format!(
-            "assperf: calls={} changed={} p95_us={} max_us={} job_p95_us={} job_max_us={} pub_bytes={} up_bytes={}",
+            "assperf: window_ms={} calls={} changed={} p95_us={} max_us={} job_p95_us={} job_max_us={} pub_bytes={} up_bytes={} jobs={}+{} ahead_hit={} nwait_p95_us={} nwait_max_us={}",
+            window_ms,
             self.calls,
             self.changed,
             self.render.p95(),
@@ -136,9 +190,15 @@ impl Aggregator {
             self.job.p95(),
             self.job_max_us,
             self.pub_bytes,
-            up_bytes
+            shared.up_bytes,
+            self.normal_jobs,
+            self.ahead_jobs,
+            shared.ahead_hits,
+            self.nwait.p95(),
+            self.nwait_max_us
         );
         *self = Self::new();
+        self.counting_since = Some(now);
         line
     }
 }
@@ -147,6 +207,7 @@ thread_local! {
     static AGG: RefCell<Aggregator> = const { RefCell::new(Aggregator::new()) };
     static LAST_RENDER_US: Cell<Option<u32>> = const { Cell::new(None) };
     static LAST_JOB_US: Cell<Option<u32>> = const { Cell::new(None) };
+    static LAST_JOB_AHEAD: Cell<bool> = const { Cell::new(false) };
 }
 
 fn micros(elapsed: Duration) -> u32 {
@@ -165,21 +226,33 @@ pub(super) fn record_render(elapsed: Duration) {
 }
 
 /// WORKER: remember the duration of the whole `Engine::render` job just run.
-pub(super) fn record_job(elapsed: Duration) {
+pub(super) fn record_job(elapsed: Duration, ahead: bool) {
     LAST_JOB_US.set(Some(micros(elapsed)));
+    LAST_JOB_AHEAD.set(ahead);
 }
 
-/// Push one cycle and, when its window closes, restart the upload counter. Reset only on
-/// emission; uploads landing between the load and the store are dropped (a diagnostic line, not
+/// WORKER: a Normal job started `waited` after it was queued behind an Ahead job in flight.
+pub(super) fn note_nwait(waited: Duration) {
+    AGG.with(|a| a.borrow_mut().note_nwait(micros(waited)));
+}
+
+/// Push one cycle and, when its window closes, restart the cross-thread counters. Reset only on
+/// emission; events landing between the load and the store are dropped (a diagnostic line, not
 /// an account).
 fn close_cycle(
     agg: &mut Aggregator,
     now: Instant,
     cycle: Cycle,
     uploaded: &AtomicU64,
+    ahead_hits: &AtomicU64,
 ) -> Option<String> {
-    let line = agg.push(now, cycle, uploaded.load(Ordering::Relaxed))?;
+    let shared = Shared {
+        up_bytes: uploaded.load(Ordering::Relaxed),
+        ahead_hits: ahead_hits.load(Ordering::Relaxed),
+    };
+    let line = agg.push(now, cycle, shared)?;
     uploaded.store(0, Ordering::Relaxed);
+    ahead_hits.store(0, Ordering::Relaxed);
     Some(line)
 }
 
@@ -193,8 +266,11 @@ pub(super) fn finish_call(changed: bool, pub_bytes: u64) {
         job_us,
         changed,
         pub_bytes,
+        ahead: LAST_JOB_AHEAD.take(),
     };
-    let line = AGG.with(|a| close_cycle(&mut a.borrow_mut(), Instant::now(), cycle, &UPLOADED));
+    let line = AGG.with(|a| {
+        close_cycle(&mut a.borrow_mut(), Instant::now(), cycle, &UPLOADED, &AHEAD_HITS)
+    });
     if let Some(line) = line {
         plx_base::eventlog::log(&line);
     }
@@ -203,8 +279,10 @@ pub(super) fn finish_call(changed: bool, pub_bytes: u64) {
 /// WORKER: the source was deselected; emit the partial window and start the next session clean.
 pub(super) fn flush() {
     let line = AGG.with(|a| {
-        a.borrow_mut()
-            .take_partial(UPLOADED.swap(0, Ordering::Relaxed))
+        a.borrow_mut().take_partial(Instant::now(), Shared {
+            up_bytes: UPLOADED.swap(0, Ordering::Relaxed),
+            ahead_hits: AHEAD_HITS.swap(0, Ordering::Relaxed),
+        })
     });
     if let Some(line) = line {
         plx_base::eventlog::log(&line);
@@ -230,7 +308,12 @@ mod tests {
             job_us: render_us * 2,
             changed,
             pub_bytes,
+            ahead: false,
         }
+    }
+
+    fn up(up_bytes: u64) -> Shared {
+        Shared { up_bytes, ahead_hits: 0 }
     }
 
     #[test]
@@ -241,14 +324,14 @@ mod tests {
             let line = a.push(
                 t0 + Duration::from_micros((i as u64 - 1) * 5030),
                 cycle((i % 100 + 1) * 10, i % 10 == 0, 100),
-                777,
+                Shared { up_bytes: 777, ahead_hits: 3 },
             );
             if i < 200 {
                 assert!(line.is_none());
             } else {
                 assert_eq!(
                     line.as_deref(),
-                    Some("assperf: calls=200 changed=20 p95_us=950 max_us=1000 job_p95_us=1900 job_max_us=2000 pub_bytes=20000 up_bytes=777")
+                    Some("assperf: window_ms=1000 calls=200 changed=20 p95_us=950 max_us=1000 job_p95_us=1900 job_max_us=2000 pub_bytes=20000 up_bytes=777 jobs=200+0 ahead_hit=3 nwait_p95_us=0 nwait_max_us=0")
                 );
             }
         }
@@ -256,13 +339,33 @@ mod tests {
     }
 
     #[test]
+    fn a_line_after_an_idle_stretch_reports_the_span_it_covers() {
+        let t0 = Instant::now();
+        let mut a = Aggregator::new();
+        assert!(a.push(t0, cycle(10, true, 1), up(0)).is_none());
+        let first = a.push(t0 + WINDOW, cycle(10, true, 1), up(0)).unwrap();
+        assert!(first.starts_with("assperf: window_ms=1000 calls=2 "), "{first}");
+        // Ten idle seconds, then a job and, a second later, the job that closes the window.
+        assert!(a.push(t0 + 11 * WINDOW, cycle(10, true, 1), up(0)).is_none());
+        let second = a.push(t0 + 12 * WINDOW, cycle(10, true, 1), up(0)).unwrap();
+        assert!(second.starts_with("assperf: window_ms=11000 calls=2 "), "{second}");
+        // A partial window at deselection ends the session: the next one starts its own clock.
+        assert!(a.push(t0 + 20 * WINDOW, cycle(10, true, 1), up(0)).is_none());
+        let partial = a.take_partial(t0 + 20 * WINDOW + WINDOW / 2, up(0)).unwrap();
+        assert!(partial.starts_with("assperf: window_ms=8500 "), "{partial}");
+        assert!(a.push(t0 + 30 * WINDOW, cycle(10, true, 1), up(0)).is_none());
+        let next = a.take_partial(t0 + 30 * WINDOW, up(0)).unwrap();
+        assert!(next.starts_with("assperf: window_ms=0 "), "{next}");
+    }
+
+    #[test]
     fn ring_keeps_only_the_latest_samples() {
         let t0 = Instant::now();
         let mut a = Aggregator::new();
         for _ in 0..(RING + 44) {
-            assert!(a.push(t0, cycle(5000, false, 0), 0).is_none());
+            assert!(a.push(t0, cycle(5000, false, 0), up(0)).is_none());
         }
-        let line = a.push(t0 + WINDOW, cycle(1, false, 0), 0).unwrap();
+        let line = a.push(t0 + WINDOW, cycle(1, false, 0), up(0)).unwrap();
         assert!(
             line.contains("calls=301 ") && line.contains("p95_us=5000 max_us=5000"),
             "{line}"
@@ -278,12 +381,15 @@ mod tests {
             job_us: 50_000,
             changed: true,
             pub_bytes: 8,
+            ahead: true,
         };
-        assert!(a.push(t0, load, 0).is_none());
-        let line = a.take_partial(0).unwrap();
+        assert!(a.push(t0, load, up(0)).is_none());
+        a.note_nwait(300);
+        a.note_nwait(900);
+        let line = a.take_partial(t0, up(0)).unwrap();
         assert_eq!(
             line,
-            "assperf: calls=0 changed=1 p95_us=0 max_us=0 job_p95_us=50000 job_max_us=50000 pub_bytes=8 up_bytes=0"
+            "assperf: window_ms=0 calls=0 changed=1 p95_us=0 max_us=0 job_p95_us=50000 job_max_us=50000 pub_bytes=8 up_bytes=0 jobs=0+1 ahead_hit=0 nwait_p95_us=900 nwait_max_us=900"
         );
     }
 
@@ -291,28 +397,42 @@ mod tests {
     fn take_partial_emits_the_open_window_once_and_resets() {
         let t0 = Instant::now();
         let mut a = Aggregator::new();
-        assert!(a.take_partial(5).is_none(), "nothing recorded");
-        assert!(a.push(t0, cycle(100, true, 4), 0).is_none());
-        let line = a.take_partial(9).unwrap();
-        assert!(line.contains("calls=1 changed=1 ") && line.ends_with("up_bytes=9"), "{line}");
-        assert!(a.take_partial(9).is_none(), "the window was reset");
+        assert!(a.take_partial(t0, up(5)).is_none(), "nothing recorded");
+        assert!(a.push(t0, cycle(100, true, 4), up(0)).is_none());
+        let line = a.take_partial(t0, up(9)).unwrap();
+        assert!(line.contains("calls=1 changed=1 ") && line.contains("up_bytes=9 "), "{line}");
+        assert!(a.take_partial(t0, up(9)).is_none(), "the window was reset");
     }
 
     #[test]
     fn closing_a_window_restarts_the_upload_counter() {
         let t0 = Instant::now();
         let uploaded = AtomicU64::new(0);
+        let hits = AtomicU64::new(0);
         let mut a = Aggregator::new();
         uploaded.fetch_add(4096, Ordering::Relaxed);
-        assert!(close_cycle(&mut a, t0, cycle(10, true, 1), &uploaded).is_none());
+        assert!(close_cycle(&mut a, t0, cycle(10, true, 1), &uploaded, &hits).is_none());
         assert_eq!(uploaded.load(Ordering::Relaxed), 4096, "mid-window: kept");
-        let line = close_cycle(&mut a, t0 + WINDOW, cycle(10, false, 0), &uploaded).unwrap();
-        assert!(line.ends_with("up_bytes=4096"), "{line}");
+        let line = close_cycle(&mut a, t0 + WINDOW, cycle(10, false, 0), &uploaded, &hits).unwrap();
+        assert!(line.contains("up_bytes=4096 "), "{line}");
         assert_eq!(uploaded.load(Ordering::Relaxed), 0, "next window starts at 0");
         uploaded.fetch_add(7, Ordering::Relaxed);
-        assert!(close_cycle(&mut a, t0 + 3 * WINDOW, cycle(10, false, 0), &uploaded).is_none());
-        let line = close_cycle(&mut a, t0 + 5 * WINDOW, cycle(10, false, 0), &uploaded).unwrap();
-        assert!(line.ends_with("up_bytes=7"), "{line}");
+        assert!(close_cycle(&mut a, t0 + 3 * WINDOW, cycle(10, false, 0), &uploaded, &hits).is_none());
+        let line = close_cycle(&mut a, t0 + 5 * WINDOW, cycle(10, false, 0), &uploaded, &hits).unwrap();
+        assert!(line.contains("up_bytes=7 "), "{line}");
+    }
+
+    #[test]
+    fn closing_a_window_reports_and_restarts_the_ahead_hits() {
+        let t0 = Instant::now();
+        let (uploaded, hits) = (AtomicU64::new(0), AtomicU64::new(0));
+        let mut a = Aggregator::new();
+        hits.fetch_add(2, Ordering::Relaxed);
+        let line = close_cycle(&mut a, t0, cycle(10, true, 1), &uploaded, &hits);
+        assert!(line.is_none() && hits.load(Ordering::Relaxed) == 2, "mid-window: kept");
+        let line = close_cycle(&mut a, t0 + WINDOW, cycle(10, false, 0), &uploaded, &hits).unwrap();
+        assert!(line.contains("ahead_hit=2 "), "{line}");
+        assert_eq!(hits.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -327,7 +447,7 @@ mod tests {
     fn render_then_finish_counts_one_call() {
         begin_call();
         record_render(Duration::from_micros(1234));
-        record_job(Duration::from_micros(2000));
+        record_job(Duration::from_micros(2000), false);
         finish_call(true, 64);
         AGG.with(|a| {
             let a = a.borrow();
@@ -347,7 +467,7 @@ mod tests {
         // Cycle 1 timed a render, then the epoch changed: it never reached finish_call.
         begin_call();
         record_render(Duration::from_micros(9));
-        record_job(Duration::from_micros(9));
+        record_job(Duration::from_micros(9), false);
         // Cycle 2 made no native call at all.
         begin_call();
         finish_call(false, 0);

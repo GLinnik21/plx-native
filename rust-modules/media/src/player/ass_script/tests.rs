@@ -99,16 +99,65 @@ fn a_small_script_is_loaded_whole_and_lines_stay_in_file_order() {
 }
 
 #[test]
-fn a_line_with_unreadable_times_is_kept_rather_than_dropped() {
+fn a_line_with_unreadable_times_is_never_alive_as_for_libass() {
+    // libass reads a stamp it cannot parse as 0: Start 0, End 0, Duration 0, so it never shows.
     let s = format!("{HEADER}Dialogue: 0,garbage,garbage,Default,,0,0,0,,odd\n");
+    let index = ScriptIndex::parse(&Arc::from(s.into_bytes())).unwrap();
+    assert!(!String::from_utf8_lossy(&index.window(123_456).text).contains(",odd\n"));
+    // ... but a line whose columns are missing altogether is kept (libass decides)
+    let s = format!("{HEADER}Dialogue: 0\n");
     let w = ScriptIndex::parse(&Arc::from(s.into_bytes())).unwrap().window(123_456);
-    assert!(String::from_utf8_lossy(&w.text).contains(",odd\n"));
+    assert!(String::from_utf8_lossy(&w.text).contains("Dialogue: 0\n"));
 }
 
 #[test]
-fn clock_times_read_with_any_fraction() {
-    assert_eq!(clock_ms("0:01:02.50"), Some(62_500));
-    assert_eq!(clock_ms("1:00:00"), Some(3_600_000));
-    assert_eq!(clock_ms("0:00:00.5"), Some(500));
-    assert_eq!(clock_ms("x"), None);
+fn window_boundaries_use_libass_times() {
+    // `0:00:01.5` is 1 s + 5 cs for libass, not 1.5 s: the line is alive from 1050 ms
+    let s = format!("{HEADER}Dialogue: 0,0:00:01.5,0:00:02.5,Default,,0,0,0,,x\n");
+    let index = ScriptIndex::parse(&Arc::from(s.into_bytes())).unwrap();
+    let spans: Vec<_> = index.spans().collect();
+    assert_eq!((spans[0].start_ms, spans[0].end_ms), (1050, 2050));
+}
+
+#[test]
+fn non_windowed_script_has_timings() {
+    let index = ScriptIndex::parse(&script(100)).unwrap();
+    assert!(!index.windowed());
+    let spans: Vec<_> = index.spans().collect();
+    assert_eq!(spans.len(), 100);
+    assert_eq!((spans[3].start_ms, spans[3].end_ms), (3000, 4000));
+}
+
+#[test]
+fn spans_know_which_lines_animate() {
+    let s = format!(
+        "{HEADER}Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{{\\kf50}}a\nDialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,Scroll up;0;10;1,b\nDialogue: 0,0:00:02.00,0:00:03.00,Default,,0,0,0,,c\n"
+    );
+    let index = ScriptIndex::parse(&Arc::from(s.into_bytes())).unwrap();
+    let flags: Vec<bool> = index.spans().map(|s| matches!(s.motion, Motion::Known(true))).collect();
+    assert_eq!(flags, [true, true, false]);
+}
+
+#[test]
+fn alive_at_finds_exactly_the_lines_a_full_scan_finds() {
+    // a long line among many short ones, out of start order in the file
+    let mut s = String::from(HEADER);
+    s.push_str("Dialogue: 0,0:00:30.00,0:00:35.00,Default,,0,0,0,,late\n");
+    s.push_str("Dialogue: 0,0:00:01.00,0:02:00.00,Default,,0,0,0,,long\n");
+    for i in 0..50i64 {
+        s.push_str(&format!("Dialogue: 0,{},{},Default,,0,0,0,,short{i}\n", stamp(i * 1000), stamp(i * 1000 + 1500)));
+    }
+    let index = ScriptIndex::parse(&Arc::<[u8]>::from(s.into_bytes())).unwrap();
+    for now in [0, 500, 1000, 1700, 29_999, 30_000, 34_999, 35_000, 49_500, 100_000, 120_000, 200_000] {
+        let mut got: Vec<&[u8]> = index.alive_at(now).collect();
+        got.sort();
+        let mut expect: Vec<&[u8]> = index
+            .lines
+            .iter()
+            .filter(|l| l.start_ms <= now && now < l.end_ms)
+            .map(|l| &index.raw[l.off as usize..(l.off + l.len) as usize])
+            .collect();
+        expect.sort();
+        assert_eq!(got, expect, "at {now}");
+    }
 }

@@ -22,9 +22,15 @@ it sets track features (`plx_ass_set_features`, Unicode line breaking), the liba
 (`plx_ass_set_cache_limits`) and extra line spacing (`plx_ass_set_line_spacing`), reports counters
 (`plx_ass_stats`), and replaces the loaded track in place (`plx_ass_replace_track`). The renderer
 scans its fonts (`ass_set_fonts`) only on its first load; a replaced track keeps every opened face
-and does not extract its own `[Fonts]` section again. The engine uses the replace for exactly one
-case so far, sliding the window of a long sidecar script. Any other change of source either re-feeds the
-same renderer (the same embedded source with the same header and fonts) or opens a new one. `tests/fixtures/make_ass_faces.py` regenerates the 14 one-glyph test faces.
+and does not extract its own `[Fonts]` section again. The engine uses the replace for two
+cases: sliding the window of a long sidecar script, and a restyle (a Text-origin source whose
+synthesized header or script changed with the viewer's text size or position, same fonts): the
+track is replaced, the held events are appended again and the line spacing of the new header's size
+is set. Any other change of source either re-feeds the
+same renderer (the same embedded source with the same header and fonts) or opens a new one. A
+Text-origin renderer, however it was reached, breaks lines by the Unicode rules and carries the line
+spacing of the size its header was built for (`Origin::Text` holds those picks); an authored one
+keeps libass's own pitch and breaking. `tests/fixtures/make_ass_faces.py` regenerates the 14 one-glyph test faces.
 
 The demuxer copies ASS headers, complete timed packets and font attachments out of FFmpeg.
 The source store removes trailing zero terminators from headers and packets. A zero byte
@@ -51,8 +57,11 @@ retains the entire script. It also incorporates the video's font attachments, in
 those arrive after the external file. Source reuse includes server identity, stream identity,
 delivery key and codec. Backward seeks and Off→On do not re-download a loaded script.
 
-`player::ass` owns the native objects on one worker. A single latest-request slot coalesces clock
-updates; a completed frame is accepted only for the current source/selection epoch. The UI never
+`player::ass` owns the native objects on one worker. A published frame carries the window of
+playheads it stays right for, so a UI tick inside the window enqueues nothing; the one pending
+slot holds either a Normal job (the screen needs a frame) or an Ahead job (the next boundary,
+rendered early and promoted by the first tick at or after it). A completed frame is accepted only
+for the current source/selection epoch. The UI never
 waits for font parsing or rasterization. Native change detection avoids work for unchanged output. Overlapping libass images are composed
 in order into disjoint regions, with a maximum of 64 regions and one bounded pixel arena.
 Consecutive libass image identities also retain native region pixels, so a moving or karaoke
@@ -99,14 +108,21 @@ Boot the fixture with `tools/tv-session.sh up --guest --mock --screen player=990
 it never resolves a real Plex account. Configure and build the developer app against that mock first.
 
 Libass cost on the TV is read from the event log, not guessed. While a styled source renders,
-`player::ass_perf` writes one `assperf: calls=.. changed=.. p95_us=.. max_us=.. job_p95_us=..
-job_max_us=.. pub_bytes=.. up_bytes=..` line per second (FFI render time, whole-job time including
-source load, append, flush-and-reload and window slide, bytes published and bytes uploaded; the
-partial window is written when the source is deselected) and
+`player::ass_perf` writes an `assperf: window_ms=.. calls=.. changed=.. p95_us=.. max_us=.. job_p95_us=..
+job_max_us=.. pub_bytes=.. up_bytes=.. jobs=N+A ahead_hit=.. nwait_p95_us=.. nwait_max_us=..` line when a job
+arrives at least a second after the previous line (`window_ms` is the span its counts cover,
+including any idle stretch before it; read the counts as rates over it) (FFI render time, whole-job time including source load, append, flush-and-reload and window
+slide, `changed` and `pub_bytes` count frames published or held ahead whose pixels differ from the one on screen, bytes uploaded; `jobs` counts the worker's Normal and Ahead jobs
+separately, `ahead_hit` the ahead frames the UI thread promoted, `nwait` how long a Normal job
+waited behind an Ahead job already rendering; the partial window is written when the source is
+deselected) and
 one `assperf: worker tid=<n>` line when the worker starts, which `tools/tv-sched-trace.sh --tid <n>`
 follows. The UI-thread texture upload is the `assup` span on `FRAMEDROP spans=` (spans print only on
 `FRAMEDROP` lines, with `/tmp/plxnative-framedrop` armed). Nothing is
-logged while no styled source is selected, and a render costs one clock pair. `python3
+logged while no styled source is selected, and a render costs one clock pair. The worker renders
+only when the screen needs a frame (a new key, a playhead outside the published frame's validity
+window, an animated cue) and renders the next boundary ahead of its time, so a steady cue costs no
+job at all between boundaries (no line is written then), not one per UI frame. `python3
 tests/fixtures/make_ass_stress.py <dir>` builds the stress MKVs (Latin, CJK, Thai, Devanagari,
 Arabic, rapid, karaoke, long, 4K60; host `ffmpeg`/`ffprobe` only) to serve with `mock_pms.py
 --extra-media`.

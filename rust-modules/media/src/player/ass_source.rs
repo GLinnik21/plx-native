@@ -136,7 +136,7 @@ impl Store {
                                 if header.as_ref() == bytes.as_slice())
                     }
                     TrackHeader::Text(dialect) => {
-                        source.origin == Origin::Text
+                        source.origin.is_text()
                             && self.text.get(track).is_some_and(|t| t.dialect == *dialect)
                     }
                 })
@@ -164,7 +164,8 @@ impl Store {
                 TrackHeader::Authored(header) => (Origin::Authored, header),
                 TrackHeader::Text(dialect) => {
                     self.text.insert(track, TextTrack { dialect });
-                    (Origin::Text, text_ass::header(&TextStyle::current()).into_bytes())
+                    let style = TextStyle::current();
+                    (Origin::Text(style), text_ass::header(&style).into_bytes())
                 }
             };
             // An unchanged inventory also preserves the per-track/global byte budgets.
@@ -173,10 +174,9 @@ impl Store {
                 Content::Embedded { events, .. } => Some(events.clone()),
                 _ => None,
             }).unwrap_or_else(|| Arc::from([]));
-            // A text track's events are a derived view of its cues, not packets to dedup against.
-            if origin == Origin::Authored {
-                self.seen.insert(track, events.iter().cloned().collect());
-            }
+            // Until `push_text` lands (it keeps a text track's cues apart from packets), `push`
+            // dedups every track against `seen`, so a kept Text event must be in it too.
+            self.seen.insert(track, events.iter().cloned().collect());
             self.tracks.insert(
                 track,
                 Arc::new(Source {
@@ -861,7 +861,7 @@ mod tests {
         let authored = s.selected(0).unwrap();
         assert_eq!(authored.origin, Origin::Authored);
         let text = s.selected(1).unwrap();
-        assert_eq!(text.origin, Origin::Text);
+        assert!(text.origin.is_text());
         let Content::Embedded { header, events, .. } = &text.content else { panic!() };
         let header = std::str::from_utf8(header).unwrap();
         assert!(header.starts_with("[Script Info]") && header.contains("PlayResX: 1920"));
@@ -882,9 +882,29 @@ mod tests {
         s.seek(generation);
         assert_eq!(s.selected(0).unwrap().origin, Origin::Authored);
         let text = s.selected(1).unwrap();
-        assert_eq!(text.origin, Origin::Text);
+        assert!(text.origin.is_text());
         let Content::Embedded { events, .. } = &text.content else { panic!() };
         assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn a_cue_redelivered_after_a_same_file_reopen_is_not_appended_twice() {
+        let mut s = Store::default();
+        let generation = s.begin("fixture", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![]);
+        s.push(generation, 0, event("cue", 1000), 0);
+        s.retain_for_reload();
+        let generation = s.begin("fixture", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![]);
+        s.push(generation, 0, event("cue", 1000), 0);
+        let source = s.selected(0).unwrap();
+        let Content::Embedded { events, .. } = &source.content else { panic!() };
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn a_text_origin_carries_the_picks_its_header_was_built_for() {
+        let mut s = Store::default();
+        s.begin("fixture", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![]);
+        assert_eq!(s.selected(0).unwrap().origin, Origin::Text(TextStyle::current()));
     }
 
     #[test]
@@ -906,7 +926,7 @@ mod tests {
             Arc::new(Source {
                 id: s.tracks[&0].id,
                 revision: 1,
-                origin: Origin::Text,
+                origin: Origin::Text(TextStyle::current()),
                 content: Content::Embedded {
                     header: Arc::from(&b"an older header"[..]),
                     events: Arc::from([event("cue", 1000)]),
@@ -931,7 +951,7 @@ mod tests {
         s.push(generation, 0, event("cue", 1000), 0);
         s.begin("fixture", vec![(0, TrackHeader::Text(TextDialect::Srt))], vec![]);
         assert_eq!(held(&s), 0, "an authored track registered as text is not the same file");
-        assert_eq!(s.selected(0).unwrap().origin, Origin::Text);
+        assert!(s.selected(0).unwrap().origin.is_text());
     }
 
     #[test]

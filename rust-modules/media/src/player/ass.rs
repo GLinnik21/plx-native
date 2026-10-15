@@ -6,6 +6,10 @@ use std::os::raw::{c_char, c_void};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+mod mailbox;
+use mailbox::{Job, Kind, Mailbox, Rendered};
+use super::ass_timing::{self, Validity};
+
 const MAX_SCRIPT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 256 * 1024;
 // No event-count bound here: `ass_source` holds an embedded track, and `ass_script` a long sidecar
@@ -19,7 +23,7 @@ const MAX_PIXELS: usize = 3840 * 2160;
 const MAX_REGIONS: usize = 64;
 
 mod aligns;
-pub use aligns::{AlignSet, PublishedAligns};
+pub use aligns::AlignSet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Event {
@@ -76,8 +80,26 @@ pub enum Origin {
     #[default]
     Authored,
     /// Synthesized from a text subtitle (`text_ass::header`): the full logical screen, and the
-    /// header follows the viewer's size and position picks.
-    Text,
+    /// header follows the viewer's size and position picks. The picks the header was synthesized
+    /// for travel with it, so the worker sets the line spacing of the header it loads, not of
+    /// whatever the viewer has picked since.
+    Text(super::text_style::TextStyle),
+}
+
+impl Origin {
+    pub fn is_text(self) -> bool {
+        matches!(self, Origin::Text(_))
+    }
+
+    /// Extra pixels between lines the origin's renderer is set to, and whether it breaks lines by
+    /// the Unicode rules (plan §4.6, D8). An authored script gets libass's own pitch and the
+    /// breaking it always had.
+    fn renderer_settings(self) -> Option<(f64, bool)> {
+        match self {
+            Origin::Authored => None,
+            Origin::Text(style) => Some((super::text_style::line_spacing(style.scale()), true)),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -92,7 +114,7 @@ pub struct Source {
     pub content: Content,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -167,31 +189,17 @@ pub fn next_source_id() -> u64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
+/// What one rendered frame is for. `now_ms` is NOT part of it: the clock moves every tick, and a
+/// frame carries the window of playheads it stays right for ([`mailbox`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Key {
     epoch: u64,
     source_id: u64,
     revision: u64,
-    now_ms: i64,
     width: i32,
     height: i32,
     storage_width: i32,
     storage_height: i32,
-}
-
-struct Request {
-    key: Key,
-    source: Arc<Source>,
-}
-
-#[derive(Default)]
-struct Mailbox {
-    pending: Option<Request>,
-    requested: Option<Key>,
-    published: Option<(u64, Arc<Frame>)>,
-    /// Beside `published`: the alignment classes active in it, for a Text-origin source only.
-    /// The epoch is the one `published` carries.
-    aligns: Option<(u64, PublishedAligns)>,
 }
 
 pub struct Runtime {
@@ -209,12 +217,7 @@ impl Runtime {
             epoch: AtomicU64::new(1),
             started: OnceLock::new(),
             worker: OnceLock::new(),
-            mailbox: Mutex::new(Mailbox {
-                pending: None,
-                requested: None,
-                published: None,
-                aligns: None,
-            }),
+            mailbox: Mutex::new(Mailbox::new()),
         }
     }
 
@@ -233,7 +236,7 @@ fn runtime() -> &'static Runtime {
     &super::SHARED.ass_renderer
 }
 
-/// MAIN THREAD: replace the latest request and return only this selection's last
+/// MAIN THREAD: ask for the frame right for `now_ms` and return only this selection's last
 /// completed frame. Contention drops this tick's request rather than waiting.
 pub fn request(
     source: Arc<Source>,
@@ -255,7 +258,6 @@ pub fn request(
         epoch: runtime().epoch.load(Ordering::Acquire),
         source_id: source.id,
         revision: source.revision,
-        now_ms,
         width,
         height,
         storage_width: if storage_width > 0 {
@@ -272,45 +274,28 @@ pub fn request(
     let started = *runtime()
         .started
         .get_or_init(|| plx_base::task::spawn("styled subtitles", worker).is_some());
-    if !started {
-        let mut mailbox = runtime().mailbox.try_lock().ok()?;
-        if let Some((epoch, frame)) = &mailbox.published {
-            if *epoch == key.epoch && frame.width == width && frame.height == height {
-                return Some(frame.clone());
-            }
-        }
-        let frame = error_frame(key, Fault::StartFailed);
-        mailbox.published = Some((key.epoch, frame.clone()));
-        return Some(frame);
-    }
     let mut mailbox = runtime().mailbox.try_lock().ok()?;
-    if mailbox.requested != Some(key) {
-        mailbox.pending = Some(Request { key, source });
-        mailbox.requested = Some(key);
+    if !started {
+        return Some(mailbox.publish_error(key, error_frame(key, Fault::StartFailed)));
+    }
+    let requested = mailbox.request(key, now_ms, &source);
+    if requested.promoted {
+        super::ass_perf::note_ahead_hit();
+    }
+    if requested.wake {
         runtime().wake();
     }
-    mailbox.published.as_ref().and_then(|(epoch, frame)| {
-        (*epoch == key.epoch
-            && frame.source_id == key.source_id
-            && frame.width == width
-            && frame.height == height)
-            .then(|| frame.clone())
-    })
+    mailbox.view(&key)
 }
 
 /// MAIN THREAD: the alignment classes (bottom, middle, top) of the cues active in the frame
-/// [`request`] last returned, or `None` when that frame is not a Text-origin one, nothing is
-/// published, or the mailbox is busy this tick (the caller keeps what it had). The screen reads it
-/// to decide which regions the HUD lifts (plan `libass-text-subs` §2.4); `serial` names the frame
-/// the classes were read for.
-pub fn published_aligns() -> Option<PublishedAligns> {
+/// [`request`] returned with this `serial`, or `None` when that frame is not the published one any
+/// more, is not a Text-origin one, or the mailbox is busy this tick (the caller keeps what it
+/// had). The screen reads it to decide which regions the HUD lifts (plan `libass-text-subs`
+/// §2.4); asking by serial means another frame's classes are never applied to this one.
+pub fn published_aligns(serial: u64) -> Option<AlignSet> {
     let mailbox = runtime().mailbox.try_lock().ok()?;
-    let (epoch, frame) = mailbox.published.as_ref()?;
-    let (aligns_epoch, aligns) = mailbox.aligns.as_ref()?;
-    (aligns_epoch == epoch
-        && *epoch == runtime().epoch.load(Ordering::Acquire)
-        && aligns.serial == frame.serial)
-        .then_some(*aligns)
+    mailbox.aligns_of(serial)
 }
 
 /// MAIN THREAD: cancellation is immediate even while libass is rendering.
@@ -335,12 +320,7 @@ fn retire_off(
     mailbox: &mut Mailbox,
     engine: &mut Engine,
 ) -> Option<(Mailbox, Engine)> {
-    if runtime.source_id.load(Ordering::Acquire) != 0
-        || (engine.is_empty()
-            && mailbox.pending.is_none()
-            && mailbox.requested.is_none()
-            && mailbox.published.is_none())
-    {
+    if runtime.source_id.load(Ordering::Acquire) != 0 || (engine.is_empty() && mailbox.is_empty()) {
         return None;
     }
     Some((std::mem::take(mailbox), std::mem::take(engine)))
@@ -370,7 +350,7 @@ fn worker() {
     super::ass_perf::log_worker_tid();
     let mut engine = Engine::default();
     loop {
-        let request = {
+        let job = {
             let mut mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
             loop {
                 if let Some(retired) = retire_off(runtime(), &mut mailbox, &mut engine) {
@@ -381,8 +361,8 @@ fn worker() {
                     mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
                     continue;
                 }
-                if let Some(request) = mailbox.pending.take() {
-                    break request;
+                if let Some(job) = mailbox.take() {
+                    break job;
                 }
                 drop(mailbox);
                 // A queue/cancel between the check above and this park leaves a
@@ -392,34 +372,28 @@ fn worker() {
                 mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
             }
         };
+        if let Some(queued) = job.queued {
+            super::ass_perf::note_nwait(queued.elapsed());
+        }
         super::ass_perf::begin_call();
-        if runtime().epoch.load(Ordering::Acquire) != request.key.epoch {
-            continue;
-        }
-        let job_started = std::time::Instant::now();
-        let frame = engine.render(&request);
-        let aligns = engine.aligns(&request.source, request.key.now_ms);
-        super::ass_perf::record_job(job_started.elapsed());
-        if runtime().epoch.load(Ordering::Acquire) != request.key.epoch {
-            continue;
-        }
-        let (changed, pub_bytes) = {
+        let live = || runtime().epoch.load(Ordering::Acquire) == job.key.epoch;
+        let rendered = live().then(|| {
+            let job_started = std::time::Instant::now();
+            let rendered = engine.render(&job);
+            super::ass_perf::record_job(job_started.elapsed(), job.kind != Kind::Normal);
+            rendered
+        });
+        let finished = {
             let mut mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
-            if runtime().epoch.load(Ordering::Acquire) != request.key.epoch {
-                continue;
-            }
-            let changed = mailbox.published.as_ref().is_none_or(|(epoch, old)| {
-                *epoch != request.key.epoch || old.serial != frame.serial
-            });
-            let bytes: usize = frame.rects.iter().map(|r| r.rgba.len()).sum();
-            mailbox.aligns = aligns.map(|set| {
-                (request.key.epoch, PublishedAligns { serial: frame.serial, set })
-            });
-            mailbox.published = Some((request.key.epoch, frame));
-            (changed, if changed { bytes as u64 } else { 0 })
+            // Every exit finishes the job, so the mailbox never believes one is still in flight.
+            let outcome = rendered.filter(|_| live());
+            let ran = outcome.is_some();
+            let finished = mailbox.finish(&job, outcome);
+            ran.then_some(finished)
         };
-        super::ass_perf::finish_call(changed, pub_bytes);
-        if changed {
+        let Some(finished) = finished else { continue };
+        super::ass_perf::finish_call(finished.changed, finished.pub_bytes);
+        if finished.wake {
             plx_machine::present::wake_from_worker();
         }
     }
@@ -507,11 +481,15 @@ fn prune_deadline(events: &[Event]) -> i64 {
         .unwrap_or(i64::MAX)
 }
 
+/// Two embedded sources the same renderer can show one after the other: equal header bytes and
+/// equal fonts, whichever timeline (`id`) each belongs to. A seek, a demux reopen of the same file
+/// and a switch between tracks that share a header all qualify; `plx_ass_flush_events` plus a
+/// re-append then replaces the events and keeps the parsed header, the fonts and their caches.
 fn same_embedded_resources(old: &Source, new: &Source) -> bool {
     matches!((&old.content, &new.content), (
         Content::Embedded { header: oh, fonts: of, .. },
         Content::Embedded { header: nh, fonts: nf, .. }
-    ) if old.id == new.id && oh == nh && of == nf)
+    ) if oh == nh && of == nf)
 }
 
 /// The synthesized header (or whole script) of a source: what a restyle replaces.
@@ -526,26 +504,26 @@ fn track_text(source: &Source) -> &[u8] {
 /// equal fonts and a different synthesized header. Everything else a header change means is a new
 /// renderer.
 fn restyles(old: &Source, new: &Source) -> bool {
-    old.origin == Origin::Text
-        && new.origin == Origin::Text
+    old.origin.is_text()
+        && new.origin.is_text()
         && std::mem::discriminant(&old.content) == std::mem::discriminant(&new.content)
         && source_fonts(old) == source_fonts(new)
         && track_text(old) != track_text(new)
 }
 
-/// A sidecar script too long to hand libass whole ([`super::ass_script`]): the lines it holds now
-/// answer for playheads in `lo..hi`, and a playhead outside is fed again.
-struct Windowed {
+/// A sidecar script's timings, kept whether or not it is windowed: what a rendered frame is valid
+/// for depends on every line. A script with more lines than one window holds also records the
+/// window the renderer holds now, `lo..hi`; a playhead outside it is fed again ([`super::ass_script`]).
+struct Scripted {
     index: super::ass_script::ScriptIndex,
-    lo: i64,
-    hi: i64,
+    window: Option<(i64, i64)>,
 }
 
 #[derive(Default)]
 struct Engine {
     source: Option<Arc<Source>>,
     native: Option<Native>,
-    script: Option<Windowed>,
+    script: Option<Scripted>,
     /// The parse behind [`Engine::aligns`] for a Text script that is not windowed.
     aligns_index: Option<aligns::ScriptAligns>,
     frame: Option<Arc<Frame>>,
@@ -565,22 +543,37 @@ impl Engine {
     fn open(&mut self, source: &Source, now_ms: i64) -> Result<(), Fault> {
         self.native = None;
         self.script = None;
+        let mut native = None;
         if let Content::Script { bytes, fonts } = &source.content {
-            if let Some(index) = super::ass_script::ScriptIndex::parse(bytes).filter(|i| i.windowed()) {
-                let window = index.window(now_ms);
-                self.native = Some(Native::open_data(fonts, &window.text, 1)?);
-                self.script = Some(Windowed { index, lo: window.lo_ms, hi: window.hi_ms });
-                return Ok(());
+            if let Some(index) = super::ass_script::ScriptIndex::parse(bytes) {
+                if index.windowed() {
+                    let window = index.window(now_ms);
+                    native = Some(Native::open_data(fonts, &window.text, 1)?);
+                    self.script = Some(Scripted { index, window: Some((window.lo_ms, window.hi_ms)) });
+                } else {
+                    self.script = Some(Scripted { index, window: None });
+                }
             }
         }
-        self.native = Some(Native::open(source)?);
+        let mut native = match native {
+            Some(native) => native,
+            None => Native::open(source)?,
+        };
+        // A Text track's renderer breaks lines by the Unicode rules and spaces them for the size
+        // its header was synthesized for (plan §4.6); an authored one keeps libass's defaults.
+        if let Some((spacing, wrap)) = source.origin.renderer_settings() {
+            if !(native.set_wrap_unicode(wrap) && native.set_line_spacing(spacing)) {
+                return Err(Fault::InitFailed);
+            }
+        }
+        self.native = Some(native);
         Ok(())
     }
 
     /// The alignment classes active at `now_ms` in a Text-origin `source`; `None` for an Authored
     /// one, which the screen never lifts.
     fn aligns(&mut self, source: &Source, now_ms: i64) -> Option<AlignSet> {
-        if source.origin != Origin::Text || self.error.is_some() {
+        if !source.origin.is_text() || self.error.is_some() {
             return None;
         }
         Some(match &source.content {
@@ -606,20 +599,24 @@ impl Engine {
             }
             Content::Script { bytes, .. } => {
                 self.script = None;
-                match super::ass_script::ScriptIndex::parse(bytes).filter(|i| i.windowed()) {
-                    Some(index) => {
+                match super::ass_script::ScriptIndex::parse(bytes) {
+                    Some(index) if index.windowed() => {
                         let window = index.window(now_ms);
                         native.replace_track(&window.text, 1)?;
-                        self.script = Some(Windowed { index, lo: window.lo_ms, hi: window.hi_ms });
+                        self.script = Some(Scripted { index, window: Some((window.lo_ms, window.hi_ms)) });
                     }
-                    None => native.replace_track(bytes, 1)?,
+                    parsed => {
+                        native.replace_track(bytes, 1)?;
+                        self.script = parsed.map(|index| Scripted { index, window: None });
+                    }
                 }
             }
         }
-        if native.set_line_spacing(super::text_style::line_spacing(super::text_style::TextStyle::current().scale())) {
-            Ok(())
-        } else {
-            Err(Fault::InitFailed)
+        // The spacing of the header being loaded, not of the viewer's picks now: they may have moved
+        // again since the header was built, and then another restyle is already on its way.
+        match source.origin.renderer_settings() {
+            Some((spacing, _)) if !native.set_line_spacing(spacing) => Err(Fault::InitFailed),
+            _ => Ok(()),
         }
     }
 
@@ -627,14 +624,16 @@ impl Engine {
     /// way, or the end of the window). The old track is released first, so two windows are never
     /// held at once.
     fn slide(&mut self, source: &Source, now_ms: i64) -> Result<(), Fault> {
-        let (Some(held), Content::Script { fonts, .. }) = (self.script.as_mut(), &source.content) else {
+        let (Some(Scripted { index, window: Some(held) }), Content::Script { fonts, .. }) =
+            (self.script.as_mut(), &source.content)
+        else {
             return Ok(());
         };
-        if (held.lo..held.hi).contains(&now_ms) {
+        if (held.0..held.1).contains(&now_ms) {
             return Ok(());
         }
-        let window = held.index.window(now_ms);
-        (held.lo, held.hi) = (window.lo_ms, window.hi_ms);
+        let window = index.window(now_ms);
+        *held = (window.lo_ms, window.hi_ms);
         // Every window repeats the script's header, `[Fonts]` included, so the held renderer
         // already has the fonts: swap the track in place rather than reopening every face.
         match self.native.as_mut() {
@@ -646,7 +645,44 @@ impl Engine {
         }
     }
 
-    fn render(&mut self, request: &Request) -> Arc<Frame> {
+    /// The frame for `job` and the window of playheads it stays right for.
+    fn render(&mut self, job: &Job) -> Rendered {
+        let frame = self.render_frame(job);
+        let validity = if frame.error.is_some() {
+            Validity::ALWAYS
+        } else {
+            self.validity(&job.source, job.now_ms)
+        };
+        let aligns = self.aligns(&job.source, job.now_ms);
+        Rendered { frame, validity, aligns }
+    }
+
+    /// The window at `now_ms` from every event's timing, clamped to the script window held.
+    fn validity(&self, source: &Source, now_ms: i64) -> Validity {
+        use ass_timing::{Motion, Span};
+        let mut validity = match (&source.content, &self.script) {
+            (Content::Embedded { events, .. }, _) => ass_timing::validity(
+                events.iter().map(|e| Span {
+                    start_ms: e.start_ms,
+                    end_ms: e.start_ms.saturating_add(e.duration_ms),
+                    motion: Motion::Packet(&e.payload),
+                }),
+                now_ms,
+            ),
+            (Content::Script { .. }, Some(script)) => ass_timing::validity(script.index.spans(), now_ms),
+            // unreachable (a script is parsed on open): render per tick rather than guess
+            (Content::Script { .. }, None) => {
+                Validity { from_ms: now_ms, until_ms: now_ms.saturating_add(1), animated: true }
+            }
+        };
+        if let Some((lo, hi)) = self.script.as_ref().and_then(|s| s.window) {
+            validity.from_ms = validity.from_ms.max(lo);
+            validity.until_ms = validity.until_ms.min(hi);
+        }
+        validity
+    }
+
+    fn render_frame(&mut self, request: &Job) -> Arc<Frame> {
         let key = request.key;
         let source_changed = self.source.as_ref().is_none_or(|old| {
             old.id != request.source.id || old.revision != request.source.revision
@@ -671,14 +707,15 @@ impl Engine {
                     && self.native.is_some()
                 {
                     // An out-of-order or size-capped window may not be expressible
-                    // as expiry + append. Reset events only, retaining parsed fonts.
+                    // as expiry + append, and a seek or a track switch brings a different
+                    // timeline. Reset events only, retaining parsed header, fonts and caches.
                     let native = self.native.as_mut().unwrap();
                     unsafe { plx_ass_flush_events(native.0) };
                     native.append(&request.source, 0)
                 } else if self.source.as_ref().is_some_and(|old| restyles(old, &request.source)) {
-                    self.restyle(&request.source, key.now_ms)
+                    self.restyle(&request.source, request.now_ms)
                 } else {
-                    self.open(&request.source, key.now_ms)
+                    self.open(&request.source, request.now_ms)
                 };
                 self.error = result.err();
             }
@@ -689,7 +726,7 @@ impl Engine {
             }
         }
         if self.error.is_none() {
-            if let Err(error) = self.slide(&request.source, key.now_ms) {
+            if let Err(error) = self.slide(&request.source, request.now_ms) {
                 self.error = Some(error);
                 self.native = None;
                 plx_base::eventlog::log(&format!("subtitle: ASS refused: {error:?}"));
@@ -722,14 +759,31 @@ impl Engine {
             .native
             .as_mut()
             .expect("loaded ASS source")
-            .render(key, previous);
+            .render(key, request.now_ms, previous);
         let frame = match result {
-            Ok(None) => {
-                if let Some(frame) = &self.frame {
-                    return frame.clone();
+            Ok(None) => match &self.frame {
+                Some(frame) if frame.error.is_none() => {
+                    if frame.source_id == key.source_id
+                        && frame.width == key.width
+                        && frame.height == key.height
+                    {
+                        return frame.clone();
+                    }
+                    // libass reports "unchanged" against the track the renderer showed before a
+                    // reuse (a seek, a track switch with the same header): the pixels stand, but
+                    // the frame must name the source it now answers for, or it is never shown.
+                    Arc::new(Frame {
+                        source_id: key.source_id,
+                        serial: next_serial(),
+                        width: key.width,
+                        height: key.height,
+                        rects: frame.rects.clone(),
+                        error: None,
+                    })
                 }
-                error_frame(key, Fault::RenderFailed)
-            }
+                Some(frame) => return frame.clone(),
+                None => error_frame(key, Fault::RenderFailed),
+            },
             Ok(Some(rects)) => {
                 if let Some(old) = &self.frame {
                     if old.source_id == key.source_id
@@ -751,6 +805,9 @@ impl Engine {
                 })
             }
             Err(error) => {
+                // The facade may have rejected the frame mid-draw: a kept renderer would answer a
+                // later reuse with "unchanged" and hand back this error frame for a new source.
+                self.native = None;
                 self.error = Some(error);
                 plx_base::eventlog::log(&format!("subtitle: ASS render failed: {error:?}"));
                 error_frame(key, error)
@@ -817,6 +874,13 @@ plx_base::dynlib! {
 
 struct Native(*mut c_void);
 
+#[cfg(test)]
+thread_local! {
+    /// Renderers created on this thread: the cost D12's reuse exists to avoid (a library, a
+    /// renderer and every face re-read). Per thread because the native tests run in parallel.
+    static OPEN_DATA_CALLS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 fn source_fonts(source: &Source) -> &[Font] {
     let (Content::Embedded { fonts, .. } | Content::Script { fonts, .. }) = &source.content;
     fonts
@@ -856,6 +920,8 @@ impl Native {
     /// A renderer holding `fonts` and the track `data` reads as: a script (`script` 1) or a codec
     /// private header (0).
     fn open_data(fonts: &[Font], data: &[u8], script: i32) -> Result<Self, Fault> {
+        #[cfg(test)]
+        OPEN_DATA_CALLS.with(|c| c.set(c.get() + 1));
         static LOADED: OnceLock<bool> = OnceLock::new();
         let loaded = *LOADED.get_or_init(|| {
             native_ass::load(Some(asset_dir())).ok() && unsafe { plx_ass_abi_version() } == NATIVE_ABI
@@ -913,7 +979,6 @@ impl Native {
     }
 
     /// Break lines by the Unicode rules (libunibreak) in the loaded track and every later one.
-    #[cfg(test)]
     fn set_wrap_unicode(&mut self, on: bool) -> bool {
         unsafe { plx_ass_set_features(self.0, i32::from(on)) >= 0 }
     }
@@ -968,13 +1033,13 @@ impl Native {
         Ok(())
     }
 
-    fn render(&mut self, key: Key, previous: &[Rect]) -> Result<Option<Vec<Rect>>, Fault> {
+    fn render(&mut self, key: Key, now_ms: i64, previous: &[Rect]) -> Result<Option<Vec<Rect>>, Fault> {
         let mut frame = NativeFrame::default();
         let started = std::time::Instant::now();
         let result = unsafe {
             plx_ass_render(
                 self.0,
-                key.now_ms,
+                now_ms,
                 key.width,
                 key.height,
                 key.storage_width,
@@ -1056,3 +1121,5 @@ impl Native {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod mailbox_tests;

@@ -68,7 +68,6 @@ fn request_key(source: &Source) -> Key {
         epoch: 1,
         source_id: source.id,
         revision: source.revision,
-        now_ms: 100,
         width: 320,
         height: 180,
         storage_width: 320,
@@ -92,15 +91,11 @@ fn off_retires_a_racing_publication_and_pending_source_outside_the_mailbox_lock(
     runtime.source_id.store(source.id, Ordering::Release);
     {
         let mut mailbox = runtime.mailbox.lock().unwrap();
-        mailbox.pending = Some(Request {
-            key,
-            source: source.clone(),
-        });
-        mailbox.requested = Some(key);
+        mailbox.request(key, 100, &source);
         // The worker owns the lock and has already accepted this epoch. Cancel
         // must return while the lock is held; the old publication then races in.
         clear_runtime(&runtime);
-        mailbox.published = Some((key.epoch, frame.clone()));
+        mailbox.publish_error(key, frame.clone());
     }
     drop(source);
     drop(frame);
@@ -116,13 +111,8 @@ fn off_retires_a_racing_publication_and_pending_source_outside_the_mailbox_lock(
     {
         let mailbox = runtime.mailbox.lock().unwrap();
         assert!(
-            mailbox.pending.is_none(),
-            "retire stale work before considering it for rendering"
-        );
-        assert!(mailbox.requested.is_none());
-        assert!(
-            mailbox.published.is_none(),
-            "a publication after cancellation must not be retained"
+            mailbox.is_empty(),
+            "retire stale work, requests and publications before considering them for rendering"
         );
     }
     assert!(source_witness.upgrade().is_some());
@@ -148,7 +138,7 @@ fn cancellation_before_worker_parks_is_remembered_and_releases_resources() {
     let frame = error_frame(key, Fault::RenderFailed);
     let witness = Arc::downgrade(&frame);
     runtime.source_id.store(source.id, Ordering::Release);
-    runtime.mailbox.lock().unwrap().published = Some((key.epoch, frame.clone()));
+    runtime.mailbox.lock().unwrap().publish_error(key, frame.clone());
     let observed_idle = Arc::new(AtomicBool::new(false));
     let may_park = Arc::new(AtomicBool::new(false));
     let (done_tx, done_rx) = mpsc::channel();
@@ -165,7 +155,7 @@ fn cancellation_before_worker_parks_is_remembered_and_releases_resources() {
             };
             {
                 let mailbox = runtime.mailbox.lock().unwrap();
-                assert!(mailbox.pending.is_none());
+                assert!(mailbox.is_empty() || mailbox.published.is_some());
                 assert_ne!(runtime.source_id.load(Ordering::Acquire), 0);
             }
             // Main will cancel only AFTER the idle observation and BEFORE park.
@@ -224,20 +214,27 @@ fn script(lines: &str) -> Arc<Source> {
     })
 }
 
-fn render(engine: &mut Engine, source: &Arc<Source>, now_ms: i64) -> Arc<Frame> {
-    let frame = engine.render(&Request {
-        source: source.clone(),
+fn job(source: &Arc<Source>, now_ms: i64, width: i32, height: i32, storage_width: i32, storage_height: i32) -> Job {
+    Job {
+        kind: Kind::Normal,
         key: Key {
             epoch: 1,
             source_id: source.id,
             revision: source.revision,
-            now_ms,
-            width: 320,
-            height: 180,
-            storage_width: 320,
-            storage_height: 180,
+            width,
+            height,
+            storage_width,
+            storage_height,
         },
-    });
+        now_ms,
+        seq: 1,
+        source: source.clone(),
+        queued: None,
+    }
+}
+
+fn render(engine: &mut Engine, source: &Arc<Source>, now_ms: i64) -> Arc<Frame> {
+    let frame = engine.render(&job(source, now_ms, 320, 180, 320, 180)).frame;
     assert_eq!(
         frame.error, None,
         "native fixture requires the built host library in pkg"
@@ -271,19 +268,7 @@ fn native_pixels_preserve_position_layers_alpha_motion_karaoke_and_readorder() {
     assert_eq!(pixel(&first, 25, 25), [255, 0, 0, 255]);
     assert_eq!(pixel(&first, 45, 35), [128, 0, 127, 255]);
     assert_eq!(pixel(&first, 75, 35), [0, 0, 255, 127]);
-    let coded = engine.render(&Request {
-        source: source.clone(),
-        key: Key {
-            epoch: 1,
-            source_id: source.id,
-            revision: source.revision,
-            now_ms: 100,
-            width: 320,
-            height: 180,
-            storage_width: 720,
-            storage_height: 480,
-        },
-    });
+    let coded = engine.render(&job(&source, 100, 320, 180, 720, 480)).frame;
     assert_eq!(coded.error, None);
     assert_eq!(pixel(&coded, 25, 25), [255, 0, 0, 255]);
     assert_eq!(
@@ -547,19 +532,7 @@ fn native_fragmented_script_stays_bounded_without_dropping_signs() {
             "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\an7\\pos({x},{y})\\p1}}m 0 0 l 4 0 4 4 0 4\n"));
     }
     let source = script(&lines);
-    let frame = Engine::default().render(&Request {
-        source: source.clone(),
-        key: Key {
-            epoch: 1,
-            source_id: source.id,
-            revision: 1,
-            now_ms: 100,
-            width: 1920,
-            height: 1080,
-            storage_width: 1920,
-            storage_height: 1080,
-        },
-    });
+    let frame = Engine::default().render(&job(&source, 100, 1920, 1080, 1920, 1080)).frame;
     assert_eq!(frame.error, None);
     assert!(frame.rects.len() <= MAX_REGIONS);
     for i in 0..70 {
@@ -621,12 +594,11 @@ fn native_with(fonts: &[Font], text: &str) -> Native {
         .expect("native fixture requires the built host library in pkg")
 }
 
-fn native_key(now_ms: i64) -> Key {
+fn native_key() -> Key {
     Key {
         epoch: 1,
         source_id: 1,
         revision: 1,
-        now_ms,
         width: 320,
         height: 180,
         storage_width: 320,
@@ -637,7 +609,7 @@ fn native_key(now_ms: i64) -> Key {
 /// The frame at `now_ms`; `None` is libass's "identical to the last frame".
 fn native_frame(native: &mut Native, now_ms: i64) -> Option<Vec<Rect>> {
     native
-        .render(native_key(now_ms), &[])
+        .render(native_key(), now_ms, &[])
         .expect("render of a valid track")
 }
 
@@ -933,7 +905,7 @@ fn native_fourteen_faces_of_one_family_all_render() {
 // ---- Source.origin, the restyle branch and the alignment classes (plan §2.4, §2.5, §4.6 case 3) ----
 
 use crate::player::text_ass::{self, AlignClass};
-use crate::player::text_style::TextStyle;
+use crate::player::text_style::{self, TextStyle};
 use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
 
 /// A Text-origin embedded track with the synthesized header for `style` and the `(start, end,
@@ -951,11 +923,41 @@ fn text_source(id: u64, revision: u64, style: &TextStyle, cues: &[(i64, i64, &st
     Arc::new(Source {
         id,
         revision,
-        origin: Origin::Text,
+        origin: Origin::Text(*style),
         content: Content::Embedded {
             header: text_ass::header(style).into_bytes().into(),
             events: events.into(),
             fonts: Arc::from([]),
+        },
+    })
+}
+
+fn open_calls() -> u32 {
+    OPEN_DATA_CALLS.with(|c| c.get())
+}
+
+const RED: &str = r"{\an7\pos(20,20)\c&H0000FF&\p1}m 0 0 l 40 0 40 40 0 40";
+const BLUE: &str = r"{\an7\pos(100,100)\c&HFF0000&\p1}m 0 0 l 40 0 40 40 0 40";
+
+/// An embedded track with `header`, one event `(start, duration, drawing)` per entry.
+fn track(header: &str, events: &[(i64, i64, &str)]) -> Arc<Source> {
+    Arc::new(Source {
+        id: next_source_id(),
+        revision: 1,
+        origin: Origin::Authored,
+        content: Content::Embedded {
+            header: header.as_bytes().into(),
+            fonts: Arc::from([]),
+            events: events
+                .iter()
+                .enumerate()
+                .map(|(n, (start_ms, duration_ms, text))| Event {
+                    start_ms: *start_ms,
+                    duration_ms: *duration_ms,
+                    payload: format!("{n},0,Default,,0,0,0,,{text}").into_bytes().into(),
+                })
+                .collect::<Vec<_>>()
+                .into(),
         },
     })
 }
@@ -966,19 +968,9 @@ fn style(size: SubtitleSize, position: SubtitlePosition) -> TextStyle {
 
 /// Render a Text-origin source into the full logical screen, as the screen asks for it.
 fn text_render(engine: &mut Engine, source: &Arc<Source>, now_ms: i64) -> Arc<Frame> {
-    let frame = engine.render(&Request {
-        source: source.clone(),
-        key: Key {
-            epoch: 1,
-            source_id: source.id,
-            revision: source.revision,
-            now_ms,
-            width: 1920,
-            height: 1080,
-            storage_width: 1920,
-            storage_height: 1080,
-        },
-    });
+    let frame = engine
+        .render(&job(source, now_ms, 1920, 1080, 1920, 1080))
+        .frame;
     assert_eq!(frame.error, None, "native fixture requires the built host library in pkg");
     frame
 }
@@ -1018,7 +1010,7 @@ fn restyle_applies_to_text_origin_tracks_of_equal_fonts_and_a_different_header_o
     let script = |bytes: &'static [u8]| Source {
         id: 1,
         revision: 1,
-        origin: Origin::Text,
+        origin: Origin::Text(no_cues_style()),
         content: Content::Script { bytes: Arc::from(bytes), fonts: Arc::from([]) },
     };
     assert!(restyles(&script(b"a"), &script(b"b")));
@@ -1054,7 +1046,7 @@ fn aligns_are_read_from_the_style_name_of_each_active_script_line() {
         Arc::new(Source {
             id: n as u64,
             revision: 1,
-            origin: Origin::Text,
+            origin: Origin::Text(no_cues_style()),
             content: Content::Script { bytes: text.into_bytes().into(), fonts: Arc::from([]) },
         })
     };
@@ -1076,6 +1068,17 @@ fn aligns_are_read_from_the_style_name_of_each_active_script_line() {
         other => other.clone(),
     };
     assert_eq!(engine.aligns(&Arc::new(next), 4200), Some(AlignSet { bottom: false, middle: false, top: true }));
+}
+
+#[test]
+fn renderer_settings_follow_the_origin_and_the_picks_it_carries() {
+    assert_eq!(Origin::Authored.renderer_settings(), None);
+    for size in [SubtitleSize::Medium, SubtitleSize::Large] {
+        let picks = style(size, SubtitlePosition::Low);
+        assert_eq!(Origin::Text(picks).renderer_settings(), Some((text_style::line_spacing(picks.scale()), true)));
+    }
+    let spacing = |size| Origin::Text(style(size, SubtitlePosition::Low)).renderer_settings().unwrap().0;
+    assert_ne!(spacing(SubtitleSize::Large), spacing(SubtitleSize::Medium));
 }
 
 #[test]
@@ -1152,6 +1155,36 @@ fn native_one_restyle_opens_no_new_renderer_and_renders_the_new_size_and_spacing
     assert_eq!(engine.native.as_ref().unwrap().stats().font_scans, 1);
 }
 
+/// A renderer reached by a fresh open takes the same settings as one reached by a restyle (plan
+/// §4.6): the line pitch of the size its header was built for, never the viewer's picks now.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_fresh_open_of_a_text_track_has_the_line_spacing_of_its_own_size() {
+    let _guard = plx_base::testlock::serial();
+    let two = [(0, 60_000, "Default", "HELLO\\NHELLO")];
+    let pitch_of = |engine: &mut Engine, picked: &TextStyle, built_for: &TextStyle| {
+        crate::route::restore_subtitle_size(picked.size);
+        crate::route::restore_subtitle_position(picked.position);
+        let frame = text_render(engine, &text_source(next_source_id(), 1, built_for, &two), 500);
+        let bands = ink(&frame.rects).bands;
+        assert_eq!(bands.len(), 2, "two lines");
+        bands[1].0 - bands[0].0
+    };
+    let medium = style(SubtitleSize::Medium, SubtitlePosition::Low);
+    let large = style(SubtitleSize::Large, SubtitlePosition::Low);
+    let pitch = pitch_of(&mut Engine::default(), &medium, &medium);
+    assert!((pitch - 48).abs() <= 1, "Medium opens at the 48 px pitch, got {pitch}");
+    let pitch = pitch_of(&mut Engine::default(), &large, &large);
+    assert!((pitch - 60).abs() <= 1, "Large opens at the 60 px pitch, got {pitch}");
+    // The picks moved on after the header was built: the header's own size still decides.
+    let pitch = pitch_of(&mut Engine::default(), &medium, &large);
+    assert!((pitch - 60).abs() <= 1, "a Large header keeps 60 px under Medium picks, got {pitch}");
+    let mut engine = Engine::default();
+    pitch_of(&mut engine, &large, &medium);
+    let pitch = pitch_of(&mut engine, &medium, &large);
+    assert!((pitch - 60).abs() <= 1, "and so does a restyle to it, got {pitch}");
+}
+
 /// The worker publishes the classes beside the frame, and `published_aligns` reads them back for
 /// that frame only, for a Text-origin source only.
 #[test]
@@ -1161,16 +1194,13 @@ fn native_the_worker_publishes_aligns_beside_a_text_frame_and_none_for_authored(
     let cues = [(0, 4000, "An8", "TOP"), (2000, 4000, "Default", "LOW")];
     let text = text_source(next_source_id(), 1, &no_cues_style(), &cues);
     // Ask until the worker has answered for `now`: the aligns it published for the frame it
-    // returned are what `expect` names (`None`: nothing published for it).
+    // returned (asked for by that frame's serial) are what `expect` names (`None`: nothing published for it).
     let until = |source: &Arc<Source>, now: i64, expect: Option<AlignSet>| {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         loop {
             let frame = request(source.clone(), now, 1920, 1080, 1920, 1080);
-            let got = published_aligns();
-            if let (Some(frame), Some(got)) = (&frame, got) {
-                assert_eq!(got.serial, frame.serial, "aligns are for the frame returned with them");
-            }
-            if frame.is_some() && got.map(|g| g.set) == expect {
+            let got = frame.as_ref().and_then(|f| published_aligns(f.serial));
+            if frame.is_some() && got == expect {
                 return;
             }
             assert!(std::time::Instant::now() < deadline, "worker never published {expect:?}, last {got:?}");
@@ -1182,4 +1212,131 @@ fn native_the_worker_publishes_aligns_beside_a_text_frame_and_none_for_authored(
     let authored = script("Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,x\n");
     until(&authored, 500, None);
     clear();
+}
+
+/// D12 part 1: a seek (new id, same header and fonts) and a switch between tracks that share a
+/// header reuse the renderer; only a different header or font set makes a new one.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_reuse_counts_renderers_for_seek_switch_and_authored_change() {
+    let mut engine = Engine::default();
+    let a = track(HEADER, &[(0, 2000, RED)]);
+    assert_eq!(pixel(&render(&mut engine, &a, 100), 25, 25), [255, 0, 0, 255]);
+    assert_eq!(open_calls(), 1, "the first track opens a renderer");
+
+    let seek = track(HEADER, &[(0, 2000, RED), (2000, 1000, BLUE)]);
+    let frame = render(&mut engine, &seek, 100);
+    assert_eq!(frame.source_id, seek.id);
+    assert_eq!(pixel(&frame, 25, 25), [255, 0, 0, 255]);
+    assert_eq!(open_calls(), 1, "a seek (new id, same header) opens no renderer");
+
+    let other = track(HEADER, &[(0, 2000, BLUE)]);
+    let frame = render(&mut engine, &other, 100);
+    assert_eq!(frame.source_id, other.id);
+    assert_eq!(pixel(&frame, 25, 25), [0; 4], "only the new track's events are shown");
+    assert_eq!(pixel(&frame, 105, 105), [0, 0, 255, 255]);
+    assert_eq!(open_calls(), 1, "a switch between identical headers opens no renderer");
+
+    let styled = HEADER.replace("&H0000FF00", "&H000000FF");
+    let authored = track(&styled, &[(0, 2000, RED)]);
+    assert_eq!(render(&mut engine, &authored, 100).source_id, authored.id);
+    assert_eq!(open_calls(), 2, "a different authored header opens a new renderer");
+}
+
+/// libass says "unchanged" when the renderer keeps showing what it showed before a reuse. The
+/// frame it answers with must name the source it now answers for, or `request` never returns it.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_unchanged_picture_after_a_switch_carries_the_new_source_id() {
+    // both blank at 5 s
+    let mut engine = Engine::default();
+    let a = track(HEADER, &[(0, 1000, RED)]);
+    let b = track(HEADER, &[(0, 1000, BLUE)]);
+    render(&mut engine, &a, 5000);
+    let frame = render(&mut engine, &b, 5000);
+    assert_eq!(frame.source_id, b.id, "blank to blank");
+    assert!(frame.rects.is_empty());
+    // the same picture on both
+    let c = track(HEADER, &[(0, 9000, RED)]);
+    let d = track(HEADER, &[(0, 9000, RED)]);
+    let shown = render(&mut engine, &c, 100);
+    let frame = render(&mut engine, &d, 100);
+    assert_eq!(frame.source_id, d.id, "same picture");
+    assert_eq!(frame.rects, shown.rects);
+    assert_eq!(open_calls(), 1);
+}
+
+fn validity_at(engine: &mut Engine, source: &Arc<Source>, now_ms: i64) -> (Arc<Frame>, Validity) {
+    let out = engine.render(&job(source, now_ms, 320, 180, 320, 180));
+    assert_eq!(out.frame.error, None, "native fixture requires the built host library in pkg");
+    (out.frame, out.validity)
+}
+
+/// The window must agree with what libass really draws, for the odd stamps `string2timecode`
+/// reads its own way (a fraction is centiseconds; no fraction is 0).
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_validity_boundaries_are_where_libass_draws() {
+    let line = |start: &str, end: &str| {
+        format!("Dialogue: 0,{start},{end},Default,,0,0,0,,{{\\an7\\pos(20,20)\\p1}}m 0 0 l 40 0 40 40 0 40\n")
+    };
+    // 1 s + 5 cs .. 2 s + 50 cs; the second line has no fractions at all: libass reads 0..0
+    let source = script(&format!("{}{}", line("0:00:01.5", "0:00:02.50"), line("0:00:03", "0:00:05")));
+    let mut engine = Engine::default();
+    let (frame, v) = validity_at(&mut engine, &source, 500);
+    assert!(frame.rects.is_empty());
+    assert_eq!((v.from_ms, v.until_ms), (i64::MIN, 1050));
+    // rendering exactly at each computed boundary shows the change
+    assert!(validity_at(&mut engine, &source, 1049).0.rects.is_empty());
+    let (frame, v) = validity_at(&mut engine, &source, 1050);
+    assert_eq!(pixel(&frame, 25, 25), [0, 255, 0, 255], "visible from 1050 ms");
+    assert_eq!((v.from_ms, v.until_ms), (1050, 2500));
+    assert_eq!(pixel(&validity_at(&mut engine, &source, 2499).0, 25, 25)[3], 255);
+    let (frame, v) = validity_at(&mut engine, &source, 2500);
+    assert!(frame.rects.is_empty(), "gone at 2500 ms");
+    assert_eq!((v.from_ms, v.until_ms), (2500, i64::MAX));
+    assert!(validity_at(&mut engine, &source, 4000).0.rects.is_empty(), "the stamp-less line never shows");
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_karaoke_and_motion_are_animated_only_while_active() {
+    let source = script(concat!(
+        "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(20,100)}{\\kf100}AAAA\n",
+        "Dialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,{\\an7\\pos(20,20)\\p1}m 0 0 l 4 0 4 4 0 4\n",
+    ));
+    let mut engine = Engine::default();
+    assert!(validity_at(&mut engine, &source, 500).1.animated);
+    let (frame, v) = validity_at(&mut engine, &source, 3500);
+    assert!(!v.animated && !frame.rects.is_empty());
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_script_window_clamps_validity_and_non_windowed_scripts_have_timings() {
+    // 30 000 lines a second apart, with a two-minute hole after the 15 000th
+    let t = |ms: i64| format!("{}:{:02}:{:02}.{:02}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000 / 10);
+    let mut lines = String::new();
+    for i in 0..30_000i64 {
+        let at = i * 1000 + if i >= 15_000 { 120_000 } else { 0 };
+        lines.push_str(&format!(
+            "Dialogue: 0,{},{},Default,,0,0,0,,{{\\an7\\pos(10,10)\\p1}}m 0 0 l 50 0 50 50 0 50\n",
+            t(at), t(at + 900)));
+    }
+    let source = script(&lines);
+    let mut engine = Engine::default();
+    let now = 15_060_000;
+    let (frame, v) = validity_at(&mut engine, &source, now);
+    assert!(frame.rects.is_empty(), "in the hole");
+    let (lo, hi) = engine.script.as_ref().unwrap().window.unwrap();
+    assert_eq!(lo, now - 10_000);
+    assert_eq!(v.from_ms, lo, "the raw boundary is older than the window, which only reaches back to lo");
+    assert_eq!(v.until_ms, 15_120_000);
+    assert!(v.until_ms <= hi);
+
+    // a script that is loaded whole keeps its timings too
+    let small = script("Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(10,10)\\p1}m 0 0 l 5 0 5 5 0 5\n");
+    let (_, v) = validity_at(&mut engine, &small, 500);
+    assert_eq!((v.from_ms, v.until_ms), (i64::MIN, 1000));
+    assert!(engine.script.as_ref().unwrap().window.is_none());
 }
