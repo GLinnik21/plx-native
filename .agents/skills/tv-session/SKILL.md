@@ -51,6 +51,14 @@ tools/tv-session.sh wan off [TTL]|on|status  # cut the SET's uplink (LAN intact)
 tools/tv-session.sh down [--flavor <f>]     # hand the TV back
 ```
 
+`up --mock-plextv=PORT --screen login` signs the debug install in through `tests/mock_pms.py`'s own
+plex.tv (mock started with `--host 0.0.0.0 --advertise-ip <host LAN IPv4> --authorize-after 2`): it
+arms `plxnative-plextv`, opens the reverse ssh tunnel that makes that loopback address real on the
+set, and the mock's server arrives OWNED through the app's normal sign-in, so server-updates
+(owned-only) can be checked without a real account. `down` closes the tunnel (`.tv-plextv.pid`).
+The stored session it leaves on the install is mock-only; clear `state/` under the debug runtime
+root when done.
+
 `screen off` blanks the picture while the app keeps running and playback keeps decoding — a PANEL
 state, not an app state (see the owner's panel rule below). `sound off`/`on` calls
 `com.webos.service.audio/setMuted` and reads `getVolume` back to confirm rather than trusting the

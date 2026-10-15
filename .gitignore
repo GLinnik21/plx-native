@@ -79,6 +79,7 @@ pkg/logmprobe
 .tv-dpad-pass
 .tv-tunnel.pid
 .tv-tunnel.log
+.tv-plextv.pid
 .tv-remote-url
 pkg/.build-config
 pkg/.config-local-stamp

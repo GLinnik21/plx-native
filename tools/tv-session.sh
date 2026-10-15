@@ -56,6 +56,18 @@
 #   --arm NAME[=VAL]  also arm trigger plxnative-NAME (repeatable), written with the screen's own
 #                     triggers BEFORE the launch, which is the only time a boot trigger is read.
 #                     For a scene's extras, e.g. `--arm menu=1 --arm submenuosc=900 --arm framedrop=25`
+#   --mock-plextv=PORT
+#                     sign the TV in through tests/mock_pms.py's own plex.tv (the mock must be
+#                     serving on THIS host at PORT, started with `--host 0.0.0.0 --advertise-ip
+#                     <this host's LAN IPv4> --authorize-after 2`, so its resources row names a
+#                     LAN address the set can reach). Debug install only. Arms
+#                     `plxnative-plextv=http://127.0.0.1:PORT` and opens the reverse ssh tunnel
+#                     that makes that loopback address real ON THE DEVICE (the trigger accepts only
+#                     loopback, deliberately). Implies --no-token; pair it with `--screen login`:
+#                     the QR sign-in authorizes itself on the 2nd poll and the mock's server arrives
+#                     OWNED, so the owned-only rules (server updates) run unmodified. Refuses
+#                     --guest/--owner, and a mock whose identity is not the synthetic one. The
+#                     tunnel lives in `.tv-plextv.pid`; `down` (and the next `up`) closes it.
 #   --keep            do not clear existing triggers first (rarely what you want)
 #
 # SCREEN OFF is a panel state, not an app state. `luna://com.webos.service.tvpower/power/
@@ -186,6 +198,9 @@ STREAM_PID_FILE="$REPO/.tv-stream.pid"
 # for is the one failure mode here that is silent AND outward-facing.
 DPAD_PID_FILE="$REPO/.tv-dpad.pid"
 TUNNEL_PID_FILE="$REPO/.tv-tunnel.pid"
+# --mock-plextv's reverse ssh tunnel (device 127.0.0.1:PORT -> this host's mock). Not outward-facing,
+# but it is a long-lived process holding a port on the set, so `down` closes it like the rest.
+PLEXTV_PID_FILE="$REPO/.tv-plextv.pid"
 REMOTE_URL_FILE="$REPO/.tv-remote-url"
 DPAD_PASS_FILE="$REPO/.tv-dpad-pass"
 
@@ -197,7 +212,7 @@ DPAD_PASS_FILE="$REPO/.tv-dpad-pass"
 # `venc: N frm ...`), the TS goes to the dead socket, and the new streamer sees ZERO bytes while
 # every log line says the pipeline is healthy. So this runs BEFORE the relaunch, not after.
 stop_viewers() {
-  for f in "$TUNNEL_PID_FILE" "$DPAD_PID_FILE" "$STREAM_PID_FILE"; do
+  for f in "$PLEXTV_PID_FILE" "$TUNNEL_PID_FILE" "$DPAD_PID_FILE" "$STREAM_PID_FILE"; do
     [ -f "$f" ] && { kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; }
   done
   pkill -f 'stream-screen.py --port' 2>/dev/null
@@ -662,10 +677,36 @@ await_direct_screen() {
   return 1
 }
 
+# `up --mock-plextv=PORT`: prove the host side is tests/mock_pms.py (its synthetic identity, the
+# same two answers tools/mock-guest.py demands) and then open the reverse tunnel that makes
+# 127.0.0.1:PORT on the DEVICE reach it. The host-side check is what refuses a real server on that
+# port; the device-side probe only proves the tunnel carries.
+open_mock_plextv() {
+  local port="$1" ident user
+  ident=$(curl -s -m 5 -H 'Accept: application/json' "http://127.0.0.1:$port/identity" 2>/dev/null)
+  user=$(curl -s -m 5 -H 'Accept: application/json' "http://127.0.0.1:$port/api/v2/user" 2>/dev/null)
+  case "$ident" in *1.41.0.0000-synthetic*) ;; *) bad "nothing synthetic answers on 127.0.0.1:$port — start tests/mock_pms.py first"; return 1 ;; esac
+  case "$user" in *'"demo-user"'*) ;; *) bad "127.0.0.1:$port is not the mock's plex.tv"; return 1 ;; esac
+  [ -f "$PLEXTV_PID_FILE" ] && { kill "$(cat "$PLEXTV_PID_FILE")" 2>/dev/null; rm -f "$PLEXTV_PID_FILE"; }
+  (nohup env PLX_TV_ADDR="$HOST" "$REPO/tools/tv-ssh" ssh -N -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=15 -R "$port:127.0.0.1:$port" tv \
+      > /dev/null 2>&1 </dev/null & echo $! > "$PLEXTV_PID_FILE") ; disown 2>/dev/null || true
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    sleep 1
+    if tv "curl -s -m 3 http://127.0.0.1:$port/identity" 2>/dev/null | grep -q 1.41.0.0000-synthetic; then
+      ok "mock plex.tv reachable on the device at 127.0.0.1:$port (reverse tunnel, pid file .tv-plextv.pid)"
+      return 0
+    fi
+  done
+  bad "the reverse tunnel did not come up (the device cannot reach the mock on 127.0.0.1:$port)"
+  return 1
+}
+
 # ------------------------------------------------------------ commands -------
 cmd_up() {
   local screen=home guest=0 mock=0 owner=0 dry_run=0 stream="" no_token=0 keep=0 remote="" server_slot="" server_set=0
-  local direct_kind="" direct_rk="" direct_marker="" extra_arm=()
+  local direct_kind="" direct_rk="" direct_marker="" extra_arm=() mock_plextv=""
   local identity_desc="" push_guest=0 push_owner=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -684,6 +725,7 @@ cmd_up() {
       --remote=*) remote="${1#*=}"; shift ;;
       --no-token) no_token=1; shift ;;
       --keep) keep=1; shift ;;
+      --mock-plextv=*) mock_plextv="${1#*=}"; shift ;;
       --arm) [ $# -ge 2 ] || { bad "--arm needs NAME[=VALUE]"; exit 2; }
              extra_arm+=("$2"); shift 2 ;;
       --arm=*) extra_arm+=("${1#*=}"); shift ;;
@@ -702,6 +744,15 @@ cmd_up() {
   if [ "$guest" = 1 ] && [ "$no_token" = 1 ]; then
     echo "--guest and --no-token are mutually exclusive: --no-token boots the stored session (or the who's-watching picker), which is a THIRD identity, distinct from both --guest and --owner" >&2
     exit 2
+  fi
+  if [ -n "$mock_plextv" ]; then
+    case "$mock_plextv" in ''|*[!0-9]*) bad "--mock-plextv=PORT needs a port number"; exit 2 ;; esac
+    if [ "$guest" = 1 ] || [ "$owner" = 1 ]; then
+      bad "--mock-plextv signs in through the mock's plex.tv; it cannot be combined with --guest or --owner"; exit 2
+    fi
+    if [ "$FLAVOR" != debug ]; then bad "--mock-plextv requires the debug install"; exit 2; fi
+    no_token=1
+    extra_arm+=("plextv=http://127.0.0.1:$mock_plextv")
   fi
   configure_direct_screen || exit 2
   # --remote is --stream plus a front door: there is nothing to publish without a stream, so it
@@ -845,6 +896,8 @@ cmd_up() {
   elif [ "$push_owner" = 1 ]; then
     push_token || info "continuing without a token — expect the QR sign-in screen"
   fi
+
+  if [ -n "$mock_plextv" ]; then open_mock_plextv "$mock_plextv" || exit 1; fi
 
   PREV_PIDS=$(app_pids)
   relaunch
