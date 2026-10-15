@@ -235,8 +235,8 @@ something.
   its dedup identity, so a seek re-read changes nothing, and the track's events are a newest-wins view
   of those raw cues), over the bundled Inter and per-script Noto faces (`ass/fonts.rs`, `docs/ass-subtitles.md`).
   Nothing produces into `SHARED.sub_cues` any more (a text cue goes to `ass_source`); the store stays,
-  dead, until the plan's PR 10, as are `active_subtitle*` and the screen's `draw_subtitles` (PR 8/10
-  remove them). Sidecar ASS keeps the complete script rather than requesting a SubRip conversion. Don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
+  dead, until the plan's PR 10, as are `active_subtitle*`; the screen no longer calls appkit's
+  `draw_subtitles`/`caption_page` (PR 8), which PR 9 deletes. Sidecar ASS keeps the complete script rather than requesting a SubRip conversion. Don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
   soft-subs note. An image sub's rect coords are in **the subtitle stream's own authoring canvas** —
   1920×1080 for Blu-ray PGS but 720×480/576 for a DVD VobSub rip — so `ff::sub_canvas` reads that
   canvas off the decoder (via `avcodec_parameters_from_context`, no raw struct offset; the ABI proof
@@ -253,7 +253,8 @@ something.
   and a script loaded in windows is exempt from the 8 MiB whole-script bound (a 4 MiB TIS-620 file is
   ~12 MiB once decoded to UTF-8); each window stays within it, except a single line larger than the bound, which the renderer refuses. What `sidecar::active_span` still
   returns is only the on-screen failure notice (`notice()`, `notice_shown()`; 6 s), drawn by the
-  bespoke caption path until PR 8. It is silent where the server burns the selection (a re-encode, or a remux whose embedded
+  player screen with `draw_subtitle_message` (and `notice_shown()` is a term of its `clock_fingerprint`, so
+  the expiry owes a frame). It is silent where the server burns the selection (a re-encode, or a remux whose embedded
   track the app may not read itself); over a plain remux the app draws it, and draws an embedded
   track too (`subside.rs`) when the link is local and the Part is 1..=30000 kbps. Which sidecar
   starts is `sidecar::restore_selection`'s one answer: the server's selected one, else the one the
