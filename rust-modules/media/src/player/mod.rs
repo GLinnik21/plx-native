@@ -18,6 +18,7 @@
 pub mod adapter;
 pub mod claim_hold;
 pub mod ass; // pinned libass worker and immutable rendered frames
+pub mod ass_perf; // per-second libass cost line (`assperf:`)
 pub mod ass_script; // a sidecar script fed in windows around the playhead
 pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub mod engine;
@@ -46,6 +47,8 @@ pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ..
 pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
 #[cfg(feature = "hostsim")]
 pub mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
+pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
+pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
 pub mod threads;
 pub mod video_geometry;
 pub mod vp9_hdr; // HDR10 for a VP9 stream: the container's PQ tag, written into the sourceInfo envelope ACB is sent
