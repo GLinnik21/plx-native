@@ -8,21 +8,10 @@ use std::sync::OnceLock;
 pub const CONTRIBUTE_URL: &str =
     "https://github.com/GLinnik21/plx-native/blob/main/docs/localization.md";
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Preference {
-    #[default]
-    System,
-    En,
-    Es,
-    Be,
-    Fr,
-    It,
-}
-/// Every language the app ships, `System` excluded — the grid a text-fit test sums over.
-#[cfg(any(test, feature = "test-support"))]
-pub const SHIPPED: [Preference; 5] =
-    [Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::It];
+// `Preference`, `Language`, `SHIPPED` and every table over them are generated from
+// `locales/languages.json` (see `platform/build_support/catalog.rs`); this file holds only the
+// behavior around them. A shipped tag is never renamed: it is what the preferences store.
+include!(concat!(env!("OUT_DIR"), "/languages.rs"));
 impl<'de> Deserialize<'de> for Preference {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let v = serde_json::Value::deserialize(d)?;
@@ -30,82 +19,9 @@ impl<'de> Deserialize<'de> for Preference {
     }
 }
 impl Preference {
-    pub fn from_tag(s: &str) -> Self {
-        match s {
-            "en" => Self::En,
-            "es" => Self::Es,
-            "be" => Self::Be,
-            "fr" => Self::Fr,
-            "it" => Self::It,
-            _ => Self::System,
-        }
-    }
-    pub fn tag(self) -> &'static str {
-        match self {
-            Self::System => "system",
-            Self::En => "en",
-            Self::Es => "es",
-            Self::Be => "be",
-            Self::Fr => "fr",
-            Self::It => "it",
-        }
-    }
     /// Serde's `skip_serializing_if`: System is what an absent preference already means.
     pub fn is_system(&self) -> bool {
         *self == Self::System
-    }
-    pub fn native_name(self) -> &'static str {
-        match self {
-            Self::System => msg::core_system_default(),
-            Self::En => "English",
-            Self::Es => "Español",
-            Self::Be => "Беларуская",
-            Self::Fr => "Français",
-            Self::It => "Italiano",
-        }
-    }
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Language {
-    En,
-    Es,
-    Be,
-    Fr,
-    It,
-    /// Generated expanded labels; selectable only by the host simulator.
-    #[cfg_attr(not(any(test, feature = "test-support", feature = "hostsim")), allow(dead_code))]
-    Pseudo,
-}
-impl Language {
-    pub fn tag(self) -> &'static str {
-        match self {
-            Self::En | Self::Pseudo => "en",
-            Self::Es => "es",
-            Self::Be => "be",
-            Self::Fr => "fr",
-            Self::It => "it",
-        }
-    }
-    fn regional(self) -> &'static str {
-        match self {
-            Self::En | Self::Pseudo => "en-US",
-            Self::Es => "es-ES",
-            Self::Be => "be-BY",
-            Self::Fr => "fr-FR",
-            Self::It => "it-IT",
-        }
-    }
-    fn parse(s: &str) -> Self {
-        let Ok(l) = s.parse::<Locale>() else {
-            return Self::En;
-        };
-        match l.id.language.as_str() {
-            "es" if l.id.script.is_none_or(|s| s.as_str() == "Latn") => Self::Es,
-            "be" if l.id.script.is_none_or(|s| s.as_str() == "Cyrl") => Self::Be,
-            "fr" if l.id.script.is_none_or(|s| s.as_str() == "Latn") => Self::Fr,
-            "it" if l.id.script.is_none_or(|s| s.as_str() == "Latn") => Self::It,
-            _ => Self::En,
-        }
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -253,26 +169,11 @@ static SAVED_PREFERENCE: std::sync::atomic::AtomicU8 = std::sync::atomic::Atomic
 
 /// The confirmed next-launch setting. Reading it never touches credential storage.
 pub fn saved_preference() -> Preference {
-    match SAVED_PREFERENCE.load(std::sync::atomic::Ordering::Acquire) {
-        1 => Preference::En,
-        2 => Preference::Es,
-        3 => Preference::Be,
-        4 => Preference::Fr,
-        5 => Preference::It,
-        _ => Preference::System,
-    }
+    Preference::from_slot(SAVED_PREFERENCE.load(std::sync::atomic::Ordering::Acquire))
 }
 
 pub fn set_saved_preference(value: Preference) {
-    let value = match value {
-        Preference::System => 0,
-        Preference::En => 1,
-        Preference::Es => 2,
-        Preference::Be => 3,
-        Preference::Fr => 4,
-        Preference::It => 5,
-    };
-    SAVED_PREFERENCE.store(value, std::sync::atomic::Ordering::Release);
+    SAVED_PREFERENCE.store(value.slot(), std::sync::atomic::Ordering::Release);
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -302,18 +203,10 @@ pub fn pseudo_on_this_thread_for_test() -> ThreadLocaleGuard {
 /// drops — the pseudo-locale's thread-local door, for tests that measure real translations.
 #[cfg(any(test, feature = "test-support"))]
 pub fn language_on_this_thread_for_test(preference: Preference) -> ThreadLocaleGuard {
-    static EN: OnceLock<LocaleContext> = OnceLock::new();
-    static ES: OnceLock<LocaleContext> = OnceLock::new();
-    static BE: OnceLock<LocaleContext> = OnceLock::new();
-    static FR: OnceLock<LocaleContext> = OnceLock::new();
-    static IT: OnceLock<LocaleContext> = OnceLock::new();
-    let slot = match preference {
-        Preference::Es => &ES,
-        Preference::Be => &BE,
-        Preference::Fr => &FR,
-        Preference::It => &IT,
-        Preference::En | Preference::System => &EN,
-    };
+    static CONTEXTS: [OnceLock<LocaleContext>; Language::SHIPPED.len()] =
+        [const { OnceLock::new() }; Language::SHIPPED.len()];
+    // System resolves to English here, as a test without a platform locale does.
+    let slot = &CONTEXTS[preference.language().unwrap_or(Language::En).index()];
     let cx = slot.get_or_init(|| LocaleContext::resolve(preference, None, None, None, None));
     ThreadLocaleGuard(THREAD_LOCALE.with(|slot| slot.replace(Some(cx))))
 }

@@ -146,3 +146,89 @@ fn pseudo_locale_exercises_expansion_without_changing_arguments() {
     assert!(!msg::settings_language_contribute_body_in(&cx).contains("github.com"),
         "only the guide caption belongs to the translated catalog, never its address");
 }
+
+#[test]
+fn declared_plural_categories_are_the_languages_own_cldr_categories() {
+    for lang in Language::SHIPPED {
+        let rules = PluralRules::try_new_cardinal(lang.tag().parse::<Locale>().unwrap().into())
+            .expect("compiled plural data");
+        let mut icu: Vec<String> = rules.categories().map(|c| format!("{c:?}").to_lowercase()).collect();
+        icu.sort();
+        let (_, declared) = Language::PLURALS.iter().find(|(l, _)| *l == lang).expect("declared");
+        let mut declared: Vec<String> = declared.iter().map(|s| s.to_string()).collect();
+        declared.sort();
+        assert_eq!(declared, icu, "{}: languages.json plurals differ from CLDR", lang.tag());
+    }
+}
+
+/// Baked ICU data falls back to root for a locale it lacks and still "succeeds", so a constructor
+/// that returns Ok proves nothing: ask the data provider which locale actually answered.
+#[test]
+fn every_shipped_language_has_its_own_icu_data_not_root() {
+    use icu_provider::prelude::*;
+    fn answered_by<M: DataMarker>(
+        provider: &impl DataProvider<M>,
+        locale: &Locale,
+    ) -> Option<DataLocale> {
+        let data_locale = DataLocale::from(locale.clone());
+        let id = DataIdentifierBorrowed::for_locale(&data_locale);
+        let response = provider
+            .load(DataRequest { id, ..Default::default() })
+            .unwrap_or_else(|e| panic!("{locale}: {e}"));
+        response.metadata.locale
+    }
+    // English is CLDR's root: its data is stored once, under und, so it answers for "en" legitimately.
+    for lang in Language::SHIPPED.into_iter().filter(|l| *l != Language::En) {
+        for tag in [lang.tag(), lang.regional()] {
+            let locale: Locale = tag.parse().unwrap();
+            for (what, got) in [
+                ("decimal symbols", answered_by::<icu_decimal::provider::DecimalSymbolsV1>(&icu_decimal::provider::Baked, &locale)),
+                ("plurals", answered_by::<icu_plurals::provider::PluralsCardinalV1>(&icu_plurals::provider::Baked, &locale)),
+            ] {
+                if let Some(got) = got {
+                    assert_eq!(
+                        got.language.as_str(),
+                        lang.tag(),
+                        "{tag}: {what} data was answered by {got}, not the language's own"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn registered_languages_keep_their_persisted_identity() {
+    // A subset, never an equality: a release that shipped a language pins its (tag, row) here.
+    const HISTORICAL: &[(&str, u32)] = &[("en", 1), ("es", 2), ("be", 3), ("fr", 5)];
+    for (tag, row) in HISTORICAL {
+        let p = Preference::from_tag(tag);
+        assert!(SHIPPED.contains(&p), "{tag} is no longer shipped");
+        assert_eq!(p.tag(), *tag);
+        assert_eq!(p.settings_row(), *row, "{tag}: Settings row identity moved");
+        assert_eq!(serde_json::to_string(&p).unwrap(), format!("\"{tag}\""));
+    }
+    for p in SHIPPED {
+        assert_eq!(Preference::from_tag(p.tag()), p);
+        assert_eq!(serde_json::to_string(&p).unwrap(), format!("\"{}\"", p.tag()));
+        assert_eq!(serde_json::from_str::<Preference>(&format!("\"{}\"", p.tag())).unwrap(), p);
+        assert_eq!(Preference::from_slot(p.slot()), p);
+        assert_eq!(p.language().map(Language::tag), Some(p.tag()));
+        assert!((1..1000).contains(&p.settings_row()));
+    }
+    assert_eq!(serde_json::to_string(&Preference::System).unwrap(), "\"system\"");
+    assert_eq!(Preference::from_tag("xx"), Preference::System);
+    assert_eq!(Preference::from_slot(Preference::System.slot()), Preference::System);
+}
+
+#[test]
+fn every_registered_language_has_launcher_metadata() {
+    let resources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pkg/resources");
+    for p in SHIPPED.iter().filter(|p| **p != Preference::En) {
+        assert!(
+            resources.join(p.tag()).join("appinfo.json").is_file(),
+            "pkg/resources/{}/appinfo.json: the launcher's name for this language (docs/localization.md#adding-a-language)",
+            p.tag()
+        );
+    }
+}
