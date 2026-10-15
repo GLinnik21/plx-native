@@ -49,6 +49,11 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `[port webos]` to `webos`, `keymanager`, `system`, `player::ffi` or `port`. Fix the reference
   (`docs/module-layers.md` says where code belongs and how to cut an upward name) instead of
   adding a (file, member) pair to `ci/allow/layers.txt`, which is empty and only shrinks.
+- **Re-basing a stacked PR after the one below it squashes:** on the upper branch, `git merge
+  <lower's final head>`, `git merge <squash>^`, `git merge -s ours <squash>`, then
+  `git merge origin/main`. `-s ours` on the squash alone drops whatever `main` gained before it.
+- `gh pr merge --auto --squash --match-head-commit <sha>` can fail just after a push with "expected
+  head oid does not match"; wait ~15 s and retry. It is a race, not a real mismatch.
 - Preserve unrelated user changes and generated artifacts. Never clean or reset a dirty tree to
   make a task easier.
 - This repository is public. Never publish values from gitignored private files such as `.tv-host`,
@@ -89,6 +94,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   takes ALL the slots (`--exclusive`)
   and no new check starts once it has asked. Never launch `make check` in the foreground with a
   short tool timeout — a queued run can wait a long time before it even starts building.
+- Two `make check` traps: `ci/check-deps.sh`'s libm lint reads any `.log(` call as `f64::ln`, so
+  don't name a method `log`; every new `MAX_*` / `*_MAX_*` constant needs a classification in
+  `ci/list-caps.ini`.
 - While iterating on one crate, `make test-crate C=plx_ui [T=filter] [DEPS=1]` builds and runs only
   that crate's lib tests in `make test-fast`'s incremental tree. It is a loop, not a gate.
 - `make test-crate` does NOT enable `hostsim`: tests under `#[cfg(all(test, feature = "hostsim"))]`
@@ -169,6 +177,13 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - Hold the TV lock around the device commands themselves and release as soon as the device work
   pauses. Do not hold a lease while building, reading screenshots or writing Markdown; other lanes
   queue behind it.
+- A dev-token boot (`--guest --mock`) registers its server undescribed, so `owned` is false and
+  owned-only features (the PMS notification feed) stay dark. Test them with `tools/tv-session.sh up
+  --mock-plextv=PORT --screen login`, which signs in through the mock's plex.tv; never vouch the
+  rule in code.
+- `tools/mock-guest.py` can refuse a freshly started LAN mock ("configured PMS must answer as
+  tests/mock_pms.py") for a few minutes while loopback already answers; retry rather than debugging
+  the app.
 - The tracked default is `FLAVOR=debug`. Any stable install, package, deploy, or release action
   must name `FLAVOR=stable` explicitly and follow the `cut-release` skill. Do not bypass the stable
   guard or the TV lock unless the user explicitly directs the exceptional action.
