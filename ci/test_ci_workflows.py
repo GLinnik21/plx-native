@@ -414,7 +414,8 @@ class DependabotNotices(unittest.TestCase):
 
     def test_pull_request_code_is_data_never_executed(self):
         job = job_body(self.NAME, "regenerate")
-        checkouts = re.findall(r"actions/checkout@[0-9a-f]{40} # v\d+\n        with:\n((?:          .*\n)+)", job)
+        # any pinned SHA and any `# vX.Y.Z` comment: Dependabot bumps both, the security shape is what is asserted
+        checkouts = re.findall(r"actions/checkout@[0-9a-f]{40}[^\n]*\n        with:\n((?:          .*\n)+)", job)
         self.assertEqual(len(checkouts), 2)
         for block in checkouts:
             self.assertIn("persist-credentials: false", block)

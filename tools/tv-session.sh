@@ -11,6 +11,8 @@
 #   tv-session.sh screen off|on  blank the PANEL while the app keeps running (see below)
 #   tv-session.sh sound off|on|status
 #                                mute/unmute the TELEVISION, independent of the panel (see below)
+#   tv-session.sh background [APPID]|foreground|fg
+#                                send the app to the background / bring it back (see below)
 #   tv-session.sh wan off [TTL]|on|status
 #                                cut the TELEVISION's route to the internet, LAN intact (see below)
 #   tv-session.sh down           hand the TV back: strip automation, close the app (no relaunch)
@@ -1233,6 +1235,51 @@ cmd_screen() {
   fi
 }
 
+# Send the app to the BACKGROUND and bring it back: the lifecycle edges (SDL WILL/DID enter
+# background `0x103`/`0x104`, WILL/DID enter foreground `0x105`/`0x106`) as the OS delivers them.
+# On this webOS 4.5 set the LG launcher/Home/Settings are OVERLAYS and deliver NO edge (see the
+# skill), so `background` launches a real full-screen app through the application manager instead
+# (default `org.webosbrew.hbchannel`, override with an argument or PLX_BG_APP) and asserts it is now
+# the foreground app. `foreground` launches THIS flavour's own id again -- the same call `up` makes,
+# but with NO close-first, so the pid must be unchanged (a changed pid means the app died, which is
+# a finding, not a relaunch) -- and asserts the app is the foreground app again. No setting is
+# changed and nothing is injected; `fg` only reads the foreground app (read-only, advisory lock).
+fg_app() {
+  tvq "script -qc \"luna-send -n 1 -f luna://com.webos.applicationManager/getForegroundAppInfo '{}'\" /dev/null" \
+    | tr -d '\r\n' | tr -s ' ' | sed -En 's/.*"appId": *"([^"]*)".*/\1/p'
+}
+launch_app() {  # $1 = app id. -i keeps the subscriber open for the launch to take (see relaunch).
+  tv "luna-send -i luna://com.webos.applicationManager/launch '{\"id\":\"$1\"}' >/dev/null 2>&1 & \
+      LP=\$!; sleep 5; kill \$LP 2>/dev/null" >/dev/null 2>&1
+}
+cmd_lifecycle() {
+  local what="${1:-}" target pid before after
+  case "$what" in
+    fg) advise_lock "tv-session fg"; ensure_awake || exit 1; info "foreground app: $(fg_app)"; return 0 ;;
+    background) target="${2:-${PLX_BG_APP:-org.webosbrew.hbchannel}}" ;;
+    foreground) target="$APPID" ;;
+    *) echo "usage: tv-session.sh background [APPID] | foreground | fg" >&2; exit 2 ;;
+  esac
+  require_lock "tv-session $what"
+  ensure_awake || exit 1
+  pid=$(app_pids)
+  [ -n "$pid" ] || { bad "$APPID is not running; nothing to $what"; return 1; }
+  before=$(fg_app)
+  if [ "$what" = background ] && [ "$before" != "$APPID" ]; then
+    bad "$APPID is not the foreground app ($before); refusing to launch over someone else's screen"; return 1
+  fi
+  info "foreground before: $before; launching $target (pid $pid)"
+  launch_app "$target"
+  after=$(fg_app)
+  if [ "$after" != "$target" ]; then
+    bad "foreground is '$after', not $target: the launch did not take"; return 1
+  fi
+  if [ "$(app_pids)" != "$pid" ]; then
+    bad "app pid changed ($pid -> $(app_pids)): the app died or restarted instead of $what"; return 1
+  fi
+  ok "$what: $target is the foreground app; $APPID still pid $pid"
+}
+
 # Mute/unmute the TELEVISION's own audio (see SOUND in the header), or just read the flag back.
 # `off`/`on` call setMuted and then RE-READ getVolume to confirm rather than trusting setMuted's
 # own returnValue -- the same discipline ensure_binary already uses for a deploy; `status` only
@@ -1402,6 +1449,7 @@ case "${1:-}" in
   up)     shift; cmd_up "$@" ;;
   screen) shift; cmd_screen "$@" ;;
   sound)  shift; cmd_sound "$@" ;;
+  background|foreground|fg) cmd_lifecycle "$@" ;;
   status) shift; cmd_status ;;
   key)    shift; cmd_key "$@" ;;
   click)  shift; cmd_click "$@" ;;

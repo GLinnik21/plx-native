@@ -41,7 +41,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Provenance;
 use plx_ui::route_screen::{RouteLayout, RoutePush};
-use super::family::SessionGround as RouteGround;
+use plx_ui::route_screen::RouteGround;
 use plx_ui::screen::{
     At, Dir, DrawFrame, Enter, FocusSource, FocusTarget, Focusable, GroupSpec, HitSource, Mounter,
     Placed, RenderStrategy, ReturnState, Screen, ScreenEvent, Step,
@@ -59,7 +59,7 @@ use super::registry::{word, AppFx, DirectoryLike};
 pub enum Family {
     /// Settings, over a live page: scrim + ambient ground sampled off the host.
     Settings,
-    /// The first-run consent question: a route surface of its own on the hero-keyed ground.
+    /// The first-run consent question: a route surface of its own on the default ambient ground.
     FirstRunConsent,
 }
 
@@ -136,7 +136,6 @@ impl RouteSurface {
         id: InstanceId,
         kind: Family,
         root: SettingsPage,
-        hubs: plx_data::pms::HubsView<'_>,
     ) -> Self {
         let mut s = Self {
             entry,
@@ -145,7 +144,7 @@ impl RouteSurface {
             inner: NavStack::new(Box::new(Immediate)),
             ids: Minter::default(),
             push: Push::new(),
-            ground: if kind == Family::FirstRunConsent { super::family::pre_home_ground(hubs) } else { RouteGround::new() },
+            ground: if kind == Family::FirstRunConsent { RouteGround::authored() } else { RouteGround::new() },
             ground_ready: false,
             remembered: Vec::new(),
         };
@@ -604,9 +603,6 @@ impl<H: DirectoryLike> Machine<H> for RouteSurface {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                if self.ground.refresh() {
-                    fx.invalidate(plx_machine::present::Provenance::Landing(MachineId::Session));
-                }
                 self.tick(*t, cx, fx);
                 Handled::Yes
             }

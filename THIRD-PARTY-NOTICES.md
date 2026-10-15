@@ -34,20 +34,20 @@ they no longer do, because the TV's version moves with the firmware (libavformat
 
 | Shipped file | Upstream | Licence |
 |---|---|---|
-| `libavutil-plx.so.61`, `libavcodec-plx.so.63`, `libavformat-plx.so.63` | FFmpeg **9.0**, unmodified | LGPL-2.1-or-later |
+| `libavutil-plx.so.61`, `libavcodec-plx.so.63`, `libavformat-plx.so.63` | FFmpeg **9.0.2**, unmodified | LGPL-2.1-or-later |
 
 **These libraries are covered by the GNU Lesser General Public License, version 2.1 or later.** A
 complete copy of that licence is supplied with this package at `licenses/LGPL-2.1.txt`.
 
 **Complete corresponding source.** The exact upstream tarball these were built from —
-`ffmpeg-9.0.tar.xz`, sha256 `7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52`,
+`ffmpeg-9.0.2.tar.xz`, sha256 `8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e`,
 from <https://ffmpeg.org/releases/> — is attached to every PlxNative release alongside the `.ipk`.
 The sources are **unmodified**: no patches are applied. The complete configure invocation that
 produced them, including every enabled component, is `ci/build-ffmpeg.sh` in the PlxNative
 repository, which is also attached to each release. The attached script takes the version, the
 digest and the tarball from its environment, so it needs no network and none of the manifest
 tooling: from a checkout of the release's tag (or its source bundle), with the attached tarball,
-`FFMPEG_VERSION=9.0 FFMPEG_SHA256=7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52 FFMPEG_TARBALL=/path/to/ffmpeg-9.0.tar.xz ci/build-ffmpeg.sh`
+`FFMPEG_VERSION=9.0.2 FFMPEG_SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e FFMPEG_TARBALL=/path/to/ffmpeg-9.0.2.tar.xz ci/build-ffmpeg.sh`
 (the script also reads the checkout's `ci/arm-cc.py` and `ci/check-link-evidence.py`, which it
 has always done).
 
@@ -81,7 +81,7 @@ uses `libass-plx-host.so.0`.
 | libass | 0.17.5 | ISC (`licenses/libass-ISC.txt`) |
 | FreeType | 2.14.3 | Elected FreeType License; contributed MIT and Zlib code (`licenses/FreeType.txt`, `licenses/Zlib.txt`) |
 | FriBidi | 1.0.17 | LGPL-2.1-or-later (`licenses/LGPL-2.1.txt`) |
-| HarfBuzz | 14.5.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
+| HarfBuzz | 14.6.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
 | libunibreak | 8.0 | zlib (`licenses/libunibreak-Zlib.txt`) |
 
 Portions of this software are copyright © 2026 The FreeType Project
@@ -484,7 +484,7 @@ of a bundled copy alone does not establish that no obligation applies.
 
 | Library | Version on this build | Licence | Note |
 |---|---|---|---|
-| FFmpeg (libavformat / libavcodec / libavutil) | **9.0, shipped in this package** | LGPL-2.1-or-later | See section 1.1 |
+| FFmpeg (libavformat / libavcodec / libavutil) | **9.0.2, shipped in this package** | LGPL-2.1-or-later | See section 1.1 |
 | GLib | 2.48.2 | LGPL-2.1-or-later | See section 1 |
 | GNU C Library | 2.24 | LGPL-2.1-or-later | See section 1 |
 | SDL2 (LG fork) | 2.0.4 | Zlib | Copyright (C) 1997-2016 Sam Lantinga |
@@ -585,6 +585,4 @@ and `ci/check-packaged-elf.py`, which is what proves the old archive is absent f
 then-current MIT grant. That original grant and Gleb Linnik notice are preserved in
 `licenses/PlxNative-historical-MIT.txt`; no ownership transfer is claimed.
 
-Source bundles also contain SDL2 Zlib headers, embedded Mesa/Khronos MIT and SGI-B-2.0
-header blocks and Khronos GLES2 MIT/Apache-2.0 headers. Preserve their original embedded notices. Exact per-file
-license assignments are in the inventory; the SGI text is in `licenses/SGI-B-2.0.txt`; none of `include/` is claimed as original LG ABI work.
+The repository carries no copy of the SDL2, GLES2 or KHR headers; `include/` holds only the project's own `ass.h` facade.

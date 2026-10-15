@@ -166,8 +166,7 @@ fn every_language_nav_item_pushes_exactly_its_dest() {
     assert_eq!(items.iter().map(|(_, d)| *d).collect::<Vec<_>>(), [SettingsPage::Contribute]);
     for &(elem, dest) in &items {
         for method in [Method::Ok, Method::Right] {
-            let mut surface = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Language,
-                plx_data::pms::HubsSnapshot::empty_for_test().view());
+            let mut surface = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Language);
             step(&mut surface, ScreenEvent::Mount, None);
             let focus = FocusKey { entry: EntryId(0), elem };
             let ev = match method {
