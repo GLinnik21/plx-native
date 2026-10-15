@@ -1248,13 +1248,20 @@ impl Bridge {
         Default::default()
     }
 
-    /// The PMS notification feed's per-frame pass (`stores::notify`). Ships off: with
-    /// `NOTIFY_ENABLED` false it opens nothing. What it produces is only counted into the event
-    /// log here (server slots and counts, never a session, key or identifier); the event mapping
-    /// that acts on it is a later change, and notifications never reach the stop queue or Offset.
+    /// The PMS notification feed's per-frame pass (`stores::notify`), and the mapping of what it
+    /// brought to reads of our own state (`Stores::notify_map`). Ships off: with `NOTIFY_ENABLED`
+    /// false the feed opens nothing and there is nothing to map. `pages` are the content pages on
+    /// the navigation stack, visible and covered: what they hold decides which hints are read back.
+    /// A notification never reaches the stop queue or the playback Offset (S5). The event log gets
+    /// only server slots and counts, never a session, key or identifier.
     /// `true` when a feed came back after a gap, so the caller owes the covered pages a re-read.
-    pub(crate) fn notify_pump(&mut self) -> bool {
+    pub(crate) fn notify_pump(&mut self, pages: &[ContentArg]) -> bool {
         let out = self.stores.notify_pump();
+        let spent = self.stores.notify_map(&out, pages, self.directory.view());
+        if !spent.refetched.is_empty() || spent.invalidated {
+            plx_base::eventlog::log(&format!(
+                "notify: refetched {} source(s) invalidated={}", spent.refetched.len(), spent.invalidated));
+        }
         for plays in &out.plays {
             plx_base::eventlog::log(&format!("notify: sid={} sessions={}", plays.sid.raw(), plays.sessions.len()));
         }

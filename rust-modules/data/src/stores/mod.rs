@@ -66,6 +66,7 @@ pub use content_arg::ContentArg;
 pub mod hubs;
 pub mod metadata;
 pub mod notify;
+pub mod notify_map;
 pub mod person;
 pub mod collection;
 pub(crate) mod deck;
@@ -97,6 +98,9 @@ pub struct Stores {
     /// The PMS notification feed's owner. Ships off (`notify::NOTIFY_ENABLED`); no `StoreId`, no
     /// `StoreCmd`: the application pumps it and tells it the lifecycle (`Bridge::notify_*`).
     pub notify: notify::NotifyStore,
+    /// What the feed's play-state hints owe the screens (`notify_map`); nothing is read until it is
+    /// pumped with the pages on the stack.
+    notify_map: notify_map::NotifyMap,
     /// The publish order of view-state edits (`crate::viewledger`): `viewstate` records into it, and
     /// every store that reads stamps a read from it and re-patches the read when it lands. A store
     /// replaced after construction takes it as an argument (`HubsStore::from_parts`).
@@ -122,6 +126,7 @@ impl Default for Stores {
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
             reconcile: viewreconcile::ViewReconcileStore::default(),
             notify: notify::NotifyStore::default(),
+            notify_map: Default::default(),
             view_ledger: Default::default(),
             network_held: false,
         };
@@ -232,6 +237,7 @@ impl Stores {
         if matches!(cmd, viewstate::ViewStateCmd::Reset) {
             self.reconcile.reset();
             self.notify.reset();
+            self.notify_map.reset();
         }
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
@@ -873,6 +879,10 @@ mod tests {
         assert_eq!(StoreId::from_ord(StoreOrd(10)), None);
     }
 }
+
+#[cfg(test)]
+#[path = "notify_map_tests.rs"]
+mod notify_map_tests;
 
 #[cfg(test)]
 #[path = "held_keys_tests.rs"]

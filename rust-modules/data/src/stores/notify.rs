@@ -10,7 +10,7 @@
 //! **A notification here is a hint, never a playback event.** Nothing in this module calls
 //! `enqueue_stop`, adds an end-of-stream candidate or publishes an Offset: a stranger's `stopped`
 //! session must not scrobble our other servers (`fan_out_origin_watched`). The output
-//! ([`NotifyOut`]) is produced and logged; the event mapping that reads it is a later change.
+//! ([`NotifyOut`]) is read by `stores::notify_map`, which turns it into read-backs of held items.
 //!
 //! The store has no `StoreId` and no `StoreCmd`: nothing on a screen addresses it. It is pumped once
 //! a frame by the application (`Bridge::notify_pump`) and told about the lifecycle

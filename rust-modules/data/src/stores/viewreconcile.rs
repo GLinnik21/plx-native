@@ -460,6 +460,17 @@ impl ViewReconcileStore {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn candidates_for_test(&self) -> Vec<Key> {
+        self.candidates.clone()
+    }
+
+    /// Is `key` owed a QUIET read (no Detail page is owed a re-read when it lands)?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_quiet_for_test(&self, key: &Key) -> bool {
+        self.quiet.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1)))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn flights_for_test(&self) -> usize {
         self.flights.len()
     }

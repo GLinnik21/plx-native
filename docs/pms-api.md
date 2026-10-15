@@ -1295,6 +1295,18 @@ names are the parser's reading and are not yet confirmed by a capture committed 
 frame would carry the session's key, client id and rating key, so it stays out of the repository
 (scrubbed captures hold only the ping cadence).
 
+What a hint does (`stores::notify_map`): a session that is new or changed state on an item a page
+HOLDS (the visible page's cards, the covered pages', and the Detail pages on the stack) owes that item
+a read-back of OUR state; a steady `playing` ping owes nothing. A `stopped` session also owes its
+server one quiet Home refetch (`RefetchSourceQuiet`, coalesced per server), and, when no page holds the
+item, one `HubsInvalidateAll`. An item a Detail page shows is read the owing way, so the landed row
+reaches the page through `DetailReconcile` (in place, no focus or scroll move); any other held card is
+read quiet and a Detail on screen is not re-fetched for it. Nothing is spent under the player or while
+a recording or replay is armed: it stays queued. A feed that comes back after a gap forgets what it had
+seen and owes the covered pages their re-read. A hint is never a playback event: it does not queue a
+stop, an end-of-stream candidate or a resume point, so a stranger's `stopped` cannot scrobble our
+other servers.
+
 Connection policy: idle 25 s ends a stream as `Silent`; `Silent`, `Closed`, a transport failure and a
 5xx retry after 2, 4, 8 ... 60 s counted in frames; a 401 parks the server until its token changes; any
 other 4xx, a build that cannot stream, and a request the credential gate refused park it for the
