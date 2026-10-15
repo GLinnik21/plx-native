@@ -577,3 +577,25 @@ fn t_settings_catches_a_row_or_choice_dropped() {
     rows.insert("subtitle_tone"); // a panel-only setting gains a row with no Choice
     assert!(!agrees(&rows), "a Settings row with no Choice is caught");
 }
+
+/// The overlay dim rule: nothing changes for SDR or at 100%; HDR at 75% / 50% scales by exactly
+/// that; a server re-encode is an SDR picture whatever the source was, a remux keeps it HDR.
+#[test]
+fn overlay_gain_is_one_for_sdr_and_full_and_the_rung_for_hdr() {
+    use HdrOverlayBrightness::{Full, Half, ThreeQuarters};
+    for pick in [Full, ThreeQuarters, Half] {
+        assert_eq!(overlay_gain_for(false, false, false, pick), 1.0, "SDR direct play, {pick:?}");
+        assert_eq!(overlay_gain_for(false, true, true, pick), 1.0, "SDR remux, {pick:?}");
+    }
+    assert_eq!(overlay_gain_for(true, false, false, Full), 1.0);
+    assert_eq!(overlay_gain_for(true, false, false, ThreeQuarters), 0.75);
+    assert_eq!(overlay_gain_for(true, false, false, Half), 0.5);
+    assert_eq!(overlay_gain_for(true, true, true, Half), 0.5, "a remux keeps the HDR stream");
+    assert_eq!(overlay_gain_for(true, true, false, Half), 1.0, "a re-encode is tone-mapped to SDR");
+}
+
+#[test]
+fn the_default_pick_changes_nothing_even_for_hdr() {
+    assert_eq!(HdrOverlayBrightness::default(), HdrOverlayBrightness::Full);
+    assert_eq!(overlay_gain_for(true, false, false, HdrOverlayBrightness::default()), 1.0);
+}

@@ -5553,6 +5553,12 @@ pub fn set_stream_declaration_for_test(
 pub fn is_remux(ps: &PlaybackSession) -> bool {
     ps.cur_contract.remux
 }
+/// The multiplier the player's overlay and subtitles are drawn with on this route, given the
+/// playing item's HDR flag (`PlayingItem::hdr`): the live HDR overlay brightness pick during an HDR
+/// picture, `1.0` otherwise. Read once per frame by the player branch of the frame loop.
+pub fn overlay_gain(ps: &PlaybackSession, source_hdr: bool) -> f32 {
+    overlay_gain_for(source_hdr, is_transcoding(ps), is_remux(ps), hdr_overlay_brightness())
+}
 /// The Plex Pass DSP the live route was ASKED for (issue #266) — `cur_contract.audio`, gated to
 /// what the server DEMONSTRABLY applied: `NONE` unless `cur_enhancement` is `Applied`
 /// (`Unverified`/`Refused`/`Off` say nothing was provably added to this stream, so a caller

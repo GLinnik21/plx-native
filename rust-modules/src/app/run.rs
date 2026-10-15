@@ -2628,7 +2628,13 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // never was: what is behind these panels is a hardware video plane GL
                         // cannot read back, so there is no host snapshot to take
                         // (`RenderStrategy::VideoPlane`).
-                        app.pages.draw(&mut app.bridge, true);
+                        //
+                        // During HDR playback the TV lifts the graphics plane, so the whole pass
+                        // draws under the viewer's HDR overlay brightness (`ui::output_gain`: RGB
+                        // only, alpha untouched). 1.0 for SDR, a re-encode, or the 100% default.
+                        let source_hdr = app.bridge.metadata_view().playing().is_some_and(|p| p.hdr);
+                        let gain = plx_media::route::overlay_gain(&app.player.session, source_hdr);
+                        plx_ui::output_gain(gain, || app.pages.draw(&mut app.bridge, true));
                         // Skipped rather than drawn while one of the player's own panels is
                         // up — `More` carries this very panel's own toggle, and the panel's
                         // content routinely spans wide enough to reach any of their bottom-right

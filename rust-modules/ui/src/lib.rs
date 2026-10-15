@@ -349,6 +349,31 @@ pub struct Painter {
 }
 thread_local! {
     static RECORD_WALK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static OUTPUT_GAIN: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+}
+
+/// **Run `f` with every [`Painter`] on this thread drawing its colours scaled by `gain`.**
+///
+/// The player's overlay (HUD, panels, read-out) and its subtitles all draw through a `Painter`
+/// over a transparent framebuffer, above the hardware video plane. During HDR playback the TV
+/// raises that graphics plane, so the same RGB looks far brighter than in SDR; this is the one
+/// place the player scales it back down. The multiplier is applied to RGB only and ALPHA IS
+/// UNTOUCHED (a linear scale of the colour channels, not a blend toward black), so edges, fades
+/// and the video showing through are exactly as in SDR. It multiplies [`Painter::rgb`]'s cascade,
+/// so it composes with a screen's own dimming, and it reaches primitives that never see a screen's
+/// painter (a subtitle drawn from `Painter::root()`).
+///
+/// `1.0` is a no-op. The scope is per thread, nests (the innermost wins; the outer is restored) and
+/// is restored on unwind. `gain` is clamped to `0.0..=1.0`: this only ever dims.
+pub fn output_gain<R>(gain: f32, f: impl FnOnce() -> R) -> R {
+    struct Restore(f32);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            OUTPUT_GAIN.with(|g| g.set(self.0));
+        }
+    }
+    let _restore = Restore(OUTPUT_GAIN.with(|g| g.replace(gain.clamp(0.0, 1.0))));
+    f()
 }
 
 /// **Run `f` as an off-screen recording walk: EVERY painter records, not only the one handed in.**
@@ -434,7 +459,7 @@ impl Painter {
         }
         use frame::backdrop::Value;
         let mut data=vec![tag];
-        [self.a,self.rgb].record(&mut data);
+        [self.a,self.out_rgb()].record(&mut data);
         let mut m = self.place(r);
         if matches!(tag, 100..=102) && self.zoom.is_none() {
             // Unzoomed text is drawn at a whole pixel (`text::Placed::origin` snaps it), so the
@@ -563,12 +588,19 @@ impl Painter {
     pub fn dy(self) -> f32 {
         self.dy
     }
+    /// The RGB gain this painter draws with: its cascade ([`rgb`](Self::rgb)) times the scoped
+    /// [`output_gain`]. Every colour that reaches the renderer goes through it.
+    #[inline]
+    fn out_rgb(self) -> f32 {
+        self.rgb * OUTPUT_GAIN.with(|g| g.get())
+    }
     #[inline]
     fn c(self, c: [f32; 4]) -> [f32; 4] {
+        let g = self.out_rgb();
         [
-            c[0] * self.rgb,
-            c[1] * self.rgb,
-            c[2] * self.rgb,
+            c[0] * g,
+            c[1] * g,
+            c[2] * g,
             c[3] * self.a,
         ]
     }
@@ -612,7 +644,7 @@ impl Painter {
             t.as_ptr(),
             b.as_ptr(),
             focus,
-            self.rgb,
+            self.out_rgb(),
         );
     }
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
@@ -1271,7 +1303,7 @@ impl Painter {
         } else {
             k.map(|c| std::array::from_fn(|i| g[i] + (c[i] - g[i]) * a))
         };
-        k.map(|c| c.map(|v| v * self.rgb))
+        k.map(|c| c.map(|v| v * self.out_rgb()))
     }
     /// Bilinear 4-corner gradient with real per-corner ALPHA, folded through the cascade — the
     /// counterpart of [`ambient`](Self::ambient), which is opaque by contract and therefore cannot
@@ -1704,6 +1736,31 @@ mod tests {
         assert_eq!(c, [0.3, 0.2, 0.1, 0.1]);
         assert_eq!(p.rgb, 0.4);
         assert_eq!(p.a, 0.125);
+    }
+
+    #[test]
+    fn output_gain_scales_the_colour_that_reaches_the_renderer_and_never_the_alpha() {
+        let col = [0.8, 0.6, 0.4, 0.5];
+        assert_eq!(Painter::root().c(col), col, "no scope, no change");
+        output_gain(0.5, || {
+            assert_eq!(Painter::root().c(col), [0.4, 0.3, 0.2, 0.5]);
+            // it composes with the cascade rather than replacing it
+            assert_eq!(Painter::root().rgb(0.5).out_rgb(), 0.25);
+            assert_eq!(Painter::root().wash_corners([[0.8, 0.4, 0.2]; 4]), [[0.4, 0.2, 0.1]; 4]);
+        });
+        assert_eq!(Painter::root().c(col), col, "the scope ends with its closure");
+    }
+
+    #[test]
+    fn output_gain_nests_clamps_and_restores_on_unwind() {
+        output_gain(0.75, || {
+            output_gain(0.5, || assert_eq!(Painter::root().out_rgb(), 0.5));
+            assert_eq!(Painter::root().out_rgb(), 0.75);
+        });
+        output_gain(3.0, || assert_eq!(Painter::root().out_rgb(), 1.0, "it only ever dims"));
+        let unwound = std::panic::catch_unwind(|| output_gain(0.5, || panic!("draw failed")));
+        assert!(unwound.is_err());
+        assert_eq!(Painter::root().out_rgb(), 1.0);
     }
 
     /// Every field of `a` within `eps` of `b`'s.

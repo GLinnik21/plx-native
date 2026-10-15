@@ -36,7 +36,7 @@
 //! assignment. `subtitle_offsets` is the other tenant of the door and is declared the same way
 //! ([`SubtitleOffsetsPref`]).
 use super::{
-    DeckPress, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode, OpaqueExtensions, PlaintextConsent,
+    DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NextEpisodeMode, OpaqueExtensions, PlaintextConsent,
     PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
     SubtitleSize, SubtitleTone,
 };
@@ -104,6 +104,11 @@ pub struct Preferences {
     /// the default for the same reason as [`Preferences::subtitle_size`].
     #[serde(default, deserialize_with = "de_soft_subtitle_position", skip_serializing_if = "is_default_subtitle_position")]
     pub subtitle_position: SubtitlePosition,
+    /// **How bright the player's overlay and captions are while the picture is HDR** — see
+    /// [`HdrOverlayBrightness`]. A frozen fallback like [`Preferences::subtitle_tone`]. Absence is
+    /// Full (no dimming). Skipped at the default for the same reason as [`Preferences::subtitle_size`].
+    #[serde(default, deserialize_with = "de_soft_hdr_overlay_brightness", skip_serializing_if = "is_default_hdr_overlay_brightness")]
+    pub hdr_overlay_brightness: HdrOverlayBrightness,
     /// **What the player does when an episode with a successor reaches its credits** — see
     /// [`NextEpisodeMode`]. A frozen fallback like [`Preferences::playback_quality`]. Absence is
     /// Countdown, which is what every build before the field did. Skipped at the default so a
@@ -474,6 +479,8 @@ setting!(SubtitleSizePref: SubtitleSize = subtitle_size, "subtitle_size", Profil
     account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
 setting!(SubtitlePositionPref: SubtitlePosition = subtitle_position, "subtitle_position", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
+setting!(HdrOverlayBrightnessPref: HdrOverlayBrightness = hdr_overlay_brightness, "hdr_overlay_brightness",
+    Profile fallback LegacyInstallKey, account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
 // Tone and enhancements have no Settings row: the player panel is their only writer.
 setting!(SubtitleTonePref: SubtitleTone = subtitle_tone, "subtitle_tone", Profile fallback LegacyInstallKey,
     account false, live true, settings None, parse Soft);
@@ -567,6 +574,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<SubtitleTonePref>(),
     Descriptor::of::<SubtitleSizePref>(),
     Descriptor::of::<SubtitlePositionPref>(),
+    Descriptor::of::<HdrOverlayBrightnessPref>(),
     Descriptor::of::<NextEpisodeModePref>(),
     Descriptor::of::<SkipIntervalPref>(),
     Descriptor::of::<DeckPressPref>(),
@@ -1219,6 +1227,22 @@ where
 /// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
 fn is_default_subtitle_position(position: &SubtitlePosition) -> bool {
     *position == SubtitlePosition::default()
+}
+
+/// The HDR overlay brightness is a preference too: a spelling this build does not know degrades to Full.
+fn de_soft_hdr_overlay_brightness<'de, D>(d: D) -> Result<HdrOverlayBrightness, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(HdrOverlayBrightness::Full);
+    };
+    Ok(serde_json::from_value::<HdrOverlayBrightness>(v).unwrap_or_default())
+}
+
+/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
+fn is_default_hdr_overlay_brightness(b: &HdrOverlayBrightness) -> bool {
+    *b == HdrOverlayBrightness::default()
 }
 
 /// The next-episode mode is a preference too: a spelling this build does not know degrades to Countdown.

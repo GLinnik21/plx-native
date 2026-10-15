@@ -1,6 +1,6 @@
-//! **The nine player settings and hero trailer autoplay, per profile.**
+//! **The ten player settings and hero trailer autoplay, per profile.**
 //!
-//! Quality, Direct Play, subtitle size, position and tone, audio enhancements, the next-episode
+//! Quality, Direct Play, subtitle size, position and tone, the HDR overlay brightness, audio enhancements, the next-episode
 //! mode, the skip interval, what OK does on a Continue Watching card, and (since P1c) whether the
 //! detail page's hero autoplays its trailer used to be one value for
 //! the whole television. Each is now a value of the SEATED profile ([`Seat`]), kept in
@@ -34,17 +34,17 @@
 //! * **No `extensions`**: a field a later build adds is not carried by this one.
 use super::{
     Fallback, Parse, ProfileKeyed, ProfileRecords, Preferences, Row, Scope, Setting, SettingsWrite,
-    AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, NextEpisodeModePref, QualityPref, SkipIntervalPref,
+    AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, QualityPref, SkipIntervalPref,
     SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref,
 };
 use crate::plex::session::{
-    DeckPress, DirectPlayMode, NextEpisodeMode, PlaybackQuality, Seat, Session, SkipInterval, SubtitlePosition,
+    DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, PlaybackQuality, Seat, Session, SkipInterval, SubtitlePosition,
     SubtitleSize, SubtitleTone,
 };
 use crate::plex::AudioEnhancements;
 use serde::{Deserialize, Serialize};
 
-/// One profile's own values of the ten settings; `None` is "this profile has no value of its own".
+/// One profile's own values of the eleven settings; `None` is "this profile has no value of its own".
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ProfilePrefs {
@@ -58,6 +58,8 @@ pub struct ProfilePrefs {
     pub subtitle_size: Option<SubtitleSize>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub subtitle_position: Option<SubtitlePosition>,
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
+    pub hdr_overlay_brightness: Option<HdrOverlayBrightness>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub next_episode_mode: Option<NextEpisodeMode>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
@@ -125,7 +127,7 @@ impl Row for ProfilePrefsPref {
 }
 
 /// A [`Setting`] a profile can own: the accessors over [`ProfilePrefs`]. Implemented for exactly the
-/// ten rows whose `FALLBACK` is [`Fallback::LegacyInstallKey`].
+/// eleven rows whose `FALLBACK` is [`Fallback::LegacyInstallKey`].
 pub trait ProfileSetting: Setting {
     /// The profile's own value, if it has picked one.
     fn own(p: &ProfilePrefs) -> Option<Self::Value>;
@@ -147,6 +149,7 @@ profile_setting!(
     SubtitleTonePref = subtitle_tone,
     SubtitleSizePref = subtitle_size,
     SubtitlePositionPref = subtitle_position,
+    HdrOverlayBrightnessPref = hdr_overlay_brightness,
     NextEpisodeModePref = next_episode_mode,
     SkipIntervalPref = skip_interval,
     DeckPressPref = deck_press,

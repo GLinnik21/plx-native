@@ -50,7 +50,7 @@
 use super::origin::Origin;
 use super::probe::Location;
 pub use prefs::{effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
-    DeckPressPref, DirectPlayModePref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
+    DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
     SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref};
 use prefs::ProfileMemory;
@@ -1243,6 +1243,58 @@ impl DeckPress {
     }
 }
 
+/// **How bright the player's overlay and captions are drawn while the picture is HDR** — one per
+/// profile, like [`SubtitleTone`]. A television maps graphics white in an HDR picture to a far
+/// brighter level than the same white in SDR (the HUD and the captions are graphics; the panel
+/// treats them as part of the HDR scene), so a viewer in a dark room is dazzled by the transport
+/// and the subtitles. This is how far RGB is scaled down then; it never applies to an SDR picture.
+/// Absence is `Full`, which is what every build before this preference drew (no dimming), and the
+/// factor is a plain linear multiplier on the sRGB-encoded values (alpha is untouched), which is
+/// the same multiply the painter's `rgb` cascade already is.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HdrOverlayBrightness {
+    #[default]
+    #[serde(rename = "full")]
+    Full,
+    #[serde(rename = "three_quarters")]
+    ThreeQuarters,
+    #[serde(rename = "half")]
+    Half,
+}
+
+impl HdrOverlayBrightness {
+    /// Every rung, brightest first — the order the picker lists them in.
+    pub const LADDER: [HdrOverlayBrightness; 3] = [
+        HdrOverlayBrightness::Full,
+        HdrOverlayBrightness::ThreeQuarters,
+        HdrOverlayBrightness::Half,
+    ];
+
+    /// An in-memory index back to a rung — out of range is `Full`, never a neighbouring rung, for
+    /// the reason [`SubtitleTone::from_index`] gives: the ladder can grow or shrink.
+    pub fn from_index(i: u8) -> HdrOverlayBrightness {
+        Self::LADDER.get(i as usize).copied().unwrap_or_default()
+    }
+
+    pub fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&b| b == self).unwrap_or(0) as u8
+    }
+
+    /// The RGB multiplier this rung applies to an HDR picture's overlay, `1.0` for `Full`.
+    pub fn factor(self) -> f32 {
+        match self {
+            HdrOverlayBrightness::Full => 1.0,
+            HdrOverlayBrightness::ThreeQuarters => 0.75,
+            HdrOverlayBrightness::Half => 0.5,
+        }
+    }
+
+    /// The rung's percentage, for its label.
+    pub fn percent(self) -> i64 {
+        (self.factor() * 100.0).round() as i64
+    }
+}
+
 /// One profile's search history.
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
 #[serde(default)]
@@ -2224,6 +2276,10 @@ impl Session {
 
     pub fn deck_press(&self) -> DeckPress {
         self.prefs.deck_press
+    }
+
+    pub fn hdr_overlay_brightness(&self) -> HdrOverlayBrightness {
+        self.prefs.hdr_overlay_brightness
     }
 
     pub fn audio_enhancements(&self) -> crate::plex::AudioEnhancements {
