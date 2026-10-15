@@ -1665,6 +1665,11 @@ class LoadManifest(unittest.TestCase):
                 if trigger in takes_rk and value is not True:
                     with self.subTest(scene=scene["name"], trigger=trigger):
                         self.assertIn("$rk", str(value))
+                        # a scene that plays a file the MOCK is handed (`mock.extra_media`) opens no
+                        # library item of anyone's server: its `mock.rk` is the mock's own id block
+                        if (scene.get("mock") or {}).get("extra_media"):
+                            self.assertTrue(scene["mock"].get("only"), scene["name"])
+                            continue
                         self.assertIn("item", scene)
 
     def test_the_example_overlay_names_every_item_key(self):
@@ -6513,7 +6518,10 @@ class FpsMock(unittest.TestCase):
 
     # --- scene selection --------------------------------------------------------------
     def test_under_mock_only_scenes_with_a_mock_block_run(self):
-        runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), True)
+        # the #665 scene's generated fixtures live outside the repo (present on a dev host, absent
+        # on a CI runner): treat them as built so the selection does not depend on the host
+        with mock.patch.object(self.mf, "missing_mock_fixtures", return_value=None):
+            runnable, skipped = self.mf.partition_mock(list(self.scenes.values()), True)
         names = {s["name"] for s in runnable}
         self.assertEqual(names, {"home-grid", "home-grid-deep", "home-recent-paging", "home-recent-paging-held", "home-recent-paging-held-3g",
                                  "home-recent-paging-held-remote-wan", "home-hint",
@@ -6522,7 +6530,8 @@ class FpsMock(unittest.TestCase):
                                  "hero-pong", "grid-pong", "home-idle", "item-menu", "library-scroll",
                                  "library-idle", "collection-page", "person-page", "search-type",
                                  "show-detail", "home-hold", "collection-hold", "home-tap",
-                                 "collection-tap"})
+                                 "collection-tap",
+                                 "fixed-480p-reencode-declaration"})
         self.assertEqual(len(runnable) + len(skipped), len(self.scenes))
         for _, why in skipped:
             self.assertIn("real library content", why)
@@ -6535,10 +6544,11 @@ class FpsMock(unittest.TestCase):
                                                    "home-recent-paging-held-remote-wan",
                                                    *self.PAGING_SURFACES,
                                                    "library-shelves-deep", "library-burst",
-                                                   "library-hold"])
+                                                   "library-hold",
+                                                   "fixed-480p-reencode-declaration"])
         self.assertIn("--mock", skipped[0][1])
         self.assertIn("home-grid", {s["name"] for s in runnable})
-        self.assertEqual(len(runnable), len(self.scenes) - 8 - len(self.PAGING_SURFACES))
+        self.assertEqual(len(runnable), len(self.scenes) - 9 - len(self.PAGING_SURFACES))
 
     def test_a_mock_scene_naming_a_library_item_carries_its_own_rating_key(self):
         # the overlay's ratingKey is the real server's; under --mock the scene opens `mock.rk`
@@ -6547,7 +6557,9 @@ class FpsMock(unittest.TestCase):
                 if s.get("item"):
                     self.assertIsInstance(s["mock"].get("rk"), int, s["name"])
                 self.assertNotIn("needs_shared_server", s, s["name"])
-                self.assertEqual(s.get("tier", "ui"), "ui", s["name"])
+                # the one player-tier mock scene plays a served file and grades its own `expect`
+                want = "player" if s["name"] == "fixed-480p-reencode-declaration" else "ui"
+                self.assertEqual(s.get("tier", "ui"), want, s["name"])
 
     def test_the_press_scenes_drive_a_real_press_and_never_a_plain_ok(self):
         # home-hold/collection-hold/home-tap/collection-tap (`plxnative-holdbench`): counted bench
@@ -6698,6 +6710,66 @@ class FpsMock(unittest.TestCase):
                          ["home-grid"])
         both = [s["name"] for s in run.fps_for_tiers(scenes, False, "home-gri")]
         self.assertEqual(sorted(both), ["home-grid", "home-grid-deep"])
+
+    # --- fixed-480p-reencode-declaration (#665) ----------------------------------------
+    def test_fixed_480p_scene_pins_the_rung_and_grades_the_declaration(self):
+        sc = self.scenes["fixed-480p-reencode-declaration"]
+        self.assertEqual(sc["quality"], "480p_720_kbps")
+        self.assertEqual(sc["expect"]["load_max"], "1920x1080@60")  # not the source's 3840x2160@60
+        self.assertEqual(sc["expect"]["sink_echo"], "1920x1080@60")
+        self.assertTrue(sc["mock"]["only"])
+        ran = self.mf.mock_scene(sc)
+        self.assertEqual(dict(run.fps_trigger_files(ran))["plxnative-play"], "990001")
+        args = self.mf.mock_server_args(sc)
+        self.assertEqual(args[0], "--extra-media")
+        self.assertTrue(args[1].endswith("bug665/src-4k-h264-aac.mkv"))
+        self.assertEqual(args[2], "--transcode-fixture")
+        self.assertTrue(args[3].endswith("bug665/transcode-480p-h264-aac.mkv"))
+
+    def test_mock_fixture_names_must_be_relative_and_inside_the_root(self):
+        for bad in ("/etc/x.mkv", "../x.mkv", "a/../../x.mkv", ""):
+            with self.assertRaises(ValueError, msg=bad):
+                self.mf.mock_server_args({"name": "x", "mock": {"transcode_fixture": bad}})
+
+    def test_a_scene_with_unbuilt_mock_fixtures_is_skipped_with_the_reason(self):
+        sc = {"name": "x", "mock": {"extra_media": ["nope/absent.mkv"]}}
+        runnable, skipped = self.mf.partition_mock([sc], True)
+        self.assertEqual(runnable, [])
+        self.assertIn("nope/absent.mkv", skipped[0][1])
+
+    def test_scene_expect_grades_the_load_declaration(self):
+        sc = self.scenes["fixed-480p-reencode-declaration"]
+        log = lambda mx: [
+            "stream: path=/video/:/transcode/universal/start.mkv?x=1",
+            "ff: v=#0 codec=h264 codec_id=27 854x480 a=#1",
+            f'load: v=H264 a="AAC" fps=30.000 dv=present:0 P0/0 el:0 atmos:0 max={mx}',
+            "smp_cb type=5 num=0 str=video/x-h264 (null) (null) 1920 1080 (null) 60.000000",
+            "SMP loadCompleted",
+            "player: pos=2s", "player: pos=15s"]
+        with mock.patch.object(run, "a_timeline_climb", return_value=(True, "climbed")):
+            good, why = run.grade_scene_expect(sc, log("1920x1080@60"))
+            self.assertTrue(good, why)
+            # the pre-4f11c1aff declaration: the SOURCE raster, ignoring the 480p ceiling
+            bad, why = run.grade_scene_expect(sc, log("3840x2160@60"))
+            self.assertFalse(bad)
+            self.assertIn("declared max=3840x2160@60", why)
+            typo = dict(sc, expect={"load_mx": "1920x1080@60"})
+            self.assertFalse(run.grade_scene_expect(typo, log("1920x1080@60"))[0])
+        self.assertEqual(run.grade_scene_expect({"name": "y"}, []), (True, ""))
+
+    def test_fixed_480p_scene_is_served_by_the_mock_when_built(self):
+        sc = self.mf.mock_scene(self.scenes["fixed-480p-reencode-declaration"])
+        if self.mf.missing_mock_fixtures(sc):
+            self.skipTest(self.mf.missing_mock_fixtures(sc))
+        port = self._free_port()
+        with self.mf.MockPms("127.0.0.1", port, self.mf.mock_server_args(sc)):
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/library/metadata/{sc['rk']}", timeout=10) as r:
+                media = json.load(r)["MediaContainer"]["Metadata"][0]["Media"][0]
+            self.assertEqual((media["width"], media["height"], media["videoCodec"]),
+                             (3840, 2160, "h264"))
+            self.assertEqual(media["audioCodec"], "aac")
+            self.assertGreater(media["bitrate"], 9000)
 
     # --- the deep scene's definition ---------------------------------------------------
     def test_deep_scene_is_modelled_on_home_grid_and_walks(self):
