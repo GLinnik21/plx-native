@@ -26,6 +26,16 @@ and does not extract its own `[Fonts]` section again. The engine uses the replac
 case so far, sliding the window of a long sidecar script. Any other change of source either re-feeds the
 same renderer (the same embedded source with the same header and fonts) or opens a new one. `tests/fixtures/make_ass_faces.py` regenerates the 14 one-glyph test faces.
 
+Fonts. libass runs with no font provider, so it finds a face by family name among the faces the
+engine adds when a renderer is created (`ass/fonts.rs`): `appfont.ttf` and `appfont-bold.ttf`
+(Inter; Bold also answers to the family "PlxSubs", which the synthesized style names), then the
+22 `fonts/subs/NotoSans<Script>-Bold.ttf` faces listed in `fonts/subs/manifest.json`, in manifest
+order. Each Noto face answers to "PlxSubs" and "Inter" too, carries nothing Inter Bold covers, and
+has Inter Bold's win-metric proportions, so authored ASS naming an unknown family falls to a face
+that has the script instead of the CJK default's missing-glyph boxes. Add order is load-bearing
+(Inter first). The files are read at each create and not kept. `tools/cut-noto-subs.py` cuts them;
+Yi is the one script the picker offers that is not covered (Noto Sans Yi has no Bold).
+
 The demuxer copies ASS headers, complete timed packets and font attachments out of FFmpeg.
 The source store removes trailing zero terminators from headers and packets. A zero byte
 inside a header makes the track invalid. The raw byte limits apply before trimming.
