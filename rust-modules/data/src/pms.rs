@@ -196,6 +196,22 @@ pub struct PmsState {
     deck_ask: Option<DeckAsk>,
     /// The rows (catalog order, inclusive) the screen holds cards for; see [`HOLD_ROWS`].
     hold: (usize, usize),
+    /// Moves whenever a quiet read stages an answer, so a held verdict is keyed on what it judged.
+    staged_gen: u32,
+    /// The last [`HubsCmd::Publish`] verdict that was to WAIT, and what it was a verdict on: the
+    /// same question asked again next frame is answered from this, not by merging again.
+    publish_memo: Option<PublishKey>,
+}
+
+/// Everything a [`publish_staged`] verdict depends on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PublishKey {
+    catalog_gen: u32,
+    staged_gen: u32,
+    hold: (usize, usize),
+    visible: bool,
+    focused_hub: Option<usize>,
+    press_live: bool,
 }
 
 /// The id of the merged Continue Watching row, which a page ask names instead of one server's hub.
@@ -222,6 +238,8 @@ impl Default for PmsState {
             fanout: Default::default(),
             deck_ask: None,
             hold: (0, HOLD_ROWS - 1),
+            staged_gen: 0,
+            publish_memo: None,
         }
     }
 }
@@ -281,7 +299,8 @@ pub fn owed(adapter: &PmsAdapter) -> bool {
 /// Has the source `sid` nothing out and nothing waiting for room: its read has landed or failed
 /// (a refused launch fails on the spot), and the fan-out gate is not holding one back for it? True
 /// for a slot the roster does not hold, which has nothing to wait for. Unlike [`owed`] this is ONE
-/// source's answer, so a slow friend's server does not make everyone else's landing wait.
+/// source's answer, so a slow friend's server does not make everyone else's landing wait. A QUIET
+/// read in flight does not count: this asks whether a prompted read is out.
 pub fn source_settled(state: &PmsState, sid: ServerId) -> bool {
     // a quiet read is nobody's wait: the return hold ends on the prompted read alone
     state.srcs.iter().find(|s| s.sid == sid).is_none_or(|s| s.quiet || (!s.fetching && !s.deferred))
@@ -690,6 +709,7 @@ fn request_refetch_hubs_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapte
         s.page = None;
         s.staged = None; // a prompted read supersedes what a quiet one brought
         s.quiet = false;
+        s.quiet_owed = false;
     }
     let mut turn = fanout_turn(&mut state.fanout, &srcs, |_| true);
     for s in srcs.iter_mut() {
@@ -1074,7 +1094,7 @@ fn settle_deck(srcs: &mut [Src], refreshed: bool) {
 
 /// Moves the deck one page in a direction; a lane that could not be read stays where it is.
 fn advance_deck(srcs: &mut [Src], before: bool) {
-    for s in srcs.iter_mut() { s.staged = None; } // its lane would put the deck back
+    for s in srcs.iter_mut() { drop_staging(s); } // its lane would put the deck back
     let (idx, mut lanes) = take_lanes(srcs);
     deck::advance(&mut lanes, !before, deck::PAGE);
     put_lanes(srcs, &idx, lanes);
@@ -1340,10 +1360,15 @@ fn pump_reloads(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
     endpoints
 }
 
+/// Is a quiet read's answer waiting to land? Cheap enough to ask every frame, before anything is
+/// built to judge it.
+pub fn has_staged(state: &PmsState) -> bool { state.srcs.iter().any(|s| s.staged.is_some()) }
+
 /// Drops what a quiet read holds for `s`. A quiet read still out is superseded rather than left to
 /// land as an ordinary full read, which would publish at its own time.
 fn drop_staged(s: &mut Src) {
     s.staged = None;
+    s.quiet_owed = false;
     if std::mem::take(&mut s.quiet) {
         s.fetching = false;
         s.deferred = false;
@@ -1351,40 +1376,69 @@ fn drop_staged(s: &mut Src) {
     }
 }
 
+/// Drops the answer a quiet read staged because something moved under it (a page or the deck), and
+/// owes the read again: the update it carried must not be lost.
+fn drop_staging(s: &mut Src) {
+    if s.staged.take().is_some() { s.quiet_owed = true; }
+}
+
 /// A quiet read that could not be started or answered: the source stays exactly as it was, with no
-/// backoff and no failed state. Rediscovery is still owed, as for any failed read.
-fn quiet_failed(s: &mut Src) -> crate::stores::EndpointRefresh {
+/// failed state, and the next quiet read waits out a back-off. No rediscovery is asked.
+fn quiet_failed(s: &mut Src) {
     s.quiet = false;
     s.deferred = false;
-    crate::stores::EndpointRefresh { sid: s.sid }
+    s.quiet_fails = s.quiet_fails.saturating_add(1);
+    s.quiet_after = QUIET_SPACING_S.max(backoff_secs(s.quiet_fails));
 }
 
 /// `HubsCmd::RefetchSourceQuiet`: read ONE source's hubs again without publishing. Never bumps
-/// `hub_gen` and touches no other source. Skipped while the source is fetching or paging, is not
-/// Ready, or an ordinary (prompted) read of any source is out: that one publishes what this would
-/// have staged.
+/// `hub_gen` and touches no other source. Not asked while the source is not Ready or a whole-source
+/// (prompted) read of any source is out: that one publishes what this would have staged. Not asked
+/// while this source has a page read out, nor inside the spacing after its last quiet read; those
+/// two are owed (`Src::quiet_owed`) and made by a later tick.
 fn refetch_source_quiet(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope, sid: ServerId,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     let mut srcs = std::mem::take(&mut state.srcs);
-    let prompted_out = srcs.iter().any(|s| (s.fetching || s.deferred) && !s.quiet);
+    let prompted_out = srcs.iter().any(|s| (s.fetching || s.deferred) && !s.quiet && s.page.is_none());
     if let Some(i) = srcs.iter().position(|s| s.sid == sid) {
-        let s = &srcs[i];
-        if !prompted_out && !s.fetching && !s.deferred && s.page.is_none() && s.state == HubState::Ready {
-            srcs[i].quiet = true;
-            let gen = state.hub_gen;
-            let mut turn = fanout_turn(&mut state.fanout, &srcs, source_waiting);
-            if let Some(request) = kick_gated(&mut turn, gen, adapter, &mut srcs[i], scope, launch) { endpoints.insert(request); }
+        let s = &mut srcs[i];
+        if s.page.is_some() {
+            s.quiet_owed = true;
+        } else if !prompted_out && !s.fetching && !s.deferred && s.state == HubState::Ready {
+            if s.quiet_after > 0.0 {
+                s.quiet_owed = true;
+            } else {
+                s.quiet_owed = false;
+                s.quiet = true;
+                s.quiet_after = QUIET_SPACING_S;
+                let gen = state.hub_gen;
+                let mut turn = fanout_turn(&mut state.fanout, &srcs, source_waiting);
+                if let Some(request) = kick_gated(&mut turn, gen, adapter, &mut srcs[i], scope, launch) { endpoints.insert(request); }
+            }
         }
     }
     state.srcs = srcs;
     endpoints
 }
 
+/// The quiet reads that were wanted and could not be made, made now that their source is idle.
+fn pump_owed_quiet(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    let mut endpoints = crate::stores::EndpointRefreshSet::default();
+    let owed: Vec<ServerId> = state.srcs.iter()
+        .filter(|s| s.quiet_owed && s.page.is_none() && !s.fetching && !s.deferred && s.quiet_after <= 0.0)
+        .map(|s| s.sid).collect();
+    for sid in owed { endpoints.merge(refetch_source_quiet(state, adapter, scope, sid, &mut *launch)); }
+    endpoints
+}
+
 /// What the staged answers would change in the published catalog.
 enum Shift {
-    /// Nothing the person could see.
+    /// Nothing at all.
     None,
+    /// Only what a row says about itself (its listing total, its window), not what it shows.
+    Meta,
     /// A row added, removed or moved: the ground itself shifts.
     Structural,
     /// These rows hold different cards.
@@ -1394,31 +1448,42 @@ enum Shift {
 fn shift(old: &HomeCatalog, new: &HubBuild) -> Shift {
     if old.hubs.len() != new.1.len() { return Shift::Structural; }
     let mut rows = Vec::new();
+    let mut meta = false;
     for (k, (was, now)) in old.hubs.iter().zip(&new.1).enumerate() {
         if (&was.hub_id, &was.key, &was.title, &was.source) != (&now.hub_id, &now.key, &now.title, &now.source) {
             return Shift::Structural;
         }
-        let cards = |items: &[Arc<PmsMovie>], row: &HubRow| items.get(row.start..row.start + row.len).map(<[_]>::to_vec);
-        let (a, b) = (cards(&old.items, was), cards(&new.0, now));
-        let same = match (&a, &b) {
+        fn cards<'a>(items: &'a [Arc<PmsMovie>], row: &HubRow) -> Option<&'a [Arc<PmsMovie>]> {
+            items.get(row.start..row.start + row.len)
+        }
+        let same = match (cards(&old.items, was), cards(&new.0, now)) {
             (Some(a), Some(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| Arc::ptr_eq(x, y) || **x == **y),
             _ => false,
         };
         if !same { rows.push(k); }
+        meta |= (was.total, was.more, was.offset) != (now.total, now.more, now.offset);
     }
-    if rows.is_empty() { Shift::None } else { Shift::Rows(rows) }
+    if !rows.is_empty() { Shift::Rows(rows) } else if meta { Shift::Meta } else { Shift::None }
 }
 
 /// `HubsCmd::Publish`: lands what quiet reads staged when nothing the person is looking at moves.
 /// Home covered: everything lands at once. Home showing: a row added, removed or moved waits, so
 /// does a changed row inside the held range, and Continue Watching waits while the focus is on it or
-/// a press is live; a change only to rows off screen, or to Continue Watching with the focus
-/// elsewhere, lands. The decision is made on the catalog the staged answers would build, so it is
-/// data here and not a rule each screen repeats.
+/// a press is live (`press_live` gates the deck rows only); a change only to rows off screen, to
+/// Continue Watching with the focus elsewhere, or to what a row says about itself, lands. The
+/// decision is made on the catalog the staged answers would build, so it is data here and not a
+/// rule each screen repeats. A verdict to wait is remembered against what it judged and not made
+/// again until one of those moves.
 fn publish_staged(state: &mut PmsState, scope: &BrowseScope, home_top_visible: bool,
     focused_hub: Option<usize>, press_live: bool) {
-    if !state.srcs.iter().any(|s| s.staged.is_some()) { return; }
+    if !has_staged(state) { return; }
+    let key = PublishKey { catalog_gen: state.catalog_gen, staged_gen: state.staged_gen, hold: state.hold,
+        visible: home_top_visible, focused_hub, press_live };
+    if state.publish_memo == Some(key) { return; }
     let mut srcs = std::mem::take(&mut state.srcs);
+    // The trial refits the deck of every source (`settle_deck`); what waits must leave every lane as
+    // it was, the sources that staged nothing included.
+    let lanes: Vec<Option<deck::Lane>> = srcs.iter().map(|s| s.last.as_ref().map(|b| b.lane.clone())).collect();
     // swap the staged answers in; `olds` is what goes back if the commit waits
     let mut olds: Vec<(usize, Option<SourceBuild>)> = Vec::new();
     for (i, s) in srcs.iter_mut().enumerate() {
@@ -1432,7 +1497,7 @@ fn publish_staged(state: &mut PmsState, scope: &BrowseScope, home_top_visible: b
     let deck = candidate.1.len().saturating_sub(published_order(&srcs, &scope.pins).len());
     let (lo, hi) = clamp_hold(state.hold);
     let waits = home_top_visible && match &change {
-        Shift::None => false,
+        Shift::None | Shift::Meta => false,
         Shift::Structural => true,
         Shift::Rows(rows) => rows.iter().any(|&k| if k < deck {
             press_live || focused_hub.is_some_and(|f| f < deck)
@@ -1444,11 +1509,15 @@ fn publish_staged(state: &mut PmsState, scope: &BrowseScope, home_top_visible: b
         for (i, old) in olds {
             srcs[i].staged = std::mem::replace(&mut srcs[i].last, old);
         }
+        for (s, lane) in srcs.iter_mut().zip(lanes) {
+            if let (Some(build), Some(lane)) = (s.last.as_mut(), lane) { build.lane = lane; }
+        }
         state.srcs = srcs;
+        state.publish_memo = Some(key);
         return;
     }
-    let commit_it = !matches!(change, Shift::None);
-    let build = commit_it.then(|| merge_held(&mut srcs, scope, state.hold).0);
+    state.publish_memo = None;
+    let build = (!matches!(change, Shift::None)).then(|| merge_held(&mut srcs, scope, state.hold).0);
     state.srcs = srcs;
     if let Some(mut build) = build {
         if home_top_visible { preserve_heroes(state, &mut build); }
@@ -2058,7 +2127,18 @@ struct Src {
     /// the landing, so a quiet ask the gate deferred is still quiet when a tick launches it and so
     /// the recorded landing format does not change.
     quiet: bool,
+    /// A quiet read is wanted and could not be made yet: it was coalesced, refused because this
+    /// source had a page read out, or its staged answer was dropped by one. The tick asks again
+    /// once the source is idle.
+    quiet_owed: bool,
+    /// Seconds before this source may start another quiet read: the spacing after one, the
+    /// back-off after a failed one.
+    quiet_after: f32,
+    quiet_fails: u32,
 }
+
+/// The least spacing between two quiet reads of one source; asks inside it coalesce into one.
+const QUIET_SPACING_S: f32 = 5.0;
 
 impl Src {
     /// The request-state transition, independent of thread creation and network I/O. Mint only
@@ -2070,6 +2150,13 @@ impl Src {
         mint: impl FnOnce() -> u32,
     ) -> Option<HubRequest> {
         if self.fetching { return None; }
+        if self.page.is_some() && std::mem::take(&mut self.quiet) {
+            // A page ask took over a quiet one the gate had deferred: this read is the page's, and
+            // its one-shelf answer must never be staged as the source's whole. The quiet read is
+            // owed again.
+            self.staged = None;
+            self.quiet_owed = true;
+        }
         self.adoptable = false;
         let request = HubRequest {
             gen: generation, seq: mint(), sid: self.sid,
@@ -2121,6 +2208,9 @@ impl Src {
             last: None,
             staged: None,
             quiet: false,
+            quiet_owed: false,
+            quiet_after: 0.0,
+            quiet_fails: 0,
         }
     }
 }
@@ -2152,6 +2242,7 @@ fn refresh_src_lifecycle(s: &mut Src) -> bool {
     s.page = None;
     s.staged = None;
     s.quiet = false;
+    s.quiet_owed = false;
     // Retained cards may still paint during the new profile's fetch, but its request must
     // start at the preview rather than reuse the previous profile's listing positions.
     if let Some(build) = s.last.as_mut() {
@@ -2635,6 +2726,7 @@ fn landed_ok(s: &mut Src, b: SourceBuild) {
     if let Some(old) = s.last.as_ref() { carry_descriptors(old, &mut b); }
     s.last = Some(b);
     s.staged = None; // this answer is newer than anything a quiet read held
+    s.quiet_owed = false;
     s.state = HubState::Ready;
     s.retry_n = 0;
     s.retry_s = 0.0;
@@ -2691,7 +2783,7 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, l
     // redirect a fetch that is already out (`plex::servers` leaks each client precisely so that
     // reference stays live).
     let Some(c) = plx_plex::plex::client_for(s.sid) else {
-        if s.quiet { return Some(quiet_failed(s)); }
+        if s.quiet { quiet_failed(s); return None; }
         return Some(landed_fail(s));
     };
     let Some(mut request) = s.begin_request(c, gen,
@@ -2704,7 +2796,7 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, l
         // nothing will ever fill the mailbox (the thread limit refused us), so release the latch
         // here and back off — `pump` will try again on the ladder.
         s.fetching = false;
-        if s.quiet { return Some(quiet_failed(s)); }
+        if s.quiet { quiet_failed(s); return None; }
         if s.page.is_some() {
             // The system refusing a thread says nothing about the server, so a page ask does not
             // spend one of its three attempts on it; it backs off and asks again.
@@ -2940,6 +3032,9 @@ pub fn run_with_directory(
     cmd: crate::stores::hubs::HubsCmd,
     directory: crate::stores::browse::DirectoryView<'_>,
 ) -> crate::stores::StoreOutcome {
+    if matches!(cmd, crate::stores::hubs::HubsCmd::Publish { .. }) && !has_staged(state) {
+        return crate::stores::StoreOutcome::default(); // the per-frame question, before anything is built
+    }
     run_with_scope(state, adapter, cmd, &BrowseScope::retained(directory))
 }
 
@@ -3079,6 +3174,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
             if l.gen == cur && l.seq == s.seq && !lifecycle_matches {
                 s.staged = None;
                 s.quiet = false;
+                s.quiet_owed = false;
                 s.fetching = false;
                 s.abandoned.clear();
                 s.adoptable = false;
@@ -3099,8 +3195,12 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
                     replay_since_request(s, &mut b);
                     if let Some(old) = s.last.as_ref() { carry_descriptors(old, &mut b); }
                     s.staged = Some(b);
+                    s.quiet_fails = 0;
+                    state.staged_gen = state.staged_gen.wrapping_add(1);
                 }
-                None => { endpoints.insert(crate::stores::EndpointRefresh { sid: s.sid }); }
+                // no rediscovery: it is for the person's own reads; this one backs off and the
+                // next ask (or the prompted retry) finds out
+                None => quiet_failed(s),
             }
             continue;
         }
@@ -3108,7 +3208,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
             Some(mut b) => {
                 replay_since_request(s, &mut b);
                 if let Some(page) = s.page.take() {
-                    s.staged = None; // the window moved under it
+                    drop_staging(s); // the window moved under it
                     dirty |= if page.id == DECK_ID { land_lane(s, b) } else if page.reload { land_reload(s, &page, b) } else { land_page(s, &page, b) };
                     paged = true;
                     s.retry_n = 0;
@@ -3131,6 +3231,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
     // backoff owed) or a Loading whose worker landed stale and was dropped — the latter owes
     // nothing, so it re-kicks on the spot rather than wedging that source on a spinner forever.
     if let Some(dt) = dt {
+        for s in srcs.iter_mut() { s.quiet_after = (s.quiet_after - dt).max(0.0); }
         let mut turn = fanout_turn(&mut state.fanout, &srcs, |s| source_waiting(s) && s.retry_s - dt <= 0.0);
         for s in srcs.iter_mut() {
             if source_waiting(s) && retry_due(s, dt) {
@@ -3177,6 +3278,7 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
             bytes / 1024
         ));
     }
+    if dt.is_some() { endpoints.merge(pump_owed_quiet(state, adapter, scope, &mut *launch)); }
     endpoints.merge(pump_reloads(state, adapter, scope, launch));
     endpoints
 }
@@ -3611,6 +3713,36 @@ pub fn edit_test_item(state: &mut PmsState, rk: &str, edit: &dyn Fn(&mut PmsMovi
     commit(state, build);
 }
 
+/// Test hook: the Home a real library has: `items` Continue Watching EPISODES, each of its own show
+/// (`show<rk>`), as the source's preview with the deck PLACED (so Continue Watching is the deck row,
+/// row 0), above one Recently Added shelf (row 1). Settled and published.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_deck_home_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, items: usize) {
+    plx_base::testlock::assert_held("the pms hub catalog (seed_deck_home_for_test)");
+    seed_with_scope_for_test(state, adapter, ServerId::UNSET, 0, HubState::Ready, &BrowseScope::standalone());
+    let card = |rk: String| Arc::new(PmsMovie {
+        art: format!("/art/{rk}"), thumb: format!("/t/{rk}"), title: rk.clone(), kind: 3,
+        show_rk: format!("show{rk}"), rk, ..PmsMovie::default()
+    });
+    let mut recent = build_test(3).shelves.remove(0);
+    recent.hub_id = "home.movies.recent".into();
+    recent.title = "Recently Added".into();
+    for (i, item) in recent.items.iter_mut().enumerate() { Arc::make_mut(item).rk = format!("r{}", i + 1); }
+    let mut source = Src::new(ServerId::UNSET, String::new());
+    source.state = HubState::Ready;
+    source.ledger = state.ledger.clone();
+    source.last = Some(SourceBuild {
+        cw: (1..=items).map(|i| CwItem { last_viewed_at: (1000 - i) as i64, m: card(i.to_string()), position: 0 }).collect(),
+        shelves: vec![recent],
+        lane: Default::default(),
+    });
+    let mut srcs = vec![source];
+    settle_deck(&mut srcs, true);
+    let build = merge_with_scope(&srcs, &BrowseScope::standalone());
+    state.srcs = srcs;
+    commit(state, build);
+}
+
 /// Test hook: what a quiet read of the first source brought, without the read: its answer is its
 /// last one with every shelf item `rk` rewritten by `edit`, held in `staged` for
 /// [`HubsCmd::Publish`](crate::stores::hubs::HubsCmd) to land. Publishes nothing.
@@ -3619,10 +3751,13 @@ pub fn stage_test_item(state: &mut PmsState, rk: &str, edit: &dyn Fn(&mut PmsMov
     plx_base::testlock::assert_held("the pms hub catalog (stage_test_item)");
     let source = state.srcs.first_mut().expect("a seeded source");
     let mut staged = source.last.clone().expect("a source that has answered");
+    staged.lane = Default::default(); // a fresh answer has not had the deck placed on it
     for shelf in &mut staged.shelves {
         for item in shelf.items.iter_mut().filter(|item| item.rk == rk) { edit(Arc::make_mut(item)); }
     }
+    for card in staged.cw.iter_mut().filter(|card| card.m.rk == rk) { edit(Arc::make_mut(&mut card.m)); }
     source.staged = Some(staged);
+    state.staged_gen = state.staged_gen.wrapping_add(1);
 }
 
 /// Test hook: move the shelf item `rk` to the front of its shelf and republish: Continue Watching

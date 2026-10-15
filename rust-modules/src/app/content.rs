@@ -903,6 +903,7 @@ fn home_publication_command(app: &App) -> plx_data::stores::hubs::HubsCmd {
 
 /// Once a frame, beside the other Home store work.
 pub(super) fn publish_staged_hubs(app: &mut App) {
+    if !app.bridge.hubs_have_staged() { return; }
     let command = home_publication_command(app);
     let _ = app.bridge.hubs_run(command);
 }

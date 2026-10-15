@@ -1265,6 +1265,11 @@ impl Bridge {
 
     /// A fresh Hubs publication captured from this owner's store, for a caller that must not read
     /// the frame's retained `self.hubs` publication (e.g. a same-turn action after a command).
+    /// Is a quiet read's answer waiting to land? The per-frame publish asks this first.
+    pub(crate) fn hubs_have_staged(&self) -> bool {
+        self.stores.hubs.has_staged()
+    }
+
     pub(crate) fn hubs_snapshot(&self) -> plx_data::pms::HubsSnapshot {
         self.stores.hubs.snapshot()
     }
@@ -1275,7 +1280,7 @@ impl Bridge {
         self.stores.hubs.owed()
     }
 
-    /// Has the Hubs read of source `sid` landed or failed (and is none waiting for room)?
+    /// Is no prompted Hubs read of source `sid` out or waiting for room? (A quiet read is not one.)
     pub(crate) fn hub_source_settled(&self, sid: plx_plex::plex::ServerId) -> bool {
         self.stores.hubs.source_settled(sid)
     }

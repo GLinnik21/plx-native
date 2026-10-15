@@ -4810,28 +4810,59 @@ fn a_next_episode_replacing_the_focused_tile_keeps_its_element_and_the_focus() {
         sid: plx_plex::plex::ServerId::UNSET, rk: "31".into() }).is_some());
 }
 
+/// [`show_home`] with Continue Watching as the DECK row the product has (row 0, above a Recently
+/// Added shelf), which is what the store's visible-Home rules are phrased over.
+fn deck_home(items: usize) -> (plx_data::pms::PmsState, std::sync::Arc<plx_data::pms::PmsAdapter>, HomeScreen) {
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_deck_home_for_test(&mut state, &adapter, items);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    tick_n(&mut s, snapshot.view(), None, 0, 6);
+    (state, adapter, s)
+}
+
+fn publish(state: &mut plx_data::pms::PmsState, adapter: &std::sync::Arc<plx_data::pms::PmsAdapter>,
+    focused_hub: Option<usize>) -> bool {
+    plx_data::pms::run(state, adapter, plx_data::stores::hubs::HubsCmd::Publish {
+        home_top_visible: true, focused_hub, press_live: false }).changed
+}
+
 #[test]
 fn focus_follows_show_after_cw_commit() {
     let _guard = plx_base::testlock::serial();
-    let (mut state, mut s) = show_home(6);
-    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    let (mut state, adapter, mut s) = deck_home(6);
+    assert_eq!(card_rk(&state, 2), "3", "premise: Continue Watching is the first row");
     let before = s.rows[0].elems.clone();
     let focus = FocusKey { entry: s.entry, elem: before[2] };
     // a quiet read answered the finished episode "3" of show3 with its next one; it waits staged
     plx_data::pms::stage_test_item(&mut state, "3", &|m| m.rk = "31".into());
     assert_eq!(card_rk(&state, 2), "3", "premise: the published row still holds the finished episode");
-    // This fixture's Continue Watching is a plain shelf row inside the held window (it has no deck
-    // rows), which a visible Home would hold; the store's visible rules are graded in
-    // `pms_staged_tests`. Here Home is covered, so the staged change lands, and the question is
-    // what the mounted screen does with it.
-    let landed = plx_data::pms::run(&mut state, &adapter, plx_data::stores::hubs::HubsCmd::Publish {
-        home_top_visible: false, focused_hub: None, press_live: false });
-    assert!(landed.changed, "premise: the staged change was published");
+    // the focus is on another row and nothing is pressed: the Continue Watching change lands
+    assert!(publish(&mut state, &adapter, Some(1)), "premise: the staged change was published");
     assert_eq!(card_rk(&state, 2), "31", "premise: the tile now holds the next episode");
     let seated = land_following(&mut s, &state, focus);
     assert_eq!(s.rows[0].elems, before, "the row keeps every element");
     assert_eq!(seated, focus, "focus stays on the show's tile: no FocusMoved");
     assert!(s.ghost_cards.is_empty() && !s.grid.shelves[0].has_ghosts(), "the same show is not a remove plus an insert");
+}
+
+#[test]
+fn a_cw_change_waits_while_the_focus_is_in_continue_watching() {
+    let _guard = plx_base::testlock::serial();
+    let (mut state, adapter, mut s) = deck_home(6);
+    let before = s.rows[0].elems.clone();
+    let focus = FocusKey { entry: s.entry, elem: before[2] };
+    plx_data::pms::stage_test_item(&mut state, "3", &|m| m.rk = "31".into());
+    assert!(!publish(&mut state, &adapter, Some(0)), "the focus is on the row that would change: nothing lands");
+    assert_eq!(card_rk(&state, 2), "3");
+    let seated = land_following(&mut s, &state, focus);
+    assert_eq!(s.rows[0].elems, before, "and the row's elements are exactly as they were");
+    assert_eq!(seated, focus);
+    assert!(s.ghost_cards.is_empty() && !s.grid.shelves[0].has_ghosts());
 }
 
 #[test]

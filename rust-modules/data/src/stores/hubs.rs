@@ -27,17 +27,17 @@ pub enum HubsCmd {
     /// Read source `sid` again WITHOUT publishing it: the answer is held on the source
     /// (`pms::Src::staged`) until [`HubsCmd::Publish`] says it may land. Unlike `RefetchHubs` it
     /// never supersedes a flight, touches no other source and moves no generation, so a read in
-    /// flight for the person is never dropped by it. Ignored while the source is loading, fetching
-    /// or paging, and while any other source has an ordinary read out.
-    ///
-    /// The caller gates it: nothing sends it while `app.refresh_hubs || bridge.hubs_owed()`
-    /// (a prompted refetch is owed or out, and would supersede it anyway). The first senders are
-    /// the re-read on resume and on reveal (layer-2 L2-5) and the notification mapping (L2-4).
+    /// flight for the person is never dropped by it. The data layer enforces its own preconditions:
+    /// it is not made while the source is loading or not Ready, or while a whole-source (prompted)
+    /// read of any source is out, which would publish what it would have staged. An ask that cannot
+    /// be made yet (the source has a page read out, or the spacing after its last quiet read has
+    /// not run out) is kept and made by a later tick; a failed quiet read backs off and asks no
+    /// rediscovery. A sender need not gate it.
     RefetchSourceQuiet { sid: plx_plex::plex::ServerId },
     /// Sent every frame by the application: may what is staged land now? Nothing staged does
     /// nothing. `home_top_visible` is "Home is the page the person is looking at"; `focused_hub`
     /// is the catalog row (the index `HubsView::hub` takes) the focus is in, if it is in a row;
-    /// `press_live` is "a press is armed". While Home is hidden the staged answer lands at once.
+    /// `press_live` is "a press is armed", which holds the Continue Watching rows only. While Home is hidden the staged answer lands at once.
     /// While it is visible it lands only if nothing the person can see or is pointing at moves:
     /// no row added, removed or reordered, and every row that changed is outside the held window
     /// or is Continue Watching with the focus elsewhere.
@@ -225,6 +225,9 @@ impl HubsStore {
     pub fn owed(&self) -> bool {
         crate::pms::owed(&self.adapter)
     }
+
+    /// Is a quiet read's answer waiting for [`HubsCmd::Publish`]?
+    pub fn has_staged(&self) -> bool { crate::pms::has_staged(&self.state) }
 
     /// Has source `sid`'s read landed (or failed)? See [`crate::pms::source_settled`].
     pub fn source_settled(&self, sid: plx_plex::plex::ServerId) -> bool {

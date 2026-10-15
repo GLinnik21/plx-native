@@ -59,16 +59,22 @@ fn other_build(slot: u16) -> SourceBuild {
 }
 
 fn rig(sources: usize) -> Rig {
+    rig_of((0..sources).map(|i| Box::new(move |slot| if i == 0 { first_build(slot) } else { other_build(slot) })
+        as Box<dyn Fn(u16) -> SourceBuild>).collect())
+}
+
+/// [`rig`] with each source's first answer chosen: `builds[i](slot)`.
+fn rig_of(builds: Vec<Box<dyn Fn(u16) -> SourceBuild>>) -> Rig {
     let mut o = Owner::default();
     plx_plex::plex::reset_servers_for_test();
-    let slots: Vec<u16> = (0..sources)
+    let slots: Vec<u16> = (0..builds.len())
         .map(|i| plx_plex::plex::register_for_test(&format!("staged-{i}"), "127.0.0.1", 9 + i as i32,
             "synthetic", "cid").raw())
         .collect();
     reset(&mut o.state, &o.adapter);
     seed(&mut o.state, slots.iter().map(|&slot| src(slot, "", HubState::Loading, None)).collect());
-    for (i, &slot) in slots.iter().enumerate() {
-        land(&o.state, &o.adapter, slot, Some(if i == 0 { first_build(slot) } else { other_build(slot) }));
+    for (&slot, build) in slots.iter().zip(&builds) {
+        land(&o.state, &o.adapter, slot, Some(build(slot)));
     }
     pump(&mut o.state, &o.adapter, 0.0);
     assert!(o.state.srcs.iter().all(|s| s.state == HubState::Ready && s.staged.is_none()),
@@ -401,8 +407,8 @@ fn failed_quiet_fetch_leaves_published_and_generation() {
     assert_eq!(s.state, HubState::Ready, "a quiet failure is not a failed source");
     assert!(!s.fetching && !s.quiet && s.staged.is_none());
     assert_eq!((s.retry_n, s.retry_s), (0, 0.0), "no backoff is armed");
-    assert_eq!(outcome.endpoints.iter().map(|e| e.sid).collect::<Vec<_>>(), [r.sid(0)],
-        "the endpoint is still reported for rediscovery");
+    assert!(outcome.endpoints.iter().next().is_none(),
+        "a quiet failure asks no rediscovery: the prompted retry owns that");
     let (_, asked) = r.run(None, 60.0);
     assert!(asked.is_empty(), "and no later tick retries it as a prompted read");
 }
@@ -416,7 +422,7 @@ fn a_quiet_launch_the_system_refused_leaves_the_source_alone() {
         &mut |_| false);
     let s = &r.o.state.srcs[0];
     assert_eq!((s.state, s.fetching, s.quiet, s.retry_n), (HubState::Ready, false, false, 0));
-    assert_eq!(outcome.endpoints.iter().map(|e| e.sid).collect::<Vec<_>>(), [sid0]);
+    assert!(outcome.endpoints.iter().next().is_none(), "and asks no rediscovery");
 }
 
 #[test]
@@ -453,4 +459,171 @@ fn a_quiet_read_in_flight_does_not_unsettle_the_source() {
     let _prompted = r.run(Some(HubsCmd::RefetchHubs), 0.0);
     assert!(!source_settled(&r.o.state, sid0));
     let _ = r.apply(&quiet.remove(0).complete(None)); // (dropped: its generation has gone)
+}
+
+fn many_cw(prefix: &'static str, newest: i64, n: usize) -> impl Fn(u16) -> SourceBuild {
+    move |slot| {
+        let rks: Vec<String> = (0..n).map(|i| format!("{prefix}{i}")).collect();
+        let cw: Vec<(i64, &str)> = rks.iter().enumerate().map(|(i, rk)| (newest - i as i64, rk.as_str())).collect();
+        built(slot, &cw, vec![shelf(slot, "Recently Added", "home.movies.recent", &["a1", "a2", "a3"])])
+    }
+}
+
+fn lane_json(r: &Rig, i: usize) -> String {
+    serde_json::to_string(&r.o.state.srcs[i].last.as_ref().unwrap().lane).unwrap()
+}
+
+#[test]
+fn a_waiting_publish_leaves_every_other_sources_deck_lane_alone() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig_of(vec![Box::new(many_cw("p", 1000, 14)), Box::new(many_cw("q", 500, 14))]);
+    let (lane0, lane1) = (lane_json(&r, 0), lane_json(&r, 1));
+    // source 0 now has more, newer cards than its share of the bound: fitting the deck shrinks
+    // source 1's window
+    r.stage(0, many_cw("n", 2000, 20)(r.slots[0]));
+    let gen = r.o.state.catalog_gen;
+    assert!(!r.publish(true, Some(0), false).changed, "premise: the focus is in Continue Watching, so it waits");
+    assert_eq!(r.o.state.catalog_gen, gen);
+    assert_eq!((lane_json(&r, 0), lane_json(&r, 1)), (lane0, lane1),
+        "a change that waits changes no source's published deck lane");
+}
+
+#[test]
+fn an_unrelated_edit_after_a_waiting_publish_leaves_the_published_deck_alone() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig_of(vec![Box::new(many_cw("p", 1000, 14)), Box::new(many_cw("q", 500, 14))]);
+    let deck = rks(&r.o.state, 0);
+    r.stage(0, many_cw("n", 2000, 20)(r.slots[0]));
+    assert!(!r.publish(true, Some(0), false).changed);
+    let sid0 = r.sid(0);
+    let _ = run(&mut r.o.state, &r.o.adapter, HubsCmd::ApplyView { at: ViewAt::leaf(sid0, "a2"), edit: ViewEdit::Watched(true) });
+    assert_eq!(rks(&r.o.state, 0), deck, "the edit republishes the deck it had, not the waiting read's share");
+}
+
+#[test]
+fn a_page_ask_supersedes_a_deferred_quiet_read() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig(1);
+    {
+        let s = &mut r.o.state.srcs[0];
+        s.quiet = true;
+        s.deferred = true; // the gate had no room for the quiet ask
+        s.page = Some(PageQuery { id: "home.movies.recent".into(), key: String::new(), start: 3, before: false,
+            hidden: Vec::new(), reload: false }); // …and then a page ask came for the same source
+    }
+    let (_, mut asked) = r.run(None, 0.0);
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].page_descriptor().is_some(), "the read that went out is the page read");
+    let landing = asked.remove(0).complete(Some(built(r.slots[0], &[], vec![
+        shelf(r.slots[0], "Recently Added", "home.movies.recent", &["a4", "a5"])])));
+    let _ = r.apply(&landing);
+    let s = &r.o.state.srcs[0];
+    assert!(s.staged.is_none(), "a page's one-shelf answer is not a source's whole answer to stage");
+    assert!(!s.quiet);
+}
+
+#[test]
+fn a_page_landing_that_dropped_the_staging_asks_the_quiet_read_again() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig(1);
+    r.stage(0, top_moved(r.slots[0]));
+    {
+        let s = &mut r.o.state.srcs[0];
+        s.page = Some(PageQuery { id: "home.movies.recent".into(), key: "k".into(), start: 3, before: false,
+            hidden: Vec::new(), reload: false });
+        s.fetching = true;
+    }
+    land(&r.o.state, &r.o.adapter, r.slots[0], Some(built(r.slots[0], &[], vec![
+        shelf(r.slots[0], "Recently Added", "home.movies.recent", &["a4", "a5"])])));
+    pump(&mut r.o.state, &r.o.adapter, 0.0);
+    assert!(r.o.state.srcs[0].staged.is_none());
+    let (_, asked) = r.run(None, 120.0);
+    assert_eq!(asked.len(), 1, "the update the page landing dropped is asked for again");
+    assert!(asked[0].page_descriptor().is_none(), "as a whole-source read");
+    assert!(r.o.state.srcs[0].quiet);
+}
+
+#[test]
+fn a_quiet_ask_refused_for_the_sources_own_page_flight_is_owed() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig(1);
+    {
+        let s = &mut r.o.state.srcs[0];
+        s.fetching = true;
+        s.page = Some(PageQuery { id: "home.movies.recent".into(), key: "k".into(), start: 3, before: false,
+            hidden: Vec::new(), reload: false });
+    }
+    assert!(r.quiet(0).is_empty(), "refused while the page read is out");
+    {
+        let s = &mut r.o.state.srcs[0];
+        s.fetching = false; // the page read landed
+        s.page = None;
+    }
+    let (_, asked) = r.run(None, 120.0);
+    assert_eq!(asked.len(), 1, "the refused ask is made again once the source is idle");
+}
+
+#[test]
+fn another_sources_page_flight_does_not_block_a_quiet_ask() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig(2);
+    r.o.state.srcs[1].fetching = true;
+    r.o.state.srcs[1].page = Some(PageQuery { id: "home.theirs".into(), key: "k".into(), start: 3, before: false,
+        hidden: Vec::new(), reload: false });
+    assert_eq!(r.quiet(0).len(), 1, "scrolling a row of one server must not silence the other's update");
+}
+
+#[test]
+fn a_deck_advance_owes_the_quiet_read_for_what_it_dropped() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig(1);
+    r.stage(0, cw_moved(r.slots[0]));
+    advance_deck(&mut r.o.state.srcs, false);
+    assert!(r.o.state.srcs[0].staged.is_none(), "the lane moved under the staged copy");
+    let (_, asked) = r.run(None, 120.0);
+    assert_eq!(asked.len(), 1, "and its update is asked for again");
+}
+
+#[test]
+fn quiet_asks_inside_the_spacing_coalesce_into_one_later_read() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig(1);
+    r.stage(0, cw_moved(r.slots[0]));
+    assert!(r.quiet(0).is_empty(), "a second ask straight after the first read is coalesced");
+    assert!(r.quiet(0).is_empty());
+    let (_, asked) = r.run(None, 120.0);
+    assert_eq!(asked.len(), 1, "and made once the spacing has run out");
+}
+
+#[test]
+fn a_failed_quiet_read_backs_off_before_the_next() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig(1);
+    let mut asked = r.quiet(0);
+    let _ = r.apply(&asked.remove(0).complete(None));
+    assert!(r.quiet(0).is_empty(), "no new read straight after a failure");
+    let (_, again) = r.run(None, 120.0);
+    assert_eq!(again.len(), 1, "the ask that came in meanwhile is made once the back-off ran out");
+}
+
+#[test]
+fn a_metadata_only_change_commits_even_under_a_visible_home() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig(1);
+    let mut build = first_build(r.slots[0]);
+    build.shelves[1].total = 90; // "Top" now reports a longer listing; its cards are the same
+    r.stage(0, build);
+    let gen = r.o.state.catalog_gen;
+    assert!(r.publish(true, Some(2), false).changed, "nothing on screen moves, so nothing waits");
+    assert_eq!(r.o.state.catalog_gen, gen.wrapping_add(1));
+    assert!(r.o.state.srcs[0].staged.is_none());
+}
+
+#[test]
+fn nothing_staged_is_known_without_a_scope() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig(1);
+    assert!(!has_staged(&r.o.state));
+    r.stage(0, cw_moved(r.slots[0]));
+    assert!(has_staged(&r.o.state));
 }
