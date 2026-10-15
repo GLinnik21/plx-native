@@ -688,7 +688,9 @@ impl SecItems {
     }
     /// A read scan first: an optimistic edit must not clone unrelated retained pages.
     fn apply_view(&mut self, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
-        let matches = |m: &PmsMovie| at.covers(m);
+        // a row the edit would leave as it is (a read-back that agrees) is not a hit: nothing is
+        // copied, no notice rises and no query goes stale for it
+        let matches = |m: &PmsMovie| at.covers(m) && edit.changes(m);
         let mut hit = false;
         for p in 0..self.pages.len() {
             if !self.pages[p]

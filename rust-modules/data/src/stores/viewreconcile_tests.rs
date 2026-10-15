@@ -208,7 +208,7 @@ fn an_item_asked_for_while_its_read_is_out_is_not_read_twice_at_once() {
     let key = (ServerId::from_raw(0), "1".to_string());
     store.enqueue([key.clone(), key.clone()]);
     assert_eq!(store.pending_for_test(), [key.clone()], "asked twice, queued once");
-    store.flights.push(Flight { id: 1, sid: key.0, keys: vec!["1".into()], stamp: 0 });
+    store.flights.push(Flight { id: 1, sid: key.0, keys: vec!["1".into()], parents: Vec::new(), stamp: 0 });
     store.pending.clear();
     store.enqueue([key.clone(), key.clone()]);
     assert!(store.pending_for_test().is_empty(), "its read is out");
@@ -220,7 +220,7 @@ fn reset_forgets_the_queue_and_the_flights() {
     let mut store = ViewReconcileStore::default();
     let sid = ServerId::from_raw(0);
     store.enqueue([(sid, "1".to_string())]);
-    store.flights.push(Flight { id: 1, sid, keys: vec!["2".into()], stamp: 0 });
+    store.flights.push(Flight { id: 1, sid, keys: vec!["2".into()], parents: Vec::new(), stamp: 0 });
     store.enqueue([(sid, "2".to_string())]);
     store.reset();
     assert!(!store.is_busy() && store.dirty_for_test().is_empty());

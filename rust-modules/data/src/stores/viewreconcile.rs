@@ -32,6 +32,15 @@
 //!   [`crate::viewledger::ViewLedger`] when it is requested. A row some edit published AFTER that
 //!   stamp covers (a press made while the read was out) is discarded: the read describes the server
 //!   from before that press, and the press's own write will queue its own read-back.
+//! * **A leaf's season and show are read too.** What an episode's change moved is also the season's
+//!   and the show's `viewedLeafCount`, and a Library grid, a Search shelf or a Home card holding
+//!   those rows must say so. The keys are not on the row that was pressed, so they come from the
+//!   leaf's own answer (`parentRatingKey`, `grandparentRatingKey`) and are read in ONE more batch
+//!   per server, the same request shape as the first: an episode costs two reads, a movie one.
+//!   The extra rows are published and followed no further. Their facts are the server's own word
+//!   (`parse_item`: watched is `viewedLeafCount >= leafCount`), each addressed to its exact
+//!   `(server, ratingKey)`, so another server's show of the same key is not touched. Read-backs of
+//!   a burst share the extra batch; the pair of rounds is the ceiling however many episodes moved.
 //! * **Results reach the stores as edits carrying facts**: `publish_view` of a
 //!   [`crate::viewstate::ViewFact::Facts`] at `Scope::Leaf` (a show's facts describe the show row,
 //!   never its episodes). Facts are the server's word, so they are not recorded in the ledger. They
@@ -66,14 +75,26 @@ type Key = (ServerId, String);
 struct Flight {
     id: u64,
     sid: ServerId,
+    /// Everything this read asked for: the items owed a read-back, then `parents`.
     keys: Vec<String>,
+    /// The tail of `keys` asked only because a leaf's answer named them as its season or show. Their
+    /// rows are published and never followed to a parent of their own.
+    parents: Vec<String>,
     stamp: Stamp,
+}
+
+/// One answered row and the keys it names above itself: a season for an episode (`parent`) and the
+/// show (`grandparent`); a season names its show as `parent`. Empty where the row has none.
+struct ReadRow {
+    movie: crate::pms::PmsMovie,
+    parent: String,
+    grandparent: String,
 }
 
 /// What a worker brings back. `rows` is `None` when the server did not answer.
 struct Landing {
     id: u64,
-    rows: Option<Vec<crate::pms::PmsMovie>>,
+    rows: Option<Vec<ReadRow>>,
 }
 
 /// Cross-thread transport for one owner; reset replaces it.
@@ -87,6 +108,8 @@ pub struct ViewReconcileStore {
     ledger: ViewLedger,
     adapter: Arc<ViewReconcileAdapter>,
     pending: Vec<Key>,
+    /// Seasons and shows the answers named, owed one more read ([`Flight::parents`]).
+    pending_parents: Vec<Key>,
     flights: Vec<Flight>,
     /// Items asked for again while their read was out: re-queued once when it lands.
     dirty: Vec<Key>,
@@ -107,6 +130,7 @@ impl Default for ViewReconcileStore {
             ledger: Default::default(),
             adapter: Arc::new(Default::default()),
             pending: Vec::new(),
+            pending_parents: Vec::new(),
             flights: Vec::new(),
             dirty: Vec::new(),
             candidates: Vec::new(),
@@ -140,7 +164,7 @@ impl ViewReconcileStore {
 
     /// Is anything queued or out?
     pub fn is_busy(&self) -> bool {
-        !self.pending.is_empty() || !self.flights.is_empty()
+        !self.pending.is_empty() || !self.pending_parents.is_empty() || !self.flights.is_empty()
     }
 
     /// Owe a read of each `(server, ratingKey)`. An item whose read is out is marked dirty instead.
@@ -174,6 +198,7 @@ impl ViewReconcileStore {
     pub fn reset(&mut self) {
         self.adapter = Arc::new(Default::default());
         self.pending.clear();
+        self.pending_parents.clear();
         self.flights.clear();
         self.dirty.clear();
         self.candidates.clear();
@@ -189,7 +214,7 @@ impl ViewReconcileStore {
             return;
         }
         let mut servers: Vec<ServerId> = Vec::new();
-        for (sid, _) in &self.pending {
+        for (sid, _) in self.pending.iter().chain(&self.pending_parents) {
             if !servers.contains(sid) && !self.flights.iter().any(|f| f.sid == *sid) {
                 servers.push(*sid);
             }
@@ -203,6 +228,19 @@ impl ViewReconcileStore {
                 } else {
                     true
                 }
+            });
+            // The seasons and shows the last answers named ride in the same batch: one request per
+            // server however many parents there are.
+            let mut parents: Vec<String> = Vec::new();
+            self.pending_parents.retain(|(s, rk)| {
+                if *s != sid || keys.len() >= BATCH_KEYS {
+                    return true;
+                }
+                if !keys.iter().any(|k| plx_plex::plex::same_item((sid, k), (sid, rk))) {
+                    keys.push(rk.clone());
+                    parents.push(rk.clone());
+                }
+                false
             });
             // Resolved here, at the spawn site; the worker never asks which server is current. A
             // slot that left the registry while queued has nowhere to read from.
@@ -220,20 +258,27 @@ impl ViewReconcileStore {
                 let rows = catch_unwind(AssertUnwindSafe(|| {
                     let refs: Vec<&str> = asked.iter().map(String::as_str).collect();
                     client.metadata_many(&refs).map(|mc| {
-                        mc.metadata.iter().map(|m| crate::pms::parse_item(m, sid)).collect::<Vec<_>>()
+                        mc.metadata.iter().map(|m| ReadRow {
+                            movie: crate::pms::parse_item(m, sid),
+                            parent: m.parent_rating_key.clone(),
+                            grandparent: m.grandparent_rating_key.clone(),
+                        }).collect::<Vec<_>>()
                     })
                 })).unwrap_or(None);
                 mail.mail.lock().unwrap_or_else(|e| e.into_inner()).push(Landing { id, rows });
             });
             if !spawned {
                 // Nothing will ever land. Keep the items and wait out the ladder.
-                self.pending.extend(keys.into_iter().map(|rk| (sid, rk)));
+                let leaves = keys.len() - parents.len();
+                let mut keys = keys.into_iter();
+                self.pending.extend(keys.by_ref().take(leaves).map(|rk| (sid, rk)));
+                self.pending_parents.extend(keys.map(|rk| (sid, rk)));
                 self.retry_cd = RETRY_FRAMES;
                 return;
             }
             plx_base::eventlog::log(&format!(
                 "viewreconcile: {} item(s) → server {} (off-thread)", keys.len(), sid.raw()));
-            self.flights.push(Flight { id, sid, keys, stamp });
+            self.flights.push(Flight { id, sid, keys, parents, stamp });
         }
     }
 
@@ -274,12 +319,27 @@ impl ViewReconcileStore {
                     "viewreconcile: server {} did not answer; the patch stands", flight.sid.raw())),
                 Some(rows) => {
                     let mut applied = 0;
-                    for m in rows {
+                    for ReadRow { movie: m, parent, grandparent } in rows {
                         if !flight.keys.iter().any(|k| plx_plex::plex::same_item((flight.sid, k), (m.sid, &m.rk))) {
                             continue;
                         }
                         if overtaking.iter().any(|at| at.covers(&m)) {
                             continue;
+                        }
+                        let is_parent = flight.parents.iter().any(|p| plx_plex::plex::same_item((flight.sid, p), (m.sid, &m.rk)));
+                        if !is_parent {
+                            // Its season and its show hold counts of their own, which this item's
+                            // change moved: read them too, unless this very read already did.
+                            for up in [parent, grandparent] {
+                                if up.is_empty() || flight.keys.iter().any(|k| plx_plex::plex::same_item((flight.sid, k), (flight.sid, &up))) {
+                                    continue;
+                                }
+                                let key = (flight.sid, up);
+                                let queued = |list: &[Key]| list.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1)));
+                                if !queued(&self.pending) && !queued(&self.pending_parents) {
+                                    self.pending_parents.push(key);
+                                }
+                            }
                         }
                         if let Some(i) = self.candidates.iter()
                             .position(|k| plx_plex::plex::same_item((k.0, &k.1), (m.sid, &m.rk)))
@@ -342,3 +402,7 @@ impl ViewReconcileStore {
 #[cfg(test)]
 #[path = "viewreconcile_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "viewreconcile_parents_tests.rs"]
+mod parents_tests;

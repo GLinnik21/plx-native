@@ -130,10 +130,11 @@ impl BrowseStore {
     }
 
     pub fn run(&mut self, cmd: BrowseCmd) -> bool {
+        use crate::viewstate::ViewEdit;
         let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
             work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }
                 | LibraryWork::Requery, ..
-        });
+        }) || matches!(&cmd, BrowseCmd::ApplyView { edit: ViewEdit::Facts { .. } | ViewEdit::Offset { .. }, .. });
         let quiet = matches!(&cmd, BrowseCmd::Addressed {
             work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres | LibraryWork::HubPage { .. } | LibraryWork::HubPageCancel { .. }, ..
         });
