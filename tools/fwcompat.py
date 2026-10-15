@@ -39,15 +39,15 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import urllib.request
 from pathlib import Path
 
-# Pinned so a database refresh is a visible commit rather than a silent change of verdict.
-FWSYM_TAG = "v20260731-e1bb0c0"
-FWSYM_DEB = "webosbrew-toolbox-fw-symbols_0.4.0-1_arm64.deb"
-FWSYM_URL = f"https://github.com/webosbrew/dev-toolbox-cli/releases/download/{FWSYM_TAG}/{FWSYM_DEB}"
-
 REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / "ci"))
+import deps  # noqa: E402  (the one fetch-and-verify routine)
+
+# Pinned (release, URL, sha256) in ci/dependencies.json, entry `webosbrew-toolbox`, so a database
+# refresh is a visible commit rather than a silent change of verdict.
+FWSYM = deps.entry("webosbrew-toolbox")
 DEFAULT_BINARY = REPO / "pkg" / "plxnative"
 CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "plxnative" / "fwsym"
 
@@ -74,14 +74,13 @@ def ensure_db(db_arg):
     if data.is_dir() and any(data.iterdir()):
         return data
     CACHE.mkdir(parents=True, exist_ok=True)
-    deb = CACHE / FWSYM_DEB
-    if not deb.exists():
-        print(f"fetching firmware symbol databases (~25 MB) -> {deb}", file=sys.stderr)
-        try:
-            urllib.request.urlretrieve(FWSYM_URL, deb)
-        except Exception as e:  # noqa: BLE001 - any failure here is the same user-facing problem
-            die(f"could not download {FWSYM_URL}: {e}\n"
-                f"        Fetch it by hand and re-run, or pass --db <extracted data dir>.")
+    asset = deps.assets_of(FWSYM)["fw-symbols"]
+    print(f"fetching firmware symbol databases (~25 MB) -> {CACHE}", file=sys.stderr)
+    try:
+        deb = deps.fetch(FWSYM, CACHE, keys={"fw-symbols"}, label="fwcompat")["fw-symbols"]
+    except (ValueError, OSError) as e:
+        die(f"could not fetch {asset['url']}: {e}\n"
+            f"        Fetch it by hand and re-run, or pass --db <extracted data dir>.")
     print("extracting...", file=sys.stderr)
     work = CACHE / "unpack"
     shutil.rmtree(work, ignore_errors=True)

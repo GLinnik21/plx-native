@@ -1,0 +1,2070 @@
+{
+  "browse.action.retry": {
+    "value": "Riprova",
+    "description": "browse action retry"
+  },
+  "browse.action.retry_home": {
+    "value": "Riprova",
+    "description": "browse action retry_home"
+  },
+  "browse.action.sign_in": {
+    "value": "Accedi",
+    "description": "browse action sign_in"
+  },
+  "browse.action.use_another_account": {
+    "value": "Usa un altro account",
+    "description": "Sign-in read-out primary button when the signed-in Plex account has no server: starts a fresh QR sign-in so a different account can be used."
+  },
+  "browse.action.more": {
+    "value": "ALTRO",
+    "description": "browse action more"
+  },
+  "browse.account.own": {
+    "value": "Questo account",
+    "description": "browse account own"
+  },
+  "browse.chrome.home": {
+    "value": "Home",
+    "description": "browse chrome home"
+  },
+  "browse.kind.movies": {
+    "value": "Film",
+    "description": "browse kind movies"
+  },
+  "browse.kind.tv_shows": {
+    "value": "Serie TV",
+    "description": "browse kind tv_shows"
+  },
+  "browse.kind.shows": {
+    "value": "Serie",
+    "description": "browse kind shows"
+  },
+  "browse.kind.movie": {
+    "value": "Film",
+    "description": "browse kind movie"
+  },
+  "browse.kind.show": {
+    "value": "Serie",
+    "description": "browse kind show"
+  },
+  "browse.kind.tv_show": {
+    "value": "Serie TV",
+    "description": "browse kind tv_show"
+  },
+  "browse.person.filmography": {
+    "value": "Filmografia",
+    "description": "browse person filmography"
+  },
+  "browse.person.empty": {
+    "value": "Nessun elemento di questa persona è presente nelle tue librerie",
+    "description": "browse person empty"
+  },
+  "browse.detail.about": {
+    "value": "Informazioni",
+    "description": "browse detail about"
+  },
+  "browse.detail.about_heading": {
+    "value": "INFORMAZIONI",
+    "description": "browse detail about_heading"
+  },
+  "browse.detail.released": {
+    "value": "Uscita",
+    "description": "browse detail released"
+  },
+  "browse.detail.runtime": {
+    "value": "Durata",
+    "description": "browse detail runtime"
+  },
+  "browse.detail.rated": {
+    "value": "Vietato",
+    "description": "browse detail rated"
+  },
+  "browse.detail.origins": {
+    "value": "Paesi d'origine",
+    "description": "browse detail origins"
+  },
+  "browse.detail.unknown": {
+    "value": "Sconosciuto",
+    "description": "browse detail unknown"
+  },
+  "browse.detail.information": {
+    "value": "Informazioni",
+    "description": "browse detail information"
+  },
+  "browse.detail.languages": {
+    "value": "Lingue",
+    "description": "browse detail languages"
+  },
+  "browse.detail.original_audio": {
+    "value": "Audio originale",
+    "description": "browse detail original_audio"
+  },
+  "browse.detail.audio": {
+    "value": "Audio",
+    "description": "browse detail audio"
+  },
+  "browse.detail.accessibility": {
+    "value": "Accessibilità",
+    "description": "browse detail accessibility"
+  },
+  "browse.detail.closed_captions": {
+    "value": "I sottotitoli per non udenti (CC) indicano i sottotitoli nelle lingue disponibili con l'aggiunta di informazioni audio rilevanti non parlate.",
+    "description": "browse detail closed_captions"
+  },
+  "browse.detail.sdh": {
+    "value": "I sottotitoli per sordi e con problemi di udito (SDH) si riferiscono ai sottotitoli nella lingua originale con l'aggiunta di informazioni non parlate rilevanti.",
+    "description": "browse detail sdh"
+  },
+  "browse.detail.audio_description": {
+    "value": "Le audiodescrizioni (AD) si riferiscono a una traccia di narrazione che descrive ciò che accade sullo schermo, per fornire contesto a chi è cieco o ipovedente.",
+    "description": "browse detail audio_description"
+  },
+  "browse.detail.related": {
+    "value": "Correlati",
+    "description": "browse detail related"
+  },
+  "browse.detail.extras": {
+    "value": "Extra",
+    "description": "browse detail extras"
+  },
+  "browse.detail.cast": {
+    "value": "Cast e troupe",
+    "description": "browse detail cast"
+  },
+  "browse.detail.also_available": {
+    "value": "Disponibile anche",
+    "description": "browse detail also_available"
+  },
+  "browse.detail.mark_watched": {
+    "value": "Segna come già visto",
+    "description": "browse detail mark_watched"
+  },
+  "browse.detail.mark_unwatched": {
+    "value": "Segna come da vedere",
+    "description": "browse detail mark_unwatched"
+  },
+  "browse.detail.mark_show_watched": {
+    "value": "Segna serie come vista",
+    "description": "browse detail mark_show_watched"
+  },
+  "browse.detail.mark_show_unwatched": {
+    "value": "Segna serie come da vedere",
+    "description": "browse detail mark_show_unwatched"
+  },
+  "browse.detail.play_start": {
+    "value": "Riproduci dall'inizio",
+    "description": "browse detail play_start"
+  },
+  "browse.detail.trailer": {
+    "value": "Trailer",
+    "description": "browse detail trailer"
+  },
+  "browse.detail.resume": {
+    "value": "Riprendi",
+    "description": "browse detail resume"
+  },
+  "browse.detail.play": {
+    "value": "Riproduci",
+    "description": "browse detail play"
+  },
+  "browse.detail.created_by": {
+    "value": "Creato da",
+    "description": "browse detail created_by"
+  },
+  "browse.detail.directed_by": {
+    "value": "Diretto da",
+    "description": "browse detail directed_by"
+  },
+  "browse.detail.starring": {
+    "value": "Con",
+    "description": "browse detail starring"
+  },
+  "browse.detail.converts": {
+    "value": "Conversione sul server",
+    "description": "browse detail converts"
+  },
+  "browse.detail.direct_play": {
+    "value": "Riproduzione diretta",
+    "description": "browse detail direct_play"
+  },
+  "browse.detail.direct_stream": {
+    "value": "Flusso diretto",
+    "description": "browse detail direct_stream"
+  },
+  "browse.detail.original_audio_converted": {
+    "value": "Originale · audio convertito",
+    "description": "Detail-page playback label when the picture is copied untouched and only the audio of the track that will play is converted by the server."
+  },
+  "browse.detail.hardware_needs": {
+    "value": "necessita conversione hardware",
+    "description": "browse detail hardware_needs"
+  },
+  "browse.detail.tonemap_needs": {
+    "value": "necessita tone-mapping",
+    "description": "browse detail tonemap_needs"
+  },
+  "browse.home.continue": {
+    "value": "Continua",
+    "description": "browse home continue"
+  },
+  "browse.home.failed": {
+    "value": "Impossibile raggiungere il tuo server Plex",
+    "description": "browse home failed"
+  },
+  "browse.home.empty": {
+    "value": "Ancora nessun elemento su questo server",
+    "description": "browse home empty"
+  },
+  "browse.home.refresh": {
+    "value": "Aggiorna",
+    "description": "browse home refresh"
+  },
+  "browse.library.sort_by": {
+    "value": "Ordina per",
+    "description": "browse library sort_by"
+  },
+  "browse.library.filter": {
+    "value": "Filtra",
+    "description": "browse library filter"
+  },
+  "browse.library.unwatched_only": {
+    "value": "Solo non visti",
+    "description": "browse library unwatched_only"
+  },
+  "browse.library.genre": {
+    "value": "Genere",
+    "description": "browse library genre"
+  },
+  "browse.library.all": {
+    "value": "Tutti",
+    "description": "browse library all"
+  },
+  "browse.library.all_genres": {
+    "value": "Tutti i generi",
+    "description": "browse library all_genres"
+  },
+  "browse.library.libraries": {
+    "value": "Librerie",
+    "description": "browse library libraries"
+  },
+  "browse.library.check_shares": {
+    "value": "Controlla nuove condivisioni",
+    "description": "browse library check_shares"
+  },
+  "browse.library.name": {
+    "value": "Libreria",
+    "description": "browse library name"
+  },
+  "browse.library.sort": {
+    "value": "Ordina",
+    "description": "browse library sort"
+  },
+  "browse.library.title": {
+    "value": "Titolo",
+    "description": "browse library title"
+  },
+  "browse.library.server": {
+    "value": "server",
+    "description": "browse library server"
+  },
+  "browse.library.no_matches": {
+    "value": "Nessun risultato corrisponde",
+    "description": "browse library no_matches"
+  },
+  "browse.library.empty": {
+    "value": "Nessuna libreria su questo server",
+    "description": "browse library empty"
+  },
+  "browse.library.loading": {
+    "value": "Caricamento…",
+    "description": "browse library loading"
+  },
+  "browse.menu.go_episode": {
+    "value": "Vai all'episodio",
+    "description": "browse menu go_episode"
+  },
+  "browse.menu.go_show": {
+    "value": "Vai alla serie",
+    "description": "browse menu go_show"
+  },
+  "browse.menu.go_season": {
+    "value": "Vai alla stagione",
+    "description": "browse menu go_season"
+  },
+  "browse.menu.go_movie": {
+    "value": "Vai al film",
+    "description": "browse menu go_movie"
+  },
+  "browse.menu.remove_deck": {
+    "value": "Rimuovi da Continua",
+    "description": "browse menu remove_deck"
+  },
+  "browse.login.deleted": {
+    "value": "Dati locali eliminati",
+    "description": "browse login deleted"
+  },
+  "browse.login.deleted_detail": {
+    "value": "Credenziali, preferenze, telemetria e diagnostica locale sono stati rimossi.",
+    "description": "browse login deleted_detail"
+  },
+  "browse.login.partial": {
+    "value": "Disconnesso e la maggior parte dei dati locali è stata eliminata",
+    "description": "browse login partial"
+  },
+  "browse.login.partial_detail": {
+    "value": "Alcuni file non hanno potuto essere rimossi e potrebbero trovarsi ancora su questo televisore.",
+    "description": "browse login partial_detail"
+  },
+  "browse.login.stalled": {
+    "value": "In attesa — premi OK per un nuovo codice",
+    "description": "browse login stalled"
+  },
+  "browse.login.expired": {
+    "value": "Il codice è scaduto — scansiona questo",
+    "description": "browse login expired"
+  },
+  "browse.login.waiting": {
+    "value": "In attesa dell'accesso…",
+    "description": "browse login waiting"
+  },
+  "browse.login.slow": {
+    "value": "L'operazione sta richiedendo più tempo del previsto.",
+    "description": "browse login slow"
+  },
+  "browse.login.title": {
+    "value": "Accedi a Plex",
+    "description": "browse login title"
+  },
+  "browse.login.instructions": {
+    "value": "Usa la fotocamera del telefono per scansionare il codice o collega manualmente questo televisore con l'indirizzo e il codice mostrati qui.",
+    "description": "browse login instructions"
+  },
+  "browse.search.placeholder": {
+    "value": "Cerca nella libreria",
+    "description": "browse search placeholder"
+  },
+  "browse.search.one_more": {
+    "value": "un altro carattere",
+    "description": "browse search one_more"
+  },
+  "browse.search.recents": {
+    "value": "RICERCHE RECENTI",
+    "description": "browse search recents"
+  },
+  "browse.search.clear": {
+    "value": "Cancella ricerche recenti",
+    "description": "browse search clear"
+  },
+  "browse.search.failed": {
+    "value": "La ricerca non ha raggiunto il server",
+    "description": "browse search failed"
+  },
+  "browse.search.failed_detail": {
+    "value": "Le tue librerie funzionano — riprova tra un momento.",
+    "description": "browse search failed_detail"
+  },
+  "browse.search.not_yet": {
+    "value": "Nessuna ricerca effettuata",
+    "description": "browse search not_yet"
+  },
+  "browse.search.results": {
+    "value": "RISULTATI DELLA RICERCA",
+    "description": "browse search results"
+  },
+  "browse.search.your_server": {
+    "value": "il tuo server",
+    "description": "browse search your_server"
+  },
+  "browse.search.shared_server": {
+    "value": "un server condiviso",
+    "description": "browse search shared_server"
+  },
+  "browse.home.loading": {
+    "value": "Caricamento della libreria…",
+    "description": "browse home loading"
+  },
+  "browse.login.failed": {
+    "value": "Impossibile accedere",
+    "description": "browse login failed"
+  },
+  "browse.login.finding": {
+    "value": "Ricerca del server in corso…",
+    "description": "browse login finding"
+  },
+  "browse.login.connecting": {
+    "value": "Connessione a Plex in corso…",
+    "description": "browse login connecting"
+  },
+  "browse.person.eyebrow": {
+    "value": "PERSONA",
+    "description": "browse person eyebrow"
+  },
+  "browse.person.born": {
+    "value": "Nato il {date}",
+    "args": {
+      "date": "str"
+    },
+    "description": "browse person born"
+  },
+  "browse.person.born_place": {
+    "value": "Nato il {date} a {place}",
+    "args": {
+      "date": "str",
+      "place": "str"
+    },
+    "description": "browse person born_place"
+  },
+  "browse.person.died": {
+    "value": "Deceduto il {date}",
+    "args": {
+      "date": "str"
+    },
+    "description": "browse person died"
+  },
+  "browse.person.films": {
+    "value": {
+      "one": "{count} film",
+      "other": "{count} film"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "browse person films"
+  },
+  "browse.person.shows": {
+    "value": {
+      "one": "{count} serie",
+      "other": "{count} serie"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "browse person shows"
+  },
+  "browse.person.library_one": {
+    "value": "{titles} in questa libreria",
+    "args": {
+      "titles": "str"
+    },
+    "description": "browse person library_one"
+  },
+  "browse.person.library_both": {
+    "value": "{films} e {shows} in questa libreria",
+    "args": {
+      "films": "str",
+      "shows": "str"
+    },
+    "description": "browse person library_both"
+  },
+  "browse.person.credits": {
+    "value": {
+      "one": "{count} riconoscimento · Dal più recente.",
+      "other": "{count} riconoscimenti · Dal più recente."
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "browse person credits"
+  },
+  "browse.detail.seasons": {
+    "value": {
+      "one": "{count} stagione",
+      "other": "{count} stagioni"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "browse detail seasons"
+  },
+  "browse.detail.episodes": {
+    "value": {
+      "one": "{count} episodio",
+      "other": "{count} episodi"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "browse detail episodes"
+  },
+  "browse.detail.extent": {
+    "value": "{seasons}, {episodes}",
+    "args": {
+      "episodes": "str",
+      "seasons": "str"
+    },
+    "description": "browse detail extent"
+  },
+  "browse.detail.season_number": {
+    "value": "Stagione {number}",
+    "args": {
+      "number": "i64"
+    },
+    "description": "browse detail season_number"
+  },
+  "browse.detail.episode_number": {
+    "value": "EPISODIO {number}",
+    "args": {
+      "number": "i64"
+    },
+    "description": "browse detail episode_number"
+  },
+  "browse.library.unwatched": {
+    "value": "Da vedere",
+    "description": "browse library unwatched"
+  },
+  "browse.library.genre_unwatched": {
+    "value": "{genre} · Da vedere",
+    "args": {
+      "genre": "str"
+    },
+    "description": "browse library genre_unwatched"
+  },
+  "browse.library.unreachable": {
+    "value": "Impossibile raggiungere {name}",
+    "args": {
+      "name": "str"
+    },
+    "description": "browse library unreachable"
+  },
+  "browse.library.shared_unreachable": {
+    "value": "Condiviso da {owner} · il tuo server funziona correttamente.",
+    "args": {
+      "owner": "str"
+    },
+    "description": "browse library shared_unreachable"
+  },
+  "browse.library.no_movies": {
+    "value": "Nessun film in {library}",
+    "args": {
+      "library": "str"
+    },
+    "description": "browse library no_movies"
+  },
+  "browse.library.no_shows": {
+    "value": "Nessuna serie in {library}",
+    "args": {
+      "library": "str"
+    },
+    "description": "browse library no_shows"
+  },
+  "browse.search.people": {
+    "value": {
+      "one": "{count} persona",
+      "other": "{count} persone"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "browse search people"
+  },
+  "browse.search.count": {
+    "value": {
+      "one": "{count} risultato",
+      "other": "{count} risultati"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "browse search count"
+  },
+  "browse.search.items": {
+    "value": {
+      "one": "{count} elemento",
+      "other": "{count} elementi"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "Number of items inside one collection, shared by search results, collection tiles and the collection page"
+  },
+  "browse.search.no_results": {
+    "value": "Nessun risultato per “{query}”",
+    "args": {
+      "query": "str"
+    },
+    "description": "browse search no_results"
+  },
+  "browse.search.join": {
+    "value": "{first} e {last}",
+    "args": {
+      "first": "str",
+      "last": "str"
+    },
+    "description": "browse search join"
+  },
+  "browse.search.shared_libraries": {
+    "value": {
+      "one": "{count} libreria condivisa",
+      "other": "{count} librerie condivise"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "browse search shared_libraries"
+  },
+  "browse.search.shared_sources": {
+    "value": {
+      "one": "{count} sorgente condivisa",
+      "other": "{count} sorgenti condivise"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "browse search shared_sources"
+  },
+  "browse.search.searching": {
+    "value": "Ricerca in {sources}",
+    "args": {
+      "sources": "str"
+    },
+    "description": "browse search searching"
+  },
+  "browse.search.unreachable": {
+    "value": "{sources} non raggiungibile",
+    "args": {
+      "sources": "str"
+    },
+    "description": "browse search unreachable"
+  },
+  "browse.search.partial": {
+    "value": "{unreachable} non raggiungibile · risultati solo da {available}",
+    "args": {
+      "available": "str",
+      "unreachable": "str"
+    },
+    "description": "browse search partial"
+  },
+  "browse.diagnostics.idle": {
+    "value": "In attesa",
+    "description": "browse diagnostics idle"
+  },
+  "browse.diagnostics.resolving": {
+    "value": "Risoluzione",
+    "description": "browse diagnostics resolving"
+  },
+  "browse.diagnostics.connecting": {
+    "value": "Connessione",
+    "description": "browse diagnostics connecting"
+  },
+  "browse.diagnostics.buffering": {
+    "value": "Caricamento",
+    "description": "browse diagnostics buffering"
+  },
+  "browse.diagnostics.seeking": {
+    "value": "Ricerca",
+    "description": "browse diagnostics seeking"
+  },
+  "browse.diagnostics.playing": {
+    "value": "In riproduzione",
+    "description": "browse diagnostics playing"
+  },
+  "browse.diagnostics.error": {
+    "value": "Errore di riproduzione",
+    "description": "browse diagnostics error"
+  },
+  "browse.diagnostics.paused": {
+    "value": "{state} (in pausa)",
+    "args": {
+      "state": "str"
+    },
+    "description": "browse diagnostics paused"
+  },
+  "browse.diagnostics.stalled": {
+    "value": "{state} (bloccato da {seconds} s)",
+    "args": {
+      "seconds": "i64",
+      "state": "str"
+    },
+    "description": "browse diagnostics stalled"
+  },
+  "browse.auth.timeout": {
+    "value": "Timeout dell'accesso — riprova.",
+    "description": "browse auth timeout"
+  },
+  "browse.auth.no_servers": {
+    "value": "Questo account Plex non ha ancora alcun server.",
+    "description": "browse auth no_servers"
+  },
+  "browse.auth.no_servers_signed_in_as": {
+    "value": "Accesso effettuato come {account}.\nQuesto account Plex non ha ancora alcun server.",
+    "args": {
+      "account": "str"
+    },
+    "description": "Sign-in read-out reason when the account has no server: two sentences on two lines (the line break is deliberate and the read-out honours it); {account} is the signed-in account's name, shortened to fit the first line. Without a name the plain no_servers reason is used."
+  },
+  "browse.auth.refused": {
+    "value": "Il tuo server Plex ha rifiutato la connessione — controlla le impostazioni di accesso alla rete.",
+    "description": "browse auth refused"
+  },
+  "browse.auth.unreachable": {
+    "value": "Impossibile raggiungere alcun server Plex — controlla la connessione.",
+    "description": "browse auth unreachable"
+  },
+  "browse.auth.plex_unreachable": {
+    "value": "Impossibile raggiungere Plex. Controlla la connessione a Internet. È necessaria una connessione a Internet per accedere.",
+    "description": "browse auth plex_unreachable"
+  },
+  "browse.auth.switch_failed": {
+    "value": "Impossibile cambiare profilo — controlla la connessione.",
+    "description": "browse auth switch_failed"
+  },
+  "browse.auth.offline_profile": {
+    "value": "Nessuna connessione a Internet. Seleziona questo profilo almeno una volta online e funzionerà offline.",
+    "description": "browse auth offline_profile"
+  },
+  "browse.auth.insecure": {
+    "value": "Trovato il tuo server Plex, ma è impossibile connettersi in modo sicuro (HTTPS). Controlla che il server consenta connessioni sicure e riprova.",
+    "description": "browse auth insecure"
+  },
+  "browse.auth.no_access": {
+    "value": "{profile} non ha accesso al server",
+    "args": {
+      "profile": "str"
+    },
+    "description": "browse auth no_access"
+  },
+  "browse.auth.no_source_access": {
+    "value": "{profile} non ha accesso a questo server",
+    "args": {
+      "profile": "str"
+    },
+    "description": "Reason line on Who's watching when the profile was picked and every server that was reached refused it (HTTP 401): this profile genuinely has no grant on the server. Only for that case: a server that did not answer uses servers_unreachable and a certificate this TV does not trust uses tls_untrusted, so do not word this as a connection problem. {profile} is the profile's name. The picker draws it as one centred line."
+  },
+  "browse.auth.tls_untrusted": {
+    "value": "Questo televisore non considera affidabile il certificato di sicurezza del tuo server. Aggiorna PlxNative e riprova.",
+    "description": "Reason line on Who's watching or the sign-in read-out when the server answered over HTTPS but its certificate chain could not be verified against this television's trusted certificate authorities (X509 verify result 2, 18, 19, 20 or 21); it is NOT the wrong-clock case, which has its own line. The sentence names the remedy that exists in the app: results 2, 20 and 21 on a plex.direct name mean an out-of-date certificate store, which an update answers with newer bundled public roots; 18 and 19 mean the server presented its own root, which only the server's owner can fix. No placeholders. Sits in a two-line reason slot on the sign-in read-out and one centred line on the picker; keep the whole sentence at 125 characters or fewer."
+  },
+  "browse.kind.episodes": {
+    "value": "Episodi",
+    "description": "browse kind episodes"
+  },
+  "browse.kind.collections": {
+    "value": "Raccolte",
+    "description": "browse kind collections"
+  },
+  "browse.kind.films": {
+    "value": "Film",
+    "description": "browse kind films"
+  },
+  "browse.kind.tv_shows_sentence": {
+    "value": "Serie TV",
+    "description": "browse kind tv_shows_sentence"
+  },
+  "browse.home.continue_watching": {
+    "value": "Continua a guardare",
+    "description": "browse home continue_watching"
+  },
+  "browse.diagnostics.title": {
+    "value": "Diagnostica",
+    "description": "browse diagnostics title"
+  },
+  "browse.diagnostics.unknown_device": {
+    "value": "sconosciuto — nyx non ha risposto",
+    "description": "Diagnostics panel: unknown device"
+  },
+  "browse.diagnostics.unknown": {
+    "value": "sconosciuto",
+    "description": "Diagnostics panel: unknown"
+  },
+  "browse.diagnostics.no_hevc": {
+    "value": "nessun HEVC",
+    "description": "Diagnostics panel: no hevc"
+  },
+  "browse.diagnostics.no_vp9": {
+    "value": "nessun VP9",
+    "description": "Diagnostics panel: no vp9"
+  },
+  "browse.diagnostics.device_table": {
+    "value": "tabella dispositivi",
+    "description": "Diagnostics panel: device table"
+  },
+  "browse.diagnostics.assumed": {
+    "value": "IPOTIZZATO",
+    "description": "Diagnostics panel: assumed"
+  },
+  "browse.diagnostics.pipeline_fps": {
+    "value": "la pipeline indica",
+    "description": "Diagnostics panel: pipeline fps"
+  },
+  "browse.diagnostics.declared_fps": {
+    "value": "dichiarato",
+    "description": "Diagnostics panel: declared fps"
+  },
+  "browse.diagnostics.unopened": {
+    "value": "flusso mai aperto",
+    "description": "Diagnostics panel: unopened"
+  },
+  "browse.diagnostics.no_connection": {
+    "value": "nessuna connessione",
+    "description": "Diagnostics panel: no connection"
+  },
+  "browse.diagnostics.refused": {
+    "value": "RIFIUTATO",
+    "description": "Diagnostics panel: refused"
+  },
+  "browse.diagnostics.completed": {
+    "value": "completato",
+    "description": "Diagnostics panel: completed"
+  },
+  "browse.diagnostics.waiting": {
+    "value": "in attesa",
+    "description": "Diagnostics panel: waiting"
+  },
+  "browse.diagnostics.no_callbacks": {
+    "value": "nessun callback",
+    "description": "Diagnostics panel: no callbacks"
+  },
+  "browse.diagnostics.nothing_demuxed": {
+    "value": "NULLA demuxato",
+    "description": "Diagnostics panel: nothing demuxed"
+  },
+  "browse.diagnostics.unknown_os": {
+    "value": "webOS sconosciuto — os_info.json illeggibile",
+    "description": "Diagnostics panel: unknown os"
+  },
+  "browse.diagnostics.standalone": {
+    "value": "autonomo · nessun PMS",
+    "description": "Diagnostics panel: standalone"
+  },
+  "browse.diagnostics.remote": {
+    "value": "remoto",
+    "description": "Diagnostics panel: remote"
+  },
+  "browse.diagnostics.relay": {
+    "value": "relay",
+    "description": "Diagnostics panel: relay"
+  },
+  "browse.diagnostics.unknown_link": {
+    "value": "collegamento sconosciuto",
+    "description": "Diagnostics panel: unknown link"
+  },
+  "browse.diagnostics.progressive": {
+    "value": "progressivo",
+    "description": "Diagnostics panel: progressive"
+  },
+  "browse.diagnostics.direct_play": {
+    "value": "riproduzione diretta",
+    "description": "Diagnostics panel: direct play"
+  },
+  "browse.diagnostics.remux": {
+    "value": "remux (copia flusso)",
+    "description": "Diagnostics panel: remux"
+  },
+  "browse.diagnostics.transcode": {
+    "value": "transcodifica (ricodifica)",
+    "description": "Diagnostics panel: transcode"
+  },
+  "browse.diagnostics.exported_window": {
+    "value": "finestra esportata",
+    "description": "Diagnostics panel: exported window"
+  },
+  "browse.diagnostics.no_window": {
+    "value": "NESSUNA FINESTRA",
+    "description": "Diagnostics panel: no window"
+  },
+  "browse.diagnostics.window_ready": {
+    "value": "finestra pronta",
+    "description": "Diagnostics panel: window ready"
+  },
+  "browse.diagnostics.not_placed": {
+    "value": "non posizionato",
+    "description": "Diagnostics panel: not placed"
+  },
+  "browse.diagnostics.placement_failed": {
+    "value": "POSIZIONAMENTO FALLITO (rv=0)",
+    "description": "Diagnostics panel: placement failed"
+  },
+  "browse.diagnostics.unavailable": {
+    "value": "NON DISPONIBILE",
+    "description": "Diagnostics panel: unavailable"
+  },
+  "browse.diagnostics.unbound": {
+    "value": "inizializzato · NON associato",
+    "description": "Diagnostics panel: unbound"
+  },
+  "browse.diagnostics.binding": {
+    "value": "associazione inviata",
+    "description": "Diagnostics panel: binding"
+  },
+  "browse.diagnostics.streaming": {
+    "value": "streaming in corso",
+    "description": "Diagnostics panel: streaming"
+  },
+  "browse.diagnostics.none_yet": {
+    "value": "ancora nessuno",
+    "description": "Diagnostics panel: none yet"
+  },
+  "browse.diagnostics.since_seek": {
+    "value": "0 — dall'ultimo salto",
+    "description": "Diagnostics panel: since seek"
+  },
+  "browse.diagnostics.auto_original": {
+    "value": "Auto · Originale",
+    "description": "Diagnostics panel: auto original"
+  },
+  "browse.diagnostics.auto_hls": {
+    "value": "Auto · HLS",
+    "description": "Diagnostics panel: auto hls"
+  },
+  "browse.diagnostics.auto_idle": {
+    "value": "Auto · controller inattivo",
+    "description": "Diagnostics panel: auto idle"
+  },
+  "browse.diagnostics.manual_inactive": {
+    "value": "inattivo · qualità manuale",
+    "description": "Diagnostics panel: manual inactive"
+  },
+  "browse.diagnostics.not_sampled": {
+    "value": "non campionato",
+    "description": "Diagnostics panel: not sampled"
+  },
+  "browse.diagnostics.first_measurement": {
+    "value": "in attesa della prima misurazione",
+    "description": "Diagnostics panel: first measurement"
+  },
+  "browse.diagnostics.not_computed": {
+    "value": "non calcolato",
+    "description": "Diagnostics panel: not computed"
+  },
+  "browse.diagnostics.budget_pending": {
+    "value": "in attesa di un budget conservativo",
+    "description": "Diagnostics panel: budget pending"
+  },
+  "browse.diagnostics.timestamps_idle": {
+    "value": "in attesa timestamp multimediali · controller inattivo",
+    "description": "Diagnostics panel: timestamps idle"
+  },
+  "browse.diagnostics.timestamps": {
+    "value": "in attesa timestamp multimediali",
+    "description": "Diagnostics panel: timestamps"
+  },
+  "browse.diagnostics.filling": {
+    "value": "riempimento",
+    "description": "Diagnostics panel: filling"
+  },
+  "browse.diagnostics.draining": {
+    "value": "svuotamento",
+    "description": "Diagnostics panel: draining"
+  },
+  "browse.diagnostics.steady": {
+    "value": "stabile",
+    "description": "Diagnostics panel: steady"
+  },
+  "browse.diagnostics.no_deficit": {
+    "value": "nessun deficit conservativo",
+    "description": "Diagnostics panel: no deficit"
+  },
+  "browse.diagnostics.direct_unsampled": {
+    "value": "non campionato · riproduzione diretta",
+    "description": "Diagnostics panel: direct unsampled"
+  },
+  "browse.diagnostics.copy_unsampled": {
+    "value": "non campionato · copia flusso",
+    "description": "Diagnostics panel: copy unsampled"
+  },
+  "browse.diagnostics.timing_unsampled": {
+    "value": "attivo · tempistiche non campionate",
+    "description": "Diagnostics panel: timing unsampled"
+  },
+  "browse.diagnostics.unknown_raster": {
+    "value": "risoluzione sconosciuta",
+    "description": "Diagnostics panel: unknown raster"
+  },
+  "browse.diagnostics.awaiting_frames": {
+    "value": "in attesa di fotogrammi",
+    "description": "Diagnostics panel: awaiting frames"
+  },
+  "browse.diagnostics.none_idle": {
+    "value": "nessuno · controller inattivo",
+    "description": "Diagnostics panel: none idle"
+  },
+  "browse.diagnostics.fixed_user": {
+    "value": "fissato dall'utente",
+    "description": "Diagnostics panel: fixed user"
+  },
+  "browse.diagnostics.watching_original": {
+    "value": "visualizzazione Originale",
+    "description": "Diagnostics panel: watching original"
+  },
+  "browse.diagnostics.hold_current": {
+    "value": "mantieni attuale",
+    "description": "Diagnostics panel: hold current"
+  },
+  "browse.diagnostics.checking_original": {
+    "value": "verifica collegamento Originale",
+    "description": "Diagnostics panel: checking original"
+  },
+  "browse.diagnostics.recover_original": {
+    "value": "ritorno a Originale",
+    "description": "Diagnostics panel: recover original"
+  },
+  "browse.diagnostics.response_unchanged": {
+    "value": "mantieni · risposta aggiornata invariata",
+    "description": "Diagnostics panel: response unchanged"
+  },
+  "browse.diagnostics.starting": {
+    "value": "avvio",
+    "description": "Diagnostics panel: starting"
+  },
+  "browse.diagnostics.no_adaptive": {
+    "value": "nessuna sessione adattiva",
+    "description": "Diagnostics panel: no adaptive"
+  },
+  "browse.diagnostics.controller_inactive": {
+    "value": "controller adattivo inattivo",
+    "description": "Diagnostics panel: controller inactive"
+  },
+  "browse.diagnostics.sample_sustains": {
+    "value": "il campione sostiene la richiesta della sorgente",
+    "description": "Diagnostics panel: sample sustains"
+  },
+  "browse.diagnostics.sample_below": {
+    "value": "campione inferiore alla richiesta della sorgente",
+    "description": "Diagnostics panel: sample below"
+  },
+  "browse.diagnostics.decision_pending": {
+    "value": "in attesa di decisione",
+    "description": "Diagnostics panel: decision pending"
+  },
+  "browse.diagnostics.original_rejected": {
+    "value": "il PMS ha rifiutato la sorgente Originale",
+    "description": "Diagnostics panel: original rejected"
+  },
+  "browse.diagnostics.original_timeout": {
+    "value": "timeout analisi sorgente Originale",
+    "description": "Diagnostics panel: original timeout"
+  },
+  "browse.diagnostics.original_connect_failed": {
+    "value": "connessione alla sorgente Originale fallita",
+    "description": "Diagnostics panel: original connect failed"
+  },
+  "browse.diagnostics.original_empty": {
+    "value": "la sorgente Originale non ha restituito corpo",
+    "description": "Diagnostics panel: original empty"
+  },
+  "browse.diagnostics.original_open_failed": {
+    "value": "impossibile aprire il flusso Originale",
+    "description": "Diagnostics panel: original open failed"
+  },
+  "browse.diagnostics.link_room": {
+    "value": "la connessione ha margine",
+    "description": "Diagnostics panel: link room"
+  },
+  "browse.diagnostics.losing_reserve": {
+    "value": "flusso attuale in perdita di riserva",
+    "description": "Diagnostics panel: losing reserve"
+  },
+  "browse.diagnostics.acquisition_behind": {
+    "value": "acquisizione in ritardo",
+    "description": "Diagnostics panel: acquisition behind"
+  },
+  "browse.diagnostics.reserve_low": {
+    "value": "riserva bassa",
+    "description": "Diagnostics panel: reserve low"
+  },
+  "browse.diagnostics.lowest_quality": {
+    "value": "qualità minima",
+    "description": "Diagnostics panel: lowest quality"
+  },
+  "browse.diagnostics.buffer_exhausted": {
+    "value": "buffer in esaurimento",
+    "description": "Diagnostics panel: buffer exhausted"
+  },
+  "browse.diagnostics.candidate_failed": {
+    "value": "candidato HLS fallito · nuovo tentativo in sospeso",
+    "description": "Diagnostics panel: candidate failed"
+  },
+  "browse.diagnostics.no_better": {
+    "value": "nessuna qualità migliore adatta",
+    "description": "Diagnostics panel: no better"
+  },
+  "browse.diagnostics.measuring": {
+    "value": "misurazione in corso",
+    "description": "Diagnostics panel: measuring"
+  },
+  "browse.diagnostics.at_best": {
+    "value": "nessuna richiesta superiore nella scala",
+    "description": "Diagnostics panel: at best"
+  },
+  "browse.diagnostics.waiting_audio": {
+    "value": "in attesa dell'audio",
+    "description": "Diagnostics panel: waiting audio"
+  },
+  "browse.diagnostics.deadline_rollback": {
+    "value": "rollback per scadenza limite recupero",
+    "description": "Diagnostics panel: deadline rollback"
+  },
+  "browse.diagnostics.response_limited": {
+    "value": "output PMS inferiore alla richiesta",
+    "description": "Diagnostics panel: response limited"
+  },
+  "browse.diagnostics.switch_hold": {
+    "value": "attesa dopo un recente cambio di qualità",
+    "description": "Diagnostics panel: switch hold"
+  },
+  "browse.diagnostics.not_queried": {
+    "value": "non ancora interrogato",
+    "description": "Diagnostics panel: not queried"
+  },
+  "browse.diagnostics.fps": {
+    "value": "{width}×{height} · {rate} fps ({source})",
+    "args": {
+      "width": "str",
+      "height": "str",
+      "rate": "str",
+      "source": "str"
+    },
+    "description": "Diagnostics panel: fps"
+  },
+  "browse.diagnostics.fps_unknown": {
+    "value": "{width}×{height} · fps sconosciuti",
+    "args": {
+      "width": "str",
+      "height": "str"
+    },
+    "description": "Diagnostics panel: fps unknown"
+  },
+  "browse.diagnostics.received": {
+    "value": "HTTP {status} · {amount} ricevuti",
+    "args": {
+      "status": "str",
+      "amount": "str"
+    },
+    "description": "Diagnostics panel: received"
+  },
+  "browse.diagnostics.callbacks": {
+    "value": {
+      "one": "{count} callback",
+      "other": "{count} callback"
+    },
+    "args": {
+      "count": "i64"
+    },
+    "description": "Diagnostics panel: callbacks"
+  },
+  "browse.diagnostics.callback_error": {
+    "value": {
+      "one": "{count} callback · ERRORE {error} a #{ordinal}",
+      "other": "{count} callback · ERRORE {error} a #{ordinal}"
+    },
+    "args": {
+      "count": "i64",
+      "error": "str",
+      "ordinal": "str"
+    },
+    "description": "Diagnostics panel: callback error"
+  },
+  "browse.diagnostics.queues": {
+    "value": "video {video}/{video_cap} MB · audio {audio}/{audio_cap} MB",
+    "args": {
+      "video": "str",
+      "video_cap": "str",
+      "audio": "str",
+      "audio_cap": "str"
+    },
+    "description": "Diagnostics panel: queues"
+  },
+  "browse.detail.unrated": {
+    "value": "NC",
+    "description": "Not rated: compact fallback for a missing content age rating"
+  },
+  "browse.diagnostics.frames_none": {
+    "value": "nessuno in {seconds} s",
+    "args": {
+      "seconds": "str"
+    },
+    "description": "Diagnostics panel: frames none"
+  },
+  "browse.diagnostics.frames_frozen": {
+    "value": "{frames} · bloccato per {seconds} s",
+    "args": {
+      "frames": "str",
+      "seconds": "str"
+    },
+    "description": "Diagnostics panel: frames frozen"
+  },
+  "browse.diagnostics.manual_quality": {
+    "value": "Manuale · {quality}",
+    "args": {
+      "quality": "str"
+    },
+    "description": "Diagnostics panel: manual quality"
+  },
+  "browse.diagnostics.model_idle": {
+    "value": "{status} · controller inattivo",
+    "args": {
+      "status": "str"
+    },
+    "description": "Diagnostics panel: model idle"
+  },
+  "browse.diagnostics.stream_limited": {
+    "value": "{rate} · limitato dal flusso",
+    "args": {
+      "rate": "str"
+    },
+    "description": "Diagnostics panel: stream limited"
+  },
+  "browse.diagnostics.demand_unknown": {
+    "value": "budget {budget} · richiesta sconosciuta",
+    "args": {
+      "budget": "str"
+    },
+    "description": "Diagnostics panel: demand unknown"
+  },
+  "browse.diagnostics.budget_surplus": {
+    "value": "budget {budget} · flusso misurato {demand} · margine {margin}",
+    "args": {
+      "budget": "str",
+      "demand": "str",
+      "margin": "str"
+    },
+    "description": "Diagnostics panel: budget surplus"
+  },
+  "browse.diagnostics.budget_deficit": {
+    "value": "budget {budget} · flusso misurato {demand} · carente di {margin}",
+    "args": {
+      "budget": "str",
+      "demand": "str",
+      "margin": "str"
+    },
+    "description": "Diagnostics panel: budget deficit"
+  },
+  "browse.diagnostics.reserve_idle": {
+    "value": "{seconds} s · riserva osservata · controller inattivo",
+    "args": {
+      "seconds": "str"
+    },
+    "description": "Diagnostics panel: reserve idle"
+  },
+  "browse.diagnostics.reserve": {
+    "value": "{seconds} s · riserva osservata",
+    "args": {
+      "seconds": "str"
+    },
+    "description": "Diagnostics panel: reserve"
+  },
+  "browse.diagnostics.buffer_trend": {
+    "value": "{seconds} s · {slope} s/s · {trend}",
+    "args": {
+      "seconds": "str",
+      "slope": "str",
+      "trend": "str"
+    },
+    "description": "Diagnostics panel: buffer trend"
+  },
+  "browse.diagnostics.horizon": {
+    "value": "orizzonte conservativo {seconds} s",
+    "args": {
+      "seconds": "str"
+    },
+    "description": "Diagnostics panel: horizon"
+  },
+  "browse.diagnostics.risk_percent": {
+    "value": " · rischio {percent}%",
+    "args": {
+      "percent": "str"
+    },
+    "description": "Diagnostics panel: risk percent"
+  },
+  "browse.diagnostics.measured_ratio": {
+    "value": "{ratio}x misurato",
+    "args": {
+      "ratio": "str"
+    },
+    "description": "Diagnostics panel: measured ratio"
+  },
+  "browse.diagnostics.predicted_ratio": {
+    "value": " · {ratio}x previsto",
+    "args": {
+      "ratio": "str"
+    },
+    "description": "Diagnostics panel: predicted ratio"
+  },
+  "browse.diagnostics.chart_budget_mbps": {
+    "value": "budget {budget} · richiesta {demand} Mbps",
+    "args": {
+      "budget": "str",
+      "demand": "str"
+    },
+    "description": "Diagnostics panel: chart budget mbps"
+  },
+  "browse.diagnostics.chart_budget_kbps": {
+    "value": "budget {budget} · richiesta {demand} kbps",
+    "args": {
+      "budget": "str",
+      "demand": "str"
+    },
+    "description": "Diagnostics panel: chart budget kbps"
+  },
+  "browse.diagnostics.network_mean": {
+    "value": "{rate} · media {mean}",
+    "args": {
+      "rate": "str",
+      "mean": "str"
+    },
+    "description": "Diagnostics panel: network mean"
+  },
+  "browse.diagnostics.quality_original": {
+    "value": "Originale · sorgente {rate} · decodificato {raster}",
+    "args": {
+      "rate": "str",
+      "raster": "str"
+    },
+    "description": "Diagnostics panel: quality original"
+  },
+  "browse.diagnostics.quality_request": {
+    "value": "richiesta ≤{rate} / ≤{raster}",
+    "args": {
+      "rate": "str",
+      "raster": "str"
+    },
+    "description": "Diagnostics panel: quality request"
+  },
+  "browse.diagnostics.decoded": {
+    "value": " · decodificato {raster}",
+    "args": {
+      "raster": "str"
+    },
+    "description": "Diagnostics panel: decoded"
+  },
+  "browse.diagnostics.quality_decoded": {
+    "value": "{quality} · decodificato {raster}",
+    "args": {
+      "quality": "str",
+      "raster": "str"
+    },
+    "description": "Diagnostics panel: quality decoded"
+  },
+  "browse.diagnostics.fallback_evidence": {
+    "value": "raccolta prove di fallback · {time}",
+    "args": {
+      "time": "str"
+    },
+    "description": "Diagnostics panel: fallback evidence"
+  },
+  "browse.diagnostics.hold_requested": {
+    "value": "mantieni · il modello richiede {rate}",
+    "args": {
+      "rate": "str"
+    },
+    "description": "Diagnostics panel: hold requested"
+  },
+  "browse.diagnostics.prime_down": {
+    "value": "preparazione a scendere a {target}",
+    "args": {
+      "target": "str"
+    },
+    "description": "Diagnostics panel: prime down"
+  },
+  "browse.diagnostics.prime_up": {
+    "value": "preparazione a salire a {target}",
+    "args": {
+      "target": "str"
+    },
+    "description": "Diagnostics panel: prime up"
+  },
+  "browse.diagnostics.changed_down": {
+    "value": "sceso a {target}",
+    "args": {
+      "target": "str"
+    },
+    "description": "Diagnostics panel: changed down"
+  },
+  "browse.diagnostics.changed_up": {
+    "value": "salito a {target}",
+    "args": {
+      "target": "str"
+    },
+    "description": "Diagnostics panel: changed up"
+  },
+  "browse.diagnostics.target_rejected": {
+    "value": "mantieni · rifiutato {target}",
+    "args": {
+      "target": "str"
+    },
+    "description": "Diagnostics panel: target rejected"
+  },
+  "browse.diagnostics.refreshing": {
+    "value": "aggiornamento richiesta {target}",
+    "args": {
+      "target": "str"
+    },
+    "description": "Diagnostics panel: refreshing"
+  },
+  "browse.diagnostics.refreshed": {
+    "value": "richiesta {target} aggiornata",
+    "args": {
+      "target": "str"
+    },
+    "description": "Diagnostics panel: refreshed"
+  },
+  "browse.diagnostics.original_check_failed": {
+    "value": "mantieni · verifica Originale fallita{http}",
+    "args": {
+      "http": "str"
+    },
+    "description": "Diagnostics panel: original check failed"
+  },
+  "browse.diagnostics.http_refused": {
+    "value": "il PMS ha rifiutato la sorgente Originale · HTTP {status}",
+    "args": {
+      "status": "str"
+    },
+    "description": "Diagnostics panel: http refused"
+  },
+  "browse.diagnostics.http_failed": {
+    "value": "il PMS ha riscontrato un errore sulla sorgente Originale · HTTP {status}",
+    "args": {
+      "status": "str"
+    },
+    "description": "Diagnostics panel: http failed"
+  },
+  "browse.diagnostics.http_rejected": {
+    "value": "il PMS ha respinto la sorgente Originale · HTTP {status}",
+    "args": {
+      "status": "str"
+    },
+    "description": "Diagnostics panel: http rejected"
+  },
+  "browse.diagnostics.open_http_failed": {
+    "value": "flusso Originale fallito dopo HTTP {status}",
+    "args": {
+      "status": "str"
+    },
+    "description": "Diagnostics panel: open http failed"
+  },
+  "browse.diagnostics.no_plex_pass": {
+    "value": "{version} · nessun Plex Pass",
+    "args": {
+      "version": "str"
+    },
+    "description": "Diagnostics panel: no plex pass"
+  },
+  "browse.crew.director": {
+    "value": "Regista",
+    "description": "App-owned crew job caption; preserve stable metadata role keys."
+  },
+  "browse.crew.writer": {
+    "value": "Sceneggiatore",
+    "description": "App-owned crew job caption; preserve stable metadata role keys."
+  },
+  "browse.crew.director_writer": {
+    "value": "Regista, Sceneggiatore",
+    "description": "App-owned crew job caption; preserve stable metadata role keys."
+  },
+  "browse.library.type": {
+    "value": "Tipo",
+    "description": "Library toolbar label for choosing shows, seasons, or episodes"
+  },
+  "browse.library.filter_by": {
+    "value": "Filtra per",
+    "description": "Library content-type menu heading"
+  },
+  "browse.kind.seasons": {
+    "value": "Stagioni",
+    "description": "Library content type"
+  },
+  "browse.library.plays": {
+    "value": "Riproduzioni",
+    "description": "Library sort by play count"
+  },
+  "browse.library.no_seasons": {
+    "value": "Nessuna stagione in {library}",
+    "description": "Empty season listing in the selected library",
+    "args": {
+      "library": "str"
+    }
+  },
+  "browse.library.no_episodes": {
+    "value": "Nessun episodio in {library}",
+    "description": "Empty episode listing in the selected library",
+    "args": {
+      "library": "str"
+    }
+  },
+  "browse.detail.full_screen_hint": {
+    "value": "{key} Schermo intero",
+    "description": "Trailer hint; key is the up-arrow keycap",
+    "args": {
+      "key": "str"
+    }
+  },
+  "browse.auth.discovery_trouble": {
+    "value": "Plex non risponde. Nuovo tentativo in corso…",
+    "description": "browse auth discovery_trouble"
+  },
+  "browse.auth.signin_refused": {
+    "value": "Plex non ha accettato questo accesso. Riprova.",
+    "description": "browse auth signin_refused"
+  },
+  "browse.auth.servers_unreachable": {
+    "value": "plex.tv ha elencato i tuoi server, ma nessuno ha risposto. Assicurati che il tuo Plex Media Server sia acceso e online, poi riprova.",
+    "description": "Reason line when plex.tv listed the account's servers and none of them answered: on the sign-in read-out (no server reachable after sign-in), and on Who's watching when a picked profile found no server answering (and none refused it or presented a certificate this TV does not trust: those have no_source_access and tls_untrusted). Two-line read-out slot, and one centred line on the picker, so keep the whole sentence at 125 characters or fewer."
+  },
+  "browse.auth.plex_tls": {
+    "value": "Questo televisore non è riuscito a stabilire una connessione sicura con plex.tv. Controlla data e ora della TV, poi riprova.",
+    "description": "browse auth plex_tls"
+  },
+  "browse.auth.plex_unavailable": {
+    "value": "plex.tv sta riscontrando problemi in questo momento, quindi i tuoi server non sono stati controllati. Riprova tra qualche minuto.",
+    "description": "browse auth plex_unavailable"
+  },
+  "browse.auth.profile_signin_refused": {
+    "value": "plex.tv ha rifiutato l'accesso per {profile}. Riprova.",
+    "description": "browse auth profile_signin_refused",
+    "args": {
+      "profile": "str"
+    }
+  },
+  "browse.auth.server_profile_refused": {
+    "value": "{server} ha rifiutato {profile}. Riprova.",
+    "description": "browse auth server_profile_refused",
+    "args": {
+      "profile": "str",
+      "server": "str"
+    }
+  },
+  "browse.auth.switch_invalid": {
+    "value": "Impossibile cambiare profilo — il server ha inviato una risposta non valida.",
+    "description": "browse auth switch_invalid"
+  },
+  "browse.auth.plex_dns_retry": {
+    "value": {
+      "one": "La TV non ha trovato plex.tv, quindi i server non sono stati controllati. Tentativo effettuato 1 volta. Controlla la connessione Internet e riprova.",
+      "other": "La TV non ha trovato plex.tv, quindi i server non sono stati controllati. Tentativi effettuati: {count}. Controlla la connessione Internet e riprova."
+    },
+    "description": "Discovery failed after this many attempts; complete retry explanation and remedy",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "browse.auth.plex_connect_retry": {
+    "value": {
+      "one": "La TV non ha raggiunto plex.tv, quindi i server non sono stati controllati. Tentativo effettuato 1 volta. Controlla la connessione Internet e riprova.",
+      "other": "La TV non ha raggiunto plex.tv, quindi i server non sono stati controllati. Tentativi effettuati: {count}. Controlla la connessione Internet e riprova."
+    },
+    "description": "Discovery failed after this many attempts; complete retry explanation and remedy",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "browse.auth.plaintext_offer": {
+    "value": "Il tuo server Plex è su questa rete ma non può essere raggiunto in modo sicuro. Seleziona Connetti per collegarti senza crittografia.",
+    "description": "browse auth plaintext_offer"
+  },
+  "browse.auth.plaintext_allowed": {
+    "value": "Il tuo server Plex è su questa rete ma non può essere raggiunto in modo sicuro. Seleziona Riprova per collegarti senza crittografia.",
+    "description": "browse auth plaintext_allowed"
+  },
+  "browse.auth.plaintext_declined_signin": {
+    "value": "Hai scelto di non connetterti al tuo server Plex senza crittografia. Seleziona Riprova per ricevere nuovamente la richiesta.",
+    "description": "browse auth plaintext_declined_signin"
+  },
+  "browse.auth.plaintext_revoked_signin": {
+    "value": "Le connessioni non crittografate al tuo server Plex sono disattivate. Seleziona Riprova per ricevere nuovamente la richiesta.",
+    "description": "browse auth plaintext_revoked_signin"
+  },
+  "browse.auth.plaintext_declined_signed_in": {
+    "value": "Hai scelto di non connetterti al tuo server Plex senza crittografia. Abilitalo in Impostazioni → Connessioni non crittografate.",
+    "description": "browse auth plaintext_declined_signed_in"
+  },
+  "browse.auth.plaintext_revoked_signed_in": {
+    "value": "Le connessioni non crittografate al tuo server Plex sono disattivate. Attivale in Impostazioni → Connessioni non crittografate.",
+    "description": "browse auth plaintext_revoked_signed_in"
+  },
+  "browse.auth.plaintext_shared_offer": {
+    "value": "Il server di {owner} è su questa rete ma non può essere raggiunto in modo sicuro. Seleziona Connetti per collegarti senza crittografia.",
+    "description": "browse auth plaintext_shared_offer",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_shared_allowed": {
+    "value": "Il server di {owner} è su questa rete ma non può essere raggiunto in modo sicuro. Seleziona Riprova per collegarti senza crittografia.",
+    "description": "browse auth plaintext_shared_allowed",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_shared_declined_signin": {
+    "value": "Hai scelto di non connetterti al server di {owner} senza crittografia. Seleziona Riprova per ricevere nuovamente la richiesta.",
+    "description": "browse auth plaintext_shared_declined_signin",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_shared_revoked_signin": {
+    "value": "Le connessioni non crittografate al server di {owner} sono disattivate. Seleziona Riprova per ricevere nuovamente la richiesta.",
+    "description": "browse auth plaintext_shared_revoked_signin",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_shared_declined_signed_in": {
+    "value": "Hai scelto di non connetterti al server di {owner} senza crittografia. Abilitalo in Impostazioni → Connessioni non crittografate.",
+    "description": "browse auth plaintext_shared_declined_signed_in",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_shared_revoked_signed_in": {
+    "value": "Le connessioni non crittografate al server di {owner} sono disattivate. Attivale in Impostazioni → Connessioni non crittografate.",
+    "description": "browse auth plaintext_shared_revoked_signed_in",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_remote": {
+    "value": "Il tuo server Plex ha risposto solo senza crittografia, dall'esterno di questa rete. Controlla l'accesso remoto nelle sue impostazioni.",
+    "description": "browse auth plaintext_remote"
+  },
+  "browse.auth.plaintext_shared_remote": {
+    "value": "Il server di {owner} ha risposto solo senza crittografia, dall'esterno di questa rete. È necessario verificare il suo accesso remoto.",
+    "description": "browse auth plaintext_shared_remote",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_shared_insecure": {
+    "value": "Il server di {owner} ha risposto solo senza crittografia. Il proprietario può verificare che consenta connessioni sicure.",
+    "description": "browse auth plaintext_shared_insecure",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.preferences.stale": {
+    "value": "Il tuo profilo o le preferenze sono cambiati. Ricarica le impostazioni e riprova.",
+    "description": "Plex account preferences: stale error"
+  },
+  "browse.preferences.refused": {
+    "value": "Plex non ha autorizzato questa richiesta dell'account. Accedi di nuovo e riprova.",
+    "description": "Plex account preferences: refused error"
+  },
+  "browse.preferences.timed_out": {
+    "value": "Plex ha impiegato troppo tempo a rispondere. Riprova.",
+    "description": "Plex account preferences: timed out error"
+  },
+  "browse.preferences.unavailable": {
+    "value": "Impossibile raggiungere Plex. Controlla la connessione e riprova.",
+    "description": "Plex account preferences: unavailable error"
+  },
+  "browse.preferences.invalid_response": {
+    "value": "Plex ha restituito una risposta inattesa. Riprova.",
+    "description": "Plex account preferences: invalid response error"
+  },
+  "browse.preferences.invalid_preference": {
+    "value": "Questo valore di preferenza non è supportato.",
+    "description": "Plex account preferences: invalid preference error"
+  },
+  "browse.auth.roster_unreachable": {
+    "value": "Impossibile caricare i profili — controlla la connessione.",
+    "description": "Read-out on the profile picker when the household's profiles could not be loaded."
+  },
+  "browse.auth.roster_refused": {
+    "value": "Il cambio di profilo non è disponibile da questo profilo.",
+    "description": "Read-out on the profile picker when Plex refuses to list profiles for the current profile."
+  },
+  "browse.auth.switch_retry": {
+    "value": "Impossibile cambiare profilo. Riprova.",
+    "description": "Profile picker error after a profile switch could not be completed."
+  },
+  "browse.auth.authority_failed": {
+    "value": "Impossibile modificare l'autorità della sessione. Riprova.",
+    "description": "Sign-in error when the app could not switch which server or account the session is based on."
+  },
+  "browse.auth.finish_failed": {
+    "value": "Impossibile completare l'accesso. Riprova.",
+    "description": "Sign-in error when the final sign-in step could not be completed."
+  },
+  "browse.auth.start_failed": {
+    "value": "Impossibile avviare l'accesso. Riprova.",
+    "description": "Sign-in error when the sign-in process could not begin."
+  },
+  "browse.auth.rediscover_failed": {
+    "value": "Impossibile riavviare la ricerca dei server. Riprova.",
+    "description": "Sign-in error when the search for Plex servers could not be restarted."
+  },
+  "browse.auth.signed_out": {
+    "value": "Hai effettuato la disconnessione — accedi per usare i profili.",
+    "description": "Sign-in read-out when profiles were requested but no account is signed in."
+  },
+  "browse.extra.behind_the_scenes": {
+    "value": "Dietro le quinte",
+    "description": "Kind of a bonus video, shown under its title on the Extras shelf."
+  },
+  "browse.extra.featurette": {
+    "value": "Special approfondimento",
+    "description": "Kind of a bonus video (a short documentary about the film), shown under its title on the Extras shelf."
+  },
+  "browse.extra.scene": {
+    "value": "Scena",
+    "description": "Kind of a bonus video (a scene or sample), shown under its title on the Extras shelf."
+  },
+  "browse.extra.deleted_scene": {
+    "value": "Scena eliminata",
+    "description": "Kind of a bonus video, shown under its title on the Extras shelf."
+  },
+  "browse.extra.interview": {
+    "value": "Intervista",
+    "description": "Kind of a bonus video, shown under its title on the Extras shelf."
+  },
+  "browse.extra.extra": {
+    "value": "Extra",
+    "description": "Generic kind of a bonus video, shown on the Extras shelf and above its title while it plays."
+  },
+  "browse.person.other": {
+    "value": "Altro",
+    "description": "Filmography tab on a person page that gathers the departments with only a few credits."
+  },
+  "browse.diagnostics.field.set": {
+    "value": "Dispositivo",
+    "description": "Row label in the playback diagnostics read-out (which television model and board this is). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.firmware": {
+    "value": "Firmware",
+    "description": "Row label in the playback diagnostics read-out (the television firmware name and codename). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.decoder": {
+    "value": "Decoder",
+    "description": "Row label in the playback diagnostics read-out (which video codecs the hardware decoder supports). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.audio": {
+    "value": "Audio",
+    "description": "Row label in the playback diagnostics read-out (the audio codec chain or audio capabilities). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.dolby_vision": {
+    "value": "Dolby Vision",
+    "description": "Row label in the playback diagnostics read-out (the brand name of the HDR format; keep it untranslated). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.server": {
+    "value": "Server",
+    "description": "Row label in the playback diagnostics read-out (the Plex Media Server version). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.connection": {
+    "value": "Connessione",
+    "description": "Row label in the playback diagnostics read-out (how the app reaches the server). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.route": {
+    "value": "AppArg",
+    "description": "Row label in the playback diagnostics read-out (the delivery route: streaming transport and whether the server converts the file). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.video": {
+    "value": "Video",
+    "description": "Row label in the playback diagnostics read-out (the video codec chain). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.picture": {
+    "value": "Immagine",
+    "description": "Row label in the playback diagnostics read-out (the decoded picture size and frame rate). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.timeline": {
+    "value": "Timeline",
+    "description": "Row label in the playback diagnostics read-out (playback position and duration). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.av_sync": {
+    "value": "Sync A/V",
+    "description": "Row label in the playback diagnostics read-out (how far audio trails video). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.video_plane": {
+    "value": "Piano video",
+    "description": "Row label in the playback diagnostics read-out (the television's hardware video layer). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.transfer": {
+    "value": "Trasferimento",
+    "description": "Row label in the playback diagnostics read-out (bytes received from the server). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.load": {
+    "value": "Caricamento",
+    "description": "Row label in the playback diagnostics read-out (whether the television's media pipeline accepted the stream). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.feed": {
+    "value": "Alimentaz.",
+    "description": "Row label in the playback diagnostics read-out (how fast data is being fed to the decoder). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.queues": {
+    "value": "Code",
+    "description": "Row label in the playback diagnostics read-out (decoder queue fill). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.frames": {
+    "value": "Fotogrammi",
+    "description": "Row label in the playback diagnostics read-out (decoded frame count). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.mode": {
+    "value": "Modalità",
+    "description": "Row label in the playback diagnostics read-out (automatic or manual quality mode). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.quality": {
+    "value": "Qualità",
+    "description": "Row label in the playback diagnostics read-out (the requested and decoded quality). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.sample": {
+    "value": "Campione",
+    "description": "Row label in the playback diagnostics read-out (the last measured transfer rate). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.conservative": {
+    "value": "Conservativo",
+    "description": "Row label in the playback diagnostics read-out (the conservative bandwidth budget). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.buffer": {
+    "value": "Buffer",
+    "description": "Row label in the playback diagnostics read-out (how much playable media is buffered). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.risk": {
+    "value": "Rischio",
+    "description": "Row label in the playback diagnostics read-out (the risk of running out of buffered media). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.acquisition": {
+    "value": "Acquisizione",
+    "description": "Row label in the playback diagnostics read-out (how long each piece of media takes to arrive). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.action": {
+    "value": "Azione",
+    "description": "Row label in the playback diagnostics read-out (what the quality controller is doing). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.reason": {
+    "value": "Motivo",
+    "description": "Row label in the playback diagnostics read-out (why the quality controller is doing it). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.chart.budget": {
+    "value": "BUDGET / RICHIESTA",
+    "description": "Uppercase key beside one of the three plots in the playback diagnostics chart (bandwidth the quality controller may spend beside what the stream needs)."
+  },
+  "browse.diagnostics.chart.network": {
+    "value": "ATTIVITÀ DI RETE",
+    "description": "Uppercase key beside one of the three plots in the playback diagnostics chart (bytes arriving from the network)."
+  },
+  "browse.diagnostics.chart.buffer": {
+    "value": "STATO DEL BUFFER",
+    "description": "Uppercase key beside one of the three plots in the playback diagnostics chart (seconds of media buffered)."
+  },
+  "browse.diagnostics.build_dev": {
+    "value": "dev",
+    "description": "Build kind in the diagnostics header: a developer build with test hooks."
+  },
+  "browse.diagnostics.build_release": {
+    "value": "release",
+    "description": "Build kind in the diagnostics header: the build users install."
+  },
+  "browse.diagnostics.header": {
+    "value": "{product} {version} · {build} · {os} · DV {dv} · superficie {width}x{height}",
+    "args": {
+      "build": "str",
+      "dv": "str",
+      "height": "str",
+      "os": "str",
+      "product": "str",
+      "version": "str",
+      "width": "str"
+    },
+    "description": "Identity line of the diagnostics read-out: app name and version, build kind, TV software, whether the TV supports Dolby Vision (DV), and the drawing surface size in pixels."
+  },
+  "browse.diagnostics.dv_yes": {
+    "value": "sì",
+    "description": "Diagnostics header: the TV supports Dolby Vision."
+  },
+  "browse.diagnostics.dv_no": {
+    "value": "no",
+    "description": "Diagnostics header: the TV does not support Dolby Vision."
+  },
+  "browse.diagnostics.dv_supported": {
+    "value": "supportato",
+    "description": "Diagnostics: the TV reports Dolby Vision support."
+  },
+  "browse.diagnostics.dv_unsupported": {
+    "value": "non supportato",
+    "description": "Diagnostics: the TV reports no Dolby Vision support."
+  },
+  "browse.diagnostics.dv_forced": {
+    "value": "forzato",
+    "description": "Diagnostics: the Dolby Vision answer was forced by a test override rather than asked of the TV."
+  },
+  "browse.diagnostics.dv_base_layer": {
+    "value": "livello base",
+    "description": "Diagnostics: a Dolby Vision file is played through its ordinary HDR base layer."
+  },
+  "browse.diagnostics.dv_declare": {
+    "value": "dichiara",
+    "description": "Diagnostics: Dolby Vision is declared to the TV for direct play."
+  },
+  "browse.diagnostics.dv_refuse": {
+    "value": "rifiuta",
+    "description": "Diagnostics: direct play of this Dolby Vision file is refused."
+  },
+  "browse.diagnostics.placed": {
+    "value": "src {width}x{height} rv={rv}",
+    "args": {
+      "height": "str",
+      "rv": "str",
+      "width": "str"
+    },
+    "description": "Diagnostics: the video layer was placed with this source size; rv is the platform call's technical return value."
+  },
+  "browse.diagnostics.no_video_path": {
+    "value": "NESSUNO — nessun percorso video",
+    "description": "Diagnostics fault: the app has no way to show video on this TV."
+  },
+  "browse.diagnostics.no_audio_payload": {
+    "value": "NESSUNO (needAudio:false)",
+    "description": "Diagnostics: the TV was told the stream has no audio; needAudio:false is the literal technical flag."
+  },
+  "browse.diagnostics.feed_accepting": {
+    "value": "accettazione",
+    "description": "Diagnostics: the decoder is accepting data."
+  },
+  "browse.diagnostics.feed_full": {
+    "value": "BufferFull (sink pieno)",
+    "description": "Diagnostics: the decoder's buffer is full; BufferFull is the TV's literal status code."
+  },
+  "browse.diagnostics.feed_refused": {
+    "value": "RIFIUTATO",
+    "description": "Diagnostics fault: the decoder refused data."
+  },
+  "browse.diagnostics.feed_holding": {
+    "value": "in pausa a circa 1,6 s di vantaggio",
+    "description": "Diagnostics: feeding is paused on purpose to stay about 1.6 seconds ahead of the picture."
+  },
+  "browse.diagnostics.feed_empty": {
+    "value": "coda vuota (nessun dato)",
+    "description": "Diagnostics: there is no data waiting to be fed."
+  },
+  "browse.diagnostics.feed_none": {
+    "value": "— ancora nulla alimentato",
+    "description": "Diagnostics: nothing has been fed to the decoder yet."
+  },
+  "browse.diagnostics.fed_rate": {
+    "value": "{video} fps · {audio}/s",
+    "args": {
+      "audio": "str",
+      "video": "str"
+    },
+    "description": "Diagnostics: video frames and audio packets fed per second."
+  },
+  "browse.diagnostics.uncertainty": {
+    "value": " · ±{percent}%",
+    "args": {
+      "percent": "str"
+    },
+    "description": "Diagnostics suffix: the measurement's uncertainty as a percentage. es and be put a no-break space before the percent sign."
+  },
+  "browse.diagnostics.plex_pass": {
+    "value": "{version} · Plex Pass",
+    "args": {
+      "version": "str"
+    },
+    "description": "Diagnostics: the server version, and that its owner has Plex Pass (a product name; keep it untranslated)."
+  },
+  "browse.library.no_collections": {
+    "value": "Nessuna raccolta in {library}",
+    "args": {
+      "library": "str"
+    },
+    "description": "Empty collection listing in the selected library"
+  },
+  "browse.collection.loading": {
+    "value": "Caricamento raccolta…",
+    "description": "Collection page read-out while its first answer is pending"
+  },
+  "browse.collection.empty": {
+    "value": "Nessun elemento di questa raccolta è presente nelle tue librerie",
+    "description": "Collection page read-out when none of the collection's members is in the viewer's libraries (an empty collection)"
+  },
+  "browse.collection.unavailable": {
+    "value": "Questa raccolta non è disponibile per questo profilo",
+    "description": "Collection page verdict when the server refuses or no longer has the collection"
+  },
+  "browse.collection.unavailable_reason": {
+    "value": "La sua libreria non è condivisa con te oppure il proprietario del server l'ha limitata.",
+    "description": "Reason under the collection page's unavailable verdict"
+  },
+  "browse.collection.kind": {
+    "value": "Raccolta",
+    "description": "The collection page meta line before its size is known; the kind of page shown"
+  },
+  "browse.collection.meta": {
+    "value": "{items} · Raccolta",
+    "args": {
+      "items": "str"
+    },
+    "description": "Collection page meta line; items is a localized item count such as “12 items”"
+  },
+  "browse.collection.season_mark": {
+    "value": "STAGIONE {number}",
+    "args": {
+      "number": "i64"
+    },
+    "description": "Upper-case mark drawn on a season poster inside a collection"
+  },
+  "browse.home.hub.on_deck": {
+    "value": "In corso",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.ondeck"
+  },
+  "browse.home.hub.recent_playlists": {
+    "value": "Playlist recenti",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.playlists"
+  },
+  "browse.home.hub.recently_added_in": {
+    "value": "Aggiunti di recente in {library}",
+    "args": {
+      "library": "str"
+    },
+    "description": "Home shelf heading for a per-library Recently Added hub (hubIdentifier movie.recentlyadded.<id>/show.recentlyadded.<id>/tv.recentlyadded.<id>), or a whole-server home.<type>.recent hub when PMS minted more than one for that type; library is the PMS librarySectionTitle of the hub's items"
+  },
+  "browse.home.hub.recently_added_movies": {
+    "value": "Film aggiunti di recente",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.movies.recent when it is the household's only movie library (so no library name is needed to disambiguate)"
+  },
+  "browse.home.hub.recently_added_tv": {
+    "value": "Serie TV aggiunte di recente",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.television.recent when it is the household's only TV library"
+  },
+  "browse.home.hub.recently_added_music": {
+    "value": "Musica aggiunta di recente",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.music.recent when it is the household's only music library"
+  },
+  "browse.home.hub.recently_added_videos": {
+    "value": "Video aggiunti di recente",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.videos.recent when it is the household's only home-videos library"
+  },
+  "browse.home.hub.recently_added_photos": {
+    "value": "Foto aggiunte di recente",
+    "description": "Home shelf heading, client-localized override for PMS hubIdentifier home.photos.recent when it is the household's only photos library"
+  },
+  "browse.library.hub.recently_added": {
+    "value": "Aggiunti di recente",
+    "description": "A library's own shelf heading (Route::Library, /hubs/sections/{id}), client-localized override for the same Recently Added hubIdentifier family as browse.home.hub.recently_added_in (movie.recentlyadded.<id>/show.recentlyadded.<id>/tv.recentlyadded.<id>) — PMS itself titles this hub plain \"Recently Added\" at this scope, with no library qualifier, because the section page is already that library"
+  },
+  "browse.collection.items": {
+    "value": "Elementi",
+    "description": "Heading over the collection page's member grid"
+  },
+  "browse.collection.order.release": {
+    "value": "Ordine di uscita",
+    "description": "Annotation after the collection page's Items heading: members are listed by release date"
+  },
+  "browse.collection.order.title": {
+    "value": "Alfabetico",
+    "description": "Annotation after the collection page's Items heading: members are listed alphabetically"
+  },
+  "browse.collection.order.custom": {
+    "value": "Ordine personalizzato",
+    "description": "Annotation after the collection page's Items heading: members are in the order the collection's owner set"
+  },
+  "browse.clock.notice_year": {
+    "value": "L'orologio della TV sembra errato ({year}). Connessione stabilita tramite la chiave memorizzata.",
+    "args": {
+      "year": "str"
+    },
+    "description": "System toast shown once per app run when the app had to recognise the Plex server by its remembered key because the server's certificate failed its date check (most likely because the television's clock is wrong, but an expired certificate on a correct clock engages it too). Hedged on purpose (\"looks wrong\"): the app cannot know the clock is the cause. {year} is the four-digit year the television believes it is, written as plain digits. The toast wraps at roughly 40 characters per line and shows up to three lines, so keep the whole sentence at 120 characters or fewer and hedge it in every language."
+  },
+  "browse.clock.notice": {
+    "value": "L'orologio della TV sembra errato. Connessione stabilita tramite la chiave memorizzata.",
+    "description": "Same toast as the year variant, for when the television's year is unknown. Keep it at 120 characters or fewer (up to three lines of roughly 40) and hedge it in every language."
+  },
+  "browse.clock.no_key": {
+    "value": "L'orologio di questa TV sembra errato. Collega la TV a Internet una volta, poi riprova.",
+    "description": "Reason line under the failed Home or Library read-out when the Plex server's certificate failed its date check and the app holds no remembered key for that server, so a wrong television clock is the likely cause. Hedged on purpose (\"looks wrong\"): the app cannot know the clock is the cause. Sits in a slot that shows two lines of about 70 characters each; keep the whole sentence under 140 characters."
+  },
+  "browse.clock.key_changed": {
+    "value": "La chiave del tuo server è cambiata. Collega la TV a Internet una volta per consentire all'app di verificarla di nuovo.",
+    "description": "Reason line under the failed Home or Library read-out when the Plex server presented a different key than the one the app remembered, so the app will not trust it while the television's clock cannot be checked. Same two-line slot as the no-key line; keep the whole sentence under 140 characters."
+  }
+}

@@ -36,6 +36,10 @@ impl UnloadTicket {
     }
 }
 
+/// The volume a freshly loaded pipeline starts at (libpf's `CustomPipeline::getVolume` defaults to
+/// 100 when the property is absent): what the paused preroll restores after muting.
+pub const PIPELINE_DEFAULT_VOLUME: c_int = 100;
+
 /// **Starfish-shaped.** One method per verb of the webOS seam (`src/starfish.h`): a Load payload,
 /// `feed`, and the ACB bind verbs `pump` walks. Another TV OS cannot implement this as is; the
 /// OS-neutral sink is step L15b (docs/module-layers.md).
@@ -59,6 +63,11 @@ pub trait VideoSink: Sync {
     unsafe fn is_load_completed(&self, mt: &MainThread) -> c_int;
     unsafe fn play(&self, mt: &MainThread) -> c_int;
     unsafe fn pause(&self, mt: &MainThread) -> c_int;
+    /// This pipeline's output volume, 0..100 (`StarfishMediaAPIs::setVolume`), applied at once. The
+    /// paused-preroll mute; the library's bool proves nothing. Per pipeline, so a fresh `load`
+    /// starts at [`PIPELINE_DEFAULT_VOLUME`] again. There is no getter: `getVolume` returns an int
+    /// on 4.5 against the NDK header's `const char *` (see `src/starfish.c`), so it is not bound.
+    unsafe fn set_volume(&self, mt: &MainThread, volume: c_int) -> c_int;
     unsafe fn flush(&self, mt: &MainThread) -> c_int;
     unsafe fn push_eos(&self, mt: &MainThread) -> c_int;
     unsafe fn set_time_to_decode(&self, mt: &MainThread, position_ns: i64) -> c_int;
@@ -120,6 +129,7 @@ impl VideoSink for NoSink {
     unsafe fn is_load_completed(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn play(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn pause(&self, _mt: &MainThread) -> c_int { 0 }
+    unsafe fn set_volume(&self, _mt: &MainThread, _volume: c_int) -> c_int { 0 }
     unsafe fn flush(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn push_eos(&self, _mt: &MainThread) -> c_int { 0 }
     unsafe fn set_time_to_decode(&self, _mt: &MainThread, _position_ns: i64) -> c_int { 0 }

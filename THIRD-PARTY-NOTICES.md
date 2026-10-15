@@ -44,7 +44,12 @@ complete copy of that licence is supplied with this package at `licenses/LGPL-2.
 from <https://ffmpeg.org/releases/> — is attached to every PlxNative release alongside the `.ipk`.
 The sources are **unmodified**: no patches are applied. The complete configure invocation that
 produced them, including every enabled component, is `ci/build-ffmpeg.sh` in the PlxNative
-repository, which is also attached to each release.
+repository, which is also attached to each release. The attached script takes the version, the
+digest and the tarball from its environment, so it needs no network and none of the manifest
+tooling: from a checkout of the release's tag (or its source bundle), with the attached tarball,
+`FFMPEG_VERSION=9.0 FFMPEG_SHA256=7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52 FFMPEG_TARBALL=/path/to/ffmpeg-9.0.tar.xz ci/build-ffmpeg.sh`
+(the script also reads the checkout's `ci/arm-cc.py` and `ci/check-link-evidence.py`, which it
+has always done).
 
 **Configuration.** Built with `--disable-everything` plus an explicit component list, **without**
 `--enable-gpl`, `--enable-version3` or `--enable-nonfree`, so no GPL-licensed or non-free FFmpeg
@@ -90,16 +95,16 @@ verbatim. The library is used unaltered.
 libass and HarfBuzz copyright notices are retained in their licence files above.
 
 The exact upstream archives, checksums and licences are recorded in
-`ci/libass-dependencies.json`. Each versioned PlxNative source release contains all
+`ci/dependencies.json`. Each versioned PlxNative source release contains all
 five archives, the facade (`src/ass.c`, `src/ass_fonts.c`, `src/ass_internal.h`,
 `include/ass.h`), its complete build recipe (`ci/build-libass.sh`, `ci/build-libass.py`) and the
 one local patch to libass. **libass carries that local patch; every other archive is unmodified.**
-`ci/libass-patches/0001-grow-font-faces.patch` replaces the fixed table of ten font faces that
+`ci/patches/libass-0001-grow-font-faces.patch` replaces the fixed table of ten font faces that
 libass keeps for each font (`ASS_FONT_MAX_FACES`) with arrays that grow on demand, so a subtitle
 track that uses many scripts is not cut off at the tenth face. It touches `libass/ass_font.c` and
 `libass/ass_font.h` only, is applied to the pinned, checksum-verified libass 0.17.5 release by
 `ci/build-libass.py` (which fails the build unless the files then match the digests pinned in
-`ci/libass-dependencies.json`), and is released under libass's own ISC licence.
+`ci/dependencies.json`), and is released under libass's own ISC licence.
 The library is built without system font providers or external font-library
 dependencies. FreeType's optional external compression/image libraries are disabled;
 HarfBuzz uses FreeType and its built-in Unicode data, without ICU or platform shapers.
@@ -141,11 +146,12 @@ for the NDK build used here.
 
 ## 2. Redistributed in this package
 
-### 2.1 Vendored C source, compiled into `plxnative`
+### 2.1 Pinned C source, fetched at build time and compiled into `plxnative`
 
 **nanosvg** and **nanosvgrast** — Copyright (c) 2013-14 Mikko Mononen <memon@inside.org>
-Licence: **Zlib** (`licenses/Zlib.txt`). The vendored headers are byte-identical to upstream
-(github.com/memononen/nanosvg); they are not altered.
+Licence: **Zlib** (`licenses/Zlib.txt`). The headers are not kept in this repository: `ci/dependencies.json` pins the upstream commit
+(github.com/memononen/nanosvg) and the sha256 of each file, `ci/deps.py` fetches and verifies them,
+and they are not altered.
 The upstream headers credit, and we reproduce, the following derivations:
 
 - The SVG parser is based on **Anti-Grain Geometry 2.4** SVG example — Copyright (C) 2002-2004
@@ -252,9 +258,11 @@ stated; election does not alter your rights under the other arms.
 
 **Elected MIT** (`licenses/MIT.txt`), with the copyright holders required by that licence:
 
+<!-- BEGIN GENERATED notices:elected-mit (edit ci/third-party-crates.json, run python3 ci/gen-third-party-notices.py) -->
+
 | Package | Version(s) | Declared licence | Copyright |
 |---|---|---|---|
-| The Rust standard library (`core`, `alloc`, `std`, `panic_unwind`, `unwind`, and the `rustc-std-workspace-*` shims) | rustc 1.98.0-nightly (c397dae80 2026-07-02) | MIT OR Apache-2.0 | The Rust Project Developers |
+| The Rust standard library (`core`, `alloc`, `std`, `panic_unwind`, `unwind`, and the `rustc-std-workspace-*` shims) | rustc 1.98.0-nightly (4c9d2bfe4 2026-07-01) | MIT OR Apache-2.0 | The Rust Project Developers |
 | — its in-tree backtrace support (`library/backtrace`) | 0.3.76 | MIT OR Apache-2.0 | 2014 Alex Crichton |
 | — its in-tree mpmc channels (`library/std/src/sync/mpmc`) | in-tree | MIT OR Apache-2.0 | 2019 The Crossbeam Project Developers |
 | addr2line | 0.25.1 | Apache-2.0 OR MIT | The `addr2line` authors |
@@ -288,7 +296,11 @@ stated; election does not alter your rights under the other arms.
 | zune-core | 0.5.1 | MIT OR Apache-2.0 OR Zlib | The zune-image developers |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | The zune-image developers |
 
+<!-- END GENERATED notices:elected-mit -->
+
 **MIT only — no alternative arm** (`licenses/MIT.txt`):
+
+<!-- BEGIN GENERATED notices:mit-only (edit ci/third-party-crates.json, run python3 ci/gen-third-party-notices.py) -->
 
 | Package | Version | Copyright |
 |---|---|---|
@@ -299,13 +311,19 @@ stated; election does not alter your rights under the other arms.
 | zmij | 1.0.21 | David Tolnay (a Rust port of Victor Zverovich's C++ `zmij`) |
 | rust-lang/libm — compiled *inside* `compiler_builtins` and exposed as intrinsics on this target | as vendored in rustc 1.98.0-nightly | (c) 2018 Jorge Aparicio; musl libc (c) 2005-2020 Rich Felker, et al.; CORE-MATH; and the fdlibm-derived notice: (c) 1993, 2004 Sun Microsystems; (c) 2003-2011 David Schultz; (c) 2003-2009 Steven G. Kargl; (c) 2003-2009 Bruce D. Evans; (c) 2008 Stephen L. Moshier; (c) 2017-2018 Arm Limited |
 
+<!-- END GENERATED notices:mit-only -->
+
 **Apache-2.0** (`licenses/Apache-2.0.txt`) — elected for `moxcms` and `pxfm`; the sole declared licence of `calendrical_calculations`:
+
+<!-- BEGIN GENERATED notices:apache (edit ci/third-party-crates.json, run python3 ci/gen-third-party-notices.py) -->
 
 | Package | Version | Declared licence | Copyright |
 |---|---|---|---|
 | calendrical_calculations | 0.2.4 | Apache-2.0 | Copyright 2023 The Unicode Consortium |
 | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | (c) Radzivon Bartoshyk |
 | pxfm | 0.1.29 | BSD-3-Clause OR Apache-2.0 | (c) Radzivon Bartoshyk |
+
+<!-- END GENERATED notices:apache -->
 
 **ICU4X code and compiled locale data — Unicode-3.0** (`licenses/ICU4X.txt`).
 These packages provide locale parsing, plural selection, regional number/date formatting and
@@ -316,6 +334,8 @@ verbatim in `licenses/ICU4X.txt`, including both notices:
 >
 > Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 > ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
+
+<!-- BEGIN GENERATED notices:icu (edit ci/third-party-crates.json, run python3 ci/gen-third-party-notices.py) -->
 
 | Package | Version |
 |---|---|
@@ -346,6 +366,8 @@ verbatim in `licenses/ICU4X.txt`, including both notices:
 | zerotrie | 0.2.5 |
 | zerovec | 0.11.8 |
 
+<!-- END GENERATED notices:icu -->
+
 `calendrical_calculations` implements algorithms from *Calendrical Calculations* by Reingold &
 Dershowitz, Cambridge University Press, 4th edition (2018), released as Lisp code under
 Apache-2.0. Its package licence carries the Unicode Consortium copyright reproduced above;
@@ -358,9 +380,20 @@ implementation. `licenses/libm.txt` preserves its complete upstream licence and 
 attributions. `qrcodegen` supplies the QR code linking viewers to the translation contribution
 guide; its source-header licence notice is preserved verbatim in `licenses/qrcodegen.txt`.
 
-The versions above come from the locked ARM runtime dependency graph (`cargo tree
---no-default-features --target arm-unknown-linux-gnueabi --edges normal,no-proc-macro`), excluding
-dev dependencies, build dependencies and host proc-macro implementations.
+The versions above are the ones in `rust-modules/Cargo.lock` (and, for the standard library's own
+crates, the pinned nightly's `library/Cargo.lock`), which `cargo tree --locked --no-default-features
+--target arm-unknown-linux-gnueabi --edges normal,no-proc-macro` resolves to the ARM runtime graph. CI
+(`ci.yml`, host-lint) runs `ci/gen-third-party-notices.py --check --verify-graph` on every pull request: the
+set of crates in that graph must equal the rows above, and no listed version may be one that only a build
+or dev dependency uses. Dev dependencies, build dependencies and host proc-macro implementations are not
+shipped and have no row. A second version of `libc` below is the standard library's own, built from
+source.
+
+The four package tables above are generated, not typed: `ci/gen-third-party-notices.py` fills the
+version column from `rust-modules/Cargo.lock` (and, for the standard library's own crates, from the
+`library/Cargo.lock` of the pinned nightly), keeps the licence and copyright columns from
+`ci/third-party-crates.json`, and `make check` fails when this section disagrees with the lockfile.
+After a dependency bump, run `make notices` and commit the result.
 
 **Conjunctive licence — no election possible:**
 
@@ -415,8 +448,8 @@ enable it) — verified absent from the binary. `rustc-literal-escaper`, `proc_m
 out-of-process `sentry-crash` handler is shipped beside it. The handler is built with its HTTP
 transport disabled: it writes a crash envelope for PlxNative's consent-aware sender to deliver on
 the next launch. The source is patched for webOS's glibc 2.12 syscall surface and the 32-bit ARM
-APCS frame layout; the pinned source hash and complete patch are in `ci/build-sentry-native.sh` and
-`vendor/sentry-native/webos-arm32.patch`.
+APCS frame layout; the pinned source hash is in `ci/dependencies.json` and the complete patch is
+`ci/patches/sentry-native-0001-webos-arm32.patch`.
 
 **libunwind** (the copy vendored by Sentry Native) — Copyright (c) 2002 Hewlett-Packard Co.
 Licence: **MIT** (`licenses/MIT.txt`). It is statically linked into both the client and crash
@@ -513,6 +546,7 @@ runtime notices listed below:
 | `licenses/ICU4X.txt` | ICU4X runtime code and compiled locale data, including its Unicode and IBM notices (§2.4) |
 | `licenses/libm.txt` | Registry libm and its upstream musl/CORE-MATH attributions (§2.4) |
 | `licenses/qrcodegen.txt` | Project Nayuki QR code generator, complete upstream MIT notice (§2.4) |
+| `licenses/jsmpeg.txt` | jsmpeg, complete upstream MIT licence (§6): a development tool, downloaded from its pinned upstream commit and not in the package; the text is kept with the others |
 | `licenses/Zlib.txt` | nanosvg (§2.1), FreeType's built-in gzip reader (§1.2) |
 | `licenses/libass-ISC.txt` | libass (§1.2), including its copyright notice |
 | `licenses/FreeType.txt` | FreeType's elected FTL and contributed module notices (§1.2) |
@@ -537,7 +571,8 @@ the GPL-3.0-or-later election. Also retain `licenses/GCC-exception-3.1.txt` and
 Two third-party components exist in the PlxNative source repository but are **not** part of this
 package, and therefore carry no obligation discharged here: **libjpeg-turbo**
 (`libturbojpeg.so.0`, copied to developer televisions by the development deploy step only) and
-**jsmpeg** (a host-side development tool). Neither is present in the installed application.
+**jsmpeg** (a host-side development tool; `tools/stream-screen.py` downloads it at the upstream commit
+`ci/dependencies.json` pins, so no copy of it is in the repository; its licence is `licenses/jsmpeg.txt`). Neither is present in the installed application.
 
 ## Source-only attribution
 
@@ -551,6 +586,5 @@ then-current MIT grant. That original grant and Gleb Linnik notice are preserved
 `licenses/PlxNative-historical-MIT.txt`; no ownership transfer is claimed.
 
 Source bundles also contain SDL2 Zlib headers, embedded Mesa/Khronos MIT and SGI-B-2.0
-header blocks, Khronos GLES2 MIT/Apache-2.0 headers, and the MIT-licensed jsmpeg tool
-(Copyright (c) 2017 Dominic Szablewski). Preserve their original embedded notices. Exact per-file
+header blocks and Khronos GLES2 MIT/Apache-2.0 headers. Preserve their original embedded notices. Exact per-file
 license assignments are in the inventory; the SGI text is in `licenses/SGI-B-2.0.txt`; none of `include/` is claimed as original LG ABI work.

@@ -435,7 +435,33 @@ pub fn pause(pa: &mut adapter::PlayerAdapter) -> bool {
     acb_mirror_playstate(pa, false);
     true
 } // playback_pause
+/// Mute the sink for a paused preroll's Play window (`engine::try_prime`, immediately before that
+/// Play): the preroll plays ONE picture for a viewer who is paused, and the ~0.2-0.3 s until the
+/// plane binds is audible. The mute is the pipeline's own `setVolume` (per pipeline: the next Load
+/// starts at the default); [`restore_preroll_volume`] sets that default back. The volume is never
+/// read: `getVolume` is not bound (it returns an int on 4.5 where the NDK header says a string, and
+/// the wrong guess killed the app), so the log says what was SET, not what the pipeline reports.
+pub(crate) fn mute_for_preroll(mt: &plx_base::task::MainThread) {
+    unsafe { sink().set_volume(mt, 0) };
+    let default = plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME;
+    TX.note_preroll_muted(default);
+    log(&format!("preroll: volume set 0 (pipeline default {default} is restored later; no readback)"));
+}
+
+/// Give back the volume [`mute_for_preroll`] took. Idempotent (nothing muted: nothing happens), so
+/// every path that ends or abandons the preroll can call it: `resume`, the accepted re-pause, and
+/// the pump's per-tick sweep, which catches a preroll closed by a path with no adapter in hand
+/// (`abandon_seek`). A stop or reload needs no restore: the volume belonged to the pipeline that
+/// went with it (`Transport::reset` forgets the mute).
+pub(crate) fn restore_preroll_volume(mt: &plx_base::task::MainThread) {
+    let Some(volume) = TX.take_preroll_volume() else { return };
+    unsafe { sink().set_volume(mt, volume) };
+    log(&format!("preroll: volume set {volume} (restored; no readback)"));
+}
+
 pub fn resume(pa: &mut adapter::PlayerAdapter) -> bool {
+    // First, whichever branch follows: the viewer asked for sound, and a Play below must not run muted.
+    restore_preroll_volume(pa.mt());
     let queued_stream = pa.engine().is_some_and(|eng| eng.uses_stream_queues());
     match SHARED.prepare_hls_user_resume(queued_stream) {
         Some(HlsUserResume::Deferred) => {
@@ -516,6 +542,7 @@ pub fn finish_paused_seek(pa: &mut adapter::PlayerAdapter) -> bool {
         return false;
     }
     TX.finish_seek_preroll();
+    restore_preroll_volume(pa.mt());
     // One receipt after the accepted pause, never per frame: device scrub checks pair this
     // boundary with stationary playhead samples rather than assuming CommitSeek held the pause.
     log(&format!("seek: paused frame restored ns={}", SHARED.playpos_ns.load(Relaxed)));

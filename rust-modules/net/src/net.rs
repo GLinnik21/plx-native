@@ -1881,15 +1881,16 @@ extern "C" fn stream_write_cb(ptr: *mut c_char, size: usize, nmemb: usize, userd
 /// 64-bit on every target, including the 32-bit television. libcurl calls it about once a second
 /// while idle, which bounds a cancel's latency.
 extern "C" fn stream_xferinfo_cb(clientp: *mut c_void, _dltotal: i64, _dlnow: i64, _ultotal: i64, _ulnow: i64) -> c_int {
-    if clientp.is_null() {
-        return 1;
-    }
-    let sink = unsafe { &*(clientp as *const StreamSink<'_>) };
-    c_int::from(sink.poll_abort())
+    stream_poll(clientp)
 }
 
 /// libcurl `CURLOPT_PROGRESSFUNCTION`, the pre-7.32 spelling: `double` arguments.
 extern "C" fn stream_progress_cb(clientp: *mut c_void, _dltotal: f64, _dlnow: f64, _ultotal: f64, _ulnow: f64) -> c_int {
+    stream_poll(clientp)
+}
+
+/// The body of both progress callbacks: non-zero (abort) for a null sink or when [`StreamSink::poll_abort`] says so.
+fn stream_poll(clientp: *mut c_void) -> c_int {
     if clientp.is_null() {
         return 1;
     }

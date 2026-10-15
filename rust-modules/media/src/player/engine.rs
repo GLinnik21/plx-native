@@ -412,13 +412,14 @@ fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Opt
     }
     let ticket = UnloadTicket::issue(mt);
     #[cfg(test)]
-    let th = if FAIL_UNLOAD_SPAWN_FOR_TEST.load(Ordering::Relaxed) {
+    let refused = FAIL_UNLOAD_SPAWN_FOR_TEST.load(Ordering::Relaxed);
+    #[cfg(not(test))]
+    let refused = false;
+    let th = if refused {
         None
     } else {
         plx_base::task::spawn("sf-unload", move || unsafe { sink().unload(&ticket) })
     };
-    #[cfg(not(test))]
-    let th = plx_base::task::spawn("sf-unload", move || unsafe { sink().unload(&ticket) });
     sp.mark("unload_handoff");
     if th.is_none() {
         log("native lifecycle: no thread for the off-frame Unload; unloading on the main thread");
@@ -2826,6 +2827,10 @@ pub fn try_prime(mt: &MainThread, eng: &mut Engine) {
         else {
             return;
         };
+        // A paused preroll plays one picture for a viewer who is paused: keep that window silent.
+        if TX.seek_preroll_active() {
+            super::mute_for_preroll(mt);
+        }
         let played = unsafe { sink().play(mt) };
         match SHARED.complete_hls_prime_play(play_token, played != 0) {
             HlsPlayCompletion::Accepted { resume_acb } => {

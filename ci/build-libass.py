@@ -18,10 +18,12 @@ import shutil
 import subprocess
 import sys
 import tarfile
-import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PINS = ROOT / 'ci/libass-dependencies.json'
+sys.path.insert(0, str(ROOT / 'ci'))
+import deps  # noqa: E402  (the one fetch-and-verify routine; ci/dependencies.json is the one manifest)
+
+PINS = ROOT / 'ci/dependencies.json'
 
 
 def digest(path):
@@ -32,50 +34,20 @@ def run(args, *, cwd=None, env=None):
     subprocess.run([str(x) for x in args], cwd=cwd, env=env, check=True)
 
 
-# Per-source bound on the curl step: a dead host must hand over to the next source quickly.
-# Three attempts (the first plus --retry 2) of --connect-timeout 15 plus two --retry-delay 2
-# pauses is at most ~49 s to give up on a host that never answers (a refused or reset
-# connection fails at once); --max-time caps one attempt at 5 minutes for a stalled
-# transfer. With the one mirror FreeType carries today, a dead primary costs ~49 s before
-# the mirror is tried.
-CURL_BOUNDS = ['--connect-timeout', '15', '--retry', '2', '--retry-delay', '2', '--max-time', '300']
-
-
-def sources_of(dep):
-    """The canonical upstream URL first, then transport-only fallbacks. Every one must yield
-    the same pinned bytes; a mirror is never a different release and never recorded as origin."""
-    mirrors = dep.get('mirrors', [])
-    if not isinstance(mirrors, list) or not all(isinstance(url, str) and url for url in mirrors):
-        raise ValueError('mirrors of ' + dep['id'] + ' must be a list of URLs')
-    return [dep['url'], *mirrors]
+# The fetch routine is shared with every other build script (ci/deps.py); these names stay here
+# because the recipe's tests exercise them through this module.
+CURL_BOUNDS = deps.CURL_BOUNDS
+sources_of = deps.sources_of
 
 
 def archive(dep, folder):
-    target = folder / dep['archive']
-    if target.is_file() and digest(target) == dep['sha256']:
-        return target
-    # ARM and host builds share downloads, but never a partial pathname.
-    fd, candidate = tempfile.mkstemp(prefix=target.name + '.', dir=folder)
-    os.close(fd)
-    failures = []
-    try:
-        for url in sources_of(dep):
-            result = subprocess.run(['curl', '-fsSL', *CURL_BOUNDS, url, '-o', candidate])
-            if result.returncode != 0:
-                failures.append(url + ' (curl exit ' + str(result.returncode) + ')')
-                print('libass: ' + dep['archive'] + ' not available from ' + url +
-                      ' (curl exit ' + str(result.returncode) + '); trying the next source', flush=True)
-                continue
-            # A source that answers with the wrong bytes is never skipped past: a mirror
-            # serving something else must be seen, not hidden behind a later source.
-            if digest(Path(candidate)) != dep['sha256']:
-                raise ValueError('source checksum mismatch: ' + dep['archive'] + ' from ' + url)
-            os.replace(candidate, target)
-            print('libass: ' + dep['archive'] + ' fetched from ' + url, flush=True)
-            return target
-        raise ValueError('could not download ' + dep['archive'] + ' from any source: ' + '; '.join(failures))
-    finally:
-        Path(candidate).unlink(missing_ok=True)
+    """The pinned source archive of one libass-stack dependency, downloaded into `folder` if absent."""
+    return deps.fetch_asset(deps.assets_of(dep)['archive'], Path(folder) / dep['archive'], 'libass')
+
+
+def stack(entries):
+    """The libass font stack out of the whole manifest, in build order."""
+    return [d for d in entries if d.get('group') == 'libass']
 
 
 def extract(path, folder):
@@ -98,9 +70,7 @@ def extract(path, folder):
 
 def patch_pins(dep, root=ROOT):
     """The pinned patches of one dependency, each verified against its pinned digest."""
-    patches = dep.get('patches', [])
-    if not isinstance(patches, list):
-        raise ValueError('patches of ' + dep['id'] + ' must be a list')
+    patches = deps.patches_of(dep)
     for patch in patches:
         if not isinstance(patch, dict) or not all(key in patch for key in ('path', 'sha256', 'result')):
             raise ValueError('every patch of ' + dep['id'] + ' needs path, sha256 and result')
@@ -114,11 +84,14 @@ def patch_pins(dep, root=ROOT):
 
 def check_patch_set(pins, root=ROOT):
     """Every pinned patch exists with its pinned digest, and no patch file goes unpinned: an
-    absent file can no longer mean "no patch", and a stray file can no longer mean "applied"."""
+    absent file can no longer mean "no patch", and a stray file can no longer mean "applied".
+    `pins` is the whole manifest: ci/patches holds the patches of every dependency."""
     pinned = set()
     for dep in pins:
-        pinned.update(patch['path'] for patch in patch_pins(dep, root))
-    folder = root / 'ci/libass-patches'
+        pinned.update(patch['path'] for patch in deps.patches_of(dep))
+        if dep.get('group') == 'libass':
+            patch_pins(dep, root)
+    folder = root / 'ci/patches'
     present = {path.relative_to(root).as_posix() for path in folder.glob('*.patch')} if folder.is_dir() else set()
     if present - pinned:
         raise ValueError('libass patch not named by any pin: ' + ', '.join(sorted(present - pinned)))
@@ -190,7 +163,7 @@ def build():
     target = 'host' if host else 'arm'
     prefix = ROOT / ('vendor/libass-prefix-host' if host else 'vendor/libass-prefix')
     work = ROOT / ('vendor/libass-build-host' if host else 'vendor/libass-build')
-    sources = ROOT / 'vendor/libass-sources'
+    sources = deps.cache_dir()
     for directory in [work, sources, prefix, ROOT / 'pkg']:
         directory.mkdir(parents=True, exist_ok=True)
     # A kernel-held lock disappears with its owner; no stale pid-file recovery.
@@ -201,8 +174,9 @@ def build():
 
 
 def build_locked(host, darwin, target, prefix, work, sources):
-    pins = json.loads(PINS.read_text())
-    check_patch_set(pins)
+    manifest = deps.load(PINS)
+    check_patch_set(manifest)
+    pins = stack(manifest)
     archives = {d['id']: archive(d, sources) for d in pins}
     env = os.environ.copy()
     # Avoid package auto-detection and caller-supplied flags changing the stack.
@@ -260,7 +234,8 @@ def build_locked(host, darwin, target, prefix, work, sources):
                     '-DCMAKE_AR=' + ar, '-DCMAKE_RANLIB=' + ranlib,
                     '-DCMAKE_C_FLAGS=' + shlex.join(flags),
                     '-DCMAKE_CXX_FLAGS=' + shlex.join(flags)]
-    key = hashlib.sha256(PINS.read_bytes() + Path(__file__).read_bytes() + identity +
+    key = hashlib.sha256(json.dumps(pins, sort_keys=True).encode() + Path(__file__).read_bytes() +
+                         (ROOT / 'ci/deps.py').read_bytes() + identity +
                          json.dumps([target, platform.machine(), cmake_flags, configure_flags]).encode() +
                          b''.join((ROOT / patch['path']).read_bytes()
                                   for dep in pins for patch in dep.get('patches', [])) +

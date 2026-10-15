@@ -1210,6 +1210,11 @@ fn paused_and_idle() -> bool {
 
 pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
     use super::shared::PlaybackState;
+    // A preroll closed by a path with no adapter in hand (`abandon_seek`) leaves its mute behind;
+    // the one place every closer funnels through is the next tick.
+    if !TX.seek_preroll_active() {
+        super::restore_preroll_volume(pa.mt());
+    }
     settle_paused_seek(pa, now);
     // ONE `&mut PlayerAdapter`, split into the live session and the seam token. Everything below
     // that replaces the session (`reload_*`) takes `pa` back, which the borrow checker only allows
@@ -4031,6 +4036,104 @@ mod native_seek_pump_tests {
         ffi_host::force_pause_result_for_test(None);
         rig.frame();
         assert_ended_paused();
+    }
+
+    // ---- the paused preroll's Play window is silent ----
+
+    /// A paused seek, driven to the point the prime has Played through the opened gate.
+    fn paused_seek_playing_its_preroll(rig: &mut Rig) {
+        rig.viewer_pause();
+        ffi_host::reset_volume_probe_for_test();
+        rig.arm(TARGET_NS);
+        rig.land_keyframe_aus(TARGET_NS, 90);
+        for _ in 0..8 {
+            rig.frame();
+        }
+    }
+
+    /// The preroll's Play window is audible, so the sink is muted BEFORE that Play and the volume
+    /// is given back only AFTER the accepted re-pause: the order is the whole fix.
+    #[test]
+    fn a_paused_preroll_mutes_before_its_play_and_restores_after_its_repause() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        paused_seek_playing_its_preroll(&mut rig);
+        assert_eq!(ffi_host::host_volume_for_test(), 0, "sanity: muted while the preroll plays");
+        SHARED.frames.store(1, Relaxed);
+        for _ in 0..3 {
+            rig.frame();
+        }
+        assert!(!TX.seek_preroll_active(), "the preroll closed on the landing");
+        let verbs = ffi_host::verb_order_for_test();
+        let at = |v: &str| verbs.iter().position(|x| x == v).unwrap_or_else(|| panic!("no {v} in {verbs:?}"));
+        assert!(at("volume:0") < at("play"), "muted before the Play: {verbs:?}");
+        assert!(at("play") < at("pause"), "{verbs:?}");
+        // No getVolume is bound (it returns an int on 4.5, not the header's string), so the restore
+        // is the pipeline default by construction, not a value read back.
+        let default = plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME;
+        assert_eq!(default, 100, "libpf CustomPipeline::getVolume's default");
+        assert!(at("pause") < at(&format!("volume:{default}")), "restored after the re-pause: {verbs:?}");
+        assert_eq!(ffi_host::host_volume_for_test(), default);
+        assert!(!TX.preroll_muted());
+    }
+
+    /// A normal (unpaused) seek prime is not a preroll: it never touches the volume.
+    #[test]
+    fn an_unpaused_seek_prime_never_sets_the_volume() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        ffi_host::reset_volume_probe_for_test();
+        rig.arm(TARGET_NS);
+        let plays = ffi_host::play_calls_for_test();
+        rig.land_keyframe_aus(TARGET_NS, 90);
+        for _ in 0..8 {
+            rig.frame();
+        }
+        assert!(ffi_host::play_calls_for_test() > plays, "sanity: the prime Played");
+        let verbs = ffi_host::verb_order_for_test();
+        assert!(!verbs.iter().any(|v| v.starts_with("volume:")), "an unpaused start set the volume: {verbs:?}");
+    }
+
+    /// The viewer presses Play while the preroll's Play window is open: the volume is back no later
+    /// than that Resume.
+    #[test]
+    fn resume_during_an_open_preroll_restores_the_volume() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        paused_seek_playing_its_preroll(&mut rig);
+        assert!(TX.seek_preroll_active() && TX.preroll_muted(), "sanity: muted preroll open");
+        assert!(crate::player::resume(&mut rig.pa), "viewer Resume accepted");
+        assert_eq!(ffi_host::host_volume_for_test(), 100, "Resume left the sink muted");
+        assert!(!TX.preroll_muted());
+    }
+
+    /// A preroll closed by anything but the accepted re-pause (an abandoned seek) still gives the
+    /// volume back, on the pump's next tick.
+    #[test]
+    fn an_abandoned_preroll_restores_the_volume_on_the_next_tick() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        paused_seek_playing_its_preroll(&mut rig);
+        assert_eq!(ffi_host::host_volume_for_test(), 0, "sanity: muted");
+        crate::player::abandon_seek();
+        assert!(!TX.seek_preroll_active());
+        rig.frame();
+        assert_eq!(ffi_host::host_volume_for_test(), 100, "an abandoned preroll left the sink muted");
+        assert!(!TX.preroll_muted());
+    }
+
+    /// A stop unloads the pipeline the mute belonged to, so the next playback starts unmuted with
+    /// no sink call on the dead one.
+    #[test]
+    fn a_stop_forgets_the_mute_with_its_pipeline() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        paused_seek_playing_its_preroll(&mut rig);
+        assert!(TX.preroll_muted(), "sanity: muted");
+        let sets = ffi_host::verb_order_for_test().len();
+        TX.reset();
+        assert!(!TX.preroll_muted());
+        assert_eq!(ffi_host::verb_order_for_test().len(), sets, "a reset touched the dead pipeline");
     }
 
     #[test]
