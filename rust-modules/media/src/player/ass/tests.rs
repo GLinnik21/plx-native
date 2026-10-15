@@ -1092,11 +1092,13 @@ fn native_every_shipped_script_latin_and_cjk_render_on_one_renderer() {
         samples.push((face["script"].as_str().unwrap().into(), face["sample"].as_str().unwrap().into()));
     }
     assert!(samples.len() >= 24);
+    // Each distinct codepoint once: a repeat ("ll") is an unchanged frame, not a new cue.
+    let mut distinct = std::collections::HashSet::new();
     let letters: Vec<(&str, String)> = samples
         .iter()
-        .flat_map(|(script, text)| {
-            text.chars().filter(|c| !c.is_whitespace()).map(move |c| (script.as_str(), c.to_string()))
-        })
+        .flat_map(|(script, text)| text.chars().map(move |c| (script.as_str(), c)))
+        .filter(|(_, c)| !c.is_whitespace() && distinct.insert(*c))
+        .map(|(script, c)| (script, c.to_string()))
         .collect();
     let rows: Vec<(i64, i64, &str)> = letters
         .iter()
