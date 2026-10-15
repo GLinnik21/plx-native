@@ -63,6 +63,29 @@ class DeployManifest(unittest.TestCase):
             with self.subTest(must=must):
                 self.assertIn(must, names)
 
+    def test_the_subtitle_faces_ship_in_their_own_directory_not_the_flat_list(self):
+        # `APP_FILES` is staged with a flat `cp`; the subtitle faces are read from fonts/subs/ of the
+        # app directory (`player::ass::fonts`), so they travel in `SUBS_FONT_FILES` and every recipe
+        # that handles the flat list handles this one too (ipk, deploy, verify-deploy).
+        subs = make_print("print-subs-font-files")
+        self.assertEqual(
+            sorted(subs),
+            sorted([*(f"pkg/fonts/subs/{p.name}" for p in (ROOT / "pkg/fonts/subs").glob("*.ttf")),
+                    "pkg/fonts/subs/manifest.json"]))
+        flat = set(make_print("print-app-files")) | set(make_print("print-deploy-files"))
+        self.assertFalse(flat & set(subs), "a flat copy would drop the directory")
+        names = [pathlib.Path(f).name for f in subs]
+        self.assertEqual(len(names), len(set(names)), "verify-deploy keys by basename")
+        self.assertFalse(set(names) & {pathlib.Path(f).name for f in flat})
+        manifest = __import__("json").loads((ROOT / "pkg/fonts/subs/manifest.json").read_text())
+        self.assertEqual(sorted(f["file"] for f in manifest["faces"]), sorted(n for n in names if n.endswith(".ttf")))
+        makefile = (ROOT / "Makefile").read_text()
+        for recipe, needle in (("ipk", "cp $(SUBS_FONT_FILES) $(STAGE)/$(SUBS_FONT_DIR)/"),
+                               ("deploy", "$(SCP) $(SUBS_FONT_FILES) tv:$(APPDIR)/$(SUBS_FONT_DIR)/"),
+                               ("verify-deploy", "$(SUBS_FONT_FILES) $(if $(LAB),pkg/lab.json,)")):
+            with self.subTest(recipe=recipe):
+                self.assertIn(needle, makefile)
+
     def test_lab_session_file_is_never_in_the_plain_list(self):
         # It has its own ship-or-remove rule (present under LAB=1, actively deleted otherwise),
         # which a plain unconditional scp must never duplicate.

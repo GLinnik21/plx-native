@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use plx_base::checkpoint::{Checkpoint, NoCheckpoint, Pacer};
+use plx_base::checkpoint::{Checkpoint, Flow, NoCheckpoint, Pacer};
 
 static FD_GATE: Mutex<()> = Mutex::new(());
 
@@ -1188,6 +1188,130 @@ pub fn http_open_until_result(
         true,
         checkpoint,
     )
+}
+
+/// Open a response that is meant to stay open (a server-sent-event feed): the ordinary connect
+/// ceiling, `recv_timeout_ms` as the socket's inactivity bound (the caller's idle bound plus slack,
+/// so the [`Checkpoint`] fires first), no absolute deadline. The `checkpoint` is consulted before
+/// and during every connect/send/header wait.
+pub fn http_open_stream_result(
+    hs: *mut HttpStream,
+    host: *const c_char,
+    port: c_int,
+    path: *const c_char,
+    extra: *const c_char,
+    recv_timeout_ms: c_int,
+    checkpoint: &mut dyn Checkpoint,
+) -> Result<(), HttpOpenError> {
+    http_open_with_timeouts(
+        hs,
+        host,
+        port,
+        path,
+        extra,
+        "GET",
+        CONNECT_TIMEOUT_MS,
+        recv_timeout_ms,
+        MEDIA_SEND_TIMEOUT_MS,
+        None,
+        false,
+        checkpoint,
+    )
+}
+
+/// How often a stream read wakes to look at its cancel flag: the bound on cancel latency here.
+const STREAM_CHECK_SLICE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The [`Checkpoint`] of a plaintext stream: stops when the caller's flag is set or when no byte
+/// has arrived for `idle`, and remembers which, because [`Flow::Stop`] carries no reason.
+struct CancelIdle<'a> {
+    cancel: &'a std::sync::atomic::AtomicBool,
+    idle: std::time::Duration,
+    /// The last moment a body byte was delivered, or the stream's start.
+    last: Instant,
+    why: Option<crate::net::StreamEnd>,
+}
+
+impl Checkpoint for CancelIdle<'_> {
+    fn check(&mut self) -> Flow {
+        if self.cancel.load(Ordering::Acquire) {
+            self.why = Some(crate::net::StreamEnd::Cancelled);
+            return Flow::Stop;
+        }
+        let now = Instant::now();
+        // An idle bound too large to represent as an instant is no bound at all.
+        let Some(idle_at) = self.last.checked_add(self.idle) else {
+            return Flow::Continue { next_check: Some(now + STREAM_CHECK_SLICE) };
+        };
+        if now >= idle_at {
+            self.why = Some(crate::net::StreamEnd::Idle);
+            return Flow::Stop;
+        }
+        Flow::Continue { next_check: Some(idle_at.min(now + STREAM_CHECK_SLICE)) }
+    }
+}
+
+/// A plaintext streaming read: `GET path` on `host:port`, every body byte handed to `on_bytes` (a
+/// `false` return ends it) while the response is still open. The plaintext twin of
+/// [`crate::net::stream_tls`], with the same [`crate::net::StreamEnd`] vocabulary: a non-2xx
+/// answer is `Status` before any byte, `cancel` and `idle` stop it at a checkpoint (this arm
+/// reacts within [`STREAM_CHECK_SLICE`]). Chunked framing is decoded by [`http_read_until`].
+/// `headers` are full `"Name: value"` lines, checked like every other caller's block.
+pub fn http_stream_plain(
+    host: &str,
+    port: c_int,
+    path: &str,
+    headers: &[String],
+    idle: std::time::Duration,
+    cancel: &std::sync::atomic::AtomicBool,
+    on_bytes: &mut dyn FnMut(&[u8]) -> bool,
+) -> crate::net::StreamEnd {
+    use crate::net::{RequestError, StreamEnd};
+    let transport = || StreamEnd::Transport(RequestError::Transport.into());
+    let mut extra = String::new();
+    for line in headers {
+        extra.push_str(line);
+        extra.push_str("\r\n");
+    }
+    let (Ok(host_c), Ok(path_c), Ok(extra_c)) =
+        (std::ffi::CString::new(host), std::ffi::CString::new(path), std::ffi::CString::new(extra))
+    else {
+        return transport();
+    };
+    let mut gate = CancelIdle { cancel, idle, last: Instant::now(), why: None };
+    if gate.check() == Flow::Stop {
+        return gate.why.unwrap_or(StreamEnd::Cancelled);
+    }
+    let recv_ms = c_int::try_from(idle.as_millis().saturating_add(5_000)).unwrap_or(c_int::MAX);
+    let mut hs = http_stream_boxed();
+    let opened = http_open_stream_result(&mut *hs, host_c.as_ptr(), port, path_c.as_ptr(), extra_c.as_ptr(), recv_ms, &mut gate);
+    let end = match opened {
+        Err(HttpOpenError::Status(status)) => StreamEnd::Status(u16::try_from(status).unwrap_or(0)),
+        Err(HttpOpenError::Stopped) => gate.why.unwrap_or(StreamEnd::Cancelled),
+        Err(_) => transport(),
+        Ok(()) => {
+            let mut buf = vec![0u8; 8192];
+            loop {
+                let n = http_read_until(&mut *hs, buf.as_mut_ptr(), buf.len() as c_int, None, &mut gate);
+                if n > 0 {
+                    gate.last = Instant::now();
+                    if !on_bytes(&buf[..n as usize]) {
+                        break StreamEnd::Consumer;
+                    }
+                } else if n == 0 {
+                    // A 0 is a finished body only when the framing says so: a chunked stream the
+                    // peer dropped between chunks also reads 0, and is an abort.
+                    break if http_body_done(&*hs) { StreamEnd::Closed } else { transport() };
+                } else if n == HTTP_READ_STOPPED {
+                    break gate.why.unwrap_or(StreamEnd::Cancelled);
+                } else {
+                    break transport();
+                }
+            }
+        }
+    };
+    http_close(&mut *hs);
+    end
 }
 
 fn legacy_open_result(result: Result<(), HttpOpenError>) -> c_int {
