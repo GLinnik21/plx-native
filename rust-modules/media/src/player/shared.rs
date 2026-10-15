@@ -260,6 +260,17 @@ enum NativeSessionPhase {
     Abandoned {
         epoch: u32,
     },
+    /// A real stop handed this epoch's ready object to the OFF-FRAME release (`engine`'s
+    /// `PendingRelease`): its `Unload` is running on a worker while the main thread has already
+    /// reset the session for whatever comes next. The admission rule is `Abandoned`'s — only the
+    /// firmware's UNLOADCOMPLETED is admitted, recorded in `unload_completed` rather than as a move
+    /// to `Unloaded` so that [`Shared::reset_session`] (which preserves this phase) cannot erase the
+    /// evidence the release then reads — and no new native session may begin until the release has
+    /// retired it.
+    Releasing {
+        epoch: u32,
+        unload_completed: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1221,12 +1232,30 @@ impl Shared {
             NativeSessionPhase::Active { epoch: active, .. }
                 | NativeSessionPhase::Unloaded { epoch: active }
                 | NativeSessionPhase::Abandoned { epoch: active }
+                | NativeSessionPhase::Releasing { epoch: active, .. }
                 if epoch != 0 && active == epoch
         );
         if !owns {
             return false;
         }
         state.phase = NativeSessionPhase::Idle;
+        true
+    }
+
+    /// Hand `epoch`'s ready object to the off-frame release (see
+    /// [`NativeSessionPhase::Releasing`]). Taking the lock is the drain barrier for a callback
+    /// already inside the session; from here only UNLOADCOMPLETED is admitted. `false` when `epoch`
+    /// does not own the `Active` phase (the caller then releases synchronously, as before).
+    pub fn begin_native_release(&self, epoch: u32) -> bool {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !matches!(state.phase, NativeSessionPhase::Active { epoch: active, .. } if epoch != 0 && active == epoch)
+        {
+            return false;
+        }
+        state.phase = NativeSessionPhase::Releasing { epoch, unload_completed: false };
         true
     }
 
@@ -1271,11 +1300,15 @@ impl Shared {
     /// This is one mandatory lifecycle assertion, separate from the native interposer's admission
     /// and in-flight proof. A missing/renumbered callback quarantines the object rather than D1.
     pub fn native_unload_completed(&self, epoch: u32) -> bool {
-        self.native_session
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .phase
-            == NativeSessionPhase::Unloaded { epoch }
+        matches!(
+            self.native_session
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .phase,
+            NativeSessionPhase::Unloaded { epoch: e }
+                | NativeSessionPhase::Releasing { epoch: e, unload_completed: true }
+                if e == epoch
+        )
     }
 
     /// Fence pre-seek presentations while retaining non-frame Load/error callbacks. Locking is a
@@ -1415,6 +1448,17 @@ impl Shared {
             state.phase = NativeSessionPhase::Unloaded { epoch };
             return Some(result);
         }
+        if let NativeSessionPhase::Releasing { epoch: releasing, unload_completed } = &mut state.phase {
+            // The same rule for an object a real stop handed to the off-frame release: the main
+            // thread has already reset the state this callback would write into for the NEXT
+            // session, so only the release's own lifecycle evidence gets through.
+            if epoch == 0 || *releasing != epoch || class != NativeEventClass::UnloadCompleted {
+                return None;
+            }
+            let result = event();
+            *unload_completed = true;
+            return Some(result);
+        }
         let NativeSessionPhase::Active {
             epoch: active,
             presentation_gate,
@@ -1523,7 +1567,12 @@ impl Shared {
         // An ABANDONED native object is not this engine's session: it outlives the engine by
         // design until its `Load` returns and `engine::reap_abandoned_load` releases it. Clearing
         // it here would let the next session begin while the C seam still owns that object.
-        if !matches!(native.phase, NativeSessionPhase::Abandoned { .. }) {
+        // The same holds for an object handed to the off-frame release: its Unload is still running
+        // and the release retires the phase itself once it has the evidence.
+        if !matches!(
+            native.phase,
+            NativeSessionPhase::Abandoned { .. } | NativeSessionPhase::Releasing { .. }
+        ) {
             native.phase = NativeSessionPhase::Idle;
         }
         // the diagnostics mirror is per-session too — a stale bind outcome from the last item is

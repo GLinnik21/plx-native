@@ -172,6 +172,15 @@ pub(super) fn release_load_for_test() {
     *held = false;
     HOLD_LOAD.1.notify_all();
 }
+/// How long the host `sf_unload` takes, in ms — the device's `StarfishMediaAPIs::Unload` blocks
+/// for 110-150 ms (`engine::PendingRelease`), and a test of the frame that pays for it needs a
+/// sink that takes measurable time too. 0 (the default) is the unmodified, instant Unload.
+#[cfg(test)]
+static UNLOAD_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+pub(super) fn delay_unload_for_test(ms: u64) {
+    UNLOAD_DELAY_MS.store(ms, Relaxed);
+}
 #[cfg(test)]
 pub(super) fn in_flight_calls_for_test() -> u32 {
     IN_FLIGHT_CALLS.load(Relaxed)
@@ -419,6 +428,7 @@ pub(super) fn reset_native_lifecycle_for_test() {
     *IN_FLIGHT_VERB.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
     HOLD_LOAD.1.notify_all();
+    UNLOAD_DELAY_MS.store(0, Relaxed);
     Clock::rewind();
 }
 
@@ -755,6 +765,13 @@ unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_cha
 unsafe fn sf_unload() {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("sf_unload");
+    #[cfg(test)]
+    {
+        let ms = UNLOAD_DELAY_MS.load(Relaxed);
+        if ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
     let epoch = ACTIVE_EPOCH.load(Relaxed);
     if epoch != 0 && OBJECT_READY.load(Relaxed) {
         // Firmware emits this synthetic lifecycle callback before Unload returns. It bypasses the
@@ -941,7 +958,7 @@ impl VideoSink for HostSink {
     ) -> c_char {
         sf_feed(p, size, pts, es_data)
     }
-    unsafe fn unload(&self, _: &MainThread) {
+    unsafe fn unload(&self, _: &plx_platform::tv::sink::UnloadTicket) {
         sf_unload()
     }
     unsafe fn callback_gate_retire(&self, _: &MainThread) -> c_int {

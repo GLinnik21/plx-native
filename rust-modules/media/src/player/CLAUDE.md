@@ -30,8 +30,24 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 
 ## Threading model (this is the whole ballgame)
 
-- `engine.rs` — the **main-thread-confined** session object. All ACB/Starfish *control* calls happen
-  on the main thread; `engine` spawns the workers below.
+- `engine.rs` — the **main-thread-confined** session object. Every ACB/Starfish *control* call
+  happens on the main thread except two Starfish verbs: `Load` (on `load_thread`) and a real stop's
+  `Unload` (on the `sf-unload` worker, below). `engine` spawns the workers below.
+- **A real stop's `Unload` runs off the frame (`engine::PendingRelease`).** Measured on the dev set
+  2026-10-15 (release build, mock, Guest): `StarfishMediaAPIs::Unload` alone held the frame that
+  handled BACK for 113-150 ms on every return (`teardown spans:` line, `sf_unload:`); the sched
+  trace put the main thread in D state in `ioctl` (~31 ms), then in `futex` (~74 ms), inside that
+  call. `teardown` (real stop only: `for_reload == false`) now moves the native phase to
+  `Releasing`, hands the Unload to an `sf-unload` worker with an `UnloadTicket`, and parks the
+  worker on the adapter. The rest of the release — callback gate, epoch retire, ACB
+  `setState(UNLOADED)`, D1 or quarantine, `destroy_window` — stays on the main thread and runs in
+  `settle_release`: on the first frame after the Unload returns (`run.rs` → `poll_release`), or
+  at once, blocking, from `start_bufferfeed_inner`, `pa.mt()`, `pa.split()` and `shutdown`, so
+  nothing reaches the seam or builds a new object while the old one is still inside Unload. While
+  `Releasing`, only that epoch's `UnloadCompleted` callback is admitted (it is D1's evidence) and no
+  native session can begin. Reloads, suspend and the decoder-release park (`for_reload == true`)
+  keep the synchronous release. The log reads `native lifecycle: off-frame Unload epoch=N released
+  X ms after the stop`, with `(a caller waited for it)` when a blocking caller had to wait.
 - `pump.rs` — the **main-thread pump** (was `bufferfeed_pump`): each frame it drives bind → Play →
   feed and services seeks.
 - `threads.rs` — the workers beside the demuxer: **`load_thread`** (construct Starfish + `Load()`,
@@ -48,8 +64,11 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 **The main-thread rule is compiler-enforced.** The seam is the `VideoSink` trait in `plx_platform::tv::sink` (`rust-modules/platform/src/tv/sink.rs`)
 (Starfish-shaped: one method per verb, reached through `player::sink()`). `ffi.rs`'s `extern "C"`
 declarations are private to that module and only `StarfishSink` there implements the trait on the
-television; `ffi_host.rs`'s `HostSink` is the simulator's. Every method but three takes a
-`task::MainThread` — a `!Send` ZST the application mints once. Since phase 9 it mints exactly one
+television; `ffi_host.rs`'s `HostSink` is the simulator's. Every verb but `load` and `unload`
+takes a `task::MainThread` (the constant queries `feed_abi_is_cow`, `window_mode` and `window_id`
+take nothing); `unload` takes an `UnloadTicket`, which only a `&MainThread` can issue and which is
+`Send`, so the main thread decides when an Unload happens and a worker may carry it out.
+`MainThread` is a `!Send` ZST the application mints once. Since phase 9 it mints exactly one
 and `boot` MOVES it into `player::adapter::PlayerAdapter` (`App.adapters.player`), which also owns
 the native session that was the `static mut ENGINE`: the seam is reached as `pa.mt()`, the session as `pa.engine()` / `pa.split()`, and a function that
 touches the session takes `pa: &mut PlayerAdapter` where it used to take `mt: &MainThread`. Moving
@@ -57,7 +76,8 @@ any of it onto a thread stops compiling (the closure captures a `&MainThread`, w
 rejects), and two live `&mut` to the session no longer needs a convention — it does not compile,
 which is what turned `pump`'s "reload REPLACES the ENGINE, so `eng` dangles" comment into a rule
 the borrow checker keeps. Two intentional holes, both worth knowing: `load` takes **no** token
-because `load_thread` runs it off-main by design, and `MainThread::assume()` is callable — so an
+because `load_thread` runs it off-main by design (and `unload` takes only a ticket, for the
+`sf-unload` worker), and `MainThread::assume()` is callable — so an
 `unsafe` block inside a worker still defeats this. The rule for new code: take the token **iff**
 you reach the seam, the adapter **iff** you reach the session, so a signature keeps meaning
 something.

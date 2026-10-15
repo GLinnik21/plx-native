@@ -969,8 +969,9 @@ is all Rust: `PMS HTTP GET` → demux (**`ff.rs`, over a custom AVIO on the
 FFmpeg the app BUNDLES** — not the television's; see the linking section, and note ours is built
 `--disable-network`, so the AVIO is the *only* way bytes reach it) → AU queues with backpressure
 (`aq.rs`) → the pump `Feed()`s the Starfish
-pipeline. Two worker threads (demux, media/load) sit beside the main loop, which owns all
-ACB/Starfish control calls. **That GET has TWO transports and the part URL's SCHEME picks one**,
+pipeline. Worker threads (demux, media/load, and `sf-unload` for a real stop's `Unload`) sit
+beside the main loop, which owns every other ACB/Starfish control call
+(`rust-modules/media/src/player/CLAUDE.md`, threading model). **That GET has TWO transports and the part URL's SCHEME picks one**,
 once, in `ff::demux`: `http` reads through `stream.rs`'s raw socket, `https` through
 **`curlio.rs`** — libcurl's *multi* interface behind a `read`/`seek`/`size`/`status`/`abort` pull
 source, so `ff.rs` never learns curl-multi mechanics. It exists because LG's reviewers have no PMS

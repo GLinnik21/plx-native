@@ -12,8 +12,11 @@
 //! that was `engine::ENGINE`. The seam still takes `&MainThread` (reached through the adapter),
 //! the slot takes `&mut PlayerAdapter`, and the token is `!Send`, so a closure that captured
 //! either cannot be handed to `task::spawn`. The exceptions are the honest ones: the two callbacks
-//! above are `extern "C"` entry points *from* the library thread and touch only `SHARED`, and
-//! `threads::load_thread` calls `sf_load` off-main by design (see `ffi`).
+//! above are `extern "C"` entry points *from* the library thread and touch only `SHARED`,
+//! `threads::load_thread` calls `sf_load` off-main by design (see `ffi`), and a real stop's
+//! `sf_unload` runs on the `sf-unload` worker on an `UnloadTicket` (`engine::PendingRelease`): the
+//! rest of that release (gate, retire, ACB UNLOADED, D1, `destroy_window`) stays on the main thread,
+//! and the adapter keeps every other seam call waiting until it is done.
 #![allow(non_upper_case_globals)]
 pub mod adapter;
 pub mod claim_hold;
