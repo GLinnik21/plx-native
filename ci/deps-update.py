@@ -23,9 +23,13 @@ reason.
     python3 ci/deps-update.py --list-outdated          "name<TAB>latest" for each entry a bump may change
     python3 ci/deps-update.py --bump NAME [--body-file F]
                                                        download the new asset(s), recompute sha256, rewrite the
-                                                       entry's version / urls / sha256 (never a patch). Exit 3
-                                                       when a pinned patch no longer applies (the manifest IS
-                                                       written, so the PR shows it).
+                                                       entry's version / urls / sha256 and its rows of
+                                                       THIRD-PARTY-NOTICES.md (never a patch; a patch's pinned
+                                                       `result` digests are recomputed). Prints the version used
+                                                       on its first line. Exit 3 when a pinned patch no longer
+                                                       applies (strict `git apply`, like the build) or a notices
+                                                       row is not found (the manifest IS written, so the PR
+                                                       shows it).
     python3 ci/deps-update.py --snapshot --sha S --ref R   GitHub dependency-submission JSON (stdout)
 
 GITHUB_TOKEN, when set, authenticates the GitHub API (60 -> 5000 requests/hour). Standard library
@@ -39,6 +43,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -49,6 +54,10 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / 'ci/dependencies.json'
+NOTICES = ROOT / 'THIRD-PARTY-NOTICES.md'
+# The most an upstream source archive may unpack to (bytes) and how many members it may have.
+MAX_EXTRACT_BYTES = 2 << 30
+MAX_EXTRACT_MEMBERS = 200000
 TYPES = {'github-release', 'github-tags', 'github-commit', 'listing', 'manual'}
 SAFE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]*$')
 REPO = re.compile(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$')
@@ -62,7 +71,9 @@ class BumpError(Exception):
 
 
 class PatchError(BumpError):
-    pass
+    """The bump needs a person (a patch, or the notices): the manifest IS written and `version` is the
+    version it moved to, so the pull request can still be opened as a draft."""
+    version = None
 
 
 # --- reading upstream -------------------------------------------------------------------------
@@ -299,28 +310,104 @@ def pin_assets(dep, notes):
     return dep
 
 
+def require_data_filter():
+    if not hasattr(tarfile, 'data_filter'):
+        raise BumpError('this Python (' + sys.version.split()[0] + ') has no tarfile.data_filter, so an upstream '
+                        'archive cannot be unpacked safely; run the bump with Python 3.12+ (the workflow does)')
+
+
+def unpack_source(archive, tree):
+    """Extract an upstream tarball into the throwaway `tree`. Refuses (BumpError) without
+    `tarfile.data_filter` (Python < 3.12 and the security backports), because a bare `extractall`
+    follows absolute paths and links out of `tree`; and refuses an archive that unpacks to more than
+    MAX_EXTRACT_BYTES / MAX_EXTRACT_MEMBERS."""
+    require_data_filter()
+    with tarfile.open(archive) as tar:
+        members = tar.getmembers()
+        if len(members) > MAX_EXTRACT_MEMBERS or sum(m.size for m in members) > MAX_EXTRACT_BYTES:
+            raise BumpError(Path(archive).name + ' unpacks to more than ' + str(MAX_EXTRACT_BYTES >> 20) +
+                            ' MiB or ' + str(MAX_EXTRACT_MEMBERS) + ' members; refusing')
+        tar.extractall(tree, members=members, filter='data')  # an upstream tarball, into a throwaway directory
+
+
+def file_digest(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 def check_patches(dep, root=ROOT):
-    """Dry-run each pinned patch against the new sources. Raises PatchError with patch's own words."""
+    """Apply each pinned patch to the new sources exactly as ci/build-libass.py does (strict
+    `git apply --check`, then `git apply`, never `patch` and its fuzz), and recompute the patch's
+    pinned `result` digests IN PLACE in `dep` from the patched files. Returns notes for the pull
+    request. Raises PatchError with git's own words."""
     patches = dep.get('patches', [])
     if not patches or 'archive' not in dep:
-        return
+        return []
+    if shutil.which('git') is None:
+        raise BumpError('git is required to check the ' + dep['id'] + ' patches')
+    notes = []
     with tempfile.TemporaryDirectory() as scratch:
         archive = Path(scratch) / dep['archive']
-        download_to(dep['url'], archive)
         tree = Path(scratch) / 'src'
-        with tarfile.open(archive) as tar:
-            if hasattr(tarfile, 'data_filter'):
-                tar.extractall(tree, filter='data')  # an upstream tarball, into a throwaway directory
-            else:
-                tar.extractall(tree)
+        require_data_filter()  # before anything is downloaded
+        download_to(dep['url'], archive)
+        unpack_source(archive, tree)
         tops = [p for p in tree.iterdir()]
         source = tops[0] if len(tops) == 1 and tops[0].is_dir() else tree
+        # `source` is outside any repository; the ceiling keeps git from discovering one anyway.
+        env = {k: v for k, v in os.environ.items() if k not in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE')}
+        env['GIT_CEILING_DIRECTORIES'] = str(source.parent)
         for patch in patches:
-            result = subprocess.run(['patch', '-p1', '--dry-run', '-d', str(source), '-i', str(root / patch['path'])],
-                                    capture_output=True, text=True)
-            if result.returncode != 0:
-                raise PatchError(patch['path'] + ' no longer applies to ' + dep['id'] + ' ' + dep['version'] +
-                                 ':\n' + (result.stdout + result.stderr).strip())
+            path = (root / patch['path']).resolve()
+            for extra in (['--check'], []):
+                result = subprocess.run(['git', 'apply', *extra, str(path)], cwd=source, env=env,
+                                        capture_output=True, text=True)
+                if result.returncode != 0:
+                    raise PatchError(patch['path'] + ' no longer applies to ' + dep['id'] + ' ' + dep['version'] +
+                                     ':\n' + (result.stdout + result.stderr).strip())
+            for relative in sorted(patch.get('result', {})):
+                target = source / relative
+                if not target.is_file():
+                    raise PatchError(patch['path'] + ' left no ' + relative + ' to pin')
+                digest = file_digest(target)
+                if digest != patch['result'][relative]:
+                    notes.append('pinned result digest of ' + relative + ' (patch ' + patch['path'] + ') recomputed')
+                patch['result'][relative] = digest
+    return notes
+
+
+# THIRD-PARTY-NOTICES.md states some pins in prose. Per entry id: exact strings, with {version},
+# {sha256} and {archive} filled from the entry before and after the bump. Only these known rows are
+# rewritten; if one is not found as written the bump fails loudly (draft pull request) instead of
+# leaving the notices stale or guessing at a regex.
+NOTICE_ROWS = {
+    'ffmpeg': ['FFmpeg **{version}**, unmodified',
+               '`{archive}`, sha256 `{sha256}`',
+               'FFMPEG_VERSION={version} FFMPEG_SHA256={sha256} FFMPEG_TARBALL=/path/to/{archive}',
+               '| FFmpeg (libavformat / libavcodec / libavutil) | **{version}, shipped in this package** |'],
+    'libass': ['| libass | {version} |', 'checksum-verified libass {version} release'],
+    'freetype': ['| FreeType | {version} |'],
+    'fribidi': ['| FriBidi | {version} |'],
+    'harfbuzz': ['| HarfBuzz | {version} |'],
+    'libunibreak': ['| libunibreak | {version} |'],
+    'sentry-native': ['**Sentry Native {version}**'],
+}
+
+
+def notice_text(row, dep):
+    return row.format(version=dep['version'], sha256=dep.get('sha256', ''), archive=dep.get('archive', ''))
+
+
+def update_notices(old, new, text):
+    """`text` of THIRD-PARTY-NOTICES.md with the rows of `old` rewritten for `new`. Raises
+    BumpError naming every expected row that is not in `text` (nothing is rewritten then)."""
+    rows = NOTICE_ROWS.get(old['id'], [])
+    missing = [notice_text(r, old) for r in rows if notice_text(r, old) not in text]
+    if missing:
+        raise BumpError('THIRD-PARTY-NOTICES.md does not contain the expected text for ' + old['id'] +
+                        ' (update it by hand): ' + '; '.join(repr(m) for m in missing))
+    for row in rows:
+        text = text.replace(notice_text(row, old), notice_text(row, new))
+    return text
 
 
 def pr_title(old, new):
@@ -331,9 +418,11 @@ def pr_body(old, new, release, notes, failure=None):
     lines = ['Automated bump of `' + new['id'] + '` in `ci/dependencies.json` (`ci/deps-update.py`): `' +
              old['version'] + '` -> `' + new['version'] + '`.', '',
              'Upstream release: ' + release['url'], '',
-             'The version, URLs and sha256 changed; patches were NOT touched.']
+             'The version, URLs and sha256 changed, as did the matching rows of `THIRD-PARTY-NOTICES.md`; patches '
+             'were NOT touched (their pinned `result` digests are recomputed).']
     if failure:
-        lines += ['', '**A pinned patch no longer applies. This PR needs a person: rebase the patch.**',
+        lines += ['', '**A pinned patch no longer applies, or THIRD-PARTY-NOTICES.md could not be updated. '
+                      'This PR needs a person.**',
                   '', '```', failure, '```']
     for note in notes:
         lines += ['', '- ' + note]
@@ -341,16 +430,15 @@ def pr_body(old, new, release, notes, failure=None):
               '- [ ] FFmpeg, Sentry Native, curl-adjacent and NDK/toolchain bumps need the `fw-compat-reviewer` agent '
               '(the binary must still start on every firmware) before merge.',
               '- [ ] Check `THIRD-PARTY-NOTICES.md` against the new release (licence, copyright holders).',
-              '- [ ] A bump that changes a patched file also changes the pinned `result` digests of that patch; '
-              'the build says so.',
               '- [ ] CI is dispatched on this branch by the workflow (a `GITHUB_TOKEN` push starts no `pull_request` run).',
               '', 'Generated by `.github/workflows/deps-update.yml`.']
     return '\n'.join(lines) + '\n'
 
 
-def bump(name, path=MANIFEST, body_file=None):
+def bump(name, path=MANIFEST, body_file=None, notices=NOTICES):
     """Move one entry to upstream's newest release. Returns (old, new, notes); raises BumpError, and
-    PatchError after the manifest has been written."""
+    PatchError (with `.version`) after the manifest has been written, when a patch or the notices
+    need a person."""
     entries = load(path)
     index = next((i for i, d in enumerate(entries) if d['id'] == name), None)
     if index is None:
@@ -366,17 +454,25 @@ def bump(name, path=MANIFEST, body_file=None):
             raise BumpError('refusing an unexpected version/tag string: ' + repr(text))
     notes = []
     new = pin_assets(rewritten(old, release), notes)
+    failures = []
+    try:
+        notes += check_patches(new)  # also recomputes the patches' pinned result digests in `new`
+    except PatchError as error:
+        failures.append(str(error))
     entries[index] = new
     Path(path).write_text(dump(entries))
-    failure = None
     try:
-        check_patches(new)
-    except PatchError as error:
-        failure = str(error)
+        notices_path = Path(notices)
+        notices_path.write_text(update_notices(old, new, notices_path.read_text()))
+    except BumpError as error:
+        failures.append(str(error))
+    failure = '\n\n'.join(failures) or None
     if body_file:
         Path(body_file).write_text(pr_body(old, new, release, notes, failure))
     if failure:
-        raise PatchError(failure)
+        error = PatchError(failure)
+        error.version = new['version']
+        raise error
     return old, new, notes
 
 
@@ -461,19 +557,31 @@ def main(argv=None):
             print(json.dumps(snapshot(entries, args.sha, args.ref, os.environ.get('GITHUB_RUN_ID', '0')), indent=2))
             return 0
         if args.bump:
-            old, new, notes = bump(args.bump, body_file=args.body_file)
+            try:
+                old, new, notes = bump(args.bump, body_file=args.body_file)
+            except PatchError as error:
+                print(error.version)  # first line: the version the manifest moved to (the branch name)
+                raise
+            print(new['version'])  # first line: the version actually used (the workflow's branch name)
             print(pr_title(old, new))
             for note in notes:
                 print('note: ' + note)
             return 0
         rows = [status(dep) for dep in entries]
         if args.list_outdated:
+            unsafe = False
             for row in rows:
                 if row['error']:
                     print('deps-update: ' + row['id'] + ': ' + row['error'], file=sys.stderr)
                 elif row['outdated'] and not row['hold']:
-                    print(row['id'] + '\t' + row['release']['version'])
-            return 1 if any(r['error'] for r in rows) else 0
+                    version = row['release']['version']
+                    if not SAFE.match(version) or not SAFE.match(row['release']['tag']):
+                        print('deps-update: ' + row['id'] + ': refusing an unexpected version/tag string: ' +
+                              repr(version), file=sys.stderr)
+                        unsafe = True
+                    else:
+                        print(row['id'] + '\t' + version)
+            return 1 if unsafe or any(r['error'] for r in rows) else 0
         if args.json:
             print(json.dumps(rows, indent=2))
         else:

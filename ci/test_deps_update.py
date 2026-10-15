@@ -4,12 +4,18 @@ tag parsing and version ordering work per source type (fixtures, no network), a 
 right strings, the dependency-graph snapshot has the submission API's shape, and the workflow keeps
 its security shape (minimal permissions, SHA-pinned actions, untrusted strings never in a script).
 """
+import contextlib
+import hashlib
 import importlib.util
 import json
+import io
 import re
 import shutil
+import subprocess
 import sys
+import tarfile
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -181,11 +187,13 @@ class Rewrite(unittest.TestCase):
         self.addCleanup(shutil.rmtree, scratch)
         path = scratch / 'm.json'
         shutil.copy(ROOT / 'ci/dependencies.json', path)
+        notices = scratch / 'NOTICES.md'
+        shutil.copy(ROOT / 'THIRD-PARTY-NOTICES.md', notices)
         before = json.loads(path.read_text())
         release = {'version': '1.0.18', 'tag': 'v1.0.18', 'url': 'https://example.invalid/r'}
         with mock.patch.object(du, 'latest', return_value=release), \
                 mock.patch.object(du, 'download_digest', return_value='c' * 64):
-            old, new, notes = du.bump('fribidi', path=path, body_file=scratch / 'body.md')
+            old, new, notes = du.bump('fribidi', path=path, body_file=scratch / 'body.md', notices=notices)
         after = json.loads(path.read_text())
         changed = [a['id'] for a, b in zip(before, after) if a != b]
         self.assertEqual(changed, ['fribidi'])
@@ -199,14 +207,18 @@ class Rewrite(unittest.TestCase):
         self.addCleanup(shutil.rmtree, scratch)
         path = scratch / 'm.json'
         shutil.copy(ROOT / 'ci/dependencies.json', path)
+        notices = scratch / 'NOTICES.md'
+        shutil.copy(ROOT / 'THIRD-PARTY-NOTICES.md', notices)
         release = {'version': '9.9.9', 'tag': '9.9.9', 'url': 'https://example.invalid/r'}
         with mock.patch.object(du, 'latest', return_value=release), \
                 mock.patch.object(du, 'download_digest', return_value='d' * 64), \
                 mock.patch.object(du, 'check_patches', side_effect=du.PatchError('x.patch no longer applies')):
-            with self.assertRaises(du.PatchError):
-                du.bump('sentry-native', path=path, body_file=scratch / 'body.md')
+            with self.assertRaises(du.PatchError) as raised:
+                du.bump('sentry-native', path=path, body_file=scratch / 'body.md', notices=notices)
+        self.assertEqual(raised.exception.version, '9.9.9')
         self.assertEqual(next(d for d in json.loads(path.read_text()) if d['id'] == 'sentry-native')['version'], '9.9.9')
         self.assertIn('no longer applies', (scratch / 'body.md').read_text())
+        self.assertIn('**Sentry Native 9.9.9**', notices.read_text())  # the notices still follow the manifest
 
     def test_held_and_current_entries_are_not_bumped(self):
         with self.assertRaises(du.BumpError):
@@ -220,6 +232,189 @@ class Rewrite(unittest.TestCase):
         with mock.patch.object(du, 'latest', return_value=release):
             with self.assertRaises(du.BumpError):
                 du.bump('fribidi', path=ROOT / 'ci/dependencies.json')
+
+
+class FilteringTarfile:
+    """The `tarfile` module as Python 3.12 has it, for hosts that predate `data_filter`: the filter
+    argument is accepted (the hardening itself is Python's, not under test) and dropped."""
+    data_filter = staticmethod(lambda member, path: member)
+
+    @staticmethod
+    def open(*args, **kwargs):
+        tar = tarfile.open(*args, **kwargs)
+        original = tar.extractall
+        tar.extractall = lambda path, members=None, filter=None: original(path, members=members)
+        return tar
+
+
+def tarball(path, files, top='x-1'):
+    with tarfile.open(path, 'w:gz') as tar:
+        for name, text in files.items():
+            data = text.encode()
+            info = tarfile.TarInfo(top + '/' + name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+
+
+PATCH = """--- a/f.c
++++ b/f.c
+@@ -1,7 +1,7 @@
+ one
+ two
+ three
+-four
++FOUR
+ five
+ six
+ seven
+"""
+SOURCE = 'one\ntwo\nthree\nfour\nfive\nsix\nseven\n'
+
+
+class Notices(unittest.TestCase):
+    def moved(self, name, version):
+        old = dep(name)
+        new = dict(old, version=version, sha256='e' * 64, archive=old.get('archive', '').replace(old['version'], version))
+        return old, new
+
+    def test_every_rule_names_a_manifest_entry_and_matches_the_committed_notices(self):
+        text = (ROOT / 'THIRD-PARTY-NOTICES.md').read_text()
+        self.assertEqual(sorted(set(du.NOTICE_ROWS) - {d['id'] for d in manifest()}), [])
+        for name, rows in du.NOTICE_ROWS.items():
+            for row in rows:
+                self.assertIn(du.notice_text(row, dep(name)), text, name)
+
+    def test_each_entry_with_rows_is_rewritten_and_the_old_strings_are_gone(self):
+        text = (ROOT / 'THIRD-PARTY-NOTICES.md').read_text()
+        for name in du.NOTICE_ROWS:
+            old, new = self.moved(name, '99.1.2')
+            out = du.update_notices(old, new, text)
+            for row in du.NOTICE_ROWS[name]:
+                self.assertNotIn(du.notice_text(row, old), out, name)
+                self.assertIn(du.notice_text(row, new), out, name)
+        old, new = self.moved('ffmpeg', '99.1.2')
+        out = du.update_notices(old, new, text)
+        self.assertNotIn(old['sha256'], out)
+        self.assertIn('FFMPEG_VERSION=99.1.2 FFMPEG_SHA256=' + 'e' * 64, out)
+
+    def test_a_row_that_is_not_there_fails_and_rewrites_nothing(self):
+        old, new = self.moved('libass', '0.18.0')
+        with self.assertRaises(du.BumpError) as raised:
+            du.update_notices(old, new, '| libass | 0.17.4 |\n')
+        self.assertIn('libass', str(raised.exception))
+
+    def test_an_entry_without_rows_leaves_the_notices_alone(self):
+        old, new = self.moved('nanosvg', 'f' * 40)
+        self.assertEqual(du.update_notices(old, new, 'x'), 'x')
+
+    def test_ffmpeg_bump_keeps_the_notices_in_step_with_the_manifest(self):
+        scratch = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, scratch)
+        path, notices = scratch / 'm.json', scratch / 'NOTICES.md'
+        shutil.copy(ROOT / 'ci/dependencies.json', path)
+        shutil.copy(ROOT / 'THIRD-PARTY-NOTICES.md', notices)
+        release = {'version': '9.1', 'tag': '9.1', 'url': 'https://example.invalid/r'}
+        with mock.patch.object(du, 'latest', return_value=release), \
+                mock.patch.object(du, 'download_digest', return_value='a' * 64):
+            du.bump('ffmpeg', path=path, notices=notices)
+        text = notices.read_text()
+        self.assertIn('ffmpeg-9.1.tar.xz', text)
+        self.assertIn('a' * 64, text)
+        self.assertNotIn(dep('ffmpeg')['sha256'], text)
+
+    def test_a_missing_notices_row_makes_the_bump_a_draft_that_says_so(self):
+        scratch = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, scratch)
+        path, notices = scratch / 'm.json', scratch / 'NOTICES.md'
+        shutil.copy(ROOT / 'ci/dependencies.json', path)
+        notices.write_text('nothing here\n')
+        release = {'version': '1.0.18', 'tag': 'v1.0.18', 'url': 'https://example.invalid/r'}
+        with mock.patch.object(du, 'latest', return_value=release), \
+                mock.patch.object(du, 'download_digest', return_value='a' * 64):
+            with self.assertRaises(du.PatchError) as raised:
+                du.bump('fribidi', path=path, body_file=scratch / 'body.md', notices=notices)
+        self.assertEqual(raised.exception.version, '1.0.18')
+        self.assertIn('THIRD-PARTY-NOTICES.md', (scratch / 'body.md').read_text())
+        self.assertEqual(notices.read_text(), 'nothing here\n')
+        self.assertEqual(next(d for d in json.loads(path.read_text()) if d['id'] == 'fribidi')['version'], '1.0.18')
+
+
+class PatchCheck(unittest.TestCase):
+    def setUp(self):
+        self.scratch = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.scratch)
+        (self.scratch / 'ci/patches').mkdir(parents=True)
+        (self.scratch / 'ci/patches/p.patch').write_text(PATCH)
+        self.archive = self.scratch / 'upstream.tar.gz'
+        self.dep = {'id': 'x', 'version': '1', 'archive': 'x-1.tar.gz', 'url': 'https://example.invalid/x',
+                    'patches': [{'path': 'ci/patches/p.patch', 'sha256': '0', 'result': {'f.c': '0' * 64}}]}
+
+    def run_check(self, source, **kw):
+        tarball(self.archive, {'f.c': source})
+        with mock.patch.object(du, 'tarfile', FilteringTarfile), \
+                mock.patch.object(du, 'download_to', lambda url, path: shutil.copy(self.archive, path)):
+            return du.check_patches(self.dep, root=self.scratch, **kw)
+
+    def test_result_digests_are_recomputed_in_place(self):
+        notes = self.run_check(SOURCE)
+        patched = SOURCE.replace('four', 'FOUR').encode()
+        self.assertEqual(self.dep['patches'][0]['result']['f.c'], hashlib.sha256(patched).hexdigest())
+        self.assertEqual(len(notes), 1)
+
+    def test_a_patch_that_only_applies_with_fuzz_is_rejected_like_the_build_does(self):
+        # patch(1) -F2 would take this (the first context line differs); git apply, like the build, does not.
+        with self.assertRaises(du.PatchError) as raised:
+            self.run_check(SOURCE.replace('one', 'uno'))
+        self.assertIn('ci/patches/p.patch no longer applies', str(raised.exception))
+        self.assertEqual(self.dep['patches'][0]['result']['f.c'], '0' * 64)
+
+    def test_no_data_filter_refuses_before_downloading(self):
+        legacy = types.SimpleNamespace(open=tarfile.open)
+        with mock.patch.object(du, 'tarfile', legacy), \
+                mock.patch.object(du, 'download_to', side_effect=AssertionError('downloaded')):
+            with self.assertRaises(du.BumpError) as raised:
+                du.check_patches(self.dep, root=self.scratch)
+        self.assertIn('data_filter', str(raised.exception))
+
+    def test_an_archive_over_the_size_cap_is_refused(self):
+        with mock.patch.object(du, 'MAX_EXTRACT_BYTES', 10):
+            with self.assertRaises(du.BumpError) as raised:
+                self.run_check(SOURCE)
+        self.assertIn('refusing', str(raised.exception))
+
+
+class CommandLine(unittest.TestCase):
+    def run_main(self, argv, **patches):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = du.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def rows(self, version, tag):
+        return [{'id': 'fribidi', 'outdated': True, 'hold': None, 'error': None,
+                 'release': {'version': version, 'tag': tag, 'url': ''}}]
+
+    def test_list_outdated_applies_the_safe_check(self):
+        with mock.patch.object(du, 'status', side_effect=lambda d: self.rows('1.0.18; rm -rf', 'v1')[0]
+                               if d['id'] == 'fribidi' else dict(self.rows('1', 'v')[0], outdated=False)):
+            code, out, err = self.run_main(['--list-outdated'])
+        self.assertEqual((code, out), (1, ''))
+        self.assertIn('refusing an unexpected version', err)
+        with mock.patch.object(du, 'status', side_effect=lambda d: self.rows('1.0.18', 'v1.0.18')[0]
+                               if d['id'] == 'fribidi' else dict(self.rows('1', 'v')[0], outdated=False)):
+            code, out, err = self.run_main(['--list-outdated'])
+        self.assertEqual((code, out), (0, 'fribidi\t1.0.18\n'))
+
+    def test_bump_prints_the_version_it_used_first(self):
+        old, new = dep('fribidi'), dict(dep('fribidi'), version='1.0.19')
+        with mock.patch.object(du, 'bump', return_value=(old, new, [])):
+            code, out, err = self.run_main(['--bump', 'fribidi'])
+        self.assertEqual((code, out.splitlines()[0]), (0, '1.0.19'))
+        failing = du.PatchError('x')
+        failing.version = '1.0.19'
+        with mock.patch.object(du, 'bump', side_effect=failing):
+            code, out, err = self.run_main(['--bump', 'fribidi'])
+        self.assertEqual((code, out.splitlines()[0]), (3, '1.0.19'))
 
 
 class Snapshot(unittest.TestCase):
@@ -301,6 +496,79 @@ class WorkflowShape(unittest.TestCase):
 
     def test_one_branch_per_dependency_and_version(self):
         self.assertIn('deps/${name}-${version}', self.code)
+
+    def test_a_branch_is_deleted_only_after_the_ownership_test_and_only_for_the_bot_s_prs(self):
+        close = self.code[self.code.index('gh pr list --state open --limit 100'):]
+        self.assertIn('app/github-actions', close)
+        self.assertLess(close.index('owned FETCH_HEAD'), close.index('--delete-branch'))
+        self.assertEqual(self.code.count('--delete-branch'), 1)
+        self.assertRegex(close, r'gh pr close "\$old" --comment')  # the fallback keeps the branch
+
+    def shell_owned(self, setup):
+        body = re.search(r'(?ms)^ *owned\(\) \{\n(.*?)^ *\}$', self.code).group(1)
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        bot = '41898282+github-actions[bot]@users.noreply.github.com'
+        script = ('set -euo pipefail\ncd "$1"\ngit init -q -b main .\n'
+                  'export GIT_AUTHOR_NAME=n GIT_COMMITTER_NAME=n\n'
+                  'export GIT_AUTHOR_EMAIL=person@example.com GIT_COMMITTER_EMAIL=person@example.com\n'
+                  'git commit -q --allow-empty -m base\n' + setup.replace('BOT', bot) +
+                  '\nbase=main; bot_email=' + bot + '\nset +e\nowned() {\n' + body + '\n}\n'
+                  'for b in bot human amended empty; do owned "$b" && echo "$b yes" || echo "$b no"; done\n')
+        out = subprocess.run(['bash', '-c', script, 'x', str(tmp)], capture_output=True, text=True, check=True).stdout
+        return dict(line.split() for line in out.splitlines() if line.endswith(('yes', 'no')))
+
+    def test_ownership_needs_the_bot_as_author_and_committer_of_every_commit(self):
+        result = self.shell_owned("""
+for b in bot human amended empty; do git branch $b main; done
+bot() { GIT_AUTHOR_EMAIL=BOT GIT_COMMITTER_EMAIL=BOT git commit -q --allow-empty -m "$1"; }
+git checkout -q bot; bot a; bot b
+git checkout -q human; git commit -q --allow-empty -m h
+git checkout -q amended; GIT_AUTHOR_EMAIL=BOT git commit -q --allow-empty -m rebased
+git checkout -q main
+""")
+        self.assertEqual(result, {'bot': 'yes', 'human': 'no', 'amended': 'no', 'empty': 'no'})
+
+    def test_one_foreign_commit_among_the_bot_s_makes_a_branch_foreign(self):
+        result = self.shell_owned("""
+for b in bot human amended empty; do git branch $b main; done
+git checkout -q bot
+GIT_AUTHOR_EMAIL=BOT GIT_COMMITTER_EMAIL=BOT git commit -q --allow-empty -m a
+git commit -q --allow-empty -m person
+git checkout -q main
+""")
+        self.assertEqual(result['bot'], 'no')
+
+    def test_a_declined_bump_is_not_proposed_again_and_points_at_update_hold(self):
+        self.assertIn('--state closed', self.code)
+        self.assertIn('mergedAt == null', self.code)
+        self.assertIn('update.hold', self.code)
+
+    def test_every_per_dependency_step_failure_is_recorded_and_skipped(self):
+        for needle in ('git checkout -q -f -B deps/work "$base" || { failed=1; continue; }',
+                       'git commit -q -m "Dependencies: ${name} -> ${used}" || { failed=1; continue; }',
+                       'g push --force origin "HEAD:refs/heads/${branch}" || { failed=1; continue; }'):
+            self.assertIn(needle, self.code)
+
+    def test_bumps_are_based_on_the_default_branch_even_when_dispatched_from_another_ref(self):
+        self.assertIn('base="origin/${DEFAULT_BRANCH}"', self.code)
+        self.assertIn('+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}', self.code)
+        self.assertEqual(self.code.count('ref: ${{ github.event.repository.default_branch }}'),
+                         self.code.count('actions/checkout@'))
+
+    def test_the_branch_name_uses_the_version_the_script_reports(self):
+        self.assertIn('used=$(sed -n 1p "$bumped")', self.code)
+        self.assertIn('branch="deps/${name}-${used}"', self.code)
+
+    def test_an_unchanged_branch_is_not_pushed_again(self):
+        self.assertIn('git diff --quiet FETCH_HEAD HEAD', self.code)
+
+    def test_the_notices_are_committed_with_the_manifest(self):
+        self.assertIn('git add ci/dependencies.json THIRD-PARTY-NOTICES.md', self.code)
+
+    def test_nothing_is_checked_with_patch_and_its_fuzz(self):
+        self.assertNotIn('--dry-run', self.code)
+        self.assertNotIn('--dry-run', (ROOT / 'ci/deps-update.py').read_text().replace('patch --dry-run', ''))
 
     def test_the_graph_job_runs_the_snapshot_and_posts_it(self):
         self.assertIn('--snapshot', self.code)
