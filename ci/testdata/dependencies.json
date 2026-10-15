@@ -1,0 +1,230 @@
+[
+  {
+    "id": "ffmpeg",
+    "bundled": true,
+    "version": "9.0",
+    "license": "LGPL-2.1-or-later",
+    "archive": "ffmpeg-9.0.tar.xz",
+    "url": "https://ffmpeg.org/releases/ffmpeg-9.0.tar.xz",
+    "sha256": "7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52",
+    "update": {
+      "type": "listing",
+      "url": "https://ffmpeg.org/releases/",
+      "file_pattern": "^ffmpeg-(\\d+\\.\\d+(?:\\.\\d+)?)\\.tar\\.xz$"
+    },
+    "patches": []
+  },
+  {
+    "id": "sentry-native",
+    "bundled": true,
+    "version": "0.16.6",
+    "license": "MIT",
+    "archive": "sentry-native-0.16.6.tar.gz",
+    "url": "https://github.com/getsentry/sentry-native/archive/refs/tags/0.16.6.tar.gz",
+    "sha256": "a194ac434da1534723556c5628256752208b0b6989fee7bf5ed6c5b3c84773ab",
+    "update": {
+      "type": "github-release",
+      "repo": "getsentry/sentry-native",
+      "tag_pattern": "^(\\d+\\.\\d+\\.\\d+)$"
+    },
+    "patches": [
+      {
+        "path": "ci/patches/sentry-native-0001-webos-arm32.patch",
+        "sha256": "3d5042f224fc00ba69bcd4036d3103823c46a1098c5ef819a72dabe13d6fa443"
+      }
+    ]
+  },
+  {
+    "id": "freetype",
+    "group": "libass",
+    "bundled": true,
+    "version": "2.14.3",
+    "license": "FTL AND MIT AND Zlib",
+    "archive": "freetype-2.14.3.tar.xz",
+    "url": "https://download.savannah.gnu.org/releases/freetype/freetype-2.14.3.tar.xz",
+    "mirrors": [
+      "https://downloads.sourceforge.net/project/freetype/freetype2/2.14.3/freetype-2.14.3.tar.xz"
+    ],
+    "sha256": "36bc4f1cc413335368ee656c42afca65c5a3987e8768cc28cf11ba775e785a5f",
+    "update": {
+      "type": "listing",
+      "url": "https://download.savannah.gnu.org/releases/freetype/",
+      "file_pattern": "^freetype-(\\d+\\.\\d+\\.\\d+)\\.tar\\.xz$"
+    },
+    "patches": []
+  },
+  {
+    "id": "fribidi",
+    "group": "libass",
+    "bundled": true,
+    "version": "1.0.17",
+    "license": "LGPL-2.1-or-later",
+    "archive": "fribidi-1.0.17.tar.xz",
+    "url": "https://github.com/fribidi/fribidi/releases/download/v1.0.17/fribidi-1.0.17.tar.xz",
+    "sha256": "6949dcde27d41cebad1fd741fcafc36d55a1020d2d872d4a6eb3914caabbada2",
+    "update": {
+      "type": "github-release",
+      "repo": "fribidi/fribidi",
+      "tag_pattern": "^v(\\d+\\.\\d+\\.\\d+)$",
+      "tag_format": "v{version}"
+    },
+    "patches": []
+  },
+  {
+    "id": "harfbuzz",
+    "group": "libass",
+    "bundled": true,
+    "version": "14.5.0",
+    "license": "MIT",
+    "archive": "harfbuzz-14.5.0.tar.xz",
+    "url": "https://github.com/harfbuzz/harfbuzz/releases/download/14.5.0/harfbuzz-14.5.0.tar.xz",
+    "sha256": "b7132e148358a45185c9feafd049dbaf243649d3c44414b3534d9c95d18592b9",
+    "update": {
+      "type": "github-release",
+      "repo": "harfbuzz/harfbuzz",
+      "tag_pattern": "^(\\d+\\.\\d+\\.\\d+)$"
+    },
+    "patches": []
+  },
+  {
+    "id": "libunibreak",
+    "group": "libass",
+    "bundled": true,
+    "version": "8.0",
+    "license": "Zlib",
+    "archive": "libunibreak-8.0.tar.gz",
+    "url": "https://github.com/adah1972/libunibreak/releases/download/libunibreak_8_0/libunibreak-8.0.tar.gz",
+    "sha256": "9c4fad6e517338a098373acc9f35579ae2c325e6446666fb9ac2666ba15ceba4",
+    "update": {
+      "type": "github-release",
+      "repo": "adah1972/libunibreak",
+      "tag_pattern": "^libunibreak_(\\d+_\\d+(?:_\\d+)?)$",
+      "tag_format": "libunibreak_{version_}"
+    },
+    "patches": []
+  },
+  {
+    "id": "libass",
+    "group": "libass",
+    "bundled": true,
+    "version": "0.17.5",
+    "license": "ISC",
+    "archive": "libass-0.17.5.tar.xz",
+    "url": "https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz",
+    "sha256": "2dca25c0e0c837ddf00b52011b3f82cac1e4ddd3ad018227806b0c2288864acc",
+    "update": {
+      "type": "github-release",
+      "repo": "libass/libass",
+      "tag_pattern": "^(\\d+\\.\\d+\\.\\d+)$"
+    },
+    "patches": [
+      {
+        "path": "ci/patches/libass-0001-grow-font-faces.patch",
+        "sha256": "03df13e07a3741d33308893d8bc96b7d4f3f37e887fac792533aee4b3965ff19",
+        "result": {
+          "libass/ass_font.c": "a5a7b2dee0b9f4e52c7705c13d759c6c1b5f04670b408d3bfab30b5770e1ab62",
+          "libass/ass_font.h": "fe318cbd0fde1f544e3ed00294d8093c7bbd8a3ad399aaa03e3df2fbb0bad2d1"
+        }
+      }
+    ]
+  },
+  {
+    "id": "nanosvg",
+    "bundled": true,
+    "version": "239e102ec2c691f2902e20ace2ed36ee4a35cfe6",
+    "license": "Zlib",
+    "upstream": "https://github.com/memononen/nanosvg",
+    "assets": {
+      "nanosvg": {
+        "name": "nanosvg.h",
+        "url": "https://raw.githubusercontent.com/memononen/nanosvg/239e102ec2c691f2902e20ace2ed36ee4a35cfe6/src/nanosvg.h",
+        "sha256": "e34fd5d084be106cea972d19ce5d27fd96d17ba89f8d06bdceee058420c8b2b0"
+      },
+      "nanosvgrast": {
+        "name": "nanosvgrast.h",
+        "url": "https://raw.githubusercontent.com/memononen/nanosvg/239e102ec2c691f2902e20ace2ed36ee4a35cfe6/src/nanosvgrast.h",
+        "sha256": "79a9c5f4db19debf9f3a648a1589e96d92854f245a5cb4f3d823f263785234d8"
+      }
+    },
+    "update": {
+      "type": "github-commit",
+      "repo": "memononen/nanosvg"
+    },
+    "patches": []
+  },
+  {
+    "id": "webos-ndk",
+    "version": "webos-d7ed7ee.6",
+    "license": "not redistributed (build toolchain; see THIRD-PARTY-NOTICES.md)",
+    "upstream": "https://github.com/webosbrew/native-toolchain",
+    "assets": {
+      "darwin-arm64": {
+        "name": "arm-webos-linux-gnueabi_sdk-buildroot_darwin-arm64.tar.bz2",
+        "url": "https://github.com/webosbrew/native-toolchain/releases/download/webos-d7ed7ee.6/arm-webos-linux-gnueabi_sdk-buildroot_darwin-arm64.tar.bz2",
+        "sha256": "954333694ab1fe1f7737e81a0be1e3188cdfffc1a119c81c86f5fcebf1857c45"
+      },
+      "darwin-x86_64": {
+        "name": "arm-webos-linux-gnueabi_sdk-buildroot_darwin-x86_64.tar.bz2",
+        "url": "https://github.com/webosbrew/native-toolchain/releases/download/webos-d7ed7ee.6/arm-webos-linux-gnueabi_sdk-buildroot_darwin-x86_64.tar.bz2",
+        "sha256": "75e7451ac39604872ae7f07894cbe8edb62b2091664a1781cb193e7ebe56aa75"
+      },
+      "linux-aarch64": {
+        "name": "arm-webos-linux-gnueabi_sdk-buildroot_linux-aarch64.tar.bz2",
+        "url": "https://github.com/webosbrew/native-toolchain/releases/download/webos-d7ed7ee.6/arm-webos-linux-gnueabi_sdk-buildroot_linux-aarch64.tar.bz2",
+        "sha256": "45a2d12ff557457d92cde4fddaa77a6f1090fca03adc43bb74397e5e0c379501"
+      }
+    },
+    "update": {
+      "type": "github-release",
+      "repo": "webosbrew/native-toolchain",
+      "tag_pattern": "^(webos-.+)$",
+      "order": "published",
+      "hold": "the toolchain is pinned to the TV firmware ABI (glibc, libstdc++); a newer NDK is a deliberate port, not a routine bump"
+    },
+    "patches": []
+  },
+  {
+    "id": "webosbrew-toolbox",
+    "version": "0.4.0-1",
+    "release_tag": "v20260731-e1bb0c0",
+    "license": "Apache-2.0",
+    "upstream": "https://github.com/webosbrew/dev-toolbox-cli",
+    "assets": {
+      "fw-symbols": {
+        "name": "webosbrew-toolbox-fw-symbols_0.4.0-1_arm64.deb",
+        "url": "https://github.com/webosbrew/dev-toolbox-cli/releases/download/v20260731-e1bb0c0/webosbrew-toolbox-fw-symbols_0.4.0-1_arm64.deb",
+        "sha256": "639721a0c2248b13e5984930b53729cc201f022725954086aca35e2ccae515b5"
+      },
+      "ipk-verify": {
+        "name": "webosbrew-toolbox-ipk-verify_0.4.0-1_arm64.deb",
+        "url": "https://github.com/webosbrew/dev-toolbox-cli/releases/download/v20260731-e1bb0c0/webosbrew-toolbox-ipk-verify_0.4.0-1_arm64.deb",
+        "sha256": "2868b4b2efc097939ab11117c9266d796f0326ee48c90f80070766814fb174d9"
+      },
+      "gen-manifest": {
+        "name": "webosbrew-toolbox-gen-manifest_0.4.0-1_arm64.deb",
+        "url": "https://github.com/webosbrew/dev-toolbox-cli/releases/download/v20260731-e1bb0c0/webosbrew-toolbox-gen-manifest_0.4.0-1_arm64.deb",
+        "sha256": "46a023cdec6f5aa07316ef4a0548c30897b349c4843596c41c70a23f8d2792e9"
+      }
+    },
+    "update": {
+      "type": "manual",
+      "repo": "webosbrew/dev-toolbox-cli",
+      "hold": "release tag, package version and the three .deb assets move independently, and its firmware symbol data defines which firmware the compat gate claims; bump by hand with the fw-compat-reviewer"
+    },
+    "patches": []
+  },
+  {
+    "id": "jsmpeg",
+    "version": "924acfbd96fdf15e6748d1368a36d79d8f4cecf6",
+    "license": "MIT",
+    "upstream": "https://github.com/phoboslab/jsmpeg",
+    "archive": "jsmpeg.min.js",
+    "url": "https://raw.githubusercontent.com/phoboslab/jsmpeg/924acfbd96fdf15e6748d1368a36d79d8f4cecf6/jsmpeg.min.js",
+    "sha256": "c0286ac82193fc9c9d5490ade425db04c446d9115bfe6823bf9bc0b0703c7760",
+    "update": {
+      "type": "github-commit",
+      "repo": "phoboslab/jsmpeg"
+    },
+    "patches": []
+  }
+]
