@@ -5239,6 +5239,13 @@ pub fn install_transcode_for_test(ps: &mut PlaybackSession, remux: bool, hls: bo
         plx_plex::plex::TranscodeDelivery::ProgressiveMkv
     };
 }
+/// Test-only: register `session` as the live encoder the next [`scrobble_stop`] closes, so a
+/// suite outside this crate can drive the stop worker's server-side `transcode_stop` leg (the one
+/// [`timeline_stop_landed`] must not wait for).
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_active_encoder_for_test(session: &str) {
+    install_active_encoder(session);
+}
 /// select the subtitle to BURN into any transcode of the current item (0 = none). This
 /// is the transcode path; direct-play uses the client renderer (player::request_subtitle).
 pub fn set_subtitle(ps: &mut PlaybackSession, sid: i64) {
@@ -5904,6 +5911,12 @@ impl TimelineStopFence {
             .announced
     }
 
+    /// Every announced stop has completed. Vacuously true before the first announce.
+    fn landed(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.completed >= state.announced
+    }
+
     fn wait(&self, required: u64) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         while state.completed < required {
@@ -5958,6 +5971,22 @@ pub fn drain_scrobble() {
 /// Non-blocking, unlike [`drain_scrobble`].
 pub fn scrobble_settled() -> bool {
     SCROBBLE_JOIN.settled()
+}
+
+/// Whether the last announced `state=stopped` timeline report has been *attempted or abandoned*:
+/// the worker has finished its POST (answered, failed or timed out), or the work was dropped
+/// (panic, thread refusal). It does NOT mean the server accepted it.
+///
+/// Earlier than [`scrobble_settled`], which also waits for the server-side `transcode_stop` round
+/// trip that follows the POST (up to a full PMS timeout, ~17 s, on a slow server). A re-read of
+/// the item only needs the resume point, so the post-playback refreshes gate on this one.
+///
+/// **It reads true when no stop was announced at all** (nothing playing, a reporter-less preview,
+/// or a stop with nothing to post), so it is only meaningful behind an owed flag that
+/// `exit_player` sets *after* [`scrobble_stop`] announced the fence on the same (main) thread
+/// (`App::refresh_hubs`, `app.refresh_detail`). Non-blocking.
+pub fn timeline_stop_landed() -> bool {
+    TIMELINE_STOP_FENCE.landed()
 }
 
 /// Seek within a LIVE TRANSCODE by restarting it at a time offset — a transcode has no byte-Cues,
