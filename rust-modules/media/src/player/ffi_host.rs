@@ -104,6 +104,18 @@ pub(super) static FORCE_PLAY_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
 pub(super) static PLAY_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(test, feature = "test-support"))]
 pub(super) static FORCE_PAUSE_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
+/// The host pipeline's volume (`setVolume`); a fresh pipeline starts at `PIPELINE_DEFAULT_VOLUME`.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static HOST_VOLUME: AtomicI32 = AtomicI32::new(plx_platform::tv::sink::PIPELINE_DEFAULT_VOLUME);
+/// Every Play / Pause / `set_volume(n)` the sink saw, in order, as `"play"`, `"pause"`,
+/// `"volume:n"`: what a test reads to prove the paused preroll mutes BEFORE its Play and restores
+/// AFTER its re-pause. Cleared by [`reset_volume_probe_for_test`].
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static VERB_ORDER_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+#[cfg(any(test, feature = "test-support"))]
+fn note_verb(verb: String) {
+    VERB_ORDER_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(verb);
+}
 
 /// ACB seam probes (host has no libAcbAPI): `setMediaVideoData` answers -1 (rejected) unless a
 /// test arms [`ACB_VIDEO_DATA_ACCEPT`], and every `acb_start`/`acb_pause`/`acb_resume` is counted,
@@ -266,6 +278,22 @@ pub(super) fn flush_calls_for_test() -> u64 {
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn force_play_result_for_test(result: Option<c_int>) {
     FORCE_PLAY_RESULT.store(result.unwrap_or(i32::MIN), Relaxed);
+}
+/// Forget the verb order and put the host pipeline back at its default volume of 100.
+#[cfg(test)]
+pub(super) fn reset_volume_probe_for_test() {
+    VERB_ORDER_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    HOST_VOLUME.store(100, Relaxed);
+}
+/// The Play / Pause / `volume:n` verbs since [`reset_volume_probe_for_test`], in order.
+#[cfg(test)]
+pub(super) fn verb_order_for_test() -> Vec<String> {
+    VERB_ORDER_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+/// The host pipeline's current volume.
+#[cfg(test)]
+pub(super) fn host_volume_for_test() -> i32 {
+    HOST_VOLUME.load(Relaxed)
 }
 #[cfg(test)]
 pub(super) fn play_calls_for_test() -> u64 {
@@ -678,6 +706,7 @@ unsafe fn sf_play() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
     {
         note_dispatch("sf_play");
+        note_verb("play".into());
         PLAY_CALLS.fetch_add(1, Relaxed);
         let forced = FORCE_PLAY_RESULT.load(Relaxed);
         if forced != i32::MIN {
@@ -694,6 +723,7 @@ unsafe fn sf_pause() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
     {
         note_dispatch("sf_pause");
+        note_verb("pause".into());
         let forced = FORCE_PAUSE_RESULT.load(Relaxed);
         if forced != i32::MIN {
             return forced;
@@ -704,6 +734,17 @@ unsafe fn sf_pause() -> c_int {
     }
     Clock::hold();
     1
+}
+unsafe fn sf_set_volume(volume: c_int) -> c_int {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        note_dispatch("sf_set_volume");
+        note_verb(format!("volume:{volume}"));
+        HOST_VOLUME.store(volume, Relaxed);
+    }
+    #[cfg(not(any(test, feature = "test-support")))]
+    let _ = volume;
+    c_int::from(enabled())
 }
 unsafe fn sf_flush() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
@@ -971,6 +1012,9 @@ impl VideoSink for HostSink {
     }
     unsafe fn pause(&self, _: &MainThread) -> c_int {
         sf_pause()
+    }
+    unsafe fn set_volume(&self, _: &MainThread, volume: c_int) -> c_int {
+        sf_set_volume(volume)
     }
     unsafe fn flush(&self, _: &MainThread) -> c_int {
         sf_flush()

@@ -194,7 +194,14 @@ something.
   `acb_mirror_playstate` does nothing below `Streaming`. So the re-pause waits for the bind plus
   one tick after it (`Engine::bound_at_frames`), and, while a preroll is open, the bind gate is one
   tick instead of the normal two (`acb_bind_frames_needed`; the preroll's Play window is audible,
-  nothing mutes the sink). An `acb_start` that runs under a really-paused pipeline (no preroll
+  so `try_prime` mutes the pipeline first: `mute_for_preroll` calls
+  `setVolume({"volume":0})` and logs `preroll: volume set 0 ...`; `getVolume` is NOT bound (it
+  returns an int on 4.5 where the NDK header says `const char *`: SIGSEGV), so the volume is
+  restored to the pipeline default 100 (`preroll: volume set 100 (restored; no readback)`) by `restore_preroll_volume` from `resume`
+  (before its Play), the accepted re-pause in `finish_paused_seek`, and the pump's per-tick sweep
+  for a preroll closed with no adapter in hand (`abandon_seek`). A stop or reload needs none: the
+  volume is per pipeline and `TX.reset` forgets the mute. Never `setAudioMute` (absent on 4.4.2 /
+  4.10.0), `AcbAPI_startMute` or the system mute). An `acb_start` that runs under a really-paused pipeline (no preroll
   open) is followed by the ACB pause, so ACB is never left PLAYING over a paused pipeline. The
   `seek: paused frame restored` line therefore means the plane was bound when the pause landed.
   An engine failure during the flight publishes `Failed` at once

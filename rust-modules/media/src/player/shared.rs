@@ -2448,6 +2448,9 @@ impl Shared {
     }
 }
 
+/// `Transport::preroll_volume` while the sink is not muted (a saved volume is 0..=100).
+const PREROLL_VOLUME_NONE: i32 = i32::MIN;
+
 /// UI-facing transport state. Main-thread-only in practice (plex_run + pump +
 /// player_hud all run on M), but exposed as atomics so app.rs / player_hud.rs read
 /// it with plain .load()/.store(). Replaces the #[no_mangle] transport globals.
@@ -2467,6 +2470,12 @@ pub struct Transport {
     /// Transport-wide on purpose: a reload (`reset_for_reload`) replaces the Engine but keeps the
     /// viewer's Pause and this ownership, so the landing is settled on whichever Engine is live.
     seek_preroll_owned: AtomicI64,
+    /// The sink volume the paused preroll's Play window muted (`player::mute_for_preroll`) saved for
+    /// its restore, `PREROLL_VOLUME_NONE` when the pipeline is not muted. The volume is PER PIPELINE:
+    /// a stop unloads it (`reset` forgets this with it) and a reload's fresh Load starts at the
+    /// default again, so only a still-live pipeline ever needs the restore
+    /// (`player::restore_preroll_volume`: resume, the accepted re-pause, and the pump's per-tick sweep).
+    preroll_volume: AtomicI32,
     pub hud_until: AtomicU32,  // pl_hud_until (SDL ticks)
     pub scrub_ns: AtomicI64,   // pl_scrub_ns (-1 = not scrubbing)
     pub seek_to_ns: AtomicI64, // g_seek_to_ns (UI seek request, -1 = none)
@@ -2588,6 +2597,7 @@ impl Transport {
             resume_pend: AtomicBool::new(false),
             seek_preroll: AtomicBool::new(false),
             seek_preroll_owned: AtomicI64::new(-1),
+            preroll_volume: AtomicI32::new(PREROLL_VOLUME_NONE),
             hud_until: AtomicU32::new(0),
             scrub_ns: AtomicI64::new(-1),
             seek_to_ns: AtomicI64::new(-1),
@@ -2695,6 +2705,33 @@ impl Transport {
         self.resume_pend.store(false, Ordering::Release);
     }
 
+    /// The paused preroll muted the sink; `saved` (0..=100) is what [`take_preroll_volume`]
+    /// returns. A second mute (a reload's fresh pipeline inside one open preroll) keeps the first
+    /// saved value (always the pipeline default today: the volume is never read back).
+    ///
+    /// [`take_preroll_volume`]: Transport::take_preroll_volume
+    pub fn note_preroll_muted(&self, saved: i32) {
+        let _ = self.preroll_volume.compare_exchange(
+            PREROLL_VOLUME_NONE,
+            saved.clamp(0, 100),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    /// Whether a mute is outstanding.
+    pub fn preroll_muted(&self) -> bool {
+        self.preroll_volume.load(Ordering::Acquire) != PREROLL_VOLUME_NONE
+    }
+
+    /// Take the volume to restore, clearing the mute. `None` when nothing is muted.
+    pub fn take_preroll_volume(&self) -> Option<i32> {
+        match self.preroll_volume.swap(PREROLL_VOLUME_NONE, Ordering::AcqRel) {
+            PREROLL_VOLUME_NONE => None,
+            v => Some(v),
+        }
+    }
+
     /// An engine reload is not a new playback and must not erase viewer Pause or the paused-seek
     /// handoff. It only retires engine-local transport mailboxes.
     ///
@@ -2720,6 +2757,8 @@ impl Transport {
         self.resume_pend.store(false, Ordering::Relaxed);
         self.seek_preroll.store(false, Ordering::Relaxed);
         self.seek_preroll_owned.store(-1, Ordering::Relaxed);
+        // The pipeline a mute belonged to is unloaded with the stop; the next one starts unmuted.
+        self.preroll_volume.store(PREROLL_VOLUME_NONE, Ordering::Relaxed);
         // …and not `scrub_ns`, for `reset_for_reload`'s reason: a new session is a fresh
         // `PlayerScreen` (or, on an auto-advance chain, `start_playback`'s in-place reset of the
         // live one), and both publish `Scrub::IDLE` themselves.
