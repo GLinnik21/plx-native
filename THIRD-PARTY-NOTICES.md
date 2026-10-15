@@ -77,19 +77,29 @@ uses `libass-plx-host.so.0`.
 | FreeType | 2.14.3 | Elected FreeType License; contributed MIT and Zlib code (`licenses/FreeType.txt`, `licenses/Zlib.txt`) |
 | FriBidi | 1.0.17 | LGPL-2.1-or-later (`licenses/LGPL-2.1.txt`) |
 | HarfBuzz | 14.5.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
+| libunibreak | 8.0 | zlib (`licenses/libunibreak-Zlib.txt`) |
 
 Portions of this software are copyright © 2026 The FreeType Project
 (https://freetype.org). All rights reserved. Its built-in gzip reader contains
 zlib 1.3.1, Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler. FriBidi is
 Copyright (C) 1999, 2000, 2017-2019 Dov Grobgeld; 2001, 2002, 2004, 2005 Behdad Esfahbod;
 2004 Sharif FarsiWeb, Inc.; and other contributors;
-the complete per-file notices accompany its source. libass and HarfBuzz copyright
-notices are retained in their licence files above.
+the complete per-file notices accompany its source. libunibreak is Copyright (C) Wu Yongwei,
+Tom Hacohen, Petr Filipsky and Andreas Roever; its licence file is the upstream `LICENCE`,
+verbatim. The library is used unaltered.
+libass and HarfBuzz copyright notices are retained in their licence files above.
 
 The exact upstream archives, checksums and licences are recorded in
 `ci/libass-dependencies.json`. Each versioned PlxNative source release contains all
-four archives, the facade (`src/ass.c`, `include/ass.h`), and its complete build
-recipe (`ci/build-libass.sh`, `ci/build-libass.py`). Upstream sources are unmodified.
+five archives, the facade (`src/ass.c`, `src/ass_fonts.c`, `src/ass_internal.h`,
+`include/ass.h`), its complete build recipe (`ci/build-libass.sh`, `ci/build-libass.py`) and the
+one local patch to libass. **libass carries that local patch; every other archive is unmodified.**
+`ci/libass-patches/0001-grow-font-faces.patch` replaces the fixed table of ten font faces that
+libass keeps for each font (`ASS_FONT_MAX_FACES`) with arrays that grow on demand, so a subtitle
+track that uses many scripts is not cut off at the tenth face. It touches `libass/ass_font.c` and
+`libass/ass_font.h` only, is applied to the pinned, checksum-verified libass 0.17.5 release by
+`ci/build-libass.py` (which fails the build unless the files then match the digests pinned in
+`ci/libass-dependencies.json`), and is released under libass's own ISC licence.
 The library is built without system font providers or external font-library
 dependencies. FreeType's optional external compression/image libraries are disabled;
 HarfBuzz uses FreeType and its built-in Unicode data, without ICU or platform shapers.
@@ -175,6 +185,7 @@ for a trademark note that applies to some of them.
 ### 2.3 Fonts
 
 **Inter** — `appfont.ttf`, `appfont-bold.ttf`
+(`appfont-bold.ttf` also answers to the family name "PlxSubs", added as a name record.)
 Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter), per the fonts' own
 name table; the licence file shipped with this package states "Copyright 2020". Version
 4.001 (git-66647c0bb).
@@ -207,6 +218,31 @@ Hangul, Kana or Han, so without this face every Korean, Japanese and Chinese tit
 library renders as empty boxes. See `rust-modules/gfx/src/text.rs` for the chain and
 `rust-modules/src/fontcov.rs` for the coverage each face is required to have.
 
+**Noto Sans <script> Bold** — `fonts/subs/NotoSans<Script>-Bold.ttf` (source: `pkg/fonts/subs/`),
+22 faces: Thai, Lao, Khmer, Myanmar, Devanagari, Bengali, Gurmukhi, Gujarati, Tamil, Telugu,
+Kannada, Malayalam, Sinhala, Oriya, Tibetan, Arabic, Hebrew, Thaana, Georgian, Armenian,
+Ethiopic and Canadian Aboriginal. They are the faces the subtitle renderer (libass) draws those
+scripts with; the application's own UI text chain does not use them.
+Copyright 2022 The Noto Project Authors (https://github.com/notofonts/<script>) for each face,
+except Hebrew (2024), Bengali (2025) and Tibetan ("Copyright 2015 Google Inc. All Rights
+Reserved."), per each font's own name table (ID 0). Sources: the unhinted Bold TrueType files of
+`github.com/notofonts/notofonts.github.io` at commit `5c3913063bb189df4edc94b766584dfb4c04a187`,
+and for Tibetan the archived file of `github.com/googlefonts/noto-fonts` at commit
+`ffebf8c1ee449e544955a7e813c54f9b73848eac`; every input is pinned by size and sha256 in
+`tools/cut-noto-subs.py`.
+Licence: **SIL Open Font License 1.1** — the same text that ships in this package as `OFL.txt`.
+The licence body distributed with these fonts and the one distributed with Inter are identical
+apart from one URL line; both copyright statements are reproduced here and inside each font's
+own name table. None of the copyright statements declares a **Reserved Font Name**
+(`tools/cut-noto-subs.py` refuses a font that does), so OFL §3 imposes no rename and each family
+name ("Noto Sans Thai", ...) is retained.
+*Modified*: each is subset to the codepoints of its script (everything Inter Bold or the
+Latin/punctuation ranges already cover is removed; layout tables are kept), hinting is dropped,
+the OS/2 and `hhea` metrics are scaled to Inter Bold's line proportions, and two name records are
+added (family and full name "PlxSubs" and "Inter", under non-English language IDs) so libass
+selects them as fallbacks. The recipe is `tools/cut-noto-subs.py`; the manifest
+`fonts/subs/manifest.json` records every input and output hash.
+
 ### 2.4 Rust code statically linked into `plxnative`
 
 The application core is Rust. The Rust standard library is compiled from source
@@ -227,8 +263,10 @@ stated; election does not alter your rights under the other arms.
 | bytemuck | 1.25.0 | Zlib OR Apache-2.0 OR MIT | 2019 Daniel "Lokathor" Gee |
 | byteorder-lite | 0.1.0 | Unlicense OR MIT | 2015 Andrew Gallant |
 | cfg-if | 1.0.4 | MIT OR Apache-2.0 | 2014 Alex Crichton |
+| chardetng | 1.0.0 | Apache-2.0 OR MIT | Mozilla Foundation |
 | crc32fast | 1.5.0 | MIT OR Apache-2.0 | 2018 Sam Rijs, Alex Crichton and contributors |
 | either | 1.18.0 | MIT OR Apache-2.0 | Copyright (c) 2015 (the upstream notice names no holder) |
+| encoding_rs | 0.8.35 | (Apache-2.0 OR MIT) AND BSD-3-Clause | Mozilla Foundation. Its encoding tables derive from the WHATWG Encoding Standard, whose data files are BSD-3-Clause (`licenses/WHATWG-BSD-3-Clause.txt`) |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | The image-rs Developers |
 | flate2 | 1.1.9 | MIT OR Apache-2.0 | 2014-2026 Alex Crichton |
 | gimli | 0.32.3 | MIT OR Apache-2.0 | The `gimli` authors |
@@ -479,10 +517,12 @@ runtime notices listed below:
 | `licenses/libass-ISC.txt` | libass (§1.2), including its copyright notice |
 | `licenses/FreeType.txt` | FreeType's elected FTL and contributed module notices (§1.2) |
 | `licenses/HarfBuzz-Old-MIT.txt` | HarfBuzz and its copyright holders (§1.2) |
+| `licenses/libunibreak-Zlib.txt` | libunibreak, complete upstream licence with its copyright holders (§1.2) |
 
-`OFL.txt` (SIL Open Font License 1.1, for **Inter and Noto Sans CJK KR** — §2.3) already ships at
+`OFL.txt` (SIL Open Font License 1.1, for **Inter, Noto Sans CJK KR and the Noto Sans script faces** — §2.3) already ships at
 the root of this package. Keep it there; do not add a second copy under `licenses/`, and do not
-add a second copy for the second font: the two upstream licence bodies are byte-identical, and
+add a second copy for the other fonts: the upstream licence bodies are identical (the Noto Sans
+script faces' differs by one URL line), and
 what differs between them (the copyright statement and the Reserved Font Name) is reproduced in
 §2.3 and carried inside each font's own name table.
 

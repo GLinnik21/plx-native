@@ -4,7 +4,8 @@
 > on-device: the WebVTT sidecar delivers **0 bytes** on our progressive-MKV pipeline and
 > `/library/streams/{id}.vtt` is 501, so **burn is the only transcode option** and the real
 > subtitle path is client rendering on direct-play — see `rust-modules/src/plex/CLAUDE.md`
-> ("Subtitles: assume client rendering") and the player subtitle renderer. The
+> ("Subtitles: assume client rendering") and the player subtitle renderer. Every text track now renders through libass; see
+> `docs/ass-subtitles.md`. The
 > "landed, tested parser (`webvtt.rs`)" referenced below was deleted in 77c5af6.
 
 **Goal.** When the user selects a subtitle track *while the item is transcoding*, render it

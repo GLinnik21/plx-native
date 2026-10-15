@@ -817,10 +817,11 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 
 ## Subtitle soft-render
 
-The **demuxer (`ff.rs`) demuxes embedded plain-text subtitles** (SRT/subrip and mov_text)
-and emits `sub cue [..] len=<n>` lines. It pushes cues for **all** plain-text tracks (tagged by
-index), and the renderer filters by the selected `desired_sub_idx`, so a mid-play track switch is
-instant (no ~10-20s buffer-gap wait). ASS/SSA preserves headers, complete timed events and fonts
+The **demuxer (`ff.rs`) demuxes embedded text subtitles** (SRT/subrip, WebVTT, mov_text, ...)
+and `ass_source::push_text` emits `sub cue [..] len=<n>` lines for the selected track when a cue is
+new (a cue the demuxer re-reads after a seek is not logged again). It pushes cues for **all** text
+tracks (tagged by index), converted to ASS events and rendered by libass; the renderer filters by the
+selected `desired_sub_idx`, so a mid-play track switch is instant (no ~10-20s buffer-gap wait). ASS/SSA preserves headers, complete timed events and fonts
 for native libass rendering; plain-cue log assertions cannot verify that output. See
 [`ass-subtitles.md`](../docs/ass-subtitles.md) for its native pixel and device checks. Image subs (PGS/VobSub/DVB) are now client-rendered too:
 `ff.rs` software-decodes the selected bitmap track (`avcodec_decode_subtitle2`), converts each

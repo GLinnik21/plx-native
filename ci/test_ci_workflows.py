@@ -23,6 +23,7 @@ Text-level on purpose, like ci/test_ci_timeouts.py (no YAML library on a stock r
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -325,7 +326,11 @@ class HostLibraryCaches(unittest.TestCase):
     def test_the_libass_key_names_every_input_the_recipe_lists(self):
         py = (ROOT / "ci/build-libass.py").read_text()
         # Everything build-libass.py folds into its own `.dependencies-key`, besides the toolchain.
-        read = {"ci/build-libass.py", "ci/libass-dependencies.json",
+        # The pinned patches are folded into the key too (their bytes), by the path the pins name.
+        pins = json.loads((ROOT / "ci/libass-dependencies.json").read_text())
+        patches = {patch["path"] for dep in pins for patch in dep.get("patches", [])}
+        self.assertTrue(patches, "the font-face patch is pinned")
+        read = {"ci/build-libass.py", "ci/libass-dependencies.json", *patches,
                 *re.findall(r"ROOT / '(ci/[\w.-]+)'\)\.read_bytes", py)}
         listed = set(makefile_list("LIBASS_INPUTS"))
         self.assertTrue(read <= listed, read - listed)
@@ -341,6 +346,14 @@ class HostLibraryCaches(unittest.TestCase):
             self.assertEqual(hashed(sources), {"ci/libass-dependencies.json"}, job)
             self.assertNotIn("runner.os", sources)
         self.assertEqual(len({cache_of(j, self.LIBASS_PREFIX)["key"] for j in self.LIBASS_JOBS}), 1)
+
+    def test_the_simulator_path_filter_names_every_libass_input_but_the_cache_keys_files(self):
+        # A change to a patch or a facade source must start the workflow that rebuilds libass.
+        text = (ROOT / ".github/workflows/simulators.yml").read_text()
+        filter_ = text[:text.index("\njobs:")]
+        for path in makefile_list("LIBASS_INPUTS"):
+            if path.startswith(("src/", "include/", "ci/libass-", "ci/build-libass")):
+                self.assertIn("'" + path + "'", filter_, path)
 
     def test_the_toolchain_is_identified_before_any_cache_is_restored(self):
         for job in self.LIBASS_JOBS:
