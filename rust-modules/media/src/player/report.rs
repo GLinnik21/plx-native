@@ -1297,6 +1297,34 @@ mod tests {
         assert!(!starts_rebuffer(S::Playing, S::Buffering, false));
     }
 
+    /// A paused session with no picture yet (`PlaybackState::Paused`) is not playing: it reports no
+    /// `PlaybackStarted`, no presented trace step, and a later `Buffering` is not a rebuffer of a
+    /// playback that never presented.
+    #[test]
+    fn a_paused_session_with_no_picture_reports_no_playback_started() {
+        let _g = plx_base::testlock::serial();
+        let ps = crate::route::PlaybackSession::IDLE;
+        SAW_START.store(false, Relaxed);
+        REBUFFER_COUNT.store(0, Relaxed);
+        LAST.store(S::Connecting as u8, Relaxed);
+        crate::player::SHARED.seeking.store(false, Relaxed);
+        crate::player::SHARED.pb_state.store(S::Paused as u8, Relaxed);
+        let steps_before = trace_steps().len();
+        tick(&ps);
+        let steps_after = trace_steps().len();
+        let started = SAW_START.load(Relaxed);
+        crate::player::SHARED.pb_state.store(S::Buffering as u8, Relaxed);
+        tick(&ps);
+        let rebuffers = REBUFFER_COUNT.load(Relaxed);
+        crate::player::SHARED.pb_state.store(S::Idle as u8, Relaxed);
+        LAST.store(S::Idle as u8, Relaxed);
+        SAW_START.store(false, Relaxed);
+        REBUFFER_COUNT.store(0, Relaxed);
+        assert!(!started, "PlaybackStarted fired with no frame on the panel");
+        assert_eq!(steps_after, steps_before, "a presented trace step was pushed with no frame");
+        assert_eq!(rebuffers, 0, "a rebuffer was counted on a playback that never presented");
+    }
+
     /// Finding: `starts_rebuffer` read every `Playing -> Buffering` edge as a stall, and a claim's
     /// presentation hold (`claim_hold`) makes `state()` answer Buffering on purpose — so each held
     /// track pick, enhancement toggle or quality change counted as a rebuffer in the quality

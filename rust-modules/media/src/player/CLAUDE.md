@@ -155,7 +155,10 @@ something.
   seek, no frame yet), whichever route reloaded, so the stream presents one frame and re-pauses
   instead of showing "Buffering…" over a blank plane. Where the preroll cannot open (the clock is
   not held yet), the pump ladder still never publishes Buffering for a paused, idle player with no
-  picture (`pump::paused_and_idle`): Buffering means work is happening. An engine failure during the flight publishes `Failed` at once
+  picture (`pump::paused_and_idle`): Buffering means work is happening, and Playing means a frame
+  is presented, so that state is `PlaybackState::Paused` (not busy, not `is_playing`, no
+  `PlaybackStarted`). The preroll opens only while the prime is still owed (`Engine::prime_play`)
+  and is owned at 0: `frames` is per-session, so the first presented frame is the landing. An engine failure during the flight publishes `Failed` at once
   (`fail_current_engine`) and clears the hold, so the error read-out shows instead of a spinner.
   The encoder a claim replaces is NOT stopped by the worker: the pump retires it
   (`route::retire_superseded_encoder`) after the reload.

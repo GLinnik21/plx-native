@@ -418,7 +418,8 @@ impl SubBitmap {
 /// at 0:00 / -0:00 instead, which is the half of the frozen-HUD report that is not blocking I/O.
 ///
 /// Derived once per frame in `pump::set_state` from signals the workers already publish; no
-/// new cross-thread plumbing. Ordered so `>= Playing` reads as "actually on screen".
+/// new cross-thread plumbing. `Playing` alone means "a frame is on the panel"; `Paused` (a paused
+/// player with no picture and nothing in flight) is neither busy nor playing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum PlaybackState {
@@ -437,6 +438,11 @@ pub enum PlaybackState {
     Playing = 5,
     /// the producer died (a failed open / no video stream). Terminal until teardown.
     Error = 6,
+    /// the viewer is paused on a session that has no picture yet and the pump has no work in
+    /// flight for one (`pump::paused_and_idle`): not `Buffering` (nothing is being waited on, so
+    /// no spinner) and not `Playing` (no frame is on the panel, so no `is_playing`, no
+    /// `PlaybackStarted`). The HUD draws its ordinary paused transport.
+    Paused = 7,
 }
 
 /// How long a viewer's audio pick may stand as "the reason for the next rebuild" before the
@@ -474,6 +480,7 @@ impl PlaybackState {
             4 => PlaybackState::Seeking,
             5 => PlaybackState::Playing,
             6 => PlaybackState::Error,
+            7 => PlaybackState::Paused,
             _ => PlaybackState::Idle,
         }
     }

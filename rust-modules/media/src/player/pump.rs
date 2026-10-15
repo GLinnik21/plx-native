@@ -1135,10 +1135,19 @@ fn settle_paused_seek(pa: &mut super::adapter::PlayerAdapter, now: u32) {
         && !crate::route::flight_outstanding()
         && TX.seek_to_ns.load(Relaxed) < 0
         && SHARED.frames.load(Relaxed) == 0
-        && pa.engine().is_some()
+        // A prime still owed: only then does the seek hold hand back a Play. Once the prime's Play
+        // has fired (`prime_play` cleared, the clock Running) a Pause before the first position
+        // update is a plain `Held(User)`; converting it would clear `user_held` with nothing left
+        // to Play, and the viewer's Play would then find no hold to release.
+        && pa.engine().is_some_and(|e| e.prime_play)
         && SHARED.hand_hold_to_seek_prime()
     {
-        if TX.own_paused_seek(SHARED.playpos_ns.load(Relaxed)) {
+        // Owned at 0, not at `playpos_ns`: `frames` is per-session (zeroed by every reset), so the
+        // first presented frame IS this session's landing, while `playpos_ns` is the PRE-reload
+        // playhead (a reload does not rewrite it). A target taken from it makes the `+ 15 s >=
+        // target` guard fail for a reload that lands behind the old playhead, and the film then
+        // plays on under a Paused transport.
+        if TX.own_paused_seek(0) {
             super::log("reload: viewer paused with no picture yet; the pump opened the preroll");
         }
     }
@@ -1157,7 +1166,8 @@ fn settle_paused_seek(pa: &mut super::adapter::PlayerAdapter, now: u32) {
 
 /// The viewer is paused and the pump is doing no work for a picture: the feed gate is shut (no
 /// preroll open), no claim or seek flight is out and no seek is waiting. "Buffering…" over a player
-/// in that state is a spinner for nothing; the ladder reports the normal paused transport instead.
+/// in that state is a spinner for nothing; the ladder reports `PlaybackState::Paused` (the normal
+/// paused transport) instead.
 /// A Load still opening (`Stage::Loading` -> Connecting) and an HLS rebuffer are real work and are
 /// decided before this is asked.
 fn paused_and_idle() -> bool {
@@ -1991,8 +2001,13 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         PlaybackState::Seeking
     } else if eng.stage == Stage::Loading {
         PlaybackState::Connecting
-    } else if SHARED.hls_rebuffering.load(Relaxed) || (SHARED.frames.load(Relaxed) == 0 && !paused_and_idle()) {
+    } else if SHARED.hls_rebuffering.load(Relaxed) {
         PlaybackState::Buffering
+    } else if SHARED.frames.load(Relaxed) == 0 {
+        // No picture yet. Work pending for one is Buffering; a paused player with nothing in
+        // flight is waiting on the viewer, which is neither a spinner nor `Playing` (no frame is
+        // presented, so `is_playing` and `PlaybackStarted` must stay false).
+        if paused_and_idle() { PlaybackState::Paused } else { PlaybackState::Buffering }
     } else {
         PlaybackState::Playing
     });
@@ -2451,6 +2466,9 @@ mod flight_tests {
     fn assert_paused_reload_primes_a_first_frame(rig: &mut Rig) {
         // The reload zeroed the session: no picture yet, viewer still paused.
         SHARED.frames.store(0, Relaxed);
+        // The fresh Engine a reload installs owes its prime (`start_bufferfeed` arms it); the rig's
+        // fixture Engine is not one.
+        rig.pa.engine().expect("engine").prime_play = true;
         assert!(TX.paused.load(Acquire), "the viewer is still paused after the reload");
         rig.frame();
         rig.frame();
@@ -3782,6 +3800,74 @@ mod native_seek_pump_tests {
         assert_ended_paused();
     }
 
+    /// The prime's Play already fired (`prime_play` cleared, the clock Running) and the viewer then
+    /// pressed Pause before the first position update: `frames == 0` and the clock is
+    /// `Held(User)`. No prime is owed, so converting that into `Held(Seek)` with `user_held` false
+    /// would strand the film: nothing plays, and Play has no user hold to take. The pump opens no
+    /// preroll, and a later Play still plays.
+    #[test]
+    fn a_pause_after_the_prime_play_but_before_the_first_frame_opens_no_preroll_and_play_resumes() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        SHARED.frames.store(0, Relaxed);
+        SHARED.reset_hls_clock_for_test();
+        assert!(SHARED.arm_initial_clock_hold(false, false));
+        rig.eng().prime_play = true;
+        let plays = ffi_host::play_calls_for_test();
+        rig.land_keyframe_aus(60_000_000_000, 90);
+        for _ in 0..8 {
+            rig.frame();
+        }
+        assert!(ffi_host::play_calls_for_test() > plays, "the prime Play fired");
+        assert!(!rig.eng().prime_play, "the prime is no longer owed");
+        assert_eq!(SHARED.frames.load(Relaxed), 0, "no position update yet");
+        assert!(crate::player::pause(&mut rig.pa), "viewer Pause accepted");
+        for _ in 0..4 {
+            rig.frame();
+        }
+        assert!(!TX.seek_preroll_active(), "a preroll opened with no prime owed: nothing would ever Play");
+        let plays = ffi_host::play_calls_for_test();
+        assert!(crate::player::resume(&mut rig.pa), "Play after the Pause is accepted");
+        for _ in 0..4 {
+            rig.frame();
+        }
+        assert!(!TX.paused.load(Acquire), "the player is unpaused");
+        assert!(ffi_host::play_calls_for_test() > plays, "Play issued a native Play");
+        assert!(ffi_host::clock_state_for_test().1, "the physical clock runs again");
+    }
+
+    /// A reload that lands BEHIND the old playhead while paused (the viewer scrubbed back more than
+    /// 15 s and switched audio before the scrub dispatched): the preroll the pump opens for the
+    /// pictureless session must close after its one frame, whatever `playpos_ns` still says.
+    #[test]
+    fn a_paused_reload_landing_far_behind_the_old_playhead_ends_paused_after_one_frame() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        SHARED.frames.store(1, Relaxed);
+        rig.viewer_pause();
+        let behind = 20_000_000_000; // the old playhead is 60 s: more than 15 s ahead of the landing
+        rig.complete_plain_reload();
+        SHARED.playpos_ns.store(60_000_000_000, Relaxed);
+        // A transcode reload (`reload_transcode`) starts the encoder at the target and arms no demuxer
+        // seek, so `playpos_ns` keeps the OLD playhead until the new session's first frame reports.
+        assert_eq!(SHARED.playpos_ns.load(Relaxed), 60_000_000_000);
+        rig.frame();
+        assert!(TX.feed_allowed(), "the pictureless session is primed a frame");
+        let plays = ffi_host::play_calls_for_test();
+        rig.land_keyframe_aus(behind, 90);
+        for _ in 0..8 {
+            rig.frame();
+        }
+        assert!(ffi_host::play_calls_for_test() > plays, "the prime Play fired");
+        // The first presented frame reports the landing's position (`pump` writes `playpos_ns`).
+        SHARED.playpos_ns.store(behind, Relaxed);
+        SHARED.frames.store(1, Relaxed);
+        for _ in 0..3 {
+            rig.frame();
+        }
+        assert_ended_paused();
+    }
+
     /// The owner's framing: "Buffering…" while the player does NO work is a lie. A viewer-paused
     /// session with no picture, the feed gate shut, and nothing in flight (no claim flight, no seek,
     /// no preroll, the Engine loaded) publishes a state the HUD draws as the normal paused
@@ -3798,9 +3884,30 @@ mod native_seek_pump_tests {
         assert!(!TX.seek_preroll_active(), "sanity: nothing is working, no preroll");
         assert!(!TX.feed_allowed(), "sanity: the feed gate is shut");
         let st = crate::player::state(&rig.ps);
-        assert_ne!(st, crate::player::PlaybackState::Buffering, "a spinner over an idle paused player");
-        assert_ne!(st, crate::player::PlaybackState::Connecting);
+        assert_eq!(
+            st,
+            crate::player::PlaybackState::Paused,
+            "neither a spinner (Buffering) nor a lie (Playing) over an idle paused player"
+        );
         assert!(!st.is_busy(), "the HUD's busy surface (`Busy::None`) follows `is_busy`");
+        assert!(!crate::player::is_playing(&rig.ps), "`is_playing` means frames are presented");
+    }
+
+    /// The telemetry follows the published state: a paused, idle session with no picture is not a
+    /// playback that started (`PlaybackStarted`).
+    #[test]
+    fn a_paused_idle_session_with_no_picture_reports_no_playback_started() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        super::super::report::reset_latches_for_test();
+        SHARED.reset_hls_clock_for_test();
+        TX.commit_paused(true);
+        rig.frame();
+        assert!(!TX.feed_allowed(), "sanity: the idle paused state");
+        super::super::report::tick(&rig.ps);
+        let started = super::super::report::error_context_for_test(&rig.ps).started;
+        super::super::report::reset_latches_for_test();
+        assert!(!started, "PlaybackStarted fired for a session that never presented a frame");
     }
 
     /// ...and the same session with real work pending still reads Buffering: a seek preroll open.
