@@ -204,6 +204,7 @@ print-simbin:   ; @printf '%s\n' "$$SIM_MACOS_BIN_ENV"
 # reads the whole file before running a recipe, so the forward reference is fine.
 print-app-files:      ; @echo '$(APP_FILES)'
 print-deploy-files:   ; @echo '$(DEPLOY_FILES)'
+print-subs-font-files: ; @echo '$(SUBS_FONT_FILES)'
 print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
 print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
@@ -1126,6 +1127,17 @@ APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
 # long as nobody compared the two by hand. `ci/test_deploy_manifest.py` pins the relationship
 # itself (via `print-app-files`/`print-deploy-files`), not just today's four names.
 DEPLOY_FILES = $(filter-out pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LAB_FILES),$(APP_FILES))
+
+# The subtitle faces (tools/cut-noto-subs.py): Noto Sans <script> Bold, one file per script, plus the
+# manifest that names them in add order. They are NOT in `APP_FILES`, because that list is staged
+# with a flat `cp` and these live in their own directory, `fonts/subs/`, where the renderer reads
+# them from (`player::ass::fonts`) - 22 more names in the app directory's root would hide the few
+# files a person looks for there. Each recipe that handles `APP_FILES` handles this list too:
+# `ipk` stages it, `deploy` copies it and `verify-deploy` checks it. The wildcard means a face added
+# to the directory ships without a second edit here; `ci/check-package.py` compares the staged
+# archive with the manifest, so a face that did not make it in fails the package, not the television.
+SUBS_FONT_DIR   = fonts/subs
+SUBS_FONT_FILES = $(sort $(wildcard pkg/fonts/subs/*.ttf)) pkg/fonts/subs/manifest.json
 # pkg/le-roots.pem is the four public Let's Encrypt roots (ISRG Root X1, X2, YR, YE) that
 # `net::keypin`'s roots mode verifies a `*.plex.direct` host against when the television's own CA
 # store lacks the issuing root (a 2020 firmware and Let's Encrypt's 2025 roots). It is PAYLOAD
@@ -1258,6 +1270,9 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# television with no separate line to remember here — which is what `pkg/splash.png` needed and
 	# never got: it was staged into every `.ipk` and never scp'd by this recipe.
 	$(SCP) $(DEPLOY_FILES) tv:$(APPDIR)/
+	@# The subtitle faces go to their own directory (see SUBS_FONT_FILES), in one more connection.
+	$(SSH) 'mkdir -p $(APPDIR)/$(SUBS_FONT_DIR)'
+	$(SCP) $(SUBS_FONT_FILES) tv:$(APPDIR)/$(SUBS_FONT_DIR)/
 	@if [ -n "$(TURBOJPEG_SO)" ]; then \
 	  $(SSH) 'test -f $(APPDIR)/libturbojpeg.so.0' || $(SCP) $(TURBOJPEG_SO) tv:$(APPDIR)/libturbojpeg.so.0; \
 	else echo "note: no libturbojpeg in the sysroot — capture JPEG mode will use the slow encoder"; fi
@@ -1285,14 +1300,15 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 # the crash handler and the FFmpeg libraries take their own path to the device above and are just
 # as capable of silently drifting, so they are verified too.
 VERIFY_FILES = pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(DEPLOY_FILES) pkg/plxnative-storage \
-               $(if $(LAB),pkg/lab.json,)
+               $(SUBS_FONT_FILES) $(if $(LAB),pkg/lab.json,)
 verify-deploy: tv-lock-require
 	@echo "verify-deploy: comparing $(words $(VERIFY_FILES)) files against $(APPID) [$(FLAVOR)]"
 	@# The storage helper lands in $(SERVICEDIR), a different directory from everything else here —
 	@# `ci/verify-deploy.py` keys purely by basename (see its module doc), so a second `cd && md5sum`
 	@# appended to the same ssh round trip merges into one stream it already knows how to read,
 	@# rather than needing a transport of its own.
-	@$(SSH) 'cd $(APPDIR) && md5sum $(notdir $(filter-out pkg/plxnative-storage,$(VERIFY_FILES))) 2>&1; \
+	@$(SSH) 'cd $(APPDIR) && md5sum $(notdir $(filter-out pkg/plxnative-storage $(SUBS_FONT_FILES),$(VERIFY_FILES))) 2>&1; \
+	         cd $(APPDIR)/$(SUBS_FONT_DIR) && md5sum $(notdir $(SUBS_FONT_FILES)) 2>&1; \
 	         cd $(SERVICEDIR) && md5sum plxnative-storage 2>&1' | \
 	  python3 ci/verify-deploy.py $(VERIFY_FILES)
 
@@ -1830,6 +1846,7 @@ ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
 	rm -rf ipkroot/data/usr && mkdir -p $(STAGE)/licenses
 	cp $(APP_FILES) $(STAGE)/
+	mkdir -p $(STAGE)/$(SUBS_FONT_DIR) && cp $(SUBS_FONT_FILES) $(STAGE)/$(SUBS_FONT_DIR)/
 	cp $(LICENSE_FILES) $(STAGE)/licenses/
 	@# Strip the STAGED copy only, never pkg/plxnative. ~2.4 MB of .symtab+.strtab (30% of the
 	@# download, on a device whose app partition is 615 MB total and shared with every other app).

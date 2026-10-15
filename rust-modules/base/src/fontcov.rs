@@ -793,6 +793,9 @@ mod tests {
     /// So this test asserts the ABSENCE, deliberately: it fails the moment someone adds an RTL
     /// face, and the failure message is the reason not to. **Checklist #6 / #48 must not be marked
     /// Pass for RTL content on the strength of this unit.**
+    /// This is about the UI chain (`appfont.ttf`, `appfont-cjk.ttf`) only. The subtitle faces
+    /// (`pkg/fonts/subs/`, Arabic, Hebrew, Thaana) do carry RTL scripts, safely: libass runs
+    /// HarfBuzz and a bidi pass over them, which `text.rs` does not.
     #[test]
     fn rtl_is_out_of_scope_and_stays_that_way() {
         for name in ["appfont.ttf", "appfont-cjk.ttf"] {

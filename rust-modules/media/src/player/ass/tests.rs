@@ -743,7 +743,11 @@ fn native_replace_track_keeps_the_fonts_and_the_next_frame_is_never_unchanged() 
     let mut native = native_with(&fixture_faces(2), &one);
     let before = native.stats();
     assert_eq!((before.font_scans, before.tracks), (1, 1));
-    assert_eq!(before.library_fonts, 4, "two bundled faces (the CJK face is the default path) and the two fixtures");
+    assert_eq!(
+        before.library_fonts,
+        bundled_faces() + 2,
+        "the bundled faces (the CJK face is the default path) and the two fixtures"
+    );
     let first = native_frame(&mut native, 100).expect("first frame");
     assert_eq!(ink(&first).bands.len(), 1);
     assert!(native_frame(&mut native, 100).is_none(), "the same instant is unchanged");
@@ -828,7 +832,7 @@ fn native_fifty_slides_of_a_script_with_embedded_fonts_keep_the_font_count_flat(
     let first = render(&mut engine, &source, 100);
     assert_eq!(ink(&first.rects).bands.len(), 1, "the embedded face draws its square");
     let opened = engine.native.as_ref().unwrap().stats();
-    assert_eq!(opened.library_fonts, 3, "two bundled faces and the one from [Fonts]");
+    assert_eq!(opened.library_fonts, bundled_faces() + 1, "the bundled faces and the one from [Fonts]");
     for i in 0..50 {
         // Far apart, so every render leaves the window the last one fed.
         let now = if i % 2 == 0 { 19_000_100 } else { 100 };
@@ -930,6 +934,247 @@ fn text_source(id: u64, revision: u64, style: &TextStyle, cues: &[(i64, i64, &st
             fonts: Arc::from([]),
         },
     })
+}
+
+// ---- the bundled subtitle faces (plan D6): scripts reached by family name ----
+//
+// What a missing glyph looks like: a character no face covers is drawn from the CJK default face
+// without a coverage check, as that face's `.notdef` box. So "this text rendered" is never `ink`
+// alone (the box has ink); it is "this text does NOT render as the boxes a codepoint nobody has
+// would". U+10FFFD is such a codepoint, and the same number of them is the reference.
+
+fn ass_time(ms: i64) -> String {
+    format!("0:{:02}:{:02}.{:02}", ms / 60_000, ms / 1000 % 60, ms % 1000 / 10)
+}
+
+/// A 320x180 script whose default style is `family` at `size`, with one top-left cue per entry.
+fn sub_script(family: &str, size: u32, cues: &[(i64, i64, &str)]) -> String {
+    let mut text = HEADER.replace("Style: Default,Inter,24", &format!("Style: Default,{family},{size}"));
+    for (start, end, body) in cues {
+        text.push_str(&format!(
+            "Dialogue: 0,{},{},Default,,0,0,0,,{{\\an7\\pos(10,10)}}{body}\n",
+            ass_time(*start),
+            ass_time(*end)
+        ));
+    }
+    text
+}
+
+/// The same number of codepoints no face carries.
+fn nothing_like(text: &str) -> String {
+    "\u{10FFFD}".repeat(text.chars().count())
+}
+
+/// One cue rendered by a renderer of its own.
+fn drawn(family: &str, size: u32, body: &str) -> Vec<Rect> {
+    let mut native = native_with(&[], &sub_script(family, size, &[(0, 2000, body)]));
+    native_frame(&mut native, 100).expect("the first frame")
+}
+
+fn width(rects: &[Rect]) -> i32 {
+    let ink = ink(rects);
+    ink.right - ink.left
+}
+
+/// How many faces every renderer starts with: Inter, Inter Bold and the manifest's Noto faces.
+fn bundled_faces() -> u32 {
+    fonts::bundled(asset_dir()).expect("the bundled faces").len() as u32
+}
+
+fn manifest_value() -> serde_json::Value {
+    let path = asset_dir().join("fonts/subs/manifest.json");
+    serde_json::from_slice(&std::fs::read(path).expect("pkg/fonts/subs/manifest.json")).expect("a JSON manifest")
+}
+
+/// Authored ASS that names a family nothing carries falls to "Inter" and, for Thai, used to fall to
+/// the CJK default's `.notdef` boxes. RED without the Noto faces: both renderings are the boxes.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_thai_in_an_unknown_family_renders_thai_not_tofu() {
+    let thai = "กขคงจ";
+    let unknown = drawn("NoSuchFamily", 40, thai);
+    assert!(!ink(&unknown).bands.is_empty());
+    assert_ne!(
+        unknown,
+        drawn("NoSuchFamily", 40, &nothing_like(thai)),
+        "Thai in an unknown family is drawn from a Thai face, not as missing-glyph boxes"
+    );
+    assert_eq!(
+        unknown,
+        drawn("PlxSubs", 40, thai),
+        "the unknown family falls to Inter, whose Noto aliases answer for Thai: the same glyphs as PlxSubs"
+    );
+    assert_eq!(unknown, drawn("Inter", 40, thai), "and so does the UI family itself");
+}
+
+/// Thai vowel and tone marks sit on the consonant: shaping, not a row of boxes.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_thai_marks_attach_to_the_consonant() {
+    let base = ink(&drawn("PlxSubs", 80, "ก"));
+    let marked = ink(&drawn("PlxSubs", 80, "กั"));
+    assert!(!base.bands.is_empty());
+    assert!(
+        marked.bands[0].0 < base.bands[0].0,
+        "the mark rises above the consonant: {:?} vs {:?}",
+        marked.bands,
+        base.bands
+    );
+    assert!((marked.right - base.right).abs() <= 10, "and adds no advance of its own (a mark may overhang; a letter would add ~40): {} vs {}", marked.right, base.right);
+    let toned = ink(&drawn("PlxSubs", 80, "ก่"));
+    assert!(toned.bands[0].0 < base.bands[0].0, "the tone mark rises: {:?} vs {:?}", toned.bands, base.bands);
+    assert!((toned.right - base.right).abs() <= 10, "and adds no advance: {} vs {}", toned.right, base.right);
+}
+
+/// क्ष is one conjunct. A ZWNJ between its letters asks for the visible virama form instead, so the
+/// two spellings differ, and the conjunct is the narrower one.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_devanagari_conjunct_shapes_and_a_zwnj_breaks_it() {
+    let conjunct = drawn("PlxSubs", 80, "क्ष");
+    let broken = drawn("PlxSubs", 80, "क्\u{200c}ष");
+    assert_ne!(conjunct, broken);
+    assert!(width(&conjunct) < width(&broken), "{} vs {}", width(&conjunct), width(&broken));
+    assert_ne!(conjunct, drawn("PlxSubs", 80, &nothing_like("क्ष")));
+}
+
+/// The joiner is resolved by libass per glyph run, within the faces the font has opened so far, so
+/// which script a track met first must not change a later Devanagari cue.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_zwnj_cue_draws_the_same_after_any_other_script() {
+    let dev = "क्\u{200c}ष क्ष";
+    let arabic = "بـب مرحبا";
+    let alone = {
+        let mut native = native_with(&[], &sub_script("PlxSubs", 60, &[(0, 1000, dev)]));
+        native_frame(&mut native, 500).expect("alone")
+    };
+    let arabic_first = {
+        let mut native =
+            native_with(&[], &sub_script("PlxSubs", 60, &[(0, 1000, arabic), (2000, 3000, dev)]));
+        assert!(!ink(&native_frame(&mut native, 500).expect("arabic")).bands.is_empty());
+        native_frame(&mut native, 2500).expect("devanagari after arabic")
+    };
+    let arabic_second = {
+        let mut native =
+            native_with(&[], &sub_script("PlxSubs", 60, &[(0, 1000, dev), (2000, 3000, arabic)]));
+        let first = native_frame(&mut native, 500).expect("devanagari first");
+        assert!(!ink(&native_frame(&mut native, 2500).expect("arabic")).bands.is_empty());
+        first
+    };
+    assert_eq!(alone, arabic_first, "Devanagari after Arabic is the Devanagari of a fresh renderer");
+    assert_eq!(alone, arabic_second, "and Arabic after it changes nothing about it");
+}
+
+/// U+0640 is in the Arabic face only (Inter has none): a kashida lengthens the join.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_arabic_tatweel_lengthens_the_join() {
+    let joined = drawn("PlxSubs", 80, "بب");
+    let stretched = drawn("PlxSubs", 80, "ب\u{640}ب");
+    assert!(width(&stretched) >= width(&joined) + 4, "{} vs {}", width(&stretched), width(&joined));
+    assert_ne!(stretched, drawn("PlxSubs", 80, &nothing_like("ب\u{640}ب")));
+}
+
+/// libass sizes a face from its win ascent plus descent. The cut rewrites every Noto face to
+/// Inter Bold's metrics (usWinAscent 2269 + usWinDescent 660 per 2048 em, 1.430 em), so a Thai and a
+/// Devanagari base letter come out at their design height in THAT em, whatever the face's own
+/// metrics were (Thai's were 1.511 em). The expectation uses Inter Bold's constants, never the
+/// face's own win values, so a face that kept its own metrics fails it.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_noto_glyphs_are_as_tall_as_their_design_in_the_same_em_as_inter() {
+    const INTER_BOLD_WIN_EM: f64 = (2269.0 + 660.0) / 2048.0;
+    let manifest = manifest_value();
+    let size = 100.0;
+    let mut probed = 0;
+    for face in manifest["faces"].as_array().unwrap() {
+        let probe = &face["probe"];
+        if probe.is_null() {
+            continue;
+        }
+        probed += 1;
+        let design_em = (probe["y_max"].as_f64().unwrap() - probe["y_min"].as_f64().unwrap())
+            / probe["upem"].as_f64().unwrap();
+        let expected = design_em / INTER_BOLD_WIN_EM * size;
+        let text = probe["char"].as_str().unwrap();
+        let bands = ink(&drawn("PlxSubs", 100, text)).bands;
+        let (top, bottom) = (bands.first().unwrap().0, bands.last().unwrap().1);
+        let got = f64::from(bottom - top + 1);
+        assert!(
+            (got - expected).abs() <= 1.0,
+            "{}: {text:?} is {got} px tall at {size} px, Inter Bold's em says {expected:.1}",
+            face["script"],
+        );
+    }
+    assert!(probed >= 2, "Thai and Devanagari are probed");
+}
+
+/// D13, shipped: one renderer, one track, consecutive cues in Latin, CJK and every shipped script,
+/// ONE CODEPOINT PER CUE. A cue of several letters would pass with one tofu among them, so each
+/// is compared with a lone U+10FFFD box (what any uncovered codepoint draws as).
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_every_shipped_script_latin_and_cjk_render_on_one_renderer() {
+    let manifest = manifest_value();
+    let mut samples: Vec<(String, String)> = vec![
+        ("Latin".into(), "Hello, World ♪«¿?»".into()),
+        ("Hangul".into(), "한국어".into()),
+        ("Han".into(), "中文".into()),
+        ("Kana".into(), "ひらがなカタカナ".into()),
+    ];
+    for face in manifest["faces"].as_array().unwrap() {
+        samples.push((face["script"].as_str().unwrap().into(), face["sample"].as_str().unwrap().into()));
+    }
+    assert!(samples.len() >= 24);
+    // Each distinct codepoint once: a repeat ("ll") is an unchanged frame, not a new cue.
+    let mut distinct = std::collections::HashSet::new();
+    let letters: Vec<(&str, String)> = samples
+        .iter()
+        .flat_map(|(script, text)| text.chars().map(move |c| (script.as_str(), c)))
+        .filter(|(_, c)| !c.is_whitespace() && distinct.insert(*c))
+        .map(|(script, c)| (script, c.to_string()))
+        .collect();
+    let rows: Vec<(i64, i64, &str)> = letters
+        .iter()
+        .enumerate()
+        .map(|(i, (_, s))| (i as i64 * 1000, i as i64 * 1000 + 900, s.as_str()))
+        .collect();
+    let mut real = native_with(&[], &sub_script("PlxSubs", 40, &rows));
+    let tofu = drawn("PlxSubs", 40, "\u{10FFFD}");
+    for (i, (script, text)) in letters.iter().enumerate() {
+        let now = i as i64 * 1000 + 500;
+        let a = native_frame(&mut real, now).expect("a new cue");
+        assert!(!ink(&a).bands.is_empty(), "{script}: {text:?} drew nothing");
+        assert_ne!(a, tofu, "{script}: {text:?} (U+{:04X}) drew as a missing-glyph box", text.chars().next().unwrap() as u32);
+    }
+    assert_eq!(
+        real.stats().library_fonts,
+        bundled_faces(),
+        "drawing adds no face: the renderer holds the bundled set (Inter, Inter Bold, the Noto faces)"
+    );
+}
+
+/// libass skips U+2060 (and the other default-ignorables, `ass_shaper_skip_characters`) before it
+/// looks a glyph up, so a word joiner inside Thai text is neither a box nor a change to the line,
+/// though no shipped face carries it. This holds the claim in `tools/cut-noto-subs.py`.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_word_joiner_in_thai_is_skipped_not_drawn_as_a_box() {
+    assert_eq!(drawn("PlxSubs", 60, "กข\u{2060}ค"), drawn("PlxSubs", 60, "กขค"));
+}
+
+/// Plan 3.4: Latin, Thai and Han in ONE cue. Each run takes its face (Inter Bold, Noto Thai, the
+/// CJK default) and none falls to boxes, so the cue is wider than any two of its parts.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_latin_thai_and_han_share_one_cue() {
+    let mixed = "Hi กขค 中文";
+    let drawn_mixed = drawn("PlxSubs", 50, mixed);
+    assert_ne!(drawn_mixed, drawn("PlxSubs", 50, &nothing_like(mixed)));
+    for part in ["Hi กขค", "กขค 中文", "Hi 中文"] {
+        assert!(width(&drawn_mixed) > width(&drawn("PlxSubs", 50, part)), "{part:?}");
+    }
 }
 
 fn open_calls() -> u32 {

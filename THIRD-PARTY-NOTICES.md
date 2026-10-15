@@ -185,6 +185,7 @@ for a trademark note that applies to some of them.
 ### 2.3 Fonts
 
 **Inter** — `appfont.ttf`, `appfont-bold.ttf`
+(`appfont-bold.ttf` also answers to the family name "PlxSubs", added as a name record.)
 Copyright 2016 The Inter Project Authors (https://github.com/rsms/inter), per the fonts' own
 name table; the licence file shipped with this package states "Copyright 2020". Version
 4.001 (git-66647c0bb).
@@ -216,6 +217,31 @@ trademark statement "Source is a trademark of Adobe in the United States and/or 
 Hangul, Kana or Han, so without this face every Korean, Japanese and Chinese title in a Plex
 library renders as empty boxes. See `rust-modules/gfx/src/text.rs` for the chain and
 `rust-modules/src/fontcov.rs` for the coverage each face is required to have.
+
+**Noto Sans <script> Bold** — `fonts/subs/NotoSans<Script>-Bold.ttf` (source: `pkg/fonts/subs/`),
+22 faces: Thai, Lao, Khmer, Myanmar, Devanagari, Bengali, Gurmukhi, Gujarati, Tamil, Telugu,
+Kannada, Malayalam, Sinhala, Oriya, Tibetan, Arabic, Hebrew, Thaana, Georgian, Armenian,
+Ethiopic and Canadian Aboriginal. They are the faces the subtitle renderer (libass) draws those
+scripts with; the application's own UI text chain does not use them.
+Copyright 2022 The Noto Project Authors (https://github.com/notofonts/<script>) for each face,
+except Hebrew (2024), Bengali (2025) and Tibetan ("Copyright 2015 Google Inc. All Rights
+Reserved."), per each font's own name table (ID 0). Sources: the unhinted Bold TrueType files of
+`github.com/notofonts/notofonts.github.io` at commit `5c3913063bb189df4edc94b766584dfb4c04a187`,
+and for Tibetan the archived file of `github.com/googlefonts/noto-fonts` at commit
+`ffebf8c1ee449e544955a7e813c54f9b73848eac`; every input is pinned by size and sha256 in
+`tools/cut-noto-subs.py`.
+Licence: **SIL Open Font License 1.1** — the same text that ships in this package as `OFL.txt`.
+The licence body distributed with these fonts and the one distributed with Inter are identical
+apart from one URL line; both copyright statements are reproduced here and inside each font's
+own name table. None of the copyright statements declares a **Reserved Font Name**
+(`tools/cut-noto-subs.py` refuses a font that does), so OFL §3 imposes no rename and each family
+name ("Noto Sans Thai", ...) is retained.
+*Modified*: each is subset to the codepoints of its script (everything Inter Bold or the
+Latin/punctuation ranges already cover is removed; layout tables are kept), hinting is dropped,
+the OS/2 and `hhea` metrics are scaled to Inter Bold's line proportions, and two name records are
+added (family and full name "PlxSubs" and "Inter", under non-English language IDs) so libass
+selects them as fallbacks. The recipe is `tools/cut-noto-subs.py`; the manifest
+`fonts/subs/manifest.json` records every input and output hash.
 
 ### 2.4 Rust code statically linked into `plxnative`
 
@@ -493,9 +519,10 @@ runtime notices listed below:
 | `licenses/HarfBuzz-Old-MIT.txt` | HarfBuzz and its copyright holders (§1.2) |
 | `licenses/libunibreak-Zlib.txt` | libunibreak, complete upstream licence with its copyright holders (§1.2) |
 
-`OFL.txt` (SIL Open Font License 1.1, for **Inter and Noto Sans CJK KR** — §2.3) already ships at
+`OFL.txt` (SIL Open Font License 1.1, for **Inter, Noto Sans CJK KR and the Noto Sans script faces** — §2.3) already ships at
 the root of this package. Keep it there; do not add a second copy under `licenses/`, and do not
-add a second copy for the second font: the two upstream licence bodies are byte-identical, and
+add a second copy for the other fonts: the upstream licence bodies are identical (the Noto Sans
+script faces' differs by one URL line), and
 what differs between them (the copyright statement and the Reserved Font Name) is reproduced in
 §2.3 and carried inside each font's own name table.
 
