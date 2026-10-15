@@ -4416,3 +4416,71 @@ fn sidecar_to_embedded_and_back_rebuilds_then_returns_to_remux() {
     assert_eq!(query_param(last, "directStreamAudio"), Some("1"), "{last}");
     cleanup(&mut ps);
 }
+
+
+// ---- a subtitle turned ON mid-play offers the same enhancement as one the playback started with ----
+//
+// Owner report: a Family Guy episode (MKV, AC3 2.0 with `canNormalizeLoudness`, ONE embedded ASS
+// subtitle, subtitles ON, Direct Play Auto) showed Boost dialog / Normalize loudness disabled with
+// "Available only at Original quality" under Quality: Original. Path A starts with the subtitle,
+// Path B enables it during playback; M7 says an embedded subtitle takes the Burn route either way.
+
+/// What the Audio tab says for a direct play that STARTED with subtitle `sub_sid` on screen.
+fn availability_when_started_with(sub_sid: i64, ordinal: Option<i32>) -> EnhancementAvailability {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(NONE);
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), ordinal)), sub_sid);
+    let got = menu_enhancement_availability(&ps);
+    live.finish();
+    cleanup(&mut ps);
+    got
+}
+
+/// What the Audio tab says after the same subtitle is enabled MID-PLAY through the real commit.
+fn availability_after_midplay_pick(
+    sub_idx: i32,
+    sub_sid: i64,
+    client_renderable: bool,
+) -> (EnhancementAvailability, bool) {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(NONE);
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    commit_subtitle_selection(&mut ps, sub_idx, sub_sid, client_renderable);
+    let got = (menu_enhancement_availability(&ps), ps.auto_original.is_some());
+    live.finish();
+    cleanup(&mut ps);
+    got
+}
+
+/// Control: an EMBEDDED subtitle (ASS, PGS, any codec: the menu hands `client_renderable =
+/// render_ordinal >= 0`) keeps the candidate, so mid-play equals start-with-sub. Passes.
+#[test]
+fn embedded_subtitle_enabled_midplay_offers_the_same_burn_as_one_at_start() {
+    let at_start = availability_when_started_with(77, Some(2));
+    let (midplay, kept) = availability_after_midplay_pick(2, 77, true);
+    assert_eq!(at_start, EnhancementAvailability::Offered(EnhancementRoute::Burn));
+    assert!(kept, "the candidate follows the embedded pick");
+    assert_eq!(midplay, at_start);
+}
+
+/// Repro: a pick the client does not draw (`client_renderable == false`, e.g. an external image
+/// sidecar listed on a transcoding route) makes `retarget_subtitle` return false, which DROPS the
+/// candidate (`TrackPickDropped`), so the Audio tab reads Disabled(NotCopyable) for the rest of
+/// the playback, while the same subtitle at start is Offered(Burn).
+#[test]
+#[ignore = "repro: mid-play non-client-renderable subtitle drops auto_original; start-with-sub offers Burn"]
+fn non_drawable_subtitle_enabled_midplay_offers_the_same_burn_as_one_at_start() {
+    let at_start = availability_when_started_with(78, None);
+    let (midplay, kept) = availability_after_midplay_pick(-1, 78, false);
+    assert_eq!(at_start, EnhancementAvailability::Offered(EnhancementRoute::Burn));
+    assert!(kept, "the Original candidate must survive a pick it can only burn");
+    assert_eq!(midplay, at_start);
+}
