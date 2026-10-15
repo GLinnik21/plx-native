@@ -36,6 +36,10 @@ impl UnloadTicket {
     }
 }
 
+/// The volume a freshly loaded pipeline starts at (libpf's `CustomPipeline::getVolume` defaults to
+/// 100 when the property is absent): what the paused preroll restores after muting.
+pub const PIPELINE_DEFAULT_VOLUME: c_int = 100;
+
 /// **Starfish-shaped.** One method per verb of the webOS seam (`src/starfish.h`): a Load payload,
 /// `feed`, and the ACB bind verbs `pump` walks. Another TV OS cannot implement this as is; the
 /// OS-neutral sink is step L15b (docs/module-layers.md).
@@ -49,10 +53,6 @@ impl UnloadTicket {
 /// a payload or id pointer must be a valid NUL-terminated string for the call, and `feed`'s
 /// `p`/`size` a readable buffer. Apart from `load` and `unload`, the verbs must be called on the
 /// main thread (which `&MainThread` witnesses), in the order the player's pump drives them.
-/// The volume a freshly loaded pipeline starts at (libpf's `CustomPipeline::getVolume` defaults to
-/// 100 when the property is absent): what the paused preroll restores after muting.
-pub const PIPELINE_DEFAULT_VOLUME: c_int = 100;
-
 pub trait VideoSink: Sync {
     /// # Safety
     /// Unlike every other verb, `load` runs off the main thread (the media worker calls it, after
