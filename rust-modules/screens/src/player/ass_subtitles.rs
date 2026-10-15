@@ -21,11 +21,20 @@ pub struct AssSubtitles {
     textures: Vec<CachedTexture>,
     uploaded: u64,
     viewport: Viewport,
-    origin: ass::Origin,
-    /// The alignment classes of the cues in `aligns_serial`'s frame (Text origin only).
-    aligns: ass::AlignSet,
-    aligns_serial: u64,
+    /// The origin `frame` was requested under. The source's current origin can already differ
+    /// (a restyle bumps the revision at once; the worker's re-render follows), and the lift is
+    /// decided by the frame on screen (plan `libass-text-subs` §2.4).
+    frame_origin: ass::Origin,
+    /// The alignment classes of the cues in one frame, by its serial (Text origin only).
+    aligns: Option<(u64, ass::AlignSet)>,
+    /// Reused each draw so the 60 fps path allocates nothing.
+    spans: Vec<(i32, i32)>,
+    dys: Vec<f32>,
 }
+
+/// Every class present: the rule for a frame whose own classes are not known. It never lifts a
+/// top or middle cue and still lifts a normal bottom block by the full `HUD_LIFT`.
+const UNKNOWN_ALIGNS: ass::AlignSet = ass::AlignSet { bottom: true, middle: true, top: true };
 
 impl AssSubtitles {
     pub fn update(&mut self, ps: &plx_media::route::PlaybackSession, now: u32) {
@@ -47,6 +56,7 @@ impl AssSubtitles {
             self.source = source.id;
             self.clock = ass_source::Clock::default();
             self.frame = None;
+            self.aligns = None;
         }
         let clock = self.clock.sample(
             plx_media::player::playpos_ns(),
@@ -59,34 +69,16 @@ impl AssSubtitles {
             plx_media::player::video_viewport(SCR_W as i32, SCR_H as i32),
             plx_media::player::video_raster(),
         );
-        self.origin = source.origin;
         if self.viewport != viewport {
             self.viewport = viewport;
             self.frame = None;
         }
+        let origin = source.origin;
         if let Some(frame) =
             ass::request(source, clock, viewport.width, viewport.height, coded_w, coded_h)
         {
             self.frame = Some(frame);
-        }
-    }
-
-    /// The classes of the cues in the frame about to be drawn. The mailbox may be busy this tick;
-    /// then the last answer stands, and before any answer every cue is taken to be a bottom one,
-    /// the normal case.
-    fn refresh_aligns(&mut self, serial: u64) {
-        if self.aligns_serial == serial {
-            return;
-        }
-        match ass::published_aligns(serial) {
-            Some(set) => {
-                self.aligns = set;
-                self.aligns_serial = serial;
-            }
-            None if self.aligns_serial == 0 => {
-                self.aligns = ass::AlignSet { bottom: true, middle: false, top: false };
-            }
-            None => {}
+            self.frame_origin = origin;
         }
     }
 
@@ -142,15 +134,18 @@ impl AssSubtitles {
                 self.uploaded = frame.serial;
             });
         }
-        let serial = frame.serial;
-        if lift && self.origin.is_text() {
-            self.refresh_aligns(serial);
-        }
-        let spans: Vec<(i32, i32)> = frame.rects.iter().map(|r| (r.y, r.height)).collect();
-        let dys = lift_dys(self.origin, lift, &spans, self.aligns);
+        let origin = self.frame_origin;
+        let aligns = if lift && origin.is_text() {
+            aligns_for(&mut self.aligns, frame.serial, || ass::published_aligns(frame.serial))
+        } else {
+            UNKNOWN_ALIGNS
+        };
+        self.spans.clear();
+        self.spans.extend(frame.rects.iter().map(|r| (r.y, r.height)));
+        lift_dys(origin, lift, &self.spans, aligns, &mut self.dys);
         let ink = plx_appkit::player_hud::subtitle_ink();
         for (i, (texture, rect)) in self.textures.iter().zip(&frame.rects).enumerate() {
-            let dy = dys[i];
+            let dy = self.dys[i];
             Painter::root().tex(
                 texture.id,
                 Rect::new(
@@ -173,6 +168,7 @@ impl AssSubtitles {
         clear_textures(&mut self.textures);
         self.uploaded = 0;
         self.frame = None;
+        self.aligns = None;
         self.source = 0;
         ass::clear();
     }
@@ -207,7 +203,8 @@ fn frame_geometry(
 /// - no bottom cue: nothing moves;
 /// - mixed: a region moves when its bottom edge is at or below `anchor - pitch / 2`, unless such a
 ///   region also starts above the frame's midline (a merged top+bottom region), in which case
-///   nothing moves, erring towards not lifting a top cue.
+///   nothing moves, erring towards not lifting a top cue. A region right above the moving group
+///   (a block whose lines are separate regions) joins it.
 ///
 /// The moved group is clamped once so its top stays on the screen.
 fn lift_dys(
@@ -215,42 +212,79 @@ fn lift_dys(
     lift: bool,
     regions: &[(i32, i32)],
     aligns: ass::AlignSet,
-) -> Vec<f32> {
-    let mut dys = vec![0.0; regions.len()];
-    let ass::Origin::Text(style) = origin else { return dys };
+    dys: &mut Vec<f32>,
+) {
+    dys.clear();
+    dys.resize(regions.len(), 0.0);
+    let ass::Origin::Text(style) = origin else { return };
     if !lift || !aligns.bottom {
-        return dys;
+        return;
     }
-    let moves: Vec<bool> = if aligns.middle || aligns.top {
-        let band = text_style::bottom_anchor_y(style.position)
-            - text_style::CAPTION_LINE_PITCH * style.scale() / 2.0;
-        let in_band: Vec<bool> =
-            regions.iter().map(|&(y, h)| (y + h) as f32 >= band).collect();
-        let merged = regions
-            .iter()
-            .zip(&in_band)
-            .any(|(&(y, _), &hit)| hit && (y as f32) < text_style::SCR_H / 2.0);
+    let pitch = text_style::CAPTION_LINE_PITCH * style.scale();
+    // `dys` doubles as the "moves" mark (-1) until the lift is known.
+    if aligns.middle || aligns.top {
+        let band = text_style::bottom_anchor_y(style.position) - pitch / 2.0;
+        let mut merged = false;
+        for (dy, &(y, h)) in dys.iter_mut().zip(regions) {
+            if (y + h) as f32 >= band {
+                *dy = -1.0;
+                merged |= (y as f32) < text_style::SCR_H / 2.0;
+            }
+        }
         if merged {
-            return dys;
+            dys.fill(0.0);
+            return;
         }
-        in_band
+        // A block whose lines are separate regions rises as one: a region sitting right above
+        // the moving group (a gap under half a pitch) joins it, up to a fixed point.
+        let group_top = |dys: &[f32]| {
+            regions.iter().zip(dys).filter(|(_, &d)| d != 0.0).map(|(r, _)| r.0).min()
+        };
+        while let Some(top) = group_top(dys) {
+            let mut grew = false;
+            for (dy, &(y, h)) in dys.iter_mut().zip(regions) {
+                if *dy == 0.0 && y < top && ((y + h) as f32) >= top as f32 - pitch / 2.0 {
+                    *dy = -1.0;
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
     } else {
-        vec![true; regions.len()]
+        dys.fill(-1.0);
+    }
+    let Some(top) = regions.iter().zip(dys.iter()).filter(|(_, &d)| d != 0.0).map(|(r, _)| r.0).min()
+    else {
+        return;
     };
-    let top = regions
-        .iter()
-        .zip(&moves)
-        .filter(|(_, &m)| m)
-        .map(|(&(y, _), _)| y)
-        .min();
-    let Some(top) = top else { return dys };
     let lift = text_style::HUD_LIFT.min(top.max(0) as f32);
-    for (dy, &m) in dys.iter_mut().zip(&moves) {
-        if m {
-            *dy = -lift;
+    for dy in dys.iter_mut().filter(|d| **d != 0.0) {
+        *dy = -lift;
+    }
+}
+
+/// The classes of the frame with `serial`: the cached answer if it is for this frame, else ask
+/// (`ask` may find the mailbox busy, or the frame no longer published) and cache a hit. With no
+/// answer for THIS frame the classes are unknown, never another frame's (`UNKNOWN_ALIGNS`).
+fn aligns_for(
+    cache: &mut Option<(u64, ass::AlignSet)>,
+    serial: u64,
+    ask: impl FnOnce() -> Option<ass::AlignSet>,
+) -> ass::AlignSet {
+    if let Some((s, set)) = *cache {
+        if s == serial {
+            return set;
         }
     }
-    dys
+    match ask() {
+        Some(set) => {
+            *cache = Some((serial, set));
+            set
+        }
+        None => UNKNOWN_ALIGNS,
+    }
 }
 
 struct CachedTexture {
@@ -296,6 +330,17 @@ mod tests {
     const BOTTOM: ass::AlignSet = ass::AlignSet { bottom: true, middle: false, top: false };
     const TOP_AND_BOTTOM: ass::AlignSet = ass::AlignSet { bottom: true, middle: false, top: true };
 
+    fn dys_of(
+        origin: ass::Origin,
+        lift: bool,
+        regions: &[(i32, i32)],
+        aligns: ass::AlignSet,
+    ) -> Vec<f32> {
+        let mut dys = Vec::new();
+        lift_dys(origin, lift, regions, aligns, &mut dys);
+        dys
+    }
+
     fn text(style: TextStyle) -> ass::Origin {
         ass::Origin::Text(style)
     }
@@ -334,7 +379,7 @@ mod tests {
                 // With and without descenders: the same motion, the descender does not jitter it.
                 let plain = line_at(style, 0);
                 let deep = line_at(style, 12);
-                let dys = lift_dys(ass::Origin::Text(style), true, &[plain, deep], BOTTOM);
+                let dys = dys_of(ass::Origin::Text(style), true, &[plain, deep], BOTTOM);
                 assert_eq!(dys, [-200.0, -200.0], "{position:?} {size:?}");
                 assert_eq!(text_style::HUD_LIFT, 200.0);
             }
@@ -347,7 +392,7 @@ mod tests {
         let regions = [line_at(style, 0), (100, 48), line_at(style, 12)];
         for aligns in [BOTTOM, TOP_AND_BOTTOM, ass::AlignSet::default()] {
             assert_eq!(
-                lift_dys(ass::Origin::Authored, true, &regions, aligns),
+                dys_of(ass::Origin::Authored, true, &regions, aligns),
                 [0.0, 0.0, 0.0]
             );
         }
@@ -356,7 +401,7 @@ mod tests {
     #[test]
     fn a_text_frame_is_unmoved_with_the_hud_down() {
         let style = TextStyle::default();
-        assert_eq!(lift_dys(text(style), false, &[line_at(style, 0)], BOTTOM), [0.0]);
+        assert_eq!(dys_of(text(style), false, &[line_at(style, 0)], BOTTOM), [0.0]);
     }
 
     #[test]
@@ -365,7 +410,7 @@ mod tests {
         let pitch = 72;
         let bottom = text_style::bottom_anchor_y(style.position) as i32;
         let region = (bottom - 4 * pitch, 4 * pitch);
-        assert_eq!(lift_dys(ass::Origin::Text(style), true, &[region], BOTTOM), [-200.0]);
+        assert_eq!(dys_of(ass::Origin::Text(style), true, &[region], BOTTOM), [-200.0]);
     }
 
     #[test]
@@ -374,33 +419,93 @@ mod tests {
         let middle = ass::AlignSet { bottom: false, middle: true, top: false };
         let top = ass::AlignSet { bottom: false, middle: false, top: true };
         let r = [line_at(style, 0), (500, 48)];
-        assert_eq!(lift_dys(text(style), true, &r, middle), [0.0, 0.0]);
-        assert_eq!(lift_dys(text(style), true, &r, top), [0.0, 0.0]);
-        assert_eq!(lift_dys(text(style), true, &r, ass::AlignSet::default()), [0.0, 0.0]);
+        assert_eq!(dys_of(text(style), true, &r, middle), [0.0, 0.0]);
+        assert_eq!(dys_of(text(style), true, &r, top), [0.0, 0.0]);
+        assert_eq!(dys_of(text(style), true, &r, ass::AlignSet::default()), [0.0, 0.0]);
     }
 
     #[test]
     fn only_the_bottom_cue_moves_beside_a_top_one() {
-        let style = TextStyle::default();
-        let top_cue = (100, 48);
-        let bottom_cue = line_at(style, 12);
-        assert_eq!(lift_dys(text(style), true, &[top_cue, bottom_cue], TOP_AND_BOTTOM), [0.0, -200.0]);
+        for position in SubtitlePosition::LADDER {
+            for size in SubtitleSize::LADDER {
+                let style = style(size, position);
+                let top_cue = (100, 48);
+                let bottom_cue = line_at(style, 12);
+                assert_eq!(
+                    dys_of(text(style), true, &[top_cue, bottom_cue], TOP_AND_BOTTOM),
+                    [0.0, -200.0],
+                    "{position:?} {size:?}"
+                );
+            }
+        }
     }
 
     #[test]
     fn a_merged_top_and_bottom_region_is_not_lifted() {
-        let style = TextStyle::default();
+        for position in SubtitlePosition::LADDER {
+            for size in SubtitleSize::LADDER {
+                let style = style(size, position);
+                let bottom = text_style::bottom_anchor_y(style.position) as i32;
+                let merged = (100, bottom - 100);
+                assert_eq!(
+                    dys_of(text(style), true, &[merged], TOP_AND_BOTTOM),
+                    [0.0],
+                    "{position:?} {size:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_four_line_block_as_separate_regions_moves_together_beside_a_top_cue() {
+        let style = style(SubtitleSize::ExtraLarge, SubtitlePosition::High);
+        let pitch = (text_style::CAPTION_LINE_PITCH * style.scale()) as i32;
         let bottom = text_style::bottom_anchor_y(style.position) as i32;
-        let merged = (100, bottom - 100);
-        assert_eq!(lift_dys(text(style), true, &[merged], TOP_AND_BOTTOM), [0.0]);
+        let mut regions = vec![(100, 48)];
+        regions.extend((1..=4).rev().map(|n| (bottom - n * pitch, pitch)));
+        assert_eq!(
+            dys_of(text(style), true, &regions, TOP_AND_BOTTOM),
+            [0.0, -200.0, -200.0, -200.0, -200.0]
+        );
+    }
+
+    #[test]
+    fn unknown_classes_never_lift_a_top_cue_but_lift_a_normal_bottom_block() {
+        for position in SubtitlePosition::LADDER {
+            for size in SubtitleSize::LADDER {
+                let style = style(size, position);
+                let dys = dys_of(
+                    text(style),
+                    true,
+                    &[(100, 48), (500, 48), line_at(style, 12)],
+                    UNKNOWN_ALIGNS,
+                );
+                assert_eq!(dys, [0.0, 0.0, -200.0], "{position:?} {size:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_frame_without_an_answer_does_not_borrow_another_frames_classes() {
+        let mut cache = None;
+        assert_eq!(aligns_for(&mut cache, 7, || Some(BOTTOM)), BOTTOM);
+        // Cached for this serial: no ask.
+        assert_eq!(aligns_for(&mut cache, 7, || panic!("asked again")), BOTTOM);
+        // Another frame, mailbox busy or frame gone: unknown, not the bottom-only set.
+        assert_eq!(aligns_for(&mut cache, 8, || None), UNKNOWN_ALIGNS);
+        assert_eq!(aligns_for(&mut cache, 8, || Some(TOP_AND_BOTTOM)), TOP_AND_BOTTOM);
+        // The top region does not move under the unknown set.
+        let style = TextStyle::default();
+        let regions = [(100, 48), line_at(style, 0)];
+        assert_eq!(dys_of(text(style), true, &regions, UNKNOWN_ALIGNS), [0.0, -200.0]);
     }
 
     #[test]
     fn the_lifted_group_stays_on_the_screen() {
         let style = TextStyle::default();
         // A tall block whose top is 60 px down moves only 60.
-        assert_eq!(lift_dys(text(style), true, &[(60, 900)], BOTTOM), [-60.0]);
-        assert_eq!(lift_dys(text(style), true, &[], BOTTOM), Vec::<f32>::new());
+        assert_eq!(dys_of(text(style), true, &[(60, 900)], BOTTOM), [-60.0]);
+        assert_eq!(dys_of(text(style), true, &[], BOTTOM), Vec::<f32>::new());
     }
 
     #[test]
