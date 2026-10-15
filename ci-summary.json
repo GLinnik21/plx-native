@@ -1,19 +1,19 @@
 {
- "generated": "2026-10-15T01:23:23Z",
+ "generated": "2026-10-15T01:26:08Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 26.8,
+   "change7_pct": 26.7,
    "d30": null,
    "delta30": null,
-   "delta7": 207.0,
+   "delta7": 206.5,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 10,
+   "n_now": 11,
    "n_prev": 68,
-   "now": 979.5,
+   "now": 979,
    "prev7": 772.5,
    "shown": true,
    "state": "worse",
@@ -23,19 +23,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -55.0,
-   "change7_pct": -49.8,
+   "change30_pct": -54.6,
+   "change7_pct": -49.2,
    "d30": 961,
-   "delta30": -528.5,
-   "delta7": -428.5,
+   "delta30": -525.0,
+   "delta7": -422.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 206,
-   "n_prev": 201,
-   "now": 432.5,
-   "prev7": 861,
+   "n_now": 204,
+   "n_prev": 203,
+   "now": 436.0,
+   "prev7": 858,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -458,17 +458,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 0.0,
+   "change7_pct": 5.6,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 1.0,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 10,
+   "n_now": 11,
    "n_prev": 68,
-   "now": 18.0,
+   "now": 19,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -500,17 +500,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 10.7,
+   "change7_pct": 14.3,
    "d30": null,
    "delta30": null,
-   "delta7": 1.5,
+   "delta7": 2.0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 10,
+   "n_now": 11,
    "n_prev": 68,
-   "now": 15.5,
+   "now": 16,
    "prev7": 14.0,
    "shown": false,
    "state": "flat",
@@ -564,7 +564,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 26.8,
+   "change_pct": 26.7,
    "commits": [
     {
      "pr": 703,
@@ -622,7 +622,7 @@
    "label": "Nightly: ARM build + gates / build + verify",
    "since": "2026-10-12",
    "threshold_pct": 25.0,
-   "to": 979.5
+   "to": 979
   }
  ],
  "schema": 2,
@@ -631,7 +631,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 979.5
+   "now": 979
   },
   {
    "group": "ci",
