@@ -851,8 +851,11 @@ pub const TILE_MARK_INK: [f32; 4] = COOL_0;
 /// The **veil**: a corner falloff under the tick, and the only thing that touches the picture. A
 /// white tick has no contrast of its own over a light frame — a snowfield, a white title card, the
 /// office's white backdrop — so this guarantees it reads without putting a plate on the artwork.
-/// Peak strength at the corner itself, gone by ~half the veil's box (`widgets::tile_mark_veil`).
-pub const TILE_MARK_VEIL: [f32; 4] = with_a(BLACK, 0.40);
+/// Peak strength at the corner itself, gone by ~half the veil's box (`widgets::watched_mark`). Black
+/// 55% per the design's TileStates board (`rgba(0,0,0,.55)` on the corner radial, DS2). This is the
+/// ONE veil role: every tile corner mark — the watched tick, and any unplayable mark added later —
+/// reads it, never a literal alpha.
+pub const TILE_MARK_VEIL: [f32; 4] = with_a(BLACK, 0.55);
 /// The tick's own soft drop shadow, INSIDE the veil — belt and braces on a bright frame, and what
 /// keeps the mark from dissolving into a busy one (the design's `drop-shadow(0 2px 7px …)`).
 pub const TILE_MARK_SHADOW: [f32; 4] = with_a(BLACK, 0.60);
