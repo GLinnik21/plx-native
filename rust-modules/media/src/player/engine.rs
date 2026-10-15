@@ -190,10 +190,6 @@ pub struct Engine {
     pub rebase_drops: i32,
     pub seek_armed_at: u32, // SDL-ticks when the current in-place seek was armed (stuck watchdog)
     pub seek_retries: i32,  // cheap reopen-retries attempted before escalating to a full reload
-    /// The pump opened the paused-seek preroll itself when it armed the current in-place seek
-    /// under a viewer Pause, so the pump also closes it on the landing (`pump::settle_paused_seek`).
-    /// A preroll a caller opened (the foreground restore) is that caller's to close.
-    pub paused_seek_owned: bool,
     pub flushed: bool,      // Kodi m_flushed: set on an in-place seek flush; the first
     // post-flush keyframe triggers setTimeToDecode + sendSegmentEvent (the fresh GStreamer
     // segment a bare flush() omits), then clears this.
@@ -1543,7 +1539,6 @@ fn start_bufferfeed_inner(
         rebase_drops: 0,
         seek_armed_at: 0,
         seek_retries: 0,
-        paused_seek_owned: false,
         flushed: false,
         presentation_rearm_pending: false,
         max_fed_video_pts: 0,
@@ -3984,8 +3979,7 @@ mod prime_livelock_tests {
             rebase_drops: 0,
             seek_armed_at: 0,
             seek_retries: 0,
-            paused_seek_owned: false,
-            flushed: false,
+                flushed: false,
             presentation_rearm_pending: false,
             max_fed_video_pts: 0,
             max_fed_audio_pts: 0,

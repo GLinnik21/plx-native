@@ -274,14 +274,29 @@ something.
   a fresh play (`start_bufferfeed_tracked` with no live Engine) clears the latch. `Reload`
   (old-ABI 3.x, and the fallback of both) is a fresh `Load` per seek. Otherwise the mode is
   re-selected per session. The evidence is in `docs/webos5-port.md` ("The public `Seek`").
-  **An in-place seek armed under a viewer Pause is owned by the pump, not its caller:** the feed
-  gate (`TX.feed_allowed()` = `!paused || seek_preroll`) is shut while paused, so a keyframe could
-  never be fed and the stuck watchdog would reload into the same shut gate. At the arm the pump
-  opens the paused-seek preroll itself (`Engine::paused_seek_owned`) and `pump::settle_paused_seek`
-  closes it on the landing (`frames() >= 1` after the keyframe's rebase → `finish_paused_seek`: a
-  brief prime Play, then Pause again). So a bare `request_seek` is correct from any caller; a
-  preroll a caller opened first (the foreground restore) stays that caller's to close. The watchdog
-  also re-bases `seek_armed_at` on every tick the gate is shut. A transcode seek instead
+  **A seek dispatched under a viewer Pause is owned by the pump, on EVERY route:** the feed gate
+  (`TX.feed_allowed()` = `!paused || seek_preroll`) is shut while paused, so no keyframe could be
+  fed, no fresh Load could prime, and the stuck watchdog would reload into the same shut gate. The
+  pump opens the paused-seek preroll itself (`own_seek_under_pause` -> `TX.own_paused_seek(target)`)
+  at the in-place arm, before `reload_at` on `Reload` mode and on every reload fallback (native
+  Pause refused / stale, retired epoch), and before `reload_transcode` on a transcode flight's
+  landing (the viewer's Pause only: a pause the claim hold took is given back by the hold). The
+  ownership lives in `Transport` beside `seek_preroll` (`seek_preroll_owned`, the target), NOT on
+  the `Engine`, because `reload_at` / the stuck watchdog / a refused native `Seek` replace the Engine
+  and `reset_for_reload` keeps both the Pause and the preroll; `arm_initial_clock_hold(user_held,
+  preroll)` then hands the fresh session's Initial prime the open gate. `pump::settle_paused_seek`
+  runs at the head of every tick on whichever Engine is live: when the seek has landed (not
+  `flushed`/`rebase_pending`, no newer tap pending, no flight, `frames() >= 1` — zeroed by the arm
+  and by every session reset — and `playpos + 15 s >= target`) it calls `finish_paused_seek`: a
+  brief prime Play, then Pause again. A REFUSED re-pause leaves the preroll and the ownership in
+  place, so the next tick retries; `TX.finish_seek_preroll` is the only thing that clears the
+  ownership (Resume and `abandon_seek` go through it, `TX.reset` clears it on stop). A Pause pressed AFTER a
+  playing seek was dispatched is noticed by the same function (`SHARED.seeking` with `TX.paused` and
+  no preroll, no flight, no claim-hold pause): it hands the clock hold back to the seek prime
+  (`SHARED.hand_hold_to_seek_prime`: the Pause marked it `user_held`, which fences the prime's Play),
+  opens the preroll and re-bases the watchdog. So a bare `request_seek` is correct from any caller;
+  a preroll a caller opened first (the foreground restore) stays that caller's to close. The stuck
+  watchdog also re-bases `seek_armed_at` on every tick the gate is shut. A transcode seek instead
   restarts the encode at `&offset` with a full fresh `Load`, and the PMS half of that restart is a
   FLIGHT, never frame-thread I/O: `route::dispatch_transcode_seek` plans on the frame, a worker
   registers the replacement encoder, and the drain installs it and reloads (`seek_landing_tail`).

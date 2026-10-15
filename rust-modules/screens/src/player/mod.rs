@@ -1077,7 +1077,10 @@ impl PlayerScreen {
     /// Ask the loop to perform the scrub, and retire the preview that asked for it.
     ///
     /// [`PlayerReq::CommitSeek`] and not [`PlayerReq::SeekTo`]: the scrub bar is how a PAUSED film
-    /// is moved, and the loop's arm for it holds that pause across the seek. Clearing `ns` here
+    /// is moved, and the pump holds that pause across the seek (it opens the seek preroll when it
+    /// dispatches the seek under a viewer Pause and re-pauses on the landing,
+    /// `plx_media::player::pump::settle_paused_seek`); the loop's arm for it is a bare
+    /// `request_seek`. Clearing `ns` here
     /// rather than in the loop is the §2.3 half of the same change — `app::playback::commit_seek`
     /// used to reach into this gesture and blank it, which is a write to another owner's state.
     fn commit_scrub<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
