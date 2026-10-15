@@ -1,0 +1,2087 @@
+{
+ "schema": 1,
+ "tool": "tools/cut-noto-subs.py",
+ "fonttools": "4.60.2",
+ "alias": {
+  "family": "PlxSubs",
+  "plxsubs_lang_id": 1031,
+  "inter_lang_id": 1036,
+  "inter_bold": "appfont-bold.ttf"
+ },
+ "inter_ranges": [
+  [
+   0,
+   591
+  ],
+  [
+   768,
+   879
+  ],
+  [
+   8192,
+   8303
+  ],
+  [
+   8352,
+   8399
+  ]
+ ],
+ "faces": [
+  {
+   "file": "NotoSansThai-Bold.ttf",
+   "family": "Noto Sans Thai",
+   "script": "Thai",
+   "languages": [
+    "th"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     3585,
+     3642
+    ],
+    [
+     3648,
+     3675
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ]
+   ],
+   "codepoints": 89,
+   "glyphs": 121,
+   "bytes": 18084,
+   "sha256": "765e9eb7c7abe73336e34078624470669e853ae5041cad78f727c31637b16aa9",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "กฌทรฮๆ",
+   "probe": {
+    "char": "ก",
+    "y_min": 0,
+    "y_max": 561,
+    "upem": 1000
+   },
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansThai/unhinted/ttf/NotoSansThai-Bold.ttf",
+    "bytes": 20600,
+    "sha256": "5227602d7f9108252cfb7d75d6f7b2a26bdb2fc2fa89a702f9063758fb2f86c7"
+   }
+  },
+  {
+   "file": "NotoSansLao-Bold.ttf",
+   "family": "Noto Sans Lao",
+   "script": "Lao",
+   "languages": [
+    "lo"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     3713,
+     3714
+    ],
+    [
+     3716,
+     3716
+    ],
+    [
+     3718,
+     3722
+    ],
+    [
+     3724,
+     3747
+    ],
+    [
+     3749,
+     3749
+    ],
+    [
+     3751,
+     3773
+    ],
+    [
+     3776,
+     3780
+    ],
+    [
+     3782,
+     3782
+    ],
+    [
+     3784,
+     3790
+    ],
+    [
+     3792,
+     3801
+    ],
+    [
+     3804,
+     3807
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ]
+   ],
+   "codepoints": 86,
+   "glyphs": 127,
+   "bytes": 19668,
+   "sha256": "3ed5aaed3a2669dfb0408c1269f501a3f86e1810ef8b6bd244110374d84adfa3",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ກຏບວຳໟ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansLao/unhinted/ttf/NotoSansLao-Bold.ttf",
+    "bytes": 21508,
+    "sha256": "6fea2e9f231a4b9cfdeec90e9afaff8818b3d11f74cdb23559275f71eeff1ffd"
+   }
+  },
+  {
+   "file": "NotoSansKhmer-Bold.ttf",
+   "family": "Noto Sans Khmer",
+   "script": "Khmer",
+   "languages": [
+    "km"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     6016,
+     6109
+    ],
+    [
+     6112,
+     6121
+    ],
+    [
+     6128,
+     6137
+    ],
+    [
+     6624,
+     6655
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ]
+   ],
+   "codepoints": 149,
+   "glyphs": 337,
+   "bytes": 61960,
+   "sha256": "b7d10169339636a4e2f85fbea65be7814865c2d39388c58c549f9b01b767ab0e",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "កឋផហឪៜ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansKhmer/unhinted/ttf/NotoSansKhmer-Bold.ttf",
+    "bytes": 67976,
+    "sha256": "817382a538f299eb809ee9313ef5c52e0049e3487eb4d02678349755ed607ddf"
+   }
+  },
+  {
+   "file": "NotoSansMyanmar-Bold.ttf",
+   "family": "Noto Sans Myanmar",
+   "script": "Myanmar",
+   "languages": [
+    "my"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     4096,
+     4255
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     43488,
+     43518
+    ],
+    [
+     43616,
+     43647
+    ],
+    [
+     65024,
+     65024
+    ]
+   ],
+   "codepoints": 227,
+   "glyphs": 602,
+   "bytes": 134204,
+   "sha256": "c8d8ed385ae5cf2a3f8f6a1e9430dbcc0272857151390812803a55e63a4d4f66",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ကဏဝၐၯႎ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansMyanmar/unhinted/ttf/NotoSansMyanmar-Bold.ttf",
+    "bytes": 146412,
+    "sha256": "c40a000f8093de13bdf1379a7c589faa2ea989319f33f244eaaa907033c6889f"
+   }
+  },
+  {
+   "file": "NotoSansDevanagari-Bold.ttf",
+   "family": "Noto Sans Devanagari",
+   "script": "Devanagari",
+   "languages": [
+    "hi",
+    "mr",
+    "ne",
+    "sa",
+    "pi",
+    "bh",
+    "ks",
+    "sd"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     2304,
+     2431
+    ],
+    [
+     7376,
+     7414
+    ],
+    [
+     7416,
+     7417
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     43056,
+     43065
+    ],
+    [
+     43232,
+     43263
+    ],
+    [
+     72448,
+     72457
+    ]
+   ],
+   "codepoints": 224,
+   "glyphs": 760,
+   "bytes": 162884,
+   "sha256": "923d390c0224df12426c8d0c757157a040483c89bbd475e34bdeac2759eb0527",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ऄऔतऴॠॿ",
+   "probe": {
+    "char": "क",
+    "y_min": 0,
+    "y_max": 622,
+    "upem": 1000
+   },
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansDevanagari/unhinted/ttf/NotoSansDevanagari-Bold.ttf",
+    "bytes": 183412,
+    "sha256": "ff2f76a23aad41e0608c2d7dbc4bacd247ff3bec78f0ec2a8fb106b561636e58"
+   }
+  },
+  {
+   "file": "NotoSansBengali-Bold.ttf",
+   "family": "Noto Sans Bengali",
+   "script": "Bengali",
+   "languages": [
+    "bn",
+    "as"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     2385,
+     2386
+    ],
+    [
+     2404,
+     2405
+    ],
+    [
+     2432,
+     2435
+    ],
+    [
+     2437,
+     2444
+    ],
+    [
+     2447,
+     2448
+    ],
+    [
+     2451,
+     2472
+    ],
+    [
+     2474,
+     2480
+    ],
+    [
+     2482,
+     2482
+    ],
+    [
+     2486,
+     2489
+    ],
+    [
+     2492,
+     2500
+    ],
+    [
+     2503,
+     2504
+    ],
+    [
+     2507,
+     2510
+    ],
+    [
+     2519,
+     2519
+    ],
+    [
+     2524,
+     2525
+    ],
+    [
+     2527,
+     2531
+    ],
+    [
+     2534,
+     2558
+    ],
+    [
+     7376,
+     7376
+    ],
+    [
+     7378,
+     7378
+    ],
+    [
+     7381,
+     7382
+    ],
+    [
+     7384,
+     7384
+    ],
+    [
+     7393,
+     7393
+    ],
+    [
+     7402,
+     7402
+    ],
+    [
+     7405,
+     7405
+    ],
+    [
+     7410,
+     7410
+    ],
+    [
+     7413,
+     7415
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     43249,
+     43249
+    ]
+   ],
+   "codepoints": 116,
+   "glyphs": 400,
+   "bytes": 94344,
+   "sha256": "2c86eaca3472bb0fa17ae3ab0dbb6376f0b3cd5b1d843281145847fbc322c3f9",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ঀওঞনসৼ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansBengali/unhinted/ttf/NotoSansBengali-Bold.ttf",
+    "bytes": 102440,
+    "sha256": "2fe8d779e0f19576d1fc11e39f9154b4326a17b693215017dd1f5a8898c3f2c3"
+   }
+  },
+  {
+   "file": "NotoSansGurmukhi-Bold.ttf",
+   "family": "Noto Sans Gurmukhi",
+   "script": "Gurmukhi",
+   "languages": [
+    "pa"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     2385,
+     2386
+    ],
+    [
+     2404,
+     2405
+    ],
+    [
+     2561,
+     2563
+    ],
+    [
+     2565,
+     2570
+    ],
+    [
+     2575,
+     2576
+    ],
+    [
+     2579,
+     2600
+    ],
+    [
+     2602,
+     2608
+    ],
+    [
+     2610,
+     2611
+    ],
+    [
+     2613,
+     2614
+    ],
+    [
+     2616,
+     2617
+    ],
+    [
+     2620,
+     2620
+    ],
+    [
+     2622,
+     2626
+    ],
+    [
+     2631,
+     2632
+    ],
+    [
+     2635,
+     2637
+    ],
+    [
+     2641,
+     2641
+    ],
+    [
+     2649,
+     2652
+    ],
+    [
+     2654,
+     2654
+    ],
+    [
+     2662,
+     2678
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     9772,
+     9772
+    ],
+    [
+     43056,
+     43065
+    ]
+   ],
+   "codepoints": 98,
+   "glyphs": 187,
+   "bytes": 24236,
+   "sha256": "3d855ca02c468bd192f33af0d019e4d51169650c2b7b753c341e6a5616fdb086",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ਅਕਟਪਸ਼ੴ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansGurmukhi/unhinted/ttf/NotoSansGurmukhi-Bold.ttf",
+    "bytes": 35712,
+    "sha256": "d16804da302ecb2a7defe0502e65136870445fd88f9fddaef60b68d5f1ee7386"
+   }
+  },
+  {
+   "file": "NotoSansGujarati-Bold.ttf",
+   "family": "Noto Sans Gujarati",
+   "script": "Gujarati",
+   "languages": [
+    "gu"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     2385,
+     2386
+    ],
+    [
+     2404,
+     2405
+    ],
+    [
+     2689,
+     2691
+    ],
+    [
+     2693,
+     2701
+    ],
+    [
+     2703,
+     2705
+    ],
+    [
+     2707,
+     2728
+    ],
+    [
+     2730,
+     2736
+    ],
+    [
+     2738,
+     2739
+    ],
+    [
+     2741,
+     2745
+    ],
+    [
+     2748,
+     2757
+    ],
+    [
+     2759,
+     2761
+    ],
+    [
+     2763,
+     2765
+    ],
+    [
+     2768,
+     2768
+    ],
+    [
+     2784,
+     2787
+    ],
+    [
+     2790,
+     2801
+    ],
+    [
+     2809,
+     2815
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     43056,
+     43065
+    ]
+   ],
+   "codepoints": 108,
+   "glyphs": 740,
+   "bytes": 124080,
+   "sha256": "0b63c45f51d46eeb9b512320b658f01e6f1e757e4f406d13f752eb16375c1af6",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "અઐજદળૹ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansGujarati/unhinted/ttf/NotoSansGujarati-Bold.ttf",
+    "bytes": 140812,
+    "sha256": "3ce0cf6e1d0bfe2ef5823772eeb2f25da28ec0c2c1d99c0fce529025723e61a1"
+   }
+  },
+  {
+   "file": "NotoSansTamil-Bold.ttf",
+   "family": "Noto Sans Tamil",
+   "script": "Tamil",
+   "languages": [
+    "ta"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     2385,
+     2386
+    ],
+    [
+     2404,
+     2405
+    ],
+    [
+     2946,
+     2947
+    ],
+    [
+     2949,
+     2954
+    ],
+    [
+     2958,
+     2960
+    ],
+    [
+     2962,
+     2965
+    ],
+    [
+     2969,
+     2970
+    ],
+    [
+     2972,
+     2972
+    ],
+    [
+     2974,
+     2975
+    ],
+    [
+     2979,
+     2980
+    ],
+    [
+     2984,
+     2986
+    ],
+    [
+     2990,
+     3001
+    ],
+    [
+     3006,
+     3010
+    ],
+    [
+     3014,
+     3016
+    ],
+    [
+     3018,
+     3021
+    ],
+    [
+     3024,
+     3024
+    ],
+    [
+     3031,
+     3031
+    ],
+    [
+     3046,
+     3066
+    ],
+    [
+     7386,
+     7386
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     43251,
+     43251
+    ],
+    [
+     70401,
+     70401
+    ],
+    [
+     70403,
+     70403
+    ],
+    [
+     70459,
+     70460
+    ]
+   ],
+   "codepoints": 85,
+   "glyphs": 182,
+   "bytes": 37292,
+   "sha256": "5e154499eaad68530052ab5fafaf93b94a54d6746c3c3c0a67a1795118a4c966",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ஃஎஙனளௐ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansTamil/unhinted/ttf/NotoSansTamil-Bold.ttf",
+    "bytes": 46428,
+    "sha256": "04a472e49fa83b387976756554fe179de631a950d79f652ebba14a39a44f5d71"
+   }
+  },
+  {
+   "file": "NotoSansTelugu-Bold.ttf",
+   "family": "Noto Sans Telugu",
+   "script": "Telugu",
+   "languages": [
+    "te"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     2385,
+     2386
+    ],
+    [
+     2404,
+     2405
+    ],
+    [
+     3072,
+     3084
+    ],
+    [
+     3086,
+     3088
+    ],
+    [
+     3090,
+     3112
+    ],
+    [
+     3114,
+     3129
+    ],
+    [
+     3132,
+     3140
+    ],
+    [
+     3142,
+     3144
+    ],
+    [
+     3146,
+     3149
+    ],
+    [
+     3157,
+     3158
+    ],
+    [
+     3160,
+     3162
+    ],
+    [
+     3165,
+     3165
+    ],
+    [
+     3168,
+     3171
+    ],
+    [
+     3174,
+     3183
+    ],
+    [
+     3191,
+     3199
+    ],
+    [
+     7386,
+     7386
+    ],
+    [
+     7410,
+     7410
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ]
+   ],
+   "codepoints": 109,
+   "glyphs": 737,
+   "bytes": 124076,
+   "sha256": "378500da564e0d43a1931ee99637f21df3d6685022fe79ad601673d4d292e420",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "అఒఝనఴౡ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansTelugu/unhinted/ttf/NotoSansTelugu-Bold.ttf",
+    "bytes": 165564,
+    "sha256": "44393b05a863057cc2cbfe86623fc20b906b00cf19a2ae9304cdd0f3608889db"
+   }
+  },
+  {
+   "file": "NotoSansKannada-Bold.ttf",
+   "family": "Noto Sans Kannada",
+   "script": "Kannada",
+   "languages": [
+    "kn"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     2385,
+     2386
+    ],
+    [
+     2404,
+     2405
+    ],
+    [
+     3200,
+     3212
+    ],
+    [
+     3214,
+     3216
+    ],
+    [
+     3218,
+     3240
+    ],
+    [
+     3242,
+     3251
+    ],
+    [
+     3253,
+     3257
+    ],
+    [
+     3260,
+     3268
+    ],
+    [
+     3270,
+     3272
+    ],
+    [
+     3274,
+     3277
+    ],
+    [
+     3285,
+     3286
+    ],
+    [
+     3293,
+     3294
+    ],
+    [
+     3296,
+     3299
+    ],
+    [
+     3302,
+     3311
+    ],
+    [
+     3313,
+     3315
+    ],
+    [
+     7376,
+     7376
+    ],
+    [
+     7378,
+     7378
+    ],
+    [
+     7386,
+     7386
+    ],
+    [
+     7410,
+     7410
+    ],
+    [
+     7412,
+     7413
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     43056,
+     43061
+    ]
+   ],
+   "codepoints": 110,
+   "glyphs": 427,
+   "bytes": 103360,
+   "sha256": "7eadbe0104fc47c8170c621dc1803bb622a361088ec2e0dfbf1543050140aec0",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ಀಐಜಧಳೲ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansKannada/unhinted/ttf/NotoSansKannada-Bold.ttf",
+    "bytes": 133868,
+    "sha256": "e989c72f6fec5a0b3366af5f90e3ce8b2b8a350fc5286c6374f0353937e513f5"
+   }
+  },
+  {
+   "file": "NotoSansMalayalam-Bold.ttf",
+   "family": "Noto Sans Malayalam",
+   "script": "Malayalam",
+   "languages": [
+    "ml"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     2385,
+     2386
+    ],
+    [
+     2404,
+     2405
+    ],
+    [
+     3328,
+     3340
+    ],
+    [
+     3342,
+     3344
+    ],
+    [
+     3346,
+     3396
+    ],
+    [
+     3398,
+     3400
+    ],
+    [
+     3402,
+     3407
+    ],
+    [
+     3412,
+     3427
+    ],
+    [
+     3430,
+     3455
+    ],
+    [
+     7386,
+     7386
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     43056,
+     43058
+    ]
+   ],
+   "codepoints": 129,
+   "glyphs": 284,
+   "bytes": 65680,
+   "sha256": "2068467db09d797629da707236ef1dabd3b31033cd02ca41fc409bc6e6c5794d",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ഄഓഠമഽൿ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansMalayalam/unhinted/ttf/NotoSansMalayalam-Bold.ttf",
+    "bytes": 75916,
+    "sha256": "165d635d82b0eb0a04275b92b9334c1ece679b99f263727c24c7c92ebcab51e9"
+   }
+  },
+  {
+   "file": "NotoSansSinhala-Bold.ttf",
+   "family": "Noto Sans Sinhala",
+   "script": "Sinhala",
+   "languages": [
+    "si"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     3457,
+     3459
+    ],
+    [
+     3461,
+     3478
+    ],
+    [
+     3482,
+     3505
+    ],
+    [
+     3507,
+     3515
+    ],
+    [
+     3517,
+     3517
+    ],
+    [
+     3520,
+     3526
+    ],
+    [
+     3530,
+     3530
+    ],
+    [
+     3535,
+     3540
+    ],
+    [
+     3542,
+     3542
+    ],
+    [
+     3544,
+     3551
+    ],
+    [
+     3558,
+     3567
+    ],
+    [
+     3570,
+     3572
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     70113,
+     70132
+    ]
+   ],
+   "codepoints": 114,
+   "glyphs": 267,
+   "bytes": 74364,
+   "sha256": "ca477271a97c02498075ee7cb89d633e0bfd51b69df18ab795f8a8ecbca2f600",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "අඑඟණභෆ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansSinhala/unhinted/ttf/NotoSansSinhala-Bold.ttf",
+    "bytes": 88508,
+    "sha256": "438ce1325e788ec0501042dd6e798c0ec02231a42dbf42e72d17b338aa46742a"
+   }
+  },
+  {
+   "file": "NotoSansOriya-Bold.ttf",
+   "family": "Noto Sans Oriya",
+   "script": "Oriya",
+   "languages": [
+    "or"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     2404,
+     2405
+    ],
+    [
+     2817,
+     2819
+    ],
+    [
+     2821,
+     2828
+    ],
+    [
+     2831,
+     2832
+    ],
+    [
+     2835,
+     2856
+    ],
+    [
+     2858,
+     2864
+    ],
+    [
+     2866,
+     2867
+    ],
+    [
+     2869,
+     2873
+    ],
+    [
+     2876,
+     2884
+    ],
+    [
+     2887,
+     2888
+    ],
+    [
+     2891,
+     2893
+    ],
+    [
+     2901,
+     2903
+    ],
+    [
+     2908,
+     2909
+    ],
+    [
+     2911,
+     2915
+    ],
+    [
+     2918,
+     2935
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ]
+   ],
+   "codepoints": 96,
+   "glyphs": 506,
+   "bytes": 106024,
+   "sha256": "71f48b1fdaf560e41688658626f40bb3d740aa16b4cb09178433d915382cc735",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ଅଓଞନଶୱ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansOriya/unhinted/ttf/NotoSansOriya-Bold.ttf",
+    "bytes": 130104,
+    "sha256": "1c575e8aba40d6baf200e8abac534e9517f431d38cc8131715643037eec149da"
+   }
+  },
+  {
+   "file": "NotoSansTibetan-Bold.ttf",
+   "family": "Noto Sans Tibetan",
+   "script": "Tibetan",
+   "languages": [
+    "bo",
+    "dz"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     3840,
+     3911
+    ],
+    [
+     3913,
+     3948
+    ],
+    [
+     3953,
+     3991
+    ],
+    [
+     3993,
+     4028
+    ],
+    [
+     4030,
+     4044
+    ],
+    [
+     4046,
+     4058
+    ],
+    [
+     8204,
+     8205
+    ],
+    [
+     9676,
+     9676
+    ]
+   ],
+   "codepoints": 214,
+   "glyphs": 1291,
+   "bytes": 372976,
+   "sha256": "7e1f4ddd87038da3fe1571cabdcbc10a59999837ff6ff30fed813b3e5433bf58",
+   "win": [
+    2269,
+    660
+   ],
+   "sample": "ༀཊཔཝཧྌ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/noto-fonts/ffebf8c1ee449e544955a7e813c54f9b73848eac/archive/hinted/NotoSansTibetan/NotoSansTibetan-Bold.ttf",
+    "bytes": 393672,
+    "sha256": "5683e96d9d2a7986b8165e9e5b20367257b7f4fc6948d37751ca9f83456de27a"
+   }
+  },
+  {
+   "file": "NotoSansArabic-Bold.ttf",
+   "family": "Noto Sans Arabic",
+   "script": "Arabic",
+   "languages": [
+    "ar",
+    "fa",
+    "ur",
+    "ps",
+    "ug",
+    "ha"
+   ],
+   "rtl": true,
+   "ranges": [
+    [
+     1536,
+     1791
+    ],
+    [
+     1872,
+     1919
+    ],
+    [
+     2160,
+     2190
+    ],
+    [
+     2192,
+     2193
+    ],
+    [
+     2200,
+     2303
+    ],
+    [
+     8204,
+     8207
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     11841,
+     11841
+    ],
+    [
+     64336,
+     64450
+    ],
+    [
+     64467,
+     64911
+    ],
+    [
+     64914,
+     64967
+    ],
+    [
+     64975,
+     64975
+    ],
+    [
+     65008,
+     65023
+    ],
+    [
+     65136,
+     65140
+    ],
+    [
+     65142,
+     65276
+    ],
+    [
+     69373,
+     69375
+    ]
+   ],
+   "codepoints": 1221,
+   "glyphs": 1341,
+   "bytes": 121608,
+   "sha256": "0eb0280e944e6df6f27b46e7073c9846e39ddc190af89ba8ef6146b4e4a22190",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ؠؾځڟھۿ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansArabic/unhinted/ttf/NotoSansArabic-Bold.ttf",
+    "bytes": 141852,
+    "sha256": "f4cb79f842a07d1bcf597879574358fb7010f73761396d1d0f2445dfedb4d2ca"
+   }
+  },
+  {
+   "file": "NotoSansHebrew-Bold.ttf",
+   "family": "Noto Sans Hebrew",
+   "script": "Hebrew",
+   "languages": [
+    "he",
+    "yi"
+   ],
+   "rtl": true,
+   "ranges": [
+    [
+     1425,
+     1479
+    ],
+    [
+     1488,
+     1514
+    ],
+    [
+     1519,
+     1524
+    ],
+    [
+     8204,
+     8207
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     64285,
+     64310
+    ],
+    [
+     64312,
+     64316
+    ],
+    [
+     64318,
+     64318
+    ],
+    [
+     64320,
+     64321
+    ],
+    [
+     64323,
+     64324
+    ],
+    [
+     64326,
+     64335
+    ]
+   ],
+   "codepoints": 139,
+   "glyphs": 143,
+   "bytes": 15200,
+   "sha256": "248f5703a9e6be5908f24529732d24aa9df0828970a3e0377db490d72495b27d",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "אזלערײ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansHebrew/unhinted/ttf/NotoSansHebrew-Bold.ttf",
+    "bytes": 16900,
+    "sha256": "dfdb3056de1f4542b888c77a1a8a750548a802e271479f56e52152423b64dde8"
+   }
+  },
+  {
+   "file": "NotoSansThaana-Bold.ttf",
+   "family": "Noto Sans Thaana",
+   "script": "Thaana",
+   "languages": [
+    "dv"
+   ],
+   "rtl": true,
+   "ranges": [
+    [
+     1548,
+     1548
+    ],
+    [
+     1563,
+     1563
+    ],
+    [
+     1567,
+     1567
+    ],
+    [
+     1632,
+     1645
+    ],
+    [
+     1748,
+     1748
+    ],
+    [
+     1920,
+     1969
+    ],
+    [
+     8204,
+     8207
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     64830,
+     64831
+    ],
+    [
+     65010,
+     65010
+    ],
+    [
+     65021,
+     65021
+    ]
+   ],
+   "codepoints": 77,
+   "glyphs": 84,
+   "bytes": 13176,
+   "sha256": "4f9ada06371e10530ad189f2bf41139a663cfac6e2b1a58aa4290670131b9d79",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ހވޏޗޞޱ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansThaana/unhinted/ttf/NotoSansThaana-Bold.ttf",
+    "bytes": 27000,
+    "sha256": "476597290f449013cb07477b1089219db333c6af9ec0e436a74139ea9b2c8536"
+   }
+  },
+  {
+   "file": "NotoSansGeorgian-Bold.ttf",
+   "family": "Noto Sans Georgian Bold",
+   "script": "Georgian",
+   "languages": [
+    "ka"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     1417,
+     1417
+    ],
+    [
+     4256,
+     4293
+    ],
+    [
+     4295,
+     4295
+    ],
+    [
+     4301,
+     4301
+    ],
+    [
+     4304,
+     4351
+    ],
+    [
+     7312,
+     7354
+    ],
+    [
+     7357,
+     7359
+    ],
+    [
+     11520,
+     11557
+    ],
+    [
+     11559,
+     11559
+    ],
+    [
+     11565,
+     11565
+    ]
+   ],
+   "codepoints": 175,
+   "glyphs": 176,
+   "bytes": 30436,
+   "sha256": "03e26f11132a5a6b57f0c3deb1df2ca95ac97c9cf7f3bfcd0d13714ed24e78aa",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ႠႱჂნჭჿ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansGeorgian/unhinted/ttf/NotoSansGeorgian-Bold.ttf",
+    "bytes": 35820,
+    "sha256": "517722454bbe6587ada79a0509db8c9b292b6a40b025eebe69c151a6508efc7e"
+   }
+  },
+  {
+   "file": "NotoSansArmenian-Bold.ttf",
+   "family": "Noto Sans Armenian",
+   "script": "Armenian",
+   "languages": [
+    "hy"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     1329,
+     1366
+    ],
+    [
+     1369,
+     1418
+    ],
+    [
+     1421,
+     1423
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     64275,
+     64279
+    ]
+   ],
+   "codepoints": 97,
+   "glyphs": 100,
+   "bytes": 17144,
+   "sha256": "fafdd045563b3105292741c9b51cca893577b3e975bae2117b2a8218b64fa2e5",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ԱՁՑըոֈ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansArmenian/unhinted/ttf/NotoSansArmenian-Bold.ttf",
+    "bytes": 18752,
+    "sha256": "1dd206046cd3f41efddec93359a8d6590e5e2d5fcb036b9025725b560cefe6c6"
+   }
+  },
+  {
+   "file": "NotoSansEthiopic-Bold.ttf",
+   "family": "Noto Sans Ethiopic",
+   "script": "Ethiopic",
+   "languages": [
+    "am",
+    "ti"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     4608,
+     4680
+    ],
+    [
+     4682,
+     4685
+    ],
+    [
+     4688,
+     4694
+    ],
+    [
+     4696,
+     4696
+    ],
+    [
+     4698,
+     4701
+    ],
+    [
+     4704,
+     4744
+    ],
+    [
+     4746,
+     4749
+    ],
+    [
+     4752,
+     4784
+    ],
+    [
+     4786,
+     4789
+    ],
+    [
+     4792,
+     4798
+    ],
+    [
+     4800,
+     4800
+    ],
+    [
+     4802,
+     4805
+    ],
+    [
+     4808,
+     4822
+    ],
+    [
+     4824,
+     4880
+    ],
+    [
+     4882,
+     4885
+    ],
+    [
+     4888,
+     4954
+    ],
+    [
+     4957,
+     4988
+    ],
+    [
+     4992,
+     5017
+    ],
+    [
+     8942,
+     8942
+    ],
+    [
+     9676,
+     9676
+    ],
+    [
+     11648,
+     11670
+    ],
+    [
+     11680,
+     11686
+    ],
+    [
+     11688,
+     11694
+    ],
+    [
+     11696,
+     11702
+    ],
+    [
+     11704,
+     11710
+    ],
+    [
+     11712,
+     11718
+    ],
+    [
+     11720,
+     11726
+    ],
+    [
+     11728,
+     11734
+    ],
+    [
+     11736,
+     11742
+    ],
+    [
+     43777,
+     43782
+    ],
+    [
+     43785,
+     43790
+    ],
+    [
+     43793,
+     43798
+    ],
+    [
+     43808,
+     43814
+    ],
+    [
+     43816,
+     43822
+    ],
+    [
+     124896,
+     124902
+    ],
+    [
+     124904,
+     124907
+    ],
+    [
+     124909,
+     124910
+    ],
+    [
+     124912,
+     124926
+    ]
+   ],
+   "codepoints": 525,
+   "glyphs": 586,
+   "bytes": 281816,
+   "sha256": "0eccd1c1ec16d7522ae8e1e700ad98e3f6af2a617fb495d2bcc5082ccc8564c9",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ሀቁኊዔጙፚ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansEthiopic/unhinted/ttf/NotoSansEthiopic-Bold.ttf",
+    "bytes": 288828,
+    "sha256": "6b06274ea730962522b1fcbfdcb16cb5a385aa36734f31f5c9d0ca910541e880"
+   }
+  },
+  {
+   "file": "NotoSansCanadianAboriginal-Bold.ttf",
+   "family": "Noto Sans Canadian Aboriginal",
+   "script": "CanadianAboriginal",
+   "languages": [
+    "iu",
+    "cr",
+    "oj"
+   ],
+   "rtl": false,
+   "ranges": [
+    [
+     5120,
+     5759
+    ],
+    [
+     6320,
+     6389
+    ],
+    [
+     72368,
+     72383
+    ]
+   ],
+   "codepoints": 726,
+   "glyphs": 743,
+   "bytes": 86112,
+   "sha256": "8eadc0cd11c73025063fc5e9f14bb0a2959e7faab4e0bbdf1c71803c388b49fd",
+   "win": [
+    1108,
+    322
+   ],
+   "sample": "ᐁᒀᓿᕿᗾᙿ",
+   "probe": null,
+   "upstream": {
+    "url": "https://raw.githubusercontent.com/notofonts/notofonts.github.io/5c3913063bb189df4edc94b766584dfb4c04a187/fonts/NotoSansCanadianAboriginal/unhinted/ttf/NotoSansCanadianAboriginal-Bold.ttf",
+    "bytes": 93656,
+    "sha256": "e786d24b678fcb2bb68236c66e4fff31b676a7e5863a7073eac58edfd7f00f50"
+   }
+  }
+ ],
+ "uncovered": [
+  {
+   "script": "Yi",
+   "languages": [
+    "ii"
+   ],
+   "reason": "Noto Sans Yi ships a Regular weight only; there is no Bold to match Inter Bold's colour"
+  },
+  {
+   "script": "Avestan",
+   "languages": [
+    "ae"
+   ],
+   "reason": "Noto Sans Avestan ships a Regular weight only; there is no Bold to match Inter Bold's colour"
+  },
+  {
+   "script": "Mongolian",
+   "languages": [
+    "mn"
+   ],
+   "reason": "Cyrillic Mongolian is Inter's; the traditional vertical script has only a Regular (Noto Sans Mongolian) and is not shipped"
+  }
+ ],
+ "buckets": {
+  "inter": [
+   "ab",
+   "om",
+   "aa",
+   "af",
+   "ak",
+   "an",
+   "ig",
+   "gn",
+   "ay",
+   "az",
+   "id",
+   "ms",
+   "bm",
+   "jv",
+   "su",
+   "bi",
+   "bs",
+   "br",
+   "ca",
+   "cs",
+   "ch",
+   "ny",
+   "sn",
+   "co",
+   "cy",
+   "da",
+   "se",
+   "de",
+   "nv",
+   "et",
+   "na",
+   "en",
+   "en-GB",
+   "es",
+   "eo",
+   "eu",
+   "ee",
+   "to",
+   "fo",
+   "fr",
+   "fr-CA",
+   "fy",
+   "ff",
+   "ga",
+   "gv",
+   "sm",
+   "gd",
+   "gl",
+   "ki",
+   "ho",
+   "hr",
+   "io",
+   "rw",
+   "ia",
+   "ie",
+   "ik",
+   "nr",
+   "nd",
+   "xh",
+   "zu",
+   "is",
+   "it",
+   "mh",
+   "kl",
+   "kr",
+   "kw",
+   "kg",
+   "rn",
+   "sw",
+   "ht",
+   "kj",
+   "ku",
+   "la",
+   "lv",
+   "lb",
+   "lt",
+   "li",
+   "ln",
+   "lu",
+   "lg",
+   "hu",
+   "mg",
+   "mt",
+   "mo",
+   "nl",
+   "no",
+   "nb",
+   "nn",
+   "oc",
+   "uz",
+   "hz",
+   "ng",
+   "pl",
+   "pt",
+   "pb",
+   "pt-BR",
+   "ty",
+   "ro",
+   "rm",
+   "qu",
+   "sc",
+   "za",
+   "st",
+   "tn",
+   "sq",
+   "ss",
+   "sk",
+   "sl",
+   "so",
+   "fi",
+   "sv",
+   "mi",
+   "vi",
+   "ve",
+   "tr",
+   "tk",
+   "tw",
+   "vo",
+   "fj",
+   "wa",
+   "tl",
+   "wo",
+   "ts",
+   "sg",
+   "yo",
+   "el",
+   "av",
+   "ba",
+   "be",
+   "bg",
+   "os",
+   "kv",
+   "ky",
+   "kk",
+   "mk",
+   "ce",
+   "ru",
+   "sr",
+   "tt",
+   "tg",
+   "uk",
+   "cv",
+   "cu"
+  ],
+  "cjk": [
+   "ja",
+   "zh",
+   "zh-TW",
+   "ko"
+  ]
+ }
+}
