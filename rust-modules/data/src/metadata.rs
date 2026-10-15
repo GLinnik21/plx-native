@@ -3866,6 +3866,8 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             crate::viewstate::ViewEdit::Watched(on) => set_watched_local(state, &at, on),
             // the loaded item has no deck to leave
             crate::viewstate::ViewEdit::LeftDeck => false,
+            // Detail re-reads itself (`DetailRefresh`); a facts patch is not published to it yet
+            crate::viewstate::ViewEdit::Facts { .. } => false,
         },
         MetadataCmd::InstallPlaying(p) => {
             install_playing(state, p);

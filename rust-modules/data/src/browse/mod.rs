@@ -562,6 +562,10 @@ struct SecState {
     total: i64,      // -1 = unknown (first fetch of this query still out)
     items: SecItems,
     cursor: Option<Arc<Cursor>>,
+    /// A read-back changed a row this section's QUERY depends on (see
+    /// [`BrowseState::apply_view_local`]): what it lists is out of date though every row on screen
+    /// is right. Cleared by any re-query.
+    membership_stale: bool,
 }
 
 /// A section's items, CHUNKED BY PAGE (restructure phase 4, the O(result) rule of spec §5.2 —
@@ -683,7 +687,7 @@ impl SecItems {
         }
     }
     /// A read scan first: an optimistic edit must not clone unrelated retained pages.
-    fn set_watched(&mut self, at: &crate::viewstate::ViewAt, on: bool) -> bool {
+    fn apply_view(&mut self, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
         let matches = |m: &PmsMovie| at.covers(m);
         let mut hit = false;
         for p in 0..self.pages.len() {
@@ -699,7 +703,7 @@ impl SecItems {
                 .flatten()
                 .filter(|m| matches(m))
             {
-                crate::viewstate::ViewEdit::Watched(on).apply(m);
+                edit.apply(m);
                 hit = true;
             }
         }
@@ -738,11 +742,27 @@ impl Default for SecState {
             total: -1,
             items: SecItems::default(),
             cursor: None,
+            membership_stale: false,
         }
     }
 }
 
 impl SecState {
+    /// Does the server's answer to this section's query change when an item is watched: the
+    /// Unwatched switch drops it, ordering by last viewed moves it? (Plex's sort key for "Last
+    /// Viewed" is `lastViewedAt`.)
+    fn membership_depends_on_viewing(&self) -> bool {
+        (self.unwatched && self.library_type.filters())
+            || self.sorts.get(self.sort_idx).is_some_and(|sort| sort.key == "lastViewedAt")
+    }
+    /// Forget the listing, as a query edit does: the next visit fetches it afresh.
+    fn reset_listing(&mut self) {
+        self.fetch = SecFetch::Loading;
+        self.total = -1;
+        self.items.clear();
+        self.cursor = None;
+        self.membership_stale = false;
+    }
     fn query_filters(&self, section_kind: SecKind) -> Vec<(String, String)> {
         let mut filters = Vec::new();
         if let Some(kind) = self.library_type.plex_type(section_kind) {
@@ -791,6 +811,9 @@ pub struct BrowseState {
     /// [`RECENT_SECTIONS`]).
     left: Vec<(usize, (usize, usize))>,
     gen: u32,
+    /// The `gen` a membership re-query was started under: while it stands and the first page is
+    /// out, the store is owed a pump even with no Library page on top ([`BrowseState::requery_owed`]).
+    requery_gen: Option<u32>,
     sections_gen: u32,
     epoch: u32,
     src_facts_gen: u32,
@@ -889,6 +912,7 @@ impl Default for BrowseState {
             focus: None,
             left: Vec::new(),
             gen: 0,
+            requery_gen: None,
             sections_gen: 0,
             epoch: 0,
             src_facts_gen: 0,
@@ -1035,10 +1059,7 @@ impl BrowseState {
         self.bump_gen();
         let current = self.cur();
         if let Some(state) = self.states.get_mut(current) {
-            state.fetch = SecFetch::Loading;
-            state.total = -1;
-            state.items.clear();
-            state.cursor = None;
+            state.reset_listing();
         }
     }
     fn set_cur(&mut self, i: usize) {
@@ -1195,12 +1216,49 @@ impl BrowseState {
             },
         }
     }
-    fn set_watched_local(&mut self, at: &crate::viewstate::ViewAt, on: bool) -> bool {
+    /// Edit every listing row the change covers, in every section's loaded pages.
+    ///
+    /// A read-back's [`ViewEdit::Facts`] that lands on a row of a listing whose MEMBERSHIP depends on
+    /// viewing (the Unwatched switch, or ordered by last viewed) also marks that section stale: the
+    /// row is patched where it stands, but the server would now list it elsewhere or not at all.
+    /// The current section waits for the Library page to be covered ([`BrowseState::requery_stale`]);
+    /// any other section simply forgets its pages, which is what a first visit looks like.
+    fn apply_view_local(&mut self, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
+        let current = self.cur();
+        let facts = matches!(edit, crate::viewstate::ViewEdit::Facts { .. });
         let mut hit = false;
-        for state in &mut self.states {
-            hit |= state.items.set_watched(at, on);
+        for (i, state) in self.states.iter_mut().enumerate() {
+            if !state.items.apply_view(at, edit) {
+                continue;
+            }
+            hit = true;
+            if facts && state.membership_depends_on_viewing() {
+                if i == current {
+                    state.membership_stale = true;
+                } else {
+                    state.reset_listing();
+                }
+            }
         }
         hit
+    }
+    /// Re-run the current section's query because a read-back changed what it would list. The
+    /// reader's place (`cursor`) survives, unlike a query edit. True when a re-query was started.
+    fn requery_stale(&mut self) -> bool {
+        let current = self.cur();
+        let Some(state) = self.states.get_mut(current).filter(|s| s.membership_stale) else { return false };
+        let cursor = state.cursor.clone();
+        self.requery();
+        if let Some(state) = self.states.get_mut(current) {
+            state.cursor = cursor;
+        }
+        self.requery_gen = Some(self.gen);
+        true
+    }
+    /// Is a membership re-query's first page still owed, so that the store must be pumped even
+    /// though no Library page is on top to do it?
+    pub fn requery_owed(&self) -> bool {
+        self.requery_gen == Some(self.gen) && self.cur_state().is_some_and(|s| s.fetch == SecFetch::Loading)
     }
     fn note_library_choice(&mut self, i: usize) {
         let (Some(kind), Some(section)) = (self.section_kind(i), self.sections.get(i)) else {
@@ -1571,6 +1629,9 @@ impl BrowseState {
                     LibraryWork::Letters => self.kick_letters(adapter),
                     LibraryWork::Genres => self.kick_genres(adapter),
                     LibraryWork::Retry => self.retry_cur_source(),
+                    LibraryWork::Requery => {
+                        self.requery_stale();
+                    }
                     LibraryWork::Commit { .. }
                     | LibraryWork::Hubs { .. }
                     | LibraryWork::HubPage { .. }
@@ -2329,10 +2390,12 @@ impl BrowseState {
             }
             BrowseCmd::ApplyView { at, edit } => match edit {
                 crate::viewstate::ViewEdit::Watched(on) => {
-                    let listing = self.set_watched_local(&at, on);
+                    let listing = self.apply_view_local(&at, edit);
                     let hubs = self.hubs_set_watched_local(&at, on);
                     listing || hubs
                 }
+                // The section shelves are re-read whole after every burst (`HubsInvalidateAll`).
+                crate::viewstate::ViewEdit::Facts { .. } => self.apply_view_local(&at, edit),
                 crate::viewstate::ViewEdit::LeftDeck => self.hubs_left_the_deck(at.sid, &at.rk),
             },
         }
@@ -3848,3 +3911,7 @@ mod localized_type_tests {
 #[cfg(test)]
 #[path = "browse_view_ledger_tests.rs"]
 mod view_ledger_tests;
+
+#[cfg(test)]
+#[path = "browse_membership_tests.rs"]
+mod membership_tests;

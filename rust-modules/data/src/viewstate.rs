@@ -25,7 +25,9 @@
 //!   to every store that holds rows for it, a show's or season's EPISODE rows included), so the tick, the veil and the resume bar all change on
 //!   the frame of the press however far away the server is. The refresh that follows the write is
 //!   the reconcile: it is the server's own answer, and it silently corrects an optimistic edit that
-//!   turned out to be wrong. A press made while a read of some store was already out is not lost to
+//!   turned out to be wrong. The per-item answer is the read-back ([`crate::stores::viewreconcile`]),
+//!   which this module triggers through [`ViewStateState::take_reread`] for every landed write, taken
+//!   or refused, and which publishes its result as [`ViewFact::Facts`]. A press made while a read of some store was already out is not lost to
 //!   that read's pre-press body either: every published change is also recorded in the shared
 //!   [`crate::viewledger::ViewLedger`], which each store consults when such a read lands. A server that never answers leaves the edit standing — the same "a
 //!   failure never blanks a populated Home" rule `pms.rs` keeps for a fetch, applied to a write.
@@ -146,6 +148,9 @@ pub enum ViewFact {
     Watched(bool),
     /// The item was hidden from Continue Watching and nothing else about it changed.
     LeftDeck,
+    /// What the server SAID about the item when the read-back asked ([`crate::stores::viewreconcile`]):
+    /// the three fields of its watch state, as `pms::parse_item` reads them.
+    Facts { watched: bool, unwatched: bool, resume_ms: i64 },
 }
 
 /// One change to what the app knows about an item's view state, published to every store that
@@ -165,6 +170,9 @@ pub enum ViewEdit {
     Watched(bool),
     /// Leave Continue Watching; every other field of the row stands.
     LeftDeck,
+    /// Set the three watch-state fields to what the server answered. Never recorded in the
+    /// [`crate::viewledger::ViewLedger`]: it is the server's word, not a press.
+    Facts { watched: bool, unwatched: bool, resume_ms: i64 },
 }
 
 /// WHICH rows a store edit reaches: the item and the scope it was published with.
@@ -184,6 +192,9 @@ impl ViewChange {
         match self.fact {
             ViewFact::Watched(on) => ViewEdit::Watched(on),
             ViewFact::LeftDeck => ViewEdit::LeftDeck,
+            ViewFact::Facts { watched, unwatched, resume_ms } => {
+                ViewEdit::Facts { watched, unwatched, resume_ms }
+            }
         }
     }
 }
@@ -226,8 +237,14 @@ impl ViewEdit {
     /// Apply to one row already known to be covered. `LeftDeck` changes no field of a row — leaving
     /// the deck is a membership change the deck's owner makes.
     pub fn apply(self, m: &mut crate::pms::PmsMovie) {
-        if let ViewEdit::Watched(on) = self {
-            crate::pms::set_watched(m, on);
+        match self {
+            ViewEdit::Watched(on) => crate::pms::set_watched(m, on),
+            ViewEdit::Facts { watched, unwatched, resume_ms } => {
+                m.watched = watched;
+                m.unwatched = unwatched;
+                m.resume_ms = resume_ms;
+            }
+            ViewEdit::LeftDeck => {}
         }
     }
 }
@@ -356,6 +373,9 @@ pub struct ViewStateState {
     retry_cd: u32,
     want_hubs: bool,
     want_detail: Option<crate::stores::viewstate::DetailRefresh>,
+    /// Items whose write landed (taken or refused) and whose truth the read-back worker is owed,
+    /// handed over by [`ViewStateState::take_reread`] once the burst is idle.
+    want_reread: Vec<(ServerId, String)>,
     next_request_id: u64,
 }
 
@@ -368,6 +388,7 @@ impl Default for ViewStateState {
             retry_cd: 0,
             want_hubs: false,
             want_detail: None,
+            want_reread: Vec::new(),
             next_request_id: 1,
         }
     }
@@ -489,7 +510,8 @@ pub fn publish_view(
     let _ = hubs(crate::stores::hubs::HubsCmd::ApplyView { at: at.clone(), edit });
     browse(crate::stores::browse::BrowseCmd::ApplyView { at: at.clone(), edit });
     // The Library's own deck is a different shelf on a different screen, and the one place a
-    // deck removal is reachable from besides Home; no other store has a deck.
+    // deck removal is reachable from besides Home; no other store has a deck. Facts reach only
+    // Home's hubs and Browse's listing and shelves so far (`docs/stores-as-machines.md`).
     if let ViewEdit::Watched(_) = edit {
         metadata(crate::stores::metadata::MetadataCmd::ApplyView { at: at.clone(), edit });
         search(crate::stores::search::SearchCmd::ApplyView { at: at.clone(), edit });
@@ -655,6 +677,17 @@ pub fn pump_with_gate(
         // says. A server that can answer neither question leaves the shelves exactly as they
         // are — `pms.rs`'s per-source rule, unchanged.
         self.want_hubs = true;
+        // A watched/unwatched write is re-read whatever the server said, on the item and on every
+        // copy the fan-out took: on success the answer confirms the optimistic edit, on refusal
+        // it is the only thing that puts the tile back. A deck removal changes no field a read
+        // reports, so it asks nothing (the hub refetch above reconciles the deck).
+        if r.w.propagates() {
+            for key in std::iter::once((r.sid, r.rk.clone())).chain(done.also.iter().cloned()) {
+                if !self.want_reread.contains(&key) {
+                    self.want_reread.push(key);
+                }
+            }
+        }
         if let Some(detail) = r.detail {
             self.want_detail = Some(detail);
         }
@@ -709,6 +742,13 @@ pub fn hold_inflight_for_test(&mut self, sid: ServerId, rk: &str) {
             detail: None,
             guid: String::new(),
         });
+}
+
+/// The items the read-back worker is owed, once this owner's burst is idle (the same gate as
+/// [`ViewStateState::take_detail_refresh`]: four presses in a row cost one batch).
+pub fn take_reread(&mut self) -> Vec<(ServerId, String)> {
+    if self.is_busy() { return Vec::new(); }
+    std::mem::take(&mut self.want_reread)
 }
 
 /// Drain the addressed Detail reconciliation only after this owner's burst is idle.
@@ -940,6 +980,7 @@ fn reset(&mut self) {
     self.retry_cd = 0;
     self.want_hubs = false;
     self.want_detail = None;
+    self.want_reread.clear();
     // The edits describe the identity that just changed (sign-in, profile or server switch): they
     // must never be made again on a read of the next one's rows.
     self.ledger.reset();

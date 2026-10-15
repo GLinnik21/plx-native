@@ -1204,6 +1204,19 @@ impl Bridge {
         self.stores.viewstate_pump(self.directory.view())
     }
 
+    /// The read-back worker's pass (`stores::viewreconcile`), and the Browse pump a membership
+    /// re-query needs while the Library page is covered and so is not ticked to pump its own store.
+    pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
+        if self.stores.reconcile_pump(self.directory.view()) {
+            plx_machine::idle::invalidate();
+        }
+        let mut browse = self.stores.browse.borrow_mut();
+        if browse.requery_owed() {
+            return browse.pump_with_gate(&self.stores.landgate).endpoints;
+        }
+        Default::default()
+    }
+
     pub(crate) fn take_detail_refresh(&self) -> Option<plx_data::stores::viewstate::DetailRefresh> {
         self.stores.take_detail_refresh()
     }

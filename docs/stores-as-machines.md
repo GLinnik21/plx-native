@@ -35,6 +35,18 @@ the server answered before the write arrived; a read requested after the landing
 word and is left alone. `ViewState`'s reset (sign-in, profile or server switch) clears the table.
 It is a main-thread `Rc` handle, and the stamp travels into a worker as a plain number. A store
 built after `Stores::default` (`HubsStore::from_parts` at boot) takes the ledger as an argument.
+`Stores::reconcile` (`stores::viewreconcile`, `StoreId::ViewReconcile`, appended after the earlier
+ordinals) is the read-back of a view-state write. ViewState hands it the `(server, ratingKey)` of every
+item whose write landed, taken or refused, once its burst is idle; it reads them with one
+`metadata_many` per server (one in flight per server, an item asked for again meanwhile is marked dirty
+and re-queued once), stamps the batch from the ledger, drops any row a newer press covers, and publishes
+the rest as `ViewFact::Facts` edits at leaf scope, which patch Home's hubs and Browse. A refused scrobble
+therefore returns the tile to what the server holds. Facts are not recorded in the ledger (they are the
+server's word). `Bridge::reconcile_pump` runs it after `viewstate_pump` every frame, and also pumps Browse
+while a Browse section is owed a membership re-query (below): a covered Library page is not ticked.
+Browse marks a section whose membership depends on viewing (Unwatched filter, `lastViewedAt` sort) stale
+when a Facts edit lands in it; the Library screen asks for the re-query (`LibraryWork::Requery`) only while
+covered, never while visible, so tiles do not leave under the cursor.
 `Stores::person` owns the open model, generation, retry ladders and dev-seed latch alongside a
 rotated `Arc<PersonAdapter>` containing the unchanged indexed fetch claims/mailboxes. `AppViews`
 lends its `PersonView` to Person, Filmography and PersonBio; `person-owner` rejects every old free
@@ -45,7 +57,7 @@ read/mutation facade and storage selector with no allowlist.
 Seven data modules own the application's server-derived state: `browse` (the Library table and its
 per-section paged listing), `pms` (Home's hub catalog, behind the `stores::hubs` machine),
 `metadata` (the detail page's item, seasons and episodes, the playing item), `search`, `person`,
-`collection`, and `viewstate` (the view-state WRITE queue). All seven now own their state per `Bridge` (Metadata
+`collection`, and `viewstate` (the view-state WRITE queue; `viewreconcile`, its read-back, is an eighth store). The first seven now own their state per `Bridge` (Metadata
 was the last to complete its port): each `Bridge` owns one of each store. `BrowseStore`'s
 state/adapter/notice, `HubsStore`'s `PmsState`/`Arc<PmsAdapter>`/notice, `SearchStore`'s
 state/adapter/notice, `MetadataStore`'s state/`Arc<MetadataAdapter>`/notice and `ViewStateStore`'s

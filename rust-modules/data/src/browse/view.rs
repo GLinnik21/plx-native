@@ -33,6 +33,7 @@ struct ListingData {
     sort_desc: bool,
     genre: Option<Arc<GenreEntry>>,
     unwatched: bool,
+    membership_stale: bool,
     cursor: Option<Arc<super::Cursor>>,
 }
 
@@ -52,6 +53,14 @@ impl ListingSnapshot {
         }
         self
     }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_membership_stale(mut self) -> Self {
+        if let Some(data) = &mut self.data {
+            data.membership_stale = true;
+        }
+        self
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_fetch(mut self, fetch: SecFetch, total: i64) -> Self {
         if let Some(data) = &mut self.data {
@@ -145,6 +154,7 @@ impl ListingSnapshot {
                 sort_desc: false,
                 genre: None,
                 unwatched: false,
+                membership_stale: false,
                 cursor: None,
             }),
         }
@@ -232,6 +242,11 @@ impl<'a> ListingView<'a> {
     pub fn unwatched(self) -> bool {
         self.0.data.as_ref().is_some_and(|s| s.unwatched && s.library_type.filters())
     }
+    /// A read-back changed a row this listing's query depends on, so the server would now list
+    /// something else. Cleared by the re-query ([`crate::stores::browse::LibraryWork::Requery`]).
+    pub fn membership_stale(self) -> bool {
+        self.0.data.as_ref().is_some_and(|s| s.membership_stale)
+    }
     pub fn library_type(self) -> super::LibraryType {
         self.0.data.as_ref().map_or(super::LibraryType::default(), |s| s.library_type)
     }
@@ -314,6 +329,7 @@ impl super::BrowseState {
                     sort_desc: state.sort_desc,
                     genre: state.genre.clone(),
                     unwatched: state.unwatched,
+                    membership_stale: state.membership_stale,
                     cursor: state.cursor.clone(),
                 }),
         }
@@ -762,7 +778,7 @@ mod tests {
             retained,
             &state.cur_state().unwrap().items.pages
         ));
-        state.set_watched_local(&crate::viewstate::ViewAt::leaf(before.sid, &before.rk), false);
+        state.apply_view_local(&crate::viewstate::ViewAt::leaf(before.sid, &before.rk), crate::viewstate::ViewEdit::Watched(false));
         assert!(state.listing_snapshot().view().item(0).unwrap().unwatched);
         assert_eq!(first.view().item(0).unwrap().unwatched, before.unwatched);
         state.requery();

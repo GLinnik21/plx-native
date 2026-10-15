@@ -2318,6 +2318,10 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // is owed either way. Invalidates from inside, per landing.
         let endpoints = app.bridge.viewstate_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
+        // …and the read-back it owes: what the server now says about the item(s) just written, on
+        // every route for the same reason (a refused write is put right here, not by a refetch).
+        let endpoints = app.bridge.reconcile_pump();
+        super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
         // A server on a plaintext grant keeps trying HTTPS (`plex::grant::UpgradeRetry`): its
         // endpoint re-discovery races every HTTPS route first and retires the grant when one
         // verifies. Route-unconditional — the upgrade is owed whatever is on screen.

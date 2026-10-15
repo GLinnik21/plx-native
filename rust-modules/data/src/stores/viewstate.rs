@@ -128,6 +128,16 @@ impl ViewStateStore {
         self.state.take_detail_refresh()
     }
 
+    /// Items whose landed write is owed a read-back (`stores::viewreconcile`).
+    pub fn take_reread(&mut self) -> Vec<(ServerId, String)> {
+        self.state.take_reread()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_busy_for_test(&self) -> bool {
+        self.state.is_busy()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn hold_inflight_for_test(&mut self, sid: ServerId, rk: &str) {
         self.state.hold_inflight_for_test(sid, rk);

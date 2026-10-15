@@ -324,6 +324,17 @@ impl LibraryScreen {
             StoreCmd::Browse(BrowseCmd::Addressed { target, work }))));
     }
 
+    /// Re-run the listing's query when a read-back made its membership stale (the Unwatched switch,
+    /// ordering by last viewed): ONLY called while the page is covered, so the reader's ground
+    /// never moves under the cursor and the page is fresh when it is shown again. The Browse pump
+    /// that lands the new first page is the application's (`Bridge::reconcile_pump`), because a
+    /// buried page is not ticked to pump its own store.
+    fn requery_stale<H: LibraryLike>(&self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        if !H::listing(cx).membership_stale() { return; }
+        let Some(target) = self.address(cx) else { return };
+        self.store(target, LibraryWork::Requery, fx);
+    }
+
     fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
         let listing = H::listing(cx);
         self.listed = listing.library_type();
@@ -1055,7 +1066,11 @@ impl LibraryScreen {
             }
         }
         match ev {
-            ScreenEvent::Mount | ScreenEvent::StoreChanged(..) => { self.sync(cx); }
+            ScreenEvent::Mount | ScreenEvent::StoreChanged(..) => {
+                self.sync(cx);
+                // A read-back that lands while this page is buried is acted on at once.
+                if !self.live { self.requery_stale(cx, fx); }
+            }
             ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.sync(cx); }
             ScreenEvent::Enter(enter) => {
                 self.live = true;
@@ -1066,7 +1081,10 @@ impl LibraryScreen {
                 }
                 self.sync(cx);
             }
-            ScreenEvent::Cover => { self.live = false; }
+            ScreenEvent::Cover => {
+                self.live = false;
+                self.requery_stale(cx, fx);
+            }
             ScreenEvent::Uncover => { self.live = true; self.sync(cx); }
             ScreenEvent::WillLeave(_) => { self.save_cursor(cx, fx); self.flush(fx); }
             ScreenEvent::App(AppMsg::Library(command)) => return self.command(*command, cx, fx),

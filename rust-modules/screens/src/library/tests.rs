@@ -732,6 +732,35 @@ fn a_compact_menu_keeps_the_host_store_pump_and_deferred_commit_live() {
         "the store must fetch the just-committed query while the compact menu remains open");
 }
 
+/// The page asks Browse to re-run a listing whose membership a read-back made stale ONLY once it is
+/// covered: not on the notice that makes it stale while it is visible, and not again once the
+/// re-query has cleared the flag.
+#[test]
+fn a_stale_listing_is_requeried_when_the_page_is_covered_never_while_visible() {
+    let _guard = plx_base::testlock::serial();
+    let requeries = |stale: bool, events: Vec<ScreenEvent<HostFixture>>| {
+        let mut fixture = Fixture::new();
+        if stale { fixture.listing = fixture.listing.clone().with_membership_stale(); }
+        let mut page = fixture.screen();
+        page.wanted_kind = None;
+        let mut out = Vec::new();
+        let mut present = plx_machine::present::Present::new();
+        let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present);
+        for ev in &events { page.step(ev, &fixture.cx(None), &mut fx); }
+        drop(fx);
+        out.iter().filter(|effect| matches!(&effect.fx, Fx::App(AppFx::Store(StoreId::Browse,
+            StoreCmd::Browse(BrowseCmd::Addressed { work: LibraryWork::Requery, .. }))))).count()
+    };
+    let notice = || ScreenEvent::StoreChanged(StoreId::ViewReconcile.ord(), 1);
+    assert_eq!(requeries(true, vec![notice(), ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 })]), 0,
+        "a visible page never re-queries under the cursor");
+    assert_eq!(requeries(true, vec![ScreenEvent::Cover]), 1, "Cover re-queries once");
+    assert_eq!(requeries(true, vec![ScreenEvent::Cover, ScreenEvent::Uncover]), 1, "Uncover never does");
+    assert_eq!(requeries(true, vec![ScreenEvent::Cover, notice()]), 2,
+        "a notice that finds the covered listing still stale asks again; the store clears the flag on the first");
+    assert_eq!(requeries(false, vec![ScreenEvent::Cover]), 0, "a listing whose membership is current is left alone");
+}
+
 #[test]
 fn published_library_projection_and_layout_enter_canonical_state() {
     let _guard = plx_base::testlock::serial();

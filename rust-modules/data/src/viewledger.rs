@@ -32,6 +32,10 @@
 //! landed, and is never held against a read requested after. Between the press and the landing
 //! the entry stands (a server that never answers leaves the edit standing, as `viewstate` says).
 //!
+//! The read-back worker ([`crate::stores::viewreconcile`]) is the one reader that stamps AND is
+//! answered by `ViewFact::Facts` instead of `patch`: it drops a row a newer press covers
+//! (`since(stamp)`), and its own Facts edits are never recorded here.
+//!
 //! ## What is kept
 //!
 //! One entry per distinct (item, scope, kind of edit) — the LATEST one — each carrying the
