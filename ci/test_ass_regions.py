@@ -14,6 +14,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = r'''
+#pragma once
 #include <stdint.h>
 #include <stdarg.h>
 typedef struct { int unused; } ASS_Library;
@@ -47,6 +48,10 @@ static void ass_process_chunk(ASS_Track *t, char *d, int n, long long s, long lo
 static void ass_prune_events(ASS_Track *t, long long d) {}
 static void ass_flush_events(ASS_Track *t) {}
 static void ass_set_frame_size(ASS_Renderer *r, int w, int h) {}
+#define ASS_FEATURE_WRAP_UNICODE 3
+static int ass_track_set_feature(ASS_Track *t, int f, int e) { return 0; }
+static void ass_set_line_spacing(ASS_Renderer *r, double s) {}
+static size_t plxi_library_fonts(ASS_Library *l) { return 0; }
 static void ass_set_storage_size(ASS_Renderer *r, int w, int h) {}
 '''
 SOURCE = r'''

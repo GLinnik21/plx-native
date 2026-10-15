@@ -2366,7 +2366,7 @@ pub(crate) fn restore_played_entry(app: &mut App) {
 pub(crate) fn refresh_after_playback(app: &mut App) {
     if app.refresh_detail.is_none()
         || bridge::player(&app.pages).is_some()
-        || !plx_media::route::scrobble_settled()
+        || !plx_media::route::timeline_stop_landed()
     {
         return;
     }
