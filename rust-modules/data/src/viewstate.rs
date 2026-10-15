@@ -1127,6 +1127,11 @@ mod tests {
         let mut collection = Vec::new();
         let mut search = Vec::new();
         let mut metadata_store = crate::stores::metadata::MetadataStore::default();
+        // the page is mounted on the pressed item: an edit that matches nothing raises no notice
+        crate::metadata::install_for_test(metadata_store.state_mut(), Some(crate::metadata::Detail {
+            sid, rk: "7".into(), ..Default::default()
+        }));
+        let _ = metadata_store.take_notice();
 
         assert!(store.run(
             crate::stores::viewstate::ViewStateCmd::Request {
@@ -1166,6 +1171,7 @@ mod tests {
         assert!(metadata_store.take_notice().is_some(),
             "the optimistic edit reaches {} before run returns", crate::stores::StoreId::Metadata.name());
         assert!(store.take_notice().is_some(), "the owning ViewState store notices its command");
+        crate::metadata::install_for_test(metadata_store.state_mut(), None);
         plx_plex::plex::reset_servers_for_test();
     }
 
