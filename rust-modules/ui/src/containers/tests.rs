@@ -155,7 +155,7 @@ fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
         // The fixture seeds captured words verbatim; the lift sees exactly what it was given.
         assert_eq!(chrome.labels.faces, [super::super::widgets::TabFace::Label("Home".into()),
             super::super::widgets::TabFace::Label("Movies".into()),
-            super::super::widgets::TabFace::Label(String::new())]);
+            super::super::widgets::TabFace::Icon(crate::icons::Icon::Search)]);
         assert!((chrome.chip_expand - 0.625).abs() < 1e-6);
         let face = read.bar_material.expect("the frame plan supplied the tab face");
         assert_eq!(face.scrim_top, [0.1, 0.2, 0.3, 0.4]);
@@ -165,7 +165,9 @@ fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
     let _guard = plx_base::testlock::serial();
     SEEN.store(false, Ordering::Relaxed);
     let (mut d, mut rig, _) = booted();
-    rig.seed_scrim_chrome_for_test("Captured A", "A", &["Home", "Movies", ""], 0.625);
+    rig.seed_scrim_chrome_for_test("Captured A", "A", &[super::super::widgets::TabFace::Label("Home".into()),
+        super::super::widgets::TabFace::Label("Movies".into()),
+        super::super::widgets::TabFace::Icon(crate::icons::Icon::Search)], 0.625);
     let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
     let modal = modal_mut(&mut d, id);
     modal.scrim_alpha = 0.5;

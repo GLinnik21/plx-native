@@ -14,43 +14,45 @@ pub(crate) enum Pill {
     Search,
 }
 
-pub(crate) fn tab_count(directory: DirectoryView<'_>) -> usize {
-    1 + directory.tab_count() + 1
+/// The strip's destination keys in strip order: Home, one key per type pill, Search. The one
+/// place that order is written; `refresh` publishes it and the pill maps below read it, so no
+/// map assumes which index Search holds.
+fn strip_keys(directory: DirectoryView<'_>) -> Vec<u32> {
+    let mut keys = vec![widgets::TAB_KEY_HOME];
+    keys.extend((0..directory.tab_count()).filter_map(|i| directory.tab_kind(i)).map(|kind| match kind {
+        SecKind::Movie => widgets::TAB_KEY_MOVIES,
+        SecKind::Show => widgets::TAB_KEY_SHOWS,
+    }));
+    keys.push(widgets::TAB_KEY_SEARCH);
+    keys
 }
 
 pub(crate) fn pill_at(directory: DirectoryView<'_>, i: usize) -> Pill {
-    pill_in(i, tab_count(directory) - 1, |tab| directory.tab_kind(tab))
+    pill_in(i, &strip_keys(directory))
 }
 
-fn pill_in(
-    i: usize,
-    search: usize,
-    kind_at: impl Fn(usize) -> Option<SecKind>,
-) -> Pill {
-    if i == search {
-        Pill::Search
-    } else if let Some(section) = i.checked_sub(1) {
-        kind_at(section).map(Pill::Section).unwrap_or(Pill::Home)
-    } else {
-        Pill::Home
+/// The destination a strip index names, by the KEY published at that index.
+fn pill_in(i: usize, keys: &[u32]) -> Pill {
+    match keys.get(i).copied() {
+        Some(widgets::TAB_KEY_MOVIES) => Pill::Section(SecKind::Movie),
+        Some(widgets::TAB_KEY_SHOWS) => Pill::Section(SecKind::Show),
+        Some(widgets::TAB_KEY_SEARCH) => Pill::Search,
+        _ => Pill::Home,
     }
 }
 
 pub(crate) fn pill_of(directory: DirectoryView<'_>, pill: Pill) -> Option<usize> {
-    let search = tab_count(directory) - 1;
-    pill_index(pill, search, |kind| directory.tab_of_kind(kind))
+    pill_index(pill, &strip_keys(directory))
 }
 
-fn pill_index(
-    pill: Pill,
-    search: usize,
-    tab_of: impl Fn(SecKind) -> Option<usize>,
-) -> Option<usize> {
-    match pill {
-        Pill::Home => Some(0),
-        Pill::Section(kind) => tab_of(kind).map(|i| i + 1),
-        Pill::Search => Some(search),
-    }
+fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
+    let key = match pill {
+        Pill::Home => widgets::TAB_KEY_HOME,
+        Pill::Section(SecKind::Movie) => widgets::TAB_KEY_MOVIES,
+        Pill::Section(SecKind::Show) => widgets::TAB_KEY_SHOWS,
+        Pill::Search => widgets::TAB_KEY_SEARCH,
+    };
+    keys.iter().position(|&k| k == key)
 }
 
 #[derive(Default)]
@@ -76,20 +78,13 @@ impl ChromeSnapshot {
         captured: Option<(&plx_plex::plex::session::CurrentProfile, &plx_plex::plex::session::Session)>) {
         let generation = directory.tabs_gen();
         if self.tabs_generation != Some(generation) {
-            self.faces.clear();
-            self.keys.clear();
-            self.faces.push(TabFace::Label(plx_platform::i18n::msg::browse_chrome_home().into()));
-            self.keys.push(widgets::TAB_KEY_HOME);
-            for i in 0..directory.tab_count() {
-                let Some(kind) = directory.tab_kind(i) else { continue };
-                self.faces.push(TabFace::Label(match kind { SecKind::Movie => plx_platform::i18n::msg::browse_kind_movies(), SecKind::Show => plx_platform::i18n::msg::browse_kind_tv_shows() }.into()));
-                self.keys.push(match kind {
-                    SecKind::Movie => widgets::TAB_KEY_MOVIES,
-                    SecKind::Show => widgets::TAB_KEY_SHOWS,
-                });
-            }
-            self.faces.push(TabFace::Icon(Icon::Search));
-            self.keys.push(widgets::TAB_KEY_SEARCH);
+            self.keys = strip_keys(directory);
+            self.faces = self.keys.iter().map(|&key| match key {
+                widgets::TAB_KEY_HOME => TabFace::Label(plx_platform::i18n::msg::browse_chrome_home().into()),
+                widgets::TAB_KEY_MOVIES => TabFace::Label(plx_platform::i18n::msg::browse_kind_movies().into()),
+                widgets::TAB_KEY_SHOWS => TabFace::Label(plx_platform::i18n::msg::browse_kind_tv_shows().into()),
+                _ => TabFace::Icon(Icon::Search),
+            }).collect();
             self.widths = widgets::tab_widths(&self.faces, measure);
             self.tabs_generation = Some(generation);
         }
@@ -241,22 +236,42 @@ mod tests {
     #[test]
     fn every_projected_pill_round_trips_by_stable_section_identity() {
         use plx_data::stores::browse::SecKind::{Movie, Show};
-        let kinds = [Movie, Show];
-        let at = |i| kinds.get(i).copied();
-        let search = kinds.len() + 1;
-        assert_eq!(pill_in(0, search, at), Pill::Home);
-        assert_eq!(pill_in(1, search, at), Pill::Section(Movie));
-        assert_eq!(pill_in(2, search, at), Pill::Section(Show));
-        assert_eq!(pill_in(search, search, at), Pill::Search);
-        assert_eq!(pill_in(search + 1, search, at), Pill::Home);
-        let pos = |kind| kinds.iter().position(|&candidate| candidate == kind);
-        for i in 0..=search {
-            assert_eq!(pill_index(pill_in(i, search, at), search, pos), Some(i));
+        let keys = [widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES, widgets::TAB_KEY_SHOWS,
+            widgets::TAB_KEY_SEARCH];
+        assert_eq!(pill_in(0, &keys), Pill::Home);
+        assert_eq!(pill_in(1, &keys), Pill::Section(Movie));
+        assert_eq!(pill_in(2, &keys), Pill::Section(Show));
+        assert_eq!(pill_in(3, &keys), Pill::Search);
+        assert_eq!(pill_in(4, &keys), Pill::Home);
+        for i in 0..keys.len() {
+            assert_eq!(pill_index(pill_in(i, &keys), &keys), Some(i));
         }
-        assert_eq!(pill_index(Pill::Section(Show), search, |_| None), None,
+        assert_eq!(pill_index(Pill::Section(Show), &[widgets::TAB_KEY_HOME, widgets::TAB_KEY_SEARCH]), None,
             "a type the captured strip no longer contains borrows no other position");
-        assert_eq!(pill_in(1, 3, |_| None), Pill::Home,
-            "an unfilled section slot falls back to the one fixed destination");
+    }
+
+    #[test]
+    fn an_icon_pill_before_search_does_not_shift_the_other_destinations() {
+        use plx_data::stores::browse::SecKind::{Movie, Show};
+        // A further icon destination (a key none of the maps names) sits before Search.
+        let extra = plx_ui::dispatch::STRIP_BASE + 9;
+        let keys = [widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES, widgets::TAB_KEY_SHOWS, extra,
+            widgets::TAB_KEY_SEARCH];
+        assert_eq!(pill_in(3, &keys), Pill::Home, "an unknown key is not Search and not a section");
+        assert_eq!(pill_in(4, &keys), Pill::Search);
+        assert_eq!(pill_in(2, &keys), Pill::Section(Show));
+        assert_eq!(pill_index(Pill::Search, &keys), Some(4));
+        assert_eq!(pill_index(Pill::Section(Movie), &keys), Some(1));
+    }
+
+    #[test]
+    fn pill_maps_follow_the_published_strip_keys() {
+        let directory = directory(&[SecKind::Movie, SecKind::Show]);
+        let view = directory.view();
+        assert_eq!(strip_keys(view), vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
+            widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_SEARCH]);
+        assert_eq!(pill_of(view, Pill::Search), Some(3));
+        assert_eq!(pill_at(view, 3), Pill::Search);
     }
 
     #[test]
