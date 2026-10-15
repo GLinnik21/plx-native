@@ -258,6 +258,10 @@ impl Default for PmsAdapter {
 #[cfg(any(test, feature = "test-support"))]
 pub fn owed_count_for_test(adapter: &PmsAdapter) -> u32 { adapter.owed.load(Ordering::SeqCst) }
 
+/// Test hook: how many authoritative hub refetches this owner has started (`RefetchHubs` bumps it).
+#[cfg(any(test, feature = "test-support"))]
+pub fn hub_gen_for_test(state: &PmsState) -> u32 { state.hub_gen }
+
 /// Is a worker spawned through [`spawn_fetch`] still owing this adapter a landing? Read by the
 /// landing gate's dump mode, which waits for the answer a request it issued owes
 /// (`plx_machine::landgate::Gate::take_all_owed`).

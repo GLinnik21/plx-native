@@ -1842,10 +1842,11 @@ pub(crate) unsafe fn construct(
     let pause_script: Option<(u32, Option<u32>, Option<u32>)> = None;
     let pause_resume_at: Option<u32> = None;
     let prev = 0u32;
-    // Home data refresh, armed on every player exit (Stop/BACK/EOS): the hubs are refetched a
-    // beat later so the final timeline PUT lands first — Continue Watching then shows the new
-    // resume point / next episode instead of the state from boot.
-    let refresh_hubs_at = 0u32;
+    // Home data refresh, armed on every player exit (Stop/BACK/EOS): the hubs are refetched once
+    // the stop report has settled (`route::scrobble_settled`), so the `stopped` timeline POST
+    // lands first — Continue Watching then shows the new resume point / next episode instead of
+    // the state from boot.
+    let refresh_hubs = false;
 
     let ev = [0u8; 128];
     // dev/testing remote: drain any tokens written to /tmp/plxnative-remote and push
@@ -1879,7 +1880,7 @@ pub(crate) unsafe fn construct(
         ptr,
         menu_play_await: None,
         prev,
-        refresh_hubs_at,
+        refresh_hubs,
         refresh_detail: None,
         plaintext_upgrade: Default::default(),
         ev,

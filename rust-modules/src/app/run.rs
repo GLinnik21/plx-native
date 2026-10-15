@@ -1238,7 +1238,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         } else if matches!(key, Key::Back) {
             key_back(&mut app.player.session,
                 &mut app.adapters.player,
-                &mut app.refresh_hubs_at,
+                &mut app.refresh_hubs,
                 &mut app.pages,
             );
         }
@@ -1601,7 +1601,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         if playback_may_run(app) && super::bridge::player(&app.pages).is_some() && plx_media::player::ended() {
             let handed_off_to_up_next = finish_playback(&mut app.player.session,
                 &mut app.adapters.player,
-                &mut app.refresh_hubs_at,
+                &mut app.refresh_hubs,
                 &mut app.pages,
                 &mut app.bridge,
             );
@@ -1640,14 +1640,17 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             }
         }
         // post-playback home refresh (armed by every exit_player): refetch the hubs so
-        // Continue Watching shows the new resume point / next episode; the small delay lets
-        // the final timeline PUT land server-side first. The request is worker-only; the
-        // landing logs the resulting item count when it actually commits.
-        if app.refresh_hubs_at != 0
-            && fr.now.wrapping_sub(app.refresh_hubs_at) < 0x8000_0000
+        // Continue Watching shows the new resume point / next episode. It waits for the stop
+        // report to have reached the server (`scrobble_settled`), not for a clock: a read that
+        // lands before the `stopped` timeline POST is the stale resume point, and a slow share
+        // makes that window seconds wide. It is owed once per exit and held while the player is
+        // on top. The request is worker-only; the landing logs the
+        // resulting item count when it actually commits.
+        if app.refresh_hubs
             && !matches!(app.route(), AppArg::Player)
+            && plx_media::route::scrobble_settled()
         {
-            app.refresh_hubs_at = 0;
+            app.refresh_hubs = false;
             super::bridge::execute_endpoint_outcomes(
                 &mut app.pages,
                 app.bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints,
@@ -1887,7 +1890,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                     {
                         commit_info_press(&mut app.player.session,
                             &mut app.adapters.player,
-                            &mut app.refresh_hubs_at,
+                            &mut app.refresh_hubs,
                             &mut app.pages,
                             &mut app.bridge,
                         )
@@ -1896,7 +1899,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                         &mut app.adapters.player,
                         fr.ctrl,
                         fr.now,
-                        &mut app.refresh_hubs_at,
+                        &mut app.refresh_hubs,
                         &mut app.pages,
                         &mut app.bridge,
                     ),
@@ -3143,7 +3146,7 @@ mod lifecycle_regression_tests {
             ptr: Pointer::IDLE,
             menu_play_await: Default::default(),
             prev: Default::default(),
-            refresh_hubs_at: Default::default(),
+            refresh_hubs: Default::default(),
             refresh_detail: None,
             plaintext_upgrade: Default::default(),
             ev: [0; 128],
@@ -4522,7 +4525,7 @@ mod lifecycle_regression_tests {
             &mut rig.app.adapters.player,
             vec![plx_screens::registry::PlayerReq::Exit],
             fr.now,
-            &mut rig.app.refresh_hubs_at,
+            &mut rig.app.refresh_hubs,
             &mut rig.app.pages,
             &mut rig.app.bridge,
             &mut rig.app.ok_armed,
@@ -4975,6 +4978,57 @@ mod lifecycle_regression_tests {
         settle(&mut rig.app, &mut t);
         assert_eq!(watched(&mut rig), Some(("1".into(), true)),
             "the episode strip still shows the read the page opened with");
+    }
+
+    /// **Layer-1 view state, G1**: Home's hubs (Continue Watching) are re-read after a playback
+    /// only once the stop has reached the server, not 800 ms after the exit. The `stopped`
+    /// timeline reply is held, the frame clock runs far past the old timer, and no refetch may
+    /// have started; once the reply is released the refetch runs exactly once.
+    #[test]
+    fn hubs_are_refetched_after_the_stop_lands_not_after_a_timer() {
+        let _serial = plx_base::testlock::serial();
+        let (hold, held) = mpsc::channel::<()>();
+        let held = Mutex::new(held);
+        let stop_seen = Arc::new(AtomicBool::new(false));
+        let seen = stop_seen.clone();
+        let Some(mut rig) = Rig::serving_with(move |request: &str| {
+            if request.contains("/:/timeline") && request.contains("state=stopped") {
+                seen.store(true, Ordering::SeqCst);
+                let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(20));
+                return r#"{"MediaContainer":{}}"#.into();
+            }
+            if request.contains("/:/timeline") {
+                return r#"{"MediaContainer":{}}"#.into();
+            }
+            queue_body(request, false).to_owned()
+        }) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        let before = rig.app.bridge.hub_refetches_for_test();
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        // The rig has no native engine, so teardown posts no `stopped` report. The engine makes
+        // exactly this call (`engine.rs`, `route::scrobble_stop`); it is made here, once BACK's own
+        // transcode stop has drained, so the held report is the only stop in flight.
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
+        settle(&mut rig.app, &mut t);
+        assert!(super::super::bridge::player(&rig.app.pages).is_none(), "premise: BACK left the player");
+        poll_until("premise: the stopped timeline never reached the server", || stop_seen.load(Ordering::SeqCst));
+        assert!(!plx_media::route::scrobble_settled(), "premise: the stop is still in flight");
+        // The old 800 ms timer is long past; the stop has not landed.
+        t += 5_000;
+        for _ in 0..4 { step(&mut rig.app, &mut t, vec![]); }
+        assert_eq!(
+            rig.app.bridge.hub_refetches_for_test(), before,
+            "the hubs were re-read before the stop reached the server",
+        );
+        hold.send(()).unwrap();
+        poll_until("the stop never settled", plx_media::route::scrobble_settled);
+        step(&mut rig.app, &mut t, vec![]);
+        assert_eq!(rig.app.bridge.hub_refetches_for_test(), before + 1, "the refetch runs once the stop landed");
+        for _ in 0..4 { step(&mut rig.app, &mut t, vec![]); }
+        assert_eq!(rig.app.bridge.hub_refetches_for_test(), before + 1, "and only once");
     }
 
     /// The same session drained to its end with nothing queued after it: `finish_playback` leaves

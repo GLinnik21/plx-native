@@ -37,7 +37,7 @@
 //! ## What it reads
 //!
 //! Only the sfnt table directory and the `cmap` table, by seek — never the whole file. That
-//! matters: `pkg/appfont-cjk.ttf` is 21 MB and its cmap is 233 KB. Unicode subtable formats 4, 6,
+//! matters: `pkg/appfont-cjk.ttf` is 13 MB and its cmap is 233 KB. Unicode subtable formats 4, 6,
 //! 12 and 13 are decoded and **unioned**; a mapping to glyph 0 is not coverage and is excluded,
 //! which is the difference between "the cmap has an entry" and "the font can draw it".
 
@@ -719,6 +719,46 @@ mod tests {
              If the pin moved on purpose, move this number and tools/cut-noto-cjk.py's together.",
             c.len()
         );
+    }
+
+    /// Table (offset, length) for `tag` in a plain sfnt, by seek.
+    fn table_span(f: &mut File, tag: &[u8; 4]) -> (u64, u64) {
+        let head = read_at(f, 0, 12).unwrap();
+        let num = be16(&head, 4).unwrap() as usize;
+        let dir = read_at(f, 12, num * 16).unwrap();
+        for i in 0..num {
+            let rec = &dir[i * 16..];
+            if &rec[0..4] == tag {
+                return (be32(rec, 8).unwrap() as u64, be32(rec, 12).unwrap() as u64);
+            }
+        }
+        panic!("no {} table", String::from_utf8_lossy(tag));
+    }
+
+    /// **Every shipped face must open under the OLDEST FreeType a television ships.** FreeType
+    /// 2.4.11 through 2.7.0 reject a font whose `loca` is `>= 0x40000` bytes (`ttpload.c`,
+    /// `table_len >= 0x40000L` -> `Invalid_Table`); a long `loca` holds `numGlyphs + 1` four-byte
+    /// offsets, so 65535 glyphs is exactly 0x40000 and fails with error 8 while 65534 opens.
+    /// SDL2_ttf then reports a face that "cannot be opened" and the whole fallback link is dead.
+    /// No host FreeType here is that old, so the bound is checked on the bytes.
+    #[test]
+    fn shipped_faces_open_under_old_freetype() {
+        for name in ["appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf"] {
+            let p = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../pkg")).join(name);
+            let mut f = File::open(&p).unwrap();
+            let (maxp, _) = table_span(&mut f, b"maxp");
+            let n = be16(&read_at(&mut f, maxp + 4, 2).unwrap(), 0).unwrap();
+            let (head, _) = table_span(&mut f, b"head");
+            let fmt = be16(&read_at(&mut f, head + 50, 2).unwrap(), 0).unwrap();
+            let (_, loca_len) = table_span(&mut f, b"loca");
+            assert!(n <= 65_534, "{name}: {n} glyphs; FreeType <= 2.7.0 needs <= 65534");
+            if fmt == 1 {
+                assert!(
+                    loca_len < 0x40000,
+                    "{name}: long loca is {loca_len} bytes; FreeType 2.4.11-2.7.0 rejects >= 0x40000"
+                );
+            }
+        }
     }
 
     /// The whole point: the chain, not any one link. This is the assertion that would have
