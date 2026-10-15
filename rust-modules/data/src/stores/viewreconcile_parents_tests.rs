@@ -297,3 +297,89 @@ fn parent_facts_that_agree_with_the_rows_raise_no_notice() {
     drive(&mut stores, |s| settled(s) && pms.truth.requests.lock().unwrap().len() == 4);
     assert_eq!(gens(&stores), before, "a read-back that agrees raises no notice");
 }
+
+// ---- what a stranger's playback owes the Detail pages (L2-4) ------------------------------------
+
+fn stranger_stops(sid: ServerId, rks: &[&str]) -> crate::stores::notify::NotifyOut {
+    use plx_plex::plex::notify::{PlaySession, PlayState};
+    crate::stores::notify::NotifyOut {
+        plays: vec![crate::stores::notify::NotifyPlays {
+            sid,
+            sessions: rks.iter().enumerate().map(|(i, rk)| PlaySession {
+                session_key: Some(format!("s{i}")),
+                client_identifier: Some("other".into()),
+                rating_key: Some((*rk).into()),
+                key: None,
+                view_offset_ms: Some(1000),
+                state: PlayState::Stopped,
+            }).collect(),
+        }],
+        resynced: Vec::new(),
+    }
+}
+
+/// Show `1`'s Detail page is loaded with its season's episodes `3` and `4`.
+fn show_detail_open(stores: &mut Stores, sid: ServerId) {
+    let mut episodes = crate::metadata::EpisodeList::with_total(2);
+    episodes.set_page(0, ["3", "4"].iter().map(|rk| crate::metadata::Episode { rk: (*rk).into(), ..Default::default() }).collect());
+    crate::metadata::set_current_for_test(stores.metadata.state_mut(), Some(crate::metadata::Detail {
+        sid, rk: "1".into(), kind: "show".into(), is_show: true, episodes, ..Default::default()
+    }));
+}
+
+fn map(stores: &mut Stores, out: &crate::stores::notify::NotifyOut, pages: &[crate::stores::ContentArg]) {
+    let directory = DirectorySnapshot::default();
+    let _ = stores.notify_map(out, pages, crate::stores::notify_map::Shown::default(), directory.view());
+}
+
+/// **A show's open Detail learns of an episode played elsewhere.** The page holds its own item
+/// only, but the episodes it lists are read the owing way too: the episode's landing names its
+/// season and show, which are read in turn, and the show's landing is the page's cue
+/// (`take_landed_views` -> `app::content::reconcile_details` -> `DetailReconcile`).
+#[test]
+fn an_episode_played_elsewhere_reaches_the_shows_open_detail() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library(&pms);
+    show_detail_open(&mut stores, sid);
+    let page = crate::stores::ContentArg::Detail { sid, rk: "1".into() };
+    map(&mut stores, &stranger_stops(sid, &["3"]), &[page]);
+    drive(&mut stores, settled);
+    let landed = stores.take_landed_views();
+    assert!(landed.contains(&(sid, "1".to_string())), "the show Detail is owed its re-read: {landed:?}");
+    assert!(landed.contains(&(sid, "2".to_string())), "and so is a season page");
+}
+
+/// The same stop with no Detail on the stack owes nothing, and one for ANOTHER show's page neither.
+#[test]
+fn an_episode_played_elsewhere_owes_nothing_without_the_shows_detail_on_the_stack() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library(&pms);
+    show_detail_open(&mut stores, sid);
+    map(&mut stores, &stranger_stops(sid, &["3"]), &[]);
+    map(&mut stores, &stranger_stops(sid, &["4"]), &[crate::stores::ContentArg::Detail { sid, rk: "other".into() }]);
+    drive(&mut stores, settled);
+    assert!(pms.truth.requests.lock().unwrap().is_empty(), "the loaded show is not the page on the stack: nothing is held");
+    assert!(stores.take_landed_views().is_empty());
+}
+
+/// Delivery, not only the flag: the Detail's item owes its page when the read lands; a card's
+/// does not.
+#[test]
+fn detail_item_stop_routes_via_detail_reconcile_delivery() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library(&pms);
+    stores.search.publish_shelves_for_test(vec![Shelf {
+        epoch: 0, window: Default::default(), kind: Kind::Show,
+        items: vec![Item::Media(PmsMovie { sid, rk: "3".into(), ..Default::default() })],
+    }]);
+    let page = crate::stores::ContentArg::Detail { sid, rk: "m".into() };
+    let directory = DirectorySnapshot::default();
+    let _ = stores.notify_map(&stranger_stops(sid, &["m", "3"]), &[page],
+        crate::stores::notify_map::Shown { search: true, ..Default::default() }, directory.view());
+    drive(&mut stores, settled);
+    assert_eq!(stores.take_landed_views(), [(sid, "m".to_string())],
+        "only the Detail's item reaches reconcile_details; the card's read-back (and its season and show) was quiet");
+}

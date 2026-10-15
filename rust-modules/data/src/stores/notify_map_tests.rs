@@ -4,6 +4,7 @@
 
 use super::browse::DirectorySnapshot;
 use super::notify::{NotifyOut, NotifyPlays, NOTIFY_ENABLED};
+use super::notify_map::Shown;
 use super::{ContentArg, Stores};
 use crate::pms::PmsMovie;
 use crate::search::{Item, Kind, Shelf};
@@ -44,8 +45,12 @@ fn holding(rks: &[&str]) -> Stores {
 }
 
 fn map(stores: &mut Stores, out: &NotifyOut, pages: &[ContentArg]) -> super::notify_map::Spent {
+    map_shown(stores, out, pages, Shown::ALL)
+}
+
+fn map_shown(stores: &mut Stores, out: &NotifyOut, pages: &[ContentArg], shown: Shown) -> super::notify_map::Spent {
     let dir = DirectorySnapshot::default();
-    stores.notify_map(out, pages, dir.view())
+    stores.notify_map(out, pages, shown, dir.view())
 }
 
 fn pending(stores: &Stores) -> Vec<String> {
@@ -65,10 +70,10 @@ fn notifications_ship_off() {
 fn holds_covers_the_visible_and_the_covered_pages() {
     let _g = plx_base::testlock::serial();
     let stores = holding(&["s1"]);
-    assert!(stores.holds(SID, "s1", &[]), "a list page's window");
-    assert!(!stores.holds(SID, "other", &[]));
-    assert!(stores.holds(SID, "d1", &[detail("d1")]), "a Detail page on the stack, top or covered");
-    assert!(!stores.holds(SID, "d1", &[]), "a popped page holds nothing");
+    assert!(stores.holds(SID, "s1", &[], Shown::ALL), "a list page's window");
+    assert!(!stores.holds(SID, "other", &[], Shown::ALL));
+    assert!(stores.holds(SID, "d1", &[detail("d1")], Shown::ALL), "a Detail page on the stack, top or covered");
+    assert!(!stores.holds(SID, "d1", &[], Shown::ALL), "a popped page holds nothing");
 }
 
 #[test]
@@ -113,7 +118,7 @@ fn stopped_held_enqueues_and_quiet_refetch() {
     let spent = map(&mut stores, &one("1", "s1", PlayState::Stopped), &[]);
     assert_eq!(pending(&stores), ["s1"]);
     assert_eq!(spent.refetched, [SID], "Home's source is refetched quietly");
-    assert!(!spent.invalidated, "the held item is read back, no whole-section invalidate");
+    assert!(spent.invalidated.is_empty(), "the held item is read back, no whole-section invalidate");
 }
 
 #[test]
@@ -124,7 +129,7 @@ fn stopped_unheld_coalesced_source_refetch_and_invalidate() {
     let spent = map(&mut stores, &out, &[]);
     assert!(pending(&stores).is_empty(), "no per-item read of an item nothing shows");
     assert_eq!(spent.refetched, [SID], "two stops on one server are one refetch");
-    assert!(spent.invalidated);
+    assert_eq!(spent.invalidated, [SID], "that server's section shelves are invalidated, once");
 }
 
 #[test]
@@ -307,4 +312,106 @@ fn two_sessionless_clients_on_one_item_do_not_collide() {
         map(&mut stores, &round(), &[]);
     }
     assert!(pending(&stores).is_empty(), "each client's steady state is no news, not a flip-flop between them");
+}
+
+#[test]
+fn a_popped_list_page_holds_nothing() {
+    let _g = plx_base::testlock::serial();
+    let stores = holding(&["s1"]);
+    let search_only = Shown { search: true, ..Default::default() };
+    assert!(stores.holds(SID, "s1", &[], search_only), "Search is on the stack");
+    assert!(!stores.holds(SID, "s1", &[], Shown::default()), "Search was popped: its last rows are not held");
+    let mut stores = holding(&["s1"]);
+    map_shown(&mut stores, &one("1", "s1", PlayState::Stopped), &[], Shown::default());
+    assert!(pending(&stores).is_empty(), "no read-back for a page that is gone");
+}
+
+const OTHER: ServerId = ServerId::from_raw(7);
+
+fn on(sid: ServerId, key: &str, rk: &str, state: PlayState) -> NotifyOut {
+    NotifyOut { plays: vec![NotifyPlays { sid, sessions: vec![session(key, rk, state)] }], resynced: Vec::new() }
+}
+
+/// A Search page holding `rk` on each of two servers.
+fn holding_on_both(rk: &str) -> Stores {
+    let mut stores = Stores::default();
+    stores.search.publish_shelves_for_test(vec![Shelf {
+        epoch: 0,
+        window: Default::default(),
+        kind: Kind::Movie,
+        items: [SID, OTHER].iter().map(|sid| Item::Media(PmsMovie { sid: *sid, rk: rk.into(), ..Default::default() })).collect(),
+    }]);
+    stores
+}
+
+#[test]
+fn a_feed_for_one_server_never_reads_or_invalidates_another() {
+    let _g = plx_base::testlock::serial();
+    let mut stores = holding_on_both("s1");
+    let spent = map(&mut stores, &on(OTHER, "1", "s1", PlayState::Stopped), &[]);
+    assert_eq!(stores.reconcile.pending_for_test(), [(OTHER, "s1".to_string())], "the key is read on the notifying server only");
+    assert_eq!(spent.refetched, [OTHER]);
+    assert!(spent.invalidated.is_empty());
+    let spent = map(&mut stores, &on(OTHER, "2", "unheld", PlayState::Stopped), &[]);
+    assert_eq!(spent.invalidated, [OTHER], "an unheld stop invalidates its own server's shelves and no other");
+    assert_eq!(spent.refetched, [OTHER]);
+}
+
+#[test]
+fn a_resync_forgets_only_that_servers_sessions() {
+    let _g = plx_base::testlock::serial();
+    let mut stores = holding_on_both("s1");
+    map(&mut stores, &on(SID, "1", "s1", PlayState::Playing), &[]);
+    map(&mut stores, &on(OTHER, "1", "s1", PlayState::Playing), &[]);
+    stores.reconcile.reset();
+    let mut out = NotifyOut::default();
+    out.resynced.push((SID, 1));
+    map(&mut stores, &out, &[]);
+    map(&mut stores, &on(OTHER, "1", "s1", PlayState::Playing), &[]);
+    assert!(pending(&stores).is_empty(), "the other server's session is still known: steady is no news");
+    map(&mut stores, &on(SID, "1", "s1", PlayState::Playing), &[]);
+    assert_eq!(stores.reconcile.pending_for_test(), [(SID, "s1".to_string())], "the resynced server's is news again");
+    assert_eq!(stores.notify_tracked_for_test(), 2);
+}
+
+/// Owed notification work is kept, not dropped, for as long as it cannot be spent, and a page
+/// owed a re-read keeps its debt (`take_landed`) until the application takes it.
+#[test]
+fn deferred_preserved_when_detail_busy() {
+    let _g = plx_base::testlock::serial();
+    let mut stores = holding(&[]);
+    let pages = [detail("d1")];
+    stores.hold_network(true); // the player is on top: nothing may be read
+    for i in 0..5 {
+        let spent = map(&mut stores, &on(SID, &format!("k{i}"), "d1", PlayState::Stopped), &pages);
+        assert_eq!(spent, Default::default());
+        assert!(pending(&stores).is_empty());
+    }
+    assert!(stores.notify_owed_for_test().contains(&(SID, "d1".to_string())), "the Detail's read is still owed");
+    // a landed read the application has not taken yet is not lost either
+    stores.reconcile.owe_page((SID, "d1".into()));
+    stores.hold_network(false);
+    map(&mut stores, &NotifyOut::default(), &pages);
+    assert_eq!(pending(&stores), ["d1"], "released and queued once, the owing way");
+    assert!(!stores.reconcile.is_quiet_for_test(&(SID, "d1".into())));
+    assert_eq!(stores.take_landed_views(), [(SID, "d1".to_string())], "the page's debt waited for the application");
+    assert!(stores.take_landed_views().is_empty(), "…and is paid once");
+}
+
+#[test]
+fn a_loaded_details_related_tiles_are_read_quiet_and_only_while_it_is_the_page() {
+    let _g = plx_base::testlock::serial();
+    let mut stores = holding(&[]);
+    crate::metadata::set_current_for_test(stores.metadata.state_mut(), Some(crate::metadata::Detail {
+        sid: SID, rk: "d1".into(),
+        related: vec![PmsMovie { sid: SID, rk: "r1".into(), ..Default::default() }],
+        ..Default::default()
+    }));
+    map(&mut stores, &one("1", "r1", PlayState::Playing), &[]);
+    assert!(pending(&stores).is_empty(), "no Detail on the stack: its tiles are not held");
+    map(&mut stores, &one("2", "r1", PlayState::Playing), &[detail("other")]);
+    assert!(pending(&stores).is_empty(), "another Detail is the page: the loaded one's tiles are not held");
+    map(&mut stores, &one("3", "r1", PlayState::Playing), &[detail("d1")]);
+    assert_eq!(pending(&stores), ["r1"]);
+    assert!(stores.reconcile.is_quiet_for_test(&(SID, "r1".into())), "a tile is patched in place, no Detail re-fetch");
 }

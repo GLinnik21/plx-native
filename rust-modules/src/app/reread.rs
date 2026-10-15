@@ -335,7 +335,7 @@ mod tests {
         let (_pages, mut rig, _n) = mounted();
         let held = [ContentArg::Detail { sid: ServerId::UNSET, rk: "d".into() }];
         for _ in 0..5 {
-            assert!(!rig.notify_pump(&held), "no feed, no gap");
+            assert!(!rig.notify_pump(&held, plx_data::stores::notify_map::Shown::ALL), "no feed, no gap");
         }
         assert!(rig.read_back_pending_for_test().is_empty());
     }

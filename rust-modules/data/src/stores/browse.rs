@@ -82,6 +82,9 @@ pub enum BrowseCmd {
     /// The profile/account switch: wipe everything and supersede everything in flight.
     Reset,
     HubsInvalidateAll,
+    /// One server's section shelves may have moved (a notification, never a press): only its
+    /// sections are re-read, behind its failure ladder and spaced like the quiet Home refetch.
+    HubsInvalidateServer { sid: ServerId },
     /// The optimistic half of a view-state change (`viewstate::publish_view`), on the grid and the
     /// shelves: a watched edit reaches the listing and the section shelves, a deck removal the
     /// section shelves' Continue Watching.

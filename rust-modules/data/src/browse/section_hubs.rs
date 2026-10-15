@@ -76,6 +76,10 @@ const FIRST_PAINT_FRAMES: u32 = 240;
 /// [`crate::pms::backoff_secs`]' 2/4/8/16/30s ladder in this module's unit. The ladder is shared —
 /// hoisted as a PURE function only, deliberately: `pms`'s `landed_ok`/`landed_fail` beside it carry
 /// Home-specific logging, stale-build retention and endpoint-refresh policy that mean nothing here.
+/// The least spacing between two notification-driven reads of one section: the quiet Home
+/// refetch's ([`crate::pms::QUIET_SPACING_S`]), in frames.
+const NOTIFY_SPACING_FRAMES: u32 = (crate::pms::QUIET_SPACING_S * 60.0) as u32;
+
 fn backoff_frames(fails: u32) -> u32 {
     (crate::pms::backoff_secs(fails) * 60.0) as u32
 }
@@ -252,6 +256,10 @@ pub struct SecHubs {
     fails: u32,
     /// Frames left before another attempt may spawn.
     retry_left: u32,
+    /// Frames before a server NOTIFICATION may ask for another read of this section, and whether
+    /// one was asked for inside that spacing ([`Self::invalidate_notified`]).
+    notified_wait: u32,
+    notified_owed: bool,
     /// The rows the page holds cards for (`LibraryWork::HubHold`); `None` until it says, which is
     /// the head of the page.
     hold: Option<(usize, usize)>,
@@ -291,7 +299,7 @@ impl Default for HubAdapter {
 
 impl SecHubs {
     pub(super) fn needs_tick(&self) -> bool {
-        self.armed && (self.retry_left > 0 || (!self.published && self.first_paint_left > 0)
+        self.armed && (self.retry_left > 0 || self.notified_wait > 0 || self.notified_owed || (!self.published && self.first_paint_left > 0)
             || (self.owed && self.retry_left == 0) || self.ask_retry_left > 0 || self.row_wanted())
     }
 
@@ -452,6 +460,12 @@ impl SecHubs {
         }
         self.retry_left = self.retry_left.saturating_sub(1);
         self.ask_retry_left = self.ask_retry_left.saturating_sub(1);
+        self.notified_wait = self.notified_wait.saturating_sub(1);
+        if self.notified_owed && self.notified_wait == 0 {
+            self.notified_owed = false;
+            self.owed = true;
+            self.notified_wait = NOTIFY_SPACING_FRAMES;
+        }
         if self.published {
             return false;
         }
@@ -508,6 +522,23 @@ impl SecHubs {
     fn landing_was_not_ours(&mut self) {
         if self.armed {
             self.owed = true;
+        }
+    }
+
+    /// A server's NOTIFICATION says this section may have moved (a stranger's playback stopped).
+    /// The read is owed, but it is a hint and not a user's press: it never forgives a failing
+    /// server (`fails` and `retry_left` stay), and reads of one section are spaced
+    /// ([`NOTIFY_SPACING_FRAMES`], the quiet Home refetch's spacing), a burst inside it becoming ONE
+    /// read when it is over.
+    fn invalidate_notified(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if self.notified_wait > 0 {
+            self.notified_owed = true;
+        } else {
+            self.owed = true;
+            self.notified_wait = NOTIFY_SPACING_FRAMES;
         }
     }
 
@@ -850,6 +881,19 @@ impl super::BrowseState {
             }
         }
         hit
+    }
+
+    /// A notification from `sid`: its sections' shelves may have moved. No other server's section
+    /// is touched and the failure ladder is kept (see [`SecHubs::invalidate_notified`]).
+    pub(super) fn hubs_invalidate_server(&mut self, sid: ServerId, adapter: &Arc<super::BrowseAdapter>) {
+        for sec in 0..self.sections().len() {
+            if self.section_sid(sec) == Some(sid) {
+                if let Some(st) = self.state_mut(sec) {
+                    st.hubs.invalidate_notified();
+                }
+            }
+        }
+        self.hubs_pump_spawns(adapter);
     }
 
     pub(super) fn hubs_invalidate_all(&mut self, adapter: &Arc<super::BrowseAdapter>) {
@@ -2281,5 +2325,85 @@ mod tests {
         }
         assert_eq!(h.publication(), Publication::Fetching);
         assert!(h.shelves().is_empty());
+    }
+
+    // ---- a notification's invalidate: one server, no ladder reset, spaced ---------------------
+
+    const SERVER_A: ServerId = ServerId::from_raw(3);
+    const SERVER_B: ServerId = ServerId::from_raw(4);
+
+    /// Four published sections: two on server A, two on server B, nothing owed.
+    fn two_servers() -> (super::super::BrowseState, Arc<super::super::BrowseAdapter>) {
+        let (mut state, _) = seeded_section();
+        state.source_mut(0).unwrap().sid = SERVER_A;
+        state.source_mut(1).unwrap().sid = SERVER_B;
+        for sec in 0..state.sections().len() {
+            seed_shelves_for_owner_test(&mut state, sec, &["row"], 1);
+            state.state_mut(sec).unwrap().hubs.owed = false;
+        }
+        (state, Arc::new(super::super::BrowseAdapter::default()))
+    }
+
+    fn owed_by_server(state: &super::super::BrowseState, sid: ServerId) -> Vec<bool> {
+        (0..state.sections().len()).filter(|i| state.section_sid(*i) == Some(sid))
+            .map(|i| state.states()[i].hubs.owed).collect()
+    }
+
+    #[test]
+    fn a_notified_invalidate_leaves_the_other_servers_sections_alone() {
+        let _g = plx_base::testlock::serial();
+        let (mut state, adapter) = two_servers();
+        state.hubs_invalidate_server(SERVER_A, &adapter);
+        assert_eq!(owed_by_server(&state, SERVER_A), [true, true], "the notifying server is re-read");
+        assert_eq!(owed_by_server(&state, SERVER_B), [false, false], "another server's shelves are untouched");
+    }
+
+    #[test]
+    fn a_notified_invalidate_does_not_reset_the_failure_ladder() {
+        let _g = plx_base::testlock::serial();
+        let (mut state, adapter) = two_servers();
+        let sec = (0..state.sections().len()).find(|i| state.section_sid(*i) == Some(SERVER_A)).unwrap();
+        {
+            let h = &mut state.state_mut(sec).unwrap().hubs;
+            h.fails = 4;
+            h.retry_left = 900;
+        }
+        state.hubs_invalidate_server(SERVER_A, &adapter);
+        let h = &state.states()[sec].hubs;
+        assert_eq!((h.fails, h.retry_left), (4, 900), "a stranger's stop does not forgive a failing server");
+        assert!(h.owed, "the read is still owed behind the ladder");
+        // …whereas the view-state invalidate (the user's own press) does reset it
+        state.hubs_invalidate_all(&adapter);
+        let h = &state.states()[sec].hubs;
+        assert_eq!((h.fails, h.retry_left), (0, 0));
+    }
+
+    #[test]
+    fn a_burst_of_notified_invalidates_is_one_read_per_spacing() {
+        let _g = plx_base::testlock::serial();
+        let (mut state, adapter) = two_servers();
+        state.hubs_invalidate_server(SERVER_A, &adapter);
+        assert_eq!(owed_by_server(&state, SERVER_A), [true, true]);
+        for sec in 0..state.sections().len() {
+            state.state_mut(sec).unwrap().hubs.owed = false; // the reads were claimed
+        }
+        for _ in 0..10 {
+            state.hubs_invalidate_server(SERVER_A, &adapter); // …and a burst follows inside the spacing
+        }
+        assert_eq!(owed_by_server(&state, SERVER_A), [false, false], "coalesced, not read again at once");
+        let spacing = (crate::pms::QUIET_SPACING_S * 60.0) as usize;
+        for _ in 0..spacing - 1 {
+            state.hubs_tick_all(&adapter);
+        }
+        assert_eq!(owed_by_server(&state, SERVER_A), [false, false], "still inside the spacing");
+        state.hubs_tick_all(&adapter);
+        assert_eq!(owed_by_server(&state, SERVER_A), [true, true], "the whole burst is ONE read once the spacing is over");
+        for sec in 0..state.sections().len() {
+            state.state_mut(sec).unwrap().hubs.owed = false;
+        }
+        for _ in 0..spacing * 2 {
+            state.hubs_tick_all(&adapter);
+        }
+        assert_eq!(owed_by_server(&state, SERVER_A), [false, false], "and no more than one");
     }
 }

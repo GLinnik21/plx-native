@@ -2444,6 +2444,10 @@ impl BrowseState {
                 self.hubs_invalidate_all(adapter);
                 true
             }
+            BrowseCmd::HubsInvalidateServer { sid } => {
+                self.hubs_invalidate_server(sid, adapter);
+                true
+            }
             BrowseCmd::ApplyView { at, edit } => match edit {
                 crate::viewstate::ViewEdit::Watched(on) => {
                     let listing = self.apply_view_local(&at, edit);

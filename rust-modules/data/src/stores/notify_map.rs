@@ -11,8 +11,10 @@
 //!   for the visible page and the covered ones, plus the Detail pages on the stack), for a session
 //!   that is new or changed state;
 //! * on `stopped`, one quiet refetch of that server's Home source (coalesced per pump and per
-//!   server), plus, when the item is not held anywhere, `BrowseCmd::HubsInvalidateAll`: the section
-//!   shelves are re-read whole, because the stop may have moved items between them.
+//!   server), plus, when the item is not held anywhere, `BrowseCmd::HubsInvalidateServer` for THAT
+//!   server: its section shelves are re-read whole, because the stop may have moved items between
+//!   them. It is a hint, not a press: it leaves another server's sections alone, does not reset a
+//!   failing section's backoff and is spaced per section like the quiet Home refetch.
 //!
 //! **Which read.** An item a Detail page on the stack shows is read the owing way
 //! (`ViewReconcileStore::enqueue`): the landed row owes the page (`take_landed` ->
@@ -46,8 +48,8 @@ type Key = (ServerId, String);
 pub struct Spent {
     /// Servers whose Home source was refetched quietly.
     pub refetched: Vec<ServerId>,
-    /// `BrowseCmd::HubsInvalidateAll` was sent.
-    pub invalidated: bool,
+    /// Servers whose section shelves were invalidated (`BrowseCmd::HubsInvalidateServer`).
+    pub invalidated: Vec<ServerId>,
 }
 
 /// Read-backs and refetches a notification owes, not yet spent.
@@ -56,12 +58,12 @@ struct Owed {
     /// `(item, owes its Detail page)`; an owing ask is never downgraded to a quiet one.
     reads: Vec<(Key, bool)>,
     refetch: Vec<ServerId>,
-    invalidate: bool,
+    invalidate: Vec<ServerId>,
 }
 
 impl Owed {
     fn is_empty(&self) -> bool {
-        self.reads.is_empty() && self.refetch.is_empty() && !self.invalidate
+        self.reads.is_empty() && self.refetch.is_empty() && self.invalidate.is_empty()
     }
     fn read(&mut self, key: Key, owing: bool) {
         match self.reads.iter_mut().find(|(k, _)| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1))) {
@@ -72,6 +74,11 @@ impl Owed {
     fn refetch(&mut self, sid: ServerId) {
         if !self.refetch.contains(&sid) {
             self.refetch.push(sid);
+        }
+    }
+    fn invalidate(&mut self, sid: ServerId) {
+        if !self.invalidate.contains(&sid) {
+            self.invalidate.push(sid);
         }
     }
 }
@@ -129,6 +136,20 @@ impl NotifyMap {
     }
 }
 
+/// Which of the app's list pages are on the navigation stack, visible or covered. The Home, Library
+/// and Search stores each keep the last page's rows after the page is popped, so what they
+/// enumerate is held only while their page is still there.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Shown {
+    pub home: bool,
+    pub library: bool,
+    pub search: bool,
+}
+
+impl Shown {
+    pub const ALL: Self = Self { home: true, library: true, search: true };
+}
+
 /// What the pages hold: the stores' enumerated cards, and the items of the Detail pages on the stack.
 struct Held {
     cards: HeldKeys,
@@ -148,18 +169,32 @@ impl Stores {
     /// What the pages hold, from each store's enumerator. Home's hold window, the Library page's
     /// shelves and grid window and Search's results are the single current ones; Person, Filmography
     /// and Collection are asked about the pages on the stack (`pages`, bottom to top: the visible page
-    /// and every covered one), and a Detail page holds its own item.
-    fn held(&self, pages: &[ContentArg]) -> Held {
-        let mut cards = self.hubs.held_keys();
+    /// and every covered one), and a Detail page holds its own item, and, while it is the loaded one, the episodes of its
+    /// current season window (owing) and its related and collection tiles (quiet).
+    fn held(&self, pages: &[ContentArg], shown: Shown) -> Held {
+        let mut cards = if shown.home { self.hubs.held_keys() } else { HeldKeys::new() };
         let mut add = |keys: HeldKeys| for (sid, rk) in keys {
             super::push_held(&mut cards, sid, &rk);
         };
-        add(self.library_held_keys());
-        add(self.search.held_keys());
+        if shown.library {
+            add(self.library_held_keys());
+        }
+        if shown.search {
+            add(self.search.held_keys());
+        }
         let mut details = Vec::new();
         for page in pages {
             match page {
-                ContentArg::Detail { sid, rk } => details.push((*sid, rk.clone())),
+                ContentArg::Detail { sid, rk } => {
+                    details.push((*sid, rk.clone()));
+                    // The loaded Detail also shows episodes (read the owing way: the page cannot be
+                    // patched from their facts) and related tiles (patched, so read quiet).
+                    let view = self.metadata.view();
+                    for (s, k) in view.held_episodes(*sid, rk) {
+                        details.push((s, k));
+                    }
+                    add(view.held_tiles(*sid, rk));
+                }
                 ContentArg::Person { .. } | ContentArg::Filmography { .. } => add(self.person.held_keys(page)),
                 ContentArg::Collection(_) => add(self.collection.held_keys(page)),
             }
@@ -168,9 +203,9 @@ impl Stores {
     }
 
     /// Does any page, visible or covered, show `(sid, rk)`? `pages` are the content pages on the
-    /// navigation stack.
-    pub fn holds(&self, sid: ServerId, rk: &str, pages: &[ContentArg]) -> bool {
-        let held = self.held(pages);
+    /// navigation stack and `shown` says which list pages are on it too.
+    pub fn holds(&self, sid: ServerId, rk: &str, pages: &[ContentArg], shown: Shown) -> bool {
+        let held = self.held(pages, shown);
         held.card(sid, rk) || held.detail(sid, rk)
     }
 
@@ -181,13 +216,14 @@ impl Stores {
         &mut self,
         out: &NotifyOut,
         pages: &[ContentArg],
+        shown: Shown,
         directory: browse::DirectoryView<'_>,
     ) -> Spent {
         for (sid, _epoch) in &out.resynced {
             self.notify_map.forget_server(*sid);
         }
         if !out.plays.is_empty() {
-            let held = self.held(pages);
+            let held = self.held(pages, shown);
             for plays in &out.plays {
                 for s in &plays.sessions {
                     // Without a rating key there is no item to read. Without a session key the
@@ -208,7 +244,9 @@ impl Stores {
                     }
                     if s.state == PlayState::Stopped {
                         owed.refetch(plays.sid);
-                        owed.invalidate |= !is_held;
+                        if !is_held {
+                            owed.invalidate(plays.sid);
+                        }
                     }
                 }
             }
@@ -233,9 +271,9 @@ impl Stores {
             let _ = self.hubs.run_with_directory(super::hubs::HubsCmd::RefetchSourceQuiet { sid }, directory);
             spent.refetched.push(sid);
         }
-        if owed.invalidate {
-            let _ = self.browse.borrow_mut().run(browse::BrowseCmd::HubsInvalidateAll);
-            spent.invalidated = true;
+        for sid in owed.invalidate {
+            let _ = self.browse.borrow_mut().run(browse::BrowseCmd::HubsInvalidateServer { sid });
+            spent.invalidated.push(sid);
         }
         spent
     }
@@ -245,9 +283,7 @@ impl Stores {
         let owed = &self.notify_map.owed;
         let mut all: Vec<_> = owed.reads.iter().map(|(k, _)| k.clone()).collect();
         all.extend(owed.refetch.iter().map(|s| (*s, String::new())));
-        if owed.invalidate {
-            all.push((ServerId::UNSET, "invalidate".into()));
-        }
+        all.extend(owed.invalidate.iter().map(|s| (*s, "invalidate".into())));
         all
     }
 

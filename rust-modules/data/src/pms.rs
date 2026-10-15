@@ -2156,7 +2156,7 @@ struct Src {
 }
 
 /// The least spacing between two quiet reads of one source; asks inside it coalesce into one.
-const QUIET_SPACING_S: f32 = 5.0;
+pub(crate) const QUIET_SPACING_S: f32 = 5.0;
 
 impl Src {
     /// The request-state transition, independent of thread creation and network I/O. Mint only

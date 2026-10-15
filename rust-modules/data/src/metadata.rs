@@ -32,6 +32,31 @@ impl<'a> MetadataView<'a> {
     pub fn current(&self) -> Option<&'a Detail> {
         self.state.current.as_ref()
     }
+    /// The episodes the loaded Detail lists in its current season window, when the loaded item IS
+    /// `(sid, rk)`. The store is single-current, so the identity check keeps a covered Detail page
+    /// from naming the episodes of the one that replaced it. An episode's change moves the season's
+    /// and the show's counts and the hero's on-deck episode, none of which can be patched from a
+    /// facts row, so the page owes itself a re-read for each.
+    pub fn held_episodes(&self, sid: plx_plex::plex::ServerId, rk: &str) -> crate::stores::HeldKeys {
+        let mut keys = crate::stores::HeldKeys::new();
+        let Some(d) = self.current().filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk))) else { return keys };
+        for (_, episode) in d.episodes.iter_loaded() {
+            crate::stores::push_held(&mut keys, d.sid, &episode.rk);
+        }
+        keys
+    }
+
+    /// The Related tiles and collection-member tiles the loaded Detail shows, when it IS
+    /// `(sid, rk)`. Their rows are patched from a facts row, so a read-back of them is quiet.
+    pub fn held_tiles(&self, sid: plx_plex::plex::ServerId, rk: &str) -> crate::stores::HeldKeys {
+        let mut keys = crate::stores::HeldKeys::new();
+        let Some(d) = self.current().filter(|d| plx_plex::plex::same_item((d.sid, &d.rk), (sid, rk))) else { return keys };
+        let members = d.collection.iter().flat_map(|c| c.members.iter());
+        for tile in d.related.iter().chain(members) {
+            crate::stores::push_held(&mut keys, tile.sid, &tile.rk);
+        }
+        keys
+    }
     pub fn now_playing(&self) -> Option<&'a NowPlaying> {
         self.state.now.as_ref()
     }

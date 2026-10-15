@@ -2359,7 +2359,17 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         let content: Vec<plx_screens::registry::ContentArg> = app.pages.nav.tabs.stack.entries.iter()
             .filter_map(|e| match &e.arg { AppArg::Content(c) => Some(c.clone()), _ => None })
             .collect();
-        if app.bridge.notify_pump(&content) {
+        let shown = app.pages.nav.tabs.stack.entries.iter().fold(
+            plx_data::stores::notify_map::Shown::default(), |mut shown, e| {
+                match e.arg {
+                    AppArg::Home => shown.home = true,
+                    AppArg::Library => shown.library = true,
+                    AppArg::Search => shown.search = true,
+                    _ => {}
+                }
+                shown
+            });
+        if app.bridge.notify_pump(&content, shown) {
             app.reread.resync(); // a lost stream: events were missed, every covered page is owed a re-read
         }
         // …and the covered pages' own re-read, once each cover episode (`app/reread.rs`).
