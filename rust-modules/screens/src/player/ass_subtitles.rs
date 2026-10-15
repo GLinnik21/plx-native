@@ -11,6 +11,7 @@ use plx_ui::{
     consts::{SCR_H, SCR_W},
     Painter, Rect,
 };
+use plx_gfx::gfx::{bucket_dim, BucketTex};
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -18,7 +19,7 @@ pub struct AssSubtitles {
     frame: Option<Arc<ass::Frame>>,
     source: u64,
     clock: ass_source::Clock,
-    textures: Vec<CachedTexture>,
+    textures: Vec<Slot>,
     uploaded: u64,
     viewport: Viewport,
     /// The origin `frame` was requested under. The source's current origin can already differ
@@ -111,24 +112,15 @@ impl AssSubtitles {
                     .collect();
                 for (slot, rect) in next.iter_mut().zip(&frame.rects) {
                     if slot.is_none() {
-                        let previous = old.iter_mut().find_map(Option::take);
+                        let i = pick_slot(old.iter().map(Option::as_ref), rect.width, rect.height);
+                        let mut recycled = i.and_then(|i| old[i].take()).unwrap_or_default();
                         plx_media::player::ass_perf::note_upload(rect.rgba.len());
-                        let id = plx_gfx::gfx::upload_rgba(
-                            previous.as_ref().map_or(0, |t| t.id),
-                            rect.width,
-                            rect.height,
-                            rect.rgba.as_ptr(),
-                        );
-                        *slot = Some(CachedTexture {
-                            id,
-                            width: rect.width,
-                            height: rect.height,
-                            pixels: rect.rgba.clone(),
-                        });
+                        recycled.upload(rect);
+                        *slot = Some(recycled);
                     }
                 }
                 for unused in old.into_iter().flatten() {
-                    plx_gfx::gfx::delete_tex(unused.id);
+                    unused.delete();
                 }
                 self.textures = next.into_iter().flatten().collect();
                 self.uploaded = frame.serial;
@@ -144,10 +136,15 @@ impl AssSubtitles {
         self.spans.extend(frame.rects.iter().map(|r| (r.y, r.height)));
         lift_dys(origin, lift, &self.spans, aligns, &mut self.dys);
         let ink = plx_appkit::player_hud::subtitle_ink();
-        for (i, (texture, rect)) in self.textures.iter().zip(&frame.rects).enumerate() {
+        for (i, (slot, rect)) in self.textures.iter().zip(&frame.rects).enumerate() {
             let dy = self.dys[i];
-            Painter::root().tex(
-                texture.id,
+            let shown = slot.shown();
+            if shown.used_w == 0 || shown.used_h == 0 {
+                continue;
+            }
+            Painter::root().tex_uv(
+                shown.tex,
+                shown.uv(),
                 Rect::new(
                     (self.viewport.x + rect.x) as f32,
                     (self.viewport.y + rect.y) as f32 + dy,
@@ -175,8 +172,8 @@ impl AssSubtitles {
 
     pub fn render_report(&self) -> plx_ui::frame::RenderReport {
         plx_ui::frame::RenderReport {
-            textures: self.textures.iter().filter(|t| t.id != 0).count() as u32,
-            bytes: self.textures.iter().map(|t| t.pixels.len()).sum(),
+            textures: self.textures.iter().map(Slot::texture_count).sum(),
+            bytes: self.textures.iter().map(Slot::allocated_bytes).sum(),
         }
     }
 }
@@ -286,22 +283,110 @@ fn aligns_for(
     }
 }
 
-struct CachedTexture {
-    id: u32,
+/// A region's two textures. A changed region uploads into the one NOT drawn last, so a partial
+/// `glTexSubImage2D` never lands on a texture the in-flight frames still sample (Mali copies the
+/// whole texture to keep them intact, resource ghosting); at the subtitle change rate the spare was
+/// last drawn many frames ago.
+#[derive(Default)]
+struct Slot {
+    bufs: [BucketTex; 2],
+    /// Index of the buffer drawn last.
+    shown: usize,
     width: i32,
     height: i32,
-    pixels: Arc<[u8]>,
+    /// Identity of the pixels in `bufs[shown]`, for [`retained_regions`].
+    pixels: Option<Arc<[u8]>>,
 }
 
-fn clear_textures(textures: &mut Vec<CachedTexture>) {
-    for texture in textures.drain(..) {
-        plx_gfx::gfx::delete_tex(texture.id);
+/// What an upload does to the spare buffer, by how the needed bucket compares with its storage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpareUse {
+    /// It fits and is not wasteful: copy in.
+    Reuse,
+    /// Nothing there yet, or too small: allocate (growing only goes up).
+    Grow,
+    /// Much larger than needed: free it and start over so the allocation shrinks.
+    Reset,
+}
+
+/// A buffer whose area exceeds this multiple of the needed bucket's is shrunk. Growth takes the
+/// per-axis maximum, so without it a tall-then-wide sequence only ever ratchets the storage up.
+const SHRINK_FACTOR: i64 = 4;
+
+fn spare_use(spare: BucketTex, w: i32, h: i32) -> SpareUse {
+    if spare.tex == 0 {
+        return SpareUse::Grow;
+    }
+    let need = i64::from(bucket_dim(w)) * i64::from(bucket_dim(h));
+    if i64::from(spare.alloc_w) * i64::from(spare.alloc_h) > need * SHRINK_FACTOR {
+        SpareUse::Reset
+    } else if spare.fits(w, h) {
+        SpareUse::Reuse
+    } else {
+        SpareUse::Grow
+    }
+}
+
+/// Which unmatched old slot to recycle for a `w`x`h` region: the first whose spare can take it as
+/// is, else the first that would grow, and an oversized one (to be reset) last. `None` when there
+/// is none.
+fn pick_slot<'a>(
+    olds: impl Iterator<Item = Option<&'a Slot>>,
+    w: i32,
+    h: i32,
+) -> Option<usize> {
+    olds.enumerate()
+        .filter_map(|(i, s)| s.map(|s| (i, spare_use(s.bufs[1 - s.shown], w, h))))
+        .min_by_key(|&(i, u)| (u != SpareUse::Reuse, u == SpareUse::Reset, i))
+        .map(|(i, _)| i)
+}
+
+impl Slot {
+    fn shown(&self) -> BucketTex {
+        self.bufs[self.shown]
+    }
+
+    /// Put `rect` into the spare buffer and make it the shown one.
+    fn upload(&mut self, rect: &ass::Rect) {
+        let spare = 1 - self.shown;
+        let mut prev = self.bufs[spare];
+        if spare_use(prev, rect.width, rect.height) == SpareUse::Reset {
+            plx_gfx::gfx::delete_tex(prev.tex);
+            prev = BucketTex::default();
+        }
+        self.bufs[spare] =
+            plx_gfx::gfx::upload_rgba_bucketed(prev, rect.width, rect.height, rect.rgba.as_ptr());
+        self.shown = spare;
+        self.width = rect.width;
+        self.height = rect.height;
+        self.pixels = Some(rect.rgba.clone());
+    }
+
+    fn texture_count(&self) -> u32 {
+        self.bufs.iter().filter(|b| b.tex != 0).count() as u32
+    }
+
+    /// Storage the driver holds, not the part drawn: RGBA8 at the bucketed size.
+    fn allocated_bytes(&self) -> usize {
+        self.bufs.iter().map(|b| b.alloc_w as usize * b.alloc_h as usize * 4).sum()
+    }
+
+    fn delete(self) {
+        for b in self.bufs {
+            plx_gfx::gfx::delete_tex(b.tex);
+        }
+    }
+}
+
+fn clear_textures(textures: &mut Vec<Slot>) {
+    for slot in textures.drain(..) {
+        slot.delete();
     }
 }
 
 /// The worker interns unchanged RGBA. Pixel identity can therefore retain an
 /// upload even if a sign moved or libass reordered its disjoint output regions.
-fn retained_regions(textures: &[CachedTexture], rects: &[ass::Rect]) -> Vec<Option<usize>> {
+fn retained_regions(textures: &[Slot], rects: &[ass::Rect]) -> Vec<Option<usize>> {
     let mut used = vec![false; textures.len()];
     rects
         .iter()
@@ -310,7 +395,7 @@ fn retained_regions(textures: &[CachedTexture], rects: &[ass::Rect]) -> Vec<Opti
                 !used[i]
                     && texture.width == rect.width
                     && texture.height == rect.height
-                    && Arc::ptr_eq(&texture.pixels, &rect.rgba)
+                    && texture.pixels.as_ref().is_some_and(|p| Arc::ptr_eq(p, &rect.rgba))
             });
             if let Some(i) = found {
                 used[i] = true;
@@ -511,20 +596,7 @@ mod tests {
     fn moving_and_reordered_regions_retain_uploads_before_recycling_changed_ones() {
         let a: Arc<[u8]> = Arc::from([255, 0, 0, 255]);
         let b: Arc<[u8]> = Arc::from([0, 0, 255, 255]);
-        let old = vec![
-            CachedTexture {
-                id: 11,
-                width: 1,
-                height: 1,
-                pixels: a.clone(),
-            },
-            CachedTexture {
-                id: 12,
-                width: 1,
-                height: 1,
-                pixels: b.clone(),
-            },
-        ];
+        let old = vec![slot_of(11, a.clone()), slot_of(12, b.clone())];
         let rect = |x, rgba| ass::Rect {
             x,
             y: 0,
@@ -540,5 +612,86 @@ mod tests {
             [Some(0), None]
         );
         assert!(retained_regions(&old, &[]).is_empty());
+    }
+
+    fn slot_of(tex: u32, pixels: Arc<[u8]>) -> Slot {
+        Slot {
+            bufs: [BucketTex { tex, alloc_w: 64, alloc_h: 64, used_w: 1, used_h: 1 }, BucketTex::default()],
+            shown: 0,
+            width: 1,
+            height: 1,
+            pixels: Some(pixels),
+        }
+    }
+
+    fn buf(tex: u32, alloc_w: i32, alloc_h: i32) -> BucketTex {
+        BucketTex { tex, alloc_w, alloc_h, used_w: alloc_w, used_h: alloc_h }
+    }
+
+    fn slot_with(bufs: [BucketTex; 2], shown: usize) -> Slot {
+        Slot { bufs, shown, ..Slot::default() }
+    }
+
+    #[test]
+    fn the_spare_is_the_buffer_not_drawn_last() {
+        let s = slot_with([buf(1, 64, 64), buf(2, 64, 64)], 0);
+        assert_eq!(s.shown().tex, 1);
+        assert_eq!(s.bufs[1 - s.shown].tex, 2);
+        let s = slot_with([buf(1, 64, 64), buf(2, 64, 64)], 1);
+        assert_eq!(s.shown().tex, 2);
+        assert_eq!(s.bufs[1 - s.shown].tex, 1);
+    }
+
+    #[test]
+    fn a_spare_that_fits_is_reused_and_a_missing_or_small_one_grows() {
+        assert_eq!(spare_use(buf(2, 256, 128), 200, 100), SpareUse::Reuse);
+        assert_eq!(spare_use(buf(2, 256, 128), 256, 128), SpareUse::Reuse);
+        assert_eq!(spare_use(BucketTex::default(), 10, 10), SpareUse::Grow);
+        assert_eq!(spare_use(buf(2, 64, 64), 65, 10), SpareUse::Grow);
+        assert_eq!(spare_use(buf(2, 64, 64), 10, 65), SpareUse::Grow);
+    }
+
+    #[test]
+    fn a_spare_over_four_times_the_needed_bucket_is_reset() {
+        // Needed bucket 64x64 = 4096; 128x128 = 16384 is exactly 4x (kept), 192x128 is over.
+        assert_eq!(spare_use(buf(2, 128, 128), 10, 10), SpareUse::Reuse);
+        assert_eq!(spare_use(buf(2, 192, 128), 10, 10), SpareUse::Reset);
+        // Per-axis growth mixes shapes: a wide-then-tall region leaves a big square behind.
+        assert_eq!(spare_use(buf(2, 1920, 1088), 1900, 70), SpareUse::Reset);
+        assert_eq!(spare_use(buf(2, 1920, 1088), 1900, 1000), SpareUse::Reuse);
+    }
+
+    #[test]
+    fn the_recycled_slot_is_the_one_whose_spare_fits() {
+        let small = slot_with([buf(1, 64, 64), buf(2, 64, 64)], 0);
+        let big = slot_with([buf(3, 512, 128), buf(4, 512, 128)], 0);
+        let none = Slot::default();
+        let pick = |slots: &[Option<Slot>], w, h| {
+            pick_slot(slots.iter().map(Option::as_ref), w, h)
+        };
+        let slots = [Some(small), Some(big), Some(none)];
+        assert_eq!(pick(&slots, 500, 100), Some(1));
+        assert_eq!(pick(&slots, 50, 50), Some(0));
+        // Nothing fits any spare: every slot would grow, so the first is taken.
+        assert_eq!(pick(&slots, 600, 100), Some(0));
+        assert_eq!(pick(&[None, None], 10, 10), None);
+        let taken = [None, Some(Slot::default())];
+        assert_eq!(pick(&taken, 10, 10), Some(1));
+    }
+
+    #[test]
+    fn reports_allocated_bytes_and_every_texture_of_every_buffer() {
+        let s = slot_with([buf(1, 128, 64), buf(2, 64, 64)], 0);
+        assert_eq!(s.texture_count(), 2);
+        assert_eq!(s.allocated_bytes(), (128 * 64 + 64 * 64) * 4);
+        // Used is smaller than allocated: the report follows the allocation.
+        let mut used = buf(1, 128, 64);
+        used.used_w = 3;
+        used.used_h = 3;
+        let s = slot_with([used, BucketTex::default()], 0);
+        assert_eq!(s.texture_count(), 1);
+        assert_eq!(s.allocated_bytes(), 128 * 64 * 4);
+        assert_eq!(Slot::default().texture_count(), 0);
+        assert_eq!(Slot::default().allocated_bytes(), 0);
     }
 }

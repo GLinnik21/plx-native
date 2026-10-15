@@ -103,8 +103,11 @@ cue does not repeatedly blend unrelated static signs. A bounded image-key table 
 changed geometry, image order, clipping or content invalidates the affected regions.
 Unchanged region pixels retain their shared allocation, including across translations, so the
 player screen’s `ass_subtitles` cache reuses their GL uploads. Changed regions recycle the
-remaining textures; gaps, Off and unmount release them. The cache reports all retained texture
-bytes to the shared render accounting.
+remaining slots. Each slot holds two bucketed textures (`gfx::upload_rgba_bucketed`) and a change
+is copied into the one not drawn last, so a partial update never lands on a texture in-flight
+frames still sample; a spare more than four times the needed bucket is freed and re-specified.
+Gaps, Off and unmount release every texture. The cache reports all allocated texture bytes to the
+shared render accounting.
 
 The subtitle clock interpolates between the pipeline's sparse position callbacks, with at most
 250 ms of extrapolation. Pause, seek and discontinuities re-anchor it. Output dimensions and the
