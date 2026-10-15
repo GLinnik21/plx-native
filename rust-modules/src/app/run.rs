@@ -2437,6 +2437,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         app.bridge.hold_network(matches!(app.route(), AppArg::Player));
         // Stops first: the resume patch lands before any read of the item is asked for.
         app.bridge.stops_pump();
+        app.bridge.watchlist_pump();
         let endpoints = app.bridge.viewstate_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
         // …and the read-back it owes: what the server now says about the item(s) just written, on

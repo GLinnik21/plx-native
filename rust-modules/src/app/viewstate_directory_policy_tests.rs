@@ -678,7 +678,7 @@ fn two_bridges_keep_their_own_captured_profile_and_labels_for_a_scrim_lift() {
         .expect("the second bridge publishes its own lift chrome");
     assert_eq!(ar.profile.name.to_bytes(), b"Owner A");
     assert_eq!(ar.profile.initial.to_bytes(), b"A");
-    assert_eq!(ar.labels.labels, ["Home", "Movies", ""]);
+    assert_eq!(ar.labels.faces, [plx_ui::widgets::TabFace::Label("Home".into()), plx_ui::widgets::TabFace::Label("Movies".into()), plx_ui::widgets::TabFace::Icon(plx_ui::icons::Icon::Search)]);
     assert_eq!(br.profile.name.to_bytes(), b"Owner B");
-    assert_eq!(br.labels.labels, ["Home", "TV Shows", ""]);
+    assert_eq!(br.labels.faces, [plx_ui::widgets::TabFace::Label("Home".into()), plx_ui::widgets::TabFace::Label("TV Shows".into()), plx_ui::widgets::TabFace::Icon(plx_ui::icons::Icon::Search)]);
 }

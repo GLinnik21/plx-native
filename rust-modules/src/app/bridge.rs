@@ -1228,6 +1228,14 @@ impl Bridge {
         }
     }
 
+    /// The Watchlist store's landing pass, once a frame and route-unconditional: a write burst
+    /// lands, a profile switch resets it, and the page reads its notice through `take_notices`.
+    pub(crate) fn watchlist_pump(&mut self) {
+        if self.stores.watchlist.pump_with_gate(&self.stores.landgate) {
+            plx_machine::idle::invalidate();
+        }
+    }
+
     pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         self.stores.viewstate_pump(self.directory.view())
     }
