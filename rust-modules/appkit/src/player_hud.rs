@@ -317,7 +317,7 @@ impl CaptionPager {
     }
 }
 
-/// The caption's lines: each newline-separated segment word-wrapped to [`caption_wrap_width`],
+/// The caption's lines: each newline-separated segment word-wrapped to [`wrap_width`],
 /// measured by `measure` in the bold face it is drawn in. Every wrapped line is kept, so a long cue
 /// is never cut short; [`caption_layout`] fits the block.
 fn caption_wrap(text: &str, scale: f32, measure: &dyn Measure) -> Vec<String> {
