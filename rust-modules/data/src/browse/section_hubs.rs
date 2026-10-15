@@ -300,6 +300,12 @@ impl SecHubs {
         clamp_hold(self.hold.unwrap_or((0, HOLD_ROWS - 1)))
     }
 
+    /// The items of the rows inside the hold window, in row order: what the page holds cards for.
+    pub(super) fn held_items(&self) -> impl Iterator<Item = &PmsMovie> {
+        let (lo, hi) = self.held();
+        self.committed.iter().skip(lo).take(hi.saturating_add(1).saturating_sub(lo)).flat_map(|shelf| shelf.items.iter())
+    }
+
     /// Whether a row read is due: a page the user asked for, or a held row without its cards.
     fn row_wanted(&self) -> bool {
         self.published && (self.ask.is_some() || self.wanted_reload().is_some())

@@ -955,6 +955,8 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // the feed connect again (a backoff is forgiven), and owe the screens a re-read.
             app.bridge.notify_network_changed();
             app.bridge.notify_resume();
+            // The television may have been away long enough for every page to be stale.
+            app.reread.resume();
             // Reacquire only on DID foreground, before playback restoration and rendering.
             restore_window(app.win);
             plx_machine::idle::invalidate();
@@ -2353,7 +2355,11 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // The PMS notification feed (ships off: opens nothing while `NOTIFY_ENABLED` is false).
         // Route-unconditional like its neighbours; its output is only logged until the event
         // mapping lands, and it never touches the stop queue or the playback Offset.
-        app.bridge.notify_pump();
+        if app.bridge.notify_pump() {
+            app.reread.resync(); // a lost stream: events were missed, every covered page is owed a re-read
+        }
+        // …and the covered pages' own re-read, once each cover episode (`app/reread.rs`).
+        super::reread::run(&mut app.reread, &mut app.pages, &mut app.bridge);
         // A server on a plaintext grant keeps trying HTTPS (`plex::grant::UpgradeRetry`): its
         // endpoint re-discovery races every HTTPS route first and retires the grant when one
         // verifies. Route-unconditional — the upgrade is owed whatever is on screen.
@@ -3188,6 +3194,7 @@ mod lifecycle_regression_tests {
             refresh_hubs: Default::default(),
             return_hold: Default::default(),
             plaintext_upgrade: Default::default(),
+            reread: Default::default(),
             ev: [0; 128],
             remote: Default::default(),
             win: Default::default(),

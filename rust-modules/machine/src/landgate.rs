@@ -405,9 +405,10 @@ fn dump_wait(name: &str, polls: &mut u64, timeout: std::time::Duration) {
     std::thread::sleep(std::time::Duration::from_micros(WAIT_STEP_US));
 }
 
-/// Is any mode armed (recording, replay or dump)? The one relaxed load every landing site pays,
-/// exposed for a feature that must not run under a controlled schedule: a live network stream
-/// delivers on its own clock, so it stays off while a recording, a replay or a dump owns the run.
+/// Is a recording, a replay or a dump armed on THIS gate? The one relaxed load every site above
+/// starts with, for a caller that has work which must not run while the schedule owns what is
+/// observed and when (view-state re-reads: `app::reread`). Production reads its own
+/// `Stores::landgate`; the process-wide fixture gate is a test seam and is not consulted.
 pub fn is_armed(&self) -> bool {
     self.armed.load(Ordering::Relaxed)
 }
@@ -663,6 +664,25 @@ impl Drop for Armed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `is_armed` reports every way a gate can be armed and the disarm that ends it, on a gate of
+    /// its own (never the process-wide fixture gate).
+    #[test]
+    fn is_armed_reflects_each_arming_and_disarm() {
+        let gate = Gate::default();
+        assert!(!gate.is_armed());
+        gate.arm_recording();
+        assert!(gate.is_armed());
+        gate.disarm();
+        assert!(!gate.is_armed());
+        gate.arm_replay(vec![]);
+        assert!(gate.is_armed());
+        gate.disarm();
+        gate.arm_dump(std::time::Duration::from_millis(1));
+        assert!(gate.is_armed());
+        gate.disarm();
+        assert!(!gate.is_armed());
+    }
 
     const A: StoreOrd = StoreOrd(1);
     const B: StoreOrd = StoreOrd(3);

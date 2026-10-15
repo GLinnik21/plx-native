@@ -187,6 +187,11 @@ impl BrowseStore {
         self.discover_pump_with_gate(plx_machine::landgate::fixture_gate())
     }
 
+    /// The items the addressed Library page holds (see [`BrowseState::held_keys`]).
+    pub fn held_keys(&self, target: SectionAddress) -> super::HeldKeys {
+        self.state.held_keys(target)
+    }
+
     /// Is a membership re-query's first page still out with no Library page on top to pump it? The
     /// application pumps this store itself while it holds (`Bridge::reconcile_pump`).
     pub fn requery_owed(&self) -> bool {
@@ -622,6 +627,32 @@ mod contract_tests {
         }
         assert_eq!(stores.browse.borrow().gen(), before);
         assert!(stores.take_notices().is_empty());
+    }
+
+    /// `held_keys` is the Library page's hold: the shelf rows inside the hold window and the grid
+    /// rows inside the wanted window of the current section, deduplicated; a stale address holds nothing.
+    #[test]
+    fn held_keys_match_hold_window() {
+        let _guard = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let mut browse = BrowseStore::default();
+        browse.seed_two_source_table_for_test();
+        browse.seed_items_for_test(30);
+        browse.seed_shelves_for_test(0, &["a", "b"], 2);
+        let id = browse.hubs_snapshot().view().id().unwrap();
+        let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+        let rks = |keys: &super::super::HeldKeys| keys.iter().map(|(_, k)| k.clone()).collect::<Vec<_>>();
+        // No grid window yet: only the shelves (both rows sit inside the default hold).
+        let shelf_only = browse.held_keys(target);
+        assert_eq!(shelf_only.len(), 4, "two shelves of two cards: {:?}", rks(&shelf_only));
+        browse.run(BrowseCmd::Addressed { target, work: LibraryWork::Want { lo: 3, hi: 6, focus: None } });
+        let held = browse.held_keys(target);
+        let grid: Vec<_> = rks(&held).into_iter().filter(|k| k.parse::<usize>().is_ok_and(|n| (4..=6).contains(&n))).collect();
+        assert_eq!(grid, ["4", "5", "6"], "the grid window is items 3..6: {:?}", rks(&held));
+        assert!(shelf_only.iter().all(|k| held.contains(k)), "shelf keys stay held alongside the grid");
+        assert_eq!(held.len(), shelf_only.len() + 3, "the shelves plus the three grid items: {:?}", rks(&held));
+        assert!(!rks(&held).contains(&"7".to_string()), "past the window");
+        assert!(browse.held_keys(SectionAddress { epoch: target.epoch + 1, ..target }).is_empty(), "a stale address holds nothing");
     }
 
     #[test]

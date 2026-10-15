@@ -1252,7 +1252,8 @@ impl Bridge {
     /// `NOTIFY_ENABLED` false it opens nothing. What it produces is only counted into the event
     /// log here (server slots and counts, never a session, key or identifier); the event mapping
     /// that acts on it is a later change, and notifications never reach the stop queue or Offset.
-    pub(crate) fn notify_pump(&mut self) {
+    /// `true` when a feed came back after a gap, so the caller owes the covered pages a re-read.
+    pub(crate) fn notify_pump(&mut self) -> bool {
         let out = self.stores.notify_pump();
         for plays in &out.plays {
             plx_base::eventlog::log(&format!("notify: sid={} sessions={}", plays.sid.raw(), plays.sessions.len()));
@@ -1260,6 +1261,7 @@ impl Bridge {
         for (sid, epoch) in &out.resynced {
             plx_base::eventlog::log(&format!("notify: sid={} resync epoch={epoch}", sid.raw()));
         }
+        !out.resynced.is_empty()
     }
 
     /// WILL background: the feed's connections are cancelled now and stay closed until resume.
@@ -1276,6 +1278,41 @@ impl Bridge {
     /// `plex::grant::network_changed`): cancel them and reconnect.
     pub(crate) fn notify_network_changed(&mut self) {
         self.stores.notify.network_changed();
+    }
+
+    /// May a covered page's re-read be spent now (`Stores::reread_allowed`)?
+    pub(crate) fn reread_allowed(&self) -> bool {
+        self.stores.reread_allowed()
+    }
+
+    /// Owe the read-back of what a page holds on screen (`Stores::owe_read_back`).
+    pub(crate) fn owe_read_back(&mut self, keys: plx_data::stores::HeldKeys) {
+        self.stores.owe_read_back(keys);
+    }
+
+    /// Owe the read-back of a Detail page's own item, which owes the page its in-place re-read
+    /// (`Stores::owe_page_read`).
+    pub(crate) fn owe_page_read(&mut self, keys: plx_data::stores::HeldKeys) {
+        self.stores.owe_page_read(keys);
+    }
+
+    /// The items the page for `arg` holds cards for, from the store that feeds it: Library's
+    /// current section, Search's results, and the Person / Filmography / Collection store when it
+    /// is showing that very page. Nothing for any other page.
+    pub(crate) fn held_keys(&self, arg: &AppArg) -> plx_data::stores::HeldKeys {
+        match arg {
+            AppArg::Library => self.stores.library_held_keys(),
+            AppArg::Search => self.stores.search.held_keys(),
+            AppArg::Content(content @ (ContentArg::Person { .. } | ContentArg::Filmography { .. })) =>
+                self.stores.person.held_keys(content),
+            AppArg::Content(content @ ContentArg::Collection(_)) => self.stores.collection.held_keys(content),
+            _ => Default::default(),
+        }
+    }
+
+    /// The Home sources, in display order: what a Home re-read asks one quiet refetch of each.
+    pub(crate) fn hub_source_ids(&self) -> Vec<plx_plex::plex::ServerId> {
+        self.stores.hubs.source_ids()
     }
 
     /// The rows the read-back has landed since the last call (`Stores::take_landed_views`).
@@ -1406,6 +1443,18 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn seed_hubs_for_test(&mut self, items: usize, hub_state: plx_data::pms::HubState) {
         self.stores.hubs.seed_for_test(items, hub_state);
+    }
+
+    /// Test hook: publish `shelves` as Search's results.
+    #[cfg(test)]
+    pub(crate) fn publish_search_for_test(&mut self, shelves: Vec<plx_data::search::Shelf>) {
+        self.stores.search.publish_shelves_for_test(shelves);
+    }
+
+    /// Test hook: the keys owed a read-back and not yet sent.
+    #[cfg(test)]
+    pub(crate) fn read_back_pending_for_test(&self) -> plx_data::stores::HeldKeys {
+        self.stores.reconcile.pending_for_test()
     }
 
     /// Is a view-state write queued or in flight?

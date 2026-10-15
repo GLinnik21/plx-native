@@ -43,6 +43,22 @@ impl StoreOutcome {
     pub fn changed(changed: bool) -> Self { Self { changed, ..Self::default() } }
 }
 
+/// The items a page shows, as the stores that hold them name them: each store's `held_keys`
+/// returns the `(server, ratingKey)` of the rows inside its own hold window (Home's `hold`, a
+/// Library's shelf hold and grid `want`, a result set's published rows). Layer 2's re-reads
+/// (`app::reread`) hand them to `ViewReconcileStore::enqueue`; nothing on `plx_ui::Screen` knows
+/// them. Placeholders (no rating key) are never listed, and an item appears once however many rows
+/// hold it.
+pub type HeldKeys = Vec<(plx_plex::plex::ServerId, String)>;
+
+/// Add `(sid, rk)` to `keys` unless it is a placeholder or is already listed.
+pub(crate) fn push_held(keys: &mut HeldKeys, sid: plx_plex::plex::ServerId, rk: &str) {
+    if rk.is_empty() || keys.iter().any(|(s, k)| plx_plex::plex::same_item((*s, k), (sid, rk))) {
+        return;
+    }
+    keys.push((sid, rk.to_owned()));
+}
+
 pub mod browse;
 pub mod fanout;
 mod content_arg;
@@ -272,6 +288,35 @@ impl Stores {
 
     pub fn network_held(&self) -> bool {
         self.network_held
+    }
+
+    /// May a re-read of the pages the viewer is not looking at be spent now? Not under the player
+    /// ([`Self::network_held`]), and not while a recording or replay is armed on this owner's
+    /// landing gate: a re-read is a request no recorded run can contain, so it would desynchronise
+    /// the capture from the replay (`plx_machine::landgate`).
+    pub fn reread_allowed(&self) -> bool {
+        !self.network_held && !self.landgate.is_armed()
+    }
+
+    /// Owe the read-back of `keys` (what a page holds on screen, see [`HeldKeys`]) to the
+    /// reconcile worker. Never a stop: nothing here scrobbles or feeds an end-of-stream decision.
+    /// Quiet: the facts are published but no Detail page is owed a re-read of its own.
+    pub fn owe_read_back(&mut self, keys: HeldKeys) {
+        self.reconcile.enqueue_reread(keys);
+    }
+
+    /// Owe the read-back of `keys` the OWING way: each row that lands also owes the Detail pages
+    /// showing it a re-read of their own (`take_landed_views`). The visible Detail's resume.
+    pub fn owe_page_read(&mut self, keys: HeldKeys) {
+        self.reconcile.enqueue(keys);
+    }
+
+        /// What the Library page now on the current section holds (its shelves in the hold window, the
+    /// grid rows in the wanted window), or nothing before a listing exists.
+    pub fn library_held_keys(&self) -> HeldKeys {
+        let mut browse = self.browse.borrow_mut();
+        let Some(id) = browse.listing_snapshot().view().id() else { return HeldKeys::new() };
+        browse.held_keys(browse::SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section })
     }
 
     /// Playbacks that stopped. Each gets an immediate resume patch ([`crate::viewstate::ViewFact::Offset`])
@@ -828,3 +873,7 @@ mod tests {
         assert_eq!(StoreId::from_ord(StoreOrd(10)), None);
     }
 }
+
+#[cfg(test)]
+#[path = "held_keys_tests.rs"]
+mod held_keys_tests;

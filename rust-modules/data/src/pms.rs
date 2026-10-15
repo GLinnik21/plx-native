@@ -1360,6 +1360,24 @@ fn pump_reloads(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
     endpoints
 }
 
+/// The items in the rows the screen holds cards for (`state.hold`, as the store keeps it: at most
+/// [`HOLD_ROWS`] rows of the published catalog, the merged Continue Watching row first), as
+/// `(server, ratingKey)`. A released row's placeholders have no rating key and are skipped.
+pub fn held_keys(state: &PmsState) -> crate::stores::HeldKeys {
+    let home = published_home(state);
+    let (lo, hi) = clamp_hold(state.hold);
+    let mut keys = crate::stores::HeldKeys::new();
+    for row in home.hubs.iter().skip(lo).take(hi - lo + 1) {
+        for item in home.items.get(row.start..row.start.saturating_add(row.len)).unwrap_or(&[]) {
+            crate::stores::push_held(&mut keys, item.sid, &item.rk);
+        }
+    }
+    keys
+}
+
+/// The servers Home reads, in display order.
+pub fn source_ids(state: &PmsState) -> Vec<ServerId> { state.srcs.iter().map(|s| s.sid).collect() }
+
 /// Is a quiet read's answer waiting to land? Cheap enough to ask every frame, before anything is
 /// built to judge it.
 pub fn has_staged(state: &PmsState) -> bool { state.srcs.iter().any(|s| s.staged.is_some()) }
@@ -3831,6 +3849,10 @@ mod owed_tests;
 #[cfg(test)]
 #[path = "pms_staged_tests.rs"]
 mod staged_tests;
+
+#[cfg(test)]
+#[path = "pms_held_keys_tests.rs"]
+mod held_keys_tests;
 
 /// The library's tile abstraction (restructure spec §10) over a catalog row: the one place a
 /// `PmsMovie` becomes a `Tile`, so a widget that draws a tile asks the trait and never this type.

@@ -334,6 +334,25 @@ fn a_stop_the_server_refused_still_owes_the_detail_pages_a_re_read() {
     drop(stores);
 }
 
+/// L2-5 re-reads: a covered page's read-back publishes the facts and owes NO Detail page a re-read
+/// (the visible Detail would otherwise be re-fetched seconds after it opened). A read-back asked
+/// for the owing way still owes the page.
+#[test]
+fn a_quiet_read_back_publishes_facts_but_owes_no_detail_page() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    pms.truth.view_offset.store(30_000, Ordering::SeqCst);
+    let (mut stores, sid) = library_holding_item(&pms);
+    stores.owe_read_back(vec![(sid, "1".to_string())]);
+    drive(&mut stores, |s| pms.truth.reads.load(Ordering::SeqCst) == 1 && settled(s));
+    assert_eq!(tile_resume(&stores), 30_000, "the facts were published");
+    assert!(stores.take_landed_views().is_empty(), "but no Detail page is owed a re-read");
+    stores.reconcile.enqueue([(sid, "1".to_string())]);
+    drive(&mut stores, |s| pms.truth.reads.load(Ordering::SeqCst) == 2 && settled(s));
+    assert_eq!(stores.take_landed_views().len(), 1, "the owing way still owes the page");
+    drop(stores);
+}
+
 /// The player is on top: the stop still patches the tile, but its read-back waits for the player to
 /// leave, then goes out once.
 #[test]
