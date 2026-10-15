@@ -135,6 +135,13 @@ impl ScrubPreview {
         }
         self.shown
     }
+
+    /// The scrub ended: forget its stills, so the next one does not open on this one's last
+    /// picture at a different position. What is known about the part (`absent`) stays.
+    pub fn release(&mut self) {
+        self.shown = None;
+        self.pending = None;
+    }
 }
 
 /// Where the card sits: centred over the knob at `knob_x`, clamped to the scrubber's own extent,
@@ -254,6 +261,28 @@ mod tests {
         assert_eq!(run(&mut m, &mut s, 20_000), Some(10_000));
         s.has_index = true;
         assert_eq!(run(&mut m, &mut s, 30_000), Some(30_000), "not latched absent");
+    }
+
+    /// A scrub that ended at 10:00 must not open the next one, at 40:00, on its 10:00 still.
+    #[test]
+    fn a_new_scrub_never_opens_on_the_last_scrubs_still() {
+        let (mut m, mut s) = (ScrubPreview::new(), Server::new(true, 2));
+        for _ in 0..4 {
+            run(&mut m, &mut s, 600_000);
+        }
+        assert_eq!(run(&mut m, &mut s, 600_000), Some(600_000));
+        m.release();
+        assert_eq!(run(&mut m, &mut s, 2_400_000), None, "nothing until 40:00's own still lands");
+    }
+
+    /// Ending a scrub forgets the stills, not what is known about the part.
+    #[test]
+    fn an_absent_index_outlives_the_scrub_that_found_it() {
+        let (mut m, mut s) = (ScrubPreview::new(), Server::new(false, 0));
+        run(&mut m, &mut s, 0);
+        m.release();
+        run(&mut m, &mut s, 600_000);
+        assert_eq!(s.asked.len(), 1);
     }
 
     #[test]

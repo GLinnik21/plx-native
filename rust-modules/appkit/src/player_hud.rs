@@ -560,6 +560,11 @@ impl TransportRow {
     /// control the narrower one does not have.
     pub fn step(&mut self, slot: ControlSlot, focus: i32, btn: i32, dt: f32, now: u32) {
         self.note_transport(now);
+        // Here and not in the draw: a scrub can end with the transport hidden (UP-hide), when
+        // nothing draws, and the next one must not open on this one's last still.
+        if plx_media::player::TX.scrub_ns.load(Relaxed) < 0 {
+            self.preview.release();
+        }
         let f = (focus == 1)
             .then(|| usize::try_from(btn).ok())
             .flatten()

@@ -158,7 +158,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 
 /// A still out of a part's BIF index (`/library/parts/{id}/indexes/{kind}/{ms}`), the scrub
-/// preview's source. Ephemeral by nature — one per scrub step, rarely asked for twice — so it is
+/// preview's source. Ephemeral by nature — one per scrub position, rarely asked for twice — so it is
 /// never given a disk identity: the LRU it would churn is the posters'.
 fn is_preview_frame(source: &str) -> bool {
     let mut parts = source.split('?').next().unwrap_or(source).split('/');
