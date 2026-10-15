@@ -30,7 +30,8 @@
 //! The renderer is asked on the SUBTITLE clock (`player::subtitle_clock_ns`, the playhead less the
 //! viewer's timing offset). Because the whole file is here, a sidecar is the one kind of track
 //! that can be ADVANCED as well as delayed — [`selected`] is what `player::subtitle_offset_range_ms`
-//! reads to offer it -30 s..+30 s, where an embedded track gets a delay only.
+//! reads to offer it the sidecar offset range (see `subtitle_offset_range_ms`), where an embedded track
+//! gets a delay only.
 //!
 //! # Threading
 //!
@@ -89,6 +90,9 @@ struct TextHold {
     style_generation: u32,
     /// Cues that survived conversion.
     cues: usize,
+    /// A worker is already building the script for newer picks (one at a time; a later pick that
+    /// lands meanwhile is taken up by the next call once this one has published).
+    restyling: bool,
 }
 
 struct State {
@@ -331,30 +335,74 @@ fn ass_source_styled(burned: bool, style: TextStyle) -> Option<Arc<super::ass::S
     // work runs under either lock.
     let (generation, fonts) = super::ass_source::font_snapshot();
     let restyled = content.text.as_ref().is_some_and(|hold| hold.style_generation != style.generation());
-    if content.font_generation != Some(generation) || restyled {
+    if restyled {
+        // The new script is built off this thread (it is the whole file again, megabytes for a long
+        // one) and published under this lock when ready; until then the old look stays up.
+        plx_base::diag::spans::span("restyle", || start_restyle(content, style));
+    }
+    if content.font_generation != Some(generation) {
         let super::ass::Content::Script { bytes, .. } = &content.source.content else { return None; };
-        let (bytes, origin) = match &mut content.text {
-            Some(hold) if restyled => {
-                let header = text_ass::header(&style);
-                let script = joined(header.as_bytes(), &bytes[hold.header_len..]);
-                (hold.header_len, hold.style_generation) = (header.len(), style.generation());
-                (script, super::ass::Origin::Text(style))
-            }
-            _ => (bytes.clone(), content.source.origin),
-        };
         content.source = Arc::new(super::ass::Source {
-            id: content.source.id, revision: content.source.revision.wrapping_add(1), origin,
-            content: super::ass::Content::Script { bytes, fonts },
+            id: content.source.id, revision: content.source.revision.wrapping_add(1),
+            origin: content.source.origin, content: super::ass::Content::Script { bytes: bytes.clone(), fonts },
         });
         content.font_generation = Some(generation);
     }
     Some(content.source.clone())
 }
 
+/// Begin building `content`'s script for `style` on a worker, unless one is already running.
+/// FRAME THREAD, under the sidecar lock: it copies two `Arc`s and starts a thread, whatever the size
+/// of the file. The worker publishes with the font snapshot current by then, so a font arriving
+/// meanwhile is not lost.
+fn start_restyle(content: &mut Content, style: TextStyle) {
+    let Some(hold) = content.text.as_mut().filter(|hold| !hold.restyling) else { return };
+    let super::ass::Content::Script { bytes, .. } = &content.source.content else { return };
+    let (id, base_generation, header_len, bytes) = (content.source.id, hold.style_generation, hold.header_len, bytes.clone());
+    hold.restyling = true;
+    let started = plx_base::task::spawn_small("sidecar restyle", move || {
+        let header = text_ass::header(&style);
+        let script = joined(header.as_bytes(), &bytes[header_len..]);
+        drop(bytes);
+        let mut st = state();
+        if let Some((_, content)) = st.loaded.as_mut() {
+            publish_restyle(content, id, base_generation, style, header.len(), script);
+        }
+        drop(st);
+        plx_machine::present::wake_from_worker();
+    });
+    if !started {
+        super::log("sidecar: restyle worker refused");
+        hold.restyling = false;
+    }
+}
+
+/// Publish a script built for `style` if `content` is still the file it was built from. The
+/// fonts are the ones the content holds now, so a restyle never undoes a font publication.
+fn publish_restyle(content: &mut Content, id: u64, base_generation: u32, style: TextStyle, header_len: usize, script: Arc<[u8]>) {
+    let (revision, origin, fonts) = match (&content.source.content, content.text.as_mut()) {
+        (super::ass::Content::Script { fonts, .. }, Some(hold)) if content.source.id == id => {
+            hold.restyling = false;
+            if hold.style_generation != base_generation {
+                return;
+            }
+            (hold.header_len, hold.style_generation) = (header_len, style.generation());
+            (content.source.revision.wrapping_add(1), super::ass::Origin::Text(style), fonts.clone())
+        }
+        _ => return,
+    };
+    content.source = Arc::new(super::ass::Source {
+        id, revision, origin, content: super::ass::Content::Script { bytes: script, fonts },
+    });
+}
+
 /// `head` then `tail` as one shared buffer, allocated once at its exact size (the iterator is
 /// exact-sized, so no intermediate `Vec` is built and copied).
 fn joined(head: &[u8], tail: &[u8]) -> Arc<[u8]> {
-    head.iter().chain(tail).copied().collect()
+    let mut script = Vec::with_capacity(head.len() + tail.len());
+    script.extend_from_slice(head);
+    script.extend_from_slice(tail);
+    script.into()
 }
 
 fn is_ass_script(text: &str) -> bool {
@@ -416,7 +464,7 @@ fn decode(bytes: Vec<u8>, codec: &str) -> Result<Content, Failure> {
             content: super::ass::Content::Script { bytes: script, fonts: Arc::from([]) },
         }),
         font_generation: None,
-        text: Some(TextHold { header_len: header.len(), style_generation: style.generation(), cues: converted.cues }),
+        text: Some(TextHold { header_len: header.len(), style_generation: style.generation(), cues: converted.cues, restyling: false }),
     })
 }
 
@@ -780,37 +828,70 @@ mod tests {
         }
     }
 
-    /// The viewer's picks restyle a converted file lazily: the header is re-synthesized and the
-    /// revision bumped once, the identity and the events stay, and an unchanged pick reuses the source.
+    /// Another pair of picks than `current`, in both size and position.
+    fn other_picks(current: TextStyle) -> TextStyle {
+        TextStyle {
+            size: if current.size == SubtitleSize::Large { SubtitleSize::Small } else { SubtitleSize::Large },
+            position: if current.position == SubtitlePosition::High { SubtitlePosition::Low } else { SubtitlePosition::High },
+        }
+    }
+
+    /// The source for `picks`, once the worker that builds a restyled script has published it.
+    fn restyled_source(picks: TextStyle) -> Arc<ass::Source> {
+        let until = Instant::now() + Duration::from_secs(5);
+        loop {
+            let source = ass_source_styled(false, picks).expect("the converted file");
+            if source.origin == Origin::Text(picks) || Instant::now() > until {
+                return source;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// A pick change must cost the frame thread nothing in proportion to the file: the call that
+    /// notices it returns the source already up (the old look stays until the new script is built
+    /// elsewhere), and the new one arrives with the events untouched and the revision bumped once.
     #[test]
-    fn a_pick_change_restyles_the_converted_script_once_and_keeps_its_events() {
+    fn a_pick_change_returns_the_held_source_at_once_and_publishes_the_restyle_later() {
         let _guard = plx_base::testlock::serial();
         reset();
         finish_download();
-        select_with_fetch(plx_plex::plex::ServerId::from_raw(0), 7, "/library/streams/7".into(), "srt".into(),
-            |_, _, _| Some(b"1\n00:00:01,000 --> 00:00:03,000\nHello\n".to_vec()));
+        let body: String = (0..20_000).map(|i| format!(
+            "{n}\n00:{m:02}:{s:02},000 --> 00:{m:02}:{e:02},000\nA cue of some length number {n}\n\n",
+            n = i + 1, m = (i / 30) % 60, s = (i % 30) * 2 % 60, e = ((i % 30) * 2 + 1) % 60)).collect();
+        select_with_fetch(plx_plex::plex::ServerId::from_raw(0), 8, "/library/streams/8".into(), "srt".into(),
+            move |_, _, _| Some(body.clone().into_bytes()));
         finish_download();
         let current = TextStyle::current();
-        let picks = TextStyle {
-            size: if current.size == SubtitleSize::Large { SubtitleSize::Small } else { SubtitleSize::Large },
-            position: if current.position == SubtitlePosition::High { SubtitlePosition::Low } else { SubtitlePosition::High },
-        };
-        let before = ass_source(false).unwrap();
-        assert_eq!(before.origin, Origin::Text(current));
-        assert!(Arc::ptr_eq(&before, &ass_source_styled(false, current).unwrap()), "the same picks: no change");
-
-        let after = ass_source_styled(false, picks).unwrap();
-        assert_eq!(after.id, before.id, "the identity stays: the screen's clock and frame are not reset");
-        assert_eq!(after.revision, before.revision.wrapping_add(1), "one bump for the new picks");
-        assert_eq!(after.origin, Origin::Text(picks));
+        let picks = other_picks(current);
+        let before = ass_source_styled(false, current).unwrap();
+        let during = ass_source_styled(false, picks).unwrap();
+        assert!(Arc::ptr_eq(&before, &during), "the old look is still up when the pick lands");
+        let after = restyled_source(picks);
+        assert_eq!((after.id, after.revision, after.origin), (before.id, before.revision.wrapping_add(1), Origin::Text(picks)));
         let (ass::Content::Script { bytes: old, .. }, ass::Content::Script { bytes: new, .. }) =
             (&before.content, &after.content) else { panic!() };
-        let (old_header, new_header) = (text_ass::header(&current), text_ass::header(&picks));
-        assert_ne!(old_header, new_header);
-        assert_eq!(&old[old_header.len()..], &new[new_header.len()..], "the events are not touched");
-        assert!(new.starts_with(new_header.as_bytes()));
+        assert_eq!(&old[text_ass::header(&current).len()..], &new[text_ass::header(&picks).len()..]);
         assert!(Arc::ptr_eq(&after, &ass_source_styled(false, picks).unwrap()), "and once only");
         reset();
+    }
+
+    /// Host timing of the restyle on the TV's repro file (4 MiB TIS-620, 35,735 cues). Run by hand:
+    /// `cargo test -p plxnative-media --lib restyle_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn restyle_timing() {
+        let bytes = std::fs::read("/tmp/libass7b-fx/sidecar-big-tis620.srt").expect("the fixture");
+        let content = decode(bytes, "srt").expect("a usable file");
+        let ass::Content::Script { bytes: script, .. } = &content.source.content else { panic!() };
+        let hold = content.text.as_ref().unwrap();
+        let header = text_ass::header(&other_picks(TextStyle::current()));
+        let t0 = Instant::now();
+        let rebuilt = joined(header.as_bytes(), &script[hold.header_len..]);
+        println!("restyle of {} bytes, {} cues: {:?}", rebuilt.len(), hold.cues, t0.elapsed());
+        let t0 = Instant::now();
+        let bytewise: Arc<[u8]> = header.as_bytes().iter().chain(&script[hold.header_len..]).copied().collect();
+        println!("the byte-wise join it replaced: {:?} ({} bytes)", t0.elapsed(), bytewise.len());
     }
 
     /// The failure notice is all that is left of the old caption path in `active_span`: shown for
