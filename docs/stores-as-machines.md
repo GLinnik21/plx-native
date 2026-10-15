@@ -38,7 +38,7 @@ built after `Stores::default` (`HubsStore::from_parts` at boot) takes the ledger
 `Stores::reconcile` (`stores::viewreconcile`, `StoreId::ViewReconcile`, appended after the earlier
 ordinals) is the read-back of a view-state write. ViewState hands it the `(server, ratingKey)` of every
 item whose write landed, taken or refused, once its burst is idle (a stopped playback the server took enqueues its item directly); it reads them with one
-`metadata_many` per server (one in flight per server, an item asked for again meanwhile is marked dirty
+`metadata_many` per server per round (an episode's answer names its season and show, which ride in a second round; one in flight per server, an item asked for again meanwhile is marked dirty
 and re-queued once), stamps the batch from the ledger, drops any row a newer press covers, and publishes
 the rest as `ViewFact::Facts` edits at leaf scope, which, like the stop's `Offset`, patch Home's hubs, Browse's listing, the rows Search, Person and
 Collection hold, and a Detail page's Related and collection-member tiles. Each store counts a Facts
