@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T22:15:55Z",
+ "generated": "2026-10-15T22:17:41Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -44,45 +44,45 @@
    "unit": "s"
   },
   {
-   "change30_pct": -48.8,
-   "change7_pct": -2.2,
+   "change30_pct": null,
+   "change7_pct": 17.1,
+   "d30": null,
+   "delta30": null,
+   "delta7": 61.0,
+   "group": "ci",
+   "id": "push_wait",
+   "kind": "wait",
+   "label": "Wait after merge",
+   "n_now": 118,
+   "n_prev": 126,
+   "now": 418.5,
+   "prev7": 357.5,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 60.0,
+   "threshold_pct": 15.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": -48.9,
+   "change7_pct": -2.4,
    "d30": 920,
-   "delta30": -449,
-   "delta7": -10.5,
+   "delta30": -450,
+   "delta7": -11.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 253,
+   "n_now": 255,
    "n_prev": 212,
-   "now": 471,
+   "now": 470,
    "prev7": 481.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
    "threshold_abs": 90.0,
    "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 16.4,
-   "d30": null,
-   "delta30": null,
-   "delta7": 58.5,
-   "group": "ci",
-   "id": "push_wait",
-   "kind": "wait",
-   "label": "Wait after merge",
-   "n_now": 119,
-   "n_prev": 126,
-   "now": 416,
-   "prev7": 357.5,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 60.0,
-   "threshold_pct": 15.0,
    "unit": "s"
   },
   {
@@ -684,6 +684,67 @@
    "since": "2026-10-15",
    "threshold_pct": 20.0,
    "to": 393.5
+  },
+  {
+   "change_pct": 17.1,
+   "commits": [
+    {
+     "pr": 761,
+     "sha": "9b02acf18",
+     "title": "Server updates: turn PMS notifications on (owned servers)"
+    },
+    {
+     "pr": 664,
+     "sha": "adf73d81a",
+     "title": "Subtitles: add a Huge caption size above Extra large"
+    },
+    {
+     "pr": 762,
+     "sha": "7441d6505",
+     "title": "Player: the paused-frame preroll plays muted (StarfishMediaAPIs::setVolume)"
+    },
+    {
+     "pr": 764,
+     "sha": "4ebd5247f",
+     "title": "Server updates: one simplify pass over the series (no behaviour change)"
+    },
+    {
+     "pr": 766,
+     "sha": "c08e295bc",
+     "title": "Server updates: simplify pass 2 \u2014 notify, stream read, off-frame release (no behaviour change)"
+    },
+    {
+     "pr": 770,
+     "sha": "57e28903e",
+     "title": "Dependencies: Dependabot for cargo, Actions, pip and npm; generated crate notices"
+    },
+    {
+     "pr": 777,
+     "sha": "be825d6a4",
+     "title": "Dependencies: one manifest for every non-Rust dependency, no copied upstream code"
+    },
+    {
+     "pr": 771,
+     "sha": "fbab7cf29",
+     "title": "Add Italian localization (it)"
+    },
+    {
+     "pr": 781,
+     "sha": "f15b24805",
+     "title": "input: OK under a transparent pointer arrives as a click; turn it back into OK"
+    },
+    {
+     "pr": 785,
+     "sha": "3de84aff8",
+     "title": "Dependencies: weekly bump PRs for ci/dependencies.json; C libraries in the dependency graph"
+    }
+   ],
+   "from": 357.5,
+   "id": "push_wait",
+   "label": "Wait after merge",
+   "since": "2026-10-15",
+   "threshold_pct": 15.0,
+   "to": 418.5
   }
  ],
  "schema": 2,
