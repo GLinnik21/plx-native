@@ -105,6 +105,38 @@ pub(super) static PLAY_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(test, feature = "test-support"))]
 pub(super) static FORCE_PAUSE_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
 
+/// ACB seam probes (host has no libAcbAPI): `setMediaVideoData` answers -1 (rejected) unless a
+/// test arms [`ACB_VIDEO_DATA_ACCEPT`], and every `acb_start`/`acb_pause`/`acb_resume` is counted,
+/// so a test can read the order and number of plane verbs the pump issued.
+#[cfg(test)]
+pub(super) static ACB_VIDEO_DATA_ACCEPT: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(super) static ACB_VIDEO_DATA_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+pub(super) static ACB_START_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+pub(super) static ACB_PAUSE_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+pub(super) static ACB_RESUME_CALLS: AtomicU64 = AtomicU64::new(0);
+/// `(setMediaVideoData, acb_start, acb_pause, acb_resume)` call counts. Test-only.
+#[cfg(test)]
+pub(super) fn acb_calls_for_test() -> (u64, u64, u64, u64) {
+    (
+        ACB_VIDEO_DATA_CALLS.load(Relaxed),
+        ACB_START_CALLS.load(Relaxed),
+        ACB_PAUSE_CALLS.load(Relaxed),
+        ACB_RESUME_CALLS.load(Relaxed),
+    )
+}
+/// Zero the ACB counters and choose whether `setMediaVideoData` is accepted. Test-only.
+#[cfg(test)]
+pub(super) fn reset_acb_for_test(accept_video_data: bool) {
+    ACB_VIDEO_DATA_ACCEPT.store(accept_video_data, Relaxed);
+    for c in [&ACB_VIDEO_DATA_CALLS, &ACB_START_CALLS, &ACB_PAUSE_CALLS, &ACB_RESUME_CALLS] {
+        c.store(0, Relaxed);
+    }
+}
+
 /// Every millis `sf_seek_ms` was called with, in order (#568): what a test reads to prove a
 /// direct-play seek went through LG's public `Seek` and landed where the keyframe did.
 #[cfg(any(test, feature = "test-support"))]
@@ -171,6 +203,15 @@ pub(super) fn release_load_for_test() {
     let mut held = HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner());
     *held = false;
     HOLD_LOAD.1.notify_all();
+}
+/// How long the host `sf_unload` takes, in ms — the device's `StarfishMediaAPIs::Unload` blocks
+/// for 110-150 ms (`engine::PendingRelease`), and a test of the frame that pays for it needs a
+/// sink that takes measurable time too. 0 (the default) is the unmodified, instant Unload.
+#[cfg(test)]
+static UNLOAD_DELAY_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+pub(super) fn delay_unload_for_test(ms: u64) {
+    UNLOAD_DELAY_MS.store(ms, Relaxed);
 }
 #[cfg(test)]
 pub(super) fn in_flight_calls_for_test() -> u32 {
@@ -419,6 +460,7 @@ pub(super) fn reset_native_lifecycle_for_test() {
     *IN_FLIGHT_VERB.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
     HOLD_LOAD.1.notify_all();
+    UNLOAD_DELAY_MS.store(0, Relaxed);
     Clock::rewind();
 }
 
@@ -755,6 +797,13 @@ unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_cha
 unsafe fn sf_unload() {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("sf_unload");
+    #[cfg(test)]
+    {
+        let ms = UNLOAD_DELAY_MS.load(Relaxed);
+        if ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
     let epoch = ACTIVE_EPOCH.load(Relaxed);
     if epoch != 0 && OBJECT_READY.load(Relaxed) {
         // Firmware emits this synthetic lifecycle callback before Unload returns. It bypasses the
@@ -867,6 +916,13 @@ unsafe fn acb_bind(_media_id: *const c_char) {
 unsafe fn acb_send_video_data(_source_info: *const c_char) -> c_int {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_send_video_data");
+    #[cfg(test)]
+    {
+        ACB_VIDEO_DATA_CALLS.fetch_add(1, Relaxed);
+        if ACB_VIDEO_DATA_ACCEPT.load(Relaxed) {
+            return 0;
+        }
+    }
     -1 // -1 = rejected, per starfish.h
 }
 unsafe fn acb_send_atmos(_media_id: *const c_char) -> c_int {
@@ -877,6 +933,8 @@ unsafe fn acb_send_atmos(_media_id: *const c_char) -> c_int {
 unsafe fn acb_start(_x: c_long, _y: c_long, _w: c_long, _h: c_long) {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_start");
+    #[cfg(test)]
+    ACB_START_CALLS.fetch_add(1, Relaxed);
 }
 unsafe fn acb_unload() {
     #[cfg(any(test, feature = "test-support"))]
@@ -885,10 +943,14 @@ unsafe fn acb_unload() {
 unsafe fn acb_pause() {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_pause");
+    #[cfg(test)]
+    ACB_PAUSE_CALLS.fetch_add(1, Relaxed);
 }
 unsafe fn acb_resume() {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("acb_resume");
+    #[cfg(test)]
+    ACB_RESUME_CALLS.fetch_add(1, Relaxed);
 }
 
 /// The simulator's [`VideoSink`]: every method is the verb of the same name above.
@@ -941,7 +1003,7 @@ impl VideoSink for HostSink {
     ) -> c_char {
         sf_feed(p, size, pts, es_data)
     }
-    unsafe fn unload(&self, _: &MainThread) {
+    unsafe fn unload(&self, _: &plx_platform::tv::sink::UnloadTicket) {
         sf_unload()
     }
     unsafe fn callback_gate_retire(&self, _: &MainThread) -> c_int {

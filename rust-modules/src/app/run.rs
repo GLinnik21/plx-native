@@ -205,6 +205,9 @@ pub(crate) unsafe fn run(app: &mut App) {
         // A timed-out native Load parked by teardown is released here, on the main thread, the
         // first frame after its media thread returns (`player::engine::AbandonedLoad`).
         plx_media::player::engine::reap_abandoned_load(&mut app.adapters.player);
+        // …and a real stop's off-frame `Unload` gets its main-thread tail (gate, epoch, ACB,
+        // D1) the first frame after it returns (`player::engine::PendingRelease`).
+        app.adapters.player.poll_release();
         app.player.session.repair_status = app.player.repair.state();
         app.bridge.publish_playback(&app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
@@ -3123,6 +3126,9 @@ pub(crate) unsafe fn shutdown(
     if is_started() {
         plx_media::player::stop_bufferfeed(ps, pa);
     }
+    // The stop's `Unload` runs off-frame; the process must not exit inside it, nor with the
+    // object it is releasing left undestroyed.
+    pa.finish_release();
     // The stop scrobble is posted off-thread now, and this process is about to die with any
     // worker still running — so THIS is the one place its result has to be waited for, or the
     // resume point the user just earned is silently dropped. Same cost the old inline call

@@ -1090,7 +1090,8 @@ static MID_SEEK_CLAIMS: std::sync::atomic::AtomicU32 = std::sync::atomic::Atomic
 /// * once the preroll the pump owns has LANDED on whichever Engine is live (in place: the keyframe
 ///   re-anchored; a reload or transcode landing: the fresh session re-anchored, and `frames` —
 ///   zeroed by the arm and by every session reset — counts a POST-seek presentation), re-pause with
-///   [`super::finish_paused_seek`]. A refused re-pause leaves the preroll and its ownership in
+///   [`super::finish_paused_seek`] (on the ACB route only once the plane is bound and a tick has
+///   followed the bind: [`plane_shows_the_picture`]). A refused re-pause leaves the preroll and its ownership in
 ///   place, so the next tick retries; the film plays only for that long.
 ///
 /// `playpos + 15 s >= target` is the guard the loop's old re-pause had: a presented frame far
@@ -1158,9 +1159,38 @@ fn settle_paused_seek(pa: &mut super::adapter::PlayerAdapter, now: u32) {
         && TX.seek_to_ns.load(Relaxed) < 0
         && !crate::route::flight_outstanding()
         && SHARED.frames.load(Relaxed) >= 1
+        && plane_shows_the_picture(eng)
         && SHARED.playpos_ns.load(Relaxed) + 15 * 1_000_000_000 >= target;
     if landed {
         super::finish_paused_seek(pa);
+    }
+}
+
+/// Is a picture the Engine has presented actually on the panel? Without ACB (webOS 5+) the sink is
+/// placed at Load, so any presented tick is. On the ACB route (webOS 4) the video plane connects
+/// only through `setMediaVideoData` + `acb_start` (the `Stage::Streaming` transition below), and a
+/// tick counted before that is a picture the plane never showed. A paused preroll re-paused on such
+/// a tick leaves a black panel (device-measured: a VIDEO-only capture read "no signal" until
+/// Resume), because the pause stops the ticks the bind is waiting on. So the landing needs the
+/// bind complete AND one tick after it (`Engine::bound_at_frames`).
+fn plane_shows_the_picture(eng: &Engine) -> bool {
+    if !ACB_OK.load(Relaxed) {
+        return true;
+    }
+    eng.stage >= Stage::Streaming && eng.bound_at_frames.is_none_or(|at| SHARED.frames.load(Relaxed) != at)
+}
+
+/// Ticks `SHARED.frames` must have reached before the ACB bind (`setMediaVideoData`) may be sent.
+/// The pipeline's sink is bound to MAIN once the decoder produces output (the order the original
+/// C engine documented: "once the decoder is producing frames so the videosink is bound to
+/// MAIN"), which is why a normal start waits for a second tick (about 400 ms of playback). While
+/// a paused preroll is open the pipeline is playing ONE picture for the viewer and every tick it
+/// waits is a tick of audible playback, so one tick (the decoder demonstrably running) is enough.
+fn acb_bind_frames_needed(preroll_open: bool) -> i32 {
+    if preroll_open {
+        1
+    } else {
+        2
     }
 }
 
@@ -1931,7 +1961,16 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // ---------- send the WHOLE sourceInfo envelope once frames flow (verbatim, except a
     // container-PQ VP9 stream, see below), then
     // window + PLAYING (setMediaVideoData -> setDisplayWindow -> setState PLAYING) ----------
-    if eng.stage == Stage::Bound && !eng.video_info_sent && SHARED.frames.load(Relaxed) >= 2 {
+    if let Some(at) = eng.bound_at_frames {
+        // The tick the landing owes after the bind has arrived (or `frames` was reset since).
+        if SHARED.frames.load(Relaxed) != at {
+            eng.bound_at_frames = None;
+        }
+    }
+    if eng.stage == Stage::Bound
+        && !eng.video_info_sent
+        && SHARED.frames.load(Relaxed) >= acb_bind_frames_needed(TX.seek_preroll_active())
+    {
         let bytes = SHARED.source_info.lock().unwrap().clone();
         if let Some(mut bytes) = bytes {
             // A VP9 stream's PQ lives in the container, which the pipeline never sees, so its own
@@ -1956,6 +1995,15 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
                 eng.video_info_sent = true;
                 unsafe { super::sink().plane_start(mt, 0, 0, 1920, 1080) };
                 eng.stage = Stage::Streaming;
+                eng.bound_at_frames = Some(SHARED.frames.load(Relaxed));
+                // `acb_start` sets ACB PLAYING. Under a pipeline that is really paused (a late
+                // tick bound the plane after the re-pause; an open preroll is a PLAYING pipeline,
+                // and its re-pause mirrors the pause itself) ACB must follow it, or it is left
+                // PLAYING over a paused pipeline and nothing ever tells it otherwise.
+                if TX.paused.load(Acquire) && !TX.seek_preroll_active() {
+                    unsafe { super::sink().plane_pause(mt) };
+                    super::log("setMediaVideoData sent under a paused pipeline → ACB PAUSED");
+                }
                 super::log("setMediaVideoData sent → window+PLAYING");
             }
         }
@@ -4010,5 +4058,131 @@ mod native_seek_pump_tests {
         rig.frame();
         assert_ended_paused();
         assert!(!SHARED.seeking.load(Relaxed), "no endless spinner");
+    }
+
+    // ---- the ACB (webOS 4) video plane binds through setMediaVideoData + acb_start; a paused
+    // preroll's picture is only on the panel once that bind has completed ----
+
+    /// ACB in use, `setMediaVideoData` accepted, the sourceInfo envelope captured; restores the
+    /// process-wide `ACB_OK` flag (default off on the host) when the test ends.
+    struct AcbGuard;
+    impl AcbGuard {
+        fn arm() -> AcbGuard {
+            ACB_OK.store(true, Relaxed);
+            ffi_host::reset_acb_for_test(true);
+            AcbGuard
+        }
+    }
+    impl Drop for AcbGuard {
+        fn drop(&mut self) {
+            ACB_OK.store(false, Relaxed);
+            ffi_host::reset_acb_for_test(false);
+        }
+    }
+
+    impl Rig {
+        /// A fresh ACB session that has not bound yet (what a reload installs).
+        fn unbound_acb_session(&mut self) {
+            // `Rig::new` reset the session, which cleared what the pipeline's callbacks captured.
+            *SHARED.media_id.lock().unwrap() = Some(std::ffi::CString::new("_media_id_").unwrap());
+            *SHARED.source_info.lock().unwrap() = Some(b"{\"context\":\"x\",\"video\":{}}\0".to_vec());
+            let e = self.eng();
+            e.video_info_sent = false;
+            e.prime_play = true;
+            e.bound_at_frames = None;
+            e.stage = Stage::Playing;
+        }
+    }
+
+    /// THE reported bug: the paused reload preroll re-paused at the first position tick, below
+    /// `Stage::Streaming`, so `setMediaVideoData` + `acb_start` never ran and the panel stayed
+    /// black until Resume.
+    #[test]
+    fn a_paused_acb_preroll_does_not_re_pause_before_the_plane_is_bound() {
+        let _serial = plx_base::testlock::serial();
+        let _acb = AcbGuard::arm();
+        let mut rig = Rig::new(None);
+        rig.unbound_acb_session();
+        rig.viewer_pause();
+        SHARED.frames.store(0, Relaxed);
+        rig.frame();
+        rig.frame();
+        assert!(TX.seek_preroll_active(), "the reload preroll opened");
+        ffi_host::reset_acb_for_test(true);
+        let mut closed_at = None;
+        for tick in 1..=6 {
+            SHARED.frames.store(tick, Relaxed);
+            rig.frame();
+            rig.frame();
+            if !TX.seek_preroll_active() {
+                closed_at = Some(tick);
+                break;
+            }
+        }
+        let closed_at = closed_at.expect("the preroll closed");
+        assert!(closed_at > 1, "re-paused on the first tick, before the plane could bind (tick {closed_at})");
+        assert!(rig.eng().stage == Stage::Streaming, "re-paused below Streaming: the plane is not bound");
+        let (video_data, start, pause, _) = ffi_host::acb_calls_for_test();
+        assert_eq!((video_data, start), (1, 1), "the bind ran exactly once before the re-pause");
+        assert_eq!(pause, 1, "the re-pause mirrors ACB PAUSED now that the plane is bound");
+        assert!(TX.paused.load(Acquire), "the film ends paused");
+    }
+
+    /// The Play window of the preroll is as short as the bind allows: during an open preroll the
+    /// decoder having produced its first tick is enough (outside one the gate stays at two).
+    #[test]
+    fn an_open_acb_preroll_binds_at_the_first_tick() {
+        let _serial = plx_base::testlock::serial();
+        let _acb = AcbGuard::arm();
+        let mut rig = Rig::new(None);
+        rig.unbound_acb_session();
+        rig.viewer_pause();
+        SHARED.frames.store(0, Relaxed);
+        rig.frame();
+        rig.frame();
+        assert!(TX.seek_preroll_active());
+        ffi_host::reset_acb_for_test(true);
+        SHARED.frames.store(1, Relaxed);
+        rig.frame();
+        let (video_data, start, pause, _) = ffi_host::acb_calls_for_test();
+        assert_eq!((video_data, start), (1, 1), "the plane bound on the preroll's first tick");
+        assert_eq!(pause, 0, "the pipeline is Playing for the preroll, so ACB stays PLAYING");
+        assert!(rig.eng().stage == Stage::Streaming);
+    }
+
+    #[test]
+    fn a_normal_acb_start_still_waits_for_the_second_tick() {
+        let _serial = plx_base::testlock::serial();
+        let _acb = AcbGuard::arm();
+        let mut rig = Rig::new(None);
+        rig.unbound_acb_session();
+        SHARED.frames.store(1, Relaxed);
+        rig.frame();
+        rig.frame();
+        assert_eq!(ffi_host::acb_calls_for_test().1, 0, "one tick is not enough outside a preroll");
+        SHARED.frames.store(2, Relaxed);
+        rig.frame();
+        assert_eq!(ffi_host::acb_calls_for_test().1, 1);
+        assert_eq!(ffi_host::acb_calls_for_test().2, 0, "playing: ACB is left PLAYING");
+    }
+
+    /// A late tick binds the plane after the pipeline was already re-paused: ACB must not be left
+    /// PLAYING under a paused pipeline.
+    #[test]
+    fn an_acb_start_under_a_paused_pipeline_is_followed_by_the_acb_pause() {
+        let _serial = plx_base::testlock::serial();
+        let _acb = AcbGuard::arm();
+        let mut rig = Rig::new(None);
+        rig.unbound_acb_session();
+        rig.eng().prime_play = false;
+        rig.eng().stage = Stage::Bound;
+        SHARED.frames.store(2, Relaxed);
+        rig.viewer_pause();
+        assert!(!TX.seek_preroll_active(), "no preroll: the pipeline itself is paused");
+        ffi_host::reset_acb_for_test(true);
+        rig.frame();
+        let (_, start, pause, _) = ffi_host::acb_calls_for_test();
+        assert_eq!(start, 1, "the bind ran");
+        assert_eq!(pause, 1, "ACB was left PLAYING under a paused pipeline");
     }
 }

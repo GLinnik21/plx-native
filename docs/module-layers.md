@@ -286,7 +286,8 @@ be a reference from the crate root into the port, which the gate refuses.
 
 The video sink landed as a verb-level cut. `tv::sink::VideoSink` has one method per verb of the
 Starfish seam, 29 of them, with the C return values and the `&MainThread` token on every method but
-`load`, `window_mode` and `window_id`. It is **Starfish-shaped**: a load payload, `feed`, and the
+`load`, `window_mode` and `window_id` (since 2026-10-15 `unload` takes an `UnloadTicket` instead, so
+a real stop's Unload can run on a worker; the trait's own doc is the current list). It is **Starfish-shaped**: a load payload, `feed`, and the
 ACB bind verbs that `pump` walks. Another TV OS cannot implement it as it stands. `player::ffi`
 keeps its `extern "C"` block unchanged and implements the trait as `StarfishSink`; `engine`, `pump`
 and `threads` call it through `player::sink()`. `player/ffi_host.rs` is no longer swapped in under

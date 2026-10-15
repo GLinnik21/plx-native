@@ -12,8 +12,11 @@
 //! that was `engine::ENGINE`. The seam still takes `&MainThread` (reached through the adapter),
 //! the slot takes `&mut PlayerAdapter`, and the token is `!Send`, so a closure that captured
 //! either cannot be handed to `task::spawn`. The exceptions are the honest ones: the two callbacks
-//! above are `extern "C"` entry points *from* the library thread and touch only `SHARED`, and
-//! `threads::load_thread` calls `sf_load` off-main by design (see `ffi`).
+//! above are `extern "C"` entry points *from* the library thread and touch only `SHARED`,
+//! `threads::load_thread` calls `sf_load` off-main by design (see `ffi`), and a real stop's
+//! `sf_unload` runs on the `sf-unload` worker on an `UnloadTicket` (`engine::PendingRelease`): the
+//! rest of that release (gate, retire, ACB UNLOADED, D1, `destroy_window`) stays on the main thread,
+//! and the adapter keeps every other seam call waiting until it is done.
 #![allow(non_upper_case_globals)]
 pub mod adapter;
 pub mod claim_hold;
@@ -2142,8 +2145,8 @@ pub fn vplane_take() -> (u32, u32) {
 /// webOS 4.10.2 (2026-08-21), it is a **~5 Hz position tick**: a 1080p H264 direct play, a 4K HEVC
 /// direct play and a visibly stuttering Dolby Vision direct play all deliver it 5 times a second,
 /// 201 ms apart, to the millisecond. So [`frames`](crate::player::shared::Shared::frames) counts
-/// TICKS, not frames — which is what `pump`'s `frames >= 2` gate really means (≈400 ms of
-/// playback, not two pictures) and what `app::diagnostics` really shows.
+/// TICKS, not frames — which is what `pump`'s ACB bind gate (`frames >= 2`, one tick while a
+/// paused preroll is open) really means (≈400 ms of playback, not two pictures) and what `app::diagnostics` really shows.
 ///
 /// The consequence for diagnosis: this callback can say the pipeline still believes it is
 /// presenting, and cannot say the picture is smooth. The video plane's real cadence is not
@@ -2162,7 +2165,7 @@ pub extern "C" fn sf_on_event(epoch: c_uint, ty: c_int, num: i64, s: *const c_ch
             23 => shared::NativeEventClass::UnloadCompleted,
             _ => shared::NativeEventClass::Other,
         };
-        SHARED.with_native_session(epoch, class, num, || sf_on_event_inner(ty, num, s));
+        SHARED.with_native_session_scoped(epoch, class, num, |scope| sf_on_event_inner(ty, num, s, scope));
     }));
 }
 /// The two libpf frame counters a callback type can name, once the webOS 4 vs 5+ numbering
@@ -2187,7 +2190,14 @@ fn sink_counter_kind(ty: c_int, major: u32) -> Option<SinkCounter> {
     }
 }
 
-fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
+fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::EventScope) {
+    if scope == shared::EventScope::Release {
+        // The lifecycle evidence of an object being released after the main thread reset the
+        // session state (`UNLOADCOMPLETED` arrives ~110 ms into the off-frame Unload): log it, but
+        // let nothing reach the census, error latch or load verdict the NEXT session owns.
+        log(&format!("smp_cb type={ty} num={num} (release evidence, not counted)"));
+        return;
+    }
     if ty != 0 {
         // The diagnostics census, beside the log line that already records every event. A COUNT is
         // what the read-out needs: "Load completed and then nothing ever called us" is the sharpest
@@ -2940,7 +2950,7 @@ mod tests {
         sf_on_event(epoch, 0, 8_000_000_000, std::ptr::null());
         assert_eq!(SHARED.frames.load(std::sync::atomic::Ordering::Acquire), 0);
         assert!(SHARED.commit_native_presentation_probe(epoch, |num| {
-            sf_on_event_inner(0, num, std::ptr::null())
+            sf_on_event_inner(0, num, std::ptr::null(), shared::EventScope::Live)
         }));
         assert_eq!(SHARED.frames.load(std::sync::atomic::Ordering::Acquire), 1);
         assert_eq!(
