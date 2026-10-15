@@ -161,14 +161,16 @@ pub enum PlayerReq {
     /// and the panel stays up. `true` = the key was PLAY, `false` = PAUSE; a PLAYPAUSE toggle is
     /// neither and is carried as `None`.
     Transport(Option<bool>),
-    /// Seek to this position in ns and resume if paused — the Chapters strip's OK.
+    /// Seek to this position in ns and resume if paused — the Chapters strip's OK, and OK or PLAY
+    /// taking a paused film's pending scrub target.
     SeekTo(i64),
     /// **Commit a SCRUB to this position, and leave a paused film paused** (restructure phase 12,
     /// PX-PLAYER) — `app::playback::commit_seek`, the other half of the pair above.
     ///
     /// The difference is the reason there are two. [`SeekTo`](PlayerReq::SeekTo) RESUMES, because
-    /// a viewer who picked a chapter asked to watch it. A scrub does not: the transport's bar is
-    /// how a PAUSED film is moved, and starting it there is a behaviour nobody asked for. Holding
+    /// a viewer who picked a chapter asked to watch it. A scrub does not: a pointer drag on the
+    /// bar is how a PAUSED film is moved (a paused KEY scrub only moves its target, and OK or PLAY
+    /// resumes from it with `SeekTo`), and starting it there is a behaviour nobody asked for. Holding
     /// the pause across the seek is the media layer's: the pump opens the bounded seek-preroll feed
     /// override when it arms the seek, decodes the landed frame without publishing a viewer
     /// Resume, and re-pauses on the landing — which is why this is a request rather than something

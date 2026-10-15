@@ -499,6 +499,16 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
     ///    the pump keeps the pause across the seek, which is what a request is for.
     /// 3. The lost-keyup safety commit is reproduced, on the same `Tick` as the ramp it guards.
     ///
+    /// **BACK, UNDO and the paused scrub** (`scrub_undo`, in `appkit`). On a PLAYING film the
+    /// commits above stand, and BACK means two more things: while a scrub is live (a hold, a tap's
+    /// pending 450 ms, a seated drag) it CANCELS it — no seek, the knob springs home — and for
+    /// five seconds after a scrub commits it seeks back to where the scrub started, once (the
+    /// window closes on use, on a new scrub, and when the transport is hidden). On a PAUSED film
+    /// (latched at the scrub's start, `Scrub::paused`) a key scrub only MOVES the target and
+    /// commits nothing on a release, a debounce or any other timer: OK or PLAY takes it and
+    /// resumes from it ([`PlayerReq::SeekTo`]), BACK drops it, and a pointer drag still commits on
+    /// release and stays paused (`CommitSeek`). Neither latch is part of `write()`.
+    ///
     /// The POINTER half is here for the same reason. A click on the scrubber's registered stop
     /// seeds the preview under the pointer, an `InputKind::Drag` carries it (§7.5: a drag drives
     /// its control with no hover and no click), and the button coming up — which reaches a screen
@@ -1184,8 +1194,9 @@ impl PlayerScreen {
 
     /// Ask the loop to perform the scrub, and retire the preview that asked for it.
     ///
-    /// [`PlayerReq::CommitSeek`] and not [`PlayerReq::SeekTo`]: the scrub bar is how a PAUSED film
-    /// is moved, and the pump holds that pause across the seek (it opens the seek preroll when it
+    /// [`PlayerReq::CommitSeek`] and not [`PlayerReq::SeekTo`]: a pointer drag on the bar is how a
+    /// PAUSED film is moved (a paused key scrub never gets here: OK or PLAY takes its target with
+    /// `SeekTo`), and the pump holds that pause across the seek (it opens the seek preroll when it
     /// dispatches the seek under a viewer Pause and re-pauses on the landing,
     /// `plx_media::player::pump::settle_paused_seek`); the loop's arm for it is a bare
     /// `request_seek`. Clearing `ns` here
