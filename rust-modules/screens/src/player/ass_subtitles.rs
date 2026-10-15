@@ -237,10 +237,7 @@ fn lift_dys(
         }
         // A block whose lines are separate regions rises as one: a region sitting right above
         // the moving group (a gap under half a pitch) joins it, up to a fixed point.
-        let group_top = |dys: &[f32]| {
-            regions.iter().zip(dys).filter(|(_, &d)| d != 0.0).map(|(r, _)| r.0).min()
-        };
-        while let Some(top) = group_top(dys) {
+        while let Some(top) = moving_top(regions, dys) {
             let mut grew = false;
             for (dy, &(y, h)) in dys.iter_mut().zip(regions) {
                 if *dy == 0.0 && y < top && ((y + h) as f32) >= top as f32 - pitch / 2.0 {
@@ -255,14 +252,16 @@ fn lift_dys(
     } else {
         dys.fill(-1.0);
     }
-    let Some(top) = regions.iter().zip(dys.iter()).filter(|(_, &d)| d != 0.0).map(|(r, _)| r.0).min()
-    else {
-        return;
-    };
+    let Some(top) = moving_top(regions, dys) else { return };
     let lift = text_style::HUD_LIFT.min(top.max(0) as f32);
     for dy in dys.iter_mut().filter(|d| **d != 0.0) {
         *dy = -lift;
     }
+}
+
+/// The top edge of the regions marked as moving (`dys` entry non-zero).
+fn moving_top(regions: &[(i32, i32)], dys: &[f32]) -> Option<i32> {
+    regions.iter().zip(dys).filter(|(_, &d)| d != 0.0).map(|(r, _)| r.0).min()
 }
 
 /// The classes of the frame with `serial`: the cached answer if it is for this frame, else ask
