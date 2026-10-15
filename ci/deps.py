@@ -292,6 +292,26 @@ def problems(entries=None, root=ROOT):
     return found
 
 
+def apply_patch(source, patch):
+    """Apply `patch` (-p1) to the extracted tree `source` exactly, or raise ValueError and change nothing.
+
+    `git apply` is a strict plain-patch tool only when it does not discover a repository: `source`
+    usually sits inside this work tree (gitignored), so GIT_CEILING_DIRECTORIES stops discovery at
+    `source` and GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE are removed (as ci/build-libass.py does).
+    `patch(1)` is not used: it accepts fuzz, so a crash-path hunk could land in the wrong place."""
+    source = Path(source).resolve()
+    patch = Path(patch).resolve()
+    if shutil.which('git') is None:
+        raise ValueError('git is required to apply ' + patch.name + ' (see setup-environment)')
+    env = {k: v for k, v in os.environ.items() if k not in ('GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE')}
+    env['GIT_CEILING_DIRECTORIES'] = str(source.parent)
+    for check in (['--check'], []):
+        result = subprocess.run(['git', 'apply', *check, str(patch)], cwd=source, env=env,
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            raise ValueError(patch.name + ' does not apply exactly: ' + (result.stdout + result.stderr).strip())
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='command', required=True)
@@ -311,11 +331,17 @@ def main(argv=None):
     sub.add_parser('cache-dir', help='print the directory fetched archives live in')
     p = sub.add_parser('verify', help='check the patches of one entry against their pinned digests (offline)')
     p.add_argument('name')
+    p = sub.add_parser('apply-patch', help='apply a patch to an extracted tree, strictly (no fuzz)')
+    p.add_argument('source')
+    p.add_argument('patch')
     sub.add_parser('check', help='validate the manifest and its patch digests (offline)')
     args = parser.parse_args(argv)
     try:
         if args.command == 'cache-dir':
             print(cache_dir())
+            return 0
+        if args.command == 'apply-patch':
+            apply_patch(args.source, args.patch)
             return 0
         if args.command in ('check', 'verify'):
             found = problems()

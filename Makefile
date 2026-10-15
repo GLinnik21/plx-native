@@ -273,7 +273,7 @@ WERROR      ?= -Werror
 # The out-of-process crash walker follows ARM's APCS frame chain. Keeping r11 frame pointers in
 # every C frame is therefore part of the crash-reporting ABI, not debug-only codegen; without it a
 # valid envelope contains only the faulting PC. Rust's matching flag is in RUST_ENV/config.toml.
-CFLAGS       = --sysroot=$(SYSROOT) -O2 -fno-omit-frame-pointer -funwind-tables -Wall -Wextra $(WERROR) -Iinclude -Isrc -Ivendor/nanosvg -D_GNU_SOURCE
+CFLAGS       = --sysroot=$(SYSROOT) -O2 -fno-omit-frame-pointer -funwind-tables -Wall -Wextra $(WERROR) -Isrc -Ivendor/nanosvg -D_GNU_SOURCE
 # DEBUG=1 keeps DWARF in the binary so a crash PC symbolizes to file:line instead of just
 # a function name (tools/crash-report.sh / the crash-triage skill). Same codegen, bigger
 # binary — deploy it only while chasing a crash.
@@ -380,8 +380,9 @@ ifeq ($(CAPLINTS),1)
 RUST_CAPLINTS = --cap-lints=warn
 endif
 RUST_ENV = RUSTFLAGS="-C target-cpu=cortex-a9 -C target-feature=-neon -C force-frame-pointers=yes $(RUST_DEBUGINFO) $(RUST_CAPLINTS) $(RUST_REMAP)"
-# -Iinclude keeps the TV's SDL2/GLES2 headers (its SDL is a 2.0.4 fork) ahead of
-# the NDK's newer sysroot copies, so we compile against the ABI the TV runs.
+# No C translation unit includes an SDL, GLES or KHR header (the Rust layers declare their own
+# `extern` signatures and read SDL structs by raw offset), so no copy of those headers is kept
+# in the repository and CFLAGS has no -Iinclude.
 
 # Real sysroot libraries. Every one of these has the SAME SONAME on every webOS release from
 # 2.2.3 to 11.2.0 (`tools/fwcompat.py --inventory` will show you), which is what makes linking

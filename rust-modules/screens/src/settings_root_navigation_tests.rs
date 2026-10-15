@@ -19,8 +19,7 @@ fn mounting_the_surface_names_its_root_page() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     assert_eq!(name(&s), word::SETTINGS);
@@ -36,8 +35,7 @@ fn signed_out_root_does_not_offer_automatically_sign_in() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     // Playback / Language / Privacy / Legal / About — About is a door, not a switch.
@@ -72,8 +70,7 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let row = FocusKey {
@@ -115,8 +112,7 @@ fn right_on_automatically_sign_in_does_not_push() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let row = FocusKey {
@@ -162,8 +158,7 @@ fn back_at_the_surface_s_own_root_is_not_handled() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let back: ScreenEvent<InnerHost> = ScreenEvent::Input(InputEvent {
@@ -206,8 +201,7 @@ fn a_pop_from_legal_restores_focus_to_the_row_that_opened_it() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
 
@@ -294,8 +288,7 @@ fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let root_row = FocusKey {
@@ -338,8 +331,7 @@ fn remembered_does_not_grow_across_repeated_visits_to_the_same_page() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let legal_row = FocusKey {
@@ -402,8 +394,7 @@ fn a_settled_pop_leaves_the_surface_at_rest_at_depth_two() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     assert!(
@@ -506,8 +497,7 @@ fn the_logical_state_follows_the_inner_stack() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let at_root = <RouteSurface as Screen<InnerHost>>::state(&s).hash();
@@ -783,8 +773,7 @@ fn back_from_each_root_door_reseats_focus_on_the_same_root_id() {
         (RootId::About, SettingsPage::About),
     ] {
         let mut s = RouteSurface::new(
-            EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root,
-            plx_data::pms::HubsSnapshot::empty_for_test().view(),
+            EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root
         );
         step(&mut s, ScreenEvent::Mount, None);
         let row = FocusKey { entry: EntryId(0), elem: root_key(id.clone()) };
