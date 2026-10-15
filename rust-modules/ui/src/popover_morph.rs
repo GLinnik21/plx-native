@@ -270,7 +270,11 @@ mod tests {
         let f = open_frames();
         assert_eq!(f[0].1.rows_scale, ROWS_FROM);
         let max = f.iter().map(|(_, fr)| fr.rows_scale).fold(0.0_f32, f32::max);
-        let bound = 1.0 + (1.0 - ROWS_FROM) * (-std::f32::consts::PI * ZETA_ROWS / (1.0 - ZETA_ROWS * ZETA_ROWS).sqrt()).exp();
+        // The underdamped overshoot bound, 1 + (1 - from) * e^(-pi z / sqrt(1 - z^2)), at z = 0.6 and
+        // from = 0.82: e^-2.3562 = 0.09479. Written as a number because the transcendental
+        // surface is gated outside machine/src/motion.rs (ci/check-deps.sh libm).
+        assert_eq!(ZETA_ROWS, 0.6);
+        let bound = 1.0 + (1.0 - ROWS_FROM) * 0.09479;
         assert!(max > 1.0 && max <= bound + 1e-3, "overshoot {max} within the ζ bound {bound}");
         assert!((f.last().unwrap().1.rows_scale - 1.0).abs() < 0.002);
     }
