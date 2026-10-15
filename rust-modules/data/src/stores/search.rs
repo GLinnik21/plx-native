@@ -86,7 +86,6 @@ impl SearchStore {
         self.state.snapshot_with_directory(directory)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
     /// The ITEMS the result shelves hold, in shelf order. A tag or collection hit has no rating
     /// key of its own to read back, so only the media cards count.
     pub fn held_keys(&self) -> super::HeldKeys {
@@ -99,6 +98,7 @@ impl SearchStore {
         keys
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn query(&self) -> &str {
         self.state.query()
     }

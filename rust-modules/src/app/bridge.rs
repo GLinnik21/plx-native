@@ -1248,6 +1248,35 @@ impl Bridge {
         Default::default()
     }
 
+    /// May a covered page's re-read be spent now (`Stores::reread_allowed`)?
+    pub(crate) fn reread_allowed(&self) -> bool {
+        self.stores.reread_allowed()
+    }
+
+    /// Owe the read-back of what a page holds on screen (`Stores::owe_read_back`).
+    pub(crate) fn owe_read_back(&mut self, keys: plx_data::stores::HeldKeys) {
+        self.stores.owe_read_back(keys);
+    }
+
+    /// The items the page for `arg` holds cards for, from the store that feeds it: Library's
+    /// current section, Search's results, and the Person / Filmography / Collection store when it
+    /// is showing that very page. Nothing for any other page.
+    pub(crate) fn held_keys(&self, arg: &AppArg) -> plx_data::stores::HeldKeys {
+        match arg {
+            AppArg::Library => self.stores.library_held_keys(),
+            AppArg::Search => self.stores.search.held_keys(),
+            AppArg::Content(content @ (ContentArg::Person { .. } | ContentArg::Filmography { .. })) =>
+                self.stores.person.held_keys(content),
+            AppArg::Content(content @ ContentArg::Collection(_)) => self.stores.collection.held_keys(content),
+            _ => Default::default(),
+        }
+    }
+
+    /// The Home sources, in display order: what a Home re-read asks one quiet refetch of each.
+    pub(crate) fn hub_source_ids(&self) -> Vec<plx_plex::plex::ServerId> {
+        self.stores.hubs.source_ids()
+    }
+
     /// The rows the read-back has landed since the last call (`Stores::take_landed_views`).
     pub(crate) fn take_landed_views(&mut self) -> Vec<(plx_plex::plex::ServerId, String)> {
         self.stores.take_landed_views()
@@ -1376,6 +1405,18 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn seed_hubs_for_test(&mut self, items: usize, hub_state: plx_data::pms::HubState) {
         self.stores.hubs.seed_for_test(items, hub_state);
+    }
+
+    /// Test hook: publish `shelves` as Search's results.
+    #[cfg(test)]
+    pub(crate) fn publish_search_for_test(&mut self, shelves: Vec<plx_data::search::Shelf>) {
+        self.stores.search.publish_shelves_for_test(shelves);
+    }
+
+    /// Test hook: the keys owed a read-back and not yet sent.
+    #[cfg(test)]
+    pub(crate) fn read_back_pending_for_test(&self) -> plx_data::stores::HeldKeys {
+        self.stores.reconcile.pending_for_test()
     }
 
     /// Is a view-state write queued or in flight?

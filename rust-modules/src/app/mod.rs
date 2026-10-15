@@ -125,6 +125,7 @@ pub(crate) mod input;
 pub(crate) mod bridge;
 pub(crate) mod chrome;
 pub(crate) mod content;
+pub(crate) mod reread;
 pub(crate) mod run;
 use self::boot::*;
 use self::events::*;
@@ -296,6 +297,9 @@ pub(crate) struct App {
     /// The HTTPS retry for servers on a plaintext grant (`plex::grant::UpgradeRetry`), stepped
     /// every frame beside the view-state pump (`app/run.rs`).
     pub(crate) plaintext_upgrade: plx_plex::plex::grant::UpgradeRetry,
+    /// The re-read of covered pages and of the visible one on resume, stepped once per loop
+    /// iteration beside the view-state pumps (`app/reread.rs`).
+    pub(crate) reread: reread::Reread,
     ev: [u8; 128],
     remote: Option<crate::remote::Remote>,
     /// The SDL window (`SDL_CreateWindow`), for the swap.

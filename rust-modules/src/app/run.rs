@@ -948,6 +948,8 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // lost one is queued for a fresh discovery (requested by the upgrade retry's frame
             // step) that re-proves eligibility before minting again (`plex::grant`).
             plx_plex::plex::grant::network_changed();
+            // The television may have been away long enough for every page to be stale.
+            app.reread.resume();
             // Reacquire only on DID foreground, before playback restoration and rendering.
             restore_window(app.win);
             plx_machine::idle::invalidate();
@@ -2342,6 +2344,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // every route for the same reason (a refused write is put right here, not by a refetch).
         let endpoints = app.bridge.reconcile_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
+        // …and the covered pages' own re-read, once each cover episode (`app/reread.rs`).
+        super::reread::run(&mut app.reread, &mut app.pages, &mut app.bridge);
         // A server on a plaintext grant keeps trying HTTPS (`plex::grant::UpgradeRetry`): its
         // endpoint re-discovery races every HTTPS route first and retires the grant when one
         // verifies. Route-unconditional — the upgrade is owed whatever is on screen.
@@ -3176,6 +3180,7 @@ mod lifecycle_regression_tests {
             refresh_hubs: Default::default(),
             return_hold: Default::default(),
             plaintext_upgrade: Default::default(),
+            reread: Default::default(),
             ev: [0; 128],
             remote: Default::default(),
             win: Default::default(),

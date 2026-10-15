@@ -224,6 +224,7 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
             json!({"hubs":{"cancel_page":[sid.raw(),id,key]}}),
         StoreCmd::Hubs(HubsCmd::Hold { lo, hi }) => json!({"hubs":{"hold":[lo,hi]}}),
         StoreCmd::Hubs(HubsCmd::Retry) => json!({"hubs":"retry"}),
+        StoreCmd::Hubs(HubsCmd::RefetchSourceQuiet { sid }) => json!({"hubs":{"refetch_source_quiet":sid.raw()}}),
         StoreCmd::Browse(BrowseCmd::Reset) => json!({"browse":"reset"}),
         StoreCmd::Browse(BrowseCmd::Discovery(result)) => plx_data::browse::record::encode(result),
         StoreCmd::Metadata(cmd) => {
@@ -396,6 +397,20 @@ mod tests {
             assert!(!encoded.contains(&actual), "distinct requests must stay distinct");
             encoded.push(actual);
         }
+    }
+
+    /// The quiet Home refetch a covered or resumed Home owes (`app/reread.rs`) is a named, replayable
+    /// effect: it encodes to its source and nothing else, distinct per source.
+    #[test]
+    fn the_quiet_home_refetch_encodes_its_source() {
+        use plx_screens::registry::AppFx;
+        use plx_data::stores::{hubs::HubsCmd, StoreCmd, StoreId};
+        use serde_json::json;
+        let quiet = |raw| encode(&Fx::App(AppFx::Store(StoreId::Hubs,
+            StoreCmd::Hubs(HubsCmd::RefetchSourceQuiet { sid: plx_plex::plex::ServerId::from_raw(raw) }))));
+        let (a, b) = (quiet(2).unwrap(), quiet(3).unwrap());
+        assert_eq!(a["command"], json!({"hubs":{"refetch_source_quiet":2}}));
+        assert_ne!(a, b, "one effect per source");
     }
 
     /// A profile publication that carries no account stamp (no account token, which is every

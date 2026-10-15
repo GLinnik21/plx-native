@@ -1885,6 +1885,7 @@ pub(crate) unsafe fn construct(
         refresh_hubs,
         return_hold: Default::default(),
         plaintext_upgrade: Default::default(),
+        reread: Default::default(),
         ev,
         remote,
         win,

@@ -278,6 +278,28 @@ impl Stores {
         self.network_held
     }
 
+    /// May a re-read of the pages the viewer is not looking at be spent now? Not under the player
+    /// ([`Self::network_held`]), and not while a recording or replay is armed on this owner's
+    /// landing gate: a re-read is a request no recorded run can contain, so it would desynchronise
+    /// the capture from the replay (`plx_machine::landgate`).
+    pub fn reread_allowed(&self) -> bool {
+        !self.network_held && !self.landgate.is_armed()
+    }
+
+    /// Owe the read-back of `keys` (what a page holds on screen, see [`HeldKeys`]) to the
+    /// reconcile worker. Never a stop: nothing here scrobbles or feeds an end-of-stream decision.
+    pub fn owe_read_back(&mut self, keys: HeldKeys) {
+        self.reconcile.enqueue(keys);
+    }
+
+    /// What the Library page now on the current section holds (its shelves in the hold window, the
+    /// grid rows in the wanted window), or nothing before a listing exists.
+    pub fn library_held_keys(&self) -> HeldKeys {
+        let mut browse = self.browse.borrow_mut();
+        let Some(id) = browse.listing_snapshot().view().id() else { return HeldKeys::new() };
+        browse.held_keys(browse::SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section })
+    }
+
     /// Playbacks that stopped. Each gets an immediate resume patch ([`crate::viewstate::ViewFact::Offset`])
     /// on the stores that show the item, so a tile reads the new resume point before any read; and,
     /// when the server took the `stopped` POST, a read-back through the reconcile worker (which
