@@ -406,7 +406,7 @@ mod tests {
         use plx_platform::i18n::{LocaleContext, Preference};
         use plx_machine::machine::Measure;
         let mut out = Vec::new();
-        for (language, region) in [(Preference::En, "en-US"), (Preference::Es, "es-ES"), (Preference::Be, "be-BY"), (Preference::Fr, "fr-FR")] {
+        for (language, region) in [(Preference::En, "en-US"), (Preference::Es, "es-ES"), (Preference::Be, "be-BY"), (Preference::Fr, "fr-FR"), (Preference::It, "it-IT")] {
             let locale = LocaleContext::resolve(language, None, Some(region), None, None);
             for ms in [-60_000, 60_000, 0] {
                 let t = text_in(ms, &locale);

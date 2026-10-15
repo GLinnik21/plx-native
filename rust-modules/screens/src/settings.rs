@@ -1602,10 +1602,10 @@ fn preference_name(preference: plx_platform::i18n::Preference) -> &'static str {
     }
 }
 
-const LANGUAGES: [plx_platform::i18n::Preference; 5] = [
+const LANGUAGES: [plx_platform::i18n::Preference; 6] = [
     plx_platform::i18n::Preference::System, plx_platform::i18n::Preference::En,
     plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be,
-    plx_platform::i18n::Preference::Fr,
+    plx_platform::i18n::Preference::Fr, plx_platform::i18n::Preference::It,
 ];
 
 /// A Language row's identity: the preference a `Choice` row saves, or the contribution guide.
@@ -1624,6 +1624,7 @@ impl FormId for LangId {
             LangId::Choice(P::Es) => 2,
             LangId::Choice(P::Be) => 3,
             LangId::Choice(P::Fr) => 5,
+            LangId::Choice(P::It) => 6,
             LangId::Contribute => 4,
         })
     }

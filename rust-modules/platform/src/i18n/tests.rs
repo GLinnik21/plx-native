@@ -42,7 +42,16 @@ fn locale_resolution_separates_language_from_formatting() {
         LocaleContext::resolve(Preference::Fr, None, None, None, None).format_locale(),
         "fr-FR"
     );
-    for tag in ["de-DE", "be-Latn", "fr-Cyrl", "garbage\r\nheader", "C"] {
+    for tag in ["it-IT", "it_CH", "it-SM"] {
+        let cx = LocaleContext::resolve(Preference::System, Some(tag), None, None, None);
+        assert_eq!(cx.language(), Language::It);
+        assert_eq!(cx.preference(), Preference::System);
+    }
+    assert_eq!(
+        LocaleContext::resolve(Preference::It, None, None, None, None).format_locale(),
+        "it-IT"
+    );
+    for tag in ["de-DE", "be-Latn", "fr-Cyrl", "it-Cyrl", "garbage\r\nheader", "C"] {
         assert_eq!(
             LocaleContext::resolve(Preference::System, Some(tag), None, None, None).language(),
             Language::En
@@ -73,6 +82,11 @@ fn plural_rules_follow_the_message_language() {
     assert_eq!(fr.plural(1), PluralCategory::One);
     assert_eq!(fr.plural(2), PluralCategory::Other);
     assert_eq!(fr.plural(1_000_000), PluralCategory::Many);
+    let it = LocaleContext::resolve(Preference::It, None, None, None, None);
+    assert_eq!(it.plural(0), PluralCategory::Other);
+    assert_eq!(it.plural(1), PluralCategory::One);
+    assert_eq!(it.plural(2), PluralCategory::Other);
+    assert_eq!(it.plural(1_000_000), PluralCategory::Many);
 }
 
 #[test]

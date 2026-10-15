@@ -1,12 +1,12 @@
 # Help translate PlxNative
 
-PlxNative's interface is available in English, Spanish, French and Belarusian (official Cyrillic
+PlxNative's interface is available in English, Spanish, French, Italian and Belarusian (official Cyrillic
 orthography). Help improve a translation or contribute another language through a pull request
 at https://github.com/GLinnik21/plx-native.
 
 ## Translate a message
 
-Catalogs live in `locales/en`, `locales/es`, `locales/fr` and `locales/be`, split by UI area. English is the
+Catalogs live in `locales/en`, `locales/es`, `locales/fr`, `locales/it` and `locales/be`, split by UI area. English is the
 source: each scoped, stable key has a `value`, translator `description`, and optional typed
 `args`. The other languages contain the same keys with translated string or plural values.
 The compiler combines each language's files; file names organize ownership, not message identity.
@@ -39,7 +39,7 @@ Double braces (`{{` and `}}`) render literal braces. A placeholder accepts `str`
 integers are formatted with the TV's regional settings. A plural message's `count` selects a
 CLDR cardinal category for the UI language. Other arguments must appear in every form; count
 may be omitted when the form spells it out. Belarusian needs `one`, `few`, `many`, and `other`;
-Spanish and French need `one`, `many`, and `other`; English needs `one` and `other`.
+Spanish, French and Italian need `one`, `many`, and `other`; English needs `one` and `other`.
 
 Use readable, natural wording. Belarusian switch labels use `Укл.` and `Выкл.`. Preserve the meaning of consent and privacy disclosures exactly.
 Third-party license texts stay verbatim. Screenshots of the affected screen help reviewers assess
@@ -61,7 +61,7 @@ the Library's TYPE menu, and the
 collection page's meta line and season marks. When one of these tests fails, shorten
 the wording; do not abbreviate it past readability.
 
-Review the affected screens with the desktop simulator. `PLXNATIVE_LOCALE=es`, `be` or `en`
+Review the affected screens with the desktop simulator. `PLXNATIVE_LOCALE=es`, `fr`, `it`, `be` or `en`
 selects a language for a simulator launch; `PLXNATIVE_FORMAT_LOCALE=de-DE` exercises separate
 regional formatting. `PLXNATIVE_LOCALE=qps-ploc` expands and accents text to reveal cramped
 layouts. These environment overrides do not operate in the shipping TV build.
@@ -93,7 +93,7 @@ scripts requiring shaping or bidirectional layout need renderer work before bein
 
 ## Runtime behavior
 
-Settings → Language defaults to the television's UI language. Explicit English, Spanish, French and
+Settings → Language defaults to the television's UI language. Explicit English, Spanish, French, Italian and
 Belarusian choices apply the next time the app starts. The running UI and Plex request language
 remain unchanged until then; playback is not interrupted. The contribution action displays this
 guide's URL and QR code for opening on another device.

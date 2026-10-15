@@ -4169,7 +4169,7 @@ mod enhancement_menu_tests {
             "base layer",
             "hdr10",
         ];
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::It] {
             let _guard = language_on_this_thread_for_test(language);
             for (name, value) in [
                 ("enh_note_sidecar", plx_platform::i18n::msg::widgets_tracks_enh_note_sidecar()),
@@ -4544,7 +4544,7 @@ mod enhancement_menu_tests {
     fn subtitles_locked_note_fits_menu_cap_es_be() {
         use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::It] {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             // the audio-conversion reason (a remux) and the quality reason, as well as the own burn
@@ -5893,7 +5893,7 @@ mod style_page_tests {
     fn every_style_page_fits_the_panel_in_every_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::It] {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             for codec in ["srt", "pgs", "ass"] {
@@ -5924,7 +5924,7 @@ mod style_page_tests {
     fn the_style_note_fits_two_lines_at_the_player_menu_floor() {
         use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::It] {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             for codec in ["pgs", "ass"] {
@@ -6470,7 +6470,7 @@ mod language_page_tests {
     fn the_language_pages_fit_the_panel_in_every_language() {
         use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
+        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::It] {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             let (mut menu, ps, store) = open(subs_with_vobsub());
