@@ -543,19 +543,19 @@ impl Engine {
     fn open(&mut self, source: &Source, now_ms: i64) -> Result<(), Fault> {
         self.native = None;
         self.script = None;
-        let mut native = None;
+        let mut windowed = None;
         if let Content::Script { bytes, fonts } = &source.content {
             if let Some(index) = super::ass_script::ScriptIndex::parse(bytes) {
                 if index.windowed() {
                     let window = index.window(now_ms);
-                    native = Some(Native::open_data(fonts, &window.text, 1)?);
+                    windowed = Some(Native::open_data(fonts, &window.text, 1)?);
                     self.script = Some(Scripted { index, window: Some((window.lo_ms, window.hi_ms)) });
                 } else {
                     self.script = Some(Scripted { index, window: None });
                 }
             }
         }
-        let mut native = match native {
+        let mut native = match windowed {
             Some(native) => native,
             None => Native::open(source)?,
         };
@@ -579,7 +579,7 @@ impl Engine {
         Some(match &source.content {
             Content::Embedded { events, .. } => aligns::of_events(events, now_ms),
             Content::Script { .. } => match &self.script {
-                Some(windowed) => aligns::of_script(&windowed.index, now_ms),
+                Some(scripted) => aligns::of_script(&scripted.index, now_ms),
                 None => aligns::ScriptAligns::at(&mut self.aligns_index, source, now_ms),
             },
         })
