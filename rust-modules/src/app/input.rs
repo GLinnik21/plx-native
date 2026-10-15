@@ -651,23 +651,10 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // panic here unwinds out of the SDL loop and kills the app. If a third write row
             // is ever added to this pattern without a verb, it does nothing instead.
             let Some(w) = a.watch_write() else { return };
-            // Only the FILMSTRIP's host re-reads the page: its rk is an episode of the loaded
-            // season, so the tab ticks, the checks and the hero's own discs all change with it. A
-            // RELATED tile is a different item — the page it is drawn on says nothing about it, and
-            // asking for a refetch here would re-read the mounted show for a write that never
-            // touched it. The tile's own tick is flipped by `metadata::set_watched_local` instead,
+            // This press re-reads nothing: the page learns the server's numbers from the read-back
+            // of the item, its season and its show (`content::reconcile_details`), after the write
+            // has landed. A RELATED tile's own tick is flipped by `metadata::set_watched_local`,
             // which walks the Related shelf for exactly this case.
-            let detail = loaded_episode.then(|| ()).and_then(|()| {
-                let entry = pages.nav.top_page()?;
-                let plx_screens::registry::AppArg::Content(
-                    plx_screens::registry::ContentArg::Detail { sid, rk: detail_rk },
-                ) = &entry.arg else { return None };
-                Some(plx_data::stores::viewstate::DetailRefresh {
-                    sid: *sid,
-                    rk: detail_rk.clone(),
-                    keep: Some(rk.clone()),
-                })
-            });
             // NO GUID from here, and deliberately: a catalog row carries none, and the guid the
             // detail page is holding belongs to the SHOW when this rk is one of its episodes. A
             // guid that is merely close marks a DIFFERENT title watched on every other source, so
@@ -676,7 +663,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // (a Search result, a Continue Watching card): the scope is read off the row in hand.
             let scope = mark_scope(rk, item.as_ref(), season.as_ref());
             bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
-                sid, rk: rk.to_string(), write: w, scope, detail, guid: String::new(),
+                sid, rk: rk.to_string(), write: w, scope, guid: String::new(),
             });
         }
         Action::RemoveFromDeck(rk) => {
@@ -697,7 +684,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // row is yours, and hiding a friend's item from it is not a claim about their deck.
             bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
                 sid, rk: rk.to_string(), write: plx_data::viewstate::Write::RemoveFromDeck,
-                scope: plx_data::viewstate::Scope::Leaf, detail: None, guid: String::new(),
+                scope: plx_data::viewstate::Scope::Leaf, guid: String::new(),
             });
         }
         // The deck card's Play row (OK opens the page): the same captured-row launch as Play from

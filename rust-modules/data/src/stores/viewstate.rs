@@ -5,15 +5,6 @@ use plx_plex::plex::ServerId;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
-/// The exact Detail page a completed burst must reconcile. `keep` is the episode whose filmstrip
-/// position survives the reload; `None` is the page hero's own watch toggle.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DetailRefresh {
-    pub sid: ServerId,
-    pub rk: String,
-    pub keep: Option<String>,
-}
-
 /// Every mutation of the view-state write store.
 #[derive(Clone)]
 pub enum ViewStateCmd {
@@ -23,8 +14,6 @@ pub enum ViewStateCmd {
         write: crate::viewstate::Write,
         /// How far down the library the press reaches: a show's or season's episode rows too.
         scope: crate::viewstate::Scope,
-        /// The originating Detail page, if this press should reconcile one after the burst.
-        detail: Option<DetailRefresh>,
         /// Portable item identity when the caller has the exact item's guid; empty asks the worker
         /// to resolve it from `(sid, rk)`.
         guid: String,
@@ -122,10 +111,6 @@ impl ViewStateStore {
     ) -> super::EndpointRefreshSet {
         self.pump_with_gate(plx_machine::landgate::fixture_gate(), browse, hubs, person, collection, search,
             metadata)
-    }
-
-    pub fn take_detail_refresh(&mut self) -> Option<DetailRefresh> {
-        self.state.take_detail_refresh()
     }
 
     /// Hold the terminal hub refetch while the player is on top; see

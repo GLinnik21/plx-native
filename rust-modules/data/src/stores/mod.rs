@@ -327,8 +327,11 @@ impl Stores {
         changed
     }
 
-    pub fn take_detail_refresh(&self) -> Option<viewstate::DetailRefresh> {
-        self.viewstate.borrow_mut().take_detail_refresh()
+    /// The `(server, ratingKey)` of every row a read-back has landed since the last call: what the
+    /// server just said about those items. The application re-reads each Detail page that shows one
+    /// (`app::content::reconcile_details`). MAIN THREAD.
+    pub fn take_landed_views(&mut self) -> Vec<(plx_plex::plex::ServerId, String)> {
+        self.reconcile.take_landed()
     }
 
     /// Capture all three retained Browse publications from one owner borrow. Directory capture

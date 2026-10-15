@@ -122,7 +122,7 @@ fn tile(stores: &Stores) -> (bool, bool) {
 fn press(stores: &mut Stores, sid: ServerId, write: Write) {
     let directory = DirectorySnapshot::default();
     assert!(stores.viewstate_run(ViewStateCmd::Request {
-        sid, rk: "1".into(), write, scope: Scope::Leaf, detail: None, guid: String::new(),
+        sid, rk: "1".into(), write, scope: Scope::Leaf, guid: String::new(),
     }, directory.view()));
 }
 

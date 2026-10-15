@@ -6093,7 +6093,7 @@ pub fn scrobble_settled() -> bool {
 /// **It reads true when no stop was announced at all** (nothing playing, a reporter-less preview,
 /// or a stop with nothing to post), so it is only meaningful behind an owed flag that
 /// `exit_player` sets *after* [`scrobble_stop`] announced the fence on the same (main) thread
-/// (`App::refresh_hubs`, `app.refresh_detail`). Non-blocking.
+/// (`App::refresh_hubs`). Non-blocking.
 pub fn timeline_stop_landed() -> bool {
     TIMELINE_STOP_FENCE.landed()
 }

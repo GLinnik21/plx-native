@@ -1103,20 +1103,45 @@ mod library_publication_tests {
         assert!(allowed(&dispatcher, false, true));
     }
 
+    /// A landing names rows, and only the Detail pages showing one of them are owed a re-read: the
+    /// covered one is deferred, and a page navigated to later is not touched. One server's row
+    /// never reaches another server's page of the same key.
     #[test]
-    fn deferred_viewstate_refresh_cannot_retarget_the_page_navigated_to_later() {
+    fn a_landed_row_owes_a_re_read_only_to_the_detail_pages_that_show_it() {
+        let _guard = plx_base::testlock::serial();
         let sid = plx_plex::plex::ServerId::from_raw(2);
-        let target = plx_data::stores::viewstate::DetailRefresh {
-            sid,
-            rk: "origin".into(),
-            keep: Some("episode".into()),
-        };
-        let origin = AppArg::Content(ContentArg::Detail { sid, rk: "origin".into() });
-        let later = AppArg::Content(ContentArg::Detail { sid, rk: "later".into() });
+        let other = plx_plex::plex::ServerId::from_raw(3);
+        let a = AppArg::Content(ContentArg::Detail { sid, rk: "origin".into() });
+        let b = AppArg::Content(ContentArg::Detail { sid, rk: "later".into() });
+        let mut pages = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+        bridge::show_page(&mut pages, a);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let a_entry = pages.nav.top_page().expect("Detail A mounted").id;
+        bridge::nav_push(&mut pages, b);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let b_entry = pages.nav.top_page().expect("Detail B mounted").id;
+        drain_detail_workers(&mut rig);
 
-        assert!(detail_refresh_matches(&origin, &target));
-        assert!(!detail_refresh_matches(&later, &target),
-            "landing after navigation must still address the Detail that emitted the write");
+        reconcile_details(&mut pages, &mut rig, &[(other, "origin".into()), (sid, "elsewhere".into())]);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert_eq!(detail_refresh_phase(&pages, a_entry), plx_screens::registry::DetailRefreshPhase::None,
+            "another server's row, and a row no page shows, owe nothing");
+        assert_eq!(detail_refresh_phase(&pages, b_entry), plx_screens::registry::DetailRefreshPhase::None);
+
+        reconcile_details(&mut pages, &mut rig, &[(sid, "origin".into())]);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert_eq!(detail_refresh_phase(&pages, a_entry), plx_screens::registry::DetailRefreshPhase::Deferred,
+            "the covered page that shows the row waits for its slot");
+        assert_eq!(detail_refresh_phase(&pages, b_entry), plx_screens::registry::DetailRefreshPhase::None,
+            "the page navigated to later is not retargeted");
+
+        reconcile_details(&mut pages, &mut rig, &[(sid, "later".into())]);
+        frame(&mut pages, &mut rig, &mut frame_no);
+        assert_eq!(detail_refresh_phase(&pages, b_entry), plx_screens::registry::DetailRefreshPhase::Requested,
+            "the page on top is re-read at once");
+        drain_detail_workers(&mut rig);
     }
 
     /// Regression for the double-fetch bug: `registry::mount` unconditionally queues
@@ -1643,7 +1668,7 @@ mod library_publication_tests {
         bridge::nav_push(&mut pages, b.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == b));
-        let (spot, focus) = seed_detail_return(&mut pages, a_entry, sid, "episode-a");
+        let (_, focus) = seed_detail_return(&mut pages, a_entry, sid, "episode-a");
 
         // Retire the constructors' real worker requests, then hold B in the same global metadata
         // slot the product uses while A's ViewState completion arrives.
@@ -1657,11 +1682,7 @@ mod library_publication_tests {
         }));
         let b_request = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-b");
 
-        refresh_content(&mut pages, &mut rig, plx_data::stores::viewstate::DetailRefresh {
-            sid,
-            rk: "detail-a".into(),
-            keep: Some("episode-a".into()),
-        });
+        reconcile_details(&mut pages, &mut rig, &[(sid, "detail-a".into())]);
         frame(&mut pages, &mut rig, &mut frame_no);
 
         assert_eq!(rig.metadata_mut().view().current().map(|detail| detail.rk.as_str()), Some("detail-b"),
@@ -1670,9 +1691,8 @@ mod library_publication_tests {
             "covered A must not supersede B's in-flight request");
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), None,
             "A's fetch stays deferred while B owns the shared slot");
-        assert_eq!(detail_restore_target(&pages, a_entry),
-            Some((spot.clone(), Some("episode-a".into()),
-                plx_screens::registry::DetailRefreshPhase::Deferred)),
+        assert_eq!(detail_refresh_phase(&pages, a_entry),
+            plx_screens::registry::DetailRefreshPhase::Deferred,
             "covered A retains the addressed episode and focus spot");
 
         assert!(land_detail_for_test(&mut rig, sid, "detail-b", b_request,
@@ -1692,9 +1712,8 @@ mod library_publication_tests {
             "A starts its deferred metadata refresh only after Back uncovers it");
         assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), generation + 2,
             "B closes its request and A starts exactly one replacement request");
-        assert_eq!(detail_restore_target(&pages, a_entry),
-            Some((spot, Some("episode-a".into()),
-                plx_screens::registry::DetailRefreshPhase::Requested)),
+        assert_eq!(detail_refresh_phase(&pages, a_entry),
+            plx_screens::registry::DetailRefreshPhase::Requested,
             "RestoreMemory must not overwrite the addressed episode/focus intent");
         // EVIDENCE, so nobody re-derives it: this assertion is NOT stale. It fails on unmodified
         // Stage C1 too — it was simply never reached there, because the `detail_generation_for_test`
@@ -1741,7 +1760,7 @@ mod library_publication_tests {
         bridge::nav_push(&mut pages, person.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == person));
-        let (spot, focus) = seed_detail_return(&mut pages, a_entry, sid, "episode-a");
+        let (_, focus) = seed_detail_return(&mut pages, a_entry, sid, "episode-a");
 
         drain_detail_workers(&mut rig);
         rig.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::Clear);
@@ -1756,11 +1775,7 @@ mod library_publication_tests {
         let generation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert_eq!(generation, stale_request);
 
-        refresh_content(&mut pages, &mut rig, plx_data::stores::viewstate::DetailRefresh {
-            sid,
-            rk: "detail-a".into(),
-            keep: Some("episode-a".into()),
-        });
+        reconcile_details(&mut pages, &mut rig, &[(sid, "detail-a".into())]);
         frame(&mut pages, &mut rig, &mut frame_no);
 
         assert!(pages.nav.top_page().is_some_and(|entry| entry.arg == person));
@@ -1770,9 +1785,8 @@ mod library_publication_tests {
             "A must not refresh while Person owns the visible page");
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(true),
             "the pre-write A fetch remains in flight while its page is covered");
-        assert_eq!(detail_restore_target(&pages, a_entry),
-            Some((spot.clone(), Some("episode-a".into()),
-                plx_screens::registry::DetailRefreshPhase::Deferred)));
+        assert_eq!(detail_refresh_phase(&pages, a_entry),
+            plx_screens::registry::DetailRefreshPhase::Deferred);
 
         let ret = pages.return_state();
         bridge::nav_pop_with_return(&mut pages, ret);
@@ -1795,9 +1809,8 @@ mod library_publication_tests {
             "the stale landing cannot undo A's optimistic watched state");
         assert_eq!(plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref()), reconciliation,
             "rejecting the stale landing cannot replace the reconciliation generation");
-        assert_eq!(detail_restore_target(&pages, a_entry),
-            Some((spot, Some("episode-a".into()),
-                plx_screens::registry::DetailRefreshPhase::Requested)),
+        assert_eq!(detail_refresh_phase(&pages, a_entry),
+            plx_screens::registry::DetailRefreshPhase::Requested,
             "RestoreMemory preserves the ViewState episode/focus intent");
         assert_eq!(pages.focus(), Some(focus));
         let generation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
@@ -1825,7 +1838,7 @@ mod library_publication_tests {
     /// observable two queue hops before the owning store admitted the request, and the `Tick` and
     /// `StoreChanged` this test queues behind the restore could read the PREVIOUS reconciliation's
     /// terminal `Some(false)` — which `pump_restore` answers by dropping the obligation outright.
-    /// `refresh_content` now runs `RequestDetail` through `Bridge::metadata_run` in the same
+    /// `reconcile_details` now runs `RequestDetail` through `Bridge::metadata_run` in the same
     /// synchronous step that emits the restore, which is what the tap below observes.
     #[test]
     fn visible_refresh_starts_before_queued_tick_or_store_change_can_consume_it() {
@@ -1899,11 +1912,7 @@ mod library_publication_tests {
                 }),
             ].into(), Default::default());
         }
-        refresh_content(&mut pages, &mut rig, plx_data::stores::viewstate::DetailRefresh {
-            sid,
-            rk: "detail-a".into(),
-            keep: Some("episode-a".into()),
-        });
+        reconcile_details(&mut pages, &mut rig, &[(sid, "detail-a".into())]);
         if settled_before_refresh {
             struct AtomicStart {
                 sid: plx_plex::plex::ServerId,
@@ -1922,12 +1931,12 @@ mod library_publication_tests {
                             "Requested must not be visible before its reconciliation request exists");
                     }
                     if matches!(&stamped.fx, Fx::Deliver(_, Delivery::Screen(ScreenEvent::App(
-                        AppMsg::DetailRestore { refresh: plx_screens::registry::DetailRefreshPhase::Requested, .. })))) {
+                        AppMsg::DetailReconcile { refresh: plx_screens::registry::DetailRefreshPhase::Requested })))) {
                         self.saw_restore = true;
                     }
                 }
             }
-            // These deliveries are already queued when DetailRestore executes. The assertion at
+            // These deliveries are already queued when DetailReconcile executes. The assertion at
             // the next effect boundary observes the state before either can consume a stale status.
             pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(
                 pages.nav.top_page().unwrap().inst.as_ref().unwrap().id),
@@ -1954,9 +1963,8 @@ mod library_publication_tests {
         }
         let stale_a = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(true));
-        assert_eq!(detail_restore_target(&pages, a_entry),
-            Some((spot.clone(), Some("episode-a".into()),
-                plx_screens::registry::DetailRefreshPhase::Requested)));
+        assert_eq!(detail_refresh_phase(&pages, a_entry),
+            plx_screens::registry::DetailRefreshPhase::Requested);
 
         let mut return_focus = focus;
         if navigate {
@@ -2015,9 +2023,8 @@ mod library_publication_tests {
         let reconciliation = plx_data::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, "detail-a"), Some(true));
         if !navigate {
-            assert_eq!(detail_restore_target(&pages, a_entry),
-                Some((spot.clone(), Some("episode-a".into()),
-                    plx_screens::registry::DetailRefreshPhase::Requested)),
+            assert_eq!(detail_refresh_phase(&pages, a_entry),
+            plx_screens::registry::DetailRefreshPhase::Requested,
                 "the retry preserves the episode and focus intent");
         }
         assert_eq!(pages.focus(), Some(return_focus));
@@ -2130,21 +2137,14 @@ mod library_publication_tests {
                 .expect("the loaded episode text row has a stable key"),
         };
         pages.set_focus(Some(focus));
-        let PageMemory::Detail(memory) = pages.return_state().memory else { unreachable!() };
-        let spot = memory.spot;
 
         let pre_refresh = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
-        refresh_content(&mut pages, &mut rig, plx_data::stores::viewstate::DetailRefresh {
-            sid,
-            rk: "detail-a".into(),
-            keep: Some("episode-a".into()),
-        });
+        reconcile_details(&mut pages, &mut rig, &[(sid, "detail-a".into())]);
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(!land_detail_for_test(&mut rig, sid, "detail-a", pre_refresh, None));
         let reconciliation = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
-        assert_eq!(detail_restore_target(&pages, a_entry),
-            Some((spot, Some("episode-a".into()),
-                plx_screens::registry::DetailRefreshPhase::Requested)));
+        assert_eq!(detail_refresh_phase(&pages, a_entry),
+            plx_screens::registry::DetailRefreshPhase::Requested);
 
         bridge::nav_push(&mut pages, person.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
@@ -2224,21 +2224,14 @@ mod library_publication_tests {
                 .expect("the loaded episode text row has a stable key"),
         };
         pages.set_focus(Some(focus));
-        let PageMemory::Detail(memory) = pages.return_state().memory else { unreachable!() };
-        let spot = memory.spot;
 
         let pre_refresh = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
-        refresh_content(&mut pages, &mut rig, plx_data::stores::viewstate::DetailRefresh {
-            sid,
-            rk: "detail-a".into(),
-            keep: Some("episode-a".into()),
-        });
+        reconcile_details(&mut pages, &mut rig, &[(sid, "detail-a".into())]);
         frame(&mut pages, &mut rig, &mut frame_no);
         assert!(!land_detail_for_test(&mut rig, sid, "detail-a", pre_refresh, None));
         let reconciliation = plx_data::metadata::begin_detail_for_test(rig.metadata_mut().adapter_ref(), sid, "detail-a");
-        assert_eq!(detail_restore_target(&pages, a_entry),
-            Some((spot, Some("episode-a".into()),
-                plx_screens::registry::DetailRefreshPhase::Requested)));
+        assert_eq!(detail_refresh_phase(&pages, a_entry),
+            plx_screens::registry::DetailRefreshPhase::Requested);
 
         bridge::nav_push(&mut pages, person.clone());
         frame(&mut pages, &mut rig, &mut frame_no);
@@ -2337,13 +2330,6 @@ pub(crate) fn restore_played_entry(app: &mut App) {
         .and_then(|_| meta.now_playing())
         .filter(|n| n.is_episode && n.detail_rk == *rk)
         .map(|n| { spot.season = Some(n.season); plx_media::route::cur_rk(&app.player.session) });
-    // The page still holds the resume point it fetched when it opened, and its Play reads that
-    // copy; the session that just ended moved it on the server. Re-read once the stop has landed.
-    app.refresh_detail = Some(plx_data::stores::viewstate::DetailRefresh {
-        sid: *sid,
-        rk: rk.clone(),
-        keep: episode.clone().filter(|rk| !rk.is_empty()),
-    });
     if episode.is_some() {
         app.pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore {
@@ -2354,77 +2340,54 @@ pub(crate) fn restore_played_entry(app: &mut App) {
     }
 }
 
-/// Re-read the Detail page a playback returned to, once the stop report has landed.
+/// The server just said something about `landed` (a read-back published those rows): every Detail
+/// page on the stack whose item is one of them is owed a re-read. That is the changed item itself,
+/// its season, or its show - the read-back reads a leaf's season and show too, so those rows are in
+/// `landed` whenever an episode moved.
 ///
-/// A Detail page plays from the `viewOffset` it fetched when it opened, and a return from the
-/// player is a restored enter, which reuses that copy (issue #575: the second Play after a stop
-/// started from the first one's position, or from 0:00). The server is the only one that knows
-/// what the stop committed (it ignores a short position, and a position past the watched
-/// threshold counts as a viewing instead), so the page asks it, through the same reconciliation a
-/// watched toggle uses ([`refresh_content`]) - after the stop has been POSTed, or the read would
-/// race the write it is meant to see.
-pub(crate) fn refresh_after_playback(app: &mut App) {
-    if app.refresh_detail.is_none()
-        || bridge::player(&app.pages).is_some()
-        || !plx_media::route::timeline_stop_landed()
-    {
-        return;
-    }
-    if let Some(target) = app.refresh_detail.take() {
-        refresh_content(&mut app.pages, &mut app.bridge, target);
-    }
-}
-
-pub(crate) fn refresh_content(
+/// A re-read is OBLIGATION ONLY (`AppMsg::DetailReconcile`): it never re-seats focus and never
+/// scrolls, so it is as safe under a live cursor as it is behind a cover. The page on top owns the
+/// ONE Metadata slot, so its request is started here, synchronously, and its page is told it is
+/// `Requested`; a covered page is told `Deferred` and starts nothing - an eager fetch for it would
+/// supersede the visible page's load - until it is uncovered and owns the slot again.
+///
+/// This is the only way a Detail page learns that a write or a playback landed: a stopped
+/// playback's resume point (issue #575), an episode played to its end (#680), a show marked watched
+/// from a page that covers it. Each arrives as the read-back of the item, after the server has
+/// committed, so the re-read cannot race the write it is meant to see.
+pub(crate) fn reconcile_details(
     pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>,
     bridge: &mut bridge::Bridge,
-    target: plx_data::stores::viewstate::DetailRefresh,
+    landed: &[(plx_plex::plex::ServerId, String)],
 ) {
-    // A write may finish after another Detail has covered its origin. The covered instance must
-    // retain the addressed restore intent, but the ONE Metadata slot belongs to the top page: an
-    // eager fetch here would supersede that visible Detail's load. So a covered entry is armed
-    // with `Deferred` and starts nothing.
-    //
-    // A VISIBLE entry starts here, synchronously, through Metadata's same-turn boundary
-    // (`Bridge::metadata_run`, the sibling of `browse_run`/`person_run`/`viewstate_run` —
-    // `stores/mod.rs`'s "same-turn application boundaries call a method on the `Stores` value
-    // they already hold"). This is trap T2 and the reason this function takes the Bridge at all:
-    // `Requested` must not be observable before the owning store has admitted the request, or a
-    // Tick or `StoreChanged` already queued behind this effect reads the PREVIOUS reconciliation's
-    // terminal `Some(false)` and `pump_restore` silently drops the obligation. Queuing the command
-    // as an `AppFx::Store` instead puts two queue hops between the phase and its admission, which
-    // is exactly that window.
-    let Some(entry) = pages.nav.tabs.stack.entries.iter().rev()
-        .find(|e| detail_refresh_matches(&e.arg, &target)) else { return };
-    let AppArg::Content(ContentArg::Detail { .. }) = &entry.arg else { return };
-    let Some(instance) = entry.inst.as_ref().map(|i| i.id) else { return };
-    let owns_metadata = pages.nav.top_page().is_some_and(|top| top.id == entry.id);
-    let memory = if owns_metadata {
-        pages.return_state().memory
-    } else { entry.ret.memory.clone() };
-    let PageMemory::Detail(spot) = memory else { return };
-    let spot = spot.spot;
-    if owns_metadata {
-        bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RequestDetail {
-            sid: target.sid,
-            rk: target.rk.clone(),
-        });
+    // Collected first: starting a request borrows the Bridge, emitting borrows the pages.
+    let top = pages.nav.top_page().map(|top| top.id);
+    let owed: Vec<_> = pages.nav.tabs.stack.entries.iter().filter_map(|entry| {
+        let AppArg::Content(ContentArg::Detail { sid, rk }) = &entry.arg else { return None };
+        landed.iter().any(|(s, r)| plx_plex::plex::same_item((*s, r), (*sid, rk)))
+            .then_some(())?;
+        let instance = entry.inst.as_ref()?.id;
+        Some((instance, *sid, rk.clone(), Some(entry.id) == top))
+    }).collect();
+    for (instance, sid, rk, owns_metadata) in owed {
+        // A VISIBLE page starts here through Metadata's same-turn boundary
+        // (`Bridge::metadata_run`, the sibling of `browse_run`/`person_run`/`viewstate_run`).
+        // This is trap T2 and the reason this function takes the Bridge at all: `Requested` must
+        // not be observable before the owning store has admitted the request, or a Tick or
+        // `StoreChanged` already queued behind this effect reads the PREVIOUS reconciliation's
+        // terminal `Some(false)` and `pump_restore` silently drops the obligation.
+        if owns_metadata {
+            bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid, rk });
+        }
+        pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
+            Delivery::Screen(ScreenEvent::App(AppMsg::DetailReconcile {
+                refresh: if owns_metadata {
+                    plx_screens::registry::DetailRefreshPhase::Requested
+                } else {
+                    plx_screens::registry::DetailRefreshPhase::Deferred
+                },
+            }))));
     }
-    pages.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
-        Delivery::Screen(ScreenEvent::App(AppMsg::DetailRestore {
-            spot,
-            episode: target.keep,
-            refresh: if owns_metadata {
-                plx_screens::registry::DetailRefreshPhase::Requested
-            } else {
-                plx_screens::registry::DetailRefreshPhase::Deferred
-            },
-        }))));
-}
-
-fn detail_refresh_matches(arg: &AppArg, target: &plx_data::stores::viewstate::DetailRefresh) -> bool {
-    matches!(arg, AppArg::Content(ContentArg::Detail { sid, rk })
-        if *sid == target.sid && *rk == target.rk)
 }
 
 /// Refuse privileged replay before any request reaches the live PlayerAdapter.

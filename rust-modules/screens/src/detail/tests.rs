@@ -333,6 +333,26 @@ fn refresh_obligation_is_logical_state_without_a_restore_intent() {
     assert!(probe.contains("restore=false") && probe.contains("refresh=Requested"));
 }
 
+/// **A server-driven re-read moves nothing.** `DetailReconcile` is the obligation alone: unlike
+/// `DetailRestore` (the deliberate re-seat after playback) it neither sets a focus-restore intent
+/// nor sends the page back to the top.
+#[test]
+fn a_reconcile_owes_the_re_read_but_moves_neither_focus_nor_scroll() {
+    let guard = plx_base::testlock::serial();
+    for phase in [DetailRefreshPhase::Deferred, DetailRefreshPhase::Requested] {
+        let mut screen = bare(&guard, ServerId::UNSET, "show");
+        screen.scroll_target = 480.0;
+        screen.scroll.pos = 480.0;
+        let _ = step(&mut screen, &ScreenEvent::App(AppMsg::DetailReconcile { refresh: phase }), None);
+        assert_eq!(screen.refresh, phase);
+        assert!(screen.restore_intent.is_none(), "no focus is re-seated ({phase:?})");
+        assert!(!screen.return_pending, "nothing was queued to move focus ({phase:?})");
+        assert_eq!(screen.scroll_target, 480.0, "the page does not scroll to the top ({phase:?})");
+        assert_eq!(screen.scroll.pos, 480.0);
+    }
+    clear();
+}
+
 #[test]
 fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
     let guard = plx_base::testlock::serial();
@@ -403,7 +423,7 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
 /// (`Some(false)`) left by the PREVIOUS reconciliation at this exact `(sid, rk)` address.
 ///
 /// Closed by IDENTITY, not synchrony: `DetailScreen::step` has no same-turn boundary the way
-/// `app::content::refresh_content` does for `DetailRestore` (see C1fix, `3b628b23`) — `Cx`
+/// `app::content::reconcile_details` does for `DetailReconcile` (see C1fix, `3b628b23`) — `Cx`
 /// publishes stores as read-only views, so there is no `&mut Stores` here by construction. Rather
 /// than widen `Cx`/`Rig`, `start_reconciliation` now records `self.refresh_gen =
 /// meta.detail_generation()` — the generation that already existed BEFORE this promotion's own
@@ -2386,14 +2406,11 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
     let addressed: Vec<_> = effects.iter().filter_map(|effect| match &effect.fx {
         Fx::App(AppFx::Store(StoreId::ViewState,
             plx_data::stores::StoreCmd::ViewState(ViewStateCmd::Request {
-                sid, rk, write, detail, guid, ..
-            }))) => Some((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str())),
+                sid, rk, write, guid, ..
+            }))) => Some((*sid, rk.as_str(), *write, guid.as_str())),
         _ => None,
     }).collect();
-    assert_eq!(addressed, [(sid, "movie", plx_data::viewstate::Write::Watched,
-        Some(&plx_data::stores::viewstate::DetailRefresh {
-            sid, rk: "movie".into(), keep: None,
-        }), "")],
+    assert_eq!(addressed, [(sid, "movie", plx_data::viewstate::Write::Watched, "")],
         "Detail must address the typed ViewState command to its owning Bridge");
     assert!(!test_store().view().current().unwrap().watched,
         "the screen must not call the process-global compatibility facade itself");

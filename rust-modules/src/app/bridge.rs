@@ -1182,7 +1182,7 @@ impl Bridge {
     /// synchronous step, which for Metadata means one thing: a reconciliation whose `Requested`
     /// phase becomes observable the moment the command returns (trap T2). Screen-issued Metadata
     /// commands that are not same-turn boundaries still cross `AppFx::Store` like every other
-    /// store's; see `app/content.rs`'s `refresh_content`.
+    /// store's; see `app/content.rs`'s `reconcile_details`.
     pub(crate) fn metadata_run(&mut self, cmd: plx_data::stores::metadata::MetadataCmd) -> bool {
         self.stores.metadata_run(cmd)
     }
@@ -1242,8 +1242,9 @@ impl Bridge {
         Default::default()
     }
 
-    pub(crate) fn take_detail_refresh(&self) -> Option<plx_data::stores::viewstate::DetailRefresh> {
-        self.stores.take_detail_refresh()
+    /// The rows the read-back has landed since the last call (`Stores::take_landed_views`).
+    pub(crate) fn take_landed_views(&mut self) -> Vec<(plx_plex::plex::ServerId, String)> {
+        self.stores.take_landed_views()
     }
 
     /// Search commands snapshot their initial favourite-library ranking from the same retained

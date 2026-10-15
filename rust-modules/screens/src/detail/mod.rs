@@ -1986,9 +1986,9 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 // identity still matches. The only thing that suppresses it is a fetch for this
                 // item already in flight. Restored enters (and every other case) keep reusing the
                 // cached detail instead of duplicating a request. A return from the PLAYER is the
-                // one restored enter that is re-read from outside this arm:
-                // `app::content::refresh_after_playback` delivers a `DetailRestore` with a
-                // `Requested` obligation once the stop report has been POSTed (#575), so Play
+                // one restored enter that is re-read from outside this arm: the stop's read-back
+                // (`Stores::stops_landed`) lands the item's facts and
+                // `app::content::reconcile_details` delivers a `DetailReconcile` (#575), so Play
                 // resumes from what the stop committed, not from the `viewOffset` the page
                 // opened with.
                 let fresh_open = matches!(kind, Enter::Fresh { .. });
@@ -2196,26 +2196,23 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 self.restore_episode(spot, episode.as_deref(), meta);
                 // A focus-only restore (including navigation memory) cannot discharge a newer
                 // write's server obligation. `Requested` on this message means the sender ALREADY
-                // admitted the request: `app::content::refresh_content` runs `RequestDetail`
-                // through `Bridge::metadata_run` in the same synchronous step that emits this
-                // effect, so recording the phase here is a pure observation, not a start. Issuing
+                // admitted the request (the contract `DetailReconcile` below is built on:
+                // `app::content::reconcile_details` runs `RequestDetail` through
+                // `Bridge::metadata_run` in the same synchronous step that emits it), so
+                // recording the phase here is a pure observation, not a start. Issuing
                 // the command again from this arm would run the non-idempotent request twice — a
                 // second `begin_detail_request` generation — and reopen the very T2 window the
                 // caller closed. A covered page keeps Deferred until Enter gives it ownership of
                 // the shared Metadata slot.
-                match refresh {
-                    DetailRefreshPhase::None => {}
-                    DetailRefreshPhase::Deferred => self.refresh = DetailRefreshPhase::Deferred,
-                    DetailRefreshPhase::Requested => {
-                        // T2: the sender already admitted this request synchronously (see the
-                        // comment above), so `meta.detail_generation()` here IS our own request's
-                        // generation. The threshold must be the generation that existed before
-                        // that admission, or our own real terminal (landing at this same,
-                        // unchanged generation number) would never look "newer" than itself.
-                        self.refresh_gen = meta.detail_generation().saturating_sub(1);
-                        self.refresh = DetailRefreshPhase::Requested;
-                    }
-                }
+                self.owe_refresh(*refresh, meta);
+                fx.invalidate(Provenance::Landing(fx.from()));
+                Handled::Yes
+            }
+            // The server's word about this page's item changed: the obligation alone. Nothing is
+            // re-seated and nothing scrolls - the focus key is an identity that survives the
+            // re-read, which `reconcile` resolves against the landed page.
+            ScreenEvent::App(AppMsg::DetailReconcile { refresh }) => {
+                self.owe_refresh(*refresh, meta);
                 fx.invalidate(Provenance::Landing(fx.from()));
                 Handled::Yes
             }
@@ -2291,7 +2288,7 @@ impl DetailScreen {
     /// **A screen cannot close that window itself**: `Cx` publishes stores as VIEWS, so there is
     /// no `&mut` here by construction, and the engine's `after_step` reconcile runs before the
     /// drain reaches this effect. The one caller that IS a same-turn application boundary —
-    /// `app::content::refresh_content`, which holds the `Bridge` — therefore does not come
+    /// `app::content::reconcile_details`, which holds the `Bridge` — therefore does not come
     /// through here at all: it runs `RequestDetail` through `Bridge::metadata_run` and hands this
     /// screen an already-backed `Requested` (see the `DetailRestore` arm). What is left on this
     /// path is the `Enter` promotion of an obligation the page has carried while covered, whose
@@ -2313,6 +2310,25 @@ impl DetailScreen {
             }),
         )));
         self.refresh = DetailRefreshPhase::Requested;
+    }
+
+    /// Record a server obligation the sender has already backed (`Requested`) or that must wait
+    /// for this page to own the Metadata slot again (`Deferred`). The one place the phase is set
+    /// from outside, shared by `DetailRestore` and `DetailReconcile`.
+    fn owe_refresh(&mut self, refresh: DetailRefreshPhase, meta: plx_data::metadata::MetadataView<'_>) {
+        match refresh {
+            DetailRefreshPhase::None => {}
+            DetailRefreshPhase::Deferred => self.refresh = DetailRefreshPhase::Deferred,
+            DetailRefreshPhase::Requested => {
+                // T2: the sender already admitted this request synchronously, so
+                // `meta.detail_generation()` here IS our own request's generation. The threshold
+                // must be the generation that existed before that admission, or our own real
+                // terminal (landing at this same, unchanged generation number) would never look
+                // "newer" than itself.
+                self.refresh_gen = meta.detail_generation().saturating_sub(1);
+                self.refresh = DetailRefreshPhase::Requested;
+            }
+        }
     }
 
     fn restore_target_matches(&self, located: Located, meta: plx_data::metadata::MetadataView<'_>) -> bool {
@@ -4258,11 +4274,6 @@ impl DetailScreen {
                             } else {
                                 plx_data::viewstate::Write::Unwatched
                             },
-                            detail: Some(plx_data::stores::viewstate::DetailRefresh {
-                                sid: d.sid,
-                                rk: d.rk.clone(),
-                                keep: None,
-                            }),
                             guid: d.guid.clone(),
                         }),
                     )));

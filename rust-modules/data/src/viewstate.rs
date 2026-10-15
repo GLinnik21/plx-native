@@ -3,7 +3,7 @@
 //! Three actions share one shape: Mark as Watched (`/:/scrobble`), Mark as Unwatched
 //! (`/:/unscrobble`) and Remove from Continue Watching (`PUT /actions/removeFromContinueWatching`).
 //! Each is one request to the item's own server, followed by a refresh of every surface that
-//! describes that item — Home's shelves always, plus the detail page when the press came from it.
+//! describes that item — Home's shelves always, plus every Detail page that shows it (re-read from the read-back's landing).
 //!
 //! ## Why this module exists
 //!
@@ -36,7 +36,7 @@
 //!   the queue is drained strictly one worker at a time, and a second press on the SAME item
 //!   replaces the queued one rather than joining it ([`coalesce`]) — the newest intent for an item
 //!   is the only one worth a round trip.
-//! * **One refresh per burst.** The hub refetch (and the detail re-read) is deferred until the queue
+//! * **One refresh per burst.** The hub refetch is deferred until the queue
 //!   empties, so ticking four episodes watched in a row costs four writes and one refresh.
 //! * **A refused spawn is a retry, never a panic and never a fallback to blocking.**
 //!   `task::spawn_small` returning false means the OS is out of threads; the queue keeps its head
@@ -386,9 +386,6 @@ struct Req {
     w: Write,
     /// How far down the library the press reaches (a show's episodes, a season's).
     scope: Scope,
-    /// Re-read the originating Detail page when this lands, by its exact `(sid, rk)` address.
-    /// `keep` retains a filmstrip episode; `None` here means the press came from another screen.
-    detail: Option<crate::stores::viewstate::DetailRefresh>,
     /// The item's PORTABLE identity (`plex://movie/…`) **as it is on `sid` for `rk`**, or empty when
     /// the press had none in hand — [`fan_out`] then resolves it from the pair, on the worker.
     ///
@@ -435,7 +432,6 @@ pub struct ViewStateState {
     sent: Option<Req>,
     retry_cd: u32,
     want_hubs: bool,
-    want_detail: Option<crate::stores::viewstate::DetailRefresh>,
     /// Items whose write landed (taken or refused) and whose truth the read-back worker is owed,
     /// handed over by [`ViewStateState::take_reread`] once the burst is idle.
     want_reread: Vec<(ServerId, String)>,
@@ -453,7 +449,6 @@ impl Default for ViewStateState {
             sent: None,
             retry_cd: 0,
             want_hubs: false,
-            want_detail: None,
             want_reread: Vec::new(),
             next_request_id: 1,
             hold_refresh: false,
@@ -484,10 +479,10 @@ impl ViewStateState {
 /// being a server slot that holds no client, which is a dropped PMS write and says so in the log
 /// rather than being the one that goes unrecorded.
 ///
-/// `detail` says exactly what to re-read when the write lands: `None` for a press outside Detail,
-/// an addressed page plus kept episode for its filmstrip, and the addressed page with no episode
-/// for the hero toggle. The hub refetch happens either way — Continue Watching changes with any of
-/// these three writes, whichever screen asked for it.
+/// A Detail page the write touched is not named here: the read-back of the item (and of its season
+/// and show) lands the server's word, and every Detail page on the stack that shows one of those
+/// rows is re-read from it (`Stores::take_landed_views`). The hub refetch happens whichever screen
+/// asked — Continue Watching changes with any of these three writes.
 ///
 /// `guid` is the item's portable identity **if the caller already holds the one belonging to `rk`**,
 /// and `""` otherwise — see [`Req::guid`], and note that "" is a perfectly ordinary answer rather
@@ -501,7 +496,6 @@ impl ViewStateState {
     rk: &str,
     w: Write,
     scope: Scope,
-    detail: Option<crate::stores::viewstate::DetailRefresh>,
     guid: &str,
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
@@ -537,7 +531,6 @@ impl ViewStateState {
         rk: rk.to_string(),
         w,
         scope,
-        detail,
         guid: guid.to_string(),
         origin_done: false,
     });
@@ -580,7 +573,8 @@ pub fn publish_view(
     // The Library's own deck is a different shelf on a different screen, and the one place a
     // deck removal is reachable from besides Home; no other store has a deck. Watched, Facts and
     // Offset reach every store that can be drawing the item; Detail's own item, episodes and
-    // seasons take Facts with its fold (they re-read themselves until then).
+    // seasons take no Facts: the application re-reads the page whole when the read-back lands
+    // (`app::content::reconcile_details`).
     if !matches!(edit, ViewEdit::LeftDeck) {
         metadata(crate::stores::metadata::MetadataCmd::ApplyView { at: at.clone(), edit });
         search(crate::stores::search::SearchCmd::ApplyView { at: at.clone(), edit });
@@ -610,7 +604,7 @@ impl ViewStateState {
         }
         let id = self.mint_request_id();
         self.queue.push(Req {
-            id, seq: 0, sid, rk: rk.to_string(), w: Write::Watched, scope: Scope::Leaf, detail: None,
+            id, seq: 0, sid, rk: rk.to_string(), w: Write::Watched, scope: Scope::Leaf,
             guid: String::new(), origin_done: true,
         });
         self.kick(adapter);
@@ -787,9 +781,6 @@ pub fn pump_with_gate(
                 }
             }
         }
-        if let Some(detail) = r.detail {
-            self.want_detail = Some(detail);
-        }
     }
     if due {
         self.kick(adapter);
@@ -838,24 +829,18 @@ pub fn hold_inflight_for_test(&mut self, sid: ServerId, rk: &str) {
             rk: rk.into(),
             w: Write::Watched,
             scope: Scope::Leaf,
-            detail: None,
             guid: String::new(),
             origin_done: false,
         });
 }
 
-/// The items the read-back worker is owed, once this owner's burst is idle (the same gate as
-/// [`ViewStateState::take_detail_refresh`]: four presses in a row cost one batch).
+/// The items the read-back worker is owed, once this owner's burst is idle (four presses in a row cost
+/// one batch).
 pub fn take_reread(&mut self) -> Vec<(ServerId, String)> {
     if self.is_busy() { return Vec::new(); }
     std::mem::take(&mut self.want_reread)
 }
 
-/// Drain the addressed Detail reconciliation only after this owner's burst is idle.
-pub fn take_detail_refresh(&mut self) -> Option<crate::stores::viewstate::DetailRefresh> {
-    if self.is_busy() { return None; }
-    self.want_detail.take()
-}
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -865,7 +850,6 @@ pub struct OwnershipFixture {
     pub sent: Option<String>,
     pub retry_cd: u32,
     pub want_hubs: bool,
-    pub want_detail: Option<crate::stores::viewstate::DetailRefresh>,
     pub mail: bool,
 }
 
@@ -880,7 +864,6 @@ impl ViewStateState {
             rk: rk.into(),
             w: Write::Watched,
             scope: Scope::Leaf,
-            detail: None,
             guid: String::new(),
             origin_done: false,
         }
@@ -895,11 +878,6 @@ impl ViewStateState {
         self.sent = Some(flight);
         self.retry_cd = 9;
         self.want_hubs = true;
-        self.want_detail = Some(crate::stores::viewstate::DetailRefresh {
-            sid: ServerId::UNSET,
-            rk: "detail".into(),
-            keep: Some("episode".into()),
-        });
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(Completion { id, done: Done::default() });
     }
@@ -910,7 +888,6 @@ impl ViewStateState {
             sent: self.sent.as_ref().map(|r| r.rk.clone()),
             retry_cd: self.retry_cd,
             want_hubs: self.want_hubs,
-            want_detail: self.want_detail.clone(),
             mail: adapter.mail.lock().unwrap_or_else(|e| e.into_inner()).is_some(),
         }
     }
@@ -1080,7 +1057,6 @@ fn reset(&mut self) {
     self.sent = None;
     self.retry_cd = 0;
     self.want_hubs = false;
-    self.want_detail = None;
     self.want_reread.clear();
     // The edits describe the identity that just changed (sign-in, profile or server switch): they
     // must never be made again on a read of the next one's rows.
@@ -1100,8 +1076,8 @@ pub fn run(
 ) -> bool {
     use crate::stores::viewstate::ViewStateCmd;
     match cmd {
-        ViewStateCmd::Request { sid, rk, write, scope, detail, guid } => {
-            self.request(adapter, sid, &rk, write, scope, detail, &guid, browse, hubs, person, collection, search, metadata)
+        ViewStateCmd::Request { sid, rk, write, scope, guid } => {
+            self.request(adapter, sid, &rk, write, scope, &guid, browse, hubs, person, collection, search, metadata)
         }
         ViewStateCmd::Reset => {
             self.reset();
@@ -1140,8 +1116,7 @@ mod tests {
                 rk: "7".into(),
                 write: Write::Watched,
                 scope: Scope::Leaf,
-                detail: None,
-                guid: String::new(),
+                    guid: String::new(),
             },
             &mut |cmd| { browse.push(cmd); true },
             &mut |cmd| {
@@ -1215,7 +1190,7 @@ mod tests {
         let (mut stores, sid) = search_with_show_and_episodes();
         let directory = crate::stores::browse::DirectorySnapshot::default();
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
-            sid, rk: "S".into(), write: Write::Watched, scope: Scope::Show, detail: None, guid: String::new(),
+            sid, rk: "S".into(), write: Write::Watched, scope: Scope::Show, guid: String::new(),
         }, directory.view()));
         let marks = search_marks(&stores);
         let mark = |rk: &str| marks.iter().find(|m| m.0 == rk).unwrap().clone();
@@ -1237,7 +1212,7 @@ mod tests {
         let directory = crate::stores::browse::DirectorySnapshot::default();
         let before = stores.view_ledger.stamp();
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
-            sid, rk: "S".into(), write: Write::Watched, scope: Scope::Show, detail: None, guid: String::new(),
+            sid, rk: "S".into(), write: Write::Watched, scope: Scope::Show, guid: String::new(),
         }, directory.view()));
         let seen = stores.view_ledger.since(before);
         assert_eq!(seen.len(), 1);
@@ -1284,7 +1259,7 @@ mod tests {
                 at: ViewAt::leaf(sid, rk), edit: ViewEdit::Watched(true) }, directory.view());
         }
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
-            sid, rk: "S".into(), write: Write::Unwatched, scope: Scope::Show, detail: None, guid: String::new(),
+            sid, rk: "S".into(), write: Write::Unwatched, scope: Scope::Show, guid: String::new(),
         }, directory.view()));
         for (rk, watched, unwatched, _) in search_marks(&stores).into_iter().filter(|m| m.0 != "other") {
             assert!(!watched && unwatched, "{rk} reads unwatched after its show was marked unwatched");
@@ -1300,7 +1275,7 @@ mod tests {
         let directory = crate::stores::browse::DirectorySnapshot::default();
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S1".into(), write: Write::Watched,
-            scope: Scope::Season { show_rk: "S".into(), index: 1 }, detail: None, guid: String::new(),
+            scope: Scope::Season { show_rk: "S".into(), index: 1 }, guid: String::new(),
         }, directory.view()));
         let marks = search_marks(&stores);
         let watched = |rk: &str| marks.iter().find(|m| m.0 == rk).unwrap().1;
@@ -1329,7 +1304,6 @@ mod tests {
             rk: "1".into(),
             write: Write::Watched,
             scope: Scope::Leaf,
-            detail: None,
             guid: String::new(),
         }, directory.view()));
 
@@ -1350,7 +1324,7 @@ mod tests {
         let adapter = Arc::new(ViewStateAdapter::default());
         let id = state.mint_request_id();
         state.sent = Some(Req { id, seq: 0, sid: origin, rk: "7".into(), w: Write::Watched,
-            scope: Scope::Leaf, detail: None, guid: "plex://movie/7".into(), origin_done: false });
+            scope: Scope::Leaf, guid: "plex://movie/7".into(), origin_done: false });
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) = Some(Completion {
             id,
             done: Done { ok: true, also: vec![(other, "70".into())] },
@@ -1417,16 +1391,7 @@ mod tests {
     const SRV_B: ServerId = ServerId::from_raw(1);
     const SRV_C: ServerId = ServerId::from_raw(2);
 
-    fn detail(episode: &str) -> crate::stores::viewstate::DetailRefresh {
-        crate::stores::viewstate::DetailRefresh {
-            sid: SRV_A,
-            rk: "show".into(),
-            keep: Some(episode.into()),
-        }
-    }
-
-    fn req(state: &mut ViewStateState, rk: &str, w: Write,
-        detail: Option<crate::stores::viewstate::DetailRefresh>) -> Req {
+    fn req(state: &mut ViewStateState, rk: &str, w: Write) -> Req {
         let id = state.mint_request_id();
         Req {
             id,
@@ -1435,17 +1400,15 @@ mod tests {
             rk: rk.into(),
             w,
             scope: Scope::Leaf,
-            detail,
             guid: String::new(),
             origin_done: false,
         }
     }
 
     /// Queue a write without spawning anything — the half of [`request`] under test here.
-    fn enqueue(state: &mut ViewStateState, rk: &str, w: Write,
-        detail: Option<crate::stores::viewstate::DetailRefresh>) {
+    fn enqueue(state: &mut ViewStateState, rk: &str, w: Write) {
         state.coalesce(ServerId::UNSET, rk, w);
-        let req = req(state, rk, w, detail);
+        let req = req(state, rk, w);
         state.queue.push(req);
     }
 
@@ -1466,9 +1429,9 @@ mod tests {
     fn a_second_press_on_one_item_replaces_the_queued_write_rather_than_joining_it() {
         let mut state = ViewStateState::default();
 
-        enqueue(&mut state, "7", Write::Watched, None);
-        enqueue(&mut state, "9", Write::Watched, None);
-        enqueue(&mut state, "7", Write::Unwatched, None); // the user changed their mind about 7
+        enqueue(&mut state, "7", Write::Watched);
+        enqueue(&mut state, "9", Write::Watched);
+        enqueue(&mut state, "7", Write::Unwatched); // the user changed their mind about 7
 
         assert_eq!(
             queued(&state),
@@ -1483,8 +1446,8 @@ mod tests {
     fn a_deck_removal_and_a_watched_toggle_on_one_item_are_two_writes() {
         let mut state = ViewStateState::default();
 
-        enqueue(&mut state, "7", Write::RemoveFromDeck, None);
-        enqueue(&mut state, "7", Write::Watched, None);
+        enqueue(&mut state, "7", Write::RemoveFromDeck);
+        enqueue(&mut state, "7", Write::Watched);
 
         assert_eq!(
             queued(&state),
@@ -1501,9 +1464,9 @@ mod tests {
     #[test]
     fn a_write_already_in_flight_is_never_coalesced_away() {
         let mut state = ViewStateState::default();
-        state.sent = Some(req(&mut state, "7", Write::Watched, None));
+        state.sent = Some(req(&mut state, "7", Write::Watched));
 
-        enqueue(&mut state, "7", Write::Unwatched, None);
+        enqueue(&mut state, "7", Write::Unwatched);
 
         assert!(state.sent.is_some(), "the one on the wire stays out");
         assert_eq!(
@@ -1513,39 +1476,29 @@ mod tests {
         );
     }
 
-    /// The refresh is owed ONCE, at the end of a burst — not per write. Ticking four episodes
-    /// watched in a row must cost four writes and one `/hubs` pair, and the detail re-read must
-    /// carry the episode the filmstrip has to land back on.
+    /// The refresh is owed ONCE, at the end of a burst - not per write. Ticking four episodes
+    /// watched in a row must cost four writes and one `/hubs` pair.
     #[test]
-    fn the_refresh_waits_for_the_last_write_of_a_burst_and_carries_the_kept_episode() {
+    fn the_refresh_waits_for_the_last_write_of_a_burst() {
         let mut state = ViewStateState::default();
 
-        state.sent = Some(req(&mut state, "1", Write::Watched, Some(detail("1"))));
-        enqueue(&mut state, "2", Write::Watched, Some(detail("2")));
+        state.sent = Some(req(&mut state, "1", Write::Watched));
+        enqueue(&mut state, "2", Write::Watched);
         assert!(state.is_busy());
 
-        // write 1 answers — the latches arm, but the queue is not empty, so nothing is refreshed
-        let landed = state.sent.take().expect("a write was out");
+        // write 1 answers - the latch arms, but the queue is not empty, so nothing is refreshed
+        state.sent.take().expect("a write was out");
         state.want_hubs = true;
-        state.want_detail = landed.detail;
         assert!(
             state.is_busy(),
-            "write 2 is still queued — the refresh is not owed yet"
+            "write 2 is still queued - the refresh is not owed yet"
         );
 
-        // …and write 2 answers, superseding which episode the filmstrip lands back on
-        let two = state.queue.remove(0);
+        // ...and write 2 answers: the burst is over
+        state.queue.remove(0);
         state.want_hubs = true;
-        state.want_detail = two.detail;
         assert!(!state.is_busy());
-        let hubs = std::mem::take(&mut state.want_hubs);
-        let detail = state.want_detail.take();
-        assert!(hubs, "exactly one hub refetch is owed for the burst");
-        assert_eq!(
-            detail.as_ref().and_then(|target| target.keep.as_deref()),
-            Some("2"),
-            "…and the LAST write's episode is the one kept"
-        );
+        assert!(std::mem::take(&mut state.want_hubs), "exactly one hub refetch is owed for the burst");
     }
 
     /// A refused spawn must neither panic nor block nor silently lose the press: the write goes back
@@ -1556,7 +1509,7 @@ mod tests {
         let mut state = ViewStateState::default();
 
         // exactly what `kick`'s refusal branch does
-        enqueue(&mut state, "5", Write::Watched, None);
+        enqueue(&mut state, "5", Write::Watched);
         let head = state.queue.remove(0);
         state.queue.insert(0, head);
         state.retry_cd = RETRY_FRAMES;
@@ -1594,7 +1547,7 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
-        let sent = req(&mut state, "7", Write::Watched, None);
+        let sent = req(&mut state, "7", Write::Watched);
         let id = sent.id;
         state.sent = Some(sent);
         let gate = plx_machine::landgate::Gate::default();
@@ -1622,8 +1575,8 @@ mod tests {
         let _serial = plx_base::testlock::serial();
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
-        let stale = req(&mut state, "6", Write::Watched, None).id;
-        let sent = req(&mut state, "7", Write::Watched, None);
+        let stale = req(&mut state, "6", Write::Watched).id;
+        let sent = req(&mut state, "7", Write::Watched);
         let id = sent.id;
         state.sent = Some(sent);
         assert_ne!(stale, id);
@@ -1653,7 +1606,7 @@ mod tests {
         let adapter = Arc::new(ViewStateAdapter::default());
         let id = state.mint_request_id();
         state.sent = Some(Req { id, seq: 0, sid: ServerId::from_raw(0), rk: "7".into(), w: Write::Watched,
-            scope: Scope::Leaf, detail: None, guid: String::new(), origin_done: true });
+            scope: Scope::Leaf, guid: String::new(), origin_done: true });
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(Completion { id, done: Done { ok: true, also } });
         let mut hubs = Vec::new();
@@ -1710,12 +1663,11 @@ mod tests {
     fn reset_leaves_nothing_queued_in_flight_or_owed() {
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
-        enqueue(&mut state, "1", Write::Watched, Some(detail("1")));
-        let sent = req(&mut state, "2", Write::Unwatched, None);
+        enqueue(&mut state, "1", Write::Watched);
+        let sent = req(&mut state, "2", Write::Unwatched);
         let sent_id = sent.id;
         state.sent = Some(sent);
         state.want_hubs = true;
-        state.want_detail = Some(detail("3"));
         state.retry_cd = 9;
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(Completion { id: sent_id, done: Done::default() });
@@ -1724,7 +1676,6 @@ mod tests {
 
         assert!(!state.is_busy());
         assert!(!state.want_hubs);
-        assert!(state.want_detail.is_none());
         assert_eq!(state.retry_cd, 0);
         assert!(adapter.mail.lock().unwrap_or_else(|e| e.into_inner()).is_some(),
             "state reset does not mutate an adapter; the owning store retires it wholesale");
@@ -1915,7 +1866,6 @@ mod tests {
             rk: "4".into(),
             w: Write::Watched,
             scope: Scope::Leaf,
-            detail: None, // no detail re-read: this press came from a Home card menu
             guid: "plex://movie/6856893830a4aaafd5c4291d".into(),
             origin_done: false,
         });
@@ -1955,7 +1905,7 @@ mod tests {
         let read_stamp = state.ledger.stamp();
         let id = state.mint_request_id();
         state.sent = Some(Req {
-            id, seq, sid: SRV_A, rk: "4".into(), w: Write::Watched, scope: Scope::Leaf, detail: None,
+            id, seq, sid: SRV_A, rk: "4".into(), w: Write::Watched, scope: Scope::Leaf,
             guid: String::new(),
             origin_done: false,
         });
@@ -2011,7 +1961,7 @@ mod tests {
         let stamp = state.ledger.stamp();
         let id = state.mint_request_id();
         state.sent = Some(Req {
-            id, seq: first, sid: SRV_A, rk: "4".into(), w: Write::Watched, scope: Scope::Leaf, detail: None,
+            id, seq: first, sid: SRV_A, rk: "4".into(), w: Write::Watched, scope: Scope::Leaf,
             guid: String::new(),
             origin_done: false,
         });
@@ -2038,11 +1988,11 @@ mod tests {
         let _guard = plx_base::testlock::serial();
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
-        let first = req(&mut state, "before-reset", Write::Watched, None);
+        let first = req(&mut state, "before-reset", Write::Watched);
         let first_id = first.id;
         state.sent = Some(first);
         state.reset();
-        let second = req(&mut state, "after-reset", Write::Unwatched, None);
+        let second = req(&mut state, "after-reset", Write::Unwatched);
         let second_id = second.id;
         assert!(second_id.0 > first_id.0, "request identity stays monotone across reset");
         state.sent = Some(second);
@@ -2058,30 +2008,6 @@ mod tests {
         assert_eq!(state.sent.as_ref().map(|request| request.id), Some(second_id),
             "a stale or mismatched completion cannot satisfy the current in-flight identity");
         assert!(!state.want_hubs);
-        assert!(state.want_detail.is_none());
-    }
-
-    #[test]
-    fn deferred_detail_refresh_keeps_the_originating_page_address() {
-        let _guard = plx_base::testlock::serial();
-        let target = crate::stores::viewstate::DetailRefresh {
-            sid: SRV_B,
-            rk: "origin-show".into(),
-            keep: Some("episode-7".into()),
-        };
-        let mut state = ViewStateState::default();
-        let adapter = Arc::new(ViewStateAdapter::default());
-        let request = req(&mut state, "episode-7", Write::Watched, Some(target.clone()));
-        let id = request.id;
-        state.sent = Some(request);
-        *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(Completion { id, done: Done::default() });
-
-        let _ = state.pump(&adapter, &mut |_| false,
-            &mut |_| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false, &mut |_| false,
-            &mut |_| false);
-
-        assert_eq!(state.take_detail_refresh(), Some(target));
     }
 
     /// `ViewAt::covers_parts` as a table: what each scope reaches among rows of the same and other

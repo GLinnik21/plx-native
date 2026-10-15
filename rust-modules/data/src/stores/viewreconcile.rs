@@ -47,7 +47,10 @@
 //!   reach Home's hubs, Browse's listing, Search, Person, Collection and Detail's Related and
 //!   collection-member tiles, each only where `ViewEdit::changes` says the row differs. Browse's
 //!   section shelves (re-read whole after a burst) and Detail's own item, episodes and seasons
-//!   (`DetailRefresh`) take neither.
+//!   take neither: they cannot be patched from a facts row (the season tabs' counts and the hero's
+//!   on-deck episode are the server's numbers). Every row a read-back publishes is also listed for
+//!   the application ([`ViewReconcileStore::take_landed`]), which re-reads each Detail page whose
+//!   item, season or show it is.
 //! * **A failed read is not re-queued**, and the optimistic patch stands (the same "a failure never
 //!   blanks a populated screen" rule as every other read here). A refused spawn is retried after
 //!   [`RETRY_FRAMES`].
@@ -118,6 +121,9 @@ pub struct ViewReconcileStore {
     /// Dropped when their read lands, fails or is overtaken, and on reset.
     candidates: Vec<Key>,
     watched_ends: Vec<Key>,
+    /// Rows published since the last [`Self::take_landed`]: the application's cue to re-read the
+    /// Detail pages that show them.
+    landed: Vec<Key>,
     retry_cd: u32,
     next_id: u64,
     notice_gen: AtomicU32,
@@ -135,6 +141,7 @@ impl Default for ViewReconcileStore {
             dirty: Vec::new(),
             candidates: Vec::new(),
             watched_ends: Vec::new(),
+            landed: Vec::new(),
             retry_cd: 0,
             next_id: 1,
             notice_gen: AtomicU32::new(0),
@@ -193,6 +200,11 @@ impl ViewReconcileStore {
         std::mem::take(&mut self.watched_ends)
     }
 
+    /// The rows read-backs have published since the last call, each once.
+    pub fn take_landed(&mut self) -> Vec<Key> {
+        std::mem::take(&mut self.landed)
+    }
+
     /// Drop everything: the identity changed. The adapter is replaced first, so a worker still out
     /// can only post to the retired one.
     pub fn reset(&mut self) {
@@ -203,6 +215,7 @@ impl ViewReconcileStore {
         self.dirty.clear();
         self.candidates.clear();
         self.watched_ends.clear();
+        self.landed.clear();
         self.retry_cd = 0;
         self.bump();
     }
@@ -348,6 +361,9 @@ impl ViewReconcileStore {
                             if m.watched {
                                 self.watched_ends.push(key);
                             }
+                        }
+                        if !self.landed.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (m.sid, &m.rk))) {
+                            self.landed.push((m.sid, m.rk.clone()));
                         }
                         publish(ViewChange {
                             sid: m.sid,

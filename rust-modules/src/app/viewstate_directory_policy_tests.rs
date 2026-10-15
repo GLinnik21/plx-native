@@ -25,7 +25,6 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
         rk: "alpha".into(),
         write: plx_data::viewstate::Write::Watched,
         scope: plx_data::viewstate::Scope::Leaf,
-        detail: None,
         guid: String::new(),
     }));
 
@@ -264,7 +263,6 @@ fn viewstate_optimistic_edit_mutates_only_its_bridge_person_store() {
         rk: "movie".into(),
         write: plx_data::viewstate::Write::Watched,
         scope: plx_data::viewstate::Scope::Leaf,
-        detail: None,
         guid: String::new(),
     }));
 
@@ -294,25 +292,19 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
             match &stamped.fx {
                 Fx::App(AppFx::Store(StoreId::ViewState,
                     StoreCmd::ViewState(plx_data::stores::viewstate::ViewStateCmd::Request {
-                        sid, rk, write, detail, guid, ..
+                        sid, rk, write, guid, ..
                     }))) => {
-                    assert_eq!((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str()),
-                        (self.sid, "movie", plx_data::viewstate::Write::Watched,
-                            Some(&plx_data::stores::viewstate::DetailRefresh {
-                                sid: self.sid, rk: "movie".into(), keep: None,
-                            }), "plex://movie"));
+                    assert_eq!((*sid, rk.as_str(), *write, guid.as_str()),
+                        (self.sid, "movie", plx_data::viewstate::Write::Watched, "plex://movie"));
                     self.app_effects += 1;
                 }
                 Fx::Deliver(MachineId::Store(ord), Delivery::Machine(AppMsg::Store(
                     StoreCmd::ViewState(plx_data::stores::viewstate::ViewStateCmd::Request {
-                        sid, rk, write, detail, guid, ..
+                        sid, rk, write, guid, ..
                     })))) => {
                     assert_eq!(*ord, StoreId::ViewState.ord());
-                    assert_eq!((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str()),
-                        (self.sid, "movie", plx_data::viewstate::Write::Watched,
-                            Some(&plx_data::stores::viewstate::DetailRefresh {
-                                sid: self.sid, rk: "movie".into(), keep: None,
-                            }), "plex://movie"));
+                    assert_eq!((*sid, rk.as_str(), *write, guid.as_str()),
+                        (self.sid, "movie", plx_data::viewstate::Write::Watched, "plex://movie"));
                     self.store_deliveries += 1;
                 }
                 _ => {}

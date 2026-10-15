@@ -1913,22 +1913,17 @@ fn set_watched_local(state: &mut MetadataState, at: &crate::viewstate::ViewAt, o
         }
         return hit || !rks.is_empty();
     }
-    let Some(was) = d.episodes.position(&at.rk).and_then(|i| d.episodes.get(i)).map(|e| e.watched) else {
+    if d.episodes.position(&at.rk).is_none() {
         return hit;
-    };
+    }
     d.episodes.edit(&at.rk, |e| {
         e.watched = on;
         e.resume_ms = 0;
     });
-    if was != on {
-        let cur = d.cur_season;
-        if let Some(s) = d.seasons.get_mut(cur) {
-            // clamped to the season's own leaf count: a server that sent none leaves this 0, and
-            // `Season::watched` reads `leaf_count > 0` first, so an unknown season stays unknown
-            let step = if on { 1 } else { -1 };
-            s.viewed_leaf_count = (s.viewed_leaf_count + step).clamp(0, s.leaf_count.max(0));
-        }
-    }
+    // The season tab's count is NOT stepped here: one episode's flip says nothing certain about
+    // the season (the server may already count it, or count others this page has not loaded). The
+    // read-back of the episode lands the season's row, which re-reads this page
+    // (`app::content::reconcile_details`), and the count comes from that read.
     true
 }
 
@@ -3884,8 +3879,8 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             // the loaded item has no deck to leave
             crate::viewstate::ViewEdit::LeftDeck => false,
             // The server's word reaches the other items' tiles on this page (Related, the
-            // collection shelf). The loaded item, its episodes and seasons still re-read
-            // themselves (`DetailRefresh`) until the Detail fold takes Facts.
+            // collection shelf). The loaded item, its episodes and seasons are re-read whole by
+            // the application when the read-back lands (`app::content::reconcile_details`).
             crate::viewstate::ViewEdit::Facts { .. } | crate::viewstate::ViewEdit::Offset { .. } => {
                 patch_tiles(state, &at, edit)
             }

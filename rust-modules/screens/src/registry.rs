@@ -1177,6 +1177,13 @@ pub enum AppMsg {
         /// synchronously start the request before publishing that phase as logical state.
         refresh: DetailRefreshPhase,
     },
+    /// The server said something new about this Detail page's item, its season or its show (a
+    /// read-back landed, `app::content::reconcile_details`): owe it a re-read. **Obligation only** -
+    /// it records the phase and nothing else, so it never re-seats focus, never touches a pending
+    /// restore intent and never moves the scroll (`DetailRestore` does all three). `refresh` is
+    /// `Requested` (the sender admitted the request synchronously) for the page on top and
+    /// `Deferred` for a covered one; `None` is ignored.
+    DetailReconcile { refresh: DetailRefreshPhase },
     /// The *Also available* surface committed a row: open that copy's own page. The SURFACE names
     /// the destination and the PAGE navigates, which is `LibraryMenu`'s shape (`LibrarySelect`) and
     /// what keeps "what a press means on the Detail page" in one place instead of two.

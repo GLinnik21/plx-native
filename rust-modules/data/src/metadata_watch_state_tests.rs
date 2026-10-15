@@ -139,32 +139,20 @@ fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_co
     );
     assert!(!d.watched, "marking one episode does not finish the show");
     assert_eq!(
-        d.seasons[1].viewed_leaf_count, 2,
-        "the BROWSED season's count moves with it"
-    );
-    assert_eq!(
-        d.seasons[0].viewed_leaf_count, 3,
-        "and no other season's does"
+        (d.seasons[0].viewed_leaf_count, d.seasons[1].viewed_leaf_count), (3, 1),
+        "no season's count is stepped by one episode's flip: the read-back's re-read brings the server's"
     );
 
-    // idempotent: pressing watched on an already-watched episode must not double-count the
-    // season, which would make a part-watched season read as finished
-    assert!(set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "e2"), true));
-    assert_eq!(
-        current(test_state()).unwrap().seasons[1].viewed_leaf_count,
-        2,
-        "the count follows the FLIP"
-    );
-
-    // …and the reverse, clamped at zero rather than going negative
+    // flipping back and forth never invents a count either, in either direction
     for _ in 0..5 {
         assert!(set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "e2"), false));
         assert!(set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "e1"), false));
+        assert!(set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "e2"), true));
     }
     assert_eq!(
-        current(test_state()).unwrap().seasons[1].viewed_leaf_count,
-        0,
-        "never a negative remainder"
+        (current(test_state()).unwrap().seasons[0].viewed_leaf_count,
+         current(test_state()).unwrap().seasons[1].viewed_leaf_count),
+        (3, 1),
     );
 
     assert!(
@@ -538,29 +526,34 @@ fn a_detail_read_in_flight_across_a_watched_edit_installs_with_it_made_again() {
     assert_eq!(tile_state(&state), Some((false, 4)), "the server's answer stands");
 }
 
-/// The season count steps only when the episode row's own watched state flips, so making the same
-/// edit again (a ledger replay of a press the row already shows) leaves the count alone.
+/// A single episode's edit (and its ledger replay) leaves the season tab's count alone: the count is
+/// the server's number, and arrives with the re-read the read-back's season row asks for. A landed
+/// re-read carrying a different number than a +-1 step would give is shown as the server sent it.
 #[test]
-fn replaying_a_single_episode_edit_does_not_step_the_season_count_twice() {
+fn a_single_episode_edit_leaves_the_season_count_to_the_servers_number() {
     use crate::viewstate::ViewAt;
     let _serial = plx_base::testlock::serial();
-    set_current_for_test(test_state(), Some(Detail {
+    let show = |viewed| Detail {
         sid: SRV_A,
         rk: "show".into(),
         is_show: true,
         kind: "show".into(),
-        seasons: vec![Season { rk: "sk1".into(), index: 1, title: "S1".into(), leaf_count: 3, viewed_leaf_count: 0 }],
+        seasons: vec![Season { rk: "sk1".into(), index: 1, title: "S1".into(), leaf_count: 3, viewed_leaf_count: viewed }],
         episodes: vec![Episode { rk: "e1".into(), season: 1, ..Default::default() }].into(),
         ..Default::default()
-    }));
+    };
+    set_current_for_test(test_state(), Some(show(0)));
     let count = || current(test_state()).unwrap().seasons[0].viewed_leaf_count;
     let ep = ViewAt::leaf(SRV_A, "e1");
     set_watched_local(test_state(), &ep, true);
     set_watched_local(test_state(), &ep, true);
-    assert_eq!(count(), 1, "the second, identical edit changes nothing");
-    set_watched_local(test_state(), &ep, false);
+    assert_eq!(count(), 0, "the count is not stepped, once or twice");
     set_watched_local(test_state(), &ep, false);
     assert_eq!(count(), 0);
+    // the server says two of three are watched (one of them elsewhere): that is what is shown
+    set_current_for_test(test_state(), Some(show(2)));
+    set_watched_local(test_state(), &ep, true);
+    assert_eq!(count(), 2, "an edit made after the re-read does not move the server's number");
     clear(test_state(), test_adapter());
 }
 
