@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T18:15:10Z",
+ "generated": "2026-10-15T18:17:21Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -45,10 +45,10 @@
   },
   {
    "change30_pct": -49.8,
-   "change7_pct": -10.0,
+   "change7_pct": -7.0,
    "d30": 928.5,
    "delta30": -462.5,
-   "delta7": -52,
+   "delta7": -35,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
@@ -56,7 +56,7 @@
    "n_now": 253,
    "n_prev": 207,
    "now": 466,
-   "prev7": 518,
+   "prev7": 501,
    "shown": true,
    "state": "flat",
    "state30": "better",
