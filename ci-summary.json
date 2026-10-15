@@ -1,20 +1,20 @@
 {
- "generated": "2026-10-15T02:45:43Z",
+ "generated": "2026-10-15T02:52:23Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 27.5,
+   "change7_pct": 26.4,
    "d30": null,
    "delta30": null,
-   "delta7": 212.5,
+   "delta7": 204.5,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 12,
-   "n_prev": 69,
-   "now": 986.5,
-   "prev7": 774,
+   "n_now": 11,
+   "n_prev": 70,
+   "now": 980,
+   "prev7": 775.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -32,9 +32,9 @@
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 208,
+   "n_now": 209,
    "n_prev": 206,
-   "now": 442.0,
+   "now": 442,
    "prev7": 853.5,
    "shown": true,
    "state": "better",
@@ -458,18 +458,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 0.0,
+   "change7_pct": 5.6,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 1.0,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 12,
-   "n_prev": 69,
-   "now": 18.0,
-   "prev7": 18,
+   "n_now": 11,
+   "n_prev": 70,
+   "now": 19,
+   "prev7": 18.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -500,18 +500,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 10.7,
+   "change7_pct": 7.1,
    "d30": null,
    "delta30": null,
-   "delta7": 1.5,
+   "delta7": 1.0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 12,
-   "n_prev": 69,
-   "now": 15.5,
-   "prev7": 14,
+   "n_now": 11,
+   "n_prev": 70,
+   "now": 15,
+   "prev7": 14.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -564,7 +564,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 27.5,
+   "change_pct": 26.4,
    "commits": [
     {
      "pr": 706,
@@ -617,12 +617,12 @@
      "title": "appkit: player_hud reads the caption mapping from media text_style (libass PR 5a)"
     }
    ],
-   "from": 774,
+   "from": 775.5,
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "since": "2026-10-12",
+   "since": "2026-10-15",
    "threshold_pct": 25.0,
-   "to": 986.5
+   "to": 980
   }
  ],
  "schema": 2,
@@ -631,7 +631,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 986.5
+   "now": 980
   },
   {
    "group": "ci",
