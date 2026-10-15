@@ -4,6 +4,11 @@
 # What this does NOT cover: the C/C++ libraries built from source (FFmpeg, libass and its inputs,
 # Sentry Native: ci/build-*.sh, ci/libass-dependencies.json), the webOS NDK and the pinned
 # `nightly-YYYY-MM-DD` toolchain. Those are bumped by hand, each with its own notices/ABI review.
+#
+# A cargo PR also moves versions in THIRD-PARTY-NOTICES.md section 2.4, which is generated from the
+# lockfile. `.github/workflows/dependabot-notices.yml` regenerates it and pushes the result to the
+# PR branch, but only when versions moved; a crate the bump ADDED needs a human licence decision, so
+# that PR stays red with the crate named (see that workflow's header for the trust model).
 version: 2
 updates:
   # The Rust workspace: one lockfile, crates.io only.

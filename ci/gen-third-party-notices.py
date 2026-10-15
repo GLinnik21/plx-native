@@ -9,6 +9,9 @@ the std workspace lock, and the rest (licence election, copyright holders, the g
 
     python3 ci/gen-third-party-notices.py            rewrite the generated regions in place
     python3 ci/gen-third-party-notices.py --check    fail (exit 1) if the file differs; `make check` runs this
+    python3 ci/gen-third-party-notices.py --root DIR           operate on the checkout at DIR (its lock, data file and notices) instead
+                                                               of the one this script sits in; the Dependabot workflow runs the trusted
+                                                               script on a pull request's files this way
     python3 ci/gen-third-party-notices.py --verify-graph       also compare the data file's crate set with
                                                                `cargo tree` for the ARM runtime graph (needs cargo)
     python3 ci/gen-third-party-notices.py --verify-toolchain   also compare the std snapshot and rustc string with the
@@ -27,6 +30,12 @@ toolchain does not have. `std_lock` in the data file is the snapshot of the rows
 check trusts it, `--verify-toolchain` proves it against rust-src when the toolchain is installed
 (the nightly the workflows pin; `rustup toolchain install nightly-YYYY-MM-DD --component rust-src`).
 Moving the pin (build-package.yml) fails the offline check until `toolchain.pin` is moved with it.
+
+EXIT CODES. 0: ok (or, without --check, the file was rewritten). 1: the tree is inconsistent or stale
+(a moved version in --check mode, a stale row, a moved pin). 2: a registry package in the lock has no
+row and is not in `not_shipped`: a licence decision only a person can make. Nothing is written for 1
+or 2 (the rewrite happens only on a consistent tree), and 2 also prints one `unclassified: a b c` line,
+which `.github/workflows/dependabot-notices.yml` turns into its error message.
 """
 from __future__ import annotations
 
@@ -136,11 +145,17 @@ def workflow_pins():
     return pins
 
 
+def unclassified(data, project):
+    """Lock packages that are neither a row nor `not_shipped`: new crates awaiting a licence decision."""
+    rows = {c['name'] for g in data['groups'] for c in g['crates']}
+    return sorted(set(project) - rows - set(data['not_shipped']))
+
+
 def problems_in(data, project, pins):
     problems = []
     rows = {c['name'] for g in data['groups'] for c in g['crates']}
     not_shipped = set(data['not_shipped'])
-    for name in sorted(set(project) - rows - not_shipped):
+    for name in unclassified(data, project):
         problems.append(f'{name} {"/".join(project[name])} is in rust-modules/Cargo.lock but ci/third-party-crates.json neither '
                         f'gives it a row nor lists it in "not_shipped". Decide whether it reaches the ARM binary '
                         f'(`{REGENERATE} --verify-graph` shows it); a shipping crate needs a row (licence, copyright holder).')
@@ -159,6 +174,16 @@ def problems_in(data, project, pins):
                         f'{data["toolchain"]["pin"]}: the std crates and rustc string of the notices describe the pinned nightly. '
                         f'Re-derive "toolchain" and "std_lock" ({REGENERATE} --verify-toolchain on that toolchain) and move the pin.')
     return problems
+
+
+def set_root(root):
+    """Point every path at another checkout (the code stays this script's)."""
+    global ROOT, DATA, NOTICES, LOCK, WORKFLOWS
+    ROOT = Path(root).resolve()
+    DATA = ROOT / 'ci' / 'third-party-crates.json'
+    NOTICES = ROOT / 'THIRD-PARTY-NOTICES.md'
+    LOCK = ROOT / 'rust-modules' / 'Cargo.lock'
+    WORKFLOWS = ROOT / '.github' / 'workflows'
 
 
 def load():
@@ -217,7 +242,10 @@ def main(argv=None):
     ap.add_argument('--check', action='store_true', help='fail instead of rewriting when the file would change')
     ap.add_argument('--verify-graph', action='store_true', help='compare the crate set with `cargo tree` (needs cargo)')
     ap.add_argument('--verify-toolchain', action='store_true', help='compare the std snapshot with the pinned nightly\'s rust-src')
+    ap.add_argument('--root', help='operate on the checkout at this directory instead of the script\'s own')
     args = ap.parse_args(argv)
+    if args.root:
+        set_root(args.root)
     data, project = load()
     problems = problems_in(data, project, workflow_pins())
     if args.verify_graph:
@@ -228,6 +256,10 @@ def main(argv=None):
         print('gen-third-party-notices: FAIL')
         for p in problems:
             print(f'  {p}')
+        new = unclassified(data, project)
+        if new:
+            print('unclassified: ' + ' '.join(new))
+            return 2
         return 1
     current = NOTICES.read_text()
     wanted = render(current, data, project)

@@ -94,6 +94,12 @@ class Classification(unittest.TestCase):
         self.assertIn('newcrate', problems[0])
         self.assertIn('not_shipped', problems[0])
 
+    def test_unclassified_lists_only_the_new_crates(self):
+        project = {'serde': ['1.0.1'], 'libc': ['0.2.9'], 'icu_x': ['2.0.0'], 'syn': ['2.0.0'], 'zed': ['1.0.0'], 'abc': ['1.0.0']}
+        self.assertEqual(gen.unclassified(data(), project), ['abc', 'zed'])
+        project = {'serde': ['9.9.9'], 'libc': ['0.2.9'], 'icu_x': ['2.0.0'], 'syn': ['2.0.0']}  # versions moved only
+        self.assertEqual(gen.unclassified(data(), project), [])
+
     def test_stale_entries_are_refused(self):
         project = {'serde': ['1.0.1'], 'libc': ['0.2.9']}  # icu_x (row) and syn (not_shipped) left the lock
         problems = ' '.join(gen.problems_in(data(), project, PINS))
@@ -111,6 +117,60 @@ class Classification(unittest.TestCase):
         project = {'serde': ['1.0.1'], 'libc': ['0.2.9'], 'icu_x': ['2.0.0'], 'syn': ['2.0.0']}
         self.assertTrue(any('pin' in p for p in gen.problems_in(data(), project, {'nightly-2030-02-02'})))
         self.assertTrue(any('pin' in p for p in gen.problems_in(data(), project, PINS | {'nightly-2030-02-02'})))
+
+
+class Modes(unittest.TestCase):
+    """The exit codes `.github/workflows/dependabot-notices.yml` branches on, on a throwaway checkout."""
+
+    def checkout(self, lock_pkgs):
+        import json, tempfile
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(__import__('shutil').rmtree, root)
+        (root / 'ci').mkdir()
+        (root / 'rust-modules').mkdir()
+        (root / '.github' / 'workflows').mkdir(parents=True)
+        (root / '.github' / 'workflows' / 'w.yml').write_text('toolchain: nightly-2030-01-01\n')
+        (root / 'ci' / 'third-party-crates.json').write_text(json.dumps(data()))
+        (root / 'rust-modules' / 'Cargo.lock').write_text(lock(*lock_pkgs))
+        (root / 'THIRD-PARTY-NOTICES.md').write_text(notices())
+        return root
+
+    def run_gen(self, root, *flags):
+        import io, contextlib
+        saved = (gen.ROOT, gen.DATA, gen.NOTICES, gen.LOCK, gen.WORKFLOWS)
+        self.addCleanup(lambda: [setattr(gen, k, v) for k, v in zip(('ROOT', 'DATA', 'NOTICES', 'LOCK', 'WORKFLOWS'), saved)])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = gen.main(['--root', str(root), *flags])
+        return code, out.getvalue()
+
+    BASE = (('serde', '1.0.1', True), ('libc', '0.2.9', True), ('icu_x', '2.0.0', True), ('syn', '2.0.0', True))
+
+    def test_a_version_bump_is_rewritten_with_exit_0(self):
+        root = self.checkout(self.BASE)
+        self.assertEqual(self.run_gen(root)[0], 0)  # first run renders the stale placeholder regions
+        (root / 'rust-modules' / 'Cargo.lock').write_text(lock(('serde', '1.0.2', True), *self.BASE[1:]))
+        code, _ = self.run_gen(root, '--check')
+        self.assertEqual(code, 1)  # stale, and --check never writes
+        self.assertIn('| serde | 1.0.1 |', (root / 'THIRD-PARTY-NOTICES.md').read_text())
+        self.assertEqual(self.run_gen(root)[0], 0)
+        self.assertIn('| serde | 1.0.2 |', (root / 'THIRD-PARTY-NOTICES.md').read_text())
+
+    def test_a_new_crate_exits_2_names_it_and_writes_nothing(self):
+        root = self.checkout(self.BASE)
+        self.run_gen(root)
+        before = (root / 'THIRD-PARTY-NOTICES.md').read_text()
+        (root / 'rust-modules' / 'Cargo.lock').write_text(lock(('serde', '1.0.2', True), *self.BASE[1:], ('newcrate', '0.1.0', True)))
+        code, out = self.run_gen(root)
+        self.assertEqual(code, 2)
+        self.assertIn('unclassified: newcrate', out)
+        self.assertEqual((root / 'THIRD-PARTY-NOTICES.md').read_text(), before)
+
+    def test_other_inconsistencies_exit_1_not_2(self):
+        root = self.checkout(self.BASE[:3])  # `syn` (not_shipped) left the lock: stale entry, nothing new
+        code, out = self.run_gen(root)
+        self.assertEqual(code, 1)
+        self.assertNotIn('unclassified:', out)
 
 
 class Repository(unittest.TestCase):
