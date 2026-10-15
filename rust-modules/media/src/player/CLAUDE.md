@@ -229,7 +229,7 @@ something.
 - **Subtitles are client-rendered here — the TV's HW subtitle engine is URI-mode only** and
   unreachable in buffer-feed. Plain text and image (PGS/VobSub) subs are decoded and drawn by
   us; styled ASS/SSA uses the bundled libass worker (`ass.rs`, `ass_source.rs`) with original
-  headers, events and attached fonts. Sidecar ASS keeps the complete script rather than requesting
+  headers, events and attached fonts, over the bundled Inter and per-script Noto faces (`ass/fonts.rs`, `docs/ass-subtitles.md`). Sidecar ASS keeps the complete script rather than requesting
   a SubRip conversion. Don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
   soft-subs note. An image sub's rect coords are in **the subtitle stream's own authoring canvas** —
   1920×1080 for Blu-ray PGS but 720×480/576 for a DVD VobSub rip — so `ff::sub_canvas` reads that

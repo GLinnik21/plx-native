@@ -973,8 +973,10 @@ def font_family(p: Path) -> str:
             count, stroff = struct.unpack(">HH", b[toff + 2:toff + 6])
             for r in range(count):
                 ro = toff + 6 + 12 * r
-                pid, _enc, _lang, nid, ln, no = struct.unpack(">HHHHHH", b[ro:ro + 12])
-                if nid == 1:
+                pid, _enc, lang, nid, ln, no = struct.unpack(">HHHHHH", b[ro:ro + 12])
+                # An English record only: the subtitle aliases ("PlxSubs", "Inter" on the Noto
+                # faces, tools/plxsubs_names.py) are extra ID 1 records under other languages.
+                if nid == 1 and (pid != 3 or (lang & 0x3FF) == 0x009):
                     raw = b[toff + stroff + no: toff + stroff + no + ln]
                     # platform 0 (Unicode) and 3 (Windows) are both UTF-16BE; 1 (Mac) is not.
                     enc = "latin-1" if pid == 1 else "utf-16-be"
@@ -1615,6 +1617,23 @@ check((ROOT / "pkg/OFL.txt").exists(),
 # and in each font's own name table (ID 0/7/13/14, asserted by tools/cut-noto-cjk.py).
 check("Noto Sans CJK" in (ROOT / "THIRD-PARTY-NOTICES.md").read_text(),
       "THIRD-PARTY-NOTICES.md attributes Noto Sans CJK (OFL 1.1 §2 wants the notice to travel)")
+# The subtitle faces (tools/cut-noto-subs.py): libass finds them by family name, so a missing or
+# renamed one is a script that silently draws as tofu. `rust-modules/media/src/player/ass/fonts.rs`
+# holds the coverage; this holds that every face the manifest names exists, is whole, and is
+# attributed.
+import hashlib as _hashlib
+SUBS_DIR = ROOT / "pkg/fonts/subs"
+_subs_manifest = json.loads((SUBS_DIR / "manifest.json").read_text(encoding="utf-8"))
+_subs_notices = (ROOT / "THIRD-PARTY-NOTICES.md").read_text()
+check(len(_subs_manifest["faces"]) >= 20, f"manifest names {len(_subs_manifest['faces'])} subtitle faces")
+for _face in _subs_manifest["faces"]:
+    _path = SUBS_DIR / _face["file"]
+    check(_path.is_file() and _hashlib.sha256(_path.read_bytes()).hexdigest() == _face["sha256"],
+          f"pkg/fonts/subs/{_face['file']} is the manifest's face (same SHA-256)")
+    check(font_family(_path) == _face["family"] and _face["family"].startswith("Noto Sans "),
+          f"{_face['file']} family={font_family(_path)!r} is a Noto Sans face")
+check("Noto Sans Thai" in _subs_notices and "pkg/fonts/subs" in _subs_notices,
+      "THIRD-PARTY-NOTICES.md attributes the Noto Sans subtitle faces (OFL 1.1 §2)")
 
 print("== shipped roots bundle ==")
 # `pkg/le-roots.pem` is a TRUST ANCHOR set, so what it holds is graded by content, not by presence:
@@ -1730,7 +1749,18 @@ if data_blob is not None:
         paths = {m.name.lstrip("./") for m in members}
         owners = {(m.uname, m.gname) for m in members}
         shipped_roots = [t.extractfile(m).read() for m in members if Path(m.name).name == "le-roots.pem"]
+        _shipped_subs = {Path(m.name).name: t.extractfile(m).read() for m in members
+                         if Path(m.name).parent.as_posix().endswith("/fonts/subs")}
     check(expected <= names, f"payload carries all {len(expected)} app files")
+    # The subtitle faces sit in fonts/subs/ of the app directory, and every one the manifest names
+    # must be there byte for byte: libass finds a script's face by family name, so a missing one is
+    # tofu on the television and nothing else notices.
+    _subs_names = {f["file"] for f in _subs_manifest["faces"]} | {"manifest.json"}
+    check(set(_shipped_subs) == _subs_names,
+          f"payload carries fonts/subs/ manifest.json and all {len(_subs_manifest['faces'])} faces")
+    check(all(_hashlib.sha256(_shipped_subs[f["file"]]).hexdigest() == f["sha256"] for f in _subs_manifest["faces"]
+              if f["file"] in _shipped_subs),
+          "the ipk's subtitle faces are byte-identical to pkg/fonts/subs (same SHA-256)")
     # The roots bundle is graded in the REPO above, but what a television trusts is the member of
     # the BUILT archive: a stale or hand-edited copy staged by the Makefile would pass every check of
     # `pkg/le-roots.pem`. Same four roots, and byte-identical to the repo file.

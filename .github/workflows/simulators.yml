@@ -20,6 +20,8 @@ on:
       - 'assets/icons/**'
       - 'vendor/nanosvg/**'
       - 'pkg/appfont*.ttf'
+      - 'pkg/fonts/subs/**'
+      - 'tools/cut-noto-subs.py'
       - 'pkg/OFL.txt'
       - 'pkg/le-roots.pem'
       - 'LICENSE'
