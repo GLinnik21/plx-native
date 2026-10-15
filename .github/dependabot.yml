@@ -9,6 +9,12 @@
 # lockfile. `.github/workflows/dependabot-notices.yml` regenerates it and pushes the result to the
 # PR branch, but only when versions moved; a crate the bump ADDED needs a human licence decision, so
 # that PR stays red with the crate named (see that workflow's header for the trust model).
+# The licence and copyright columns of that section come from ci/third-party-crates.json, not from the
+# lock, so an auto-regenerated table can carry stale licence text: ci.yml's `--verify-graph` step catches a
+# new or unlisted shipping crate, but on a MAJOR bump re-read the crate's licence and copyright by hand.
+# Concurrent cargo PRs conflict on THIRD-PARTY-NOTICES.md and Cargo.lock once one of them merges. Comment
+# `@dependabot recreate` on the other(s): it is safe, the job re-runs on the rebuilt branch. (Not `rebase`:
+# after the bot's push Dependabot treats the PR as edited and ignores it.)
 version: 2
 updates:
   # The Rust workspace: one lockfile, crates.io only.

@@ -374,9 +374,14 @@ implementation. `licenses/libm.txt` preserves its complete upstream licence and 
 attributions. `qrcodegen` supplies the QR code linking viewers to the translation contribution
 guide; its source-header licence notice is preserved verbatim in `licenses/qrcodegen.txt`.
 
-The versions above come from the locked ARM runtime dependency graph (`cargo tree
---no-default-features --target arm-unknown-linux-gnueabi --edges normal,no-proc-macro`), excluding
-dev dependencies, build dependencies and host proc-macro implementations.
+The versions above are the ones in `rust-modules/Cargo.lock` (and, for the standard library's own
+crates, the pinned nightly's `library/Cargo.lock`), which `cargo tree --locked --no-default-features
+--target arm-unknown-linux-gnueabi --edges normal,no-proc-macro` resolves to the ARM runtime graph. CI
+(`ci.yml`, host-lint) runs `ci/gen-third-party-notices.py --check --verify-graph` on every pull request: the
+set of crates in that graph must equal the rows above, and no listed version may be one that only a build
+or dev dependency uses. Dev dependencies, build dependencies and host proc-macro implementations are not
+shipped and have no row. A second version of `libc` below is the standard library's own, built from
+source.
 
 The four package tables above are generated, not typed: `ci/gen-third-party-notices.py` fills the
 version column from `rust-modules/Cargo.lock` (and, for the standard library's own crates, from the

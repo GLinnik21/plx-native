@@ -438,6 +438,16 @@ class DependabotNotices(unittest.TestCase):
         self.assertIn("licence decision", refusal)
         self.assertLess(job.index("exit 1"), job.index("git -C pr commit"))
 
+    def test_cargo_never_runs_here_and_the_backstop_is_in_ci(self):
+        # A PR's .cargo/config.toml can name a credential-provider program, so cargo on its files with a
+        # write token is refused; ci.yml's host-lint job proves the crate set with cargo instead.
+        self.assertNotRegex(code(self.NAME), r"(?m)^\s+(?:run: )?.*\bcargo\b")
+        lint = job_body("ci.yml", "host-lint")
+        self.assertIn("python3 ci/gen-third-party-notices.py --check --verify-graph", lint)
+        header = (WORKFLOWS / self.NAME).read_text()
+        self.assertIn("@dependabot recreate", header)
+        self.assertNotIn("`@dependabot rebase` or", header)
+
 
 class BuildBenchWorkflow(unittest.TestCase):
     """The daily build-time measurement (build-bench.yml): a schedule that can only ever run main's tip.

@@ -119,6 +119,41 @@ class Classification(unittest.TestCase):
         self.assertTrue(any('pin' in p for p in gen.problems_in(data(), project, PINS | {'nightly-2030-02-02'})))
 
 
+class Graph(unittest.TestCase):
+    """--verify-graph's comparison, on a synthetic `cargo tree` (no cargo is run)."""
+
+    def check(self, tree_text, *pkgs):
+        d = data()
+        d['not_shipped'] = ['syn', 'once_cell']
+        return gen.graph_problems(gen.parse_tree(tree_text), d, gen.parse_lock(lock(*pkgs)))
+
+    BASE = [('serde', '1.0.0', True), ('libc', '0.2.2', True), ('icu_x', '1.0.0', True), ('syn', '2.0.0', True), ('once_cell', '1.0.0', True)]
+    TREE = 'plx v0.1.0 (/x)\nserde v1.0.0\nlibc v0.2.2 (*)\nicu_x v1.0.0\n'
+
+    def test_a_consistent_graph_has_no_problems(self):
+        self.assertEqual(self.check(self.TREE, *self.BASE), [])
+
+    def test_a_shipping_crate_listed_not_shipped_is_caught(self):
+        problems = self.check(self.TREE + 'once_cell v1.0.0\n', *self.BASE)
+        self.assertEqual(len(problems), 1)
+        self.assertIn('once_cell', problems[0])
+        self.assertIn('no row', problems[0])
+
+    def test_a_row_that_left_the_graph_is_caught(self):
+        problems = self.check('serde v1.0.0\nlibc v0.2.2\n', *self.BASE)
+        self.assertEqual(len(problems), 1)
+        self.assertIn('icu_x', problems[0])
+
+    def test_a_version_only_a_build_dependency_uses_is_caught(self):
+        problems = self.check(self.TREE, *self.BASE, ('serde', '0.9.0', True))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("serde ['0.9.0']", problems[0])
+
+    def test_a_std_version_beside_the_project_one_is_fine(self):
+        # data(): std_lock libc 0.2.1 is the std workspace's; the tree has only the project's 0.2.2
+        self.assertEqual(self.check(self.TREE, *self.BASE), [])
+
+
 class Modes(unittest.TestCase):
     """The exit codes `.github/workflows/dependabot-notices.yml` branches on, on a throwaway checkout."""
 

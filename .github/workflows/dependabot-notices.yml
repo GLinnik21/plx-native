@@ -40,7 +40,16 @@ name: Dependabot notices
 # (`gh workflow run`, why `actions: write`). That run is not the PR's `pull_request` run, but its
 # checks attach to the new head commit and show in the PR's checks list. LIMITS: it tests the
 # branch head, not the merge with main (the `pull_request` run does), and the red `pull_request` run
-# on the previous commit stays in the history. `@dependabot rebase` or close/reopen starts a normal one.
+# on the previous commit stays in the history. `@dependabot recreate` (or close/reopen) starts a normal one. NOT `@dependabot rebase`: once github-actions[bot]
+# has pushed, Dependabot treats the PR as edited by a person and stops rebasing it; `recreate` rebuilds the
+# branch from scratch and this job then runs again.
+#
+# NO CARGO HERE, deliberately. A PR's own `.cargo/config.toml` can name a credential-provider program (and
+# build.rs / proc macros run on build), so cargo on the PR files would run PR code beside a write token. That
+# is why this job only reads the lock as text and cannot prove which crates SHIP: the backstop is ci.yml's
+# host-lint job, which runs `gen-third-party-notices.py --check --verify-graph` (cargo, read-only token) on
+# the PR after the push. It also means this job can write a notices table for a bump whose licence or
+# copyright changed: those columns come from ci/third-party-crates.json, not the lock.
 #
 # Listed in .github/dependabot.yml's header and tested by ci/test_ci_workflows.py (DependabotNotices).
 

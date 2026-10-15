@@ -22,7 +22,13 @@ the data file (it ships) or listed in `not_shipped` (it was looked at and does n
 pulls in cannot reach the binary unclassified; every row exists in a lock; each version cell and the
 `compiler_builtins` version in the prose equal the lock's; and the nightly the data file names is the one
 the workflows pin. It cannot tell which side of that line a NEW crate belongs on: that is the human act
-the failure message asks for, and `--verify-graph` re-derives it from cargo.
+the failure message asks for, and `--verify-graph` re-derives it from cargo. `not_shipped` is by NAME
+and holds common crates (once_cell, thiserror, base64, ...) that dev and build dependencies pull in, so
+only the graph proves that no shipping crate has come to depend on one: `ci.yml`'s host-lint job runs
+`--check --verify-graph` on every pull request (`cargo tree --locked` resolves; it runs no build
+script), and the same pass rejects a version cell that only a build or dev dependency uses. The licence
+and copyright columns come from the data file, not from any lock: nothing here notices that a crate's
+licence changed in a new release, so a major bump needs them re-read by a person.
 
 THE STD HALF. The standard library is built from source (`-Z build-std`), so its crates' versions come
 from the lock inside the pinned nightly's rust-src, `library/Cargo.lock`, which a host without that
@@ -216,25 +222,44 @@ def verify_toolchain(data):
     return problems
 
 
-def verify_graph(data):
+def parse_tree(text):
+    """{name: {versions}} from `cargo tree --prefix none --format '{p}'` output."""
+    tree = {}
+    for line in text.splitlines():
+        m = re.match(r'(\S+) v(\S+)$', line.replace(' (*)', ''))
+        if m:
+            tree.setdefault(m.group(1), set()).add(m.group(2))
+    return tree
+
+
+def graph_problems(tree, data, project):
+    """Compare the ARM runtime graph with the data file. Classification by name is not enough: `not_shipped`
+    holds common crates (once_cell, thiserror, ...) that dev and build dependencies pull in, so a shipping
+    crate that starts to depend on one is in the graph with no row; and a row's version cell is read from the
+    lock, which also holds versions only a build or dev dependency uses."""
+    rows = {c['name'] for g in data['groups'] for c in g['crates']}
+    shipped_by_std = set(data['std_lock'])
+    problems = []
+    for name in sorted(set(tree) - rows):
+        problems.append(f'{name} {sorted(tree[name])} is in the ARM runtime graph but has no row (it may be listed in '
+                        f'"not_shipped"; a shipping crate needs a row with its licence and copyright holder)')
+    for name in sorted(rows - set(tree) - shipped_by_std):
+        problems.append(f'row {name} is not in the ARM runtime graph (and is not a std crate): is it still linked?')
+    for name in sorted(rows & set(tree)):
+        extra = set(project.get(name, ())) - tree[name]
+        if extra:
+            problems.append(f'{name} {sorted(extra)} is in rust-modules/Cargo.lock but not in the ARM runtime graph (only a build or '
+                            f'dev dependency uses it), yet the notices table would list it')
+    return problems
+
+
+def verify_graph(data, project):
     cmd = ['cargo', 'tree', '--locked', '--manifest-path', str(ROOT / 'rust-modules' / 'Cargo.toml'), '--no-default-features',
            '--target', 'arm-unknown-linux-gnueabi', '--edges', 'normal,no-proc-macro', '--prefix', 'none', '--format', '{p}']
     out = subprocess.run(cmd, capture_output=True, text=True, env={**os.environ, 'CARGO_INCREMENTAL': '0'})
     if out.returncode != 0:
         return [f'cargo tree failed: {out.stderr.strip()[-400:]}']
-    tree = {}
-    for line in out.stdout.splitlines():
-        m = re.match(r'(\S+) v(\S+)$', line.replace(' (*)', ''))
-        if m:
-            tree.setdefault(m.group(1), set()).add(m.group(2))
-    rows = {c['name'] for g in data['groups'] for c in g['crates']}
-    shipped_by_std = set(data['std_lock'])
-    problems = []
-    for name in sorted(set(tree) - rows):
-        problems.append(f'{name} {sorted(tree[name])} is in the ARM runtime graph but has no row')
-    for name in sorted(rows - set(tree) - shipped_by_std):
-        problems.append(f'row {name} is not in the ARM runtime graph (and is not a std crate): is it still linked?')
-    return problems
+    return graph_problems(parse_tree(out.stdout), data, project)
 
 
 def main(argv=None):
@@ -249,7 +274,7 @@ def main(argv=None):
     data, project = load()
     problems = problems_in(data, project, workflow_pins())
     if args.verify_graph:
-        problems += verify_graph(data)
+        problems += verify_graph(data, project)
     if args.verify_toolchain:
         problems += verify_toolchain(data)
     if problems:
