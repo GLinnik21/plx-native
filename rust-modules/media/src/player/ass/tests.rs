@@ -1585,3 +1585,5 @@ fn native_script_window_clamps_validity_and_non_windowed_scripts_have_timings() 
     assert_eq!((v.from_ms, v.until_ms), (i64::MIN, 1000));
     assert!(engine.script.as_ref().unwrap().window.is_none());
 }
+
+mod synth;

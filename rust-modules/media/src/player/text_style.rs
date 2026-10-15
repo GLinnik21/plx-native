@@ -30,10 +30,31 @@ pub const CAPTION_MAX_W: f32 = SCR_W * 0.75;
 /// The caption line count the block is bottom-anchored at; the Timing capsule's y is fixed by it.
 pub const CAPTION_ANCHOR_LINES: usize = 3;
 
-/// The gap between the bottom of the frame and the bottom of the last line at the Low position
-/// (`SCR_H - SUB_BASE_Y`), and, symmetrically, the gap between the top of the frame and the top of
-/// the first line of a top-aligned cue ([`TOP_MARGIN_V`]).
+/// The gap between the bottom of the frame and the bottom of the bespoke caption block at the Low
+/// position (`SCR_H - SUB_BASE_Y`), and, symmetrically, the gap between the top of the frame and the
+/// top of the first line of a top-aligned cue ([`TOP_MARGIN_V`]). It is the geometry of the block
+/// the appkit draw places, which the Timing capsule is cleared against, so it is NOT the libass
+/// `MarginV` of the Low position: libass sets the same line on a different box ([`INK_TRIM`]).
 pub const BOTTOM_GAP: f32 = 100.0;
+
+/// How much nearer the frame's bottom libass's `MarginV` sits than [`BOTTOM_GAP`], so the ink
+/// baseline of a one-line cue lands where [`today_ink_baseline`] puts it. Fixed by the PR 5b
+/// native golden (`ass::tests::synth`): with `MarginV = BOTTOM_GAP`, libass's Inter Bold baseline
+/// sat 3.56 / 3 / 2 / 2 px ABOVE today's at the four sizes (971 / 968 / 966 / 963 against
+/// 974.56 / 971 / 968 / 965 at Low), because the two layouts put the line on different boxes;
+/// shifting every size down by 3 px leaves each within 1. It costs 3 px of the clearance the HUD
+/// lift leaves under `SUB_CEIL_Y` (the lifted ink of "Hxg" ends about 2 px past it, today's "g"
+/// about 1).
+pub const INK_TRIM: f32 = 3.0;
+
+/// The inset the bespoke caption draw adds under a line's top (`player_hud::draw_caption_block`
+/// draws at `line_top + 4`).
+pub const CAPTION_TEXT_INSET: f32 = 4.0;
+
+/// The top of the transport HUD's control row (`player_hud::BTN_Y`, which is this constant). A
+/// text caption lifted with the HUD up must end above it, deep marks included (plan §2.4, as
+/// amended by PR 5b: the golden's criterion is this row, not `SUB_CEIL_Y`).
+pub const HUD_CONTROLS_TOP_Y: f32 = SCR_H - 288.0;
 
 /// The `MarginV` of the top-aligned styles: independent of the Position setting.
 pub const TOP_MARGIN_V: f32 = BOTTOM_GAP;
@@ -59,7 +80,14 @@ pub const CAPTION_FLOOR_Y: f32 = SCR_H - 54.0;
 /// `(usWinAscent 2269 + usWinDescent 660) / unitsPerEm 2048`. A style's `Fontsize` is therefore
 /// `CAPTION_FACE * scale * INTER_BOLD_WIN_EM` to draw today's em. `text_style::tests::inter_win_ratio`
 /// reads the shipped TTF and fails if this stops being true.
-pub const INTER_BOLD_WIN_EM: f64 = (2269.0 + 660.0) / 2048.0;
+pub const INTER_BOLD_WIN_ASCENT_EM: f64 = 2269.0 / 2048.0;
+pub const INTER_BOLD_WIN_DESCENT_EM: f64 = 660.0 / 2048.0;
+pub const INTER_BOLD_WIN_EM: f64 = INTER_BOLD_WIN_ASCENT_EM + INTER_BOLD_WIN_DESCENT_EM;
+
+/// Inter Bold's `hhea` ascender over its em (`1984 / 2048`): SDL_ttf puts the baseline of the
+/// bespoke draw `ceil(face * INTER_BOLD_HHEA_ASCENT_EM)` rows under a line's draw y.
+/// `text_style::tests::inter_win_ratio` pins it to the shipped TTF.
+pub const INTER_BOLD_HHEA_ASCENT_EM: f32 = 1984.0 / 2048.0;
 
 /// The face-size multiplier for the viewer's Settings > Playback size pick.
 pub fn size_scale(size: SubtitleSize) -> f32 {
@@ -92,9 +120,10 @@ pub fn side_margin(scale: f32) -> u32 {
     ((SCR_W - wrap_width(scale)) / 2.0).round().max(0.0) as u32
 }
 
-/// The `MarginV` of the bottom-aligned styles: the gap under the last line plus the Position lift.
+/// The `MarginV` of the bottom-aligned styles: the gap under the last line ([`BOTTOM_GAP`] less
+/// [`INK_TRIM`]) plus the Position lift.
 pub fn bottom_margin_v(position: SubtitlePosition) -> u32 {
-    (BOTTOM_GAP + position_lift(position)).round() as u32
+    (BOTTOM_GAP - INK_TRIM + position_lift(position)).round() as u32
 }
 
 /// The y (frame pixels, from the top) of the bottom of the last line box of a bottom-aligned cue
@@ -166,6 +195,18 @@ pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool) -> T
     TodayBaseline { scale, baseline, floor }
 }
 
+/// Where today's one-line caption puts the BASELINE of its glyphs (the row just under a flat-bottomed
+/// capital such as "H"): `baseline` and `floor` above are the edges of the block, and the text is
+/// drawn at `top + CAPTION_TEXT_INSET` with the baseline `ceil(ascender)` rows under that. This is
+/// the number the libass look is held to (`ass::tests::synth`), 5 / 9 / 12 / 15 px above
+/// [`TodayBaseline::baseline`] at the four sizes. A port of that draw: `draw_caption_block`
+/// (appkit) takes its inset from [`CAPTION_TEXT_INSET`], and the ascent is
+/// SDL_ttf's `ceil(hhea ascender)` as `gfx::text` documents it, not measured on a television.
+pub fn today_ink_baseline(position: SubtitlePosition, scale: f32, hud_up: bool) -> f32 {
+    let lay = today_layout(1, scale, today_baseline(position, scale, hud_up).baseline);
+    lay.top + CAPTION_TEXT_INSET + (INTER_BOLD_HHEA_ASCENT_EM * lay.face as f32).ceil()
+}
+
 /// Where today's caption block of `lines` lines is drawn: the face in px, the line pitch, and the
 /// y of the first line's box.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -217,10 +258,19 @@ mod tests {
     fn inter_win_ratio() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pkg/appfont-bold.ttf");
         let font = std::fs::read(&path).expect("the shipped bold face");
+        let hhea = {
+            let tables = be16(&font, 4) as usize;
+            let at = (0..tables).map(|i| 12 + i * 16).find(|&at| &font[at..at + 4] == b"hhea").expect("hhea");
+            be16(&font, be32(&font, at + 8) + 4)
+        };
+        assert_eq!(hhea, 1984, "Inter Bold's hhea ascender changed");
+        assert!((hhea as f32 / 2048.0 - INTER_BOLD_HHEA_ASCENT_EM).abs() < 1e-9);
         let (upem, ascent, descent) = win_metrics(&font);
         assert_eq!((upem, ascent, descent), (2048, 2269, 660), "Inter Bold's metrics changed");
         let ratio = (ascent + descent) as f64 / upem as f64;
         assert!((ratio - INTER_BOLD_WIN_EM).abs() < 1e-9, "{ratio} != {INTER_BOLD_WIN_EM}");
+        assert_eq!(INTER_BOLD_WIN_ASCENT_EM, ascent as f64 / upem as f64);
+        assert_eq!(INTER_BOLD_WIN_DESCENT_EM, descent as f64 / upem as f64);
     }
 
     #[test]
@@ -263,11 +313,12 @@ mod tests {
 
     #[test]
     fn bottom_anchor_follows_position() {
-        assert_eq!(bottom_margin_v(SubtitlePosition::Low), 100);
-        assert_eq!(bottom_margin_v(SubtitlePosition::Middle), 260);
-        assert_eq!(bottom_margin_v(SubtitlePosition::High), 420);
-        assert_eq!(bottom_anchor_y(SubtitlePosition::Low), SUB_BASE_Y);
-        assert_eq!(bottom_anchor_y(SubtitlePosition::High), 660.0);
+        // BOTTOM_GAP less INK_TRIM, plus the Position lift.
+        assert_eq!(bottom_margin_v(SubtitlePosition::Low), 97);
+        assert_eq!(bottom_margin_v(SubtitlePosition::Middle), 257);
+        assert_eq!(bottom_margin_v(SubtitlePosition::High), 417);
+        assert_eq!(bottom_anchor_y(SubtitlePosition::Low), SUB_BASE_Y + INK_TRIM);
+        assert_eq!(bottom_anchor_y(SubtitlePosition::High), 663.0);
     }
 
     #[test]
@@ -281,6 +332,18 @@ mod tests {
             // The HUD moves the baseline by the same 200 px at every position.
             assert_eq!(down.baseline - up.baseline, HUD_LIFT);
         }
+    }
+
+    #[test]
+    fn today_ink_baseline_sits_under_the_block_top() {
+        // 36 px face: line top 932, drawn at 936, baseline ceil(34.875) = 35 rows down.
+        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.0, false), 971.0);
+        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.0, true), 771.0);
+        assert_eq!(today_ink_baseline(SubtitlePosition::High, 1.0, false), 651.0);
+        // 28 / 45 / 54 px faces, pitch 37.44 / 60 / 72.
+        assert!((today_ink_baseline(SubtitlePosition::Low, 0.78, false) - 974.56).abs() < 1e-3);
+        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.25, false), 968.0);
+        assert_eq!(today_ink_baseline(SubtitlePosition::Low, 1.5, false), 965.0);
     }
 
     #[test]
