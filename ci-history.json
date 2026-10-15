@@ -1,4 +1,4 @@
-{"updated":"2026-10-15T18:04:10Z",
+{"updated":"2026-10-15T18:08:29Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -2772,7 +2772,8 @@
 {"id":38766121136,"at":"2026-10-15T16:06:07Z","sha":"9b02acf18","title":"Server updates: turn PMS notifications on (owned servers)","pr":761,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":238,"Windows launcher syntax":21,"macOS simulator build + launch":122,"macOS tests against bundled FFmpeg and ASS":122}},
 {"id":38769081346,"at":"2026-10-15T16:26:59Z","sha":"adf73d81a","title":"Subtitles: add a Huge caption size above Extra large","pr":664,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":152,"Windows launcher syntax":18,"macOS simulator build + launch":202,"Linux simulator build + launch":234}},
 {"id":38777433236,"at":"2026-10-15T17:27:04Z","sha":"7441d6505","title":"Player: the paused-frame preroll plays muted (StarfishMediaAPIs::setVolume)","pr":762,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":215,"Linux simulator build + launch":324,"Windows launcher syntax":15,"macOS simulator build + launch":245}},
-{"id":38781471992,"at":"2026-10-15T17:56:21Z","sha":"6243dd7af","title":"Server updates: one simplify pass over the series (no behaviour change)","pr":764,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":205,"Linux simulator build + launch":273,"macOS tests against bundled FFmpeg and ASS":155,"Windows launcher syntax":18}}
+{"id":38781471992,"at":"2026-10-15T17:56:21Z","sha":"6243dd7af","title":"Server updates: one simplify pass over the series (no behaviour change)","pr":764,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":205,"Linux simulator build + launch":273,"macOS tests against bundled FFmpeg and ASS":155,"Windows launcher syntax":18}},
+{"id":38782551609,"at":"2026-10-15T18:04:14Z","sha":"4ebd5247f","title":"Server updates: one simplify pass over the series (no behaviour change)","pr":764,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":17,"Linux simulator build + launch":241,"macOS tests against bundled FFmpeg and ASS":173,"macOS simulator build + launch":207}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},

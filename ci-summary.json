@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T18:04:33Z",
+ "generated": "2026-10-15T18:08:55Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -45,18 +45,18 @@
   },
   {
    "change30_pct": -49.8,
-   "change7_pct": -11.7,
+   "change7_pct": -10.2,
    "d30": 928.5,
    "delta30": -462.5,
-   "delta7": -62,
+   "delta7": -53.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 253,
+   "n_now": 252,
    "n_prev": 209,
-   "now": 466,
-   "prev7": 528,
+   "now": 466.0,
+   "prev7": 519,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.1,
+   "change7_pct": 14.9,
    "d30": null,
    "delta30": null,
-   "delta7": 54,
+   "delta7": 53.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 117,
+   "n_now": 118,
    "n_prev": 127,
-   "now": 412,
+   "now": 411.5,
    "prev7": 358,
    "shown": true,
    "state": "flat",
@@ -291,14 +291,14 @@
    "change7_pct": -5.9,
    "d30": null,
    "delta30": null,
-   "delta7": -14,
+   "delta7": -14.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 107,
-   "now": 222,
+   "now": 222.0,
    "prev7": 236,
    "shown": true,
    "state": "flat",
@@ -330,17 +330,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -62.4,
+   "change7_pct": -62.3,
    "d30": null,
    "delta30": null,
-   "delta7": -306,
+   "delta7": -305.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 107,
-   "now": 184,
+   "now": 184.5,
    "prev7": 490,
    "shown": true,
    "state": "better",
@@ -393,17 +393,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -10.2,
+   "change7_pct": -9.9,
    "d30": null,
    "delta30": null,
-   "delta7": -16.0,
+   "delta7": -15.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 68,
-   "now": 141,
+   "now": 141.5,
    "prev7": 157.0,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 107,
-   "now": 17,
+   "now": 17.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 66.0,
    "commits": [
     {
-     "pr": 753,
-     "sha": "19eb1f294",
-     "title": "Server updates L2-2: PMS SSE notification client, shipped off, owned servers only"
-    },
-    {
      "pr": 756,
      "sha": "2f04b614c",
      "title": "Player: a screensaver that takes back the video decoder parks playback until the next key press"
@@ -615,6 +610,11 @@
      "pr": 762,
      "sha": "7441d6505",
      "title": "Player: the paused-frame preroll plays muted (StarfishMediaAPIs::setVolume)"
+    },
+    {
+     "pr": 764,
+     "sha": "4ebd5247f",
+     "title": "Server updates: one simplify pass over the series (no behaviour change)"
     }
    ],
    "from": 217.5,
@@ -628,11 +628,6 @@
    "change_pct": 37.1,
    "commits": [
     {
-     "pr": 753,
-     "sha": "19eb1f294",
-     "title": "Server updates L2-2: PMS SSE notification client, shipped off, owned servers only"
-    },
-    {
      "pr": 756,
      "sha": "2f04b614c",
      "title": "Player: a screensaver that takes back the video decoder parks playback until the next key press"
@@ -676,6 +671,11 @@
      "pr": 762,
      "sha": "7441d6505",
      "title": "Player: the paused-frame preroll plays muted (StarfishMediaAPIs::setVolume)"
+    },
+    {
+     "pr": 764,
+     "sha": "4ebd5247f",
+     "title": "Server updates: one simplify pass over the series (no behaviour change)"
     }
    ],
    "from": 276.0,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 222
+   "now": 222.0
   }
  ],
  "slowest_local": [
