@@ -15,6 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mkipk import storage_archive_errors
+import deps  # noqa: E402  — ci/deps.py, the manifest reader (ci/dependencies.json pins the FFmpeg tarball)
 import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and title
 import version_rule  # noqa: E402  — ci/version_rule.py, the shared "next X.Y.Z" arithmetic
 
@@ -687,7 +688,7 @@ if len(sys.argv) > 2 and sys.argv[1] == "--print-rc":
 SENTINELS = ("__IPK_SHA256__", "__COMMIT__", "__RUN_URL__", "__IPK_SIZE__", "__INSTALLED_SIZE__")
 # The one a note cannot do without: it is the only tamper check a user of an unsigned binary has.
 REQUIRED_SENTINEL = "__IPK_SHA256__"
-FFMPEG_TARBALL_SHA = "7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52"
+FFMPEG_TARBALL_SHA = deps.get(deps.entry("ffmpeg"), "sha256")
 AUDIT_BEGIN = "<!-- BEGIN GENERATED"
 AUDIT_END = "<!-- END GENERATED -->"
 # Sections that were in the note and are now the audit's. Named so a regression to the old shape
@@ -1677,7 +1678,7 @@ NEEDED_LICENCES = {
     "Apache-2.0.txt": "Material Icons, moxcms, pxfm, compiler_builtins",
     "LLVM-exception.txt": "compiler_builtins",
     "Unicode-3.0.txt": "the Unicode tables inside Rust core",
-    "Zlib.txt": "nanosvg — vendored and compiled into the binary",
+    "Zlib.txt": "nanosvg — fetched at a pinned commit and compiled into the binary",
     "ICU4X.txt": "ICU4X locale code/data — Unicode and IBM adaptation notices",
     "libm.txt": "registry libm — complete upstream math attributions",
     "qrcodegen.txt": "Project Nayuki QR code generator — upstream MIT notice",

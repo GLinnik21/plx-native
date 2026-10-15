@@ -356,6 +356,21 @@ fn the_playing_item_carries_its_plex_type() {
     );
 }
 
+/// `PlayingItem.hdr` is the played leaf's video HDR flag (PQ or HLG transfer), the fact the
+/// player's HDR overlay dim reads; an SDR leaf and an absent item are not HDR.
+#[test]
+fn the_playing_item_carries_the_video_hdr_flag() {
+    let leaf = |trc: &str| -> plx_plex::plex::Metadata {
+        serde_json::from_value(serde_json::json!({ "Media": [{ "Part": [{ "Stream": [
+            { "streamType": 1, "colorTrc": trc }
+        ] }] }] })).unwrap()
+    };
+    assert!(playing_item_from(SRV_A, "42", Some(&leaf("smpte2084"))).hdr, "HDR10");
+    assert!(playing_item_from(SRV_A, "42", Some(&leaf("arib-std-b67"))).hdr, "HLG");
+    assert!(!playing_item_from(SRV_A, "42", Some(&leaf("bt709"))).hdr, "SDR");
+    assert!(!playing_item_from(SRV_A, "42", None).hdr, "no item, no HDR");
+}
+
 /// The cache hit must hand back the same `kind` the page loaded, so a play from a detail page
 /// that skips the PMS fetch still knows what it is playing.
 #[test]

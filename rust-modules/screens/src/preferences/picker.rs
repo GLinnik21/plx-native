@@ -92,10 +92,11 @@ impl PickerPage {
     /// falls back to; reading the legacy key alone would call a profile's own pick "not saved" and
     /// write it again on every OK.
     fn durable(&self, value: &Value) -> bool {
-        use plx_plex::plex::session::{current_seat, peek, stored_effective, SubtitlePositionPref, SubtitleSizePref};
+        use plx_plex::plex::session::{current_seat, peek, stored_effective, SubtitlePositionPref, SubtitleSizePref, HdrOverlayBrightnessPref};
         match value {
             Value::SubtitleSize(v) => stored_effective::<SubtitleSizePref>(&peek(), &current_seat()) == *v,
             Value::SubtitlePosition(v) => stored_effective::<SubtitlePositionPref>(&peek(), &current_seat()) == *v,
+            Value::HdrOverlay(v) => stored_effective::<HdrOverlayBrightnessPref>(&peek(), &current_seat()) == *v,
             _ => true,
         }
     }
@@ -177,7 +178,7 @@ impl PickerPage {
     }
     fn commit(&mut self, value: Value, fx: &mut Effects<'_, InnerHost>) {
         match value {
-            Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) => self.txn.save_local(&mut self.state.io, value, fx),
+            Value::Quality(_) | Value::DirectPlay(_) | Value::NextEpisode(_) | Value::DeckPress(_) | Value::SkipInterval(_) | Value::SubtitleSize(_) | Value::SubtitlePosition(_) | Value::HdrOverlay(_) => self.txn.save_local(&mut self.state.io, value, fx),
             value => {
                 let mut update = PreferenceUpdate::default();
                 match (self.state.field, value) {

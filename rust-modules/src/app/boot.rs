@@ -425,6 +425,20 @@ pub(crate) unsafe fn hide_cursor() {
     }
 }
 
+/// True where the pointer is hidden by swapping in a transparent cursor rather than by LG's call,
+/// so the system's pointer stays up and the remote's OK arrives as a click (`input::click_is_ok`).
+/// False on the host simulator, where a click is always a real one.
+pub(crate) unsafe fn cursor_is_transparent() -> bool {
+    #[cfg(not(feature = "hostsim"))]
+    {
+        matches!(cursor_door(), CursorDoor::Sdl { .. })
+    }
+    #[cfg(feature = "hostsim")]
+    {
+        false
+    }
+}
+
 /// Bring the pointer back after [`hide_cursor`] swapped in the transparent cursor. Call on pointer
 /// motion while the cursor is hidden. A no-op wherever LG's extension exists: there the
 /// compositor shows its own pointer on motion, as it always has.

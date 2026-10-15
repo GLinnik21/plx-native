@@ -1,0 +1,40 @@
+name: Cache the pinned downloads
+description: >
+  Restore vendor/downloads, the one directory ci/deps.py fetches every pinned archive into
+  (FFmpeg, Sentry Native, the libass stack, nanosvg, the webosbrew toolbox), keyed on the manifest.
+  On a miss the action fetches ALL of them (everything but the NDK, which has its own cache) before
+  the job ends, so the entry the post step saves is complete whichever job saved it first. A hit
+  means an upstream outage (savannah.gnu.org has been unreachable for hours) cannot break the
+  build: ci/deps.py re-verifies each cached file against its sha256 and downloads only what is
+  missing or wrong.
+
+# The key is the manifest's own hash and nothing else, so a change to a build script never re-saves
+# the archives. No restore-keys: a prefix match could only hand back an older set of the same files,
+# which ci/deps.py would verify and replace one by one anyway, but a miss is simpler to reason about.
+#
+# WHY THE EAGER FETCH. The key is shared by every job, and jobs need different subsets (a host job
+# only nanosvg, the package job FFmpeg + Sentry + libass). actions/cache saves the first entry for a
+# key and never overwrites it, so without the fetch below whichever job finished first would freeze
+# an incomplete entry for the life of that manifest. Fetching everything on a miss costs one
+# ~40 MB download, once per manifest change.
+#
+# Call it after actions/checkout; the manifest has to be on disk to be hashed.
+
+runs:
+  using: composite
+  steps:
+    - id: restore
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: vendor/downloads
+        key: deps-downloads-${{ hashFiles('ci/dependencies.json') }}
+    - name: Fetch every pinned archive on a miss
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: python3 ci/deps.py fetch-all --exclude webos-ndk
+    - name: Save the complete set
+      if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: vendor/downloads
+        key: deps-downloads-${{ hashFiles('ci/dependencies.json') }}
