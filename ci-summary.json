@@ -1,19 +1,19 @@
 {
- "generated": "2026-10-15T20:32:26Z",
+ "generated": "2026-10-15T20:34:39Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 78.6,
+   "change7_pct": 79.1,
    "d30": null,
    "delta30": null,
-   "delta7": 169.0,
+   "delta7": 170,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 102,
+   "n_now": 103,
    "n_prev": 117,
-   "now": 384.0,
+   "now": 385,
    "prev7": 215,
    "shown": true,
    "state": "worse",
@@ -24,17 +24,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 40.5,
+   "change7_pct": 40.7,
    "d30": null,
    "delta30": null,
-   "delta7": 111.5,
+   "delta7": 112,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 102,
+   "n_now": 103,
    "n_prev": 117,
-   "now": 386.5,
+   "now": 387,
    "prev7": 275,
    "shown": true,
    "state": "worse",
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.3,
+   "change7_pct": 15.5,
    "d30": null,
    "delta30": null,
-   "delta7": 55.0,
+   "delta7": 55.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 118,
+   "n_now": 119,
    "n_prev": 126,
-   "now": 413.5,
+   "now": 414,
    "prev7": 358.5,
    "shown": true,
    "state": "flat",
@@ -270,14 +270,14 @@
    "change7_pct": 9.9,
    "d30": 177.0,
    "delta30": 144.0,
-   "delta7": 29.0,
+   "delta7": 29,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 102,
+   "n_now": 103,
    "n_prev": 117,
-   "now": 321.0,
+   "now": 321,
    "prev7": 292,
    "shown": true,
    "state": "flat",
@@ -312,14 +312,14 @@
    "change7_pct": 7.5,
    "d30": null,
    "delta30": null,
-   "delta7": 13.0,
+   "delta7": 13,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 102,
+   "n_now": 103,
    "n_prev": 117,
-   "now": 186.0,
+   "now": 186,
    "prev7": 173,
    "shown": true,
    "state": "flat",
@@ -351,17 +351,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 9.1,
+   "change7_pct": 8.7,
    "d30": null,
    "delta30": null,
-   "delta7": 12.5,
+   "delta7": 12,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 102,
+   "n_now": 103,
    "n_prev": 67,
-   "now": 150.5,
+   "now": 150,
    "prev7": 138,
    "shown": true,
    "state": "flat",
@@ -372,17 +372,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -24.9,
+   "change7_pct": -25.1,
    "d30": null,
    "delta30": null,
-   "delta7": -47.5,
+   "delta7": -48,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 102,
+   "n_now": 103,
    "n_prev": 117,
-   "now": 143.5,
+   "now": 143,
    "prev7": 191,
    "shown": true,
    "state": "better",
@@ -524,14 +524,14 @@
    "change7_pct": 0.0,
    "d30": 361.5,
    "delta30": -358.5,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 102,
+   "n_now": 103,
    "n_prev": 117,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -564,13 +564,8 @@
  ],
  "regressions": [
   {
-   "change_pct": 78.6,
+   "change_pct": 79.1,
    "commits": [
-    {
-     "pr": 757,
-     "sha": "5dfa6ce49",
-     "title": "base: worker threads carry their names in shipping builds"
-    },
     {
      "pr": 758,
      "sha": "7064a117c",
@@ -615,6 +610,11 @@
      "pr": 777,
      "sha": "be825d6a4",
      "title": "Dependencies: one manifest for every non-Rust dependency, no copied upstream code"
+    },
+    {
+     "pr": 771,
+     "sha": "fbab7cf29",
+     "title": "Add Italian localization (it)"
     }
    ],
    "from": 215,
@@ -622,16 +622,11 @@
    "label": "CI: host unit tests (hostsim)",
    "since": "2026-10-15",
    "threshold_pct": 20.0,
-   "to": 384.0
+   "to": 385
   },
   {
-   "change_pct": 40.5,
+   "change_pct": 40.7,
    "commits": [
-    {
-     "pr": 757,
-     "sha": "5dfa6ce49",
-     "title": "base: worker threads carry their names in shipping builds"
-    },
     {
      "pr": 758,
      "sha": "7064a117c",
@@ -676,6 +671,11 @@
      "pr": 777,
      "sha": "be825d6a4",
      "title": "Dependencies: one manifest for every non-Rust dependency, no copied upstream code"
+    },
+    {
+     "pr": 771,
+     "sha": "fbab7cf29",
+     "title": "Add Italian localization (it)"
     }
    ],
    "from": 275,
@@ -683,7 +683,7 @@
    "label": "CI: host unit tests (default features)",
    "since": "2026-10-15",
    "threshold_pct": 20.0,
-   "to": 386.5
+   "to": 387
   }
  ],
  "schema": 2,
@@ -698,19 +698,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 386.5
+   "now": 387
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 384.0
+   "now": 385
   },
   {
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "now": 321.0
+   "now": 321
   },
   {
    "group": "ci",
