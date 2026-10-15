@@ -299,7 +299,7 @@ class MarkerStillTriggersTests(unittest.TestCase):
         (crate / "Cargo.toml").write_text(STUB_MANIFEST)
         shutil.copy(RUST / "Cargo.lock", crate / "Cargo.lock")
         # Inputs the script reads but this test never edits.
-        for name in ("src", "vendor"):
+        for name in ("src", "vendor", "ci"):
             (repo / name).symlink_to(ROOT / name)
         self.repo, self.crate = repo, crate
         vcs(repo, "init", "-q", "-b", "trunk")

@@ -25,7 +25,7 @@
 # Wire modes (--codec, default mpeg): with a current app binary the app source is
 # MPEG1 video in MPEG-TS (the TV's own libavcodec mpeg1video encoder, ~29fps at
 # 960x540 in ~0.3-2.5Mbit) relayed to the page over a WebSocket (/ws) and decoded
-# by the vendored jsmpeg (served at /jsmpeg.js) into a <canvas>. The JPEG path
+# by jsmpeg (fetched at its pinned upstream commit by ci/deps.py, served at /jsmpeg.js) into a <canvas>. The JPEG path
 # remains as the fallback: legacy app binaries, and PLAYBACK viewing — the GL
 # capture can't see the video plane, so when the TS byte-flow stalls the service
 # capture feeds JPEG frames and the page flips to its pipelined long-poll pull
@@ -1267,10 +1267,14 @@ def main():
     jsmpeg_js = b""
     if tshub is not None:
         try:
-            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "jsmpeg.min.js"), "rb") as f:
+            # Not in the repository: ci/dependencies.json pins it (commit + sha256) and ci/deps.py
+            # downloads it into vendor/downloads, or finds it there already.
+            sys.path.insert(0, os.path.join(REPO_ROOT, "ci"))
+            import deps
+            with open(deps.fetch(deps.entry("jsmpeg"), label="jsmpeg")["archive"], "rb") as f:
                 jsmpeg_js = f.read()
-        except OSError:
-            print("WARN: jsmpeg.min.js not found next to stream-screen.py — mpeg mode disabled")
+        except (OSError, ValueError, KeyError) as e:
+            print(f"WARN: jsmpeg could not be fetched ({e}) — mpeg mode disabled")
             tshub = None
             args.codec = "jpeg"
     stats = {"frames": 0, "proc": None}
