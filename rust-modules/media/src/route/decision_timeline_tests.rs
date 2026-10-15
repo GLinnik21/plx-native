@@ -502,3 +502,34 @@ fn a_film_request_retires_the_previous_trailers_preview_mark() {
     reset_player_control_for_test(&ps);
     reset_session(&mut ps);
 }
+
+/// The record a stop leaves for the app: position from the final report, parentage and the
+/// "was it watched when the play began" from the item's play-queue row (fetched at play start), and
+/// `was_watched = true` when no row can be found (an unknown must never fan a scrobble out). With no
+/// client the POST cannot be taken, and the record still arrives, as not taken.
+#[test]
+fn a_stop_leaves_a_record_with_the_queue_rows_parentage_and_prior_watched_state() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    drain_scrobble();
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    let _ = take_landed_stops();
+    ps.queue = vec![plx_plex::plex::QueueRow {
+        item_id: 11, rk: "7".into(), show_rk: "S".into(), season: 2, watched: false, ..Default::default()
+    }];
+    ps.pq_item_id = "11".into();
+    scrobble_stop(&mut ps, Some(("7".into(), 30_000, 60_000)), None);
+    drain_scrobble();
+    ps.pq_item_id = "99".into();
+    scrobble_stop(&mut ps, Some(("8".into(), 1_000, 60_000)), None);
+    drain_scrobble();
+    let stops = take_landed_stops();
+    assert_eq!(stops.len(), 2, "both stops arrive, oldest first");
+    let first = &stops[0];
+    assert_eq!((first.rk.as_str(), first.show_rk.as_str(), first.season_index), ("7", "S", 2));
+    assert_eq!((first.pos_ms, first.dur_ms, first.ok, first.was_watched), (30_000, 60_000, false, false));
+    assert!(stops[1].was_watched, "no queue row for the item: read as watched, never fanned out");
+    assert!(!stops_owed());
+    reset_player_control_for_test(&ps);
+}
