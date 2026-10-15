@@ -128,6 +128,22 @@ impl ViewStateStore {
         self.state.take_detail_refresh()
     }
 
+    /// Hold the terminal hub refetch while the player is on top; see
+    /// [`crate::viewstate::ViewStateState::hold_refresh`].
+    pub fn set_hold_refresh(&mut self, on: bool) {
+        self.state.hold_refresh = on;
+    }
+
+    /// Fan an end-of-stream watch out to the title's other copies; see
+    /// [`crate::viewstate::ViewStateState::fan_out_origin_watched`].
+    pub fn fan_out_origin_watched(&mut self, sid: ServerId, rk: &str) -> bool {
+        let queued = self.state.fan_out_origin_watched(&self.adapter, sid, rk);
+        if queued {
+            self.bump();
+        }
+        queued
+    }
+
     /// Items whose landed write is owed a read-back (`stores::viewreconcile`).
     pub fn take_reread(&mut self) -> Vec<(ServerId, String)> {
         self.state.take_reread()

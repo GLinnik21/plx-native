@@ -5628,6 +5628,52 @@ struct ScrobbleWork {
     subtitle_stream_id: i64,
     transcode_session: String,
     timeline_stop: Option<TimelineStopCompletion>,
+    /// The record the app learns this stop from; posted just before `timeline_stop` completes.
+    stop_mail: Option<PendingStop>,
+}
+
+/// The stops whose `stopped` POST has been attempted or abandoned, waiting for the app to take
+/// them. **A queue, not the plan's one slot.** `scrobble_stop` joins the previous worker
+/// (`drain_scrobble`) on the main thread before it announces the next stop; if that worker was
+/// stalled on a slow server the app has had no frame in between, so the next worker's record would
+/// land on top of the previous one in a single slot and an Up Next chain would lose an episode.
+/// The app drains it every frame ([`take_landed_stops`]); it holds at most the stops that happened
+/// since the last frame.
+static STOP_MAIL: Mutex<Vec<plx_data::viewstate::StopRecord>> = Mutex::new(Vec::new());
+/// Stops with a record built and not yet posted: what a replay's landing gate waits for.
+static STOPS_OWED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Posts its record exactly once; dropped unposted (a panicking worker) it posts it as not taken,
+/// so the viewer's position still shows and nothing is owed forever.
+struct PendingStop {
+    rec: Option<plx_data::viewstate::StopRecord>,
+}
+
+impl PendingStop {
+    fn post(&mut self, ok: bool) {
+        if let Some(mut rec) = self.rec.take() {
+            rec.ok = ok;
+            STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner()).push(rec);
+            STOPS_OWED.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Drop for PendingStop {
+    fn drop(&mut self) {
+        self.post(false);
+    }
+}
+
+/// The stops posted since the last call, oldest first. MAIN THREAD, once a frame.
+pub fn take_landed_stops() -> Vec<plx_data::viewstate::StopRecord> {
+    std::mem::take(&mut *STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Is a stop's record still being posted? True from `scrobble_stop` to the end of its `stopped`
+/// attempt: what the landing gate waits on in dump mode.
+pub fn stops_owed() -> bool {
+    STOPS_OWED.load(Ordering::SeqCst) > 0
 }
 
 impl ScrobbleWork {
@@ -5639,6 +5685,7 @@ impl ScrobbleWork {
         if let Some(t) = self.report_th.take() {
             plx_base::task::join("timeline", t);
         }
+        let mut posted = false;
         if let Some((rk, t_ms, d_ms)) = self.final_report.take() {
             let ok = {
                 let _effect = TIMELINE_EFFECT.lock().unwrap_or_else(|e| e.into_inner());
@@ -5662,6 +5709,11 @@ impl ScrobbleWork {
                 d_ms / 1000,
                 ok as i32,
             ));
+            posted = ok;
+        }
+        // BEFORE the fence completes, so a completed fence implies the record is in the mailbox.
+        if let Some(mut mail) = self.stop_mail.take() {
+            mail.post(posted);
         }
         // This is the semantic publication boundary: old reporter joined, then old stopped was
         // attempted in the common effect lane. Wake replacement reporters before the unrelated
@@ -5726,6 +5778,27 @@ pub fn scrobble_stop(
     // item, and letting two race would let an older one land last. Normally free — the measured
     // baseline for a finished worker is 0 ms.
     drain_scrobble();
+    let stop_mail = final_report.as_ref().map(|(rk, pos_ms, dur_ms)| {
+        let sid = cur_sid(ps);
+        // The item's row in the play queue, fetched when the play began: its watched state is the
+        // "before" of this stop. A row that cannot be found reads as watched, so an unknown never
+        // fans out a scrobble nobody asked for.
+        let row = plx_plex::plex::queue_index_of(&ps.queue, ps.pq_item_id.parse().unwrap_or(0), sid, rk)
+            .map(|i| &ps.queue[i]);
+        STOPS_OWED.fetch_add(1, Ordering::SeqCst);
+        PendingStop {
+            rec: Some(plx_data::viewstate::StopRecord {
+                sid,
+                rk: rk.clone(),
+                show_rk: row.map(|r| r.show_rk.clone()).unwrap_or_default(),
+                season_index: row.map_or(0, |r| r.season),
+                pos_ms: *pos_ms,
+                dur_ms: *dur_ms,
+                ok: false,
+                was_watched: row.is_none_or(|r| r.watched),
+            }),
+        }
+    });
     let timeline_stop =
         (final_report.is_some() || report_th.is_some()).then(|| TIMELINE_STOP_FENCE.announce());
     let work = std::sync::Arc::new(std::sync::Mutex::new(Some(ScrobbleWork {
@@ -5739,6 +5812,7 @@ pub fn scrobble_stop(
         subtitle_stream_id: sub,
         transcode_session: tsession,
         timeline_stop,
+        stop_mail,
     })));
     let worker = work.clone();
     let join_generation = SCROBBLE_JOIN.reserve();

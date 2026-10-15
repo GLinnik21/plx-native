@@ -736,11 +736,11 @@ fn edit_item_with_scope(
 fn apply_edit(b: &mut SourceBuild, at: &ViewAt, edit: ViewEdit) -> bool {
     // A deck removal is about the one row pressed; a watched change reaches what the scope names.
     let mine = |m: &PmsMovie| match edit {
-        ViewEdit::Watched(_) | ViewEdit::Facts { .. } => at.covers(m),
+        ViewEdit::Watched(_) | ViewEdit::Facts { .. } | ViewEdit::Offset { .. } => at.covers(m),
         ViewEdit::LeftDeck => at.is_item(m.sid, &m.rk),
     };
     match edit {
-        ViewEdit::Watched(_) | ViewEdit::Facts { .. } => {
+        ViewEdit::Watched(_) | ViewEdit::Facts { .. } | ViewEdit::Offset { .. } => {
             let mut hit = false;
             for c in b.cw.iter_mut().chain(b.lane.rows.iter_mut()) {
                 if mine(&*c.m) && edit.changes(&*c.m) {

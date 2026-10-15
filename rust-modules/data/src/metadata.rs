@@ -3867,7 +3867,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
             // the loaded item has no deck to leave
             crate::viewstate::ViewEdit::LeftDeck => false,
             // Detail re-reads itself (`DetailRefresh`); a facts patch is not published to it yet
-            crate::viewstate::ViewEdit::Facts { .. } => false,
+            crate::viewstate::ViewEdit::Facts { .. } | crate::viewstate::ViewEdit::Offset { .. } => false,
         },
         MetadataCmd::InstallPlaying(p) => {
             install_playing(state, p);

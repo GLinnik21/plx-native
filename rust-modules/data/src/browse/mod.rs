@@ -1249,7 +1249,8 @@ impl BrowseState {
     /// fetches afresh and opens at the top.
     fn apply_view_local(&mut self, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
         let current = self.cur();
-        let facts = matches!(edit, crate::viewstate::ViewEdit::Facts { .. });
+        let facts = matches!(edit,
+            crate::viewstate::ViewEdit::Facts { .. } | crate::viewstate::ViewEdit::Offset { .. });
         let mut hit = false;
         for (i, state) in self.states.iter_mut().enumerate() {
             if !state.items.apply_view(at, edit) {
@@ -2422,7 +2423,9 @@ impl BrowseState {
                     listing || hubs
                 }
                 // The section shelves are re-read whole after every burst (`HubsInvalidateAll`).
-                crate::viewstate::ViewEdit::Facts { .. } => self.apply_view_local(&at, edit),
+                crate::viewstate::ViewEdit::Facts { .. } | crate::viewstate::ViewEdit::Offset { .. } => {
+                    self.apply_view_local(&at, edit)
+                }
                 crate::viewstate::ViewEdit::LeftDeck => self.hubs_left_the_deck(at.sid, &at.rk),
             },
         }

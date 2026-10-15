@@ -81,6 +81,10 @@ pub struct Stores {
     /// every store that reads stamps a read from it and re-patches the read when it lands. A store
     /// replaced after construction takes it as an argument (`HubsStore::from_parts`).
     pub view_ledger: crate::viewledger::ViewLedger,
+    /// The player is on top: view-state reconcile work that reaches the network (the read-back, the
+    /// hub refetch a landed write owes, the membership re-query it may start) stays owed instead of
+    /// running under the video. Set once a frame by [`Stores::hold_network`].
+    network_held: bool,
 }
 
 impl Default for Stores {
@@ -98,6 +102,7 @@ impl Default for Stores {
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
             reconcile: viewreconcile::ViewReconcileStore::default(),
             view_ledger: Default::default(),
+            network_held: false,
         };
         stores.share_view_ledger();
         stores
@@ -246,19 +251,43 @@ impl Stores {
         )
     }
 
-    /// The read-back worker's route-unconditional pass: hand it what landed writes owe, send its
-    /// reads, and publish the facts it brought back to the stores that hold the rows.
-    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>) -> bool {
-        let owed = self.viewstate.borrow_mut().take_reread();
-        self.reconcile.enqueue(owed);
-        let idle = !self.viewstate.borrow().is_busy();
+    /// Hold (`true`) or release the view-state reconcile network work; see [`Stores::network_held`].
+    /// Patches are not held: what the stores already show keeps changing while the player is up.
+    pub fn hold_network(&mut self, on: bool) {
+        self.network_held = on;
+        self.viewstate.borrow_mut().set_hold_refresh(on);
+    }
+
+    pub fn network_held(&self) -> bool {
+        self.network_held
+    }
+
+    /// Playbacks that stopped. Each gets an immediate resume patch ([`crate::viewstate::ViewFact::Offset`])
+    /// on the stores that show the item, so a tile reads the new resume point before any read; and,
+    /// when the server took the `stopped` POST, a read-back through the reconcile worker (which
+    /// stays queued while the network is held). MAIN THREAD, route-unconditional.
+    pub fn stops_landed(&mut self, stops: Vec<crate::viewstate::StopRecord>, directory: browse::DirectoryView<'_>) {
+        for stop in stops {
+            self.publish(crate::viewstate::ViewChange {
+                sid: stop.sid,
+                rk: stop.rk.clone(),
+                scope: crate::viewstate::Scope::Leaf,
+                fact: crate::viewstate::ViewFact::Offset { ms: stop.pos_ms, dur_ms: stop.dur_ms },
+            }, directory);
+            if stop.ok {
+                self.reconcile.enqueue_stop((stop.sid, stop.rk), stop.was_watched);
+            }
+        }
+    }
+
+    fn publish(&mut self, change: crate::viewstate::ViewChange, directory: browse::DirectoryView<'_>) {
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
         let person = &mut self.person;
         let collection = &mut self.collection;
         let search = &mut self.search;
         let metadata = &mut self.metadata;
-        self.reconcile.pump_with_gate(&self.landgate, idle, &mut |change| crate::viewstate::publish_view(
+        crate::viewstate::publish_view(
             change,
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
@@ -266,7 +295,36 @@ impl Stores {
             &mut |cmd| collection.run(cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
             &mut |cmd| metadata.run(cmd),
-        ))
+        );
+    }
+
+    /// The read-back worker's route-unconditional pass: hand it what landed writes owe, send its
+    /// reads, and publish the facts it brought back to the stores that hold the rows.
+    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>) -> bool {
+        let owed = self.viewstate.borrow_mut().take_reread();
+        self.reconcile.enqueue(owed);
+        let idle = !self.viewstate.borrow().is_busy() && !self.network_held;
+        let browse = std::rc::Rc::clone(&self.browse);
+        let hubs = &mut self.hubs;
+        let person = &mut self.person;
+        let collection = &mut self.collection;
+        let search = &mut self.search;
+        let metadata = &mut self.metadata;
+        let changed = self.reconcile.pump_with_gate(&self.landgate, idle, &mut |change| crate::viewstate::publish_view(
+            change,
+            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
+            &mut |cmd| person.run(cmd),
+            &mut |cmd| collection.run(cmd),
+            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| metadata.run(cmd),
+        ));
+        // A first watch whose read-back found the stream's end: the other servers' copies are
+        // owed the same watched write, through ViewState's serial queue (the origin already holds it).
+        for (sid, rk) in self.reconcile.take_watched_ends() {
+            self.viewstate.borrow_mut().fan_out_origin_watched(sid, &rk);
+        }
+        changed
     }
 
     pub fn take_detail_refresh(&self) -> Option<viewstate::DetailRefresh> {
