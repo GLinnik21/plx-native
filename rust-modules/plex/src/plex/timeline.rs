@@ -162,7 +162,7 @@ impl QueueRow {
             kind: m.kind,
             title: m.title,
             show_title: m.grandparent_title,
-            season: m.parent_index,
+            season: m.parent_index.unwrap_or(0),
             index: m.index,
             thumb: m.thumb,
             poster: m.grandparent_thumb,

@@ -82,16 +82,10 @@ pub enum BrowseCmd {
     /// The profile/account switch: wipe everything and supersede everything in flight.
     Reset,
     HubsInvalidateAll,
-    /// The optimistic half of a view-state write, on the grid and the shelves.
-    SetWatchedLocal {
-        sid: ServerId,
-        rk: String,
-        on: bool,
-    },
-    LeftTheDeck {
-        sid: ServerId,
-        rk: String,
-    },
+    /// The optimistic half of a view-state change (`viewstate::publish_view`), on the grid and the
+    /// shelves: a watched edit reaches the listing and the section shelves, a deck removal the
+    /// section shelves' Continue Watching.
+    ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
 }
 
 /// The production owner of Browse's main-thread state, worker transport and notice generation.
@@ -117,6 +111,11 @@ impl Default for BrowseStore {
 }
 
 impl BrowseStore {
+    /// Join the owner's view-state publish order (`Stores::view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.ledger = ledger.clone();
+    }
+
     fn bump(&self) -> u32 {
         self.notice_dirty.store(true, Ordering::Relaxed);
         self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1

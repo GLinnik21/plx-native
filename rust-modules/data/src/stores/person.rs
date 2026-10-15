@@ -21,8 +21,8 @@ pub enum PersonCmd {
     Close,
     /// The profile/account switch.
     Reset,
-    /// The optimistic half of a view-state write, on the person's shelves.
-    SetWatchedLocal { sid: ServerId, rk: String, on: bool },
+    /// The optimistic half of a view-state change, on the person's shelves.
+    ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
 }
 
 /// One Person owner: logical state, the worker adapter all current requests capture, and notice.
@@ -45,6 +45,11 @@ impl Default for PersonStore {
 }
 
 impl PersonStore {
+    /// Join the owner's view-state publish order (`Stores::view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.ledger = ledger.clone();
+    }
+
     fn bump(&self) -> u32 {
         self.notice_dirty.store(true, Ordering::Relaxed);
         self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1

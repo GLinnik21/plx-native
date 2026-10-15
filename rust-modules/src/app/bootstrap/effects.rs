@@ -254,7 +254,7 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
                 CollectionCmd::Restore { total, counts } => json!({"restore":[total,counts]}),
                 CollectionCmd::Close => json!("close"),
                 CollectionCmd::Reset => json!("reset"),
-                CollectionCmd::SetWatchedLocal { .. } => return Err("unsupported controlled collection command"),
+                CollectionCmd::ApplyView { .. } => return Err("unsupported controlled collection command"),
             }})
         }
         _ => return Err("unsupported Home store command"),

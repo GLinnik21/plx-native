@@ -74,12 +74,16 @@ pub struct Stores {
     /// The player's subtitle search & download (`crate::subsearch`). Appended last.
     pub subtitle_search: subsearch::SubSearchStore,
     pub viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
+    /// The publish order of view-state edits (`crate::viewledger`): `viewstate` records into it, and
+    /// every store that reads stamps a read from it and re-patches the read when it lands. A store
+    /// replaced after construction takes it as an argument (`HubsStore::from_parts`).
+    pub view_ledger: crate::viewledger::ViewLedger,
 }
 
 impl Default for Stores {
     fn default() -> Self {
         let browse = std::rc::Rc::new(std::cell::RefCell::new(browse::BrowseStore::default()));
-        Self {
+        let mut stores = Self {
             landgate: Default::default(),
             browse,
             hubs: hubs::HubsStore::default(),
@@ -89,11 +93,27 @@ impl Default for Stores {
             search: search::SearchStore::default(),
             subtitle_search: subsearch::SubSearchStore::default(),
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
-        }
+            view_ledger: Default::default(),
+        };
+        stores.share_view_ledger();
+        stores
     }
 }
 
 impl Stores {
+    /// Hand [`Stores::view_ledger`] to every store that reads, once, at construction. A store built
+    /// afterwards takes the ledger as a constructor argument instead (`HubsStore::from_parts`).
+    fn share_view_ledger(&mut self) {
+        let ledger = &self.view_ledger;
+        self.browse.borrow_mut().share_ledger(ledger);
+        self.hubs.share_ledger(ledger);
+        self.metadata.share_ledger(ledger);
+        self.person.share_ledger(ledger);
+        self.collection.share_ledger(ledger);
+        self.search.share_ledger(ledger);
+        self.viewstate.borrow_mut().share_ledger(ledger);
+    }
+
     /// Explicit synchronous Browse command path. The answer is available before this call returns.
     pub fn browse_run(&self, cmd: browse::BrowseCmd) -> bool {
         self.browse.borrow_mut().run(cmd)

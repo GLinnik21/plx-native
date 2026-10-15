@@ -24,6 +24,7 @@
 //! outside `pms`/`stores::hubs` spells the old direct-call form; this is the part that
 //! keyword-level `pub(super)` genuinely cannot add on top of that count.
 use crate::stores::{deck, paging};
+use crate::viewstate::{ViewAt, ViewEdit};
 use plx_plex::plex::ServerId;
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
@@ -65,6 +66,11 @@ pub fn listable(type_str: &str) -> bool {
 /// a shelf, never the number of shelves.
 pub(crate) const HUB_FETCH_COUNT: i64 = 12;
 
+/// `PmsMovie::season_index` of an EPISODE whose server sent no `parentIndex`. Distinct from `0`
+/// (Specials), so a `Scope::Season { index: 0 }` change does not reach a row whose season is merely
+/// unknown. Every reader that shows or opens by season already tests `> 0`.
+pub const SEASON_UNKNOWN: c_int = -1;
+
 /// A catalog row — owned strings (the old C-ABI fixed `[u8; N]` buffers are gone; no C
 /// consumer remains). Fields pub so the UI / route / player read them directly.
 #[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -103,7 +109,7 @@ pub struct PmsMovie {
     pub kind: c_int, // 0 = movie, 1 = show, 2 = season, 3 = episode, 4 = collection
     pub resume_ms: i64,  // viewOffset — drives the Continue Watching resume bar
     pub show_rk: String, // parent show rk (episode: grandparent; season: parent)
-    pub season_index: c_int, // season number (episode: parentIndex; season: index)
+    pub season_index: c_int, // season number (episode: parentIndex, or [`SEASON_UNKNOWN`]; season: index)
     pub show_title: String, // episode: grandparentTitle; season: parentTitle
     pub ep_index: c_int, // episode only: episode number within the season
     /// Fully unwatched (movie/episode: no viewCount; show/season: zero viewed leaves).
@@ -165,6 +171,8 @@ static EMPTY_HOME: LazyLock<Arc<HomeCatalog>> = LazyLock::new(|| Arc::new(HomeCa
 /// One Hubs owner's main-thread-only logical state (`docs/stores-as-machines.md`). Production
 /// gains one through `stores::hubs::HubsStore`; the worker-touched half is [`PmsAdapter`].
 pub struct PmsState {
+    /// The publish order of view-state edits; each source holds a clone (see `Src::ledger`).
+    pub(crate) ledger: crate::viewledger::ViewLedger,
     published: Option<Arc<HomeCatalog>>,
     /// The source table, in display order: our own servers first, then each shared one. Main
     /// thread only, so no lock is needed once this lives per-owner rather than behind a global.
@@ -203,6 +211,7 @@ struct DeckAsk {
 impl Default for PmsState {
     fn default() -> Self {
         Self {
+            ledger: Default::default(),
             published: None,
             srcs: Vec::new(),
             seen: u64::MAX,
@@ -341,7 +350,7 @@ pub fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
         3 => {
             // episode: parent show = grandparent, season number = parentIndex
             m.show_rk = clean(&it.grandparent_rating_key);
-            m.season_index = it.parent_index as c_int;
+            m.season_index = it.parent_index.map_or(SEASON_UNKNOWN, |i| i as c_int);
             m.show_title = clean(&it.grandparent_title);
             m.ep_index = it.index as c_int;
         }
@@ -679,19 +688,7 @@ fn request_refetch_hubs_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapte
     endpoints
 }
 
-/// A local, **optimistic** edit to what the shelves say about one item — applied before the write
-/// that justifies it has left the machine, so a press lands on the panel at once however far away
-/// the item's server is. See [`edit_item_with_scope`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LocalEdit {
-    /// The item is now watched (`true`) or unwatched (`false`), everywhere it appears.
-    Watched(bool),
-    /// The item has been hidden from Continue Watching (`removeFromContinueWatching`) — it leaves
-    /// the deck and NOTHING else about it changes, which is exactly what that endpoint does.
-    LeftTheDeck,
-}
-
-/// Apply `edit` to every shelf row naming `(sid, rk)` and re-commit Home under the retained Browse
+/// Apply `edit` ([`ViewEdit`]) to every shelf row `at` covers and re-commit Home under the retained Browse
 /// scope. Returns whether anything
 /// matched. **MAIN THREAD** — it rebuilds the catalog the UI holds `&'static` rows out of.
 ///
@@ -705,15 +702,14 @@ pub enum LocalEdit {
 /// This is one half of a pair and is useless alone: it is what the user SEES, and the refetch the
 /// write's landing kicks is what the server SAYS. Where they disagree the refetch wins, silently.
 #[cfg(test)]
-fn edit_item(state: &mut PmsState, sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
-    edit_item_with_scope(state, sid, rk, edit, &BrowseScope::standalone())
+fn edit_item(state: &mut PmsState, at: &ViewAt, edit: ViewEdit) -> bool {
+    edit_item_with_scope(state, at, edit, &BrowseScope::standalone())
 }
 
 fn edit_item_with_scope(
     state: &mut PmsState,
-    sid: ServerId,
-    rk: &str,
-    edit: LocalEdit,
+    at: &ViewAt,
+    edit: ViewEdit,
     scope: &BrowseScope,
 ) -> bool {
     // Same test-only catalog guard as `request_refetch_hubs` — the catalog is `PmsState`, a
@@ -723,10 +719,7 @@ fn edit_item_with_scope(
     let mut hit = false;
     for s in state.srcs.iter_mut() {
         if let Some(b) = s.last.as_mut() {
-            let matched = apply_edit(b, sid, rk, edit);
-            // A read in flight will land from before this edit; keep it to be made again there.
-            if matched && s.fetching { s.edits.push((sid, rk.to_string(), edit)); }
-            hit |= matched;
+            hit |= apply_edit(b, at, edit);
         }
     }
     if !hit {
@@ -740,27 +733,31 @@ fn edit_item_with_scope(
 
 /// [`edit_item_with_scope`] on ONE source's projection. Pure — no statics, no I/O — so the rule is
 /// graded on the host rather than inferred from a screenshot.
-fn apply_edit(b: &mut SourceBuild, sid: ServerId, rk: &str, edit: LocalEdit) -> bool {
-    let mine = |m: &PmsMovie| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk));
+fn apply_edit(b: &mut SourceBuild, at: &ViewAt, edit: ViewEdit) -> bool {
+    // A deck removal is about the one row pressed; a watched change reaches what the scope names.
+    let mine = |m: &PmsMovie| match edit {
+        ViewEdit::Watched(_) => at.covers(m),
+        ViewEdit::LeftDeck => at.is_item(m.sid, &m.rk),
+    };
     match edit {
-        LocalEdit::Watched(on) => {
+        ViewEdit::Watched(on) => {
             let mut hit = false;
             for c in b.cw.iter_mut().chain(b.lane.rows.iter_mut()) {
                 if mine(&*c.m) {
-                    set_watched(Arc::make_mut(&mut c.m), on);
+                    ViewEdit::Watched(on).apply(Arc::make_mut(&mut c.m));
                     hit = true;
                 }
             }
             for m in b.shelves.iter_mut().flat_map(|s| s.items.iter_mut()) {
                 // test the shared card first: `make_mut` clones only the card that matches
                 if mine(&**m) {
-                    set_watched(Arc::make_mut(m), on);
+                    ViewEdit::Watched(on).apply(Arc::make_mut(m));
                     hit = true;
                 }
             }
             hit
         }
-        LocalEdit::LeftTheDeck => {
+        ViewEdit::LeftDeck => {
             let before = b.cw.len();
             b.cw.retain(|c| !mine(&*c.m));
             b.lane.remove(|row| mine(&*row.m)) || b.cw.len() != before
@@ -1117,13 +1114,18 @@ fn deck_ready(ask: &DeckAsk, srcs: &[Src]) -> bool {
         && s.page.as_ref().is_some_and(|page| page.id == DECK_ID)))
 }
 
-/// The read describes the server from when it was issued, so the edits made since are made again
-/// on what it brought: a removed card stays out and a marked one stays marked.
-fn land_lane(source: &mut Src, mut build: SourceBuild) -> bool {
+/// A deck page's landing: the lane the read brought replaces the one held. (The edits published
+/// since the read was issued are made again on every landing by [`replay_since_request`].)
+fn land_lane(source: &mut Src, build: SourceBuild) -> bool {
     let Some(last) = source.last.as_mut() else { return false };
-    for (sid, rk, edit) in std::mem::take(&mut source.edits) { apply_edit(&mut build, sid, &rk, edit); }
     last.lane = build.lane;
     true
+}
+
+/// The read describes the server from when it was issued, so the edits published since are made
+/// again on what it brought: a removed card stays out and a marked one stays marked.
+fn replay_since_request(source: &Src, build: &mut SourceBuild) {
+    for (at, edit) in source.ledger.since(source.stamp) { apply_edit(build, &at, edit); }
 }
 
 fn land_page(source: &mut Src, page: &PageQuery, build: SourceBuild) -> bool {
@@ -1907,11 +1909,12 @@ struct Src {
     /// Rows `(hub id, key)` whose reload failed for good while held; asked again only after the
     /// screen's hold moves.
     stalled: Vec<(String, String)>,
-    /// The optimistic edits made while a read for this source was in flight, in order. That read's
-    /// landing describes the server from before them, so it is given them again (see
-    /// [`land_lane`]); the record ends with the read, and a read issued after an edit carries the
-    /// edit already.
-    edits: Vec<(ServerId, String, LocalEdit)>,
+    /// The publish order of view-state edits (`stores::Stores` shares one across the stores), and
+    /// where the read now in flight for this source was issued in it: its landing describes the
+    /// server from before every edit published since, so it is given them again
+    /// ([`replay_since_request`]). A read issued after an edit carries the edit already.
+    ledger: crate::viewledger::ViewLedger,
+    stamp: crate::viewledger::Stamp,
     /// The projection this source last ANSWERED with, kept across a failure. This is what makes a
     /// failure never blank a populated Home; `None` (never answered) is what makes a dead source
     /// contribute nothing at all — no heading, no empty shelf, no spinner row.
@@ -1950,7 +1953,7 @@ impl Src {
         self.client = Some(client);
         self.token_gen = request.token_gen;
         self.fetching = true;
-        self.edits.clear(); // the lane this request carries already has every edit made so far
+        self.stamp = self.ledger.stamp(); // this read already carries every edit published so far
         if self.page.is_none() { self.state = HubState::Loading; }
         self.retry_s = 0.0;
         self.seq = request.seq;
@@ -1974,9 +1977,18 @@ impl Src {
             retry_n: 0,
             deferred: false,
             stalled: Vec::new(),
-            edits: Vec::new(),
+            ledger: Default::default(),
+            stamp: 0,
             last: None,
         }
+    }
+}
+
+impl PmsState {
+    /// Join the owner's view-state publish order, sources included (`Src::ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.ledger = ledger.clone();
+        for s in &mut self.srcs { s.ledger = ledger.clone(); }
     }
 }
 
@@ -2417,7 +2429,11 @@ fn sync_roster_with_scope(state: &mut PmsState, scope: &BrowseScope) {
                 refresh_src_lifecycle(&mut keep);
                 out.push(keep);
             }
-            None => out.push(Src::new(sid, handle)),
+            None => {
+                let mut fresh = Src::new(sid, handle);
+                fresh.ledger = state.ledger.clone();
+                out.push(fresh);
+            }
         }
     }
     // Whatever is left in `srcs` has left the roster — un-pinned, or a share plex.tv no longer
@@ -2811,8 +2827,8 @@ fn run_with_scope(
             let mut launch = |request| spawn_fetch(adapter, request);
             controlled_work_with_scope(state, adapter, Some(cmd), 0.0, scope, &mut launch)
         },
-        HubsCmd::EditItem { sid, rk, edit } => crate::stores::StoreOutcome::changed(
-            edit_item_with_scope(state, sid, &rk, edit, scope)),
+        HubsCmd::ApplyView { at, edit } => crate::stores::StoreOutcome::changed(
+            edit_item_with_scope(state, &at, edit, scope)),
         HubsCmd::Reset => {
             reset_with_scope(state, adapter, scope);
             crate::stores::StoreOutcome::changed(true)
@@ -2915,7 +2931,8 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         }
         s.fetching = false;
         match l.build {
-            Some(b) => {
+            Some(mut b) => {
+                replay_since_request(s, &mut b);
                 if let Some(page) = s.page.take() {
                     dirty |= if page.id == DECK_ID { land_lane(s, b) } else if page.reload { land_reload(s, &page, b) } else { land_page(s, &page, b) };
                     paged = true;
@@ -3101,6 +3118,7 @@ fn seed_with_scope_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, sid
         .map(|facts| facts.handle.clone())
         .unwrap_or_default();
     let mut s = Src::new(sid, handle);
+    s.ledger = state.ledger.clone();
     s.state = hub_state;
     if items > 0 {
         let mut build = build_test(items);

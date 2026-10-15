@@ -2386,7 +2386,7 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
     let addressed: Vec<_> = effects.iter().filter_map(|effect| match &effect.fx {
         Fx::App(AppFx::Store(StoreId::ViewState,
             plx_data::stores::StoreCmd::ViewState(ViewStateCmd::Request {
-                sid, rk, write, detail, guid,
+                sid, rk, write, detail, guid, ..
             }))) => Some((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str())),
         _ => None,
     }).collect();
