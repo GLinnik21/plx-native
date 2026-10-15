@@ -1248,14 +1248,14 @@ impl DeckPress {
 /// brighter level than the same white in SDR (the HUD and the captions are graphics; the panel
 /// treats them as part of the HDR scene), so a viewer in a dark room is dazzled by the transport
 /// and the subtitles. This is how far RGB is scaled down then; it never applies to an SDR picture.
-/// Absence is `Full`, which is what every build before this preference drew (no dimming), and the
-/// factor is a plain linear multiplier on the sRGB-encoded values (alpha is untouched), which is
+/// Absence is `ThreeQuarters`: the overlay is dimmed to 75% in an HDR picture unless the viewer
+/// chose otherwise (`Full` turns the dim off). The factor is a plain linear multiplier on the sRGB-encoded values (alpha is untouched), which is
 /// the same multiply the painter's `rgb` cascade already is.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HdrOverlayBrightness {
-    #[default]
     #[serde(rename = "full")]
     Full,
+    #[default]
     #[serde(rename = "three_quarters")]
     ThreeQuarters,
     #[serde(rename = "half")]
@@ -1270,7 +1270,7 @@ impl HdrOverlayBrightness {
         HdrOverlayBrightness::Half,
     ];
 
-    /// An in-memory index back to a rung — out of range is `Full`, never a neighbouring rung, for
+    /// An in-memory index back to a rung — out of range is the default, never a neighbouring rung, for
     /// the reason [`SubtitleTone::from_index`] gives: the ladder can grow or shrink.
     pub fn from_index(i: u8) -> HdrOverlayBrightness {
         Self::LADDER.get(i as usize).copied().unwrap_or_default()

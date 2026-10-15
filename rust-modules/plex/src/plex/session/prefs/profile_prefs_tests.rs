@@ -451,13 +451,13 @@ fn nobody_seated_captures_no_write() {
 }
 
 /// **The HDR overlay brightness rides the same per-profile plumbing as every other rung**: it
-/// defaults to Full (100%, today's drawing), a profile's own pick reads back and round-trips its
+/// defaults to ThreeQuarters (75%, the dim on out of the box), a profile's own pick reads back and round-trips its
 /// stored spelling, a spelling this build does not know falls back to the install's value, and the
 /// factors are the plain 1.0 / 0.75 / 0.5 multipliers the picker's labels say.
 #[test]
-fn hdr_overlay_brightness_defaults_to_full_and_round_trips() {
-    assert_eq!(HdrOverlayBrightness::default(), HdrOverlayBrightness::Full);
-    assert_eq!(HdrOverlayBrightnessPref::get(&Preferences::default()), HdrOverlayBrightness::Full);
+fn hdr_overlay_brightness_defaults_to_three_quarters_and_round_trips() {
+    assert_eq!(HdrOverlayBrightness::default(), HdrOverlayBrightness::ThreeQuarters);
+    assert_eq!(HdrOverlayBrightnessPref::get(&Preferences::default()), HdrOverlayBrightness::ThreeQuarters);
     assert!(
         serde_json::to_value(Preferences::default()).unwrap().get("hdr_overlay_brightness").is_none(),
         "the default is not written, so a session that never chose serializes as it always did"
@@ -469,7 +469,7 @@ fn hdr_overlay_brightness_defaults_to_full_and_round_trips() {
     for b in HdrOverlayBrightness::LADDER {
         assert_eq!(HdrOverlayBrightness::from_index(b.index()), b);
     }
-    assert_eq!(HdrOverlayBrightness::from_index(200), HdrOverlayBrightness::Full);
+    assert_eq!(HdrOverlayBrightness::from_index(200), HdrOverlayBrightness::ThreeQuarters);
 
     let legacy = Preferences::default();
     let p = prefs_with(json!([record("kid", STAMP, json!({ "hdr_overlay_brightness": "half" }))]));
@@ -478,15 +478,17 @@ fn hdr_overlay_brightness_defaults_to_full_and_round_trips() {
         HdrOverlayBrightness::Half
     );
     assert_eq!(serde_json::to_value(&p).unwrap()["profile_prefs"][0]["prefs"], json!({ "hdr_overlay_brightness": "half" }));
-    let p = prefs_with(json!([record("kid", STAMP, json!({ "hdr_overlay_brightness": "three_quarters" }))]));
-    assert_eq!(
-        effective::<HdrOverlayBrightnessPref>(&legacy, own_prefs(&p.profile_prefs, "kid", STAMP)),
-        HdrOverlayBrightness::ThreeQuarters
-    );
-    let p = prefs_with(json!([record("kid", STAMP, json!({ "hdr_overlay_brightness": "a_quarter" }))]));
+    let p = prefs_with(json!([record("kid", STAMP, json!({ "hdr_overlay_brightness": "full" }))]));
     assert_eq!(
         effective::<HdrOverlayBrightnessPref>(&legacy, own_prefs(&p.profile_prefs, "kid", STAMP)),
         HdrOverlayBrightness::Full,
+        "a profile that chose 100% keeps it (it is written: the default is 75%)"
+    );
+    assert_eq!(serde_json::to_value(&p).unwrap()["profile_prefs"][0]["prefs"], json!({ "hdr_overlay_brightness": "full" }));
+    let p = prefs_with(json!([record("kid", STAMP, json!({ "hdr_overlay_brightness": "a_quarter" }))]));
+    assert_eq!(
+        effective::<HdrOverlayBrightnessPref>(&legacy, own_prefs(&p.profile_prefs, "kid", STAMP)),
+        HdrOverlayBrightness::ThreeQuarters,
         "an unknown spelling reads the install's value"
     );
     let install: Preferences = serde_json::from_value(json!({ "hdr_overlay_brightness": "half" })).unwrap();

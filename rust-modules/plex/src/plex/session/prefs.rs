@@ -106,7 +106,7 @@ pub struct Preferences {
     pub subtitle_position: SubtitlePosition,
     /// **How bright the player's overlay and captions are while the picture is HDR** — see
     /// [`HdrOverlayBrightness`]. A frozen fallback like [`Preferences::subtitle_tone`]. Absence is
-    /// Full (no dimming). Skipped at the default for the same reason as [`Preferences::subtitle_size`].
+    /// ThreeQuarters (the default dim). Skipped at the default for the same reason as [`Preferences::subtitle_size`].
     #[serde(default, deserialize_with = "de_soft_hdr_overlay_brightness", skip_serializing_if = "is_default_hdr_overlay_brightness")]
     pub hdr_overlay_brightness: HdrOverlayBrightness,
     /// **What the player does when an episode with a successor reaches its credits** — see
@@ -1229,13 +1229,13 @@ fn is_default_subtitle_position(position: &SubtitlePosition) -> bool {
     *position == SubtitlePosition::default()
 }
 
-/// The HDR overlay brightness is a preference too: a spelling this build does not know degrades to Full.
+/// The HDR overlay brightness is a preference too: a spelling this build does not know degrades to the default (75%).
 fn de_soft_hdr_overlay_brightness<'de, D>(d: D) -> Result<HdrOverlayBrightness, D::Error>
 where
     D: Deserializer<'de>,
 {
     let Ok(v) = serde_json::Value::deserialize(d) else {
-        return Ok(HdrOverlayBrightness::Full);
+        return Ok(HdrOverlayBrightness::default());
     };
     Ok(serde_json::from_value::<HdrOverlayBrightness>(v).unwrap_or_default())
 }

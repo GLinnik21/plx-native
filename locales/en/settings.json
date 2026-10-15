@@ -685,11 +685,11 @@
   },
   "settings.playback.hdr_overlay.full": {
     "value": "100%",
-    "description": "HDR overlay brightness picker option (the default): the controls and subtitles are drawn at full brightness, as in SDR."
+    "description": "HDR overlay brightness picker option: the controls and subtitles are drawn at full brightness during HDR, as in SDR (no dimming)."
   },
   "settings.playback.hdr_overlay.three_quarters": {
     "value": "75%",
-    "description": "HDR overlay brightness picker option: the controls and subtitles are drawn at three quarters of full brightness during HDR."
+    "description": "HDR overlay brightness picker option (the default): the controls and subtitles are drawn at three quarters of full brightness during HDR."
   },
   "settings.playback.hdr_overlay.half": {
     "value": "50%",

@@ -173,7 +173,7 @@ fn scramble() {
     restore_deck_press(DeckPress::Play);
     crate::player::restore_subtitle_tone(SubtitleTone::Grey);
     crate::player::restore_audio_enhancements(AudioEnhancements { boost_dialog: false, normalize_loudness: true });
-    restore_hdr_overlay_brightness(HdrOverlayBrightness::ThreeQuarters);
+    restore_hdr_overlay_brightness(HdrOverlayBrightness::Full);
     crate::player::preview::restore_trailer_autoplay(true);
 }
 
@@ -204,7 +204,7 @@ fn restore_profile_rows_unseated_reads_the_legacy_keys_and_never_an_own_value() 
         cells(),
         Cells(Quality::Original, DirectPlayMode::Auto, SubtitleSize::Medium, SubtitlePosition::Low,
             NextEpisodeMode::Countdown, SkipInterval::Seconds10, DeckPress::Details, SubtitleTone::White,
-            AudioEnhancements::NONE, HdrOverlayBrightness::Full, false),
+            AudioEnhancements::NONE, HdrOverlayBrightness::ThreeQuarters, false),
         "a record that chose nothing restores every default (an absent quality is Original; the derived \
          `Preferences::default()` has trailers off: a PARSED record reads them on, see below)"
     );
@@ -406,7 +406,7 @@ fn every_live_setting_is_picked_into_the_seated_profiles_record() {
         cells(),
         Cells(Quality::P480, DirectPlayMode::Disabled, SubtitleSize::ExtraLarge, SubtitlePosition::Middle,
             NextEpisodeMode::Off, SkipInterval::Seconds60, DeckPress::Details, SubtitleTone::Grey,
-            AudioEnhancements::NONE, HdrOverlayBrightness::Full, true)
+            AudioEnhancements::NONE, HdrOverlayBrightness::ThreeQuarters, true)
     );
 }
 
@@ -598,7 +598,10 @@ fn overlay_gain_is_one_for_sdr_and_full_and_the_rung_for_hdr() {
 }
 
 #[test]
-fn the_default_pick_changes_nothing_even_for_hdr() {
-    assert_eq!(HdrOverlayBrightness::default(), HdrOverlayBrightness::Full);
-    assert_eq!(overlay_gain_for(true, false, false, HdrOverlayBrightness::default()), 1.0);
+fn the_default_pick_dims_an_hdr_picture_to_75_percent_and_never_an_sdr_one() {
+    assert_eq!(HdrOverlayBrightness::default(), HdrOverlayBrightness::ThreeQuarters);
+    assert_eq!(HdrOverlayBrightness::from_index(99), HdrOverlayBrightness::ThreeQuarters);
+    assert_eq!(overlay_gain_for(true, false, false, HdrOverlayBrightness::default()), 0.75);
+    assert_eq!(overlay_gain_for(false, false, false, HdrOverlayBrightness::default()), 1.0);
+    assert_eq!(overlay_gain_for(true, false, false, HdrOverlayBrightness::Full), 1.0, "a chosen 100% stays off");
 }
