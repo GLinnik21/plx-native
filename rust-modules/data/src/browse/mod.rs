@@ -686,17 +686,18 @@ impl SecItems {
             }
         }
     }
-    /// A read scan first: an optimistic edit must not clone unrelated retained pages.
-    fn apply_view(&mut self, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
-        // a row the edit would leave as it is (a read-back that agrees) is not a hit: nothing is
-        // copied, no notice rises and no query goes stale for it
+    /// A read scan first: an optimistic edit must not clone unrelated retained pages. Returns
+    /// `(covered, changed)`: whether any loaded row is one the edit addresses, and whether any
+    /// of them actually changed. A read-back that agrees with the row covers it and changes
+    /// nothing: no page is copied and no notice rises, but the listing still has to learn it.
+    fn apply_view(&mut self, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> (bool, bool) {
+        let covered = |m: &PmsMovie| at.covers(m);
         let matches = |m: &PmsMovie| at.covers(m) && edit.changes(m);
-        let mut hit = false;
+        let (mut any_covered, mut changed) = (false, false);
         for p in 0..self.pages.len() {
-            if !self.pages[p]
-                .as_ref()
-                .is_some_and(|page| page.iter().flatten().any(matches))
-            {
+            let Some(page) = self.pages[p].as_ref() else { continue };
+            any_covered |= page.iter().flatten().any(covered);
+            if !page.iter().flatten().any(matches) {
                 continue;
             }
             let page = Arc::make_mut(&mut self.pages)[p].as_mut().unwrap();
@@ -706,10 +707,10 @@ impl SecItems {
                 .filter(|m| matches(m))
             {
                 edit.apply(m);
-                hit = true;
+                changed = true;
             }
         }
-        hit
+        (any_covered, changed)
     }
     #[cfg(any(test, feature = "test-support"))]
     fn from_vec(v: Vec<Option<PmsMovie>>) -> Self {
@@ -1242,9 +1243,12 @@ impl BrowseState {
     }
     /// Edit every listing row the change covers, in every section's loaded pages.
     ///
-    /// A read-back's [`ViewEdit::Facts`] that lands on a row of a listing whose MEMBERSHIP depends on
-    /// viewing (the Unwatched switch, or ordered by last viewed) also marks that section stale: the
-    /// row is patched where it stands, but the server would now list it elsewhere or not at all.
+    /// A read-back's [`ViewEdit::Facts`] that COVERS a row of a listing whose MEMBERSHIP depends on
+    /// viewing (the Unwatched switch, or ordered by last viewed) also marks that section stale,
+    /// whether or not it changes the row: the server's answer is what marks staleness, and a
+    /// read-back that agrees with the optimistic row is exactly that answer. The row is patched
+    /// where it stands, but the server would now list it elsewhere or not at all.
+    /// Returns true when a row changed or a section was newly marked stale or reset.
     /// The current section waits for a page to be pushed over the Library page
     /// ([`BrowseState::requery_stale`]); any other section simply forgets its pages AND its
     /// cursor (`reset_listing`), which is what a first visit looks like: switching back to it
@@ -1255,15 +1259,15 @@ impl BrowseState {
             crate::viewstate::ViewEdit::Facts { .. } | crate::viewstate::ViewEdit::Offset { .. });
         let mut hit = false;
         for (i, state) in self.states.iter_mut().enumerate() {
-            if !state.items.apply_view(at, edit) {
-                continue;
-            }
-            hit = true;
-            if facts && state.membership_depends_on_viewing() {
+            let (covered, changed) = state.items.apply_view(at, edit);
+            hit |= changed;
+            if covered && facts && state.membership_depends_on_viewing() {
                 if i == current {
+                    hit |= !state.membership_stale;
                     state.membership_stale = true;
                 } else {
                     state.reset_listing();
+                    hit = true;
                 }
             }
         }

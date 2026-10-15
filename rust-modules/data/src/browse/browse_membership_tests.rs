@@ -116,3 +116,33 @@ fn a_stale_section_that_is_not_showing_forgets_its_pages() {
     assert_eq!((first.fetch, first.total), (SecFetch::Loading, -1), "its next visit fetches afresh");
     assert!(!first.membership_stale);
 }
+
+#[test]
+fn an_agreeing_read_back_still_marks_an_unwatched_filtered_listing_stale() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _) = registered_page_source();
+    assert!(browse.state.set_unwatched(true));
+    resident(sid, &mut browse);
+    assert!(apply(&mut browse, sid, ViewEdit::Watched(true)));
+    assert!(!stale(&mut browse), "the press alone says nothing");
+    assert!(apply(&mut browse, sid, WATCHED_FACTS), "marking the listing stale is a change the store must publish");
+    let row = browse.state.states()[0].items.get(0).unwrap();
+    assert!(row.watched && !row.unwatched);
+    assert!(stale(&mut browse), "the server's answer agrees with the row, and that answer is what marks staleness");
+    assert!(!apply(&mut browse, sid, WATCHED_FACTS), "a second agreeing answer changes nothing");
+}
+
+#[test]
+fn an_agreeing_read_back_resets_a_stale_section_that_is_not_showing() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _) = registered_page_source();
+    browse.append_sections(0, vec![(2, "Other".into(), SecKind::Movie)]);
+    assert!(browse.state.set_unwatched(true));
+    resident(sid, &mut browse);
+    browse.state.want(0, PAGE, None);
+    browse.state.set_cur(1);
+    assert!(apply(&mut browse, sid, ViewEdit::Watched(true)));
+    assert!(apply(&mut browse, sid, WATCHED_FACTS), "the reset is a change the store must publish");
+    let first = &browse.state.states()[0];
+    assert_eq!((first.fetch, first.total), (SecFetch::Loading, -1), "its next visit fetches afresh");
+}

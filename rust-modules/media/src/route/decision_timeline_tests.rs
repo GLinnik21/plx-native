@@ -527,7 +527,7 @@ fn a_stop_leaves_a_record_with_the_queue_rows_parentage_and_prior_watched_state(
     let stops = take_landed_stops();
     assert_eq!(stops.len(), 2, "both stops arrive, oldest first");
     let first = &stops[0];
-    assert_eq!((first.rk.as_str(), first.show_rk.as_str(), first.season_index), ("7", "S", 2));
+    assert_eq!(first.rk.as_str(), "7");
     assert_eq!((first.pos_ms, first.dur_ms, first.ok, first.was_watched), (30_000, 60_000, false, false));
     assert!(stops[1].was_watched, "no queue row for the item: read as watched, never fanned out");
     assert!(!stops_owed());
@@ -546,7 +546,7 @@ fn a_stop_posted_after_the_identity_changed_is_dropped() {
     reset_session(&mut ps);
     let _ = take_landed_stops();
     let rec = |rk: &str| plx_data::viewstate::StopRecord {
-        sid: ServerId::from_raw(0), rk: rk.into(), show_rk: String::new(), season_index: 0,
+        sid: ServerId::from_raw(0), rk: rk.into(),
         pos_ms: 30_000, dur_ms: 60_000, ok: false, was_watched: false,
     };
     let mut landed_before = PendingStop::new(rec("1"));

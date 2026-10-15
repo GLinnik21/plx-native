@@ -33,6 +33,7 @@ fn reply(conn: &mut std::net::TcpStream, body: &str) {
 fn row(truth: &Truth, rk: &str) -> String {
     let viewed = ["3", "4"].iter().filter(|e| truth.watched.lock().unwrap().contains(**e)).count();
     match rk {
+        "m" => r#"{"ratingKey":"m","type":"movie","title":"M"}"#.to_string(),
         "1" => format!(r#"{{"ratingKey":"1","type":"show","title":"S","leafCount":2,"viewedLeafCount":{viewed}}}"#),
         "2" => format!(r#"{{"ratingKey":"2","type":"season","title":"S1","index":1,"parentRatingKey":"1","leafCount":2,"viewedLeafCount":{viewed}}}"#),
         ep => {
@@ -197,15 +198,68 @@ fn a_show_row_on_another_server_is_not_patched() {
 }
 
 /// The leaf's answer names its season and show; the keys are not on the row that was pressed, so
-/// they cost exactly one more read, which carries both. A movie has none and costs no more.
+/// they cost exactly one more read, which carries both.
 #[test]
-fn a_missing_parent_key_costs_exactly_one_extra_read() {
+fn an_episode_costs_one_extra_read_for_its_season_and_show() {
     let _g = plx_base::testlock::serial();
     let pms = serve();
     let (mut stores, sid) = library(&pms);
     press(&mut stores, sid, "3", Write::Watched);
     drive(&mut stores, settled);
     assert_eq!(*pms.truth.requests.lock().unwrap(), ["3", "2,1"], "the episode, then its season and show together");
+}
+
+/// A movie names no season and no show, so its read-back is the one read.
+#[test]
+fn a_movie_costs_exactly_one_read() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library(&pms);
+    press(&mut stores, sid, "m", Write::Watched);
+    drive(&mut stores, settled);
+    assert_eq!(*pms.truth.requests.lock().unwrap(), ["m"]);
+}
+
+fn parent_row(sid: ServerId, rk: &str, kind: i32, show_rk: &str) -> ReadRow {
+    ReadRow {
+        movie: PmsMovie { sid, rk: rk.into(), kind, show_rk: show_rk.into(), unwatched: true, ..Default::default() },
+        parent: String::new(),
+        grandparent: String::new(),
+    }
+}
+
+/// A show-scope press made while the season/show read is out: the read describes the server from
+/// before that press, so its show row and its season row (both under the press) are dropped. A
+/// sibling show's row, which the press does not cover, still lands.
+#[test]
+fn a_show_scope_press_overtakes_an_out_parent_read() {
+    let sid = ServerId::from_raw(0);
+    let ledger = ViewLedger::default();
+    let mut store = ViewReconcileStore::default();
+    store.share_ledger(&ledger);
+    store.flights.push(Flight {
+        id: 1, sid, keys: vec!["2".into(), "1".into(), "9".into()],
+        parents: vec!["2".into(), "1".into(), "9".into()], stamp: ledger.stamp(),
+    });
+    ledger.record(&crate::viewstate::ViewAt { sid, rk: "1".into(), scope: Scope::Show }, ViewEdit::Watched(true));
+    store.adapter.mail.lock().unwrap().push(Landing { id: 1, rows: Some(vec![
+        parent_row(sid, "2", 2, "1"), parent_row(sid, "1", 1, ""), parent_row(sid, "9", 1, ""),
+    ]) });
+    let mut published = Vec::new();
+    store.pump_with_gate(&plx_machine::landgate::Gate::default(), false, &mut |c| published.push(c.rk));
+    assert_eq!(published, ["9"], "the stale show and season rows are dropped; the unrelated show lands");
+}
+
+/// A batch that could not be spawned goes back split as it came: leaves to `pending`, the parents
+/// that rode with them to `pending_parents`, so the retry batches them the same way.
+#[test]
+fn an_unspawned_batch_splits_back_into_leaves_and_parents() {
+    let sid = ServerId::from_raw(0);
+    let mut store = ViewReconcileStore::default();
+    store.requeue_unspawned(sid, vec!["3".into(), "4".into(), "2".into(), "1".into()], 2);
+    assert_eq!(store.pending_for_test(), [(sid, "3".to_string()), (sid, "4".to_string())]);
+    assert_eq!(store.pending_parents, [(sid, "2".to_string()), (sid, "1".to_string())]);
+    assert_eq!(store.retry_cd, RETRY_FRAMES);
 }
 
 /// Two episodes of one season pressed in a burst: one read of both, one of the season and show —

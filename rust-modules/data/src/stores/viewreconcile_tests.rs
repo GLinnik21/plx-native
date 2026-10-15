@@ -256,7 +256,7 @@ fn a_read_is_not_spawned_while_a_write_is_queued_so_the_press_survives_it() {
 
 fn stop(sid: ServerId, pos_ms: i64, was_watched: bool, ok: bool) -> crate::viewstate::StopRecord {
     crate::viewstate::StopRecord {
-        sid, rk: "1".into(), show_rk: String::new(), season_index: 0, pos_ms, dur_ms: 60_000, ok, was_watched,
+        sid, rk: "1".into(), pos_ms, dur_ms: 60_000, ok, was_watched,
     }
 }
 
