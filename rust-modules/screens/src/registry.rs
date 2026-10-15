@@ -165,10 +165,10 @@ pub enum PlayerReq {
     /// The difference is the reason there are two. [`SeekTo`](PlayerReq::SeekTo) RESUMES, because
     /// a viewer who picked a chapter asked to watch it. A scrub does not: the transport's bar is
     /// how a PAUSED film is moved, and starting it there is a behaviour nobody asked for. Holding
-    /// the pause across the seek needs three pieces of state that are the loop's and no screen's —
-    /// `App::repause_at`, `TX.resume_pend` and the bounded seek-preroll feed override that lets
-    /// the pipeline decode the landed frame without publishing a viewer Resume — which is why this
-    /// is a request rather than something `PlayerScreen` performs.
+    /// the pause across the seek is the media layer's: the pump opens the bounded seek-preroll feed
+    /// override when it arms the seek, decodes the landed frame without publishing a viewer
+    /// Resume, and re-pauses on the landing — which is why this is a request rather than something
+    /// `PlayerScreen` performs.
     CommitSeek(i64),
     /// Apply the `…` popover's chosen row.
     More(plx_appkit::more_menu::Action),

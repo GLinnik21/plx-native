@@ -1899,6 +1899,28 @@ impl Shared {
         }
     }
 
+    /// A viewer Pause that lands on a clock a seek or an Initial hold already owns marks it
+    /// `user_held`, and `reserve_hls_prime_play` refuses a Play on a user-held clock: the keyframe
+    /// would be fed through the preroll's open gate and never be allowed to present. When the pump
+    /// opens a preroll for such a Pause it hands the hold back to the seek prime exactly as
+    /// [`Self::prepare_seek_pause`] does for a seek dispatched from a user hold. `false` when the
+    /// clock is not held (transitioning, running, rebuffering): the caller tries again next tick.
+    pub fn hand_hold_to_seek_prime(&self) -> bool {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        let HlsClockPhase::Held {
+            hold: ClockHold::User | ClockHold::Initial | ClockHold::Seek | ClockHold::ResumePrime,
+        } = clock.phase
+        else {
+            return false;
+        };
+        if clock.user_held {
+            clock.user_held = false;
+            clock.resume_acb_pending = true;
+        }
+        clock.phase = HlsClockPhase::Held { hold: ClockHold::Seek };
+        true
+    }
+
     pub fn complete_seek_pause(&self, token: u64, accepted: bool) -> HlsPauseCompletion {
         let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
         if clock.phase
@@ -2368,6 +2390,11 @@ pub struct Transport {
     /// The viewer remains logically paused while a seek is allowed to feed, Play one landed frame,
     /// then re-pause. Keeping this separate prevents the UI/user intent from lying during preroll.
     seek_preroll: AtomicBool,
+    /// The seek preroll above was opened by the PUMP, not by a caller, and the pump closes it: the
+    /// target (ns) the seek was dispatched at, `-1` when the preroll is absent or a caller's.
+    /// Transport-wide on purpose: a reload (`reset_for_reload`) replaces the Engine but keeps the
+    /// viewer's Pause and this ownership, so the landing is settled on whichever Engine is live.
+    seek_preroll_owned: AtomicI64,
     pub hud_until: AtomicU32,  // pl_hud_until (SDL ticks)
     pub scrub_ns: AtomicI64,   // pl_scrub_ns (-1 = not scrubbing)
     pub seek_to_ns: AtomicI64, // g_seek_to_ns (UI seek request, -1 = none)
@@ -2488,6 +2515,7 @@ impl Transport {
             pause_clock: Mutex::new(UserPauseClock::new()),
             resume_pend: AtomicBool::new(false),
             seek_preroll: AtomicBool::new(false),
+            seek_preroll_owned: AtomicI64::new(-1),
             hud_until: AtomicU32::new(0),
             scrub_ns: AtomicI64::new(-1),
             seek_to_ns: AtomicI64::new(-1),
@@ -2564,8 +2592,34 @@ impl Transport {
         !self.paused.load(Ordering::Acquire) || self.seek_preroll_active()
     }
 
+    /// Open the paused-seek preroll for a seek the PUMP dispatched under a viewer Pause, and take
+    /// ownership of closing it (`pump::settle_paused_seek`). A preroll a caller already opened (the
+    /// foreground restore) stays the caller's: `false`. Re-opening an owned one just retargets it
+    /// (a coalesced tap). Not paused: nothing to hold, `false`.
+    pub fn own_paused_seek(&self, target_ns: i64) -> bool {
+        if self.seek_preroll_owned.load(Ordering::Acquire) >= 0 {
+            self.seek_preroll_owned.store(target_ns.max(0), Ordering::Release);
+            return true;
+        }
+        if self.seek_preroll_active() || !self.begin_paused_seek() {
+            return false;
+        }
+        self.seek_preroll_owned.store(target_ns.max(0), Ordering::Release);
+        true
+    }
+
+    /// The target of the preroll the pump owns, if it owns one.
+    pub fn owned_paused_seek(&self) -> Option<i64> {
+        let target = self.seek_preroll_owned.load(Ordering::Acquire);
+        (target >= 0 && self.seek_preroll_active()).then_some(target)
+    }
+
+    /// Closing the preroll ends any ownership of it, so a failed re-pause (which leaves the preroll
+    /// open) keeps the pump retrying, and every other closer (Resume, an abandoned seek, a stop)
+    /// drops it without the pump re-pausing a film the viewer has since released.
     pub fn finish_seek_preroll(&self) {
         self.seek_preroll.store(false, Ordering::Release);
+        self.seek_preroll_owned.store(-1, Ordering::Release);
         self.resume_pend.store(false, Ordering::Release);
     }
 
@@ -2593,6 +2647,7 @@ impl Transport {
         self.paused.store(false, Ordering::Release);
         self.resume_pend.store(false, Ordering::Relaxed);
         self.seek_preroll.store(false, Ordering::Relaxed);
+        self.seek_preroll_owned.store(-1, Ordering::Relaxed);
         // …and not `scrub_ns`, for `reset_for_reload`'s reason: a new session is a fresh
         // `PlayerScreen` (or, on an auto-advance chain, `start_playback`'s in-place reset of the
         // live one), and both publish `Scrub::IDLE` themselves.

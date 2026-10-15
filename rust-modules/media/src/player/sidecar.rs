@@ -230,6 +230,17 @@ pub fn select_without_fetch_for_test(stream_id: i64) {
     st.failed = None;
 }
 
+/// Select `stream_id` as a sidecar whose conversion FAILED `age` ago, without fetching anything: the
+/// failure notice is up for [`FAILURE_SHOWN`] from then. For the player screen's frame-fingerprint
+/// tests, which cannot wait six seconds and cannot reach the private state.
+#[cfg(any(test, feature = "test-support"))]
+pub fn fail_for_test(stream_id: i64, age: Duration) {
+    select_without_fetch_for_test(stream_id);
+    let mut st = state();
+    let want = st.want.clone().expect("just selected");
+    st.failed = Some((want, Failure::Empty, Instant::now().checked_sub(age).unwrap_or_else(Instant::now)));
+}
+
 /// A new item is starting: nothing of the previous one's may survive. MAIN THREAD.
 pub fn reset() {
     let mut st = state();

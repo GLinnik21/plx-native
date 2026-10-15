@@ -2657,6 +2657,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         s.parked_at_end = false;
         let aq = s.aq;
         let mut hopped_to_tls = None;
+        let reopen_began = std::time::Instant::now();
         let ok = match &mut s.src {
             // Redirects are followed here too (`stream::redirect`), and the effective target is
             // written back so the NEXT seek starts from it rather than replaying the chain. A hop
@@ -2719,6 +2720,11 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         if let Some(cs) = hopped_to_tls {
             s.src = Src::Curl(cs);
         }
+        // One line per reopen (a seek into the file, or libavformat healing a failed read).
+        crate::player::log(&format!(
+            "ff: seek_cb reopen off={target} ok={ok} ms={}",
+            reopen_began.elapsed().as_millis()
+        ));
         if !ok {
             return -1;
         }
@@ -8386,6 +8392,7 @@ pub fn demux(
                 // redirected to https, which `open_plain_progressive` hands to curl. Both arms publish the same two diagnostics (`dg_http_status`, `file_size`)
                 // before anything else can fail, because the read-out panel is the first thing anybody
                 // looks at when a part will not play and it must mean the same thing either way.
+                let open_began = std::time::Instant::now();
                 let (src, size) = if origin.is_tls() {
                     let reservation = curl_open
                         .take()
@@ -8423,6 +8430,8 @@ pub fn demux(
                         }
                     }
                 };
+
+                crate::player::log(&format!("ff: open ms={}", open_began.elapsed().as_millis()));
 
                 let mut state = Box::new(AvioState {
                     src,
@@ -8799,10 +8808,13 @@ pub fn demux(
                         let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
                         // Fence completed renders from the old position before new packets arrive.
                         crate::player::ass_source::seek(ass_generation);
+                        crate::player::log(&format!("ff: seek begin {}s", seek_ns / 1_000_000_000));
+                        let seek_began = std::time::Instant::now();
                         let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
                         crate::player::log(&format!(
-                            "ff: seek {}s rv={sr}",
-                            seek_ns / 1_000_000_000
+                            "ff: seek {}s rv={sr} ms={}",
+                            seek_ns / 1_000_000_000,
+                            seek_began.elapsed().as_millis()
                         ));
                         headroom.restart(aq_p);
                         SHARED.first_audio_pts.store(i64::MIN, Ordering::Release);
