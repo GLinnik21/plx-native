@@ -349,7 +349,7 @@ fn worker() {
         };
         let Some(finished) = finished else { continue };
         super::ass_perf::finish_call(finished.changed, finished.pub_bytes);
-        if finished.changed {
+        if finished.wake {
             plx_machine::present::wake_from_worker();
         }
     }
@@ -669,6 +669,9 @@ impl Engine {
                 })
             }
             Err(error) => {
+                // The facade may have rejected the frame mid-draw: a kept renderer would answer a
+                // later reuse with "unchanged" and hand back this error frame for a new source.
+                self.native = None;
                 self.error = Some(error);
                 plx_base::eventlog::log(&format!("subtitle: ASS render failed: {error:?}"));
                 error_frame(key, error)

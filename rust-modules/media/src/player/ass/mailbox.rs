@@ -81,7 +81,11 @@ pub(super) struct Requested {
 /// What finishing a job published, for the worker's accounting.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Finished {
-    /// A Normal job published a frame whose pixels differ from the one it replaced.
+    /// A Normal job published a frame whose pixels differ from the one it replaced: the screen
+    /// has something new, wake it.
+    pub wake: bool,
+    /// The frame the job produced (published, or held ahead) differs from the one on screen,
+    /// for the `assperf` account.
     pub changed: bool,
     pub pub_bytes: u64,
 }
@@ -122,8 +126,12 @@ impl Mailbox {
     fn enqueue_normal(&mut self, key: Key, now_ms: i64, source: &Arc<Source>) {
         self.seqs += 1;
         self.requested = Some((key, now_ms, self.seqs));
-        let queued = matches!(self.in_flight, Some(InFlight { kind: Kind::Ahead { .. }, .. }))
-            .then(Instant::now);
+        // A Normal job this one replaces keeps its earlier stamp: the wait began then (R6).
+        let queued = match self.pending.as_ref() {
+            Some(Job { kind: Kind::Normal, queued: Some(since), .. }) => Some(*since),
+            _ => matches!(self.in_flight, Some(InFlight { kind: Kind::Ahead { .. }, .. }))
+                .then(Instant::now),
+        };
         self.pending = Some(Job {
             kind: Kind::Normal,
             key,
@@ -256,6 +264,16 @@ impl Mailbox {
         frame
     }
 
+    /// Whether `frame` differs from the published one, and the RGBA bytes it carries if so.
+    fn differs(&self, frame: &Frame, epoch: u64) -> (bool, u64) {
+        let changed = self
+            .published
+            .as_ref()
+            .is_none_or(|old| old.epoch != epoch || old.frame.serial != frame.serial);
+        let bytes = if changed { frame.rects.iter().map(|r| r.rgba.len() as u64).sum() } else { 0 };
+        (changed, bytes)
+    }
+
     /// WORKER, under the lock: take the pending job and mark it in flight.
     pub fn take(&mut self) -> Option<Job> {
         let job = self.pending.take()?;
@@ -275,15 +293,7 @@ impl Mailbox {
                 if job.seq == self.withdrawn || !latest {
                     return Finished::default();
                 }
-                let changed = self
-                    .published
-                    .as_ref()
-                    .is_none_or(|old| old.epoch != job.key.epoch || old.frame.serial != frame.serial);
-                let pub_bytes = if changed {
-                    frame.rects.iter().map(|r| r.rgba.len() as u64).sum()
-                } else {
-                    0
-                };
+                let (changed, pub_bytes) = self.differs(&frame, job.key.epoch);
                 self.pub_ids += 1;
                 self.published = Some(Published {
                     pub_id: self.pub_ids,
@@ -294,7 +304,7 @@ impl Mailbox {
                 });
                 self.next = None;
                 self.arm_ahead(&job.source);
-                Finished { changed, pub_bytes }
+                Finished { wake: changed, changed, pub_bytes }
             }
             Kind::Ahead { after } => {
                 let Some((frame, validity)) = outcome else { return Finished::default() };
@@ -304,6 +314,7 @@ impl Mailbox {
                 if !current {
                     return Finished::default();
                 }
+                let (changed, pub_bytes) = self.differs(&frame, job.key.epoch);
                 self.pub_ids += 1;
                 self.next = Some(Published {
                     pub_id: self.pub_ids,
@@ -312,9 +323,20 @@ impl Mailbox {
                     frame,
                     validity,
                 });
-                Finished::default()
+                // Nothing to show yet: the promotion on the UI thread is what the screen sees.
+                Finished { wake: false, changed, pub_bytes }
             }
         }
+    }
+
+    #[cfg(test)]
+    pub fn pending_queued(&self) -> Option<Instant> {
+        self.pending.as_ref().and_then(|j| j.queued)
+    }
+
+    #[cfg(test)]
+    pub fn answered(&self) -> u64 {
+        self.answered
     }
 
     #[cfg(test)]

@@ -3,23 +3,26 @@
 //!
 //! ```text
 //! assperf: worker tid=1234
-//! assperf: calls=3 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456 jobs=2+1 ahead_hit=1 nwait_p95_us=0 nwait_max_us=0
+//! assperf: window_ms=1000 calls=3 changed=2 p95_us=1800 max_us=4100 job_p95_us=2100 job_max_us=9000 pub_bytes=123456 up_bytes=123456 jobs=2+1 ahead_hit=1 nwait_p95_us=0 nwait_max_us=0
 //! ```
 //!
-//! `calls` is how many times the worker ran `plx_ass_render` (one per job: a frame is rendered
+//! `window_ms` is the span the counts cover: from the previous line (or the session's first job)
+//! to this one. Jobs are rare while a cue is steady, so a line can follow a long idle stretch and
+//! the counts are only comparable as rates over `window_ms`. `calls` is how many times the worker ran `plx_ass_render` (one per job: a frame is rendered
 //! when the screen needs one, and the next boundary is rendered ahead of its time, not once per UI
-//! frame), `changed` how many of those published a new frame, `p95_us`/`max_us` the wall time
+//! frame), `changed` how many of those produced a frame whose pixels differ from the one on screen
+//! (published at once, or held ahead for the next boundary), `p95_us`/`max_us` the wall time
 //! of the FFI call alone (nearest-rank 95th percentile over a fixed ring), `job_p95_us`/`job_max_us`
 //! the same for the whole worker job (source load, event append, flush-and-reload, window slide
 //! and the draw call: the cost a cue change or seek pays), `pub_bytes` the RGBA
-//! bytes of the frames published, and `up_bytes` the bytes the UI thread uploaded with
-//! `glTexImage2D` in the same second ([`note_upload`]). `jobs=N+A` counts the worker's Normal and
+//! bytes of the frames published or held ahead, and `up_bytes` the bytes the UI thread uploaded with
+//! `glTexImage2D` in the same window ([`note_upload`]). `jobs=N+A` counts the worker's Normal and
 //! Ahead jobs separately, `ahead_hit` how many times the UI thread promoted an ahead frame
 //! ([`note_ahead_hit`]) and `nwait_*` how long a Normal job waited behind an Ahead job that was
 //! already rendering ([`note_nwait`]; native rendering cannot be cancelled). The upload's own time is the `assup`
 //! span on `FRAMEDROP spans=` (spans print only on `FRAMEDROP` lines and only while the frame
-//! instrument is armed, `/tmp/plxnative-framedrop`). A window closes on the first render at least a
-//! second after it opened, and [`flush`] emits the partial window when the source is deselected.
+//! instrument is armed, `/tmp/plxnative-framedrop`). A window closes on the first job at least a
+//! second after it opened (an idle stretch emits no line, hence `window_ms`), and [`flush`] emits the partial window when the source is deselected.
 //! `tools/tv-sched-trace.sh --tid <tid>` follows the worker.
 //!
 //! Always compiled; the cost is one clock pair per render and a fixed 256-slot ring.
@@ -110,6 +113,9 @@ pub(super) struct Aggregator {
     max_us: u32,
     job_max_us: u32,
     pub_bytes: u64,
+    /// When the counters (these and the cross-thread ones) last restarted: the previous line, or
+    /// the first job of a session. Survives a line so `window_ms` spans the idle gap too.
+    counting_since: Option<Instant>,
 }
 
 impl Aggregator {
@@ -127,12 +133,14 @@ impl Aggregator {
             max_us: 0,
             job_max_us: 0,
             pub_bytes: 0,
+            counting_since: None,
         }
     }
 
     /// Record one cycle; returns the finished window's line once a second has passed.
     pub(super) fn push(&mut self, now: Instant, cycle: Cycle, shared: Shared) -> Option<String> {
         let started = *self.started.get_or_insert(now);
+        self.counting_since.get_or_insert(now);
         if let Some(us) = cycle.render_us {
             self.render.push(us);
             self.calls += 1;
@@ -150,7 +158,7 @@ impl Aggregator {
         if now.saturating_duration_since(started) < WINDOW {
             return None;
         }
-        Some(self.take_line(shared))
+        Some(self.take_line(now, shared))
     }
 
     /// A Normal job waited `us` behind an Ahead job that was already rendering.
@@ -160,13 +168,21 @@ impl Aggregator {
     }
 
     /// The open window as a line (and reset), or `None` if nothing was recorded.
-    pub(super) fn take_partial(&mut self, shared: Shared) -> Option<String> {
-        (self.job.pushed > 0).then(|| self.take_line(shared))
+    pub(super) fn take_partial(&mut self, now: Instant, shared: Shared) -> Option<String> {
+        (self.job.pushed > 0).then(|| {
+            let line = self.take_line(now, shared);
+            self.counting_since = None;
+            line
+        })
     }
 
-    fn take_line(&mut self, shared: Shared) -> String {
+    fn take_line(&mut self, now: Instant, shared: Shared) -> String {
+        let window_ms = self
+            .counting_since
+            .map_or(0, |since| now.saturating_duration_since(since).as_millis());
         let line = format!(
-            "assperf: calls={} changed={} p95_us={} max_us={} job_p95_us={} job_max_us={} pub_bytes={} up_bytes={} jobs={}+{} ahead_hit={} nwait_p95_us={} nwait_max_us={}",
+            "assperf: window_ms={} calls={} changed={} p95_us={} max_us={} job_p95_us={} job_max_us={} pub_bytes={} up_bytes={} jobs={}+{} ahead_hit={} nwait_p95_us={} nwait_max_us={}",
+            window_ms,
             self.calls,
             self.changed,
             self.render.p95(),
@@ -182,6 +198,7 @@ impl Aggregator {
             self.nwait_max_us
         );
         *self = Self::new();
+        self.counting_since = Some(now);
         line
     }
 }
@@ -262,7 +279,7 @@ pub(super) fn finish_call(changed: bool, pub_bytes: u64) {
 /// WORKER: the source was deselected; emit the partial window and start the next session clean.
 pub(super) fn flush() {
     let line = AGG.with(|a| {
-        a.borrow_mut().take_partial(Shared {
+        a.borrow_mut().take_partial(Instant::now(), Shared {
             up_bytes: UPLOADED.swap(0, Ordering::Relaxed),
             ahead_hits: AHEAD_HITS.swap(0, Ordering::Relaxed),
         })
@@ -314,11 +331,31 @@ mod tests {
             } else {
                 assert_eq!(
                     line.as_deref(),
-                    Some("assperf: calls=200 changed=20 p95_us=950 max_us=1000 job_p95_us=1900 job_max_us=2000 pub_bytes=20000 up_bytes=777 jobs=200+0 ahead_hit=3 nwait_p95_us=0 nwait_max_us=0")
+                    Some("assperf: window_ms=1000 calls=200 changed=20 p95_us=950 max_us=1000 job_p95_us=1900 job_max_us=2000 pub_bytes=20000 up_bytes=777 jobs=200+0 ahead_hit=3 nwait_p95_us=0 nwait_max_us=0")
                 );
             }
         }
         assert_eq!(a.calls, 0, "the window resets");
+    }
+
+    #[test]
+    fn a_line_after_an_idle_stretch_reports_the_span_it_covers() {
+        let t0 = Instant::now();
+        let mut a = Aggregator::new();
+        assert!(a.push(t0, cycle(10, true, 1), up(0)).is_none());
+        let first = a.push(t0 + WINDOW, cycle(10, true, 1), up(0)).unwrap();
+        assert!(first.starts_with("assperf: window_ms=1000 calls=2 "), "{first}");
+        // Ten idle seconds, then a job and, a second later, the job that closes the window.
+        assert!(a.push(t0 + 11 * WINDOW, cycle(10, true, 1), up(0)).is_none());
+        let second = a.push(t0 + 12 * WINDOW, cycle(10, true, 1), up(0)).unwrap();
+        assert!(second.starts_with("assperf: window_ms=11000 calls=2 "), "{second}");
+        // A partial window at deselection ends the session: the next one starts its own clock.
+        assert!(a.push(t0 + 20 * WINDOW, cycle(10, true, 1), up(0)).is_none());
+        let partial = a.take_partial(t0 + 20 * WINDOW + WINDOW / 2, up(0)).unwrap();
+        assert!(partial.starts_with("assperf: window_ms=8500 "), "{partial}");
+        assert!(a.push(t0 + 30 * WINDOW, cycle(10, true, 1), up(0)).is_none());
+        let next = a.take_partial(t0 + 30 * WINDOW, up(0)).unwrap();
+        assert!(next.starts_with("assperf: window_ms=0 "), "{next}");
     }
 
     #[test]
@@ -349,10 +386,10 @@ mod tests {
         assert!(a.push(t0, load, up(0)).is_none());
         a.note_nwait(300);
         a.note_nwait(900);
-        let line = a.take_partial(up(0)).unwrap();
+        let line = a.take_partial(t0, up(0)).unwrap();
         assert_eq!(
             line,
-            "assperf: calls=0 changed=1 p95_us=0 max_us=0 job_p95_us=50000 job_max_us=50000 pub_bytes=8 up_bytes=0 jobs=0+1 ahead_hit=0 nwait_p95_us=900 nwait_max_us=900"
+            "assperf: window_ms=0 calls=0 changed=1 p95_us=0 max_us=0 job_p95_us=50000 job_max_us=50000 pub_bytes=8 up_bytes=0 jobs=0+1 ahead_hit=0 nwait_p95_us=900 nwait_max_us=900"
         );
     }
 
@@ -360,11 +397,11 @@ mod tests {
     fn take_partial_emits_the_open_window_once_and_resets() {
         let t0 = Instant::now();
         let mut a = Aggregator::new();
-        assert!(a.take_partial(up(5)).is_none(), "nothing recorded");
+        assert!(a.take_partial(t0, up(5)).is_none(), "nothing recorded");
         assert!(a.push(t0, cycle(100, true, 4), up(0)).is_none());
-        let line = a.take_partial(up(9)).unwrap();
+        let line = a.take_partial(t0, up(9)).unwrap();
         assert!(line.contains("calls=1 changed=1 ") && line.contains("up_bytes=9 "), "{line}");
-        assert!(a.take_partial(up(9)).is_none(), "the window was reset");
+        assert!(a.take_partial(t0, up(9)).is_none(), "the window was reset");
     }
 
     #[test]

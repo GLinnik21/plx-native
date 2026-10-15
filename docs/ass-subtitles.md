@@ -38,8 +38,11 @@ retains the entire script. It also incorporates the video's font attachments, in
 those arrive after the external file. Source reuse includes server identity, stream identity,
 delivery key and codec. Backward seeks and Off→On do not re-download a loaded script.
 
-`player::ass` owns the native objects on one worker. A single latest-request slot coalesces clock
-updates; a completed frame is accepted only for the current source/selection epoch. The UI never
+`player::ass` owns the native objects on one worker. A published frame carries the window of
+playheads it stays right for, so a UI tick inside the window enqueues nothing; the one pending
+slot holds either a Normal job (the screen needs a frame) or an Ahead job (the next boundary,
+rendered early and promoted by the first tick at or after it). A completed frame is accepted only
+for the current source/selection epoch. The UI never
 waits for font parsing or rasterization. Native change detection avoids work for unchanged output. Overlapping libass images are composed
 in order into disjoint regions, with a maximum of 64 regions and one bounded pixel arena.
 Consecutive libass image identities also retain native region pixels, so a moving or karaoke
@@ -86,10 +89,11 @@ Boot the fixture with `tools/tv-session.sh up --guest --mock --screen player=990
 it never resolves a real Plex account. Configure and build the developer app against that mock first.
 
 Libass cost on the TV is read from the event log, not guessed. While a styled source renders,
-`player::ass_perf` writes one `assperf: calls=.. changed=.. p95_us=.. max_us=.. job_p95_us=..
-job_max_us=.. pub_bytes=.. up_bytes=.. jobs=N+A ahead_hit=.. nwait_p95_us=.. nwait_max_us=..` line per
-second (FFI render time, whole-job time including source load, append, flush-and-reload and window
-slide, bytes published and bytes uploaded; `jobs` counts the worker's Normal and Ahead jobs
+`player::ass_perf` writes an `assperf: window_ms=.. calls=.. changed=.. p95_us=.. max_us=.. job_p95_us=..
+job_max_us=.. pub_bytes=.. up_bytes=.. jobs=N+A ahead_hit=.. nwait_p95_us=.. nwait_max_us=..` line when a job
+arrives at least a second after the previous line (`window_ms` is the span its counts cover,
+including any idle stretch before it; read the counts as rates over it) (FFI render time, whole-job time including source load, append, flush-and-reload and window
+slide, `changed` and `pub_bytes` count frames published or held ahead whose pixels differ from the one on screen, bytes uploaded; `jobs` counts the worker's Normal and Ahead jobs
 separately, `ahead_hit` the ahead frames the UI thread promoted, `nwait` how long a Normal job
 waited behind an Ahead job already rendering; the partial window is written when the source is
 deselected) and
@@ -98,8 +102,8 @@ follows. The UI-thread texture upload is the `assup` span on `FRAMEDROP spans=` 
 `FRAMEDROP` lines, with `/tmp/plxnative-framedrop` armed). Nothing is
 logged while no styled source is selected, and a render costs one clock pair. The worker renders
 only when the screen needs a frame (a new key, a playhead outside the published frame's validity
-window, an animated cue) and renders the next boundary ahead of its time, so an idle second has a
-handful of jobs, not one per UI frame. `python3
+window, an animated cue) and renders the next boundary ahead of its time, so a steady cue costs no
+job at all between boundaries (no line is written then), not one per UI frame. `python3
 tests/fixtures/make_ass_stress.py <dir>` builds the stress MKVs (Latin, CJK, Thai, Devanagari,
 Arabic, rapid, karaoke, long, 4K60; host `ffmpeg`/`ffprobe` only) to serve with `mock_pms.py
 --extra-media`.

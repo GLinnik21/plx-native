@@ -24,6 +24,9 @@ struct Sim {
     normal: Vec<i64>,
     ahead: Vec<i64>,
     promoted: u32,
+    /// A windowed script: how far ahead of the playhead the held window reaches.
+    slide: Option<i64>,
+    window: Option<(i64, i64)>,
 }
 
 fn key_of(epoch: u64, revision: u64) -> Key {
@@ -57,6 +60,8 @@ impl Sim {
             normal: Vec::new(),
             ahead: Vec::new(),
             promoted: 0,
+            slide: None,
+            window: None,
         }
     }
 
@@ -69,6 +74,12 @@ impl Sim {
         match job.kind {
             Kind::Normal => self.normal.push(job.now_ms),
             Kind::Ahead { .. } => self.ahead.push(job.now_ms),
+        }
+        if let Some(span) = self.slide {
+            // Engine::slide: a playhead outside the held window feeds the renderer again.
+            if self.window.is_none_or(|(lo, hi)| job.now_ms < lo || job.now_ms >= hi) {
+                self.window = Some((job.now_ms - 1000, job.now_ms + span));
+            }
         }
         let tag = self.tag_at(job.now_ms);
         let frame = match &self.last {
@@ -90,7 +101,7 @@ impl Sim {
             }
         };
         self.last = Some((tag, frame.clone()));
-        let validity = ass_timing::validity(
+        let mut validity = ass_timing::validity(
             self.cues.iter().map(|c| Span {
                 start_ms: c.start,
                 end_ms: c.end,
@@ -98,6 +109,10 @@ impl Sim {
             }),
             job.now_ms,
         );
+        if let Some((lo, hi)) = self.window {
+            validity.from_ms = validity.from_ms.max(lo);
+            validity.until_ms = validity.until_ms.min(hi);
+        }
         (frame, validity)
     }
 
@@ -184,6 +199,30 @@ fn boundary_without_visible_change_requests_at_most_once() {
     assert_eq!(sim.ahead.len(), 5, "one early render per distinct boundary: 1000 2000 3000 4000 5000");
     // the renderer reuses a frame only against the one it rendered last: text, nothing, text, nothing
     assert_eq!(serials.len(), 4);
+}
+
+#[test]
+fn a_windowed_slide_costs_one_job_per_boundary() {
+    // one long cue, so the only boundaries are the held window's own edges every 5 s
+    let mut sim = Sim::new(vec![cue(0, 100_000, 3)]);
+    sim.slide = Some(5000);
+    sim.tick(0);
+    let mut per_edge = Vec::new();
+    let mut before = sim.jobs().0 + sim.jobs().1;
+    for now in (16..30_000).step_by(16) {
+        sim.tick(now);
+        let total = sim.jobs().0 + sim.jobs().1;
+        assert!(total - before <= 1, "at most one job per tick at {now}");
+        if total != before {
+            per_edge.push(now);
+        }
+        before = total;
+        assert_eq!(sim.mb.view(&sim.key).unwrap().rects[0].rgba[0], 3, "the cue never drops at {now}");
+    }
+    // each window edge costs one early render; none per tick near `hi`
+    let edges = per_edge.len();
+    assert!(edges <= 8, "{edges} jobs over six windows: {per_edge:?}");
+    assert!(sim.normal.len() <= 1 + edges, "{:?}", sim.normal);
 }
 
 #[test]
@@ -468,8 +507,49 @@ fn a_cancelled_epoch_finishes_the_job_without_publishing() {
     let job = sim.mb.take().unwrap();
     sim.mb.finish(&job, None);
     assert!(sim.mb.published.is_none());
+    assert_eq!(sim.mb.answered(), job.seq, "a job that did not render is still answered");
+
     assert!(sim.mb.pending_job().is_none());
     // the Normal job counts as answered, so a later request is not blocked behind it
     sim.key = key_of(2, 1);
     assert!(sim.mb.request(sim.key, 100, &sim.source).wake);
+}
+
+#[test]
+fn an_ahead_frame_counts_as_changed_with_its_bytes_and_does_not_wake_the_screen() {
+    let mut sim = Sim::new(vec![cue(0, 1000, 1), cue(1000, 2000, 2)]);
+    sim.request(100);
+    let normal = sim.mb.take().unwrap();
+    let outcome = sim.render(&normal);
+    let first = sim.mb.finish(&normal, Some(outcome));
+    assert_eq!((first.wake, first.changed, first.pub_bytes), (true, true, 4));
+    let ahead = sim.mb.take().unwrap();
+    let outcome = sim.render(&ahead);
+    let held = sim.mb.finish(&ahead, Some(outcome));
+    assert_eq!((held.wake, held.changed, held.pub_bytes), (false, true, 4), "a new cue, held for later");
+}
+
+#[test]
+fn an_ahead_frame_identical_to_the_published_one_is_not_a_change() {
+    let mut sim = Sim::new(vec![cue(0, 1000, 5), cue(1000, 2000, 5)]);
+    sim.request(100);
+    let normal = sim.mb.take().unwrap();
+    sim.complete(normal);
+    let ahead = sim.mb.take().unwrap();
+    let outcome = sim.render(&ahead);
+    let held = sim.mb.finish(&ahead, Some(outcome));
+    assert_eq!((held.changed, held.pub_bytes), (false, 0));
+}
+
+#[test]
+fn a_replaced_normal_job_keeps_the_stamp_of_its_wait() {
+    let mut sim = Sim::new(vec![cue(0, 1000, 1), cue(1000, 2000, 2)]);
+    sim.request(100);
+    let normal = sim.mb.take().unwrap();
+    sim.complete(normal);
+    let _ahead = sim.mb.take().unwrap(); // rendering, so a Normal job has to wait
+    sim.request(1100);
+    let since = sim.mb.pending_queued().expect("waits behind the Ahead job");
+    sim.request(5000); // a jump replaces the pending Normal job
+    assert_eq!(sim.mb.pending_queued(), Some(since), "the wait began with the first one");
 }
