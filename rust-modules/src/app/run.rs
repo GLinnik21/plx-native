@@ -1641,14 +1641,14 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         }
         // post-playback home refresh (armed by every exit_player): refetch the hubs so
         // Continue Watching shows the new resume point / next episode. It waits for the stop
-        // report to have reached the server (`scrobble_settled`), not for a clock: a read that
+        // report to have reached the server (`timeline_stop_landed`), not for a clock: a read that
         // lands before the `stopped` timeline POST is the stale resume point, and a slow share
         // makes that window seconds wide. It is owed once per exit and held while the player is
         // on top. The request is worker-only; the landing logs the
         // resulting item count when it actually commits.
         if app.refresh_hubs
             && !matches!(app.route(), AppArg::Player)
-            && plx_media::route::scrobble_settled()
+            && plx_media::route::timeline_stop_landed()
         {
             app.refresh_hubs = false;
             super::bridge::execute_endpoint_outcomes(
@@ -5029,6 +5029,56 @@ mod lifecycle_regression_tests {
         assert_eq!(rig.app.bridge.hub_refetches_for_test(), before + 1, "the refetch runs once the stop landed");
         for _ in 0..4 { step(&mut rig.app, &mut t, vec![]); }
         assert_eq!(rig.app.bridge.hub_refetches_for_test(), before + 1, "and only once");
+    }
+
+    /// **Layer-1 view state, G1 on a transcoded play.** The stop worker posts `stopped` and THEN
+    /// asks the server to stop the encoder; a slow PMS holds that second round trip for a full
+    /// timeout. The resume point is committed by the first, so the hubs refetch must not wait for
+    /// the second. The rig plays direct, so the encoder is registered through the media crate's
+    /// test seam (what `apply_plan` does for a real transcode); the encoder stop is held while
+    /// `stopped` is answered at once.
+    #[test]
+    fn hubs_are_refetched_once_stopped_lands_even_while_the_encoder_stop_is_held() {
+        let _serial = plx_base::testlock::serial();
+        let (hold, held) = mpsc::channel::<()>();
+        let held = Mutex::new(held);
+        let encoder_stop_seen = Arc::new(AtomicBool::new(false));
+        let seen = encoder_stop_seen.clone();
+        let Some(mut rig) = Rig::serving_with(move |request: &str| {
+            if request.contains("/video/:/transcode/universal/stop?session=rig-encoder") {
+                seen.store(true, Ordering::SeqCst);
+                let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(20));
+                return String::new();
+            }
+            if request.contains("/:/timeline") {
+                return r#"{"MediaContainer":{}}"#.into();
+            }
+            queue_body(request, false).to_owned()
+        }) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        let before = rig.app.bridge.hub_refetches_for_test();
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        // As in `hubs_are_refetched_after_the_stop_lands_not_after_a_timer`: the engine's own
+        // `scrobble_stop` call, made once BACK's stop has drained. The encoder is registered
+        // first, so the worker's second leg is the held `transcode_stop`.
+        plx_media::route::install_active_encoder_for_test("rig-encoder");
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
+        settle(&mut rig.app, &mut t);
+        assert!(super::super::bridge::player(&rig.app.pages).is_none(), "premise: BACK left the player");
+        poll_until("premise: the encoder stop never reached the server", || encoder_stop_seen.load(Ordering::SeqCst));
+        assert!(!plx_media::route::scrobble_settled(), "premise: the worker is inside the held encoder stop");
+        t += 5_000;
+        for _ in 0..4 { step(&mut rig.app, &mut t, vec![]); }
+        let refetches = rig.app.bridge.hub_refetches_for_test();
+        hold.send(()).unwrap();
+        plx_media::route::drain_scrobble();
+        assert_eq!(
+            refetches, before + 1,
+            "the hubs waited for the server-side encoder stop, though `stopped` had landed",
+        );
     }
 
     /// The same session drained to its end with nothing queued after it: `finish_playback` leaves
