@@ -371,7 +371,7 @@ presentation in a design pass.
    `opening_row` is also the focus fallback when a focused row disappears.
 
    **Popover open styles.** Two exist. `Appear` (default) is the shared `K_APPEAR` fade+slide.
-   `Morph` (`Popover::morphing()`, `Opener::open_style = Morph`) is the glass opener's pill-to-panel
+   `Morph` (`Popover::morphing()` is the one selector; open with `open_from(opener.rect)`) is the glass opener's pill-to-panel
    morph in `popover_morph.rs`: width spring k 620 and height spring k 950 critically damped, radius
    pill -> 22 with a bulge, rows 0.82 -> 1 at zeta 0.6 k 720, and a 0.92 -> 1 fade+scale fallback
    when the opener has no rect. Content alpha always leads ground alpha (never an empty glass
@@ -466,7 +466,11 @@ tried first. None of it is reconstructable from the code without repeating the m
   edge `GLASS_RIM_LIGHT` and `GlassRim::Menu` — the shader (`fs_glass.frag`) refracts the rim from
   the captured host page with the SAME rounded-rect SDF that rounds the panel, so there is no extra
   pass — and then a soft shadow cut out around the panel's rounded shape. The scrim behind a compact
-  menu is `theme::underlay::DIM_COMPACT`, 30%. Only when no live backdrop exists (a unit test, a
+  menu is `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
+  (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha and a
+  sliding panel passes its rest lift (`Painter::rest_lift`) so the open slide re-grabs nothing.
+  This applies to EVERY `panel_ground` user (alerts, About, bio), so a growing panel's blur
+  region is unmeasured — a TV-phase item. Only when no live backdrop exists (a unit test, a
   surface over the video plane, a frozen page outside `host::live`) does `draw` return `false` and
   the panel fall back to the 15×8 underlay field the modal dim latched (`ui::underlay`, reaching a
   surface as `DrawFrame::underlay`), windowed to the panel's rect and graded under `PANEL_LUMA_MAX`.

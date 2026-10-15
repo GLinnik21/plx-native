@@ -185,7 +185,6 @@ fn the_default_popover_keeps_the_shared_fade_and_slide() {
     let _g = plx_base::testlock::serial();
     let mut pop = crate::popover::Popover::new();
     assert_eq!(pop.open_style(), crate::popover::OpenStyle::Appear);
-    assert_eq!(crate::popover::Opener::NONE.open_style, crate::popover::OpenStyle::Appear);
     assert!(pop.morph_frame(None, crate::Rect::FULL).is_none());
     pop.open();
     pop.update(1.0 / 60.0);
@@ -193,4 +192,49 @@ fn the_default_popover_keeps_the_shared_fade_and_slide() {
     reference.step(1.0, crate::popover::K_APPEAR, 1.0 / 60.0);
     assert_eq!(pop.appear(), reference.pos, "the appear spring is the crate::popover::K_APPEAR one");
     pop.close();
+}
+
+/// A morphing popover's `panel` draws the GROUND at the morphing rect, never ahead of its rows.
+#[test]
+fn a_morphing_panel_grows_from_the_pill_and_its_ground_never_leads_its_rows() {
+    let _g = plx_base::testlock::serial();
+    let (pill, panel) = (crate::Rect::new(1500.0, 40.0, 196.0, 38.0), crate::Rect::new(1380.0, 40.0, 316.0, 400.0));
+    let mut pop = crate::popover::Popover::new().morphing();
+    pop.open_from(Some(pill));
+    // Frame 0: the ground is not down yet (pill only) -- no empty glass frame.
+    assert!(pop.ground(panel, 26.0).is_none());
+    let mut grew = false;
+    for _ in 0..240 {
+        pop.update(1.0 / 60.0);
+        let content = pop.morph_frame(Some(pill), panel).unwrap().content_alpha;
+        if let Some((r, _rad, mul)) = pop.ground(panel, 26.0) {
+            assert!(mul <= 1.0 + 1e-6 && mul * content <= content + 1e-6, "ground alpha <= content alpha");
+            if r != panel {
+                grew = true;
+                assert!(r.w <= panel.w + 1e-3 && r.h <= panel.h + 1e-3 && r.w >= pill.w - 1e-3);
+            }
+        }
+    }
+    assert!(grew, "mid-open the ground is the morphing rect, not the settled one");
+    assert_eq!(pop.ground(panel, 26.0), Some((panel, 26.0, 1.0)), "settled: the caller's own rect");
+    pop.close();
+}
+
+/// The appear slide is carried on the content painter so a glass ground can use `backdrop_rising`.
+#[test]
+fn a_sliding_panel_carries_its_rest_lift_and_a_morph_does_not() {
+    let _g = plx_base::testlock::serial();
+    let mut pop = crate::popover::Popover::new();
+    pop.open();
+    pop.update(1.0 / 60.0);
+    let a = pop.appear();
+    let lift = pop.content_painter(crate::popover::Popover::RISE).rest_lift().expect("sliding");
+    assert!((lift - crate::popover::Popover::RISE * (1.0 - a)).abs() < 1e-4);
+    assert!(pop.content_painter(0.0).rest_lift().is_none());
+    pop.close();
+    let mut m = crate::popover::Popover::new().morphing();
+    m.open();
+    m.update(1.0 / 60.0);
+    assert!(m.content_painter(crate::popover::Popover::RISE).rest_lift().is_none());
+    m.close();
 }

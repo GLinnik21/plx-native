@@ -348,6 +348,10 @@ pub struct Painter {
     /// later `translate` moves it with the content. Set only through the scoped
     /// [`text_lift::draw`]; `Zoom::NONE` for every ordinary painter.
     zoom: Zoom,
+    /// A popover panel's APPEAR slide still to go, in px (`Some(rise*(1-appear))`), set only by
+    /// `Popover::content_painter` for a sliding panel. A glass panel hands it to the backdrop as
+    /// `rest_dy` so its snapshot is grabbed around the rest rect; `None` for everything else.
+    lift: Option<f32>,
 }
 thread_local! {
     static RECORD_WALK: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -463,6 +467,7 @@ impl Painter {
             clip: Rect::FULL,
             text_recorder: false,
             zoom: Zoom::NONE,
+            lift: None,
         }
     }
     pub const fn recording() -> Self {
@@ -521,6 +526,14 @@ impl Painter {
     /// on which the ground is invisible).
     pub fn opacity(self) -> f32 {
         self.a
+    }
+    /// Translate down by an appear slide of `dy` px and remember it ([`rest_lift`](Self::rest_lift)).
+    pub fn lifted(self, dy: f32) -> Self {
+        Self { lift: Some(dy), ..self.translate(0.0, dy) }
+    }
+    /// The popover appear slide this painter carries, if it was made by [`lifted`](Self::lifted).
+    pub fn rest_lift(self) -> Option<f32> {
+        self.lift
     }
     pub fn translate(self, dx: f32, dy: f32) -> Self {
         Self {
@@ -1416,8 +1429,8 @@ impl Painter {
     }
     /// [`text`](Self::text) with `letter_spacing` px of tracking between glyphs (DS8; negative
     /// tightens, `plx_gfx::text::TRACKING_TITLE_TIGHT` is the Watchlist header's). At `0.0` this IS
-    /// `text`. The discovery and recording passes see the string's untracked declaration (the
-    /// tracked draw only moves glyph gaps inside it), so only a live draw takes the tracked path.
+    /// `text`. The discovery pass sees the string's untracked declaration (the tracked draw only moves
+    /// glyph gaps inside it); the recording pass prewarms the per-cluster strings the live draw uses.
     #[allow(clippy::too_many_arguments)]
     pub fn text_tracked(
         self,
@@ -1430,8 +1443,16 @@ impl Painter {
         bold: c_int,
         letter_spacing: f32,
     ) -> f32 {
-        if letter_spacing == 0.0 || frame::backdrop::discovering() || self.records() {
+        if letter_spacing == 0.0 || frame::backdrop::discovering() {
             return self.text(s, x, y, sz, col, align, bold);
+        }
+        if self.records() {
+            // The live draw rasterizes each CLUSTER as its own string, so that is what to prewarm.
+            plx_gfx::text::queue_prewarm_tracked(s, sz, bold);
+            let w = plx_gfx::text::text_width_tracked(s, sz, bold, letter_spacing);
+            #[cfg(any(test, feature = "test-support"))]
+            draw_census::note(100, self.place(Rect::new(x, y, w, 0.0)));
+            return w;
         }
         let c = self.c(col);
         plx_gfx::text::draw_text_tracked(

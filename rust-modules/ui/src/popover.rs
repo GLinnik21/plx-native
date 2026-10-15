@@ -252,14 +252,9 @@ pub struct Opener {
     /// painter, because which alpha it belongs on is the host's business: a page element rides
     /// `nav::page_alpha`, a piece of the shared top bar rides `nav::chrome_alpha`.
     pub redraw: fn(),
-    /// How the panel arrives. [`OpenStyle::Appear`] (the default of [`Opener::NONE`] and
-    /// [`Opener::drawn`], so every existing opener is unchanged) is the shared [`K_APPEAR`]
-    /// fade+slide; [`OpenStyle::Morph`] is the glass opener's pill-to-panel morph
-    /// ([`crate::popover_morph`]). Contract freeze: the selector exists, the morph body is DS7's.
-    pub open_style: OpenStyle,
 }
 
-/// The two ways a popover panel can arrive; see [`Opener::open_style`].
+/// The two ways a popover panel can arrive; the ONE selector is [`Popover::morphing`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum OpenStyle {
     /// The shared fade+slide on [`K_APPEAR`] — what every popover did before the morph existed.
@@ -279,14 +274,13 @@ impl Opener {
     pub const NONE: Opener = Opener {
         rect: None,
         redraw: draw_nothing,
-        open_style: OpenStyle::Appear,
     };
 
     /// An opener that is only a DRAW — for a panel whose placement is its own. The Library's chip
     /// menus are anchored on the toolbar rather than on the chip's measured rect, so they have a
     /// thing to lift and no rect to hand over.
     pub const fn drawn(redraw: fn()) -> Opener {
-        Opener { rect: None, redraw, open_style: OpenStyle::Appear }
+        Opener { rect: None, redraw }
     }
 }
 
@@ -325,12 +319,16 @@ pub struct Popover {
     style: OpenStyle,
     /// The morph's springs; stepped only under [`OpenStyle::Morph`].
     morph: crate::popover_morph::Morph,
+    /// The opener's rect the morph grows from ([`open_from`](Self::open_from)); `None` = the
+    /// fade+scale fallback.
+    from: Option<Rect>,
 }
 impl Popover {
     pub const fn new() -> Self {
         Popover {
             style: OpenStyle::Appear,
             morph: crate::popover_morph::Morph::new(),
+            from: None,
             open: false,
             closing: false,
             appear: Spring::at(0.0),
@@ -372,8 +370,16 @@ impl Popover {
     ) -> Option<crate::popover_morph::Frame> {
         (self.style == OpenStyle::Morph).then(|| self.morph.frame(from, panel))
     }
+    /// [`open`](Self::open) for a [`morphing`](Self::morphing) popover whose opener has a measured
+    /// rect: the panel grows out of `from` (the pill). Pass [`Opener::rect`]; `None` is the
+    /// fade+scale fallback, which is what a plain `open` gives.
+    pub fn open_from(&mut self, from: Option<Rect>) {
+        self.open();
+        self.from = from;
+    }
     /// (re)open: restart the fade+slide from 0.
     pub fn open(&mut self) {
+        self.from = None;
         self.appear = Spring::at(0.0);
         self.morph.reset();
         self.closing = false;
@@ -535,9 +541,12 @@ impl Popover {
             return Painter::root().alpha(a * crate::nav::page_alpha());
         }
         let a = self.appear();
-        Painter::root()
-            .alpha(a * crate::nav::page_alpha())
-            .translate(0.0, rise * (1.0 - a))
+        let p = Painter::root().alpha(a * crate::nav::page_alpha());
+        if rise == 0.0 {
+            return p;
+        }
+        // `lifted` remembers the slide so a glass ground can grab its snapshot around the REST rect.
+        p.lifted(rise * (1.0 - a))
     }
     /// **The app's entry-slide distance** — how far a panel rises into place on open, in px, for
     /// [`painter`](Self::painter) and [`content_painter`](Self::content_painter).
@@ -634,8 +643,26 @@ impl Popover {
         rad: f32,
         field: Option<&crate::underlay::UnderlayField>,
     ) {
-        crate::widgets::panel_ground(p, r, rad, field);
+        if let Some((r, rad, mul)) = self.ground(r, rad) {
+            crate::widgets::panel_ground(p.alpha(mul), r, rad, field);
+        }
         self.ground_done();
+    }
+
+    /// What [`panel`](Self::panel) draws as the ground this frame: `(rect, radius, alpha factor on
+    /// the content painter)`, or `None` for nothing yet. Appear style: the caller's `r`/`rad` at
+    /// full factor. Morph: the morphing rect and radius at the GROUND's alpha, as a factor of the
+    /// content painter's (the content alpha, which leads the ground's, so the factor is <= 1 and
+    /// the ground is never ahead of its rows); once settled the caller's own `r`/`rad`.
+    fn ground(&self, r: Rect, rad: f32) -> Option<(Rect, f32, f32)> {
+        if self.style != OpenStyle::Morph || self.morph.settled() {
+            return Some((r, rad, 1.0));
+        }
+        let f = self.morph.frame(self.from, r);
+        if f.ground_alpha <= 0.0 || f.content_alpha <= 0.0 {
+            return None;
+        }
+        Some((f.rect, f.radius, (f.ground_alpha / f.content_alpha).min(1.0)))
     }
 
     /// The boundary between this popover's GROUND and its FOREGROUND, reported to [`host`].
