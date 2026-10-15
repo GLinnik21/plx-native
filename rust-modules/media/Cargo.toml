@@ -55,6 +55,10 @@ encoding_rs = { version = "0.8", default-features = false, features = ["alloc"] 
 chardetng = { version = "1", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
+# Dolby Vision RPU parse/convert/write (quietvoid's dovi_tool library, MIT): the in-app Profile 7 ->
+# 8.1 conversion in `ff::packet_to_annexb`. Pure Rust; the RPU API needs none of its optional
+# features (xml, serde, capi).
+dolby_vision = { version = "3.4", default-features = false }
 
 [dev-dependencies]
 # THE rule of the layer crates: dev-depend on ITSELF with `devtriggers`, so `cargo test -p plx_media`

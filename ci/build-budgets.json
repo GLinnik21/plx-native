@@ -15,19 +15,19 @@
       "what": "Third-party (registry/git) packages the app crate compiles for armv7-unknown-linux-gnueabi with its DEFAULT features: normal + build dependencies, dev-dependencies excluded, workspace members excluded.",
       "unit": "packages",
       "mode": "fail",
-      "limit": 73,
-      "measured": 73,
-      "measured_on": "2026-10-16",
-      "headroom": "+0"
+      "limit": 89,
+      "measured": 86,
+      "measured_on": "2026-10-17",
+      "headroom": "+3"
     },
     "packages_no_default_features": {
       "what": "The same count with --no-default-features, which is what every shipped binary is built with.",
       "unit": "packages",
       "mode": "fail",
-      "limit": 73,
-      "measured": 73,
-      "measured_on": "2026-10-16",
-      "headroom": "+0"
+      "limit": 89,
+      "measured": 86,
+      "measured_on": "2026-10-17",
+      "headroom": "+3"
     },
     "duplicate_versions_default": {
       "what": "Crate names present in more than one version in the NORMAL-edge graph for the default feature set (the set `cargo tree -d --edges normal --target armv7-unknown-linux-gnueabi` prints).",

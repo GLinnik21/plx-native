@@ -206,6 +206,121 @@ fn a_runt_packet_is_rejected_before_any_indexing() {
     assert!(out.is_empty(), "size < nls + 1 must bail before the walk");
 }
 
+// -- Dolby Vision Profile 7 -> 8.1 on the feed path -------------------------------------
+//
+// HEVC NAL header: F(1) type(6) layer_hi(1) | layer_lo(5) tid(3). A base-layer TRAIL_R slice is
+// `02 01`; an RPU (UNSPEC62) is `7C 01`; a single-track dual layer wraps each enhancement-layer
+// NAL in UNSPEC63, `7E 01`; the same slice carried in layer 1 instead is `02 09`.
+
+/// Only a dual layer with a cross-compatible base layer is converted: the demuxer's reading of
+/// the file has to agree with `Dovi::converts_to_p81`, which decided the route and the payload.
+#[test]
+fn only_a_cross_compatible_profile_7_record_arms_the_conversion() {
+    let p7 = parse_dovi_conf(&dovi_bytes(7, 6, 1, 1, 1, 6)).unwrap();
+    assert!(dovi_converts_to_p81(&p7));
+    let p7_no_bl = parse_dovi_conf(&dovi_bytes(7, 6, 1, 1, 1, 0)).unwrap();
+    assert!(!dovi_converts_to_p81(&p7_no_bl), "no base layer to leave on screen");
+    let p7_single = parse_dovi_conf(&dovi_bytes(7, 6, 1, 0, 1, 6)).unwrap();
+    assert!(!dovi_converts_to_p81(&p7_single), "no enhancement layer, nothing to convert");
+    for (profile, compat) in [(5, 0), (8, 1), (8, 4)] {
+        let d = parse_dovi_conf(&dovi_bytes(profile, 6, 1, 0, 1, compat)).unwrap();
+        assert!(!dovi_converts_to_p81(&d), "P{profile} compat {compat}");
+    }
+}
+
+#[test]
+fn the_layer_id_reads_both_halves_of_the_nal_header() {
+    assert_eq!(hevc_layer_id(&[0x02, 0x01]), 0);
+    assert_eq!(hevc_layer_id(&[0x02, 0x09]), 1);
+    assert_eq!(hevc_layer_id(&[0x03, 0x01]), 32, "bit 0 of byte 0 is the HIGH bit");
+    assert_eq!(hevc_layer_id(&[0x02]), 0, "a runt NAL is never mistaken for an EL");
+}
+
+#[test]
+fn an_enhancement_layer_nal_is_recognised_by_either_spelling() {
+    assert!(is_dv_enhancement_layer(&[0x7E, 0x01, 0x40, 0x01]), "UNSPEC63 wrapper");
+    assert!(is_dv_enhancement_layer(&[0x02, 0x09]), "a layer-1 slice");
+    assert!(!is_dv_enhancement_layer(&[0x02, 0x01]), "a base-layer slice");
+    assert!(!is_dv_enhancement_layer(&[0x7C, 0x01]), "the RPU is not the enhancement layer");
+    assert!(!is_dv_enhancement_layer(&[0x7E]), "a runt NAL");
+}
+
+/// Armed, the enhancement layer never reaches the pipeline, whichever way it is carried, and
+/// the base layer is emitted byte for byte.
+#[test]
+fn an_armed_profile_7_feed_drops_the_enhancement_layer() {
+    let bl = [0x02u8, 0x01, 0xAA];
+    let el_wrapped = [0x7Eu8, 0x01, 0x02, 0x01, 0xBB];
+    let el_layer1 = [0x02u8, 0x09, 0xBB];
+    let buf = avcc(&[&bl, &el_wrapped, &el_layer1]);
+    let (_, out) = to_annexb_p7(&buf, &[]);
+    assert_eq!(out, vec![0, 0, 0, 1, 0x02, 0x01, 0xAA]);
+}
+
+/// The rewrite is `dovi_tool -m 2`'s, byte for byte: dovi_tool's own MEL test RPU comes out as
+/// the 8.1 RPU dovi_tool's test suite expects of that conversion (`tests/fixtures/dovi-p7-*`, from
+/// quietvoid/dovi_tool `assets/tests/`), and the packet carries it in the RPU's place.
+#[test]
+fn an_armed_feed_rewrites_profile_7_rpus_as_dovi_tool_does() {
+    let orig = rpu_fixture_nal(include_bytes!("../../../tests/fixtures/dovi-p7-mel-rpu.bin"));
+    let want = rpu_fixture_nal(include_bytes!("../../../tests/fixtures/dovi-p7-mel-to-81-rpu.bin"));
+    assert_eq!(rewrite_dv_rpu_p7_to_p81(&orig).as_deref(), Some(&want[..]));
+    let bl = [0x02u8, 0x01, 0xAA];
+    let (_, out) = to_annexb_p7(&avcc(&[&bl, &orig]), &[]);
+    let mut expect = vec![0, 0, 0, 1, 0x02, 0x01, 0xAA, 0, 0, 0, 1];
+    expect.extend_from_slice(&want);
+    assert_eq!(out, expect);
+}
+
+/// A full enhancement layer's RPU converts too. dovi_tool keeps no mode-2 output for its FEL
+/// asset (its `fel_to_81.bin` is the mapping-preserving mode 5), so this holds the profile the
+/// result parses back as rather than its bytes: what the panel is told is 8.1 must read as 8.
+#[test]
+fn a_full_enhancement_layer_rpu_converts_to_profile_8() {
+    let orig = rpu_fixture_nal(include_bytes!("../../../tests/fixtures/dovi-p7-fel-rpu.bin"));
+    let parse = |nal: &[u8]| dolby_vision::rpu::dovi_rpu::DoviRpu::parse_unspec62_nalu(nal).unwrap();
+    assert_eq!(parse(&orig).dovi_profile, 7);
+    let out = rewrite_dv_rpu_p7_to_p81(&orig).expect("a FEL RPU converts");
+    assert_eq!(&out[..2], &[0x7C, 0x01], "still an UNSPEC62 NAL");
+    assert_eq!(parse(&out).dovi_profile, 8);
+}
+
+/// An RPU that is already single-layer is handed back unchanged, not re-encoded.
+#[test]
+fn a_profile_8_rpu_is_left_as_it_was() {
+    let p8 = rpu_fixture_nal(include_bytes!("../../../tests/fixtures/dovi-p7-mel-to-81-rpu.bin"));
+    assert_eq!(rewrite_dv_rpu_p7_to_p81(&p8).as_deref(), Some(&p8[..]));
+}
+
+/// An RPU the converter cannot parse is DROPPED, never forwarded as-is: a Profile 8
+/// declaration followed by a Profile 7 RPU is worse than a frame with no RPU at all.
+#[test]
+fn an_unconvertible_rpu_is_dropped_on_an_armed_feed() {
+    let bl = [0x02u8, 0x01, 0xAA];
+    let bad_rpu = [0x7Cu8, 0x01, 0x00, 0x00, 0x00];
+    let buf = avcc(&[&bl, &bad_rpu]);
+    let (_, out) = to_annexb_p7(&buf, &[]);
+    assert_eq!(out, vec![0, 0, 0, 1, 0x02, 0x01, 0xAA]);
+}
+
+/// Unarmed (every stream that is not a converted Profile 7) nothing changes: enhancement-layer
+/// NALs and RPUs pass through exactly as they always did.
+#[test]
+fn an_unarmed_feed_is_untouched_by_the_conversion() {
+    let el_wrapped = [0x7Eu8, 0x01, 0xBB];
+    let el_layer1 = [0x02u8, 0x09, 0xBB];
+    let rpu = [0x7Cu8, 0x01, 0x19, 0x08];
+    let buf = avcc(&[&el_wrapped, &el_layer1, &rpu]);
+    let (_, out) = to_annexb(&buf, true, &[]);
+    assert_eq!(
+        out,
+        vec![
+            0, 0, 0, 1, 0x7E, 0x01, 0xBB, 0, 0, 0, 1, 0x02, 0x09, 0xBB, 0, 0, 0, 1, 0x7C, 0x01,
+            0x19, 0x08
+        ]
+    );
+}
+
 // -- AV1: leb128 ----------------------------------------------------------------------
 
 #[test]

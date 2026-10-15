@@ -3459,9 +3459,9 @@ mod enhancement_menu_tests {
         teardown(&ps);
     }
 
-    /// P5 (or P7 with an enhancement layer): no copy of the base layer is ever correct, so there is
-    /// nothing the enhancement's remux could decorate — Disabled, not Hidden (owner direction,
-    /// 2026-09-29).
+    /// P5 (or a dual layer without a cross-compatible base layer): no copy of the base layer is
+    /// ever correct, so there is nothing the enhancement's remux could decorate — Disabled, not
+    /// Hidden (owner direction, 2026-09-29).
     #[test]
     fn enh_rows_disabled_dv_unusable_base() {
         let _g = plx_base::testlock::serial();
