@@ -257,6 +257,11 @@ static struct Bounds unite(struct Bounds a, struct Bounds b)
     };
 }
 
+static size_t region_bytes(struct Bounds b)
+{
+    return (size_t)(b.right - b.left) * (b.bottom - b.top) * 4;
+}
+
 /* Merge to a fixed point: a union can overlap a previously separate region.
  * Every image ends in exactly one region, so rendering the regions independently
  * preserves the upstream list's layer order, including translucent overlaps. */
@@ -350,7 +355,7 @@ static void place_regions(PlxAss *ctx, const struct Bounds *bounds, size_t count
         old_offset[i] = old;
         next_offset[i] = next;
         if (i < ctx->region_count) old += ctx->regions[i].bytes;
-        next += (size_t)(bounds[i].right - bounds[i].left) * (bounds[i].bottom - bounds[i].top) * 4;
+        next += region_bytes(bounds[i]);
     }
     for (size_t i = 0; i < count; ++i)
         if (retained[i] && next_offset[i] < old_offset[i])
@@ -363,7 +368,7 @@ static void place_regions(PlxAss *ctx, const struct Bounds *bounds, size_t count
         PlxAssBitmap *bitmap = &ctx->regions[i];
         *bitmap = (PlxAssBitmap){
             .x = b.left, .y = b.top, .width = b.right - b.left, .height = b.bottom - b.top,
-            .bytes = (size_t)(b.right - b.left) * (b.bottom - b.top) * 4,
+            .bytes = region_bytes(b),
             .rgba = ctx->rgba + next_offset[i]
         };
         if (!retained[i]) memset(ctx->rgba + next_offset[i], 0, bitmap->bytes);
@@ -428,8 +433,7 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
                          (size_t)image_count, reusable, retained) < 0) return -1;
     size_t bytes = 0;
     for (size_t i = 0; i < region_count; ++i) {
-        struct Bounds b = bounds[i];
-        size_t n = (size_t)(b.right - b.left) * (b.bottom - b.top) * 4;
+        size_t n = region_bytes(bounds[i]);
         if (n > MAX_PIXELS * 4 || bytes > MAX_PIXELS * 4 - n) return -1;
         bytes += n;
     }
