@@ -153,7 +153,10 @@ impl ChromeSnapshot {
     #[cfg(test)]
     pub(crate) fn seed_for_test(&mut self, name: &str, initial: &str, labels: &[&str], measure: &dyn Measure) {
         self.tabs_generation = Some(1);
-        self.faces = labels.iter().map(|s| TabFace::Label((*s).to_owned())).collect();
+        // An empty label is the Search slot: the production strip ends in the Search icon face.
+        self.faces = labels.iter()
+            .map(|s| if s.is_empty() { TabFace::Icon(Icon::Search) } else { TabFace::Label((*s).to_owned()) })
+            .collect();
         self.keys = (0..self.faces.len()).map(|i| plx_ui::dispatch::STRIP_BASE + i as u32).collect();
         self.widths = widgets::tab_widths(&self.faces, measure);
         self.profile_generation = Some(1);
