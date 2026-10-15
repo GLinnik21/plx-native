@@ -366,6 +366,13 @@ presentation in a design pass.
    `Row::destructive(true)` and open the table with `TableView::open_sections`, whose
    `opening_row` is also the focus fallback when a focused row disappears.
 
+   **Popover open styles.** Two exist. `Appear` (default) is the shared `K_APPEAR` fade+slide.
+   `Morph` (`Popover::morphing()`, `Opener::open_style = Morph`) is the glass opener's pill-to-panel
+   morph in `popover_morph.rs`: width spring k 620 and height spring k 950 critically damped, radius
+   pill -> 22 with a bulge, rows 0.82 -> 1 at zeta 0.6 k 720, and a 0.92 -> 1 fade+scale fallback
+   when the opener has no rect. Content alpha always leads ground alpha (never an empty glass
+   frame). The item hold menu keeps lift+appear. A new morph constant is named in `popover_morph.rs`.
+
 2. **Clickable text marks are ALL CAPS.** `MORE` and every other pressable text mark is
    capitalised, overriding the design system's sentence-case rule for app-written text: the mark is
    a control, not prose, and caps is how the app says *pressable*. Use the shared
