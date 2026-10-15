@@ -767,7 +767,7 @@ fn native_replace_track_keeps_the_fonts_and_the_next_frame_is_never_unchanged() 
     let mut native = native_with(&fixture_faces(2), &one);
     let before = native.stats();
     assert_eq!((before.font_scans, before.tracks), (1, 1));
-    assert_eq!(before.library_fonts, 5, "three bundled faces and the two fixtures");
+    assert_eq!(before.library_fonts, 4, "two bundled faces (the CJK face is the default path) and the two fixtures");
     let first = native_frame(&mut native, 100).expect("first frame");
     assert_eq!(ink(&first).bands.len(), 1);
     assert!(native_frame(&mut native, 100).is_none(), "the same instant is unchanged");
@@ -851,7 +851,7 @@ fn native_fifty_slides_of_a_script_with_embedded_fonts_keep_the_font_count_flat(
     let first = render(&mut engine, &source, 100);
     assert_eq!(ink(&first.rects).bands.len(), 1, "the embedded face draws its square");
     let opened = engine.native.as_ref().unwrap().stats();
-    assert_eq!(opened.library_fonts, 4, "three bundled faces and the one from [Fonts]");
+    assert_eq!(opened.library_fonts, 3, "two bundled faces and the one from [Fonts]");
     for i in 0..50 {
         // Far apart, so every render leaves the window the last one fed.
         let now = if i % 2 == 0 { 19_000_100 } else { 100 };
