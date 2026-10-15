@@ -436,6 +436,12 @@ impl NotifyStore {
             return;
         }
         self.seen = marker;
+        {
+            let all: Vec<_> = plx_plex::plex::server_ids().collect();
+            let described = all.iter().filter(|&&s| plx_plex::plex::server_facts(s).is_some()).count();
+            let owned_n = all.iter().filter(|&&s| plx_plex::plex::server_facts(s).is_some_and(|f| f.owned)).count();
+            plx_base::eventlog::log(&format!("notify: roster servers={} described={described} owned={owned_n}", all.len()));
+        }
         let owned = |sid: ServerId| plx_plex::plex::server_facts(sid).is_some_and(|f| f.owned);
         self.conns.retain_mut(|c| {
             let keep = owned(c.sid) && plx_plex::plex::client_for(c.sid).is_some();
