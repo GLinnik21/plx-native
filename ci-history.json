@@ -1,4 +1,4 @@
-{"updated":"2026-10-15T15:56:32Z",
+{"updated":"2026-10-15T15:57:55Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -2761,7 +2761,8 @@
 {"id":38753632653,"at":"2026-10-15T14:41:26Z","sha":"bb9fdd0c1","title":"Player: a paused preroll on the ACB route re-pauses only once the video plane is bound","pr":759,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":162,"macOS simulator build + launch":182,"Windows launcher syntax":15,"Linux simulator build + launch":254}},
 {"id":38757895221,"at":"2026-10-15T15:09:58Z","sha":"c08de2194","title":"dev: DIAG count after the notify trigger's removal","pr":761,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":288,"macOS tests against bundled FFmpeg and ASS":161,"macOS simulator build + launch":140,"Windows launcher syntax":32}},
 {"id":38758516262,"at":"2026-10-15T15:14:08Z","sha":"ed07bd93e","title":"starfish: sf_get_volume reads the integer after the volume key","pr":762,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":192,"macOS tests against bundled FFmpeg and ASS":107,"Linux simulator build + launch":226,"Windows launcher syntax":18}},
-{"id":38764020699,"at":"2026-10-15T15:51:38Z","sha":"08d25841c","title":"sink: PIPELINE_DEFAULT_VOLUME above the VideoSink doc block","pr":762,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":193,"macOS tests against bundled FFmpeg and ASS":162,"Windows launcher syntax":27,"Linux simulator build + launch":280}}
+{"id":38764020699,"at":"2026-10-15T15:51:38Z","sha":"08d25841c","title":"sink: PIPELINE_DEFAULT_VOLUME above the VideoSink doc block","pr":762,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":193,"macOS tests against bundled FFmpeg and ASS":162,"Windows launcher syntax":27,"Linux simulator build + launch":280}},
+{"id":38764338273,"at":"2026-10-15T15:53:49Z","sha":"e58656743","title":"notify_map: rename Transitions::log to emit (libm gate reads .log() as f64::ln)","pr":761,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":227,"Linux simulator build + launch":233,"macOS tests against bundled FFmpeg and ASS":121,"Windows launcher syntax":21}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
