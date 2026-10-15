@@ -3366,6 +3366,7 @@ mod enhancement_menu_tests {
 
     fn teardown(ps: &plx_media::route::PlaybackSession) {
         reset_player_control_for_test(ps);
+        plx_media::route::restore_quality(plx_media::route::Quality::Original);
         plx_plex::plex::reset_servers_for_test();
     }
 
@@ -3578,6 +3579,50 @@ mod enhancement_menu_tests {
             let note = menu.form.table.sections[1].rows.last().unwrap();
             assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_not_copyable());
             assert_ne!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_quality());
+            teardown(&ps);
+        }
+    }
+
+    /// A track pick the Original route could not follow dropped the candidate; under Auto (on HLS)
+    /// the quality in force is the honest reason.
+    #[test]
+    fn enh_rows_disabled_after_a_dropped_pick_under_auto_blames_quality() {
+        let _g = plx_base::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture {
+            remux: Some(false),
+            base_present: false,
+            quality: plx_media::route::Quality::Auto,
+            declined: Some(plx_media::route::OriginalDeclined::TrackPickDropped),
+            ..Default::default()
+        });
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
+        teardown(&ps);
+    }
+
+    /// A burn re-encodes the picture, so the Quality row says "Converted"; the Audio tab explains
+    /// its own state there (the burn note) rather than a converting reason.
+    #[test]
+    fn enh_rows_under_a_burn_explain_the_burn_not_a_conversion() {
+        let _g = plx_base::testlock::serial();
+        for fixture in [
+            EnhTestFixture {
+                subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+                applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+                applied_burn: true,
+                ..Default::default()
+            },
+            EnhTestFixture {
+                subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+                remux: Some(false),
+                ..Default::default()
+            },
+        ] {
+            let (menu, ps) = audio_tab(fixture);
+            assert!(plx_media::route::original_is_converted(&ps), "the picture is re-encoded");
+            assert_eq!(menu.enhance_route, Some(plx_media::route::EnhancementRoute::Burn));
+            assert_eq!(menu.enhance_disabled, None);
+            let note = menu.form.table.sections[1].rows.last().unwrap();
+            assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_note_burn());
             teardown(&ps);
         }
     }

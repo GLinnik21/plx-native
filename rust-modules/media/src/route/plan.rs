@@ -677,8 +677,10 @@ pub enum DisabledReason {
     NotOriginalQuality,
     /// Settings > Force Direct Play is on, so the server cannot add the enhancement.
     ForcedDirectPlay,
-    /// Original is picked but the server is converting the video ([`original_is_converted`]
-    /// in the live session): the Quality row reads "Original · Converted" and this note agrees.
+    /// Original is picked but the route does not copy the video (the live session's
+    /// `original_is_converted`): the Quality row reads "Original · Converted" and this note says the
+    /// same fact. A burn route is also `Converted` (its picture is re-encoded) yet the Audio tab
+    /// explains its own state there (the burn note): the row states the picture fact, the tab its own.
     ServerConverting,
     /// Original is in force and the route copies the video, but no Original candidate exists to
     /// decorate (a relay link, a video that had to be converted, a track pick the Original route
@@ -716,6 +718,11 @@ pub(super) fn enhancement_availability(f: &EnhancementFacts, target: RouteFamily
         Disabled(match f.declined {
             Some(OriginalDeclined::ForcedDirectPlay) => DisabledReason::ForcedDirectPlay,
             _ if converting => DisabledReason::ServerConverting,
+            // A pick the Original route could not follow dropped the candidate; under Auto or a
+            // rung the quality in force is the honest thing to name.
+            Some(OriginalDeclined::TrackPickDropped) if f.quality != Quality::Original => {
+                DisabledReason::NotOriginalQuality
+            }
             Some(_) => DisabledReason::NotCopyable,
             None if f.quality != Quality::Original => DisabledReason::NotOriginalQuality,
             None => DisabledReason::NotCopyable,

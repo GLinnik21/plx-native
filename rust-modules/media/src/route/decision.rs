@@ -9178,9 +9178,12 @@ pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
 /// **Is "Original" picked while the video on screen is NOT the original?** The quality in force
 /// (the picker, which the HUD's Quality row reads) says Original, but the route playing is neither
 /// a direct play nor a codec-preserving remux: a fixed rung or HLS is still on screen, or the
-/// server is re-encoding the video (a burned subtitle, a forced fallback). Built on the same
-/// `quality()` fact [`facts`] hands the Audio note, so a Quality read-out that uses it can never
-/// disagree with that note.
+/// server is re-encoding the video (a burned subtitle, a forced fallback). A burn route is
+/// converted: its picture IS re-encoded, so the Quality row keeps "Original · Converted" there even
+/// though the Audio tab treats a burn as its own Original-family state (`enhancement_family`) and
+/// explains it with the burn note. The honest rule is that the row states the picture fact and the
+/// Audio tab explains its own state; the two read the same `quality()` but not always the same route
+/// family.
 pub fn original_is_converted(ps: &PlaybackSession) -> bool {
     quality() == Quality::Original && live_family(ps) == RouteFamily::Other
 }
@@ -9192,7 +9195,8 @@ pub enum PlayingQuality {
     Unsettled,
     /// The original picture plays (a direct play, or a remux that keeps the video).
     Original,
-    /// Original is picked but the server is converting the picture ([`original_is_converted`]).
+    /// The server is converting the picture and no rung names it ([`original_is_converted`] under
+    /// Original; under Auto a re-encode with no ceiling).
     Converted,
     /// Auto (or a fixed rung) is on a converted stream at this picture height, in lines.
     Rung(i64),
@@ -9218,7 +9222,9 @@ pub fn playing_quality(ps: &PlaybackSession) -> PlayingQuality {
     }
     match ps.cur_contract.ceiling {
         Some(c) if c.max_h > 0 => PlayingQuality::Rung(c.max_h),
-        _ => PlayingQuality::Unsettled,
+        // Converted with no rung to name: a burn under Auto, or a picture this television cannot
+        // decode and the server therefore converts.
+        _ => PlayingQuality::Converted,
     }
 }
 

@@ -237,7 +237,7 @@ fn quality_readout(ps: &plx_media::route::PlaybackSession, current: plx_media::r
     use plx_media::route::{PlayingQuality, Quality};
     let joined = |second: String| format!("{} \u{b7} {second}", current.short_label());
     match (current, plx_media::route::playing_quality(ps)) {
-        (Quality::Original, PlayingQuality::Converted) => {
+        (Quality::Original | Quality::Auto, PlayingQuality::Converted) => {
             joined(plx_platform::i18n::msg::widgets_menu_quality_converted().to_owned())
         }
         (Quality::Auto, PlayingQuality::Original) => joined(Quality::Original.label()),
@@ -253,7 +253,7 @@ fn quality_conversion_note(ps: &plx_media::route::PlaybackSession, current: plx_
     use plx_media::route::{PlayingQuality, Quality};
     matches!(
         (current, plx_media::route::playing_quality(ps)),
-        (Quality::Original, PlayingQuality::Converted) | (Quality::Auto, PlayingQuality::Rung(_))
+        (Quality::Original | Quality::Auto, PlayingQuality::Converted) | (Quality::Auto, PlayingQuality::Rung(_))
     )
 }
 
@@ -1454,6 +1454,7 @@ mod focus_tests {
         let note = detail_at(&mut page, checked_row);
         plx_media::route::reset_player_control_for_test(&ps);
         plx_plex::plex::reset_servers_for_test();
+        plx_media::route::restore_quality(plx_media::route::Quality::Original);
         (value, note)
     }
 
@@ -1486,8 +1487,29 @@ mod focus_tests {
         let (v, n) = quality_row(fixture(Some(false), Quality::Auto), Some(plx_media::abr::Rung::P720));
         assert_eq!(v, format!("{auto} \u{b7} 720p"), "4");
         assert_eq!(n, note, "4");
+        // 4b. Auto on a converted route with no rung to name (a burn under Auto, or a picture this
+        // television cannot decode): "Auto · Converted", never "Auto" alone
+        let (v, n) = quality_row(fixture(Some(false), Quality::Auto), None);
+        assert_eq!(v, format!("{auto} \u{b7} {converted}"), "4b");
+        assert_eq!(n, note, "4b");
+        // burns re-encode the picture, so the row keeps "Original · Converted": Boost on with an
+        // embedded subtitle (the enhancement's own burn), and a plain Original burn
+        let burn_own = EnhTestFixture {
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+            applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+            applied_burn: true,
+            ..fixture(Some(true), Quality::Original)
+        };
+        let (v, n) = quality_row(burn_own, None);
+        assert_eq!((v, n.as_str()), (format!("{original} \u{b7} {converted}"), note), "own burn");
+        let burn_plain = EnhTestFixture {
+            subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+            ..fixture(Some(false), Quality::Original)
+        };
+        let (v, n) = quality_row(burn_plain, None);
+        assert_eq!((v, n.as_str()), (format!("{original} \u{b7} {converted}"), note), "plain burn");
         // 5. a fixed 720p: the short name, no sub-line (the page keeps the full label)
-        let (v, n) = quality_row(fixture(Some(false), Quality::P720), None);
+        let (v, n) = quality_row(EnhTestFixture { base_present: false, ..fixture(Some(false), Quality::P720) }, None);
         assert_eq!((v.as_str(), n.contains(note)), ("720p", false), "5");
         // a switch in flight: the choice alone
         let (v, _) = quality_row(EnhTestFixture { in_flight: true, ..fixture(Some(false), Quality::Auto) }, None);
@@ -1520,6 +1542,7 @@ mod focus_tests {
         }
         plx_media::route::reset_player_control_for_test(&ps);
         plx_plex::plex::reset_servers_for_test();
+        plx_media::route::restore_quality(plx_media::route::Quality::Original);
         plx_ui::table::assert_no_fit_failures(&out);
     }
 }
