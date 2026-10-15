@@ -1057,7 +1057,7 @@ mod tests {
         STOP_SERVER.store(false, Ordering::Release);
         let (port, server) = serve_file(body, &STOP_SERVER);
 
-        SHARED.sub_cues.lock().unwrap().clear();
+        crate::player::ass_source::reset();
         crate::player::request_subtitle(0);
         let stop = SideStop::new();
         let url = format!("http://127.0.0.1:{port}/library/parts/1/out.mkv");
@@ -1081,7 +1081,12 @@ mod tests {
         };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let cue = loop {
-            if let Some(c) = SHARED.sub_cues.lock().unwrap().first().map(|c| (c.track, c.start_ns, c.end_ns)) {
+            // The reader registered the file's text track and its cue went to libass's source.
+            let held = crate::player::ass_source::selected(0).and_then(|source| match &source.content {
+                crate::player::ass::Content::Embedded { events, .. } => events.first().map(|e| (e.start_ms, e.duration_ms)),
+                _ => None,
+            });
+            if let Some(c) = held {
                 break Some(c);
             }
             if std::time::Instant::now() > deadline || reader.is_finished() {
@@ -1094,11 +1099,11 @@ mod tests {
         STOP_SERVER.store(true, Ordering::Release);
         let _ = server.join();
         crate::player::request_subtitle(-1);
-        SHARED.sub_cues.lock().unwrap().clear();
+        crate::player::ass_source::reset();
         let _ = std::fs::remove_dir_all(&dir);
         let cue = cue.unwrap_or_else(|| panic!("no cue arrived; reader ended {end:?}, delta {delta:?}"));
         assert_eq!(delta, Some(1_000_000_000), "assumed delta = keyframe at 2 s - (0 + disp_base 1 s)");
-        assert_eq!(cue, (0, 0, 1_500_000_000), "1.0 s .. 2.5 s shifted by -delta");
+        assert_eq!(cue, (0, 1_500), "1.0 s .. 2.5 s shifted by -delta: starts at 0 and lasts 1.5 s");
         assert_eq!(end, RunEnd::Stopped);
     }
 }
