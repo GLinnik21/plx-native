@@ -81,7 +81,7 @@ uses `libass-plx-host.so.0`.
 | libass | 0.17.5 | ISC (`licenses/libass-ISC.txt`) |
 | FreeType | 2.14.3 | Elected FreeType License; contributed MIT and Zlib code (`licenses/FreeType.txt`, `licenses/Zlib.txt`) |
 | FriBidi | 1.0.17 | LGPL-2.1-or-later (`licenses/LGPL-2.1.txt`) |
-| HarfBuzz | 14.5.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
+| HarfBuzz | 14.6.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
 | libunibreak | 8.0 | zlib (`licenses/libunibreak-Zlib.txt`) |
 
 Portions of this software are copyright © 2026 The FreeType Project
@@ -585,6 +585,4 @@ and `ci/check-packaged-elf.py`, which is what proves the old archive is absent f
 then-current MIT grant. That original grant and Gleb Linnik notice are preserved in
 `licenses/PlxNative-historical-MIT.txt`; no ownership transfer is claimed.
 
-Source bundles also contain SDL2 Zlib headers, embedded Mesa/Khronos MIT and SGI-B-2.0
-header blocks and Khronos GLES2 MIT/Apache-2.0 headers. Preserve their original embedded notices. Exact per-file
-license assignments are in the inventory; the SGI text is in `licenses/SGI-B-2.0.txt`; none of `include/` is claimed as original LG ABI work.
+The repository carries no copy of the SDL2, GLES2 or KHR headers; `include/` holds only the project's own `ass.h` facade.
