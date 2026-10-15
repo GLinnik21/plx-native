@@ -143,7 +143,7 @@ def server_slash():
     return unary_union([base.difference(slash.buffer(HW_INLINE + 1.0, cap_style='round')),
                         slash.buffer(HW_INLINE, cap_style='round')])
 
-INLINE = {  # the Watchlist's marks (docs/watchlist-plan.md once it lands)
+INLINE = {  # the Watchlist's marks: Icon::{Bookmark, BookmarkFill, Clock, ServerSlash} in ui/src/icons.rs
   # Not on the watchlist / the tab: an outline ribbon with the inline weight.
   "bookmark":      lambda: stroke(BOOKMARK, HW_INLINE),
   # On the watchlist: the outline's own silhouette filled, so the state flip never moves an edge.
