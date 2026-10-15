@@ -79,8 +79,8 @@ fn display_pos_ns(loading: bool, seekdisp: i64, scrub: i64, livepos: i64) -> i64
 pub struct ClockWarm {
     /// The (elapsed, remaining) seconds `strings` were formatted for.
     key: Option<(i64, i64)>,
-    /// `(text, bold)` exactly as [`draw_playbar`] hands them to `Painter::text`.
-    strings: Vec<(CString, c_int)>,
+    /// `(text, bold, size)` exactly as [`draw_playbar`] hands them to `Painter::text`.
+    strings: Vec<(CString, c_int, c_int)>,
 }
 
 impl ClockWarm {
@@ -104,16 +104,24 @@ impl ClockWarm {
             self.key = Some(key);
             self.strings.clear();
             let (el, rem) = key;
+            let (cap, grown) = (theme::size::CAPTION, crate::scrub_preview::CLOCK_GROWN_SZ);
             let clocks = [
-                (fmt_time(el * SEC_NS, false), 1),
-                (fmt_time(rem * SEC_NS, true), 0),
-                (fmt_time((el + 1) * SEC_NS, false), 1),
-                (fmt_time((rem - 1).max(0) * SEC_NS, true), 0),
+                (fmt_time(el * SEC_NS, false), 1, cap),
+                (fmt_time(rem * SEC_NS, true), 0, cap),
+                (fmt_time((el + 1) * SEC_NS, false), 1, cap),
+                (fmt_time((rem - 1).max(0) * SEC_NS, true), 0, cap),
+                // the elapsed clock also draws at the size it grows to during a scrub with no card
+                // (`scrub_preview::clock_faces`); cold, that is a font open and a rasterisation in
+                // the middle of a hold. Last, so the resting sizes are never starved of the frame's
+                // budget.
+                (fmt_time(el * SEC_NS, false), 1, grown),
+                (fmt_time((el + 1) * SEC_NS, false), 1, grown),
             ];
-            self.strings.extend(clocks.into_iter().filter_map(|(s, bold)| Some((CString::new(s).ok()?, bold))));
+            self.strings
+                .extend(clocks.into_iter().filter_map(|(s, bold, sz)| Some((CString::new(s).ok()?, bold, sz))));
         }
-        for (s, bold) in &self.strings {
-            plx_gfx::text::queue_prewarm(s.as_ptr(), theme::size::CAPTION, *bold);
+        for (s, bold, sz) in &self.strings {
+            plx_gfx::text::queue_prewarm(s.as_ptr(), *sz, *bold);
         }
     }
 }
@@ -1645,7 +1653,7 @@ pub enum Knob {
 /// differently: the player route from its own scrub gesture, seek target and focus ring
 /// ([`Playbar::live`]), and the detail page's full-trailer transport from a preview session that
 /// has none of the three.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Playbar {
     /// the DISPLAYED playhead (a seek target, a scrub preview or the published position)
     pub pos_ns: i64,
@@ -1655,9 +1663,11 @@ pub struct Playbar {
     pub mark: TransportMark,
     /// drives the inline spinner's rotation
     pub now: u32,
-    /// the knob clock's font size: [`theme::size::CAPTION`], grown while a scrub shows no card
-    /// ([`crate::scrub_preview::Motion::clock_size`])
-    pub clock_sz: i32,
+    /// how far the knob clock has grown, 0 (resting, [`theme::size::CAPTION`]) to 1
+    /// ([`crate::scrub_preview::CLOCK_GROWN_SZ`]), while a scrub shows no card
+    /// ([`crate::scrub_preview::Motion::clock_grow`]). The two sizes are CROSSFADED on it
+    /// ([`crate::scrub_preview::clock_faces`]); a size is never tweened.
+    pub clock_grow: f32,
 }
 
 impl Playbar {
@@ -1698,7 +1708,7 @@ impl Playbar {
             knob,
             mark: transport_mark(paused, busy, scrub >= 0, dispos, livepos, since_play_ms),
             now,
-            clock_sz: theme::size::CAPTION,
+            clock_grow: 0.0,
         }
     }
 }
@@ -1771,19 +1781,17 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
     // right — hidden once the moving elapsed label would overlap it (near the end of the movie).
     let ty = sy + 30.0;
     // A grown knob clock keeps its BASELINE, so it grows upward and never into the remaining clock's
-    // line; it is laid out at the larger size, never a scaled texture.
-    let ety = plx_gfx::text::baseline_y(bar.clock_sz, 1, theme::size::CAPTION, 1, ty);
-    let (el_l, el_r) = draw_clock(
-        p,
-        &fmt_time(dispos, false),
-        hx,
-        ety,
-        bar.clock_sz,
-        white,
-        sx,
-        sx + sw,
-        measure,
-    );
+    // line. It is a CROSSFADE of two ladder rungs (the resting CAPTION and the one above it), each
+    // laid out at its own size, never a tweened size or a scaled texture; the extents the rest of
+    // the line clears are the union of the faces drawn.
+    let elapsed = fmt_time(dispos, false);
+    let (mut el_l, mut el_r) = (f32::INFINITY, f32::NEG_INFINITY);
+    for (sz, face_a) in crate::scrub_preview::clock_faces(theme::size::CAPTION, bar.clock_grow).into_iter().flatten() {
+        let ety = plx_gfx::text::baseline_y(sz, 1, theme::size::CAPTION, 1, ty);
+        let (l, r) = draw_clock(p.alpha(face_a), &elapsed, hx, ety, sz, white, sx, sx + sw, measure);
+        el_l = el_l.min(l);
+        el_r = el_r.max(r);
+    }
     let rem = fmt_time(dur - dispos, true);
     // MEASURE the label, never estimate it. `chars * CAPTION * 0.52` was an Arial-calibrated
     // constant guarding a real behaviour — the remaining clock hides before the moving elapsed
@@ -1997,7 +2005,7 @@ pub fn draw_hud(
         }
 
         let mut bar = Playbar::live(ps, busy, focus, row.since_play_ms(now), now);
-        bar.clock_sz = row.preview.motion.clock_size(theme::size::CAPTION, now);
+        bar.clock_grow = row.preview.motion.clock_grow(now);
         // a cancelled scrub's knob returns to the playhead rather than jumping to it
         bar.pos_ns = row.spring.apply(bar.pos_ns, now);
         let line = draw_playbar(p, bar, measure);
@@ -2200,7 +2208,7 @@ mod tests {
         // `prepare` may run on a frame the loop then does not present: it records, uploads nothing.
         assert!(plx_gfx::text::prewarm_pending(), "prepare queued the clocks");
         assert!(!plx_gfx::text::prewarm_resident_for_test(b"1:23", sz, 1), "prepare itself uploaded");
-        // Four strings against a three-string frame budget: the second presented frame finishes them.
+        // Six strings against a three-string frame budget: the second presented frame finishes them.
         while plx_gfx::text::prewarm_pending() {
             plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
         }
@@ -2208,6 +2216,16 @@ mod tests {
             assert!(
                 plx_gfx::text::prewarm_resident_for_test(text.as_bytes(), sz, bold),
                 "{text:?} (bold={bold}) was left for the draw to rasterise after the back-buffer wait"
+            );
+        }
+        // …and the elapsed clock at the size it GROWS to during a scrub with no card
+        // (`scrub_preview::clock_faces`): a cold rung there is a font open plus a rasterisation in
+        // the middle of a hold.
+        let grown = crate::scrub_preview::CLOCK_GROWN_SZ;
+        for text in ["1:23", "1:24"] {
+            assert!(
+                plx_gfx::text::prewarm_resident_for_test(text.as_bytes(), grown, 1),
+                "{text:?} at the grown size ({grown}) was left cold"
             );
         }
 

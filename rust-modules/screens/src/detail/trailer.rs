@@ -478,7 +478,7 @@ impl Transport {
                 knob: Knob::Tick,
                 mark: self.mark(paused, live_ns),
                 now: self.now_ms,
-                clock_sz: plx_ui::theme::size::CAPTION,
+                clock_grow: 0.0,
             },
             measure,
         );

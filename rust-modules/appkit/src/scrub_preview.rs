@@ -247,14 +247,28 @@ pub const STALE_HIDE_MS: u32 = 400;
 /// A still stands for the target while it is within this many ms of it. The server's index
 /// interval is not known to us (a PMS default is 10 s), so it is the floor and the constant.
 pub const STILL_TOLERANCE_MS: i64 = 10_000;
-/// The knob clock's size at full growth, as a multiple of its resting size.
-pub const CLOCK_GROW: f32 = 1.25;
+/// The knob clock's size at full growth: the type-ladder rung nearest 1.25x its resting
+/// [`theme::size::CAPTION`] (30 px). 28 and 32 are both 2 px away; [`theme::size::BODY`] is taken
+/// because its bold face is already open for the control row's labels, so the first grown clock
+/// opens no font of its own. A size is never animated (`gfx/tokens.rs`): the clock CROSSFADES
+/// between the resting size and this one, see [`clock_faces`].
+pub const CLOCK_GROWN_SZ: i32 = theme::size::BODY;
 const CLOCK_UP_MS: u32 = 150;
 const CLOCK_DOWN_MS: u32 = 200;
 /// A scrub that has shown no card by now, and has not been told there is no index, is judged to
 /// have none to show: the clock then grows. Short enough to feel at once, long enough that a
 /// still arriving at the ordinary speed never sees the clock move.
 const NO_CARD_GRACE_MS: u32 = 400;
+
+/// The knob clock's faces at growth progress `grow` (0..1): `(size, opacity)` for each one drawn.
+/// The resting `base` size fades out as [`CLOCK_GROWN_SZ`] fades in, both laid out at their own
+/// size on one baseline; at either end one face stands alone at full opacity. Two rungs
+/// crossfaded rather than a size tweened, so no frame asks the glyph cache for a size that is not
+/// on the ladder.
+pub fn clock_faces(base: i32, grow: f32) -> [Option<(i32, f32)>; 2] {
+    let g = grow.clamp(0.0, 1.0);
+    [(g < 1.0).then_some((base, 1.0 - g)), (g > 0.0).then_some((CLOCK_GROWN_SZ, g))]
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Ease {
@@ -434,10 +448,10 @@ impl Motion {
         !self.live && chrome_takes_pointer(self.chrome_seen)
     }
 
-    /// The knob clock's font size now: the resting `base` up to `base * 1.25`, rounded to whole
-    /// px (the text cache keys on integer sizes).
-    pub fn clock_size(&self, base: i32, now: u32) -> i32 {
-        (base as f32 * (1.0 + (CLOCK_GROW - 1.0) * self.clock.at(now))).round() as i32
+    /// How far the knob clock has grown at `now`, 0 (resting) to 1 (grown): the progress its two
+    /// faces crossfade on ([`clock_faces`]).
+    pub fn clock_grow(&self, now: u32) -> f32 {
+        self.clock.at(now).clamp(0.0, 1.0)
     }
 
     /// Does anything here still move at `now`? The frame loop presents on change only, so an
@@ -879,31 +893,67 @@ mod tests {
         assert_eq!(live(Some(606_000), 606_000, 480, &mut m).unwrap().prev, None);
     }
 
+    /// **A size cannot be animated** (`gfx/tokens.rs`): across the whole ramp up and back down,
+    /// the knob clock draws at the resting size and ONE ladder rung above it, crossfaded on the
+    /// ramp's progress — never at a size in between.
+    #[test]
+    fn the_knob_clock_crossfades_two_ladder_rungs() {
+        use plx_ui::theme::size::{BODY, CAPTION};
+        assert_eq!(CLOCK_GROWN_SZ, BODY, "the rung nearest 1.25x CAPTION");
+        let mut m = Motion::new();
+        m.step_live(true, 0);
+        m.observe(None, 0, true, 900.0, 0);
+        let mut seen = std::collections::BTreeSet::new();
+        let mut mid_fade = false;
+        let mut walk = |m: &Motion, t: u32| {
+            let faces = clock_faces(CAPTION, m.clock_grow(t));
+            let drawn: Vec<(i32, f32)> = faces.into_iter().flatten().collect();
+            for &(sz, a) in &drawn {
+                seen.insert(sz);
+                assert!(a > 0.0 && a <= 1.0, "{t}: a drawn face is visible: {drawn:?}");
+            }
+            if drawn.len() == 2 {
+                mid_fade = true;
+                assert!((drawn[0].1 + drawn[1].1 - 1.0).abs() < 1e-6, "{t}: opposite alphas: {drawn:?}");
+            }
+        };
+        for t in (0..=600).step_by(5) {
+            m.step_live(true, t);
+            walk(&m, t);
+        }
+        m.step_live(false, 1000);
+        for t in (1000..=1400).step_by(5) {
+            walk(&m, t);
+        }
+        assert_eq!(seen.into_iter().collect::<Vec<_>>(), vec![CAPTION, BODY]);
+        assert!(mid_fade, "the ramps were sampled mid-fade");
+    }
+
     /// The knob clock grows only when the whole scrub has shown no card.
     #[test]
     fn the_knob_clock_grows_only_when_no_card_shows() {
-        let base = 24;
-        // no index at all: grows at once, to 30
+        let grow = |m: &Motion, t: u32| m.clock_grow(t);
+        // no index at all: grows at once, in 150 ms
         let mut m = Motion::new();
         m.step_live(true, 0);
         m.observe(None, 0, true, 900.0, 0);
         m.step_live(true, 16);
-        assert!(m.clock_size(base, 16) >= base);
-        assert_eq!(m.clock_size(base, 16 + CLOCK_UP_MS), 30, "1.25x");
-        assert_eq!(m.clock_size(base, 16 + CLOCK_UP_MS / 2) > base, true, "eased up");
+        assert_eq!(grow(&m, 16 + CLOCK_UP_MS), 1.0);
+        let mid = grow(&m, 16 + CLOCK_UP_MS / 2);
+        assert!(mid > 0.0 && mid < 1.0, "eased up: {mid}");
         // ends: back down over 200 ms
         m.step_live(false, 2000);
-        assert!(m.clock_size(base, 2100) < 30);
-        assert_eq!(m.clock_size(base, 2200), base);
+        assert!(grow(&m, 2100) < 1.0 && grow(&m, 2100) > 0.0);
+        assert_eq!(grow(&m, 2200), 0.0);
 
         // a still pending the whole time: grows once the grace has passed
         let mut m = Motion::new();
         m.step_live(true, 0);
         m.observe(None, 0, false, 900.0, 0);
         m.step_live(true, 300);
-        assert_eq!(m.clock_size(base, 300 + CLOCK_UP_MS), base, "not before the grace");
+        assert_eq!(grow(&m, 300 + CLOCK_UP_MS), 0.0, "not before the grace");
         m.step_live(true, NO_CARD_GRACE_MS);
-        assert_eq!(m.clock_size(base, NO_CARD_GRACE_MS + CLOCK_UP_MS), 30);
+        assert_eq!(grow(&m, NO_CARD_GRACE_MS + CLOCK_UP_MS), 1.0);
 
         // a card shows quickly: the clock never moves
         let mut m = Motion::new();
@@ -911,17 +961,24 @@ mod tests {
         m.observe(Some(0), 0, false, 900.0, 100);
         for t in (100..1500).step_by(50) {
             m.step_live(true, t);
-            assert_eq!(m.clock_size(base, t + 400), base, "{t}");
+            assert_eq!(grow(&m, t + 400), 0.0, "{t}");
         }
 
         // a card that shows AFTER the clock grew takes it back down: never both
         let mut m = Motion::new();
         m.step_live(true, 0);
         m.step_live(true, 500);
-        assert_eq!(m.clock_size(base, 500 + CLOCK_UP_MS), 30);
+        assert_eq!(grow(&m, 500 + CLOCK_UP_MS), 1.0);
         m.observe(Some(0), 0, false, 900.0, 700);
         m.step_live(true, 700);
-        assert_eq!(m.clock_size(base, 700 + CLOCK_DOWN_MS), base);
+        assert_eq!(grow(&m, 700 + CLOCK_DOWN_MS), 0.0);
+    }
+
+    #[test]
+    fn a_resting_or_fully_grown_clock_is_one_face() {
+        use plx_ui::theme::size::CAPTION;
+        assert_eq!(clock_faces(CAPTION, 0.0), [Some((CAPTION, 1.0)), None]);
+        assert_eq!(clock_faces(CAPTION, 1.0), [None, Some((CLOCK_GROWN_SZ, 1.0))]);
     }
 
     #[test]
