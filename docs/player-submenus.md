@@ -15,7 +15,7 @@ because the overlay's state shape changed on purpose.
 
 ## Behaviour
 
-- **Subtitles root:** a Subtitles section (Off plus single-track languages), one section per
+- **Subtitles root:** a Subtitles section (Off, Forced only, and the single-track languages), one section per
   multi-track language of `yours`, an "Other languages N" row, then Timing (a value row, no
   chevron; it hands off to the timing capsule) and Style. **Other languages:** one row per
   language A-Z; a single-track language is a direct pick row, a multi-track one is a "French, 3
@@ -73,11 +73,11 @@ state, not panel state).
 ## Focus identity
 
 Each page declares rows with semantic ids, one alphabet for every page: `appkit::track_menu::TrackRow`
-(`Audio(i)`, `Boost`, `Loudness`, `SubOff`, `Sub(i)`, `Timing`, `Style`, `OpenField(field)`,
+(`Audio(i)`, `Boost`, `Loudness`, `SubOff`, `SubForcedOnly`, `Sub(i)`, `Timing`, `Style`, `OpenField(field)`,
 `Choice(field, rung)`, `OpenOther`, `OpenLang(lang)`). Selection and saved openers
 are stored by id. `RowKey` is a hand-assigned family base plus a STABLE ordinal (the track's index
 in the item's list, never a list position): `0x0001_0000` Audio, `0x0002_0000` the DSP pair,
-`0x0003_0000` Off, `0x0004_0000` tracks, `0x0005_0000` Timing/Style, `0x0006_0000` the Style
+`0x0003_0000` Off (`0x0003_0001` Forced only), `0x0004_0000` tracks, `0x0005_0000` Timing/Style, `0x0006_0000` the Style
 page's drill-ins, `0x0007_0000` picker rungs (one 256-wide block per field), `0x0008_0000` the Other languages
 drill-in and `0x0009_0000 +` a language's drill-in, which uses its slot on the Other page instead of
 a track index. `OpenLang` carries the language's `LangId`, the stream id of its first track in the

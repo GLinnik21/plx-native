@@ -10,11 +10,12 @@
 //!
 //! The claim worker's plumbing (the work/fallback enums, the landing mailbox, the spawn, the drain
 //! and the stale-landing discard rules) is [`super::flight`]; the route DECISIONS that feed it
-//! (the claim table, the enhancement step, the plans and the PMS attempts) stay here.
+//! (the claim table, the enhancement step, the plans and the PMS attempts) stay here. The track
+//! memory's effects (the recall at a resolve, the parked write-back, the track menu's picks) are the
+//! child module `memory` (`decision_memory.rs`); the fields it works on stay on [`PlaybackSession`].
 
 use plx_plex::plex::ServerId;
-use plx_plex::plex::session::prefs::{AudioMemo, SubtitleMemo, TrackMemoryEntry};
-use plx_plex::plex::session::{QualityPref, SubtitleOffsetEntry};
+use plx_plex::plex::session::QualityPref;
 use plx_data::pms::PmsMovie;
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -22,6 +23,21 @@ use std::sync::Mutex;
 use super::flight::*;
 use super::plan::*;
 use super::prefs::*;
+use super::track_memory::{SubMode, TrackContext};
+
+// The track memory's effects: the recall at a resolve, the parked write-back and the track menu's
+// picks. A child module so the file that declares `PlaybackSession` is not also the one that
+// says what is remembered about it; every public name keeps its `route::` path.
+#[path = "decision_memory.rs"]
+mod memory;
+pub use memory::{
+    commit_audio_pick, commit_forced_only_and_sidecar, commit_forced_only_pick, commit_subtitle_and_sidecar, commit_subtitle_pick,
+    on_decoded_frame, persist_subtitle_offset, rematch_subtitle_with_names, repoint_parked_subtitle, send_parked_write_back,
+};
+#[cfg(any(test, feature = "test-support"))]
+pub use memory::{park_write_back_for_test, write_back_parked};
+pub(super) use memory::ParkedWriteBack;
+use memory::{follow_audio_with_forced_only, parked_write_back, recalled_track_memory, remembered_subtitle_offset, settle_landing_selection};
 
 // ---- ONE playback session, as ONE value -----------------------------------------------------
 
@@ -63,6 +79,9 @@ struct RetryContext {
     /// rescue ([`retry_current_play`]) of a playback that was enhanced: an enhanced `start.mkv`
     /// that failed to open is the one failure a plain retry would repeat verbatim.
     suppress_enhancement: bool,
+    /// The subtitle MODE the session held ([`PlaybackSession::sub_mode`]), so a retry of Forced only
+    /// is still Forced only: `selection` carries stream ids, which cannot say so.
+    sub_mode: SubMode,
 }
 
 /// Everything the main thread needs to resolve and render the playback in progress, in one struct.
@@ -309,11 +328,19 @@ pub struct PlaybackSession {
     /// by the first commit that changes the subtitle shown, because a pick the app draws in place
     /// runs no landing to clear it.
     cur_memory_note: bool,
-    /// **A remembered choice this landing applied that the server does not have yet** (§4.8 W6),
+    /// **A remembered choice this landing applied that the server does not have yet** (W6),
     /// parked by [`apply_plan`] and sent by [`send_parked_write_back`] on the landing's first
     /// decoded frame. `take`n by the send, so a play writes at most once; every other landing
     /// (a retry, a rescue, a seek rebuild) installs a session with nothing parked.
     write_back: Option<ParkedWriteBack>,
+    /// Which of the three subtitle states the playback is in ([`SubMode`]): `cur_sub_sid` alone
+    /// cannot tell Forced only from a pick of the forced track it drew. Set by a landing from the
+    /// plan (or the retry that led to it), by every ordinary subtitle commit from the stream it
+    /// picked, and back to Forced only by the commits derived from it.
+    sub_mode: SubMode,
+    /// What the audio follow and the first-frame names re-match need of the playing item (neither
+    /// can read the metadata store); NOT published ([`Self::publication`]). `None` without an item.
+    track_ctx: Option<TrackContext>,
     /// the playing item's Part id (from the part key), so an audio switch can PUT the
     /// server-side stream selection — the transcoder encodes the part's SELECTED audio.
     cur_part_id: i64,
@@ -489,6 +516,8 @@ impl PlaybackSession {
         cur_kind: String::new(),
         cur_memory_note: false,
         write_back: None,
+        sub_mode: SubMode::Track,
+        track_ctx: None,
         cur_part_id: 0,
         sess: String::new(),
         machine_id: String::new(),
@@ -569,6 +598,8 @@ impl PlaybackSession {
             cur_memory_note,
             // The parked write is the loop's to send, not a screen's to see.
             write_back: _,
+            sub_mode,
+            track_ctx: _,
             cur_part_id,
             sess,
             machine_id,
@@ -629,6 +660,8 @@ impl PlaybackSession {
             cur_kind: cur_kind.clone(),
             cur_memory_note: *cur_memory_note,
             write_back: None,
+            sub_mode: *sub_mode,
+            track_ctx: None,
             cur_part_id: *cur_part_id,
             sess: sess.clone(),
             machine_id: machine_id.clone(),
@@ -2444,6 +2477,7 @@ pub fn force_applying_for_test(serial: u64) {
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_player_control_for_test(ps: &PlaybackSession) {
+    retire_pending_stops(); // the stop mailbox is process-global, like the control it sits beside
     let projection = route_projection(ps);
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     control.engine_epoch = next_generation(control.engine_epoch);
@@ -5206,6 +5240,13 @@ pub fn install_transcode_for_test(ps: &mut PlaybackSession, remux: bool, hls: bo
         plx_plex::plex::TranscodeDelivery::ProgressiveMkv
     };
 }
+/// Test-only: register `session` as the live encoder the next [`scrobble_stop`] closes, so a
+/// suite outside this crate can drive the stop worker's server-side `transcode_stop` leg (the one
+/// [`timeline_stop_landed`] must not wait for).
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_active_encoder_for_test(session: &str) {
+    install_active_encoder(session);
+}
 /// select the subtitle to BURN into any transcode of the current item (0 = none). This
 /// is the transcode path; direct-play uses the client renderer (player::request_subtitle).
 pub fn set_subtitle(ps: &mut PlaybackSession, sid: i64) {
@@ -5594,6 +5635,87 @@ struct ScrobbleWork {
     subtitle_stream_id: i64,
     transcode_session: String,
     timeline_stop: Option<TimelineStopCompletion>,
+    /// The record the app learns this stop from; posted just before `timeline_stop` completes.
+    stop_mail: Option<PendingStop>,
+}
+
+/// The stops whose `stopped` POST has been attempted or abandoned, waiting for the app to take
+/// them. **A queue, not the plan's one slot.** `scrobble_stop` joins the previous worker
+/// (`drain_scrobble`) on the main thread before it announces the next stop; if that worker was
+/// stalled on a slow server the app has had no frame in between, so the next worker's record would
+/// land on top of the previous one in a single slot and an Up Next chain would lose an episode.
+/// The app drains it every frame ([`take_landed_stops`]); it holds at most the stops that happened
+/// since the last frame.
+static STOP_MAIL: Mutex<Vec<plx_data::viewstate::StopRecord>> = Mutex::new(Vec::new());
+/// Stops with a record built and not yet posted: what a replay's landing gate waits for. A stop
+/// retired by [`retire_pending_stops`] stays owed until its worker posts (and is dropped), so the
+/// count never reaches zero while a worker still holds a record, and never goes negative.
+static STOPS_OWED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The identity epoch a stop record is built under. A record belongs to whoever was signed in when
+/// the stop began; one that lands after [`retire_pending_stops`] bumped this is another identity's
+/// and is dropped on posting.
+static STOP_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Posts its record exactly once; dropped unposted (a panicking worker) it posts it as not taken,
+/// so the viewer's position still shows and nothing is owed forever.
+struct PendingStop {
+    rec: Option<plx_data::viewstate::StopRecord>,
+    epoch: u64,
+}
+
+impl PendingStop {
+    /// Owes `rec` under the current identity epoch.
+    fn new(rec: plx_data::viewstate::StopRecord) -> Self {
+        // under the mailbox lock, so `retire_pending_stops` cannot slip between the two reads
+        let mail = STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner());
+        STOPS_OWED.fetch_add(1, Ordering::SeqCst);
+        let epoch = STOP_EPOCH.load(Ordering::SeqCst);
+        drop(mail);
+        Self { rec: Some(rec), epoch }
+    }
+
+    fn post(&mut self, ok: bool) {
+        if let Some(mut rec) = self.rec.take() {
+            rec.ok = ok;
+            {
+                let mut mail = STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner());
+                if STOP_EPOCH.load(Ordering::SeqCst) == self.epoch {
+                    mail.push(rec);
+                } else {
+                    plx_base::eventlog::log("viewstate: a stop from a retired identity was dropped");
+                }
+            }
+            STOPS_OWED.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Drop for PendingStop {
+    fn drop(&mut self) {
+        self.post(false);
+    }
+}
+
+/// **The identity changed: no stop of the old one may reach the new one.** Bumps the epoch (every
+/// record still being posted is now stale and is dropped when its worker posts it) and empties the
+/// mailbox of the ones already posted. A stalled `stopped` POST by one profile would otherwise land
+/// after a switch and patch, read back and fan out on the NEW profile's token. MAIN THREAD, from
+/// the same place every store is reset.
+pub fn retire_pending_stops() {
+    let mut mail = STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner());
+    STOP_EPOCH.fetch_add(1, Ordering::SeqCst);
+    mail.clear();
+}
+
+/// The stops posted since the last call, oldest first. MAIN THREAD, once a frame.
+pub fn take_landed_stops() -> Vec<plx_data::viewstate::StopRecord> {
+    std::mem::take(&mut *STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Is a stop's record still being posted? True from `scrobble_stop` to the end of its `stopped`
+/// attempt: what the landing gate waits on in dump mode.
+pub fn stops_owed() -> bool {
+    STOPS_OWED.load(Ordering::SeqCst) > 0
 }
 
 impl ScrobbleWork {
@@ -5605,6 +5727,7 @@ impl ScrobbleWork {
         if let Some(t) = self.report_th.take() {
             plx_base::task::join("timeline", t);
         }
+        let mut posted = false;
         if let Some((rk, t_ms, d_ms)) = self.final_report.take() {
             let ok = {
                 let _effect = TIMELINE_EFFECT.lock().unwrap_or_else(|e| e.into_inner());
@@ -5628,6 +5751,11 @@ impl ScrobbleWork {
                 d_ms / 1000,
                 ok as i32,
             ));
+            posted = ok;
+        }
+        // BEFORE the fence completes, so a completed fence implies the record is in the mailbox.
+        if let Some(mut mail) = self.stop_mail.take() {
+            mail.post(posted);
         }
         // This is the semantic publication boundary: old reporter joined, then old stopped was
         // attempted in the common effect lane. Wake replacement reporters before the unrelated
@@ -5692,6 +5820,22 @@ pub fn scrobble_stop(
     // item, and letting two race would let an older one land last. Normally free — the measured
     // baseline for a finished worker is 0 ms.
     drain_scrobble();
+    let stop_mail = final_report.as_ref().map(|(rk, pos_ms, dur_ms)| {
+        let sid = cur_sid(ps);
+        // The item's row in the play queue, fetched when the play began: its watched state is the
+        // "before" of this stop. A row that cannot be found reads as watched, so an unknown never
+        // fans out a scrobble nobody asked for.
+        let row = plx_plex::plex::queue_index_of(&ps.queue, ps.pq_item_id.parse().unwrap_or(0), sid, rk)
+            .map(|i| &ps.queue[i]);
+        PendingStop::new(plx_data::viewstate::StopRecord {
+            sid,
+            rk: rk.clone(),
+            pos_ms: *pos_ms,
+            dur_ms: *dur_ms,
+            ok: false,
+            was_watched: row.is_none_or(|r| r.watched),
+        })
+    });
     let timeline_stop =
         (final_report.is_some() || report_th.is_some()).then(|| TIMELINE_STOP_FENCE.announce());
     let work = std::sync::Arc::new(std::sync::Mutex::new(Some(ScrobbleWork {
@@ -5705,6 +5849,7 @@ pub fn scrobble_stop(
         subtitle_stream_id: sub,
         transcode_session: tsession,
         timeline_stop,
+        stop_mail,
     })));
     let worker = work.clone();
     let join_generation = SCROBBLE_JOIN.reserve();
@@ -5789,9 +5934,10 @@ impl ScrobbleJoin {
         self.changed.notify_all();
     }
 
-    /// Whether no stop report is still on its way to the server: no worker was ever reserved, the
-    /// last one has been joined, or its thread has returned. Never blocks, and never joins - the
-    /// frame loop asks this every frame while it waits to re-read what the stop committed.
+    /// Whether the whole stop worker, including the server-side `transcode_stop`, has returned: no
+    /// worker was ever reserved, the last one has been joined, or its thread has returned. Never
+    /// blocks, and never joins. The gate for re-reading what the stop committed is
+    /// [`timeline_stop_landed`], not this.
     fn settled(&self) -> bool {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.completed >= state.generation
@@ -5877,6 +6023,12 @@ impl TimelineStopFence {
             .announced
     }
 
+    /// Every announced stop has completed. Vacuously true before the first announce.
+    fn landed(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.completed >= state.announced
+    }
+
     fn wait(&self, required: u64) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         while state.completed < required {
@@ -5926,11 +6078,35 @@ pub fn drain_scrobble() {
     SCROBBLE_JOIN.drain();
 }
 
-/// Whether the last [`scrobble_stop`] has finished posting (see [`ScrobbleJoin::settled`]): true
-/// once the server holds the resume point the stop reported, so a re-read of the item sees it.
-/// Non-blocking, unlike [`drain_scrobble`].
+/// Whether the last [`scrobble_stop`]'s whole worker has returned (see [`ScrobbleJoin::settled`]),
+/// including the server-side `transcode_stop`. The re-read gate is [`timeline_stop_landed`], which
+/// opens once the `stopped` POST has landed; this one only says the worker is done. Non-blocking,
+/// unlike [`drain_scrobble`].
 pub fn scrobble_settled() -> bool {
     SCROBBLE_JOIN.settled()
+}
+
+/// Whether the last announced `state=stopped` timeline report has been *attempted or abandoned*:
+/// the worker has finished its POST (answered, failed or timed out), or the work was dropped
+/// (panic, thread refusal). It does NOT mean the server accepted it.
+///
+/// Earlier than [`scrobble_settled`], which also waits for the server-side `transcode_stop` round
+/// trip that follows the POST (up to a full PMS timeout, ~17 s, on a slow server). A re-read of
+/// the item only needs the resume point, so the post-playback refreshes gate on this one.
+///
+/// **It reads true when no stop was announced at all** (nothing playing, a reporter-less preview,
+/// or a stop with nothing to post), so it is only meaningful behind an owed flag that
+/// `exit_player` sets *after* [`scrobble_stop`] announced the fence on the same (main) thread
+/// (`App::refresh_hubs`). Non-blocking.
+pub fn timeline_stop_landed() -> bool {
+    TIMELINE_STOP_FENCE.landed()
+}
+
+/// How many `state=stopped` reports have ever been announced. A caller that remembers the value it
+/// last saw can tell whether an exit announced one of its own (the count moved) or ended a play
+/// that never started and reported nothing.
+pub fn timeline_stops_announced() -> u64 {
+    TIMELINE_STOP_FENCE.announced()
 }
 
 /// Seek within a LIVE TRANSCODE by restarting it at a time offset — a transcode has no byte-Cues,
@@ -6944,7 +7120,7 @@ fn send_selection(c: &plx_plex::plex::Client, part: i64, aud: i64, sub: Option<i
 /// (`revoke_for_profile_switch` blanks its token and the next profile's grant re-tokens the SAME
 /// slot), so the server id alone cannot say whose request this is. The worker drops the request
 /// when either value moved (W11). `write_back` marks the request an applied remembered choice made
-/// (§4.8), so the drop can say so.
+/// (WB), so the drop can say so.
 struct QueuedSelection {
     sid: ServerId,
     part: i64,
@@ -7220,6 +7396,8 @@ impl ResolveEnv {
                 && (ps.cur_sub_sidecar || side_reader_admitted(ps)))
                 .then_some(ps.cur_sub_ordinal),
             subtitle_override: None,
+            sub_mode: SubMode::Track,
+            forced_lang: forced_only_lang(ps).to_string(),
             cached_item: meta.cached_playing(sid, rk),
             quality: quality(),
             direct_play_mode: direct_play_mode(),
@@ -7237,21 +7415,6 @@ impl ResolveEnv {
             dv_capability: None,
         }
     }
-}
-
-/// **Everything the active profile remembered about its shows on `sid`'s server** (the track
-/// memory), through the memory door's mirror. MAIN THREAD, like the rest of the snapshot: the
-/// resolve worker must not read the mirror. A play raised off a shelf does not know its show until
-/// the item is fetched, so the whole list rides along and `build_stream` picks the entry by
-/// `playing.show_rk`. Empty until the server is registered and has said its machine id.
-fn recalled_track_memory(sid: ServerId) -> Vec<TrackMemoryEntry> {
-    let Some(machine_id) = plx_plex::plex::client_for(sid).map(|c| c.machine_id()).filter(|m| !m.is_empty()) else {
-        return Vec::new();
-    };
-    recall_all::<TrackMemoryEntry>(&plx_plex::plex::session::current_profile_key())
-        .into_iter()
-        .filter(|e| e.machine_id == machine_id)
-        .collect()
 }
 
 pub fn playback_preview(d: &plx_data::metadata::Detail) -> Option<Preview> {
@@ -7754,6 +7917,9 @@ fn clear_track_selection(s: &mut PlaybackSession) {
 fn begin_track_selection(s: &mut PlaybackSession, retry: Option<RetryContext>) {
     clear_track_selection(s);
     s.carried_selection = retry.and_then(|r| r.selection);
+    // The mode rides the retry the same way the pair does: kept while no playable plan has landed,
+    // so a second retry built before this one lands still finds Forced only.
+    s.sub_mode = retry.map_or(SubMode::Track, |r| r.sub_mode);
 }
 
 /// Clear the outgoing item's live track selection for a play request. A retry is the SAME item
@@ -7775,49 +7941,6 @@ fn reset_track_selection(sid: ServerId, rk: &str, retry: Option<RetryContext>) {
             }
         }
     }
-}
-
-/// This profile's remembered subtitle sync-timing correction for `rk` on `sid`'s server, if this
-/// television has ever tuned one — the read half of [`persist_subtitle_offset`], through the memory
-/// door's mirror ([`recall`]), so a correction made a moment ago is found whether or not its file
-/// write has landed yet. `None` when the server is not (yet) registered, which a resolve about to
-/// fail for the same reason would find out anyway.
-fn remembered_subtitle_offset(sid: ServerId, rk: &str) -> Option<i64> {
-    let machine_id = plx_plex::plex::client_for(sid)?.machine_id().to_string();
-    if machine_id.is_empty() {
-        return None;
-    }
-    recall::<SubtitleOffsetEntry>(&plx_plex::plex::session::current_profile_key(), &(machine_id, rk.to_string()))
-        .map(|e| e.offset_ms)
-}
-
-/// Remember the viewer's subtitle sync-timing correction for the CURRENTLY PLAYING item, so the
-/// next resume of this exact file starts from where they left it (`remembered_subtitle_offset`'s
-/// own doc). It goes through the memory door ([`remember`]): the mirror takes it now, on this
-/// thread, and the file write is queued on the storage worker like every other in-player
-/// preference edit (`player::set_subtitle_tone`) — the live atomic
-/// ([`crate::player::set_subtitle_offset`]) is already applied by the time this queues, so a slow
-/// or lost write costs only a restart's worth of memory, never this resume.
-pub fn persist_subtitle_offset(ps: &PlaybackSession, offset_ms: i64) {
-    let Some(machine_id) = plx_plex::plex::client_for(cur_sid(ps)).map(|c| c.machine_id().to_string()) else {
-        return;
-    };
-    if machine_id.is_empty() {
-        return;
-    }
-    let rk = cur_rk(ps);
-    let user = plx_plex::plex::session::current_profile_key();
-    let key = (machine_id.clone(), rk.clone());
-    // Only the offset is the viewer's pick: whatever else the entry carries (a key a newer build
-    // wrote) is the list's, so it is taken from the entry that is there when this runs.
-    remember::<SubtitleOffsetEntry>(&user, key, move |current| {
-        (offset_ms != 0).then(|| SubtitleOffsetEntry {
-            machine_id: machine_id.clone(),
-            rating_key: rk.clone(),
-            offset_ms,
-            extensions: current.map(|e| e.extensions.clone()).unwrap_or_default(),
-        })
-    });
 }
 
 /// Start a fresh resolve for the item whose terminal error is still on screen.
@@ -7843,183 +7966,6 @@ pub fn confirm_resume_presented(ps: &mut PlaybackSession) {
     }
 }
 
-/// **A remembered choice a landing applied and the server has not been told** (§4.8 W6), parked on
-/// the session until the landing's first decoded frame. Everything the send needs rides here
-/// because the playing item moves into the metadata store at the landing: the identity of the
-/// route it belongs to, the halves (already filtered by W7 against the Part's own streams) and the
-/// selection the viewer was looking at when it landed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct ParkedWriteBack {
-    sid: ServerId,
-    part_id: i64,
-    /// The landing's stream URL: the parked write belongs to THAT direct play. A recovery flight, a
-    /// quality change or a rebuild that replaced the route in place does not run [`apply_plan`], so
-    /// it cannot clear this; the URL (and `is_transcoding`) is how the send knows it is stale.
-    url: String,
-    audio: Option<i64>,
-    subtitle: Option<SubWrite>,
-    /// The subtitle the Part already has selected for the viewer (resolve time), if any. An
-    /// audio-only write names it unchanged: re-selecting it moves nothing and keeps a downloaded
-    /// stream alive (W5), and with none selected the field is omitted so no explicit Off is created.
-    keep_subtitle: Option<i64>,
-    /// The Part carries an external stream (W5), so a subtitle half is withheld whatever the
-    /// subtitle on screen becomes; `subtitle: None` alone cannot say that (a declined memory and a
-    /// half PMS already agrees with are `None` too).
-    external_on_part: bool,
-    /// `(audio, subtitle)` stream ids the viewer had on screen at the landing. Any difference at
-    /// the first frame means a pick (or a recovery) took over, and that pick's own PUT carries the
-    /// live selection, so there is nothing left to write.
-    ///
-    /// Read from the SESSION once the landing is complete ([`settle_parked_landing`]), never from
-    /// the plan: the landing restores the server's selected sidecar over the plan's `sub_sid`, and
-    /// on a direct play that is not a remux (Direct Play = Forced, a Dolby Vision base layer that
-    /// cannot stand alone) the plan never names it.
-    landed: (i64, i64),
-}
-
-/// What [`apply_plan`] parks for `plan` (W6, W7): `plan.write_back` less the halves PMS already
-/// agrees with, `None` for a plan that is not a playable landing or has nothing left to write.
-///
-/// W7 compares each half with the Part's streams in `plan.playing`. An `Id` half is skipped only
-/// when that stream is already `selected` AND the playing item was fetched fresh this resolve
-/// (`plan.playing_fresh`): a cached detail page may predate an earlier write, and re-sending the
-/// selection PMS holds is harmless. An `Off` half is skipped whenever the copy shows nothing selected,
-/// fresh or not, so a stale cache can never create an explicit Off.
-fn parked_write_back(plan: &Plan) -> Option<ParkedWriteBack> {
-    let wb = plan.write_back.filter(|_| !plan.url.is_empty() && plan.part_id > 0)?;
-    let playing = plan.playing.as_ref()?;
-    let fresh = plan.playing_fresh;
-    let selected_sub = playing.subs.iter().find(|s| s.selected).map(|s| s.id);
-    let audio = wb.audio.filter(|id| !(fresh && playing.audio.iter().any(|a| a.id == *id && a.selected)));
-    let subtitle = wb.subtitle.filter(|half| match *half {
-        SubWrite::Id(id) => !(fresh && playing.subs.iter().any(|s| s.id == id && s.selected)),
-        SubWrite::Off => selected_sub.is_some(),
-    });
-    if audio.is_none() && subtitle.is_none() {
-        return None;
-    }
-    Some(ParkedWriteBack {
-        sid: plan.sid,
-        part_id: plan.part_id,
-        url: plan.url.clone(),
-        audio,
-        subtitle,
-        keep_subtitle: selected_sub,
-        external_on_part: external_on_part(playing),
-        landed: (0, 0),
-    })
-}
-
-/// Record what the finished landing has on screen as the selection the parked write belongs to
-/// (see [`ParkedWriteBack::landed`]). [`apply_plan`] calls it after the restore of the server's
-/// sidecar, the last step that can change `cur_audio` or `cur_sub_sid` before the first frame.
-fn settle_parked_landing(ps: &mut PlaybackSession) {
-    let live = (cur_audio_sid(ps), cur_sub_sid(ps));
-    if let Some(parked) = ps.write_back.as_mut() {
-        parked.landed = live;
-    }
-}
-
-/// **Send the parked write-back, once, on the landing's first decoded frame** (§4.8 W6). Called by
-/// the pump's decoded-frame branch; MAIN THREAD, and it only QUEUES (the serial selection worker
-/// does the PUT), so a slow server never stalls the frame.
-///
-/// `Option::take` is the once-per-play guard (W8). The value is dropped, not sent, when:
-///   - the route it was parked for is gone: a different URL, or any transcode (a recovery flight
-///     or a rebuild replaced it, and that route's own start PUT is the write, W3);
-///   - a remembered pick is not shown (`cur_memory_note`);
-///   - the selection on screen is no longer the landed one: the viewer picked something, and that
-///     pick's PUT already carries the live ids.
-///
-/// The subtitle field is the half's own id (`0` for Off), else the Part's own selected subtitle,
-/// else omitted. It is never `cur_sub_sid`, which on a fall-through can be a pick PMS never had (W2).
-pub fn send_parked_write_back(ps: &mut PlaybackSession) {
-    let Some(parked) = ps.write_back.take() else {
-        return;
-    };
-    let live = (cur_audio_sid(ps), cur_sub_sid(ps));
-    if is_transcoding(ps) || ps.url != parked.url || cur_sid(ps) != parked.sid || cur_part_id(ps) != parked.part_id {
-        crate::player::log("track-memory: write-back dropped (the route changed)");
-        return;
-    }
-    if ps.cur_memory_note {
-        crate::player::log("track-memory: write-back dropped (the remembered pick is not shown)");
-        return;
-    }
-    if live != parked.landed {
-        crate::player::log("track-memory: write-back dropped (the selection on screen changed)");
-        return;
-    }
-    let subtitle = match parked.subtitle {
-        Some(SubWrite::Id(id)) => Some(id),
-        Some(SubWrite::Off) => Some(0),
-        None => parked.keep_subtitle,
-    };
-    crate::player::log(&format!(
-        "track-memory: write-back part={} audio={} sub={}",
-        parked.part_id,
-        parked.audio.map_or_else(|| "-".to_string(), |a| a.to_string()),
-        subtitle.map_or_else(|| "-".to_string(), |s| s.to_string()),
-    ));
-    queue_selection(parked.sid, parked.part_id, parked.audio.unwrap_or(0), subtitle, true);
-}
-
-/// **Carry the parked write to a subtitle the first frame's re-match put on screen** (§4.8 W6,
-/// §4.9). The container-name re-match runs on the decoded-frame branch BEFORE
-/// [`send_parked_write_back`] and commits a derived subtitle; without this the commit would queue a
-/// PUT of its own, change `cur_sub_sid` under the parked write (whose `landed` check would then drop
-/// it, the remembered audio half with it) and reach PMS through the manual-pick path, which applies
-/// neither W5 nor W7.
-///
-/// Returns whether a write is parked. If so the parked write now accounts for `sub_sid` and the
-/// caller queues NO PUT of its own: the audio half is untouched, the subtitle half is `sub_sid`
-/// (`0` is Off) under W5 and W7, and the live selection is the landed one again. If not, nothing was
-/// applied at the landing and the caller commits as an ordinary derived selection.
-///   - W5: a Part with an external stream keeps its subtitle half withheld (the audio-only write
-///     then names the Part's own selection); the memory still shows on screen.
-///   - W7: an Off over a Part with nothing selected would create an explicit Off, so that half is
-///     dropped, and a write left with no half at all is cleared. A re-matched id PMS already holds
-///     is sent anyway: re-selecting it is harmless.
-pub fn repoint_parked_subtitle(ps: &mut PlaybackSession, sub_sid: i64) -> bool {
-    let Some(parked) = ps.write_back.as_mut() else {
-        return false;
-    };
-    parked.landed.1 = sub_sid;
-    if !parked.external_on_part {
-        parked.subtitle = match sub_sid {
-            id if id > 0 => Some(SubWrite::Id(id)),
-            _ => parked.keep_subtitle.map(|_| SubWrite::Off),
-        };
-    }
-    if parked.audio.is_none() && parked.subtitle.is_none() {
-        ps.write_back = None;
-    }
-    true
-}
-
-/// Test-only: park a write-back on `ps` as a landing would, naming the session's own route and
-/// selection, so a test of the PUMP can grade that the decoded-frame branch (and no earlier frame)
-/// takes it.
-#[cfg(any(test, feature = "test-support"))]
-pub fn park_write_back_for_test(ps: &mut PlaybackSession) {
-    ps.write_back = Some(ParkedWriteBack {
-        sid: cur_sid(ps),
-        part_id: cur_part_id(ps),
-        url: ps.url.clone(),
-        audio: Some(cur_audio_sid(ps)),
-        subtitle: None,
-        keep_subtitle: None,
-        external_on_part: false,
-        landed: (cur_audio_sid(ps), cur_sub_sid(ps)),
-    });
-}
-
-/// Test-only: a write-back is still parked on `ps`.
-#[cfg(any(test, feature = "test-support"))]
-pub fn write_back_parked(ps: &PlaybackSession) -> bool {
-    ps.write_back.is_some()
-}
-
 fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     RetryContext {
         resume_ns: resume_ns.max(0),
@@ -8031,6 +7977,7 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         direct_play_mode: ps.direct_play_mode,
         suppress_enhancement: false,
+        sub_mode: ps.sub_mode,
     }
 }
 
@@ -8058,6 +8005,7 @@ fn apply_retry(env: &mut ResolveEnv, retry: RetryContext) {
         env.audio_sid = audio_sid;
         env.sub_sid = sub_sid;
         env.subtitle_override = Some(sub_sid);
+        env.sub_mode = retry.sub_mode;
         // That selection is the viewer's own pick of THIS playback and outranks anything the
         // profile remembered for the show.
         env.memory.clear();
@@ -8383,6 +8331,8 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         // A refused landing selected nothing, so it keeps what the retry that led here carried; a
         // playable one has a known selection of its own.
         let carried_selection = if selection_known { None } else { s.carried_selection };
+        // …and the subtitle mode with it: a refused landing keeps the retry's.
+        let sub_mode = if selection_known { plan.sub_mode } else { s.sub_mode };
         let now_ms = s.now_ms;
         let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
@@ -8441,6 +8391,8 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             cur_kind,
             cur_memory_note: plan.memory_note,
             write_back,
+            sub_mode,
+            track_ctx: plan.track_ctx,
             cur_part_id: plan.part_id,
             sess: plan.sess,
             machine_id,
@@ -8495,7 +8447,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             ps.cur_sub_client_drawable = true;
         }
     }
-    settle_parked_landing(ps);
+    settle_landing_selection(ps);
     let start = prepare_playback_landing(ps, !ps.url.is_empty());
     // SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
     if let Some(ord) = plan.feed_audio_ordinal {
@@ -9266,7 +9218,7 @@ pub enum BurnReason {
 
 /// **The live [`SubtitlePresenter`]**, from the committed selection (`cur_sub_sid`, written for
 /// every route by `commit_subtitle_selection`) and the live route. A transcode burns whatever is
-/// selected and the client then draws nothing (`player_hud::draw_subtitles` is silenced by
+/// selected and the client then draws nothing (the libass source is silenced by
 /// [`subtitles_burned`] the same way) — except a sidecar, or an admitted embedded track, over a remux, which the app draws
 /// ([`SubtitlePresenter::ClientOverRemux`]); direct play draws it in the app. The reason is the
 /// audio conversion when the live family is a remux or the burn is the enhancement's own or the
@@ -10234,7 +10186,22 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
 /// is `false` only for the Forced refusal (the pick is not played and the verdict says so). A pick
 /// deferred behind a pending Original handoff, or one the enhancement reconcile re-routes, is
 /// accepted.
+///
+/// **While the subtitle mode is Forced only the pick also re-points it** (FO): the forced
+/// track in the language of the audio just chosen is committed as a derived selection
+/// ([`follow_audio_with_forced_only`]), which PUTs like any in-playback subtitle change and writes
+/// NO memory: the memo stays Forced only.
 pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
+    let sid = audio.sid;
+    let accepted = commit_audio_route(ps, audio);
+    if accepted {
+        follow_audio_with_forced_only(ps, sid);
+    }
+    accepted
+}
+
+/// The route half of [`commit_audio_selection`]: which way the pick reloads, and what it displaces.
+fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
     if forced_direct_play(ps) && !audio_track_direct_plays(ps, &audio.codec, audio.channels) {
         ps.play_verdict = Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion));
         return false;
@@ -10342,6 +10309,29 @@ pub fn commit_subtitle_selection(
     stream_id: i64,
     client_renderable: bool,
 ) {
+    commit_subtitle_selection_inner(ps, sub_idx, stream_id, client_renderable, true);
+}
+
+/// [`commit_subtitle_selection`] with the direct-play selection PUT optional. `put == false` is for
+/// the commit whose server write is accounted for or must not happen: the first frame's
+/// container-name re-match while a live write-back is parked, which carries the re-matched subtitle
+/// itself ([`repoint_parked_subtitle`]), and that re-match over a Part that carries an external
+/// stream, where W5 forbids any subtitle write. Everything else a commit does (the burn refresh, the
+/// side reader, the route projection) is unchanged.
+fn commit_subtitle_selection_inner(
+    ps: &mut PlaybackSession,
+    sub_idx: i32,
+    stream_id: i64,
+    client_renderable: bool,
+    put: bool,
+) {
+    // An ORDINARY commit settles the mode from the stream it picks (Forced only is put back by the
+    // commits derived from it), and a viewer's pick ends any owed container-name re-match: the
+    // viewer has decided what is on screen.
+    ps.sub_mode = SubMode::of_stream(stream_id);
+    if let Some(ctx) = ps.track_ctx.as_mut() {
+        ctx.rematch = None;
+    }
     let transcoding = is_transcoding(ps);
     // A live plain remux whose new pick is Off or a subtitle the app draws over it (a sidecar, or
     // an embedded track the side reader is admitted for) keeps its stream: the server never carried
@@ -10420,7 +10410,9 @@ pub fn commit_subtitle_selection(
         // stale server-side selection that would otherwise burn on the next transcode). Reached
         // from `app/playback.rs::commit_track` inside the run-loop's `FrameScope`, so this PUT runs
         // on the serial selection worker instead of blocking the frame thread.
-        queue_put_selection(cur_sid(ps), cur_part_id(ps), cur_audio_sid(ps), cur_sub_sid(ps));
+        if put {
+            queue_put_selection(cur_sid(ps), cur_part_id(ps), cur_audio_sid(ps), cur_sub_sid(ps));
+        }
     }
     if in_place {
         // The stream stays; what the app reads beside it follows the pick (start, switch or stop
@@ -10437,88 +10429,30 @@ pub fn commit_subtitle_selection(
     }
 }
 
-/// One half of a show's track memory, as the track menu's pick describes it.
-#[derive(Clone)]
-enum TrackPick {
-    Audio(AudioMemo),
-    Subtitle(SubtitleMemo),
+/// Which of the three subtitle states the playback is in ([`SubMode`]).
+pub fn cur_sub_mode(ps: &PlaybackSession) -> SubMode {
+    ps.sub_mode
 }
 
-/// **Remember a track pick for the playing show: the track memory's one write.** Gated by the
-/// same predicate the read side applies in `plan::show_memory` (an `episode` with a known show),
-/// so what is written is exactly what a later resolve can read; a movie, a trailer or an item the
-/// server did not place in a show writes nothing. The seat and the tenure are `remember`'s to
-/// refuse: nothing is written for a run that seated nobody (a dev token), and a refused write
-/// leaves the mirror as it was.
-///
-/// The closure keeps the OTHER half of the entry as it is when it runs (against the mirror now,
-/// and against the file's entry when the queued write runs): an audio pick must not erase the
-/// subtitle the viewer chose a minute ago, nor the other way round.
-fn remember_track_pick(ps: &PlaybackSession, pick: TrackPick) -> bool {
-    let show = cur_show_rk(ps);
-    if cur_kind(ps) != "episode" || show.is_empty() {
-        return false;
-    }
-    let Some(machine_id) = plx_plex::plex::client_for(cur_sid(ps)).map(|c| c.machine_id().to_string()) else {
-        return false;
-    };
-    if machine_id.is_empty() {
-        return false;
-    }
-    let show = show.to_string();
-    let user = plx_plex::plex::session::current_profile_key();
-    remember::<TrackMemoryEntry>(&user, (machine_id.clone(), show.clone()), move |current| {
-        let mut entry = current.cloned().unwrap_or_else(|| TrackMemoryEntry::new(&machine_id, &show, None, None));
-        match &pick {
-            TrackPick::Audio(memo) => entry.audio = Some(memo.clone()),
-            TrackPick::Subtitle(memo) => entry.subtitle = Some(memo.clone()),
-        }
-        Some(entry)
-    })
+/// Put `ps` in `mode` as a Forced only pick would, for a menu test that cannot reach the field.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_sub_mode_for_test(ps: &mut PlaybackSession, mode: SubMode) {
+    ps.sub_mode = mode;
 }
 
-/// **The track menu's audio pick: commit it, and remember it if the route took it.** `memo` is the
-/// descriptor of the picked row ([`memo_of_audio`](super::memo_of_audio)); `None` is a commit that is
-/// not a viewer's choice and remembers nothing. The write is made only when
-/// [`commit_audio_selection`] accepted the pick, so the Forced refusal (a track the route will not
-/// play) is never remembered. Returns whether the route accepted it.
-///
-/// Automatic picks do NOT come through here: the start-of-play auto-pick, a retry, a rescue and
-/// Switch to Auto call [`commit_audio_selection`] or build a plan directly, and write no memory.
-/// A pick deferred behind a pending Original handoff was accepted, and so remembered, when the
-/// viewer made it; [`apply_deferred_original_effects`] only replays it and writes nothing.
-pub fn commit_audio_pick(ps: &mut PlaybackSession, audio: CarriedAudio, memo: Option<AudioMemo>) -> bool {
-    let accepted = commit_audio_selection(ps, audio);
-    if accepted {
-        if let Some(memo) = memo {
-            remember_track_pick(ps, TrackPick::Audio(memo));
-        }
-    }
-    accepted
+/// **The language Forced only falls back to** when the audio that plays names none: the one the
+/// remembered Forced only (or the row's last choice) recorded, kept on the landing's
+/// [`TrackContext`]. Empty when nothing recorded one or no item has landed. The resolve and the
+/// audio follow already match with it; the Subtitles menu reads it too, so the row and the next
+/// episode choose by one rule.
+pub fn forced_only_lang(ps: &PlaybackSession) -> &str {
+    ps.track_ctx.as_ref().map_or("", |c| c.forced_lang.as_str())
 }
 
-/// **The track menu's subtitle pick: commit it, and remember it.** `memo` is
-/// [`SubtitleMemo::Off`] for Off, or [`memo_of_subtitle`](super::memo_of_subtitle) of the picked
-/// track (an embedded track, a sidecar, a fresh download); `None` remembers nothing. A subtitle
-/// commit has no refusal, so every one that carries a memo and CHANGES the subtitle is written.
-/// The commit is always made (an OK on the checked row republishes), but a pick of the stream the
-/// route already shows is the menu being closed, not chosen: the route put that stream there
-/// (the ladder, a rescue, an earlier pick), and an automatic pick is never written. Off is stored
-/// as Off: it beats the account's rule and the server's embedded selection next episode (only a
-/// server-selected sidecar the app can draw ranks above memory, `plan::pick_subtitle`).
-pub fn commit_subtitle_pick(
-    ps: &mut PlaybackSession,
-    sub_idx: i32,
-    stream_id: i64,
-    client_renderable: bool,
-    memo: Option<SubtitleMemo>,
-) {
-    // Read before the commit, which writes the stream it was handed.
-    let changed = stream_id != ps.cur_sub_sid;
-    commit_subtitle_selection(ps, sub_idx, stream_id, client_renderable);
-    if let Some(memo) = memo.filter(|_| changed) {
-        remember_track_pick(ps, TrackPick::Subtitle(memo));
-    }
+/// Give `ps` the Forced only fallback language `lang`, for a menu test that cannot reach the field.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_forced_only_lang_for_test(ps: &mut PlaybackSession, lang: &str) {
+    ps.track_ctx.get_or_insert_with(TrackContext::default).forced_lang = lang.to_string();
 }
 
 /// Atomically publish the main-thread session fields a newly spawned timeline reporter may read.

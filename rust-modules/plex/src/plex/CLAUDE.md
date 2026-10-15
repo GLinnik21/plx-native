@@ -152,7 +152,7 @@ into it (`session::project_server_keys`: each machine's key bound to the hosts o
 machine registered at runtime; a key `session::learn_server_key` learns reaches the table only when its
 queued write is applied and projected (the projection is the only production source of a key; `register_lazy` only binds hosts);
 sign-out empties it (revoked/missing/cleared sessions project nothing). Both stacks share
-the decision and the option code: the control plane in `net::request_tls_evidence`, the media plane
+the decision and the option code: the control plane in `net::request_tls_sink` (wrapped by `request_tls_evidence`), the media plane
 in `curlio::CurlSource::start_range_until`, which every open, reopen and seek goes through. After a
 key-mode success the host is LATCHED for 10 minutes on the monotonic clock (later requests skip the
 doomed strict handshake; the timer does not slide; a strict success or a changed pin clears it; rc 90
@@ -192,7 +192,7 @@ three attempts. A name mismatch, a self-signed leaf (18/19), plex.tv or any othe
 mode. After a success the host is latched in the same `keypin` state for 10 minutes on the monotonic
 clock (later requests skip the doomed strict handshake, the timer does not slide, a strict success or
 a refusal by the bundle clears it); both stacks share the decision, the control plane in
-`net::request_tls_evidence` and the media plane in `curlio::CurlSource::start_range_until`. Unlike key
+`net::request_tls_sink` (wrapped by `request_tls_evidence`) and the media plane in `curlio::CurlSource::start_range_until`. Unlike key
 mode a roots-mode answer IS strictly verified, so it may teach `peer_pin`. The log carries one line when
 the fallback engages, one when it first succeeds and one when the bundle refuses too, naming only the
 verify result.
@@ -376,6 +376,14 @@ a dead source is **absent** from Home and states itself in its own library secti
 
 ## Gotchas that bite (all verified in code)
 
+- **`notify.rs` is the PMS server-sent-event feed, and it is not a playback signal.** It parses
+  `/:/eventsource/notifications?filters=playing` (`docs/pms-api.md` §9: the parameter is `filters`,
+  the spec's `filter` is wrong) into lenient `Notification`s over `http::stream`, dropping this
+  device's own sessions at the source, and never mints a client id (`client_id` is the persisted
+  one; a new id raises a new-device alert). Its policy lives in `plx_data::stores::notify`: shipped
+  OFF, owned servers only. Nothing here may call a stop, an end-of-stream candidate or an Offset
+  publish: a stranger's `stopped` session would otherwise scrobble our other servers.
+
 - **A hub's `title` is PMS's own localized text — except for the standard hubs, which this app
   now overrides client-side at BOTH scopes it draws hubs on.** `hubs.rs`/`models.rs`'s
   `Hub::title` still carries whatever PMS sent, but neither `screens/home/mod.rs` nor a library's
@@ -481,7 +489,8 @@ a dead source is **absent** from Home and states itself in its own library secti
   `plaintext_consent` and `server_key_pins`, the per-profile `last_library` and `library_sorts` (cleared
   at sign-out like every `ACCOUNT_BOUND = true` row in `prefs::DESCRIPTORS`, but their records carry no
   account stamp, so the one login that is not a sign-out, a stored session that could not be activated
-  in `app/boot.rs`, leaves them to the next account), and the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
+  in `app/boot.rs`, would leave them to the next account: `replace_after_reauthentication_guarded_with_outcome`
+  clears both when the login's account token differs from the stored one), and the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
   forms — the legacy file's `Session` and the canonical preference record — declared before each
   form's own `extensions`, so the flatten takes its keys first and the unknown-key map still sees
   only keys nobody models. A new key of that kind is a `Preferences` field (its serde attributes
@@ -523,9 +532,36 @@ a dead source is **absent** from Home and states itself in its own library secti
   (`TrackCommit`'s `memo`), `route::commit_audio_pick` / `commit_subtitle_pick` call `route::remember`
   when the route accepted the pick, and nothing else writes it (a movie, an unseated boot, an
   automatic choice and a harness setup commit remember nothing; the harness's
-  `plxnative-trackmemory=clear` removes entries through the same door). A remembered Off beats the
+  `plxnative-trackmemory=clear` removes entries through the same door, and `=fill[:N]` writes N worst-case
+  shows through it to read the DB8 write cost at the budget). A remembered Off beats the
   account's rule and PMS's embedded selection, but not a server-selected sidecar the app can draw
   (`plan.rs` `pick_subtitle` withholds the memory from the ladder while the item has one).
+  The subtitle half is one of THREE states (`SubtitleMemo`: `Track`, `Off`, `ForcedOnly { lang }`);
+  **Forced only** is the Subtitles menu's second row (`TrackCommit::SubtitleForcedOnly`,
+  `route::commit_forced_only_pick`), written on an explicit change of mode and never on an OK on the
+  row that already holds it (which recommits what is on screen), with the drawn track's language
+  (else the playing audio's, else the one the session fell back to). It ranks exactly as a remembered
+  Off does: a retry's own pick and a server-selected sidecar the app can draw still outrank it (the
+  withholding in `pick_subtitle` is of the memory, whichever of the three it is), and below those the
+  next episode shows its forced, non-commentary, renderable subtitle in the
+  language of the audio that PLAYS (`route::track_memory::match_forced_only`), or nothing, and never
+  falls to a full track or to the lower rungs. `PlaybackSession::sub_mode` (`SubMode`) holds which
+  state the playback is in, because a stream id cannot say it (a retry carries it in
+  `RetryContext::sub_mode`, and the language the mode falls back to for audio that names none in
+  `ResolveEnv::forced_lang`, since a retry consults no memory). Two derived commits keep the mode true, both through the one commit every
+  pick goes through and neither writing memory: a new audio re-points it (`commit_audio_selection`),
+  and, on a direct play, the first decoded frame re-matches the remembered subtitle once with the
+  container's track names (`route::rematch_subtitle_with_names`, called from `player/pump.rs`; an MP4
+  part's PMS streams carry no `title`, so only the demuxer's tag says which track is forced). That
+  re-match runs BEFORE the write-back's send on the same frame: while a write-back is parked it
+  re-points the parked write's subtitle half (`route::repoint_parked_subtitle`, W5 and W7 apply to the
+  re-matched id) and queues no PUT of its own, so the server hears one write that names the remembered
+  audio and the re-matched subtitle; with nothing parked, or a parked write that went stale first
+  (`decision::memory::parked_write_stale`: the route was replaced, the viewer picked), it PUTs like any subtitle
+  commit, except that over a Part with an external stream (W5) it PUTs nothing. It never
+  replaces a sidecar on screen, and compares with what the landing SHOWS (read from the session after
+  the sidecar restore, `settle_landing_selection`), not with the plan, which names no sidecar. Leaving
+  Forced only is a remembered change even onto the very track it drew.
   `subtitle_offsets` is account-bound as well (since SO) under different rules: a record without a
   stamp is read as the signed-in account's own and is stamped at the list's next write
   (`MemoryEntry::ADOPTS_UNSTAMPED`), at the plex list a write with no account token is still

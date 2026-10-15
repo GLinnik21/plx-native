@@ -133,7 +133,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   previous major, and — since 2026-09-02 — **everything else in ONE scp from `DEPLOY_FILES`**,
   which is `APP_FILES` (the exact list `ipk` stages into the `.ipk`) minus those three carve-outs:
   this flavour's `appinfo.json`, both icon sizes, `pkg/splash.png`, the three font files
-  (UNCONDITIONALLY, including the 21 MB CJK face — the old `test -f || scp` guard on the fonts
+  (UNCONDITIONALLY, including the 13 MB CJK face — the old `test -f || scp` guard on the fonts
   meant a changed one could never reach the TV, and a separate md5 guard on the CJK face alone had
   the same failure mode by omission: it kept `pkg/splash.png`, both icons, `pkg/OFL.txt` and
   `THIRD-PARTY-NOTICES.md` off the deploy path for as long as this recipe spelled its file list out
@@ -957,7 +957,7 @@ video shows through.
 context. All UI is drawn with two tiny shaders — an SDF rounded-rect/triangle shader (cards, focus
 glow, HUD widgets, seven-segment FPS) and a text shader that samples SDL2_ttf-rendered glyph
 textures (cached by string+size). Critically-damped springs animate focus scale and shelf scroll.
-Fonts are `appfont.ttf` / `appfont-bold.ttf` deployed next to the binary. (Wayland surface setup +
+Fonts are `appfont.ttf` / `appfont-bold.ttf` deployed next to the binary; the subtitle renderer additionally loads the per-script Noto faces from `fonts/subs/` (`docs/ass-subtitles.md`, cut by `tools/cut-noto-subs.py`, staged by `SUBS_FONT_FILES` in the Makefile). (Wayland surface setup +
 input decoding live in `system.rs` / `app/events.rs` + `app/input.rs`, not the C shim — see the gotchas below.)
 
 **Video playback (summary — `rust-modules/media/src/player/CLAUDE.md` is the deep-dive: pipeline,
@@ -978,6 +978,23 @@ on their LAN and stream from the public internet, which `stream.rs` cannot reach
 cleartext. So **libcurl is used by two modules for two jobs** — `net.rs` for plex.tv plus HTTPS PMS
 control calls, `curlio.rs` for the media bytes — and each binds its own `dynlib!` table,
 which the linking section explains is load-bearing rather than tidy.
+
+**Subtitles (summary — `docs/ass-subtitles.md` is the deep-dive; `rust-modules/media/src/player/CLAUDE.md`
+has the producers).** The client draws subtitles itself; the TV's subtitle engine is unreachable in
+buffer-feed. Every TEXT subtitle renders through the one bundled libass worker (`player::ass`),
+whether it is authored ASS/SSA, an embedded SubRip/WebVTT/mov_text/SAMI track or a sidecar `.srt`/`.vtt`:
+a text track gets a header `text_ass::header` synthesizes from the viewer's size and position picks, and
+its cues become ASS events (`text_ass::convert`, `ass_source::push_text`). Such a source has
+`Origin::Text`: it renders into the full logical screen, the screen lifts its bottom-anchored regions
+clear of the transport, and a change of the size or position pick restyles it. An authored ASS source is
+never moved. The old caption path is gone (`CaptionPlan`, `draw_subtitles`, the `SHARED.sub_cues`
+store, `active_subtitle*`): do not look for a second text renderer. Image subtitles
+(PGS/VobSub) keep their bitmap path. The one text the sidecar still draws itself is its failure notice
+(`sidecar::notice()`), drawn by the player screen with `appkit::player_hud::draw_subtitle_message`.
+Fonts are bundled Inter plus per-script Noto Bold faces; because libass runs with no font provider, a
+missing or unloadable libass removes every text subtitle and the screen draws the libass fault message
+(`ass::Fault::message`, via `AssSubtitles::error`) instead; the sidecar's own failure notice
+(`sidecar::notice()`) is only for a sidecar that fetched or converted to nothing.
 
 ### Module-cycle ratchet (`ci/check-module-cycle.py`)
 
@@ -1104,7 +1121,9 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   `SearchStore` owns its state/adapter/notice with a rotated adapter, and `ViewStateStore`
   owns its queue, in-flight request, retry/refresh latches, rotated worker adapter and notice.
   ViewState completions carry a monotone request ID and only the exact in-flight identity lands;
-  a deferred Detail refresh retains its originating `(server, ratingKey, episode)` address. Owned
+  a landed read-back re-reads every Detail page naming the item, its season or its show
+  (`AppMsg::DetailReconcile`: the top page Requested, a covered one Deferred until uncover; it
+  carries only the obligation, no address and no episode). Owned
   screens emit `AppFx::Store`, and `app/bridge.rs` delivers it to the owning machine. A command
   that changes observable state raises the store's notice. Browse has no active-owner compatibility
   reads and no `stores::browse::apply(Cmd)` shim: consumers receive per-owner retained

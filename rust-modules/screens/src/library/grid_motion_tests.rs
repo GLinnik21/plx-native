@@ -293,3 +293,81 @@ fn a_requery_refilled_under_a_cover_is_not_read_as_a_landing_on_uncover() {
     frame(&mut page, &mut engine, &fixture, 6000);
     assert!((page.scroll.pos - jumped).abs() < 0.5, "uncovering moved the page by a landing's rows: {jumped} -> {}", page.scroll.pos);
 }
+
+/// What `deliver` drops: the effects one event produced.
+fn effects_of(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: &Fixture, event: ScreenEvent<HostFixture>)
+    -> Vec<plx_machine::machine::Stamped<HostFixture>> {
+    let mut output = Vec::new();
+    let mut present = plx_machine::present::Present::new();
+    page.step(&event, &fixture.cx(engine.current(OWNER)),
+        &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present));
+    for effect in &output {
+        if let Fx::Remember { group, elem } = effect.fx { engine.remember_projected(ENTRY, group, elem); }
+    }
+    output
+}
+
+fn saved_cursors(effects: &[plx_machine::machine::Stamped<HostFixture>]) -> Vec<plx_data::browse::CursorAt> {
+    effects.iter().filter_map(|effect| match &effect.fx {
+        Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::Addressed {
+            work: LibraryWork::SaveCursor { cursor, .. }, .. }))) => Some(cursor.at.clone()),
+        _ => None,
+    }).collect()
+}
+
+/// A page that is stale and then buried by a PAGE push: the store re-fetches the same query in the
+/// background (emptied and loading, then refilled), and the reader comes back to the same place.
+/// `query_moves` is what the store used to do — present the re-fetch as a new query.
+fn a_membership_refresh_under_a_page_push(query_moves: bool, refill_before_uncover: bool) {
+    use plx_machine::machine::Leave;
+    let (mut fixture, mut page, mut engine, elem) = seated(0..90, 50);
+    let key = engine.current(OWNER).unwrap();
+    let scroll = page.scroll.pos;
+    let store = || ScreenEvent::StoreChanged(plx_data::stores::StoreId::Browse.ord(), 1);
+    let query = fixture.listing.view().id().unwrap().query;
+    let after = |l: plx_data::stores::browse::ListingSnapshot| if query_moves { l.with_query(query + 1) } else { l };
+
+    fixture.listing = numbered(0..90).with_membership_stale();
+    deliver(&mut page, &mut engine, &fixture, store());
+    let mut effects = effects_of(&mut page, &mut engine, &fixture, ScreenEvent::WillLeave(Leave::Deeper));
+    effects.extend(effects_of(&mut page, &mut engine, &fixture, ScreenEvent::Cover));
+    assert!(effects.iter().any(|e| matches!(&e.fx, Fx::App(AppFx::Store(StoreId::Browse,
+        StoreCmd::Browse(BrowseCmd::Addressed { work: LibraryWork::Requery, .. }))))), "buried by a page: re-query");
+
+    fixture.listing = after(numbered(0..0).with_fetch(SecFetch::Loading, -1));
+    deliver(&mut page, &mut engine, &fixture, store());
+    if refill_before_uncover {
+        fixture.listing = after(numbered(0..90));
+        deliver(&mut page, &mut engine, &fixture, store());
+    }
+    effects.extend(effects_of(&mut page, &mut engine, &fixture, ScreenEvent::Uncover));
+    effects.extend(effects_of(&mut page, &mut engine, &fixture, ScreenEvent::Enter(Enter::Restored)));
+    frame(&mut page, &mut engine, &fixture, 6000);
+    if !refill_before_uncover {
+        fixture.listing = after(numbered(0..90));
+        deliver(&mut page, &mut engine, &fixture, store());
+    }
+    for ms in 0..30 { frame(&mut page, &mut engine, &fixture, 6016 + ms * 16); }
+
+    assert_eq!(engine.current(OWNER), Some(key), "focus stays on the tile the reader left");
+    assert!(page.pair.detail.index_of(elem) == Some(50), "the tile is still item 50");
+    assert!((page.scroll.pos - scroll).abs() < 0.5, "the page moved: {scroll} -> {}", page.scroll.pos);
+    effects.extend(effects_of(&mut page, &mut engine, &fixture, ScreenEvent::WillLeave(Leave::ForGood)));
+    let saved = saved_cursors(&effects);
+    assert!(!saved.iter().any(|at| matches!(at, plx_data::browse::CursorAt::SlotIndex(0))),
+        "the bookmark was reset to the top: {saved:?}");
+    assert!(matches!(saved.last(), Some(plx_data::browse::CursorAt::ItemKey { rk, .. }) if rk == "50"),
+        "the bookmark names the reader's item: {saved:?}");
+}
+
+#[test]
+fn a_membership_requery_under_a_page_keeps_focus_and_scroll_when_refilled_before_uncover() {
+    let _guard = plx_base::testlock::serial();
+    a_membership_refresh_under_a_page_push(false, true);
+}
+
+#[test]
+fn a_membership_requery_under_a_page_keeps_focus_and_scroll_when_refilled_after_uncover() {
+    let _guard = plx_base::testlock::serial();
+    a_membership_refresh_under_a_page_push(false, false);
+}

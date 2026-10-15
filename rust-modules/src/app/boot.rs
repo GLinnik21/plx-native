@@ -853,6 +853,8 @@ pub(super) fn activate_server_owned(
     let _ = bridge.hubs_run(plx_data::stores::hubs::HubsCmd::Reset).changed;
     bridge.person_run(plx_data::stores::person::PersonCmd::Reset);
     bridge.collection_run(plx_data::stores::collection::CollectionCmd::Reset);
+    // before the stores reset: a stop the previous identity left in flight must not land on this one
+    plx_media::route::retire_pending_stops();
     bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
     bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::Reset);
     let mut endpoints = bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints;
@@ -1141,7 +1143,9 @@ pub(crate) unsafe fn construct(
     plx_gfx::gfx::init_blur();
     // The transport takes the client's `User-Agent` as a value (it names no Plex layer): hand it
     // over before any request can be made, so the first one already carries it.
-    plx_net::net::set_user_agent(plx_plex::plex::identity::user_agent());
+    if plx_net::net::set_user_agent(plx_plex::plex::identity::user_agent()).is_err() {
+        plx_base::eventlog::log("net: the client's User-Agent holds a control character; none is sent");
+    }
     // One-time libcurl bind + init (main thread) before any threaded HTTPS call. A false here
     // means this device has no libcurl we can bind, so plex.tv sign-in will not work — the app
     // still runs, and `net::global_init` has already said so in the event log.
@@ -1840,10 +1844,11 @@ pub(crate) unsafe fn construct(
     let pause_script: Option<(u32, Option<u32>, Option<u32>)> = None;
     let pause_resume_at: Option<u32> = None;
     let prev = 0u32;
-    // Home data refresh, armed on every player exit (Stop/BACK/EOS): the hubs are refetched a
-    // beat later so the final timeline PUT lands first — Continue Watching then shows the new
-    // resume point / next episode instead of the state from boot.
-    let refresh_hubs_at = 0u32;
+    // Home data refresh, armed on every player exit (Stop/BACK/EOS): the hubs are refetched once
+    // the stop report has settled (`route::timeline_stop_landed`), so the `stopped` timeline POST
+    // lands first — Continue Watching then shows the new resume point / next episode instead of
+    // the state from boot.
+    let refresh_hubs = false;
 
     let ev = [0u8; 128];
     // dev/testing remote: drain any tokens written to /tmp/plxnative-remote and push
@@ -1872,14 +1877,16 @@ pub(crate) unsafe fn construct(
         player,
         adapters,
         repause_at,
+        decoder_parked: false,
         ok_armed,
         last_route_reported,
         ptr,
         menu_play_await: None,
         prev,
-        refresh_hubs_at,
-        refresh_detail: None,
+        refresh_hubs,
+        return_hold: Default::default(),
         plaintext_upgrade: Default::default(),
+        reread: Default::default(),
         ev,
         remote,
         win,

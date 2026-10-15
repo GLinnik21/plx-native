@@ -1246,6 +1246,15 @@ pub fn key(k: Key, at: Tick) -> InputEvent<u32> {
     }
 }
 
+/// [`key`]'s release: the same key, `Edge::Up`.
+pub fn key_up(k: Key, at: Tick) -> InputEvent<u32> {
+    let mut event = key(k, at);
+    if let InputKind::Key { edge, .. } = &mut event.kind {
+        *edge = plx_machine::machine::Edge::Up;
+    }
+    event
+}
+
 #[test]
 fn the_spike_composes_boot_a_key_a_landing_and_a_poster_over_four_frames() {
     let _g = plx_base::testlock::serial();

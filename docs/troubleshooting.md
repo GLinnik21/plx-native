@@ -5,7 +5,9 @@ This page is about what to do when something doesn't work.
 
 ## The app tile does nothing
 
-PlxNative needs **webOS 4.0 or newer** (webOS 3.4.3 has also been tested and works). Older
+PlxNative needs **webOS 4.0 or newer** (webOS 3.4.3 has also been tested and works, and 3.9.3
+plays direct play from a source build at or after
+[`60f99c7`](https://github.com/GLinnik21/plx-native/commit/60f99c7)). Older
 firmware may not be able to start it at all, so the tile just does nothing when you select it. See [Will it work on my
 television?](../README.md#will-it-work-on-my-television) for the full picture, including sets
 that start but hit a specific known problem.

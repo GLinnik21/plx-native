@@ -263,12 +263,13 @@ the real one.)
 | `episode_h264_aac` | 90 s | H.264/AAC episode with no subtitle tracks at all. |
 | `movie_h264_ac3_many_audio` | 90 s | **Eight** audio tracks, each language-tagged, with **TrueHD English at index 6** — `audio_switch_transcode` picks row 6 and expects the switch to force a transcode. |
 | `movie_av1_no_dp_audio` | 780 s | AV1 4K + Opus: on a set whose codec table lists no AV1 decoder (the dev set), no direct-playable video *and* no direct-playable audio, so the server must transcode. 780 s because `resume_transcode` seeds 600 s. **Its three cases need a Plex Pass server** — see below. |
-| `movie_hevc_4k_pgs_subs` | 780 s | HEVC 4K HDR10 + a **PGS bitmap** subtitle track at index 0 (`subtitle_image_pgs` picks row 1; row 0 is *Off*). Seeds 600 s. |
+| `movie_hevc_4k_pgs_subs` | 780 s | HEVC 4K HDR10 + a **PGS bitmap** subtitle track at index 0 (`subtitle_image_pgs` names it `"track": 0`, which counts tracks only, so the rows above the tracks do not move it). Seeds 600 s. |
 
 **Track ORDER is part of the spec, not a detail.** `tests/README.md`: the audio tab's row is
-the metadata audio index in file order, and the subtitle tab's row 0 is *Off* with row *r*
-being subtitle index *r−1*. Three cases assert positions, and the generator's declarative
-spec — the same one `verify()` reads back — is what pins them.
+the metadata audio index in file order, and the subtitle cases name their track by position
+(`"track": N`, which counts the Subtitles tab's tracks only), so the rows above the tracks —
+row 0 *Off*, row 1 *Forced only* — never move a case. Three cases assert positions, and the
+generator's declarative spec — the same one `verify()` reads back — is what pins them.
 
 ### You can see the shape without opening a manifest
 

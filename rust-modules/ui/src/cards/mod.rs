@@ -30,6 +30,14 @@
 //!   A non-deliberate `FocusMoved` adopts the new card whole and snaps the old one to rest; only a
 //!   deliberate move lets the old tile go over frames. At most one tile reads lifted in any frame,
 //!   including the one between the landing and the tick.)
+//! - **Animated landings.** A [`Shelf`] built with [`Shelf::animate_landings`] plays a content change
+//!   that no focus move announced (a card leaves, a card arrives) instead of cutting: the removed
+//!   card fades out as a ghost the owner paints ([`Shelf::paint_ghosts`], from the cards named by
+//!   [`Shelf::ghost_keys`]), the cards that stay slide to their slots (the focused tile is held by
+//!   the landing rule, so it does not move unless the scroll's range clamps it), the new ones fade in.
+//!   Off by default; first loads, slides of the source's window and [`dormant`](Shelf::dormant)
+//!   shelves never animate; the springs are frame-time and count as layout motion. See `landing.rs`.
+//!   [`Grid`] does not animate landings.
 //! - **The pop rule.** A tile the engine reports focused that no deliberate move (`By::Dir` /
 //!   `By::Pointer`) announced draws at FULL focus scale at once — a restore or reconcile is adopted
 //!   whole, a page returns exactly as it was left. An unfocused tile draws at rest (or the live
@@ -63,6 +71,7 @@ use crate::{Painter, Rect};
 
 mod avatars;
 mod grid;
+mod landing;
 mod pool;
 mod shelf;
 mod stack;
@@ -104,6 +113,11 @@ pub fn hold_band((lo, hi): (usize, usize), len: usize) -> (usize, usize) {
 /// empty, which is the page's cue to use its fallback.
 pub fn clamp_slot(slot: usize, len: usize) -> Option<usize> {
     len.checked_sub(1).map(|last| slot.min(last))
+}
+
+/// `e`'s identity as the number a landing's ghosts are named by ([`Shelf::ghost_keys`]).
+pub fn elem_key<E: std::hash::Hash>(e: &E) -> u64 {
+    pool::key(e)
 }
 
 /// The read-only content a section draws. The screen implements it over its own store view; the
@@ -183,6 +197,13 @@ pub trait CardSource<H: Host> {
     /// its length).
     fn page_epoch(&self) -> u32 {
         0
+    }
+    /// A number that moves whenever the list of cards (their elements, order or length) may have
+    /// changed, or `None` for a source that cannot say: an animated landing
+    /// ([`Shelf::animate_landings`]) then compares every card each tick instead of only when the
+    /// length or this moved.
+    fn revision(&self) -> Option<u64> {
+        None
     }
     /// Whether the list goes on past the LAST card, for the placeholders a [`Shelf`] draws there
     /// until the page lands. [`more`](Self::more) unless the source gates that on where focus is

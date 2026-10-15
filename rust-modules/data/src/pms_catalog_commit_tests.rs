@@ -274,3 +274,18 @@ fn a_playlists_hub_reaches_no_shelf_so_its_key_is_not_admitted() {
     assert!(!plx_plex::plex::is_pageable_hub_key("/playlists/all"));
     assert!(!plx_plex::plex::is_pageable_hub_key("/playlists/all?playlistType=video"));
 }
+
+/// An episode whose server sent no `parentIndex` has an UNKNOWN season, which is not Specials
+/// (`parentIndex` 0): a `Scope::Season { index: 0 }` change must not reach it.
+#[test]
+fn an_episode_without_a_parent_index_has_an_unknown_season_not_specials() {
+    let row = |parent_index: Option<i64>| plx_plex::plex::Metadata {
+        kind: "episode".into(), rating_key: "9".into(), parent_index, ..Default::default()
+    };
+    assert_eq!(parse_item(&row(Some(0)), sid(0)).season_index, 0, "Specials");
+    assert_eq!(parse_item(&row(Some(3)), sid(0)).season_index, 3);
+    assert_eq!(parse_item(&row(None), sid(0)).season_index, SEASON_UNKNOWN);
+    let json = r#"{"ratingKey":"9","type":"episode","index":2}"#;
+    let parsed: plx_plex::plex::Metadata = serde_json::from_str(json).expect("lenient parse");
+    assert_eq!(parsed.parent_index, None, "an absent field stays absent through the wire parse");
+}

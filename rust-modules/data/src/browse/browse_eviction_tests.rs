@@ -133,10 +133,10 @@ fn an_edit_aimed_at_an_evicted_index_is_a_no_op() {
     let evicted = 5 * PAGE + 3;
     assert!(items.page_missing(5));
     let rk = format!("{}", evicted + 1);
-    assert!(!items.set_watched(super::ServerId::UNSET, &rk, true), "the row is not held");
+    assert!(!items.apply_view(&crate::viewstate::ViewAt::leaf(super::ServerId::UNSET, &rk), crate::viewstate::ViewEdit::Watched(true)).1, "the row is not held");
     assert!(items.page_missing(5), "an edit does not bring the page back");
     assert!(items.get(evicted).is_none());
-    assert!(items.set_watched(super::ServerId::UNSET, &format!("{}", 9 * PAGE + 1), true));
+    assert!(items.apply_view(&crate::viewstate::ViewAt::leaf(super::ServerId::UNSET, &format!("{}", 9 * PAGE + 1)), crate::viewstate::ViewEdit::Watched(true)).1);
 }
 
 #[test]

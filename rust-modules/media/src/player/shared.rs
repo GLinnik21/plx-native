@@ -346,17 +346,6 @@ struct AbrSeed {
     observed_at: Instant,
 }
 
-/// one client-rendered subtitle cue (content-time ns). `track` is the 0-based subtitle-stream
-/// index it belongs to; the demuxer pushes cues for ALL text tracks and the render filters by
-/// the selected `desired_sub_idx`, so switching tracks is instant (no re-demux of the buffered
-/// region). Content-time ns matches the fed video PTS timeline (see active_subtitle).
-pub struct SubCue {
-    pub track: i32,
-    pub start_ns: i64,
-    pub end_ns: i64,
-    pub text: String,
-}
-
 /// one rect of a decoded image-subtitle display set: `w`×`h` at position (`x`,`y`) **in the
 /// subtitle stream's own authoring canvas** (see [`SubBitmap::cw`]) — NOT in screen pixels; the
 /// renderer scales it into the video rect.
@@ -617,6 +606,13 @@ pub struct Shared {
     /// `error_shape` tell a k5lp-style hang apart from an ordinary firmware refusal on the wire,
     /// as `FailureKind::LoadTimeout` rather than the generic `FailureKind::TvPipeline`.
     pub load_timed_out: AtomicBool,
+    /// The pipeline took the video decoder back from an ESTABLISHED session: `type=18 num=600`
+    /// (`"VDEC resource is released by policy action"`) after a picture. Measured on the dev set
+    /// (webOS 4, 2026-10-13): a direct play left paused until the screensaver came on got this
+    /// with NO `LIFECYCLE: background`, and every later Play was refused for good. Set on the
+    /// callback thread, taken once by the app loop ([`super::take_decoder_revoked`]), which parks
+    /// the session exactly as an app switch does and rebuilds it on the viewer's next press.
+    pub decoder_revoked: AtomicBool,
     /// issue #74 D.1: the epoch this session last logged "native: loadCompleted while Load in
     /// flight — deferring" for — 0 = never. `epoch` is monotonic and never 0 for a real session
     /// ([`NativeSessionState::next`] skips 0 on wraparound), so comparing against this is enough
@@ -650,7 +646,6 @@ pub struct Shared {
     /// picker's rows are the only place this reaches, and only on DIRECT PLAY: a transcode is a
     /// remux the server built, and its tags are whatever the server put there.
     pub track_names: Mutex<TrackNames>,
-    pub sub_cues: Mutex<Vec<SubCue>>,
     pub ass_sources: Mutex<super::ass_source::Store>,
     pub ass_renderer: super::ass::Runtime,
     pub sub_bitmaps: Mutex<Vec<SubBitmap>>, // image-sub cues (every image track while subs are on)
@@ -917,6 +912,13 @@ pub struct Shared {
 }
 
 impl Shared {
+    /// The container's track names ([`Shared::track_names`]) for a READER on the main thread. A
+    /// panicked writer cannot leave the names half-built (they are replaced whole), so a poisoned
+    /// lock still holds a usable value and the reader takes it rather than panic.
+    pub fn track_names_lenient(&self) -> std::sync::MutexGuard<'_, TrackNames> {
+        self.track_names.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub const fn new() -> Self {
         Shared {
             native_session: Mutex::new(NativeSessionState::new()),
@@ -993,12 +995,12 @@ impl Shared {
             demux_no_video: AtomicBool::new(false),
             load_failed: AtomicBool::new(false),
             load_timed_out: AtomicBool::new(false),
+            decoder_revoked: AtomicBool::new(false),
             native_load_deferred_logged_epoch: AtomicU32::new(0),
             native_load_elapsed_ms: AtomicU64::new(0),
             playback_trace: Mutex::new(super::report::PlaybackTrace::new()),
             desired_sub_idx: AtomicI32::new(-1),
             track_names: Mutex::new(TrackNames::new()),
-            sub_cues: Mutex::new(Vec::new()),
             ass_sources: Mutex::new(super::ass_source::Store::new()),
             ass_renderer: super::ass::Runtime::new(),
             sub_bitmaps: Mutex::new(Vec::new()),
@@ -1615,6 +1617,7 @@ impl Shared {
         self.demux_no_video.store(false, Ordering::Relaxed);
         self.load_failed.store(false, Ordering::Relaxed);
         self.load_timed_out.store(false, Ordering::Relaxed);
+        self.decoder_revoked.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
         // item (player::reset_subtitle). ASS packets are immutable file facts, not
@@ -1624,8 +1627,7 @@ impl Shared {
             let mut sources = self.ass_sources.lock().unwrap_or_else(|e| e.into_inner());
             if for_reload { sources.retain_for_reload(); } else { sources.reset(); }
         }
-        // These decoded cue/bitmap stores are transient render state and refill on read.
-        self.sub_cues.lock().unwrap().clear();
+        // The decoded bitmap store is transient render state and refills on read.
         self.sub_bitmaps.lock().unwrap().clear();
         // Cleared with them, and for the same reason: they describe the FILE the last demuxer had
         // open. A reload-based seek re-opens the same part and re-publishes the same names, but a
@@ -1890,6 +1892,28 @@ impl Shared {
             | HlsClockPhase::PlayIssuing { .. }
             | HlsClockPhase::Stopping => None,
         }
+    }
+
+    /// A viewer Pause that lands on a clock a seek or an Initial hold already owns marks it
+    /// `user_held`, and `reserve_hls_prime_play` refuses a Play on a user-held clock: the keyframe
+    /// would be fed through the preroll's open gate and never be allowed to present. When the pump
+    /// opens a preroll for such a Pause it hands the hold back to the seek prime exactly as
+    /// [`Self::prepare_seek_pause`] does for a seek dispatched from a user hold. `false` when the
+    /// clock is not held (transitioning, running, rebuffering): the caller tries again next tick.
+    pub fn hand_hold_to_seek_prime(&self) -> bool {
+        let mut clock = self.hls_clock.lock().unwrap_or_else(|e| e.into_inner());
+        let HlsClockPhase::Held {
+            hold: ClockHold::User | ClockHold::Initial | ClockHold::Seek | ClockHold::ResumePrime,
+        } = clock.phase
+        else {
+            return false;
+        };
+        if clock.user_held {
+            clock.user_held = false;
+            clock.resume_acb_pending = true;
+        }
+        clock.phase = HlsClockPhase::Held { hold: ClockHold::Seek };
+        true
     }
 
     pub fn complete_seek_pause(&self, token: u64, accepted: bool) -> HlsPauseCompletion {
@@ -2361,6 +2385,11 @@ pub struct Transport {
     /// The viewer remains logically paused while a seek is allowed to feed, Play one landed frame,
     /// then re-pause. Keeping this separate prevents the UI/user intent from lying during preroll.
     seek_preroll: AtomicBool,
+    /// The seek preroll above was opened by the PUMP, not by a caller, and the pump closes it: the
+    /// target (ns) the seek was dispatched at, `-1` when the preroll is absent or a caller's.
+    /// Transport-wide on purpose: a reload (`reset_for_reload`) replaces the Engine but keeps the
+    /// viewer's Pause and this ownership, so the landing is settled on whichever Engine is live.
+    seek_preroll_owned: AtomicI64,
     pub hud_until: AtomicU32,  // pl_hud_until (SDL ticks)
     pub scrub_ns: AtomicI64,   // pl_scrub_ns (-1 = not scrubbing)
     pub seek_to_ns: AtomicI64, // g_seek_to_ns (UI seek request, -1 = none)
@@ -2481,6 +2510,7 @@ impl Transport {
             pause_clock: Mutex::new(UserPauseClock::new()),
             resume_pend: AtomicBool::new(false),
             seek_preroll: AtomicBool::new(false),
+            seek_preroll_owned: AtomicI64::new(-1),
             hud_until: AtomicU32::new(0),
             scrub_ns: AtomicI64::new(-1),
             seek_to_ns: AtomicI64::new(-1),
@@ -2557,8 +2587,34 @@ impl Transport {
         !self.paused.load(Ordering::Acquire) || self.seek_preroll_active()
     }
 
+    /// Open the paused-seek preroll for a seek the PUMP dispatched under a viewer Pause, and take
+    /// ownership of closing it (`pump::settle_paused_seek`). A preroll a caller already opened (the
+    /// foreground restore) stays the caller's: `false`. Re-opening an owned one just retargets it
+    /// (a coalesced tap). Not paused: nothing to hold, `false`.
+    pub fn own_paused_seek(&self, target_ns: i64) -> bool {
+        if self.seek_preroll_owned.load(Ordering::Acquire) >= 0 {
+            self.seek_preroll_owned.store(target_ns.max(0), Ordering::Release);
+            return true;
+        }
+        if self.seek_preroll_active() || !self.begin_paused_seek() {
+            return false;
+        }
+        self.seek_preroll_owned.store(target_ns.max(0), Ordering::Release);
+        true
+    }
+
+    /// The target of the preroll the pump owns, if it owns one.
+    pub fn owned_paused_seek(&self) -> Option<i64> {
+        let target = self.seek_preroll_owned.load(Ordering::Acquire);
+        (target >= 0 && self.seek_preroll_active()).then_some(target)
+    }
+
+    /// Closing the preroll ends any ownership of it, so a failed re-pause (which leaves the preroll
+    /// open) keeps the pump retrying, and every other closer (Resume, an abandoned seek, a stop)
+    /// drops it without the pump re-pausing a film the viewer has since released.
     pub fn finish_seek_preroll(&self) {
         self.seek_preroll.store(false, Ordering::Release);
+        self.seek_preroll_owned.store(-1, Ordering::Release);
         self.resume_pend.store(false, Ordering::Release);
     }
 
@@ -2586,6 +2642,7 @@ impl Transport {
         self.paused.store(false, Ordering::Release);
         self.resume_pend.store(false, Ordering::Relaxed);
         self.seek_preroll.store(false, Ordering::Relaxed);
+        self.seek_preroll_owned.store(-1, Ordering::Relaxed);
         // …and not `scrub_ns`, for `reset_for_reload`'s reason: a new session is a fresh
         // `PlayerScreen` (or, on an auto-advance chain, `start_playback`'s in-place reset of the
         // live one), and both publish `Scrub::IDLE` themselves.

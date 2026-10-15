@@ -11,6 +11,7 @@
 //!   `decode`, which is why the plan forbids them. These tests do NOT assert that a new key
 //!   survives a save: that is tier 2.
 use super::*;
+use super::test_support::{signed_in, STAMP};
 use super::v0;
 use plx_platform::storage::{client, state, wire::*};
 
@@ -193,10 +194,6 @@ fn sign_out_then_in_reads_the_legacy_values() {
 }
 
 // ---- item 10: queued edits across a tenure / identity change; revoked writes ----------------
-
-fn signed_in() -> Session {
-    Session { client_id: "cid-1".into(), account_token: "acct".into(), ..Default::default() }
-}
 
 /// Hold the persistence worker on a job so that an edit queued behind it runs only after the
 /// test has changed the world, then release it. Returns the pieces; `release` frees the worker.
@@ -512,7 +509,6 @@ fn tier1_legacy_file_extra_top_level_keys_leave_credentials_and_todays_keys_inta
 /// frozen top-level keys are still the previous build's to read: a profile's pick never rewrote them.
 #[test]
 fn tier1_the_real_profile_prefs_shape_rides_through_the_previous_build() {
-    const STAMP: &str = "00112233445566ff";
     let mut original = rich();
     assert!(put_own::<SubtitleSizePref>(&mut original.prefs.profile_prefs, "", STAMP, SubtitleSize::Small));
     assert!(put_own::<SkipIntervalPref>(&mut original.prefs.profile_prefs, "u-7", STAMP, SkipInterval::Seconds10));
@@ -627,12 +623,14 @@ fn tier1_real_shape_stamped_offsets_are_read_by_the_old_build_and_the_codec() {
     assert_eq!(parsed.subtitle_offsets[0].extensions.0.get("account"), Some(&serde_json::json!(stamp)));
 }
 
-/// **N7: the one login that is not a sign-out keeps today's behaviour.** boot.rs :1105-1107 starts a
-/// QR sign-in with the stored session still on disk, so the new token replaces the old without a
-/// `ClearTenure`. `library_sorts` and `last_library` are cleared by sign-out (SO) but are not
-/// stamped, so this login's account inherits them, as it does today. The stamped offsets do not
-/// pass: they stay in the file under the previous account's stamp, and read as nothing to the new
-/// one.
+/// **N7, at the persistence layer: a commit with a different account token carries the stored
+/// preferences through.** boot.rs :1105-1107 starts a QR sign-in with the stored session still on
+/// disk, so the new token replaces the old without a `ClearTenure`. `library_sorts` and
+/// `last_library` are cleared by sign-out (SO) but are not stamped, so THIS layer, which only writes
+/// what it is handed, keeps them. The login's own door clears them before it gets here
+/// (`memory_tests::a_login_over_another_accounts_session_does_not_inherit_its_library_views`). The
+/// stamped offsets do not pass either way: they stay in the file under the previous account's stamp,
+/// and read as nothing to the new one.
 #[test]
 fn relogin_without_clear_keeps_library_views() {
     use super::prefs::ProfileMemory;

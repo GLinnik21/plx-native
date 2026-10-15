@@ -830,3 +830,10 @@ pub(super) fn selection_pms(parts: Vec<PartModel>) -> SelectionPms {
     });
     SelectionPms { port, state, _alive: stop }
 }
+
+/// The demuxer publishes the container's subtitle track names (by ordinal) when it opens a part.
+/// Process-global, so a world starts and ends with none.
+pub(super) fn publish_container_names(subs: &[&str]) {
+    *crate::player::SHARED.track_names.lock().unwrap_or_else(|e| e.into_inner()) =
+        crate::player::TrackNames { audio: Vec::new(), subs: subs.iter().map(|s| s.to_string()).collect() };
+}

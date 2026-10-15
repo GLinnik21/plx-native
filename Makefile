@@ -204,6 +204,7 @@ print-simbin:   ; @printf '%s\n' "$$SIM_MACOS_BIN_ENV"
 # reads the whole file before running a recipe, so the forward reference is fine.
 print-app-files:      ; @echo '$(APP_FILES)'
 print-deploy-files:   ; @echo '$(DEPLOY_FILES)'
+print-subs-font-files: ; @echo '$(SUBS_FONT_FILES)'
 print-sentry-handler: ; @echo '$(SENTRY_HANDLER)'
 print-ffmpeg-staged:  ; @echo '$(FFMPEG_STAGED)'
 print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
@@ -795,8 +796,8 @@ RUST_TARGET = arm-unknown-linux-gnueabi
 RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/$(ARM_PROFILE)/libplxnative_modules.a
 
 # Every ordinary C translation unit ships; gpdebug remains an opt-in allocator guard.
-# ass.c belongs to the privately bundled renderer, never the application ELF.
-SRCS = $(filter-out src/gpdebug.c src/ass.c,$(wildcard src/*.c)) src/compat/getauxval.c
+# ass.c and ass_fonts.c belong to the privately bundled renderer, never the application ELF.
+SRCS = $(filter-out src/gpdebug.c src/ass.c src/ass_fonts.c,$(wildcard src/*.c)) src/compat/getauxval.c
 OBJS = $(SRCS:.c=.o)
 
 all: pkg/plxnative pkg/plxnative-storage
@@ -849,7 +850,8 @@ FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 LIBASS_STAGED = pkg/libass-plx.so.0
 LIBASS_INPUTS = ci/build-libass.sh ci/build-libass.py ci/libass-dependencies.json \
                 ci/arm-cc.py ci/check-link-evidence.py ci/stage-link-evidence.py \
-                src/ass.c src/ass_composite.h include/ass.h
+                ci/libass-patches/0001-grow-font-faces.patch \
+                src/ass.c src/ass_fonts.c src/ass_internal.h src/ass_composite.h include/ass.h
 $(LIBASS_STAGED): $(LIBASS_INPUTS)
 	WEBOS_SDK=$(WEBOS_SDK) ./ci/build-libass.sh
 
@@ -1125,6 +1127,17 @@ APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
 # long as nobody compared the two by hand. `ci/test_deploy_manifest.py` pins the relationship
 # itself (via `print-app-files`/`print-deploy-files`), not just today's four names.
 DEPLOY_FILES = $(filter-out pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LAB_FILES),$(APP_FILES))
+
+# The subtitle faces (tools/cut-noto-subs.py): Noto Sans <script> Bold, one file per script, plus the
+# manifest that names them in add order. They are NOT in `APP_FILES`, because that list is staged
+# with a flat `cp` and these live in their own directory, `fonts/subs/`, where the renderer reads
+# them from (`player::ass::fonts`) - 22 more names in the app directory's root would hide the few
+# files a person looks for there. Each recipe that handles `APP_FILES` handles this list too:
+# `ipk` stages it, `deploy` copies it and `verify-deploy` checks it. The wildcard means a face added
+# to the directory ships without a second edit here; `ci/check-package.py` compares the staged
+# archive with the manifest, so a face that did not make it in fails the package, not the television.
+SUBS_FONT_DIR   = fonts/subs
+SUBS_FONT_FILES = $(sort $(wildcard pkg/fonts/subs/*.ttf)) pkg/fonts/subs/manifest.json
 # pkg/le-roots.pem is the four public Let's Encrypt roots (ISRG Root X1, X2, YR, YE) that
 # `net::keypin`'s roots mode verifies a `*.plex.direct` host against when the television's own CA
 # store lacks the issuing root (a 2020 firmware and Let's Encrypt's 2025 roots). It is PAYLOAD
@@ -1133,7 +1146,7 @@ DEPLOY_FILES = $(filter-out pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(L
 # certificate chains to a newer root stops being reachable on an old firmware. Absent, the fallback
 # simply does not engage. NOT `roots.pem`: that name is `net::post_ca`'s telemetry bundle.
 # appfont-cjk.ttf is the fallback face (Noto Sans CJK KR, tools/cut-noto-cjk.py) and it is the
-# single largest thing in the package — 21 MB raw, ~11 MB of the .ipk. It is PAYLOAD, not an
+# single largest thing in the package — 13.4 MB raw, ~7.5 MB of the .ipk. It is PAYLOAD, not an
 # optional extra: without it a Korean, Japanese or Chinese library renders as tofu end to end, and
 # the television's own DroidSansFallback is present on the sets we have measured but is not
 # something a submission can be graded against. `rust-modules/base/src/fontcov.rs`'s host gate asserts
@@ -1246,7 +1259,7 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	   $(SSH) 'chmod 644 $(APPDIR)/lab.json'; \
 	 else $(SSH) 'rm -f $(APPDIR)/lab.json'; fi
 	# The rest of the payload — appinfo, both icon sizes, the splash/launch image, the three font
-	# files (including the 21 MB CJK fallback face — unconditional now, like everything else in
+	# files (including the 13 MB CJK fallback face — unconditional now, like everything else in
 	# this list: `verify-deploy` below is what makes a stale copy visible instead of a scp that
 	# quietly never ran), the OFL licence and the third-party notices — in ONE scp, ONE connection,
 	# from `DEPLOY_FILES`: the SAME list `ipk` stages via `cp $(APP_FILES) $(STAGE)/`. `scp` to a
@@ -1257,6 +1270,9 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# television with no separate line to remember here — which is what `pkg/splash.png` needed and
 	# never got: it was staged into every `.ipk` and never scp'd by this recipe.
 	$(SCP) $(DEPLOY_FILES) tv:$(APPDIR)/
+	@# The subtitle faces go to their own directory (see SUBS_FONT_FILES), in one more connection.
+	$(SSH) 'mkdir -p $(APPDIR)/$(SUBS_FONT_DIR)'
+	$(SCP) $(SUBS_FONT_FILES) tv:$(APPDIR)/$(SUBS_FONT_DIR)/
 	@if [ -n "$(TURBOJPEG_SO)" ]; then \
 	  $(SSH) 'test -f $(APPDIR)/libturbojpeg.so.0' || $(SCP) $(TURBOJPEG_SO) tv:$(APPDIR)/libturbojpeg.so.0; \
 	else echo "note: no libturbojpeg in the sysroot — capture JPEG mode will use the slow encoder"; fi
@@ -1284,14 +1300,15 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 # the crash handler and the FFmpeg libraries take their own path to the device above and are just
 # as capable of silently drifting, so they are verified too.
 VERIFY_FILES = pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(DEPLOY_FILES) pkg/plxnative-storage \
-               $(if $(LAB),pkg/lab.json,)
+               $(SUBS_FONT_FILES) $(if $(LAB),pkg/lab.json,)
 verify-deploy: tv-lock-require
 	@echo "verify-deploy: comparing $(words $(VERIFY_FILES)) files against $(APPID) [$(FLAVOR)]"
 	@# The storage helper lands in $(SERVICEDIR), a different directory from everything else here —
 	@# `ci/verify-deploy.py` keys purely by basename (see its module doc), so a second `cd && md5sum`
 	@# appended to the same ssh round trip merges into one stream it already knows how to read,
 	@# rather than needing a transport of its own.
-	@$(SSH) 'cd $(APPDIR) && md5sum $(notdir $(filter-out pkg/plxnative-storage,$(VERIFY_FILES))) 2>&1; \
+	@$(SSH) 'cd $(APPDIR) && md5sum $(notdir $(filter-out pkg/plxnative-storage $(SUBS_FONT_FILES),$(VERIFY_FILES))) 2>&1; \
+	         cd $(APPDIR)/$(SUBS_FONT_DIR) && md5sum $(notdir $(SUBS_FONT_FILES)) 2>&1; \
 	         cd $(SERVICEDIR) && md5sum plxnative-storage 2>&1' | \
 	  python3 ci/verify-deploy.py $(VERIFY_FILES)
 
@@ -1829,6 +1846,7 @@ ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
 	rm -rf ipkroot/data/usr && mkdir -p $(STAGE)/licenses
 	cp $(APP_FILES) $(STAGE)/
+	mkdir -p $(STAGE)/$(SUBS_FONT_DIR) && cp $(SUBS_FONT_FILES) $(STAGE)/$(SUBS_FONT_DIR)/
 	cp $(LICENSE_FILES) $(STAGE)/licenses/
 	@# Strip the STAGED copy only, never pkg/plxnative. ~2.4 MB of .symtab+.strtab (30% of the
 	@# download, on a device whose app partition is 615 MB total and shared with every other app).
@@ -2087,7 +2105,7 @@ $(FFMPEG_HOST_STAGED): pkg/%.dylib: $(FFMPEG_HOST_INC)/libavformat/avformat.h ci
 # The ASS reader tests also need staged libass to compare caption pixels after packet ingestion.
 check-ffmpeg: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED)
 	cd rust-modules && CARGO_INCREMENTAL=0 PLX_FFMPEG_DIR=$(CURDIR)/pkg PATH="$$HOME/.cargo/bin:$$PATH" \
-	  cargo +$(RUST_NIGHTLY) test --lib -p plx_media -- ff::image_subtitle_tests ff::subside::tests::side_reader_draws_a_shifted_cue_from_a_generated_mkv --ignored
+	  cargo +$(RUST_NIGHTLY) test --lib -p plx_media -- ff::image_subtitle_tests ff::subtitle_charset_tests ff::subside::tests::side_reader_draws_a_shifted_cue_from_a_generated_mkv --ignored
 
 # The same ABI gate the cross build runs, at the other pointer width. ci/ffabi-assert.c `#if`s on
 # `__SIZEOF_POINTER__` and carries both tables, so this compile is what holds ff.rs's 64-bit

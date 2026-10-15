@@ -1077,7 +1077,7 @@ impl SubtitleSize {
 
 /// The persisted subtitle vertical placements, lowest first — one per profile, like [`SubtitleTone`].
 /// Absence is `Low`, which is where every build before this preference drew the caption
-/// (`appkit::player_hud`'s fixed `SUB_BASE_Y`/`SUB_CEIL_Y` baseline). Only the plain-text caption draw
+/// (`media::player::text_style`'s fixed `SUB_BASE_Y`/`SUB_CEIL_Y` baseline). Only the plain-text caption draw
 /// moves with this; image (PGS/VobSub) captions and native ASS/SSA keep their own placement
 /// (`docs/ass-subtitles.md`).
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
@@ -3966,10 +3966,17 @@ pub fn replace_after_reauthentication_guarded_with_outcome(
         install_locked(read);
         return Err(());
     }
-    let next = edit(&cur);
+    let mut next = edit(&cur);
     if next.account_token.is_empty() {
         install_locked(read);
         return Ok(None);
+    }
+    // The one login that is not a sign-out: the stored session is still on disk, so no `ClearTenure`
+    // ran. A different account must not open on the previous one's library views, which carry no
+    // account stamp to read as nothing under (`ACCOUNT_BOUND_PREFERENCES` is what sign-out clears).
+    if !cur.account_token.is_empty() && cur.account_token != next.account_token {
+        next.prefs.last_library.clear();
+        next.prefs.library_views.clear();
     }
     if !may_write() { return Err(()); }
     Ok(Some(save_locked_with_authority(&next, SaveAuthority::FreshReauthentication)))
@@ -4049,7 +4056,12 @@ fn save_locked_with_authority(
     plx_platform::storage::wire::failure::clear();
     CANDIDATE_ERRNOS.with(|slot| slot.set([None; 8]));
     let protected_before = has_protected_authority();
+    let write_started = std::time::Instant::now();
     let commit = persistence::write_session(s, authority);
+    plx_base::eventlog::log(&format!(
+        "session: canonical write took {} ms",
+        write_started.elapsed().as_millis()
+    ));
     // Uncertain helper replies already own their evidence in CanonicalCommit. Only the older
     // StoreError-only failure variants still need this immediate thread-local snapshot.
     let helper_failure = match &commit {

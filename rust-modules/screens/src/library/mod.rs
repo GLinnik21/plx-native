@@ -189,6 +189,11 @@ pub struct LibraryScreen {
     grid_fade: Xfade,
     readout: Readout,
     live: bool,
+    /// A PAGE has been pushed over this one (`WillLeave(Deeper)`) and it has not come back: not
+    /// ticked, not drawn, so the one state in which its listing may be re-fetched without moving
+    /// ground under the reader. A modal (a compact menu) covers the page without setting it.
+    /// Transient like `seat_wanted`: it is not part of the canon, a pop clears it.
+    buried: bool,
     initial: bool,
     /// The head group the page seated its own focus in, while that seat is still the page's own
     /// choice: nobody has moved since. Such a seat follows the head when a landing changes what the
@@ -241,7 +246,7 @@ impl LibraryScreen {
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
             viewports: Vec::new(), seat_wanted: None,
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
-            readout: Readout::Loading, live: true, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
+            readout: Readout::Loading, live: true, buried: false, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
             library_capsules: plx_ui::widgets::TabStrip::new(),
             library_pop: plx_ui::widgets::CtlPop::new(),
             ground: plx_ui::widgets::PageGround::new(), ground_seeded: false,
@@ -322,6 +327,20 @@ impl LibraryScreen {
     fn store<H: LibraryLike>(&self, target: SectionAddress, work: LibraryWork, fx: &mut Effects<'_, H>) {
         fx.push(Fx::App(AppFx::Store(StoreId::Browse,
             StoreCmd::Browse(BrowseCmd::Addressed { target, work }))));
+    }
+
+    /// Re-fetch the listing when a read-back made its membership stale (the Unwatched switch,
+    /// ordering by last viewed): ONLY called while a page is pushed over this one (`buried`), so
+    /// the reader's ground never moves under the cursor and the listing is fresh when the page is
+    /// shown again. It is the same query refreshed, not a query edit (`ListingId::query` stands),
+    /// so the page keeps its scroll and its focus. The Browse pump that lands the new first page
+    /// is the application's (`Bridge::reconcile_pump`), because a buried page is not ticked to
+    /// pump its own store. A modal over the page (a compact menu) never triggers it: the page is
+    /// still visible and ticking.
+    fn requery_stale<H: LibraryLike>(&self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        if !H::listing(cx).membership_stale() { return; }
+        let Some(target) = self.address(cx) else { return };
+        self.store(target, LibraryWork::Requery, fx);
     }
 
     fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
@@ -1055,10 +1074,15 @@ impl LibraryScreen {
             }
         }
         match ev {
-            ScreenEvent::Mount | ScreenEvent::StoreChanged(..) => { self.sync(cx); }
+            ScreenEvent::Mount | ScreenEvent::StoreChanged(..) => {
+                self.sync(cx);
+                // A read-back that lands while a page is pushed over this one is acted on at once.
+                if self.buried { self.requery_stale(cx, fx); }
+            }
             ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.sync(cx); }
             ScreenEvent::Enter(enter) => {
                 self.live = true;
+                self.buried = false;
                 // The engine seats the target right after this event, so a key it names must hold
                 // a projected slot by then: pinned and projected until the page's next tick.
                 if let Enter::Fresh { focus: FocusTarget::Elem(key) } = enter {
@@ -1066,9 +1090,16 @@ impl LibraryScreen {
                 }
                 self.sync(cx);
             }
-            ScreenEvent::Cover => { self.live = false; }
-            ScreenEvent::Uncover => { self.live = true; self.sync(cx); }
-            ScreenEvent::WillLeave(_) => { self.save_cursor(cx, fx); self.flush(fx); }
+            ScreenEvent::Cover => {
+                self.live = false;
+                if self.buried { self.requery_stale(cx, fx); }
+            }
+            ScreenEvent::Uncover => { self.live = true; self.buried = false; self.sync(cx); }
+            ScreenEvent::WillLeave(leave) => {
+                if matches!(leave, plx_machine::machine::Leave::Deeper) { self.buried = true; }
+                self.save_cursor(cx, fx);
+                self.flush(fx);
+            }
             ScreenEvent::App(AppMsg::Library(command)) => return self.command(*command, cx, fx),
             ScreenEvent::App(AppMsg::LibraryEdit { target, edit }) => {
                 use plx_data::stores::browse::QueryEdit;

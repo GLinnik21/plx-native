@@ -608,6 +608,9 @@ struct Source {
     /// none of its hits yet. It is asked for the window outside any slide ([`owed_read`]), no later
     /// slide waits on it, and its unread depths do not count as "more to come" ([`has_past`]).
     skipped: [bool; NKIND],
+    /// Where in the view-state publish order ([`crate::viewledger`]) the read now out for this
+    /// source was issued; its landing is made again with every edit published since.
+    stamp: crate::viewledger::Stamp,
 }
 
 impl Source {
@@ -618,6 +621,7 @@ impl Source {
         tails: [tail::Lane::EMPTY; NKIND],
         tv: tail::TvMap { first_episode: None },
         skipped: [false; NKIND],
+        stamp: 0,
     };
 }
 
@@ -644,6 +648,8 @@ fn nsrc() -> usize {
 /// One Search owner's main-thread-only logical state (`docs/stores-as-machines.md`). Production
 /// gains one through `stores::search::SearchStore`; the worker-touched half is [`SearchAdapter`].
 pub struct SearchState {
+    /// The publish order of view-state edits, shared by `stores::Stores`.
+    pub(crate) ledger: crate::viewledger::ViewLedger,
     // Published buffers are shared with retained frame views. Only the main-thread store writes
     // them; replacing a query or landing cannot invalidate a frame that still owns the old Arc.
     query: Option<Arc<str>>,
@@ -707,6 +713,7 @@ pub struct SearchState {
 impl Default for SearchState {
     fn default() -> Self {
         Self {
+            ledger: Default::default(),
             query: None,
             shelves: None,
             state: State::Idle,
@@ -901,9 +908,10 @@ fn set_query_with_directory(
     plx_machine::idle::invalidate();
 }
 
-/// Flip `(sid, rk)`'s watched state in the result set — the optimistic half of a view-state write,
-/// for the Search screen's own tiles. `pms::edit_item`'s twin, for `browse::set_watched_local`'s
-/// reason: that one reaches the HOME hubs alone, so a film marked watched from a search result's
+/// Apply a view-state change to every result row it covers — the optimistic half of a view-state
+/// write, for the Search screen's own tiles. A show or season change also reaches the EPISODE rows
+/// of that show (`ViewAt::covers`), which a search for an actor or a title can hold beside it.
+/// `pms::edit_item`'s twin, for `browse::set_watched_local`'s reason: that one reaches the HOME hubs alone, so a film marked watched from a search result's
 /// context menu kept its old mark until a refetch.
 ///
 /// **Both stores, and no `rebuild`.** A source owns its rows and `SearchState::shelves` is a
@@ -913,12 +921,16 @@ fn set_query_with_directory(
 /// itself.
 ///
 /// Returns whether anything matched. **MAIN THREAD.**
-fn set_watched_local(state: &mut SearchState, sid: ServerId, rk: &str, on: bool) -> bool {
+fn apply_view(state: &mut SearchState, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
+    // A result tile has no deck: a removal from Continue Watching changes nothing here.
+    if let crate::viewstate::ViewEdit::LeftDeck = edit { return false }
     let mut hit = false;
+    // `changes`: a press always counts, the server's `Facts`/`Offset` only where they differ, so a
+    // read-back that agrees with what is drawn raises no notice and moves nothing.
     let mut flip = |it: &mut Item| {
         if let Item::Media(m) = it {
-            if plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)) {
-                crate::pms::set_watched(m, on);
+            if at.covers(m) && edit.changes(m) {
+                edit.apply(m);
                 hit = true;
             }
         }
@@ -932,8 +944,7 @@ fn set_watched_local(state: &mut SearchState, sid: ServerId, rk: &str, on: bool)
     if let Some(shelves) = &mut state.shelves {
         // A write outside the visible result cap must not clone a retained catalog it cannot
         // change. The catalog itself is bounded by KINDS × WINDOW, never library-sized.
-        if shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it,
-            Item::Media(m) if plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)))) {
+        if shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it, Item::Media(m) if at.covers(m) && edit.changes(m))) {
             for it in Arc::make_mut(shelves).iter_mut().flat_map(|s| &mut s.items) { flip(it); }
         }
     }
@@ -1166,6 +1177,13 @@ fn pump_with_optional_directory(
     true
 }
 
+/// A read describes the server from when it was issued: the view-state edits published since
+/// ([`crate::viewledger`]) are made again on the rows it brought.
+fn replay_since_request<'a>(ledger: &crate::viewledger::ViewLedger, stamp: crate::viewledger::Stamp,
+    items: impl Iterator<Item = &'a mut Item>) {
+    ledger.patch(stamp, items.filter_map(|it| if let Item::Media(m) = it { Some(m) } else { None }));
+}
+
 /// Record ONE source's landing. The merge itself is [`rebuild`], run once after the whole sweep, so
 /// two sources landing in the same frame cost one rebuild rather than two.
 fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
@@ -1198,6 +1216,9 @@ fn record(state: &mut SearchState, i: usize, what: Option<Projection>) {
             // The two fields an answer decides, and `retry_cd` is deliberately not one of them: a
             // source that has answered is refused by `maybe_spawn` on `status` alone, and the next
             // query resets the whole record through `Source::EMPTY`.
+            let mut items = items;
+            let (ledger, stamp) = (state.ledger.clone(), source(state, i).stamp);
+            replay_since_request(&ledger, stamp, items.iter_mut().flatten());
             let s = source_mut(state, i);
             s.status = Status::Answered;
             s.tails = std::array::from_fn(|k| tail::Lane::from_preview(KINDS[k], &items[k]));
@@ -1450,6 +1471,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize,
     let favs = favs(state);
     let worker_adapter = Arc::clone(adapter);
     mailbox.claim(gen);
+    source_mut(state, i).stamp = state.ledger.stamp();
     // an answered source is here for a read of one lane: the worker takes a copy, so a failed or
     // superseded read leaves the lane as it was
     let spawned = if source(state, i).status == Status::Answered {
@@ -1556,7 +1578,9 @@ fn land_read(state: &mut SearchState, i: usize, t: TailMail) -> bool {
     let k = t.kind;
     let mut progressed = false;
     match t.read {
-        Some((lane, tv)) => {
+        Some((mut lane, tv)) => {
+            let (ledger, stamp) = (state.ledger.clone(), source(state, i).stamp);
+            replay_since_request(&ledger, stamp, lane.items_mut());
             let s = source_mut(state, i);
             progressed = (lane.covered(), lane.end, lane.is_growth()) != (s.tails[k].covered(), s.tails[k].end, s.tails[k].is_growth());
             s.tails[k] = lane;
@@ -1867,7 +1891,7 @@ fn run_with_optional_directory(
             reset(state, adapter);
             true
         }
-        SearchCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(state, sid, &rk, on),
+        SearchCmd::ApplyView { at, edit } => apply_view(state, &at, edit),
         SearchCmd::Page { kind, before, seen } => page(state, kind, before, seen),
         SearchCmd::PageCancel { kind, seen } => cancel_page(state, kind, seen),
     }
@@ -1885,7 +1909,7 @@ pub fn set_watched_local_for_test(
     rk: &str,
     on: bool,
 ) -> bool {
-    set_watched_local(state, sid, rk, on)
+    apply_view(state, &crate::viewstate::ViewAt::leaf(sid, rk), crate::viewstate::ViewEdit::Watched(on))
 }
 
 #[cfg(any(test, feature = "test-support"))]

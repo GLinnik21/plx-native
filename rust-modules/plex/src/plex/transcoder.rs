@@ -42,7 +42,7 @@ pub fn is_dp_audio_track(codec: &str, channels: i64) -> bool {
 /// does not burn/transcode a sub the demuxer will draw itself.
 ///
 /// Spellings are PMS profile names plus the FFmpeg/Stream.codec aliases they arrive as
-/// (`movtext` as in Roku; `dvd` beside `vobsub` / `dvd_subtitle`). Obscure `ff.rs` Plain
+/// (`movtext` as in Roku; `dvd` beside `vobsub` / `dvd_subtitle`). Obscure `text_ass::TextDialect::Plain`
 /// aliases (`vplayer`, `jacosub`, …) stay off this list on purpose — unknown selected codecs
 /// take the `0` path rather than a full re-encode.
 pub const DP_SUBTITLE_CODECS: &str = "srt,subrip,ass,ssa,mov_text,movtext,webvtt,text,pgs,hdmv_pgs_subtitle,vobsub,dvd,dvd_subtitle,dvdsub,dvb_subtitle,dvbsub";

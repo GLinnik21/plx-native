@@ -66,9 +66,12 @@ itself. (In this capture the frame under it was decoded by the simulator.)
 
 ## Will it work on my television?
 
-**It needs webOS 4.0 or newer**, with one tested exception: a 2016 set on **webOS 3.4.3** signs
+**It needs webOS 4.0 or newer**, with two tested exceptions: a 2016 set on **webOS 3.4.3** signs
 in, browses, searches and plays (direct play, transcodes, subtitles and seeking) through Developer
-Mode. Other 3.x releases are untested, and anything older than 3.4 is unknown. Past that, it most
+Mode, and a 2018 set on **webOS 3.9.3** plays direct play the same way when built from source at
+or after [`60f99c7`](https://github.com/GLinnik21/plx-native/commit/60f99c7) — the catalogue's
+prebuilt v0.8.0 predates that fix (see [Known issues](#known-issues)). Other 3.x releases are
+untested, and anything older than 3.4 is unknown. Past that, it most
 likely will. I develop and test on a 2019 set, and opt-in usage reports show
 video playing on sets from 2018 through the newest, on webOS 11 — both direct play and server
 transcodes, Developer Mode installs included.
@@ -78,7 +81,7 @@ transcodes, Developer Mode installs included.
 | Where | What happens |
 |---|---|
 | **Some 2019 sets on LG's k5lp or k3lp chip**, installed through Developer Mode | Video won't play. On these sets LG's Developer Mode sandbox can withhold a device the video path needs — Kodi and Moonlight hit the same wall. The app checks for it and says so instead of crashing; other sets on the same chip play normally. On a rooted TV with Homebrew Channel, the failure screen offers **Repair**, which applies the Homebrew Channel fix to the sandbox (one owner fixed it this way from a root shell; the button itself hasn't been run on an affected set yet). Without root there is no fix. |
-| **2018 sets on firmware that reports platform release 3.9.3** | Sign-in and browsing work, but video has never been seen to start on one, and no error is reported either: [#249](https://github.com/GLinnik21/plx-native/issues/249). |
+| **2018 sets on firmware that reports platform release 3.9.3** | Sign-in and browsing work. The prebuilt **v0.8.0** holds a strong ELF reference to the cxx11 `StarfishMediaAPIs::Feed` symbol, which 3.x `libplayerAPIs` does not export, so on the prebuilt video never starts and no error is reported: [#249](https://github.com/GLinnik21/plx-native/issues/249). A source build at or after [`60f99c7`](https://github.com/GLinnik21/plx-native/commit/60f99c7) resolves Feed with a dual-ABI `dlsym` and plays direct play on a 2018 C7 (W17H chassis, 3.9.3). |
 | **webOS 3.x** | Seeking restarts the stream at the new position instead of jumping in place, so each seek takes a moment longer. In-place seek depends on the internal layout of LG's 4.x media player, and on 3.4 that layout differs. |
 | **Sets on LG's k6hp chip** | A crash seen in opt-in crash reports and not reproduced here, because I have no such set: [#174](https://github.com/GLinnik21/plx-native/issues/174). |
 

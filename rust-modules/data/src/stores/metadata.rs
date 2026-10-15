@@ -80,8 +80,8 @@
 //!   (`pump_related`, at the start of the frame, installs it).
 //! - `SeekRelated{at, seen}` → `metadata::ask_related` with `RelatedAsk::Seek` — the same read, opened at a tail position.
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
-//! - `SetWatchedLocal{sid, rk, on}` → `metadata::set_watched_local` — the optimistic half of a
-//!   view-state write, answers whether it actually changed anything.
+//! - `ApplyView{at, edit}` → `metadata::set_watched_local` — the optimistic half of a view-state
+//!   change, answers whether it actually changed anything.
 //! - `InstallPlaying(Option<PlayingItem>)` → `metadata::install_playing` — the playback plan's leaf
 //!   (`route.rs`).
 //! - `MarkSkipped(Marker)` → `metadata::mark_skipped`.
@@ -215,8 +215,8 @@ pub enum MetadataCmd {
     /// discarded when it lands, and one landed but not yet installed is dropped.
     CancelRelated,
     SetNowPlaying(Option<crate::metadata::NowPlaying>),
-    /// The optimistic half of a view-state write on the loaded item, its episodes and Related.
-    SetWatchedLocal { sid: ServerId, rk: String, on: bool },
+    /// The optimistic half of a view-state change on the loaded item, its episodes and Related.
+    ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
     /// The playback plan's leaf (`route.rs`).
     InstallPlaying(Option<crate::metadata::PlayingItem>),
     /// A subtitle the server just installed for the PLAYING item (the player's subtitle search),
@@ -271,6 +271,11 @@ impl Default for MetadataStore {
 }
 
 impl MetadataStore {
+    /// Join the owner's view-state publish order (`Stores::view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.ledger = ledger.clone();
+    }
+
     fn bump(&self) -> u32 {
         self.notice_dirty.store(true, Ordering::Relaxed);
         self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1
@@ -319,8 +324,14 @@ impl MetadataStore {
         if matches!(&cmd, MetadataCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
+        // An optimistic edit that matched no row (a server's `Facts`/`Offset` that agrees with what
+        // is drawn) raises no notice: a notice relayouts a mounted Detail page. Every other
+        // command bumps whatever it returned.
+        let view_edit = matches!(&cmd, MetadataCmd::ApplyView { .. });
         let changed = crate::metadata::run(&mut self.state, &self.adapter, cmd);
-        self.bump();
+        if changed || !view_edit {
+            self.bump();
+        }
         changed
     }
 
@@ -474,5 +485,39 @@ mod two_owner_tests {
         a.run(MetadataCmd::Clear);
         assert_eq!(a.gen(), 1, "A's own command must advance A's own notice generation");
         assert_eq!(b.gen(), 0, "A's command must not advance B's notice generation");
+    }
+}
+
+#[cfg(test)]
+mod view_edit_notice_tests {
+    use super::*;
+    use crate::metadata::{Detail, Related};
+    use crate::viewstate::{ViewAt, ViewEdit};
+
+    /// An `ApplyView` that matched no tile raises no notice: a notice relayouts a mounted Detail
+    /// page, re-measures it and releases its pending Related page requests, so a server's
+    /// `Facts`/`Offset` that agrees with what is drawn must not cost one. A press that does change
+    /// a tile still does.
+    #[test]
+    fn a_view_edit_that_changed_nothing_raises_no_notice() {
+        let _serial = plx_base::testlock::serial();
+        let sid = plx_plex::plex::ServerId::UNSET;
+        let mut store = MetadataStore::default();
+        let tile = |rk: &str| Related { sid, rk: rk.into(), resume_ms: 3_510_000, unwatched: true, ..Default::default() };
+        crate::metadata::install_for_test(store.state_mut(), Some(Detail {
+            sid, rk: "show".into(), related: vec![tile("r0")], ..Default::default()
+        }));
+        let _ = store.take_notice();
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        let apply = |store: &mut MetadataStore, rk: &str, edit| {
+            store.run(MetadataCmd::ApplyView { at: ViewAt::leaf(sid, rk), edit })
+        };
+        assert!(apply(&mut store, "r0", facts));
+        assert!(store.take_notice().is_some(), "a changed tile is news");
+        assert!(!apply(&mut store, "r0", facts));
+        assert_eq!(store.take_notice(), None, "facts that agree with the tile raise no notice");
+        assert!(!apply(&mut store, "elsewhere", facts));
+        assert_eq!(store.take_notice(), None, "an item nothing here draws raises none either");
+        crate::metadata::install_for_test(store.state_mut(), None);
     }
 }

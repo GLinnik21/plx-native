@@ -85,6 +85,17 @@ screen does not re-seat anything (a scroll TARGET it sets against content that a
 in the scroll's own coordinates, `Grid::pending_shift`); and read a shelf through `heading_lift()` / `under_band()`, not through
 the L0 `CardRow`.
 
+A `Shelf` built with `animate_landings(true)` (Home's Continue Watching row) PLAYS a landing that no
+move announced instead of cutting it (`cards/landing.rs`): a removed card fades out as a ghost, named by its
+element (`ghost_keys()`) so the owner keeps only the cards that left (`Arc` clones, while `landing_pending()`) and paints them
+with `paint_ghosts`; survivors slide, new cards fade in, each on its own alpha. The focused tile is held
+at its slot by the landing rule (its offset is 0), but the scroll is clamped to its range, so at an end
+of the strip even it can move on screen. There is no cap on the cards diffed (a map, not a scan); only cards
+on-axis at either end get a spring, a fade or a ghost, the rest cut. A slide of the window the source holds
+(`global` / `page_epoch` moved) is adopted whole. These springs are layout motion, so a landing seen while the page
+is a held transition image starts at once (the first live frame shows the start state) and steps once the
+image is released (`containers::transition::page_image_held`). Off by default; `Grid` has none yet.
+
 A row that goes on past an edge (`CardSource::more_after`, `more()` unless the source overrides it, / `more_before`, `false`
 unless the source says its window slid off the start: Home, Library and Search do) paints the skeleton of an unloaded poster in the cells past that edge, a screenful at
 most, so a row still loading does not look finished (`Shelf::paint_pending`). They are cells of the

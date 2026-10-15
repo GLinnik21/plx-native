@@ -105,6 +105,22 @@ pub(super) static PLAY_CALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(any(test, feature = "test-support"))]
 pub(super) static FORCE_PAUSE_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
 
+/// Every millis `sf_seek_ms` was called with, in order (#568): what a test reads to prove a
+/// direct-play seek went through LG's public `Seek` and landed where the keyframe did.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static SEEK_LOG: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+/// Forced `sf_seek_ms` answer; `i32::MIN` means "behave". `0` is LG refusing the seek.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static FORCE_SEEK_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
+/// How many times the sink was flushed: a native seek must not flush (Seek flushes itself, and a
+/// flush after it re-anchors the segment at 0).
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static FLUSH_CALLS: AtomicU64 = AtomicU64::new(0);
+/// How many times the Segment path's private-offset verbs (`setTimeToDecode`, `setContentInfo`,
+/// `sendSegmentEvent`) were called: on `VP_EXPORTED` they must never be, whatever the seek's fate.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static SEGMENT_CALLS: AtomicU64 = AtomicU64::new(0);
+
 /// issue #74 D.1 test seam — real (v0.6.0) `sf_load` publishes `SMP_READY(1)` and then calls the
 /// blocking, synchronous Load, so there is a real window during which every OTHER seam verb is
 /// dispatchable but must not be dispatched. The unmodified host `sf_load` above has no such
@@ -182,6 +198,29 @@ pub(super) fn load_in_flight_for_test() -> bool {
 #[cfg(test)]
 pub(super) fn force_clocksink_for_test(on: bool) {
     FORCE_ENABLED.store(on, Relaxed);
+}
+/// Forget the seek probes (#568) and optionally force LG's `Seek` answer (`Some(0)` = refuse).
+#[cfg(test)]
+pub(super) fn reset_seek_probe_for_test(force: Option<c_int>) {
+    SEEK_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    FORCE_SEEK_RESULT.store(force.unwrap_or(i32::MIN), Relaxed);
+    FLUSH_CALLS.store(0, Relaxed);
+    SEGMENT_CALLS.store(0, Relaxed);
+}
+/// The millis every `Seek` was called with since [`reset_seek_probe_for_test`].
+#[cfg(test)]
+pub(super) fn seek_log_for_test() -> Vec<i64> {
+    SEEK_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+/// How many private-offset Segment verbs ran since [`reset_seek_probe_for_test`].
+#[cfg(test)]
+pub(super) fn segment_calls_for_test() -> u64 {
+    SEGMENT_CALLS.load(Relaxed)
+}
+/// How many times the sink was flushed since [`reset_seek_probe_for_test`].
+#[cfg(test)]
+pub(super) fn flush_calls_for_test() -> u64 {
+    FLUSH_CALLS.load(Relaxed)
 }
 #[cfg(any(test, feature = "test-support"))]
 pub(super) fn force_play_result_for_test(result: Option<c_int>) {
@@ -447,8 +486,9 @@ impl Clock {
         Self::start_ticker();
     }
 
-    /// Rewind to the start of a fresh stream. A seek on this path is a fresh `Load`
-    /// (`INPLACE_SEEK_OK` is false under `VP_EXPORTED`), so the fed timeline restarts at zero.
+    /// Rewind to the start of a fresh stream (a fresh `Load`, or `sf_flush`, which is itself a seek
+    /// to 0), so the fed timeline restarts at zero. A native `Seek` does not come here: it
+    /// re-anchors at the millis it was given (`sf_seek_ms`).
     fn rewind() {
         PLAYING.store(false, Relaxed);
         BASE_NS.store(0, Relaxed);
@@ -625,11 +665,36 @@ unsafe fn sf_pause() -> c_int {
 }
 unsafe fn sf_flush() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
-    note_dispatch("sf_flush");
+    {
+        note_dispatch("sf_flush");
+        FLUSH_CALLS.fetch_add(1, Relaxed);
+    }
     if !enabled() {
         return 0;
     }
     Clock::rewind();
+    crate::player::sim_video::flush();
+    1
+}
+/// LG's public `Seek(millis)`: refuses a negative target, otherwise flushes the pipeline and
+/// re-anchors the segment (and so the fed-PTS clock) at the millis passed, paused, with nothing fed.
+/// `FORCE_SEEK_RESULT` injects LG's refusal.
+unsafe fn sf_seek_ms(ms: i64) -> c_int {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        note_dispatch("sf_seek_ms");
+        SEEK_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(ms);
+        let forced = FORCE_SEEK_RESULT.load(Relaxed);
+        if forced != i32::MIN {
+            return forced;
+        }
+    }
+    if !enabled() || ms < 0 {
+        return 0;
+    }
+    PLAYING.store(false, Relaxed);
+    BASE_NS.store(ms.saturating_mul(1_000_000), Relaxed);
+    FED_MAX_NS.store(i64::MIN, Relaxed);
     crate::player::sim_video::flush();
     1
 }
@@ -640,17 +705,26 @@ unsafe fn sf_push_eos() -> c_int {
 }
 unsafe fn sf_set_time_to_decode(_position_ns: i64) -> c_int {
     #[cfg(any(test, feature = "test-support"))]
-    note_dispatch("sf_set_time_to_decode");
+    {
+        note_dispatch("sf_set_time_to_decode");
+        SEGMENT_CALLS.fetch_add(1, Relaxed);
+    }
     c_int::from(enabled())
 }
 unsafe fn sf_set_content_info(_position_ns: i64) -> c_int {
     #[cfg(any(test, feature = "test-support"))]
-    note_dispatch("sf_set_content_info");
+    {
+        note_dispatch("sf_set_content_info");
+        SEGMENT_CALLS.fetch_add(1, Relaxed);
+    }
     c_int::from(enabled())
 }
 unsafe fn sf_send_segment() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
-    note_dispatch("sf_send_segment");
+    {
+        note_dispatch("sf_send_segment");
+        SEGMENT_CALLS.fetch_add(1, Relaxed);
+    }
     c_int::from(enabled())
 }
 
@@ -850,6 +924,9 @@ impl VideoSink for HostSink {
     }
     unsafe fn send_segment(&self, _: &MainThread) -> c_int {
         sf_send_segment()
+    }
+    unsafe fn seek(&self, _: &MainThread, ms: i64) -> c_int {
+        sf_seek_ms(ms)
     }
     fn feed_abi_is_cow(&self) -> bool {
         false

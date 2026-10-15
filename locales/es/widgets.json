@@ -13,6 +13,7 @@
   "widgets.tracks.subtitles": "Subtítulos",
   "widgets.tracks.unknown": "Desconocido",
   "widgets.tracks.off": "Desactivados",
+  "widgets.tracks.forced_only": "Solo forzados",
   "widgets.tracks.mono": "Mono",
   "widgets.tracks.stereo": "Estéreo",
   "widgets.tracks.original": "Original: {language}",

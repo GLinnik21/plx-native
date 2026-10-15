@@ -31,8 +31,7 @@
 //! picked" while the other half and the rest of the list survive.
 use super::{MemoryEntry, Parse, ProfileList, Row, Scope, SettingsWrite};
 use crate::plex::session::Session;
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 /// The most entries one profile keeps (the oldest are dropped first).
 pub const CAP: usize = 64;
@@ -89,20 +88,22 @@ pub struct SubtitleTrackMemo {
     /// `text` or `image`.
     pub kind: String,
     /// A sidecar file rather than an embedded stream. The file differs per episode, so a memo of
-    /// one means the next episode's own same-language sidecar (`route::plan::memory_subtitle`).
+    /// one means the next episode's own same-language sidecar (`route::track_memory::memory_subtitle`).
     pub external: bool,
     pub title: String,
 }
 
 /// **What a profile picked for a show's subtitles**: a specific track, Off, or Forced only. The
 /// mode is the wire tag, so a build that does not know a mode reads that half as absent (see
-/// `de_soft_half`).
+/// `super::de_soft_opt`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum SubtitleMemo {
     /// A specific track, matched by its descriptor (hard: language, `forced`).
     Track(SubtitleTrackMemo),
-    /// Off, absolute.
+    /// Off. Like a track, it outranks the account's rule and the server's embedded selection, but
+    /// unlike one it does not fall through to them; a server-selected sidecar the app can draw
+    /// still shows first (see `rust-modules/plex/src/plex/CLAUDE.md`).
     Off,
     /// Forced only. `lang` is the language of the forced track on screen when the viewer chose it
     /// (empty if none was), used only when the playing audio has no language tag.
@@ -132,14 +133,14 @@ pub struct TrackMemoryEntry {
 }
 
 /// The tolerant read shape of a [`TrackMemoryEntry`]: the key strings are required strings (a
-/// wrong type fails the element), the halves are soft (`de_soft_half`).
+/// wrong type fails the element), the halves are soft (`super::de_soft_opt`).
 #[derive(Deserialize)]
 struct TrackMemoryEntryWire {
     machine_id: String,
     show_rk: String,
-    #[serde(default, deserialize_with = "de_soft_half")]
+    #[serde(default, deserialize_with = "super::de_soft_opt")]
     audio: Option<AudioMemo>,
-    #[serde(default, deserialize_with = "de_soft_half")]
+    #[serde(default, deserialize_with = "super::de_soft_opt")]
     subtitle: Option<SubtitleMemo>,
 }
 
@@ -159,16 +160,6 @@ impl TryFrom<TrackMemoryEntryWire> for TrackMemoryEntry {
             Ok(entry)
         }
     }
-}
-
-/// A half this build cannot read reads as never picked, and costs only itself.
-fn de_soft_half<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(serde_json::from_value::<T>(value).ok())
 }
 
 /// Cut `s` to at most `max` bytes at a character boundary.
@@ -231,6 +222,33 @@ impl TrackMemoryEntry {
         TrackMemoryEntry { machine_id: machine_id.to_string(), show_rk: show_rk.to_string(), audio, subtitle }.normalized()
     }
 
+    /// The largest entry the list can hold, the `n`th of its profile: EVERY string at its bound, the
+    /// widest digits, a sixteen-digit show key. Sixty-four of them for one profile are the household
+    /// budget's size (`one_profile_keeps_64_worst_case_entries`), which is what the budget tests build
+    /// and what the harness's `plxnative-trackmemory=fill` writes to read the DB8 write cost at the
+    /// budget. Built through [`TrackMemoryEntry::new`], like any other.
+    pub fn worst_case(n: u32) -> Self {
+        let audio = AudioMemo {
+            lang: "l".repeat(LANG_MAX),
+            tag: "t".repeat(TAG_MAX),
+            commentary: false,
+            ad: false,
+            codec: "c".repeat(CODEC_MAX),
+            channels: CHANNELS_MAX,
+            title: "t".repeat(TITLE_MAX),
+        };
+        let subtitle = SubtitleMemo::Track(SubtitleTrackMemo {
+            lang: "l".repeat(LANG_MAX),
+            tag: "t".repeat(TAG_MAX),
+            forced: false,
+            sdh: false,
+            kind: "k".repeat(KIND_MAX),
+            external: false,
+            title: "t".repeat(TITLE_MAX),
+        });
+        TrackMemoryEntry::new(&"m".repeat(MACHINE_ID_MAX), &format!("{n:0>SHOW_RK_MAX$}"), Some(audio), Some(subtitle))
+    }
+
     /// **The one normaliser**: applied when an entry is built, when it is written through
     /// `upsert_with`, and when a file is read. The key strings are dropped when over their bound
     /// (leaving the entry blank), the others as [`AudioMemo`]/[`SubtitleTrackMemo`] state.
@@ -255,6 +273,9 @@ impl MemoryEntry for TrackMemoryEntry {
     const BUDGET: Option<usize> = Some(BUDGET_BYTES);
     fn key(&self) -> Self::Key {
         (self.machine_id.clone(), self.show_rk.clone())
+    }
+    fn matches(&self, key: &Self::Key) -> bool {
+        self.machine_id == key.0 && self.show_rk == key.1
     }
     fn forgets(&self) -> bool {
         self.is_blank()

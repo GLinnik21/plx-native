@@ -11,6 +11,7 @@
 //! or the ACB/Starfish seam, so the parameter carries information. `arm_seek` and `begin_resume`
 //! run on the main thread too and deliberately do not take one: they only publish to `SHARED`.
 use super::shared::{HlsPlayCompletion, HlsPrimeKind, Stage};
+use super::SeekMode;
 use super::{log, sink, threads, ACB_OK, PTYPE, SHARED, TX};
 use crate::aq::{AuNode, AuQueue};
 use plx_net::stream::HttpStream;
@@ -1078,6 +1079,11 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     }
     ps.jail_load_blocked = false;
     ps.native_start_refused = false;
+    // A fresh play (not a `reload_at`, which reaches `start_bufferfeed_for` directly) is a new
+    // playback: it gets to try the native Seek again.
+    if pa.engine().is_none() {
+        super::set_native_seek_refused(false);
+    }
     if let Some(existing) = pa.engine().map(|engine| engine.route_start) {
         match crate::route::classify_live_engine_start(existing) {
             crate::route::LiveEngineStartRelation::CurrentAttempt => {
@@ -1575,40 +1581,20 @@ fn start_bufferfeed_inner(
         report_stop: Some(report_stop),
         preview_abandon: false,
     };
-    // Re-arm the in-place-seek probe for this session. `feed_stream` clears it when
-    // `sf_send_segment` can't reach the pipeline, and that is a fact about the StarfishMediaAPIs
-    // object — which `sf_load` constructs and teardown's `sf_destroy` destructs, once per session
-    // — not about the TV (see the SCOPE note on INPLACE_SEEK_OK in mod.rs). Left latched for the
-    // process, one teardown-window race silently turned every subsequent seek, of every
-    // subsequent item, into a full reload for the rest of the app's life. Placed HERE rather than
-    // at the top of this function on purpose: the `engine_is_live` no-op return above must NOT
-    // re-arm, or a stray PLAY landing mid-session would cancel a fallback that is still needed.
-    //
-    // NOT re-armed on webOS 5+. In-place seek reaches the pipeline through two decompile-derived
-    // offsets into LG-private C++ objects — `StarfishMediaAPIs::player` at object+0x4c, then
-    // `AbstractPlayer::pipeline` at +0x04 (src/starfish.c's sf_pipeline), plus
-    // MEDIA_CUSTOM_CONTENT_INFO's ptsToDecode at +0x28. Every one of those was read off a
-    // webOS 4.5 binary with a disassembler, and nothing in a symbol table can confirm them on
-    // another firmware: a field added to StarfishMediaAPIs by any 5.x build moves +0x4c and the
-    // very next seek dereferences whatever now lives there. The reload fallback is slower but is
-    // built out of Load/Play alone and assumes no layout at all. Re-enable per release only once
-    // somebody has re-derived the offsets on that firmware.
-    //
-    // NOR when the library is the pre-C++11 build (`inplace_layout_known`): its StarfishMediaAPIs
-    // is a different object from the 4.5 one, and the first fast-forward on a 3.4.0 set crashed
-    // through these offsets. The old-ABI Feed (`sf_feed_abi_is_cow`) is the direct evidence, and
-    // it covers 3.9.x too. A KNOWN release below 4 is refused as well; an UNKNOWN one
-    // (`major == 0`, os_info unreadable) with the C++11 Feed keeps in-place seek, as before
-    // #578, because that Feed says the library is 4.x or later and the VP_EXPORTED exclusion
-    // below already handles 5+.
+    // Select this session's direct-play seek mode (`SeekMode`, mod.rs, whose SCOPE note argues why
+    // it is per session). `feed_stream` can downgrade it to `Reload` mid-session (the pipeline was
+    // unreachable, or LG refused a `Seek`), and that is a fact about the StarfishMediaAPIs object
+    // — which `sf_load` constructs and teardown's `sf_destroy` destructs, once per session — not
+    // about the TV, so it is re-selected here for every session. Placed HERE rather than at the
+    // top of this function on purpose: the `engine_is_live` no-op return above must NOT re-select,
+    // or a stray PLAY landing mid-session would cancel a downgrade that is still needed.
     let layout_known = inplace_layout_known(
         plx_platform::tv::device::info().major,
         sink().feed_abi_is_cow(),
     );
-    super::INPLACE_SEEK_OK.store(
-        layout_known && sink().window_mode() != super::VP_EXPORTED,
-        Ordering::Relaxed,
-    );
+    let mode = session_seek_mode(layout_known, sink().window_mode(), dev_seek_mode());
+    log(&format!("seek mode: {mode:?} (layout_known={layout_known})"));
+    super::set_seek_mode(mode);
     pa.install(eng);
     native_start.commit();
     clock_start.commit();
@@ -1836,7 +1822,28 @@ fn reload_transcode_start(ps: &mut crate::route::PlaybackSession, pa: &mut super
     Some(start_bufferfeed_for(ps, pa, ticket))
 }
 
+/// Every target `reload_at` was asked for (test probe, #568): proves a refused native Seek reloads
+/// exactly once, at the user's target.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static RELOAD_AT_LOG: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether the paused-seek preroll was open as each `reload_at` / `reload_transcode` was entered,
+/// before its teardown (test probe): the reload keeps it, so what the fresh session's feed gate and
+/// prime see is whatever the dispatcher left open here.
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static RELOAD_PREROLL_LOG: std::sync::Mutex<Vec<bool>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(any(test, feature = "test-support"))]
+fn note_reload_preroll() {
+    RELOAD_PREROLL_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(TX.seek_preroll_active());
+}
+
 pub fn reload_at(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, target_ns: i64) -> ReloadOutcome {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        RELOAD_AT_LOG.lock().unwrap_or_else(|e| e.into_inner()).push(target_ns);
+        note_reload_preroll();
+    }
     if crate::route::url(ps).is_empty() {
         log("reload_at: no url (ignored)");
         settle_missing_route_start();
@@ -1874,6 +1881,8 @@ pub fn switch_audio_native(ps: &mut crate::route::PlaybackSession, pa: &mut supe
 /// start.mkv is already 0-based at `&offset`, so no av_seek — just set disp_base to the offset.
 /// route::retranscode has already set the URL + session + STREAM_VCODEC=h264 before this call.
 pub fn reload_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, offset_ns: i64) -> ReloadOutcome {
+    #[cfg(any(test, feature = "test-support"))]
+    note_reload_preroll();
     if crate::route::url(ps).is_empty() {
         // The other abandonment path with the same hole: `request_seek` armed the spinner and
         // nothing here would ever disarm it. See `player::abandon_seek`.
@@ -2131,7 +2140,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // reload has no transcode session anyway, so the skip only matters for the URL).
     // The DURATION is a fact about the FILE, and a reload plays the same file: keep it across
     // the reset so the playbar has a denominator while the demuxer reopens. Without this every
-    // reload-based seek — which on webOS 5+ is EVERY seek, in-place being disabled there — drew
+    // reload-based seek (old-ABI 3.x, a refused native Seek, a transcode seek) drew
     // the playhead at position ÷ 0, i.e. the far left, for the few hundred ms until `ff.rs`
     // re-published it, while the clock beside it (position alone, seeded by `arm_seek`) read
     // correctly. Reported on an LG C3 (webOS 23). A real stop still zeroes it: the next item is
@@ -2745,7 +2754,56 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                         continue;
                     }
                 }
-                if eng.flushed {
+                if eng.flushed && super::seek_mode() == SeekMode::NativeSeek {
+                    // NATIVE in-place seek (#568): feed the REAL content PTS (pts_shift=0,
+                    // disp_base=0 -> playpos = presented real pts = content time, as in the
+                    // Segment branch below) and anchor the pipeline with LG's public
+                    // `StarfishMediaAPIs::Seek(millis)`. Seek is a flushing `gst_element_seek`
+                    // whose new segment starts at EXACTLY the millis passed, so the PTS fed from
+                    // here on is on that timeline by construction; the pump skipped its own
+                    // `flush()` for this mode and nothing may flush after this (a `flush()` is
+                    // itself a seek to 0 and re-creates the stale-segment stall). `feed_stream`
+                    // runs on the main thread and is the only Feed caller, and this keyframe is
+                    // not fed yet, so Seek cannot race a Feed. Never a negative millis: Seek
+                    // refuses it, and a negative PTS is unparseable by Feed.
+                    SHARED.pts_shift.store(0, Ordering::Relaxed);
+                    let ms = pts.max(0) / 1_000_000;
+                    let rv = unsafe { sink().seek(mt, ms) };
+                    log(&format!("in-place seek(native): Seek({ms}) rv={rv}"));
+                    if rv == 0 {
+                        // A refused Seek can leave the pipeline refusing every Feed. Drop the rest
+                        // of THIS SESSION's seeks to the reload path and redo THIS one as a
+                        // reload at the user's target (the pump reads the mailbox next tick;
+                        // `reload_at` REPLACES the engine). `eng.flushed`/`rebase_pending` stay
+                        // set so the audio lane keeps holding and no AU reaches a pipeline that
+                        // is rejecting Feed.
+                        super::set_seek_mode(SeekMode::Reload);
+                        // Latched across the reload this very seek is about to do, so the fresh
+                        // session's `select_seek_mode` does not offer the same firmware another
+                        // refused Seek on every later seek of this playback.
+                        super::set_native_seek_refused(true);
+                        log(
+                            "in-place seek DOWNGRADE: native Seek refused -> reload-per-seek for \
+                             the rest of this playback",
+                        );
+                        let tgt = SHARED.seek_target_ns.load(Ordering::Relaxed).max(0);
+                        TX.seek_reqs.store(1, Ordering::Release);
+                        TX.seek_to_ns.store(tgt, Ordering::Release);
+                        eng.pending_video = None;
+                        break;
+                    }
+                    segment_installed = true;
+                    eng.flushed = false;
+                } else if eng.flushed && super::seek_mode() != SeekMode::Segment {
+                    // Flushed but not in a mode that anchors in place: a refused native `Seek`
+                    // downgraded the session to `Reload` and the pump's reload (`reload_at`)
+                    // is on its way. The private Segment path (`sf_pipeline`'s decompile-derived
+                    // offsets, proven on webOS 4.5 only) must NEVER run here, so this keyframe
+                    // anchors nothing: drop it and leave `flushed`/`rebase_pending` set, which
+                    // keeps the audio lane holding until the reload replaces the engine.
+                    eng.pending_video = None;
+                    break;
+                } else if eng.flushed {
                     // Kodi IN-PLACE seek (exact): feed the REAL content PTS (no rebase), tell the
                     // pipeline the real decode position, then inject a fresh GStreamer SEGMENT —
                     // this re-anchors the sink WITHOUT a reload/decoder re-init. disp_base=0 +
@@ -2778,7 +2836,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                         // silently became multi-second reloads with nothing in the event log
                         // naming the cause — only the `sendSegment=0` above, whose consequence
                         // was not stated anywhere.
-                        super::INPLACE_SEEK_OK.store(false, Ordering::Relaxed);
+                        super::set_seek_mode(SeekMode::Reload);
                         log(
                             "in-place seek DOWNGRADE: sendSegment=0 (CustomPipeline unreachable) \
                              -> reload-per-seek for the rest of this session",
@@ -3054,6 +3112,60 @@ pub fn feed_sample(mt: &MainThread, eng: &mut Engine) {
 /// release below 4 is refused too; `major == 0` (release unknown) defers to the Feed evidence.
 fn inplace_layout_known(major: u32, feed_abi_is_cow: bool) -> bool {
     !feed_abi_is_cow && (major == 0 || major >= 4)
+}
+
+/// [`select_seek_mode`] for a session that is starting: a `NativeSeek` this playback already had
+/// REFUSED stays `Reload` (the latch `feed_stream` sets, which `reload_at` preserves and a fresh
+/// play clears), instead of paying reopen + keyframe + refused `Seek` + full `Load` on every seek.
+pub(super) fn session_seek_mode(layout_known: bool, window_mode: c_int, dev: Option<SeekMode>) -> SeekMode {
+    match select_seek_mode(layout_known, window_mode, dev) {
+        SeekMode::NativeSeek if super::native_seek_refused() => SeekMode::Reload,
+        mode => mode,
+    }
+}
+
+/// How a direct-play seek re-anchors the pipeline in a new session (see [`SeekMode`]).
+///
+/// - `VP_EXPORTED` (webOS 5+) -> [`SeekMode::NativeSeek`]: LG's PUBLIC `StarfishMediaAPIs::Seek`.
+///   The Kodi in-place path (`Segment`) is NOT used there: it reaches LG-private C++ objects
+///   through two decompile-derived offsets (`StarfishMediaAPIs::player` at object+0x4c, then
+///   `AbstractPlayer::pipeline` at +0x04, plus `MEDIA_CUSTOM_CONTENT_INFO`'s `ptsToDecode` at
+///   +0x28) read off a webOS 4.5 binary, which nothing in a symbol table can confirm on another
+///   firmware: a field added to StarfishMediaAPIs by any 5.x build moves +0x4c and the very next
+///   seek dereferences whatever now lives there. `Seek` is an exported symbol, present on every
+///   firmware 1.2 to 11.2, so it assumes no layout at all.
+/// - A known layout without `VP_EXPORTED` (webOS 4.x) -> [`SeekMode::Segment`], unchanged.
+/// - NOR when the library is the pre-C++11 build (`inplace_layout_known` false): its
+///   StarfishMediaAPIs is a different object from the 4.5 one, and the first fast-forward on a
+///   3.4.0 set crashed through those offsets. The old-ABI Feed (`sf_feed_abi_is_cow`) is the
+///   direct evidence, and it covers 3.9.x too. That COW Feed ABI is also unverified for `Seek`, so
+///   this is [`SeekMode::Reload`], as before. A KNOWN release below 4 is refused as well; an
+///   UNKNOWN one (`major == 0`, os_info unreadable) with the C++11 Feed keeps in-place seek, as
+///   before #578, because that Feed says the library is 4.x or later.
+/// `dev` is the `plxnative-seekmode` dev trigger and wins when present, so a webOS 4.5 set can
+/// exercise `NativeSeek`.
+pub(super) fn select_seek_mode(layout_known: bool, window_mode: c_int, dev: Option<SeekMode>) -> SeekMode {
+    if let Some(forced) = dev {
+        return forced;
+    }
+    if window_mode == super::VP_EXPORTED {
+        SeekMode::NativeSeek
+    } else if layout_known {
+        SeekMode::Segment
+    } else {
+        SeekMode::Reload
+    }
+}
+
+/// `/tmp/plxnative-seekmode`: `native`, `segment` or `reload`. `None` without the `devtriggers`
+/// feature (`devtrig::read` folds away), so a release build cannot be steered.
+fn dev_seek_mode() -> Option<SeekMode> {
+    match plx_base::devtrig::read("seekmode")?.trim() {
+        "native" => Some(SeekMode::NativeSeek),
+        "segment" => Some(SeekMode::Segment),
+        "reload" => Some(SeekMode::Reload),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -3888,7 +4000,7 @@ mod prime_livelock_tests {
             rebase_drops: 0,
             seek_armed_at: 0,
             seek_retries: 0,
-            flushed: false,
+                flushed: false,
             presentation_rearm_pending: false,
             max_fed_video_pts: 0,
             max_fed_audio_pts: 0,
@@ -6030,5 +6142,143 @@ mod late_audio_start_tests {
         assert!(eng.max_fed_video_pts > 0, "PRECONDITION FAILED: the host sink fed no video");
         assert_eq!(eng.max_fed_audio_pts, 0, "stale audio must not reach the sink");
         assert_eq!(eng.audio_start_fp, None);
+    }
+}
+
+/// **Issue #568: on webOS 5+ (`VP_EXPORTED`) every direct-play seek was a full fresh Starfish
+/// `Load` (black screen, the DV/HDR badge re-popping).** `scrub: tap commit 905s` was followed by
+/// `reload_at: fresh Load at 905s`, because the Kodi in-place path reaches LG-private objects and
+/// was switched off there. The seek now goes through LG's public `StarfishMediaAPIs::Seek`.
+///
+/// These drive the real mode selection, the pump's reload-or-in-place decision and the real
+/// [`feed_stream`] re-anchor against the host sink with the clock sink armed, which reports
+/// `VP_EXPORTED` exactly as a webOS 5+ set does.
+#[cfg(all(test, feature = "hostsim"))]
+mod native_seek_tests {
+    use super::*;
+    use crate::player::ffi_host;
+
+    const V_STEP_NS: i64 = 41_708_333;
+    const TARGET_NS: i64 = 905_000_000_000;
+
+    /// Process-wide state these tests set, restored on the way out, panic or not.
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ffi_host::force_clocksink_for_test(false);
+            ffi_host::reset_seek_probe_for_test(None);
+            crate::player::set_seek_mode(SeekMode::Segment);
+            SHARED.pts_shift.store(0, Ordering::Relaxed);
+            SHARED.seek_target_ns.store(-1, Ordering::Relaxed);
+            SHARED.pres_fed.store(0, Ordering::Relaxed);
+            TX.seek_to_ns.store(-1, Ordering::Relaxed);
+            TX.seek_reqs.store(0, Ordering::Relaxed);
+        }
+    }
+
+    fn arm(force_seek: Option<c_int>) -> Restore {
+        ffi_host::force_clocksink_for_test(true);
+        ffi_host::reset_seek_probe_for_test(force_seek);
+        SHARED.pres_fed.store(PRES_NONE, Ordering::Relaxed);
+        TX.seek_to_ns.store(-1, Ordering::Relaxed);
+        TX.seek_reqs.store(0, Ordering::Relaxed);
+        Restore
+    }
+
+    /// An engine that has applied a direct-play seek and is waiting for the keyframe: flushed,
+    /// rebase pending, the video queue holding a keyframe at `TARGET_NS` and the AUs after it.
+    fn engine_seeking() -> Engine {
+        let mut eng = super::prime_livelock_tests::engine_after_reload();
+        eng.flushed = true;
+        eng.rebase_pending = true;
+        SHARED.seek_target_ns.store(TARGET_NS, Ordering::Relaxed);
+        let au = [0u8; 64];
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        for i in 0..60 {
+            crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, TARGET_NS + i * V_STEP_NS, c_int::from(i == 0), 1);
+        }
+        eng
+    }
+
+    fn tick(eng: &mut Engine) {
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        feed_both_lanes(&mt, eng);
+    }
+
+    #[test]
+    fn a_webos5_session_seeks_natively_and_never_reloads() {
+        let _serial = plx_base::testlock::serial();
+        let _restore = arm(None);
+        let sink_mode = sink().window_mode();
+        assert_eq!(sink_mode, crate::player::VP_EXPORTED, "PRECONDITION: the armed host sink is the webOS 5+ one");
+        let mode = select_seek_mode(inplace_layout_known(5, false), sink_mode, None);
+        assert_eq!(mode, SeekMode::NativeSeek, "VP_EXPORTED selects LG's public Seek");
+        assert!(
+            !crate::player::pump::seek_reloads(mode),
+            "a mid-play direct-play seek on VP_EXPORTED must NOT be a fresh Load (#568)"
+        );
+    }
+
+    #[test]
+    fn the_other_firmwares_keep_their_modes() {
+        assert_eq!(select_seek_mode(true, crate::player::VP_ACB, None), SeekMode::Segment, "webOS 4.x is unchanged");
+        assert_eq!(select_seek_mode(false, crate::player::VP_ACB, None), SeekMode::Reload, "the old ABI reloads, as before");
+        assert_eq!(select_seek_mode(false, crate::player::VP_NONE, None), SeekMode::Reload);
+        assert_eq!(select_seek_mode(true, crate::player::VP_ACB, Some(SeekMode::NativeSeek)), SeekMode::NativeSeek, "the dev trigger wins");
+        assert!(crate::player::pump::seek_reloads(SeekMode::Reload));
+        assert!(!crate::player::pump::seek_reloads(SeekMode::Segment));
+        assert!(!crate::player::pump::seek_reloads(SeekMode::NativeSeek));
+    }
+
+    #[test]
+    fn the_landed_keyframe_is_the_native_seek_and_nothing_flushes() {
+        let _serial = plx_base::testlock::serial();
+        let _restore = arm(None);
+        crate::player::set_seek_mode(SeekMode::NativeSeek);
+        let mut eng = engine_seeking();
+        tick(&mut eng);
+
+        assert_eq!(ffi_host::seek_log_for_test(), vec![TARGET_NS / 1_000_000], "Seek(<keyframe ms>), once");
+        assert_eq!(ffi_host::flush_calls_for_test(), 0, "Seek flushes itself; a flush after it re-anchors at 0");
+        assert!(!eng.flushed && !eng.rebase_pending, "the seek is applied");
+        assert_eq!(SHARED.pts_shift.load(Ordering::Relaxed), 0, "content time, no rebase");
+        assert!(eng.max_fed_video_pts >= TARGET_NS, "the keyframe and the AUs after it were fed on the Seek's timeline");
+        assert_eq!(crate::player::seek_mode(), SeekMode::NativeSeek);
+    }
+
+    #[test]
+    fn a_pre_zero_keyframe_seeks_to_zero_not_negative() {
+        let _serial = plx_base::testlock::serial();
+        let _restore = arm(None);
+        crate::player::set_seek_mode(SeekMode::NativeSeek);
+        let mut eng = super::prime_livelock_tests::engine_after_reload();
+        eng.flushed = true;
+        eng.rebase_pending = true;
+        SHARED.seek_target_ns.store(0, Ordering::Relaxed);
+        let au = [0u8; 64];
+        let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+        crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, -80_000_000, 1, 1);
+        tick(&mut eng);
+        assert_eq!(ffi_host::seek_log_for_test(), vec![0], "Seek refuses a negative millis");
+    }
+
+    #[test]
+    fn a_refused_seek_reloads_this_one_and_every_later_one() {
+        let _serial = plx_base::testlock::serial();
+        let _restore = arm(Some(0));
+        crate::player::set_seek_mode(SeekMode::NativeSeek);
+        let mut eng = engine_seeking();
+        tick(&mut eng);
+
+        assert_eq!(crate::player::seek_mode(), SeekMode::Reload, "native seek is off for the rest of the session");
+        assert!(crate::player::pump::seek_reloads(crate::player::seek_mode()));
+        assert_eq!(
+            TX.seek_to_ns.load(Ordering::Acquire),
+            TARGET_NS,
+            "this seek is re-posted at the user's target for the pump's reload"
+        );
+        assert_eq!(eng.max_fed_video_pts, 0, "nothing is fed into a pipeline that refused the seek");
+        assert!(eng.pending_video.is_none());
+        assert_eq!(ffi_host::flush_calls_for_test(), 0);
     }
 }

@@ -1392,6 +1392,7 @@ where
         } else { super::containers::transition::PagePaint::Live };
         if !source_pass && (pages || host_render != HostRender::Live || video_plane) {
             self.page_image = image;
+            super::containers::transition::set_page_image_held(!matches!(paint, super::containers::transition::PagePaint::Live));
             if matches!(paint, super::containers::transition::PagePaint::Live) {
                 self.page_snapshot.release();
                 self.page_image = Default::default();

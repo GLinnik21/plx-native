@@ -24,7 +24,7 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
         sid,
         rk: "alpha".into(),
         write: plx_data::viewstate::Write::Watched,
-        detail: None,
+        scope: plx_data::viewstate::Scope::Leaf,
         guid: String::new(),
     }));
 
@@ -178,11 +178,12 @@ fn person_store_notifies_only_when_a_command_actually_changed_state() {
     let _ = bridge.stores.person.take_notice();
     let gen_before = bridge.stores.person.gen();
 
-    let changed = bridge.person_run(plx_data::stores::person::PersonCmd::SetWatchedLocal {
-        sid, rk: "no-such-item".into(), on: true,
+    let changed = bridge.person_run(plx_data::stores::person::PersonCmd::ApplyView {
+        at: plx_data::viewstate::ViewAt::leaf(sid, "no-such-item"),
+        edit: plx_data::viewstate::ViewEdit::Watched(true),
     });
 
-    assert!(!changed, "an unmatched SetWatchedLocal must report no change");
+    assert!(!changed, "an unmatched ApplyView must report no change");
     assert_eq!(bridge.stores.person.gen(), gen_before,
         "a no-op command must not bump the Person store's generation");
     assert_eq!(bridge.stores.person.take_notice(), None,
@@ -214,8 +215,9 @@ fn addressed_person_store_command_changes_and_notifies_only_its_bridge() {
     let _ = first.stores.take_notices();
     let _ = second.stores.take_notices();
 
-    deliver_person(&mut first, plx_data::stores::person::PersonCmd::SetWatchedLocal {
-        sid, rk: "movie".into(), on: true,
+    deliver_person(&mut first, plx_data::stores::person::PersonCmd::ApplyView {
+        at: plx_data::viewstate::ViewAt::leaf(sid, "movie"),
+        edit: plx_data::viewstate::ViewEdit::Watched(true),
     });
 
     assert!(first.person_view().current().unwrap().shelf(0)[0].watched,
@@ -260,7 +262,7 @@ fn viewstate_optimistic_edit_mutates_only_its_bridge_person_store() {
         sid,
         rk: "movie".into(),
         write: plx_data::viewstate::Write::Watched,
-        detail: None,
+        scope: plx_data::viewstate::Scope::Leaf,
         guid: String::new(),
     }));
 
@@ -290,25 +292,19 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
             match &stamped.fx {
                 Fx::App(AppFx::Store(StoreId::ViewState,
                     StoreCmd::ViewState(plx_data::stores::viewstate::ViewStateCmd::Request {
-                        sid, rk, write, detail, guid,
+                        sid, rk, write, guid, ..
                     }))) => {
-                    assert_eq!((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str()),
-                        (self.sid, "movie", plx_data::viewstate::Write::Watched,
-                            Some(&plx_data::stores::viewstate::DetailRefresh {
-                                sid: self.sid, rk: "movie".into(), keep: None,
-                            }), "plex://movie"));
+                    assert_eq!((*sid, rk.as_str(), *write, guid.as_str()),
+                        (self.sid, "movie", plx_data::viewstate::Write::Watched, "plex://movie"));
                     self.app_effects += 1;
                 }
                 Fx::Deliver(MachineId::Store(ord), Delivery::Machine(AppMsg::Store(
                     StoreCmd::ViewState(plx_data::stores::viewstate::ViewStateCmd::Request {
-                        sid, rk, write, detail, guid,
+                        sid, rk, write, guid, ..
                     })))) => {
                     assert_eq!(*ord, StoreId::ViewState.ord());
-                    assert_eq!((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str()),
-                        (self.sid, "movie", plx_data::viewstate::Write::Watched,
-                            Some(&plx_data::stores::viewstate::DetailRefresh {
-                                sid: self.sid, rk: "movie".into(), keep: None,
-                            }), "plex://movie"));
+                    assert_eq!((*sid, rk.as_str(), *write, guid.as_str()),
+                        (self.sid, "movie", plx_data::viewstate::Write::Watched, "plex://movie"));
                     self.store_deliveries += 1;
                 }
                 _ => {}

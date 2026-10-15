@@ -41,6 +41,7 @@ mod sys {
         pub(super) fn sf_set_time_to_decode(position_ns: i64) -> c_int;
         pub(super) fn sf_set_content_info(position_ns: i64) -> c_int;
         pub(super) fn sf_send_segment() -> c_int;
+        pub(super) fn sf_seek_ms(ms: i64) -> c_int;
         pub(super) fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_char;
         pub(super) fn sf_feed_abi_is_cow() -> c_int;
         pub(super) fn sf_unload();
@@ -126,6 +127,10 @@ impl plx_platform::tv::sink::VideoSink for StarfishSink {
     #[inline]
     unsafe fn send_segment(&self, _: &MainThread) -> c_int {
         sys::sf_send_segment()
+    }
+    #[inline]
+    unsafe fn seek(&self, _: &MainThread, ms: i64) -> c_int {
+        sys::sf_seek_ms(ms)
     }
     #[inline]
     fn feed_abi_is_cow(&self) -> bool {

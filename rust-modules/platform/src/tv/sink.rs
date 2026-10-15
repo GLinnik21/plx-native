@@ -42,6 +42,12 @@ pub trait VideoSink: Sync {
     unsafe fn set_time_to_decode(&self, mt: &MainThread, position_ns: i64) -> c_int;
     unsafe fn set_content_info(&self, mt: &MainThread, position_ns: i64) -> c_int;
     unsafe fn send_segment(&self, mt: &MainThread) -> c_int;
+    /// LG's public `StarfishMediaAPIs::Seek(millis)` (issue #568): a flushing seek whose new segment
+    /// starts at `ms`, so the PTS fed afterwards must be on that same timeline. It flushes itself,
+    /// so the caller must not `flush` around it (a `flush` is a seek to 0), and it must not race a
+    /// `feed`. `ms` is never negative. Returns 0 when refused, which also means `feed` may now be
+    /// rejected until a seek or flush succeeds.
+    unsafe fn seek(&self, mt: &MainThread, ms: i64) -> c_int;
     /// True when the library's `Feed` is the pre-C++11 copy-on-write-string build (webOS 3.x).
     /// A memoized read, so it takes no `MainThread`.
     fn feed_abi_is_cow(&self) -> bool;
@@ -94,6 +100,7 @@ impl VideoSink for NoSink {
     unsafe fn set_time_to_decode(&self, _mt: &MainThread, _position_ns: i64) -> c_int { 0 }
     unsafe fn set_content_info(&self, _mt: &MainThread, _position_ns: i64) -> c_int { 0 }
     unsafe fn send_segment(&self, _mt: &MainThread) -> c_int { 0 }
+    unsafe fn seek(&self, _mt: &MainThread, _ms: i64) -> c_int { 0 }
     fn feed_abi_is_cow(&self) -> bool { false }
     unsafe fn feed(&self, _mt: &MainThread, _p: *const u8, _size: c_uint, _pts: i64, _es_data: c_int) -> c_char {
         b'e' as c_char

@@ -9,7 +9,12 @@
 //! [`SubRow::target`]. The model deliberately carries no checked track, offset or tone: those are
 //! read-outs, so changing one never re-groups the list.
 //!
-//! The shape: Off and every single-track "yours" language sit under one "Subtitles" header; a
+//! [`sub_traits`] is the same parse (`track_label::track_name` then `parse` and `flags`) read as a
+//! predicate of one stream, forced / SDH / commentary: the rule `route`'s track memory matches and
+//! remembers a subtitle by, so a memo written from a row is a memo the matchers find that row by.
+//!
+//! The shape: Off, Forced only (the third remembered subtitle state, [`SubRow::ForcedOnly`]) and
+//! every single-track "yours" language sit under one "Subtitles" header; a
 //! "yours" language with several tracks gets its own section, ranked full < SDH < forced <
 //! commentary; everything else is "Other languages", ONE row on the root (a drill-in; the page behind it is
 //! [`SubModel::other`], one [`OtherLang`] per language, sorted by name); and a headerless section holds Timing and Style (both omitted
@@ -36,6 +41,9 @@ pub fn is_image_sub_codec(codec: &str) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowTarget {
     Off,
+    /// The mode row after Off: "the forced track in the playing audio's language, or nothing".
+    /// It names no track — which one it draws is the matcher's answer, not the row's.
+    ForcedOnly,
     /// A track row — the index into the playing item's subs list ([`super::PlayingItem::subs`]).
     Sub(usize),
     Timing,
@@ -90,8 +98,8 @@ pub struct SubTrack {
 /// A section's header, as a meaning rather than a string — the caller owns the catalog words.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SubHeader {
-    /// "Subtitles": Off, then every single-track "yours" language that precedes the first
-    /// multi-track one.
+    /// "Subtitles": Off, Forced only, then every single-track "yours" language that precedes the
+    /// first multi-track one.
     Subtitles,
     /// A multi-track "yours" language: its name and track count.
     Language { name: String, tracks: usize },
@@ -104,6 +112,9 @@ pub enum SubHeader {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SubRow {
     Off,
+    /// Forced only: shown wherever Off is, whether or not the item carries a forced track
+    /// (choosing it on one that does not shows nothing, and is remembered for the show).
+    ForcedOnly,
     /// A flat track row (label = its language): a single-track "yours" language.
     Flat(SubTrack),
     /// A row inside a multi-track "yours" language's own section (label = its source or kind).
@@ -120,6 +131,7 @@ impl SubRow {
     pub fn target(&self) -> RowTarget {
         match self {
             SubRow::Off => RowTarget::Off,
+            SubRow::ForcedOnly => RowTarget::ForcedOnly,
             SubRow::Flat(t) | SubRow::InLanguage(t) => RowTarget::Sub(t.i),
             SubRow::Timing => RowTarget::Timing,
             SubRow::Style => RowTarget::Style,
@@ -209,6 +221,41 @@ fn display_lang(s: &Stream) -> String {
     }
 }
 
+/// **What the Forced only row reads out** while it is the mode: the language it shows or looked
+/// for. The drawn forced track's language when one is on screen, else the playing audio's (the
+/// language the match was made in, so "nothing" still says what was looked for), else the catalog's
+/// "Unknown". It always names a language, because the words "Forced only" mean forced in the
+/// AUDIO's language here and the account setting of the same words filters by the subtitle
+/// language: the read-out is what tells the two apart (`track-memory-plan.md` §4.9).
+///
+/// **It is bounded** ([`READOUT_CHARS`]) and drops a region qualifier ("Portuguese (Brazil)" reads
+/// "Portuguese"): a table row's label is guaranteed only 60% of the panel (`ui::fit::ROW_PRIMARY_SHARE`)
+/// against a long value, and Belarusian "Толькі прымусовыя" is wider than that share, so
+/// a server-text language name of any length would clip the app's own words. The read-out only has
+/// to tell the languages apart, which a short form does.
+pub fn forced_only_readout(drawn: Option<&Stream>, audio: Option<&Stream>) -> String {
+    match drawn.or(audio) {
+        Some(s) => short_language(&display_lang(s)),
+        None => plx_platform::i18n::msg::widgets_tracks_unknown().to_string(),
+    }
+}
+
+/// The longest read-out, in characters, ellipsis included.
+const READOUT_CHARS: usize = 11;
+
+/// A language name for a trailing read-out: without its parenthesised qualifier, and cut to
+/// [`READOUT_CHARS`] with an ellipsis when still longer.
+fn short_language(name: &str) -> String {
+    let base = name.split(" (").next().unwrap_or(name).trim();
+    if base.chars().count() <= READOUT_CHARS {
+        return base.to_string();
+    }
+    let mut cut: String = base.chars().take(READOUT_CHARS - 1).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('\u{2026}');
+    cut
+}
+
 /// Each group's FIRST track's stream id over the item's full list — offered or not, so a
 /// language's identity never moves when a sidecar becomes offered or leaves, and never follows a
 /// list position.
@@ -275,6 +322,28 @@ fn sub_tracks(
     out
 }
 
+/// What the track menu calls a subtitle, read off the stream the way the menu reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SubTraits {
+    /// `Stream.forced` or the name says forced (`track_label::flags`).
+    pub forced: bool,
+    /// `Stream.sdh` or the name says SDH (`track_label::flags`).
+    pub sdh: bool,
+    /// The name says commentary (`track_label::Kind::Commentary`), whatever the flags say.
+    pub commentary: bool,
+}
+
+/// The menu's own predicate for one subtitle stream: the merged name, parsed, with
+/// the structured flags folded in. The one place "forced" is decided for memory.
+pub fn sub_traits(s: &Stream) -> SubTraits {
+    // The container name arrives only once the demuxer has the file open (`TrackNames`), after the
+    // resolve; here the PMS title is all there is.
+    let name = track_label::track_name(&s.title, "", &s.lang);
+    let label = track_label::parse(&name, &s.lang, s.forced, s.sdh);
+    let (forced, sdh) = track_label::flags(&label, s.forced, s.sdh);
+    SubTraits { forced, sdh, commentary: label.kind == Kind::Commentary }
+}
+
 /// **Group and order the Subtitles panel's rows.**
 ///
 /// `subs` is the playing item's FULL subtitle list; `offered` is the subset this route offers
@@ -322,8 +391,11 @@ pub fn sub_sections(
     }
     buckets.sort_by_key(|(rank, _)| *rank);
 
-    // 1. "Subtitles": Off, then every single-track "yours" language, flat.
-    let mut sections = vec![SubSection { header: SubHeader::Subtitles, rows: vec![SubRow::Off] }];
+    // 1. "Subtitles": Off, Forced only, then every single-track "yours" language, flat. Forced
+    // only is offered wherever Off is: it is a MODE (remembered for the show), not a track, so an
+    // item with no forced track still shows it.
+    let mut sections =
+        vec![SubSection { header: SubHeader::Subtitles, rows: vec![SubRow::Off, SubRow::ForcedOnly] }];
 
     // 2. Each multi-track "yours" language interrupts with its own section; a single-track
     // language folds back into "Subtitles" ONLY while that is still the last section built — once
@@ -608,7 +680,53 @@ mod tests {
             layout(&subs, &["eng"]).iter().flat_map(|s| &s.rows).map(SubRow::target).collect();
         assert_eq!(
             targets,
-            [RowTarget::Off, RowTarget::Sub(0), RowTarget::Other, RowTarget::Timing, RowTarget::Style]
+            [
+                RowTarget::Off,
+                RowTarget::ForcedOnly,
+                RowTarget::Sub(0),
+                RowTarget::Other,
+                RowTarget::Timing,
+                RowTarget::Style
+            ]
         );
+    }
+
+    #[test]
+    fn forced_only_is_the_second_row_of_the_subtitles_section() {
+        let subs = vec![stream(1, 0, "English", "eng", ""), stream(2, 1, "French", "fra", "")];
+        let sections = layout(&subs, &["eng"]);
+        assert_eq!(sections[0].header, SubHeader::Subtitles);
+        assert_eq!(sections[0].rows[..2], [SubRow::Off, SubRow::ForcedOnly], "Off, then Forced only");
+        assert_eq!(flat_langs(&sections[0].rows), ["English"], "the tracks follow both");
+        assert_eq!(SubRow::ForcedOnly.target(), RowTarget::ForcedOnly);
+    }
+
+    #[test]
+    fn forced_only_is_offered_with_a_forced_track_and_without_one() {
+        let forced = vec![stream(1, 0, "English", "eng", ""), stream(2, 1, "English", "eng", "Forced")];
+        let full_only = vec![stream(1, 0, "English", "eng", "")];
+        for subs in [forced, full_only, Vec::new()] {
+            let rows = &layout(&subs, &["eng"])[0].rows;
+            assert_eq!(rows[..2], [SubRow::Off, SubRow::ForcedOnly], "{} tracks", subs.len());
+        }
+    }
+
+    /// The Forced only read-out always names a language: the drawn track's first, the playing
+    /// audio's when nothing is drawn (what the match looked for), "Unknown" when neither says.
+    #[test]
+    fn forced_only_readout_names_the_drawn_track_else_the_audio_else_unknown() {
+        let drawn = stream(2, 1, "Spanish", "spa", "Forced");
+        let audio = stream(10, 0, "English", "eng", "");
+        let nameless = stream(11, 0, "", "", "");
+        assert_eq!(forced_only_readout(Some(&drawn), Some(&audio)), "Spanish", "the drawn track wins");
+        assert_eq!(forced_only_readout(None, Some(&audio)), "English", "nothing drawn: the audio's language");
+        assert_eq!(forced_only_readout(None, Some(&nameless)), plx_platform::i18n::msg::widgets_tracks_unknown());
+        // a region qualifier is dropped and a long name is cut, so the label beside it stays whole
+        let brazil = stream(3, 2, "Portuguese (Brazil)", "por", "");
+        assert_eq!(forced_only_readout(Some(&brazil), None), "Portuguese");
+        let bokmal = stream(4, 3, "Norwegian Bokm\u{e5}l", "nob", "");
+        assert_eq!(forced_only_readout(Some(&bokmal), None), "Norwegian\u{2026}");
+        assert_eq!(forced_only_readout(Some(&stream(5, 4, "Tagalog", "tgl", "")), None), "Tagalog", "a short name is untouched");
+        assert_eq!(forced_only_readout(None, None), plx_platform::i18n::msg::widgets_tracks_unknown());
     }
 }
