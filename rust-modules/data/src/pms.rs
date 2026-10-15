@@ -3641,6 +3641,19 @@ pub fn blur_first_shelf_for_test(state: &mut PmsState, blur_of: impl Fn(usize) -
     commit(state, build);
 }
 
+/// Rewrite the first shelf's cards with `edit` and publish the result the way a REFRESHED landing
+/// does: a fresh merge, so the hero pool is rebuilt from the new rows rather than preserved (the
+/// post-playback refetch — a finished film leaving Continue Watching, the next episode replacing the
+/// one that was watched). Call after a `seed_*_for_test`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn edit_first_shelf_for_test(state: &mut PmsState, edit: impl FnOnce(&mut Vec<Arc<PmsMovie>>)) {
+    let shelf = &mut state.srcs[0].last.as_mut().unwrap().shelves[0];
+    edit(&mut shelf.items);
+    shelf.positions = (0..shelf.items.len()).collect();
+    let build = merge(&state.srcs);
+    commit(state, build);
+}
+
 /// A Home whose only row is a Continue Watching deck of `items` cards with `more` behind them.
 #[cfg(any(test, feature = "test-support"))]
 pub fn seed_continue_window_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, items: usize, more: bool) {
