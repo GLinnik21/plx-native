@@ -292,7 +292,9 @@ something.
   place, so the next tick retries; `TX.finish_seek_preroll` is the only thing that clears the
   ownership (Resume and `abandon_seek` go through it, `TX.reset` clears it on stop). A Pause pressed AFTER a
   playing seek was dispatched is noticed by the same function (`SHARED.seeking` with `TX.paused` and
-  no preroll, no flight, no claim-hold pause): it hands the clock hold back to the seek prime
+  no preroll, no flight, no claim-hold pause, AND the seek already in flight: no newer tap in
+  `TX.seek_to_ns` and the Engine `flushed` or `rebase_pending` — a bare paused `request_seek` not
+  yet dispatched is the dispatcher's, owned at its own target by `own_seek_under_pause`): it hands the clock hold back to the seek prime
   (`SHARED.hand_hold_to_seek_prime`: the Pause marked it `user_held`, which fences the prime's Play),
   opens the preroll and re-bases the watchdog. So a bare `request_seek` is correct from any caller;
   a preroll a caller opened first (the foreground restore) stays that caller's to close. The stuck
