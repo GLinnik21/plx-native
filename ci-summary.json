@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T22:02:04Z",
+ "generated": "2026-10-15T22:15:55Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -44,27 +44,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": null,
-   "change7_pct": 17.1,
-   "d30": null,
-   "delta30": null,
-   "delta7": 61.0,
-   "group": "ci",
-   "id": "push_wait",
-   "kind": "wait",
-   "label": "Wait after merge",
-   "n_now": 118,
-   "n_prev": 126,
-   "now": 418.5,
-   "prev7": 357.5,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 60.0,
-   "threshold_pct": 15.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": -48.8,
    "change7_pct": -2.2,
    "d30": 920,
@@ -83,6 +62,27 @@
    "state30": "better",
    "threshold_abs": 90.0,
    "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 16.4,
+   "d30": null,
+   "delta30": null,
+   "delta7": 58.5,
+   "group": "ci",
+   "id": "push_wait",
+   "kind": "wait",
+   "label": "Wait after merge",
+   "n_now": 119,
+   "n_prev": 126,
+   "now": 416,
+   "prev7": 357.5,
+   "shown": true,
+   "state": "flat",
+   "state30": "new",
+   "threshold_abs": 60.0,
+   "threshold_pct": 15.0,
    "unit": "s"
   },
   {
@@ -288,17 +288,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -5.3,
+   "change7_pct": -5.1,
    "d30": null,
    "delta30": null,
-   "delta7": -12.5,
+   "delta7": -12.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 108,
-   "now": 222.5,
+   "now": 223,
    "prev7": 235.0,
    "shown": true,
    "state": "flat",
@@ -338,9 +338,9 @@
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 108,
-   "now": 184.0,
+   "now": 184,
    "prev7": 463.0,
    "shown": true,
    "state": "better",
@@ -393,17 +393,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -9.2,
+   "change7_pct": -8.9,
    "d30": null,
    "delta30": null,
-   "delta7": -14.5,
+   "delta7": -14.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 72,
-   "now": 142.5,
+   "now": 143,
    "prev7": 157.0,
    "shown": true,
    "state": "flat",
@@ -487,9 +487,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 108,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 81.9,
    "commits": [
     {
-     "pr": 759,
-     "sha": "bb9fdd0c1",
-     "title": "Player: a paused preroll on the ACB route re-pauses only once the video plane is bound"
-    },
-    {
      "pr": 761,
      "sha": "9b02acf18",
      "title": "Server updates: turn PMS notifications on (owned servers)"
@@ -615,6 +610,11 @@
      "pr": 781,
      "sha": "f15b24805",
      "title": "input: OK under a transparent pointer arrives as a click; turn it back into OK"
+    },
+    {
+     "pr": 785,
+     "sha": "3de84aff8",
+     "title": "Dependencies: weekly bump PRs for ci/dependencies.json; C libraries in the dependency graph"
     }
    ],
    "from": 213,
@@ -628,11 +628,6 @@
    "change_pct": 43.1,
    "commits": [
     {
-     "pr": 759,
-     "sha": "bb9fdd0c1",
-     "title": "Player: a paused preroll on the ACB route re-pauses only once the video plane is bound"
-    },
-    {
      "pr": 761,
      "sha": "9b02acf18",
      "title": "Server updates: turn PMS notifications on (owned servers)"
@@ -676,6 +671,11 @@
      "pr": 781,
      "sha": "f15b24805",
      "title": "input: OK under a transparent pointer arrives as a click; turn it back into OK"
+    },
+    {
+     "pr": 785,
+     "sha": "3de84aff8",
+     "title": "Dependencies: weekly bump PRs for ci/dependencies.json; C libraries in the dependency graph"
     }
    ],
    "from": 275,
@@ -684,67 +684,6 @@
    "since": "2026-10-15",
    "threshold_pct": 20.0,
    "to": 393.5
-  },
-  {
-   "change_pct": 17.1,
-   "commits": [
-    {
-     "pr": 759,
-     "sha": "bb9fdd0c1",
-     "title": "Player: a paused preroll on the ACB route re-pauses only once the video plane is bound"
-    },
-    {
-     "pr": 761,
-     "sha": "9b02acf18",
-     "title": "Server updates: turn PMS notifications on (owned servers)"
-    },
-    {
-     "pr": 664,
-     "sha": "adf73d81a",
-     "title": "Subtitles: add a Huge caption size above Extra large"
-    },
-    {
-     "pr": 762,
-     "sha": "7441d6505",
-     "title": "Player: the paused-frame preroll plays muted (StarfishMediaAPIs::setVolume)"
-    },
-    {
-     "pr": 764,
-     "sha": "4ebd5247f",
-     "title": "Server updates: one simplify pass over the series (no behaviour change)"
-    },
-    {
-     "pr": 766,
-     "sha": "c08e295bc",
-     "title": "Server updates: simplify pass 2 \u2014 notify, stream read, off-frame release (no behaviour change)"
-    },
-    {
-     "pr": 770,
-     "sha": "57e28903e",
-     "title": "Dependencies: Dependabot for cargo, Actions, pip and npm; generated crate notices"
-    },
-    {
-     "pr": 777,
-     "sha": "be825d6a4",
-     "title": "Dependencies: one manifest for every non-Rust dependency, no copied upstream code"
-    },
-    {
-     "pr": 771,
-     "sha": "fbab7cf29",
-     "title": "Add Italian localization (it)"
-    },
-    {
-     "pr": 781,
-     "sha": "f15b24805",
-     "title": "input: OK under a transparent pointer arrives as a click; turn it back into OK"
-    }
-   ],
-   "from": 357.5,
-   "id": "push_wait",
-   "label": "Wait after merge",
-   "since": "2026-10-15",
-   "threshold_pct": 15.0,
-   "to": 418.5
   }
  ],
  "schema": 2,
@@ -777,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 222.5
+   "now": 223
   }
  ],
  "slowest_local": [
