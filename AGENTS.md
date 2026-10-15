@@ -113,6 +113,8 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `.github/workflows/` or the module layout pastes a before/after `make build-bench` table in its
   body (`docs/agent-reference.md`, build section); the tool takes the `make check` lock exclusively
   (every slot), so it waits for running checks and nothing else builds while it measures.
+  Dependabot PRs (`.github/dependabot.yml`) are exempt: a bot cannot run it, so whoever merges a grouped
+  bump measures first when it changes the toolchain or the dependency set the build compiles.
 - `make` performs the ARM cross-build. Do not assume a host-only green result proves the target
   still builds.
 - A plain local `make` / `make deploy` compiles the ARM library with the fast `tvdev` cargo profile

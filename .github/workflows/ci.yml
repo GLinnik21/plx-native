@@ -175,6 +175,15 @@ jobs:
         # raise one deliberately: ci/build-budgets.json, docs/agent-reference.md.
         run: python3 ci/check-build-budgets.py --graph --src rust-modules/src --src rust-modules/base/src --src rust-modules/machine/src --src rust-modules/net/src --src rust-modules/platform/src --src rust-modules/gfx/src --src rust-modules/ui/src --src rust-modules/plex/src --src rust-modules/telemetry/src --src rust-modules/data/src --src rust-modules/session/src --src rust-modules/media/src --src rust-modules/appkit/src --src rust-modules/screens/src
 
+      - name: Third-party notices vs the ARM runtime graph
+        # `make check` runs only the OFFLINE half of this (ci/gen-third-party-notices.py --check), which
+        # classifies lock packages by name. `not_shipped` holds common crates that dev/build deps pull in,
+        # so a bump that makes a shipping crate depend on one passes it with no licence row. This compares
+        # the data file with `cargo tree` for the ARM graph. `--locked` resolves and compiles nothing and
+        # runs no build script, so it is cheap here. (The Dependabot auto-fix job cannot run cargo: see
+        # dependabot-notices.yml; this is its backstop.)
+        run: python3 ci/gen-third-party-notices.py --check --verify-graph
+
       - name: Type-check the simulator feature set
         # The host simulator is a real build configuration with real users (the `ui-sim` skill, and
         # `make macapp`, which ships `--release --no-default-features --features hostsim` to
