@@ -4325,6 +4325,9 @@ pub(super) struct OriginalRecoveryPlan {
     flavour: RecoveryFlavour,
     /// Whether an enhancement this recovery carries is the subtitle-burning flavour.
     burn: bool,
+    /// The selected subtitle is one the candidate cannot show, so the replacement is a burn even
+    /// with no enhancement params and survives a refused enhancement.
+    subtitle_burn: bool,
     pub(super) client: Option<&'static plx_plex::plex::Client>,
     sid: ServerId,
     rk: String,
@@ -4343,7 +4346,7 @@ pub(super) struct OriginalRecoveryPlan {
 
 impl OriginalRecoveryPlan {
     fn force_burn_for(&self, audio: plx_plex::plex::AudioEnhancements) -> bool {
-        audio.any() && self.burn
+        (audio.any() && self.burn) || self.subtitle_burn
     }
 
     /// Whether the PMS half will actually reach the server: a replacement remux's selection PUT and
@@ -4392,7 +4395,15 @@ fn plan_original_recovery(
         || (cause == RecoveryCause::EnhancementReleased && applied_quality() == Quality::Auto);
     let candidate = ps.auto_original.clone()?;
     let route = recovery_route(ps, &candidate);
-    let flavour = recovery_flavour(&candidate, recovery_want(ps, &candidate));
+    // A subtitle only the server's burn can show stays burned: the recovery is the Original
+    // burn (an enhanced one when wanted), never a direct play or plain remux that drops it.
+    let subtitle_burn = !candidate_shows_selected_subtitle(ps, &candidate);
+    let want = recovery_want(ps, &candidate);
+    let flavour = if subtitle_burn {
+        RecoveryFlavour::Remux(want)
+    } else {
+        recovery_flavour(&candidate, want)
+    };
     // The worker may have committed several HLS encoders since the main-thread plan was installed.
     // Mirror the physical route into the session before replacing it, otherwise the rollback pairs
     // the newest encoder id with the bootstrap URL/rung and reopens different media at a different
@@ -4429,6 +4440,7 @@ fn plan_original_recovery(
     Some(OriginalRecoveryPlan {
         flavour,
         burn: matches!(route, Some(EnhancementRoute::Burn)),
+        subtitle_burn,
         client: cur_client(ps),
         sid: cur_sid(ps),
         rk: cur_rk(ps),
@@ -4508,7 +4520,7 @@ pub(super) fn run_original_recovery(
             }
             AdmitOrPlainRemux::PlainRemux => {
                 let none = plx_plex::plex::AudioEnhancements::NONE;
-                match prepare_original_remux(off, plan, none, false, true)? {
+                match prepare_original_remux(off, plan, none, plan.subtitle_burn, true)? {
                     OriginalRemux::Prepared(prepared) => Some(OriginalRecoveryNet::Remux(prepared)),
                     OriginalRemux::RefusedToDirect => None,
                 }
@@ -8546,13 +8558,13 @@ fn prepare_original_remux(
     // session replaces its registration; a direct candidate needs no remux at all.
     if enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
         note_enhancement_refused(" in Original recovery; fell back", audio);
-        if candidate.feeds_part() {
+        if candidate.feeds_part() && !plan.subtitle_burn {
             let _ = c.transcode_stop(&replacement);
             return Some(OriginalRemux::RefusedToDirect);
         }
         enhancement_refused = true;
         audio = plx_plex::plex::AudioEnhancements::NONE;
-        force_burn = false;
+        force_burn = plan.subtitle_burn;
         spec = spec_for(audio, force_burn);
         decision = c.transcode_decision(off, &spec);
     }
@@ -9235,10 +9247,15 @@ fn sidecar_drawn_by_client(ps: &PlaybackSession) -> bool {
     ps.cur_sub_sidecar && ps.cur_sub_client_drawable
 }
 
-/// **Is a subtitle selected that the client cannot draw at all?** Then a direct play of the
-/// Original candidate would show nothing, so the route must keep the server's burn.
-fn subtitle_undrawable(ps: &PlaybackSession) -> bool {
-    ps.cur_sub_sid != 0 && !ps.cur_sub_client_drawable
+/// **Will the Original candidate SHOW the selected subtitle** when the route returns to it? No
+/// subtitle: trivially. Otherwise the candidate's own render ordinal (the demuxer draws it on a
+/// direct play, the side reader over a remux), or a sidecar the app fetches itself. Anything else
+/// (an image sidecar, a pick with no ordinal and no sidecar key) is shown only by the server's
+/// burn, so a route that returns to the candidate must keep the burn. This reads the candidate,
+/// not `cur_sub_client_drawable`: a cold start that lands on a Burn records that as `false` for a
+/// track the app can draw, and the candidate still names its ordinal.
+fn candidate_shows_selected_subtitle(ps: &PlaybackSession, candidate: &AutoOriginalCandidate) -> bool {
+    ps.cur_sub_sid == 0 || candidate.subtitle_ordinal.is_some() || sidecar_drawn_by_client(ps)
 }
 
 /// What the picked subtitle does to the route: nothing, a sidecar the client draws itself, or an
@@ -9537,7 +9554,7 @@ pub fn enhancement_step(ps: &PlaybackSession) -> EnhancementStep {
     }
     if applied.any() && !want.any() {
         return match ps.auto_original.as_ref() {
-            Some(candidate) if candidate.feeds_part() && !subtitle_undrawable(ps) => {
+            Some(candidate) if candidate.feeds_part() && candidate_shows_selected_subtitle(ps, candidate) => {
                 EnhancementStep::ReleaseToDirect
             }
             // An embedded subtitle still on screen is kept by the plain burn, never dropped by a

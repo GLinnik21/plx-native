@@ -147,9 +147,6 @@ fn install(
         },
         "960001",
     );
-    // What a real resolve records for a subtitle with a render ordinal
-    // (`plan.sub_render_ordinal.is_some()`); the candidate's ordinal stands in for it here.
-    ps.cur_sub_client_drawable = sub_sid != 0 && ps.auto_original.as_ref().is_some_and(|c| c.subtitle_ordinal.is_some());
 }
 
 /// The toggle row minus persistence (`request_audio_enhancement` also retains a session write,
@@ -4476,14 +4473,14 @@ fn embedded_subtitle_enabled_midplay_offers_the_same_burn_as_one_at_start() {
 
 /// A pick the client does not draw (`client_renderable == false`, e.g. an external image sidecar)
 /// used to DROP the candidate (`TrackPickDropped`), so the Audio tab read Disabled(NotCopyable) for
-/// the rest of the playback while the same subtitle at start is Offered(Burn). It now keeps it.
+/// the rest of the playback. It now keeps it and offers the Burn: an intended mid-play behaviour.
+/// (A cold start with an image sidecar selected plays with the subtitle OFF, `pick_dp_subtitle`
+/// excludes externals, so this is not "parity with start".)
 #[test]
-fn non_drawable_subtitle_enabled_midplay_offers_the_same_burn_as_one_at_start() {
-    let at_start = availability_when_started_with(78, None);
+fn non_drawable_subtitle_enabled_midplay_keeps_the_candidate_and_offers_burn() {
     let (midplay, kept) = availability_after_midplay_pick(-1, 78, false);
-    assert_eq!(at_start, EnhancementAvailability::Offered(EnhancementRoute::Burn));
     assert!(kept, "the Original candidate must survive a pick it can only burn");
-    assert_eq!(midplay, at_start);
+    assert_eq!(midplay, EnhancementAvailability::Offered(EnhancementRoute::Burn));
 }
 
 /// An image sidecar (`.sup`/`.idx`: no ordinal, no sidecar key) on a standing enhanced Burn.
@@ -4549,6 +4546,76 @@ fn turning_a_non_drawable_subtitle_off_lands_on_the_plain_routes() {
     assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(PREF, false)));
     crate::player::restore_audio_enhancements(NONE);
     assert_eq!(enhancement_step(&ps), EnhancementStep::ReleaseToDirect);
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// A cold start that lands on the enhancement's Burn records `cur_sub_client_drawable == false` even
+/// for an embedded track the app CAN draw (`force_burn` leaves no `sub_render_ordinal`), while the
+/// candidate still names the ordinal. Releasing the enhancement returns to direct play, where the
+/// candidate draws that subtitle.
+#[test]
+fn cold_start_burn_released_returns_to_direct_with_the_subtitle_restored() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Burn(PREF), a1(), Some(candidate(true, a1(), Some(2))), 77);
+    assert!(!ps.cur_sub_client_drawable, "what a cold-start burn records");
+    crate::player::restore_audio_enhancements(NONE);
+    assert_eq!(enhancement_step(&ps), EnhancementStep::ReleaseToDirect);
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// Recovery to the Original candidate while a subtitle only a burn can show is selected must not
+/// land on a direct play (or a plain remux) that drops it: it is the plain Original burn.
+#[test]
+fn recovery_with_a_non_drawable_subtitle_burns_instead_of_dropping_it() {
+    for (quality, cause) in [
+        (Quality::Auto, RecoveryCause::Automatic),
+        (Quality::Original, RecoveryCause::ManualOriginal),
+    ] {
+        let mut ps = PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let live = Live::start(EnhMode::Honor("ac3"));
+        restore_quality(quality);
+        reset_player_control_for_test(&ps);
+        crate::player::restore_audio_enhancements(NONE);
+        install(&mut ps, &live, Delivery::Hls, a1(), Some(candidate(true, a1(), None)), 78);
+        ps.cur_sub_sidecar = true;
+        ps.cur_sub_client_drawable = false;
+        let ticket = worker_ticket();
+        assert_eq!(
+            recover_auto_to_original_for(&mut ps, &ticket, 60, cause),
+            Some(AutoOriginalReload::Remux),
+            "{quality:?}",
+        );
+        assert_eq!(ps.cur_contract, enhanced_remux_contract(NONE, true), "{quality:?}");
+        let requests = live.finish();
+        let d = decisions(&requests);
+        assert!(d.last().is_some_and(|r| r.contains("subtitles=burn")), "{quality:?}: {requests:?}");
+        cleanup(&mut ps);
+    }
+}
+
+/// Same recovery, but the subtitle is one the candidate shows: the direct play stays direct.
+#[test]
+fn recovery_with_a_drawable_subtitle_still_returns_to_direct() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(NONE);
+    install(&mut ps, &live, Delivery::Hls, a1(), Some(candidate(true, a1(), Some(2))), 77);
+    let ticket = worker_ticket();
+    assert_eq!(
+        recover_auto_to_original_for(&mut ps, &ticket, 60, RecoveryCause::Automatic),
+        Some(AutoOriginalReload::Direct),
+    );
     live.finish();
     cleanup(&mut ps);
 }

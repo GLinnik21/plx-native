@@ -297,10 +297,11 @@ impl AutoOriginalCandidate {
     /// the route is direct and `request_subtitle(-1)` never touches that renderer. A pick the
     /// client cannot draw (an image sidecar, a pick with no ordinal and no sidecar key) is KEPT
     /// with `None` too: the Original route never shows it client-side, and the server burns it
-    /// wherever the route is enhanced (M7's Burn), exactly as for the same subtitle at playback
-    /// start. Releasing to a direct play that silently drops it is prevented by
-    /// `enhancement_step`'s `subtitle_undrawable` gate, not here. Unlike the audio sibling this
-    /// cannot fail, so the candidate is never dropped by a subtitle pick.
+    /// wherever the route is enhanced (M7's Burn). That is a deliberate mid-play behaviour, not
+    /// parity with a cold start (an image sidecar selected at cold start plays with the subtitle
+    /// off). Releasing or recovering to a route that would silently drop it is prevented by
+    /// `candidate_shows_selected_subtitle`, not here. Unlike the audio sibling this cannot fail,
+    /// so the candidate is never dropped by a subtitle pick.
     pub(super) fn retarget_subtitle(&mut self, ordinal: Option<i32>) {
         self.subtitle_ordinal = ordinal.filter(|o| *o >= 0);
     }
