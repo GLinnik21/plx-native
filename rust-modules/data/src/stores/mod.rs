@@ -355,6 +355,8 @@ impl Stores {
             StoreId::SubtitleSearch => self.subtitle_search.gen(),
             StoreId::ViewState => self.viewstate.borrow().gen(),
             StoreId::ViewReconcile => self.reconcile.gen(),
+            // A landing gate slot only: the stop mailbox is not a store and has no generation.
+            StoreId::ViewStop => 0,
         }
     }
 
@@ -406,6 +408,10 @@ pub enum StoreId {
     SubtitleSearch,
     /// Appended for the same reason: the read-back of landed view-state writes.
     ViewReconcile,
+    /// Appended for the same reason: the landing gate's slot for the stop mailbox
+    /// (`route::take_landed_stops`), which is no store but needs an ordinal of its own because the
+    /// gate keeps one mailbox per ordinal.
+    ViewStop,
 }
 
 /// Route-scoped background work, distinct from a user command. Polling an idle store must not
@@ -431,7 +437,7 @@ impl StoreWork {
 }
 
 impl StoreId {
-    pub const ALL: [StoreId; 9] = [
+    pub const ALL: [StoreId; 10] = [
         StoreId::Browse,
         StoreId::Hubs,
         StoreId::Metadata,
@@ -441,6 +447,7 @@ impl StoreId {
         StoreId::Collection,
         StoreId::SubtitleSearch,
         StoreId::ViewReconcile,
+        StoreId::ViewStop,
     ];
 
     /// The library's ordinal for this store (spec §5.1: the library never names `StoreId`).
@@ -463,6 +470,7 @@ impl StoreId {
             StoreId::Person => "person",
             StoreId::ViewState => "viewstate",
             StoreId::ViewReconcile => "viewreconcile",
+            StoreId::ViewStop => "viewstop",
         }
     }
 }
@@ -797,6 +805,6 @@ mod tests {
         for id in StoreId::ALL {
             assert_eq!(StoreId::from_ord(id.ord()), Some(id));
         }
-        assert_eq!(StoreId::from_ord(StoreOrd(9)), None);
+        assert_eq!(StoreId::from_ord(StoreOrd(10)), None);
     }
 }

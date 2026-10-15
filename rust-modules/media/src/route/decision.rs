@@ -2477,6 +2477,7 @@ pub fn force_applying_for_test(serial: u64) {
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_player_control_for_test(ps: &PlaybackSession) {
+    retire_pending_stops(); // the stop mailbox is process-global, like the control it sits beside
     let projection = route_projection(ps);
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     control.engine_epoch = next_generation(control.engine_epoch);
@@ -5640,20 +5641,44 @@ struct ScrobbleWork {
 /// The app drains it every frame ([`take_landed_stops`]); it holds at most the stops that happened
 /// since the last frame.
 static STOP_MAIL: Mutex<Vec<plx_data::viewstate::StopRecord>> = Mutex::new(Vec::new());
-/// Stops with a record built and not yet posted: what a replay's landing gate waits for.
+/// Stops with a record built and not yet posted: what a replay's landing gate waits for. A stop
+/// retired by [`retire_pending_stops`] stays owed until its worker posts (and is dropped), so the
+/// count never reaches zero while a worker still holds a record, and never goes negative.
 static STOPS_OWED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The identity epoch a stop record is built under. A record belongs to whoever was signed in when
+/// the stop began; one that lands after [`retire_pending_stops`] bumped this is another identity's
+/// and is dropped on posting.
+static STOP_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Posts its record exactly once; dropped unposted (a panicking worker) it posts it as not taken,
 /// so the viewer's position still shows and nothing is owed forever.
 struct PendingStop {
     rec: Option<plx_data::viewstate::StopRecord>,
+    epoch: u64,
 }
 
 impl PendingStop {
+    /// Owes `rec` under the current identity epoch.
+    fn new(rec: plx_data::viewstate::StopRecord) -> Self {
+        // under the mailbox lock, so `retire_pending_stops` cannot slip between the two reads
+        let mail = STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner());
+        STOPS_OWED.fetch_add(1, Ordering::SeqCst);
+        let epoch = STOP_EPOCH.load(Ordering::SeqCst);
+        drop(mail);
+        Self { rec: Some(rec), epoch }
+    }
+
     fn post(&mut self, ok: bool) {
         if let Some(mut rec) = self.rec.take() {
             rec.ok = ok;
-            STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner()).push(rec);
+            {
+                let mut mail = STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner());
+                if STOP_EPOCH.load(Ordering::SeqCst) == self.epoch {
+                    mail.push(rec);
+                } else {
+                    plx_base::eventlog::log("viewstate: a stop from a retired identity was dropped");
+                }
+            }
             STOPS_OWED.fetch_sub(1, Ordering::SeqCst);
         }
     }
@@ -5663,6 +5688,17 @@ impl Drop for PendingStop {
     fn drop(&mut self) {
         self.post(false);
     }
+}
+
+/// **The identity changed: no stop of the old one may reach the new one.** Bumps the epoch (every
+/// record still being posted is now stale and is dropped when its worker posts it) and empties the
+/// mailbox of the ones already posted. A stalled `stopped` POST by one profile would otherwise land
+/// after a switch and patch, read back and fan out on the NEW profile's token. MAIN THREAD, from
+/// the same place every store is reset.
+pub fn retire_pending_stops() {
+    let mut mail = STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner());
+    STOP_EPOCH.fetch_add(1, Ordering::SeqCst);
+    mail.clear();
 }
 
 /// The stops posted since the last call, oldest first. MAIN THREAD, once a frame.
@@ -5785,19 +5821,16 @@ pub fn scrobble_stop(
         // fans out a scrobble nobody asked for.
         let row = plx_plex::plex::queue_index_of(&ps.queue, ps.pq_item_id.parse().unwrap_or(0), sid, rk)
             .map(|i| &ps.queue[i]);
-        STOPS_OWED.fetch_add(1, Ordering::SeqCst);
-        PendingStop {
-            rec: Some(plx_data::viewstate::StopRecord {
-                sid,
-                rk: rk.clone(),
-                show_rk: row.map(|r| r.show_rk.clone()).unwrap_or_default(),
-                season_index: row.map_or(0, |r| r.season),
-                pos_ms: *pos_ms,
-                dur_ms: *dur_ms,
-                ok: false,
-                was_watched: row.is_none_or(|r| r.watched),
-            }),
-        }
+        PendingStop::new(plx_data::viewstate::StopRecord {
+            sid,
+            rk: rk.clone(),
+            show_rk: row.map(|r| r.show_rk.clone()).unwrap_or_default(),
+            season_index: row.map_or(0, |r| r.season),
+            pos_ms: *pos_ms,
+            dur_ms: *dur_ms,
+            ok: false,
+            was_watched: row.is_none_or(|r| r.watched),
+        })
     });
     let timeline_stop =
         (final_report.is_some() || report_th.is_some()).then(|| TIMELINE_STOP_FENCE.announce());

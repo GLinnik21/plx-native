@@ -188,6 +188,11 @@ pub struct ViewChange {
     pub fact: ViewFact,
 }
 
+/// The share of an item's duration at which PMS marks it watched and clears its `viewOffset`
+/// (`docs/pms-api.md` §6: "~90%"). Not [`crate::metadata::resume_ns`]'s 95%, which is where the
+/// client stops OFFERING a resume.
+const WATCHED_PERCENT: i64 = 90;
+
 /// The edit a store applies to the rows a [`ViewAt`] names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewEdit {
@@ -225,10 +230,15 @@ impl ViewChange {
             ViewFact::Facts { watched, unwatched, resume_ms } => {
                 ViewEdit::Facts { watched, unwatched, resume_ms }
             }
-            // never past the end of what was playing
-            ViewFact::Offset { ms, dur_ms } => {
-                ViewEdit::Offset { ms: if dur_ms > 0 { ms.clamp(0, dur_ms) } else { ms.max(0) } }
-            }
+            // never past the end of what was playing; at the watched threshold PMS clears
+            // `viewOffset` (docs/pms-api.md, "Client behavior expected by PMS"), so there is no point
+            ViewFact::Offset { ms, dur_ms } => ViewEdit::Offset {
+                ms: if dur_ms > 0 && ms.saturating_mul(100) >= dur_ms.saturating_mul(WATCHED_PERCENT) {
+                    0
+                } else {
+                    ms.max(0)
+                },
+            },
         }
     }
 }
@@ -589,7 +599,9 @@ impl ViewStateState {
     /// already has a write queued or out — a press newer than the stream's end wins, and its own
     /// fan-out (or its absence) decides.
     pub(crate) fn fan_out_origin_watched(&mut self, adapter: &Arc<ViewStateAdapter>, sid: ServerId, rk: &str) -> bool {
-        if plx_plex::plex::client_for(sid).is_none()
+        // One server has no other copy to reach: the request would only cost a second hub refetch.
+        if plx_plex::plex::server_ids().nth(1).is_none()
+            || plx_plex::plex::client_for(sid).is_none()
             || self.queue.iter().chain(self.sent.iter()).any(|r| plx_plex::plex::same_item((r.sid, &r.rk), (sid, rk)))
         {
             return false;
@@ -671,10 +683,12 @@ impl ViewStateState {
             self.retry_cd = RETRY_FRAMES;
             return;
         }
+        // An end-of-stream request writes nothing on its origin: say what it does.
+        let what = if origin_done { "fanout-only" } else { w.name() };
         plx_base::eventlog::log(&format!(
             "viewstate: rk={} {} → server {} (off-thread)",
             req.rk,
-            w.name(),
+            what,
             req.sid.raw()
         ));
         self.sent = Some(req);
@@ -754,7 +768,9 @@ pub fn pump_with_gate(
         // and on failure it is what puts the optimistic edit back to whatever the server really
         // says. A server that can answer neither question leaves the shelves exactly as they
         // are — `pms.rs`'s per-source rule, unchanged.
-        self.want_hubs = true;
+        // (An end-of-stream fan-out that reached no copy changed nothing here: its origin's
+        // read-back, which asked for it, already owes the refresh.)
+        self.want_hubs |= !(r.origin_done && done.also.is_empty());
         // A watched/unwatched write is re-read whatever the server said, on the item and on every
         // copy the fan-out took: on success the answer confirms the optimistic edit, on refusal
         // it is the only thing that puts the tile back. A deck removal changes no field a read
@@ -1592,6 +1608,65 @@ mod tests {
             &mut |_| false, &mut |_| false, &mut |_| false, &mut |_| false);
         assert!(state.sent.is_none(), "the write on the wire was answered by ITS completion");
         join.join().unwrap();
+    }
+
+    /// The fan-out request an end of stream queues writes nothing on the origin, and when it reached
+    /// no other copy it changed nothing the origin's own read-back (which asked for it) has not
+    /// already brought: it must not owe the hub refetch a second time.
+    fn land_origin_done(also: Vec<(ServerId, String)>) -> Vec<crate::stores::hubs::HubsCmd> {
+        let mut state = ViewStateState::default();
+        let adapter = Arc::new(ViewStateAdapter::default());
+        let id = state.mint_request_id();
+        state.sent = Some(Req { id, seq: 0, sid: ServerId::from_raw(0), rk: "7".into(), w: Write::Watched,
+            scope: Scope::Leaf, detail: None, guid: String::new(), origin_done: true });
+        *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(Completion { id, done: Done { ok: true, also } });
+        let mut hubs = Vec::new();
+        let _ = state.pump(&adapter, &mut |_| true,
+            &mut |cmd| { hubs.push(cmd); crate::stores::StoreOutcome::default() },
+            &mut |_| false, &mut |_| false, &mut |_| false, &mut |_| false);
+        hubs
+    }
+
+    #[test]
+    fn an_origin_done_fanout_that_reached_no_copy_owes_no_hub_refetch() {
+        let _g = plx_base::testlock::serial();
+        let hubs = land_origin_done(Vec::new());
+        assert!(!hubs.iter().any(|c| matches!(c, crate::stores::hubs::HubsCmd::RefetchHubs)),
+            "nothing changed past what the origin's own read-back brings");
+    }
+
+    #[test]
+    fn an_origin_done_fanout_that_reached_a_copy_owes_one_hub_refetch() {
+        let _g = plx_base::testlock::serial();
+        let hubs = land_origin_done(vec![(ServerId::from_raw(1), "70".into())]);
+        assert_eq!(hubs.iter().filter(|c| matches!(c, crate::stores::hubs::HubsCmd::RefetchHubs)).count(), 1);
+    }
+
+    #[test]
+    fn a_one_server_install_queues_no_origin_done_fanout() {
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("viewstate-one-server", "127.0.0.1", 9, "synthetic", "fixture");
+        let mut state = ViewStateState::default();
+        let adapter = Arc::new(ViewStateAdapter::default());
+        assert!(!state.fan_out_origin_watched(&adapter, sid, "7"));
+        assert!(!state.is_busy(), "no request for a fan-out that has nowhere to go");
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// A stop at or past the server's watched threshold has no resume point: PMS clears `viewOffset`
+    /// there, so the immediate patch must read 0 and not the duration.
+    #[test]
+    fn a_stop_past_the_watched_threshold_patches_a_zero_resume_point() {
+        let at = |ms, dur_ms| ViewChange { sid: ServerId::from_raw(0), rk: "7".into(), scope: Scope::Leaf,
+            fact: ViewFact::Offset { ms, dur_ms } }.edit();
+        assert_eq!(at(60_000, 100_000), ViewEdit::Offset { ms: 60_000 });
+        assert_eq!(at(89_999, 100_000), ViewEdit::Offset { ms: 89_999 });
+        assert_eq!(at(90_000, 100_000), ViewEdit::Offset { ms: 0 });
+        assert_eq!(at(100_000, 100_000), ViewEdit::Offset { ms: 0 });
+        assert_eq!(at(120_000, 100_000), ViewEdit::Offset { ms: 0 });
+        assert_eq!(at(5_000, 0), ViewEdit::Offset { ms: 5_000 }, "an unknown duration clamps nothing");
     }
 
     /// `reset` is what an identity change leans on: nothing of the previous account's may be left

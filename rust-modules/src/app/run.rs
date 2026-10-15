@@ -3767,6 +3767,7 @@ mod lifecycle_regression_tests {
         /// request still parks until [`Self::resolve`] releases it.
         fn serving_with(respond: impl Fn(&str) -> String + Send + 'static) -> Option<Rig> {
             plx_plex::plex::reset_servers_for_test();
+            plx_media::route::retire_pending_stops(); // the stop mailbox is process-global
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -5093,27 +5094,40 @@ mod lifecycle_regression_tests {
     // ---- layer-1 view state, item 6: what a stop tells the screens -----------------------------
 
     /// A server for the stop tests. Item `1` reads back as watched once a `stopped` timeline has
-    /// arrived and `ends` is set (the stream reached its end), else with a resume point of 30 s.
+    /// arrived and `ends` is set (the stream reached its end), else with a resume point of 150 s (PMS
+    /// stores no `stopped` under about a minute, so a mid-way stop in these tests is a realistic one).
     /// Metadata reads park while `hold_reads` is set, so a test can look at the screens between the
     /// stop and the server's answer.
     struct StopServer {
         stopped: Arc<AtomicBool>,
         hold_reads: Arc<AtomicBool>,
+        /// While set, the `stopped` timeline POST parks before it is answered.
+        hold_stop: Arc<AtomicBool>,
     }
 
     impl StopServer {
         fn new() -> Self {
-            Self { stopped: Arc::new(AtomicBool::new(false)), hold_reads: Arc::new(AtomicBool::new(false)) }
+            Self {
+                stopped: Arc::new(AtomicBool::new(false)),
+                hold_reads: Arc::new(AtomicBool::new(false)),
+                hold_stop: Arc::new(AtomicBool::new(false)),
+            }
         }
 
         fn rig(&self, ends: bool) -> Option<Rig> {
-            let (stopped, hold) = (self.stopped.clone(), self.hold_reads.clone());
+            let (stopped, hold, hold_stop) = (self.stopped.clone(), self.hold_reads.clone(), self.hold_stop.clone());
             Rig::serving_with(move |request: &str| {
                 if request.contains("/decision?") {
                     return r#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#.into();
                 }
                 if request.contains("/:/timeline") {
-                    if request.contains("state=stopped") { stopped.store(true, Ordering::SeqCst); }
+                    if request.contains("state=stopped") {
+                        for _ in 0..5_000 {
+                            if !hold_stop.load(Ordering::SeqCst) { break; }
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        stopped.store(true, Ordering::SeqCst);
+                    }
                     return r#"{"MediaContainer":{}}"#.into();
                 }
                 if request.contains("/:/scrobble") {
@@ -5128,10 +5142,10 @@ mod lifecycle_regression_tests {
                     let seen = stopped.load(Ordering::SeqCst);
                     let facts = match (seen, ends) {
                         (true, true) => r#","viewCount":1"#,
-                        (true, false) => r#","viewOffset":30000"#,
+                        (true, false) => r#","viewOffset":150000"#,
                         (false, _) => "",
                     };
-                    return format!(r#"{{"MediaContainer":{{"Metadata":[{{"ratingKey":"1","type":"movie","title":"First","duration":60000{facts}}}]}}}}"#);
+                    return format!(r#"{{"MediaContainer":{{"Metadata":[{{"ratingKey":"1","type":"movie","title":"First","duration":600000{facts}}}]}}}}"#);
                 }
                 queue_body(request, false).to_owned()
             })
@@ -5174,6 +5188,9 @@ mod lifecycle_regression_tests {
         let _serial = plx_base::testlock::serial();
         let server = StopServer::new();
         let Some(mut rig) = server.rig(true) else { return };
+        // A second source: with one server the end-of-stream fan-out has nowhere to go and is never
+        // queued, which would leave the "no second scrobble" check below guarding nothing.
+        plx_plex::plex::register_for_test("lifecycle-fixture-copy", "127.0.0.1", 9, "synthetic", "lifecycle-copy");
         let mut t = product_transition(&mut rig.app);
         settle(&mut rig.app, &mut t);
         library_with_grid(&mut rig, &mut t, 1);
@@ -5184,11 +5201,18 @@ mod lifecycle_regression_tests {
         settle(&mut rig.app, &mut t);
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin), "the end returned to the Library");
         // the rig has no engine, so teardown posts no `stopped`: the engine's own call, at the end
-        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 60_000, 60_000)), None);
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 600_000, 600_000)), None);
         plx_media::route::drain_scrobble();
         poll_until("the grid tile never read watched", || {
             step(&mut rig.app, &mut t, vec![]);
             rig.app.bridge.grid_tile_for_test(0) == Some((true, false, 0))
+        });
+        // The read-back that found the end queued the fan-out-only request (a second server is
+        // registered, so there is a copy to reach); only once ViewState has run it is "no second
+        // scrobble" a statement about it and not about the moment before it started.
+        poll_until("ViewState never went idle", || {
+            step(&mut rig.app, &mut t, vec![]);
+            !rig.app.bridge.viewstate_busy_for_test()
         });
         assert_eq!(requests_matching(&rig, "/:/scrobble", 0), 0, "no second scrobble on the origin");
     }
@@ -5207,15 +5231,45 @@ mod lifecycle_regression_tests {
         server.hold_reads.store(true, Ordering::SeqCst); // the play's own reads are done
         let back = back_key(t + 16);
         step(&mut rig.app, &mut t, vec![back]);
-        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 150_000, 600_000)), None);
         plx_media::route::drain_scrobble();
         poll_until("the tile never showed the resume point", || {
             step(&mut rig.app, &mut t, vec![]);
-            rig.app.bridge.grid_tile_for_test(0).is_some_and(|tile| tile.2 == 30_000)
+            rig.app.bridge.grid_tile_for_test(0).is_some_and(|tile| tile.2 == 150_000)
         });
         server.hold_reads.store(false, Ordering::SeqCst);
         for _ in 0..8 { step(&mut rig.app, &mut t, vec![]); }
-        assert_eq!(rig.app.bridge.grid_tile_for_test(0).map(|tile| tile.2), Some(30_000));
+        assert_eq!(rig.app.bridge.grid_tile_for_test(0).map(|tile| tile.2), Some(150_000));
+    }
+
+    /// **A stop never outlives the identity it was made under.** A `stopped` POST stalled on a slow
+    /// server returns after the user switched profile; the new identity must get no read-back (a
+    /// request on its token) from the old one's stop.
+    #[test]
+    fn a_stop_that_lands_after_an_identity_change_reads_nothing_back() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(false) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        library_with_grid(&mut rig, &mut t, 1);
+        play_from_here(&mut rig, &mut t);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        let from = rig.requests.lock().unwrap().len();
+        server.hold_stop.store(true, Ordering::SeqCst);
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 150_000, 600_000)), None);
+        poll_until("premise: the stopped POST never reached the server", || {
+            requests_matching(&rig, "state=stopped", from) == 1
+        });
+        let _ = super::super::boot::activate_server_owned(&mut rig.app.bridge); // the identity changed
+        server.hold_stop.store(false, Ordering::SeqCst);
+        plx_media::route::drain_scrobble();
+        assert!(!plx_media::route::stops_owed(), "the retired stop is no longer owed");
+        // before any frame: the mailbox itself, which the app would otherwise drain into the new stores
+        assert!(plx_media::route::take_landed_stops().is_empty(), "the old identity's stop reached the mailbox");
+        for _ in 0..12 { step(&mut rig.app, &mut t, vec![]); }
+        assert_eq!(requests_matching(&rig, "GET /library/metadata/", from), 0, "the old identity's stop was read back");
     }
 
     /// Network reconcile work is held while the player is on top: a mark-watched that lands under

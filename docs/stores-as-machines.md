@@ -64,6 +64,11 @@ rotated `Arc<PersonAdapter>` containing the unchanged indexed fetch claims/mailb
 lends its `PersonView` to Person, Filmography and PersonBio; `person-owner` rejects every old free
 read/mutation facade and storage selector with no allowlist.
 
+`StoreId::ViewStop` (appended last) is no store: it is the landing gate's slot for the stop mailbox
+(`route::take_landed_stops`), because the gate keeps one mailbox per ordinal and `ViewState`'s is taken. The
+mailbox belongs to one identity: `route::retire_pending_stops` (from `activate_server_owned`, before the
+stores reset) drops the records posted and the ones a stalled `stopped` POST posts later.
+
 ## 1. What a store is, today
 
 Seven data modules own the application's server-derived state: `browse` (the Library table and its

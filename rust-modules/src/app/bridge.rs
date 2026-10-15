@@ -1212,7 +1212,7 @@ impl Bridge {
     pub(crate) fn stops_pump(&mut self) {
         let stops = plx_data::stores::take_landings_owed(
             &self.stores.landgate,
-            plx_data::stores::StoreId::ViewState,
+            plx_data::stores::StoreId::ViewStop,
             |got: &[plx_data::viewstate::StopRecord]| got.is_empty() && plx_media::route::stops_owed(),
             plx_media::route::take_landed_stops,
         );
@@ -1353,6 +1353,12 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn seed_hubs_for_test(&mut self, items: usize, hub_state: plx_data::pms::HubState) {
         self.stores.hubs.seed_for_test(items, hub_state);
+    }
+
+    /// Is a view-state write queued or in flight?
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn viewstate_busy_for_test(&self) -> bool {
+        self.stores.viewstate.borrow().is_busy_for_test()
     }
 
     /// How many hub refetches Home's store has started.
