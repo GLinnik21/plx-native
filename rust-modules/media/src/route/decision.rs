@@ -5823,9 +5823,10 @@ impl ScrobbleJoin {
         self.changed.notify_all();
     }
 
-    /// Whether no stop report is still on its way to the server: no worker was ever reserved, the
-    /// last one has been joined, or its thread has returned. Never blocks, and never joins - the
-    /// frame loop asks this every frame while it waits to re-read what the stop committed.
+    /// Whether the whole stop worker, including the server-side `transcode_stop`, has returned: no
+    /// worker was ever reserved, the last one has been joined, or its thread has returned. Never
+    /// blocks, and never joins. The gate for re-reading what the stop committed is
+    /// [`timeline_stop_landed`], not this.
     fn settled(&self) -> bool {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.completed >= state.generation
@@ -5966,9 +5967,10 @@ pub fn drain_scrobble() {
     SCROBBLE_JOIN.drain();
 }
 
-/// Whether the last [`scrobble_stop`] has finished posting (see [`ScrobbleJoin::settled`]): true
-/// once the server holds the resume point the stop reported, so a re-read of the item sees it.
-/// Non-blocking, unlike [`drain_scrobble`].
+/// Whether the last [`scrobble_stop`]'s whole worker has returned (see [`ScrobbleJoin::settled`]),
+/// including the server-side `transcode_stop`. The re-read gate is [`timeline_stop_landed`], which
+/// opens once the `stopped` POST has landed; this one only says the worker is done. Non-blocking,
+/// unlike [`drain_scrobble`].
 pub fn scrobble_settled() -> bool {
     SCROBBLE_JOIN.settled()
 }
