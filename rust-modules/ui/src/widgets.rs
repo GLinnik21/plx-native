@@ -164,6 +164,11 @@ pub fn panel_ground(
     radius: f32,
     field: Option<&crate::underlay::UnderlayField>,
 ) {
+    // DS6: a menu is glass whenever a live backdrop exists (`popover_glass`); the field ground below
+    // is the fallback for a frame without one.
+    if crate::profile::phase("panel.glass", || crate::popover_glass::draw(p, r, radius)) {
+        return;
+    }
     let boost = theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3];
     let weight = panel_tint_sweep().unwrap_or(theme::underlay::PANEL_TINT);
     let drew = crate::profile::phase("panel.field", || {
