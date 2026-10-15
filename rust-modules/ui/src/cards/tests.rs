@@ -3393,3 +3393,255 @@ fn an_off_axis_change_creates_nothing_to_animate() {
     assert!(r.sect.ghost_probe().0.is_empty() && !r.sect.landing_pending());
     assert_eq!(drawn_cards(&r), before);
 }
+
+// ---- animated landings on the grid (`landing.rs`, DS4) ------------------------------------
+
+use crate::consts::{K_SCALE, K_SCROLL};
+
+/// `x0` after `frames` ticks of a critically damped spring at stiffness `k`, from rest: the
+/// closed form the springs integrate (so a test names the constant a landing runs on).
+fn critical(x0: f32, k: f32, frames: u32) -> f32 {
+    let w = k.sqrt();
+    let t = frames as f32 * 16_667e-6;
+    x0 * (1.0 + w * t) * (-w * t).exp()
+}
+
+fn animated_grid(n: usize, focus: u32, spec: GridSpec) -> Rig<Grid> {
+    crate::containers::transition::set_page_image_held(false);
+    let mut r = Rig::<Grid>::new(n);
+    r.sect = Grid::new(ENTRY, spec.animate_landings(true));
+    r.run(2);
+    r.land_focus(focus, By::Restore);
+    r.run(240);
+    r
+}
+
+/// The engine's answer to the focused card leaving: focus goes to the card now at its index.
+fn remove_focused_grid(r: &mut Rig<Grid>, at: usize) {
+    r.src.elems.remove(at);
+    let next = r.reconcile_after_removal(at);
+    r.land_focus(next, By::Reconcile);
+}
+
+fn grid_ghost_paint(g: &Grid, cx: &Cx9<'_>, elems: &[u32]) -> Vec<(u32, Rect)> {
+    let f = DrawFrame::new(cx, Painter::recording());
+    let ghosts = Cards::new(elems.to_vec(), false);
+    g.paint_ghosts(&f, f.painter, &ghosts);
+    ghosts.drawn.take()
+}
+
+fn settled_rect(r: &Rig<Grid>, e: u32) -> Rect {
+    <Rig<Grid> as CardHarness>::place(r, e, At::SpringTarget).unwrap().rect
+}
+
+fn centre(r: Rect) -> (f32, f32) {
+    (r.x + r.w / 2.0, r.y + r.h / 2.0)
+}
+
+/// The focused card leaves: it is a ghost, fading where it stood on `K_SCALE`, easing from its
+/// lifted scale to rest, and the grid is quiet once it is gone.
+#[test]
+fn a_grid_ghost_fades_in_its_cell_on_k_scale() {
+    let mut r = animated_grid(40, 108, GRID);
+    let was = <Rig<Grid> as CardHarness>::place(&r, 108, At::Drawn).unwrap().rect;
+    remove_focused_grid(&mut r, 8);
+    r.run(1);
+    let (ghosts, a) = r.sect.ghost_probe();
+    assert_eq!(ghosts, vec![8], "the card's index in the previous source");
+    assert!((a - critical(1.0, K_SCALE, 1)).abs() < 2e-3, "fades on K_SCALE: {a}");
+    let lift = r.sect.ghost_scales()[0];
+    assert!(lift > 1.0 && lift <= poster_grid::STYLE.focus_scale + 1e-4, "a focused ghost eases from its lift: {lift}");
+    let cx = r.cx();
+    let drawn = grid_ghost_paint(&r.sect, &cx, &[108]);
+    let (_, rect) = *drawn.iter().find(|&&(e, _)| e == 108).expect("the ghost is painted from the card the owner kept");
+    let (c, w) = (centre(rect), centre(was));
+    assert!((c.0 - w.0).abs() < 0.5 && (c.1 - w.1).abs() < 0.5, "in the cell it stood in: {was:?} {rect:?}");
+    let mut last = a;
+    for f in 2..=9 {
+        r.run(1);
+        let (_, a) = r.sect.ghost_probe();
+        assert!(a < last && (a - critical(1.0, K_SCALE, f)).abs() < 2e-3, "frame {f}: monotone, on K_SCALE: {a}");
+        last = a;
+    }
+    r.run(600);
+    assert!(r.sect.ghost_probe().0.is_empty() && grid_ghost_paint(&r.sect, &r.cx(), &[108]).is_empty(), "gone once faded");
+    assert!(!r.sect.landing_pending() && !r.sect.has_ghosts() && !r.run(1), "and the grid is quiet");
+}
+
+/// Survivors spring home on `K_SCROLL`, all on the same frame (no stagger), each along a straight
+/// line: the card that crosses the line break travels one 2-D spring from the end of the row above
+/// to the start of its new row (its `x` and `y` progress are one number), never overshooting.
+#[test]
+fn survivors_spring_home_together_and_a_line_break_is_one_straight_spring() {
+    let mut r = animated_grid(40, 108, GRID);
+    let watch = [110u32, 111, 112, 113, 118];
+    let old: Vec<Rect> = watch.iter().map(|&e| settled_rect(&r, e)).collect();
+    remove_focused_grid(&mut r, 8);
+    let series: Vec<Vec<Rect>> = (1..=40).map(|_| { r.run(1); watch.iter().map(|&e| settled_rect(&r, e)).collect() }).collect();
+    r.run(600);
+    let new: Vec<Rect> = watch.iter().map(|&e| settled_rect(&r, e)).collect();
+    // 112 was the first card of the next row and is now the last of this one
+    let cross = watch.iter().position(|&e| e == 112).unwrap();
+    let (dx, dy) = (old[cross].x - new[cross].x, old[cross].y - new[cross].y);
+    assert!(dx < -poster_grid::STYLE.w && dy > 100.0, "premise: a diagonal move across the line break: {dx} {dy}");
+    for (f, rects) in series.iter().enumerate() {
+        let want = critical(1.0, K_SCROLL, f as u32 + 1);
+        for (j, &e) in watch.iter().enumerate() {
+            let (sx, sy) = (old[j].x - new[j].x, old[j].y - new[j].y);
+            let (px, py) = (rects[j].x - new[j].x, rects[j].y - new[j].y);
+            if sx.abs() > 0.5 {
+                assert!((px / sx - want).abs() < 3e-3, "frame {}: card {e} x is off the shared K_SCROLL curve: {} vs {want}", f + 1, px / sx);
+            }
+            if sy.abs() > 0.5 {
+                assert!((py / sy - want).abs() < 3e-3, "frame {}: card {e} y is off the shared K_SCROLL curve: {} vs {want}", f + 1, py / sy);
+            } else {
+                assert!(py.abs() < 0.01, "frame {}: card {e} left its row: {py}", f + 1);
+            }
+        }
+    }
+    let first = &series[0][cross];
+    assert!((first.y - old[cross].y).abs() < 0.1 * dy && (first.x - old[cross].x).abs() < 0.1 * dx.abs(),
+        "the first frame is still near where it stood: {first:?} vs {:?}", old[cross]);
+    assert!(!r.sect.landing_pending() && !r.run(1));
+}
+
+/// The next card is the focus: it takes the removed card's cell with the pop held (one lifted
+/// tile in every frame), and its stop is the rect it is drawn at.
+#[test]
+fn focus_moves_to_the_next_card_and_it_slides_into_the_cell() {
+    let mut r = animated_grid(40, 108, GRID);
+    let cell = <Rig<Grid> as CardHarness>::place(&r, 108, At::Drawn).unwrap().rect;
+    let from = <Rig<Grid> as CardHarness>::place(&r, 109, At::Drawn).unwrap().rect;
+    remove_focused_grid(&mut r, 8);
+    assert_eq!(r.focus.map(|k| k.elem), Some(109));
+    let full = poster_grid::STYLE.focus_scale;
+    for frame in 0..90 {
+        r.run(1);
+        assert_eq!(r.scale(109), Some(full), "frame {frame}: the pop held");
+        assert!(lifted(&r) <= 1, "frame {frame}: more than one tile lifted");
+        let (drawn, stops) = r.drawn_and_stops(1.0, 0.0);
+        let d = drawn.iter().find(|&&(e, _)| e == 109).map(|&(_, d)| d).expect("the next card is drawn");
+        let st = stops.iter().find(|s| s.key.elem == 109).expect("and registered").rect;
+        assert!(rect_close(d, st), "frame {frame}: drawn {d:?} is not its stop {st:?}");
+        if frame == 0 {
+            assert!(d.x > cell.x + 0.5 * (from.x - cell.x), "still near where it stood: {d:?}");
+        }
+    }
+    let end = <Rig<Grid> as CardHarness>::place(&r, 109, At::Drawn).unwrap().rect;
+    assert!(rect_close(end, cell), "settled in the removed card's cell: {end:?} {cell:?}");
+}
+
+fn rect_close(a: Rect, b: Rect) -> bool {
+    (a.x - b.x).abs() < 0.5 && (a.y - b.y).abs() < 0.5 && (a.w - b.w).abs() < 0.5 && (a.h - b.h).abs() < 0.5
+}
+
+/// A card with no end on screen cuts (no spring, no ghost), and one on screen plays: there is no
+/// cap, only the screen.
+#[test]
+fn a_grid_snaps_what_is_off_screen_and_animates_what_is_not() {
+    let mut r = animated_grid(200, 108, GRID);
+    remove_focused_grid(&mut r, 8);
+    r.run(1);
+    let n = r.src.elems.len();
+    assert_ne!(r.sect.landing_probe(n, 9).0, (0.0, 0.0), "a card on screen springs");
+    assert_ne!(r.sect.landing_probe(n, 11).0 .1, 0.0, "one on the next row springs across the break");
+    for i in [150, 199 - 1] {
+        assert_eq!(r.sect.landing_probe(n, i).0, (0.0, 0.0), "card {i} is off screen at both ends and cuts");
+    }
+    r.run(600);
+    assert!(!r.sect.landing_pending());
+    // a card that leaves off screen plays nothing at all
+    let before = r.drawn_and_stops(1.0, 0.0).0;
+    r.src.elems.remove(150);
+    r.run(1);
+    assert!(r.sect.ghost_probe().0.is_empty() && !r.sect.landing_pending(), "nothing to animate");
+    assert_eq!(r.drawn_and_stops(1.0, 0.0).0, before, "and what is on screen does not move");
+}
+
+/// A card that arrives fades in and the cards after it slide; a grid that did not ask plays nothing.
+#[test]
+fn an_inserted_card_fades_in_on_the_grid_and_an_unanimated_grid_cuts() {
+    let mut r = animated_grid(40, 108, GRID);
+    r.src.elems.insert(10, 900);
+    r.run(1);
+    let n = r.src.elems.len();
+    let a = r.sect.landing_probe(n, 10).1;
+    assert!(a > 0.0 && a < 0.5, "fades in from nothing: {a}");
+    assert_eq!(r.sect.landing_probe(n, 9).1, 1.0);
+    r.run(600);
+    assert!(!r.sect.landing_pending());
+    let mut r = settled::<Grid>(40);
+    r.land_focus(108, By::Restore);
+    r.run(240);
+    remove_focused_grid(&mut r, 8);
+    r.run(1);
+    assert!(!r.sect.landing_pending() && !r.sect.has_ghosts() && r.sect.ghost_keys().next().is_none(), "off by default");
+}
+
+/// A removal BEFORE the focus that moves it up a row shifts the page to keep the focused tile put;
+/// the ghost stays where the card stood ON SCREEN (the cards beside it spring to the shifted page,
+/// the ghost fades where it was), in the grid's own scroll and under an owner's.
+fn a_ghost_holds_its_screen_place_when_the_landing_shifts_the_page<S: Section>(mut r: Rig<S>, grid: fn(&Rig<S>) -> &Grid)
+where
+    Rig<S>: CardHarness,
+{
+    let stood = r.place(111, At::SpringTarget).unwrap().rect;
+    r.src.elems.remove(11);
+    let shifted = r.scroll();
+    for frame in 0..30 {
+        r.run(1);
+        let cx = r.cx();
+        let drawn = grid_ghost_paint(grid(&r), &cx, &[111]);
+        let (_, ghost) = *drawn.first().expect("the ghost is painted");
+        assert!(rect_close(ghost, stood), "frame {frame}: the ghost left its place: {stood:?} -> {ghost:?} (scroll {shifted:?} -> {:?})", r.scroll());
+    }
+}
+#[test]
+fn a_grid_ghost_stays_in_its_row_when_the_page_shifts() {
+    crate::containers::transition::set_page_image_held(false);
+    let r = animated_grid(40, 112, GRID);
+    a_ghost_holds_its_screen_place_when_the_landing_shifts_the_page(r, |r| &r.sect);
+}
+#[test]
+fn an_external_grid_ghost_stays_in_its_row_when_the_page_shifts() {
+    crate::containers::transition::set_page_image_held(false);
+    let mut r = Rig::<ExtGrid>::new(40);
+    r.sect = ExtGrid { grid: Grid::new(ENTRY, EXT.animate_landings(true)), page: 0.0 };
+    r.run(2);
+    r.land_focus(112, By::Restore);
+    r.run(240);
+    a_ghost_holds_its_screen_place_when_the_landing_shifts_the_page(r, |r| &r.sect.grid);
+}
+
+fn mount_animated_shelf(n: usize) -> Box<dyn CardHarness> {
+    let mut r = Rig::<Shelf>::new(n);
+    r.sect = Shelf::new(ENTRY, &RowStyle::HOME).animate_landings(true);
+    Box::new(r)
+}
+fn mount_animated_grid(n: usize) -> Box<dyn CardHarness> {
+    let mut r = Rig::<Grid>::new(n);
+    r.sect = Grid::new(ENTRY, GRID.animate_landings(true));
+    Box::new(r)
+}
+fn mount_animated_external_grid(n: usize) -> Box<dyn CardHarness> {
+    let mut r = Rig::<ExtGrid>::new(n);
+    r.sect = ExtGrid { grid: Grid::new(ENTRY, EXT.animate_landings(true)), page: 0.0 };
+    Box::new(r)
+}
+
+/// Every conformance case still passes with landings animated, and so does the removal contract.
+#[test]
+fn the_conformance_cases_and_the_removal_contract_pass_with_landings_animated() {
+    let table: [(&'static str, Mount); 3] = [
+        ("shelf", mount_animated_shelf),
+        ("grid", mount_animated_grid),
+        ("external", mount_animated_external_grid),
+    ];
+    let matrix = conformance::run_all(&table);
+    let bad: Vec<_> = matrix.iter().filter(|(_, _, o)| *o != Outcome::Pass).collect();
+    assert!(bad.is_empty(), "{bad:#?}");
+    let _guard = plx_base::testlock::serial();
+    for (screen, mount) in table {
+        assert_eq!(conformance::removal_focuses_next(mount), Outcome::Pass, "{screen}");
+    }
+}

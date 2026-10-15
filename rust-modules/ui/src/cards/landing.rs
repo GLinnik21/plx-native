@@ -11,10 +11,19 @@
 //!   publication cannot make it show another card. A ghost drawn at rest is not lifted; one that
 //!   was the focused card starts at the scale it was drawn at and eases to rest while it fades;
 //! - **a card that stays** starts where it was on screen and a spring carries it to its new slot.
-//!   The offsets are taken against the scroll's own move for the focused card (the landing rule of
+//!   A slot is a point, `(x, y)`: a strip's slots share a `y`, a grid's do not, and a card that
+//!   crosses a line break goes to its new slot as ONE straight 2-D spring (an `x` and a `y` spring
+//!   of the same stiffness started together stay proportional, so the path is a straight line
+//!   with no arc and no two phases). There is no stagger: every survivor starts on the frame of
+//!   the change. The offsets are taken against the scroll's own move for the focused card (the landing rule of
 //!   `mod.rs` has already kept it at its slot, so its offset is 0), but the scroll is clamped to
 //!   its range, so a focused card at an end of the strip can still move on screen;
 //! - **an inserted card** fades in, each card on its own alpha.
+//!
+//! The owner names the layout through [`Scene::slot`] (index to the slot's top-left in the
+//! unscrolled strip or document) and the scroll through [`Scene::shift`]; a ghost's `y` is held
+//! as the same kind of shift, so a grid whose document scroll moved under a landing keeps the ghost
+//! where it stood on screen.
 //!
 //! The first appearance of a section's cards is not a landing (nothing was there to change), nor is
 //! a change while the section is [`dormant`](super::Shelf::dormant) or a slide of the window the
@@ -54,9 +63,9 @@ pub(crate) struct Ghost {
     pub key: u64,
     /// Its index when it was last adopted: where it stood in the strip.
     pub was: usize,
-    /// How far the section's scroll moved since, px: the ghost stands at its old slot plus this,
-    /// which is where it stood on screen.
-    pub shift: f32,
+    /// How far the section's scroll moved since, px `(x, y)`: the ghost stands at its old slot plus
+    /// this, which is where it stood on screen.
+    pub shift: (f32, f32),
     /// Its alpha, 1 to 0.
     pub alpha: Spring,
     /// Its pop scale, from what it was drawn at to rest.
@@ -65,17 +74,30 @@ pub(crate) struct Ghost {
 
 /// What a tick tells the landing about the section this frame.
 pub(crate) struct Scene<'a> {
-    /// How far the section moved its scroll this tick to keep its focused card where it was (px,
-    /// 0 for none: the landing rule, clamped to the scroll's range).
-    pub shift: f32,
-    /// The slot width, px.
-    pub pitch: f32,
-    /// The strip x of card 0.
-    pub margin_x: f32,
-    /// Whether a card at this x in the strip (unscrolled) is on-axis now.
-    pub on: &'a dyn Fn(f32) -> bool,
+    /// How far the section moved its scroll this tick to keep its focused card where it was (px
+    /// `(x, y)`, `(0, 0)` for none: the landing rule, clamped to the scroll's range).
+    pub shift: (f32, f32),
+    /// Slot `i`'s top-left in the strip (or document), unscrolled, px.
+    pub slot: &'a dyn Fn(usize) -> (f32, f32),
+    /// Whether a card at this point in the strip (unscrolled) is on-axis now.
+    pub on: &'a dyn Fn(f32, f32) -> bool,
     /// The cell that was focused before this tick and the scale it was drawn at.
     pub lifted: Option<(usize, f32)>,
+}
+
+/// A moving card's offset from its slot, px: two springs of one stiffness that start together, so
+/// the card travels a straight line.
+#[derive(Clone, Copy)]
+struct Slide {
+    x: Spring,
+    y: Spring,
+}
+
+impl Slide {
+    fn settled(&self) -> bool {
+        use plx_machine::idle::settled;
+        settled(self.x.pos, 0.0, self.x.vel) && settled(self.y.pos, 0.0, self.y.vel)
+    }
 }
 
 #[derive(Clone, Default)]
@@ -83,8 +105,8 @@ struct Anim {
     /// Cards the animation was built for: a source of another length is drawn without it until
     /// the next tick has diffed again.
     n: usize,
-    /// The x offset in px of each moving card (by [`key`]), springing to 0.
-    off: HashMap<u64, Spring>,
+    /// The offset in px of each moving card (by [`key`]), springing to 0.
+    off: HashMap<u64, Slide>,
     /// The alpha of each arriving card, springing to 1.
     fade: HashMap<u64, Spring>,
     ghosts: Vec<Ghost>,
@@ -93,7 +115,7 @@ struct Anim {
 impl Anim {
     fn retain_live(&mut self) {
         use plx_machine::idle::settled;
-        self.off.retain(|_, s| !settled(s.pos, 0.0, s.vel));
+        self.off.retain(|_, s| !s.settled());
         self.fade.retain(|_, s| !settled(s.pos, 1.0, s.vel));
         self.ghosts.retain(|g| !settled(g.alpha.pos, 0.0, g.alpha.vel));
     }
@@ -115,13 +137,13 @@ pub(crate) struct Landing {
     revision: Option<u64>,
     /// The scroll the section moved to keep its focused card in place since the cards last matched
     /// (the sum of the landing shifts of the ticks that saw the change).
-    shift: f32,
+    shift: (f32, f32),
     anim: Option<Anim>,
 }
 
 impl Landing {
     pub(crate) const fn new() -> Self {
-        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: 0.0, anim: None }
+        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None }
     }
 
     pub(crate) const fn set_enabled(&mut self, on: bool) {
@@ -136,7 +158,7 @@ impl Landing {
         self.loaded = (0..n).any(|i| src.loaded(i));
         self.window = (src.global(0), src.page_epoch());
         self.revision = src.revision();
-        self.shift = 0.0;
+        self.shift = (0.0, 0.0);
         self.anim = None;
     }
 
@@ -170,8 +192,13 @@ impl Landing {
 
     /// Card `i`'s x offset of `n` cards, px.
     pub(crate) fn offset(&self, n: usize, i: usize) -> f32 {
+        self.offset_xy(n, i).0
+    }
+
+    /// Card `i`'s offset of `n` cards, px `(x, y)`.
+    pub(crate) fn offset_xy(&self, n: usize, i: usize) -> (f32, f32) {
         self.anim.as_ref().filter(|a| a.n == n && !a.off.is_empty())
-            .and_then(|a| a.off.get(self.keys.get(i)?)).map_or(0.0, |s| s.pos)
+            .and_then(|a| a.off.get(self.keys.get(i)?)).map_or((0.0, 0.0), |s| (s.x.pos, s.y.pos))
     }
 
     /// Card `i`'s alpha of `n` cards: 1 unless it is arriving.
@@ -197,10 +224,10 @@ impl Landing {
             // a change that came and went leaves nothing to play
             self.revision = revision;
             self.window = window;
-            self.shift = 0.0;
+            self.shift = (0.0, 0.0);
             return;
         }
-        self.shift += scene.shift;
+        self.shift = (self.shift.0 + scene.shift.0, self.shift.1 + scene.shift.1);
         if self.keys.is_empty() || !self.loaded || window != self.window {
             return self.adopt(src);
         }
@@ -220,23 +247,26 @@ impl Landing {
         // which the landing rule kept in place, comes out at 0 and so does not move
         let shift = std::mem::take(&mut self.shift);
         let mut prev = self.anim.take().unwrap_or_default();
-        let strip = |slot: f32| scene.margin_x + slot * scene.pitch;
         let mut next = Anim { n, ..Anim::default() };
         for (i, &k) in new.iter().enumerate() {
             let Some(&was) = old_at.get(&k) else {
                 // arriving: a card still fading in, or a ghost brought back, goes on from its alpha
                 let ghost = prev.ghosts.iter().position(|g| g.key == k).map(|g| prev.ghosts.swap_remove(g).alpha.pos);
                 let from = prev.fade.get(&k).map(|s| s.pos).or(ghost);
-                if (scene.on)(strip(i as f32)) {
+                let (x, y) = (scene.slot)(i);
+                if (scene.on)(x, y) {
                     next.fade.insert(k, Spring::at(from.unwrap_or(0.0)));
                 }
                 continue;
             };
-            let carried = prev.off.get(&k).map_or(0.0, |s| s.pos);
-            let start = (was as f32 - i as f32) * scene.pitch + shift + carried;
+            let carried = prev.off.get(&k).map_or((0.0, 0.0), |s| (s.x.pos, s.y.pos));
+            let (was_at, now_at) = ((scene.slot)(was), (scene.slot)(i));
+            let start = (was_at.0 - now_at.0 + shift.0 + carried.0, was_at.1 - now_at.1 + shift.1 + carried.1);
             // off-axis both before and after: nothing of it is on screen to slide
-            if start.abs() >= 0.5 && ((scene.on)(strip(i as f32)) || (scene.on)(strip(i as f32) + start)) {
-                next.off.insert(k, Spring::at(start));
+            if (start.0.abs() >= 0.5 || start.1.abs() >= 0.5)
+                && ((scene.on)(now_at.0, now_at.1) || (scene.on)(now_at.0 + start.0, now_at.1 + start.1))
+            {
+                next.off.insert(k, Slide { x: Spring::at(start.0), y: Spring::at(start.1) });
             }
             if let Some(s) = prev.fade.get(&k) {
                 next.fade.insert(k, *s);
@@ -245,13 +275,13 @@ impl Landing {
         // ghosts still fading from an earlier landing stay where they stood on screen
         for mut g in prev.ghosts {
             if !kept.contains(&g.key) {
-                g.shift += shift;
+                g.shift = (g.shift.0 + shift.0, g.shift.1 + shift.1);
                 next.ghosts.push(g);
             }
         }
         for (was, &k) in old.iter().enumerate().filter(|(_, k)| !kept.contains(k)) {
-            let x = strip(was as f32) + shift;
-            if (scene.on)(x) {
+            let at = (scene.slot)(was);
+            if (scene.on)(at.0 + shift.0, at.1 + shift.1) {
                 let s = scene.lifted.filter(|&(c, _)| c == was).map_or(1.0, |(_, s)| s.max(1.0));
                 next.ghosts.push(Ghost { key: k, was, shift, alpha: Spring::at(1.0), lift: Spring::at(s) });
             }
@@ -271,7 +301,8 @@ impl Landing {
             return;
         }
         for s in a.off.values_mut() {
-            s.step(0.0, k.0, dt);
+            s.x.step(0.0, k.0, dt);
+            s.y.step(0.0, k.0, dt);
         }
         for s in a.fade.values_mut() {
             s.step(1.0, k.1, dt);
