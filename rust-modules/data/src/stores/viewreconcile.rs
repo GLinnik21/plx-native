@@ -35,7 +35,10 @@
 //! * **Results reach the stores as edits carrying facts**: `publish_view` of a
 //!   [`crate::viewstate::ViewFact::Facts`] at `Scope::Leaf` (a show's facts describe the show row,
 //!   never its episodes). Facts are the server's word, so they are not recorded in the ledger. They
-//!   reach Home's hubs and Browse's listing and shelves so far; the other stores follow.
+//!   reach Home's hubs, Browse's listing, Search, Person, Collection and Detail's Related and
+//!   collection-member tiles, each only where `ViewEdit::changes` says the row differs. Browse's
+//!   section shelves (re-read whole after a burst) and Detail's own item, episodes and seasons
+//!   (`DetailRefresh`) take neither.
 //! * **A failed read is not re-queued**, and the optimistic patch stands (the same "a failure never
 //!   blanks a populated screen" rule as every other read here). A refused spawn is retried after
 //!   [`RETRY_FRAMES`].
