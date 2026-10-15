@@ -49,6 +49,10 @@ plx_plex = { path = "../plex" }
 plx_telemetry = { path = "../telemetry" }
 plx_data = { path = "../data" }
 libc = "0.2"
+# Legacy-encoding text subtitles (GBK, Big5, Shift_JIS, EUC-KR, windows-125x): `player::sub_charset`. Pure Rust, no FFI.
+encoding_rs = { version = "0.8", default-features = false, features = ["alloc"] }
+# Guesses the encoding of a legacy (non-UTF-8) subtitle track from its bytes, hinted by its language. Pure Rust, on encoding_rs.
+chardetng = { version = "1", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
 

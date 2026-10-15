@@ -3,52 +3,47 @@
 //! The demuxer only ever sees the streams INSIDE the container it opened, so a sidecar was
 //! unreachable on direct play and the track menu hid it (`docs/parity-gaps.md`, "Sidecar
 //! (external) subtitle streams are unreachable on the direct-play path"). This is the missing
-//! producer: fetch the whole file from PMS once. Plain captions answer [`active`]; ASS/SSA
-//! keeps its complete script for [`ass_source`] and the native styled renderer. Styles,
-//! overlapping events, drawings and embedded fonts must never pass through plain-text parsing.
+//! producer: fetch the whole file from PMS once. ASS/SSA keeps its complete script for
+//! [`ass_source`] and the native styled renderer (styles, overlapping events, drawings and embedded
+//! fonts must never pass through a text parser). SubRip and WebVTT are converted on the fetch worker
+//! to an ASS script of the viewer's synthesized style (`text_ass::script_from_srt`/`_vtt`, charset
+//! by `sub_charset`), and render through the same libass worker as an embedded text track; the
+//! script is restyled lazily when the viewer's size or position pick changes.
 //!
-//! # Why its own store, and not `SHARED.sub_cues`
+//! # Why its own store, and not `ass_source`
 //!
-//! That store is a WINDOW: `push_subtitle_text` drops everything more than the latest delay + 2 s
-//! (32 s) behind the playhead (`player::subtitle_floor_ns`) and caps at 512, because the demuxer
-//! refills it as it reads. A sidecar arrives once, whole —
-//! 1,000-2,000 cues for a feature — and nothing re-reads it after a backward seek. Plain cues
-//! are kept as the file's own text with a compact index, sorted, and looked up by time (a cue's
-//! text is cut out only when it is drawn); a styled script stays intact for libass.
+//! That store is a WINDOW the demuxer refills as it reads, and a backward seek empties it. A
+//! sidecar arrives once, whole — 1,000-2,000 cues for a feature — and nothing re-reads it after a
+//! seek. The converted script is kept intact (a long one is fed to libass a window at a time,
+//! `ass_script`), and the clock a frame is rendered for is the screen's.
 //!
 //! # The clock
 //!
 //! A sidecar's timestamps are file time, and on DIRECT PLAY `playpos_ns` is file time too (the
 //! rebase keeps it so across seeks). Where the server BURNS the selection into the picture (a
-//! re-encode, or a remux the app may not draw over) [`active`] answers nothing while its caller
-//! says the selection is burned (`route::subtitles_burned`) — otherwise a direct play that becomes
+//! re-encode, or a remux the app may not draw over) [`ass_source`] answers nothing, and the caller
+//! draws no [`notice`], while it says the selection is burned (`route::subtitles_burned`) — otherwise a direct play that becomes
 //! a burn mid-film (a DTS audio pick) would show the line twice. Over a plain remux nothing is
 //! burned and a sidecar is drawn from here. The fact is PASSED IN rather than read: the playback session is
 //! the frame's publication, and the draw that calls this already holds it.
 //!
-//! The draw asks on the SUBTITLE clock (`player::subtitle_clock_ns`, the playhead less the
+//! The renderer is asked on the SUBTITLE clock (`player::subtitle_clock_ns`, the playhead less the
 //! viewer's timing offset). Because the whole file is here, a sidecar is the one kind of track
 //! that can be ADVANCED as well as delayed — [`selected`] is what `player::subtitle_offset_range_ms`
-//! reads to offer it -30 s..+30 s, where an embedded track gets a delay only.
+//! reads to offer it the sidecar offset range (see `subtitle_offset_range_ms`), where an embedded track
+//! gets a delay only.
 //!
 //! # Threading
 //!
-//! [`select`]/[`deselect`]/[`active`] are main-thread calls; the fetch runs on a `task` worker and
+//! [`select`]/[`deselect`]/[`active`]/[`ass_source`] are main-thread calls; the fetch runs on a `task` worker and
 //! lands under the one mutex, fenced by a generation so an answer for a pick the viewer has
 //! already moved off is dropped rather than installed. One worker drains a single latest-pick
 //! slot, so repeated picks cannot accumulate threads or downloads.
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// One cue with its whole text. Production keeps a [`Span`] per cue and cuts the text out only
-/// when it is drawn; the tests read a file as whole cues through [`parse`].
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq)]
-pub struct Cue {
-    pub start_ns: i64,
-    pub end_ns: i64,
-    pub text: String,
-}
+use super::text_ass;
+use super::text_style::TextStyle;
 
 /// Why nothing is being drawn for a selected sidecar — said ON SCREEN for a few seconds, in the
 /// caption's own place, because a picked subtitle that silently shows nothing is
@@ -78,9 +73,26 @@ struct Selection {
     codec: String,
 }
 
-enum Content {
-    Plain(Subtitles),
-    Ass { source: Arc<super::ass::Source>, font_generation: Option<u64> },
+/// A loaded file as the renderer takes it.
+struct Content {
+    source: Arc<super::ass::Source>,
+    font_generation: Option<u64>,
+    /// Set for a converted SubRip/WebVTT file, whose header follows the viewer's picks.
+    text: Option<TextHold>,
+}
+
+/// What a converted file needs to be restyled: the script is the synthesized header followed by
+/// the converted `Dialogue:` lines, so the events are the bytes past `header_len` and are not kept
+/// twice.
+struct TextHold {
+    header_len: usize,
+    /// The picks (`TextStyle::generation`) the held header was synthesized for.
+    style_generation: u32,
+    /// Cues that survived conversion.
+    cues: usize,
+    /// A worker is already building the script for newer picks (one at a time; a later pick that
+    /// lands meanwhile is taken up by the next call once this one has published).
+    restyling: bool,
 }
 
 struct State {
@@ -101,6 +113,10 @@ static STATE: Mutex<State> = Mutex::new(State {
     loaded: None,
     failed: None,
 });
+
+/// Signalled, under [`STATE`], whenever the download worker goes idle or a restyle worker has
+/// finished: what the tests wait on instead of the clock.
+static SETTLED: std::sync::Condvar = std::sync::Condvar::new();
 
 /// How long a [`Failure`] stays on screen.
 const FAILURE_SHOWN: Duration = Duration::from_secs(6);
@@ -150,6 +166,7 @@ fn select_with_fetch(
             let mut st = state();
             let Some(request) = st.pending.take() else {
                 st.running = false;
+                SETTLED.notify_all();
                 return;
             };
             request
@@ -167,9 +184,9 @@ fn select_with_fetch(
         }
         match outcome {
             Ok(content) => {
-                match &content {
-                    Content::Plain(subs) => super::log(&format!("sidecar: stream {stream_id} ready, {} cues", subs.cue_count())),
-                    Content::Ass { .. } => super::log(&format!("sidecar: stream {stream_id} ready, styled ASS")),
+                match &content.text {
+                    Some(hold) => super::log(&format!("sidecar: stream {stream_id} ready, {} cues", hold.cues)),
+                    None => super::log(&format!("sidecar: stream {stream_id} ready, styled ASS")),
                 }
                 st.loaded = Some((selection, content));
             }
@@ -185,6 +202,7 @@ fn select_with_fetch(
         st.running = false;
         st.pending = None;
         st.failed = Some((selection, Failure::Fetch, Instant::now()));
+        SETTLED.notify_all();
     }
 }
 
@@ -216,6 +234,17 @@ pub fn select_without_fetch_for_test(stream_id: i64) {
         server: plx_plex::plex::ServerId::UNSET, stream_id, key: String::new(), codec: String::new(),
     });
     st.failed = None;
+}
+
+/// Select `stream_id` as a sidecar whose conversion FAILED `age` ago, without fetching anything: the
+/// failure notice is up for [`FAILURE_SHOWN`] from then. For the player screen's frame-fingerprint
+/// tests, which cannot wait six seconds and cannot reach the private state.
+#[cfg(any(test, feature = "test-support"))]
+pub fn fail_for_test(stream_id: i64, age: Duration) {
+    select_without_fetch_for_test(stream_id);
+    let mut st = state();
+    let want = st.want.clone().expect("just selected");
+    st.failed = Some((want, Failure::Empty, Instant::now().checked_sub(age).unwrap_or_else(Instant::now)));
 }
 
 /// A new item is starting: nothing of the previous one's may survive. MAIN THREAD.
@@ -254,57 +283,121 @@ pub fn restore_selection(
     Some(s.id)
 }
 
-/// The line to draw at `now_ns`, if a sidecar is selected and the server is not burning it.
-pub fn active(now_ns: i64, burned: bool) -> Option<String> {
-    active_span(now_ns, burned).map(|(text, _, _)| text)
-}
-
-/// [`active`] with the `(start_ns, end_ns)` the cue is shown over, in the subtitle clock — what a
-/// caption too tall for one screen pages across. The on-screen failure notice has no cue span; it
-/// comes back as `(0, i64::MAX)`.
-pub fn active_span(now_ns: i64, burned: bool) -> Option<(String, i64, i64)> {
+/// The failure notice to draw, if a sidecar is selected: why nothing is being drawn for it, while
+/// that is worth saying on screen — for [`FAILURE_SHOWN`] after its fetch or conversion failed. The
+/// cues themselves are libass's ([`ass_source`]); this is the one thing the renderer cannot say,
+/// that a picked file produced nothing. The caller applies the burned rule (the server BURNS the
+/// selection; drawing the notice too would double the line).
+pub fn notice() -> Option<&'static str> {
     let st = state();
-    if burned {
-        return None; // the server BURNS the selection; drawing it too would double the line
-    }
     let want = st.want.as_ref()?;
-    if let Some((source, why, at)) = &st.failed {
-        if source == want && at.elapsed() < FAILURE_SHOWN {
-            return Some((why.message().to_string(), 0, i64::MAX));
-        }
-    }
-    match &st.loaded {
-        Some((source, Content::Plain(subs))) if source == want => subs.cue_at(now_ns),
+    match &st.failed {
+        Some((source, why, at)) if source == want && at.elapsed() < FAILURE_SHOWN => Some(why.message()),
         _ => None,
     }
 }
 
-/// The selected styled script, unless the server burns it. It is the same immutable source through seeks
-/// and Off→On; render requests carry the current clock, so no cue is lost on a backward seek.
+/// Is [`notice`] up right now? The player's frame fingerprint reads it, so the instant the notice
+/// expires still owes a frame (nothing else on the screen changes then).
+pub fn notice_shown() -> bool {
+    notice().is_some()
+}
+
+/// The selected script, unless the server burns it. It is the same immutable source through seeks
+/// and Off→On; render requests carry the current clock, so no cue is lost on a backward seek. A
+/// converted SubRip/WebVTT file whose header was synthesized for other picks than the viewer's now
+/// has its restyle started here, lazily, on a worker; the old look stays up until the worker
+/// publishes the restyled script (an unselected file is never restyled).
 pub fn ass_source(burned: bool) -> Option<Arc<super::ass::Source>> {
+    ass_source_styled(burned, TextStyle::current())
+}
+
+/// [`ass_source`] for explicit picks (the tests restyle without touching the preferences).
+fn ass_source_styled(burned: bool, style: TextStyle) -> Option<Arc<super::ass::Source>> {
     if burned { return None; }
     let mut st = state();
     let State { want, loaded, .. } = &mut *st;
     let want = want.as_ref()?;
-    match loaded {
-        Some((selection, Content::Ass { source, font_generation })) if selection == want => {
-            // The file can arrive before its movie's demuxer discovers attachments. Preserve
-            // both buffers by Arc and revise only when that immutable font publication changes.
-            // The font store never acquires the sidecar lock, so this short snapshot has one
-            // lock order; no native work runs under either lock.
-            let (generation, fonts) = super::ass_source::font_snapshot();
-            if *font_generation != Some(generation) {
-                let super::ass::Content::Script { bytes, .. } = &source.content else { return None; };
-                *source = Arc::new(super::ass::Source {
-                    id: source.id, revision: source.revision.wrapping_add(1),
-                    content: super::ass::Content::Script { bytes: bytes.clone(), fonts },
-                });
-                *font_generation = Some(generation);
-            }
-            Some(source.clone())
-        }
-        _ => None,
+    let (selection, content) = loaded.as_mut()?;
+    if selection != want {
+        return None;
     }
+    // The file can arrive before its movie's demuxer discovers attachments. Preserve both buffers
+    // by Arc and revise only when that immutable font publication, or the picks, changed. The font
+    // store never acquires the sidecar lock, so this short snapshot has one lock order; no native
+    // work runs under either lock.
+    let (generation, fonts) = super::ass_source::font_snapshot();
+    let restyled = content.text.as_ref().is_some_and(|hold| hold.style_generation != style.generation());
+    if restyled {
+        // The new script is built off this thread (it is the whole file again, megabytes for a long
+        // one) and published under this lock when ready; until then the old look stays up.
+        plx_base::diag::spans::span("restyle", || start_restyle(content, style));
+    }
+    if content.font_generation != Some(generation) {
+        let super::ass::Content::Script { bytes, .. } = &content.source.content else { return None; };
+        content.source = Arc::new(super::ass::Source {
+            id: content.source.id, revision: content.source.revision.wrapping_add(1),
+            origin: content.source.origin, content: super::ass::Content::Script { bytes: bytes.clone(), fonts },
+        });
+        content.font_generation = Some(generation);
+    }
+    Some(content.source.clone())
+}
+
+/// Begin building `content`'s script for `style` on a worker, unless one is already running.
+/// FRAME THREAD, under the sidecar lock: it copies two `Arc`s and starts a thread, whatever the size
+/// of the file. The worker publishes with the font snapshot current by then, so a font arriving
+/// meanwhile is not lost.
+fn start_restyle(content: &mut Content, style: TextStyle) {
+    let Some(hold) = content.text.as_mut().filter(|hold| !hold.restyling) else { return };
+    let super::ass::Content::Script { bytes, .. } = &content.source.content else { return };
+    let (id, base_generation, header_len, bytes) = (content.source.id, hold.style_generation, hold.header_len, bytes.clone());
+    hold.restyling = true;
+    let started = plx_base::task::spawn_small("sidecar restyle", move || {
+        let header = text_ass::header(&style);
+        let script = joined(header.as_bytes(), &bytes[header_len..]);
+        drop(bytes);
+        let mut st = state();
+        if let Some((_, content)) = st.loaded.as_mut() {
+            publish_restyle(content, id, base_generation, style, header.len(), script);
+        }
+        SETTLED.notify_all();
+        drop(st);
+        plx_machine::present::wake_from_worker();
+    });
+    if !started {
+        super::log("sidecar: restyle worker refused");
+        hold.restyling = false;
+        SETTLED.notify_all();
+    }
+}
+
+/// Publish a script built for `style` if `content` is still the file it was built from. The
+/// fonts are the ones the content holds now, so a restyle never undoes a font publication.
+fn publish_restyle(content: &mut Content, id: u64, base_generation: u32, style: TextStyle, header_len: usize, script: Arc<[u8]>) {
+    let (revision, origin, fonts) = match (&content.source.content, content.text.as_mut()) {
+        (super::ass::Content::Script { fonts, .. }, Some(hold)) if content.source.id == id => {
+            hold.restyling = false;
+            if hold.style_generation != base_generation {
+                return;
+            }
+            (hold.header_len, hold.style_generation) = (header_len, style.generation());
+            (content.source.revision.wrapping_add(1), super::ass::Origin::Text(style), fonts.clone())
+        }
+        _ => return,
+    };
+    content.source = Arc::new(super::ass::Source {
+        id, revision, origin, content: super::ass::Content::Script { bytes: script, fonts },
+    });
+}
+
+/// `head` then `tail` as one shared buffer, allocated once at its exact size (the iterator is
+/// exact-sized, so no intermediate `Vec` is built and copied).
+fn joined(head: &[u8], tail: &[u8]) -> Arc<[u8]> {
+    let mut script = Vec::with_capacity(head.len() + tail.len());
+    script.extend_from_slice(head);
+    script.extend_from_slice(tail);
+    script.into()
 }
 
 fn is_ass_script(text: &str) -> bool {
@@ -313,291 +406,123 @@ fn is_ass_script(text: &str) -> bool {
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("Dialogue:")))
 }
 
+/// Whether a text sidecar is WebVTT: it says so in its first line, or the server named the codec.
+fn is_webvtt(text: &str, codec: &str) -> bool {
+    codec.eq_ignore_ascii_case("vtt")
+        || codec.eq_ignore_ascii_case("webvtt")
+        || text.trim_start_matches('\u{feff}').starts_with("WEBVTT")
+}
+
 fn decode(bytes: Vec<u8>, codec: &str) -> Result<Content, Failure> {
     if bytes.len() > plx_plex::plex::SIDECAR_MAX_BYTES { return Err(Failure::Empty); }
-    let text = String::from_utf8_lossy(&bytes);
-    if is_ass_script(&text) {
+    // The check's lossy copy (a whole file when it is not UTF-8) is gone before anything else is built.
+    let authored = { let text = String::from_utf8_lossy(&bytes); is_ass_script(&text) };
+    if authored {
         // Validate only the presence of events. libass owns the script grammar, including
         // style/format declarations, overlapping dialogue and vector drawing events.
-        return Ok(Content::Ass {
+        return Ok(Content {
             source: Arc::new(super::ass::Source {
-                id: super::ass::next_source_id(), revision: 1,
+                id: super::ass::next_source_id(), revision: 1, origin: super::ass::Origin::Authored,
                 content: super::ass::Content::Script { bytes: bytes.into(), fonts: Arc::from([]) },
             }),
             font_generation: None,
+            text: None,
         });
     }
     // A server conversion or error must not silently turn an ASS selection into plain text.
     if codec.eq_ignore_ascii_case("ass") || codec.eq_ignore_ascii_case("ssa") {
         return Err(Failure::Empty);
     }
-    let subs = Subtitles::from_bytes(bytes);
-    if subs.cue_count() == 0 { Err(Failure::Empty) } else { Ok(Content::Plain(subs)) }
-}
-
-/// The newest-starting cue covering `now_ns` in a list sorted by start — the same "newest wins"
-/// rule `active_subtitle` applies to the embedded store. Search the whole-file index: a
-/// long-running sign may outlive any number of shorter dialogue cues. Test-only wrapper that
-/// builds the end index per call; production keeps one per file ([`Subtitles::ends`]).
-#[cfg(test)]
-fn cue_at<T: Timed>(cues: &[T], now_ns: i64) -> Option<&T> {
-    cue_at_counted(cues, &EndTree::new(cues), now_ns).0
-}
-
-/// [`cue_at_indexed`] and the number of tree nodes and cues it looked at, so a test can pin the
-/// lookup's cost.
-fn cue_at_counted<'a, T: Timed>(cues: &'a [T], ends: &EndTree, now_ns: i64) -> (Option<&'a T>, usize) {
-    let after = cues.partition_point(|c| c.span().0 <= now_ns);
-    let mut steps = 0;
-    let hit = ends.rightmost_after(after, now_ns, &mut steps).map(|i| &cues[i]);
-    (hit, steps)
-}
-
-/// The cue [`cue_at`] defines, in O(log n): a binary search for the cues that have started, then a
-/// descent of the end-time tree for the newest of them whose end is still ahead. A gap in the
-/// dialogue is therefore as cheap as a hit, however far back the previous cue is.
-fn cue_at_indexed<'a, T: Timed>(cues: &'a [T], ends: &EndTree, now_ns: i64) -> Option<&'a T> {
-    cue_at_counted(cues, ends, now_ns).0
-}
-
-/// A max-tree over the cues' end times, in the cues' own order. Starts are sorted but ends are
-/// not (a sign outlives the dialogue over it), so "the newest cue still on screen" is a search
-/// for the rightmost end past `now`, which the tree answers by skipping every subtree whose
-/// largest end has already passed. 8 bytes per cue (twice the leaves) kept beside the 24-byte spans.
-struct EndTree {
-    size: usize,
-    max: Vec<i64>,
-}
-
-impl EndTree {
-    fn new<T: Timed>(cues: &[T]) -> Self {
-        let size = cues.len().next_power_of_two().max(1);
-        let mut max = vec![i64::MIN; 2 * size];
-        for (i, c) in cues.iter().enumerate() {
-            max[size + i] = c.span().1;
-        }
-        for k in (1..size).rev() {
-            max[k] = max[2 * k].max(max[2 * k + 1]);
-        }
-        Self { size, max }
+    // A sidecar file is whole-file text of unknown language here: the charset step is the BOM,
+    // valid UTF-8, else the encoding `chardetng` guesses from the whole file (`sub_charset`).
+    let text = super::sub_charset::subtitle_text_whole(&bytes, &super::sub_charset::TrackCharset::unknown());
+    // A NUL is never subtitle text: padding is dropped, as the line readers always did.
+    let text = if text.contains('\0') { std::borrow::Cow::Owned(text.replace('\0', "")) } else { text };
+    let text_ref = text.trim_start_matches('\u{feff}');
+    if is_ass_script(text_ref) {
+        return Err(Failure::Empty);
     }
-
-    /// The largest index below `hi` whose end is greater than `now`. `steps` counts nodes visited.
-    fn rightmost_after(&self, hi: usize, now: i64, steps: &mut usize) -> Option<usize> {
-        self.descend(1, 0, self.size, hi, now, steps)
+    let converted = if is_webvtt(text_ref, codec) { text_ass::script_from_vtt(text_ref) } else { text_ass::script_from_srt(text_ref) };
+    // Only the converted events are needed from here: the decoded text and the file go first.
+    drop(text);
+    drop(bytes);
+    if converted.cues == 0 {
+        return Err(Failure::Empty);
     }
-
-    fn descend(&self, node: usize, lo: usize, len: usize, hi: usize, now: i64, steps: &mut usize) -> Option<usize> {
-        *steps += 1;
-        if lo >= hi || self.max[node] <= now {
-            return None;
-        }
-        if len == 1 {
-            return Some(lo);
-        }
-        let half = len / 2;
-        self.descend(2 * node + 1, lo + half, half, hi, now, steps)
-            .or_else(|| self.descend(2 * node, lo, half, hi, now, steps))
-    }
-}
-
-/// The lookup key of [`cue_at`]: a cue's `(start_ns, end_ns)`.
-trait Timed {
-    fn span(&self) -> (i64, i64);
-}
-
-#[cfg(test)]
-impl Timed for Cue {
-    fn span(&self) -> (i64, i64) {
-        (self.start_ns, self.end_ns)
-    }
-}
-
-/// One cue's place in the file: its times, and the byte range of its text lines in
-/// [`Subtitles::text`]. A cue is 24 bytes here whatever its length; its text is never copied
-/// until it is drawn.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Span {
-    start_ns: i64,
-    end_ns: i64,
-    text_start: u32,
-    text_end: u32,
-}
-
-impl Timed for Span {
-    fn span(&self) -> (i64, i64) {
-        (self.start_ns, self.end_ns)
-    }
-}
-
-/// A parsed plain-text subtitle file: the file's own text, kept once, and an index of its cues
-/// sorted by start. A backward seek is a binary search of the index, not a re-read, and no cue
-/// has a count cap or a length cap — the file's bytes already bound both.
-struct Subtitles {
-    text: String,
-    spans: Vec<Span>,
-    /// End-time tree over `spans`, so a lookup in a gap does not walk back over the file.
-    ends: EndTree,
-}
-
-impl Subtitles {
-    fn empty() -> Self {
-        Self { text: String::new(), spans: Vec::new(), ends: EndTree::new::<Span>(&[]) }
-    }
-
-    /// The number of usable cues. Zero means "nothing to draw", which is what turns into the
-    /// on-screen explanation.
-    fn cue_count(&self) -> usize {
-        self.spans.len()
-    }
-
-    /// The caption at `now_ns`: only the cue that covers it is cut from the text.
-    #[cfg(test)]
-    fn line_at(&self, now_ns: i64) -> Option<String> {
-        self.cue_at(now_ns).map(|(text, _, _)| text)
-    }
-
-    /// The caption at `now_ns` with the `(start_ns, end_ns)` it is shown over.
-    fn cue_at(&self, now_ns: i64) -> Option<(String, i64, i64)> {
-        cue_at_indexed(&self.spans, &self.ends, now_ns).map(|span| (cue_text(&self.text, span), span.start_ns, span.end_ns))
-    }
-
-    /// Index a whole subtitle file. An empty index comes back for a file too large to be a
-    /// subtitle, a styled script (its native renderer owns the grammar), or one with no usable
-    /// cue. SubRip and WebVTT share one reader; ASS/SSA is never flattened here.
-    fn from_bytes(bytes: Vec<u8>) -> Self {
-        if bytes.len() > plx_plex::plex::SIDECAR_MAX_BYTES {
-            return Self::empty();
-        }
-        let mut text = match String::from_utf8(bytes) {
-            Ok(text) => text,
-            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
-        };
-        let bom = text.len() - text.trim_start_matches('\u{feff}').len();
-        text.drain(..bom);
-        if is_ass_script(&text) {
-            return Self::empty();
-        }
-        let mut spans = index_srt(&text);
-        spans.retain(|s| s.end_ns > s.start_ns && !cue_text(&text, s).is_empty());
-        spans.sort_by_key(|s| s.start_ns);
-        let ends = EndTree::new(&spans);
-        Self { text, spans, ends }
-    }
-}
-
-/// The text a cue draws, read from its own lines of the file. `sub_text` drops every `\r`, so
-/// the region's CRLF line endings come out as the same `\n` joins the lines always had.
-fn cue_text(text: &str, span: &Span) -> String {
-    super::sub_text(text[span.text_start as usize..span.text_end as usize].as_bytes())
-}
-
-/// Whole cues with their whole text, sorted by start. Tests read files this way; production
-/// keeps the [`Subtitles`] index and cuts text only when it is drawn.
-#[cfg(test)]
-pub fn parse(bytes: &[u8]) -> Vec<Cue> {
-    let subs = Subtitles::from_bytes(bytes.to_vec());
-    subs.spans
-        .iter()
-        .map(|span| Cue {
-            start_ns: span.start_ns,
-            end_ns: span.end_ns,
-            text: cue_text(&subs.text, span),
-        })
-        .collect()
-}
-
-// ---- parsing (pure) ---------------------------------------------------------------------------
-
-/// Index the cues of a SubRip or WebVTT file: a timing line (one containing `-->`) opens a cue,
-/// its text is every line up to the next blank line or timing line, and anything else outside a
-/// cue (the counter line, `WEBVTT`, a NOTE) is not text. Offsets are byte offsets into `text`,
-/// so a cue's text is never copied out at parse time.
-fn index_srt(text: &str) -> Vec<Span> {
-    /// `(start_ns, end_ns, byte range of the text lines)` of the cue being read.
-    type Open = (i64, i64, Option<(usize, usize)>);
-    fn flush(cur: &mut Option<Open>, out: &mut Vec<Span>) {
-        if let Some((start_ns, end_ns, Some((text_start, text_end)))) = cur.take() {
-            out.push(Span {
-                start_ns,
-                end_ns,
-                text_start: text_start as u32,
-                text_end: text_end as u32,
-            });
-        }
-    }
-    let mut out = Vec::new();
-    let mut cur: Option<Open> = None;
-    let mut offset = 0;
-    for raw in text.split_inclusive('\n') {
-        let line_start = offset;
-        offset += raw.len();
-        let line = raw.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some((start, end)) = timing_line(line) {
-            flush(&mut cur, &mut out);
-            cur = Some((start, end, None));
-        } else if line.trim().is_empty() {
-            flush(&mut cur, &mut out);
-        } else if let Some((_, _, lines)) = cur.as_mut() {
-            let first = match *lines {
-                Some((first, _)) => first,
-                None => line_start,
-            };
-            *lines = Some((first, line_start + line.len()));
-        }
-    }
-    flush(&mut cur, &mut out);
-    out
-}
-
-/// `00:01:02,500 --> 00:01:05,000` (SubRip), `01:02.500 --> 01:05.000 line:0` (WebVTT).
-fn timing_line(line: &str) -> Option<(i64, i64)> {
-    let (a, b) = line.split_once("-->")?;
-    let start = timestamp(a.trim())?;
-    let end = timestamp(b.split_whitespace().next()?)?;
-    Some((start, end))
-}
-
-/// `[H+:]MM:SS[,.]fff` → ns. The fraction is read as written (`.5` is half a second, `.50` too).
-fn timestamp(s: &str) -> Option<i64> {
-    let (clock, frac) = match s.rsplit_once([',', '.']) {
-        Some((c, f)) => (c, f),
-        None => (s, ""),
-    };
-    let mut secs: i64 = 0;
-    let mut fields = 0;
-    for part in clock.split(':') {
-        let v: i64 = part.trim().parse().ok().filter(|v| *v >= 0)?;
-        secs = secs.checked_mul(60)?.checked_add(v)?;
-        fields += 1;
-    }
-    if !(2..=3).contains(&fields) {
-        return None;
-    }
-    let mut frac_ns: i64 = 0;
-    let mut scale: i64 = 100_000_000;
-    for ch in frac.chars().take(9) {
-        frac_ns += ch.to_digit(10)? as i64 * scale;
-        scale /= 10;
-    }
-    secs.checked_mul(1_000_000_000)?.checked_add(frac_ns)
+    let style = TextStyle::current();
+    let header = text_ass::header(&style);
+    let script = joined(header.as_bytes(), converted.events.as_bytes());
+    drop(converted.events);
+    Ok(Content {
+        source: Arc::new(super::ass::Source {
+            id: super::ass::next_source_id(), revision: 1, origin: super::ass::Origin::Text(style),
+            content: super::ass::Content::Script { bytes: script, fonts: Arc::from([]) },
+        }),
+        font_generation: None,
+        text: Some(TextHold { header_len: header.len(), style_generation: style.generation(), cues: converted.cues, restyling: false }),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::ass::{self, Origin};
+    use super::super::ass_script::{ScriptIndex, WINDOW_BYTES, WINDOW_EVENTS};
+    use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
     use std::sync::atomic::Ordering::Relaxed;
 
+    /// A backstop against a hung worker only: the waits below end on the worker's own signal, so a
+    /// loaded runner just takes longer. Hitting it means the worker never finished.
+    const WORKER_HUNG: Duration = Duration::from_secs(120);
+
+    /// Block until the download worker has gone idle ([`SETTLED`]), however long the host takes.
     fn finish_download() {
-        let until = Instant::now() + Duration::from_secs(2);
-        while state().running && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(!state().running, "sidecar worker finished");
+        let (st, timeout) = SETTLED
+            .wait_timeout_while(state(), WORKER_HUNG, |st| st.running)
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(!timeout.timed_out() && !st.running, "sidecar worker finished");
+    }
+
+    /// Block until no restyle worker is building a script for the loaded file ([`SETTLED`]).
+    fn finish_restyle() {
+        let (_st, timeout) = SETTLED
+            .wait_timeout_while(state(), WORKER_HUNG, |st| {
+                st.loaded.as_ref().and_then(|(_, c)| c.text.as_ref()).is_some_and(|hold| hold.restyling)
+            })
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(!timeout.timed_out(), "sidecar restyle worker finished");
     }
 
     const STYLED_SCRIPT: &[u8] = b"[Script Info]\nScriptType: v4.00+\n[Events]\n\
         Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\pos(300,100)\\c&H0000FF&}SIGN\n";
+
+    /// The script bytes of a loaded file.
+    fn script_bytes(content: &Content) -> Arc<[u8]> {
+        let ass::Content::Script { bytes, .. } = &content.source.content else { panic!("a sidecar is a script") };
+        bytes.clone()
+    }
+
+    /// The `Dialogue:` lines of a loaded file, as libass is given them.
+    fn dialogue(content: &Content) -> Vec<String> {
+        String::from_utf8(script_bytes(content).to_vec()).unwrap()
+            .lines().filter(|l| l.starts_with("Dialogue:")).map(String::from).collect()
+    }
+
+    /// The text field of each line.
+    fn texts(content: &Content) -> Vec<String> {
+        dialogue(content).iter().map(|l| l.splitn(10, ',').nth(9).unwrap().to_string()).collect()
+    }
+
+    fn converted(body: &str) -> Content {
+        decode(body.as_bytes().to_vec(), "srt").expect("a usable file")
+    }
+
+    #[test]
+    fn nul_bytes_in_a_text_sidecar_do_not_fail_the_whole_file() {
+        let body = "1\n00:00:01,000 --> 00:00:02,000\nHel\0lo\n\n2\n00:00:03,000 --> 00:00:04,000\nWorld\n\0\0\0";
+        let content = converted(body);
+        assert_eq!(texts(&content), ["Hello", "World"]);
+    }
 
     #[test]
     fn styled_sidecar_source_survives_seek_and_off_on_but_not_new_items() {
@@ -609,9 +534,10 @@ mod tests {
             |_, _, _| Some(STYLED_SCRIPT.to_vec()));
         finish_download();
         let first = ass_source(false).expect("native script available");
+        assert_eq!(first.origin, Origin::Authored, "an authored script keeps its own look");
         assert!(ass_source(true).is_none(), "a server burn silences the native script");
-        for clock in [2_000_000_000, 80_000_000_000, 1_000_000_000] {
-            assert_eq!(active(clock, false), None, "ASS never enters the plain renderer");
+        for _seek in 0..3 {
+            assert_eq!(notice(), None, "a script has no notice");
             assert_eq!(ass_source(false).unwrap().id, first.id, "seek keeps the whole script");
         }
         deselect();
@@ -662,31 +588,13 @@ mod tests {
             select_with_fetch(plx_plex::plex::ServerId::from_raw(server), 42, key.into(), "srt".into(),
                 move |_, _, _| Some(format!("00:00:01 --> 00:00:03\nserver {server}\n").into_bytes()));
             finish_download();
-            assert_eq!(active(2_000_000_000, false), Some(format!("server {server}")));
+            let source = ass_source(false).expect("the converted file");
+            let ass::Content::Script { bytes, .. } = &source.content else { panic!() };
+            let script = String::from_utf8_lossy(bytes);
+            assert!(script.contains(&format!(",server {server}\n")), "{script}");
+            assert!(!script.contains(&format!("server {}", 1 - server)));
         }
         reset();
-    }
-
-    #[test]
-    fn styled_sidecars_never_draw_a_flattened_second_caption() {
-        let _guard = plx_base::testlock::serial();
-        reset();
-        let until = Instant::now() + Duration::from_secs(2);
-        while state().running && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(!state().running);
-        let script = b"[Script Info]\nScriptType: v4.00+\n[Events]\n\
-            Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\pos(300,100)\\c&H0000FF&}SIGN\n";
-        select_with_fetch(plx_plex::plex::ServerId::from_raw(0), 42,
-            "/library/streams/42.ass".into(), "ass".into(), move |_, _, _| Some(script.to_vec()));
-        let until = Instant::now() + Duration::from_secs(2);
-        while state().running && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let plain_caption = active(2_000_000_000, false);
-        reset();
-        assert_eq!(plain_caption, None, "styled ASS belongs to its native renderer");
     }
 
     #[test]
@@ -695,11 +603,7 @@ mod tests {
         reset();
         // A prior route test may have left its now-abandoned worker finishing a no-client
         // result. Let that worker retire before installing this test's controlled transport.
-        let until = Instant::now() + Duration::from_secs(2);
-        while state().running && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(!state().running);
+        finish_download();
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -720,11 +624,14 @@ mod tests {
         select_with_fetch(sid, 1, "new".into(), "srt".into(), fetch);
         let parallel = started_rx.recv_timeout(Duration::from_millis(100)).is_ok();
         release_tx.send(()).unwrap();
-        let until = Instant::now() + Duration::from_secs(2);
-        while active(2_000_000_000, false).as_deref() != Some("new") && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(active(2_000_000_000, false).as_deref(), Some("new"));
+        let text_of = || ass_source(false).map(|s| {
+            let ass::Content::Script { bytes, .. } = &s.content else { panic!() };
+            String::from_utf8_lossy(bytes).into_owned()
+        });
+        finish_download();
+        let script = text_of().expect("the latest pick landed");
+        assert!(script.ends_with(",new\n"), "{script}");
+        assert!(!script.contains(",old\n"));
         reset();
         assert!(!parallel, "an abandoned fetch must finish before another worker is started");
     }
@@ -733,115 +640,165 @@ mod tests {
     fn sidecar_download_refuses_an_oversized_body() {
         let mut body = b"00:00:01 --> 00:00:03\n".to_vec();
         body.resize(4 * 1024 * 1024 + 1, b'x');
-        assert!(parse(&body).is_empty(), "oversized sidecars must not allocate a parsed copy");
+        assert!(decode(body.clone(), "srt").is_err(), "oversized sidecars must not allocate a converted copy");
         assert!(decode(body, "ass").is_err(), "native scripts obey the same download bound");
     }
 
-    /// A cue is never cut: a 10,000-character line reaches the caption whole. The old cut at
-    /// 4,096 characters was silent, so a long sign simply stopped mid-sentence.
+    /// A cue is never cut: a 10,000-character line reaches the script whole.
     #[test]
     fn sidecar_cue_text_is_whole() {
         let line = "é".repeat(10_000);
-        let body = format!("00:00:01 --> 00:00:03\n{line}");
-        let cues = parse(body.as_bytes());
-        assert_eq!(cues.len(), 1);
-        assert_eq!(cues[0].text, line);
+        let content = converted(&format!("00:00:01 --> 00:00:03\n{line}"));
+        assert_eq!(texts(&content), [line]);
     }
 
-    fn srt_stamp(secs: i64) -> String {
-        format!("{:02}:{:02}:{:02},000", secs / 3600, secs / 60 % 60, secs % 60)
-    }
-
-    /// A merged feature-length file is well past the old 20,000-cue cut: the first cue, cue
-    /// 25,000 and the last must all answer, and so must a seek back to the start after the end
-    /// has been read.
+    /// The ordinary file: counters, CRLF, a BOM, italics, a two-line cue — the counter line must
+    /// never leak into the cue before it, and times are written to the centisecond.
     #[test]
-    fn sidecar_keeps_every_cue_of_a_long_file() {
+    fn a_subrip_file_becomes_clean_sorted_events() {
+        let srt = "\u{feff}1\r\n00:00:01,000 --> 00:00:03,500\r\n<i>Hello</i>\r\nthere\r\n\r\n\
+                   2\r\n00:01:00,250 --> 00:01:02,000\r\n{\\an8}Second line\r\n";
+        let content = converted(srt);
+        assert_eq!(content.text.as_ref().unwrap().cues, 2);
+        assert_eq!(dialogue(&content), [
+            "Dialogue: 0,0:00:01.00,0:00:03.50,Default,,0,0,0,,{\\i1}Hello{\\i0}\\Nthere",
+            "Dialogue: 0,0:01:00.25,0:01:02.00,An8,,0,0,0,,Second line",
+        ]);
+        assert_eq!(content.source.origin, Origin::Text(TextStyle::current()));
+        let script = String::from_utf8(script_bytes(&content).to_vec()).unwrap();
+        assert!(script.starts_with(&text_ass::header(&TextStyle::current())), "the synthesized header comes first");
+    }
+
+    /// PMS is asked for SubRip but may answer in whatever it has. WebVTT differs in a header,
+    /// `.` before the milliseconds with the hours optional, cue settings after the end time and
+    /// blocks that are not cues; none may cost a cue or reach the text, and `line:0` puts the cue
+    /// at the top.
+    #[test]
+    fn a_webvtt_file_converts_and_line_zero_is_the_top() {
+        let vtt = "WEBVTT\n\nNOTE made by hand\n\n01:02.500 --> 01:05.000 line:0 position:50%\nHi\n\n\
+                   1:00:00.000 --> 1:00:01.000\nAn hour in\n\n\
+                   00:00:10.000 --> 00:00:11.000 line:-1\nBottom\n";
+        let content = converted(vtt);
+        assert_eq!(dialogue(&content), [
+            "Dialogue: 0,0:00:10.00,0:00:11.00,Default,,0,0,0,,Bottom",
+            "Dialogue: 0,0:01:02.50,0:01:05.00,An8,,0,0,0,,Hi",
+            "Dialogue: 0,1:00:00.00,1:00:01.00,Default,,0,0,0,,An hour in",
+        ]);
+        // the codec the server names is enough when the first line does not say so
+        let bare = decode(b"00:01.000 --> 00:02.000 line:0\nTop\n".to_vec(), "vtt").unwrap();
+        assert_eq!(dialogue(&bare), ["Dialogue: 0,0:00:01.00,0:00:02.00,An8,,0,0,0,,Top"]);
+    }
+
+    /// A merged feature-length file is well past any one window: every cue is converted, and the
+    /// script is fed to libass in windows that hold the first cue, cue 25,000 and the last.
+    #[test]
+    fn a_long_file_converts_whole_and_is_fed_in_windows() {
         const N: i64 = 30_000;
+        let stamp = |secs: i64| format!("{:02}:{:02}:{:02},000", secs / 3600, secs / 60 % 60, secs % 60);
         let mut body = String::new();
         for k in 0..N {
             // Cue k runs over [2k s, 2k s + 1 s) and says "cue k".
-            body.push_str(&format!("{}\n{} --> {}\ncue {k}\n\n",
-                k + 1, srt_stamp(2 * k), srt_stamp(2 * k + 1)));
+            body.push_str(&format!("{}\n{} --> {}\ncue {k}\n\n", k + 1, stamp(2 * k), stamp(2 * k + 1)));
         }
-        let cues = parse(body.as_bytes());
-        let at = |k: i64| cue_at(&cues, 2 * k * S + S / 2).map(|c| c.text.clone());
-        assert_eq!(at(0).as_deref(), Some("cue 0"));
-        assert_eq!(at(25_000).as_deref(), Some("cue 25000"));
-        assert_eq!(at(N - 1).as_deref(), Some("cue 29999"));
-        assert_eq!(at(0).as_deref(), Some("cue 0"), "a backward seek after the end finds the earlier cue");
-        // The production lookup reads the index directly; it must answer the same way.
-        let subs = Subtitles::from_bytes(body.into_bytes());
-        let line = |k: i64| subs.line_at(2 * k * S + S / 2);
-        assert_eq!(subs.cue_count(), N as usize);
-        assert_eq!(line(25_000).as_deref(), Some("cue 25000"));
-        assert_eq!(line(N - 1).as_deref(), Some("cue 29999"));
-        assert_eq!(line(0).as_deref(), Some("cue 0"));
-    }
-
-    /// **The lookup in a long gap costs O(log n), not a scan back over the file.** Cue starts are
-    /// sorted but ends are not, so "newest start whose end is still ahead" needs more than the
-    /// start search; a 30,000-cue file with an hour of silence in the middle is the worst case.
-    #[test]
-    fn a_seek_into_a_long_gap_does_not_scan_the_file() {
-        let mut body = String::new();
-        for k in 0..30_000i64 {
-            let at = if k < 15_000 { 2 * k } else { 2 * k + 3600 };
-            body.push_str(&format!("{}\n{} --> {}\ncue {k}\n\n", k + 1, srt_stamp(at), srt_stamp(at + 1)));
+        let content = converted(&body);
+        assert_eq!(content.text.as_ref().unwrap().cues, N as usize);
+        let index = ScriptIndex::parse(&script_bytes(&content)).unwrap();
+        assert_eq!(index.len(), N as usize);
+        assert!(index.windowed());
+        for k in [0, 25_000, N - 1] {
+            let window = index.window(2 * k * 1000 + 500);
+            assert!(window.covers(2 * k * 1000 + 500));
+            let held = String::from_utf8_lossy(&window.text).into_owned();
+            assert!(held.contains(&format!(",cue {k}\n")), "cue {k} is in its window");
+            assert!(held.starts_with(&text_ass::header(&TextStyle::current())));
+            assert!(held.matches("Dialogue:").count() <= WINDOW_EVENTS);
         }
-        let cues = parse(body.as_bytes());
-        let gap = (2 * 15_000 + 1800) * S;
-        let (hit, steps) = cue_at_counted(&cues, &EndTree::new(&cues), gap);
-        assert!(hit.is_none(), "silence in the gap");
-        assert!(steps <= 64, "a gap lookup took {steps} steps over {} cues", cues.len());
-        let (hit, steps) = cue_at_counted(&cues, &EndTree::new(&cues), (2 * 29_999 + 3600) * S + S / 2);
-        assert_eq!(hit.map(|c| c.text.as_str()), Some("cue 29999"));
-        assert!(steps <= 64, "{steps} steps");
-        // A long sign over the whole file is still found from anywhere.
-        let mut with_sign = vec![Cue { start_ns: 0, end_ns: i64::MAX / 2, text: "sign".into() }];
-        with_sign.extend(cues.iter().cloned());
-        let (hit, steps) = cue_at_counted(&with_sign, &EndTree::new(&with_sign), gap);
-        assert_eq!(hit.map(|c| c.text.as_str()), Some("sign"));
-        assert!(steps <= 64, "{steps} steps");
     }
 
+    /// The worst case the size rule exists for: a 4 MiB (`SIDECAR_MAX_BYTES`) Thai SubRip file in
+    /// TIS-620 is one byte per letter and three once decoded to UTF-8, so a converted script is
+    /// well past the 8 MiB a script loaded whole may be. It must convert, be fed in windows, and
+    /// every window must stay within the bound. Two shapes: many ordinary cues, and a handful of
+    /// enormous ones (more bytes than a window but fewer lines than one).
     #[test]
-    fn sidecar_long_cue_survives_many_short_overlaps() {
-        let mut cues = vec![Cue { start_ns: 0, end_ns: 1000, text: "sign".into() }];
-        cues.extend((1..40).map(|n| Cue { start_ns: n, end_ns: n + 1, text: "dialogue".into() }));
-        assert_eq!(cue_at(&cues, 100).map(|c| c.text.as_str()), Some("sign"));
+    fn a_4_mib_tis620_file_converts_and_windows_within_the_bound() {
+        let thai = "สวัสดีครับ ผมชื่อสมชาย ยินดีที่ได้รู้จักทุกคน ";
+        let (tis, _, bad) = encoding_rs::WINDOWS_874.encode(thai);
+        assert!(!bad);
+        let cue = |k: usize, repeats: usize| {
+            let at = |s: usize| format!("{:02}:{:02}:{:02},000", s / 3600, s / 60 % 60, s % 60);
+            let mut out = format!("{}\r\n{} --> {}\r\n", k + 1, at(k * 2), at(k * 2 + 1)).into_bytes();
+            for _ in 0..repeats { out.extend_from_slice(&tis); }
+            out.extend_from_slice(b"\r\n\r\n");
+            out
+        };
+        let limit = plx_plex::plex::SIDECAR_MAX_BYTES;
+        for (name, repeats) in [("many small cues", 2), ("few enormous cues", 10_000)] {
+            let mut file = Vec::new();
+            let mut k = 0;
+            loop {
+                let next = cue(k, repeats);
+                if file.len() + next.len() > limit { break; }
+                file.extend_from_slice(&next);
+                k += 1;
+            }
+            assert!(file.len() <= limit && file.len() > limit - 512 * 1024, "{name}: {} bytes", file.len());
+            let content = decode(file, "srt").unwrap_or_else(|why| panic!("{name}: {why:?}"));
+            assert!(texts(&content)[0].contains("สวัสดีครับ"), "{name}: decoded as Thai, not mojibake");
+            let bytes = script_bytes(&content);
+            assert!(bytes.len() > WINDOW_BYTES, "{name}: {} bytes after conversion is the case under test", bytes.len());
+            assert_eq!(ass::validate(&content.source), Ok(()), "{name}: a windowed script is bounded by its source");
+            let index = ScriptIndex::parse(&bytes).unwrap();
+            assert!(index.windowed(), "{name}");
+            // walk it: every window is within the bound and covers its playhead; together they hold every cue
+            let mut now = 0;
+            let mut seen = std::collections::BTreeSet::new();
+            loop {
+                let window = index.window(now);
+                assert!(window.text.len() <= WINDOW_BYTES, "{name}: a {} byte window", window.text.len());
+                assert!(window.covers(now), "{name}");
+                let held = String::from_utf8_lossy(&window.text).into_owned();
+                for line in held.lines().filter(|l| l.starts_with("Dialogue:")) {
+                    seen.insert(line.splitn(4, ',').nth(1).unwrap().to_string());
+                }
+                if window.hi_ms == i64::MAX { break; }
+                now = window.hi_ms;
+            }
+            assert_eq!(seen.len(), index.len(), "{name}: every cue is in some window");
+        }
     }
 
-    const S: i64 = 1_000_000_000;
-
-    /// The ordinary file: counters, CRLF, a BOM, italics, a two-line cue — and the counter line
-    /// must never leak into the text of the cue before it.
+    /// Out-of-order files exist (merged fan subs); the script is in start order. A cue that ends
+    /// before it starts, or says nothing, is dropped rather than drawn.
     #[test]
-    fn a_subrip_file_becomes_clean_sorted_cues() {
-        let srt = "\u{feff}1\r\n00:00:01,000 --> 00:00:03,500\r\n<i>Hello</i>\r\nthere\r\n\r\n\
-                   2\r\n00:01:00,250 --> 00:01:02,000\r\n{\\an8}Second line\r\n";
-        let cues = parse(srt.as_bytes());
-        assert_eq!(
-            cues,
-            vec![
-                Cue { start_ns: S, end_ns: 3 * S + S / 2, text: "Hello\nthere".into() },
-                Cue { start_ns: 60 * S + S / 4, end_ns: 62 * S, text: "Second line".into() },
-            ]
-        );
+    fn events_are_sorted_and_the_unusable_cues_dropped() {
+        let srt = "2\n00:00:10,000 --> 00:00:11,000\nlater\n\n1\n00:00:01,000 --> 00:00:02,000\nsooner\n\n\
+                   3\n00:00:05,000 --> 00:00:04,000\nbackwards\n\n4\n00:00:20,000 --> 00:00:21,000\n<i></i>\n";
+        assert_eq!(texts(&converted(srt)), ["sooner", "later"]);
     }
 
-    /// PMS is asked for SubRip but may answer in whatever it has. WebVTT differs in three ways
-    /// that matter — a header, `.` before the milliseconds with the hours optional, and cue
-    /// settings after the end time — and none of them may cost a cue or reach the text.
+    /// Where two cues overlap the newer one wins: the older ends where the newer starts.
     #[test]
-    fn a_webvtt_file_parses_through_the_same_reader() {
-        let vtt = "WEBVTT\n\nNOTE made by hand\n\n01:02.500 --> 01:05.000 line:0 position:50%\nHi\n\n\
-                   1:00:00.000 --> 1:00:01.000\nAn hour in\n";
-        let cues = parse(vtt.as_bytes());
-        assert_eq!(cues.len(), 2);
-        assert_eq!((cues[0].start_ns, cues[0].end_ns), (62 * S + S / 2, 65 * S));
-        assert_eq!(cues[0].text, "Hi");
-        assert_eq!(cues[1].start_ns, 3600 * S);
+    fn an_overlap_is_clipped_to_the_newest_cue() {
+        let content = converted("1\n00:00:01,000 --> 00:00:04,000\na\n\n2\n00:00:02,000 --> 00:00:04,000\nb\n");
+        assert_eq!(dialogue(&content), [
+            "Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,a",
+            "Dialogue: 0,0:00:02.00,0:00:04.00,Default,,0,0,0,,b",
+        ]);
+    }
+
+    /// Garbage in, nothing out — an HTML error page or an image subtitle must not panic and must
+    /// not produce a script, because that is what turns into the on-screen explanation.
+    #[test]
+    fn a_body_that_is_not_a_subtitle_yields_no_script() {
+        for body in [
+            &b"<html><body>501 Not Implemented</body></html>"[..],
+            &[0xff, 0xfe, 0x00, 0x01, 0x02],
+            b"",
+            b"1\n99:99:99,999 --> nonsense\ntext\n",
+        ] {
+            assert!(matches!(decode(body.to_vec(), "srt"), Err(Failure::Empty)), "{body:?}");
+        }
     }
 
     #[test]
@@ -850,66 +807,123 @@ mod tests {
             Dialogue: 0,0:00:01.00,0:00:03.00,Sign,,0,0,0,,{\\pos(300,100)}SIGN\n\
             Dialogue: 1,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\k20}Dialogue\n";
         for codec in ["ass", "SSA"] {
-            let Content::Ass { source, .. } = decode(script.to_vec(), codec).unwrap() else {
-                panic!("styled script must remain native ASS");
-            };
-            let super::super::ass::Content::Script { bytes, .. } = &source.content else { panic!() };
-            assert_eq!(bytes.as_ref(), script);
+            let content = decode(script.to_vec(), codec).unwrap();
+            assert_eq!(script_bytes(&content).as_ref(), script);
+            assert_eq!(content.source.origin, Origin::Authored);
+            assert!(content.text.is_none(), "an authored script is never restyled");
         }
-        assert!(parse(script).is_empty(), "the plain parser must not flatten a styled script");
         assert!(decode(b"1\n00:00:01,000 --> 00:00:03,000\nSIGN\n".to_vec(), "ass").is_err(),
             "a converted response must not silently discard styling");
     }
 
-    /// Out-of-order files exist (merged fan subs); lookup is a binary search, so order is owed.
-    /// A cue that ends before it starts, or says nothing, is dropped rather than drawn.
+    /// #708's legacy charsets reach the script as the same UTF-8 text the embedded path gets.
     #[test]
-    fn cues_are_sorted_and_the_unusable_ones_dropped() {
-        let srt = "2\n00:00:10,000 --> 00:00:11,000\nlater\n\n1\n00:00:01,000 --> 00:00:02,000\nsooner\n\n\
-                   3\n00:00:05,000 --> 00:00:04,000\nbackwards\n\n4\n00:00:20,000 --> 00:00:21,000\n<i></i>\n";
-        let cues = parse(srt.as_bytes());
-        let texts: Vec<&str> = cues.iter().map(|c| c.text.as_str()).collect();
-        assert_eq!(texts, ["sooner", "later"]);
+    fn legacy_charsets_convert_to_the_expected_event_body() {
+        for (encoding, line) in [
+            (encoding_rs::GBK, "你好，世界。今天天气很好，我们一起去公园散步吧。"),
+            (encoding_rs::SHIFT_JIS, "こんにちは、世界。今日はいい天気ですね。一緒に散歩に行きましょう。"),
+            (encoding_rs::EUC_KR, "안녕하세요, 세계. 오늘 날씨가 정말 좋네요. 같이 산책하러 가요."),
+        ] {
+            let (bytes, _, bad) = encoding.encode(line);
+            assert!(!bad);
+            let mut file = b"1\n00:00:01,000 --> 00:00:03,000\n".to_vec();
+            file.extend_from_slice(&bytes);
+            file.push(b'\n');
+            let content = decode(file, "srt").expect("a usable file");
+            assert_eq!(texts(&content), [line], "{}", encoding.name());
+        }
     }
 
-    /// Garbage in, nothing out — an HTML error page or an image subtitle must not panic and must
-    /// not produce cues, because "no cues" is what turns into the on-screen explanation.
-    #[test]
-    fn a_body_that_is_not_a_subtitle_yields_no_cues() {
-        assert!(parse(b"<html><body>501 Not Implemented</body></html>").is_empty());
-        assert!(parse(&[0xff, 0xfe, 0x00, 0x01, 0x02]).is_empty());
-        assert!(parse(b"").is_empty());
-        assert!(parse(b"1\n99:99:99,999 --> nonsense\ntext\n").is_empty());
+    /// Another pair of picks than `current`, in both size and position.
+    fn other_picks(current: TextStyle) -> TextStyle {
+        TextStyle {
+            size: if current.size == SubtitleSize::Large { SubtitleSize::Small } else { SubtitleSize::Large },
+            position: if current.position == SubtitlePosition::High { SubtitlePosition::Low } else { SubtitlePosition::High },
+        }
     }
 
-    /// The lookup is what a SEEK depends on: any position, in any order, answers from the whole
-    /// file — the property the windowed embedded store cannot give a sidecar.
-    #[test]
-    fn a_position_finds_its_cue_wherever_the_playhead_came_from() {
-        let cues = parse(
-            b"1\n00:00:01,000 --> 00:00:03,000\na\n\n2\n00:00:02,000 --> 00:00:04,000\nb\n\n\
-              3\n00:10:00,000 --> 00:10:02,000\nc\n",
-        );
-        let at = |ns: i64| cue_at(&cues, ns).map(|c| c.text.as_str());
-        assert_eq!(at(0), None);
-        assert_eq!(at(S + S / 2), Some("a"));
-        assert_eq!(at(2 * S + S / 2), Some("b"), "where two overlap, the newer one wins");
-        assert_eq!(at(3 * S + S / 2), Some("b"));
-        assert_eq!(at(5 * S), None, "a gap is silence");
-        assert_eq!(at(601 * S), Some("c"));
-        assert_eq!(at(S + S / 2), Some("a"), "…and back again after a backward seek");
-        assert_eq!(at(3 * S), Some("b"), "an end time is exclusive");
+    /// The source for `picks`, once the worker that builds a restyled script has published it.
+    fn restyled_source(picks: TextStyle) -> Arc<ass::Source> {
+        finish_restyle();
+        ass_source_styled(false, picks).expect("the converted file")
     }
 
+    /// A pick change must cost the frame thread nothing in proportion to the file: the call that
+    /// notices it returns the source already up (the old look stays until the new script is built
+    /// elsewhere), and the new one arrives with the events untouched and the revision bumped once.
     #[test]
-    fn timestamps_accept_both_separators_and_refuse_nonsense() {
-        assert_eq!(timestamp("00:00:01,000"), Some(S));
-        assert_eq!(timestamp("00:01.5"), Some(S + S / 2));
-        assert_eq!(timestamp("1:02:03.250"), Some(3723 * S + S / 4));
-        assert_eq!(timestamp("12"), None, "a bare counter line is not a time");
-        assert_eq!(timestamp("a:b:c"), None);
-        assert_eq!(timestamp("1:2:3:4"), None);
-        assert_eq!(timestamp("-1:00:00,000"), None);
+    fn a_pick_change_returns_the_held_source_at_once_and_publishes_the_restyle_later() {
+        let _guard = plx_base::testlock::serial();
+        reset();
+        finish_download();
+        let body: String = (0..20_000).map(|i| format!(
+            "{n}\n00:{m:02}:{s:02},000 --> 00:{m:02}:{e:02},000\nA cue of some length number {n}\n\n",
+            n = i + 1, m = (i / 30) % 60, s = (i % 30) * 2 % 60, e = ((i % 30) * 2 + 1) % 60)).collect();
+        select_with_fetch(plx_plex::plex::ServerId::from_raw(0), 8, "/library/streams/8".into(), "srt".into(),
+            move |_, _, _| Some(body.clone().into_bytes()));
+        finish_download();
+        let current = TextStyle::current();
+        let picks = other_picks(current);
+        let before = ass_source_styled(false, current).unwrap();
+        let during = ass_source_styled(false, picks).unwrap();
+        assert!(Arc::ptr_eq(&before, &during), "the old look is still up when the pick lands");
+        let after = restyled_source(picks);
+        assert_eq!((after.id, after.revision, after.origin), (before.id, before.revision.wrapping_add(1), Origin::Text(picks)));
+        let (ass::Content::Script { bytes: old, .. }, ass::Content::Script { bytes: new, .. }) =
+            (&before.content, &after.content) else { panic!() };
+        assert_eq!(&old[text_ass::header(&current).len()..], &new[text_ass::header(&picks).len()..]);
+        assert!(Arc::ptr_eq(&after, &ass_source_styled(false, picks).unwrap()), "and once only");
+        reset();
+    }
+
+    /// Host timing of the restyle on the TV's repro file (4 MiB TIS-620, 35,735 cues). Run by hand:
+    /// `cargo test -p plxnative-media --lib restyle_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn restyle_timing() {
+        let bytes = std::fs::read("/tmp/libass7b-fx/sidecar-big-tis620.srt").expect("the fixture");
+        let content = decode(bytes, "srt").expect("a usable file");
+        let ass::Content::Script { bytes: script, .. } = &content.source.content else { panic!() };
+        let hold = content.text.as_ref().unwrap();
+        let header = text_ass::header(&other_picks(TextStyle::current()));
+        let t0 = Instant::now();
+        let rebuilt = joined(header.as_bytes(), &script[hold.header_len..]);
+        println!("restyle of {} bytes, {} cues: {:?}", rebuilt.len(), hold.cues, t0.elapsed());
+        let t0 = Instant::now();
+        let bytewise: Arc<[u8]> = header.as_bytes().iter().chain(&script[hold.header_len..]).copied().collect();
+        println!("the byte-wise join it replaced: {:?} ({} bytes)", t0.elapsed(), bytewise.len());
+    }
+
+    /// The failure notice is all that is left of the old caption path: shown for six seconds in
+    /// the caption's own place (the caller silences it where the server burns the selection).
+    #[test]
+    fn the_failure_notice_is_shown_for_six_seconds() {
+        let _guard = plx_base::testlock::serial();
+        reset();
+        finish_download();
+        assert_eq!((notice(), notice_shown()), (None, false), "nothing selected");
+        select_with_fetch(plx_plex::plex::ServerId::from_raw(0), 9, "/library/streams/9".into(), "srt".into(),
+            |_, _, _| Some(b"<html>not a subtitle</html>".to_vec()));
+        finish_download();
+        let message = plx_platform::i18n::msg::widgets_sidecar_empty();
+        assert_eq!(notice(), Some(message));
+        assert!(notice_shown());
+        assert!(ass_source(false).is_none(), "and no script");
+        // six seconds on
+        {
+            let mut st = state();
+            let (_, _, at) = st.failed.as_mut().unwrap();
+            *at = Instant::now().checked_sub(FAILURE_SHOWN + Duration::from_millis(1)).unwrap();
+        }
+        assert_eq!((notice(), notice_shown()), (None, false));
+        // a fetch failure says its own thing
+        select_with_fetch(plx_plex::plex::ServerId::from_raw(0), 10, "/library/streams/10".into(), "srt".into(),
+            |_, _, _| None);
+        finish_download();
+        assert_eq!(notice(), Some(plx_platform::i18n::msg::widgets_sidecar_fetch_failed()));
+        deselect();
+        assert_eq!(notice(), None, "off clears it");
+        reset();
     }
 
     /// Issue #266 I6: the route withholds the audio enhancement exactly when this restore would

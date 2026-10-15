@@ -13,10 +13,15 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
+import shutil
 import socket
+import subprocess
+import tarfile
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -158,6 +163,160 @@ class Manifest(unittest.TestCase):
             for url in dep.get('mirrors', []):
                 self.assertTrue(url.startswith('https://'), url)
                 self.assertTrue(url.split('?')[0].endswith('/' + dep['archive']), url)
+
+
+GIT_PATCH = b'''diff --git a/libass/f.c b/libass/f.c
+index 0000000..1111111 100644
+--- a/libass/f.c
++++ b/libass/f.c
+@@ -1,2 +1,2 @@
+ int a;
+-int b;
++int c;
+'''
+BEFORE = b'int a;\nint b;\n'
+AFTER = b'int a;\nint c;\n'
+
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+class ApplyPatches(unittest.TestCase):
+    """`apply_patches` on a tree nested inside an ignored directory of a git repository, which is
+    exactly where `vendor/libass-build/source/libass-<ver>` sits in this repository's work tree."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.repo = Path(self.temp.name).resolve()
+        subprocess.run(['git', 'init', '-q', str(self.repo)], check=True)
+        (self.repo / '.gitignore').write_text('vendor/\n')
+        self.source = self.repo / 'vendor/libass-build/source/libass-9.9'
+        (self.source / 'libass').mkdir(parents=True)
+        (self.source / 'libass/f.c').write_bytes(BEFORE)
+        self.patch = 'ci/libass-patches/0001-fixture.patch'
+        (self.repo / self.patch).parent.mkdir(parents=True)
+        (self.repo / self.patch).write_bytes(GIT_PATCH)
+        self.dep = {'id': 'libass', 'patches': [{
+            'path': self.patch, 'sha256': sha(GIT_PATCH), 'result': {'libass/f.c': sha(AFTER)}}]}
+
+    def apply(self, dep=None):
+        with contextlib.redirect_stdout(io.StringIO()):
+            build_libass.apply_patches(dep or self.dep, self.source, root=self.repo)
+
+    def test_the_premise_git_skips_an_ignored_path_without_the_ceiling(self):
+        # Why the ceiling exists: from inside the ignored tree git resolves the patch against the
+        # enclosing repository, applies nothing, and still exits 0.
+        env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+        result = subprocess.run(['git', 'apply', str(self.repo / self.patch)], cwd=self.source, env=env)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual((self.source / 'libass/f.c').read_bytes(), BEFORE)
+
+    def test_the_patch_applies_and_the_result_hashes_match(self):
+        self.apply()
+        self.assertEqual((self.source / 'libass/f.c').read_bytes(), AFTER)
+
+    def test_the_ceiling_is_the_source_dirs_parent(self):
+        seen = []
+        real = subprocess.run
+
+        def spy(args, **kwargs):
+            seen.append(kwargs.get('env', {}).get('GIT_CEILING_DIRECTORIES'))
+            return real(args, **kwargs)
+
+        with mock.patch.object(build_libass.subprocess, 'run', spy):
+            self.apply()
+        self.assertTrue(seen)
+        self.assertEqual(set(seen), {str(self.source.parent)})
+
+    def test_a_git_environment_from_the_caller_does_not_redirect_it(self):
+        elsewhere = Path(self.temp.name) / 'elsewhere'
+        subprocess.run(['git', 'init', '-q', str(elsewhere)], check=True)
+        with mock.patch.dict(os.environ, {'GIT_DIR': str(elsewhere / '.git'),
+                                           'GIT_WORK_TREE': str(elsewhere),
+                                           'GIT_INDEX_FILE': str(elsewhere / 'index')}):
+            self.apply()
+        self.assertEqual((self.source / 'libass/f.c').read_bytes(), AFTER)
+
+    def test_a_wrong_result_hash_raises(self):
+        self.dep['patches'][0]['result']['libass/f.c'] = sha(b'something else')
+        with self.assertRaisesRegex(ValueError, 'libass patch not applied'):
+            self.apply()
+
+    def test_a_patch_that_was_not_really_applied_is_caught_by_the_hash_alone(self):
+        # Independent of git: if apply "succeeded" without changing the file, the result differs.
+        ok = subprocess.CompletedProcess([], 0, '', '')
+        with mock.patch.object(build_libass.subprocess, 'run', return_value=ok):
+            with self.assertRaisesRegex(ValueError, 'libass patch not applied'):
+                self.apply()
+
+    def test_an_already_applied_patch_raises(self):
+        self.apply()
+        with self.assertRaisesRegex(ValueError, 'does not apply'):
+            self.apply()
+
+    def test_a_tampered_patch_file_raises(self):
+        (self.repo / self.patch).write_bytes(GIT_PATCH + b'\n')
+        with self.assertRaisesRegex(ValueError, 'digest mismatch'):
+            self.apply()
+
+    def test_a_missing_patch_file_raises(self):
+        (self.repo / self.patch).unlink()
+        with self.assertRaisesRegex(ValueError, 'patch missing'):
+            self.apply()
+
+    def test_missing_git_is_a_clear_error(self):
+        with mock.patch.object(build_libass.shutil, 'which', return_value=None):
+            with self.assertRaisesRegex(ValueError, 'git is required'):
+                self.apply()
+
+    def test_a_dependency_without_patches_needs_no_git(self):
+        with mock.patch.object(build_libass.shutil, 'which', return_value=None):
+            self.apply({'id': 'freetype', 'patches': []})
+            self.apply({'id': 'freetype'})
+
+    def test_a_patch_file_no_pin_names_fails_the_build(self):
+        stray = self.repo / 'ci/libass-patches/0002-stray.patch'
+        stray.write_bytes(GIT_PATCH)
+        with self.assertRaisesRegex(ValueError, 'not named by any pin: ci/libass-patches/0002-stray.patch'):
+            build_libass.check_patch_set([self.dep], root=self.repo)
+        build_libass.check_patch_set([self.dep, {'id': 'x', 'patches': [
+            {'path': 'ci/libass-patches/0002-stray.patch', 'sha256': sha(GIT_PATCH), 'result': {}}]}],
+            root=self.repo)
+
+
+class PinnedPatches(unittest.TestCase):
+    def pins(self):
+        return json.loads((ROOT / 'ci/libass-dependencies.json').read_text())
+
+    def test_the_real_pins_name_every_patch_file_with_its_digest(self):
+        build_libass.check_patch_set(self.pins())
+
+    def test_the_font_face_patch_is_pinned_on_libass_alone(self):
+        by_id = {d['id']: d['patches'] for d in self.pins()}
+        self.assertEqual([p['path'] for p in by_id['libass']], ['ci/libass-patches/0001-grow-font-faces.patch'])
+        self.assertEqual({k for k, v in by_id.items() if v}, {'libass'})
+        self.assertEqual(set(by_id['libass'][0]['result']), {'libass/ass_font.c', 'libass/ass_font.h'})
+
+    def test_libunibreak_is_pinned_and_enabled(self):
+        deps = {d['id']: d for d in self.pins()}
+        self.assertEqual(deps['libunibreak']['license'], 'Zlib')
+        self.assertTrue(deps['libunibreak']['url'].endswith(deps['libunibreak']['archive']))
+        recipe = (ROOT / 'ci/build-libass.py').read_text()
+        self.assertIn("'--enable-libunibreak'", recipe)
+        self.assertNotIn('--disable-libunibreak', recipe)
+        self.assertIn("'libunibreak.a'", recipe)
+
+    def test_the_real_patch_applies_to_the_real_libass_release_and_reaches_its_result_hashes(self):
+        dep = {d['id']: d for d in self.pins()}['libass']
+        archive = ROOT / 'vendor/libass-sources' / dep['archive']
+        if not archive.is_file() or sha(archive.read_bytes()) != dep['sha256']:
+            self.skipTest('libass source archive not downloaded')
+        with tempfile.TemporaryDirectory() as folder:
+            build_libass.extract(archive, Path(folder))
+            with contextlib.redirect_stdout(io.StringIO()):
+                build_libass.apply_patches(dep, Path(folder) / ('libass-' + dep['version']))
 
 
 if __name__ == '__main__':
