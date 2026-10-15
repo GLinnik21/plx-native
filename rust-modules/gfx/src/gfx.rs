@@ -269,6 +269,17 @@ extern "C" {
         ty: c_uint,
         pixels: *const c_void,
     );
+    fn glTexSubImage2D(
+        target: c_uint,
+        level: c_int,
+        xoff: c_int,
+        yoff: c_int,
+        w: c_int,
+        h: c_int,
+        format: c_uint,
+        ty: c_uint,
+        pixels: *const c_void,
+    );
     fn glTexParameteri(target: c_uint, pname: c_uint, param: c_int);
     // UI self-capture (the "cap_*" section at the bottom of this file)
     fn glGenFramebuffers(n: c_int, ids: *mut c_uint);
@@ -2155,6 +2166,112 @@ pub fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -> c_uin
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         tex
     }
+}
+
+/// Texture storage granularity of [`upload_rgba_bucketed`], in pixels.
+pub const UPLOAD_BUCKET: c_int = 64;
+
+/// `n` rounded up to a multiple of [`UPLOAD_BUCKET`] (0 stays 0, a negative size is 0).
+pub fn bucket_dim(n: c_int) -> c_int {
+    (n.max(0) + UPLOAD_BUCKET - 1) / UPLOAD_BUCKET * UPLOAD_BUCKET
+}
+
+/// A texture owned by [`upload_rgba_bucketed`]: its GL name, the size of its storage (a bucket
+/// multiple) and the part of that storage the last upload filled. `Default` is "no texture yet".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BucketTex {
+    pub tex: c_uint,
+    pub alloc_w: c_int,
+    pub alloc_h: c_int,
+    pub used_w: c_int,
+    pub used_h: c_int,
+}
+
+impl BucketTex {
+    /// Does a `w`×`h` image fit the existing storage (so it needs no re-specification)? A smaller
+    /// image does: shrinking stays in its bucket.
+    pub fn fits(&self, w: c_int, h: c_int) -> bool {
+        self.tex != 0 && w <= self.alloc_w && h <= self.alloc_h
+    }
+
+    /// The UV rectangle of the used part, for `Painter::tex_uv`.
+    pub fn uv(&self) -> [f32; 4] {
+        let (u, v) = self.uv_max();
+        [0.0, 0.0, u, v]
+    }
+
+    /// The UV of the used part's far corner.
+    pub fn uv_max(&self) -> (f32, f32) {
+        if self.alloc_w == 0 || self.alloc_h == 0 {
+            return (0.0, 0.0);
+        }
+        (self.used_w as f32 / self.alloc_w as f32, self.used_h as f32 / self.alloc_h as f32)
+    }
+}
+
+/// Like [`upload_rgba`], for content that changes size often (libass subtitle frames): the
+/// texture is allocated at the image size rounded up to [`UPLOAD_BUCKET`], and a later image that
+/// fits is copied in with `glTexSubImage2D` rather than re-specifying the texture (assup max
+/// 4.3 ms on the PR 7a TV run, #730, srt-rapid at 1080p; max 3.9 ms at rapid-4k60 in the earlier
+/// probe). Only a first or a larger image allocates. After every image a transparent 1-px guard
+/// column and row are written just outside it, so stale ink from a previous larger image is never
+/// sampled by the linear filter at the used edge; draw `[0, uv_max()]` exactly. Every non-empty
+/// upload bumps `tex_ledger::revision`, like [`upload_rgba`]. Main-thread only. A `w` or `h` of 0
+/// uploads nothing.
+pub fn upload_rgba_bucketed(prev: BucketTex, w: c_int, h: c_int, pixels: *const u8) -> BucketTex {
+    let mut t = prev;
+    t.used_w = w.max(0);
+    t.used_h = h.max(0);
+    if t.used_w == 0 || t.used_h == 0 {
+        return t;
+    }
+    unsafe {
+        if t.tex == 0 {
+            glGenTextures(1, &mut t.tex);
+        }
+        glBindTexture(GL_TEXTURE_2D, t.tex);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        if !prev.fits(w, h) {
+            t.alloc_w = bucket_dim(w).max(prev.alloc_w);
+            t.alloc_h = bucket_dim(h).max(prev.alloc_h);
+            glTexImage2D(
+                GL_TEXTURE_2D,
+                0,
+                GL_RGBA as c_int,
+                t.alloc_w,
+                t.alloc_h,
+                0,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                std::ptr::null(),
+            );
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        }
+        tex_ledger::specified(t.tex, t.alloc_w, t.alloc_h);
+        glTexSubImage2D(
+            GL_TEXTURE_2D,
+            0,
+            0,
+            0,
+            w,
+            h,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            pixels as *const c_void,
+        );
+        let zeros = vec![0u8; t.alloc_w.max(t.alloc_h) as usize * 4];
+        let zp = zeros.as_ptr() as *const c_void;
+        if w < t.alloc_w {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, w, 0, 1, (h + 1).min(t.alloc_h), GL_RGBA, GL_UNSIGNED_BYTE, zp);
+        }
+        if h < t.alloc_h {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, h, (w + 1).min(t.alloc_w), 1, GL_RGBA, GL_UNSIGNED_BYTE, zp);
+        }
+    }
+    t
 }
 
 /// **Every texture [`upload_rgba`] specifies, counted until [`delete_tex`] frees it** — the live
@@ -6526,6 +6643,34 @@ pub fn draw_field_panel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bucket_dim_rounds_up_to_64() {
+        for (n, want) in [(-5, 0), (0, 0), (1, 64), (63, 64), (64, 64), (65, 128)] {
+            assert_eq!(bucket_dim(n), want, "{n}");
+        }
+        assert_eq!((bucket_dim(1920), bucket_dim(1080)), (1920, 1088));
+        assert_eq!((bucket_dim(3840), bucket_dim(2160)), (3840, 2176));
+    }
+
+    #[test]
+    fn a_smaller_or_equal_image_fits_its_bucket_and_a_larger_one_does_not() {
+        let none = BucketTex::default();
+        assert!(!none.fits(1, 1), "no texture yet");
+        let t = BucketTex { tex: 7, alloc_w: 128, alloc_h: 64, used_w: 65, used_h: 64 };
+        assert!(t.fits(128, 64));
+        assert!(t.fits(10, 3), "shrinking stays in the bucket");
+        assert!(!t.fits(129, 64));
+        assert!(!t.fits(10, 65));
+    }
+
+    #[test]
+    fn uv_max_is_used_over_allocated() {
+        let t = BucketTex { tex: 7, alloc_w: 128, alloc_h: 64, used_w: 64, used_h: 16 };
+        assert_eq!(t.uv_max(), (0.5, 0.25));
+        assert_eq!(t.uv(), [0.0, 0.0, 0.5, 0.25]);
+        assert_eq!(BucketTex::default().uv_max(), (0.0, 0.0));
+    }
 
     /// **[`enc_u8`] is `(enc(v).clamp(0, 1) * 255 + 0.5) as u8` to the bit, without a `powf`.**
     /// Every threshold is checked from both sides (the last float below it and the threshold
