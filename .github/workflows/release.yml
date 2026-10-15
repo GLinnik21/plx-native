@@ -113,7 +113,7 @@ jobs:
             echo "::error::candidate '$CANDIDATE' is not a release-candidate tag — expected rc/vX.Y.Z-rc.N."
             exit 1
           fi
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.line || 'main' }}
           # a shallow clone cannot push
@@ -261,7 +261,7 @@ jobs:
             esac
           fi
           echo "line=$line" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.ref.outputs.tag }}
       - name: The tag must match pkg/appinfo.json
@@ -295,7 +295,7 @@ jobs:
     # comments say it supports: a fresh bump, an explicit rebuild, or a hand-pushed tag.
     if: always() && needs.guard.result == 'success'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.guard.outputs.tag }}
       - name: LICENSE and third-party notices must exist
@@ -394,14 +394,14 @@ jobs:
       # default and would delete `dist/`. This job had no checkout at all until now, which made its
       # last step — `ci/verify-published.sh` — a file that does not exist; it has never run, because
       # v0.2.1 was hand-published and nothing has been published through this job since.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.guard.outputs.tag }}
           # A shallow clone cannot push, and this job now pushes: the completed release audit goes
           # to whichever line this release was cut from (main, or a release/vX.Y maintenance
           # branch) in its last step. Same reason `prepare` fetches everything.
           fetch-depth: 0
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-assets
           path: dist
@@ -506,7 +506,7 @@ jobs:
 
       - name: Create the release
         id: publish
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ needs.guard.outputs.tag }}
           # The note's own `# vX.Y.Z — theme` line, not the bare tag — GitHub already shows this
@@ -624,7 +624,7 @@ jobs:
       actions: write
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           persist-credentials: false
