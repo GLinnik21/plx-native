@@ -203,11 +203,8 @@ pub(super) fn finish_call(changed: bool, pub_bytes: u64) {
 /// WORKER: the source was deselected; emit the partial window and start the next session clean.
 pub(super) fn flush() {
     let line = AGG.with(|a| {
-        let line = a
-            .borrow_mut()
-            .take_partial(UPLOADED.load(Ordering::Relaxed));
-        UPLOADED.store(0, Ordering::Relaxed);
-        line
+        a.borrow_mut()
+            .take_partial(UPLOADED.swap(0, Ordering::Relaxed))
     });
     if let Some(line) = line {
         plx_base::eventlog::log(&line);
