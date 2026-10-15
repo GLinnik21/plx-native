@@ -142,14 +142,12 @@ int plx_ass_load(PlxAss *ctx, const uint8_t *data, size_t len, int script)
     if (read_track(ctx, data, len, script) < 0) return -1;
     /* Inter is the shipped Latin family. With provider NONE libass tries the
      * exact authored family, this family, then default_font (our CJK face).
-     * ass_set_fonts opens every font the library holds, so it runs once per ctx: the fonts
-     * are fixed from here (plx_ass_add_font refuses), and a replaced track reuses the faces. */
-    if (!ctx->fonts_set) {
-        ass_set_fonts(ctx->renderer, ctx->default_font, "Inter",
-                      ASS_FONTPROVIDER_NONE, NULL, 1);
-        ctx->fonts_set = 1;
-        ++ctx->font_scans;
-    }
+     * ass_set_fonts opens every font the library holds, so it runs once per ctx, here: the fonts
+     * are fixed from now on (plx_ass_add_font and a second load refuse), and a replaced track
+     * reuses the faces. */
+    ass_set_fonts(ctx->renderer, ctx->default_font, "Inter", ASS_FONTPROVIDER_NONE, NULL, 1);
+    ctx->fonts_set = 1;
+    ++ctx->font_scans;
     return 0;
 }
 
