@@ -86,6 +86,9 @@ pub mod pins;
 // `impl AccountClient` block (same pattern as the PMS op files above).
 pub mod discover;
 
+// The plex.tv Watchlist (discover provider): `impl AccountClient`, contract frozen in watchlist.rs.
+pub mod watchlist;
+
 // The hub fetch's backoff ladder and the advisory "re-discover this server's endpoint" request —
 // shared by `grant`'s upgrade retry here and by the data layer (`pms`, `stores`), which re-export
 // them under their historical names.
@@ -103,6 +106,8 @@ pub use client::urlenc_str;
 pub use client::{decode_ip, decode_link, encode_ip, encode_link};
 #[allow(unused_imports)]
 pub use client::{Client, IpVersion, StreamUrl};
+// `Client::find_by_guids`' vocabulary (library.rs stays private).
+pub use library::{GuidKind, GuidLookupError, GuidMatch, GUIDS_PER_REQUEST};
 // WHERE a server is, as one value. `Origin` is what `register_origin`/`install` take and what a
 // `Client` carries; `Scheme` is re-exported beside it because `dev::DevServer` deserializes one
 // straight out of the `plxnative-servers` trigger.

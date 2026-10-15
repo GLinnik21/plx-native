@@ -5,6 +5,34 @@ use super::models::{MediaContainer, Metadata};
 use super::paging::{paged_path, PageReq};
 use super::params::{SectionQuery, StreamSelection};
 
+/// Largest number of guids one `find_by_guids` request carries.
+pub const GUIDS_PER_REQUEST: usize = 40;
+
+/// The Plex `type` a `find_by_guids` call filters on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GuidKind {
+    /// `type=1`
+    Movie,
+    /// `type=2`
+    Show,
+}
+
+/// One guid this server holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuidMatch {
+    pub guid: String,
+    /// This server's own ratingKey for it.
+    pub rating_key: String,
+    pub library_section_id: Option<i64>,
+}
+
+/// Why `find_by_guids` could not answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuidLookupError {
+    /// The server did not answer (or answered unreadably) for at least one chunk.
+    Unanswered,
+}
+
 fn sidecar_key_allowed(key: &str) -> bool {
     let Some(tail) = key.strip_prefix("/library/streams/") else { return false; };
     let (id, ext) = tail.split_once('.').unwrap_or((tail, ""));
@@ -69,6 +97,18 @@ impl Client {
             q = q.int("type", t);
         }
         self.get_json(&q.build())
+    }
+
+    /// Which of `guids` does THIS server hold? One `GET /library/all?type=T&guid=a,b,c` per chunk
+    /// of at most [`GUIDS_PER_REQUEST`], `T` = 1 (movie) or 2 (show) from `kind`. Only `plex://`
+    /// guids are sent; anything else is skipped, never matched. A guid the server does not hold is
+    /// simply absent from the result; `Err` means a chunk could not be answered at all, which the
+    /// caller must NOT read as "absent" (docs/watchlist-plan.md §1.5).
+    ///
+    /// CONTRACT FREEZE: the body is a stub until W1b fills it.
+    pub fn find_by_guids(&self, kind: GuidKind, guids: &[String]) -> Result<Vec<GuidMatch>, GuidLookupError> {
+        let _ = (kind, guids);
+        unimplemented!("W1b")
     }
 
     /// Sorted/filtered/paged section listing — the Library browse grid's one fetch.
