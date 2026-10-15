@@ -737,12 +737,97 @@ pub(crate) fn exit_player(
 pub(crate) fn hold_return_to_home(
     refresh_hubs: bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
-) {
-    if refresh_hubs
+) -> bool {
+    refresh_hubs
         && matches!(pages.top_arg(), Some(AppArg::Player))
         && matches!(pages.nav.tabs.stack.pending_dest(), Some(AppArg::Home))
-    {
-        pages.nav.tabs.stack.transition.hold_floor(CW_RETURN_HOLD_MS);
+        && pages.nav.tabs.stack.transition.hold_floor(CW_RETURN_HOLD_MS)
+}
+
+/// What the loop remembers about the return hold: the fence count the last refetch was issued
+/// against (an exit that announced no stop is not held for), the source of the item that was
+/// played (the one read waited for), when the hold was armed (for the log line), and the input a
+/// key press that ended the hold kept out of the frame that released the dip.
+pub(crate) struct ReturnHold {
+    stops_seen: u64,
+    played: Option<plx_plex::plex::ServerId>,
+    armed_at: Option<u32>,
+    deferred: Vec<plx_machine::machine::InputEvent<u32>>,
+}
+
+impl Default for ReturnHold {
+    fn default() -> Self {
+        Self {
+            stops_seen: plx_media::route::timeline_stops_announced(),
+            played: None,
+            armed_at: None,
+            deferred: Vec::new(),
+        }
+    }
+}
+
+impl ReturnHold {
+    /// The refetch the hold waits for has been issued: stops announced so far are accounted for.
+    pub(crate) fn refetch_issued(&mut self) {
+        self.stops_seen = plx_media::route::timeline_stops_announced();
+    }
+
+    /// Log how the hold ended, once.
+    fn ended(&mut self, cause: &str, now: u32) {
+        if let Some(at) = self.armed_at.take() {
+            log(&format!("home: return hold released by {cause} after {} ms", now.wrapping_sub(at)));
+        }
+    }
+}
+
+/// A decision to act on the screen behind the dip: a FRESH key press or a pointer click. A key's
+/// release or repeat (BACK's own Up arrives while the dip is dark), pointer motion and the system
+/// keyboard's state are not.
+fn acts_on_the_new_screen(event: &plx_machine::machine::InputEvent<u32>) -> bool {
+    use plx_machine::machine::{Edge, InputKind};
+    matches!(event.kind, InputKind::Key { edge: Edge::Down, .. } | InputKind::Click { .. })
+}
+
+/// The input half of the return hold, once a frame before the container's frame: hand back the
+/// input a releasing press kept out, arm the hold for an exit that reported a stop, and release it
+/// on a fresh press. The press that releases it is held out of THIS frame whole: the dip crosses
+/// its floor in this frame's tick, after input was delivered, so the page that would take the batch
+/// is still the player. It is delivered on the next frame, when Home owns input.
+pub(crate) fn return_hold_inputs(app: &mut super::App, now: u32) {
+    if !app.return_hold.deferred.is_empty() && app.pages.nav.tabs.stack.pending_dest().is_none() {
+        let held = std::mem::take(&mut app.return_hold.deferred);
+        app.inputs.splice(0..0, held);
+    }
+    let stop_reported = plx_media::route::timeline_stops_announced() > app.return_hold.stops_seen;
+    if hold_return_to_home(app.refresh_hubs && stop_reported, &mut app.pages) {
+        app.return_hold.armed_at = Some(now);
+        app.return_hold.played = Some(plx_media::route::cur_sid(&app.player.session));
+    }
+    if app.pages.nav.tabs.stack.transition.floor_held() && app.inputs.iter().any(acts_on_the_new_screen) {
+        app.pages.nav.tabs.stack.transition.release_floor();
+        app.return_hold.ended("key", now);
+        let batch = std::mem::take(&mut app.inputs);
+        app.return_hold.deferred.extend(batch);
+    }
+}
+
+/// The settle half, after the refetch block: the hold ends when the played item's own source has
+/// landed its read (or failed it), not when every source has (one slow friend's server must not
+/// spend the bound). An unknown source falls back to the adapter-wide count. When the dip let go on
+/// its own, that was the bound.
+pub(crate) fn return_hold_settle(app: &mut super::App, now: u32) {
+    if app.pages.nav.tabs.stack.transition.floor_held() {
+        let read_in = match app.return_hold.played {
+            Some(sid) if sid != plx_plex::plex::ServerId::UNSET => app.bridge.hub_source_settled(sid),
+            _ => !app.bridge.hubs_owed(),
+        };
+        if !app.refresh_hubs && read_in {
+            app.pages.nav.tabs.stack.transition.release_floor();
+            app.return_hold.ended("settle", now);
+        }
+    } else if let Some(at) = app.return_hold.armed_at {
+        let cause = if now.wrapping_sub(at) >= CW_RETURN_HOLD_MS { "bound" } else { "the dip ending" };
+        app.return_hold.ended(cause, now);
     }
 }
 

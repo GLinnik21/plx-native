@@ -6096,6 +6096,13 @@ pub fn timeline_stop_landed() -> bool {
     TIMELINE_STOP_FENCE.landed()
 }
 
+/// How many `state=stopped` reports have ever been announced. A caller that remembers the value it
+/// last saw can tell whether an exit announced one of its own (the count moved) or ended a play
+/// that never started and reported nothing.
+pub fn timeline_stops_announced() -> u64 {
+    TIMELINE_STOP_FENCE.announced()
+}
+
 /// Seek within a LIVE TRANSCODE by restarting it at a time offset — a transcode has no byte-Cues,
 /// so a byte-Range seek can't work (docs/plex-api.md). Registers a fresh physical encoder, swaps
 /// the route to its delivery-matched start endpoint with `offset={secs}`, then retires the old

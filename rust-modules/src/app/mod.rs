@@ -291,6 +291,8 @@ pub(crate) struct App {
     /// (`route::timeline_stop_landed`) and the player is off the route (never by a timer: a read
     /// that beats the stop's POST sees the old resume point).
     pub(crate) refresh_hubs: bool,
+    /// The return from the player to Home waiting on that refetch (`playback::ReturnHold`).
+    pub(crate) return_hold: playback::ReturnHold,
     /// The HTTPS retry for servers on a plaintext grant (`plex::grant::UpgradeRetry`), stepped
     /// every frame beside the view-state pump (`app/run.rs`).
     pub(crate) plaintext_upgrade: plx_plex::plex::grant::UpgradeRetry,

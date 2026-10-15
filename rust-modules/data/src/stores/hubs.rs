@@ -202,6 +202,11 @@ impl HubsStore {
         crate::pms::owed(&self.adapter)
     }
 
+    /// Has source `sid`'s read landed (or failed)? See [`crate::pms::source_settled`].
+    pub fn source_settled(&self, sid: plx_plex::plex::ServerId) -> bool {
+        crate::pms::source_settled(&self.state, sid)
+    }
+
     /// Test hook: how many authoritative refetches (`RefetchHubs`) this store has started.
     #[cfg(any(test, feature = "test-support"))]
     pub fn refetch_count_for_test(&self) -> u32 { crate::pms::hub_gen_for_test(&self.state) }

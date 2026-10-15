@@ -278,6 +278,14 @@ pub fn owed(adapter: &PmsAdapter) -> bool {
     adapter.owed.load(Ordering::SeqCst) > 0
 }
 
+/// Has the source `sid` nothing out and nothing waiting for room: its read has landed or failed
+/// (a refused launch fails on the spot), and the fan-out gate is not holding one back for it? True
+/// for a slot the roster does not hold, which has nothing to wait for. Unlike [`owed`] this is ONE
+/// source's answer, so a slow friend's server does not make everyone else's landing wait.
+pub fn source_settled(state: &PmsState, sid: ServerId) -> bool {
+    state.srcs.iter().find(|s| s.sid == sid).is_none_or(|s| !s.fetching && !s.deferred)
+}
+
 fn published_home(state: &PmsState) -> &Arc<HomeCatalog> {
     state.published.as_ref().unwrap_or(&EMPTY_HOME)
 }

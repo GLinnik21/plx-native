@@ -1269,6 +1269,11 @@ impl Bridge {
         self.stores.hubs.owed()
     }
 
+    /// Has the Hubs read of source `sid` landed or failed (and is none waiting for room)?
+    pub(crate) fn hub_source_settled(&self, sid: plx_plex::plex::ServerId) -> bool {
+        self.stores.hubs.source_settled(sid)
+    }
+
     /// Synchronous addressed Hubs command against this owner's retained Browse directory. Used by
     /// callers outside the per-frame dispatch (server activation, boot).
     pub(crate) fn hubs_run(&mut self, cmd: plx_data::stores::hubs::HubsCmd) -> plx_data::stores::StoreOutcome {

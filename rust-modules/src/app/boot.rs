@@ -1883,6 +1883,7 @@ pub(crate) unsafe fn construct(
         menu_play_await: None,
         prev,
         refresh_hubs,
+        return_hold: Default::default(),
         plaintext_upgrade: Default::default(),
         ev,
         remote,
