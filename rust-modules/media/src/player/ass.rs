@@ -341,6 +341,7 @@ fn worker() {
                 if let Some(retired) = retire_off(runtime(), &mut mailbox, &mut engine) {
                     // Native destruction can be slow too: release the mailbox first.
                     drop(mailbox);
+                    super::ass_perf::flush();
                     drop(retired);
                     mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
                     continue;
@@ -356,10 +357,13 @@ fn worker() {
                 mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
             }
         };
+        super::ass_perf::begin_call();
         if runtime().epoch.load(Ordering::Acquire) != request.key.epoch {
             continue;
         }
+        let job_started = std::time::Instant::now();
         let frame = engine.render(&request);
+        super::ass_perf::record_job(job_started.elapsed());
         if runtime().epoch.load(Ordering::Acquire) != request.key.epoch {
             continue;
         }
