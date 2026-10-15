@@ -171,6 +171,8 @@ static EMPTY_HOME: LazyLock<Arc<HomeCatalog>> = LazyLock::new(|| Arc::new(HomeCa
 /// One Hubs owner's main-thread-only logical state (`docs/stores-as-machines.md`). Production
 /// gains one through `stores::hubs::HubsStore`; the worker-touched half is [`PmsAdapter`].
 pub struct PmsState {
+    /// The publish order of view-state edits; each source holds a clone (see `Src::ledger`).
+    pub(crate) ledger: crate::viewledger::ViewLedger,
     published: Option<Arc<HomeCatalog>>,
     /// The source table, in display order: our own servers first, then each shared one. Main
     /// thread only, so no lock is needed once this lives per-owner rather than behind a global.
@@ -209,6 +211,7 @@ struct DeckAsk {
 impl Default for PmsState {
     fn default() -> Self {
         Self {
+            ledger: Default::default(),
             published: None,
             srcs: Vec::new(),
             seen: u64::MAX,
@@ -716,10 +719,7 @@ fn edit_item_with_scope(
     let mut hit = false;
     for s in state.srcs.iter_mut() {
         if let Some(b) = s.last.as_mut() {
-            let matched = apply_edit(b, at, edit);
-            // A read in flight will land from before this edit; keep it to be made again there.
-            if matched && s.fetching { s.edits.push((at.clone(), edit)); }
-            hit |= matched;
+            hit |= apply_edit(b, at, edit);
         }
     }
     if !hit {
@@ -1114,13 +1114,18 @@ fn deck_ready(ask: &DeckAsk, srcs: &[Src]) -> bool {
         && s.page.as_ref().is_some_and(|page| page.id == DECK_ID)))
 }
 
-/// The read describes the server from when it was issued, so the edits made since are made again
-/// on what it brought: a removed card stays out and a marked one stays marked.
-fn land_lane(source: &mut Src, mut build: SourceBuild) -> bool {
+/// A deck page's landing: the lane the read brought replaces the one held. (The edits published
+/// since the read was issued are made again on every landing by [`replay_since_request`].)
+fn land_lane(source: &mut Src, build: SourceBuild) -> bool {
     let Some(last) = source.last.as_mut() else { return false };
-    for (at, edit) in std::mem::take(&mut source.edits) { apply_edit(&mut build, &at, edit); }
     last.lane = build.lane;
     true
+}
+
+/// The read describes the server from when it was issued, so the edits published since are made
+/// again on what it brought: a removed card stays out and a marked one stays marked.
+fn replay_since_request(source: &Src, build: &mut SourceBuild) {
+    for (at, edit) in source.ledger.since(source.stamp) { apply_edit(build, &at, edit); }
 }
 
 fn land_page(source: &mut Src, page: &PageQuery, build: SourceBuild) -> bool {
@@ -1904,11 +1909,12 @@ struct Src {
     /// Rows `(hub id, key)` whose reload failed for good while held; asked again only after the
     /// screen's hold moves.
     stalled: Vec<(String, String)>,
-    /// The optimistic edits made while a read for this source was in flight, in order. That read's
-    /// landing describes the server from before them, so it is given them again (see
-    /// [`land_lane`]); the record ends with the read, and a read issued after an edit carries the
-    /// edit already.
-    edits: Vec<(ViewAt, ViewEdit)>,
+    /// The publish order of view-state edits (`stores::Stores` shares one across the stores), and
+    /// where the read now in flight for this source was issued in it: its landing describes the
+    /// server from before every edit published since, so it is given them again
+    /// ([`replay_since_request`]). A read issued after an edit carries the edit already.
+    ledger: crate::viewledger::ViewLedger,
+    stamp: crate::viewledger::Stamp,
     /// The projection this source last ANSWERED with, kept across a failure. This is what makes a
     /// failure never blank a populated Home; `None` (never answered) is what makes a dead source
     /// contribute nothing at all — no heading, no empty shelf, no spinner row.
@@ -1947,7 +1953,7 @@ impl Src {
         self.client = Some(client);
         self.token_gen = request.token_gen;
         self.fetching = true;
-        self.edits.clear(); // the lane this request carries already has every edit made so far
+        self.stamp = self.ledger.stamp(); // this read already carries every edit published so far
         if self.page.is_none() { self.state = HubState::Loading; }
         self.retry_s = 0.0;
         self.seq = request.seq;
@@ -1971,9 +1977,18 @@ impl Src {
             retry_n: 0,
             deferred: false,
             stalled: Vec::new(),
-            edits: Vec::new(),
+            ledger: Default::default(),
+            stamp: 0,
             last: None,
         }
+    }
+}
+
+impl PmsState {
+    /// Join the owner's view-state publish order, sources included (`Src::ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.ledger = ledger.clone();
+        for s in &mut self.srcs { s.ledger = ledger.clone(); }
     }
 }
 
@@ -2414,7 +2429,11 @@ fn sync_roster_with_scope(state: &mut PmsState, scope: &BrowseScope) {
                 refresh_src_lifecycle(&mut keep);
                 out.push(keep);
             }
-            None => out.push(Src::new(sid, handle)),
+            None => {
+                let mut fresh = Src::new(sid, handle);
+                fresh.ledger = state.ledger.clone();
+                out.push(fresh);
+            }
         }
     }
     // Whatever is left in `srcs` has left the roster — un-pinned, or a share plex.tv no longer
@@ -2912,7 +2931,8 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         }
         s.fetching = false;
         match l.build {
-            Some(b) => {
+            Some(mut b) => {
+                replay_since_request(s, &mut b);
                 if let Some(page) = s.page.take() {
                     dirty |= if page.id == DECK_ID { land_lane(s, b) } else if page.reload { land_reload(s, &page, b) } else { land_page(s, &page, b) };
                     paged = true;
@@ -3098,6 +3118,7 @@ fn seed_with_scope_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, sid
         .map(|facts| facts.handle.clone())
         .unwrap_or_default();
     let mut s = Src::new(sid, handle);
+    s.ledger = state.ledger.clone();
     s.state = hub_state;
     if items > 0 {
         let mut build = build_test(items);

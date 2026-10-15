@@ -191,6 +191,11 @@ impl<'a> CollectionView<'a> {
 }
 
 pub struct CollectionState {
+    /// The publish order of view-state edits, shared by `stores::Stores`.
+    pub(crate) ledger: crate::viewledger::ViewLedger,
+    /// Where in that order the read now out (single flight) was issued; its landing is made again
+    /// with every edit published since.
+    stamp: crate::viewledger::Stamp,
     current: Option<Collection>,
     generation: u32,
     /// The content counter [`CollectionView::revision`] reads.
@@ -199,7 +204,9 @@ pub struct CollectionState {
 }
 
 impl Default for CollectionState {
-    fn default() -> Self { Self { current: None, generation: 0, revision: 0, retry_cd: 0 } }
+    fn default() -> Self {
+        Self { ledger: Default::default(), stamp: 0, current: None, generation: 0, revision: 0, retry_cd: 0 }
+    }
 }
 
 impl CollectionState {
@@ -347,6 +354,7 @@ impl CollectionState {
         let generation = self.generation;
         let sid = c.id.sid;
         adapter.fetch.claim(generation);
+        self.stamp = self.ledger.stamp();
         let worker_adapter = Arc::clone(adapter);
         let request = serde_json::json!({"store":"collection","slot":0,"gen":generation,
             "sid":sid.raw(),"client":client.instance_gen(),"job":job});
@@ -364,6 +372,7 @@ impl CollectionState {
     }
 
     fn apply_landing(&mut self, landing: Landing) -> bool {
+        let (ledger, stamp) = (self.ledger.clone(), self.stamp);
         let Some(c) = self.current.as_mut() else { return false };
         match landing {
             Landing::Header { rk, head } => {
@@ -379,7 +388,10 @@ impl CollectionState {
                 c.status = CollectionStatus::Loading;
                 true
             }
-            Landing::Page { start, got, pages, total } => {
+            Landing::Page { start, got, mut pages, total } => {
+                // The read describes the server from when it was issued: edits published since
+                // are made again on its rows (`crate::viewledger`).
+                ledger.patch(stamp, pages.iter_mut().flatten());
                 // A page is read at its own offset: the frontier, or a re-read of a page whose
                 // count is known. Anything past the frontier was never asked for in order.
                 if start % PAGE_SIZE != 0 { return false; }
@@ -777,6 +789,29 @@ mod tests {
         let c = state.view().current().unwrap();
         assert_eq!((c.status, c.more), (CollectionStatus::Empty, false));
         assert!(state.job().is_none());
+    }
+
+    /// A members page read while a Mark Watched was pressed lands with the member as the server
+    /// described it before the press; the ledger makes the press again on it.
+    #[test]
+    fn a_members_page_in_flight_across_a_watched_edit_lands_watched() {
+        let adapter = Arc::new(CollectionAdapter::default());
+        let mut state = CollectionState::default();
+        state.run(&adapter, CollectionCmd::Open { target: set_target("50003", 9, "Set") });
+        let generation = state.generation();
+        adapter.land(generation, Landing::Header { rk: None, head: header("Set", 2) });
+        assert!(state.take_landing_for_test(&adapter));
+        // the read is out: stamped now, before the press
+        state.stamp = state.ledger.stamp();
+        let sid = state.current.as_ref().unwrap().id.sid;
+        let at = crate::viewstate::ViewAt::leaf(sid, "m1");
+        state.ledger.record(&at, crate::viewstate::ViewEdit::Watched(true));
+        let member = |rk: &str| PmsMovie { sid, rk: rk.into(), unwatched: true, resume_ms: 7, ..Default::default() };
+        adapter.land(generation, Landing::Page { start: 0, got: 2, pages: vec![vec![member("m1"), member("m2")]], total: 2 });
+        assert!(state.take_landing_for_test(&adapter));
+        let c = state.current.as_ref().unwrap();
+        let marks: Vec<_> = (0..c.shown()).filter_map(|i| c.pages.get(i)).map(|m| (m.rk.clone(), m.watched, m.resume_ms)).collect();
+        assert_eq!(marks, vec![("m1".to_string(), true, 0), ("m2".to_string(), false, 7)]);
     }
 
     /// A tag route resolves from the section's collection listing, whose row IS the collection's

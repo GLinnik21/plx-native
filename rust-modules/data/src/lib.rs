@@ -21,3 +21,4 @@ pub mod subsearch; // the player's subtitle search & download: agent search, ins
 pub mod search; // Search data layer: /hubs/search fanned out across every source, merged into typed shelves
 pub mod stores; // stores as machines (restructure phase 4): one command vocabulary + one step per data store
 pub mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
+pub mod viewledger; // the publish order of view-state edits, so a read in flight is re-patched on landing

@@ -299,3 +299,33 @@ fn a_show_scoped_edit_reaches_its_episode_rows_and_a_deck_removal_stays_on_one_r
         "a deck removal names the one row pressed, never the episodes under a show");
     assert_eq!(b.cw.len(), 2);
 }
+
+/// Whatever a source's read brings — a hub shelf, not only the deck lane — describes the server
+/// from when it was issued, so what was pressed since is made again on it: a marked card stays
+/// marked and a card taken off Continue Watching stays off.
+#[test]
+fn a_source_read_in_flight_across_edits_lands_with_them_made_again() {
+    let _g = plx_base::testlock::serial();
+    let mut s = Src::new(sid(0), String::new());
+    s.stamp = s.ledger.stamp(); // the read goes out…
+    s.ledger.record(&ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)); // …then two presses
+    s.ledger.record(&ViewAt::leaf(sid(0), "8"), ViewEdit::LeftDeck);
+    let mut brought = SourceBuild { lane: Default::default(),
+        cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7"), position: 0 },
+            CwItem { last_viewed_at: 8, m: started(0, "8"), position: 1 }],
+        shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])] };
+
+    replay_since_request(&s, &mut brought);
+
+    assert!(brought.shelves[0].items[0].watched, "the pressed card is marked on a shelf too");
+    assert!(!brought.shelves[0].items[1].watched, "and nothing else");
+    assert!(brought.cw[0].m.watched, "…and in the deck");
+    assert_eq!(brought.cw.iter().map(|c| c.m.rk.as_str()).collect::<Vec<_>>(), ["7"],
+        "a card taken off the deck while the read was out stays off");
+
+    s.stamp = s.ledger.stamp(); // a read issued after the presses carries them already
+    let mut later = SourceBuild { lane: Default::default(), cw: Vec::new(),
+        shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7"])] };
+    replay_since_request(&s, &mut later);
+    assert!(!later.shelves[0].items[0].watched, "its answer stands");
+}

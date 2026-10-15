@@ -769,6 +769,14 @@ impl SecState {
 /// sibling [`BrowseAdapter`]; everything whose identity belongs to a Browse instance lives here.
 #[derive(Clone)]
 pub struct BrowseState {
+    /// The publish order of view-state edits, shared with every other store
+    /// (`stores::Stores::default`); a standalone state owns a private one.
+    pub(crate) ledger: crate::viewledger::ViewLedger,
+    /// The ledger stamp of the listing page read in flight (single flight: `BrowseAdapter::fetching`),
+    /// taken when it was requested. Its landing is patched with every edit published since.
+    page_stamp: crate::viewledger::Stamp,
+    /// The same for the section-hubs read in flight (`BrowseAdapter::hubs.fetching` is its claim).
+    hubs_stamp: crate::viewledger::Stamp,
     session_generation: u64,
     sources: Vec<BrowseSource>,
     sections: Vec<BrowseSection>,
@@ -870,6 +878,9 @@ impl BrowseAdapter {
 impl Default for BrowseState {
     fn default() -> Self {
         Self {
+            ledger: Default::default(),
+            page_stamp: 0,
+            hubs_stamp: 0,
             sources: Vec::new(),
             sections: Vec::new(),
             states: Vec::new(),
@@ -2472,6 +2483,7 @@ impl BrowseState {
         let Some(client) = plx_plex::plex::client_for(sid) else { return };
         let token_gen = client.token_gen();
         adapter.fetching.store(true, Ordering::SeqCst);
+        self.page_stamp = self.ledger.stamp();
         let worker_adapter = Arc::clone(adapter);
         let spawned = plx_base::task::spawn_small("page", move || {
             let page = catch_unwind(|| {
@@ -2547,6 +2559,7 @@ impl BrowseState {
         // visible rows, the focused slot's page and the page a restore lands on.
         let wanted = self.want;
         let focus = self.focus;
+        let (ledger, stamp) = (self.ledger.clone(), self.page_stamp);
         let page = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
             || adapter.fetching.load(Ordering::SeqCst), || {
             adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -2623,7 +2636,11 @@ impl BrowseState {
                                     focus,
                                     restore: state.cursor.as_deref().map(Cursor::slot),
                                 };
-                                state.items.land(result.start, result.items, &keep);
+                                // The read describes the server from when it was requested; an
+                                // edit published since (a press while it was out) is made again.
+                                let mut items = result.items;
+                                ledger.patch(stamp, items.iter_mut());
+                                state.items.land(result.start, items, &keep);
                                 changed = true;
                             }
                         }
@@ -3827,3 +3844,7 @@ mod localized_type_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "browse_view_ledger_tests.rs"]
+mod view_ledger_tests;

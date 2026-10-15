@@ -26,6 +26,12 @@ surface directly; its deleted Browse migration allowlist is distinct from the re
 `ci/allow/mutators.txt` gate allowlist (currently empty).
 `Stores::viewstate` likewise owns the write queue, in-flight request, retry/refresh latches, rotated
 `Arc` mailbox and notice. Its zero-tolerance `viewstate-owner` gate has no allowlist.
+`Stores::view_ledger` is the one cross-store piece of state: the publish order of view-state edits
+(`viewledger`), recorded into by `viewstate` and held by every store that reads. A read stamps the
+ledger when it is requested and, when it lands, is given every edit published since (a press made
+while it was out), so a landing never undoes a press. It is a main-thread `Rc` handle, and the
+stamp travels into a worker as a plain number. A store swapped in after `Stores::default`
+(`HubsStore::from_parts` at boot) is re-attached with `Stores::share_view_ledger`.
 `Stores::person` owns the open model, generation, retry ladders and dev-seed latch alongside a
 rotated `Arc<PersonAdapter>` containing the unchanged indexed fetch claims/mailboxes. `AppViews`
 lends its `PersonView` to Person, Filmography and PersonBio; `person-owner` rejects every old free

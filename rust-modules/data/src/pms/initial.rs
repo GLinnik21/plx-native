@@ -101,6 +101,7 @@ impl Initial {
         -> Result<(super::PmsState, super::PmsAdapter), &'static str> {
         if !self.validate_boot() { return Err("Home initial state contains work or content"); }
         let state = super::PmsState {
+            ledger: Default::default(),
             published: Some(Arc::new(self.catalog.clone())),
             srcs: Vec::new(),
             seen: self.seen,
@@ -122,7 +123,7 @@ impl Initial {
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(state: &PmsState, adapter: &PmsAdapter) -> Self {
         let sources = state.srcs.iter().map(|s| {
-            let Src { sid, client, token_gen, handle, state, fetching, seq, retry_s, retry_n, last, page, deferred: _, abandoned: _, adoptable: _, stalled: _, edits: _ } = s;
+            let Src { sid, client, token_gen, handle, state, fetching, seq, retry_s, retry_n, last, page, deferred: _, abandoned: _, adoptable: _, stalled: _, ledger: _, stamp: _ } = s;
             Source { sid: *sid, client: client.map(|c| c.instance_gen()), token_gen: *token_gen,
                 handle: handle.clone(), state: match state { HubState::Loading => 0, HubState::Ready => 1, HubState::Failed => 2 },
                 fetching: *fetching, seq: *seq, retry_bits: retry_s.to_bits(), retry_n: *retry_n, last: last.clone(), page: page.clone() }

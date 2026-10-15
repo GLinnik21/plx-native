@@ -114,7 +114,7 @@ base
 | plex | `plex http` | 26k | 72% |
 | telemetry | `telemetry diag` (the event schema) | 16k | 64% |
 | ui | `ui` (the library) | 51k | 47% |
-| data | `stores browse metadata person collection search viewstate pms` | 27k | 56% |
+| data | `stores browse metadata person collection search viewstate viewledger pms` | 27k | 56% |
 | session | `auth` | 11k | 35% |
 | media | `ff aq abr hls curlio player route` | 56k | 49% |
 | appkit | `appkit` (the player panels and the Sources row several screens draw) | 13k | 32% |

@@ -53,6 +53,11 @@ impl Default for ViewStateStore {
 }
 
 impl ViewStateStore {
+    /// Join the owner's view-state publish order (`Stores::share_view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.ledger = ledger.clone();
+    }
+
     fn bump(&self) -> u32 {
         self.notice_dirty.store(true, Ordering::Relaxed);
         self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1

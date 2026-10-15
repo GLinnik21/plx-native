@@ -53,6 +53,11 @@ impl Default for HubsStore {
 }
 
 impl HubsStore {
+    /// Join the owner's view-state publish order (`Stores::share_view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.share_ledger(ledger);
+    }
+
     /// Retire the mailbox at the store command boundary, including when recording controls how
     /// subsequent work is launched. Every command entry point shares this identity-reset rule.
     fn prepare_command(&mut self, cmd: Option<&HubsCmd>) {

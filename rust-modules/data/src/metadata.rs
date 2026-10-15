@@ -115,6 +115,14 @@ pub struct Playhead {
 /// [`MetadataAdapter`].
 #[derive(Default)]
 pub struct MetadataState {
+    /// The publish order of view-state edits, shared by `stores::Stores`.
+    pub(crate) ledger: crate::viewledger::ViewLedger,
+    /// Where in that order the detail read now out was issued ([`MetadataCmd::RequestDetail`]).
+    detail_stamp: crate::viewledger::Stamp,
+    /// Where in that order the loaded page stood when it was installed. A season, episode-page or
+    /// related-window read is issued after that, so every edit published since is made again on
+    /// what such a read brings ([`replay_since_install`]).
+    page_stamp: crate::viewledger::Stamp,
     current: Option<Detail>,
     now: Option<NowPlaying>,
     playing: Option<PlayingItem>,
@@ -3826,6 +3834,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
     match cmd {
         MetadataCmd::RequestDetail { sid, rk } => {
             let prefer = selected_season_number(state, sid, &rk);
+            state.detail_stamp = state.ledger.stamp();
             request_detail(adapter, sid, &rk, prefer);
             true
         }
@@ -3971,9 +3980,30 @@ fn install_landed_detail(state: &mut MetadataState, adapter: &std::sync::Arc<Met
         carry_related_window(old, &mut d);
     }
     state.current = Some(d);
+    // The read describes the server from when it was requested: the edits published since are
+    // made again on the page it installed (`crate::viewledger`).
+    replay_views(state, state.detail_stamp);
+    state.page_stamp = state.ledger.stamp();
     // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
     sync_now_playing(state);
     true
+}
+
+/// Make every watched edit published after `since` again on the loaded page, through the same
+/// [`set_watched_local`] the press itself used.
+fn replay_views(state: &mut MetadataState, since: crate::viewledger::Stamp) {
+    for (at, edit) in state.ledger.since(since) {
+        if let crate::viewstate::ViewEdit::Watched(on) = edit {
+            set_watched_local(state, &at, on);
+        }
+    }
+}
+
+/// [`replay_views`] for a season, episode-page or related-window landing. Such a read was issued
+/// after the page was installed, so the install is a safe (early) stamp for it: replaying an edit
+/// the read already carried only repeats it.
+fn replay_since_install(state: &mut MetadataState) {
+    replay_views(state, state.page_stamp);
 }
 
 /// A re-read of the page already loaded (a return from the player, a watched toggle) lands with
@@ -4838,6 +4868,9 @@ pub fn pump_episode_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
     if let (true, Some(keep)) = (changed, keep) {
         d.episodes.evict(&keep);
     }
+    if changed {
+        replay_since_install(state);
+    }
     changed
 }
 
@@ -5068,6 +5101,9 @@ pub fn pump_related_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
         (t.offset, t.end, t.total, t.more, t.hubs, t.row) = (info.offset, info.end, info.total, info.more, hubs, state);
         changed = true;
     }
+    if changed {
+        replay_since_install(state);
+    }
     changed
 }
 
@@ -5122,6 +5158,7 @@ pub fn pump_season_with_gate(state: &mut MetadataState, adapter: &MetadataAdapte
             // the old list's wanted range means nothing to the new one
             adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner()).keep = None;
             d.cur_season = r.idx;
+            replay_since_install(state);
             true
         }
         None => {

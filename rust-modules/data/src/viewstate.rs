@@ -25,7 +25,9 @@
 //!   to every store that holds rows for it, a show's or season's EPISODE rows included), so the tick, the veil and the resume bar all change on
 //!   the frame of the press however far away the server is. The refresh that follows the write is
 //!   the reconcile: it is the server's own answer, and it silently corrects an optimistic edit that
-//!   turned out to be wrong. A server that never answers leaves the edit standing — the same "a
+//!   turned out to be wrong. A press made while a read of some store was already out is not lost to
+//!   that read's pre-press body either: every published change is also recorded in the shared
+//!   [`crate::viewledger::ViewLedger`], which each store consults when such a read lands. A server that never answers leaves the edit standing — the same "a
 //!   failure never blanks a populated Home" rule `pms.rs` keeps for a fetch, applied to a write.
 //! * **One write at a time, in order.** These are not idempotent reads: a watched/unwatched pair
 //!   landing out of order leaves the server saying the opposite of what the user last asked for. So
@@ -343,6 +345,9 @@ pub struct ViewStateAdapter {
 
 /// Main-thread state for one ViewState owner. Nothing in this value selects another owner.
 pub struct ViewStateState {
+    /// Every change published is recorded here first, so a read already in flight is re-patched
+    /// when it lands (`crate::viewledger`). `stores::Stores` shares it with the stores that read.
+    pub(crate) ledger: crate::viewledger::ViewLedger,
     queue: Vec<Req>,
     sent: Option<Req>,
     retry_cd: u32,
@@ -354,6 +359,7 @@ pub struct ViewStateState {
 impl Default for ViewStateState {
     fn default() -> Self {
         Self {
+            ledger: Default::default(),
             queue: Vec::new(),
             sent: None,
             retry_cd: 0,
@@ -428,8 +434,9 @@ impl ViewStateState {
     // OPTIMISTIC, before the request: the press must land on the panel now, not one WAN round trip
     // from now. Only THIS copy — the other sources' keys are not known until the fan-out resolves
     // them, which is what [`pump`] finishes the job with.
-    publish_view(ViewChange { sid, rk: rk.to_string(), scope: scope.clone(), fact: w.fact() },
-        browse, hubs, person, collection, search, metadata);
+    let change = ViewChange { sid, rk: rk.to_string(), scope: scope.clone(), fact: w.fact() };
+    self.ledger.record(&change.at(), change.edit());
+    publish_view(change, browse, hubs, person, collection, search, metadata);
     self.coalesce(sid, rk, w);
     let id = self.mint_request_id();
     self.queue.push(Req {
@@ -625,8 +632,9 @@ pub fn pump_with_gate(
             // matched as the one row it is.
             let scope = match &r.scope { Scope::Show => Scope::Show, Scope::Leaf => Scope::Leaf,
                 Scope::Season { .. } | Scope::Unknown => Scope::Unknown };
-            publish_view(ViewChange { sid: *osid, rk: ork.clone(), scope, fact: r.w.fact() },
-                browse, hubs, person, collection, search, metadata);
+            let change = ViewChange { sid: *osid, rk: ork.clone(), scope, fact: r.w.fact() };
+            self.ledger.record(&change.at(), change.edit());
+            publish_view(change, browse, hubs, person, collection, search, metadata);
         }
         // The refresh is owed whether or not the server took it: on success it is the reconcile,
         // and on failure it is what puts the optimistic edit back to whatever the server really
@@ -1049,6 +1057,25 @@ mod tests {
             assert_eq!(mark(rk), (rk.into(), true, false, 0), "episode {rk} of the show reads watched");
         }
         assert_eq!(mark("other"), ("other".into(), false, true, 5_000), "another show's episode is untouched");
+        drop(stores);
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// The press is recorded in the publish order the stores share, once, at the scope it was
+    /// pressed with — the half of the ledger a read landing later depends on.
+    #[test]
+    fn a_press_is_recorded_in_the_ledger_the_stores_share() {
+        let _g = plx_base::testlock::serial();
+        let (mut stores, sid) = search_with_show_and_episodes();
+        let directory = crate::stores::browse::DirectorySnapshot::default();
+        let before = stores.view_ledger.stamp();
+        assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+            sid, rk: "S".into(), write: Write::Watched, scope: Scope::Show, detail: None, guid: String::new(),
+        }, directory.view()));
+        let seen = stores.view_ledger.since(before);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, ViewAt { sid, rk: "S".into(), scope: Scope::Show });
+        assert_eq!(seen[0].1, ViewEdit::Watched(true));
         drop(stores);
         plx_plex::plex::reset_servers_for_test();
     }

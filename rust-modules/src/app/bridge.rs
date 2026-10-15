@@ -467,6 +467,7 @@ impl Bridge {
         let (state, adapter) = initial.home.restore(mt).expect("validated Home initial state");
         let mut stores = plx_data::stores::Stores::default();
         stores.hubs = plx_data::stores::hubs::HubsStore::from_parts(state, adapter);
+        stores.share_view_ledger();
         let hubs = stores.hubs.snapshot();
         // Arms controlled-content recording/replay's admission ledger over detail terminals —
         // exactly the decision the retired crate-global `record::reset(initial.content.is_some())`

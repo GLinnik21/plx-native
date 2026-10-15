@@ -506,3 +506,30 @@ fn unmarking_one_season_of_a_watched_show_clears_the_shows_own_watched_flag() {
     assert_eq!((d.seasons[0].viewed_leaf_count, d.seasons[1].viewed_leaf_count), (0, 2));
     clear(test_state(), test_adapter());
 }
+
+/// The detail read was requested, the user pressed Mark Watched on a related tile while it was out,
+/// and the read installs the page as the server described it before the press. The ledger makes
+/// the press again, through the same edit the press used.
+#[test]
+fn a_detail_read_in_flight_across_a_watched_edit_installs_with_it_made_again() {
+    let _serial = plx_base::testlock::serial();
+    let mut state = MetadataState::default();
+    let adapter = test_adapter();
+    let sid = plx_plex::plex::ServerId::UNSET;
+    let tile = || related_tile(sid, "rel");
+    let fresh = || Detail { sid, rk: "42".into(), related: vec![tile()], ..Default::default() };
+
+    state.detail_stamp = state.ledger.stamp(); // the read goes out…
+    state.ledger.record(&crate::viewstate::ViewAt::leaf(sid, "rel"), crate::viewstate::ViewEdit::Watched(true)); // …then the press
+    assert!(install_landed_detail(&mut state, adapter, Some(fresh())));
+    let tile_state = |state: &MetadataState| state.current.as_ref().map(|d| (d.related[0].watched, d.related[0].resume_ms));
+    assert_eq!(tile_state(&state), Some((true, 0)));
+
+    state.detail_stamp = state.ledger.stamp(); // a read requested after the press
+    assert!(install_landed_detail(&mut state, adapter, Some(fresh())));
+    assert_eq!(tile_state(&state), Some((false, 4)), "it carries the press already; its answer stands");
+}
+
+fn related_tile(sid: plx_plex::plex::ServerId, rk: &str) -> crate::pms::PmsMovie {
+    crate::pms::PmsMovie { sid, rk: rk.into(), unwatched: true, resume_ms: 4, ..Default::default() }
+}
