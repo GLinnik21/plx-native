@@ -125,6 +125,9 @@ impl Client {
         let Some(language) = query_language(&query.language) else {
             return SubtitleSearchOutcome::BadLanguage;
         };
+        crate::alt!(b => b
+            .search_subtitles(rating_key, &language)
+            .map_or(SubtitleSearchOutcome::Transport, SubtitleSearchOutcome::Ok));
         let path = search_path(rating_key, &language, query.hearing_impaired, query.forced);
         match self.get_json_status(&path) {
             JsonStatusOutcome::Transport => SubtitleSearchOutcome::Transport,
@@ -149,6 +152,12 @@ impl Client {
     /// `candidate_key` must come from the search being acted on; a stale key is accepted and
     /// silently does nothing.
     pub fn add_subtitle(&self, rating_key: &str, candidate_key: &str) -> SubtitleAddOutcome {
+        // A backend's candidate keys are its own handles.
+        crate::alt!(b => if b.add_subtitle(rating_key, candidate_key) {
+            SubtitleAddOutcome::Ok
+        } else {
+            SubtitleAddOutcome::Transport
+        });
         if !candidate_key_allowed(candidate_key) {
             return SubtitleAddOutcome::BadKey;
         }

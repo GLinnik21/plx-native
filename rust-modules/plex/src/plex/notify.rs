@@ -287,7 +287,11 @@ impl Client {
         cancel: &AtomicBool,
         on: &mut dyn FnMut(Notification),
     ) -> NotifyEnd {
-        if self.data_io_disabled() || !self.has_token() {
+        if self.data_io_disabled() {
+            return NotifyEnd::Refused { status: 0 };
+        }
+        crate::alt!(b => b.notifications(_off, cancel, on));
+        if !self.has_token() {
             return NotifyEnd::Refused { status: 0 };
         }
         let path = self.with_token(

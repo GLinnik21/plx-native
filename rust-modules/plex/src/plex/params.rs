@@ -338,3 +338,41 @@ impl TimelineState {
         }
     }
 }
+
+/// **An item's scrubbing thumbnails** (`Client::trickplay`): `count` pictures of `width`×`height`,
+/// one every `interval_ms` of the video from its start, laid out row by row on sheets of
+/// `tile_cols`×`tile_rows`. Sheet `n` holds pictures `n * per_sheet()` onward
+/// (`Client::trickplay_sheet` fetches one). A Plex server answers none: PMS keeps its own preview
+/// index (BIF), which this client does not read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Trickplay {
+    pub width: u32,
+    pub height: u32,
+    pub tile_cols: u32,
+    pub tile_rows: u32,
+    pub count: u32,
+    pub interval_ms: i64,
+}
+
+impl Trickplay {
+    /// Pictures on one sheet.
+    pub fn per_sheet(&self) -> u32 {
+        self.tile_cols * self.tile_rows
+    }
+
+    /// The picture shown at `pos_ms` (the last one at or before it), or `None` before the first
+    /// or for an index that describes nothing.
+    pub fn index_at(&self, pos_ms: i64) -> Option<u32> {
+        if self.interval_ms <= 0 || self.count == 0 || self.per_sheet() == 0 || pos_ms < 0 {
+            return None;
+        }
+        Some(((pos_ms / self.interval_ms).min(i64::from(self.count) - 1)) as u32)
+    }
+
+    /// Picture `index` as (sheet, column, row).
+    pub fn place(&self, index: u32) -> (u32, u32, u32) {
+        let per = self.per_sheet().max(1);
+        let at = index % per;
+        (index / per, at % self.tile_cols.max(1), at / self.tile_cols.max(1))
+    }
+}

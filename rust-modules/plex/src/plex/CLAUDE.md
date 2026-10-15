@@ -276,7 +276,8 @@ asks `CredentialPolicy::may_carry_credential` or `Origin::is_tls` for a credenti
 stamps the policy half at synthesis, and `auth::settle_plaintext` adds the grant half after the
 race. A grant is minted only by discovery, from a FRESH verdict `InsecureEvidence::
 plaintext_eligibility` calls eligible, when the person's recorded answer (`Session::
-plaintext_consent`, captured at the spawn site as `grant::PlaintextAsk`) allows it; it is bound to
+plaintext_consent`, captured at the spawn site as `grant::PlaintextAsk`) allows it (on an alternative
+backend, by `PlaintextAsk::settle_vouched` instead); it is bound to
 {identity generation, network generation, machine, exact numeric origin}, never persisted, dies on
 sign-in/sign-out, on every DID foreground (which queues each stranded server's endpoint
 re-discovery, requested by `grant::UpgradeRetry::due`), on a refusal (which also moves the consent generation

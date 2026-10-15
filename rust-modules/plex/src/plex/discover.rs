@@ -67,6 +67,15 @@ use serde::Deserialize;
 
 const DISCOVER: &str = "https://discover.provider.plex.tv";
 
+/// [`DISCOVER`], or a closed local port while another backend is installed.
+fn discover() -> &'static str {
+    #[cfg(feature = "alt-backend")]
+    if super::backend::active().is_some() {
+        return super::account::NO_PLEX_TV;
+    }
+    DISCOVER
+}
+
 impl AccountClient {
     /// GET {DISCOVER}/library/people/{guid} — one person's biography record.
     ///
@@ -78,7 +87,8 @@ impl AccountClient {
     /// 200 with an empty container, and that comes back here as a **default (all-empty) profile**,
     /// so the caller settles on it, stops retrying, and the page degrades to portrait + name.
     pub fn person_profile(&self, guid: &str) -> Option<PersonProfile> {
-        let env: PersonEnvelope = self.get(&format!("{DISCOVER}/library/people/{guid}"))?;
+        crate::alt!(b => b.person_profile(guid));
+        let env: PersonEnvelope = self.get(&format!("{}/library/people/{guid}", discover()))?;
         Some(
             env.media_container
                 .metadata
@@ -100,8 +110,9 @@ impl AccountClient {
     /// department: the provider sends every group in one body, and the screen's tabs are those
     /// groups.
     pub fn person_credits(&self, guid: &str) -> Option<Vec<CreditGroup>> {
+        crate::alt!(b => b.person_credits(guid));
         let env: CreditsEnvelope =
-            self.get(&format!("{DISCOVER}/library/people/{guid}/credits"))?;
+            self.get(&format!("{}/library/people/{guid}/credits", discover()))?;
         // **A body that carried NO recognized container key is a FAILURE, not an empty career** —
         // and keeping those apart is the whole reason [`CreditsContainer`]'s fields are `Option`
         // rather than `#[serde(default)]` vectors.

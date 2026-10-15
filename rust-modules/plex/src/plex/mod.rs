@@ -16,6 +16,49 @@
 //! `session::install_or_drop_after_write`).
 #![allow(dead_code)]
 
+/// Another kind of media server behind the `Client` surface (`alt-backend` only).
+#[cfg(feature = "alt-backend")]
+pub mod backend;
+
+/// `alt!(b => b.sections());` returns the installed backend's answer; nothing without `alt-backend`.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! alt {
+    ($b:ident => $call:expr) => {
+        #[cfg(feature = "alt-backend")]
+        if let Some($b) = $crate::plex::backend::active() {
+            return $call;
+        }
+    };
+}
+
+/// Whether a listing row without a `Part.key` is still playable, looked up by its key. Never on Plex.
+pub fn rows_resolve_by_key() -> bool {
+    #[cfg(feature = "alt-backend")]
+    if backend::active().is_some() {
+        return true;
+    }
+    false
+}
+
+/// Whether profiles can be switched: a Plex Home needs plex.tv, which another backend lacks.
+pub fn has_plex_home() -> bool {
+    #[cfg(feature = "alt-backend")]
+    if backend::active().is_some() {
+        return false;
+    }
+    true
+}
+
+/// Whether the server runs the fixed-HLS transcode Auto quality needs. Always on Plex.
+pub fn fixed_hls_available() -> bool {
+    #[cfg(feature = "alt-backend")]
+    if let Some(b) = backend::active() {
+        return b.fixed_hls();
+    }
+    true
+}
+
 mod client;
 pub mod identity; // ONE X-Plex-* identity for both transports (plex.tv headers + PMS query)
 mod models;
@@ -41,6 +84,8 @@ pub mod notify;
 /// (`crate::pms`) and a library's own `/hubs/sections/{id}` shelves (`crate::browse::section_hubs`)
 /// so neither reimplements or drifts from the other's id table.
 pub mod hub_title;
+/// Which of an item's versions plays, when the backend lets one be chosen.
+pub mod versions;
 /// Whole-file text subtitles are bounded before transport allocation and parsing.
 pub const SIDECAR_MAX_BYTES: usize = 4 * 1024 * 1024;
 mod timeline;
@@ -243,3 +288,5 @@ pub use transcoder::{
     DP_AUDIO_CODECS, DP_SUBTITLE_CODECS, LinkPolicy, direct_play_video_codecs, is_dp_audio, is_dp_audio_track,
     is_dp_subtitle, link_policy,
 };
+#[cfg(feature = "alt-backend")]
+pub use transcoder::{device_audio_encode_target, device_video_copy_codecs};

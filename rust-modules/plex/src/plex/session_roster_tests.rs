@@ -319,6 +319,9 @@ fn a_single_server_session_behaves_as_it_always_has() {
     );
     assert_eq!(s.shared_sources().count(), 0);
     assert!(s.account(None).signed_in && s.account(None).can_switch);
+    // No Plex Home: signed in, no switching.
+    let without_home = s.account_with(None, false);
+    assert!(without_home.signed_in && !without_home.can_switch);
 }
 
 /// The Search screen's recent terms are ordinary session content: they survive a write/read

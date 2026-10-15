@@ -28,6 +28,9 @@ hostsim = ["plx_base/hostsim", "plx_machine/hostsim", "plx_platform/hostsim"]
 # `[dev-dependencies]`; never in a shipped build.
 test-support = ["plx_base/test-support", "plx_machine/test-support", "plx_platform/test-support", "plx_net/test-support"]
 
+# Lets another kind of media server answer `Client` calls (`src/plex/backend.rs`). Off in PlxNative.
+alt-backend = []
+
 [dependencies]
 plx_base = { path = "../base" }
 plx_machine = { path = "../machine" }

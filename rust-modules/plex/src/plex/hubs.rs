@@ -35,6 +35,7 @@ fn is_item_listing_key(key: &str, prefix: &str, suffix: &str) -> bool {
 
 impl Client {
     pub fn hub_items_paged(&self, key: &str, start: i64, size: i64) -> Option<MediaContainer> {
+        crate::alt!(b => b.hub_items_paged(key, start, size));
         if !is_pageable_hub_key(key) { return None; }
         self.get_json(&hub_page_path(key, start, size))
     }
@@ -51,6 +52,7 @@ impl Client {
     /// only honest one), so we parse and discard them today; and with several sources on Home the
     /// waste is per source per fetch, not once.
     pub fn home_hubs(&self, count: i64) -> Option<MediaContainer> {
+        crate::alt!(b => b.home_hubs(count));
         self.get_json(&home_hubs_path(count))
     }
 
@@ -58,6 +60,7 @@ impl Client {
     /// hubs, not cards (`docs/pms-api.md`, Paging, observed). The answer carries `totalSize` and
     /// echoes `offset`.
     pub fn home_hubs_page(&self, count: i64, req: PageReq) -> Option<MediaContainer> {
+        crate::alt!(b => b.home_hubs_page(count, req));
         self.get_json(&paged_path(&home_hubs_path(count), req))
     }
 
@@ -84,16 +87,19 @@ impl Client {
     /// set. A refetch legitimately returns a different shelf count and different ids with nothing
     /// changed on the server, which is a fact about this endpoint rather than about any caller.
     pub fn library_hubs(&self, section_key: i64, count: i64) -> Option<MediaContainer> {
+        crate::alt!(b => b.library_hubs(section_key, count));
         self.get_json(&library_hubs_path(section_key, count))
     }
 
     /// [`Client::library_hubs`], one window of the hub list (by hub, as for [`Client::home_hubs_page`]).
     pub fn library_hubs_page(&self, section_key: i64, count: i64, req: PageReq) -> Option<MediaContainer> {
+        crate::alt!(b => b.library_hubs_page(section_key, count, req));
         self.get_json(&paged_path(&library_hubs_path(section_key, count), req))
     }
 
     /// GET /hubs/continueWatching?count=… — the dedicated Continue Watching hub.
     pub fn continue_watching(&self, count: i64) -> Option<MediaContainer> {
+        crate::alt!(b => b.continue_watching(count));
         self.get_json(
             &QueryBuilder::new("/hubs/continueWatching")
                 .int("count", count)
@@ -104,6 +110,7 @@ impl Client {
     /// GET /hubs/continueWatching/items, one page: the listing behind the dedicated hub, by offset,
     /// last viewed descending. The Continue Watching deck reads each server's listing with this.
     pub fn continue_watching_page(&self, start: i64, size: i64) -> Option<MediaContainer> {
+        crate::alt!(b => b.continue_watching_page(start, size));
         self.get_json(&continue_watching_page_path(start, size))
     }
 
@@ -124,6 +131,7 @@ impl Client {
     ///
     /// PUT is the only verb routed here; GET and POST both 404.
     pub fn remove_from_continue_watching(&self, rating_key: &str) -> bool {
+        crate::alt!(b => b.remove_from_continue_watching(rating_key));
         let path = QueryBuilder::new("/actions/removeFromContinueWatching")
             .str("ratingKey", rating_key)
             .build();
@@ -173,6 +181,7 @@ impl Client {
     ///   response carries ~17 hubs, most with `size: 0`. `search::KINDS` fixes the shelf order for
     ///   exactly this reason: honouring the server's would move a row under a typing user's focus.
     pub fn search(&self, query: &str, limit: i64, section_id: i64) -> Option<MediaContainer> {
+        crate::alt!(b => b.search(query, limit, section_id));
         self.get_json(&search_path(query, limit, section_id))
     }
 
@@ -183,6 +192,7 @@ impl Client {
     /// window's end; the end of a listing is a SHORT page, never `totalSize`. An unknown kind
     /// answers empty with no error, which `search::tail` treats as "unsupported", not "end".
     pub fn search_typed(&self, query: &str, kind: SearchKind, req: PageReq) -> Option<MediaContainer> {
+        crate::alt!(b => b.search_typed(query, kind, req));
         self.get_json(&typed_search_path(query, kind, req))
     }
 }

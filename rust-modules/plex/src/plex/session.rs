@@ -5168,6 +5168,11 @@ impl Session {
     /// (`auth::owner::SessionSnapshot::switch_refused`), and it is `screens::account_menu`, not
     /// this, that hides the row on it.
     pub fn account(&self, active: Option<&UserRef>) -> Account {
+        self.account_with(active, super::has_plex_home())
+    }
+
+    /// [`Self::account`], with [`super::has_plex_home`] given.
+    pub fn account_with(&self, active: Option<&UserRef>, plex_home: bool) -> Account {
         let named = |t: &str| Some(t.to_string()).filter(|t| !t.is_empty());
         // the roster hop searches for a NAMED admin, then any named entry — a `find(admin)` whose
         // hit happens to carry an empty title must not swallow the answer sitting behind it, which
@@ -5187,7 +5192,7 @@ impl Session {
             .or_else(roster);
         Account {
             signed_in: !self.account_token.is_empty() || self.can_go_local(),
-            can_switch: !self.account_token.is_empty(),
+            can_switch: plex_home && !self.account_token.is_empty(),
             name,
         }
     }
