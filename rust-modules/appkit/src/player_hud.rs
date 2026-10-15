@@ -11,7 +11,7 @@ use plx_machine::machine::Measure;
 pub use plx_media::player::text_style::CAPSULE_BOTTOM_Y;
 use plx_media::player::text_style::{
     position_lift, size_scale, wrap_width, CAPTION_ANCHOR_LINES, CAPTION_FACE, CAPTION_FLOOR_Y,
-    CAPTION_LINE_PITCH, SUB_BASE_Y, SUB_CEIL_Y,
+    CAPTION_LINE_PITCH, CAPTION_TEXT_INSET, HUD_CONTROLS_TOP_Y, SUB_BASE_Y, SUB_CEIL_Y,
 };
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::theme;
@@ -191,9 +191,9 @@ fn draw_caption_block(lines: &[String], lay: &CaptionLayout) {
         if let Ok(cs) = CString::new(ln.as_str()) {
             // dark outline (4 offsets) then the bold caption in its tone — legible over any scene
             for (dx, dy) in [(-2.0f32, 0.0f32), (2.0, 0.0), (0.0, -2.0), (0.0, 2.0)] {
-                p.text(cs.as_ptr(), cx + dx, top + 4.0 + dy, lay.face, outline, 1, 1);
+                p.text(cs.as_ptr(), cx + dx, top + CAPTION_TEXT_INSET + dy, lay.face, outline, 1, 1);
             }
-            p.text(cs.as_ptr(), cx, top + 4.0, lay.face, ink, 1, 1);
+            p.text(cs.as_ptr(), cx, top + CAPTION_TEXT_INSET, lay.face, ink, 1, 1);
         }
     }
 }
@@ -620,7 +620,7 @@ const SB_Y: f32 = SCR_H - 198.0;
 const SB_H: f32 = 8.0;
 const BTN_S: f32 = 64.0; // right-side control button size (mockup ≈ 68)
 const BTN_GAP: f32 = 22.0;
-const BTN_Y: f32 = SCR_H - 288.0;
+const BTN_Y: f32 = HUD_CONTROLS_TOP_Y;
 
 // The control row, exported for `skip_pill` — while a marker is under the playhead the Skip button
 // STANDS IN for the two discs, and it has to land on exactly their row and right edge or the

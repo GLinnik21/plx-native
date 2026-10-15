@@ -51,6 +51,11 @@ pub const INK_TRIM: f32 = 3.0;
 /// draws at `line_top + 4`).
 pub const CAPTION_TEXT_INSET: f32 = 4.0;
 
+/// The top of the transport HUD's control row (`player_hud::BTN_Y`, which is this constant). A
+/// text caption lifted with the HUD up must end above it, deep marks included (plan §2.4, as
+/// amended by PR 5b: the golden's criterion is this row, not `SUB_CEIL_Y`).
+pub const HUD_CONTROLS_TOP_Y: f32 = SCR_H - 288.0;
+
 /// The `MarginV` of the top-aligned styles: independent of the Position setting.
 pub const TOP_MARGIN_V: f32 = BOTTOM_GAP;
 
@@ -194,8 +199,8 @@ pub fn today_baseline(position: SubtitlePosition, scale: f32, hud_up: bool) -> T
 /// capital such as "H"): `baseline` and `floor` above are the edges of the block, and the text is
 /// drawn at `top + CAPTION_TEXT_INSET` with the baseline `ceil(ascender)` rows under that. This is
 /// the number the libass look is held to (`ass::tests::synth`), 5 / 9 / 12 / 15 px above
-/// [`TodayBaseline::baseline`] at the four sizes. A hard-coded port of that draw: nothing ties
-/// [`CAPTION_TEXT_INSET`] to the literal `4.0` in `draw_caption_block` (appkit), and the ascent is
+/// [`TodayBaseline::baseline`] at the four sizes. A port of that draw: `draw_caption_block`
+/// (appkit) takes its inset from [`CAPTION_TEXT_INSET`], and the ascent is
 /// SDL_ttf's `ceil(hhea ascender)` as `gfx::text` documents it, not measured on a television.
 pub fn today_ink_baseline(position: SubtitlePosition, scale: f32, hud_up: bool) -> f32 {
     let lay = today_layout(1, scale, today_baseline(position, scale, hud_up).baseline);

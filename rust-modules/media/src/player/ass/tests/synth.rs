@@ -279,6 +279,30 @@ fn native_lines_wrap_at_the_wrap_width_for_every_size() {
             widest = widest.max(right - left);
         }
         assert!(widest as f32 >= 0.85 * wrap, "{size:?}: greedy wrapping fills the width ({widest} of {wrap})");
+        // Greedy: simulate the break by rendering each candidate line on its own; a word joins the
+        // line while the joined text still fits the wrap width, and libass must have broken in the
+        // same places (so a line plus the next word would not have fit).
+        let width_of = |t: &str| {
+            // `\q2`: no wrapping, so this is the line's own width.
+            let (l, r) = fill_extent(&text_frame(&picks, &[raw(2, &format!("{{\\q2}}{t}"))]), 0, 1080);
+            (r - l) as f32
+        };
+        let mut texts: Vec<String> = Vec::new();
+        for w in PROSE.split(' ') {
+            match texts.last_mut() {
+                Some(line) if width_of(&format!("{line} {w}")) <= wrap => {
+                    line.push(' ');
+                    line.push_str(w);
+                }
+                _ => texts.push(w.to_string()),
+            }
+        }
+        let simulated: Vec<f32> = texts.iter().map(|t| width_of(t)).collect();
+        assert_eq!(simulated.len(), lines.len(), "{size:?}: greedy line count {simulated:?} vs {lines:?}");
+        for (n, ((top, bottom), want)) in lines.iter().zip(&simulated).enumerate() {
+            let (left, right) = fill_extent(&rects, *top, *bottom);
+            near(&format!("{size:?} line {n} width"), (right - left) as f32, *want, 3.0);
+        }
     }
 }
 
@@ -336,7 +360,7 @@ fn native_a_mixed_latin_and_arabic_line_takes_the_direction_of_its_first_letter(
     // right-hand end of the line.
     let latin = centroid_x(&ltr, |px| solid(px, true, true, true));
     let red = centroid_x(&ltr, |px| solid(px, true, false, false));
-    assert!(red > 0.0 && latin > 0.0);
+    assert!(latin < red, "the Latin word leads on the left of the Arabic run");
     let (left, right) = fill_extent(&ltr, 0, 1080);
     let stop_x = pixels(&ltr).filter(|(_, _, px)| solid(*px, true, true, true)).map(|(x, _, _)| x).max().unwrap();
     assert!(stop_x >= right - 2, "an LTR paragraph ends in its full stop ({stop_x} vs {right})");
@@ -397,36 +421,35 @@ fn native_escapes_show_what_the_subtitle_says() {
     assert!(!pixels(&frame("x")).any(|(_, _, px)| solid(px, true, false, false)));
 }
 
-/// How far under the bottom anchor the deepest mark of the corpus below hangs, outline included
-/// (measured: Devanagari 4 px, Arabic 6 px at the largest sizes).
-const DEEP_MARK_OVERHANG: f32 = 6.0;
-
-/// Plan §2.4 asks for HUD-up deep marks "entirely above `SUB_CEIL_Y`". They are not: Devanagari
-/// below-base signs and Arabic descenders hang up to 6 px under the bottom anchor (2 px of it the
-/// outline), so with the transport up and the fixed 200 px lift they end up to 9 px under
-/// `SUB_CEIL_Y` at Low (3 of those are `INK_TRIM`). What this pins is what holds: the marks stay
-/// within `DEEP_MARK_OVERHANG` of the anchor, so the 200 px lift carries them with their line, and
-/// they do reach below the Latin baseline (the corpus is not vacuous).
+/// Plan §2.4 (amended by PR 5b): with the transport up, a text caption lifts by `HUD_LIFT`, and its
+/// deepest ink (Devanagari below-base signs, Arabic descenders, outline included) must still end
+/// above the HUD's control row, `HUD_CONTROLS_TOP_Y`. The plan's first wording, "entirely above
+/// `SUB_CEIL_Y`", cannot hold: at Low the anchor is 983 and `SUB_CEIL_Y` 780, so even Latin "Hxg"
+/// ends past it. The row is what the lift has to clear; the corpus ends 3 px above it at Low.
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]
-fn native_deep_marks_hang_at_most_six_pixels_under_the_bottom_anchor() {
-    for (script, text) in [
-        ("Devanagari", "कृ दु ह्रू"),
-        ("Devanagari prose", "कृपया दुकान ह्रूँ गुरु"),
-        ("Arabic", "مجموعة الجيم والعين"),
-        ("Arabic descenders", "ليج جحخ عغ ڤ"),
-    ] {
+fn native_hud_up_deep_marks_clear_the_transport_controls() {
+    for position in POSITIONS {
         for size in SIZES {
-            for position in POSITIONS {
-                let picks = style(size, position);
-                let depth = ink_bottom(&text_frame(&picks, &[cue(text)])) as f32;
-                let overhang = depth - text_style::bottom_anchor_y(position);
+            let picks = style(size, position);
+            // Non-vacuity: the corpus reaches below what plain Latin with a descender does.
+            let latin = ink_bottom(&text_frame(&picks, &[cue("Hxg")]));
+            for (script, text) in [
+                ("Devanagari", "कृ दु ह्रू"),
+                ("Devanagari prose", "कृपया दुकान ह्रूँ गुरु"),
+                ("Arabic", "مجموعة الجيم والعين"),
+                ("Arabic descenders", "ليج جحخ عغ ڤ"),
+            ] {
+                let depth = ink_bottom(&text_frame(&picks, &[cue(text)]));
+                let lifted = depth as f32 - text_style::HUD_LIFT;
                 assert!(
-                    overhang <= DEEP_MARK_OVERHANG,
-                    "{script} {size:?} {position:?}: ink {overhang} px under the anchor"
+                    lifted <= text_style::HUD_CONTROLS_TOP_Y,
+                    "{script} {size:?} {position:?}: lifted ink ends at {lifted}, controls start at {}",
+                    text_style::HUD_CONTROLS_TOP_Y
                 );
-                let baseline = first_glyph_baseline(&text_frame(&picks, &[cue("Hxg")])) as f32;
-                assert!(depth > baseline, "{script} {size:?} {position:?}: no ink below the baseline");
+                if position == SubtitlePosition::Low && size == SubtitleSize::ExtraLarge {
+                    assert!(depth > latin, "{script}: no deeper than Latin \"Hxg\" ({depth} vs {latin})");
+                }
             }
         }
     }
