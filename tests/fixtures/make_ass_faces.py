@@ -2,7 +2,7 @@
 """Regenerate tests/fixtures/ass-faces/face-NN.ttf: 14 one-glyph faces of one family.
 
 libass 0.17.5 caps the faces one ASS_Font can hold at ASS_FONT_MAX_FACES (10); the bundled build
-patches that cap away (ci/libass-patches/0001-grow-font-faces.patch). The native test
+patches that cap away (ci/patches/libass-0001-grow-font-faces.patch). The native test
 `native_fourteen_faces_of_one_family_all_render` gives one renderer these 14 faces under the
 family "PlxFaces", each covering one private-use codepoint (U+E000 + n), and shows one cue of 14
 glyphs with every glyph drawn. Each glyph is a solid square (a different size per face, so a
