@@ -21,13 +21,14 @@ pub struct SortSpec {
     pub desc: bool,
 }
 
-/// The "Show" filter: which rows by availability. `Available` is "On your servers".
+/// The "Show" filter (plan INPUT 1): `Released` keeps rows in the API released list;
+/// `OnYourServers` keeps rows playable on a Reachable server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Show {
     #[default]
     All,
-    Available,
-    Unavailable,
+    Released,
+    OnYourServers,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -38,7 +39,7 @@ pub struct FilterSpec {
 
 /// Title order: Unicode-lowercase, fold only marks that are not letters in any shipped language
 /// (e-acute to e, a-grave to a, c-cedilla to c, oe-ligature to oe); n-tilde, short-u (Be) and
-/// short-i (Be) stay distinct (after n, u, i); then the unfolded string, then the hex. No new
+/// short-i (Be) stay distinct (after n, u, i); Be yo and dotted-i take their alphabet slots (after е, after з); then the unfolded string, then the hex. No new
 /// dependency. Operates on `titleSort` else `title`.
 pub fn compare_titles(a: &WatchRow, b: &WatchRow) -> Ordering {
     let (ta, tb) = (sort_text(a), sort_text(b));
@@ -68,10 +69,14 @@ fn fold_key(s: &str) -> Vec<u32> {
             '\u{306}' if out.last() == Some(&base('у')) || out.last() == Some(&base('и')) => {
                 *out.last_mut().unwrap() += 2
             }
+            // Combining diaeresis after e makes yo.
+            '\u{308}' if out.last() == Some(&base('е')) => *out.last_mut().unwrap() += 2,
             '\u{300}'..='\u{36f}' => {}
             'ñ' => out.push(base('n') + 2),
             'ў' => out.push(base('у') + 2),
             'й' => out.push(base('и') + 2),
+            'ё' => out.push(base('е') + 2),
+            'і' => out.push(base('з') + 2),
             'œ' => out.extend([base('o'), base('e')]),
             'æ' => out.extend([base('a'), base('e')]),
             _ => out.push(base(fold_accent(c))),
@@ -105,8 +110,8 @@ pub fn sorted_filtered(rows: &[WatchRow], sort: &SortSpec, filter: &FilterSpec, 
         .filter(|&i| filter.kind.is_none_or(|k| rows[i].kind == k))
         .filter(|&i| match filter.show {
             Show::All => true,
-            Show::Available => available(i),
-            Show::Unavailable => !available(i),
+            Show::Released => rows[i].released,
+            Show::OnYourServers => available(i),
         })
         .collect();
     // A missing field sorts last whichever way the key runs, so the direction applies only to
@@ -259,9 +264,33 @@ mod tests {
         let movies = FilterSpec { kind: Some(Kind::Movie), show: Show::All };
         assert_eq!(sorted_filtered(&rows, &desc, &movies, &|_| true), [2, 0]);
         let avail = |i: usize| i != 2;
-        let on = FilterSpec { kind: None, show: Show::Available };
+        let on = FilterSpec { kind: None, show: Show::OnYourServers };
         assert_eq!(sorted_filtered(&rows, &desc, &on, &avail), [1, 0]);
-        let off = FilterSpec { kind: None, show: Show::Unavailable };
-        assert_eq!(sorted_filtered(&rows, &desc, &off, &avail), [2]);
+        let off = FilterSpec { kind: None, show: Show::Released };
+        assert_eq!(sorted_filtered(&rows, &desc, &off, &avail), [2, 1, 0]);
+    }
+
+    #[test]
+    fn show_released_drops_coming_soon_and_on_your_servers_drops_unknown() {
+        let mut rows = vec![row("a", 0), row("b", 1), row("c", 2)];
+        rows[1].released = false;
+        let sort = SortSpec { key: SortKey::DateAdded, desc: true };
+        let released = FilterSpec { kind: None, show: Show::Released };
+        assert_eq!(sorted_filtered(&rows, &sort, &released, &|_| false), [0, 2]);
+        // Row 2 stands for Unknown (not playable on a Reachable server).
+        let held = FilterSpec { kind: None, show: Show::OnYourServers };
+        assert_eq!(sorted_filtered(&rows, &sort, &held, &|i| i != 2), [0, 1]);
+    }
+
+    #[test]
+    fn belarusian_yo_and_dotted_i_sort_at_their_alphabet_slots() {
+        let rows: Vec<WatchRow> =
+            ["Яблык", "Іван", "Ёлка", "Жук", "Зіма"].iter().enumerate().map(|(i, t)| row(t, i as u32)).collect();
+        let sort = SortSpec { key: SortKey::Title, desc: false };
+        let titles: Vec<&str> = sorted_filtered(&rows, &sort, &FilterSpec::default(), &|_| true)
+            .iter()
+            .map(|&i| rows[i].title.as_str())
+            .collect();
+        assert_eq!(titles, ["Ёлка", "Жук", "Зіма", "Іван", "Яблык"]);
     }
 }

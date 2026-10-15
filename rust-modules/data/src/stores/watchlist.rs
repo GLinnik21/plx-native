@@ -1235,7 +1235,7 @@ mod tests {
         let pages = mock.pages.load(Ordering::SeqCst);
         s.run(WatchlistCmd::Sort(SortSpec { key: SortKey::Title, desc: true }));
         assert_eq!(titles(&s), ["Charlie", "Bravo", "Alpha"]);
-        s.run(WatchlistCmd::Filter(FilterSpec { kind: None, show: Show::Available }));
+        s.run(WatchlistCmd::Filter(FilterSpec { kind: None, show: Show::OnYourServers }));
         assert_eq!(titles(&s), ["Charlie"]);
         s.pump();
         assert_eq!(mock.pages.load(Ordering::SeqCst), pages);
