@@ -273,7 +273,7 @@ pub fn request(
     };
     let started = *runtime()
         .started
-        .get_or_init(|| plx_base::task::spawn("styled subtitles", worker).is_some());
+        .get_or_init(|| plx_base::task::spawn("ass-render", worker).is_some());
     let mut mailbox = runtime().mailbox.try_lock().ok()?;
     if !started {
         return Some(mailbox.publish_error(key, error_frame(key, Fault::StartFailed)));

@@ -463,6 +463,15 @@ true` marks a scene that runs ONLY under `--mock` (it is skipped, with a reason,
 `--fps`). An exact scene name as `--filter` selects that scene alone (`home-grid` does not pull in
 `home-grid-deep`).
 
+A **player** scene can also grade what the app declared, not how fast it drew: `fixed-480p-reencode-declaration`
+(#665) is a `--fps-player --mock` scene whose `mock` block hands the mock `extra_media` (a real, ffprobed
+3840x2160 H.264 file, rk 990001) and a `transcode_fixture` (the 854x480 clip `start.mkv` returns), both
+named relative to `$FIXTURES_OUT` (default `~/plxnative-fixtures`; a scene whose files are not built is
+skipped with the ffmpeg commands' location), and whose `expect` block reuses a playback case's keys
+(`load_max`, `sink_echo`, `decision`, `codec`/`video_size`, `min_timeline_climb_s`; `no_error` always).
+`quality` pins the rung (`480p_720_kbps`). Run it: `tools/tv-lock.sh with --why "fixed 480p declaration" --
+./tests/run.py --fps-player --mock --filter fixed-480p-reencode-declaration`.
+
 `home-grid-deep` is the Home-with-many-rows scene (#395): `--home-hubs 170`. `plxnative-homeosc`
 only sweeps about nine rows either side of the top, so it instead presses **Down once per landed
 row** at about three keys a second, rests, and presses **Up** back, through one ssh paced from the

@@ -645,7 +645,8 @@ pub(crate) fn load_video_refused(lv: LoadVideo, caps: &plx_platform::devcaps::Ca
 ///   above, and `fps` is never raised above 60 by the table (120 is a claim nobody has tested).
 ///
 /// `maxFrameRate`: **H.264 declares the stream's own rate class** (24/25/30/50/60, never below
-/// the stream; 60 when the rate is unknown) — see the measurement inside; HEVC stays at 60, the
+/// the stream beyond one 1 ms container-timebase tick per frame, so 30.303 declares 30, issue
+/// #665; 60 when the rate is unknown) — see the measurement inside; HEVC stays at 60, the
 /// value every Dolby Vision verification was taken under. `/tmp/plxnative-sinkmax=WxH@F`
 /// overrides the whole result so the remaining legs are an A/B with no rebuild. Pure; the
 /// wrappers feed it the route.
@@ -676,7 +677,12 @@ fn sink_envelope(
     // displayed-frame counter (callback type 47, see the payload note above) put a number on
     // what the eye saw: declared at 60 the 4K 24p stream was PRESENTED at 13.0 fps mean, worst
     // second 10; declared at 24, 24.1 fps.** The class, not the exact value: 23.976 → 24 keeps
-    // the declaration a ceiling the stream fits under.
+    // the declaration a ceiling the stream fits under. The one deliberate exception is a
+    // millisecond-timebase 30.303 → 30 (`fps_class`, issue #665), where the declaration sits
+    // about 1% BELOW the fed rate. Suspected, NOT yet device-verified: the k6lp SoC's H.264
+    // decoder is 4K@30-limited, so declaring 50 on a 30p 4K stream is refused with num=601;
+    // `pipe_h264_uhd_30p_ms_timebase` and an owner retest on the 60UN7310 are the proof, with a
+    // second `/tmp/plxnative-nofps` leg to tell a rate-pair refusal from the 4K@30 limit.
     if video == LoadVideo::H264 && stream_fps > 0.0 && stream_fps.is_finite() {
         env.fps = fps_class(stream_fps);
     }
@@ -721,11 +727,26 @@ fn renamed_static_payload(video: LoadVideo) -> String {
     PAYLOAD_H265.replacen(r#""video":"H265""#, &to, 1)
 }
 
-/// The smallest of the broadcast/film rate classes the stream fits under: 24, 25, 30, 50, 60,
-/// else the rate rounded up. A ceiling, never below the stream.
+/// The broadcast/film rate class (24, 25, 30, 50, 60) a stream's reported rate belongs to, else
+/// the rate rounded up.
+///
+/// A rate belongs to the smallest class `c` for which either `fps <= c + 0.01` (the exact and
+/// NTSC rates: 23.976, 29.97, 59.94) or its mean frame duration is within **1 ms** of the class's
+/// (`1000/fps > 1000/c - 1`). The 1 ms is the Matroska timebase: timestamps are integers in
+/// `TimestampScale` = 1 ms, so a frame interval estimated from them is off by less than one tick,
+/// and a 30p file reports `avg_frame_rate` 1000/33 (30.303) and PMS `frameRate` 30.303 (issue
+/// #665). The error is constant in TIME, not in rate, so the tolerance grows with the class: the
+/// windows top out at 24.59, 25.64, 30.93, 52.63 and 63.83 and never overlap the next class.
+///
+/// This is NOT a claim that the stream is exactly the class: a constant-33 ms file really is fed
+/// at 30.303 fps, so the declaration can sit about 1% below the fed rate. libpf has never been
+/// measured accepting `maxFrameRate` below `videoFps`; the esInfo rational deliberately stays the
+/// raw rate (it is a timing input for libpf's PTS lattice, not a ceiling), and only the ceiling
+/// is snapped. Only the H.264 path reaches this; HEVC and transcodes keep 60.
 fn fps_class(fps: f64) -> u32 {
     for class in [24u32, 25, 30, 50, 60] {
-        if fps <= f64::from(class) + 0.01 {
+        let c = f64::from(class);
+        if fps <= c + 0.01 || 1000.0 / fps > 1000.0 / c - 1.0 {
             return class;
         }
     }
@@ -5769,6 +5790,27 @@ mod sink_envelope_tests {
         // the table still clamps a class from above
         let slow = caps((3840, 2160, 25), (3840, 2160, 60));
         assert_eq!(sink_envelope(LoadVideo::H264, (3840, 2160), 30.0, &slow, true).fps, 25);
+    }
+
+    /// Issue #665: an MKV's 1 ms timebase stores a 30p frame as 33 ms, so PMS reports 30.303 and
+    /// the strict class rounded it up to 50, which a 4K@30 H.264 decoder refuses. A rate within
+    /// the timebase rounding error above a class snaps to it; a genuinely higher one still rounds up.
+    #[test]
+    fn a_millisecond_timebase_rate_snaps_to_its_class() {
+        let c = caps(DEV_SET.0, DEV_SET.1);
+        for (fps, want) in [
+            (30.303, 30), (24.39, 24), (23.81, 24), (25.0, 25), (50.0, 50), (58.82, 60), (59.94, 60),
+            (31.0, 50), (26.0, 30),
+        ] {
+            assert_eq!(sink_envelope(LoadVideo::H264, (3840, 2160), fps, &c, false).fps, want, "h264 {fps}");
+        }
+    }
+
+    /// Issue #665: the re-encode of a 4K source at 480p declares FHD60 for H.264.
+    #[test]
+    fn a_480p_ceiling_on_a_4k_source_declares_fhd60_for_h264() {
+        let c = caps(DEV_SET.0, DEV_SET.1);
+        assert_eq!(sink_envelope(LoadVideo::H264, (854, 480), 0.0, &c, false), ENVELOPE_FHD60);
     }
 
     #[test]

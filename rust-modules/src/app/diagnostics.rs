@@ -491,7 +491,8 @@ fn header(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, n
 fn playback_line(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::Diag, now: u32) -> String {
     use plx_media::player::PlaybackState as S;
     let s = match plx_media::player::state(ps) {
-        S::Idle => plx_platform::i18n::msg::browse_diagnostics_idle(),
+        // No picture and nothing in flight, under the viewer's Pause: read as "Idle (paused)" below.
+        S::Idle | S::Paused => plx_platform::i18n::msg::browse_diagnostics_idle(),
         S::Resolving => plx_platform::i18n::msg::browse_diagnostics_resolving(),
         S::Connecting => plx_platform::i18n::msg::browse_diagnostics_connecting(),
         S::Buffering => plx_platform::i18n::msg::browse_diagnostics_buffering(),

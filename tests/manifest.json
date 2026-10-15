@@ -1436,6 +1436,35 @@
       "require_log": ["moreosc: depth=1"]
     },
     {
+      "name": "fixed-480p-reencode-declaration",
+      "tier": "player",
+      "route": "player",
+      "run_secs": 40,
+      "warmup_s": 9,
+      "quality": "480p_720_kbps",
+      "comment": "Issue #665, second bug, against the SYNTHETIC mock only: a FIXED playback quality (480p) on a 3840x2160 H.264 source that the ceiling denies direct play and remux, so the app re-encodes over progressive start.mkv (TranscodeDelivery::ProgressiveMkv). Before 4f11c1aff `route::sink_max_raster` returned the SOURCE raster on that delivery and ignored the session's ceiling, so the Starfish Load declared `load: v=H264 a=\"AAC\" ... max=3840x2160@60` for a stream that is 854x480; now it is min(source, ceiling) = 854x480, whose H.264 envelope is `max=1920x1080@60`. The dev TV plays the old declaration without complaint, so this scene grades the DECLARATION (expect.load_max, and the set's own `smp_cb type=5` echo of it), not whether playback survives. Run it with `tools/tv-lock.sh with --why \"fixed 480p declaration\" -- ./tests/run.py --fps-player --mock --filter fixed-480p-reencode-declaration` (guest boot, synthetic mock, panel and sound off; never an account). tests/mock_pms.py is started with `--extra-media <src> --transcode-fixture <clip>`; plxnative-quality=480p_720_kbps (the same word `quality: switch -> ...` prints) pins the rung, an in-memory override that never touches a saved preference. The two files are generated, NOT in the repo, and live under $FIXTURES_OUT (default ~/plxnative-fixtures) in bug665/; the scene is skipped with this reason until they exist. SOURCE (rk 990001, ~10 Mbps, 30 s): `ffmpeg -f lavfi -i testsrc2=size=3840x2160:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 30 -c:v libx264 -preset ultrafast -pix_fmt yuv420p -profile:v high -level 5.1 -b:v 10M -minrate 10M -maxrate 10M -bufsize 10M -x264-params nal-hrd=cbr:keyint=60 -c:a aac -b:a 128k -ac 2 src-4k-h264-aac.mkv`. SERVED TRANSCODE (what start.mkv returns, 30 s): `ffmpeg -f lavfi -i testsrc2=size=854x480:rate=30 -f lavfi -i sine=frequency=440:sample_rate=48000 -t 30 -c:v libx264 -preset veryfast -pix_fmt yuv420p -profile:v main -b:v 700k -maxrate 700k -bufsize 1400k -g 60 -c:a aac -b:a 96k -ac 2 transcode-480p-h264-aac.mkv`. Both carry AAC so the mock's (unmodified, 'direct play OK / copy') /decision answer and the real output agree on the codecs the Load declares. The scene has no loop_floor on purpose: it grades the log, and only needs five post-warmup player heartbeats to prove it reached the player. NOT yet run on a device.",
+      "mock": {
+        "only": true,
+        "rk": 990001,
+        "extra_media": ["bug665/src-4k-h264-aac.mkv"],
+        "transcode_fixture": "bug665/transcode-480p-h264-aac.mkv"
+      },
+      "triggers": {
+        "plxnative-play": "$rk"
+      },
+      "require_log": ["route: quality ceiling P480"],
+      "expect": {
+        "decision": "transcode",
+        "codec": "h264",
+        "video_size": "854x480",
+        "load_video": "H264",
+        "load_audio": "AAC",
+        "load_max": "1920x1080@60",
+        "sink_echo": "1920x1080@60",
+        "min_timeline_climb_s": 10
+      }
+    },
+    {
       "name": "timing-capsule",
       "tier": "player",
       "route": "player",
@@ -3329,6 +3358,45 @@
         "sink_echo": "3840x2160@24"
       },
       "_note": "4K H.264 exists in no real library the maintainer has (every 4K item there is HEVC or AV1 — `library_gaps.video` lists it), so before this fixture the combination had never been played at all. The device's own capability table claims H.264 to 4096x2304@60, so this is inside the envelope, not at its edge."
+    },
+    {
+      "name": "pipe_h264_uhd_30p_ms_timebase",
+      "fixture": "pipe_h264_ac3_2160p30.mkv",
+      "title": "UHD 3840x2160 30p h264 + AC-3, fps 30.303 (1 ms MKV timebase) — issue #665",
+      "covers": [
+        "uhd-2160",
+        "h264-3840x2160",
+        "fps-class-ms-timebase"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "ac3",
+        "fps": 30.303,
+        "source_raster": [
+          3840,
+          2160
+        ]
+      },
+      "run_secs": 40,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "video_size": "3840x2160",
+        "load_video": "H264",
+        "load_audio": "AC3",
+        "load_dovi": "none",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 1,
+        "load_max": "3840x2160@30",
+        "sink_echo": "3840x2160@30"
+      },
+      "_note": "Issue #665 (LG 60UN7310, webOS 5): a 4K H.264 High@5.1 MKV whose 1 ms timebase makes PMS report 30.303 fps. The fps class rounded that up to 50 and the pipeline refused the Load with type=18 num=601; LG's own app direct-plays the file. The declaration must be the 30 class."
     },
     {
       "name": "pipe_res_hevc_sd",

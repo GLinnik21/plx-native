@@ -244,6 +244,9 @@ def _rate_arg(fps):
     for exact in (23.976, 29.97, 47.952, 59.94, 119.88):
         if abs(fps - exact) < 0.02:
             return "%d/1001" % round(exact * 1001)
+    # A 30p stream in a 1 ms-timebase MKV: constant 33 ms frames, 1000/33 (issue #665).
+    if abs(fps - 30.303) < 0.001:
+        return "1000/33"
     return "%g" % fps
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -1246,6 +1249,19 @@ PIPE_SHAPES = {
                    "default": True, "title": "AC-3 5.1 English"}],
         "subs": [],
     },
+    # Issue #665: a 30p 4K H.264 MKV. Matroska stamps frames in a 1 ms timebase, so a 30 fps
+    # stream stores 33 ms frames and PMS / ffprobe report avg 1000/33 = 30.303. The Load must
+    # declare 30 for it, not the next class up (50), which a 4K@30 H.264 decoder refuses.
+    # `declare.fps` is that reported 30.303; the encode runs at 1000/33 so every frame is the 33 ms the 1 ms timebase stores.
+    "pipe_h264_ac3_2160p30": {
+        "kind": "clip", "ext": "mkv",
+        "duration": PIPE_SECS, "rate": 0.20,
+        "declare": {"vcodec": "h264", "acodec": "ac3", "fps": 30.303, "atmos": False},
+        "video": {"codec": "h264", "size": "3840x2160", "crf": 26, "fps": 30.303},
+        "audio": [{"codec": "ac3", "ch": 6, "lang": "eng", "br": "448k", "pitch": 220,
+                   "default": True, "title": "AC-3 5.1 English"}],
+        "subs": [],
+    },
     # **The 4K source the ABR ladder can actually be driven from.** Its sibling above is the
     # resolution matrix's cell and carries AC-3 5.1, which is right for what THAT case grades and
     # wrong here for two independent reasons: the harness checks a case's `declare` against the
@@ -1600,6 +1616,7 @@ PIPE_MBIT = {
     "pipe_h264_ac3_480p": 1.71,         # 1.26 video + 0.45 AC-3
     "pipe_h264_ac3_720p": 3.73,         # 3.28 + 0.45
     "pipe_h264_ac3_2160p": 12.2,        # 11.77 + 0.45
+    "pipe_h264_ac3_2160p30": 12.2,      # same 4K video and audio as the 24p cell
     "pipe_h264_aac_2160p": 12.0,        # same 4K video, stereo AAC instead of AC-3 5.1
     "pipe_hevc_eac3_480p": 1.34,        # 0.96 video + 0.38 E-AC-3
     "pipe_hevc_eac3_720p": 2.50,        # 2.12 + 0.38
