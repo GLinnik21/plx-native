@@ -324,8 +324,14 @@ impl MetadataStore {
         if matches!(&cmd, MetadataCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
+        // An optimistic edit that matched no row (a server's `Facts`/`Offset` that agrees with what
+        // is drawn) raises no notice: a notice relayouts a mounted Detail page. Every other
+        // command bumps whatever it returned.
+        let view_edit = matches!(&cmd, MetadataCmd::ApplyView { .. });
         let changed = crate::metadata::run(&mut self.state, &self.adapter, cmd);
-        self.bump();
+        if changed || !view_edit {
+            self.bump();
+        }
         changed
     }
 
@@ -479,5 +485,39 @@ mod two_owner_tests {
         a.run(MetadataCmd::Clear);
         assert_eq!(a.gen(), 1, "A's own command must advance A's own notice generation");
         assert_eq!(b.gen(), 0, "A's command must not advance B's notice generation");
+    }
+}
+
+#[cfg(test)]
+mod view_edit_notice_tests {
+    use super::*;
+    use crate::metadata::{Detail, Related};
+    use crate::viewstate::{ViewAt, ViewEdit};
+
+    /// An `ApplyView` that matched no tile raises no notice: a notice relayouts a mounted Detail
+    /// page, re-measures it and releases its pending Related page requests, so a server's
+    /// `Facts`/`Offset` that agrees with what is drawn must not cost one. A press that does change
+    /// a tile still does.
+    #[test]
+    fn a_view_edit_that_changed_nothing_raises_no_notice() {
+        let _serial = plx_base::testlock::serial();
+        let sid = plx_plex::plex::ServerId::UNSET;
+        let mut store = MetadataStore::default();
+        let tile = |rk: &str| Related { sid, rk: rk.into(), resume_ms: 3_510_000, unwatched: true, ..Default::default() };
+        crate::metadata::install_for_test(store.state_mut(), Some(Detail {
+            sid, rk: "show".into(), related: vec![tile("r0")], ..Default::default()
+        }));
+        let _ = store.take_notice();
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        let apply = |store: &mut MetadataStore, rk: &str, edit| {
+            store.run(MetadataCmd::ApplyView { at: ViewAt::leaf(sid, rk), edit })
+        };
+        assert!(apply(&mut store, "r0", facts));
+        assert!(store.take_notice().is_some(), "a changed tile is news");
+        assert!(!apply(&mut store, "r0", facts));
+        assert_eq!(store.take_notice(), None, "facts that agree with the tile raise no notice");
+        assert!(!apply(&mut store, "elsewhere", facts));
+        assert_eq!(store.take_notice(), None, "an item nothing here draws raises none either");
+        crate::metadata::install_for_test(store.state_mut(), None);
     }
 }

@@ -1850,6 +1850,37 @@ mod tests {
         crate::metadata::install_for_test(metadata_store.state_mut(), None);
     }
 
+    /// **Which stores a change reaches.** The server's word (`Facts`) and a stop's position
+    /// (`Offset`) reach the person, collection, search and metadata owners, each with the edit the
+    /// change names; leaving Continue Watching reaches none of the four (a result tile, a filmography
+    /// row and a Detail tile have no deck).
+    #[test]
+    fn publish_view_hands_facts_and_offset_to_the_four_tile_stores_and_a_deck_removal_to_none() {
+        use crate::stores::{collection::CollectionCmd, metadata::MetadataCmd, person::PersonCmd, search::SearchCmd};
+        let reached = |fact| {
+            let (mut p, mut c, mut s, mut m) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            publish_view(ViewChange { sid: SRV_A, rk: "4".into(), scope: Scope::Leaf, fact },
+                &mut |_| false,
+                &mut |_cmd| crate::stores::StoreOutcome::default(),
+                &mut |cmd| { if let PersonCmd::ApplyView { edit, .. } = cmd { p.push(edit) } false },
+                &mut |cmd| { if let CollectionCmd::ApplyView { edit, .. } = cmd { c.push(edit) } false },
+                &mut |cmd| { if let SearchCmd::ApplyView { edit, .. } = cmd { s.push(edit) } false },
+                &mut |cmd| { if let MetadataCmd::ApplyView { edit, .. } = cmd { m.push(edit) } false });
+            (p, c, s, m)
+        };
+        let facts = ViewFact::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        let edit = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        assert_eq!(reached(facts), (vec![edit], vec![edit], vec![edit], vec![edit]), "Facts reach all four");
+        let offset = ViewFact::Offset { ms: 42, dur_ms: 1_000_000 };
+        let edit = ViewEdit::Offset { ms: 42 };
+        assert_eq!(reached(offset), (vec![edit], vec![edit], vec![edit], vec![edit]), "Offset reaches all four");
+        assert_eq!(
+            reached(ViewFact::LeftDeck),
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+            "a deck removal reaches none of them"
+        );
+    }
+
     /// **The landing itself, driven through [`ViewStateState::pump`].** The test above grades what
     /// `publish_view` does; this one grades that the pump actually CALLS it — for every copy the worker reported,
     /// with the write that was SENT rather than whatever was pressed since — and then clears the

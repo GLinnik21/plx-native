@@ -6,7 +6,7 @@ use crate::stores::{browse::DirectorySnapshot, viewstate::ViewStateCmd, Stores};
 use crate::viewstate::Write;
 use std::collections::HashSet;
 use std::io::{Read, Write as _};
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicI64, AtomicUsize};
 
 /// What the fake server holds and how it behaves. One item, rating key `1`.
 #[derive(Default)]
@@ -19,6 +19,8 @@ struct Truth {
     release: AtomicBool,
     reads: AtomicUsize,
     scrobbles: AtomicUsize,
+    /// The `viewOffset` a read answers with (0: none), whatever the watched state.
+    view_offset: AtomicI64,
 }
 
 struct Pms {
@@ -59,8 +61,12 @@ fn serve_connection(mut conn: std::net::TcpStream, truth: Arc<Truth>) {
             truth.holding.store(false, Ordering::SeqCst);
         }
         let count = if seen { r#","viewCount":1"# } else { "" };
+        let offset = match truth.view_offset.load(Ordering::SeqCst) {
+            0 => String::new(),
+            ms => format!(r#","viewOffset":{ms}"#),
+        };
         return reply(&mut conn, "200 OK", &format!(
-            r#"{{"MediaContainer":{{"size":1,"Metadata":[{{"ratingKey":"1","type":"movie","title":"t","guid":"plex://movie/x"{count}}}]}}}}"#));
+            r#"{{"MediaContainer":{{"size":1,"Metadata":[{{"ratingKey":"1","type":"movie","title":"t","guid":"plex://movie/x"{count}{offset}}}]}}}}"#));
     }
     reply(&mut conn, "200 OK", r#"{"MediaContainer":{"size":0}}"#);
 }
@@ -348,18 +354,21 @@ fn an_end_of_stream_scrobbles_the_other_servers_copy_but_not_the_origin_again() 
 
 /// The same end of stream, seen from the other server's Search screen: B's copy of the title is
 /// scrobbled by the fan-out, and the tile Search holds for it reads watched without a search being
-/// run again.
+/// run again. B's tile already reads watched but carries a stale resume point, and B's server still
+/// answers its read-back with a `viewOffset` of its own: the fan-out's optimistic `Watched` would
+/// leave `0`, so only the read-back's `Facts` reaching Search can put the server's word on the tile.
 #[test]
 fn after_an_end_of_stream_the_other_servers_search_tile_reads_watched() {
     use crate::search::{Item, Kind, Shelf};
     let _g = plx_base::testlock::serial();
     let (a, b) = (serve(), serve());
     a.truth.watched.lock().unwrap().insert("1".into());
+    b.truth.view_offset.store(7_000, Ordering::SeqCst);
     let (mut stores, sid_a, sid_b) = two_servers(&a, &b);
     stores.search.publish_shelves_for_test(vec![Shelf {
         epoch: 0, window: Default::default(), kind: Kind::Movie,
         items: vec![Item::Media(crate::pms::PmsMovie {
-            sid: sid_b, rk: "1".into(), unwatched: true, resume_ms: 20_000, ..Default::default()
+            sid: sid_b, rk: "1".into(), watched: true, unwatched: false, resume_ms: 20_000, ..Default::default()
         })],
     }]);
     let search_tile = |stores: &Stores| {
@@ -370,11 +379,17 @@ fn after_an_end_of_stream_the_other_servers_search_tile_reads_watched() {
             _ => None,
         })
     };
-    assert_eq!(search_tile(&stores), Some((false, true, 20_000)), "premise: B's copy is unwatched");
+    assert_eq!(
+        search_tile(&stores), Some((true, false, 20_000)),
+        "premise: B's tile already reads watched but still carries a stale resume point"
+    );
     let directory = DirectorySnapshot::default();
     stores.stops_landed(vec![stop(sid_a, 60_000, false, true)], directory.view());
     drive(&mut stores, |s| settled(s) && b.truth.scrobbles.load(Ordering::SeqCst) == 1);
-    assert_eq!(search_tile(&stores), Some((true, false, 0)), "B's Search tile reads watched");
+    assert_eq!(
+        search_tile(&stores), Some((true, false, 7_000)),
+        "the read-back's Facts replace the stale resume point with the server's word"
+    );
     drop(stores);
 }
 
