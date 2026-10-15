@@ -1,0 +1,1212 @@
+{
+  "settings.title": {
+    "value": "Impostazioni",
+    "description": "Settings, account, onboarding or privacy UI: settings.title"
+  },
+  "settings.libraries.section": {
+    "value": "Librerie",
+    "description": "Settings, account, onboarding or privacy UI: settings.libraries.section"
+  },
+  "settings.libraries.title": {
+    "value": "Librerie preferite",
+    "description": "Settings, account, onboarding or privacy UI: settings.libraries.title"
+  },
+  "settings.libraries.detail": {
+    "value": "Quali librerie mostra questo televisore.",
+    "description": "Settings, account, onboarding or privacy UI: settings.libraries.detail"
+  },
+  "settings.privacy.section": {
+    "value": "Privacy",
+    "description": "Settings, account, onboarding or privacy UI: settings.privacy.section"
+  },
+  "settings.privacy.title": {
+    "value": "Privacy e dati",
+    "description": "Settings, account, onboarding or privacy UI: settings.privacy.title"
+  },
+  "settings.privacy.detail": {
+    "value": "Segnalazioni opzionali, informazioni sulla privacy e dati locali.",
+    "description": "Settings, account, onboarding or privacy UI: settings.privacy.detail"
+  },
+  "settings.legal.title": {
+    "value": "Note legali",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.title"
+  },
+  "settings.legal.detail": {
+    "value": "Privacy, licenze, codice sorgente, marchi e contatti.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.detail"
+  },
+  "settings.system.section": {
+    "value": "Sistema",
+    "description": "Settings, account, onboarding or privacy UI: settings.system.section"
+  },
+  "settings.auto_sign_in.title": {
+    "value": "Accedi automaticamente",
+    "description": "Settings, account, onboarding or privacy UI: settings.auto_sign_in.title"
+  },
+  "settings.auto_sign_in.detail": {
+    "value": "Salta l'elenco dei profili all'avvio dell'app.",
+    "description": "Settings, account, onboarding or privacy UI: settings.auto_sign_in.detail"
+  },
+  "settings.trailers.title": {
+    "value": "Riproduci i trailer automaticamente",
+    "description": "Settings, account, onboarding or privacy UI: settings.trailers.title"
+  },
+  "settings.trailers.detail": {
+    "value": "Dopo un momento su un titolo, riproducine il trailer con l'audio.",
+    "description": "Settings, account, onboarding or privacy UI: settings.trailers.detail"
+  },
+  "settings.about.title": {
+    "value": "Informazioni su PlxNative",
+    "description": "Settings, account, onboarding or privacy UI: settings.about.title"
+  },
+  "settings.about.section": {
+    "value": "Informazioni",
+    "description": "Settings, account, onboarding or privacy UI: settings.about.section"
+  },
+  "settings.about.detail": {
+    "value": "Versione, copyright e informazioni sul progetto.",
+    "description": "Settings, account, onboarding or privacy UI: settings.about.detail"
+  },
+  "settings.root.copy": {
+    "value": "Gestisci questo televisore e il tuo profilo Plex. Le preferenze per la lingua dell'audio e dei sottotitoli si sincronizzano con il tuo account Plex; le impostazioni di riproduzione appartengono a ciascun profilo e la lingua dell'app si applica a questo televisore.",
+    "description": "Settings, account, onboarding or privacy UI: settings.root.copy"
+  },
+  "settings.libraries.count": {
+    "value": {
+      "one": "{count} preferita",
+      "other": "{count} preferite"
+    },
+    "description": "Settings, account, onboarding or privacy UI: settings.libraries.count",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "settings.account.title": {
+    "value": "Account",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.title"
+  },
+  "settings.account.change_profile": {
+    "value": "Cambia profilo",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.change_profile"
+  },
+  "settings.account.sign_in": {
+    "value": "Accedi",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.sign_in"
+  },
+  "settings.account.sign_out": {
+    "value": "Esci",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.sign_out"
+  },
+  "settings.account.settings": {
+    "value": "Impostazioni",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.settings"
+  },
+  "settings.account.diagnostics": {
+    "value": "Invia diagnostica",
+    "description": "Settings, account, onboarding or privacy UI: settings.account.diagnostics"
+  },
+  "settings.profiles.title": {
+    "value": "Chi guarda?",
+    "description": "Settings, account, onboarding or privacy UI: settings.profiles.title"
+  },
+  "settings.profiles.pin": {
+    "value": "Inserisci il PIN di {name}",
+    "description": "Settings, account, onboarding or privacy UI: settings.profiles.pin",
+    "args": {
+      "name": "str"
+    }
+  },
+  "settings.onboard.title": {
+    "value": "Quali librerie desideri?",
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.title"
+  },
+  "settings.onboard.start": {
+    "value": "Inizia a guardare",
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.start"
+  },
+  "settings.done": {
+    "value": "Fatto",
+    "description": "Settings, account, onboarding or privacy UI: settings.done"
+  },
+  "settings.retry": {
+    "value": "Riprova",
+    "description": "Settings, account, onboarding or privacy UI: settings.retry"
+  },
+  "settings.onboard.failed": {
+    "value": "Impossibile caricare le librerie",
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.failed"
+  },
+  "settings.onboard.failed_reason": {
+    "value": "Controlla la connessione e riprova.",
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.failed_reason"
+  },
+  "settings.onboard.copy": {
+    "value": "Scegli le librerie mostrate da questo televisore. Le tue preferite riempiono gli scaffali della Home e le schede della Libreria; Impostazioni le elenca tutte.",
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.copy"
+  },
+  "settings.onboard.shared": {
+    "value": {
+      "one": "{names} ha condiviso delle librerie con te. Scegli le tue preferite: sono ciò che Home e la Libreria mostrano, e potrai modificarle in Impostazioni quando vuoi.",
+      "other": "{names} hanno condiviso delle librerie con te. Scegli le tue preferite: sono ciò che Home e la Libreria mostrano, e potrai modificarle in Impostazioni quando vuoi."
+    },
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.shared",
+    "args": {
+      "count": "i64",
+      "names": "str"
+    }
+  },
+  "settings.onboard.names": {
+    "value": "{names} e {last}",
+    "description": "Settings, account, onboarding or privacy UI: settings.onboard.names",
+    "args": {
+      "last": "str",
+      "names": "str"
+    }
+  },
+  "settings.language.title": {
+    "value": "Lingua",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.title"
+  },
+  "settings.language.detail": {
+    "value": "Scegli la lingua utilizzata da PlxNative.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.detail"
+  },
+  "settings.language.system": {
+    "value": "Predefinita di sistema",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.system"
+  },
+  "settings.language.copy": {
+    "value": "Scegli la lingua dell'app per tutti su questo televisore. Le modifiche avranno effetto dopo il riavvio di PlxNative.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.copy"
+  },
+  "settings.language.pending": {
+    "value": "Riavvia PlxNative per applicare questa modifica.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.pending"
+  },
+  "settings.language.restart_hint": {
+    "value": "Tieni premuto {key} per chiudere PlxNative, quindi aprilo di nuovo.",
+    "description": "Complete sentence under the Language page's explanation, telling people how to restart the app: holding the remote's BACK button closes it (many LG remotes have no EXIT button). {key} is the BACK button rendered as a keycap; keep exactly one occurrence. Must fit one line of the Settings narrative column at CAPTION size.",
+    "args": {
+      "key": "str"
+    }
+  },
+  "settings.language.save_failed": {
+    "value": "Impossibile salvare la lingua. Riprova.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.save_failed"
+  },
+  "settings.language.help": {
+    "value": "Aiutaci a tradurre l'app.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.help"
+  },
+  "settings.language.contribute": {
+    "value": "Contribuisci su GitHub",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.contribute"
+  },
+  "settings.language.contribute_copy": {
+    "value": "Scansiona il codice con il tuo telefono per leggere la guida alla traduzione e contribuire su GitHub.",
+    "description": "Settings, account, onboarding or privacy UI: settings.language.contribute_copy"
+  },
+  "settings.language.contribute_body": {
+    "value": "Guida alla traduzione",
+    "description": "Caption above the translation guide address; the canonical URL is drawn separately and must never be translated."
+  },
+  "settings.consent.crash.title": {
+    "value": "Condividere i rapporti di errore?",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.title"
+  },
+  "settings.consent.product.title": {
+    "value": "Condividere le analisi di prodotto?",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.product.title"
+  },
+  "settings.consent.crash.body": {
+    "value": "Se PlxNative si arresta in modo anomalo o l'accesso fallisce, può inviare dettagli tecnici che aiutano a trovare e risolvere il problema. I rapporti possono includere il segnale, gli indirizzi di codice, le informazioni sui thread e i dettagli di compatibilità del dispositivo, oppure quale passaggio dell'accesso è fallito e come ha risposto la connessione, oltre a un identificativo casuale del rapporto di errore creato all'attivazione e eliminato alla disattivazione o alla disconnessione, in modo che arresti anomali ripetuti sotto lo stesso identificativo siano contati una sola volta anziché una per ciascuno. Non includono mai titoli, account Plex, ricerche, nomi o indirizzi di server, token, testo dei sottotitoli o l'identificativo di analisi di prodotto.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.body"
+  },
+  "settings.consent.product.body": {
+    "value": "PlxNative può condividere quali schermate e funzionalità vengono utilizzate, insieme ai risultati generali di accesso e riproduzione. I rapporti contengono un ID di analisi casuale, creato all'attivazione e eliminato alla disattivazione o alla disconnessione, e possono includere la versione dell'app, la versione di webOS, il modello del televisore e del SoC, e se un server selezionato è locale, remoto o tramite relay. Non includono mai titoli, account Plex, ricerche, nomi o indirizzi di server, token, testo dei sottotitoli o cronologia di visione esatta.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.product.body"
+  },
+  "settings.consent.crash.row": {
+    "value": "Rapporti di errore",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.row"
+  },
+  "settings.consent.crash.detail": {
+    "value": "Rapporti tecnici opzionali sugli errori.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.detail"
+  },
+  "settings.consent.usage.row": {
+    "value": "Analisi di prodotto",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.usage.row"
+  },
+  "settings.consent.usage.detail": {
+    "value": "Funzionalità opzionali ed esiti di riproduzione.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.usage.detail"
+  },
+  "settings.consent.crash.document": {
+    "value": "Arresti anomali / Errori",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.document"
+  },
+  "settings.consent.usage.document": {
+    "value": "Analisi / Utilizzo",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.usage.document"
+  },
+  "settings.consent.example": {
+    "value": "Visualizza un rapporto di esempio",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.example"
+  },
+  "settings.consent.policy": {
+    "value": "Informativa sulla privacy",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.policy"
+  },
+  "settings.consent.analytics_id": {
+    "value": "ID analisi",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.analytics_id"
+  },
+  "settings.consent.crash_id": {
+    "value": "ID rapporto di errore",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash_id"
+  },
+  "settings.consent.delete": {
+    "value": "Elimina tutti i dati locali",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.delete"
+  },
+  "settings.consent.delete_scope": {
+    "value": "Questa operazione effettua la disconnessione e rimuove i dati di PlxNative memorizzati su questo televisore. Non elimina i dati già inviati a Plex, ai tuoi Plex Media Server, a Sentry o a PostHog.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.delete_scope"
+  },
+  "settings.consent.settings_copy": {
+    "value": "Controlla le segnalazioni opzionali, rivedi esattamente cosa può essere condiviso e gestisci i dati memorizzati da PlxNative su questo televisore.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.settings_copy"
+  },
+  "settings.consent.reporting": {
+    "value": "Segnalazioni",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.reporting"
+  },
+  "settings.consent.information": {
+    "value": "Informazioni",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.information"
+  },
+  "settings.consent.on_tv": {
+    "value": "Su questa TV",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.on_tv"
+  },
+  "settings.consent.preview_crash": {
+    "value": "Anteprima campo per campo del rapporto di errore.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_crash"
+  },
+  "settings.consent.preview_usage": {
+    "value": "Anteprima campo per campo degli eventi di analisi di prodotto.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_usage"
+  },
+  "settings.consent.preview_policy": {
+    "value": "L'informativa sulla privacy completa di PlxNative per questa build.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_policy"
+  },
+  "settings.consent.preview_errors_id": {
+    "value": "Il tuo identificativo del rapporto di errore e come richiederne l'eliminazione.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_errors_id"
+  },
+  "settings.consent.preview_analytics_id": {
+    "value": "L'identificativo associato alle tue analisi e come richiederne l'eliminazione.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview_analytics_id"
+  },
+  "settings.consent.delete_detail": {
+    "value": "Disconnettiti e rimuovi i dati di PlxNative da questa TV.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.delete_detail"
+  },
+  "settings.consent.errors_subtitle": {
+    "value": "L'identificativo casuale associato ai rapporti di errore di questo accesso e come richiederne l'eliminazione.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.errors_subtitle"
+  },
+  "settings.consent.analytics_subtitle": {
+    "value": "L'identificativo casuale associato alle analisi di prodotto di questo accesso e come richiederne l'eliminazione.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.analytics_subtitle"
+  },
+  "settings.consent.policy_subtitle": {
+    "value": "Come PlxNative gestisce i dati locali, i servizi Plex e le segnalazioni opzionali.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.policy_subtitle"
+  },
+  "settings.consent.crash_subtitle": {
+    "value": "Cosa viene effettivamente inviato: i campi esatti che un rapporto di errore può contenere, solo quando la segnalazione degli errori è attiva.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.crash_subtitle"
+  },
+  "settings.consent.usage_subtitle": {
+    "value": "Cosa viene effettivamente inviato: i campi esatti che un evento di analisi di prodotto può contenere, solo quando la segnalazione di utilizzo è attiva.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.usage_subtitle"
+  },
+  "settings.consent.share_analytics": {
+    "value": "Condividi",
+    "description": "Short affirmative action for the consent question above; keep paired actions on one row."
+  },
+  "settings.consent.share_reports": {
+    "value": "Condividi",
+    "description": "Short affirmative action for the consent question above; keep paired actions on one row."
+  },
+  "settings.consent.do_not_share": {
+    "value": "Non condividere",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.do_not_share"
+  },
+  "settings.consent.delete_question": {
+    "value": "Eliminare tutti i dati locali?",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.delete_question"
+  },
+  "settings.cancel": {
+    "value": "Annulla",
+    "description": "Settings, account, onboarding or privacy UI: settings.cancel"
+  },
+  "settings.delete": {
+    "value": "Elimina",
+    "description": "Settings, account, onboarding or privacy UI: settings.delete"
+  },
+  "settings.legal.privacy.title": {
+    "value": "Informativa sulla privacy",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.title"
+  },
+  "settings.legal.opensource.title": {
+    "value": "Licenze open source",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.opensource.title"
+  },
+  "settings.legal.ffmpeg.title": {
+    "value": "FFmpeg e offerta del codice sorgente",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.ffmpeg.title"
+  },
+  "settings.legal.source.title": {
+    "value": "Codice sorgente di PlxNative",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.source.title"
+  },
+  "settings.legal.trademarks.title": {
+    "value": "Marchi e assenza di affiliazione",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.trademarks.title"
+  },
+  "settings.legal.contact.title": {
+    "value": "Contatti privacy e sicurezza",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.contact.title"
+  },
+  "settings.legal.privacy.subtitle": {
+    "value": "Come PlxNative gestisce i dati locali e i rapporti opzionali.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.subtitle"
+  },
+  "settings.legal.opensource.subtitle": {
+    "value": "Componenti, titolari del copyright e testi delle licenze.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.opensource.subtitle"
+  },
+  "settings.legal.ffmpeg.subtitle": {
+    "value": "Avviso LGPL, sostituibilità e codice sorgente corrispondente.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.ffmpeg.subtitle"
+  },
+  "settings.legal.source.subtitle": {
+    "value": "Sorgente del progetto, script di build e materiali di rilascio.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.source.subtitle"
+  },
+  "settings.legal.trademarks.subtitle": {
+    "value": "Stato di client indipendente e attribuzione dei marchi.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.trademarks.subtitle"
+  },
+  "settings.legal.contact.subtitle": {
+    "value": "Come fare una domanda sulla privacy o segnalare una vulnerabilità.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.contact.subtitle"
+  },
+  "settings.legal.section": {
+    "value": "Note legali",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.section"
+  },
+  "settings.legal.copy": {
+    "value": "Leggi gli avvisi applicabili a questa build, ai suoi componenti open source e al suo rapporto con Plex e LG.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.copy"
+  },
+  "settings.about.subtitle": {
+    "value": "Un client multimediale nativo creato per LG webOS.",
+    "description": "Settings, account, onboarding or privacy UI: settings.about.subtitle"
+  },
+  "settings.legal.privacy.responsible": {
+    "value": "RESPONSABILE DEI DATI DI PLXNATIVE",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.responsible"
+  },
+  "settings.legal.privacy.responsible_body": {
+    "value": "Gleb Linnik è responsabile esclusivamente dei dati che PlxNative memorizza localmente e dei rapporti opzionali che scegli di condividere.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.responsible_body"
+  },
+  "settings.legal.privacy.plex": {
+    "value": "SERVIZI PLEX",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.plex"
+  },
+  "settings.legal.privacy.plex_body": {
+    "value": "PlxNative è un client indipendente per Plex. Per effettuare l'accesso, individuare i server e fornire le funzionalità dell'account Plex, l'app comunica direttamente con i servizi Plex. Plex elabora le informazioni ricevute da tali servizi secondo la propria Informativa sulla privacy. Lo sviluppatore di PlxNative non riceve tali informazioni.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.plex_body"
+  },
+  "settings.legal.privacy.plex_link": {
+    "value": "Informativa sulla privacy di Plex: https://www.plex.tv/about/privacy-legal/",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.plex_link"
+  },
+  "settings.legal.privacy.servers": {
+    "value": "PLEX MEDIA SERVER",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.servers"
+  },
+  "settings.legal.privacy.servers_body": {
+    "value": "Per sfogliare e riprodurre i contenuti multimediali, aggiornare i progressi di visione e utilizzare le funzionalità del server, PlxNative comunica direttamente con i Plex Media Server selezionati. Tali richieste sono gestite dal server selezionato e dal suo operatore. Lo sviluppatore di PlxNative non le riceve.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.servers_body"
+  },
+  "settings.legal.privacy.local": {
+    "value": "SU QUESTO TELEVISORE",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.local"
+  },
+  "settings.legal.privacy.local_body": {
+    "value": "PlxNative memorizza il token del tuo account Plex e un token separato per ciascun server che usi. Per ogni profilo a cui hai effettuato l'accesso su questo televisore, conserva inoltre i token di accesso al server di quel profilo e, per un profilo protetto da PIN, una verifica a senso unico calcolata a partire da quel PIN anziché il PIN stesso. Conserva anche gli indirizzi e gli identificativi di tali server, i nomi e le immagini dei profili del tuo account (immagini e altre illustrazioni scaricate vengono memorizzate come file con limiti di dimensione per il riutilizzo tra i riavvi), le tue scelte per le librerie della Home, le ricerche recenti, la qualità di riproduzione, la riproduzione diretta e le preferenze per la lingua dell'app, oltre ai log tecnici locali: un log degli eventi e un log dell'output degli errori, entrambi svuotati a ogni avvio dell'app, un log degli arresti anomali conservato fino al riavvio del televisore e un'istantanea dello stato di archiviazione con limiti di dimensione. Memorizza inoltre le tue risposte alle due domande sulle segnalazioni opzionali, l'ID casuale del rapporto di errore se hai attivato i rapporti di errore, l'ID casuale di analisi se hai attivato le analisi di prodotto, qualsiasi rapporto in attesa di essere inviato e un indicatore che registra quanta parte del log degli arresti anomali è già stata letta. L'app non conserva alcun segnalibro proprio sul punto in cui hai interrotto la visione: la posizione di riproduzione è gestita dal tuo Plex Media Server. L'opzione Elimina tutti i dati locali in Impostazioni effettua la disconnessione e rimuove i dati di PlxNative da questo televisore.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.local_body"
+  },
+  "settings.legal.privacy.crashes": {
+    "value": "RAPPORTI DI ERRORE OPZIONALI",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.crashes"
+  },
+  "settings.legal.privacy.crashes_body": {
+    "value": "Se abilitati, i dettagli tecnici sugli arresti anomali vengono inviati a Sentry in Germania. Possono includere il segnale, gli indirizzi di codice, le informazioni sui thread e i dettagli di compatibilità del dispositivo. Ogni rapporto trasporta un ID casuale del rapporto di errore creato su questo televisore quando hai attivato i rapporti di errore, in modo che arresti anomali ripetuti sotto lo stesso ID siano contati una sola volta anziché una per ciascuno. Non deriva dal tuo account Plex, dal tuo televisore o da qualsiasi informazione che ti riguardi, e non viene mai inviato insieme alle analisi di prodotto. Le Impostazioni lo mostrano come il tuo ID rapporto di errore mentre i rapporti di errore sono attivi.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.crashes_body"
+  },
+  "settings.legal.privacy.analytics": {
+    "value": "ANALISI DI PRODOTTO OPZIONALI",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.analytics"
+  },
+  "settings.legal.privacy.analytics_body": {
+    "value": "Se abilitate, gli eventi relativi a schermate e funzionalità e i risultati generali di accesso e riproduzione vengono inviati a PostHog in Germania con un ID di analisi casuale creato all'attivazione delle analisi di prodotto. Le Impostazioni mostrano tale identificativo come il tuo ID analisi mentre le analisi di prodotto sono attive. Gli eventi di accesso precedenti alla tua risposta vengono trattenuti in memoria e inviati solo se scegli di condividerli.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.analytics_body"
+  },
+  "settings.legal.privacy.excluded": {
+    "value": "MAI INCLUSI",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.excluded"
+  },
+  "settings.legal.privacy.excluded_body": {
+    "value": "Titoli, account Plex, ricerche, nomi o indirizzi di server, token, testo dei sottotitoli e cronologia di visione esatta non sono inclusi in alcun tipo di rapporto opzionale. Entrambe le scelte sono indipendenti e possono essere modificate in qualsiasi momento nelle Impostazioni.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.excluded_body"
+  },
+  "settings.legal.privacy.retention": {
+    "value": "CONSERVAZIONE DEI DATI",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.retention"
+  },
+  "settings.legal.privacy.retention_body": {
+    "value": "Elementi diversi hanno durate differenti, pertanto questa sezione le specifica per ciascuno di essi. Il tuo accesso, i server registrati con esso e i relativi token, i token di accesso al server e la verifica del PIN memorizzati per ciascun profilo, le immagini dei profili e le altre illustrazioni scaricate memorizzate nella cache, e le tue risposte sulle connessioni non crittografate vengono rimossi quando effettui la disconnessione. Le tue risposte alle due domande sulle segnalazioni opzionali, nonché l'ID rapporto di errore e l'ID analisi (se presenti), appartengono a tale accesso: la disconnessione li rimuove insieme ad esso e chi accederà successivamente riceverà nuovamente la richiesta. Il passaggio tra i profili di uno stesso account Plex non costituisce una disconnessione e mantiene tutto, compresi i token di accesso al server e la verifica del PIN memorizzati per un profilo che non stai attualmente utilizzando, consentendo di selezionare nuovamente quel profilo senza connessione a Internet. Un rapporto in attesa di invio viene eliminato una volta inviato, e un rapporto in coda di una categoria che disattivi, o dalla quale ti disconnetti, viene eliminato in quel preciso momento; un rapporto che il mittente avesse già prelevato in quel momento potrebbe comunque essere inviato, e nessun ulteriore rapporto verrà prelevato successivamente. Il log degli eventi e il log dell'output degli errori vengono svuotati a ogni avvio dell'app, il log degli arresti anomali viene conservato fino al riavvio del televisore (momento in cui il televisore pulisce la propria memoria temporanea) e l'istantanea di archiviazione viene sostituita quando il suo stato con limiti di dimensione cambia. L'opzione Elimina tutti i dati locali rimuove ogni elemento. Un rapporto già inviato viene conservato dal servizio che lo ha ricevuto secondo il programma di conservazione di tale servizio; scrivi al contatto sottostante per conoscere i periodi attualmente in vigore. La preferenza per la lingua dell'app appartiene a questo televisore e viene conservata quando effettui la disconnessione; l'opzione Elimina tutti i dati locali la ripristina.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.retention_body"
+  },
+  "settings.legal.privacy.choices": {
+    "value": "LE TUE SCELTE E COME RICHIEDERE INFORMAZIONI",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.choices"
+  },
+  "settings.legal.privacy.choices_body": {
+    "value": "Entrambi i rapporti opzionali sono disattivati finché non li attivi, e ciascuno di essi può essere disattivato nuovamente in qualsiasi momento nelle Impostazioni. Un singolo rapporto per un problema di accesso viene inviato solo quando premi Invia rapporto. L'opzione Elimina tutti i dati locali rimuove ciò che PlxNative ha memorizzato su questo televisore; non influisce su quanto già inviato. Per chiedere quali rapporti di errore o analisi di prodotto siano conservati per la tua installazione, o per richiederne l'eliminazione, scrivi al contatto sottostante citando il tuo ID rapporto di errore o ID analisi dalle Impostazioni, oppure l'ID del rapporto mostrato dopo un invio singolo. Ciascun identificativo rappresenta l'unico riferimento associato ai relativi rapporti. Disattivare una categoria elimina il relativo identificativo da questo televisore, così come effettuare la disconnessione; i rapporti già inviati mantengono quello precedente, quindi ti conviene annotarlo prima se intendi richiederne l'eliminazione.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.choices_body"
+  },
+  "settings.legal.privacy.processing": {
+    "value": "LUOGO DI ELABORAZIONE DEI DATI",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.processing"
+  },
+  "settings.legal.privacy.processing_body": {
+    "value": "I rapporti di errore opzionali sono elaborati da Sentry in Germania e le analisi di prodotto opzionali da PostHog in Germania. Plex elabora ciò che i suoi servizi ricevono in base all'Informativa sulla privacy di Plex. Un Plex Media Server a cui ti connetti può trovarsi ovunque ed è gestito da chiunque lo amministri, non dallo sviluppatore di PlxNative.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.processing_body"
+  },
+  "settings.legal.privacy.uninstall": {
+    "value": "DISINSTALLAZIONE",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.uninstall"
+  },
+  "settings.legal.privacy.uninstall_body": {
+    "value": "La rimozione di PlxNative rimuove l'applicazione, ma webOS non offre a un'applicazione alcun modo di eseguire codice durante la sua rimozione, pertanto tutto ciò che viene conservato al di fuori della directory dell'applicazione potrebbe sopravvivere. Il tuo accesso viene deliberatamente conservato lì affinché una reinstallazione non comporti la disconnessione. Le tue risposte alle segnalazioni opzionali e i relativi ID rapporto di errore e ID analisi sono conservati con tale accesso, in modo che una decisione già presa non ti venga richiesta nuovamente dopo una reinstallazione. Anche la preferenza per la lingua dell'app viene conservata lì. Usa Elimina tutti i dati locali PRIMA di disinstallare se desideri che non rimanga nulla di PlxNative su questo televisore.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.uninstall_body"
+  },
+  "settings.legal.privacy.contact": {
+    "value": "CONTATTI",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.contact"
+  },
+  "settings.legal.privacy.contact_body": {
+    "value": "Domande sulla privacy: support@plxnative.com",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.contact_body"
+  },
+  "settings.legal.ffmpeg.body": {
+    "value": "Questo software utilizza librerie del progetto FFmpeg ai sensi della licenza LGPLv2.1. FFmpeg è protetto da copyright (c) degli sviluppatori di FFmpeg; PlxNative non possiede FFmpeg.\n\nLe librerie FFmpeg non sono modificate e vengono caricate in modo dinamico, e possono essere sostituite con una build compatibile nelle interfacce. Il codice sorgente completo e corrispondente di FFmpeg 9.0, la riga di configurazione esatta e lo script di compilazione vengono pubblicati con ogni rilascio di PlxNative.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.ffmpeg.body"
+  },
+  "settings.legal.trademarks.body": {
+    "value": "Plex, il logo Plex e Plex Media Server sono marchi di Plex, Inc.\n\nLG e webOS sono marchi di LG Electronics Inc.\n\nPlxNative è un'applicazione indipendente e non ufficiale. Non è prodotta, sponsorizzata o affiliata a Plex, Inc. o LG Electronics Inc.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.trademarks.body"
+  },
+  "settings.legal.contact.body": {
+    "value": "Le domande sulla privacy possono essere inviate a support@plxnative.com.\n\nLe vulnerabilità di sicurezza possono essere segnalate in via privata tramite GitHub Security Advisories per GLinnik21/plx-native. Si prega di non includere token Plex, indirizzi di server o informazioni multimediali personali in una segnalazione.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.contact.body"
+  },
+  "settings.legal.opensource.body": {
+    "value": "PlxNative è un software open source con licenza GPL-3.0-o-successiva. Copyright (c) 2026 Gleb Linnik e contributori. Puoi modificarlo e ridistribuirlo secondo questi termini. Non viene fornita alcuna garanzia, nella misura consentita dalla legge.\n\nI componenti di terze parti conservano le rispettive licenze. Il pacchetto include THIRD-PARTY-NOTICES.md e i testi delle licenze per il runtime e i crate di Rust, FFmpeg, Sentry Native, libunwind, NanoSVG, font e icone. Le librerie della piattaforma hanno termini separati.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.opensource.body"
+  },
+  "settings.legal.source.body": {
+    "value": "Codice sorgente per la build {build}:\n\nhttps://github.com/GLinnik21/plx-native/tree/{build}\n\nI candidati di migrazione locali potrebbero contenere modifiche non pubblicate. Il loro snapshot sorgente corrispondente viene fornito con le prove del candidato. Un binario pubblicato deve essere accompagnato dal suo pacchetto sorgente completo specifico per la versione e dalle istruzioni di compilazione; un branch in movimento non costituisce la registrazione del codice sorgente corrispondente. Vedi LICENSING.md nel pacchetto.",
+    "description": "Settings, account, onboarding or privacy UI: settings.legal.source.body",
+    "args": {
+      "build": "str"
+    }
+  },
+  "settings.about.body": {
+    "value": "Versione {version}\nBuild {build}\n\nSviluppato da Gleb Linnik\n© 2026 Gleb Linnik\n\nOpen source con licenza GPL-3.0-o-successiva\ngithub.com/GLinnik21/plx-native\n\nPlxNative è un'applicazione indipendente e non ufficiale. Non è prodotta, sponsorizzata o affiliata a Plex, Inc. o LG Electronics Inc.",
+    "description": "Settings, account, onboarding or privacy UI: settings.about.body",
+    "args": {
+      "build": "str",
+      "version": "str"
+    }
+  },
+  "settings.consent.preview.crash_intro": {
+    "value": "Arresti anomali / Errori — cosa viene effettivamente inviato a Sentry in Germania, e solo quando la segnalazione degli errori è attiva. I valori casuali e specifici della build sono segnaposto; le classi fisse sottostanti sono valori rappresentativi dei domini chiusi nell'Informativa sulla privacy. Non viene inviato nient'altro. L'identificativo del rapporto di errore è casuale, viene creato solo quando i rapporti di errore sono abilitati e viene mostrato qui come segnaposto.\n\n",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.crash_intro"
+  },
+  "settings.consent.preview.usage_intro": {
+    "value": "Analisi / Utilizzo — cosa viene effettivamente inviato a PostHog in Germania, e solo quando la segnalazione di utilizzo è attiva, con un ID di analisi casuale. I valori casuali e specifici della build sono segnaposto; le classi fisse sottostanti sono valori rappresentativi dei domini chiusi nell'Informativa sulla privacy. Non viene inviato nient'altro. L'identificativo di utilizzo è casuale e viene creato solo quando le analisi di prodotto sono abilitate.\n\n",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.usage_intro"
+  },
+  "settings.consent.preview.native": {
+    "value": "Rapporto di errore nativo (solo quando la segnalazione degli errori è attiva):\n",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.native"
+  },
+  "settings.consent.preview.fallback": {
+    "value": " (solo se l'acquisizione nativa non è disponibile):\n",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.fallback"
+  },
+  "settings.consent.preview.handled": {
+    "value": "\n\nErrore di riproduzione gestito (solo quando la segnalazione degli errori è attiva):\n",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.handled"
+  },
+  "settings.consent.analytics.absent": {
+    "value": "NESSUN ID ANALISI\n\nLe analisi di prodotto sono disattivate, quindi questa installazione non ha alcun identificativo di analisi e non invia alcun evento di analisi.\n\nUn identificativo viene creato solo quando attivi le analisi di prodotto, e disattivarle comporta l'eliminazione di tale identificativo. Se avevi attivato le analisi in precedenza e desideri che gli eventi di quel periodo vengano eliminati, scrivi a {contact} — ma tieni presente che l'identificativo associato è stato distrutto quando le analisi sono state disattivate, quindi non può più essere cercato da questo televisore.\n\nI rapporti di errore non utilizzano questo identificativo. Essi trasportano un ID rapporto di errore separato, mostrato sulla propria riga mentre i rapporti di errore sono attivi.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.analytics.absent",
+    "args": {
+      "contact": "str"
+    }
+  },
+  "settings.consent.analytics.present": {
+    "value": "IL TUO ID ANALISI\n\n{id}\n\nCOS'È\n\nUn identificativo casuale creato su questo televisore quando hai attivato le analisi di prodotto. Viene associato agli eventi di analisi in modo che possano essere conteggiati come provenienti da un unico ID analisi: un'unica accettazione ininterrotta su un televisore. Non deriva dal tuo account Plex, dal tuo televisore o da qualsiasi informazione che ti riguardi, e non viene mai inviato con i rapporti di errore, che trasportano un proprio ID rapporto di errore separato.\n\nCOME RICHIEDERE L'ELIMINAZIONE DI QUESTI EVENTI\n\nScrivi a {contact} e cita l'identificativo sopra. È l'unico riferimento associato a questi eventi, pertanto una richiesta priva di esso non può essere abbinata ad alcun dato.\n\nCOME TERMINA\n\nDisattivare le analisi di prodotto elimina questo identificativo, e riattivarle ne crea uno nuovo. Anche la disconnessione lo rimuove, e chi accede successivamente riceve nuovamente la richiesta; lo stesso vale per Elimina tutti i dati locali. Gli eventi già inviati mantengono il vecchio identificativo, motivo per cui ti conviene annotarlo prima di disattivare le analisi se intendi richiederne l'eliminazione.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.analytics.present",
+    "args": {
+      "contact": "str",
+      "id": "str"
+    }
+  },
+  "settings.consent.errors.absent": {
+    "value": "NESSUN ID RAPPORTO DI ERRORE\n\nI rapporti di errore sono disattivati, quindi questa installazione non ha alcun identificativo di rapporto di errore e non invia alcun rapporto sugli errori.\n\nUn identificativo viene creato solo quando attivi i rapporti di errore, e disattivarli comporta l'eliminazione di tale identificativo. Se avevi attivato i rapporti di errore in precedenza e desideri che i rapporti di quel periodo vengano eliminati, scrivi a {contact} — ma tieni presente che l'identificativo associato è stato distrutto quando i rapporti di errore sono stati disattivati, quindi non può più essere cercato da questo televisore.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.errors.absent",
+    "args": {
+      "contact": "str"
+    }
+  },
+  "settings.consent.errors.present": {
+    "value": "IL TUO ID RAPPORTO DI ERRORE\n\n{id}\n\nCOS'È\n\nUn identificativo casuale creato su questo televisore quando hai attivato i rapporti di errore. Viene associato a ogni rapporto di errore in modo che arresti anomali ripetuti sotto lo stesso ID rapporto di errore vengano contati una sola volta, permettendo di distinguere un problema che ha colpito molte persone da un televisore che lo ha riscontrato molte volte. Non deriva dal tuo account Plex, dal tuo televisore o da qualsiasi informazione che ti riguardi, e non viene mai inviato con le analisi di prodotto, che dispongono di un proprio ID analisi separato.\n\nCOME RICHIEDERE L'ELIMINAZIONE DI QUESTI RAPPORTI\n\nScrivi a {contact} e cita l'identificativo sopra. È l'unico riferimento associato a questi rapporti, pertanto una richiesta priva di esso non può essere abbinata ad alcun dato.\n\nCOME TERMINA\n\nDisattivare i rapporti di errore elimina questo identificativo, e riattivarli ne crea uno nuovo. Anche la disconnessione lo rimuove, e chi accede successivamente riceve nuovamente la richiesta; lo stesso vale per Elimina tutti i dati locali. I rapporti già inviati mantengono il vecchio identificativo, motivo per cui ti conviene annotarlo prima di disattivare i rapporti di errore se intendi richiederne l'eliminazione.",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.errors.present",
+    "args": {
+      "contact": "str",
+      "id": "str"
+    }
+  },
+  "settings.consent.preview.usage_heading": {
+    "value": "Eventi di utilizzo (solo quando la segnalazione di utilizzo è attiva):\n",
+    "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.usage"
+  },
+  "settings.back": {
+    "value": "Indietro",
+    "description": "Settings, consent or sign-in UI: settings.back"
+  },
+  "settings.profiles.failed": {
+    "value": "Impossibile cambiare profilo",
+    "description": "Settings, consent or sign-in UI: settings.profiles.failed"
+  },
+  "settings.playback.section": {
+    "value": "Riproduzione",
+    "description": "Settings, consent or sign-in UI: settings.playback.section"
+  },
+  "settings.playback.title": {
+    "value": "Video e riproduzione",
+    "description": "Settings, consent or sign-in UI: settings.playback.title"
+  },
+  "settings.playback.detail": {
+    "value": "Qualità predefinita e riproduzione diretta.",
+    "description": "Settings, consent or sign-in UI: settings.playback.detail"
+  },
+  "settings.audio.title": {
+    "value": "Audio e sottotitoli",
+    "description": "Settings, consent or sign-in UI: settings.audio.title"
+  },
+  "settings.audio.detail": {
+    "value": "Preferenze di lingua sincronizzate con il tuo account Plex.",
+    "description": "Settings, consent or sign-in UI: settings.audio.detail"
+  },
+  "settings.playback.quality": {
+    "value": "Qualità predefinita",
+    "description": "Settings, consent or sign-in UI: settings.playback.quality"
+  },
+  "settings.playback.direct_play": {
+    "value": "Riproduzione diretta",
+    "description": "Settings, consent or sign-in UI: settings.playback.direct_play"
+  },
+  "settings.playback.subtitle_size": {
+    "value": "Dimensione sottotitoli",
+    "description": "Settings, consent or sign-in UI: the client-rendered subtitle caption's text size."
+  },
+  "settings.playback.subtitle_size.small": {
+    "value": "Piccola",
+    "description": "Subtitle size picker option: the smallest client-rendered caption size."
+  },
+  "settings.playback.subtitle_size.medium": {
+    "value": "Media",
+    "description": "Subtitle size picker option: the default client-rendered caption size."
+  },
+  "settings.playback.subtitle_size.large": {
+    "value": "Grande",
+    "description": "Subtitle size picker option: a larger client-rendered caption size."
+  },
+  "settings.playback.subtitle_size.extra_large": {
+    "value": "Molto grande",
+    "description": "Subtitle size picker option: a larger client-rendered caption size, one step below Huge."
+  },
+  "settings.playback.subtitle_size.huge": {
+    "value": "Enorme",
+    "description": "Subtitle size picker option: the largest client-rendered caption size."
+  },
+  "settings.playback.subtitle_position": {
+    "value": "Posizione sottotitoli",
+    "description": "Settings, consent or sign-in UI: how high above the bottom edge the client-rendered subtitle caption sits."
+  },
+  "settings.playback.subtitle_position.low": {
+    "value": "Bassa",
+    "description": "Subtitle position picker option: the caption sits near the bottom edge (the default)."
+  },
+  "settings.playback.subtitle_position.middle": {
+    "value": "Centrale",
+    "description": "Subtitle position picker option: the caption sits further up the picture."
+  },
+  "settings.playback.subtitle_position.high": {
+    "value": "Alta",
+    "description": "Subtitle position picker option: the caption sits near the top of the safe area."
+  },
+  "settings.playback.next_episode": {
+    "value": "Prossimo episodio",
+    "description": "Settings, consent or sign-in UI: what the player does at an episode's credits when another episode is queued."
+  },
+  "settings.playback.next_episode.countdown": {
+    "value": "Conto alla rovescia A seguire",
+    "description": "Next episode picker option (the default): the Up Next card appears over the credits and counts down to the next episode."
+  },
+  "settings.playback.next_episode.after_credits": {
+    "value": "Dopo i titoli di coda",
+    "description": "Next episode picker option: nothing is shown during the credits; the next episode starts when this one ends."
+  },
+  "settings.playback.next_episode.off": {
+    "value": "Disattivato",
+    "description": "Next episode picker option: nothing is shown during the credits and the next episode does not start by itself."
+  },
+  "settings.playback.deck_press": {
+    "value": "Continua a guardare",
+    "description": "Settings row title and picker title: what OK does on a card in the Continue Watching shelf."
+  },
+  "settings.playback.deck_press.details": {
+    "value": "Apri dettagli",
+    "description": "Continue Watching picker option (the default): OK on a card opens the movie page, or the show page on the card's season for an episode."
+  },
+  "settings.playback.deck_press.play": {
+    "value": "Riproduci",
+    "description": "Continue Watching picker option: OK on a card starts or resumes the video at once."
+  },
+  "settings.playback.skip_interval": {
+    "value": "Intervallo di salto",
+    "description": "Settings, consent or sign-in UI: how far one Left or Right press jumps while watching."
+  },
+  "settings.playback.skip_interval.seconds": {
+    "value": {
+      "one": "{count} secondo",
+      "other": "{count} secondi"
+    },
+    "description": "Skip interval picker option and row read-out: the length of one jump, in seconds (5, 10, 15, 30 or 60).",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "settings.audio.language": {
+    "value": "Lingua audio preferita",
+    "description": "Settings, consent or sign-in UI: settings.audio.language"
+  },
+  "settings.audio.subtitles": {
+    "value": "Sottotitoli",
+    "description": "Settings, consent or sign-in UI: settings.audio.subtitles"
+  },
+  "settings.audio.subtitle_language": {
+    "value": "Lingua dei sottotitoli",
+    "description": "Settings, consent or sign-in UI: settings.audio.subtitle_language"
+  },
+  "settings.audio.forced_subtitles": {
+    "value": "Sottotitoli forzati",
+    "description": "Settings, consent or sign-in UI: settings.audio.forced_subtitles"
+  },
+  "settings.playback.force_body": {
+    "value": "Bypassa i controlli di compatibilità di riproduzione e utilizza sempre la qualità originale. La riproduzione potrebbe non avere audio, essere visualizzata in modo errato, bloccarsi o causare l'arresto anomalo dell'app. PlxNative non passerà automaticamente a una riproduzione compatibile e potrebbe non riprendersi correttamente.\n\nAbilita questa opzione solo se comprendi questi rischi e sai come riavviare l'app e riportare la Riproduzione diretta su Automatico.",
+    "description": "Settings, consent or sign-in UI: settings.playback.force_body"
+  },
+  "settings.playback.force_note": {
+    "value": "Override avanzato. La riproduzione potrebbe fallire o bloccarsi; il fallback automatico è disattivato. Torna su Automatico in caso di problemi.",
+    "description": "Settings, consent or sign-in UI: settings.playback.force_note"
+  },
+  "settings.audio.account_note": {
+    "value": "Salvato in questo profilo Plex e condiviso con le tue altre app Plex. Le modifiche potrebbero richiedere del tempo per influenzare la riproduzione; le selezioni già effettuate per un elemento mantengono comunque la priorità.",
+    "description": "Settings, consent or sign-in UI: settings.audio.account_note"
+  },
+  "settings.playback.copy_profile": {
+    "value": "Impostazioni di riproduzione per il profilo {profile}. Le modifiche qui apportate si applicano alla riproduzione successiva.",
+    "description": "Explanation under the title of the Video & playback page itself while a profile is seated. {profile} is that profile's name exactly as the profile chip shows it (a user-chosen Plex name, any length, never declined or translated), so the sentence must keep it as a bare noun: the Spanish, French and Belarusian strings say 'the profile {profile}' so the name never has to decline or elide. Each picker opened from the page has its own explanation (settings.playback.<field>.copy), so this one is about the page as a whole, not about any single setting.",
+    "args": {
+      "profile": "str"
+    }
+  },
+  "settings.playback.copy_profile_forced": {
+    "value": "Impostazioni di riproduzione per il profilo {profile}.",
+    "description": "The profile sentence of the Video & playback page's explanation while a profile is seated AND Force Direct Play is on. It is a full sentence ending in a period, and settings.playback.force_note follows it as the next sentence of the same paragraph (the text view draws no line break, so nothing here may rely on one). It is settings.playback.copy_profile without its second sentence, which does not fit the column beside the Force note for a long profile name in the longer languages. It is the only place Settings names the profile under Force. {profile} is the name exactly as the profile chip shows it (a user-chosen Plex name, any length, never declined or translated), so the sentence must keep it as a bare noun: the Spanish, French and Belarusian strings say 'the profile {profile}' so the name never has to decline or elide.",
+    "args": {
+      "profile": "str"
+    }
+  },
+  "settings.playback.unseated": {
+    "value": "Scegli un profilo per modificare questa impostazione",
+    "description": "Explanation under the title of the Video & playback page while NO profile is seated (a normal session always has one, because Settings is opened through a profile; a developer-token run and a controlled replay have none, see session::Seat): replaces settings.playback.copy_profile. The page's rows then show the values every profile starts from, dimmed and unopenable, because a pick must belong to a profile; 'this' is those rows."
+  },
+  "settings.playback.quality.copy": {
+    "value": "La qualità massima di riproduzione di un video. I file più grandi vengono convertiti dal tuo server Plex per adattarsi. Disponibile anche nel menu Altro del lettore.",
+    "description": "Explanation under the title of the Default quality picker (Settings, Video & playback). Describes the ceiling and says the same control is in the player's More menu (the More menu drops its Quality section only under Forced Direct Play, where this text is replaced by the Force note)."
+  },
+  "settings.playback.direct_play.copy": {
+    "value": "Automatico riproduce il file originale quando il televisore lo supporta; altrimenti il tuo server Plex lo converte. Disattivato effettua sempre la conversione. Forza ignora ogni controllo: solo per risoluzione dei problemi.",
+    "description": "Explanation under the title of the Direct Play picker. Names its three modes in order: Auto, Disabled and Force (the picker's third option, 'Force Direct Play (advanced)'). While Force is on the Force note replaces it."
+  },
+  "settings.playback.subtitle_size.copy": {
+    "value": "Le dimensioni del testo dei sottotitoli. I sottotitoli in formato immagine e stilizzati mantengono le proprie dimensioni. Disponibile anche alla voce Stile nel menu Sottotitoli del lettore.",
+    "description": "Explanation under the title of the Subtitle size picker. Picture subtitles (PGS, VobSub) and styled (ASS/SSA) subtitles carry their own geometry, so the setting does not reach them; the same control is the Size row under Style on the Subtitles tab of the player's track menu."
+  },
+  "settings.playback.subtitle_position.copy": {
+    "value": "L'altezza a cui si posizionano i sottotitoli sul video. I sottotitoli in formato immagine e stilizzati mantengono la propria posizione. Disponibile anche alla voce Stile nel menu Sottotitoli del lettore.",
+    "description": "Explanation under the title of the Subtitle position picker. Picture subtitles (PGS, VobSub) and styled (ASS/SSA) subtitles carry their own geometry, so the setting does not reach them; the same control is the Position row under Style on the Subtitles tab of the player's track menu."
+  },
+  "settings.playback.next_episode.copy": {
+    "value": "Il conto alla rovescia A seguire mostra un pulsante Episodio successivo all'avvio dei titoli di coda. Dopo i titoli di coda lascia che vengano riprodotti, quindi avvia l'episodio successivo. Disattivato chiude invece il lettore.",
+    "description": "Explanation under the title of the Next episode picker. It names the three options by their picker labels (Up Next countdown, After credits, Off); keep those words identical to settings.playback.next_episode.countdown, .after_credits and .off. Only credits that run to the end of the item trigger the button."
+  },
+  "settings.playback.deck_press.copy": {
+    "value": "Apri dettagli apre la pagina del film quando premi OK su una scheda di Continua a guardare, o la pagina della serie per un episodio. Riproduci lo avvia o lo riprende immediatamente. Il menu della scheda, aperto tenendo premuto OK, offre sempre l'altra opzione.",
+    "description": "Explanation under the title of the Continue Watching picker. It names the two options by their picker labels (Open details, Play); keep those words identical to settings.playback.deck_press.details and .play."
+  },
+  "settings.playback.skip_interval.copy": {
+    "value": "Di quanto saltano la pressione di Sinistra o Destra nel lettore.",
+    "description": "Explanation under the title of the Skip interval picker. One value for both directions; it also sets the hop in the trailer transport."
+  },
+  "settings.playback.enable_force": {
+    "value": "Abilita Forzatura",
+    "description": "Settings, consent or sign-in UI: settings.playback.enable_force"
+  },
+  "settings.playback.force_question": {
+    "value": "Forzare la riproduzione diretta?",
+    "description": "Settings, consent or sign-in UI: settings.playback.force_question"
+  },
+  "settings.audio.saving": {
+    "value": "Salvataggio sull'account Plex in corso…",
+    "description": "Settings, consent or sign-in UI: settings.audio.saving"
+  },
+  "settings.audio.loading": {
+    "value": "Caricamento delle preferenze dell'account Plex in corso…",
+    "description": "Settings, consent or sign-in UI: settings.audio.loading"
+  },
+  "settings.playback.saving": {
+    "value": "Salvataggio preferenza di riproduzione in corso…",
+    "description": "Settings, consent or sign-in UI: settings.playback.saving"
+  },
+  "settings.audio.manual": {
+    "value": "Disattivato (selezione manuale)",
+    "description": "Settings, consent or sign-in UI: settings.audio.manual"
+  },
+  "settings.audio.foreign": {
+    "value": "Quando l'audio non è nella lingua dei sottotitoli",
+    "description": "Subtitles picker option: show subtitles when the audio that plays is not in the Subtitle language"
+  },
+  "settings.audio.foreign.short": {
+    "value": "Quando l'audio non è nella lingua dei sottotitoli",
+    "description": "Settings, consent or sign-in UI: the trailing value beside the 'Subtitles' row for the 'when audio isn't in the subtitle language' mode (not the picker, which uses the long settings.audio.foreign string). It must still name the subtitle language; the long form fits in English."
+  },
+  "settings.audio.always": {
+    "value": "Sempre",
+    "description": "Settings, consent or sign-in UI: settings.audio.always"
+  },
+  "settings.audio.prefer_regular": {
+    "value": "Preferisci sottotitoli non forzati",
+    "description": "Settings, consent or sign-in UI: settings.audio.prefer_regular"
+  },
+  "settings.audio.prefer_regular.short": {
+    "value": "Preferisci non forzati",
+    "description": "Settings, consent or sign-in UI: a SHORT trailing value shown beside the 'Forced Subtitles' row label (not the picker, which still uses the long settings.audio.prefer_regular string). Keep it a few words in the same grammatical form as its sibling Forced Subtitles values."
+  },
+  "settings.audio.prefer_forced": {
+    "value": "Preferisci sottotitoli forzati",
+    "description": "Settings, consent or sign-in UI: settings.audio.prefer_forced"
+  },
+  "settings.audio.prefer_forced.short": {
+    "value": "Preferisci forzati",
+    "description": "Settings, consent or sign-in UI: a SHORT trailing value shown beside the 'Forced Subtitles' row label (not the picker, which still uses the long settings.audio.prefer_forced string). Keep it a few words in the same grammatical form as its sibling Forced Subtitles values."
+  },
+  "settings.audio.only_forced": {
+    "value": "Solo sottotitoli forzati",
+    "description": "Settings, consent or sign-in UI: settings.audio.only_forced"
+  },
+  "settings.audio.only_forced.short": {
+    "value": "Solo forzati",
+    "description": "Settings, consent or sign-in UI: a SHORT trailing value shown beside the 'Forced Subtitles' row label (not the picker, which still uses the long settings.audio.only_forced string). Keep it a few words in the same grammatical form as its sibling Forced Subtitles values."
+  },
+  "settings.audio.only_regular": {
+    "value": "Solo sottotitoli non forzati",
+    "description": "Settings, consent or sign-in UI: settings.audio.only_regular"
+  },
+  "settings.audio.only_regular.short": {
+    "value": "Solo non forzati",
+    "description": "Settings, consent or sign-in UI: a SHORT trailing value shown beside the 'Forced Subtitles' row label (not the picker, which still uses the long settings.audio.only_regular string). Keep it a few words in the same grammatical form as its sibling Forced Subtitles values."
+  },
+  "settings.audio.original": {
+    "value": "Originale",
+    "description": "Settings, consent or sign-in UI: settings.audio.original"
+  },
+  "settings.audio.no_preference": {
+    "value": "Nessuna preferenza",
+    "description": "Settings, consent or sign-in UI: settings.audio.no_preference"
+  },
+  "settings.audio.not_set": {
+    "value": "Non impostato",
+    "description": "Settings, consent or sign-in UI: settings.audio.not_set"
+  },
+  "settings.playback.overridden": {
+    "value": "Forza Riproduzione diretta: qualità originale.",
+    "description": "Sub-line under the Default Quality row while Force Direct Play is on. One line, no wrap (about 580px at most in Belarusian): keep it short and say the same thing in every language."
+  },
+  "settings.audio.selection_off": {
+    "value": "La selezione automatica è disattivata. Scegliere una lingua la attiva.",
+    "description": "Sub-line under the Audio Language row when Plex's automatic audio selection is off. One line, no wrap (about 670px at most): keep it short and say the same thing in every language."
+  },
+  "settings.audio.retry": {
+    "value": "Riprova",
+    "description": "Settings, consent or sign-in UI: settings.audio.retry"
+  },
+  "settings.audio.retry_detail": {
+    "value": "Esegui nuovamente la richiesta dell'account.",
+    "description": "Settings, consent or sign-in UI: settings.audio.retry_detail"
+  },
+  "settings.audio.sign_in_again": {
+    "value": "Accedi nuovamente a questo profilo Plex per modificarne le preferenze dell'account.",
+    "description": "Settings, consent or sign-in UI: settings.audio.sign_in_again"
+  },
+  "settings.playback.save_failed": {
+    "value": "Impossibile salvare o caricare questa preferenza. Riprova.",
+    "description": "Settings, consent or sign-in UI: settings.playback.save_failed"
+  },
+  "settings.playback.auto": {
+    "value": "Automatico",
+    "description": "Settings, consent or sign-in UI: settings.playback.auto"
+  },
+  "settings.playback.forced": {
+    "value": "Forza Riproduzione diretta (avanzato)",
+    "description": "Long picker label for the forced Direct Play mode; the row beside 'Direct Play' shows settings.playback.forced.short instead. Same grammatical form as settings.playback.auto and settings.playback.disabled. Must fit the picker row (about 757px in Belarusian)."
+  },
+  "settings.playback.forced.short": {
+    "value": "Forzata",
+    "description": "Settings, consent or sign-in UI: a SHORT trailing value shown beside the 'Direct Play' label on its row (not the picker, which still uses the long settings.playback.forced string). Must match the grammatical gender/form of the sibling values settings.playback.auto and settings.playback.disabled, since all three describe the same mode noun."
+  },
+  "settings.playback.disabled": {
+    "value": "Disattivato",
+    "description": "Settings, consent or sign-in UI: settings.playback.disabled"
+  },
+  "settings.plaintext.connect": {
+    "value": "Connetti",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.connect"
+  },
+  "settings.plaintext.not_now": {
+    "value": "Non ora",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.not_now"
+  },
+  "settings.plaintext.question": {
+    "value": "Connettere senza crittografia?",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.question"
+  },
+  "settings.plaintext.body": {
+    "value": "Il tuo accesso a Plex viaggerà senza crittografia su questa rete, solo verso questo server.",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.body"
+  },
+  "settings.plaintext.section": {
+    "value": "Connessioni non crittografate",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.section"
+  },
+  "settings.plaintext.server": {
+    "value": "Server Plex",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.server"
+  },
+  "settings.plaintext.denied": {
+    "value": "Non consentito. Solo connessioni sicure.",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.denied"
+  },
+  "settings.plaintext.connected": {
+    "value": "Consentito su questa rete. Connesso senza crittografia.",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.connected"
+  },
+  "settings.plaintext.allowed": {
+    "value": "Consentito su questa rete quando una connessione sicura fallisce.",
+    "description": "Sub-line under a server's unencrypted-connection switch when it is on but no plaintext connection is in use. One line, no wrap (about 685px at most): keep it short."
+  },
+  "settings.login.continue_unsaved": {
+    "value": "Continua",
+    "description": "Settings, consent or sign-in UI: settings.login.continue_unsaved"
+  },
+  "settings.login.details": {
+    "value": "Dettagli",
+    "description": "Settings, consent or sign-in UI: settings.login.details"
+  },
+  "settings.login.send_report": {
+    "value": "Invia rapporto",
+    "description": "Settings, consent or sign-in UI: settings.login.send_report"
+  },
+  "settings.login.close": {
+    "value": "Chiudi",
+    "description": "Settings, consent or sign-in UI: settings.login.close"
+  },
+  "settings.login.report_question": {
+    "value": "Inviare un rapporto su questo problema di accesso?",
+    "description": "Settings, consent or sign-in UI: settings.login.report_question"
+  },
+  "settings.login.report_body": {
+    "value": "Il rapporto indica quale passaggio dell'accesso è fallito e come ha risposto la connessione, le fasi di errore di archiviazione e i numeri di errore, oltre alla versione dell'app. Non include mai il nome dell'account, i token, il PIN, il codice di accesso o gli indirizzi di rete.",
+    "description": "Settings, consent or sign-in UI: settings.login.report_body"
+  },
+  "settings.login.unreachable": {
+    "value": "Impossibile raggiungere Plex. Controlla la connessione Internet della TV.",
+    "description": "Settings, consent or sign-in UI: settings.login.unreachable"
+  },
+  "settings.login.report_sending": {
+    "value": "Invio del rapporto in corso…",
+    "description": "Settings, consent or sign-in UI: settings.login.report_sending"
+  },
+  "settings.login.report_sent": {
+    "value": "Rapporto inviato. Grazie.",
+    "description": "Settings, consent or sign-in UI: settings.login.report_sent"
+  },
+  "settings.login.report_saved": {
+    "value": "Rapporto salvato. Sarà inviato più tardi.",
+    "description": "Settings, consent or sign-in UI: settings.login.report_saved"
+  },
+  "settings.login.report_failed": {
+    "value": "Impossibile inviare il rapporto.",
+    "description": "Settings, consent or sign-in UI: settings.login.report_failed"
+  },
+  "settings.login.save_failed_title": {
+    "value": "Impossibile salvare il tuo accesso",
+    "description": "Settings, consent or sign-in UI: settings.login.save_failed_title"
+  },
+  "settings.login.save_failed_body": {
+    "value": "Il tuo accesso non ha potuto essere salvato su questa TV. Puoi continuare, ma ti verrà chiesto di accedere nuovamente la prossima volta.",
+    "description": "Settings, consent or sign-in UI: settings.login.save_failed_body"
+  },
+  "settings.login.unknown_device": {
+    "value": "televisore sconosciuto",
+    "description": "Settings, consent or sign-in UI: settings.login.unknown_device"
+  },
+  "settings.login.your_servers": {
+    "value": "i tuoi server",
+    "description": "Settings, consent or sign-in UI: settings.login.your_servers"
+  },
+  "settings.language.saving": {
+    "value": "Salvataggio della lingua in corso…",
+    "description": "Settings, consent or sign-in UI: settings.language.saving"
+  },
+  "settings.audio.error_retry": {
+    "value": "{reason} Seleziona Riprova.",
+    "description": "Settings, consent or sign-in UI: settings.audio.error_retry",
+    "args": {
+      "reason": "str"
+    }
+  },
+  "settings.login.report_id": {
+    "value": "ID rapporto: {id}",
+    "description": "Settings, consent or sign-in UI: settings.login.report_id",
+    "args": {
+      "id": "str"
+    }
+  },
+  "settings.legal.privacy.plaintext_body": {
+    "description": "In-app privacy disclosure, aligned with PRIVACY.md.",
+    "value": "Per un server per cui ti è stato chiesto, PlxNative conserva anche se hai consentito una connessione non crittografata sulla tua rete domestica, per l'account Plex che ha risposto. Viene memorizzata solo la risposta. L'autorizzazione in sé non viene mai memorizzata e termina quando un controllo recente non raggiunge più lo stesso indirizzo del server, all'accesso o alla disconnessione, a un cambio di profilo a meno che il nuovo profilo non raggiunga quel server allo stesso indirizzo, o quando l'app torna in primo piano dallo sfondo."
+  },
+  "settings.legal.privacy.signin_body": {
+    "description": "In-app privacy disclosure, aligned with PRIVACY.md.",
+    "value": "Se l'accesso fallisce, lo stesso canale può trasportare un rapporto sul problema di accesso: quale passaggio dell'accesso è fallito (o quale tipo specifico di errore interno all'app lo ha interrotto), come ha risposto la connessione (una classe di errore con il relativo stato HTTP o numero di errore di rete), conteggi dei tentativi e durate arrotondati, quanti codici sono stati mostrati e, quando un accesso non ha potuto essere salvato, una classe di errore di archiviazione, a quale passaggio del servizio chiavi si è fermato e il codice di errore numerico del servizio chiavi, fasi di errore ed codici di errore fissi dell'helper di archiviazione, numeri errno dei candidati di archiviazione (mai percorsi di file o proprietari), la versione dell'app e quando si è verificato. Non include mai il nome dell'account, i token, il PIN, il codice di accesso o gli indirizzi di rete. Con i rapporti di errore attivi, viene inviato automaticamente sotto il tuo ID rapporto di errore e la schermata di accesso mostra il relativo ID rapporto. Altrimenti viene inviato solo se premi Invia rapporto nella schermata di accesso, una volta, senza alcun ID rapporto di errore e con un ID rapporto casuale che identifica solo quel singolo rapporto."
+  },
+  "settings.consent.preview.incident": {
+    "value": "\n\nRapporto sul problema di accesso (automaticamente solo quando la segnalazione degli errori è attiva; altrimenti solo quando premi Invia rapporto, e in tal caso senza l'identificativo del rapporto di errore):\n",
+    "description": "Heading in the crash-report preview above the sign-in problem report sample. Privacy disclosure: keep the conditions exact. 'Send report' names the button."
+  },
+  "settings.consent.placeholder.address": {
+    "value": "indirizzo",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.flags": {
+    "value": "flag",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.fault_address": {
+    "value": "indirizzo dell'errore",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.caller_address": {
+    "value": "indirizzo del chiamante",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.symbol_address": {
+    "value": "indirizzo del simbolo",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.compiled_function": {
+    "value": "funzione compilata",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.source_line": {
+    "value": "riga sorgente",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.source_column": {
+    "value": "colonna sorgente",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.source_location": {
+    "value": "origine convalidata a tempo di compilazione:riga",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.record_id": {
+    "value": "id stabile per questo record del log degli errori",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.crashed_build_id": {
+    "value": "build id ELF dell'arresto anomalo",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.running_build_id": {
+    "value": "build id ELF in esecuzione",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.error_event_id": {
+    "value": "id evento di errore casuale per singolo errore",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.crash_event_id": {
+    "value": "id casuale per questo arresto anomalo",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.message_hash": {
+    "value": "hash del messaggio",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.load_address": {
+    "value": "indirizzo di caricamento",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.mapped_bytes": {
+    "value": "byte mappati",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.kernel_release": {
+    "value": "rilascio del kernel",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.kernel_build": {
+    "value": "suffisso build del kernel",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.debug_id": {
+    "value": "debug id ELF",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.build_id": {
+    "value": "build id ELF",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.code_id": {
+    "value": "code id ELF",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.virtual_address": {
+    "value": "indirizzo virtuale ELF",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.bytes": {
+    "value": "byte",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.thread_address": {
+    "value": "indirizzo istruzione del thread",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.thread_id": {
+    "value": "id del thread",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.thread_label": {
+    "value": "etichetta interna del thread",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.library": {
+    "value": "nome file della libreria",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.webos_release": {
+    "value": "rilascio webOS",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.webos_codename": {
+    "value": "nome in codice rilascio webOS",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.webos_api": {
+    "value": "versione API webOS",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.soc_class": {
+    "value": "classe SoC/piattaforma",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.revision_class": {
+    "value": "classe di revisione hardware",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.model_class": {
+    "value": "classe modello dispositivo",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.crash_time": {
+    "value": "ora dell'arresto anomalo",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.crash_report_id": {
+    "value": "id del rapporto di errore",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.session_id": {
+    "value": "id sessione casuale",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.event_time": {
+    "value": "ora dell'evento",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.random_id": {
+    "value": "id casuale",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.project_key": {
+    "value": "chiave di progetto",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.app_version": {
+    "value": "versione app",
+    "description": "Placeholder shown inside angle brackets in the data preview, standing for this app's version number."
+  },
+  "settings.consent.placeholder.webos_codename_short": {
+    "value": "nome in codice webOS",
+    "description": "Placeholder shown inside angle brackets in the data preview, standing for the TV software's release codename."
+  }
+}

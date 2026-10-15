@@ -107,14 +107,12 @@ is **required**: the SDK bakes absolute paths at build time, and `relocate-sdk.s
 rewrites them to wherever you extracted it. If you ever move the SDK directory,
 re-run `relocate-sdk.sh` or nothing will compile.
 
-Manual equivalent (useful if the download URL changed — check the
-[latest release](https://github.com/webosbrew/native-toolchain/releases)):
+Manual equivalent. The release, URLs and sha256 of each host build are pinned in
+`ci/dependencies.json` (entry `webos-ndk`); `ci/deps.py` downloads and verifies:
 
 ```bash
 mkdir -p ~/webos-ndk && cd ~/webos-ndk
-curl -fL -o sdk.tar.bz2 \
-  https://github.com/webosbrew/native-toolchain/releases/download/webos-d7ed7ee.6/arm-webos-linux-gnueabi_sdk-buildroot_darwin-arm64.tar.bz2
-tar xjf sdk.tar.bz2
+tar xjf "$(python3 <repo>/ci/deps.py fetch webos-ndk --asset darwin-arm64 --into .)"
 cd arm-webos-linux-gnueabi_sdk-buildroot && ./relocate-sdk.sh
 ```
 

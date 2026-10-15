@@ -1,0 +1,1075 @@
+{
+  "widgets.diagnostics.uploading": {
+    "value": "Invio diagnostica…",
+    "description": "Status toast after the viewer requests a diagnostic upload."
+  },
+  "widgets.diagnostics.uploaded": {
+    "value": "Diagnostica inviata",
+    "description": "Status toast after the viewer requests a diagnostic upload."
+  },
+  "widgets.diagnostics.failed": {
+    "value": "Invio diagnostica non riuscito",
+    "description": "Status toast after the viewer requests a diagnostic upload."
+  },
+  "widgets.menu.options": {
+    "value": "Opzioni",
+    "description": "Option or section label in the player overflow menu."
+  },
+  "widgets.menu.quality": {
+    "value": "Qualità",
+    "description": "Option or section label in the player overflow menu."
+  },
+  "widgets.menu.stats": {
+    "value": "Statistiche per nerd",
+    "description": "Option or section label in the player overflow menu."
+  },
+  "widgets.menu.diagnostics": {
+    "value": "Invia diagnostica",
+    "description": "Option or section label in the player overflow menu."
+  },
+  "widgets.badge.forced": {
+    "value": "FORZATI",
+    "description": "Compact media-track badge. This describes a subtitle or audio track."
+  },
+  "widgets.toggle.on": {
+    "value": "Sì",
+    "description": "Trailing value of an on/off settings switch."
+  },
+  "widgets.toggle.off": {
+    "value": "No",
+    "description": "Trailing value of an on/off settings switch."
+  },
+  "widgets.tracks.audio": {
+    "value": "Audio",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.subtitles": {
+    "value": "Sottotitoli",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.unknown": {
+    "value": "Sconosciuto",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.off": {
+    "value": "Disattivati",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.forced_only": {
+    "value": "Solo forzati",
+    "description": "Subtitles tab of the player's track selector. The row directly after Off: show only the forced subtitle in the language of the audio that is playing (the lines that translate foreign speech or on-screen text), or nothing when the episode has none. Remembered per show, like Off or a chosen track. While it is the choice, the row reads out the language it shows or looked for, so keep it short enough to share the line with a language name. Same words as the account-wide Forced Subtitles setting's short value (settings.audio.only_forced.short)."
+  },
+  "widgets.tracks.mono": {
+    "value": "Mono",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.stereo": {
+    "value": "Stereo",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.original": {
+    "value": "Originale: {language}",
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "language": "str"
+    }
+  },
+  "widgets.tracks.converted_by_server": {
+    "value": "{track} · convertito dal tuo server",
+    "description": "Sub-line under an audio track in the player's audio menu when the TV cannot decode that track and the server converts its audio. {track} is the codec and channel layout, e.g. AAC 7.1.",
+    "args": {
+      "track": "str"
+    }
+  },
+  "widgets.action.mark_watched": {
+    "value": "Segna come già visto",
+    "description": "Action verb shared by the media context menu and detail-page controls."
+  },
+  "widgets.action.mark_unwatched": {
+    "value": "Segna come da vedere",
+    "description": "Action verb shared by the media context menu and detail-page controls."
+  },
+  "widgets.action.play_start": {
+    "value": "Riproduci dall'inizio",
+    "description": "Action verb shared by the media context menu and detail-page controls."
+  },
+  "widgets.action.play_trailer": {
+    "value": "Riproduci trailer",
+    "description": "Action verb shared by the media context menu and detail-page controls."
+  },
+  "widgets.source.remote": {
+    "value": "Remoto",
+    "description": "Server/library availability, connection type, or library-picker action."
+  },
+  "widgets.source.relay": {
+    "value": "Relay",
+    "description": "Server/library availability, connection type, or library-picker action."
+  },
+  "widgets.source.needs_library": {
+    "value": "Serve almeno una libreria",
+    "description": "Sub-line under the last remaining library row in the Library panel. One line, no wrap (about 400px at most in Spanish, 450px in Belarusian): keep it short."
+  },
+  "widgets.source.new_shares": {
+    "value": "Controlla librerie condivise",
+    "description": "Row in the Library panel that re-checks the account for newly shared libraries. A row label in a 527px column, no wrap: keep it short."
+  },
+  "widgets.source.unauthorized": {
+    "value": "Non autorizzato",
+    "description": "Server/library availability, connection type, or library-picker action."
+  },
+  "widgets.source.unreachable": {
+    "value": "Non raggiungibile",
+    "description": "Server/library availability, connection type, or library-picker action."
+  },
+  "widgets.source.insecure": {
+    "value": "Non sicuro",
+    "description": "Server/library availability, connection type, or library-picker action."
+  },
+  "widgets.info.from_beginning": {
+    "value": "Dall'inizio",
+    "description": "Action button in the in-player information card."
+  },
+  "widgets.info.go_show": {
+    "value": "Vai alla serie",
+    "description": "Action button in the in-player information card."
+  },
+  "widgets.info.go_movie": {
+    "value": "Vai al film",
+    "description": "Action button in the in-player information card."
+  },
+  "widgets.playback.direct_play": {
+    "value": "Riproduzione diretta",
+    "description": "Human-readable description of the active playback delivery mode."
+  },
+  "widgets.playback.direct_stream": {
+    "value": "Flusso diretto",
+    "description": "Human-readable description of the active playback delivery mode."
+  },
+  "widgets.playback.converting": {
+    "value": "Conversione",
+    "description": "Human-readable description of the active playback delivery mode."
+  },
+  "widgets.playback.converting_codec": {
+    "value": "Conversione · {codec}",
+    "description": "Human-readable description of the active playback delivery mode.",
+    "args": {
+      "codec": "str"
+    }
+  },
+  "widgets.chapters.number": {
+    "value": "Capitolo {number}",
+    "description": "Fallback chapter name when the server supplies no title.",
+    "args": {
+      "number": "i64"
+    }
+  },
+  "widgets.skip.intro": {
+    "value": "Salta intro",
+    "description": "Player action that skips the currently offered introduction or credits marker."
+  },
+  "widgets.skip.credits": {
+    "value": "Salta titoli di coda",
+    "description": "Player action that skips the currently offered introduction or credits marker."
+  },
+  "widgets.next.episode": {
+    "value": "Prossimo episodio",
+    "description": "Up-next episode card over the player; keep the supplied episode title intact."
+  },
+  "widgets.next.credits": {
+    "value": "Guarda titoli di coda",
+    "description": "Up-next episode card over the player; keep the supplied episode title intact."
+  },
+  "widgets.next.caption": {
+    "value": "A seguire · {episode}",
+    "description": "Up-next episode card over the player; keep the supplied episode title intact.",
+    "args": {
+      "episode": "str"
+    }
+  },
+  "widgets.status.preparing": {
+    "value": "Preparazione…",
+    "description": "Short player status beside a spinner or terminal playback error."
+  },
+  "widgets.status.connecting": {
+    "value": "Connessione…",
+    "description": "Short player status beside a spinner or terminal playback error."
+  },
+  "widgets.status.buffering": {
+    "value": "Caricamento…",
+    "description": "Short player status beside a spinner or terminal playback error."
+  },
+  "widgets.status.switching_audio": {
+    "value": "Cambio audio…",
+    "description": "Short player status beside a spinner while the stream is rebuilt for an audio track the viewer picked."
+  },
+  "widgets.status.seeking": {
+    "value": "Ricerca…",
+    "description": "Short player status beside a spinner or terminal playback error."
+  },
+  "widgets.status.failed": {
+    "value": "Riproduzione non riuscita",
+    "description": "Short player status beside a spinner or terminal playback error."
+  },
+  "widgets.player.info": {
+    "value": "Info",
+    "description": "Bottom navigation tab in the player."
+  },
+  "widgets.player.chapters": {
+    "value": "Capitoli",
+    "description": "Bottom navigation tab in the player."
+  },
+  "widgets.card.new_episode": {
+    "value": "Nuovo episodio",
+    "description": "Secondary caption beneath a focused media card."
+  },
+  "widgets.card.show_new_episode": {
+    "value": "{show} · Nuovo episodio",
+    "description": "Secondary caption beneath a focused media card.",
+    "args": {
+      "show": "str"
+    }
+  },
+  "widgets.card.season_episode": {
+    "value": "S{season} • E{episode}",
+    "description": "Secondary caption beneath a focused media card.",
+    "args": {
+      "episode": "i64",
+      "season": "i64"
+    }
+  },
+  "widgets.card.episode": {
+    "value": "E{episode}",
+    "description": "Secondary caption beneath a focused media card.",
+    "args": {
+      "episode": "i64"
+    }
+  },
+  "widgets.failure.jail": {
+    "value": "Riproduzione non riuscita — la sandbox di questa TV blocca il video nativo",
+    "description": "failure jail"
+  },
+  "widgets.failure.refused": {
+    "value": "Riproduzione non riuscita — il server non può riprodurre o convertire questo file",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.failure.audio_only": {
+    "value": "Riproduzione non riuscita — il server ha inviato solo l'audio",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.failure.no_video": {
+    "value": "Riproduzione non riuscita — nessun video nel file",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.failure.open": {
+    "value": "Riproduzione non riuscita — impossibile aprire il flusso multimediale",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.failure.stopped": {
+    "value": "Riproduzione non riuscita — la riproduzione si è interrotta dopo l'avvio",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.failure.tv_rejected": {
+    "value": "Riproduzione non riuscita — la TV ha rifiutato il flusso",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.reason.jail": {
+    "value": "La sandbox di questo apparecchio non concede all'app /dev/rtkmem",
+    "description": "reason jail"
+  },
+  "widgets.reason.refused": {
+    "value": "Il server non può riprodurre o convertire questo file",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.audio_only": {
+    "value": "Il server ha inviato solo l'audio — non ha trovato una destinazione di transcodifica video utilizzabile",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.no_video": {
+    "value": "Questo file non ha alcuna traccia video",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.open": {
+    "value": "Impossibile aprire il flusso multimediale",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.stopped": {
+    "value": "La riproduzione si è interrotta dopo l'avvio",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.tv_rejected": {
+    "value": "Questa TV non è riuscita ad avviare il flusso video",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.unknown": {
+    "value": "Il lettore si è arrestato prima di poter identificare il problema",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.hint.return": {
+    "value": "Premi {key} per tornare indietro",
+    "description": "Complete sentence. {key} is a remote button rendered as a keycap; keep exactly one occurrence.",
+    "args": {
+      "key": "str"
+    }
+  },
+  "widgets.hint.scroll": {
+    "value": "Scorri",
+    "description": "widgets hint scroll"
+  },
+  "widgets.hint.hold_options": {
+    "value": "Tieni premuto {key} per le opzioni",
+    "description": "Complete sentence in the Home screen's standing hint capsule, teaching that holding the remote's OK button on a card opens its context menu. {key} is the OK button rendered as a keycap; keep exactly one occurrence. Must fit one line in the capsule at CAPTION size in every shipped language.",
+    "args": {
+      "key": "str"
+    }
+  },
+  "widgets.failure.no_pass": {
+    "value": "Questo server non ha {subscription}",
+    "description": "Player error caption or supporting subscription fact.",
+    "args": {
+      "subscription": "str"
+    }
+  },
+  "widgets.tracks.playing": {
+    "value": "in riproduzione",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.forced": {
+    "value": "Forzati",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.external": {
+    "value": "Esterni",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.container": {
+    "value": "Contenitore",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.size": {
+    "value": "Dimensione",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.total_bitrate": {
+    "value": "Bitrate totale",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.duration": {
+    "value": "Durata",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.aspect": {
+    "value": "Proporzioni",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.codec": {
+    "value": "Codec",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.resolution": {
+    "value": "Risoluzione",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.frame_rate": {
+    "value": "Frame rate",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.bitrate": {
+    "value": "Bitrate",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.bit_depth": {
+    "value": "Profondità in bit",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.profile": {
+    "value": "Profilo",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.level": {
+    "value": "Livello",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.version": {
+    "value": "Versione",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.base_layer": {
+    "value": "Livello base",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.present": {
+    "value": "Presente",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.file_heading": {
+    "value": "FILE",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.video_heading": {
+    "value": "VIDEO",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.audio_heading": {
+    "value": "AUDIO",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.subtitles_heading": {
+    "value": "SOTTOTITOLI",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.heading": {
+    "value": "INFORMAZIONI TRACCIA",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.channels": {
+    "value": "{count} can",
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "widgets.tracks.depth": {
+    "value": "{depth} bit",
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "depth": "i64"
+    }
+  },
+  "widgets.tracks.count": {
+    "value": {
+      "one": "{count} traccia",
+      "other": "{count} tracce"
+    },
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "widgets.tracks.count_detail": {
+    "value": {
+      "one": "{description} · {count} traccia",
+      "other": "{description} · {count} tracce"
+    },
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "count": "i64",
+      "description": "str"
+    }
+  },
+  "widgets.tracks.count_heading": {
+    "value": {
+      "one": "{heading} · {count} TRACCIA",
+      "other": "{heading} · {count} TRACCE"
+    },
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "count": "i64",
+      "heading": "str"
+    }
+  },
+  "widgets.reason.jail_help": {
+    "value": "La riparazione richiede una TV con root e accesso a Homebrew Channel. Vedi plxnative.com/troubleshooting/#playback-reports-jail_missing_rtkmem per assistenza.",
+    "description": "reason jail_help"
+  },
+  "widgets.tracks.empty": {
+    "value": "Nessuna traccia",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.bytes": {
+    "value": {
+      "one": "{count} byte",
+      "other": "{count} byte"
+    },
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "widgets.tracks.fps": {
+    "value": "{rate} fps",
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "rate": "str"
+    }
+  },
+  "widgets.tracks.mbps": {
+    "value": "{rate} Mbps",
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "rate": "str"
+    }
+  },
+  "widgets.tracks.kbps": {
+    "value": "{rate} kbps",
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "rate": "str"
+    }
+  },
+  "widgets.panel.jail": {
+    "value": "la sandbox di questa installazione blocca l'accesso a /dev/rtkmem; PlxNative può offrire una riparazione confermata tramite l'accesso con root di Homebrew Channel",
+    "description": "panel jail"
+  },
+  "widgets.panel.refused": {
+    "value": "il server ha rifiutato l'elemento in /decision — non può né riprodurlo direttamente né convertirlo",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.audio_only_no_pass": {
+    "value": "il server ha inviato solo l'audio — non ha trovato una destinazione di transcodifica video utilizzabile (il server non ha Plex Pass)",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.audio_only": {
+    "value": "il server ha inviato solo l'audio — non ha trovato una destinazione di transcodifica video utilizzabile",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.no_video": {
+    "value": "il flusso non contiene alcuna traccia video",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.open": {
+    "value": "impossibile aprire o leggere il flusso multimediale",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.stopped": {
+    "value": "il produttore multimediale si è arrestato prima del completamento della riproduzione",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.tv_rejected": {
+    "value": "la pipeline multimediale del televisore ha rifiutato il flusso",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.unknown": {
+    "value": "il lettore si è arrestato senza una causa segnalata",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.failure.load_timeout": {
+    "value": "Riproduzione non riuscita — la TV non ha completato l'avvio del flusso",
+    "description": "failure load_timeout"
+  },
+  "widgets.panel.load_timeout": {
+    "value": "la pipeline multimediale del televisore non ha completato in tempo l'avvio del flusso",
+    "description": "panel load_timeout"
+  },
+  "widgets.reason.load_timeout": {
+    "value": "Questa TV non ha completato in tempo l'avvio del flusso video",
+    "description": "reason load_timeout"
+  },
+  "widgets.failure.forced_playback": {
+    "value": "Riproduzione non riuscita — Forza Riproduzione diretta non ha potuto riprodurre questo flusso",
+    "description": "failure forced_playback"
+  },
+  "widgets.panel.forced_playback": {
+    "value": "Forza Riproduzione diretta non ha potuto usare il flusso originale; il fallback automatico è disattivato",
+    "description": "panel forced_playback"
+  },
+  "widgets.reason.forced_playback": {
+    "value": "Forza Riproduzione diretta non ha potuto riprodurre questo flusso",
+    "description": "reason forced_playback"
+  },
+  "widgets.reason.forced_playback_help": {
+    "value": "Forza Riproduzione diretta è attivo, quindi il server non è potuto intervenire con un flusso convertito.",
+    "description": "reason forced_playback_help"
+  },
+  "widgets.repair.question": {
+    "value": "Riparare la sandbox di PlxNative?",
+    "description": "repair question"
+  },
+  "widgets.repair.body": {
+    "value": "Usa l'accesso root di Homebrew Channel per aggiornare la sandbox di PlxNative con il profilo nativo di LG. Richiede una TV con root. Chiudi e riapri PlxNative al termine.",
+    "description": "repair body"
+  },
+  "widgets.repair.action": {
+    "value": "Ripara",
+    "description": "repair action"
+  },
+  "widgets.repair.running": {
+    "value": "Riparazione della sandbox dell'app…",
+    "description": "repair running"
+  },
+  "widgets.repair.wait": {
+    "value": "Attendi il risultato prima di chiudere l'app.",
+    "description": "repair wait"
+  },
+  "widgets.repair.completed": {
+    "value": "Riparazione della sandbox completata",
+    "description": "repair completed"
+  },
+  "widgets.repair.reopen": {
+    "value": "Chiudi e riapri PlxNative prima di riprodurre un video.",
+    "description": "repair reopen"
+  },
+  "widgets.repair.failed": {
+    "value": "Impossibile confermare la riparazione della sandbox",
+    "description": "repair failed"
+  },
+  "widgets.repair.start_failed": {
+    "value": "Impossibile avviare la riparazione. Chiudi e riapri PlxNative per riprovare.",
+    "description": "repair start_failed"
+  },
+  "widgets.repair.hbc_unavailable": {
+    "value": "Il servizio Homebrew Channel non è disponibile.",
+    "description": "repair hbc_unavailable"
+  },
+  "widgets.repair.not_root": {
+    "value": "Il servizio Homebrew Channel non è in esecuzione come root.",
+    "description": "repair not_root"
+  },
+  "widgets.repair.command_failed": {
+    "value": "Il comando di riparazione della sandbox non è riuscito.",
+    "description": "repair command_failed"
+  },
+  "widgets.repair.timeout": {
+    "value": "L'esito della riparazione è sconosciuto. Chiudi e riapri l'app per verificare di nuovo.",
+    "description": "repair timeout"
+  },
+  "widgets.repair.unreadable": {
+    "value": "Riparazione completata, ma l'app non riesce ancora a vedere /dev/rtkmem. Chiudi e riapri l'app.",
+    "description": "repair unreadable"
+  },
+  "widgets.repair.unsupported": {
+    "value": "La riparazione della sandbox non è disponibile su questo dispositivo.",
+    "description": "repair unsupported"
+  },
+  "widgets.tracks.color": {
+    "value": "Colore",
+    "description": "tracks color"
+  },
+  "widgets.tracks.boost_dialog": {
+    "value": "Amplifica dialoghi",
+    "description": "Audio panel of the player's track selector (Plex Pass only, issue #266). Toggle row label; the On/Off read-out comes from the row's own switch state, not this string."
+  },
+  "widgets.tracks.normalize_loudness": {
+    "value": "Normalizza volume",
+    "description": "Audio panel of the player's track selector (Plex Pass only, issue #266). Toggle row label; the On/Off read-out comes from the row's own switch state, not this string."
+  },
+  "widgets.tracks.enh_note_sidecar": {
+    "value": "I sottotitoli non cambieranno.",
+    "description": "Issue #266/M7. One-line note under the ENABLED Boost dialog / Normalize loudness rows when the subtitle on screen is an external file the app draws itself — reassures the viewer that turning the toggle on leaves it untouched. No jargon: never say sidecar/remux/burn."
+  },
+  "widgets.tracks.enh_note_burn": {
+    "value": "I sottotitoli restano attivi. Il tuo server Plex rielaborerà il video per mantenerli, quindi l'immagine potrebbe apparire leggermente più morbida.",
+    "description": "Issue #266/M7. One-line note under the ENABLED Boost dialog / Normalize loudness rows when the subtitle on screen is embedded in the file — turning the toggle on makes the server re-encode the video to keep it in view. No jargon: never say burn/re-encode/transcode."
+  },
+  "widgets.tracks.enh_note_dv_off": {
+    "value": "Dolby Vision si disattiva mentre questa opzione è attiva. Il video viene comunque riprodotto in HDR.",
+    "description": "Issue #266/M7. One-line note under the ENABLED Boost dialog / Normalize loudness rows for a Dolby Vision source whose base layer is usable — turning the toggle on plays the HDR10 base picture without the Dolby Vision declaration."
+  },
+  "widgets.tracks.enh_reason_not_analyzed": {
+    "value": "Non ancora pronto per questo video. Il tuo server Plex deve prima analizzarne l'audio.",
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when the carried audio track has no canNormalizeLoudness fact yet."
+  },
+  "widgets.tracks.enh_reason_dv_unusable": {
+    "value": "Non disponibile per questo video Dolby Vision.",
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows for a Dolby Vision source whose base layer is not self-displayable (Profile 5)."
+  },
+  "widgets.tracks.enh_reason_dv_subtitle": {
+    "value": "Non utilizzabile con i sottotitoli su questo video Dolby Vision. Disattiva i sottotitoli per usarlo.",
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows for a declared Dolby Vision source with an embedded subtitle on screen — the server copies the video and silently drops the subtitle rather than honoring either ask."
+  },
+  "widgets.tracks.enh_reason_quality": {
+    "value": "Disponibile solo alla qualità Originale.",
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when the live route is not Direct/Remux (a fixed quality rung, HLS, a relay) or no Original candidate exists."
+  },
+  "widgets.tracks.enh_reason_refused": {
+    "value": "Il tuo server Plex non è riuscito ad attivarlo per questo video.",
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows after this playback's server already refused or ignored the params once."
+  },
+  "widgets.tracks.sub_burn_audio": {
+    "value": "Disegnati dal tuo server mentre converte l'audio.",
+    "description": "Subtitles tab of the player's track selector. One-line reason under the DIMMED Timing and Style rows while the subtitle on screen is drawn into the picture by the server because it is converting the audio (a remux, or the audio enhancement's own burn): the text is already in the video, so neither control can reach it. No jargon: never say burn/remux/transcode."
+  },
+  "widgets.tracks.sub_burn_quality": {
+    "value": "Disegnati dal tuo server a questa qualità.",
+    "description": "Subtitles tab of the player's track selector. One-line reason under the DIMMED Timing and Style rows while the subtitle on screen is drawn into the picture by the server for any reason other than converting the audio (a quality-limited re-encode, a picture subtitle that must be burned): the text is already in the video, so neither control can reach it. No jargon: never say burn/remux/transcode."
+  },
+  "widgets.tracks.sub_remembered_note": {
+    "value": "I sottotitoli che hai scelto per questa serie non possono essere mostrati con questo video.",
+    "description": "Subtitles tab of the player's track selector. A short reason under the first group of rows, shown only when the show's remembered subtitle choice was applied to this episode but this way of playing it can show none of it (the player cannot draw that subtitle itself and the server would have to re-encode the picture to do it), so Off is what is on screen. Wraps over several lines on the panel (three in English). No jargon: never say burn/remux/transcode."
+  },
+  "widgets.tracks.style": {
+    "value": "Stile",
+    "description": "Subtitles tab of the player's track selector. The drill-in row that opens the caption style pages (Size, Position, Color), and the title of that page."
+  },
+  "widgets.tracks.style_size": {
+    "value": "Dimensione",
+    "description": "Style page of the player's subtitle menu. Row label and page title for the caption size; its value reads out the chosen size (Small, Medium, Large, Extra Large, Huge)."
+  },
+  "widgets.tracks.style_position": {
+    "value": "Posizione",
+    "description": "Style page of the player's subtitle menu. Row label and page title for where the caption sits on screen; its value reads out the chosen height (Low, Middle, High)."
+  },
+  "widgets.tracks.style_image_note": {
+    "value": "I sottotitoli basati su immagini mantengono dimensione e posizione proprie.",
+    "description": "Note under the Style rows when the subtitle on screen is a picture (PGS, VobSub): the Size and Position rows are dimmed because the picture carries its own geometry. No jargon."
+  },
+  "widgets.tracks.style_styled_note": {
+    "value": "I sottotitoli stilizzati mantengono dimensione e posizione proprie.",
+    "description": "Note under the Style rows when the subtitle on screen is a styled script (ASS/SSA) that positions and sizes its own text: the Size and Position rows are dimmed. No jargon."
+  },
+  "widgets.tracks.timing": {
+    "value": "Sincronizzazione",
+    "description": "tracks timing"
+  },
+  "widgets.tracks.external_badge": {
+    "value": "ESTERNI",
+    "description": "tracks external_badge"
+  },
+  "widgets.tracks.tone_white": {
+    "value": "Bianco",
+    "description": "tracks tone_white"
+  },
+  "widgets.tracks.tone_silver": {
+    "value": "Argento",
+    "description": "tracks tone_silver"
+  },
+  "widgets.tracks.tone_light_grey": {
+    "value": "Grigio chiaro",
+    "description": "tracks tone_light_grey"
+  },
+  "widgets.tracks.tone_grey": {
+    "value": "Grigio",
+    "description": "tracks tone_grey"
+  },
+  "widgets.tracks.tone_dark_grey": {
+    "value": "Grigio scuro",
+    "description": "tracks tone_dark_grey"
+  },
+  "widgets.tracks.tone_charcoal": {
+    "value": "Antracite",
+    "description": "tracks tone_charcoal"
+  },
+  "widgets.runtime.main_thread": {
+    "value": "MAIN THREAD {kind} {milliseconds}ms · {label}",
+    "description": "Developer warning; kind and label are technical diagnostic identifiers",
+    "args": {
+      "kind": "str",
+      "label": "str",
+      "milliseconds": "i64"
+    }
+  },
+  "widgets.verdict.direct_play_disabled": {
+    "value": "Riproduzione diretta è disattivata. Questo flusso solo originale richiede che Riproduzione diretta sia impostata su Automatico.",
+    "description": "Playback failure detail when the Direct Play setting is Disabled but the stream can only play as the original file."
+  },
+  "widgets.verdict.forced_no_original": {
+    "value": "Forza Riproduzione diretta è attivo e questo elemento non ha un file originale da riprodurre.",
+    "description": "Playback failure detail while Force Direct Play is on: the item has no original file."
+  },
+  "widgets.verdict.forced_container": {
+    "value": "Forza Riproduzione diretta è attivo e il contenitore di questo file non può essere riprodotto senza conversione.",
+    "description": "Playback failure detail while Force Direct Play is on: the file's container format cannot be played directly."
+  },
+  "widgets.verdict.forced_video": {
+    "value": "Forza Riproduzione diretta è attivo e questo formato video non può essere riprodotto senza conversione.",
+    "description": "Playback failure detail while Force Direct Play is on: the video format cannot be played directly."
+  },
+  "widgets.verdict.forced_audio": {
+    "value": "Forza Riproduzione diretta è attivo e questo formato audio non può essere riprodotto senza conversione.",
+    "description": "Playback failure detail while Force Direct Play is on: the audio format cannot be played directly."
+  },
+  "widgets.verdict.forced_unauthorized": {
+    "value": "Forza Riproduzione diretta è attivo e il server non ha consentito la riproduzione del file originale.",
+    "description": "Playback failure detail while Force Direct Play is on: the Plex server did not allow playing the original file."
+  },
+  "widgets.verdict.forced_open": {
+    "value": "Forza Riproduzione diretta è attivo e non è stato possibile aprire il file originale.",
+    "description": "Playback failure detail while Force Direct Play is on: the original file could not be opened."
+  },
+  "widgets.verdict.forced_audio_conversion": {
+    "value": "Forza Riproduzione diretta è attivo e questa traccia audio richiede una conversione.",
+    "description": "Playback failure detail while Force Direct Play is on: the selected audio track would need server conversion."
+  },
+  "widgets.quality.original": {
+    "value": "Originale",
+    "description": "Playback quality choice that plays the original file without conversion."
+  },
+  "widgets.ass.start_failed": {
+    "value": "Impossibile avviare i sottotitoli stilizzati",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.invalid_file": {
+    "value": "Questo file di sottotitoli stilizzati non è valido o è troppo grande",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.invalid_track": {
+    "value": "Questa traccia di sottotitoli stilizzati non è valida o è troppo grande",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.invalid_events": {
+    "value": "Questa traccia di sottotitoli stilizzati contiene eventi non validi",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.track_too_large": {
+    "value": "Questa traccia di sottotitoli stilizzati è troppo grande",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.render_failed": {
+    "value": "Impossibile visualizzare questo sottotitolo stilizzato",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.unavailable": {
+    "value": "Il supporto per i sottotitoli stilizzati non è disponibile in questa installazione",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.fonts_unavailable": {
+    "value": "Impossibile caricare i font dei sottotitoli",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.init_failed": {
+    "value": "Impossibile inizializzare i sottotitoli stilizzati",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.font_too_large": {
+    "value": "Il font dei sottotitoli installato è troppo grande",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.unreadable": {
+    "value": "Impossibile leggere questo file di sottotitoli stilizzati",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.font_name": {
+    "value": "Il nome di questo font dei sottotitoli non è valido",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.track_fonts": {
+    "value": "Impossibile caricare i font di questo sottotitolo",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.too_many_events": {
+    "value": "Questa traccia di sottotitoli stilizzati contiene troppi eventi",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.invalid_regions": {
+    "value": "Il renderer dei sottotitoli stilizzati ha restituito regioni non valide",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.invalid_pixels": {
+    "value": "Il renderer dei sottotitoli stilizzati ha restituito pixel non validi",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.overlapping_regions": {
+    "value": "Il renderer dei sottotitoli stilizzati ha restituito regioni sovrapposte",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.sidecar.fetch_failed": {
+    "value": "Impossibile caricare questo sottotitolo dal server",
+    "description": "Message drawn in place of an external subtitle file that could not be downloaded."
+  },
+  "widgets.sidecar.empty": {
+    "value": "Questo file di sottotitoli non contiene righe leggibili",
+    "description": "Message drawn in place of an external subtitle file that contains no readable text."
+  },
+  "widgets.badge.cc": {
+    "value": "CC",
+    "description": "Badge: the title has closed captions. The mark the explanation text browse.detail.closed_captions defines; keep the two in step. Latin CC is the international mark in Spain and in the be catalog's own explanation."
+  },
+  "widgets.badge.sdh": {
+    "value": "SDH",
+    "description": "Badge: subtitles for the deaf and hard of hearing. Must match the abbreviation in browse.detail.sdh, which introduces it."
+  },
+  "widgets.badge.ad": {
+    "value": "AD",
+    "description": "Badge: the title has an audio-description track. Must match the abbreviation in browse.detail.audio_description (es: audiodescripción, AD)."
+  },
+  "widgets.tracks.other_languages": {
+    "value": "Altre lingue",
+    "description": "Subtitles panel of the player's track selector. Row that opens the page of subtitle languages that are not the viewer's own, and that page's title."
+  },
+  "widgets.tracks.search.open": {
+    "value": "Cerca sottotitoli",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Row on the Subtitles tab that opens the page, and that page's title."
+  },
+  "widgets.tracks.search.language": {
+    "value": "Lingua",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Row that shows and changes the language being searched; also the language list's title."
+  },
+  "widgets.tracks.search.results": {
+    "value": "Risultati",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Section header above the subtitles the server found."
+  },
+  "widgets.tracks.search.searching": {
+    "value": "Ricerca in corso…",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Shown while the server is still searching."
+  },
+  "widgets.tracks.search.none": {
+    "value": "Nessun sottotitolo trovato.",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). The search finished and found nothing. An answer, not an error."
+  },
+  "widgets.tracks.search.failed": {
+    "value": "Impossibile cercare i sottotitoli. La riproduzione non subirà interruzioni.",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). The server did not answer the search. Never alarming: playback continues."
+  },
+  "widgets.tracks.search.denied": {
+    "value": "Questo server non consente a questo account di aggiungere sottotitoli.",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). The server refused the request for this account. Blames nobody; no retry is offered."
+  },
+  "widgets.tracks.search.missing": {
+    "value": "Impossibile cercare sottotitoli per questo elemento.",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). The server could not find the item to search for."
+  },
+  "widgets.tracks.search.bad_language": {
+    "value": "Impossibile cercare sottotitoli in questa lingua.",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). The chosen language has no code the server accepts."
+  },
+  "widgets.tracks.search.retry": {
+    "value": "Riprova",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Row that repeats a search that failed."
+  },
+  "widgets.tracks.search.adding": {
+    "value": "Aggiunta…",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Read-out on a result row while the server downloads it."
+  },
+  "widgets.tracks.search.added": {
+    "value": "Aggiunto",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Read-out on a result row once the subtitle is in the item."
+  },
+  "widgets.tracks.search.requested": {
+    "value": "Richiesto",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Read-out when the server accepted the download but it has not appeared yet."
+  },
+  "widgets.tracks.search.add_failed": {
+    "value": "Non aggiunto",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). Read-out on a result row the server could not add."
+  },
+  "widgets.tracks.search.add_failed_note": {
+    "value": "Il server non è riuscito ad aggiungere questo sottotitolo. Provane un altro.",
+    "description": "Subtitles panel of the player's track selector, the Search for subtitles page (an agent search on the Plex server, e.g. OpenSubtitles). One-line note under the results after a download failed."
+  },
+  "widgets.tracks.track_ordinal": {
+    "value": "Traccia {number}",
+    "description": "Subtitles panel of the player's track selector. Tells apart subtitle tracks that are otherwise identical; the number is the track's position among them.",
+    "args": {
+      "number": "i64"
+    }
+  },
+  "widgets.tracks.kind_full": {
+    "value": "Completi",
+    "description": "Subtitles panel of the player's track selector. Label of a nameless subtitle track that carries every line of dialogue (not forced-only, not SDH)."
+  },
+  "widgets.tracks.kind_commentary": {
+    "value": "Commento",
+    "description": "Subtitles panel of the player's track selector. Label of a nameless subtitle track that transcribes a commentary."
+  },
+  "widgets.tracks.capsule_later": {
+    "value": "Sottotitoli {duration} dopo",
+    "description": "On-video timing control of the player: subtitles are shown this much later than the file's own timing. The duration is already formatted, e.g. \"0.3 s\".",
+    "args": {
+      "duration": "str"
+    }
+  },
+  "widgets.tracks.capsule_earlier": {
+    "value": "Sottotitoli {duration} prima",
+    "description": "On-video timing control of the player: subtitles are shown this much earlier than the file's own timing. The duration is already formatted, e.g. \"0.3 s\".",
+    "args": {
+      "duration": "str"
+    }
+  },
+  "widgets.tracks.capsule_original": {
+    "value": "Sincronizzazione originale",
+    "description": "On-video timing control of the player: subtitles use the file's own timing (no offset)."
+  },
+  "widgets.region.gb": {
+    "value": "Regno Unito",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.us": {
+    "value": "Stati Uniti",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.br": {
+    "value": "Brasile",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.pt": {
+    "value": "Portogallo",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.es": {
+    "value": "Spagna",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.mx": {
+    "value": "Messico",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.fr": {
+    "value": "Francia",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.be": {
+    "value": "Belgio",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.ca": {
+    "value": "Canada",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.de": {
+    "value": "Germania",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.at": {
+    "value": "Austria",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.ch": {
+    "value": "Svizzera",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.cn": {
+    "value": "Cina",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.tw": {
+    "value": "Taiwan",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.hk": {
+    "value": "Hong Kong",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.in": {
+    "value": "India",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.au": {
+    "value": "Australia",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.ru": {
+    "value": "Russia",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.ua": {
+    "value": "Ucraina",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.it": {
+    "value": "Italia",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.jp": {
+    "value": "Giappone",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.kr": {
+    "value": "Corea del Sud",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.nl": {
+    "value": "Paesi Bassi",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.latin_america": {
+    "value": "America Latina",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.failure.play_auto": {
+    "value": "Passa ad Automatico e riproduci",
+    "description": "Failed-playback button: sets Direct Play back to Auto (the Settings value, saved) and plays the item again."
+  },
+  "widgets.failure.change_quality": {
+    "value": "Cambia qualità",
+    "description": "Failed-playback button: opens the quality ladder; picking a rung retries at it."
+  }
+}

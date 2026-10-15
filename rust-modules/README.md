@@ -34,7 +34,7 @@ side. Its Rust entry points are `plex_run`, `plx_crash_write_image_marker`,
 - **`src/crashtrace.c`** — the async-signal-safe fallback fault recorder installed by the shim.
 - **`src/sentry_context.c`** — a narrow string-only wrapper around Sentry's opaque, by-value
   `sentry_value_t`; Rust calls it without having to reproduce that ARM32 ABI.
-- **`src/svg.c`** — the vendored nanosvg rasterizer (header-only C).
+- **`src/svg.c`** — the nanosvg rasterizer (header-only C, fetched at the pinned commit by `ci/deps.py`).
 
 Rust *can* do the Starfish FFI (`#[link_name = "<mangled>"]` mirrors the C
 `__asm__`), but it would be **all `unsafe` with zero safety gain**, high effort,
