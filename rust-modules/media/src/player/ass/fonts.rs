@@ -29,8 +29,6 @@ const INTER: [&str; 2] = ["appfont.ttf", "appfont-bold.ttf"];
 /// Where the Noto faces and their manifest sit, under the app directory.
 const SUBS_DIR: &str = "fonts/subs";
 const MANIFEST: &str = "manifest.json";
-/// A manifest naming more faces than this is not ours (22 ship).
-const MAX_FACES: usize = 64;
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -51,7 +49,7 @@ pub(super) fn bundled(asset_dir: &Path) -> Result<Vec<PathBuf>, Fault> {
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .ok_or(Fault::FontsUnavailable)?;
-    if manifest.faces.is_empty() || manifest.faces.len() > MAX_FACES {
+    if manifest.faces.is_empty() {
         return Err(Fault::FontsUnavailable);
     }
     let mut files: Vec<PathBuf> = INTER.iter().map(|name| asset_dir.join(name)).collect();
