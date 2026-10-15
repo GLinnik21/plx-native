@@ -177,6 +177,10 @@ pub struct Engine {
     pub native_epoch: u32,
     pub stage: Stage,
     pub video_info_sent: bool, // videoInfoSent
+    /// ACB route: `SHARED.frames` when the plane bind completed (`Stage::Streaming`), until a tick
+    /// beyond it is seen. A paused preroll re-pauses only after that tick: a picture presented
+    /// before the bind is not on the panel.
+    pub bound_at_frames: Option<i32>,
     /// webOS 5+ only: the source size the exported window was last placed with, so a corrective
     /// re-place happens exactly once if the demuxer publishes the real one later. 0 = never placed.
     pub placed_src: (c_int, c_int),
@@ -1550,6 +1554,7 @@ fn start_bufferfeed_inner(
         native_epoch,
         stage: Stage::Loading,
         video_info_sent: false,
+        bound_at_frames: None,
         placed_src: (0, 0),
         eos_pushed: false,
         // if a seek is armed for the FIRST open (resume, or reload_at), rebase the first
@@ -3994,6 +3999,7 @@ mod prime_livelock_tests {
             native_epoch: 0,
             stage: Stage::Streaming,
             video_info_sent: true,
+            bound_at_frames: None,
             placed_src: (0, 0),
             eos_pushed: false,
             rebase_pending: false,

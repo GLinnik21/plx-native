@@ -165,7 +165,19 @@ something.
   picture (`pump::paused_and_idle`): Buffering means work is happening, and Playing means a frame
   is presented, so that state is `PlaybackState::Paused` (not busy, not `is_playing`, no
   `PlaybackStarted`). The preroll opens only while the prime is still owed (`Engine::prime_play`)
-  and is owned at 0: `frames` is per-session, so the first presented frame is the landing. An engine failure during the flight publishes `Failed` at once
+  and is owned at 0: `frames` is per-session, so the first presented frame is the landing.
+  **On the ACB route (webOS 4) the landing also needs the video plane BOUND**
+  (`pump::plane_shows_the_picture`): the plane connects only through `setMediaVideoData` +
+  `acb_start` (`Stage::Streaming`), and a tick counted before that is a picture the panel never
+  showed. A preroll re-paused on the first tick left the panel black ("no signal" on a VIDEO-only
+  capture) until Resume, because the pause stops the ticks the bind waits on and
+  `acb_mirror_playstate` does nothing below `Streaming`. So the re-pause waits for the bind plus
+  one tick after it (`Engine::bound_at_frames`), and, while a preroll is open, the bind gate is one
+  tick instead of the normal two (`acb_bind_frames_needed`; the preroll's Play window is audible,
+  nothing mutes the sink). An `acb_start` that runs under a really-paused pipeline (no preroll
+  open) is followed by the ACB pause, so ACB is never left PLAYING over a paused pipeline. The
+  `seek: paused frame restored` line therefore means the plane was bound when the pause landed.
+  An engine failure during the flight publishes `Failed` at once
   (`fail_current_engine`) and clears the hold, so the error read-out shows instead of a spinner.
   The encoder a claim replaces is NOT stopped by the worker: the pump retires it
   (`route::retire_superseded_encoder`) after the reload.

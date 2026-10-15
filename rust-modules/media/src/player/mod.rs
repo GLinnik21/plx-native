@@ -2142,8 +2142,8 @@ pub fn vplane_take() -> (u32, u32) {
 /// webOS 4.10.2 (2026-08-21), it is a **~5 Hz position tick**: a 1080p H264 direct play, a 4K HEVC
 /// direct play and a visibly stuttering Dolby Vision direct play all deliver it 5 times a second,
 /// 201 ms apart, to the millisecond. So [`frames`](crate::player::shared::Shared::frames) counts
-/// TICKS, not frames — which is what `pump`'s `frames >= 2` gate really means (≈400 ms of
-/// playback, not two pictures) and what `app::diagnostics` really shows.
+/// TICKS, not frames — which is what `pump`'s ACB bind gate (`frames >= 2`, one tick while a
+/// paused preroll is open) really means (≈400 ms of playback, not two pictures) and what `app::diagnostics` really shows.
 ///
 /// The consequence for diagnosis: this callback can say the pipeline still believes it is
 /// presenting, and cannot say the picture is smooth. The video plane's real cadence is not
