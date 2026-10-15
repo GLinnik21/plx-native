@@ -203,6 +203,7 @@ import hashlib
 import json
 import os
 import pathlib
+import queue
 import random
 import re
 import socket
@@ -1764,6 +1765,11 @@ class MockPms:
         self.link = link_conditioner.Conditioner()  # `--link`; a no-op until a profile is set
         self.wire_log = []  # `GET /_mock/wire`: per-request arrival/finish times under the link
         self.requests = []  # (path, status) in arrival order, for the harness
+        # `/:/eventsource/notifications` (the PMS SSE feed): one queue per open stream, fed by
+        # `POST /_mock/notify`. `sse_ping_s` is the comment-ping period; `sse_opened` counts streams.
+        self.subscribers = []
+        self.sse_opened = 0
+        self.sse_ping_s = 10.0
         self.unknown = []
         self.writes = []
         # Set by `serve` after binding the listener; ordinary sign-in advertises only this mock.
@@ -1945,6 +1951,37 @@ class MockPms:
                     self.request_log.clear()
                 return j({"ok": True})
             return j({"error": "method not allowed"}, 405)
+        if p == "/_mock/notify":
+            # One `playing` notification, as another client's session would cause it, to every open
+            # feed. `{"ratingKey": N, "state": "playing|paused|stopped", "viewOffset": ms}`; a
+            # `stopped` with a `viewOffset` also leaves that resume point on the item, which is what
+            # the server would have stored, so the app's read-back has something new to find.
+            if method != "POST":
+                return j({"error": "method not allowed"}, 405)
+            try:
+                req = json.loads(body or b"{}")
+                rk = int(req["ratingKey"])
+                state = str(req.get("state", "playing"))
+                offset = req.get("viewOffset")
+                offset = None if offset is None else int(offset)
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                return j({"error": "need {ratingKey, state?, viewOffset?}"}, 400)
+            with self.lock:
+                it = lib.items.get(rk)
+                if it is not None and state == "stopped" and offset is not None:
+                    it["viewOffset"] = offset
+                    it["lastViewedAt"] = int(time.time())
+                entry = {"sessionKey": str(req.get("sessionKey", "1")),
+                         "clientIdentifier": req.get("clientIdentifier", "mock-other-client"),
+                         "ratingKey": str(rk), "key": f"/library/metadata/{rk}", "state": state}
+                if offset is not None:
+                    entry["viewOffset"] = offset
+                frame = ("event: notification\ndata: " + json.dumps({"NotificationContainer": {
+                    "type": "playing", "size": 1, "PlaySessionStateNotification": [entry]}}) + "\n\n").encode()
+                for sub_q in self.subscribers:
+                    sub_q.put(frame)
+                delivered = len(self.subscribers)
+            return j({"delivered": delivered})
         if p == "/_mock/config":
             if method != "POST":
                 return j({"error": "method not allowed"}, 405)
@@ -2525,6 +2562,8 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(delay_ms / 1000)
         if method in ("GET", "HEAD") and (self._media(method) or self._transcode_fixture(method)):
             return
+        if method == "GET" and urllib.parse.urlsplit(self.path).path == "/:/eventsource/notifications":
+            return self._notifications()
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n) if n else b""
         split = urllib.parse.urlsplit(self.path)
@@ -2562,6 +2601,49 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self.wfile.write(data)
         self._wire(plan, split, t_recv, len(data), status, False)
+
+    def _notifications(self):
+        """The PMS SSE feed: a comment ping at once and every `sse_ping_s`, and whatever
+        `POST /_mock/notify` queues, until the client hangs up. A request with no token is a 401,
+        as on a real server. The stream is logged in `request_log` like any other request."""
+        pms = self.server.pms
+        split = urllib.parse.urlsplit(self.path)
+        query = urllib.parse.parse_qs(split.query)
+        token = self.headers.get("X-Plex-Token") or (query.get("X-Plex-Token") or [""])[-1]
+        with pms.lock:
+            pms.request_log.append({"method": "GET", "path": split.path,
+                                    "query": {k: v[-1] for k, v in query.items() if "token" not in k.lower()},
+                                    "session": None})
+        if not token:
+            self.send_response(401)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        feed = queue.Queue()
+        with pms.lock:
+            pms.subscribers.append(feed)
+            pms.sse_opened += 1
+        self.close_connection = True
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b": ping\n\n")
+            self.wfile.flush()
+            while True:
+                try:
+                    frame = feed.get(timeout=pms.sse_ping_s)
+                except queue.Empty:
+                    frame = b": ping\n\n"
+                self.wfile.write(frame)
+                self.wfile.flush()
+        except OSError:
+            pass  # the client hung up
+        finally:
+            with pms.lock:
+                pms.subscribers.remove(feed)
 
     def _wire(self, plan, split, t_recv, nbytes, status, failed):
         """One row of `GET /_mock/wire`: when the request arrived and when its answer finished
@@ -3093,6 +3175,7 @@ def selftest():
 
     _selftest_plaintext_only_lan()
     _selftest_section_hubs()
+    _selftest_notifications()
     _selftest_paging()
     _selftest_link()
     print("mock_pms selftest: ok")
@@ -3103,6 +3186,43 @@ def _teardown(srv):
     srv.server_close()
     if srv.insecure_fail_listener is not None:
         srv.insecure_fail_listener.close()
+
+
+def _selftest_notifications():
+    """The SSE feed: 401 without a token, a ping at once, and a `POST /_mock/notify` delivered as one
+    `notification` frame whose `stopped` also leaves the resume point on the item."""
+    import urllib.error
+    import urllib.request
+
+    srv, pms = serve(0, seed=7)
+    try:
+        base = f"http://127.0.0.1:{srv.server_address[1]}"
+        try:
+            urllib.request.urlopen(base + "/:/eventsource/notifications?filters=playing", timeout=5)
+            raise AssertionError("a feed with no token must be refused")
+        except urllib.error.HTTPError as e:
+            assert e.code == 401, e.code
+        req = urllib.request.Request(base + "/:/eventsource/notifications?filters=playing",
+                                     headers={"X-Plex-Token": "t", "Accept": "text/event-stream"})
+        with urllib.request.urlopen(req, timeout=5) as feed:
+            assert feed.headers.get_content_type() == "text/event-stream"
+            assert feed.readline() == b": ping\n"
+            assert feed.readline() == b"\n"
+            rk = next(iter(pms.lib.items))
+            post = urllib.request.Request(
+                base + "/_mock/notify", method="POST",
+                data=json.dumps({"ratingKey": rk, "state": "stopped", "viewOffset": 123000}).encode())
+            with urllib.request.urlopen(post, timeout=5) as reply:
+                assert json.load(reply) == {"delivered": 1}
+            assert feed.readline() == b"event: notification\n"
+            data = json.loads(feed.readline().split(b"data: ", 1)[1])
+            entry = data["NotificationContainer"]["PlaySessionStateNotification"][0]
+            assert entry["state"] == "stopped" and entry["ratingKey"] == str(rk)
+            assert entry["clientIdentifier"] == "mock-other-client"
+        assert pms.lib.items[rk]["viewOffset"] == 123000
+        assert pms.sse_opened == 1
+    finally:
+        _teardown(srv)
 
 
 def _selftest_section_hubs():
