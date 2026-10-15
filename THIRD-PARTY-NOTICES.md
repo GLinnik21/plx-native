@@ -258,9 +258,11 @@ stated; election does not alter your rights under the other arms.
 
 **Elected MIT** (`licenses/MIT.txt`), with the copyright holders required by that licence:
 
+<!-- BEGIN GENERATED notices:elected-mit (edit ci/third-party-crates.json, run python3 ci/gen-third-party-notices.py) -->
+
 | Package | Version(s) | Declared licence | Copyright |
 |---|---|---|---|
-| The Rust standard library (`core`, `alloc`, `std`, `panic_unwind`, `unwind`, and the `rustc-std-workspace-*` shims) | rustc 1.98.0-nightly (c397dae80 2026-07-02) | MIT OR Apache-2.0 | The Rust Project Developers |
+| The Rust standard library (`core`, `alloc`, `std`, `panic_unwind`, `unwind`, and the `rustc-std-workspace-*` shims) | rustc 1.98.0-nightly (4c9d2bfe4 2026-07-01) | MIT OR Apache-2.0 | The Rust Project Developers |
 | — its in-tree backtrace support (`library/backtrace`) | 0.3.76 | MIT OR Apache-2.0 | 2014 Alex Crichton |
 | — its in-tree mpmc channels (`library/std/src/sync/mpmc`) | in-tree | MIT OR Apache-2.0 | 2019 The Crossbeam Project Developers |
 | addr2line | 0.25.1 | Apache-2.0 OR MIT | The `addr2line` authors |
@@ -294,7 +296,11 @@ stated; election does not alter your rights under the other arms.
 | zune-core | 0.5.1 | MIT OR Apache-2.0 OR Zlib | The zune-image developers |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | The zune-image developers |
 
+<!-- END GENERATED notices:elected-mit -->
+
 **MIT only — no alternative arm** (`licenses/MIT.txt`):
+
+<!-- BEGIN GENERATED notices:mit-only (edit ci/third-party-crates.json, run python3 ci/gen-third-party-notices.py) -->
 
 | Package | Version | Copyright |
 |---|---|---|
@@ -305,13 +311,19 @@ stated; election does not alter your rights under the other arms.
 | zmij | 1.0.21 | David Tolnay (a Rust port of Victor Zverovich's C++ `zmij`) |
 | rust-lang/libm — compiled *inside* `compiler_builtins` and exposed as intrinsics on this target | as vendored in rustc 1.98.0-nightly | (c) 2018 Jorge Aparicio; musl libc (c) 2005-2020 Rich Felker, et al.; CORE-MATH; and the fdlibm-derived notice: (c) 1993, 2004 Sun Microsystems; (c) 2003-2011 David Schultz; (c) 2003-2009 Steven G. Kargl; (c) 2003-2009 Bruce D. Evans; (c) 2008 Stephen L. Moshier; (c) 2017-2018 Arm Limited |
 
+<!-- END GENERATED notices:mit-only -->
+
 **Apache-2.0** (`licenses/Apache-2.0.txt`) — elected for `moxcms` and `pxfm`; the sole declared licence of `calendrical_calculations`:
+
+<!-- BEGIN GENERATED notices:apache (edit ci/third-party-crates.json, run python3 ci/gen-third-party-notices.py) -->
 
 | Package | Version | Declared licence | Copyright |
 |---|---|---|---|
 | calendrical_calculations | 0.2.4 | Apache-2.0 | Copyright 2023 The Unicode Consortium |
 | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | (c) Radzivon Bartoshyk |
 | pxfm | 0.1.29 | BSD-3-Clause OR Apache-2.0 | (c) Radzivon Bartoshyk |
+
+<!-- END GENERATED notices:apache -->
 
 **ICU4X code and compiled locale data — Unicode-3.0** (`licenses/ICU4X.txt`).
 These packages provide locale parsing, plural selection, regional number/date formatting and
@@ -322,6 +334,8 @@ verbatim in `licenses/ICU4X.txt`, including both notices:
 >
 > Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 > ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
+
+<!-- BEGIN GENERATED notices:icu (edit ci/third-party-crates.json, run python3 ci/gen-third-party-notices.py) -->
 
 | Package | Version |
 |---|---|
@@ -352,6 +366,8 @@ verbatim in `licenses/ICU4X.txt`, including both notices:
 | zerotrie | 0.2.5 |
 | zerovec | 0.11.8 |
 
+<!-- END GENERATED notices:icu -->
+
 `calendrical_calculations` implements algorithms from *Calendrical Calculations* by Reingold &
 Dershowitz, Cambridge University Press, 4th edition (2018), released as Lisp code under
 Apache-2.0. Its package licence carries the Unicode Consortium copyright reproduced above;
@@ -364,9 +380,20 @@ implementation. `licenses/libm.txt` preserves its complete upstream licence and 
 attributions. `qrcodegen` supplies the QR code linking viewers to the translation contribution
 guide; its source-header licence notice is preserved verbatim in `licenses/qrcodegen.txt`.
 
-The versions above come from the locked ARM runtime dependency graph (`cargo tree
---no-default-features --target arm-unknown-linux-gnueabi --edges normal,no-proc-macro`), excluding
-dev dependencies, build dependencies and host proc-macro implementations.
+The versions above are the ones in `rust-modules/Cargo.lock` (and, for the standard library's own
+crates, the pinned nightly's `library/Cargo.lock`), which `cargo tree --locked --no-default-features
+--target arm-unknown-linux-gnueabi --edges normal,no-proc-macro` resolves to the ARM runtime graph. CI
+(`ci.yml`, host-lint) runs `ci/gen-third-party-notices.py --check --verify-graph` on every pull request: the
+set of crates in that graph must equal the rows above, and no listed version may be one that only a build
+or dev dependency uses. Dev dependencies, build dependencies and host proc-macro implementations are not
+shipped and have no row. A second version of `libc` below is the standard library's own, built from
+source.
+
+The four package tables above are generated, not typed: `ci/gen-third-party-notices.py` fills the
+version column from `rust-modules/Cargo.lock` (and, for the standard library's own crates, from the
+`library/Cargo.lock` of the pinned nightly), keeps the licence and copyright columns from
+`ci/third-party-crates.json`, and `make check` fails when this section disagrees with the lockfile.
+After a dependency bump, run `make notices` and commit the result.
 
 **Conjunctive licence — no election possible:**
 
