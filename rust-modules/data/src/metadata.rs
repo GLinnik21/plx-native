@@ -1819,10 +1819,10 @@ pub fn install_for_test(state: &mut MetadataState, d: Option<Detail>) {
 /// THREE things can be about the item, and all three are updated:
 /// * **the loaded item itself** — a movie, or the show whose hero toggle was pressed;
 /// * **one EPISODE of the loaded season** — the filmstrip's context menu, whose rk is a leaf of the
-///   show `CURRENT` holds. Its season's `viewedLeafCount` moves with it, because the season tab's
-///   tick is derived from that count ([`Season::watched`]) and a tick that disagreed with the
-///   episode row beneath it is precisely the "two surfaces describing one item two ways" this page
-///   already refuses elsewhere.
+///   show `CURRENT` holds. Only the episode's `watched` and `resume_ms` change here: its season's
+///   `viewedLeafCount` is deliberately NOT stepped, because one flip says nothing certain about the
+///   season. The read-back lands the season's row, `app::content::reconcile_details` re-reads this
+///   page, and the server's count arrives from that read.
 /// * **a tile of the RELATED shelf** — a different item entirely, which is what makes it the odd
 ///   one out: it is matched on its OWN `sid` (each row carries one, see [`Related`]) rather than on
 ///   the page's, and it is checked unconditionally rather than as one arm of a chain. Since
