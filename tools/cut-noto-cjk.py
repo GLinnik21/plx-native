@@ -31,13 +31,14 @@ a reader will otherwise assume is an omission:
      SDL2_ttf 2.0.x reads neither (see `cut-inter.py` §3 — `FT_Get_Kerning` never reads GPOS).
      Latin runs are kerned by Inter's own `kern` table, on the Inter link.
 
-  4. **No second weight.** The `wght` 700 instance is another ~21 MB in a package that is
+  4. **No second weight.** The `wght` 700 instance is another ~13 MB in a package that is
      currently ~5 MB, which is not a trade this app can make for a fallback face. `text.rs` opens
      THIS face for bold runs too, without synthetic emboldening — see `text.rs::link_font` for why
      smearing a 20-stroke ideograph is worse than a weight mismatch beside it.
 
 **What IS dropped, and why it is not "narrowing the subset".** The codepoint set is untouched —
-all 44810 of them ship. What goes is four tables this renderer provably cannot read:
+all 44810 of them ship, with the cmap format-14 (UVS) subtable. What goes is, first, tables this
+renderer provably cannot read:
 
   * `GSUB` (163 KB) and `GPOS` (78 KB) + `GDEF` — SDL2_ttf 2.0.x does no shaping and no OpenType
     feature selection at all (the device's is 2.0.14; HarfBuzz support landed in 2.0.18). Dropping
@@ -46,6 +47,14 @@ all 44810 of them ship. What goes is four tables this renderer provably cannot r
   * `vhea` + `vmtx` (261 KB) — vertical writing metrics. Nothing in this app lays out vertically.
   * `BASE` (278 B), `DSIG` (8 B) — baseline tables for a shaper we do not have, and a signature
     that is invalid the moment the font is instanced.
+
+Second, the glyphs no codepoint reaches. With GSUB gone, the ~21.4k alternates (vertical, locale,
+ruby and width forms) are unreachable, and they are what makes the instance 65535 glyphs and its
+long `loca` exactly 0x40000 bytes — which FreeType 2.4.11 through 2.7.0 (`ttpload.c`,
+`table_len >= 0x40000L`) refuses to open (error 8), and several firmware inventories ship such a
+FreeType. The fontTools subsetter keeps the 44,074 cmap-reachable glyphs (plus the 12-selector UVS
+glyphs): 44,097 glyphs, identical outlines and advances, about 13.4 MB instead of 21.2 MB. The
+script asserts the glyph count and the `loca` bound; `fontcov.rs` asserts them on the shipped file.
 
 Name IDs 0, 7, 13 and 14 (copyright, trademark, licence, licence URL) are asserted present on the
 way out: OFL 1.1 §2 requires the notice to travel with the Font Software, and `pkg/OFL.txt` alone
@@ -57,6 +66,7 @@ import hashlib
 import sys
 from pathlib import Path
 
+from fontTools import subset
 from fontTools.ttLib import TTFont
 from fontTools.varLib import instancer
 
@@ -74,6 +84,10 @@ ASSET_BYTES = 36140528
 
 WGHT = 400
 DROP_TABLES = ("GSUB", "GPOS", "GDEF", "BASE", "DSIG", "vhea", "vmtx")
+# FreeType 2.4.11 .. 2.7.0 (`ttpload.c`: `table_len >= 0x40000L` -> Invalid_Table) cannot open a font
+# whose long `loca` is 0x40000 bytes or more, i.e. 65535 glyphs. Several firmware inventories ship
+# such a FreeType; the unsubsetted cut (65535 glyphs) failed there with error 8.
+LOCA_LIMIT = 0x40000
 LICENCE_NAME_IDS = {0: "copyright", 7: "trademark", 13: "licence", 14: "licence URL"}
 
 # What the cut MUST still cover when it is done — a coarse self-check so a bad instancer upgrade
@@ -138,6 +152,41 @@ def main() -> None:
         if tag in font:
             del font[tag]
 
+    # Subset to the cmap-reachable glyphs. The GSUB table is already gone, so the ~21.4k glyphs the
+    # instance carried beyond the 44,074 the cmap reaches (GSUB alternates: vertical forms, locale
+    # forms, ruby, ...) are DEAD WEIGHT, and they are what pushes the glyph count to 65535 and the
+    # long `loca` to exactly 0x40000. Every codepoint is kept (so `covered()` below must still be
+    # equal), the format-14 UVS subtable stays, outlines/advances/hinting are untouched.
+    opts = subset.Options()
+    opts.layout_features = []
+    opts.name_IDs = ["*"]
+    opts.name_languages = ["*"]
+    opts.name_legacy = True
+    opts.notdef_outline = True
+    opts.notdef_glyph = True
+    opts.hinting = True
+    opts.glyph_names = "post" in font and font["post"].formatType != 3.0
+    opts.legacy_cmap = True
+    opts.symbol_cmap = True
+    opts.drop_tables = [t for t in opts.drop_tables if t not in ("cmap",)]
+    sub = subset.Subsetter(options=opts)
+    # The subsetter keeps a format-14 (UVS) subtable only for selectors it is ASKED to keep, and a
+    # selector (U+FE00.., U+E0100..) is in no other subtable, so name them from the table itself.
+    selectors = {vs for t in font["cmap"].tables if t.format == 14 for vs in t.uvsDict}
+    if not selectors:
+        raise SystemExit("the instance has no cmap format-14 (UVS) subtable to keep")
+    sub.populate(unicodes=sorted(before | selectors))
+    sub.subset(font)
+    n_glyphs = len(font.getGlyphOrder())
+    if n_glyphs > 65534:
+        raise SystemExit(f"{n_glyphs} glyphs: FreeType <= 2.7.0 cannot open >= 65535")
+    if font["head"].indexToLocFormat == 1:
+        loca_bytes = (n_glyphs + 1) * 4
+        if loca_bytes >= LOCA_LIMIT:
+            raise SystemExit(f"long loca is {loca_bytes} bytes, FreeType <= 2.7.0 needs < {LOCA_LIMIT}")
+
+    if not any(t.format == 14 for t in font["cmap"].tables):
+        raise SystemExit("subsetting dropped the cmap format-14 (UVS) subtable")
     after = covered(font)
     if after != before:
         raise SystemExit(f"instancing changed coverage: {len(before)} -> {len(after)} codepoints")
@@ -157,7 +206,7 @@ def main() -> None:
     # a fontTools upgrade may legitimately reorder or repad tables without changing the font, so
     # pinning it here would fail for the wrong reason. What IS asserted is the semantics:
     # the coverage floors above, and `fontcov.rs`'s exact 44810.
-    print(f"{out}  {out.stat().st_size:,} bytes  {len(after):,} codepoints")
+    print(f"{out}  {out.stat().st_size:,} bytes  {len(after):,} codepoints  {n_glyphs:,} glyphs")
     print(f"  sha256   {hashlib.sha256(out.read_bytes()).hexdigest()}")
     print(f"  family   {font['name'].getDebugName(1)!r} / {font['name'].getDebugName(2)!r}")
     print(f"  from     {UPSTREAM} @ {RELEASE_TAG}  {ASSET}")

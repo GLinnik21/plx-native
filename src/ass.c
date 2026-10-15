@@ -2,8 +2,10 @@
  * ASS_Image/ASS_Track through the exact pinned libass headers used to build it. */
 #include "../include/ass.h"
 #include "ass_composite.h"
+#include "ass_internal.h"
 #include <ass/ass.h>
 #include <limits.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +16,10 @@
 #define MAX_EVENTS 20000
 #define MAX_PIXELS (3840u * 2160u)
 #define MAX_IMAGES 16384
+#define MAX_LINE_SPACING 1000.0
+/* libass bounds its glyph/bitmap caches, in glyphs / MiB respectively. */
+#define DEFAULT_GLYPH_CACHE 1000
+#define DEFAULT_BITMAP_CACHE_MIB 24
 
 struct ImageKey {
     uintptr_t bitmap;
@@ -34,6 +40,9 @@ struct PlxAss {
     int cache_valid;
     int width, height, storage_width, storage_height;
     int first;
+    int fonts_set;      /* ass_set_fonts has run: it opens every font, so only once per ctx */
+    int wrap_unicode;
+    uint32_t font_scans, tracks;
     char *default_font;
     unsigned reciprocal[256];
 };
@@ -45,7 +54,7 @@ static void quiet_message(int level, const char *format, va_list args, void *dat
     (void)level; (void)format; (void)args; (void)data;
 }
 
-unsigned plx_ass_abi_version(void) { return 2; }
+unsigned plx_ass_abi_version(void) { return PLX_ASS_ABI_VERSION; }
 
 void plx_ass_destroy(PlxAss *ctx)
 {
@@ -72,8 +81,7 @@ PlxAss *plx_ass_create(const char *default_font)
     ass_set_extract_fonts(ctx->library, 1);
     ctx->renderer = ass_renderer_init(ctx->library);
     if (!ctx->renderer) goto failed;
-    /* libass bounds its glyph/bitmap caches, in glyphs / MiB respectively. */
-    ass_set_cache_limits(ctx->renderer, 1000, 24);
+    ass_set_cache_limits(ctx->renderer, DEFAULT_GLYPH_CACHE, DEFAULT_BITMAP_CACHE_MIB);
     ctx->first = 1;
     return ctx;
 failed:
@@ -83,7 +91,7 @@ failed:
 
 int plx_ass_add_font(PlxAss *ctx, const char *name, const uint8_t *data, size_t len)
 {
-    if (!ctx || ctx->track || !name || !*name || !data || !len ||
+    if (!ctx || ctx->track || ctx->fonts_set || !name || !*name || !data || !len ||
         len > MAX_FONT_BYTES || ctx->font_bytes > MAX_FONT_BYTES - len)
         return -1;
     ass_add_font(ctx->library, name, (char *)data, (int)len);
@@ -91,9 +99,18 @@ int plx_ass_add_font(PlxAss *ctx, const char *name, const uint8_t *data, size_t 
     return 0;
 }
 
-int plx_ass_load(PlxAss *ctx, const uint8_t *data, size_t len, int script)
+/* The features of the loaded track, from the ctx. The track is replaced as a whole on every
+ * load, and libass keeps them per track, so they are applied here each time. */
+static int apply_features(PlxAss *ctx)
 {
-    if (!ctx || ctx->track || !data || !len || len > MAX_SCRIPT_BYTES) return -1;
+    if (!ctx->track) return 0;
+    return ass_track_set_feature(ctx->track, ASS_FEATURE_WRAP_UNICODE, ctx->wrap_unicode);
+}
+
+/* Read `data` as the ctx's track. On failure the ctx holds no track. */
+static int read_track(PlxAss *ctx, const uint8_t *data, size_t len, int script)
+{
+    if (!data || !len || len > MAX_SCRIPT_BYTES) return -1;
     if (script) {
         ctx->track = ass_read_memory(ctx->library, (char *)data, len, NULL);
     } else {
@@ -102,14 +119,93 @@ int plx_ass_load(PlxAss *ctx, const uint8_t *data, size_t len, int script)
     }
     if (!ctx->track || ctx->track->track_type == TRACK_TYPE_UNKNOWN ||
         ctx->track->n_styles <= 0 || ctx->track->n_events > MAX_EVENTS ||
-        (script && ctx->track->n_events == 0))
+        (script && ctx->track->n_events == 0)) {
+        if (ctx->track) ass_free_track(ctx->track);
+        ctx->track = NULL;
         return -1;
+    }
     /* Matroska ReadOrder is the deduplication key, including after demux replay. */
     ass_set_check_readorder(ctx->track, 1);
+    /* Not supported without libunibreak: only an enabled flag can fail. */
+    if (apply_features(ctx) < 0 && ctx->wrap_unicode) {
+        ass_free_track(ctx->track);
+        ctx->track = NULL;
+        return -1;
+    }
+    ++ctx->tracks;
+    return 0;
+}
+
+int plx_ass_load(PlxAss *ctx, const uint8_t *data, size_t len, int script)
+{
+    if (!ctx || ctx->track || ctx->fonts_set) return -1;
+    if (read_track(ctx, data, len, script) < 0) return -1;
     /* Inter is the shipped Latin family. With provider NONE libass tries the
-     * exact authored family, this family, then default_font (our CJK face). */
-    ass_set_fonts(ctx->renderer, ctx->default_font, "Inter",
-                  ASS_FONTPROVIDER_NONE, NULL, 1);
+     * exact authored family, this family, then default_font (our CJK face).
+     * ass_set_fonts opens every font the library holds, so it runs once per ctx, here: the fonts
+     * are fixed from now on (plx_ass_add_font and a second load refuse), and a replaced track
+     * reuses the faces. */
+    ass_set_fonts(ctx->renderer, ctx->default_font, "Inter", ASS_FONTPROVIDER_NONE, NULL, 1);
+    ctx->fonts_set = 1;
+    ++ctx->font_scans;
+    return 0;
+}
+
+int plx_ass_replace_track(PlxAss *ctx, const uint8_t *data, size_t len, int script)
+{
+    if (!ctx || !ctx->fonts_set) return -1;
+    /* The first load already extracted and registered the fonts. ass_set_fonts never runs again,
+     * so a [Fonts] section read now would only add copies nothing uses. */
+    ass_set_extract_fonts(ctx->library, 0);
+    if (ctx->track) ass_free_track(ctx->track);
+    ctx->track = NULL;
+    /* Per-track frame state, as a fresh ctx has it: otherwise libass's "unchanged" for the
+     * new track's first frame would be answered with the old track's regions. */
+    ctx->first = 1;
+    ctx->cache_valid = 0;
+    ctx->region_count = ctx->image_count = 0;
+    return read_track(ctx, data, len, script);
+}
+
+int plx_ass_set_features(PlxAss *ctx, int wrap_unicode)
+{
+    if (!ctx) return -1;
+    wrap_unicode = wrap_unicode != 0;
+    if (wrap_unicode) {
+        /* A library built without libunibreak refuses the feature; say so before any track. */
+        ASS_Track *probe = ass_new_track(ctx->library);
+        int supported = probe && ass_track_set_feature(probe, ASS_FEATURE_WRAP_UNICODE, 1) == 0;
+        if (probe) ass_free_track(probe);
+        if (!supported) return -1;
+    }
+    ctx->wrap_unicode = wrap_unicode;
+    /* Only enabling can fail, and it was just proven to work. */
+    apply_features(ctx);
+    return 0;
+}
+
+int plx_ass_set_cache_limits(PlxAss *ctx, int glyph_max, int bitmap_mib)
+{
+    if (!ctx || glyph_max < 1 || bitmap_mib < 1) return -1;
+    ass_set_cache_limits(ctx->renderer, glyph_max, bitmap_mib);
+    return 0;
+}
+
+int plx_ass_set_line_spacing(PlxAss *ctx, double spacing)
+{
+    if (!ctx || !isfinite(spacing) || fabs(spacing) > MAX_LINE_SPACING) return -1;
+    ass_set_line_spacing(ctx->renderer, spacing);
+    /* libass compares images, not settings: redraw the next frame in full. */
+    ctx->cache_valid = 0;
+    return 0;
+}
+
+int plx_ass_stats(const PlxAss *ctx, PlxAssStats *out)
+{
+    if (!ctx || !out) return -1;
+    out->library_fonts = (uint32_t)plxi_library_fonts(ctx->library);
+    out->font_scans = ctx->font_scans;
+    out->tracks = ctx->tracks;
     return 0;
 }
 
@@ -159,6 +255,11 @@ static struct Bounds unite(struct Bounds a, struct Bounds b)
         a.right > b.right ? a.right : b.right,
         a.bottom > b.bottom ? a.bottom : b.bottom
     };
+}
+
+static size_t region_bytes(struct Bounds b)
+{
+    return (size_t)(b.right - b.left) * (b.bottom - b.top) * 4;
 }
 
 /* Merge to a fixed point: a union can overlap a previously separate region.
@@ -254,7 +355,7 @@ static void place_regions(PlxAss *ctx, const struct Bounds *bounds, size_t count
         old_offset[i] = old;
         next_offset[i] = next;
         if (i < ctx->region_count) old += ctx->regions[i].bytes;
-        next += (size_t)(bounds[i].right - bounds[i].left) * (bounds[i].bottom - bounds[i].top) * 4;
+        next += region_bytes(bounds[i]);
     }
     for (size_t i = 0; i < count; ++i)
         if (retained[i] && next_offset[i] < old_offset[i])
@@ -267,7 +368,7 @@ static void place_regions(PlxAss *ctx, const struct Bounds *bounds, size_t count
         PlxAssBitmap *bitmap = &ctx->regions[i];
         *bitmap = (PlxAssBitmap){
             .x = b.left, .y = b.top, .width = b.right - b.left, .height = b.bottom - b.top,
-            .bytes = (size_t)(b.right - b.left) * (b.bottom - b.top) * 4,
+            .bytes = region_bytes(b),
             .rgba = ctx->rgba + next_offset[i]
         };
         if (!retained[i]) memset(ctx->rgba + next_offset[i], 0, bitmap->bytes);
@@ -332,8 +433,7 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
                          (size_t)image_count, reusable, retained) < 0) return -1;
     size_t bytes = 0;
     for (size_t i = 0; i < region_count; ++i) {
-        struct Bounds b = bounds[i];
-        size_t n = (size_t)(b.right - b.left) * (b.bottom - b.top) * 4;
+        size_t n = region_bytes(bounds[i]);
         if (n > MAX_PIXELS * 4 || bytes > MAX_PIXELS * 4 - n) return -1;
         bytes += n;
     }

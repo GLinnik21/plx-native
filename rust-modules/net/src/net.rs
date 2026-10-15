@@ -395,7 +395,40 @@ pub fn available() -> bool {
 }
 
 pub fn threaded_tls_ready() -> bool {
-    CURL_THREADED_TLS_OK.load(Ordering::Acquire)
+    CURL_THREADED_TLS_OK.load(Ordering::Acquire) && !serial_tls_forced()
+}
+
+/// Test seam: make [`threaded_tls_ready`] answer `false`, the way the old-OpenSSL fallback does.
+/// Process-global, so a test holds `plx_base::testlock::serial()` while its guard lives.
+#[cfg(any(test, feature = "test-support"))]
+static FORCE_SERIAL_TLS: AtomicBool = AtomicBool::new(false);
+
+#[cfg(any(test, feature = "test-support"))]
+fn serial_tls_forced() -> bool {
+    FORCE_SERIAL_TLS.load(Ordering::Acquire)
+}
+#[cfg(not(any(test, feature = "test-support")))]
+const fn serial_tls_forced() -> bool {
+    false
+}
+
+/// Restores the real [`threaded_tls_ready`] on drop (panic included).
+#[cfg(any(test, feature = "test-support"))]
+pub struct SerialTlsGuard;
+
+#[cfg(any(test, feature = "test-support"))]
+impl SerialTlsGuard {
+    pub fn force() -> SerialTlsGuard {
+        FORCE_SERIAL_TLS.store(true, Ordering::Release);
+        SerialTlsGuard
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for SerialTlsGuard {
+    fn drop(&mut self) {
+        FORCE_SERIAL_TLS.store(false, Ordering::Release);
+    }
 }
 
 /// The `User-Agent` every request sends: each easy request here, the player's HTTPS source
@@ -1379,6 +1412,92 @@ mod loopback_pms {
         Observed { port, accepted, requests }
     }
 
+    /// One step of a [`spawn_streaming`] script.
+    #[derive(Clone)]
+    pub enum StreamStep {
+        /// A chunked-body chunk, flushed at once.
+        Chunk(Vec<u8>),
+        /// Pause the script, in milliseconds.
+        Sleep(u64),
+        /// End the body properly (`0` chunk) and close.
+        Close,
+        /// Close the connection WITHOUT ending the body: a transfer that fails after bytes.
+        Abort,
+        /// Say nothing more until the client goes away (at most 30 s).
+        Hang,
+        /// Answer `status` with a four-byte body and close, instead of a 200 event stream.
+        Status(u16),
+    }
+
+    /// A TLS loopback double for a long-lived response. Each accepted connection reads one request
+    /// (recorded in [`Observed::requests`]), answers `200 text/event-stream` with a chunked body
+    /// unless the first step is [`StreamStep::Status`], then plays `steps` in order.
+    pub fn spawn_streaming(cert: Arc<TestCert>, steps: Vec<StreamStep>) -> Observed {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind streaming listener");
+        let port = listener.local_addr().unwrap().port();
+        let tls_cfg = tls_config(&cert);
+        let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (count, log) = (Arc::clone(&accepted), Arc::clone(&requests));
+        let steps = Arc::new(steps);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut sock) = stream else { continue };
+                count.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                let (tls_cfg, log, steps) = (Arc::clone(&tls_cfg), Arc::clone(&log), Arc::clone(&steps));
+                std::thread::spawn(move || {
+                    let _ = sock.set_read_timeout(Some(std::time::Duration::from_secs(30)));
+                    let Ok(mut conn) = rustls::ServerConnection::new(tls_cfg) else { return };
+                    let mut tls = rustls::Stream::new(&mut conn, &mut sock);
+                    let request = read_whole_request(&mut tls);
+                    if request.is_empty() {
+                        return;
+                    }
+                    log.lock().unwrap_or_else(|e| e.into_inner()).push(request);
+                    if !matches!(steps.first(), Some(StreamStep::Status(_))) {
+                        let head = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+                        if tls.write_all(head).is_err() || tls.flush().is_err() {
+                            return;
+                        }
+                    }
+                    for step in steps.iter() {
+                        match step {
+                            StreamStep::Chunk(bytes) => {
+                                let mut frame = format!("{:x}\r\n", bytes.len()).into_bytes();
+                                frame.extend_from_slice(bytes);
+                                frame.extend_from_slice(b"\r\n");
+                                if tls.write_all(&frame).is_err() || tls.flush().is_err() {
+                                    return;
+                                }
+                            }
+                            StreamStep::Sleep(ms) => std::thread::sleep(std::time::Duration::from_millis(*ms)),
+                            StreamStep::Close => {
+                                let _ = tls.write_all(b"0\r\n\r\n");
+                                let _ = tls.flush();
+                                return;
+                            }
+                            StreamStep::Abort => return,
+                            StreamStep::Hang => {
+                                let mut sink = [0u8; 64];
+                                while matches!(tls.read(&mut sink), Ok(n) if n > 0) {}
+                                return;
+                            }
+                            StreamStep::Status(status) => {
+                                let reply = format!(
+                                    "HTTP/1.1 {status} Test\r\nContent-Length: 4\r\nConnection: close\r\n\r\nnope"
+                                );
+                                let _ = tls.write_all(reply.as_bytes());
+                                let _ = tls.flush();
+                                return;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        Observed { port, accepted, requests }
+    }
+
     /// A loopback double that only ever speaks plaintext HTTP — for the "HTTPS fails" E2E
     /// scenario, where a TLS ClientHello against this listener must fail the handshake (there is
     /// no `rustls::ServerConnection` here to answer it) while a plain request still succeeds.
@@ -1465,7 +1584,7 @@ mod loopback_pms {
     }
 }
 #[cfg(any(test, feature = "test-support"))]
-pub use loopback_pms::{dead_port, mint_ca_issued_cert, mint_cert, spawn_dual_protocol, spawn_observed, spawn_observed_keepalive, spawn_plain_only, spawn_redirecting, spawn_scripted, ymd_from_now, Observed, Reply, TestCaGuard, TestCert};
+pub use loopback_pms::{dead_port, mint_ca_issued_cert, mint_cert, spawn_dual_protocol, spawn_observed, spawn_observed_keepalive, spawn_plain_only, spawn_redirecting, spawn_scripted, spawn_streaming, StreamStep, ymd_from_now, Observed, Reply, TestCaGuard, TestCert};
 #[cfg(any(test, feature = "test-support"))]
 pub use loopback_pms::{curl_ready, expired_leaf, identity_request, key_of_port, leaf_pin, remember};
 
@@ -1521,6 +1640,307 @@ pub fn request_tls(
     request_tls_result(url, headers, verb, body, t, follow_redirects, max_body, tls, None).ok()
 }
 
+/// How a streaming read ([`stream_tls`]) ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamEnd {
+    Closed,
+    Cancelled,
+    Idle,
+    Consumer,
+    Status(u16),
+    Transport(RequestFailure),
+    Unsupported,
+    Refused,
+}
+
+/// Deadlines for a response that stays open: a connect ceiling and no total or low-speed bound.
+pub const STREAM: Timeouts = Timeouts {
+    connect_s: 8,
+    total_s: 0,
+    total_ms: 0,
+    low_speed_bps: 0,
+    low_speed_s: 0,
+};
+
+/// `CURLOPT_NOPROGRESS` (LONG + 43): `0` turns on libcurl's progress meter, whose callback is the
+/// one hook that runs while NO bytes are arriving, which is what a cancel or an idle bound needs.
+/// Read off `curl/curl.h` (8.7.1) with a C program, as the others below; present since 7.1.
+const CURLOPT_NOPROGRESS: c_int = 43;
+/// `CURLOPT_XFERINFOFUNCTION` (`CURLOPTTYPE_FUNCTIONPOINT` 20000 + 219), libcurl 7.32.0 and later:
+/// the progress callback with `curl_off_t` (64-bit, on the 32-bit television too) arguments.
+const CURLOPT_XFERINFOFUNCTION: c_int = 20219;
+/// `CURLOPT_XFERINFODATA` is `CURLOPT_PROGRESSDATA`, `CURLOPTTYPE_OBJECTPOINT` 10000 + 57: one
+/// slot, two names, so one constant serves both callbacks.
+const CURLOPT_XFERINFODATA: c_int = 10057;
+/// `CURLOPT_PROGRESSFUNCTION` (`CURLOPTTYPE_FUNCTIONPOINT` 20000 + 56): the older progress
+/// callback, `double` arguments, deprecated by 7.32 but still honoured; the fallback below it.
+const CURLOPT_PROGRESSFUNCTION: c_int = 20056;
+/// The first libcurl with `CURLOPT_XFERINFOFUNCTION` (7.32.0, as `curl_version_info`'s `0xXXYYZZ`).
+const CURL_XFERINFO_MIN_VERSION: u32 = 0x07_20_00;
+
+/// The consumer side of a streaming read, shared by the write and progress callbacks of one
+/// [`stream_tls`] call. Its address is handed to libcurl as `CURLOPT_WRITEDATA`/`XFERINFODATA`, so it
+/// lives on the caller's stack for the whole transfer and is touched only from the thread that is
+/// inside `curl_easy_perform` (libcurl runs both callbacks there), which is why plain `Cell`s do.
+///
+/// It outlives the individual attempts of [`request_tls_sink`]'s rung loop: what must survive from
+/// one attempt to the next is exactly [`Self::got_body`] and [`Self::ended`].
+struct StreamSink<'a> {
+    on_bytes: std::cell::RefCell<&'a mut dyn FnMut(&[u8]) -> bool>,
+    cancel: &'a AtomicBool,
+    idle: std::time::Duration,
+    /// When a body byte last arrived, or when the current attempt began.
+    last_byte: std::cell::Cell<std::time::Instant>,
+    /// Whether any body byte has reached `on_bytes`. Once true the stream is never replayed.
+    got_body: std::cell::Cell<bool>,
+    /// Whether the status line has been judged yet (at the first body byte).
+    status_checked: std::cell::Cell<bool>,
+    /// The key pin this attempt was told to enforce ([`keypin::Mode::Key`]) and has not yet
+    /// confirmed. Key mode lowers `VERIFYPEER`, so before the first byte reaches the consumer the
+    /// peer's key is checked here, independently of libcurl's own enforcement
+    /// ([`keypin::confirm`]); an unreadable certificate chain fails closed.
+    unconfirmed_pin: std::cell::RefCell<Option<String>>,
+    /// Set when that check refused: the attempt's `CURLcode` is then [`keypin::PIN_MISMATCH`].
+    pin_refused: std::cell::Cell<bool>,
+    /// Why this layer ended the transfer itself, if it did.
+    ended: std::cell::Cell<Option<StreamEnd>>,
+    /// The attempt's easy handle, for `CURLINFO_RESPONSE_CODE` inside the write callback.
+    easy: std::cell::Cell<*mut CURL>,
+}
+
+impl<'a> StreamSink<'a> {
+    fn new(on_bytes: &'a mut dyn FnMut(&[u8]) -> bool, cancel: &'a AtomicBool, idle: std::time::Duration) -> Self {
+        StreamSink {
+            on_bytes: std::cell::RefCell::new(on_bytes),
+            cancel,
+            idle,
+            last_byte: std::cell::Cell::new(std::time::Instant::now()),
+            got_body: std::cell::Cell::new(false),
+            status_checked: std::cell::Cell::new(false),
+            unconfirmed_pin: std::cell::RefCell::new(None),
+            pin_refused: std::cell::Cell::new(false),
+            ended: std::cell::Cell::new(None),
+            easy: std::cell::Cell::new(ptr::null_mut()),
+        }
+    }
+
+    fn ended(&self) -> Option<StreamEnd> {
+        self.ended.get()
+    }
+
+    /// A failed attempt may be followed by another rung only while nothing reached the consumer
+    /// and this layer did not itself end the transfer.
+    fn may_retry(&self) -> bool {
+        !self.got_body.get() && self.ended.get().is_none()
+    }
+
+    fn mark_body(&self) {
+        self.got_body.set(true);
+    }
+
+    fn end(&self, why: StreamEnd) {
+        if self.ended.get().is_none() {
+            self.ended.set(Some(why));
+        }
+    }
+
+    /// `key_pin` is the pin of a key-mode attempt, `None` for a fully verified one.
+    fn begin_attempt(&self, easy: *mut CURL, key_pin: Option<&str>) {
+        self.easy.set(easy);
+        self.last_byte.set(std::time::Instant::now());
+        self.status_checked.set(false);
+        *self.unconfirmed_pin.borrow_mut() = key_pin.map(str::to_owned);
+        self.pin_refused.set(false);
+    }
+
+    fn pin_refused(&self) -> bool {
+        self.pin_refused.get()
+    }
+
+    /// In key mode, confirm the peer's key before any of its bytes are used. `true` when there is
+    /// nothing to confirm or the key matched.
+    fn pin_confirmed(&self) -> bool {
+        let Some(pin) = self.unconfirmed_pin.borrow().clone() else {
+            return true;
+        };
+        if keypin::confirm(self.easy.get(), &pin) {
+            *self.unconfirmed_pin.borrow_mut() = None;
+            return true;
+        }
+        self.pin_refused.set(true);
+        self.end(StreamEnd::Transport(RequestFailure {
+            cause: RequestError::Transport,
+            status: None,
+            body_limit: None,
+            curl_rc: Some(keypin::PIN_MISMATCH as i32),
+            verify: None,
+        }));
+        false
+    }
+
+    /// Turn the progress meter on and hand libcurl the callback that polls [`Self::poll_abort`]:
+    /// the XFERINFO one from libcurl 7.32 (or when the version is unknown), else the older
+    /// PROGRESS one. `false`, with [`StreamEnd::Unsupported`] recorded, when this libcurl takes
+    /// neither. Every call goes through the already-bound `curl_easy_setopt_*`: no new symbol.
+    fn install_abort_poll(&self, easy: *mut CURL) -> bool {
+        let data = (self as *const StreamSink<'_>) as *const c_void;
+        let version = curl_version_num();
+        let mut installed = false;
+        unsafe {
+            if curl_easy_setopt_long(easy, CURLOPT_NOPROGRESS, 0 as c_long) == 0 {
+                if (version == 0 || version >= CURL_XFERINFO_MIN_VERSION)
+                    && curl_easy_setopt_ptr(easy, CURLOPT_XFERINFOFUNCTION, stream_xferinfo_cb as *const c_void) == 0
+                {
+                    installed = curl_easy_setopt_ptr(easy, CURLOPT_XFERINFODATA, data) == 0;
+                }
+                if !installed
+                    && curl_easy_setopt_ptr(easy, CURLOPT_PROGRESSFUNCTION, stream_progress_cb as *const c_void) == 0
+                {
+                    installed = curl_easy_setopt_ptr(easy, CURLOPT_XFERINFODATA, data) == 0;
+                }
+            }
+        }
+        if !installed {
+            self.end(StreamEnd::Unsupported);
+            static REPORTED: AtomicBool = AtomicBool::new(false);
+            if !REPORTED.swap(true, Ordering::Relaxed) {
+                plx_base::eventlog::log(&format!(
+                    "net: this libcurl ({version:#08x}) takes neither CURLOPT_XFERINFOFUNCTION nor CURLOPT_PROGRESSFUNCTION — no streaming reads"
+                ));
+            }
+        }
+        installed
+    }
+
+    /// Ask libcurl to abort now? `true` records why.
+    fn poll_abort(&self) -> bool {
+        if self.ended.get().is_some() {
+            return true;
+        }
+        if self.cancel.load(Ordering::Acquire) {
+            self.end(StreamEnd::Cancelled);
+            return true;
+        }
+        if self.last_byte.get().elapsed() > self.idle {
+            self.end(StreamEnd::Idle);
+            return true;
+        }
+        false
+    }
+
+    /// One body segment from libcurl. `false` aborts the transfer (curl rc 23), with the reason
+    /// recorded when it is ours.
+    fn write(&self, bytes: &[u8]) -> bool {
+        if self.poll_abort() || !self.pin_confirmed() {
+            return false;
+        }
+        if !self.status_checked.get() {
+            // The status line is parsed before the first body byte, so this is the earliest place
+            // that can refuse a non-2xx answer before the consumer sees any of it.
+            let mut code: c_long = 0;
+            let rc = unsafe {
+                curl_easy_getinfo_long(self.easy.get(), CURLINFO_RESPONSE_CODE, &mut code as *mut c_long)
+            };
+            if rc != 0 || !(200..300).contains(&code) {
+                self.end(StreamEnd::Status(u16::try_from(code).unwrap_or(0)));
+                return false;
+            }
+            self.status_checked.set(true);
+        }
+        self.last_byte.set(std::time::Instant::now());
+        self.mark_body();
+        let Ok(mut on_bytes) = self.on_bytes.try_borrow_mut() else {
+            self.end(StreamEnd::Consumer);
+            return false;
+        };
+        // A panic must not unwind into libcurl's C frames.
+        let keep = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (*on_bytes)(bytes))).unwrap_or(false);
+        if !keep {
+            self.end(StreamEnd::Consumer);
+        }
+        keep
+    }
+}
+
+/// libcurl `CURLOPT_WRITEFUNCTION` for a stream: forward received bytes to the consumer.
+extern "C" fn stream_write_cb(ptr: *mut c_char, size: usize, nmemb: usize, userdata: *mut c_void) -> usize {
+    let n = size.saturating_mul(nmemb);
+    if userdata.is_null() || ptr.is_null() {
+        return 0;
+    }
+    let sink = unsafe { &*(userdata as *const StreamSink<'_>) };
+    let slice = unsafe { std::slice::from_raw_parts(ptr as *const u8, n) };
+    if sink.write(slice) {
+        n
+    } else {
+        0
+    }
+}
+
+/// libcurl `CURLOPT_XFERINFOFUNCTION`: non-zero aborts the transfer (curl rc 42). `curl_off_t` is
+/// 64-bit on every target, including the 32-bit television. libcurl calls it about once a second
+/// while idle, which bounds a cancel's latency.
+extern "C" fn stream_xferinfo_cb(clientp: *mut c_void, _dltotal: i64, _dlnow: i64, _ultotal: i64, _ulnow: i64) -> c_int {
+    if clientp.is_null() {
+        return 1;
+    }
+    let sink = unsafe { &*(clientp as *const StreamSink<'_>) };
+    c_int::from(sink.poll_abort())
+}
+
+/// libcurl `CURLOPT_PROGRESSFUNCTION`, the pre-7.32 spelling: `double` arguments.
+extern "C" fn stream_progress_cb(clientp: *mut c_void, _dltotal: f64, _dlnow: f64, _ultotal: f64, _ulnow: f64) -> c_int {
+    if clientp.is_null() {
+        return 1;
+    }
+    let sink = unsafe { &*(clientp as *const StreamSink<'_>) };
+    c_int::from(sink.poll_abort())
+}
+
+/// A streaming HTTPS `GET`: every body byte goes to `on_bytes` while the response is still open
+/// (a server-sent-event feed), until the server closes, `cancel` is set, nothing arrives for `idle`,
+/// or `on_bytes` returns `false`. It runs through [`request_tls_sink`], the one request function, so
+/// verification, the key-pin and roots rungs and the header checks are the ordinary ones; a rung
+/// re-sends the request only while no body byte has reached the consumer ([`StreamSink::may_retry`]).
+///
+/// * A non-2xx answer is [`StreamEnd::Status`], reported before `on_bytes` is called.
+/// * [`StreamEnd::Refused`] without dialling when libcurl is unbound or only serialised HTTPS is
+///   safe ([`threaded_tls_ready`]): a stream would hold the one fallback lock for its whole life.
+/// * Cancel and idle are noticed by libcurl's progress callback, which runs about once a second
+///   while no bytes arrive, so they take up to about a second; [`StreamEnd::Unsupported`] when this
+///   libcurl takes neither progress callback.
+/// * Blocking: call it off the frame thread, as every request here.
+///
+/// No new libcurl symbol: only option ids on the already-bound `curl_easy_setopt_*`.
+#[allow(clippy::too_many_arguments)]
+#[track_caller]
+pub fn stream_tls(
+    url: &str,
+    headers: &[String],
+    tls: Tls<'_>,
+    resolve: Option<&str>,
+    idle: std::time::Duration,
+    cancel: &AtomicBool,
+    on_bytes: &mut dyn FnMut(&[u8]) -> bool,
+) -> StreamEnd {
+    if !available() || !threaded_tls_ready() {
+        return StreamEnd::Refused;
+    }
+    if cancel.load(Ordering::Acquire) {
+        return StreamEnd::Cancelled;
+    }
+    let sink = StreamSink::new(on_bytes, cancel, idle);
+    let result = request_tls_sink(url, headers, "GET", None, STREAM, false, None, tls, resolve, false, &SinkMode::Stream(&sink));
+    if let Some(end) = sink.ended() {
+        return end;
+    }
+    match result {
+        Ok(resp) if resp.ok() => StreamEnd::Closed,
+        Ok(resp) => StreamEnd::Status(resp.status),
+        Err(failure) => StreamEnd::Transport(failure),
+    }
+}
+
 /// `resolve` is a ready-made `CURLOPT_RESOLVE` entry (`host:port:address`, see
 /// [`origin::ResolvePin::entry`]) for the URL's own host, or `None` to let the resolver
 /// answer. Every request whose origin carries a [`origin::ResolvePin`] passes one; plex.tv
@@ -1559,6 +1979,30 @@ fn request_tls_evidence(
     follow_redirects: bool, max_body: Option<usize>, tls: Tls<'_>, resolve: Option<&str>,
     learn_pin: bool,
 ) -> Result<Resp, RequestFailure> {
+    request_tls_sink(url, headers, verb, body, t, follow_redirects, max_body, tls, resolve, learn_pin, &SinkMode::Buffer)
+}
+
+/// Where a request's body goes: into the bounded in-memory [`BodySink`] a caller gets back as
+/// [`Resp::body`] (every request but one), or through a [`StreamSink`] to a consumer while the
+/// response is still open ([`stream_tls`]). It is a parameter of the ONE request function, not a
+/// second function, so the header checks, the handle setup, the key-pin and roots rungs and the
+/// failure naming are shared rather than copied.
+enum SinkMode<'s, 'a> {
+    Buffer,
+    Stream(&'s StreamSink<'a>),
+}
+
+#[allow(clippy::too_many_arguments)]
+#[track_caller]
+fn request_tls_sink(
+    url: &str, headers: &[String], verb: &str, body: Option<&[u8]>, t: Timeouts,
+    follow_redirects: bool, max_body: Option<usize>, tls: Tls<'_>, resolve: Option<&str>,
+    learn_pin: bool, sink_mode: &SinkMode<'_, '_>,
+) -> Result<Resp, RequestFailure> {
+    let stream = match sink_mode {
+        SinkMode::Buffer => None,
+        SinkMode::Stream(s) => Some(*s),
+    };
     // The one funnel every libcurl easy request passes (plex.tv account calls, PMS TLS control
     // calls via `request_result_evidence`). A frame-thread caller would freeze the HUD for up to
     // the request timeout: panic in host tests, abort under `threadcheck`.
@@ -1675,13 +2119,36 @@ fn request_tls_evidence(
             }
             let easy = Easy(h);
             curl_easy_setopt_ptr(easy.0, CURLOPT_URL, url_c.as_ptr() as *const c_void);
-            curl_easy_setopt_ptr(easy.0, CURLOPT_WRITEFUNCTION, write_cb as *const c_void);
+            // In stream mode `sink` stays empty: the body goes through `stream`'s callbacks instead.
             let mut sink = BodySink::new(max_body);
-            curl_easy_setopt_ptr(
-                easy.0,
-                CURLOPT_WRITEDATA,
-                (&mut sink as *mut BodySink) as *mut c_void,
-            );
+            match stream {
+                None => {
+                    curl_easy_setopt_ptr(easy.0, CURLOPT_WRITEFUNCTION, write_cb as *const c_void);
+                    curl_easy_setopt_ptr(
+                        easy.0,
+                        CURLOPT_WRITEDATA,
+                        (&mut sink as *mut BodySink) as *mut c_void,
+                    );
+                }
+                Some(stream) => {
+                    stream.begin_attempt(
+                        easy.0,
+                        match mode {
+                            keypin::Mode::Key { pin, .. } => Some(pin.as_str()),
+                            _ => None,
+                        },
+                    );
+                    curl_easy_setopt_ptr(easy.0, CURLOPT_WRITEFUNCTION, stream_write_cb as *const c_void);
+                    curl_easy_setopt_ptr(
+                        easy.0,
+                        CURLOPT_WRITEDATA,
+                        (stream as *const StreamSink<'_>) as *mut c_void,
+                    );
+                    if !stream.install_abort_poll(easy.0) {
+                        return Err(RequestError::Transport.into());
+                    }
+                }
+            }
             // No curl call in this module may escape HTTP(S). The public QR fetch is the only one that
             // follows redirects; it is capped, and an HTTPS start may never downgrade to plaintext.
             require_setopt!(
@@ -1871,6 +2338,11 @@ fn request_tls_evidence(
             // Key mode asked libcurl to enforce the pin; a second, independent look at the key the
             // peer really presented is cheap here and makes a backend that accepted the option and
             // never enforced it fail closed. Only a completed handshake has a key to look at.
+            if stream.is_some_and(StreamSink::pin_refused) {
+                // Refused inside the write callback, before the consumer saw a byte.
+                rc = keypin::PIN_MISMATCH;
+                code = 0;
+            }
             if let keypin::Mode::Key { pin, .. } = mode {
                 if (rc == 0 || (info_rc == 0 && code != 0)) && !keypin::confirm(easy.0, pin) {
                     rc = keypin::PIN_MISMATCH;
@@ -1894,7 +2366,10 @@ fn request_tls_evidence(
             // are the ones that mean something different from "the network is down". 60 and 51 are
             // explained by the verify result ([`tls_verify_why`]), not blamed on the CA store: a wrong
             // clock fails them too.
-            let why = (rc != 0 && !sink.overflowed).then(|| {
+            // A stream this layer ended itself (cancel, idle, consumer, a refusal status) is not a
+            // transport failure worth a line.
+            let ended_here = stream.is_some_and(|s| s.ended().is_some());
+            let why = (rc != 0 && !sink.overflowed && !ended_here).then(|| {
                 tls_failure_reason(easy.0, rc).unwrap_or_else(|| match rc {
                     35 => "TLS handshake failed (protocol too new for this firmware?)",
                     77 => "CA bundle could not be read",
@@ -1935,7 +2410,14 @@ fn request_tls_evidence(
             if matches!(mode, keypin::Mode::Roots { .. }) && keypin::is_roots_refusal(done.rc) {
                 keypin::roots_failed(key, done.rc, done.verify);
             }
-            if let Some(next) = keypin::after_failure(key, &mode, done.rc, done.verify, roots_tried) {
+            // A rung re-sends the request, so it may run only while no body byte has been handed to
+            // a stream's consumer: a stream that already delivered is never replayed from its start.
+            let rung = if stream.is_none_or(StreamSink::may_retry) {
+                keypin::after_failure(key, &mode, done.rc, done.verify, roots_tried)
+            } else {
+                None
+            };
+            if let Some(next) = rung {
                 match remaining_budget(t, started.elapsed()) {
                     Some(left) => {
                         budget = left;
@@ -1947,7 +2429,9 @@ fn request_tls_evidence(
                     // that led here did, inside the time the caller allowed.
                     None => break (done, mode),
                 }
-            } else if done.rc != 0 {
+            } else if done.rc != 0 && !stream.is_some_and(|s| s.ended().is_some()) {
+                // (A stream this layer ended itself — cancel, idle, consumer, status — failed by
+                // our own hand, which says nothing about the host.)
                 // No rung to retry in: what this failure says about the host is a fact the app can
                 // tell a viewer about (a date failure with no key), or ends one (anything else).
                 match &mode {
@@ -2000,7 +2484,7 @@ fn remaining_budget(t: Timeouts, elapsed: std::time::Duration) -> Option<Timeout
     (left >= 1).then(|| Timeouts { total_ms: left as c_long, ..t })
 }
 
-/// What one pass of [`request_tls_evidence`]'s attempt closure leaves behind. Plain data: the easy
+/// What one pass of [`request_tls_sink`]'s attempt closure leaves behind. Plain data: the easy
 /// handle and every list it referenced are gone by the time this exists.
 struct Attempt {
     rc: c_int,
@@ -3832,6 +4316,11 @@ pub(crate) mod user_agent_tests;
 #[cfg(test)]
 #[path = "net_wire_characterization_tests.rs"]
 mod wire_characterization_tests;
+
+/// The streaming read ([`stream_tls`]): chunk order, cancel and idle latency, rung retries, status.
+#[cfg(test)]
+#[path = "net_stream_tests.rs"]
+mod stream_tests;
 
 /// The latch's clock, through the `*_at` seam: it lapses after [`keypin::LATCH`] and a later key-mode
 /// success inside the interval does not slide it.
