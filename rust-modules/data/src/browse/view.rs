@@ -79,7 +79,8 @@ impl ListingSnapshot {
         self
     }
 
-    /// A requery's publication: the same section under a new query generation.
+    /// A QUERY EDIT's publication: the same section under a new `ListingId::query`. A membership
+    /// re-query does not move it (`BrowseState::requery_stale` bumps only the fetch generation).
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_query(mut self, query: u32) -> Self {
         if let Some(data) = &mut self.data {
