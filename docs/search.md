@@ -40,11 +40,12 @@ as "0 post-warmup samples", which is indistinguishable from a real regression.
 ### The pill goes LAST
 
 Search is always the LAST pill: `app/chrome.rs` builds the strip's faces as `Home`, the type pills,
-then `TabFace::Icon(Icon::Search)`, and `Pill::Search` resolves to that last index. Since 2026-09-05
-that position is the only thing about Search's pill that holds still, and nothing reads the last face
-as "the Search pill" any more: the strip's destinations are found by KEY (`widgets::TAB_KEY_SEARCH`,
-`STRIP_BASE + 3`, and `TAB_KEY_CHIP` at `+4`), and the library and search pages map a pressed key to
-its destination with those constants. The row is
+then `TabFace::Icon(Icon::Search)`. Nothing reads "the last face" as the Search pill: the strip's
+destinations are found by KEY (`widgets::TAB_KEY_SEARCH`, `STRIP_BASE + 3`, and `TAB_KEY_CHIP` at
+`+4`), `app/chrome.rs` builds the faces and the keys together from one `strip_keys` list, and
+`Pill::Search` resolves to wherever that key sits, so an icon pill inserted before it moves no
+other destination. The library and search pages map a pressed key to its destination with those
+constants. The row is
 `Home`, then one pill per type that has a FAVOURITE library, then Search: two to four stops, because
 `browse::tab_count()` now counts `tab_kinds()`, and a type whose last favourite is switched off
 draws no pill. Movies and TV Shows are still type destinations whose concrete owned/shared section

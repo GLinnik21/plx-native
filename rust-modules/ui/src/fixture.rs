@@ -1055,10 +1055,10 @@ impl FixtureRig {
         }
     }
 
-    pub fn seed_scrim_chrome_for_test(&mut self, name: &str, initial: &str, labels: &[&str], expand: f32) {
+    pub fn seed_scrim_chrome_for_test(&mut self, name: &str, initial: &str, faces: &[super::widgets::TabFace], expand: f32) {
         self.scrim_name = std::ffi::CString::new(name).unwrap();
         self.scrim_initial = std::ffi::CString::new(initial).unwrap();
-        self.scrim_labels = labels.iter().map(|s| super::widgets::TabFace::Label((*s).to_owned())).collect();
+        self.scrim_labels = faces.to_vec();
         self.scrim_expand = expand;
         self.scrim_chrome = true;
     }
