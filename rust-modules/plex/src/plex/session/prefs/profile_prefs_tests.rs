@@ -364,6 +364,41 @@ fn profile_choose_never_writes_the_legacy_key() {
     assert!(!ProfilePrefs { ..own.clone() }.is_empty());
 }
 
+/// **#741: a picked 50% is on disk and survives the default moving from 100% to 75%.** The pick is
+/// written as the profile's OWN value (`"half"`), so the build that reads it back, whichever
+/// default it carries, shows Half; and the write is also made for 100% (no longer the skipped
+/// default) so a chosen Full is not reinterpreted as the new 75% default.
+#[test]
+fn a_picked_hdr_rung_is_on_disk_and_survives_the_default_changing() {
+    let _g = plx_base::testlock::serial();
+    let session = TempSession::new("hdr-rung-on-disk");
+    let stamp = session.seated("kid", "account-token");
+    let w = ProfileWrite::capture().expect("a seated profile");
+    let seat = Seat::Seated { user: "kid".into(), stamp: stamp.clone() };
+
+    assert!(persist_profile_pref::<HdrOverlayBrightnessPref>(&w, HdrOverlayBrightness::Half));
+    // Read back from the file, as a relaunch does, not from the live cache.
+    let raw: Value = serde_json::from_str(&std::fs::read_to_string(session.path()).unwrap()).unwrap();
+    assert_eq!(raw["profile_prefs"][0]["prefs"]["hdr_overlay_brightness"], json!("half"));
+    assert_eq!(stored_effective::<HdrOverlayBrightnessPref>(&stored(), &seat), HdrOverlayBrightness::Half);
+
+    assert!(persist_profile_pref::<HdrOverlayBrightnessPref>(&w, HdrOverlayBrightness::Full));
+    let raw: Value = serde_json::from_str(&std::fs::read_to_string(session.path()).unwrap()).unwrap();
+    assert_eq!(raw["profile_prefs"][0]["prefs"]["hdr_overlay_brightness"], json!("full"), "Full is written, not skipped as the default");
+    assert_eq!(stored_effective::<HdrOverlayBrightnessPref>(&stored(), &seat), HdrOverlayBrightness::Full);
+
+    // A file an older build (default Full, key absent for a profile that never picked) wrote.
+    let old: Preferences = serde_json::from_value(json!({
+        "profile_prefs": [record("kid", STAMP, json!({ "hdr_overlay_brightness": "half" })), record("pal", STAMP, json!({}))]
+    })).unwrap();
+    let mut tv: Session = serde_json::from_value(json!({})).unwrap();
+    tv.prefs = old;
+    let kid = Seat::Seated { user: "kid".into(), stamp: STAMP.into() };
+    let pal = Seat::Seated { user: "pal".into(), stamp: STAMP.into() };
+    assert_eq!(stored_effective::<HdrOverlayBrightnessPref>(&tv, &kid), HdrOverlayBrightness::Half);
+    assert_eq!(stored_effective::<HdrOverlayBrightnessPref>(&tv, &pal), HdrOverlayBrightness::ThreeQuarters, "no own value: the new default");
+}
+
 /// An equal own value is no write (and is saved, nothing was refused); a different one is.
 #[test]
 fn an_unchanged_own_value_is_saved_without_a_write() {
