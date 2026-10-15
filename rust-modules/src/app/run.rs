@@ -1287,7 +1287,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             return;
         }
         if app.ptr.dpad_mode {
-            if app.ptr.mot_accum < 120.0 {
+            if app.ptr.mot_accum < super::input::DPAD_MOTION_GATE {
                 return;
             }
             app.ptr.dpad_mode = false;
@@ -1316,11 +1316,17 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     } else if et == SDL_MOUSEBUTTONDOWN {
         // OK on a set whose pointer the app can only make transparent: see `click_is_ok`. Pushed
         // as an OK key-down, so it reaches the focused control by the key path.
-        if super::input::click_is_ok(
+        let on_control = {
+            let (cx, cy) = ptr_xy(&app.ev);
+            app.pages.input.hit.top_at(cx, cy).is_some()
+        };
+        let as_ok = super::input::click_is_ok(
             app.ptr.dpad_mode,
-            app.ptr.cur_hidden,
+            app.ptr.mot_accum,
+            on_control,
             unsafe { super::boot::cursor_is_transparent() },
-        ) {
+        );
+        if as_ok {
             app.ptr.ok_from_click = true;
             super::events::remote_synth_key_edge(SDLK_RETURN, 0, true);
             return;

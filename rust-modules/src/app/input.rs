@@ -75,12 +75,22 @@ impl Pointer {
 /// 2026-10-15: Up, Right, Right, no OK key in the event log, and the player paused.) Where LG's
 /// call exists the system hides its own pointer and OK arrives as a key, so the click never comes.
 ///
-/// So while the D-pad owns focus and the pointer is hidden by the transparent cursor, a click that
-/// was not preceded by enough motion to leave D-pad mode is the OK key on the focused control.
-/// Motion past the gate still turns the pointer back on and makes the next click a real one.
-pub(crate) fn click_is_ok(dpad_mode: bool, cur_hidden: bool, transparent_cursor: bool) -> bool {
-    dpad_mode && cur_hidden && transparent_cursor
+/// So while the D-pad owns focus on a transparent-cursor set, a click is the OK key on the focused
+/// control when either the pointer has not travelled far enough to leave D-pad mode
+/// ([`DPAD_MOTION_GATE`]) or it lands on no control at all. **Not "while the pointer is
+/// hidden"**: pressing OK jiggles a Magic Remote, any motion at all shows the pointer again, and a
+/// fix keyed on `cur_hidden` never fired on the device. **Nor travel alone**: travel is summed
+/// since the last D-pad press, so a hand simply holding the remote drifts past any gate — measured
+/// 600 px between Up, Right, Right and OK over full-screen video, where the player never leaves
+/// D-pad mode, and the click paused the film under a lit `…` disc. A click that lands ON a control
+/// after real travel is still that control's.
+pub(crate) fn click_is_ok(dpad_mode: bool, motion_since_dpad: f32, on_control: bool, transparent_cursor: bool) -> bool {
+    dpad_mode && transparent_cursor && (motion_since_dpad < DPAD_MOTION_GATE || !on_control)
 }
+
+/// Pointer travel, in logical px accumulated since the last D-pad press, that hands focus back to
+/// the pointer: below it, motion is the hand holding the remote, not a deliberate move.
+pub(crate) const DPAD_MOTION_GATE: f32 = 120.0;
 
 // `home_activate` (the OK/pointer activation ladder for the legacy Home grid) was retired with
 // the legacy `ui::home` module when phase 8 made Home an owned `Screen` — its job (trail reset,
@@ -1638,19 +1648,21 @@ mod click_is_ok_tests {
     use super::click_is_ok;
 
     /// Issue #642's set: arrows hid the pointer by the transparent cursor, so OK arrives as a
-    /// click — it is the OK key. Anywhere else a click is a click: the pointer is in use
-    /// (`dpad_mode` false after motion, or shown), or LG's own hide made OK a real key already.
+    /// click — it is the OK key, including after the jiggle a press itself causes. Anywhere else a
+    /// click is a click: the pointer was moved on purpose (past the gate, or out of D-pad mode),
+    /// or LG's own hide made OK a real key already.
     #[test]
-    fn only_a_click_under_a_transparent_hidden_pointer_in_dpad_mode_is_ok() {
-        assert!(click_is_ok(true, true, true));
-        for (dpad, hidden, transparent) in [
-            (false, true, true),
-            (true, false, true),
-            (true, true, false),
-            (false, false, true),
-            (false, false, false),
+    fn a_click_in_dpad_mode_on_a_transparent_cursor_set_is_ok_unless_the_pointer_moved_onto_a_control() {
+        assert!(click_is_ok(true, 0.0, true, true));
+        assert!(click_is_ok(true, 6.0, true, true), "the jiggle of pressing OK is still OK");
+        assert!(click_is_ok(true, 600.0, false, true), "drift onto bare video is still OK");
+        for (dpad, motion, on_control, transparent) in [
+            (true, super::DPAD_MOTION_GATE, true, true),
+            (true, 500.0, true, true),
+            (false, 0.0, false, true),
+            (true, 0.0, false, false),
         ] {
-            assert!(!click_is_ok(dpad, hidden, transparent), "{dpad} {hidden} {transparent}");
+            assert!(!click_is_ok(dpad, motion, on_control, transparent), "{dpad} {motion} {on_control} {transparent}");
         }
     }
 }
