@@ -6,6 +6,13 @@
 #![allow(dead_code)]
 use plx_gfx::gfx::{delete_tex, upload_rgba};
 use plx_machine::machine::Measure;
+// The caption's look (face, pitch, wrap, lift, anchors) is one definition, media's `text_style`,
+// shared with the synthesized ASS header (plan `libass-text-subs` §2.5, PR 5a).
+pub use plx_media::player::text_style::CAPSULE_BOTTOM_Y;
+use plx_media::player::text_style::{
+    position_lift, size_scale, wrap_width, CAPTION_ANCHOR_LINES, CAPTION_FACE, CAPTION_FLOOR_Y,
+    CAPTION_LINE_PITCH, SUB_BASE_Y, SUB_CEIL_Y,
+};
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::theme;
 use plx_ui::widgets::{
@@ -159,9 +166,17 @@ pub fn draw_subtitle_message(text: &str, hud_up: bool, measure: &dyn Measure) {
 /// same direction, on top of that. The third value is the lowest y the block may reach — with the
 /// HUD up that is the transport's ceiling, so a block that grows down cannot run into the scrubber.
 fn caption_geometry(hud_up: bool) -> (f32, f32, f32) {
-    let scale = subtitle_size_scale(plx_media::route::subtitle_size());
-    let baseline = (if hud_up { SUB_CEIL_Y } else { SUB_BASE_Y })
-        - subtitle_position_lift(plx_media::route::subtitle_position());
+    caption_geometry_for(plx_media::route::subtitle_size(), plx_media::route::subtitle_position(), hud_up)
+}
+
+/// [`caption_geometry`] for explicit picks (the tie test pins it against `text_style::today_baseline`).
+fn caption_geometry_for(
+    size: plx_plex::plex::session::SubtitleSize,
+    position: plx_plex::plex::session::SubtitlePosition,
+    hud_up: bool,
+) -> (f32, f32, f32) {
+    let scale = size_scale(size);
+    let baseline = (if hud_up { SUB_CEIL_Y } else { SUB_BASE_Y }) - position_lift(position);
     let floor = if hud_up { SUB_CEIL_Y } else { CAPTION_FLOOR_Y };
     (scale, baseline, floor)
 }
@@ -302,13 +317,13 @@ impl CaptionPager {
     }
 }
 
-/// The caption's lines: each newline-separated segment word-wrapped to [`caption_wrap_width`],
+/// The caption's lines: each newline-separated segment word-wrapped to [`wrap_width`],
 /// measured by `measure` in the bold face it is drawn in. Every wrapped line is kept, so a long cue
 /// is never cut short; [`caption_layout`] fits the block.
 fn caption_wrap(text: &str, scale: f32, measure: &dyn Measure) -> Vec<String> {
     let face = (CAPTION_FACE * scale).round() as c_int;
     let measure = |s: &str| measure.width_str(s, face, true);
-    let width = caption_wrap_width(scale);
+    let width = wrap_width(scale);
     let mut lines: Vec<String> = Vec::new();
     for seg in text.split('\n') {
         let seg = seg.trim();
@@ -318,24 +333,6 @@ fn caption_wrap(text: &str, scale: f32, measure: &dyn Measure) -> Vec<String> {
         lines.extend(wrap_px(seg, width, &measure));
     }
     lines
-}
-
-/// The caption's face in px at scale 1 (the default Medium size), before [`subtitle_size_scale`].
-/// Subtitle caption: media chrome, a documented carve-out from `theme::size` (see HUD_TITLE_SZ).
-const CAPTION_FACE: f32 = 36.0;
-
-/// The widest a caption line runs at the base face: about 42 characters of bold caption text, the
-/// usual subtitle line length. It grows with the viewer's size, so a larger size draws the SAME
-/// lines bigger rather than more, shorter lines (an Extra large cue used to wrap at 28 characters
-/// and run to twice the lines), up to [`CAPTION_MAX_W`].
-const CAPTION_WRAP_W: f32 = 760.0;
-
-/// The widest a caption line ever runs, at any size: three quarters of the screen (owner's call).
-const CAPTION_MAX_W: f32 = SCR_W * 0.75;
-
-/// The pixel width a caption line wraps at for the viewer's size `scale`.
-fn caption_wrap_width(scale: f32) -> f32 {
-    (CAPTION_WRAP_W * scale).min(CAPTION_MAX_W)
 }
 
 /// Greedy word-wrap of `s` to `width` px as `measure` reports them. A word wider than `width` on
@@ -378,9 +375,6 @@ impl CaptionLayout {
 /// viewer's own size. The first step is that size, so a block that fits is drawn as it always was.
 const CAPTION_FIT_STEPS: [f32; 4] = [1.0, 0.875, 0.75, 0.625];
 
-/// The lowest y a caption block may reach with the transport down: the screen's bottom margin.
-const CAPTION_FLOOR_Y: f32 = SCR_H - plx_ui::consts::MARGIN_Y;
-
 /// Place one caption block of `lines` lines at the viewer's `scale`, its bottom on `baseline` for a
 /// block of up to [`CAPTION_ANCHOR_LINES`] lines. A taller block keeps that anchor's top and grows
 /// DOWN, so it moves away from the Timing capsule rather than up into it. If the block would pass
@@ -421,54 +415,6 @@ fn subtitle_ink_for(tone: plx_plex::plex::session::SubtitleTone) -> [f32; 4] {
         .copied()
         .unwrap_or(theme::SUBTITLE_INKS[0])
 }
-
-/// The face-size multiplier for the viewer's Settings > Playback pick, applied to the plain-text
-/// caption's [`CAPTION_FACE`] ([`draw_subtitle_message`]) and its line pitch and wrap width
-/// ([`caption_wrap_width`]) together, so a larger caption keeps its lines and never runs past the
-/// screen's side margins.
-fn subtitle_size_scale(size: plx_plex::plex::session::SubtitleSize) -> f32 {
-    use plx_plex::plex::session::SubtitleSize;
-    match size {
-        SubtitleSize::Small => 0.78,
-        SubtitleSize::Medium => 1.0,
-        SubtitleSize::Large => 1.25,
-        SubtitleSize::ExtraLarge => 1.5,
-    }
-}
-
-/// How far ABOVE [`SUB_BASE_Y`]/[`SUB_CEIL_Y`] the viewer's Position pick lifts the plain-text
-/// caption ([`draw_subtitle_message`]) — Low is the baseline every build before this preference
-/// drew, so it lifts nothing.
-fn subtitle_position_lift(position: plx_plex::plex::session::SubtitlePosition) -> f32 {
-    use plx_plex::plex::session::SubtitlePosition;
-    match position {
-        SubtitlePosition::Low => 0.0,
-        SubtitlePosition::Middle => 160.0,
-        SubtitlePosition::High => 320.0,
-    }
-}
-
-/// Subtitle baseline: where the caption block sits with the transport DOWN, and the ceiling it
-/// lifts to with the transport UP (clear of the scrubber, buttons and tabs). Both paths share
-/// them: text lifts by moving its baseline, images lift by however much they overhang the
-/// ceiling — otherwise a bottom-positioned PGS cue sits behind the scrim while the user seeks.
-const SUB_BASE_Y: f32 = SCR_H - 100.0;
-const SUB_CEIL_Y: f32 = SCR_H - 300.0;
-
-/// The caption line count the block is bottom-anchored at, and the reason the Timing capsule's y is
-/// fixed rather than following the caption block (`appkit::timing_capsule`, plan
-/// `subtitle-menu-capsule` §4): a live cue's line count changes frame to frame, and a capsule that
-/// tracked it would jump under a viewer's thumb mid-hold. A block taller than this keeps the
-/// anchor's top and grows down ([`caption_layout`]); it never has lines cut — one too tall for
-/// the area at the smallest size is shown a page at a time ([`CaptionPlan`]).
-const CAPTION_ANCHOR_LINES: usize = 3;
-/// The vertical pitch of one caption line in [`draw_subtitle_message`] at scale 1 — its
-/// [`CAPTION_FACE`] plus leading; it scales with the face.
-const CAPTION_LINE_PITCH: f32 = 48.0;
-/// The Timing capsule's bottom y — [`SUB_BASE_Y`] cleared by the tallest caption block that stays
-/// bottom-anchored ([`CAPTION_ANCHOR_LINES`] at [`CAPTION_LINE_PITCH`]). A taller block grows down
-/// from the same top, so the capsule never overlaps any caption.
-pub const CAPSULE_BOTTOM_Y: f32 = SUB_BASE_Y - CAPTION_ANCHOR_LINES as f32 * CAPTION_LINE_PITCH;
 
 /// Map a decoded image-subtitle rect from the stream's `cw`×`ch` authoring canvas onto the video
 /// rect — which is always the full panel here (the video track is authored 1920×1080; see the
@@ -3183,7 +3129,7 @@ mod tests {
     /// It must stay two lines, drawn at the full Extra large size, on one page.
     #[test]
     fn a_two_line_cue_at_extra_large_stays_two_lines_at_full_size() {
-        let xl = subtitle_size_scale(plx_plex::plex::session::SubtitleSize::ExtraLarge);
+        let xl = size_scale(plx_plex::plex::session::SubtitleSize::ExtraLarge);
         let cue = "I don't know why you came here tonight,\nbut you had better leave right now.";
         let lines = caption_wrap(cue, xl, &FM);
         assert_eq!(lines, ["I don't know why you came here tonight,", "but you had better leave right now."]);
@@ -3196,14 +3142,42 @@ mod tests {
     #[test]
     fn caption_lines_stay_inside_the_wrap_width() {
         use plx_plex::plex::session::SubtitleSize;
-        let widths: Vec<f32> = SubtitleSize::LADDER.iter().map(|&s| caption_wrap_width(subtitle_size_scale(s))).collect();
+        let widths: Vec<f32> = SubtitleSize::LADDER.iter().map(|&s| wrap_width(size_scale(s))).collect();
         assert_eq!(widths, [760.0 * 0.78, 760.0, 950.0, 1140.0]);
         assert!(widths.iter().all(|&w| w <= 1440.0), "{widths:?}");
-        assert_eq!(caption_wrap_width(10.0), 1440.0, "any size is capped at 75% of 1920");
+        assert_eq!(wrap_width(10.0), 1440.0, "any size is capped at 75% of 1920");
         let measure = |s: &str| s.chars().count() as f32 * 10.0;
         let lines = wrap_px("aa bbb cccc dd eeeeeeeeeeee f", 80.0, &measure);
         assert_eq!(lines, ["aa bbb", "cccc dd", "eeeeeeeeeeee", "f"]);
         assert!(lines.iter().all(|l| measure(l) <= 80.0 || !l.contains(' ')), "{lines:?}");
+    }
+
+    /// `text_style::today_baseline`/`today_layout` are a port of `caption_geometry`/`caption_layout`
+    /// with hard-coded constants (the synthesized ASS header is built from them); this pins that the
+    /// port and the code it replaces cannot drift: 3 positions x 4 sizes x HUD up/down, 1-3 lines.
+    #[test]
+    fn text_style_baseline_ties_to_caption_geometry_and_layout() {
+        use plx_media::player::text_style::{today_baseline, today_layout};
+        use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
+        assert_eq!(CAPTION_FLOOR_Y, SCR_H - plx_ui::consts::MARGIN_Y, "media hard-codes the screen margin");
+        assert_eq!((plx_media::player::text_style::SCR_W, plx_media::player::text_style::SCR_H), (SCR_W, SCR_H));
+        let mut n = 0;
+        for position in SubtitlePosition::LADDER {
+            for size in SubtitleSize::LADDER {
+                for hud_up in [false, true] {
+                    let (scale, baseline, floor) = caption_geometry_for(size, position, hud_up);
+                    let t = today_baseline(position, size_scale(size), hud_up);
+                    assert_eq!((t.scale, t.baseline, t.floor), (scale, baseline, floor), "{position:?} {size:?} up={hud_up}");
+                    for lines in 1..=CAPTION_ANCHOR_LINES {
+                        let lay = caption_layout(lines, scale, baseline, floor);
+                        let tl = today_layout(lines, scale, baseline);
+                        assert_eq!((tl.face, tl.pitch, tl.top), (lay.face, lay.pitch, lay.top), "{lines} lines");
+                    }
+                    n += 1;
+                }
+            }
+        }
+        assert_eq!(n, 24);
     }
 
     /// **A 1-3 line caption lays out exactly as it did before the fit rule**: 36 px at the

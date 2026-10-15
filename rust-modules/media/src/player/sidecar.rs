@@ -40,6 +40,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::text_ass::timing_line;
+
 /// One cue with its whole text. Production keeps a [`Span`] per cue and cuts the text out only
 /// when it is drawn; the tests read a file as whole cues through [`parse`].
 #[cfg(test)]
@@ -549,39 +551,6 @@ fn index_srt(text: &str) -> Vec<Span> {
     out
 }
 
-/// `00:01:02,500 --> 00:01:05,000` (SubRip), `01:02.500 --> 01:05.000 line:0` (WebVTT).
-fn timing_line(line: &str) -> Option<(i64, i64)> {
-    let (a, b) = line.split_once("-->")?;
-    let start = timestamp(a.trim())?;
-    let end = timestamp(b.split_whitespace().next()?)?;
-    Some((start, end))
-}
-
-/// `[H+:]MM:SS[,.]fff` → ns. The fraction is read as written (`.5` is half a second, `.50` too).
-fn timestamp(s: &str) -> Option<i64> {
-    let (clock, frac) = match s.rsplit_once([',', '.']) {
-        Some((c, f)) => (c, f),
-        None => (s, ""),
-    };
-    let mut secs: i64 = 0;
-    let mut fields = 0;
-    for part in clock.split(':') {
-        let v: i64 = part.trim().parse().ok().filter(|v| *v >= 0)?;
-        secs = secs.checked_mul(60)?.checked_add(v)?;
-        fields += 1;
-    }
-    if !(2..=3).contains(&fields) {
-        return None;
-    }
-    let mut frac_ns: i64 = 0;
-    let mut scale: i64 = 100_000_000;
-    for ch in frac.chars().take(9) {
-        frac_ns += ch.to_digit(10)? as i64 * scale;
-        scale /= 10;
-    }
-    secs.checked_mul(1_000_000_000)?.checked_add(frac_ns)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -898,17 +867,6 @@ mod tests {
         assert_eq!(at(601 * S), Some("c"));
         assert_eq!(at(S + S / 2), Some("a"), "…and back again after a backward seek");
         assert_eq!(at(3 * S), Some("b"), "an end time is exclusive");
-    }
-
-    #[test]
-    fn timestamps_accept_both_separators_and_refuse_nonsense() {
-        assert_eq!(timestamp("00:00:01,000"), Some(S));
-        assert_eq!(timestamp("00:01.5"), Some(S + S / 2));
-        assert_eq!(timestamp("1:02:03.250"), Some(3723 * S + S / 4));
-        assert_eq!(timestamp("12"), None, "a bare counter line is not a time");
-        assert_eq!(timestamp("a:b:c"), None);
-        assert_eq!(timestamp("1:2:3:4"), None);
-        assert_eq!(timestamp("-1:00:00,000"), None);
     }
 
     /// Issue #266 I6: the route withholds the audio enhancement exactly when this restore would
