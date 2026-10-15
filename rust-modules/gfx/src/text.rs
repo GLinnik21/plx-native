@@ -27,7 +27,9 @@
 //! determines the texture — and the `ink_t`/`ink_b` cap-band machinery still measures one texture.
 //!
 //! **The chain, in order:** Inter (`appfont.ttf`) → the **bundled** `appfont-cjk.ttf` → the
-//! television's own `/usr/share/fonts/DroidSansFallback.ttf`. The bundled face is the guarantee,
+//! bundled monochrome emoji face `appfont-emoji.ttf` (see [`run_text`] for how its runs reach a
+//! renderer that cannot address a glyph above U+FFFF) → the television's own
+//! `/usr/share/fonts/DroidSansFallback.ttf`. The bundled face is the guarantee,
 //! because a submission is graded on whatever firmware the reviewer happens to have; the system
 //! face behind it is free insurance, measured present on webOS 4.10.0 (2026-08-23: 11172/11172
 //! Hangul, 20902 Han, Kana, and — see below — no Hebrew and no Arabic).
@@ -796,21 +798,29 @@ enum Link {
     /// releases; we have no images for them. This is precisely why link 2 is bundled rather than
     /// borrowed — this link is a bonus that may or may not exist, and the code treats it as such.
     Sys = 2,
+    /// The bundled `appfont-emoji.ttf` (monochrome Noto Emoji, `tools/cut-noto-emoji.py`): the
+    /// emoji in library and item names. Monochrome because the television's SDL2_ttf draws
+    /// outlines into the alpha mask `fs_text.frag` tints, and has no colour-font support. Its
+    /// runs are rewritten by [`run_text`] before SDL_ttf sees them.
+    Emoji = 3,
 }
-const CHAIN: [Link; 3] = [Link::Base, Link::Cjk, Link::Sys];
+const CHAIN: [Link; 4] = [Link::Base, Link::Cjk, Link::Emoji, Link::Sys];
 
 /// The bundled fallback face, cut by `tools/cut-noto-cjk.py` and staged beside the binary.
 const CJK_FONT: &str = "appfont-cjk.ttf";
+/// The bundled emoji face, cut by `tools/cut-noto-emoji.py` and staged beside the binary.
+const EMOJI_FONT: &str = "appfont-emoji.ttf";
 /// The television's pan-CJK fallback. Distinct from [`DROIDSANS`], which is the *Latin* face and a
 /// defect path: reaching this one is normal and expected on a Korean library.
 const DROIDSANS_FALLBACK: &str = "/usr/share/fonts/DroidSansFallback.ttf";
 
 static mut FONTS_CJK: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
 static mut FONTS_SYS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
+static mut FONTS_EMOJI: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
 /// Per-link coverage, read from the file's cmap on FIRST NEED and never again. `None` after
 /// `COV_TRIED` means the file is absent or unreadable, i.e. the link is empty.
-static mut COV: [Option<plx_base::fontcov::Coverage>; 3] = [None, None, None];
-static mut COV_TRIED: [bool; 3] = [false; 3];
+static mut COV: [Option<plx_base::fontcov::Coverage>; 4] = [None, None, None, None];
+static mut COV_TRIED: [bool; 4] = [false; 4];
 
 /// The ONE place a link's file is named — both the coverage read and the `TTF_OpenFont` go
 /// through it, so the two can never disagree about which file a link is.
@@ -821,6 +831,7 @@ fn link_file(link: Link) -> std::path::PathBuf {
         // `make check` — the gate is not decoration here, it is what makes one read enough.
         Link::Base => plx_base::paths::in_app_dir("appfont.ttf"),
         Link::Cjk => plx_base::paths::in_app_dir(CJK_FONT),
+        Link::Emoji => plx_base::paths::in_app_dir(EMOJI_FONT),
         Link::Sys => std::path::PathBuf::from(DROIDSANS_FALLBACK),
     }
 }
@@ -882,6 +893,7 @@ unsafe fn link_font(link: Link, sz: c_int, bold: c_int) -> *mut TtfFont {
     let sz = sz.clamp(8, FONT_SLOTS as c_int - 1) as usize;
     let arr = match link {
         Link::Cjk => &mut *addr_of_mut!(FONTS_CJK),
+        Link::Emoji => &mut *addr_of_mut!(FONTS_EMOJI),
         _ => &mut *addr_of_mut!(FONTS_SYS),
     };
     if arr[sz].is_null() {
@@ -966,6 +978,43 @@ fn split_runs_with(s: &str, covers: impl Fn(Link, u32) -> bool) -> Option<Runs> 
     Some(runs)
 }
 
+/// The text SDL_ttf is handed for one run. Unchanged for every link but [`Link::Emoji`], whose
+/// run is rewritten for a renderer with no shaper and 16-bit glyph keys (SDL2_ttf 2.0.x):
+///
+/// * an astral emoji becomes its mirror at U+E000 + rank (`tools/cut-noto-emoji.py`), since the
+///   television's SDL2_ttf cannot reach a glyph above U+FFFF;
+/// * the invisible joiners of emoji sequences are dropped: the variation selectors U+FE0E/U+FE0F,
+///   the zero-width joiner U+200D, the skin-tone modifiers U+1F3FB..U+1F3FF and the tag
+///   characters. Without a shaper a sequence cannot become one glyph, so 👨‍👩‍👧 draws as its parts
+///   and a toned 👍🏽 as the plain 👍, which beats a swatch or a box between them.
+///
+/// Can return an empty string (a run of nothing but joiners), which the callers skip.
+fn run_text(link: Link, s: &str, rank: impl Fn(u32) -> Option<u32>) -> std::borrow::Cow<'_, str> {
+    if link != Link::Emoji {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    s.chars()
+        .filter(|&ch| !is_emoji_joiner(ch as u32))
+        .map(|ch| match rank(ch as u32) {
+            Some(r) => char::from_u32(0xE000 + r).unwrap_or(ch),
+            None => ch,
+        })
+        .collect::<String>()
+        .into()
+}
+
+fn is_emoji_joiner(cp: u32) -> bool {
+    matches!(cp, 0xFE0E | 0xFE0F | 0x200D | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F)
+}
+
+/// [`run_text`] against the emoji face's own cmap.
+unsafe fn run_text_live(link: Link, s: &str) -> std::borrow::Cow<'_, str> {
+    run_text(link, s, |cp| match &(*addr_of!(COV))[Link::Emoji as usize] {
+        Some(c) => c.astral_rank(cp),
+        None => None,
+    })
+}
+
 /// vertical ink bounds of a packed RGBA buffer — the same scan [`surface_ink_v`] does, over a
 /// buffer we own rather than an SDL surface.
 fn buf_ink_v(px: &[u8], w: c_int, h: c_int) -> (c_int, c_int) {
@@ -1023,7 +1072,11 @@ unsafe fn render_runs(
         // A link whose face will not open is not fatal: fall back to the base face, which draws
         // the run's .notdef boxes — the pre-chain result for that run only.
         let f = if f.is_null() { base } else { f };
-        let Ok(c) = CString::new(&s[from..to]) else {
+        let text = run_text_live(link, &s[from..to]);
+        if text.is_empty() {
+            continue;
+        }
+        let Ok(c) = CString::new(text.as_bytes()) else {
             free_all(&parts);
             return None;
         };
@@ -1428,7 +1481,11 @@ fn measure_native_bounds(s: &CStr, sz: c_int, bold: c_int) -> ((f32, f32), bool)
             for &(link, from, to) in &runs.at[..runs.n] {
                 let f = link_font(link, sz, bold);
                 let f = if f.is_null() { font_at(sz, bold) } else { f };
-                let Ok(c) = CString::new(&st[from..to]) else {
+                let text = run_text_live(link, &st[from..to]);
+                if text.is_empty() {
+                    continue;
+                }
+                let Ok(c) = CString::new(text.as_bytes()) else {
                     complete = false;
                     continue;
                 };
@@ -2105,12 +2162,53 @@ mod tests {
     /// The real shipped cmaps, parsed once for the whole test binary (see `fontcov::shipped`).
     /// `Link::Sys` is `None` on purpose: the television's DroidSansFallback does not exist on a
     /// build host, so this is also the "the chain is SHORT" configuration under test.
-    fn chain() -> [Option<&'static fontcov::Coverage>; 3] {
+    fn chain() -> [Option<&'static fontcov::Coverage>; 4] {
         [
             fontcov::shipped("appfont.ttf").as_ref().ok(),
             fontcov::shipped("appfont-cjk.ttf").as_ref().ok(),
             None,
+            fontcov::shipped("appfont-emoji.ttf").as_ref().ok(),
         ]
+    }
+
+    /// A run as SDL_ttf will receive it, against the shipped emoji cmap.
+    fn drawn(link: Link, s: &str) -> String {
+        let emoji = fontcov::shipped("appfont-emoji.ttf").as_ref().expect("emoji face");
+        run_text(link, s, |cp| emoji.astral_rank(cp)).into_owned()
+    }
+
+    /// The owner's case: kids' libraries told apart by an emoji. Those were a box beside the name.
+    #[test]
+    fn a_library_name_with_an_emoji_splits_onto_the_emoji_face() {
+        assert_eq!(
+            runs_of("Movies \u{1F9F8}"),
+            vec![(Link::Base, "Movies "), (Link::Emoji, "\u{1F9F8}")]
+        );
+        assert_eq!(
+            runs_of("\u{1F3AC} Filmes"),
+            vec![(Link::Emoji, "\u{1F3AC}"), (Link::Base, " Filmes")]
+        );
+    }
+
+    /// The television's SDL2_ttf cannot reach a glyph above U+FFFF, so every emoji it is handed
+    /// must be in the BMP, and must be the mirror of the emoji asked for.
+    #[test]
+    fn an_emoji_run_reaches_sdl_ttf_in_the_bmp_as_the_same_glyph() {
+        let emoji = fontcov::shipped("appfont-emoji.ttf").as_ref().expect("emoji face");
+        for s in ["\u{1F9F8}", "\u{1F476}\u{1F9D2}", "\u{1F3AC}\u{FE0F}", "\u{2B50}"] {
+            let out = drawn(Link::Emoji, s);
+            assert!(!out.is_empty(), "{s:?} drew nothing");
+            for ch in out.chars() {
+                assert!((ch as u32) <= 0xFFFF, "{s:?} hands SDL_ttf U+{:X}", ch as u32);
+                assert!(emoji.contains(ch as u32), "{s:?}: the face has no U+{:X}", ch as u32);
+            }
+        }
+        // a family sequence draws its members, a toned thumb the plain one, with no joiner left
+        assert_eq!(drawn(Link::Emoji, "\u{1F44D}\u{1F3FD}"), drawn(Link::Emoji, "\u{1F44D}"));
+        assert_eq!(drawn(Link::Emoji, "\u{1F468}\u{200D}\u{1F469}").chars().count(), 2);
+        assert_eq!(drawn(Link::Emoji, "\u{FE0F}"), "");
+        // every other link is handed its text untouched
+        assert_eq!(drawn(Link::Cjk, "君の名は"), "君の名は");
     }
 
     fn split(s: &str) -> Option<Runs> {

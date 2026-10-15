@@ -243,6 +243,22 @@ added (family and full name "PlxSubs" and "Inter", under non-English language ID
 selects them as fallbacks. The recipe is `tools/cut-noto-subs.py`; the manifest
 `fonts/subs/manifest.json` records every input and output hash.
 
+**Noto Emoji** — `appfont-emoji.ttf`
+Copyright 2013-2026 Google LLC, per the font's own name table. Version 3.006, the monochrome Noto
+Emoji, taken from the `@fontsource/noto-emoji` npm package version 5.3.2 (file
+`files/noto-emoji-emoji-400-normal.woff`, the static weight-400 build).
+Licence: **SIL Open Font License 1.1**, the same text that ships in this package as `OFL.txt`.
+The font declares **no Reserved Font Name**, so the family name "Noto Emoji" is retained.
+*Modified*: converted from WOFF to TrueType; the `GSUB`, `vhea`, `vmtx` and `STAT` tables removed
+(SDL2_ttf 2.0.x performs no shaping and no vertical layout); every codepoint above U+FFFF given a
+second cmap entry in the Private Use Area (U+E000 onward) pointing at the same glyph, because
+SDL2_ttf before 2.0.18 cannot address a glyph above U+FFFF; and the OFL licence description added
+to the name table (ID 13). **No codepoint was removed.** The recipe is `tools/cut-noto-emoji.py`,
+which pins the input by sha256.
+
+*Why it ships:* it is the emoji link of the application's font fallback chain, so an emoji in a
+library or title name draws instead of an empty box.
+
 ### 2.4 Rust code statically linked into `plxnative`
 
 The application core is Rust. The Rust standard library is compiled from source
