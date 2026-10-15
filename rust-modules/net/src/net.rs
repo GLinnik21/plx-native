@@ -1695,6 +1695,13 @@ struct StreamSink<'a> {
     got_body: std::cell::Cell<bool>,
     /// Whether the status line has been judged yet (at the first body byte).
     status_checked: std::cell::Cell<bool>,
+    /// The key pin this attempt was told to enforce ([`keypin::Mode::Key`]) and has not yet
+    /// confirmed. Key mode lowers `VERIFYPEER`, so before the first byte reaches the consumer the
+    /// peer's key is checked here, independently of libcurl's own enforcement
+    /// ([`keypin::confirm`]); an unreadable certificate chain fails closed.
+    unconfirmed_pin: std::cell::RefCell<Option<String>>,
+    /// Set when that check refused: the attempt's `CURLcode` is then [`keypin::PIN_MISMATCH`].
+    pin_refused: std::cell::Cell<bool>,
     /// Why this layer ended the transfer itself, if it did.
     ended: std::cell::Cell<Option<StreamEnd>>,
     /// The attempt's easy handle, for `CURLINFO_RESPONSE_CODE` inside the write callback.
@@ -1710,6 +1717,8 @@ impl<'a> StreamSink<'a> {
             last_byte: std::cell::Cell::new(std::time::Instant::now()),
             got_body: std::cell::Cell::new(false),
             status_checked: std::cell::Cell::new(false),
+            unconfirmed_pin: std::cell::RefCell::new(None),
+            pin_refused: std::cell::Cell::new(false),
             ended: std::cell::Cell::new(None),
             easy: std::cell::Cell::new(ptr::null_mut()),
         }
@@ -1735,10 +1744,38 @@ impl<'a> StreamSink<'a> {
         }
     }
 
-    fn begin_attempt(&self, easy: *mut CURL) {
+    /// `key_pin` is the pin of a key-mode attempt, `None` for a fully verified one.
+    fn begin_attempt(&self, easy: *mut CURL, key_pin: Option<&str>) {
         self.easy.set(easy);
         self.last_byte.set(std::time::Instant::now());
         self.status_checked.set(false);
+        *self.unconfirmed_pin.borrow_mut() = key_pin.map(str::to_owned);
+        self.pin_refused.set(false);
+    }
+
+    fn pin_refused(&self) -> bool {
+        self.pin_refused.get()
+    }
+
+    /// In key mode, confirm the peer's key before any of its bytes are used. `true` when there is
+    /// nothing to confirm or the key matched.
+    fn pin_confirmed(&self) -> bool {
+        let Some(pin) = self.unconfirmed_pin.borrow().clone() else {
+            return true;
+        };
+        if keypin::confirm(self.easy.get(), &pin) {
+            *self.unconfirmed_pin.borrow_mut() = None;
+            return true;
+        }
+        self.pin_refused.set(true);
+        self.end(StreamEnd::Transport(RequestFailure {
+            cause: RequestError::Transport,
+            status: None,
+            body_limit: None,
+            curl_rc: Some(keypin::PIN_MISMATCH as i32),
+            verify: None,
+        }));
+        false
     }
 
     /// Turn the progress meter on and hand libcurl the callback that polls [`Self::poll_abort`]:
@@ -1794,7 +1831,7 @@ impl<'a> StreamSink<'a> {
     /// One body segment from libcurl. `false` aborts the transfer (curl rc 23), with the reason
     /// recorded when it is ours.
     fn write(&self, bytes: &[u8]) -> bool {
-        if self.poll_abort() {
+        if self.poll_abort() || !self.pin_confirmed() {
             return false;
         }
         if !self.status_checked.get() {
@@ -2094,7 +2131,13 @@ fn request_tls_sink(
                     );
                 }
                 Some(stream) => {
-                    stream.begin_attempt(easy.0);
+                    stream.begin_attempt(
+                        easy.0,
+                        match mode {
+                            keypin::Mode::Key { pin, .. } => Some(pin.as_str()),
+                            _ => None,
+                        },
+                    );
                     curl_easy_setopt_ptr(easy.0, CURLOPT_WRITEFUNCTION, stream_write_cb as *const c_void);
                     curl_easy_setopt_ptr(
                         easy.0,
@@ -2295,6 +2338,11 @@ fn request_tls_sink(
             // Key mode asked libcurl to enforce the pin; a second, independent look at the key the
             // peer really presented is cheap here and makes a backend that accepted the option and
             // never enforced it fail closed. Only a completed handshake has a key to look at.
+            if stream.is_some_and(StreamSink::pin_refused) {
+                // Refused inside the write callback, before the consumer saw a byte.
+                rc = keypin::PIN_MISMATCH;
+                code = 0;
+            }
             if let keypin::Mode::Key { pin, .. } = mode {
                 if (rc == 0 || (info_rc == 0 && code != 0)) && !keypin::confirm(easy.0, pin) {
                     rc = keypin::PIN_MISMATCH;
@@ -2381,7 +2429,9 @@ fn request_tls_sink(
                     // that led here did, inside the time the caller allowed.
                     None => break (done, mode),
                 }
-            } else if done.rc != 0 {
+            } else if done.rc != 0 && !stream.is_some_and(|s| s.ended().is_some()) {
+                // (A stream this layer ended itself — cancel, idle, consumer, status — failed by
+                // our own hand, which says nothing about the host.)
                 // No rung to retry in: what this failure says about the host is a fact the app can
                 // tell a viewer about (a date failure with no key), or ends one (anything else).
                 match &mode {
@@ -2434,7 +2484,7 @@ fn remaining_budget(t: Timeouts, elapsed: std::time::Duration) -> Option<Timeout
     (left >= 1).then(|| Timeouts { total_ms: left as c_long, ..t })
 }
 
-/// What one pass of [`request_tls_evidence`]'s attempt closure leaves behind. Plain data: the easy
+/// What one pass of [`request_tls_sink`]'s attempt closure leaves behind. Plain data: the easy
 /// handle and every list it referenced are gone by the time this exists.
 struct Attempt {
     rc: c_int,

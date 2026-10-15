@@ -1239,7 +1239,10 @@ impl Checkpoint for CancelIdle<'_> {
             return Flow::Stop;
         }
         let now = Instant::now();
-        let idle_at = self.last.checked_add(self.idle).unwrap_or(now);
+        // An idle bound too large to represent as an instant is no bound at all.
+        let Some(idle_at) = self.last.checked_add(self.idle) else {
+            return Flow::Continue { next_check: Some(now + STREAM_CHECK_SLICE) };
+        };
         if now >= idle_at {
             self.why = Some(crate::net::StreamEnd::Idle);
             return Flow::Stop;
@@ -1296,7 +1299,9 @@ pub fn http_stream_plain(
                         break StreamEnd::Consumer;
                     }
                 } else if n == 0 {
-                    break StreamEnd::Closed;
+                    // A 0 is a finished body only when the framing says so: a chunked stream the
+                    // peer dropped between chunks also reads 0, and is an abort.
+                    break if http_body_done(&*hs) { StreamEnd::Closed } else { transport() };
                 } else if n == HTTP_READ_STOPPED {
                     break gate.why.unwrap_or(StreamEnd::Cancelled);
                 } else {

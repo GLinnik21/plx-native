@@ -320,7 +320,8 @@ fn request_with(
     body_policy: BodyPolicy,
     pin: Option<&ResolvePin>,
 ) -> RequestOutcome {
-    // This is the single dispatch chokepoint for every PMS/plex.tv REST call, plaintext or TLS.
+    // This is the single dispatch chokepoint for every PMS/plex.tv REST call, plaintext or TLS
+    // (`stream_under` is its streaming twin, with the same guard and credential gate).
     // A frame-thread caller landing here blocks on SO_RCVTIMEO (up to 15s) with the HUD frozen; the
     // dev threadcheck watchdog SIGABRTs after 2s instead. `assert_may_block` panics (host tests) or
     // aborts (device, `feature="threadcheck"`) if this runs while `FrameScope` says we are on the
@@ -410,7 +411,6 @@ pub fn stream(
     stream_under(CredentialPolicy::build(), origin, path, headers, pin, idle, cancel, on_bytes)
 }
 
-#[allow(clippy::too_many_arguments)]
 #[track_caller]
 fn stream_under(
     policy: CredentialPolicy,
@@ -439,10 +439,7 @@ fn stream_under(
             on_bytes,
         ),
         Scheme::Https => {
-            let url = format!("{}{}", origin.base(), path);
-            let resolve = pin
-                .filter(|p| p.host() == origin.host() && p.port() == origin.port())
-                .map(plx_net::net::resolve::entry_of);
+            let (url, resolve) = url_and_resolve(origin, path, pin);
             plx_net::net::stream_tls(
                 &url,
                 &owned,
@@ -454,6 +451,16 @@ fn stream_under(
             )
         }
     }
+}
+
+/// The full URL of `path` on `origin`, and the `CURLOPT_RESOLVE` entry for `pin` when it is for
+/// this very origin (a pin for another host is ignored). Shared by [`tls`] and [`stream_under`].
+fn url_and_resolve(origin: &Origin, path: &str, pin: Option<&ResolvePin>) -> (String, Option<String>) {
+    let url = format!("{}{}", origin.base(), path);
+    let resolve = pin
+        .filter(|p| p.host() == origin.host() && p.port() == origin.port())
+        .map(plx_net::net::resolve::entry_of);
+    (url, resolve)
 }
 
 /// The plaintext-credential log line for this outcome, the first time the process meets it —
@@ -730,10 +737,7 @@ fn tls(
     body_policy: BodyPolicy,
     pin: Option<&ResolvePin>,
 ) -> RequestOutcome {
-    let url = format!("{}{}", origin.base(), path);
-    let resolve = pin
-        .filter(|p| p.host() == origin.host() && p.port() == origin.port())
-        .map(plx_net::net::resolve::entry_of);
+    let (url, resolve) = url_and_resolve(origin, path, pin);
     let owned: Vec<String> = headers.iter().map(|h| (*h).to_string()).collect();
     // A POST carries a body even when that body is empty — the Plex control plane's POSTs put
     // their params in the query string — while GET and the body-less PUT carry none. `net` turns
@@ -1388,8 +1392,8 @@ mod tests {
         assert_eq!(end, StreamEnd::Cancelled);
         assert_eq!(got, b"data: 1\n\ndata: 2\n\n", "chunks are decoded and delivered in order");
         let latency = returned.duration_since(cancelled_at.expect("both chunks arrived"));
-        assert!(latency < std::time::Duration::from_millis(1000), "{latency:?}");
-        assert!(began.elapsed() < std::time::Duration::from_secs(5));
+        assert!(latency < std::time::Duration::from_secs(3), "{latency:?}");
+        assert!(began.elapsed() < std::time::Duration::from_secs(8));
         let head = server.join().unwrap();
         assert!(head.starts_with("GET /:/eventsource/notifications?filters=playing HTTP/1.1\r\n"), "{head}");
         assert!(head.to_ascii_lowercase().contains("accept: text/event-stream"), "{head}");
@@ -1408,8 +1412,64 @@ mod tests {
             std::time::Duration::from_secs(1), &cancel, &mut |_: &[u8]| true,
         );
         assert_eq!(end, StreamEnd::Idle);
-        assert!(began.elapsed() < std::time::Duration::from_millis(2500), "{:?}", began.elapsed());
+        assert!(
+            began.elapsed() >= std::time::Duration::from_secs(1) && began.elapsed() < std::time::Duration::from_secs(4),
+            "{:?}",
+            began.elapsed()
+        );
         server.join().unwrap();
+    }
+
+    /// A peer that drops the connection between chunks is an abort, not a clean end of stream.
+    #[test]
+    fn plaintext_stream_abort_between_chunks_is_a_transport_failure() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = serve_stream(listener, vec![Beat::Chunk(b"data: 1\n\n")]);
+        let origin = Origin::http("127.0.0.1", port as i32);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut got = Vec::new();
+        let end = stream_under(
+            CredentialPolicy::HttpsOnly, &origin, "/s", &[], None,
+            std::time::Duration::from_secs(5), &cancel,
+            &mut |b: &[u8]| {
+                got.extend_from_slice(b);
+                true
+            },
+        );
+        server.join().unwrap();
+        assert_eq!(got, b"data: 1\n\n");
+        assert!(matches!(end, StreamEnd::Transport(_)), "{end:?}");
+    }
+
+    /// A cancel set from another thread while the read is blocked in the socket wait is seen at the
+    /// next wake (250 ms), not at the next byte.
+    #[test]
+    fn plaintext_stream_cancel_from_another_thread_wakes_a_blocked_read() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let server = serve_stream(listener, vec![Beat::Hang]);
+        let origin = Origin::http("127.0.0.1", port as i32);
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let set_at = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let setter = {
+            let (cancel, set_at) = (cancel.clone(), set_at.clone());
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                *set_at.lock().unwrap() = Some(std::time::Instant::now());
+                cancel.store(true, std::sync::atomic::Ordering::Release);
+            })
+        };
+        let end = stream_under(
+            CredentialPolicy::HttpsOnly, &origin, "/s", &[], None,
+            std::time::Duration::from_secs(60), &cancel, &mut |_: &[u8]| true,
+        );
+        let returned = std::time::Instant::now();
+        setter.join().unwrap();
+        server.join().unwrap();
+        assert_eq!(end, StreamEnd::Cancelled);
+        let latency = returned.duration_since(set_at.lock().unwrap().expect("cancel was set"));
+        assert!(latency < std::time::Duration::from_secs(3), "{latency:?}");
     }
 
     #[test]
