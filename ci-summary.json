@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T13:59:02Z",
+ "generated": "2026-10-15T14:01:15Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -53,9 +53,9 @@
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 252,
+   "n_now": 253,
    "n_prev": 216,
-   "now": 463.0,
+   "now": 463,
    "prev7": 597.5,
    "shown": true,
    "state": "flat",
