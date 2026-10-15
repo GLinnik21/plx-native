@@ -2212,7 +2212,7 @@ impl BucketTex {
 /// Like [`upload_rgba`], for content that changes size often (libass subtitle frames): the
 /// texture is allocated at the image size rounded up to [`UPLOAD_BUCKET`], and a later image that
 /// fits is copied in with `glTexSubImage2D` rather than re-specifying the texture (assup max
-/// 4.3 ms on the PR 7a TV run, #730, srt-rapid at 1080p; max 3.9 ms at rapid-4k60 in the earlier
+/// 4.3 ms on the TV run of #730, srt-rapid at 1080p; max 3.9 ms at rapid-4k60 in the earlier
 /// probe). Only a first or a larger image allocates. After every image a transparent 1-px guard
 /// column and row are written just outside it, so stale ink from a previous larger image is never
 /// sampled by the linear filter at the used edge; draw `[0, uv_max()]` exactly. Every non-empty
@@ -2262,13 +2262,17 @@ pub fn upload_rgba_bucketed(prev: BucketTex, w: c_int, h: c_int, pixels: *const 
             GL_UNSIGNED_BYTE,
             pixels as *const c_void,
         );
-        let zeros = vec![0u8; t.alloc_w.max(t.alloc_h) as usize * 4];
-        let zp = zeros.as_ptr() as *const c_void;
-        if w < t.alloc_w {
-            glTexSubImage2D(GL_TEXTURE_2D, 0, w, 0, 1, (h + 1).min(t.alloc_h), GL_RGBA, GL_UNSIGNED_BYTE, zp);
-        }
-        if h < t.alloc_h {
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, h, (w + 1).min(t.alloc_w), 1, GL_RGBA, GL_UNSIGNED_BYTE, zp);
+        // The guard strips are one pixel wide: a zero line as long as the longer side feeds both,
+        // and an exact-fit image (no strip) allocates nothing.
+        if w < t.alloc_w || h < t.alloc_h {
+            let zeros = vec![0u8; t.alloc_w.max(t.alloc_h) as usize * 4];
+            let zp = zeros.as_ptr() as *const c_void;
+            if w < t.alloc_w {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, w, 0, 1, (h + 1).min(t.alloc_h), GL_RGBA, GL_UNSIGNED_BYTE, zp);
+            }
+            if h < t.alloc_h {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, h, (w + 1).min(t.alloc_w), 1, GL_RGBA, GL_UNSIGNED_BYTE, zp);
+            }
         }
     }
     t
