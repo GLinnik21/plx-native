@@ -34,6 +34,9 @@ pub mod collections;
 /// Agent-backed subtitle search & download. `docs/pms-api.md` §8 is the verified contract; the
 /// bundled OpenAPI spec is wrong about this endpoint and must not be read as authority for it.
 pub mod subtitles;
+/// The PMS server-sent-event notification feed: the SSE parser, the lenient `playing` models and
+/// the one-connection client. `docs/pms-api.md` §9; the data layer decides when to connect.
+pub mod notify;
 /// The one client-side hub-title override rule (issue #12): shared by Home's whole-catalog merge
 /// (`crate::pms`) and a library's own `/hubs/sections/{id}` shelves (`crate::browse::section_hubs`)
 /// so neither reimplements or drifts from the other's id table.

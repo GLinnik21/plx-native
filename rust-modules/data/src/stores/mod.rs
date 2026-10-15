@@ -49,6 +49,7 @@ mod content_arg;
 pub use content_arg::ContentArg;
 pub mod hubs;
 pub mod metadata;
+pub mod notify;
 pub mod person;
 pub mod collection;
 pub(crate) mod deck;
@@ -77,6 +78,9 @@ pub struct Stores {
     pub viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
     /// The read-back of landed view-state writes. Appended after ViewState's other owners.
     pub reconcile: viewreconcile::ViewReconcileStore,
+    /// The PMS notification feed's owner. Ships off (`notify::NOTIFY_ENABLED`); no `StoreId`, no
+    /// `StoreCmd`: the application pumps it and tells it the lifecycle (`Bridge::notify_*`).
+    pub notify: notify::NotifyStore,
     /// The publish order of view-state edits (`crate::viewledger`): `viewstate` records into it, and
     /// every store that reads stamps a read from it and re-patches the read when it lands. A store
     /// replaced after construction takes it as an argument (`HubsStore::from_parts`).
@@ -101,6 +105,7 @@ impl Default for Stores {
             subtitle_search: subsearch::SubSearchStore::default(),
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
             reconcile: viewreconcile::ViewReconcileStore::default(),
+            notify: notify::NotifyStore::default(),
             view_ledger: Default::default(),
             network_held: false,
         };
@@ -210,6 +215,7 @@ impl Stores {
     ) -> bool {
         if matches!(cmd, viewstate::ViewStateCmd::Reset) {
             self.reconcile.reset();
+            self.notify.reset();
         }
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
@@ -249,6 +255,12 @@ impl Stores {
             &mut |cmd| search.run_with_directory(cmd, directory),
             &mut |cmd| metadata.run(cmd),
         )
+    }
+
+    /// The notification feed's per-frame pass. It stands down while the landing gate is armed (a
+    /// recording, a replay or a dump owns the run), and never reads the registry's tokens.
+    pub fn notify_pump(&mut self) -> notify::NotifyOut {
+        self.notify.pump(self.landgate.is_armed())
     }
 
     /// Hold (`true`) or release the view-state reconcile network work; see [`Stores::network_held`].

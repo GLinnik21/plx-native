@@ -864,6 +864,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // Outside the player guard below on purpose: this is the OS taking the screen from
         // whatever is on it, not a fact about playback.
         super::bridge::background(&mut app.pages);
+        // The notification feed is a live socket the OS will not keep: cancel it at the first edge
+        // that says the screen is going (idempotent on the second), reopened by DID foreground.
+        app.bridge.notify_suspend();
         // Revoke our borrowed SDL proxies before another frame can use them while backgrounded.
         // SDL owns their lifetime; foreground must query its current window again.
         release_borrowed_window(plx_platform::tv::window::release);
@@ -948,6 +951,10 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // lost one is queued for a fresh discovery (requested by the upgrade retry's frame
             // step) that re-proves eligibility before minting again (`plex::grant`).
             plx_plex::plex::grant::network_changed();
+            // …and the same doubt applies to the notification feed's open sockets: drop them, let
+            // the feed connect again (a backoff is forgiven), and owe the screens a re-read.
+            app.bridge.notify_network_changed();
+            app.bridge.notify_resume();
             // Reacquire only on DID foreground, before playback restoration and rendering.
             restore_window(app.win);
             plx_machine::idle::invalidate();
@@ -2343,6 +2350,10 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // every route for the same reason (a refused write is put right here, not by a refetch).
         let endpoints = app.bridge.reconcile_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
+        // The PMS notification feed (ships off: opens nothing while `NOTIFY_ENABLED` is false).
+        // Route-unconditional like its neighbours; its output is only logged until the event
+        // mapping lands, and it never touches the stop queue or the playback Offset.
+        app.bridge.notify_pump();
         // A server on a plaintext grant keeps trying HTTPS (`plex::grant::UpgradeRetry`): its
         // endpoint re-discovery races every HTTPS route first and retires the grant when one
         // verifies. Route-unconditional — the upgrade is owed whatever is on screen.

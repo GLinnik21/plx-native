@@ -376,6 +376,14 @@ a dead source is **absent** from Home and states itself in its own library secti
 
 ## Gotchas that bite (all verified in code)
 
+- **`notify.rs` is the PMS server-sent-event feed, and it is not a playback signal.** It parses
+  `/:/eventsource/notifications?filters=playing` (`docs/pms-api.md` §9: the parameter is `filters`,
+  the spec's `filter` is wrong) into lenient `Notification`s over `http::stream`, dropping this
+  device's own sessions at the source, and never mints a client id (`client_id` is the persisted
+  one; a new id raises a new-device alert). Its policy lives in `plx_data::stores::notify`: shipped
+  OFF, owned servers only. Nothing here may call a stop, an end-of-stream candidate or an Offset
+  publish: a stranger's `stopped` session would otherwise scrobble our other servers.
+
 - **A hub's `title` is PMS's own localized text — except for the standard hubs, which this app
   now overrides client-side at BOTH scopes it draws hubs on.** `hubs.rs`/`models.rs`'s
   `Hub::title` still carries whatever PMS sent, but neither `screens/home/mod.rs` nor a library's

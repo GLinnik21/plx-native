@@ -1248,6 +1248,36 @@ impl Bridge {
         Default::default()
     }
 
+    /// The PMS notification feed's per-frame pass (`stores::notify`). Ships off: with
+    /// `NOTIFY_ENABLED` false it opens nothing. What it produces is only counted into the event
+    /// log here (server slots and counts, never a session, key or identifier); the event mapping
+    /// that acts on it is a later change, and notifications never reach the stop queue or Offset.
+    pub(crate) fn notify_pump(&mut self) {
+        let out = self.stores.notify_pump();
+        for plays in &out.plays {
+            plx_base::eventlog::log(&format!("notify: sid={} sessions={}", plays.sid.raw(), plays.sessions.len()));
+        }
+        for (sid, epoch) in &out.resynced {
+            plx_base::eventlog::log(&format!("notify: sid={} resync epoch={epoch}", sid.raw()));
+        }
+    }
+
+    /// WILL background: the feed's connections are cancelled now and stay closed until resume.
+    pub(crate) fn notify_suspend(&mut self) {
+        self.stores.notify.suspend();
+    }
+
+    /// DID foreground: the feed may connect again, and a pending backoff is forgiven.
+    pub(crate) fn notify_resume(&mut self) {
+        self.stores.notify.resume();
+    }
+
+    /// The network may have changed under every open connection (the foreground edge, beside
+    /// `plex::grant::network_changed`): cancel them and reconnect.
+    pub(crate) fn notify_network_changed(&mut self) {
+        self.stores.notify.network_changed();
+    }
+
     /// The rows the read-back has landed since the last call (`Stores::take_landed_views`).
     pub(crate) fn take_landed_views(&mut self) -> Vec<(plx_plex::plex::ServerId, String)> {
         self.stores.take_landed_views()

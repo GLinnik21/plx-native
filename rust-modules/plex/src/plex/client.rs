@@ -57,7 +57,7 @@ pub(super) enum JsonStatusOutcome {
 /// here rather than in [`Client::playback_identity`]: it selects server-returned metadata for
 /// browse/search reads too, not only playback protocol calls. Owned strings keep the optional
 /// locale value alive while `crate::http` borrows the slice.
-fn pms_headers(headers: &[&str]) -> Vec<String> {
+pub(super) fn pms_headers(headers: &[&str]) -> Vec<String> {
     let mut out: Vec<String> = headers.iter().map(|h| (*h).to_string()).collect();
     if let Some(language) = super::identity::language() {
         out.push(format!("X-Plex-Language: {language}"));
@@ -402,6 +402,9 @@ impl Client {
     /// changes a logical result; a controlled replay must supply that result through ingress.
     pub fn disable_data_io(&self) { self.data_io_disabled.store(true, Relaxed); }
     pub fn denied_data_requests(&self) -> u32 { self.denied_data_requests.load(Relaxed) }
+    /// Has [`Client::disable_data_io`] been called? The pure read: unlike `may_send` it counts no
+    /// denied request, so a caller may ask as often as it likes.
+    pub fn data_io_disabled(&self) -> bool { self.data_io_disabled.load(Relaxed) }
     fn may_send(&self) -> bool {
         if !self.data_io_disabled.load(Relaxed) { return true; }
         self.denied_data_requests.fetch_add(1, Relaxed);
