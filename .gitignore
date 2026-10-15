@@ -102,15 +102,17 @@ pkg/.flavor/
 # tree in a machine-wide, flag-keyed cache (`$PLX_BUILD_CACHE`, default `~/.cache/plxnative`), so
 # a fresh worktree gets its own real prefix in about three seconds. The slashless form stays: it
 # costs nothing, and it is the pattern that was actually load-bearing when somebody did.
-# `vendor/ffmpeg-build` still holds one thing after that change — the pinned upstream TARBALL,
-# which stays in the checkout because `release.yml` publishes it as the LGPL corresponding source.
+# `vendor/ffmpeg-build` holds the in-checkout object tree when PLX_BUILD_CACHE is empty. The pinned
+# upstream TARBALL (which `release.yml` publishes as the LGPL corresponding source) is in
+# `vendor/downloads`, with every other archive `ci/deps.py` fetches from `ci/dependencies.json`.
 vendor/ffmpeg-build
+vendor/downloads
+# nanosvg is fetched, not vendored: `ci/deps.py stage nanosvg --into vendor/nanosvg`.
+vendor/nanosvg
 vendor/ffmpeg-prefix
-vendor/sentry-native-*.tar.gz
 vendor/sentry-native-src
 vendor/sentry-native-build
 vendor/sentry-native-prefix
-vendor/libass-sources
 vendor/libass-build
 vendor/libass-build-host
 vendor/libass-prefix

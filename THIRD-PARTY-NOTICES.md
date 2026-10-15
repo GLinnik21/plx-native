@@ -90,16 +90,16 @@ verbatim. The library is used unaltered.
 libass and HarfBuzz copyright notices are retained in their licence files above.
 
 The exact upstream archives, checksums and licences are recorded in
-`ci/libass-dependencies.json`. Each versioned PlxNative source release contains all
+`ci/dependencies.json`. Each versioned PlxNative source release contains all
 five archives, the facade (`src/ass.c`, `src/ass_fonts.c`, `src/ass_internal.h`,
 `include/ass.h`), its complete build recipe (`ci/build-libass.sh`, `ci/build-libass.py`) and the
 one local patch to libass. **libass carries that local patch; every other archive is unmodified.**
-`ci/libass-patches/0001-grow-font-faces.patch` replaces the fixed table of ten font faces that
+`ci/patches/libass-0001-grow-font-faces.patch` replaces the fixed table of ten font faces that
 libass keeps for each font (`ASS_FONT_MAX_FACES`) with arrays that grow on demand, so a subtitle
 track that uses many scripts is not cut off at the tenth face. It touches `libass/ass_font.c` and
 `libass/ass_font.h` only, is applied to the pinned, checksum-verified libass 0.17.5 release by
 `ci/build-libass.py` (which fails the build unless the files then match the digests pinned in
-`ci/libass-dependencies.json`), and is released under libass's own ISC licence.
+`ci/dependencies.json`), and is released under libass's own ISC licence.
 The library is built without system font providers or external font-library
 dependencies. FreeType's optional external compression/image libraries are disabled;
 HarfBuzz uses FreeType and its built-in Unicode data, without ICU or platform shapers.
@@ -141,11 +141,12 @@ for the NDK build used here.
 
 ## 2. Redistributed in this package
 
-### 2.1 Vendored C source, compiled into `plxnative`
+### 2.1 Pinned C source, fetched at build time and compiled into `plxnative`
 
 **nanosvg** and **nanosvgrast** — Copyright (c) 2013-14 Mikko Mononen <memon@inside.org>
-Licence: **Zlib** (`licenses/Zlib.txt`). The vendored headers are byte-identical to upstream
-(github.com/memononen/nanosvg); they are not altered.
+Licence: **Zlib** (`licenses/Zlib.txt`). The headers are not kept in this repository: `ci/dependencies.json` pins the upstream commit
+(github.com/memononen/nanosvg) and the sha256 of each file, `ci/deps.py` fetches and verifies them,
+and they are not altered.
 The upstream headers credit, and we reproduce, the following derivations:
 
 - The SVG parser is based on **Anti-Grain Geometry 2.4** SVG example — Copyright (C) 2002-2004
@@ -416,7 +417,7 @@ out-of-process `sentry-crash` handler is shipped beside it. The handler is built
 transport disabled: it writes a crash envelope for PlxNative's consent-aware sender to deliver on
 the next launch. The source is patched for webOS's glibc 2.12 syscall surface and the 32-bit ARM
 APCS frame layout; the pinned source hash and complete patch are in `ci/build-sentry-native.sh` and
-`vendor/sentry-native/webos-arm32.patch`.
+`ci/patches/sentry-native-0001-webos-arm32.patch`.
 
 **libunwind** (the copy vendored by Sentry Native) — Copyright (c) 2002 Hewlett-Packard Co.
 Licence: **MIT** (`licenses/MIT.txt`). It is statically linked into both the client and crash

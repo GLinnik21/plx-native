@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 
+import deps as deps_module
 from source_bundle import fail, safe_name, validate
 
 
@@ -78,18 +79,22 @@ def main():
         fail('isolated Rust compiler differs from bundled runtime revision')
     destination.mkdir(parents=True)
     extract_regular(args.archive, destination)
-    source_folders = [('ffmpeg', 'vendor/ffmpeg-build'), ('sentry-native', 'vendor')]
-    ass_pins = destination / 'ci/libass-dependencies.json'
-    if ass_pins.is_file():
-        source_folders += [(dep['id'], 'vendor/libass-sources')
-                           for dep in json.loads(ass_pins.read_text())]
-    for name, folder in source_folders:
-        source = destination / deps[name]['sources'][0]['path']
-        target = destination / folder / source.name
-        if target.exists():
-            fail('recipe source path already exists: ' + str(target.relative_to(destination)))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+    # The bundled upstream inputs go where the build looks for them: the download cache
+    # (`vendor/downloads`), under the names the manifest gives them. A build then finds each one
+    # present and verified, and fetches nothing.
+    pins = destination / 'ci/dependencies.json'
+    if pins.is_file():
+        for dep in json.loads(pins.read_text()):
+            if not dep.get('bundled'):
+                continue
+            by_name = {Path(entry['path']).name: entry for entry in deps[dep['id']]['sources']}
+            for asset in deps_module.assets_of(dep).values():
+                source = destination / by_name[asset['name']]['path']
+                target = destination / deps_module.cached_path(dep, asset, Path('vendor/downloads'))
+                if target.exists():
+                    fail('recipe source path already exists: ' + str(target.relative_to(destination)))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, target)
     crate_root = destination / 'rust-modules'
     extract_regular(destination / deps['cargo-vendor']['sources'][0]['path'], crate_root)
     config = crate_root / '.cargo/config.toml'

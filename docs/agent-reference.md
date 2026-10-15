@@ -1451,7 +1451,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   both) and the pointer-width stack reads that make the walk safe on a 32-bit target are now
   **upstream** (getsentry/sentry-native#2052 and #2053, contributed from this repo, merged
   2026-09-03/04, released in 0.16.6) — the patch beside the pin
-  (`vendor/sentry-native/webos-arm32.patch`) carries neither any more and is down to what upstream
+  (`ci/patches/sentry-native-0001-webos-arm32.patch`) carries neither any more and is down to what upstream
   still does not do: a `process_vm_readv` wrapper for glibc 2.12, the 32-frame cap for non-crashed
   threads, the 30 s handler budget, and two webOS-only escapes in the signal handler (no in-process
   libunwind, no SDK hooks — both reproduced a recursive SIGSEGV through `getenv`).

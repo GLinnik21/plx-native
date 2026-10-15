@@ -1,7 +1,7 @@
 // src/svg.c — runtime SVG rasterizer (nanosvg, vendored header-only, zlib licence).
 //
 // NOT public domain, which this line said until 2026-08-02. nanosvg is zlib-licensed,
-// Copyright (c) 2013-14 Mikko Mononen — see vendor/nanosvg/nanosvg.h. It is compiled INTO the
+// Copyright (c) 2013-14 Mikko Mononen — see the nanosvg.h that ci/deps.py fetches into vendor/nanosvg. It is compiled INTO the
 // shipped binary, so it is the one vendored C dependency that carries a real attribution
 // obligation, and a notices file generated from this comment would have omitted him entirely.
 //

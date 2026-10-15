@@ -845,12 +845,22 @@ FFMPEG_SONAMES = libavutil-plx.so.61 libavcodec-plx.so.63 libavformat-plx.so.63 
                  $(if $(RELEASE),,libswscale-plx.so.10)
 FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 
+# nanosvg is not in the repository. It is fetched at the commit pinned in ci/dependencies.json
+# (two header files, one sha256 each) into the gitignored vendor/nanosvg, which CFLAGS puts on the
+# include path. The host build does the same from rust-modules/build_support/host_link.rs.
+NANOSVG_STAMP = vendor/nanosvg/.staged
+$(NANOSVG_STAMP): ci/deps.py ci/dependencies.json
+	python3 ci/deps.py stage nanosvg --into vendor/nanosvg
+	@touch $@
+
+src/svg.o: $(NANOSVG_STAMP)
+
 # One pinned ASS renderer and font stack on every firmware. Only the plx_ass_* facade
 # is exported; FreeType/FriBidi/HarfBuzz are static and cannot bind to firmware copies.
 LIBASS_STAGED = pkg/libass-plx.so.0
-LIBASS_INPUTS = ci/build-libass.sh ci/build-libass.py ci/libass-dependencies.json \
+LIBASS_INPUTS = ci/build-libass.sh ci/build-libass.py ci/deps.py ci/dependencies.json \
                 ci/arm-cc.py ci/check-link-evidence.py ci/stage-link-evidence.py \
-                ci/libass-patches/0001-grow-font-faces.patch \
+                ci/patches/libass-0001-grow-font-faces.patch \
                 src/ass.c src/ass_fonts.c src/ass_internal.h src/ass_composite.h include/ass.h
 $(LIBASS_STAGED): $(LIBASS_INPUTS)
 	WEBOS_SDK=$(WEBOS_SDK) ./ci/build-libass.sh
@@ -867,7 +877,7 @@ SENTRY_UNWIND_LIB     = $(SENTRY_NATIVE_PREFIX)/lib/libunwind.a
 SENTRY_REMOTE_UNWIND_LIB = $(SENTRY_NATIVE_PREFIX)/lib/libunwind_remote.a
 SENTRY_HANDLER        = $(SENTRY_NATIVE_PREFIX)/bin/sentry-crash
 SENTRY_NATIVE_STAMP   = $(SENTRY_NATIVE_PREFIX)/.built
-SENTRY_NATIVE_INPUTS  = ci/arm-cc.py ci/check-link-evidence.py ci/stage-link-evidence.py ci/build-sentry-native.sh vendor/sentry-native/webos-arm32.patch
+SENTRY_NATIVE_INPUTS  = ci/arm-cc.py ci/check-link-evidence.py ci/stage-link-evidence.py ci/build-sentry-native.sh ci/deps.py ci/dependencies.json ci/patches/sentry-native-0001-webos-arm32.patch
 
 # `sentry_context.c` is the only application TU that includes the SDK header. Its Rust caller sees
 # plain C strings rather than sentry_value_t's opaque by-value union, whose AAPCS ABI must stay on
@@ -881,7 +891,7 @@ $(SENTRY_NATIVE_STAMP): $(SENTRY_NATIVE_INPUTS)
 
 sentry-native: $(SENTRY_NATIVE_STAMP)
 
-$(FFMPEG_INC)/libavformat/avformat.h: ci/build-ffmpeg.sh ci/arm-cc.py ci/check-link-evidence.py ci/stage-link-evidence.py
+$(FFMPEG_INC)/libavformat/avformat.h: ci/build-ffmpeg.sh ci/deps.py ci/dependencies.json ci/arm-cc.py ci/check-link-evidence.py ci/stage-link-evidence.py
 	RELEASE=$(RELEASE) ./ci/build-ffmpeg.sh
 
 # The real files carry a full version (libavutil-plx.so.58.29.100); ship them under the SONAME.
@@ -1003,9 +1013,11 @@ pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(SENTRY_NA
 
 # --- NDK bootstrap -----------------------------------------------------------
 # Download + extract + relocate the webosbrew native-toolchain into $(WEBOS_SDK).
-NDK_REL ?= webos-d7ed7ee.6
+# The release, the per-host asset URLs and their sha256 are declared once, in ci/dependencies.json
+# (entry `webos-ndk`); `ci/deps.py` downloads and verifies. Nothing here carries a literal copy.
+NDK_REL = $(shell python3 ci/deps.py get webos-ndk version)
 # Host-aware asset selection. webosbrew/native-toolchain publishes exactly THREE host builds for
-# this release — darwin-arm64, darwin-x86_64, linux-aarch64 — and NO linux-x86_64. That is why CI
+# the pinned release — darwin-arm64, darwin-x86_64, linux-aarch64 — and NO linux-x86_64. That is why CI
 # runs on `ubuntu-24.04-arm`: an x86_64 Linux runner cannot obtain this toolchain at all, and the
 # old hardcoded `darwin-$(uname -m)` name RESOLVED there (downloading a Mach-O toolchain that
 # passed the `test -x` guard below and died later with "Exec format error").
@@ -1018,13 +1030,8 @@ else ifeq ($(NDK_HOST),aarch64)
 else
   NDK_PLAT = UNSUPPORTED
 endif
-NDK_TARBALL = arm-webos-linux-gnueabi_sdk-buildroot_$(NDK_PLAT).tar.bz2
-NDK_URL = https://github.com/webosbrew/native-toolchain/releases/download/$(NDK_REL)/$(NDK_TARBALL)
-# sha256 of the linux-aarch64 tarball (the one CI fetches), verified 2026-08-01. Empty for the
-# darwin assets — `make setup-env` on a dev Mac keeps its existing no-checksum behaviour; CI is
-# where an unverified 156 MB download actually matters.
-NDK_SHA256_linux-aarch64 = 45a2d12ff557457d92cde4fddaa77a6f1090fca03adc43bb74397e5e0c379501
-NDK_SHA256 = $(NDK_SHA256_$(NDK_PLAT))
+# Every host's asset carries a pinned sha256 (assets.<NDK_PLAT>.sha256 of the manifest entry).
+NDK_DL = $(dir $(WEBOS_SDK))ndk-download
 # Fetch this checkout's DEV telemetry credentials from GitHub into the gitignored local file.
 #
 # **GitHub is the single source of truth for every credential**, including the dev ones; the working
@@ -1061,12 +1068,10 @@ setup-env:
 	  echo "Available: darwin-arm64, darwin-x86_64, linux-aarch64."; exit 1; }
 	@test -x $(CC) && { echo "NDK already present at $(WEBOS_SDK)"; exit 0; } || true
 	mkdir -p $(dir $(WEBOS_SDK))
-	curl -fL --retry 3 --retry-all-errors -o $(dir $(WEBOS_SDK))/ndk.tar.bz2 "$(NDK_URL)"
-	@test -z "$(NDK_SHA256)" || { \
-	  echo "$(NDK_SHA256)  $(dir $(WEBOS_SDK))/ndk.tar.bz2" | $(SHA256SUM) -c -; }
-	tar xjf $(dir $(WEBOS_SDK))/ndk.tar.bz2 -C $(dir $(WEBOS_SDK))
+	tarball=$$(python3 ci/deps.py fetch webos-ndk --asset $(NDK_PLAT) --into $(NDK_DL)) && \
+	  tar xjf "$$tarball" -C $(dir $(WEBOS_SDK))
 	cd $(WEBOS_SDK) && ./relocate-sdk.sh
-	rm -f $(dir $(WEBOS_SDK))/ndk.tar.bz2
+	rm -rf $(NDK_DL)
 	@echo "NDK ready: $$($(CC) --version | head -1)"
 
 # tmp+mv so deploy works while the old binary is still executing (ETXTBSY)
@@ -2090,7 +2095,7 @@ check-ass: $(LIBASS_HOST_STAGED)
 	cd rust-modules && CARGO_INCREMENTAL=0 PLXNATIVE_APP_DIR="$(CURDIR)/pkg" PATH="$$HOME/.cargo/bin:$$PATH" \
 	  cargo +$(RUST_NIGHTLY) test --lib -p plx_media player::ass::tests -- --include-ignored
 
-$(FFMPEG_HOST_INC)/libavformat/avformat.h: ci/build-ffmpeg.sh
+$(FFMPEG_HOST_INC)/libavformat/avformat.h: ci/build-ffmpeg.sh ci/deps.py ci/dependencies.json
 	HOST=1 ./ci/build-ffmpeg.sh
 
 $(FFMPEG_HOST_STAGED): pkg/%.dylib: $(FFMPEG_HOST_INC)/libavformat/avformat.h ci/stage-host-ffmpeg.sh

@@ -33,6 +33,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github/workflows"
+sys.path.insert(0, str(ROOT / "ci"))
+import deps  # noqa: E402
 
 
 def text(name):
@@ -278,7 +280,7 @@ class HostLibraryCaches(unittest.TestCase):
     LIBASS_JOBS = ("linux", "macos", "macos-host-tests")
     FFMPEG_WORK = "~/.cache/plxnative/ffmpeg"
     LIBASS_PREFIX = "vendor/libass-prefix-host"
-    LIBASS_SOURCES = "vendor/libass-sources"
+    DOWNLOADS = "vendor/downloads"
 
     def test_no_cache_stores_a_prefix_make_would_judge_by_mtime(self):
         # A restored prefix is OLDER than the checkout's script, so make re-runs the script. Cache
@@ -299,13 +301,14 @@ class HostLibraryCaches(unittest.TestCase):
         self.assertIn('CACHED_TAR="$CACHE_ROOT/ffmpeg/ffmpeg-$VERSION-', sh)
         py = (ROOT / "ci/build-libass.py").read_text()
         self.assertIn(f"ROOT / ('{self.LIBASS_PREFIX}' if host", py)
-        self.assertIn(f"sources = ROOT / '{self.LIBASS_SOURCES}'", py)
+        self.assertIn("sources = deps.cache_dir()", py)
+        self.assertEqual(deps.cache_dir(), ROOT / self.DOWNLOADS)
         self.assertIn("stamp = prefix / '.dependencies-key'", py)
         for job in self.MACOS_JOBS:
             cache_of(job, self.FFMPEG_WORK)
         for job in self.LIBASS_JOBS:
             cache_of(job, self.LIBASS_PREFIX)
-            cache_of(job, self.LIBASS_SOURCES)
+            self.assertIn("uses: ./.github/actions/deps-cache", job_body("simulators.yml", job), job)
 
     def test_the_ffmpeg_key_names_every_input_the_script_keys_on(self):
         sh = (ROOT / "ci/build-ffmpeg.sh").read_text()
@@ -314,7 +317,7 @@ class HostLibraryCaches(unittest.TestCase):
         self.assertEqual(inherited, {"ci/arm-cc.py", "ci/check-link-evidence.py"})
         for job in self.MACOS_JOBS:
             key = cache_of(job, self.FFMPEG_WORK)["key"]
-            self.assertEqual(hashed(key), {"ci/build-ffmpeg.sh", *inherited}, job)
+            self.assertEqual(hashed(key), {"ci/build-ffmpeg.sh", "ci/deps.py", "ci/dependencies.json", *inherited}, job)
             self.assertIn("runner.os", key)
             self.assertIn("runner.arch", key)
             # The compiler, SDK and build environment are inputs the script reads from the machine.
@@ -327,10 +330,11 @@ class HostLibraryCaches(unittest.TestCase):
         py = (ROOT / "ci/build-libass.py").read_text()
         # Everything build-libass.py folds into its own `.dependencies-key`, besides the toolchain.
         # The pinned patches are folded into the key too (their bytes), by the path the pins name.
-        pins = json.loads((ROOT / "ci/libass-dependencies.json").read_text())
-        patches = {patch["path"] for dep in pins for patch in dep.get("patches", [])}
+        pins = json.loads((ROOT / "ci/dependencies.json").read_text())
+        patches = {patch["path"] for dep in pins if dep.get("group") == "libass"
+                   for patch in dep.get("patches", [])}
         self.assertTrue(patches, "the font-face patch is pinned")
-        read = {"ci/build-libass.py", "ci/libass-dependencies.json", *patches,
+        read = {"ci/build-libass.py", "ci/dependencies.json", "ci/deps.py", *patches,
                 *re.findall(r"ROOT / '(ci/[\w.-]+)'\)\.read_bytes", py)}
         listed = set(makefile_list("LIBASS_INPUTS"))
         self.assertTrue(read <= listed, read - listed)
@@ -340,11 +344,6 @@ class HostLibraryCaches(unittest.TestCase):
             self.assertIn("runner.os", key)
             self.assertIn("runner.arch", key)
             self.assertIn("steps.toolchain.outputs.id", key)
-            # The tarballs are pinned by checksum, so their entry is shared by every OS and moves
-            # only with the pins; a facade edit must not re-save 25 MB of sources.
-            sources = cache_of(job, self.LIBASS_SOURCES)["key"]
-            self.assertEqual(hashed(sources), {"ci/libass-dependencies.json"}, job)
-            self.assertNotIn("runner.os", sources)
         self.assertEqual(len({cache_of(j, self.LIBASS_PREFIX)["key"] for j in self.LIBASS_JOBS}), 1)
 
     def test_the_simulator_path_filter_names_every_libass_input_but_the_cache_keys_files(self):
@@ -352,7 +351,7 @@ class HostLibraryCaches(unittest.TestCase):
         text = (ROOT / ".github/workflows/simulators.yml").read_text()
         filter_ = text[:text.index("\njobs:")]
         for path in makefile_list("LIBASS_INPUTS"):
-            if path.startswith(("src/", "include/", "ci/libass-", "ci/build-libass")):
+            if path.startswith(("src/", "include/", "ci/patches/libass-", "ci/build-libass")):
                 self.assertIn("'" + path + "'", filter_, path)
 
     def test_the_toolchain_is_identified_before_any_cache_is_restored(self):

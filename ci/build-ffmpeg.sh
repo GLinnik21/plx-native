@@ -60,9 +60,12 @@
 # `lib*-plx.so.*` glob cannot pick it up.
 set -eu
 
-VERSION=9.0
-SHA256=7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# The pin (version, upstream URL, sha256) is declared once, in ci/dependencies.json; nothing here
+# carries a literal copy of it. ci/deps.py is also what downloads and verifies the tarball.
+DEPS="$ROOT/ci/deps.py"
+VERSION=$(python3 "$DEPS" get ffmpeg version)
+SHA256=$(python3 "$DEPS" get ffmpeg sha256)
 NDK=${WEBOS_SDK:-$HOME/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot}
 SYSROOT="$NDK/arm-webos-linux-gnueabi/sysroot"
 HOST=${HOST:-}
@@ -93,7 +96,7 @@ HOST=${HOST:-}
 # to, because a runner is ephemeral and caches the prefix rather than the objects.
 #
 # The TARBALL is deliberately NOT in the cache. It is the LGPL corresponding source that
-# `release.yml` publishes beside each release (`ls vendor/ffmpeg-build/ffmpeg-*.tar.xz`), so it
+# `release.yml` publishes beside each release (`ls vendor/downloads/ffmpeg-*.tar.xz`), so it
 # belongs with the checkout, it is 10 MB, and both the cross and host builds now share the one
 # copy instead of downloading it twice.
 if [ -n "$HOST" ]; then
@@ -101,7 +104,7 @@ if [ -n "$HOST" ]; then
 else
   PREFIX="$ROOT/vendor/ffmpeg-prefix"
 fi
-TARDIR="$ROOT/vendor/ffmpeg-build"
+TARDIR=$(python3 "$DEPS" cache-dir)
 # `--prefix` is the LITERAL /plx, not $PREFIX, and the install is redirected with DESTDIR below.
 #
 # WHY: FFmpeg records its entire configure INVOCATION inside libavutil (`avutil_configuration()`),
@@ -386,7 +389,8 @@ ensure_tar() {
   if ! tarball_ok "$cand"; then
     rm -f "$cand"
     echo "ffmpeg: fetching $VERSION"
-    curl -fsSL "https://ffmpeg.org/releases/ffmpeg-$VERSION.tar.xz" -o "$cand"
+    python3 "$DEPS" fetch ffmpeg --into "$TARDIR" >/dev/null
+    cp "$TAR" "$cand"
   fi
   mv "$cand" "$TAR"
 }
