@@ -2680,6 +2680,8 @@ mod scrub_ownership_tests {
         use plx_ui::screen::DrawFrame;
         let _g = plx_base::testlock::serial();
         let _f = Fixture::new(false);
+        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Playing);
+        plx_media::player::TX.scrub_ns.store(-1, Relaxed);
         let elems = |page: &PlayerScreen| {
             let cx = cx();
             let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
@@ -2706,6 +2708,7 @@ mod scrub_ownership_tests {
         assert_eq!(elems(&page), vec![player_hud::ELEM_SCRUB], "still hidden in the 150 ms wait");
         step(&mut page, 2_300);
         assert_eq!(elems(&page), before, "back, and clickable again");
+        plx_media::player::restore_state_for_test(was);
     }
 
     /// **(c) The scrubber's stop is a SEEK target, and a drag previews across it.**
