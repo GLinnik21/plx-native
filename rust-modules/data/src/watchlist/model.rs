@@ -83,6 +83,149 @@ pub enum TileState {
 /// Derive a row's state. Pure; run at commit and when `facts_gen`/reachability moves.
 /// Membership in flight (the intent ledger) is NOT a tile state: the ledger flips the row set.
 pub fn tile_state(row: &WatchRow, table: &MatchTable, reach: &dyn Reach) -> TileState {
-    let _ = (row, table, reach);
-    unimplemented!("W2a")
+    let answers: &[(ServerId, Asked)] = table.by_guid.get(&row.guid).map_or(&[], |v| v.as_slice());
+    let held = || answers.iter().filter(|(_, a)| matches!(a, Asked::Held(_)));
+    if held().any(|(sid, _)| reach.reachable(*sid)) {
+        return if row.released { TileState::Available } else { TileState::ComingSoonMatched };
+    }
+    if held().next().is_some() {
+        // Matched earlier, every matching server is now Unreachable.
+        return TileState::ServerOffline;
+    }
+    if !row.released {
+        return TileState::ComingSoon;
+    }
+    // Released, no copy: "absent" only once every server on the roster has answered.
+    let roster = reach.roster();
+    let all_absent = !roster.is_empty()
+        && roster.iter().all(|sid| answers.iter().any(|(s, a)| s == sid && matches!(a, Asked::Absent)));
+    if all_absent {
+        TileState::NotOnAnyServer
+    } else {
+        TileState::Unknown
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    struct Stub {
+        up: RefCell<Vec<ServerId>>,
+        roster: Vec<ServerId>,
+    }
+    impl Reach for Stub {
+        fn reachable(&self, s: ServerId) -> bool {
+            self.up.borrow().contains(&s)
+        }
+        fn roster(&self) -> Vec<ServerId> {
+            self.roster.clone()
+        }
+    }
+
+    fn sid(n: usize) -> ServerId {
+        ServerId::from_raw(n as u16)
+    }
+
+    fn row(released: bool) -> WatchRow {
+        WatchRow {
+            guid: "plex://movie/aaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            hex: [0xaa; 12],
+            kind: Kind::Movie,
+            title: "T".into(),
+            title_sort: String::new(),
+            year: None,
+            added_at: None,
+            release: None,
+            rating: None,
+            released,
+            order: 0,
+        }
+    }
+
+    fn held(s: ServerId) -> (ServerId, Asked) {
+        (s, Asked::Held(ServerMatch { server_id: s, rating_key: 7 }))
+    }
+
+    fn table(r: &WatchRow, v: Vec<(ServerId, Asked)>) -> MatchTable {
+        let mut t = MatchTable::default();
+        t.by_guid.insert(r.guid.clone(), v);
+        t
+    }
+
+    fn stub(up: &[ServerId], roster: &[ServerId]) -> Stub {
+        Stub { up: RefCell::new(up.to_vec()), roster: roster.to_vec() }
+    }
+
+    #[test]
+    fn available_when_released_and_held_on_a_reachable_server() {
+        let s = sid(0);
+        let r = row(true);
+        assert_eq!(tile_state(&r, &table(&r, vec![held(s)]), &stub(&[s], &[s])), TileState::Available);
+    }
+
+    #[test]
+    fn coming_soon_unmatched_and_matched() {
+        let s = sid(0);
+        let r = row(false);
+        assert_eq!(tile_state(&r, &MatchTable::default(), &stub(&[s], &[s])), TileState::ComingSoon);
+        assert_eq!(
+            tile_state(&r, &table(&r, vec![(s, Asked::Absent)]), &stub(&[s], &[s])),
+            TileState::ComingSoon
+        );
+        assert_eq!(
+            tile_state(&r, &table(&r, vec![held(s)]), &stub(&[s], &[s])),
+            TileState::ComingSoonMatched
+        );
+    }
+
+    #[test]
+    fn not_on_any_server_needs_every_roster_server_to_answer_absent() {
+        let s = sid(0);
+        let r = row(true);
+        let t = table(&r, vec![(s, Asked::Absent)]);
+        assert_eq!(tile_state(&r, &t, &stub(&[s], &[s])), TileState::NotOnAnyServer);
+        // An empty roster has asked nobody: unknown, not absent.
+        assert_eq!(tile_state(&r, &t, &stub(&[], &[])), TileState::Unknown);
+    }
+
+    #[test]
+    fn unknown_when_no_match_and_a_server_is_silent() {
+        let s = sid(0);
+        let r = row(true);
+        assert_eq!(tile_state(&r, &MatchTable::default(), &stub(&[s], &[s])), TileState::Unknown);
+    }
+
+    #[test]
+    fn server_offline_when_every_matching_server_is_unreachable() {
+        let s = sid(0);
+        let r = row(true);
+        assert_eq!(tile_state(&r, &table(&r, vec![held(s)]), &stub(&[], &[s])), TileState::ServerOffline);
+    }
+
+    #[test]
+    fn one_reachable_copy_among_several_is_enough() {
+        let (a, b) = (sid(0), sid(1));
+        let r = row(true);
+        let t = table(&r, vec![held(a), (b, Asked::Absent)]);
+        assert_eq!(tile_state(&r, &t, &stub(&[a], &[a, b])), TileState::Available);
+        assert_eq!(tile_state(&r, &t, &stub(&[b], &[a, b])), TileState::ServerOffline);
+        // One server absent, the other silent: not yet "on no server".
+        let t = table(&r, vec![(a, Asked::Absent)]);
+        assert_eq!(tile_state(&r, &t, &stub(&[a, b], &[a, b])), TileState::Unknown);
+    }
+
+    #[test]
+    fn a_reachability_flip_rederives_without_touching_the_table() {
+        let s = sid(0);
+        let r = row(true);
+        let t = table(&r, vec![held(s)]);
+        let reach = stub(&[s], &[s]);
+        assert_eq!(tile_state(&r, &t, &reach), TileState::Available);
+        reach.up.borrow_mut().clear();
+        assert_eq!(tile_state(&r, &t, &reach), TileState::ServerOffline);
+        reach.up.borrow_mut().push(s);
+        assert_eq!(tile_state(&r, &t, &reach), TileState::Available);
+    }
 }
