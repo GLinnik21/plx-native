@@ -195,9 +195,8 @@ impl Conn {
     fn back_off(&mut self, frame: u64) {
         let secs = (BACKOFF_BASE_S << self.attempts.min(8)).min(BACKOFF_MAX_S);
         let frames = secs * FRAMES_PER_S;
-        // Up to a quarter more, picked by the frame count: servers that dropped together do not
-        // all knock again on the same frame.
-        // The server id is mixed in so two servers drained in the same pump still differ.
+        // Up to a quarter more, picked by the frame count with the server id mixed in: servers that
+        // dropped together, even in the same pump, do not all knock again on the same frame.
         let jitter = frame.wrapping_add(u64::from(self.sid.raw()).wrapping_mul(7919)) % (frames / 4).max(1);
         self.attempts = self.attempts.saturating_add(1);
         self.state = State::Backoff { until: frame + frames + jitter };
@@ -416,13 +415,16 @@ impl NotifyStore {
             return;
         }
         self.seen = marker;
-        {
-            let all: Vec<_> = plx_plex::plex::server_ids().collect();
-            let described = all.iter().filter(|&&s| plx_plex::plex::server_facts(s).is_some()).count();
-            let owned_n = all.iter().filter(|&&s| plx_plex::plex::server_facts(s).is_some_and(|f| f.owned)).count();
-            plx_base::eventlog::log(&format!("notify: roster servers={} described={described} owned={owned_n}", all.len()));
-        }
         let owned = |sid: ServerId| plx_plex::plex::server_facts(sid).is_some_and(|f| f.owned);
+        let (mut servers, mut described, mut owned_n) = (0, 0, 0);
+        for sid in plx_plex::plex::server_ids() {
+            servers += 1;
+            if let Some(facts) = plx_plex::plex::server_facts(sid) {
+                described += 1;
+                owned_n += usize::from(facts.owned);
+            }
+        }
+        plx_base::eventlog::log(&format!("notify: roster servers={servers} described={described} owned={owned_n}"));
         self.conns.retain_mut(|c| {
             let keep = owned(c.sid) && plx_plex::plex::client_for(c.sid).is_some();
             if !keep {

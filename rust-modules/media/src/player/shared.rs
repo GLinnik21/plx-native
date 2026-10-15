@@ -1261,21 +1261,17 @@ impl Shared {
     /// already inside the session; from here only UNLOADCOMPLETED is admitted. `false` when `epoch`
     /// does not own the `Active` phase (the caller then releases synchronously, as before).
     pub fn begin_native_release(&self, epoch: u32) -> bool {
-        let mut state = self
-            .native_session
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if !matches!(state.phase, NativeSessionPhase::Active { epoch: active, .. } if epoch != 0 && active == epoch)
-        {
-            return false;
-        }
-        state.phase = NativeSessionPhase::Releasing { epoch, unload_completed: false };
-        true
+        self.leave_active(epoch, NativeSessionPhase::Releasing { epoch, unload_completed: false })
     }
 
     /// Hand `epoch`'s still-in-flight Load to the abandoned-Load release (see
     /// [`NativeSessionPhase::Abandoned`]). `false` when `epoch` does not own the `Active` phase.
     pub fn abandon_native_session(&self, epoch: u32) -> bool {
+        self.leave_active(epoch, NativeSessionPhase::Abandoned { epoch })
+    }
+
+    /// Move `epoch`'s `Active` phase to `to`; `false` (nothing changed) when `epoch` does not own it.
+    fn leave_active(&self, epoch: u32, to: NativeSessionPhase) -> bool {
         let mut state = self
             .native_session
             .lock()
@@ -1284,7 +1280,7 @@ impl Shared {
         {
             return false;
         }
-        state.phase = NativeSessionPhase::Abandoned { epoch };
+        state.phase = to;
         true
     }
 

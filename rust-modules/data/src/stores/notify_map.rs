@@ -92,6 +92,12 @@ struct Owed {
     invalidate: Vec<ServerId>,
 }
 
+fn push_unique(servers: &mut Vec<ServerId>, sid: ServerId) {
+    if !servers.contains(&sid) {
+        servers.push(sid);
+    }
+}
+
 impl Owed {
     fn is_empty(&self) -> bool {
         self.reads.is_empty() && self.refetch.is_empty() && self.invalidate.is_empty()
@@ -103,14 +109,10 @@ impl Owed {
         }
     }
     fn refetch(&mut self, sid: ServerId) {
-        if !self.refetch.contains(&sid) {
-            self.refetch.push(sid);
-        }
+        push_unique(&mut self.refetch, sid);
     }
     fn invalidate(&mut self, sid: ServerId) {
-        if !self.invalidate.contains(&sid) {
-            self.invalidate.push(sid);
-        }
+        push_unique(&mut self.invalidate, sid);
     }
 }
 
@@ -221,9 +223,7 @@ impl Stores {
                     // The loaded Detail also shows episodes (read the owing way: the page cannot be
                     // patched from their facts) and related tiles (patched, so read quiet).
                     let view = self.metadata.view();
-                    for (s, k) in view.held_episodes(*sid, rk) {
-                        details.push((s, k));
-                    }
+                    details.extend(view.held_episodes(*sid, rk));
                     add(view.held_tiles(*sid, rk));
                 }
                 ContentArg::Person { .. } | ContentArg::Filmography { .. } => add(self.person.held_keys(page)),

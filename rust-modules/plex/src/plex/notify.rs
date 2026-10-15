@@ -269,10 +269,6 @@ impl Client {
         self.token.read().is_ok_and(|t| !t.is_empty())
     }
 
-    /// One connection to the notification feed, run to its end on the calling worker.
-    /// `on` receives each [`Notification`] as it arrives, pings included and own sessions already
-    /// dropped. Refused up front, without a socket, when the token is blank or data I/O is off.
-    #[track_caller]
     /// May this server's token ride its origin RIGHT NOW (TLS, a developer build, or a live
     /// consented grant)? The pure read of the gate `http::stream` applies, asked before a dial so a
     /// refused origin is not connected to at all (a foreground clears every plaintext grant until
@@ -281,6 +277,10 @@ impl Client {
         crate::plex::grant::credential_allowed(&self.origin)
     }
 
+    /// One connection to the notification feed, run to its end on the calling worker.
+    /// `on` receives each [`Notification`] as it arrives, pings included and own sessions already
+    /// dropped. Refused up front, without a socket, when the token is blank or data I/O is off.
+    #[track_caller]
     pub fn notifications(
         &self,
         _off: &plx_base::task::OffFrame,
