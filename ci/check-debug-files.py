@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run `sentry-cli debug-files check` on each file and require it to show symbols.
 
-    SENTRY_CLI="npx --yes @sentry/cli@3.7.0" ci/check-debug-files.py FILE...
+    SENTRY_CLI="$PWD/tools/node_modules/.bin/sentry-cli" ci/check-debug-files.py FILE...   # after `npm ci --prefix tools`
 
 `debug-files check` exits 0 for a stripped object that holds nothing to symbolicate, so the exit
 status alone proves nothing: the files listed here exist to name frames, and a file whose reported

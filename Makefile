@@ -1837,8 +1837,14 @@ SENTRY_ORG     ?= gleb-linnik
 # development project. Release CI supplies SENTRY_PROJECT=plx-native explicitly; a checkout with
 # no telemetry cache keeps that production fallback for deliberate one-off invocations.
 SENTRY_PROJECT ?= $(or $(call telemetry_val,sentry_project),plx-native)
-SENTRY_CLI     ?= npx --yes @sentry/cli@latest
-sentry-symbols: symbols symbols-libs
+# The CLI is the version pinned in tools/package.json (Dependabot bumps it with its lockfile),
+# installed on first use; point SENTRY_CLI at another command to bypass that.
+SENTRY_CLI_LOCAL := tools/node_modules/.bin/sentry-cli
+SENTRY_CLI     ?= $(SENTRY_CLI_LOCAL)
+$(SENTRY_CLI_LOCAL): tools/package.json tools/package-lock.json
+	npm ci --prefix tools
+	@touch $@
+sentry-symbols: symbols symbols-libs $(filter $(SENTRY_CLI_LOCAL),$(SENTRY_CLI))
 	@test -n "$${SENTRY_AUTH_TOKEN:-}" || { \
 	  echo "sentry-symbols: SENTRY_AUTH_TOKEN is required" >&2; exit 1; }
 	@# `debug-files check` on every file, requiring `debug` or `symtab` features (not merely a zero exit).

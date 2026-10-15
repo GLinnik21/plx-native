@@ -374,18 +374,20 @@ jobs:
           # requires each to report `debug` or `symtab` features: the command exits 0 for a stripped
           # object with nothing in it, and an upload of one is silent until a real crash fails to
           # symbolicate. That check needs no token, so a pull request's dry run keeps it.
-          SENTRY_CLI="npx --yes @sentry/cli@3.7.0" \
+          # The CLI is the version pinned in tools/package.json (Dependabot bumps it with its lockfile).
+          npm ci --prefix tools
+          SENTRY_CLI="$PWD/tools/node_modules/.bin/sentry-cli" \
             python3 ci/check-debug-files.py pkg/plxnative.debug pkg/symbols/*.debug
           if [ "$UPLOAD" != true ]; then
             echo "Skipping the Sentry upload: upload-debug-files is '$UPLOAD' (a pull request's nightly dry run)."
             exit 0
           fi
-          npx --yes @sentry/cli@3.7.0 debug-files upload \
+          tools/node_modules/.bin/sentry-cli debug-files upload \
               --include-sources pkg/plxnative.debug pkg/plxnative
           # The bundled libraries: `sentry-crash` is deliberately NOT uploaded (a separate process
           # that sends nothing, so no event frame lands in it). No `--include-sources`: the
           # libraries' DWARF names third-party source files, not this repository's.
-          npx --yes @sentry/cli@3.7.0 debug-files upload pkg/symbols
+          tools/node_modules/.bin/sentry-cli debug-files upload pkg/symbols
 
       - name: ELF + packaging assertions
         # REQUIRE_PACKAGE: this step runs AFTER `make ipk`, so "nothing staged" here means the build
