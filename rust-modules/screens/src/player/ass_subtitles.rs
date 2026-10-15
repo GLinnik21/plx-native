@@ -71,39 +71,42 @@ impl AssSubtitles {
             return;
         };
         if self.uploaded != frame.serial {
-            // Reserve all unchanged regions first. A changing region must not steal
-            // a texture that a later static sign still needs in this same frame.
-            let matches = retained_regions(&self.textures, &frame.rects);
-            let mut old: Vec<_> = std::mem::take(&mut self.textures)
-                .into_iter()
-                .map(Some)
-                .collect();
-            let mut next: Vec<_> = matches
-                .into_iter()
-                .map(|index| index.and_then(|i| old[i].take()))
-                .collect();
-            for (slot, rect) in next.iter_mut().zip(&frame.rects) {
-                if slot.is_none() {
-                    let previous = old.iter_mut().find_map(Option::take);
-                    let id = plx_gfx::gfx::upload_rgba(
-                        previous.as_ref().map_or(0, |t| t.id),
-                        rect.width,
-                        rect.height,
-                        rect.rgba.as_ptr(),
-                    );
-                    *slot = Some(CachedTexture {
-                        id,
-                        width: rect.width,
-                        height: rect.height,
-                        pixels: rect.rgba.clone(),
-                    });
+            plx_base::diag::spans::span("assup", || {
+                // Reserve all unchanged regions first. A changing region must not steal
+                // a texture that a later static sign still needs in this same frame.
+                let matches = retained_regions(&self.textures, &frame.rects);
+                let mut old: Vec<_> = std::mem::take(&mut self.textures)
+                    .into_iter()
+                    .map(Some)
+                    .collect();
+                let mut next: Vec<_> = matches
+                    .into_iter()
+                    .map(|index| index.and_then(|i| old[i].take()))
+                    .collect();
+                for (slot, rect) in next.iter_mut().zip(&frame.rects) {
+                    if slot.is_none() {
+                        let previous = old.iter_mut().find_map(Option::take);
+                        plx_media::player::ass_perf::note_upload(rect.rgba.len());
+                        let id = plx_gfx::gfx::upload_rgba(
+                            previous.as_ref().map_or(0, |t| t.id),
+                            rect.width,
+                            rect.height,
+                            rect.rgba.as_ptr(),
+                        );
+                        *slot = Some(CachedTexture {
+                            id,
+                            width: rect.width,
+                            height: rect.height,
+                            pixels: rect.rgba.clone(),
+                        });
+                    }
                 }
-            }
-            for unused in old.into_iter().flatten() {
-                plx_gfx::gfx::delete_tex(unused.id);
-            }
-            self.textures = next.into_iter().flatten().collect();
-            self.uploaded = frame.serial;
+                for unused in old.into_iter().flatten() {
+                    plx_gfx::gfx::delete_tex(unused.id);
+                }
+                self.textures = next.into_iter().flatten().collect();
+                self.uploaded = frame.serial;
+            });
         }
         let ink = plx_appkit::player_hud::subtitle_ink();
         for (texture, rect) in self.textures.iter().zip(&frame.rects) {

@@ -332,6 +332,7 @@ fn worker() {
         .worker
         .set(std::thread::current())
         .expect("one styled subtitle worker");
+    super::ass_perf::log_worker_tid();
     let mut engine = Engine::default();
     loop {
         let request = {
@@ -340,6 +341,7 @@ fn worker() {
                 if let Some(retired) = retire_off(runtime(), &mut mailbox, &mut engine) {
                     // Native destruction can be slow too: release the mailbox first.
                     drop(mailbox);
+                    super::ass_perf::flush();
                     drop(retired);
                     mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
                     continue;
@@ -355,14 +357,17 @@ fn worker() {
                 mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
             }
         };
+        super::ass_perf::begin_call();
         if runtime().epoch.load(Ordering::Acquire) != request.key.epoch {
             continue;
         }
+        let job_started = std::time::Instant::now();
         let frame = engine.render(&request);
+        super::ass_perf::record_job(job_started.elapsed());
         if runtime().epoch.load(Ordering::Acquire) != request.key.epoch {
             continue;
         }
-        let changed = {
+        let (changed, pub_bytes) = {
             let mut mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
             if runtime().epoch.load(Ordering::Acquire) != request.key.epoch {
                 continue;
@@ -370,9 +375,11 @@ fn worker() {
             let changed = mailbox.published.as_ref().is_none_or(|(epoch, old)| {
                 *epoch != request.key.epoch || old.serial != frame.serial
             });
+            let bytes: usize = frame.rects.iter().map(|r| r.rgba.len()).sum();
             mailbox.published = Some((request.key.epoch, frame));
-            changed
+            (changed, if changed { bytes as u64 } else { 0 })
         };
+        super::ass_perf::finish_call(changed, pub_bytes);
         if changed {
             plx_machine::present::wake_from_worker();
         }
@@ -787,6 +794,7 @@ impl Native {
 
     fn render(&mut self, key: Key, previous: &[Rect]) -> Result<Option<Vec<Rect>>, Fault> {
         let mut frame = NativeFrame::default();
+        let started = std::time::Instant::now();
         let result = unsafe {
             plx_ass_render(
                 self.0,
@@ -798,6 +806,7 @@ impl Native {
                 &mut frame,
             )
         };
+        super::ass_perf::record_render(started.elapsed());
         if result < 0 {
             return Err(Fault::RenderFailed);
         }
