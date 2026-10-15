@@ -93,6 +93,17 @@ pub struct Scrub {
     /// the accelerating ramp from `Tick`, and a drag must not — the pointer says where the preview
     /// is, once per motion event, and an advance underneath it would fight the hand.
     pub drag: bool,
+    /// **The film was PAUSED when this scrub began** (`viewer_paused`, latched at the start and
+    /// held to the end): a key-driven scrub then only MOVES the target and commits nothing — not
+    /// on release, not on a timer — until OK or PLAY takes it (`PlayerReq::SeekTo`, which resumes
+    /// from it) or BACK drops it. A pointer drag still commits on release and stays paused. Not
+    /// part of the canonical `write()`: it is a latch of the gesture, not state the replay
+    /// fixtures observe.
+    pub paused: bool,
+    /// **Where the film was when this scrub began**, in ns: the position BACK returns to for
+    /// five seconds after a PLAYING scrub commits (`scrub_undo`). Meaningful only while `ns >= 0`
+    /// and until the commit hands it to the transport row's undo window.
+    pub origin_ns: i64,
 }
 impl Scrub {
     /// No scrub in progress and no tap commit pending — where the loop starts.
@@ -102,6 +113,8 @@ impl Scrub {
         reveal: false,
         ns: -1,
         drag: false,
+        paused: false,
+        origin_ns: 0,
     };
     /// Start a WHOLE gesture in `now`/`fwd` — every field, not the four a press happens to care
     /// about.
@@ -125,6 +138,18 @@ impl Scrub {
         self.key.disengage();
         self.reveal = false;
         self.drag = false;
+    }
+    /// **Is there a scrub BACK should cancel?** A preview exists and something still owns it: a key
+    /// held (or its release waiting out the bounce), a tap's 450 ms commit pending, a pointer
+    /// seated on the bar, or — on a paused film — a target waiting for OK.
+    pub fn is_live(&self) -> bool {
+        self.ns >= 0 && (self.key.dir != 0 || self.commit_at != 0 || self.drag || self.paused)
+    }
+    /// Throw the whole gesture away: no preview, no hold, no pending commit.
+    pub fn cancel(&mut self) {
+        self.ns = -1;
+        self.commit_at = 0;
+        self.disengage();
     }
     /// **Where a target may legally land**: never before zero, and never inside the last three
     /// seconds, which is a seek past the point the pipeline can prime from. The one place the two
@@ -500,7 +525,7 @@ mod hud_visibility_tests {
         key.press(11, true);
         key.repeat(12);
         key.release(13);
-        let mut scrub = Scrub { key, commit_at: 14, reveal: true, ns: 15, drag: true };
+        let mut scrub = Scrub { key, commit_at: 14, reveal: true, ns: 15, drag: true, paused: false, origin_ns: 0 };
         scrub.disengage();
         assert_eq!((scrub.key.dir, scrub.key.engaged, scrub.reveal, scrub.drag), (0, false, false, false));
         assert!(!scrub.key.release_pending(), "…nor a release still waiting out the bounce window");

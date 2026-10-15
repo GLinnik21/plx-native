@@ -211,6 +211,7 @@ impl PlayerScreen {
         self.scrub.ns = -1;
         self.scrub.disengage();
         self.scrub.commit_at = 0;
+        self.row.close_undo();
         if !for_reload {
             self.hud.until = 0;
             self.hud.dismissed = false;
@@ -378,6 +379,8 @@ impl PlayerScreen {
             mix(pos as u64);
             mix(plx_media::player::seek_display_ns() as u64);
             mix(plx_media::player::TX.scrub_ns.load(Relaxed) as u64);
+            // the undo window opening, expiring and fading out: the deadline owes a frame
+            mix(u64::from(self.row.undo_phase(now)));
             // the scrub's fades, card and knob clock: a frame is owed for as long as one runs
             if self.row.scrub_motion_animating(now) {
                 mix(u64::from(now));
@@ -566,6 +569,16 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                 // accelerating advance with its lost-keyup safety commit, then the tap debounce.
                 // In that order, because the safety commit disengages the gesture and a debounce
                 // armed by a real release must not then be answered twice.
+                // A paused film's pending target is only meaningful while the film IS paused: if it
+                // was resumed another way (a click on the picture, the transport's own toggle) the
+                // target has nothing left to wait for and is retired, not left to sit on the bar.
+                if self.scrub.paused
+                    && self.scrub.ns >= 0
+                    && !self.scrub.drag
+                    && !plx_media::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    self.scrub.cancel();
+                }
                 self.step_scrub_hold(tick.ms, fx);
                 self.step_tap_commit(tick.ms, fx);
                 self.publish();
@@ -713,6 +726,7 @@ impl PlayerScreen {
                 let dur = plx_media::player::duration_ns();
                 if dur > 0 {
                     self.hud.nav.focus = 0;
+                    self.begin_gesture(ps);
                     self.scrub.ns = self.pointed_ns(x, dur);
                     self.scrub.drag = true;
                     self.scrub.commit_at = 0; // the release commits; no debounce owns this one
@@ -782,8 +796,7 @@ impl PlayerScreen {
         self.scrub.drag = false;
         if self.scrub.ns >= 0 {
             plx_base::eventlog::log(&format!("scrub: pointer commit ns={}", self.scrub.ns));
-            Self::ask(fx, PlayerReq::CommitSeek(self.scrub.ns));
-            self.scrub.ns = -1;
+            self.commit_scrub(now, fx);
         }
         self.scrub.disengage();
         self.hud.extend(now, input::HUD_LINGER_MS);
@@ -837,6 +850,9 @@ impl PlayerScreen {
         }
         match key {
             Key::Play | Key::Pause | Key::PlayPause => {
+                if edge == Edge::Down && key != Key::Pause && self.take_paused_target(now, fx) {
+                    return Handled::Yes;
+                }
                 if edge == Edge::Down {
                     let play = match key {
                         Key::Play => Some(true),
@@ -855,10 +871,18 @@ impl PlayerScreen {
             // …except a BACK that finds the transport ON SCREEN: that one hides it, the way an
             // UP-hide does, and the film keeps playing. A second BACK, now over a bare picture,
             // leaves. `visible_at_press` and not `hud_up`, for the reason its own doc gives.
+            Key::Back
+                if edge == Edge::Down
+                    && (self.scrub.is_live() || self.row.undo_origin(now).is_some()) =>
+            {
+                self.key_back_scrub(now, fx);
+                Handled::Yes
+            }
             Key::Back if edge == Edge::Down && self.hud.visible_at_press => {
                 self.hud.nav.focus = 0;
                 self.scrub.ns = -1;
                 self.scrub.disengage();
+                self.row.close_undo();
                 self.hud.dismissed = true;
                 self.publish();
                 Handled::Yes
@@ -882,7 +906,7 @@ impl PlayerScreen {
                         // pending release first, as the `Up` itself used to.
                         let fwd = matches!(key, consts::Key::Right { .. });
                         if self.scrub.key.release_pending() && !self.scrub.key.continues(fwd, now) {
-                            self.settle_release(fx);
+                            self.settle_release(now, fx);
                         }
                         self.key_scrub_fresh(ps, key, now, meta)
                     }
@@ -910,7 +934,9 @@ impl PlayerScreen {
     /// arm — a plain play/pause toggle. Port of `key_ok`'s `Route::Player` arm.
     fn key_ok<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) {
         let vis = self.hud.visible_at_press;
-        if vis && self.hud.nav.focus == 1 {
+        if self.take_paused_target(now, fx) {
+            // OK took the target and resumes from it; that is all this press means
+        } else if vis && self.hud.nav.focus == 1 {
             Self::ask(fx, PlayerReq::ArmControlRow);
         } else if vis && self.hud.nav.focus == 2 {
             let kind = if self.hud.nav.tab == 0 {
@@ -958,6 +984,7 @@ impl PlayerScreen {
             self.scrub.disengage();
         }
         if hide {
+            self.row.close_undo();
             self.hud.dismissed = true;
         } else {
             self.hud.extend(now, input::HUD_LINGER_MS);
@@ -966,13 +993,70 @@ impl PlayerScreen {
 
     /// A held scrub's release, once it has survived the bounce window: commit the preview and end
     /// the gesture. Called from the tick, and from a press that is NOT the key coming back.
-    fn settle_release<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
+    fn settle_release<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) {
         plx_base::eventlog::log(&format!(
             "scrub: keyup commit (held) {}s",
             self.scrub.ns / 1_000_000_000
         ));
-        self.commit_scrub(fx);
+        self.finish_hold(now, fx);
+    }
+
+    /// A key hold is over (its release survived the bounce, or the keyup never came): commit the
+    /// preview, or — on a paused film — leave it pending as the target and end only the key
+    /// gesture.
+    fn finish_hold<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) {
+        if !self.scrub.paused {
+            self.commit_scrub(now, fx);
+        }
         self.scrub.disengage();
+    }
+
+    /// **A scrub begins** (no preview yet): note where the film is and whether it is paused, the
+    /// two facts the rest of the gesture is decided by, and close an undo window that belongs to
+    /// the scrub before. Called at every seed; a gesture already under way keeps its own.
+    fn begin_gesture(&mut self, ps: &plx_media::route::PlaybackSession) {
+        if self.scrub.ns >= 0 {
+            return;
+        }
+        self.scrub.origin_ns = plx_media::player::intended_pos_ns(ps);
+        self.scrub.paused = plx_media::player::lifecycle::viewer_paused();
+        self.row.close_undo();
+    }
+
+    /// **OK or PLAY on a paused film's pending target**: seek there and resume from it
+    /// ([`PlayerReq::SeekTo`], which resumes, not the bare `CommitSeek` that holds the pause).
+    /// `false` when there is none, and the press means what it always did.
+    fn take_paused_target<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) -> bool {
+        if !(self.scrub.paused && self.scrub.ns >= 0 && !self.scrub.drag) {
+            return false;
+        }
+        plx_base::eventlog::log(&format!(
+            "scrub: paused target taken {}s",
+            self.scrub.ns / 1_000_000_000
+        ));
+        Self::ask(fx, PlayerReq::SeekTo(self.scrub.ns));
+        self.scrub.cancel();
+        self.hud.extend(now, input::HUD_LINGER_MS);
+        self.publish();
+        true
+    }
+
+    /// **BACK while a scrub is live, or inside the undo window.** A live scrub is cancelled — no
+    /// seek, the preview gone, the knob springs home (`scrub_undo::KnobSpring`) — and a paused
+    /// target is dropped the same way. Otherwise the window returns the film to where the last
+    /// committed scrub started, once: the window closes on use, so a second BACK is the ordinary
+    /// one.
+    fn key_back_scrub<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) {
+        if self.scrub.is_live() {
+            plx_base::eventlog::log("scrub: BACK cancels the scrub");
+            self.scrub.cancel();
+        } else if let Some(origin) = self.row.undo_origin(now) {
+            plx_base::eventlog::log(&format!("scrub: BACK undoes the seek to {}s", origin / 1_000_000_000));
+            Self::ask(fx, PlayerReq::CommitSeek(origin));
+            self.row.close_undo();
+        }
+        self.hud.extend(now, input::HUD_LINGER_MS);
+        self.publish();
     }
 
     /// A FRESH LEFT/RIGHT press: port of `key_scrub`'s `ScrubPress` dispatch. It commits NOTHING —
@@ -1010,6 +1094,7 @@ impl PlayerScreen {
             input::ScrubPress::Reveal => {
                 self.hud.nav.focus = 0;
                 if dur > 0 {
+                    self.begin_gesture(ps);
                     self.scrub.begin(now, fwd);
                     self.scrub.reveal = true;
                     self.scrub.ns = plx_media::player::intended_pos_ns(ps);
@@ -1032,6 +1117,7 @@ impl PlayerScreen {
                 self.scrub.commit_at = 0; // more input → cancel a pending tap commit
                 self.scrub.reveal = false; // a visible press is a real gesture whatever raised the HUD
                 if self.scrub.key.dir == 0 && self.scrub.ns < 0 {
+                    self.begin_gesture(ps);
                     self.scrub.ns = plx_media::player::intended_pos_ns(ps);
                 }
                 if !self.scrub.key.engaged {
@@ -1085,7 +1171,14 @@ impl PlayerScreen {
             // A hold's release is deferred inside `HeldKey` — the driver bounces keys mid-hold, and
             // `step_scrub_hold` commits once the window has passed without a re-press. What is
             // left here is a tap → commit on a short debounce so quick taps accumulate first.
-            self.scrub.commit_at = now.wrapping_add(input::TAP_COMMIT_MS).max(1);
+            //
+            // On a PAUSED film there is no debounce and no commit: the tap only moved the target,
+            // which waits for OK or PLAY (or BACK), and the key gesture is simply over.
+            if self.scrub.paused {
+                self.scrub.key.disengage();
+            } else {
+                self.scrub.commit_at = now.wrapping_add(input::TAP_COMMIT_MS).max(1);
+            }
         }
     }
 
@@ -1098,11 +1191,24 @@ impl PlayerScreen {
     /// `request_seek`. Clearing `ns` here
     /// rather than in the loop is the §2.3 half of the same change — `app::playback::commit_seek`
     /// used to reach into this gesture and blank it, which is a write to another owner's state.
-    fn commit_scrub<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
+    ///
+    /// A commit on a PLAYING film opens the five-second undo window (`scrub_undo`) at the position
+    /// the scrub started from, and keeps the transport up for it and its fade. A paused film's
+    /// pointer drag commits too, and stays paused — with no window: the picture is a held frame,
+    /// not something that played on past where the user was.
+    fn commit_scrub<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) {
         if self.scrub.ns < 0 {
             return;
         }
-        Self::ask(fx, PlayerReq::CommitSeek(self.scrub.ns));
+        let target = self.scrub.ns;
+        Self::ask(fx, PlayerReq::CommitSeek(target));
+        if !self.scrub.paused && target != self.scrub.origin_ns {
+            self.row.open_undo(self.scrub.origin_ns, now);
+            self.hud.extend(
+                now,
+                plx_appkit::scrub_undo::UNDO_MS + plx_appkit::scrub_undo::UNDO_FADE_MS,
+            );
+        }
         self.scrub.ns = -1;
     }
 
@@ -1122,7 +1228,7 @@ impl PlayerScreen {
                 "scrub: tap commit {}s",
                 self.scrub.ns / 1_000_000_000
             ));
-            self.commit_scrub(fx);
+            self.commit_scrub(now, fx);
         }
         self.scrub.ns = -1;
         self.scrub.disengage();
@@ -1144,7 +1250,7 @@ impl PlayerScreen {
     fn step_scrub_hold<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) {
         // The release that survived the bounce window is the real one.
         if self.scrub.key.release_due(now) {
-            self.settle_release(fx);
+            self.settle_release(now, fx);
             return;
         }
         if self.scrub.key.dir == 0
@@ -1167,8 +1273,7 @@ impl PlayerScreen {
         self.hud.extend(now, input::HUD_LINGER_MS);
         if self.scrub.key.lost(now) {
             plx_base::eventlog::log(&format!("scrub: lost keyup commit {}s", s / 1_000_000_000));
-            self.commit_scrub(fx);
-            self.scrub.disengage();
+            self.finish_hold(now, fx);
         }
     }
 }

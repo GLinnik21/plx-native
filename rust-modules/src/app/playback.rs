@@ -417,6 +417,7 @@ pub(super) fn start_playback_with<R: PlaybackResources>(
     if let Some(player) = super::bridge::player_mut(pages) {
         player.hud = HudState::IDLE;
         player.scrub = Scrub::IDLE;
+        player.row.close_undo();
         player.up_next.reset();
         player.hud.extend(clock::now(), hud_ms);
         player.publish();
