@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T14:35:45Z",
+ "generated": "2026-10-15T14:46:18Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 5.1,
+   "change7_pct": 4.6,
    "d30": null,
    "delta30": null,
-   "delta7": 19.5,
+   "delta7": 17.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 117,
+   "n_now": 118,
    "n_prev": 128,
-   "now": 404,
+   "now": 402.0,
    "prev7": 384.5,
    "shown": true,
    "state": "flat",
@@ -291,14 +291,14 @@
    "change7_pct": -7.5,
    "d30": null,
    "delta30": null,
-   "delta7": -18.0,
+   "delta7": -18,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 109,
-   "now": 221.0,
+   "now": 221,
    "prev7": 239,
    "shown": true,
    "state": "flat",
@@ -309,17 +309,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -63.0,
+   "change7_pct": -63.1,
    "d30": null,
    "delta30": null,
-   "delta7": -316.5,
+   "delta7": -317,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 109,
-   "now": 185.5,
+   "now": 185,
    "prev7": 502,
    "shown": true,
    "state": "better",
@@ -396,14 +396,14 @@
    "change7_pct": -11.9,
    "d30": null,
    "delta30": null,
-   "delta7": -19.0,
+   "delta7": -19,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 65,
-   "now": 140.0,
+   "now": 140,
    "prev7": 159,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 109,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 62.6,
    "commits": [
     {
-     "pr": 738,
-     "sha": "75733781e",
-     "title": "Home: focus follows the show (10b) and the return hold (10c)"
-    },
-    {
      "pr": 748,
      "sha": "79a24ff43",
      "title": "Home: quiet per-source refetch and visibility-gated staging (L2-3)"
@@ -615,6 +610,11 @@
      "pr": 758,
      "sha": "7064a117c",
      "title": "Player: a real stop's Starfish Unload runs off the frame that handled BACK"
+    },
+    {
+     "pr": 759,
+     "sha": "bb9fdd0c1",
+     "title": "Player: a paused preroll on the ACB route re-pauses only once the video plane is bound"
     }
    ],
    "from": 219,
@@ -628,11 +628,6 @@
    "change_pct": 33.6,
    "commits": [
     {
-     "pr": 738,
-     "sha": "75733781e",
-     "title": "Home: focus follows the show (10b) and the return hold (10c)"
-    },
-    {
      "pr": 748,
      "sha": "79a24ff43",
      "title": "Home: quiet per-source refetch and visibility-gated staging (L2-3)"
@@ -676,6 +671,11 @@
      "pr": 758,
      "sha": "7064a117c",
      "title": "Player: a real stop's Starfish Unload runs off the frame that handled BACK"
+    },
+    {
+     "pr": 759,
+     "sha": "bb9fdd0c1",
+     "title": "Player: a paused preroll on the ACB route re-pauses only once the video plane is bound"
     }
    ],
    "from": 277,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 221.0
+   "now": 221
   }
  ],
  "slowest_local": [
