@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T10:49:41Z",
+ "generated": "2026-10-15T10:53:45Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,18 +66,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -7.7,
+   "change7_pct": -5.4,
    "d30": null,
    "delta30": null,
-   "delta7": -32.5,
+   "delta7": -22.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 112,
-   "n_prev": 129,
-   "now": 388.5,
-   "prev7": 421,
+   "n_now": 113,
+   "n_prev": 128,
+   "now": 388,
+   "prev7": 410.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -267,18 +267,18 @@
   },
   {
    "change30_pct": 79.1,
-   "change7_pct": 11.6,
+   "change7_pct": 11.8,
    "d30": 177.0,
    "delta30": 140.0,
-   "delta7": 33,
+   "delta7": 33.5,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
    "n_now": 97,
-   "n_prev": 121,
+   "n_prev": 120,
    "now": 317,
-   "prev7": 284,
+   "prev7": 283.5,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -288,17 +288,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -9.2,
+   "change7_pct": -8.8,
    "d30": null,
    "delta30": null,
-   "delta7": -22,
+   "delta7": -21.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 101,
+   "n_now": 102,
    "n_prev": 111,
-   "now": 218,
+   "now": 219.0,
    "prev7": 240,
    "shown": true,
    "state": "flat",
@@ -309,17 +309,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -63.7,
+   "change7_pct": -63.8,
    "d30": null,
    "delta30": null,
-   "delta7": -326,
+   "delta7": -326.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 101,
+   "n_now": 102,
    "n_prev": 111,
-   "now": 186,
+   "now": 185.5,
    "prev7": 512,
    "shown": true,
    "state": "better",
@@ -375,14 +375,14 @@
    "change7_pct": -11.9,
    "d30": null,
    "delta30": null,
-   "delta7": -19,
+   "delta7": -19.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 101,
+   "n_now": 102,
    "n_prev": 63,
-   "now": 140,
+   "now": 140.0,
    "prev7": 159,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 101,
+   "n_now": 102,
    "n_prev": 111,
-   "now": 17,
+   "now": 17.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -524,15 +524,15 @@
    "change7_pct": 0.0,
    "d30": 361.5,
    "delta30": -358.5,
-   "delta7": 0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
    "n_now": 97,
-   "n_prev": 121,
+   "n_prev": 120,
    "now": 3,
-   "prev7": 3,
+   "prev7": 3.0,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -567,11 +567,6 @@
    "change_pct": 52.3,
    "commits": [
     {
-     "pr": 742,
-     "sha": "7201de034",
-     "title": "libass 9: appkit deletes the old caption path"
-    },
-    {
      "pr": 744,
      "sha": "d5cfa46f8",
      "title": "libass 10: media deletes the embedded text-cue store"
@@ -615,6 +610,11 @@
      "pr": 738,
      "sha": "75733781e",
      "title": "Home: focus follows the show (10b) and the return hold (10c)"
+    },
+    {
+     "pr": 748,
+     "sha": "79a24ff43",
+     "title": "Home: quiet per-source refetch and visibility-gated staging (L2-3)"
     }
    ],
    "from": 220,
@@ -628,11 +628,6 @@
    "change_pct": 27.4,
    "commits": [
     {
-     "pr": 742,
-     "sha": "7201de034",
-     "title": "libass 9: appkit deletes the old caption path"
-    },
-    {
      "pr": 744,
      "sha": "d5cfa46f8",
      "title": "libass 10: media deletes the embedded text-cue store"
@@ -676,6 +671,11 @@
      "pr": 738,
      "sha": "75733781e",
      "title": "Home: focus follows the show (10b) and the return hold (10c)"
+    },
+    {
+     "pr": 748,
+     "sha": "79a24ff43",
+     "title": "Home: quiet per-source refetch and visibility-gated staging (L2-3)"
     }
    ],
    "from": 277,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 218
+   "now": 219.0
   }
  ],
  "slowest_local": [

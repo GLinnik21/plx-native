@@ -1,4 +1,4 @@
-{"updated":"2026-10-15T10:49:25Z",
+{"updated":"2026-10-15T10:53:25Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -2708,7 +2708,8 @@
 {"id":38720307476,"at":"2026-10-15T10:26:44Z","sha":"176fa6dd7","title":"Merge main's squash of #737 (its content is already here)","pr":738,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19,"Linux simulator build + launch":249,"macOS simulator build + launch":291,"macOS tests against bundled FFmpeg and ASS":208}},
 {"id":38721079639,"at":"2026-10-15T10:33:12Z","sha":"8e5e08289","title":"Diagnostics: name the Paused player state","pr":750,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":147,"macOS tests against bundled FFmpeg and ASS":136,"Windows launcher syntax":80,"Linux simulator build + launch":244}},
 {"id":38721726800,"at":"2026-10-15T10:38:42Z","sha":"75733781e","title":"Home: focus follows the show (10b) and the return hold (10c)","pr":738,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":25,"macOS simulator build + launch":181,"macOS tests against bundled FFmpeg and ASS":156,"Linux simulator build + launch":262}},
-{"id":38721797153,"at":"2026-10-15T10:39:19Z","sha":"f47346dfd","title":"Merge main's squash of #738 (its content is already here)","pr":748,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":110,"Linux simulator build + launch":234,"Windows launcher syntax":23,"macOS simulator build + launch":132}}
+{"id":38721797153,"at":"2026-10-15T10:39:19Z","sha":"f47346dfd","title":"Merge main's squash of #738 (its content is already here)","pr":748,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":110,"Linux simulator build + launch":234,"Windows launcher syntax":23,"macOS simulator build + launch":132}},
+{"id":38722967169,"at":"2026-10-15T10:49:21Z","sha":"79a24ff43","title":"Home: quiet per-source refetch and visibility-gated staging (L2-3)","pr":748,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":177,"macOS tests against bundled FFmpeg and ASS":176,"Windows launcher syntax":18,"Linux simulator build + launch":231}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
