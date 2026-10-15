@@ -1131,7 +1131,7 @@ DEPLOY_FILES = $(filter-out pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(L
 # The subtitle faces (tools/cut-noto-subs.py): Noto Sans <script> Bold, one file per script, plus the
 # manifest that names them in add order. They are NOT in `APP_FILES`, because that list is staged
 # with a flat `cp` and these live in their own directory, `fonts/subs/`, where the renderer reads
-# them from (`player::subfonts`) - 22 more names in the app directory's root would hide the few
+# them from (`player::ass::fonts`) - 22 more names in the app directory's root would hide the few
 # files a person looks for there. Each recipe that handles `APP_FILES` handles this list too:
 # `ipk` stages it, `deploy` copies it and `verify-deploy` checks it. The wildcard means a face added
 # to the directory ships without a second edit here; `ci/check-package.py` compares the staged

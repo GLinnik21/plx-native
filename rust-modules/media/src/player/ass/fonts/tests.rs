@@ -193,7 +193,9 @@ fn the_aliases_are_the_records_libass_looks_for() {
         assert!(rec.contains(&(0x409, own.into())), "{own}: {rec:?}");
         assert!(rec.contains(&(0x407, "PlxSubs".into())), "{own}: {rec:?}");
         assert!(rec.contains(&(0x40C, "Inter".into())), "{own}: {rec:?}");
-        assert!(family_records(&bytes, 4).contains(&(0x407, "PlxSubs".into())), "{own}: full name");
+        let full = family_records(&bytes, 4);
+        assert!(full.contains(&(0x407, "PlxSubs".into())), "{own}: full name {full:?}");
+        assert!(full.contains(&(0x40C, "Inter".into())), "{own}: full name {full:?}");
         for (lang, _) in rec.iter().filter(|(_, t)| t == "PlxSubs" || t == "Inter") {
             assert_ne!(lang & 0x3FF, 0x009, "{own}: an alias under an English-variant language");
         }
@@ -255,20 +257,24 @@ fn each_script_resolves_to_its_noto_face_and_not_to_inter() {
     }
 }
 
-/// libass sizes a line from `usWinAscent + usWinDescent`: a face with a different split draws its
-/// script higher or lower than the Latin beside it (the ratio is of the ascent to the sum, so faces
-/// of different units-per-em compare).
+/// libass sizes a line from `usWinAscent + usWinDescent` per em, and splits it at the ascent. A face
+/// whose total differs draws its script larger or smaller than the Latin beside it (Thai was 1.511
+/// em against Inter Bold's 1.430), and one whose split differs draws it higher or lower. Both are
+/// held, each in its own unit: the total in em (read from `head`), the split as a fraction.
 #[test]
-fn every_face_has_inter_bolds_win_ratio() {
-    let ratio = |font: &[u8]| {
+fn every_face_has_inter_bolds_win_metrics() {
+    let metrics = |font: &[u8]| {
         let os2 = table(font, b"OS/2").unwrap();
+        let upem = be16(table(font, b"head").unwrap(), 18) as f64;
         let (asc, desc) = (be16(os2, 74) as f64, be16(os2, 76) as f64);
-        asc / (asc + desc)
+        ((asc + desc) / upem, asc / (asc + desc))
     };
-    let inter = ratio(&read("appfont-bold.ttf"));
+    let (inter_em, inter_split) = metrics(&read("appfont-bold.ttf"));
+    assert!((inter_em - 1.430).abs() < 0.001, "Inter Bold's own total is {inter_em} em");
     for f in faces() {
-        let r = ratio(&read_sub(&f));
-        assert!((r - inter).abs() < 0.001, "{}: {r} vs Inter's {inter}", f["file"]);
+        let (em, split) = metrics(&read_sub(&f));
+        assert!((em - inter_em).abs() < 0.001, "{}: {em} em vs Inter's {inter_em}", f["file"]);
+        assert!((split - inter_split).abs() < 0.001, "{}: split {split} vs Inter's {inter_split}", f["file"]);
     }
 }
 
@@ -284,28 +290,55 @@ fn shaped_scripts_keep_their_layout_tables() {
     }
 }
 
-/// What the picker offers and what is left out is written down, not discovered: every language a
-/// face is cut for is one the app offers, and Yi (no Bold upstream) is the only one left uncovered.
+/// What the picker offers and what is left out is derived, not remembered: the manifest assigns
+/// EVERY language of `languages.rs` to exactly one bucket (a face, the CJK default, Inter, or
+/// uncovered with a reason), and each claim is checked against the shipped cmaps. A language added
+/// to the picker without a decision here fails this test.
 #[test]
-fn the_uncovered_scripts_are_listed_and_the_languages_are_real() {
+fn every_language_has_exactly_one_bucket_and_the_claim_holds() {
     use plx_plex::plex::languages::LANGUAGES;
     let m = manifest();
-    let known = |code: &str| LANGUAGES.iter().any(|l| l.code == code);
-    for f in faces() {
-        for code in f["languages"].as_array().unwrap() {
-            assert!(known(code.as_str().unwrap()), "{}: unknown language {code}", f["file"]);
-        }
-    }
+    let buckets = m["buckets"].as_object().expect("a buckets table");
+    assert_eq!(buckets.len(), LANGUAGES.len(), "a language without a bucket, or a bucket without a language");
+    let (inter, cjk) = (cov("appfont-bold.ttf"), cov("appfont-cjk.ttf"));
+    let face_of = |script: &str| faces().into_iter().find(|f| f["script"] == script).expect("a face for the bucket");
     let uncovered = m["uncovered"].as_array().unwrap();
-    assert!(uncovered.iter().any(|u| u["script"] == "Yi" && u["languages"][0] == "ii"));
-    for u in uncovered {
-        assert!(u["reason"].as_str().unwrap().len() > 10);
-        for code in u["languages"].as_array().unwrap() {
-            assert!(known(code.as_str().unwrap()), "{code}");
+    for lang in LANGUAGES {
+        let entry = buckets.get(lang.code).unwrap_or_else(|| panic!("{}: no bucket", lang.code));
+        let (kind, detail) = (entry[0].as_str().unwrap(), entry[1].as_str().unwrap());
+        let name: Vec<u32> = lang.name.chars().filter(|c| !c.is_whitespace()).map(|c| c as u32).collect();
+        match kind {
+            "inter" => assert!(name.iter().all(|&c| inter.contains(c)), "{}: {:?} is not Inter's", lang.code, lang.name),
+            "cjk" => assert!(name.iter().all(|&c| cjk.contains(c)), "{}: {:?} is not the CJK face's", lang.code, lang.name),
+            "face" => {
+                let face = face_of(detail);
+                assert!(face["languages"].as_array().unwrap().iter().any(|c| c == lang.code), "{}", lang.code);
+                let c = subs_cov(&face);
+                assert!(
+                    name.iter().all(|&cp| inter.contains(cp) || c.contains(cp)),
+                    "{}: {:?} is in neither Inter nor {detail}",
+                    lang.code,
+                    lang.name
+                );
+            }
+            "uncovered" => {
+                let row = uncovered.iter().find(|u| u["script"] == detail).expect("the uncovered row");
+                assert!(row["languages"].as_array().unwrap().iter().any(|c| c == lang.code), "{}", lang.code);
+                assert!(row["reason"].as_str().unwrap().len() > 10, "{detail}: say why");
+            }
+            other => panic!("{}: bucket {other}", lang.code),
         }
     }
-    assert!(faces().iter().all(|f| subs_cov(f).len() > 0));
-    let yi = 0xA288u32;
-    assert!(!cov("appfont-bold.ttf").contains(yi));
-    assert!(faces().iter().all(|f| !subs_cov(f).contains(yi)), "a face covers Yi; update `uncovered`");
+    // every row of `faces` / `uncovered` names real languages, and no codepoint of an uncovered
+    // script is carried by a face (a face that gains one means the row is stale).
+    for u in uncovered {
+        for code in u["languages"].as_array().unwrap() {
+            assert_eq!(buckets[code.as_str().unwrap()][0], "uncovered", "{code}");
+        }
+    }
+    assert!(buckets.values().any(|b| b[0] == "uncovered" && b[1] == "Yi"), "Yi is the standing example");
+    for cp in [0xA288u32, 0x10B00 /* Avestan */, 0x1820 /* Mongolian */] {
+        assert!(!inter.contains(cp), "U+{cp:04X}");
+        assert!(faces().iter().all(|f| !subs_cov(f).contains(cp)), "a face covers U+{cp:04X}; update `uncovered`");
+    }
 }

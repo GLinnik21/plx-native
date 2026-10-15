@@ -65,7 +65,7 @@ class DeployManifest(unittest.TestCase):
 
     def test_the_subtitle_faces_ship_in_their_own_directory_not_the_flat_list(self):
         # `APP_FILES` is staged with a flat `cp`; the subtitle faces are read from fonts/subs/ of the
-        # app directory (`player::subfonts`), so they travel in `SUBS_FONT_FILES` and every recipe
+        # app directory (`player::ass::fonts`), so they travel in `SUBS_FONT_FILES` and every recipe
         # that handles the flat list handles this one too (ipk, deploy, verify-deploy).
         subs = make_print("print-subs-font-files")
         self.assertEqual(

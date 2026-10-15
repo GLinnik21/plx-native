@@ -25,7 +25,7 @@ is added to the renderer FIRST, so Latin, digits and punctuation never fall to a
 (`rust-modules/plex/src/plex/languages.rs`) for which Noto Sans ships a Bold weight; the list is
 `FACES` below, with each face's languages recorded in the manifest. A script outside it has no face
 and falls to `path_default`; `UNCOVERED` names those, with the reason, so the gap is documented and
-a test (`subfonts.rs`) holds it. Tibetan is the one face not from the current release repository:
+a test (`ass/fonts/tests.rs`) holds it. Tibetan is the one face not from the current release repository:
 `notofonts.github.io` ships no Noto Sans Tibetan, so it is the archived `noto-fonts` file.
 
 **The cut, per face.**
@@ -35,13 +35,14 @@ a test (`subfonts.rs`) holds it. Tibetan is the one face not from the current re
      removes the dead weight and the ambiguity). KEPT regardless of those ranges, when upstream has
      them: U+200C/U+200D (joiners) and U+25CC (the dotted circle HarfBuzz inserts for a broken
      cluster, looked up in the face being shaped), and U+200E/U+200F in the right-to-left faces.
-     libass itself never looks default-ignorables up in a font (`ass_shaper_skip_characters`), so
-     the joiners cannot make the face choice depend on which script a track met first.
+     libass itself never looks default-ignorables up in a font (`ass_shaper_skip_characters`, which
+     skips U+200B-200F and U+2060-206F), so the joiners cannot make the face choice depend on which
+     script a track met first, and U+2060 (listed in plan 3.2) is not worth carrying at all.
   2. Layout kept: `layout_features=*`, `layout_scripts=*`, the closure follows from the cmap.
   3. Hinting dropped (libass renders unhinted; the archived Tibetan file carries TrueType
      instructions). `glyf`/`loca` stay in the form FreeType 2.4.11-2.7.0 can open (< 65535 glyphs and
      `loca` < 0x40000 bytes - asserted; these faces are opened by the bundled FreeType only, but
-     `subfonts.rs` checks every shipped face against the old bound anyway).
+     `ass/fonts/tests.rs` checks every shipped face against the old bound anyway).
   4. **Win metrics normalised.** libass sizes a face from `usWinAscent + usWinDescent` and its own
      em, so a Noto face with tall win metrics would render smaller than Inter in the same line
      and change the line height. `usWinAscent/usWinDescent`, `hhea` and the typo metrics are
@@ -57,7 +58,7 @@ below, and checked before anything is read. `--fetch` downloads them into a dire
 empty or absent; every other run reads that directory with `python3 -I`-style hygiene (the tool
 never imports or executes anything from it). The output is deterministic for one fontTools version
 (`recalcTimestamp=False`); the manifest records the version and each output's sha256, but the
-semantics (coverage, ratio, names) are what `subfonts.rs` asserts, not the byte hash.
+semantics (coverage, ratio, names) are what `ass/fonts/tests.rs` asserts, not the byte hash.
 """
 import hashlib
 import json
@@ -145,18 +146,31 @@ FACES = (
     ("Georgian", (0x10A0, 0x10FF, 80), False, ("ka",)),
     ("Armenian", (0x0530, 0x058F, 80), False, ("hy",)),
     ("Ethiopic", (0x1200, 0x137F, 300), False, ("am", "ti")),
-    ("CanadianAboriginal", (0x1400, 0x167F, 600), False, ("iu", "cr")),
+    ("CanadianAboriginal", (0x1400, 0x167F, 600), False, ("iu", "cr", "oj")),
 )
 
 # A script a listed language is written in, for which no Bold face is shipped: it falls to
-# `path_default` (the CJK file), which has no glyph for it, so it draws as tofu. Held by a test.
+# `path_default` (the CJK file), which has no glyph for it, so it draws as tofu. Every language of
+# languages.rs lands in exactly one bucket (`language_buckets`), and a test holds that.
 UNCOVERED = (
     {"script": "Yi", "languages": ["ii"],
      "reason": "Noto Sans Yi ships a Regular weight only; there is no Bold to match Inter Bold's colour"},
+    {"script": "Avestan", "languages": ["ae"],
+     "reason": "Noto Sans Avestan ships a Regular weight only; there is no Bold to match Inter Bold's colour"},
+    {"script": "Mongolian", "languages": ["mn"],
+     "reason": "Cyrillic Mongolian is Inter's; the traditional vertical script has only a Regular "
+               "(Noto Sans Mongolian) and is not shipped"},
 )
+# Languages whose native name is drawn by the CJK default face (the file at `path_default`).
+CJK_LANGUAGES = ("ja", "zh", "zh-TW", "ko")
+LANGUAGES_RS = REPO / "rust-modules" / "plex" / "src" / "plex" / "languages.rs"
+CJK_FACE = REPO / "pkg" / "appfont-cjk.ttf"
 
 # Latin, digits, punctuation, currency, combining diacriticals: Inter Bold's. See the docstring.
 INTER_RANGES = ((0x0000, 0x024F), (0x0300, 0x036F), (0x2000, 0x206F), (0x20A0, 0x20CF))
+# U+2060 (word joiner) is NOT kept although plan 3.2 listed it: libass skips U+2060-206F (and
+# U+200B-200F) as default-ignorables before any face lookup (`ass_shaper_skip_characters`), so a
+# face glyph for it would never be used. A rendering test holds that a cue with it draws no box.
 JOINERS = (0x200C, 0x200D, 0x25CC)
 RTL_MARKS = (0x200E, 0x200F)
 # A base letter whose rendered height the renderer test compares with its design height (the
@@ -235,7 +249,7 @@ def keep_set(upstream: set, inter: set, rtl: bool) -> set:
 
 def sample_of(codepoints, block: tuple) -> str:
     """Up to SAMPLE_LETTERS base letters from the script's block, evenly spaced: a string every
-    shaped face must be able to draw with no .notdef (`subfonts.rs` renders it)."""
+    shaped face must be able to draw with no .notdef (`ass/fonts/tests.rs` renders it)."""
     lo, hi, _floor = block
     letters = [cp for cp in sorted(codepoints)
                if lo <= cp <= hi and unicodedata.category(chr(cp)) in ("Lo", "Ll", "Lu", "Lm")]
@@ -332,7 +346,7 @@ def cut_face(script: str, block: tuple, rtl: bool, src: Path, inter: tuple) -> t
         raise SystemExit(f"{script}: long loca too big for FreeType <= 2.7.0")
     check_licence(font, f"{script} (output)")
     # The English family is whatever upstream calls it ("Noto Sans Canadian Aboriginal" has spaces
-    # the file name lacks); it is recorded, and `subfonts.rs` holds it.
+    # the file name lacks); it is recorded, and `ass/fonts/tests.rs` holds it.
     family = font["name"].getDebugName(1)
     if not family.startswith("Noto Sans"):
         raise SystemExit(f"{script}: family {family!r} is not a Noto Sans face")
@@ -344,15 +358,56 @@ def cut_face(script: str, block: tuple, rtl: bool, src: Path, inter: tuple) -> t
     return out, after, n_glyphs, asc, desc, family, sample, probe
 
 
-def alias_inter_bold() -> bool:
-    """Idempotently give the committed Inter Bold its "PlxSubs" record. True if it changed."""
+def language_buckets(faces: list) -> dict:
+    """code -> [bucket, detail] for EVERY language in languages.rs: ["face", script], ["cjk", ""],
+    ["uncovered", script] or ["inter", ""] (the native name is wholly in Inter Bold's cmap). A
+    language that fits none is an error: the gap is a decision to be written down, never silence."""
+    import re
+    rows = re.findall(r'code: "([A-Za-z-]+)", name: "([^"]*)"', LANGUAGES_RS.read_text())
+    if len(rows) < 100:
+        raise SystemExit(f"{LANGUAGES_RS}: parsed only {len(rows)} languages")
+    by_code = dict(rows)
+    inter_cps = inter_bold_facts()[0]
+    cjk_cps = cmap_of(TTFont(CJK_FACE, lazy=True))
+    explicit = {}
+    for face in faces:
+        for code in face["languages"]:
+            explicit[code] = ["face", face["script"]]
+    for entry in UNCOVERED:
+        for code in entry["languages"]:
+            explicit[code] = ["uncovered", entry["script"]]
+    for code in CJK_LANGUAGES:
+        explicit[code] = ["cjk", ""]
+    for code in explicit:
+        if code not in by_code:
+            raise SystemExit(f"{code}: named in FACES/UNCOVERED but not in languages.rs")
+    buckets = {}
+    for code, name in rows:
+        wanted = {ord(c) for c in name if not c.isspace()}
+        if code in explicit:
+            buckets[code] = explicit[code]
+            if explicit[code][0] == "cjk" and not wanted <= cjk_cps:
+                raise SystemExit(f"{code}: name {name!r} is not wholly in the CJK face")
+        elif wanted <= inter_cps:
+            buckets[code] = ["inter", ""]
+        else:
+            lacking = sorted(f"U+{cp:04X}" for cp in wanted - inter_cps)
+            raise SystemExit(f"{code} ({name!r}): no bucket - Inter Bold lacks {lacking}; add a face "
+                             f"to FACES or the script to UNCOVERED")
+    return buckets
+
+
+def alias_inter_bold(write: bool = True) -> bool:
+    """Idempotently give the committed Inter Bold its "PlxSubs" record. True if it needs/had a
+    change; with `write=False` nothing is saved (the `--check` mode must not touch the tree)."""
     font = TTFont(INTER_BOLD, lazy=True, recalcTimestamp=False)
     before = [(r.platformID, r.platEncID, r.langID, r.nameID, str(r)) for r in font["name"].names]
     names.add_plxsubs_alias(font)
     after = [(r.platformID, r.platEncID, r.langID, r.nameID, str(r)) for r in font["name"].names]
     if sorted(before) == sorted(after):
         return False
-    font.save(INTER_BOLD)
+    if write:
+        font.save(INTER_BOLD)
     return True
 
 
@@ -399,6 +454,7 @@ def cut(directory: Path) -> None:
         "inter_ranges": [list(r) for r in INTER_RANGES],
         "faces": faces,
         "uncovered": list(UNCOVERED),
+        "buckets": language_buckets(faces),
     }
     MANIFEST.write_text(json.dumps(manifest, indent=1, ensure_ascii=False) + "\n")
     total = sum(f["bytes"] for f in faces)
@@ -411,8 +467,10 @@ def check() -> None:
         path = OUT_DIR / face["file"]
         if sha256_of(path) != face["sha256"]:
             raise SystemExit(f"{path.name} does not match the manifest; re-run the cut")
-    if alias_inter_bold():
-        raise SystemExit("pkg/appfont-bold.ttf lacked the PlxSubs alias (now added; commit it)")
+    if alias_inter_bold(write=False):
+        raise SystemExit("pkg/appfont-bold.ttf lacks the PlxSubs alias; run the cut to add it")
+    if language_buckets(manifest["faces"]) != manifest["buckets"]:
+        raise SystemExit("the manifest's language buckets are stale; re-run the cut")
     print(f"{len(manifest['faces'])} faces match the manifest")
 
 

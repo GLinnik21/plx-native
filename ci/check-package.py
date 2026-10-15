@@ -1618,7 +1618,7 @@ check((ROOT / "pkg/OFL.txt").exists(),
 check("Noto Sans CJK" in (ROOT / "THIRD-PARTY-NOTICES.md").read_text(),
       "THIRD-PARTY-NOTICES.md attributes Noto Sans CJK (OFL 1.1 §2 wants the notice to travel)")
 # The subtitle faces (tools/cut-noto-subs.py): libass finds them by family name, so a missing or
-# renamed one is a script that silently draws as tofu. `rust-modules/media/src/player/subfonts.rs`
+# renamed one is a script that silently draws as tofu. `rust-modules/media/src/player/ass/fonts.rs`
 # holds the coverage; this holds that every face the manifest names exists, is whole, and is
 # attributed.
 import hashlib as _hashlib

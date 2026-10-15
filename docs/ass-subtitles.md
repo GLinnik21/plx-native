@@ -33,8 +33,12 @@ engine adds when a renderer is created (`ass/fonts.rs`): `appfont.ttf` and `appf
 order. Each Noto face answers to "PlxSubs" and "Inter" too, carries nothing Inter Bold covers, and
 has Inter Bold's win-metric proportions, so authored ASS naming an unknown family falls to a face
 that has the script instead of the CJK default's missing-glyph boxes. Add order is load-bearing
-(Inter first). The files are read at each create and not kept. `tools/cut-noto-subs.py` cuts them;
-Yi is the one script the picker offers that is not covered (Noto Sans Yi has no Bold).
+(Inter first). The files are read at each create and not kept. `tools/cut-noto-subs.py` cuts them
+and records in the manifest a bucket for EVERY language of the picker (a face, the CJK default,
+Inter, or uncovered with its reason), which a test checks against the shipped cmaps. Three scripts
+are uncovered because Noto Sans ships them in Regular only: Yi (`ii`), Avestan (`ae`) and
+traditional Mongolian (`mn`, whose Cyrillic form is Inter's). U+2060 is not carried by any face:
+libass skips the default-ignorables (U+200B-200F, U+2060-206F) before it looks a glyph up.
 
 The demuxer copies ASS headers, complete timed packets and font attachments out of FFmpeg.
 The source store removes trailing zero terminators from headers and packets. A zero byte

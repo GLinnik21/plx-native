@@ -2,7 +2,7 @@
 
 Shared by `tools/cut-inter.py` (which writes `pkg/appfont-bold.ttf`) and `tools/cut-noto-subs.py`
 (which writes `pkg/fonts/subs/*.ttf` and re-applies the Inter alias idempotently), so a re-cut of
-either cannot silently drop it. `rust-modules/media/src/player/subfonts.rs` asserts the result on
+either cannot silently drop it. `rust-modules/media/src/player/ass/fonts.rs` asserts the result on
 the shipped files.
 
 libass reads every Microsoft-platform name record with ID 1 (family) and ID 4 (full name) of a font,

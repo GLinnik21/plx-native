@@ -42,7 +42,7 @@ two Inter faces.
   4. **The "PlxSubs" alias on the Bold face** (`tools/plxsubs_names.py`): an extra name-ID 1/4
      record under Windows langID 0x0407, which is what the libass subtitle style asks for. Invisible
      to UI text and tools (the 0x0409 records stay "Inter"); `tools/cut-noto-subs.py` re-applies it
-     idempotently, and `rust-modules/media/src/player/subfonts.rs` asserts it on the shipped file.
+     idempotently, and `rust-modules/media/src/player/ass/fonts.rs` asserts it on the shipped file.
 """
 import math
 import sys
