@@ -117,7 +117,7 @@ impl ClockWarm {
     }
 }
 
-/// Shared caption placement for plain text and a styled-renderer failure message. Text size and
+/// Shared caption placement for the libass fault message and the sidecar failure notice. Text size and
 /// vertical placement follow the viewer's Settings > Playback picks (`route::subtitle_size`,
 /// `route::subtitle_position`) — native ASS/SSA keeps its authored style instead
 /// (`docs/ass-subtitles.md`). The message is a short fixed string, so it is never paged: a block
