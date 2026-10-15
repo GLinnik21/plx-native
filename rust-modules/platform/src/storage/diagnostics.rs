@@ -127,7 +127,7 @@ fn mailbox() -> Option<Arc<Mailbox>> {
             wake: Condvar::new(),
         });
         let owned = mailbox.clone();
-        if plx_base::task::spawn("storage diagnostics", move || run(owned)).is_none() {
+        if plx_base::task::spawn("storage-diag", move || run(owned)).is_none() {
             return None;
         }
         *worker = Some(mailbox);
@@ -221,7 +221,7 @@ fn run(mailbox: Arc<Mailbox>) {
     }
 }
 fn guard() -> plx_base::task::BlockingGuard {
-    plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("storage diagnostics") })
+    plx_base::task::assert_may_block(const { &plx_base::task::BlockingLabel::new("storage-diag") })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

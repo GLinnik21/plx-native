@@ -63,7 +63,7 @@ pub fn start_probe() {
     if STARTED.set(()).is_err() {
         return;
     }
-    if plx_base::task::spawn("webos Dolby Vision capability", run_probe).is_none() {
+    if plx_base::task::spawn("dv-caps-probe", run_probe).is_none() {
         publish(
             DvProbe {
                 capability: DvCapability::Unknown,

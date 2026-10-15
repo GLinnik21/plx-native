@@ -5098,7 +5098,7 @@ fn retire_replaced_encoder(ps: &PlaybackSession, encoder: String) {
     }
     let Some(client) = cur_client(ps) else { return };
     plx_base::task::spawn_small_or_inline(
-        "abr-original-stop",
+        "abr-orig-stop",
         const { &plx_base::task::BlockingLabel::new("encoder stop (worker thread refused)") },
         move || {
             let ok = client.transcode_stop(&encoder);
@@ -5119,7 +5119,7 @@ fn retire_hls_encoder_keep_source(ps: &PlaybackSession, encoder: String) {
     }
     let Some(client) = cur_client(ps) else { return };
     plx_base::task::spawn_small_or_inline(
-        "abr-original-physical-stop",
+        "abr-orig-pstop",
         const { &plx_base::task::BlockingLabel::new("encoder physical stop (worker thread refused)") },
         move || {
             let ok = client.transcode_stop_physical(&encoder);
@@ -7561,7 +7561,7 @@ fn retire_plan_resources(resources: AbandonedPlanResources) {
     // server allocation, so a refused worker stops them inline. The normal path keeps this
     // network work off the main thread.
     plx_base::task::spawn_small_or_inline(
-        "resolve-abandoned-stop",
+        "abandon-stop",
         const { &plx_base::task::BlockingLabel::new("abandoned plan stop (worker thread refused)") },
         move || {
             for identity in resources.identities {

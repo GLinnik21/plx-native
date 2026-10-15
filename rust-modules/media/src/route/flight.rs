@@ -406,7 +406,7 @@ fn spawn_flight_worker(
     if take_fault(Fault::SpawnRefusal) {
         return false;
     }
-    plx_base::task::spawn_off_frame("retranscode-claim", move |off| {
+    plx_base::task::spawn_off_frame("retransc-claim", move |off| {
         // catch_unwind OUTSIDE the mailbox write, like the resolve worker: a panicking attempt must
         // still land (as a `Rejected`) or `ControlPhase::Applying` waits forever for a mailbox
         // entry that will now never arrive.
@@ -464,7 +464,7 @@ pub(super) fn stop_encoder_session(client: &'static plx_plex::plex::Client, sess
         return;
     }
     plx_base::task::spawn_small_or_inline(
-        "retranscode-stop",
+        "retransc-stop",
         const { &plx_base::task::BlockingLabel::new("encoder stop (worker thread refused)") },
         move || {
             let _ = client.transcode_stop(&session);

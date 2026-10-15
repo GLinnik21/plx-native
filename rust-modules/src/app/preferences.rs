@@ -35,14 +35,14 @@ pub(super) fn execute(command: PreferenceCmd) {
             };
             // A refused spawn drops the reply sender. The screen reports its disconnected
             // receipt as retryable without claiming that an account call ran.
-            plx_base::task::spawn_small("account preferences", move || {
+            plx_base::task::spawn_small("acct-prefs", move || {
                 let outcome = request.load();
                 let _ = reply.send(AccountPreferenceReply { request: Some(request), outcome });
                 plx_machine::idle::invalidate();
             });
         }
         PreferenceCmd::Save { request, base, update, reply } => {
-            plx_base::task::spawn_small("account preferences", move || {
+            plx_base::task::spawn_small("acct-prefs", move || {
                 let outcome = request.save(&base, update);
                 let _ = reply.send(AccountPreferenceReply { request: Some(request), outcome });
                 plx_machine::idle::invalidate();
