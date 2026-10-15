@@ -257,9 +257,9 @@ const ES_LONG: [&str; 12] = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre",
     "octubre", "noviembre", "diciembre",
 ];
-/// Belarusian abbreviations take the genitive form, as the long names do.
+/// CLDR `be` abbreviated format months: three letters, no dot, and "мая" (the genitive) for May.
 const BE_MEDIUM: [&str; 12] =
-    ["сту.", "лют.", "сак.", "кра.", "тра.", "чэр.", "ліп.", "жні.", "вер.", "кас.", "ліс.", "сне."];
+    ["сту", "лют", "сак", "кра", "мая", "чэр", "ліп", "жні", "вер", "кас", "ліс", "сне"];
 /// Genitive, because a day number governs the month in Belarusian ("12 сакавіка").
 const BE_GENITIVE: [&str; 12] = [
     "студзеня", "лютага", "сакавіка", "красавіка", "траўня", "чэрвеня", "ліпеня", "жніўня",
