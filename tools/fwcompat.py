@@ -78,7 +78,7 @@ def ensure_db(db_arg):
     print(f"fetching firmware symbol databases (~25 MB) -> {CACHE}", file=sys.stderr)
     try:
         deb = deps.fetch(FWSYM, CACHE, keys={"fw-symbols"}, label="fwcompat")["fw-symbols"]
-    except ValueError as e:
+    except (ValueError, OSError) as e:
         die(f"could not fetch {asset['url']}: {e}\n"
             f"        Fetch it by hand and re-run, or pass --db <extracted data dir>.")
     print("extracting...", file=sys.stderr)
