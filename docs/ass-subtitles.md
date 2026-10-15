@@ -182,7 +182,8 @@ waited behind an Ahead job already rendering; the partial window is written when
 deselected) and
 one `assperf: worker tid=<n>` line when the worker starts, which `tools/tv-sched-trace.sh --tid <n>`
 follows. The UI-thread texture upload is the `assup` span on `FRAMEDROP spans=` (spans print only on
-`FRAMEDROP` lines, with `/tmp/plxnative-framedrop` armed). Nothing is
+`FRAMEDROP` lines, with `/tmp/plxnative-framedrop` armed); each changed region uploads with a full
+`glTexImage2D` (a bucketed `glTexSubImage2D` variant that reused the texture was measured on the TV and gave no gain, #735). Nothing is
 logged while no styled source is selected, and a render costs one clock pair. The worker renders
 only when the screen needs a frame (a new key, a playhead outside the published frame's validity
 window, an animated cue) and renders the next boundary ahead of its time, so a steady cue costs no
