@@ -1104,7 +1104,9 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   `SearchStore` owns its state/adapter/notice with a rotated adapter, and `ViewStateStore`
   owns its queue, in-flight request, retry/refresh latches, rotated worker adapter and notice.
   ViewState completions carry a monotone request ID and only the exact in-flight identity lands;
-  a deferred Detail refresh retains its originating `(server, ratingKey, episode)` address. Owned
+  a landed read-back re-reads every Detail page naming the item, its season or its show
+  (`AppMsg::DetailReconcile`: the top page Requested, a covered one Deferred until uncover; it
+  carries only the obligation, no address and no episode). Owned
   screens emit `AppFx::Store`, and `app/bridge.rs` delivers it to the owning machine. A command
   that changes observable state raises the store's notice. Browse has no active-owner compatibility
   reads and no `stores::browse::apply(Cmd)` shim: consumers receive per-owner retained
