@@ -738,6 +738,6 @@ mod tests {
         for id in StoreId::ALL {
             assert_eq!(StoreId::from_ord(id.ord()), Some(id));
         }
-        assert_eq!(StoreId::from_ord(StoreOrd(8)), None);
+        assert_eq!(StoreId::from_ord(StoreOrd(9)), None);
     }
 }
