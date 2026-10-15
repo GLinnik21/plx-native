@@ -15,6 +15,7 @@ use super::image_subtitle_tests::bind_host_ffmpeg;
 use super::*;
 use crate::player::ass::Content;
 use crate::player::ass_source;
+use subs::SubCue;
 
 #[test]
 #[ignore = "requires the bundled host FFmpeg; run make check-ffmpeg"]
@@ -65,4 +66,52 @@ fn a_gbk_subrip_track_reads_as_chinese_not_replacement_characters() {
     ass_source::reset();
     assert_eq!(bodies, ["你好，世界！这是中文字幕。", "简体中文测试"]);
     assert!(bodies.iter().all(|b| !b.contains('\u{fffd}')));
+}
+
+/// A packet with no duration gets `start + 4 s` (`SubTracks::decode`), so the cue overlaps whatever
+/// comes next and the newest-wins view must clip it (plan §0 D10). ffmpeg always writes a
+/// BlockDuration, so the fixture's packets are made durationless here, after the demuxer has read
+/// them: both cues then run 4 s from their own starts, and the first overlaps the second.
+#[test]
+#[ignore = "requires the bundled host FFmpeg; run make check-ffmpeg"]
+fn a_packet_without_a_duration_is_clipped_by_the_cue_after_it() {
+    let _g = plx_base::testlock::serial();
+    let _ffmpeg = bind_host_ffmpeg();
+    ass_source::reset();
+    crate::player::request_subtitle(0);
+    let mut starts = Vec::new();
+    unsafe {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/gbk-subrip.mkv");
+        let path = CString::new(path.to_str().unwrap()).unwrap();
+        let mut fmt = std::ptr::null_mut();
+        assert!(avformat_open_input(&mut fmt, path.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) >= 0);
+        let mut pkt = av_packet_alloc();
+        let mut subs = SubTracks::open(fmt, (*fmt).streams);
+        let generation = begin_ass_sources("fixture:no-duration", fmt, (*fmt).streams, subs.entries());
+        while av_read_frame(fmt, pkt) >= 0 {
+            if let Some(pos) = subs.position((*pkt).stream_index) {
+                let st = *(*fmt).streams.add((*pkt).stream_index as usize);
+                (*pkt).duration = 0;
+                if let Some(cue) = subs.decode(pos, pkt, st) {
+                    let SubCue::Text { start, end, .. } = &cue else { panic!("a text cue") };
+                    assert_eq!(end - start, 4_000_000_000, "the default end is start + 4 s");
+                    starts.push(start / 1_000_000);
+                    cue.push(generation);
+                }
+            }
+            av_packet_unref(pkt);
+        }
+        subs.close();
+        av_packet_free(&mut pkt);
+        avformat_close_input(&mut fmt);
+    }
+    let source = ass_source::selected(0).expect("the subrip track is registered as a text track");
+    let Content::Embedded { events, .. } = &source.content else { panic!("an embedded source") };
+    crate::player::request_subtitle(-1);
+    ass_source::reset();
+    assert_eq!(starts.len(), 2, "both cues");
+    assert!(starts[1] - starts[0] < 4000, "the fixture's cues are closer than the default 4 s: {starts:?}");
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].duration_ms, starts[1] - starts[0], "the first cue ends where the second begins");
+    assert_eq!(events[1].duration_ms, 4000, "the last cue keeps the default");
 }

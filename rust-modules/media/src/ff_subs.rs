@@ -259,7 +259,9 @@ pub(super) enum SubCue<'a> {
     /// SRT / WebVTT / mov_text ... payload (mov_text's length prefix already dropped), converted to
     /// ASS by the track's dialect in `ass_source::push_text`.
     /// `payload` is always UTF-8 here: [`SubTracks::decode`] ran the track's charset step.
-    Text { track: i32, start: i64, end: i64, payload: std::borrow::Cow<'a, [u8]> },
+    /// `identity` is `ass_source::packet_identity` of the packet bytes BEFORE the charset step: the
+    /// dedup key of a re-read, which must not depend on how the detector decoded it this time.
+    Text { track: i32, start: i64, end: i64, payload: std::borrow::Cow<'a, [u8]>, identity: u64 },
     /// An ASS/SSA dialogue line for `ass_source`.
     Ass { track: i32, start: i64, end: i64, payload: &'a [u8] },
     /// A decoded image display set (every rect, indexed) on its authoring canvas.
@@ -283,8 +285,8 @@ impl<'a> SubCue<'a> {
     /// so each one goes through this with `-delta` before [`Self::push`].
     pub(super) fn shifted(self, by_ns: i64) -> SubCue<'a> {
         match self {
-            SubCue::Text { track, start, end, payload } => {
-                SubCue::Text { track, start: start.saturating_add(by_ns), end: end.saturating_add(by_ns), payload }
+            SubCue::Text { track, start, end, payload, identity } => {
+                SubCue::Text { track, start: start.saturating_add(by_ns), end: end.saturating_add(by_ns), payload, identity }
             }
             SubCue::Ass { track, start, end, payload } => {
                 SubCue::Ass { track, start: start.saturating_add(by_ns), end: end.saturating_add(by_ns), payload }
@@ -302,9 +304,9 @@ impl SubCue<'_> {
     /// `Text` or `Ass` cue is pushed under; the image kinds ignore it.
     pub(super) fn push(self, ass_generation: u64) {
         match self {
-            SubCue::Text { track, start, end, payload } => {
+            SubCue::Text { track, start, end, payload, identity } => {
                 let text = String::from_utf8_lossy(&payload);
-                crate::player::ass_source::push_text(ass_generation, track, start, end, &text);
+                crate::player::ass_source::push_text(ass_generation, track, start, end, &text, identity);
             }
             SubCue::Ass { track, start, end, payload } => {
                 crate::player::ass_source::push(ass_generation, track, start, end, payload);
@@ -459,11 +461,12 @@ impl SubTracks {
             SubCue::Ass { track, start, end, payload }
         } else {
             // Text is UTF-8 by the spec and legacy-encoded (GBK, Big5, ...) in practice (#628).
+            let identity = crate::player::ass_source::packet_identity(payload);
             let payload = match crate::player::sub_charset::subtitle_text(payload, &self.charsets[pos]) {
                 std::borrow::Cow::Borrowed(text) => std::borrow::Cow::Borrowed(text.as_bytes()),
                 std::borrow::Cow::Owned(text) => std::borrow::Cow::Owned(text.into_bytes()),
             };
-            SubCue::Text { track, start, end, payload }
+            SubCue::Text { track, start, end, payload, identity }
         })
     }
 
@@ -574,8 +577,8 @@ mod tests {
     #[test]
     fn shifted_moves_every_variant() {
         let by = -2_500_000_000;
-        match (SubCue::Text { track: 1, start: 10_000_000_000, end: 12_000_000_000, payload: b"x"[..].into() }).shifted(by) {
-            SubCue::Text { track, start, end, payload } => {
+        match (SubCue::Text { track: 1, start: 10_000_000_000, end: 12_000_000_000, payload: b"x"[..].into(), identity: 7 }).shifted(by) {
+            SubCue::Text { track, start, end, payload, .. } => {
                 assert_eq!((track, start, end, &payload[..]), (1, 7_500_000_000, 9_500_000_000, &b"x"[..]));
             }
             _ => panic!("a text cue stays a text cue"),

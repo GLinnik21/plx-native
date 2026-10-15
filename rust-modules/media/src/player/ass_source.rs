@@ -53,9 +53,17 @@ struct RawCue {
     payload: Arc<[u8]>,
 }
 
-/// (start_ms, end_ms, the cue's text as the demuxer delivered it). The key is the dedup identity of
-/// a packet: a re-read after a seek or a demux reopen delivers the same one again.
-type RawKey = (i64, i64, Box<str>);
+/// (start_ms, end_ms, [`packet_identity`] of the packet's bytes as the demuxer delivered them,
+/// BEFORE the charset step). The key is the dedup identity of a packet: a re-read after a seek or a
+/// demux reopen delivers the same one again. It is a hash, not the text: the charset detector
+/// learns as it reads, so the same packet can decode to different text the second time, and the
+/// raw map must not hold a second copy of every cue's text beside its payload.
+type RawKey = (i64, i64, u64);
+
+/// A 64-bit FNV-1a of a packet's bytes: the third part of a [`RawKey`].
+pub fn packet_identity(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
+}
 
 /// A text track the store holds: its cues are converted by `dialect`.
 ///
@@ -425,8 +433,10 @@ impl Store {
     /// non-positive span, nothing visible) or already held.
     ///
     /// The cue is kept as received in `raw`; the track's `Source.events` become the newest-wins
-    /// view of all raw cues (plan §1.5). A re-delivered packet finds its raw key and returns before
-    /// anything is touched, so a seek re-read or a demux reopen never bumps the revision.
+    /// view of all raw cues (plan §1.5). A re-delivered packet finds its raw key (`identity`, see
+    /// [`packet_identity`]) and returns before anything is touched, so a seek re-read or a demux
+    /// reopen never bumps the revision. A cue the budget retires on arrival is not new either.
+    #[cfg(test)]
     fn push_text(
         &mut self,
         generation: u64,
@@ -434,6 +444,20 @@ impl Store {
         start_ms: i64,
         end_ms: i64,
         text: &str,
+        floor_ms: i64,
+    ) -> Option<usize> {
+        self.push_text_keyed(generation, track, start_ms, end_ms, text, packet_identity(text.as_bytes()), floor_ms)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_text_keyed(
+        &mut self,
+        generation: u64,
+        track: i32,
+        start_ms: i64,
+        end_ms: i64,
+        text: &str,
+        identity: u64,
         floor_ms: i64,
     ) -> Option<usize> {
         if generation != self.generation || end_ms <= start_ms || text.len() > MAX_PACKET_BYTES {
@@ -444,7 +468,7 @@ impl Store {
             return None;
         };
         let held = self.text.get_mut(&track)?;
-        let key: RawKey = (start_ms, end_ms, text.into());
+        let key: RawKey = (start_ms, end_ms, identity);
         if held.raw.contains_key(&key) {
             return None; // reread after a seek or a demux reopen: one event, the same ReadOrder
         }
@@ -466,7 +490,10 @@ impl Store {
         }
         held.next_readorder = readorder.checked_add(1)?;
         let shown = text_ass::visible_chars(&converted.body);
+        let before_prune = held.raw.len();
         held.raw.retain(|(_, end, _), _| *end >= floor_ms);
+        let pruned = held.raw.len() != before_prune;
+        let held_before = held.raw.len();
         held.raw.insert(key, RawCue { readorder, align: converted.align, payload });
         let budget = self.event_budget(track, header.len());
         let held = self.text.get_mut(&track)?;
@@ -479,6 +506,11 @@ impl Store {
                 i += 1;
                 !retire[i - 1]
             });
+        }
+        // Retired on arrival (a backward seek's re-read can be the earliest-ending cue): the
+        // track is as it was, so nothing changed and nothing is new to report.
+        if !held.raw.contains_key(&key) && held.raw.len() == held_before && !pruned {
+            return None;
         }
         let source = Source {
             id: old.id,
@@ -526,18 +558,19 @@ pub fn begin(media_key: &str, headers: Vec<(i32, TrackHeader)>, fonts: Vec<Font>
 }
 
 /// One cue of a text track (`text` is UTF-8, in the track's dialect), `start_ns`/`end_ns` in the
-/// clock of the subtitle stream. The cue is converted to ASS and joins the track's source; see
+/// clock of the subtitle stream; `identity` is the [`packet_identity`] of the packet before its
+/// charset step. The cue is converted to ASS and joins the track's source; see
 /// [`Store::push_text`]. Logs `sub cue [a..bms] len=N` for the selected track when the cue is new:
 /// the cue's length, never its text (subtitle text is viewing content and the event log is shared
 /// in issue threads), which `tests/run.py` reads to see that a text cue arrived.
-pub fn push_text(generation: u64, track: i32, start_ns: i64, end_ns: i64, text: &str) {
+pub fn push_text(generation: u64, track: i32, start_ns: i64, end_ns: i64, text: &str, identity: u64) {
     let floor_ms = super::subtitle_floor_ns() / 1_000_000;
     let (start_ms, end_ms) = (start_ns / 1_000_000, end_ns / 1_000_000);
     let selected = Some(super::desired_sub_idx()).filter(|&t| t >= 0);
     let shown = {
         let mut store = store();
         store.selected_track = selected;
-        store.push_text(generation, track, start_ms, end_ms, text, floor_ms)
+        store.push_text_keyed(generation, track, start_ms, end_ms, text, identity, floor_ms)
     };
     if let Some(len) = shown.filter(|_| selected == Some(track)) {
         super::log(&format!("sub cue [{start_ms}..{end_ms}ms] len={len}"));
@@ -1417,6 +1450,34 @@ mod tests {
         assert_eq!(view(&mut s, 0).len(), s.text[&0].raw.len());
     }
 
+    /// A backward seek's re-read can be the earliest-ending cue the budget holds, so it is retired
+    /// the moment it is inserted. It is not held, so it is not new: no revision, no `sub cue` line.
+    #[test]
+    fn a_cue_the_budget_retires_on_arrival_is_not_reported_as_new() {
+        let (mut s, g) = text_store("f");
+        let big = "x".repeat(MAX_PACKET_BYTES - 64);
+        for i in 0..40 {
+            s.push_text(g, 0, 1000 + i, 60_000 + i, &format!("{i} {big}"), 0);
+        }
+        let (held, revision_before) = (s.text[&0].raw.len(), revision(&mut s, 0));
+        assert_eq!(s.push_text(g, 0, 500, 1500, &format!("early {big}"), 0), None);
+        assert_eq!(s.text[&0].raw.len(), held, "it was not kept");
+        assert_eq!(revision(&mut s, 0), revision_before, "and nothing changed");
+    }
+
+    /// The charset detector learns as it reads, so the same packet can decode to other text after
+    /// a reopen. The dedup key is the packet, not the text, so the re-read is still found.
+    #[test]
+    fn a_reread_that_decodes_differently_is_still_the_same_cue() {
+        let (mut s, g) = text_store("f");
+        let packet = packet_identity(&[0xC4, 0xE3, 0xBA, 0xC3]);
+        assert!(s.push_text_keyed(g, 0, 1000, 2000, "mis-detected", packet, 0).is_some());
+        let held = view(&mut s, 0);
+        assert_eq!(s.push_text_keyed(g, 0, 1000, 2000, "\u{4f60}\u{597d}", packet, 0), None);
+        assert_eq!(view(&mut s, 0), held, "one event, the first reading");
+        assert_ne!(packet_identity(b"a"), packet_identity(b"b"));
+    }
+
     #[test]
     fn the_event_count_bound_retires_the_earliest_ending_then_the_far_ahead() {
         let items: Vec<(i64, i64, usize)> = (0..MAX_EVENTS as i64 + 3).map(|i| (i * 3000, i * 3000 + 2000, 10)).collect();
@@ -1532,9 +1593,9 @@ mod tests {
         );
         super::super::request_subtitle(1);
         let log = plx_base::eventlog::with_private_log(|| {
-            push_text(generation, 0, 1_000_000_000, 2_500_000_000, "not the selected track");
-            push_text(generation, 1, 1_000_000_000, 2_500_000_000, "Secret <i>dialogue</i>");
-            push_text(generation, 1, 1_000_000_000, 2_500_000_000, "Secret <i>dialogue</i>");
+            push_text(generation, 0, 1_000_000_000, 2_500_000_000, "not the selected track", packet_identity("not the selected track".as_bytes()));
+            push_text(generation, 1, 1_000_000_000, 2_500_000_000, "Secret <i>dialogue</i>", packet_identity("Secret <i>dialogue</i>".as_bytes()));
+            push_text(generation, 1, 1_000_000_000, 2_500_000_000, "Secret <i>dialogue</i>", packet_identity("Secret <i>dialogue</i>".as_bytes()));
             std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
         });
         super::super::request_subtitle(-1);
