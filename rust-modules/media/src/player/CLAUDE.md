@@ -149,7 +149,11 @@ something.
   (`player::lifecycle::viewer_paused`, `claim_hold::owns_pause`): the OK toggle means Pause and a
   seek's `resume_if_paused` leaves the hold alone (its seek is carried past the reload by
   `pump::commit_or_carry_seek`, including a seek pressed mid-flight when none was pending at
-  claim time). An engine failure during the flight publishes `Failed` at once
+  claim time). A reload (or a Pause pressed before the first frame) under a VIEWER Pause leaves a
+  session with `frames == 0` behind a shut feed gate; `pump::settle_paused_seek` opens the bounded
+  paused-seek preroll for exactly that state (paused, no claim-hold pause, no flight, no pending
+  seek, no frame yet), whichever route reloaded, so the stream presents one frame and re-pauses
+  instead of showing "Buffering…" over a blank plane. An engine failure during the flight publishes `Failed` at once
   (`fail_current_engine`) and clears the hold, so the error read-out shows instead of a spinner.
   The encoder a claim replaces is NOT stopped by the worker: the pump retires it
   (`route::retire_superseded_encoder`) after the reload.

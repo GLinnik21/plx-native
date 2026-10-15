@@ -1085,6 +1085,8 @@ static MID_SEEK_CLAIMS: std::sync::atomic::AtomicU32 = std::sync::atomic::Atomic
 ///
 /// * a viewer Pause pressed AFTER a playing seek was dispatched shut the feed gate under it, so
 ///   the pump opens its preroll now (and restarts the stuck watchdog's clock from the open);
+/// * a session with no picture yet under a viewer Pause (any reload, or a Pause before the first
+///   frame) gets the same preroll, so it can present one frame (see the branch below);
 /// * once the preroll the pump owns has LANDED on whichever Engine is live (in place: the keyframe
 ///   re-anchored; a reload or transcode landing: the fresh session re-anchored, and `frames` —
 ///   zeroed by the arm and by every session reset — counts a POST-seek presentation), re-pause with
@@ -1117,6 +1119,27 @@ fn settle_paused_seek(pa: &mut super::adapter::PlayerAdapter, now: u32) {
                 MID_SEEK_CLAIMS.fetch_add(1, Relaxed);
                 super::log("seek: viewer paused mid-seek; the pump opened the preroll");
             }
+        }
+    }
+    // A session with no picture under a viewer Pause. A reload keeps the Pause and zeroes `frames`,
+    // the fresh Engine arms an Initial hold the Pause marks user-held, and the feed gate
+    // (`TX.feed_allowed`) stays shut: no keyframe is fed, nothing is ever presented, and the HUD
+    // reads Buffering over a blank plane until Play. Derived from the state, so it covers every
+    // route that reloads (retranscode, adaptive, native audio, Original, recovery landings, a
+    // Pause pressed during a claim flight or before the first frame) without a call at each site:
+    // open the same bounded preroll a paused seek gets. Once a frame is presented `frames >= 1`
+    // closes this branch for good and the landed check below re-pauses.
+    if TX.paused.load(Acquire)
+        && !TX.seek_preroll_active()
+        && !super::claim_hold::owns_pause()
+        && !crate::route::flight_outstanding()
+        && TX.seek_to_ns.load(Relaxed) < 0
+        && SHARED.frames.load(Relaxed) == 0
+        && pa.engine().is_some()
+        && SHARED.hand_hold_to_seek_prime()
+    {
+        if TX.own_paused_seek(SHARED.playpos_ns.load(Relaxed)) {
+            super::log("reload: viewer paused with no picture yet; the pump opened the preroll");
         }
     }
     let Some(target) = TX.owned_paused_seek() else { return };
@@ -2408,6 +2431,70 @@ mod flight_tests {
         assert_eq!(rig.flight.decisions(), 1, "the arm never asked PMS to rebuild: the claim refused itself");
         assert_ne!(crate::route::transcode_session(&rig.ps), before, "the rebuilt encoder is the route's now");
     }
+
+    /// What a fresh Engine after a reload must reach while the viewer is paused: the paused-seek
+    /// preroll open (so the feed gate lets the keyframe through and the prime may Play), then, once
+    /// a frame is presented, the film re-paused. The rig's Engine is the one the reload installed.
+    fn assert_paused_reload_primes_a_first_frame(rig: &mut Rig) {
+        // The reload zeroed the session: no picture yet, viewer still paused.
+        SHARED.frames.store(0, Relaxed);
+        assert!(TX.paused.load(Acquire), "the viewer is still paused after the reload");
+        rig.frame();
+        rig.frame();
+        assert!(
+            TX.feed_allowed(),
+            "a reload under a viewer Pause left the feed gate shut on a session with no picture: the \
+             keyframe is never fed and the HUD shows Buffering forever"
+        );
+        SHARED.frames.store(1, Relaxed);
+        rig.frame();
+        rig.frame();
+        assert!(!TX.seek_preroll_active(), "the preroll closed once the first frame was presented");
+        assert!(TX.paused.load(Acquire), "the film ends paused");
+    }
+
+    /// The viewer is paused on a picture; Boost Dialog / Normalize Loudness requests an adaptive
+    /// reload; the fresh session has no picture and must be primed to show one.
+    #[test]
+    fn a_paused_adaptive_reload_primes_a_first_frame_and_ends_paused() {
+        let mut rig = Rig::new(60);
+        SHARED.frames.store(1, Relaxed);
+        SHARED.reset_hls_clock_for_test();
+        assert!(crate::player::pause(&mut rig.pa), "viewer Pause accepted");
+        crate::player::request_adaptive_reload(&rig.ps);
+        rig.frames_until("the adaptive reload to settle", |r| {
+            !crate::route::flight_outstanding() && r.flight.decisions() > 0
+        });
+        rig.frame();
+        assert_paused_reload_primes_a_first_frame(&mut rig);
+    }
+
+    /// A Pause pressed while the claim's flight is out: the claim hold took the Pause first, the
+    /// viewer's press forgets its restore, and the landing reloads a stream nobody owes a Play.
+    #[test]
+    fn a_pause_pressed_during_a_claim_flight_primes_the_reloaded_stream_a_first_frame() {
+        let mut rig = Rig::new(150);
+        SHARED.frames.store(1, Relaxed);
+        rig.flight.hold_answers();
+        crate::player::request_adaptive_reload(&rig.ps);
+        rig.frame();
+        assert!(crate::route::flight_outstanding(), "the claim must be in flight");
+        assert!(super::super::claim_hold::owns_pause(), "a playing stream: the hold took the Pause");
+        // Negative: the hold's own pause is given back by the hold, never primed over.
+        SHARED.frames.store(0, Relaxed);
+        rig.frame();
+        assert!(!TX.seek_preroll_active(), "a claim hold's pause opened a preroll");
+        SHARED.frames.store(1, Relaxed);
+        assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, true), "the viewer's Pause press");
+        assert!(!super::super::claim_hold::owns_pause(), "the viewer's press outranks the hold");
+        rig.flight.release_answers();
+        rig.frames_until("the adaptive reload to settle", |r| {
+            !crate::route::flight_outstanding() && r.flight.decisions() > 0
+        });
+        rig.frame();
+        assert_paused_reload_primes_a_first_frame(&mut rig);
+    }
+
     /// A rig whose route is a live fixed-rung HLS transcode under an applied Auto contract.
     fn hls_rig(delay_ms: u64) -> Rig {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -3613,6 +3700,60 @@ mod native_seek_pump_tests {
         );
         assert_eq!(preroll_at_reload(), vec![false], "a hold's pause is given back, never re-asserted");
         super::super::claim_hold::clear();
+    }
+
+    // ---- a fresh session under a viewer Pause is primed a first frame whatever reloaded it ----
+
+    impl Rig {
+        /// What every non-seek reload does once its route accepts (`reload_transcode`,
+        /// `switch_audio_native`, the adaptive and Original landings): the session resets keeping
+        /// the transport's Pause, and the fresh Engine arms its Initial hold from it. No seek is
+        /// armed and no preroll is opened by the caller.
+        fn complete_plain_reload(&mut self) {
+            TX.reset_for_reload();
+            SHARED.reset_session_for_reload();
+            SHARED.reset_hls_clock_for_test();
+            assert!(SHARED.arm_initial_clock_hold(TX.paused.load(Acquire), TX.seek_preroll_active()));
+            let epoch = SHARED.begin_native_session().unwrap_or(0);
+            let mut fresh = super::super::engine::streaming_engine_for_test(epoch);
+            fresh.stage = Stage::Playing;
+            self.pa.install(fresh);
+            SHARED.duration_ns.store(7_200_000_000_000, Relaxed);
+            SHARED.file_size.store(50_000_000_000, Relaxed);
+            SHARED.playpos_ns.store(TARGET_NS, Relaxed);
+        }
+    }
+
+    #[test]
+    fn a_paused_non_seek_reload_primes_a_first_frame_and_ends_paused() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        SHARED.frames.store(1, Relaxed);
+        rig.viewer_pause();
+        // retranscode_tail / native_audio_tail / adaptive_tail: no seek, the preroll not opened.
+        assert!(!TX.seek_preroll_active());
+        rig.complete_plain_reload();
+        assert_eq!(SHARED.frames.load(Relaxed), 0, "the reload zeroed the picture");
+        rig.frame();
+        assert!(TX.feed_allowed(), "the fresh session must be allowed to feed a keyframe");
+        let plays = rig.land_and_present(TARGET_NS);
+        assert!(plays >= 1, "the prime Play fired through the opened gate before the frame was presented");
+        assert_ended_paused();
+    }
+
+    #[test]
+    fn a_pause_pressed_on_an_initial_hold_before_any_frame_primes_one_and_ends_paused() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        SHARED.reset_hls_clock_for_test();
+        assert!(SHARED.arm_initial_clock_hold(false, false), "a fresh Engine is Held(Initial)");
+        assert!(crate::player::pause(&mut rig.pa), "Pause on the held clock is accepted as already held");
+        assert_eq!(SHARED.frames.load(Relaxed), 0);
+        rig.frame();
+        assert!(TX.feed_allowed(), "a Pause before the first frame must not starve the first frame");
+        let plays = rig.land_and_present(60_000_000_000);
+        assert!(plays >= 1, "the prime Play fired through the opened gate");
+        assert_ended_paused();
     }
 
     #[test]
