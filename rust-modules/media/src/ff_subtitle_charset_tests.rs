@@ -32,13 +32,14 @@ fn a_gbk_subrip_track_reads_as_chinese_not_replacement_characters() {
         let mut pkt = av_packet_alloc();
         assert!(!pkt.is_null());
         assert!(!fmt.is_null());
-        let mut subs = SubTracks::open(fmt, (*fmt).streams);
+        let mut subs = SubTracks::open(fmt, fmt.as_ref().expect("avformat_open_input succeeded").streams);
         assert_eq!(subs.entries().len(), 1, "the fixture has one subtitle track");
-        let generation = begin_ass_sources("fixture:gbk-subrip", fmt, (*fmt).streams, subs.entries());
+        let generation = begin_ass_sources("fixture:gbk-subrip", fmt, fmt.as_ref().expect("avformat_open_input succeeded").streams, subs.entries());
         let mut pushed = 0;
         while av_read_frame(fmt, pkt) >= 0 {
-            if let Some(pos) = subs.position((*pkt).stream_index) {
-                let st = *(*fmt).streams.add((*pkt).stream_index as usize);
+            if let Some(pos) = subs.position(pkt.as_ref().expect("av_packet_alloc").stream_index) {
+                let streams = fmt.as_ref().expect("avformat_open_input succeeded").streams;
+                let st = *streams.add(pkt.as_ref().expect("av_packet_alloc").stream_index as usize);
                 if let Some(cue) = subs.decode(pos, pkt, st) {
                     cue.push(generation);
                     pushed += 1;
@@ -86,12 +87,13 @@ fn a_packet_without_a_duration_is_clipped_by_the_cue_after_it() {
         let mut fmt = std::ptr::null_mut();
         assert!(avformat_open_input(&mut fmt, path.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) >= 0);
         let mut pkt = av_packet_alloc();
-        let mut subs = SubTracks::open(fmt, (*fmt).streams);
-        let generation = begin_ass_sources("fixture:no-duration", fmt, (*fmt).streams, subs.entries());
+        let mut subs = SubTracks::open(fmt, fmt.as_ref().expect("avformat_open_input succeeded").streams);
+        let generation = begin_ass_sources("fixture:no-duration", fmt, fmt.as_ref().expect("avformat_open_input succeeded").streams, subs.entries());
         while av_read_frame(fmt, pkt) >= 0 {
-            if let Some(pos) = subs.position((*pkt).stream_index) {
-                let st = *(*fmt).streams.add((*pkt).stream_index as usize);
-                (*pkt).duration = 0;
+            if let Some(pos) = subs.position(pkt.as_ref().expect("av_packet_alloc").stream_index) {
+                let streams = fmt.as_ref().expect("avformat_open_input succeeded").streams;
+                let st = *streams.add(pkt.as_ref().expect("av_packet_alloc").stream_index as usize);
+                pkt.as_mut().expect("av_packet_alloc").duration = 0;
                 if let Some(cue) = subs.decode(pos, pkt, st) {
                     let SubCue::Text { start, end, .. } = &cue else { panic!("a text cue") };
                     assert_eq!(end - start, 4_000_000_000, "the default end is start + 4 s");
