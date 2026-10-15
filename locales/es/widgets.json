@@ -164,6 +164,8 @@
   "widgets.tracks.enh_reason_dv_unusable": "No disponible para este vídeo con Dolby Vision.",
   "widgets.tracks.enh_reason_dv_subtitle": "No se puede usar con subtítulos en este vídeo con Dolby Vision. Desactiva los subtítulos para usarlo.",
   "widgets.tracks.enh_reason_quality": "Solo disponible con la calidad Original.",
+  "widgets.tracks.enh_reason_forced": "No disponible mientras Forzar reproducción directa esté activado. Desactívalo en Ajustes para usarlo.",
+  "widgets.tracks.enh_reason_not_copyable": "Tu servidor Plex no puede añadir esto al vídeo mientras se reproduce así.",
   "widgets.tracks.enh_reason_refused": "Tu servidor Plex no pudo activar esto para este vídeo.",
   "widgets.tracks.sub_burn_audio": "Lo dibuja tu servidor mientras convierte el audio.",
   "widgets.tracks.sub_burn_quality": "Lo dibuja tu servidor con esta calidad.",

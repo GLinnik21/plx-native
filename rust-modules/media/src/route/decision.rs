@@ -226,6 +226,9 @@ pub struct PlaybackSession {
     /// HLS is active: the HLS worker owns only measurements, while the main thread owns the
     /// codec/session transition back to this exact source declaration.
     auto_original: Option<AutoOriginalCandidate>,
+    /// Why `auto_original` is `None`, when it is known (see [`OriginalDeclined`]): read by the
+    /// audio-enhancement reason and nothing else.
+    original_declined: Option<OriginalDeclined>,
     /// Debug pipeline-tier substitute for PMS's fixed-rendition endpoints. Empty in every
     /// production plan; see [`arm_auto_fixture`].
     auto_fixture_base: String,
@@ -496,6 +499,7 @@ impl PlaybackSession {
         cur_source_decodable: true,
         cur_auto_original_watched: false,
         auto_original: None,
+        original_declined: None,
         auto_fixture_base: String::new(),
         auto_switches: 0,
         auto_last_switch: None,
@@ -577,6 +581,7 @@ impl PlaybackSession {
             cur_source_decodable,
             cur_auto_original_watched,
             auto_original,
+            original_declined,
             auto_fixture_base,
             auto_switches,
             auto_last_switch,
@@ -640,6 +645,7 @@ impl PlaybackSession {
             cur_source_decodable: *cur_source_decodable,
             cur_auto_original_watched: *cur_auto_original_watched,
             auto_original: auto_original.clone(),
+            original_declined: *original_declined,
             auto_fixture_base: auto_fixture_base.clone(),
             auto_switches: *auto_switches,
             auto_last_switch: *auto_last_switch,
@@ -8358,6 +8364,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             cur_source_decodable: plan.source_decodable,
             cur_auto_original_watched: plan.auto_original_watched,
             auto_original: plan.auto_original,
+            original_declined: plan.original_declined,
             auto_fixture_base: String::new(),
             // A NEW playback starts a new switch history: the count exists to stop this film
             // flapping, and inheriting the last one's would price a first decision as a fourth.
@@ -9163,6 +9170,8 @@ pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
         carried: ps.cur_audio.as_ref(),
         subtitle_effect: subtitle_effect_of(ps),
         refused: ps.cur_enhancement == EnhancementOutcome::Refused,
+        quality: quality(),
+        declined: ps.original_declined,
     }
 }
 
@@ -10045,6 +10054,11 @@ pub struct EnhTestFixture {
     /// A remembered subtitle was chosen for this play but the route shows none of it
     /// ([`cur_memory_note`]): the Subtitles tab says why.
     pub memory_note: bool,
+    /// The quality the HUD's Quality row reads (the picker). Defaults to Original: the shape
+    /// whose "only at Original quality" note contradicted the row.
+    pub quality: Quality,
+    /// Why `base_present: false` is so (see [`OriginalDeclined`]); `None` = a fixed rung.
+    pub declined: Option<OriginalDeclined>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -10065,6 +10079,8 @@ impl Default for EnhTestFixture {
             in_flight: false,
             side_reader: false,
             memory_note: false,
+            quality: Quality::Original,
+            declined: None,
         }
     }
 }
@@ -10098,6 +10114,8 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
     plx_plex::plex::serverinfo::store_for_test(sid, route.pass, "1.43.4");
 
     let mut ps = PlaybackSession::IDLE;
+    restore_quality(route.quality);
+    ps.original_declined = route.declined;
     ps.cur_sid = sid;
     ps.cur_sub_sid = if route.subtitle_effect == SubtitleEffect::None { 0 } else { 999 };
     ps.cur_sub_sidecar = route.subtitle_effect == SubtitleEffect::Sidecar;
@@ -10236,6 +10254,7 @@ fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
                 plx_plex::plex::TranscodeDelivery::FixedHls { .. }
             ) {
                 ps.auto_original = None;
+                ps.original_declined = Some(OriginalDeclined::TrackPickDropped);
             }
         }
         // Issue #266: on the Original family the candidate is also the way back from an enhanced
@@ -10244,6 +10263,7 @@ fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
             if let Some(candidate) = ps.auto_original.as_mut() {
                 if !candidate.retarget_audio(&audio, direct_plays) {
                     ps.auto_original = None;
+                    ps.original_declined = Some(OriginalDeclined::TrackPickDropped);
                 }
             }
         }
@@ -10364,6 +10384,7 @@ fn commit_subtitle_selection_inner(
                     }
                 } else {
                     s.auto_original = None;
+                    s.original_declined = Some(OriginalDeclined::TrackPickDropped);
                 }
             }
         }
@@ -10374,6 +10395,7 @@ fn commit_subtitle_selection_inner(
             if let Some(candidate) = ps.auto_original.as_mut() {
                 if !candidate.retarget_subtitle(pick, client_renderable) {
                     ps.auto_original = None;
+                    ps.original_declined = Some(OriginalDeclined::TrackPickDropped);
                 }
             }
         }

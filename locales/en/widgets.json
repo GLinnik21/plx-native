@@ -668,7 +668,15 @@
   },
   "widgets.tracks.enh_reason_quality": {
     "value": "Available only at Original quality.",
-    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when the live route is not Direct/Remux (a fixed quality rung, HLS, a relay) or no Original candidate exists."
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows ONLY when the quality in force is not Original (a fixed quality rung, or Auto currently on HLS); picking Original is the way in. Never shown under \"Quality: Original\"."
+  },
+  "widgets.tracks.enh_reason_forced": {
+    "value": "Not available while Force Direct Play is on. Turn it off in Settings to use it.",
+    "description": "One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when Settings > Force Direct Play is on, so the server never gets to change the sound."
+  },
+  "widgets.tracks.enh_reason_not_copyable": {
+    "value": "Your Plex server can't add this to the video as it plays now.",
+    "description": "One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when Original quality is in force (or cannot be reached by picking it) but the video cannot be offered the enhancement as it plays: a relay link, a video the server must convert, a track pick the Original route could not follow. Deliberately generic: the viewer cannot act on the differences."
   },
   "widgets.tracks.enh_reason_refused": {
     "value": "Your Plex server couldn't turn this on for this video.",

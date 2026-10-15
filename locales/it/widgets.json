@@ -670,6 +670,14 @@
     "value": "Disponibile solo alla qualità Originale.",
     "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when the live route is not Direct/Remux (a fixed quality rung, HLS, a relay) or no Original candidate exists."
   },
+  "widgets.tracks.enh_reason_forced": {
+    "value": "Non disponibile finché Forza Riproduzione diretta è attivo. Disattivalo nelle Impostazioni per usarlo.",
+    "description": "One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when Settings > Force Direct Play is on, so the server never gets to change the sound."
+  },
+  "widgets.tracks.enh_reason_not_copyable": {
+    "value": "Il tuo server Plex non può aggiungerlo al video così com’è in riproduzione ora.",
+    "description": "One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when Original quality is in force (or cannot be reached by picking it) but the video cannot be offered the enhancement as it plays: a relay link, a video the server must convert, a track pick the Original route could not follow. Deliberately generic: the viewer cannot act on the differences."
+  },
   "widgets.tracks.enh_reason_refused": {
     "value": "Il tuo server Plex non è riuscito ad attivarlo per questo video.",
     "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows after this playback's server already refused or ignored the params once."

@@ -1785,6 +1785,8 @@ impl TrackMenuState {
             DisabledReason::DolbyVisionUnusable => plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_unusable(),
             DisabledReason::DolbyVisionSubtitle => plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_subtitle(),
             DisabledReason::NotOriginalQuality => plx_platform::i18n::msg::widgets_tracks_enh_reason_quality(),
+            DisabledReason::ForcedDirectPlay => plx_platform::i18n::msg::widgets_tracks_enh_reason_forced(),
+            DisabledReason::NotCopyable => plx_platform::i18n::msg::widgets_tracks_enh_reason_not_copyable(),
             DisabledReason::ServerRefused => plx_platform::i18n::msg::widgets_tracks_enh_reason_refused(),
         }
         .to_string()
@@ -3518,13 +3520,16 @@ mod enhancement_menu_tests {
         teardown(&ps);
     }
 
-    /// I5 excludes every non-Direct/Remux shape identically (HLS, a fixed rung, a relay); one
-    /// `Other`-family route stands for the group, since the predicate cannot tell them apart. M7:
-    /// visible-and-dim, not hidden — "only at Original quality" is a plain reason.
+    /// A quality that is NOT Original in force (Auto on HLS, a fixed rung) is the one case that
+    /// may say "only at Original quality"; M7: visible-and-dim, not hidden.
     #[test]
-    fn enh_rows_disabled_hls() {
+    fn enh_rows_disabled_hls_under_auto_blames_quality() {
         let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture {
+            remux: Some(false),
+            quality: plx_media::route::Quality::Auto,
+            ..Default::default()
+        });
         assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
         let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_quality());
@@ -3532,28 +3537,64 @@ mod enhancement_menu_tests {
     }
 
     #[test]
-    fn enh_rows_disabled_reencode_rung() {
+    fn enh_rows_disabled_fixed_rung_blames_quality() {
         let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture {
+            remux: Some(false),
+            base_present: false,
+            quality: plx_media::route::Quality::P720,
+            ..Default::default()
+        });
         assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
         teardown(&ps);
     }
 
+    /// The owner's report: the note said "only at Original quality" while the Quality row read
+    /// Original. A non-copy route under Original must never blame the quality.
     #[test]
-    fn enh_rows_disabled_relay() {
+    fn enh_rows_disabled_under_original_never_blames_quality() {
         let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
-        teardown(&ps);
+        for fixture in [
+            EnhTestFixture { remux: Some(false), ..Default::default() },
+            EnhTestFixture {
+                base_present: false,
+                declined: Some(plx_media::route::OriginalDeclined::Relay),
+                ..Default::default()
+            },
+            EnhTestFixture {
+                base_present: false,
+                declined: Some(plx_media::route::OriginalDeclined::VideoNeedsConverting),
+                ..Default::default()
+            },
+            EnhTestFixture {
+                base_present: false,
+                declined: Some(plx_media::route::OriginalDeclined::TrackPickDropped),
+                ..Default::default()
+            },
+            EnhTestFixture { base_present: false, ..Default::default() },
+        ] {
+            let (menu, ps) = audio_tab(fixture);
+            assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotCopyable));
+            let note = menu.form.table.sections[1].rows.last().unwrap();
+            assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_not_copyable());
+            assert_ne!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_quality());
+            teardown(&ps);
+        }
     }
 
-    /// A forced direct play (or a fixed rung/relay/non-Original MDE) never computes an
-    /// `auto_original` candidate at all — `base_present: false` reproduces exactly that.
+    /// Force Direct Play never computes an `auto_original` candidate; the note names the setting.
     #[test]
     fn enh_rows_disabled_forced() {
         let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { base_present: false, ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
+        let (menu, ps) = audio_tab(EnhTestFixture {
+            base_present: false,
+            quality: plx_media::route::Quality::Auto,
+            declined: Some(plx_media::route::OriginalDeclined::ForcedDirectPlay),
+            ..Default::default()
+        });
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::ForcedDirectPlay));
+        let note = menu.form.table.sections[1].rows.last().unwrap();
+        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_forced());
         teardown(&ps);
     }
 
@@ -4179,6 +4220,8 @@ mod enhancement_menu_tests {
                 ("enh_reason_dv_unusable", plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_unusable()),
                 ("enh_reason_dv_subtitle", plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_subtitle()),
                 ("enh_reason_quality", plx_platform::i18n::msg::widgets_tracks_enh_reason_quality()),
+                ("enh_reason_forced", plx_platform::i18n::msg::widgets_tracks_enh_reason_forced()),
+                ("enh_reason_not_copyable", plx_platform::i18n::msg::widgets_tracks_enh_reason_not_copyable()),
                 ("enh_reason_refused", plx_platform::i18n::msg::widgets_tracks_enh_reason_refused()),
                 ("sub_burn_audio", plx_platform::i18n::msg::widgets_tracks_sub_burn_audio()),
                 ("sub_burn_quality", plx_platform::i18n::msg::widgets_tracks_sub_burn_quality()),
