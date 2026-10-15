@@ -60,6 +60,27 @@ fn captured_tab_labels_measure_words_and_keep_the_search_mark_square() {
     assert_eq!(words[1].to_bytes(), "Фильмы".as_bytes());
 }
 
+/// DS5: an icon face is an icon wherever it sits, not only last. Two icon faces after two labels
+/// (Home, Movies, Bookmark, Search) both get the square pill, and the strip does not scroll.
+/// Red against a `i + 1 == len` rule: the Bookmark would be measured as an empty label.
+#[test]
+fn an_icon_face_is_square_wherever_it_sits_in_the_strip() {
+    let faces = vec![TabFace::Label("Home".into()), TabFace::Label("Movies".into()),
+        TabFace::Icon(crate::icons::Icon::Bookmark), TabFace::Icon(crate::icons::Icon::Search)];
+    let (words, widths) = tab_metrics_from(&faces, |s| s.to_bytes().len() as f32 * 7.0);
+    assert_eq!(widths[2], TAB_ICON_PILL_W);
+    assert_eq!(widths[3], TAB_ICON_PILL_W);
+    assert_ne!(widths[2], 2.0 * TAB_PILL_PAD, "an icon is not an empty label");
+    assert!(words[2].to_bytes().is_empty() && words[3].to_bytes().is_empty());
+    assert_eq!(widths[0], 4.0 * 7.0 + 2.0 * TAB_PILL_PAD);
+    assert!(tab_content_w(&widths) <= TAB_VIEW_MAX, "four stops fit");
+    for i in 0..widths.len() {
+        for &start in &[0.0f32, 400.0, 9000.0] {
+            assert_eq!(tab_scroll_target(&widths, i, start), 0.0, "stop {i} must not scroll");
+        }
+    }
+}
+
 #[test]
 fn tab_metrics_cache_rejects_different_captured_labels_even_at_the_same_generation() {
     use super::*;
