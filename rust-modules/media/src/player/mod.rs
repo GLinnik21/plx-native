@@ -18,6 +18,8 @@
 pub mod adapter;
 pub mod claim_hold;
 pub mod ass; // pinned libass worker and immutable rendered frames
+pub mod ass_perf; // per-second libass cost line (`assperf:`)
+pub mod ass_timing; // libass clock reading and the validity window of a rendered frame
 pub mod ass_script; // a sidecar script fed in windows around the playhead
 pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub mod engine;
@@ -42,9 +44,12 @@ mod foreground_flight_tests;
 mod resume_tests;
 mod shared;
 pub mod sidecar;
+pub mod sub_charset; // legacy-encoding text subtitles (GBK, Big5, Shift_JIS, ...) read as UTF-8; decided once per track
 pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
 #[cfg(feature = "hostsim")]
 pub mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
+pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
+pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
 pub mod threads;
 pub mod video_geometry;
 pub mod vp9_hdr; // HDR10 for a VP9 stream: the container's PQ tag, written into the sourceInfo envelope ACB is sent
@@ -1957,33 +1962,6 @@ pub fn push_subtitle_text(track: i32, start_ns: i64, end_ns: i64, text: String) 
         text,
     });
 }
-/// demux (D-thread) pushes a subtitle cue (content-time ns) for track `track`. Called for
-/// EVERY plain-text track so a mid-play switch is instant; only the selected track's cues are logged.
-pub fn push_subtitle_cue(
-    track: i32,
-    start_ns: i64,
-    end_ns: i64,
-    payload: &[u8],
-) {
-    let text = sub_text(payload);
-    if text.is_empty() {
-        return;
-    }
-    if track == SHARED.desired_sub_idx.load(Relaxed) {
-        // LENGTH, never the dialogue. This line used to carry 34 characters of what the viewer
-        // was watching — the most sensitive thing the event log has ever held, in a file that gets
-        // photographed into public issue threads. `len=` answers every question the text answered
-        // for triage (did a cue arrive, at what time, was it empty, is the track the right one)
-        // without being viewing content.
-        log(&format!(
-            "sub cue [{}..{}ms] len={}",
-            start_ns / 1_000_000,
-            end_ns / 1_000_000,
-            text.chars().count()
-        ));
-    }
-    push_subtitle_text(track, start_ns, end_ns, text);
-}
 /// the selected track's subtitle text active at `now_ns`, or None (also None when off).
 pub fn active_subtitle(now_ns: i64) -> Option<String> {
     active_subtitle_span(now_ns).map(|(text, _, _)| text)
@@ -2150,8 +2128,10 @@ pub fn bitmap_by_key(key: i64) -> Option<(i32, i32, Vec<SubRect>)> {
         .find(|c| c.track == sel && c.start_ns == key)
         .map(|c| (c.cw, c.ch, c.rects.clone()))
 }
-/// Extract plain caption text, stripping markup and normalizing line breaks.
-/// ASS/SSA never enters this path: the native renderer receives its complete script/events.
+/// Extract plain caption text, stripping markup and normalizing line breaks. Nothing draws with it
+/// any more (every text track is libass's); it is the reference the `text_ass` floor tests grade
+/// the converter against, and goes with the rest of the bespoke caption path in the plan's PR 10.
+#[cfg(test)]
 fn sub_text(payload: &[u8]) -> String {
     let s = String::from_utf8_lossy(payload);
     let mut out = String::with_capacity(s.len());

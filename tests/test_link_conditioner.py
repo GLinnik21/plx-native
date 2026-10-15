@@ -154,7 +154,7 @@ class OnTheMock(unittest.TestCase):
         self.post({"spec": "listing=none:latency=100"})
         urllib.request.urlopen(urllib.request.Request(self.base + "/_mock/wire", method="DELETE"), timeout=5)
         self.timed("/library/sections/1/all?X-Plex-Container-Start=24&X-Plex-Container-Size=24")
-        row = self.wire_row("/library/sections/1/all")
+        row = self.wire_row("/library/sections/1/all", start="24")
         self.assertEqual((row["start"], row["size"], row["class"]), ("24", "24", "listing"))
         self.assertGreaterEqual(row["t_done"] - row["t_recv"], 0.09)
 
@@ -173,14 +173,18 @@ class OnTheMock(unittest.TestCase):
             row = self.wire_row("/library/sections/1/all")
         self.assertEqual((row["start"], row["class"]), ("0", "listing"))
 
-    def wire_row(self, path, deadline_s=5.0):
-        """The first wire-log row for `path`, waiting (bounded) for it: the row is appended just
-        AFTER the response's final write, so it can trail the client's own read of the body."""
+    def wire_row(self, path, deadline_s=5.0, start=None):
+        """The first wire-log row for `path` (and, when given, this `start`), waiting (bounded) for
+        it: the row is appended just AFTER the response's final write, so it can trail the client's
+        own read of the body. The same lag lets the PREVIOUS test's last row land after this test's
+        `DELETE /_mock/wire`, so a test that issues a request with a distinctive `start` names it
+        rather than taking whichever row for the path arrived first (a CI flake: start=None)."""
         end = time.monotonic() + deadline_s
         while True:
             with urllib.request.urlopen(self.base + "/_mock/wire", timeout=5) as r:
                 rows = json.loads(r.read())["rows"]
-            found = next((r for r in rows if r["path"] == path), None)
+            found = next((r for r in rows if r["path"] == path
+                          and (start is None or r["start"] == start)), None)
             if found is not None or time.monotonic() >= end:
                 self.assertIsNotNone(found, f"no wire row for {path} within {deadline_s}s; rows={rows}")
                 return found
