@@ -1,19 +1,19 @@
 {
- "generated": "2026-10-15T00:41:31Z",
+ "generated": "2026-10-15T00:42:21Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 27.2,
+   "change7_pct": 27.4,
    "d30": null,
    "delta30": null,
-   "delta7": 209.0,
+   "delta7": 210.5,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 9,
+   "n_now": 10,
    "n_prev": 68,
-   "now": 977,
+   "now": 978.5,
    "prev7": 768.0,
    "shown": true,
    "state": "worse",
@@ -458,17 +458,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 11.1,
+   "change7_pct": 8.3,
    "d30": null,
    "delta30": null,
-   "delta7": 2.0,
+   "delta7": 1.5,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 9,
+   "n_now": 10,
    "n_prev": 68,
-   "now": 20,
+   "now": 19.5,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -508,9 +508,9 @@
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 9,
+   "n_now": 10,
    "n_prev": 68,
-   "now": 16,
+   "now": 16.0,
    "prev7": 14.0,
    "shown": false,
    "state": "flat",
@@ -564,7 +564,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 27.2,
+   "change_pct": 27.4,
    "commits": [
     {
      "pr": 701,
@@ -622,7 +622,7 @@
    "label": "Nightly: ARM build + gates / build + verify",
    "since": "2026-10-12",
    "threshold_pct": 25.0,
-   "to": 977
+   "to": 978.5
   }
  ],
  "schema": 2,
@@ -631,7 +631,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 977
+   "now": 978.5
   },
   {
    "group": "ci",
