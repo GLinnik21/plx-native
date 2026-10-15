@@ -356,8 +356,7 @@ impl AboutPanelScreen {
         measure: &dyn plx_machine::machine::Measure,
         field: Option<&plx_ui::underlay::UnderlayField>,
     ) {
-        let slide = RISE * (1.0 - appear);
-        let p = Painter::root().alpha(appear).translate(0.0, slide);
+        let p = sheet_painter(appear);
 
         // ---- measure ----
         // The tagline first, because the synopsis's line budget is what is LEFT after it.
@@ -620,7 +619,7 @@ impl<H: crate::registry::AppLike + crate::registry::MetadataLike + crate::regist
     ///
     /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): the
     /// panel's ground once sampled the framebuffer (`Glass::CACHED`), so the dim had to be down
-    /// before the backdrop was taken; the ground is the latched underlay field now, latched at the
+    /// before the backdrop was taken; the ground is live glass now (`popover_glass`, DS6), with the latched underlay field as its fallback, latched at the
     /// head of the dims from the undimmed page. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
     /// earlier than the surface pass this `draw` runs in — and multiplies by the appear spring and
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
@@ -677,9 +676,24 @@ fn rule(p: Painter, r: Rect, y: f32) {
     widgets::hairline(p, r.x + PAD, r.y + y, CONTENT_W);
 }
 
+/// The painter every frame of the sheet draws through: the appear fade and the rise, with the rise
+/// REMEMBERED (`Painter::lifted`) so the glass ground grabs its backdrop around the rest rect and
+/// the open slide re-grabs nothing.
+fn sheet_painter(appear: f32) -> Painter {
+    Painter::root().alpha(appear).lifted(RISE * (1.0 - appear))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sheet's painter carries its rise as `rest_lift`, so `popover_glass::draw` takes the
+    /// rising grab. A hand-made `translate` leaves it `None` and re-grabs every slide frame.
+    #[test]
+    fn the_sheet_painter_remembers_its_rise() {
+        assert_eq!(sheet_painter(0.25).rest_lift(), Some(RISE * 0.75));
+        assert_eq!(sheet_painter(1.0).rest_lift(), Some(0.0));
+    }
 
     /// The ladder in the mock's own order, with every block present: each block sits below the one
     /// above it by exactly its gap, and the panel's height closes with the bottom padding.

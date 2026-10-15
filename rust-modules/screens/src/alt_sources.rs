@@ -647,7 +647,7 @@ impl<H: AppLike<Memory = PageMemory> + crate::registry::MetadataLike> Screen<H> 
     ///
     /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): the
     /// panel's ground once sampled the framebuffer (`Glass::CACHED`), so the dim had to be down
-    /// before the backdrop was taken; the ground is the latched underlay field now, latched at the
+    /// before the backdrop was taken; the ground is live glass now (`popover_glass`, DS6), with the latched underlay field as its fallback, latched at the
     /// head of the dims from the undimmed page. `ModalStack::draw_scrims` draws it at the end of the PAGE pass,
     /// which is strictly earlier than the surface pass this `draw` runs in, and multiplies by the
     /// appear spring and by `nav::page_alpha` — the second of which the in-`draw` version could
@@ -660,7 +660,7 @@ impl<H: AppLike<Memory = PageMemory> + crate::registry::MetadataLike> Screen<H> 
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let appear = f.page_alpha;
         let r = self.frame(f.measure);
-        let p = f.painter.alpha(appear).translate(0.0, RISE * (1.0 - appear));
+        let p = f.painter.alpha(appear).lifted(RISE * (1.0 - appear));
         let measure = f.measure;
         // Named for `/tmp/plxnative-cpuprof` beside the page's own phases, so a slow frame while
         // this panel is up can be read as the PANEL or as the host under it.
