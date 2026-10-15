@@ -131,7 +131,8 @@ impl BrowseStore {
 
     pub fn run(&mut self, cmd: BrowseCmd) -> bool {
         let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
-            work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }, ..
+            work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }
+                | LibraryWork::Requery, ..
         });
         let quiet = matches!(&cmd, BrowseCmd::Addressed {
             work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres | LibraryWork::HubPage { .. } | LibraryWork::HubPageCancel { .. }, ..
@@ -183,6 +184,12 @@ impl BrowseStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn discover_pump(&mut self) -> super::StoreOutcome {
         self.discover_pump_with_gate(plx_machine::landgate::fixture_gate())
+    }
+
+    /// Is a membership re-query's first page still out with no Library page on top to pump it? The
+    /// application pumps this store itself while it holds (`Bridge::reconcile_pump`).
+    pub fn requery_owed(&self) -> bool {
+        self.state.requery_owed()
     }
 
     pub fn listing_snapshot(&mut self) -> ListingSnapshot {
@@ -505,6 +512,13 @@ pub enum LibraryWork {
         hi: usize,
     },
     Retry,
+    /// Re-fetch the current section's query if a read-back made its membership stale (the Unwatched
+    /// switch, ordering by last viewed). The Library page asks once a PAGE has been pushed over it,
+    /// never while it is visible or under a modal (a compact menu): the reader's ground does not
+    /// move under the cursor, and the listing is fresh when the page is shown again. It is the
+    /// same query refreshed, so [`crate::browse::view::ListingId::query`] does not move and the
+    /// page keeps its scroll and focus.
+    Requery,
 }
 
 impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {

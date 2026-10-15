@@ -108,8 +108,12 @@ impl SearchStore {
         if matches!(&cmd, SearchCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
+        let view_edit = matches!(&cmd, SearchCmd::ApplyView { .. });
         let answer = self.state.run(&self.adapter, cmd);
-        self.bump();
+        // An `ApplyView` that matched no tile raises no notice; every other command does.
+        if answer || !view_edit {
+            self.bump();
+        }
         answer
     }
 
@@ -123,8 +127,11 @@ impl SearchStore {
         if matches!(&cmd, SearchCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
+        let view_edit = matches!(&cmd, SearchCmd::ApplyView { .. });
         let answer = self.state.run_with_directory(&self.adapter, cmd, directory);
-        self.bump();
+        if answer || !view_edit {
+            self.bump();
+        }
         answer
     }
 
@@ -171,5 +178,39 @@ impl SearchStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn adapter_for_test(&self) -> Arc<crate::search::SearchAdapter> {
         Arc::clone(&self.adapter)
+    }
+}
+
+#[cfg(test)]
+mod view_edit_notice_tests {
+    use super::*;
+    use crate::search::{Item, Kind, Shelf};
+    use crate::viewstate::{ViewAt, ViewEdit};
+
+    /// An `ApplyView` that matched no tile raises no notice: the server's `Facts`/`Offset` that
+    /// agree with what is drawn move nothing, and a store that bumped anyway would relayout every
+    /// mounted consumer for it. A change that does reach a tile still raises one.
+    #[test]
+    fn a_view_edit_that_changed_nothing_raises_no_notice() {
+        let _g = plx_base::testlock::serial();
+        let sid = plx_plex::plex::ServerId::UNSET;
+        let mut store = SearchStore::default();
+        store.publish_shelves_for_test(vec![Shelf {
+            epoch: 0, window: Default::default(), kind: Kind::Movie,
+            items: vec![Item::Media(crate::pms::PmsMovie {
+                sid, rk: "1".into(), unwatched: true, resume_ms: 20_000, ..Default::default()
+            })],
+        }]);
+        let _ = store.take_notice();
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        let apply = |store: &mut SearchStore, rk: &str| {
+            store.run(SearchCmd::ApplyView { at: ViewAt::leaf(sid, rk), edit: facts })
+        };
+        assert!(apply(&mut store, "1"));
+        assert!(store.take_notice().is_some(), "a changed tile is news");
+        assert!(!apply(&mut store, "1"));
+        assert_eq!(store.take_notice(), None, "facts that agree with the tile raise no notice");
+        assert!(!apply(&mut store, "elsewhere"));
+        assert_eq!(store.take_notice(), None);
     }
 }

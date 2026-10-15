@@ -923,11 +923,13 @@ fn set_query_with_directory(
 /// Returns whether anything matched. **MAIN THREAD.**
 fn apply_view(state: &mut SearchState, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
     // A result tile has no deck: a removal from Continue Watching changes nothing here.
-    let crate::viewstate::ViewEdit::Watched(_) = edit else { return false };
+    if let crate::viewstate::ViewEdit::LeftDeck = edit { return false }
     let mut hit = false;
+    // `changes`: a press always counts, the server's `Facts`/`Offset` only where they differ, so a
+    // read-back that agrees with what is drawn raises no notice and moves nothing.
     let mut flip = |it: &mut Item| {
         if let Item::Media(m) = it {
-            if at.covers(m) {
+            if at.covers(m) && edit.changes(m) {
                 edit.apply(m);
                 hit = true;
             }
@@ -942,7 +944,7 @@ fn apply_view(state: &mut SearchState, at: &crate::viewstate::ViewAt, edit: crat
     if let Some(shelves) = &mut state.shelves {
         // A write outside the visible result cap must not clone a retained catalog it cannot
         // change. The catalog itself is bounded by KINDS × WINDOW, never library-sized.
-        if shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it, Item::Media(m) if at.covers(m))) {
+        if shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it, Item::Media(m) if at.covers(m) && edit.changes(m))) {
             for it in Arc::make_mut(shelves).iter_mut().flat_map(|s| &mut s.items) { flip(it); }
         }
     }

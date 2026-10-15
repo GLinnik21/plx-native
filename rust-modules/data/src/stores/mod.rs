@@ -57,6 +57,7 @@ pub mod paging;
 pub mod search;
 pub mod subsearch;
 pub mod tape;
+pub mod viewreconcile;
 pub mod viewstate;
 
 /// Production store aggregate. All seven stores are physical owners here — Browse, Person and
@@ -74,10 +75,16 @@ pub struct Stores {
     /// The player's subtitle search & download (`crate::subsearch`). Appended last.
     pub subtitle_search: subsearch::SubSearchStore,
     pub viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
+    /// The read-back of landed view-state writes. Appended after ViewState's other owners.
+    pub reconcile: viewreconcile::ViewReconcileStore,
     /// The publish order of view-state edits (`crate::viewledger`): `viewstate` records into it, and
     /// every store that reads stamps a read from it and re-patches the read when it lands. A store
     /// replaced after construction takes it as an argument (`HubsStore::from_parts`).
     pub view_ledger: crate::viewledger::ViewLedger,
+    /// The player is on top: view-state reconcile work that reaches the network (the read-back, the
+    /// hub refetch a landed write owes, the membership re-query it may start) stays owed instead of
+    /// running under the video. Set once a frame by [`Stores::hold_network`].
+    network_held: bool,
 }
 
 impl Default for Stores {
@@ -93,7 +100,9 @@ impl Default for Stores {
             search: search::SearchStore::default(),
             subtitle_search: subsearch::SubSearchStore::default(),
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
+            reconcile: viewreconcile::ViewReconcileStore::default(),
             view_ledger: Default::default(),
+            network_held: false,
         };
         stores.share_view_ledger();
         stores
@@ -112,6 +121,7 @@ impl Stores {
         self.collection.share_ledger(ledger);
         self.search.share_ledger(ledger);
         self.viewstate.borrow_mut().share_ledger(ledger);
+        self.reconcile.share_ledger(ledger);
     }
 
     /// Explicit synchronous Browse command path. The answer is available before this call returns.
@@ -198,6 +208,9 @@ impl Stores {
         cmd: viewstate::ViewStateCmd,
         directory: browse::DirectoryView<'_>,
     ) -> bool {
+        if matches!(cmd, viewstate::ViewStateCmd::Reset) {
+            self.reconcile.reset();
+        }
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
         let person = &mut self.person;
@@ -238,6 +251,82 @@ impl Stores {
         )
     }
 
+    /// Hold (`true`) or release the view-state reconcile network work; see [`Stores::network_held`].
+    /// Patches are not held: what the stores already show keeps changing while the player is up.
+    pub fn hold_network(&mut self, on: bool) {
+        self.network_held = on;
+        self.viewstate.borrow_mut().set_hold_refresh(on);
+    }
+
+    pub fn network_held(&self) -> bool {
+        self.network_held
+    }
+
+    /// Playbacks that stopped. Each gets an immediate resume patch ([`crate::viewstate::ViewFact::Offset`])
+    /// on the stores that show the item, so a tile reads the new resume point before any read; and,
+    /// when the server took the `stopped` POST, a read-back through the reconcile worker (which
+    /// stays queued while the network is held). MAIN THREAD, route-unconditional.
+    pub fn stops_landed(&mut self, stops: Vec<crate::viewstate::StopRecord>, directory: browse::DirectoryView<'_>) {
+        for stop in stops {
+            self.publish(crate::viewstate::ViewChange {
+                sid: stop.sid,
+                rk: stop.rk.clone(),
+                scope: crate::viewstate::Scope::Leaf,
+                fact: crate::viewstate::ViewFact::Offset { ms: stop.pos_ms, dur_ms: stop.dur_ms },
+            }, directory);
+            if stop.ok {
+                self.reconcile.enqueue_stop((stop.sid, stop.rk), stop.was_watched);
+            }
+        }
+    }
+
+    fn publish(&mut self, change: crate::viewstate::ViewChange, directory: browse::DirectoryView<'_>) {
+        let browse = std::rc::Rc::clone(&self.browse);
+        let hubs = &mut self.hubs;
+        let person = &mut self.person;
+        let collection = &mut self.collection;
+        let search = &mut self.search;
+        let metadata = &mut self.metadata;
+        crate::viewstate::publish_view(
+            change,
+            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
+            &mut |cmd| person.run(cmd),
+            &mut |cmd| collection.run(cmd),
+            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| metadata.run(cmd),
+        );
+    }
+
+    /// The read-back worker's route-unconditional pass: hand it what landed writes owe, send its
+    /// reads, and publish the facts it brought back to the stores that hold the rows.
+    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>) -> bool {
+        let owed = self.viewstate.borrow_mut().take_reread();
+        self.reconcile.enqueue(owed);
+        let idle = !self.viewstate.borrow().is_busy() && !self.network_held;
+        let browse = std::rc::Rc::clone(&self.browse);
+        let hubs = &mut self.hubs;
+        let person = &mut self.person;
+        let collection = &mut self.collection;
+        let search = &mut self.search;
+        let metadata = &mut self.metadata;
+        let changed = self.reconcile.pump_with_gate(&self.landgate, idle, &mut |change| crate::viewstate::publish_view(
+            change,
+            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
+            &mut |cmd| person.run(cmd),
+            &mut |cmd| collection.run(cmd),
+            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| metadata.run(cmd),
+        ));
+        // A first watch whose read-back found the stream's end: the other servers' copies are
+        // owed the same watched write, through ViewState's serial queue (the origin already holds it).
+        for (sid, rk) in self.reconcile.take_watched_ends() {
+            self.viewstate.borrow_mut().fan_out_origin_watched(sid, &rk);
+        }
+        changed
+    }
+
     pub fn take_detail_refresh(&self) -> Option<viewstate::DetailRefresh> {
         self.viewstate.borrow_mut().take_detail_refresh()
     }
@@ -265,6 +354,9 @@ impl Stores {
             StoreId::Search => self.search.gen(),
             StoreId::SubtitleSearch => self.subtitle_search.gen(),
             StoreId::ViewState => self.viewstate.borrow().gen(),
+            StoreId::ViewReconcile => self.reconcile.gen(),
+            // A landing gate slot only: the stop mailbox is not a store and has no generation.
+            StoreId::ViewStop => 0,
         }
     }
 
@@ -294,6 +386,9 @@ impl Stores {
         if let Some(generation) = self.viewstate.borrow().take_notice() {
             notices.push((StoreId::ViewState, generation));
         }
+        if let Some(generation) = self.reconcile.take_notice() {
+            notices.push((StoreId::ViewReconcile, generation));
+        }
         notices
     }
 }
@@ -311,6 +406,12 @@ pub enum StoreId {
     Collection,
     /// Appended for the same reason: every earlier store keeps its recorded ordinal.
     SubtitleSearch,
+    /// Appended for the same reason: the read-back of landed view-state writes.
+    ViewReconcile,
+    /// Appended for the same reason: the landing gate's slot for the stop mailbox
+    /// (`route::take_landed_stops`), which is no store but needs an ordinal of its own because the
+    /// gate keeps one mailbox per ordinal.
+    ViewStop,
 }
 
 /// Route-scoped background work, distinct from a user command. Polling an idle store must not
@@ -336,7 +437,7 @@ impl StoreWork {
 }
 
 impl StoreId {
-    pub const ALL: [StoreId; 8] = [
+    pub const ALL: [StoreId; 10] = [
         StoreId::Browse,
         StoreId::Hubs,
         StoreId::Metadata,
@@ -345,6 +446,8 @@ impl StoreId {
         StoreId::ViewState,
         StoreId::Collection,
         StoreId::SubtitleSearch,
+        StoreId::ViewReconcile,
+        StoreId::ViewStop,
     ];
 
     /// The library's ordinal for this store (spec §5.1: the library never names `StoreId`).
@@ -366,6 +469,8 @@ impl StoreId {
             StoreId::SubtitleSearch => "subsearch",
             StoreId::Person => "person",
             StoreId::ViewState => "viewstate",
+            StoreId::ViewReconcile => "viewreconcile",
+            StoreId::ViewStop => "viewstop",
         }
     }
 }
@@ -700,6 +805,6 @@ mod tests {
         for id in StoreId::ALL {
             assert_eq!(StoreId::from_ord(id.ord()), Some(id));
         }
-        assert_eq!(StoreId::from_ord(StoreOrd(8)), None);
+        assert_eq!(StoreId::from_ord(StoreOrd(10)), None);
     }
 }

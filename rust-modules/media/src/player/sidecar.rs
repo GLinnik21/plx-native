@@ -114,6 +114,10 @@ static STATE: Mutex<State> = Mutex::new(State {
     failed: None,
 });
 
+/// Signalled, under [`STATE`], whenever the download worker goes idle or a restyle worker has
+/// finished: what the tests wait on instead of the clock.
+static SETTLED: std::sync::Condvar = std::sync::Condvar::new();
+
 /// How long a [`Failure`] stays on screen.
 const FAILURE_SHOWN: Duration = Duration::from_secs(6);
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -162,6 +166,7 @@ fn select_with_fetch(
             let mut st = state();
             let Some(request) = st.pending.take() else {
                 st.running = false;
+                SETTLED.notify_all();
                 return;
             };
             request
@@ -197,6 +202,7 @@ fn select_with_fetch(
         st.running = false;
         st.pending = None;
         st.failed = Some((selection, Failure::Fetch, Instant::now()));
+        SETTLED.notify_all();
     }
 }
 
@@ -355,12 +361,14 @@ fn start_restyle(content: &mut Content, style: TextStyle) {
         if let Some((_, content)) = st.loaded.as_mut() {
             publish_restyle(content, id, base_generation, style, header.len(), script);
         }
+        SETTLED.notify_all();
         drop(st);
         plx_machine::present::wake_from_worker();
     });
     if !started {
         super::log("sidecar: restyle worker refused");
         hold.restyling = false;
+        SETTLED.notify_all();
     }
 }
 
@@ -463,12 +471,26 @@ mod tests {
     use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
     use std::sync::atomic::Ordering::Relaxed;
 
+    /// A backstop against a hung worker only: the waits below end on the worker's own signal, so a
+    /// loaded runner just takes longer. Hitting it means the worker never finished.
+    const WORKER_HUNG: Duration = Duration::from_secs(120);
+
+    /// Block until the download worker has gone idle ([`SETTLED`]), however long the host takes.
     fn finish_download() {
-        let until = Instant::now() + Duration::from_secs(2);
-        while state().running && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert!(!state().running, "sidecar worker finished");
+        let (st, timeout) = SETTLED
+            .wait_timeout_while(state(), WORKER_HUNG, |st| st.running)
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(!timeout.timed_out() && !st.running, "sidecar worker finished");
+    }
+
+    /// Block until no restyle worker is building a script for the loaded file ([`SETTLED`]).
+    fn finish_restyle() {
+        let (_st, timeout) = SETTLED
+            .wait_timeout_while(state(), WORKER_HUNG, |st| {
+                st.loaded.as_ref().and_then(|(_, c)| c.text.as_ref()).is_some_and(|hold| hold.restyling)
+            })
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(!timeout.timed_out(), "sidecar restyle worker finished");
     }
 
     const STYLED_SCRIPT: &[u8] = b"[Script Info]\nScriptType: v4.00+\n[Events]\n\
@@ -606,10 +628,7 @@ mod tests {
             let ass::Content::Script { bytes, .. } = &s.content else { panic!() };
             String::from_utf8_lossy(bytes).into_owned()
         });
-        let until = Instant::now() + Duration::from_secs(2);
-        while text_of().is_none() && Instant::now() < until {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        finish_download();
         let script = text_of().expect("the latest pick landed");
         assert!(script.ends_with(",new\n"), "{script}");
         assert!(!script.contains(",old\n"));
@@ -825,14 +844,8 @@ mod tests {
 
     /// The source for `picks`, once the worker that builds a restyled script has published it.
     fn restyled_source(picks: TextStyle) -> Arc<ass::Source> {
-        let until = Instant::now() + Duration::from_secs(5);
-        loop {
-            let source = ass_source_styled(false, picks).expect("the converted file");
-            if source.origin == Origin::Text(picks) || Instant::now() > until {
-                return source;
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        }
+        finish_restyle();
+        ass_source_styled(false, picks).expect("the converted file")
     }
 
     /// A pick change must cost the frame thread nothing in proportion to the file: the call that

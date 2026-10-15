@@ -275,12 +275,13 @@ impl CollectionState {
             // refetch later.
             CollectionCmd::ApplyView { at, edit } => {
                 // A member has no deck to leave.
-                let crate::viewstate::ViewEdit::Watched(_) = edit else { return false };
+                if let crate::viewstate::ViewEdit::LeftDeck = edit { return false }
                 let Some(c) = self.current.as_mut() else { return false };
                 let mut hit = false;
                 for i in 0..c.shown() {
                     c.pages.edit(i, |item| {
-                        if at.covers(item) {
+                        // `changes`: the server's `Facts`/`Offset` that agree touch nothing
+                        if at.covers(item) && edit.changes(item) {
                             edit.apply(item);
                             hit = true;
                         }
@@ -860,6 +861,29 @@ mod tests {
             edit: crate::viewstate::ViewEdit::Watched(true) }));
         let item = &state.view().current().unwrap().item(0).unwrap();
         assert!(item.watched && !item.unwatched);
+    }
+
+    #[test]
+    fn the_servers_facts_and_offset_patch_a_member_only_where_they_differ() {
+        use crate::viewstate::{ViewAt, ViewEdit};
+        let adapter = Arc::new(CollectionAdapter::default());
+        let mut state = CollectionState::default();
+        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        state.install_for_test(vec![
+            PmsMovie { rk: "a".into(), unwatched: true, resume_ms: 4, ..Default::default() },
+            PmsMovie { rk: "b".into(), unwatched: true, ..Default::default() },
+        ], CollectionStatus::Ready);
+        let mut run = |rk: &str, edit| state.run(&adapter, CollectionCmd::ApplyView {
+            at: ViewAt::leaf(ServerId::UNSET, rk), edit });
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        assert!(run("a", facts));
+        assert!(!run("a", facts), "facts that agree with the member change nothing");
+        assert!(run("b", ViewEdit::Offset { ms: 55 }));
+        assert!(!run("b", ViewEdit::Offset { ms: 55 }));
+        let c = state.view().current().unwrap();
+        let (a, b) = (c.item(0).unwrap(), c.item(1).unwrap());
+        assert_eq!((a.watched, a.unwatched, a.resume_ms), (true, false, 0));
+        assert_eq!((b.watched, b.unwatched, b.resume_ms), (false, true, 55), "an offset leaves the watched state alone");
     }
 
     /// A collection opened and its header landed, reading nothing yet.

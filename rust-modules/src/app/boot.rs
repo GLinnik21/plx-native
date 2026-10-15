@@ -853,6 +853,8 @@ pub(super) fn activate_server_owned(
     let _ = bridge.hubs_run(plx_data::stores::hubs::HubsCmd::Reset).changed;
     bridge.person_run(plx_data::stores::person::PersonCmd::Reset);
     bridge.collection_run(plx_data::stores::collection::CollectionCmd::Reset);
+    // before the stores reset: a stop the previous identity left in flight must not land on this one
+    plx_media::route::retire_pending_stops();
     bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
     bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::Reset);
     let mut endpoints = bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints;

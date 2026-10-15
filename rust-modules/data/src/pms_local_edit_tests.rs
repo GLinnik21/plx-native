@@ -353,3 +353,29 @@ fn a_source_request_takes_its_ledger_stamp_at_the_request() {
     assert!(brought.shelves[0].items[1].watched, "the second was made while the read was out");
     plx_plex::plex::reset_servers_for_test();
 }
+
+/// The read-back answers for every item a write touched, mostly agreeing with what the optimistic
+/// edit already put on the row. Facts that change nothing are not a hit: a hit forces a full merge,
+/// a Home commit and a notice, for rows that look exactly as before.
+#[test]
+fn facts_that_change_no_row_are_not_a_hit_but_facts_that_differ_are() {
+    let _g = plx_base::testlock::serial();
+    let mut o = Owner::default();
+    reset(&mut o.state, &o.adapter);
+    let mut b = SourceBuild {
+        lane: Default::default(),
+        cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7"), position: 0 }],
+        shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])],
+    };
+    let leaf = ViewAt::leaf(sid(0), "7");
+    let eight = b.shelves[0].items[1].clone();
+    let equal = ViewEdit::Facts { watched: eight.watched, unwatched: eight.unwatched, resume_ms: eight.resume_ms };
+    assert!(!apply_edit(&mut b, &ViewAt::leaf(sid(0), "8"), equal), "facts equal to the row: no hit");
+    // "7" is a started card on the deck and a plain card on the shelf: facts that differ from either edit it
+    let watched = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+    assert!(apply_edit(&mut b, &leaf, watched), "facts that differ from the row edit it");
+    assert!(b.cw[0].m.watched && b.shelves[0].items[0].watched);
+    assert_eq!(b.cw[0].m.resume_ms, 0);
+    assert!(!apply_edit(&mut b, &leaf, watched), "the same facts again change nothing: no hit");
+    reset(&mut o.state, &o.adapter);
+}

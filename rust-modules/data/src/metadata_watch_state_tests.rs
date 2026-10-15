@@ -265,7 +265,7 @@ fn an_optimistic_watch_flip_reaches_the_collection_shelf() {
     set_current_for_test(test_state(), Some(Detail {
         sid: SRV_A,
         rk: "m1".into(),
-        collection: Some(crate::metadata::CollectionShelf {
+        collection: Some(CollectionShelf {
             title: "A Pair".into(),
             section: 1,
             tag: 5,
@@ -566,4 +566,38 @@ fn replaying_a_single_episode_edit_does_not_step_the_season_count_twice() {
 
 fn related_tile(sid: plx_plex::plex::ServerId, rk: &str) -> crate::pms::PmsMovie {
     crate::pms::PmsMovie { sid, rk: rk.into(), unwatched: true, resume_ms: 4, ..Default::default() }
+}
+
+/// The server's word (`Facts`, `Offset`) reaches the other items' tiles on a Detail page, the
+/// Related shelf and the collection shelf's members, in place and only where it differs. The loaded
+/// item, its episodes and its seasons are not patched here (they re-read themselves until the Detail
+/// fold takes Facts).
+#[test]
+fn the_servers_facts_and_offset_patch_related_and_collection_tiles_only_where_they_differ() {
+    use crate::stores::metadata::MetadataCmd;
+    use crate::viewstate::{ViewAt, ViewEdit};
+    let _serial = plx_base::testlock::serial();
+    let tile = |rk: &str| Related { sid: SRV_A, rk: rk.into(), resume_ms: 3_510_000, unwatched: true, ..Default::default() };
+    set_current_for_test(test_state(), Some(Detail {
+        sid: SRV_A,
+        rk: "show".into(),
+        resume_ms: 11,
+        related: vec![tile("r0"), tile("r1")],
+        collection: Some(CollectionShelf { members: vec![tile("m0")], ..Default::default() }),
+        ..Default::default()
+    }));
+    let adapter = std::sync::Arc::new(MetadataAdapter::default());
+    let run = |rk: &str, sid, edit| super::run(test_state(), &adapter, MetadataCmd::ApplyView { at: ViewAt::leaf(sid, rk), edit });
+    let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+    assert!(run("r1", SRV_A, facts));
+    assert!(!run("r1", SRV_A, facts), "facts that agree with the tile change nothing");
+    assert!(!run("r0", SRV_B, facts), "another server's r0 names nothing here");
+    assert!(run("m0", SRV_A, ViewEdit::Offset { ms: 42 }));
+    assert!(!run("m0", SRV_A, ViewEdit::Offset { ms: 42 }));
+    let d = current(test_state()).unwrap();
+    assert_eq!((d.related[1].watched, d.related[1].unwatched, d.related[1].resume_ms), (true, false, 0));
+    assert_eq!(d.related[0].resume_ms, 3_510_000, "no other tile moved");
+    let m = &d.collection.as_ref().unwrap().members[0];
+    assert_eq!((m.watched, m.unwatched, m.resume_ms), (false, true, 42), "an offset leaves the watched state alone");
+    assert_eq!(d.resume_ms, 11, "the loaded item is the fold's, not this patch's");
 }
