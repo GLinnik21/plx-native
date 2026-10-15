@@ -110,6 +110,13 @@ impl Collection {
         self.pages.loaded_rows().find(|(_, m)| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk))).map(|(i, _)| i)
     }
 
+    /// The loaded members inside the window the screen asked for (see [`CollectionCmd::Window`]).
+    pub(crate) fn held_keys(&self, keys: &mut crate::stores::HeldKeys) {
+        for (i, m) in self.pages.loaded_rows() {
+            if self.wanted.contains(&i) { crate::stores::push_held(keys, m.sid, &m.rk); }
+        }
+    }
+
     /// Every row held, with its absolute index.
     pub fn loaded_rows(&self) -> impl Iterator<Item = (usize, &PmsMovie)> + '_ { self.pages.loaded_rows() }
 

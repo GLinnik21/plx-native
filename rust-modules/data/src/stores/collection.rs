@@ -52,6 +52,14 @@ impl CollectionStore {
         self.notice_dirty.swap(false, Ordering::Relaxed).then(|| self.gen())
     }
     pub fn view(&self) -> CollectionView<'_> { self.state.view() }
+    /// The members the page for `arg` holds cards for (its wanted window), or nothing when the
+    /// store holds a different collection.
+    pub fn held_keys(&self, arg: &super::content_arg::ContentArg) -> super::HeldKeys {
+        let mut keys = super::HeldKeys::new();
+        let (super::content_arg::ContentArg::Collection(r), Some(c)) = (arg, self.state.view().current()) else { return keys };
+        if c.id.same_collection(r) { c.held_keys(&mut keys); }
+        keys
+    }
     pub fn run(&mut self, cmd: CollectionCmd) -> bool {
         if matches!(cmd, CollectionCmd::Reset) { self.adapter = Arc::new(Default::default()); }
         let changed = self.state.run(&self.adapter, cmd);

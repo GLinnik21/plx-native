@@ -67,6 +67,26 @@ impl PersonStore {
         self.state.view()
     }
 
+    /// The items the page for `arg` shows (every shelf), or nothing when the store holds a different
+    /// person. The store is single-current, so the identity check keeps a covered Person page from
+    /// naming the items of the one that replaced it.
+    pub fn held_keys(&self, arg: &super::content_arg::ContentArg) -> super::HeldKeys {
+        use super::content_arg::ContentArg;
+        let mut keys = super::HeldKeys::new();
+        let Some(p) = self.state.view().current() else { return keys };
+        let same = match arg {
+            ContentArg::Person { .. } => arg.same_item(&ContentArg::Person {
+                sid: p.sid, key: p.key.clone(), guid: p.guid.clone(), name: String::new(), thumb: String::new() }),
+            ContentArg::Filmography { sid, key } => plx_plex::plex::same_item((p.sid, &p.key), (*sid, key)),
+            _ => false,
+        };
+        if !same { return keys; }
+        for m in p.shelves.iter().flat_map(|shelf| shelf.items.iter()) {
+            super::push_held(&mut keys, m.sid, &m.rk);
+        }
+        keys
+    }
+
     /// Synchronous addressed command path. Reset rotates the adapter before clearing state, so an
     /// old worker can only finish into the retired mailbox it captured.
     pub fn run(&mut self, cmd: PersonCmd) -> bool {

@@ -1118,6 +1118,28 @@ impl BrowseState {
         self.want = (lo, hi);
         self.focus = focus;
     }
+    /// The items the Library page addressed by `target` holds on screen: the section's hold-window
+    /// shelves and, when it is the current section, the grid rows in its wanted window. Empty when
+    /// the address no longer names a section (a table epoch moved).
+    pub fn held_keys(&self, target: crate::stores::browse::SectionAddress) -> crate::stores::HeldKeys {
+        let mut keys = crate::stores::HeldKeys::new();
+        let Some(index) = self.resolve_section(target.epoch, target.sid, target.section) else {
+            return keys;
+        };
+        let Some(st) = self.states.get(index) else { return keys };
+        for m in st.hubs.held_items() {
+            crate::stores::push_held(&mut keys, m.sid, &m.rk);
+        }
+        if index == self.cur {
+            let (lo, hi) = self.want;
+            for i in lo..hi.min(st.items.len) {
+                if let Some(m) = st.items.get(i) {
+                    crate::stores::push_held(&mut keys, m.sid, &m.rk);
+                }
+            }
+        }
+        keys
+    }
     pub fn resolve_section(&self, epoch: u32, sid: ServerId, key: i64) -> Option<usize> {
         if epoch != self.table_epoch() {
             return None;

@@ -226,6 +226,13 @@ impl HubsStore {
         crate::pms::owed(&self.adapter)
     }
 
+    /// The cards in the rows Home holds (`HubsCmd::Hold`), for the re-read of what they show.
+    pub fn held_keys(&self) -> super::HeldKeys { crate::pms::held_keys(&self.state) }
+
+    /// Every source Home reads, in display order: what a re-read of the whole page asks one by one
+    /// ([`HubsCmd::RefetchSourceQuiet`]).
+    pub fn source_ids(&self) -> Vec<plx_plex::plex::ServerId> { crate::pms::source_ids(&self.state) }
+
     /// Is a quiet read's answer waiting for [`HubsCmd::Publish`]?
     pub fn has_staged(&self) -> bool { crate::pms::has_staged(&self.state) }
 

@@ -43,6 +43,22 @@ impl StoreOutcome {
     pub fn changed(changed: bool) -> Self { Self { changed, ..Self::default() } }
 }
 
+/// The items a page shows, as the stores that hold them name them: each store's `held_keys`
+/// returns the `(server, ratingKey)` of the rows inside its own hold window (Home's `hold`, a
+/// Library's shelf hold and grid `want`, a result set's published rows). Layer 2's re-reads
+/// (`app::reread`) hand them to `ViewReconcileStore::enqueue`; nothing on `plx_ui::Screen` knows
+/// them. Placeholders (no rating key) are never listed, and an item appears once however many rows
+/// hold it.
+pub type HeldKeys = Vec<(plx_plex::plex::ServerId, String)>;
+
+/// Add `(sid, rk)` to `keys` unless it is a placeholder or is already listed.
+pub(crate) fn push_held(keys: &mut HeldKeys, sid: plx_plex::plex::ServerId, rk: &str) {
+    if rk.is_empty() || keys.iter().any(|(s, k)| plx_plex::plex::same_item((*s, k), (sid, rk))) {
+        return;
+    }
+    keys.push((sid, rk.to_owned()));
+}
+
 pub mod browse;
 pub mod fanout;
 mod content_arg;
@@ -816,3 +832,7 @@ mod tests {
         assert_eq!(StoreId::from_ord(StoreOrd(10)), None);
     }
 }
+
+#[cfg(test)]
+#[path = "held_keys_tests.rs"]
+mod held_keys_tests;
