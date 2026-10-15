@@ -232,3 +232,32 @@ fn every_registered_language_has_launcher_metadata() {
         );
     }
 }
+
+#[test]
+fn english_only_plural_uses_english_rules() {
+    let _be = language_on_this_thread_for_test(Preference::Be);
+    // Belarusian plural(21) is One; the panel's English-only tally must still say "callbacks".
+    assert_eq!(msg::browse_diagnostics_callbacks(21), "21 callbacks");
+    assert_eq!(msg::browse_diagnostics_callbacks(1), "1 callback");
+}
+
+#[test]
+fn english_only_ignores_pseudo() {
+    let _pseudo = pseudo_on_this_thread_for_test();
+    assert_eq!(msg::browse_diagnostics_nothing_demuxed(), "NOTHING demuxed");
+    assert_eq!(msg::browse_diagnostics_nothing_demuxed_c().to_str(), Ok("NOTHING demuxed"));
+}
+
+#[test]
+fn render_in_english_is_scoped_and_nests() {
+    let _be = language_on_this_thread_for_test(Preference::Be);
+    assert_eq!(current().language(), Language::Be);
+    let inside = render_in_english(|| {
+        assert_eq!(current().language(), Language::En);
+        render_in_english(|| assert_eq!(current().language(), Language::En));
+        assert_eq!(current().language(), Language::En);
+        current().decimal(35, 1)
+    });
+    assert_eq!(inside, "3.5");
+    assert_eq!(current().language(), Language::Be);
+}

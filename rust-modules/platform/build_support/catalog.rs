@@ -368,8 +368,22 @@ fn read_locale(root: &Path, spec: &LanguageSpec) -> Result<Catalog, Vec<String>>
     if errors.is_empty() { Ok(Catalog { spec: spec.clone(), entries, origin }) } else { Err(errors) }
 }
 
-/// Missing and extra keys of one language against the English key set, one line each, capped.
-fn check_keys(lang: &Catalog, expected: &BTreeSet<&str>) -> Vec<String> {
+/// Whether translators supply this English entry. `"translate": false` marks a technical
+/// read-out that shows in English in every language (the diagnostics panel, support codes);
+/// it is declared only on the English entry and `false` is its only value, so there is one
+/// spelling and no redundant `true` to drift.
+fn translatable(entry: &Value) -> Result<bool, String> {
+    match entry.get("translate") {
+        None => Ok(true),
+        Some(Value::Bool(false)) => Ok(false),
+        Some(_) => Err("translate must be false; omit it for a message translators supply".into()),
+    }
+}
+
+/// Missing and extra keys of one language against the translatable English keys, one line each,
+/// capped. A key that is English-only gets its own message: "unknown" would send the translator
+/// looking for a typo.
+fn check_keys(lang: &Catalog, expected: &BTreeSet<&str>, english_only: &BTreeSet<&str>) -> Vec<String> {
     let have: BTreeSet<&str> = lang.entries.keys().map(String::as_str).collect();
     let tag = &lang.spec.tag;
     let mut lines: Vec<String> = expected
@@ -377,7 +391,11 @@ fn check_keys(lang: &Catalog, expected: &BTreeSet<&str>) -> Vec<String> {
         .map(|k| format!("locales/{tag}: {k}: missing; add a translation (the key is in locales/en)"))
         .collect();
     lines.extend(have.difference(expected).map(|k| {
-        format!("{}: {k}: not in locales/en; add it to English with a description, or delete it", lang.origin[*k])
+        if english_only.contains(k) {
+            format!("{}: {k}: English-only (translate:false in locales/en); delete it", lang.origin[*k])
+        } else {
+            format!("{}: {k}: not in locales/en; add it to English with a description, or delete it", lang.origin[*k])
+        }
     }));
     if lines.len() > KEY_ERROR_LINES {
         let more = lines.len() - KEY_ERROR_LINES;
@@ -403,6 +421,15 @@ fn key_code(key: &str, source: &Catalog, langs: &[Catalog]) -> Result<KeyCode, V
         return Err(vec![format!("{at}: args must be an object")]);
     }
     let mut errors = Vec::new();
+    let translate = match translatable(entry) {
+        Ok(t) => t,
+        Err(e) => {
+            errors.push(format!("{at}: {e}"));
+            true
+        }
+    };
+    // An English-only message reads no translator catalog: `langs` is not consulted for it.
+    let langs: &[Catalog] = if translate { langs } else { &[] };
     let mut args: BTreeMap<String, String> = BTreeMap::new();
     for (k, v) in entry.get("args").and_then(Value::as_object).into_iter().flatten() {
         let Some(ty) = v.as_str() else {
@@ -429,9 +456,9 @@ fn key_code(key: &str, source: &Catalog, langs: &[Catalog]) -> Result<KeyCode, V
     for l in langs {
         let file = &l.origin[key];
         let v = &l.entries[key];
-        if v.as_object().is_some_and(|m| ["value", "description", "args"].iter().any(|k| m.contains_key(*k))) {
+        if v.as_object().is_some_and(|m| ["value", "description", "args", "translate"].iter().any(|k| m.contains_key(*k))) {
             errors.push(format!(
-                "{file}: {key}: a translation is a bare string or a plural map; \"value\", \"description\" and \"args\" belong only in locales/en"
+                "{file}: {key}: a translation is a bare string or a plural map; \"value\", \"description\", \"args\" and \"translate\" belong only in locales/en"
             ));
             continue;
         }
@@ -498,6 +525,9 @@ fn key_code(key: &str, source: &Catalog, langs: &[Catalog]) -> Result<KeyCode, V
         return Err(errors);
     }
     let (en, rest) = values.split_first().expect("English first");
+    if !translate {
+        return Ok(KeyCode { code: english_only_code(&name, &en.2, &args, plural), corpus });
+    }
     // Language arms in registry order, the generated Pseudo last.
     let mut arms: Vec<(String, BTreeMap<String, String>)> = std::iter::once(en)
         .chain(rest)
@@ -575,6 +605,54 @@ fn key_code(key: &str, source: &Catalog, langs: &[Catalog]) -> Result<KeyCode, V
     Ok(KeyCode { code: out, corpus })
 }
 
+/// The accessors of an English-only message: no language match, no `_in` variants (a language
+/// parameter to a language-independent message is a mistake the type system can reject), and
+/// numbers and plural categories from [`super::english`], never the UI language's: Belarusian
+/// `plural(21)` is `One`, which would print "21 callback".
+fn english_only_code(name: &str, forms: &BTreeMap<String, String>, args: &BTreeMap<String, String>, plural: bool) -> String {
+    let params = args
+        .iter()
+        .map(|(k, v)| format!("{k}: {}", if v == "str" { "&str" } else { "i64" }))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if args.is_empty() {
+        let text: String = parts(&forms[""])
+            .expect("validated template")
+            .into_iter()
+            .map(|p| match p {
+                Part::Text(t) => t,
+                Part::Arg(_) => unreachable!(),
+            })
+            .collect();
+        return format!(
+            "pub fn {name}() -> &'static str {{ {text:?} }}\npub fn {name}_c() -> &'static std::ffi::CStr {{ c{text:?} }}\n"
+        );
+    }
+    let mut out = format!("pub fn {name}({params}) -> String {{\n");
+    if plural || args.values().any(|v| v == "i64") {
+        out.push_str("let cx = super::english();\n");
+    }
+    if plural {
+        out.push_str("match cx.plural(count) {\n");
+        let mut ordered: Vec<_> = forms.iter().collect();
+        ordered.sort_by_key(|(cat, _)| *cat == "other");
+        for (cat, s) in ordered {
+            let arm = if cat == "other" {
+                "_".to_string()
+            } else {
+                format!("icu_plurals::PluralCategory::{}{}", cat[..1].to_uppercase(), &cat[1..])
+            };
+            out.push_str(&format!("{arm} => {},\n", expression(s, args).expect("validated template")));
+        }
+        out.push_str("}\n");
+    } else {
+        out.push_str(&expression(&forms[""], args).expect("validated template"));
+        out.push('\n');
+    }
+    out.push_str("}\n");
+    out
+}
+
 /// The registry as Rust: `Preference`, `Language` and every table over them. `specs` is every
 /// shipped language in display order.
 fn languages_rs(specs: &[&LanguageSpec]) -> String {
@@ -634,9 +712,16 @@ fn languages_rs(specs: &[&LanguageSpec]) -> String {
 
 pub fn compile(source: &Catalog, langs: &[Catalog]) -> Result<Generated, Vec<String>> {
     let mut errors = Vec::new();
-    let expected: BTreeSet<&str> = source.entries.keys().map(String::as_str).collect();
+    // An invalid flag is reported by `key_code` below; for the key sets it reads as translatable.
+    let (expected, english_only): (BTreeSet<&str>, BTreeSet<&str>) = {
+        let mut split = (BTreeSet::new(), BTreeSet::new());
+        for (k, v) in &source.entries {
+            if translatable(v).unwrap_or(true) { split.0.insert(k.as_str()); } else { split.1.insert(k.as_str()); }
+        }
+        split
+    };
     for l in langs {
-        errors.extend(check_keys(l, &expected));
+        errors.extend(check_keys(l, &expected, &english_only));
     }
     if !errors.is_empty() {
         return Err(errors);
@@ -897,6 +982,83 @@ mod tests {
         bad[2].origin.insert("test.extra".into(), "fr/x.json".into());
         assert!(errors_of(compile(&en, &bad)).contains("fr/x.json: test.extra: not in locales/en"));
     }
+    /// The slice of generated text holding one accessor: from `pub fn <name>(` to the next `pub fn`
+    /// that is not its own `_c` twin.
+    fn accessor_text<'a>(messages: &'a str, name: &str) -> &'a str {
+        let start = messages.find(&format!("pub fn {name}(")).expect("accessor generated");
+        let own_c = format!("pub fn {name}_c(");
+        let mut end = messages.len();
+        let mut from = start + 1;
+        while let Some(i) = messages[from..].find("pub fn ") {
+            let at = from + i;
+            if !messages[at..].starts_with(&own_c) {
+                end = at;
+                break;
+            }
+            from = at + 1;
+        }
+        &messages[start..end]
+    }
+    fn with_english_only(en: &mut Catalog) {
+        en.entries.insert(
+            "test.tech".into(),
+            serde_json::json!({"value":"NOTHING demuxed","translate":false,"description":"Panel read-out"}),
+        );
+        en.origin.insert("test.tech".into(), "en/x.json".into());
+    }
+    #[test]
+    fn english_only_keys_need_no_translation() {
+        let (mut en, langs) = catalogs();
+        with_english_only(&mut en);
+        let g = compile(&en, &langs).expect("an English-only key needs no translator entry");
+        let slice = accessor_text(&g.messages, "test_tech");
+        assert!(slice.contains("\"NOTHING demuxed\""), "{slice}");
+        assert!(slice.contains("c\"NOTHING demuxed\""), "{slice}");
+        assert!(!slice.contains("Language::"), "{slice}");
+        assert!(!g.messages.contains("test_tech_in") && !g.messages.contains("test_tech_c_in"));
+        assert!(g.messages.contains("\"NOTHING demuxed\",\n"), "CORPUS keeps the English text");
+        assert!(!g.messages.contains("NÖÖTHÏNG"), "pseudo does not expand it");
+    }
+    #[test]
+    fn english_only_with_arguments_uses_the_english_context() {
+        let (mut en, langs) = catalogs();
+        en.entries.insert(
+            "test.tally".into(),
+            serde_json::json!({"value":{"one":"{count} callback","other":"{count} callbacks"},"translate":false,"args":{"count":"i64"},"description":"Panel tally"}),
+        );
+        en.origin.insert("test.tally".into(), "en/x.json".into());
+        let g = compile(&en, &langs).unwrap();
+        let slice = accessor_text(&g.messages, "test_tally");
+        assert!(slice.contains("super::english()"), "{slice}");
+        assert!(!slice.contains("Language::") && !slice.contains("current()"), "{slice}");
+        assert!(!g.messages.contains("test_tally_in"));
+    }
+    #[test]
+    fn translator_catalog_with_english_only_key_is_rejected() {
+        let (mut en, mut langs) = catalogs();
+        with_english_only(&mut en);
+        langs[2].entries.insert("test.tech".into(), serde_json::json!("NIČOGA"));
+        langs[2].origin.insert("test.tech".into(), "fr/x.json".into());
+        let e = errors_of(compile(&en, &langs));
+        assert!(e.contains("fr/x.json: test.tech: English-only"), "{e}");
+        assert!(e.contains("delete it"), "{e}");
+    }
+    #[test]
+    fn translate_flag_is_english_only_and_false_only() {
+        for flag in [serde_json::json!(true), serde_json::json!("no"), serde_json::json!(0)] {
+            let (mut en, langs) = catalogs();
+            en.entries.get_mut("test.label").unwrap()["translate"] = flag;
+            let e = errors_of(compile(&en, &langs));
+            assert!(e.contains("translate must be false"), "{e}");
+        }
+        let (en, mut langs) = catalogs();
+        langs[0].entries.insert(
+            "test.label".into(),
+            serde_json::json!({"value":"Hola {name}","translate":false}),
+        );
+        let e = errors_of(compile(&en, &langs));
+        assert!(e.contains("es/x.json: test.label"), "{e}");
+    }
     #[test]
     fn a_wrapped_translation_gets_its_own_message() {
         let (en, mut langs) = catalogs();
@@ -906,7 +1068,7 @@ mod tests {
         );
         let e = errors_of(compile(&en, &langs));
         assert!(
-            e.contains("es/x.json: test.label: a translation is a bare string or a plural map; \"value\", \"description\" and \"args\" belong only in locales/en"),
+            e.contains("es/x.json: test.label: a translation is a bare string or a plural map; \"value\", \"description\", \"args\" and \"translate\" belong only in locales/en"),
             "{e}"
         );
     }

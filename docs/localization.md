@@ -11,6 +11,12 @@ source: each scoped, stable key has a `value`, translator `description`, and opt
 `args`. The other languages contain the same keys with translated string or plural values.
 The compiler combines each language's files; file names organize ownership, not message identity.
 
+Some English entries carry `"translate": false`. They are technical read-outs meant for the
+people who debug the app — the Stats-for-nerds diagnostics panel, its playback verdict line and
+the support codes on failure screens — and they show in English in every language. Do not add
+them to your catalog; the build rejects a catalog that contains one. Everything else, including
+consent and privacy text that looks technical, is translated.
+
 ```json
 {
   "library.results": {
@@ -50,7 +56,7 @@ context and wrapping; do not include tokens, private server addresses or persona
 
 Run `make check` (or, while iterating, `make test-crate C=plx_platform T=catalog`) to validate catalogs and run the host checks. Let it finish before starting
 another build in the same checkout: its structure-gate tests temporarily modify source files. Every build rejects duplicate,
-missing or unknown keys, invalid placeholders, and incomplete plural forms. The generated
+missing or unknown keys, invalid placeholders, incomplete plural forms, or a translation of an English-only message. The generated
 accessors also make unknown message keys and wrong argument types compilation errors. Source
 wording can change without renaming its key; change a key only when its meaning changes.
 
@@ -65,7 +71,7 @@ the wording; do not abbreviate it past readability.
 Review the affected screens with the desktop simulator. `PLXNATIVE_LOCALE=es`, `fr`, `it`, `be` or `en`
 selects a language for a simulator launch; `PLXNATIVE_FORMAT_LOCALE=de-DE` exercises separate
 regional formatting. `PLXNATIVE_LOCALE=qps-ploc` expands and accents text to reveal cramped
-layouts. These environment overrides do not operate in the shipping TV build.
+layouts; English-only diagnostics text is not expanded. These environment overrides do not operate in the shipping TV build.
 
 Open a pull request describing which language and screens changed, and how you checked the
 wording and layout. Translations ship with app releases; the app does not download language packs.

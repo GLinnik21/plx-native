@@ -153,7 +153,7 @@ pub fn normalize(s: &str) -> Option<String> {
     let l = base.parse::<Locale>().ok()?;
     (l.id.language.as_str() != "und").then(|| l.to_string())
 }
-/// `webOS 4.10.2`, or the UI language's "webOS unknown" read-out when the firmware file could not
+/// `webOS 4.10.2`, or the English "webOS unknown" read-out when the firmware file could not
 /// be read — the release is the one field a stranger's report needs, and "unknown" is the honest
 /// reading of an empty one rather than a plausible default. Shared by the support lines of the
 /// failure read-out and of the sign-in report.
@@ -184,9 +184,33 @@ pub fn saved_preference_for_test(value: Preference) -> Preference {
     previous
 }
 
-#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static THREAD_LOCALE: std::cell::Cell<Option<&'static LocaleContext>> = const { std::cell::Cell::new(None) };
+}
+
+/// The fixed English context behind every `"translate": false` message: English plural rules and
+/// en-US number formatting, whatever the UI language or the TV's format locale. The generated
+/// accessors of an English-only message call this instead of [`current`].
+pub fn english() -> &'static LocaleContext {
+    static ENGLISH: OnceLock<LocaleContext> = OnceLock::new();
+    ENGLISH.get_or_init(|| LocaleContext::resolve(Preference::En, None, Some("en-US"), Some("24"), None))
+}
+
+/// Run `f` with [`current`] answering [`english`] on THIS thread, then restore what it answered
+/// before (so it nests, and nests under the test overrides). It is how the diagnostics panel
+/// composes its shared, translated helpers (units, decimals, quality labels) in English.
+///
+/// **Nothing reached inside `f` may cache localized text process-wide** (a `OnceLock<String>`
+/// first touched here would freeze English for the whole app). None does today; keep it so.
+pub fn render_in_english<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<&'static LocaleContext>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            THREAD_LOCALE.with(|slot| slot.set(self.0));
+        }
+    }
+    let _restore = Restore(THREAD_LOCALE.with(|slot| slot.replace(Some(english()))));
+    f()
 }
 
 /// Resolve every catalog accessor on THIS test thread in the expanded pseudo-locale until the
@@ -222,11 +246,11 @@ impl Drop for ThreadLocaleGuard {
 }
 
 pub fn current() -> &'static LocaleContext {
+    if let Some(cx) = THREAD_LOCALE.with(std::cell::Cell::get) {
+        return cx;
+    }
     #[cfg(any(test, feature = "test-support"))]
     {
-        if let Some(cx) = THREAD_LOCALE.with(std::cell::Cell::get) {
-            return cx;
-        }
         CURRENT.get_or_init(|| LocaleContext::resolve(Preference::En, None, None, None, None))
     }
     #[cfg(not(any(test, feature = "test-support")))]

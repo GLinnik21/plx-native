@@ -253,8 +253,6 @@
   "settings.login.report_failed": "Invio della segnalazione non riuscito.",
   "settings.login.save_failed_title": "Impossibile salvare l'accesso",
   "settings.login.save_failed_body": "Impossibile salvare l'accesso su questa TV. Puoi continuare, ma la prossima volta dovrai accedere di nuovo.",
-  "settings.login.unknown_device": "TV sconosciuta",
-  "settings.login.your_servers": "i tuoi server",
   "settings.language.saving": "Salvataggio della lingua in corso…",
   "settings.audio.error_retry": "{reason} Seleziona Riprova.",
   "settings.login.report_id": "ID segnalazione: {id}",
