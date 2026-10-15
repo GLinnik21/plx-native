@@ -64,7 +64,7 @@ pub use shared::SubRect;
 pub use plx_data::metadata::track_names::TrackNames;
 pub use shared::UserPauseCursor;
 use shared::{
-    HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume, Shared, SubBitmap, SubCue,
+    HlsPauseCompletion, HlsPlayCompletion, HlsUserPause, HlsUserResume, Shared, SubBitmap,
     Transport,
 };
 
@@ -1625,7 +1625,6 @@ pub fn intended_pos_ns(ps: &crate::route::PlaybackSession) -> i64 {
 /// transcode with that source audio at the current position next tick.
 pub fn request_audio_switch(ps: &crate::route::PlaybackSession, _sid: i64) {
     crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::Retranscode);
-    SHARED.sub_cues.lock().unwrap().clear(); // the fresh transcode carries no embedded subs
 }
 /// request a NATIVE audio-track switch (direct-play, NO transcode): feed the 0-based `audio_idx`
 /// audio stream from the same MKV with codec `codec`. The pump reloads direct-play at the current
@@ -1636,13 +1635,12 @@ pub fn request_audio_track(ps: &mut crate::route::PlaybackSession, audio_idx: i3
     crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::NativeAudioReload);
 }
 /// Everything a native audio switch needs BEFORE its direct-play reload, without queueing one:
-/// the Load payload codec, the demuxer's stream index, and the old track's embedded cues gone.
+/// the Load payload codec and the demuxer's stream index.
 /// A claimed action that owes a displaced pick its reload (issue #266) stages it here and runs
 /// the reload itself, so no second intent is queued mid-claim.
 pub fn stage_native_audio(ps: &mut crate::route::PlaybackSession, audio_idx: i32, codec: &str) {
     crate::route::set_stream_acodec(ps, codec); // the reload's Load payload uses this audio codec
     SHARED.desired_audio_idx.store(audio_idx, Relaxed);
-    SHARED.sub_cues.lock().unwrap().clear();
 }
 /// reset to the default (best) audio stream — called on a new item so a prior track choice
 /// does not leak across items (desired_audio_idx persists across seeks, not across items).
@@ -1669,7 +1667,6 @@ pub fn set_audio_track(idx: i32) {
 /// re-burns (or drops) it. No-op-ish if not transcoding (the caller gates on that).
 pub fn request_transcode_refresh(ps: &crate::route::PlaybackSession) {
     crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::Retranscode);
-    SHARED.sub_cues.lock().unwrap().clear(); // burned/absent in the fresh transcode
 }
 
 /// Restart the current stream at the current movie position so a fresh demux worker captures a
@@ -1713,7 +1710,6 @@ pub fn request_original_recovery(ps: &crate::route::PlaybackSession) {
         ps,
         crate::route::UserRouteIntent::RecoverOriginal(crate::route::RecoveryCause::ManualOriginal),
     );
-    SHARED.sub_cues.lock().unwrap().clear();
 }
 
 // ---- client-rendered subtitles (direct-play only; a transcode carries no subs) ----
@@ -1721,11 +1717,9 @@ pub fn request_original_recovery(ps: &crate::route::PlaybackSession) {
 pub fn desired_sub_idx() -> i32 {
     SHARED.desired_sub_idx.load(Relaxed)
 }
-/// select a subtitle track by index (-1 = off). Does NOT clear the cue store: the demuxer
-/// pushes cues for EVERY text track regardless of selection, so the buffered region's cues for
-/// the newly-selected track are already present and the switch shows immediately. Clearing here
-/// would reintroduce the ~10-20s buffer-gap delay (the demuxer runs well ahead of the playhead).
-/// A new item / transcode re-point clears the store via reset_session / the pump.
+/// select a subtitle track by index (-1 = off). Does NOT clear the buffered subtitle
+/// cues: the demuxer runs well ahead of the playhead, so clearing here would reintroduce the
+/// ~10-20s buffer-gap delay. A new item / transcode re-point clears them via reset_session / the pump.
 pub fn request_subtitle(idx: i32) {
     SHARED.desired_sub_idx.store(idx, Relaxed);
     if idx < 0 {
@@ -1797,7 +1791,7 @@ pub fn subtitle_clock_ns(now_ns: i64) -> i64 {
 /// floor that followed the current offset (2 s of history at offset 0) left nothing for a delay
 /// raised mid-playback to show until the window had refilled. A negative offset (sidecar only)
 /// reads ahead of the playhead, which this floor never prunes. What bounds memory is each store's
-/// cap and its eviction order ([`push_subtitle_text`], [`SUB_BITMAP_BUDGET`]), not this floor.
+/// budget and eviction order ([`SUB_BITMAP_BUDGET`]), not this floor.
 fn subtitle_floor_ns() -> i64 {
     subtitle_floor_for(
         SHARED.playpos_ns.load(Relaxed),
@@ -1930,78 +1924,6 @@ pub fn reclamp_subtitle_offset() {
     SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(subtitle_offset_ms()), Relaxed);
 }
 
-/// The text store's hard cap, a runaway guard that an ordinary file never reaches. The store
-/// holds every text track (the demux pushes them all) from `subtitle_floor_ns` — 32 s behind the
-/// playhead at EVERY offset — to the demuxer's read position. The read-ahead is bounded by the
-/// A/V queues (`engine::AQ_VIDEO_BYTES` 10 MiB, `AQ_AUDIO_BYTES` 1 MiB); even a 2 Mbit/s encode
-/// with 192 kbit/s audio fills them in about 42 s, so the window is at most 32 + 42 = 74 s. A
-/// dense dialogue track runs about one cue per second at its peak: 3 text tracks x 74 s x 1
-/// cue/s = 222 cues, under half the cap. Eviction is oldest first, i.e. history no delay is
-/// reading at an ordinary offset.
-const SUB_TEXT_CAP: usize = 512;
-
-/// push a ready (already-clean) subtitle cue into the shared store, tagged with its 0-based
-/// track index (the demux pushes for every text track).
-/// Bounded by TIME rather than a fixed count: since every track is pushed regardless of
-/// selection, drop cues more than the latest delay behind the playhead (`subtitle_floor_ns`)
-/// and keep the demuxer's forward window. [`SUB_TEXT_CAP`] guards against a runaway.
-pub fn push_subtitle_text(track: i32, start_ns: i64, end_ns: i64, text: String) {
-    if text.is_empty() {
-        return;
-    }
-    let mut cues = SHARED.sub_cues.lock().unwrap();
-    let floor = subtitle_floor_ns();
-    cues.retain(|c| c.end_ns >= floor);
-    if cues.len() >= SUB_TEXT_CAP {
-        cues.remove(0);
-    }
-    cues.push(SubCue {
-        track,
-        start_ns,
-        end_ns,
-        text,
-    });
-}
-/// the selected track's subtitle text active at `now_ns`, or None (also None when off).
-pub fn active_subtitle(now_ns: i64) -> Option<String> {
-    active_subtitle_span(now_ns).map(|(text, _, _)| text)
-}
-
-/// [`active_subtitle`] with the cue's `(start_ns, end_ns)` in the subtitle clock (the clock
-/// [`subtitle_clock_ns`] converts the playhead to).
-pub fn active_subtitle_span(now_ns: i64) -> Option<(String, i64, i64)> {
-    let sel = SHARED.desired_sub_idx.load(Relaxed);
-    if sel < 0 {
-        return None;
-    }
-    let cues = SHARED.sub_cues.lock().unwrap();
-    let lookup_ns = subtitle_clock_ns(now_ns);
-    cues.iter()
-        .rev()
-        .find(|c| c.track == sel && lookup_ns >= c.start_ns && lookup_ns < c.end_ns)
-        .map(|c| (c.text.clone(), c.start_ns, c.end_ns))
-}
-
-/// **The IDENTITY of the text cue active at `now_ns`** — its start, or 0 for none.
-///
-/// [`active_subtitle`] clones the cue's `String`, which is right for the draw and wrong for the
-/// per-frame motion report that has to run whether or not the frame draws (spec §8.3): a subtitle
-/// appearing or vanishing is a whole-screen content change with no spring behind it, and before
-/// phase 9 nothing reported it because the player route presented unconditionally. `start_ns` is a
-/// sufficient identity — two cues of one track cannot share a start.
-pub fn subtitle_cue_id(now_ns: i64) -> i64 {
-    let sel = SHARED.desired_sub_idx.load(Relaxed);
-    if sel < 0 {
-        return 0;
-    }
-    let cues = SHARED.sub_cues.lock().unwrap();
-    let lookup_ns = subtitle_clock_ns(now_ns);
-    cues.iter()
-        .rev()
-        .find(|c| c.track == sel && lookup_ns >= c.start_ns && lookup_ns < c.end_ns)
-        .map_or(0, |c| c.start_ns)
-}
-
 /// **The image-subtitle store's byte ceiling**, which must hold the window a delayed caption
 /// needs: from the history floor (`subtitle_floor_ns`: 60 s of the latest delay,
 /// `SUBTITLE_OFFSET_LATEST_MS`, + 2 s behind the playhead, retained at EVERY offset so a raised
@@ -2034,7 +1956,7 @@ pub const SUB_BITMAP_BUDGET: usize = 40 * 1024 * 1024;
 /// subtitles are on (so a switch between image tracks is instant — see ff.rs) and pushes each
 /// display set here; the renderer (M) reads the selected track's active one for the playpos. A
 /// new display-set supersedes any still-open cue on the same track (PGS signals the end via a
-/// later CLEAR or a superseding set, both handled here). Bounded by time like the text store, and
+/// later CLEAR or a superseding set, both handled here). Bounded by time (`subtitle_floor_ns`) and
 /// by [`SUB_BITMAP_BUDGET`].
 ///
 /// `cw`/`ch` are the stream's authoring canvas (0 = the decoder never declared one) and every
@@ -2128,48 +2050,6 @@ pub fn bitmap_by_key(key: i64) -> Option<(i32, i32, Vec<SubRect>)> {
         .find(|c| c.track == sel && c.start_ns == key)
         .map(|c| (c.cw, c.ch, c.rects.clone()))
 }
-/// Extract plain caption text, stripping markup and normalizing line breaks. Nothing draws with it
-/// any more (every text track is libass's); it is the reference the `text_ass` floor tests grade
-/// the converter against, and goes with the rest of the bespoke caption path in the plan's PR 10.
-#[cfg(test)]
-fn sub_text(payload: &[u8]) -> String {
-    let s = String::from_utf8_lossy(payload);
-    let mut out = String::with_capacity(s.len());
-    let mut ch = s.chars().peekable();
-    while let Some(c) = ch.next() {
-        match c {
-            '<' => {
-                while let Some(x) = ch.next() {
-                    if x == '>' {
-                        break;
-                    }
-                }
-            } // <i></i>
-            '{' => {
-                while let Some(x) = ch.next() {
-                    if x == '}' {
-                        break;
-                    }
-                }
-            } // {\an8}
-            '\\' => match ch.peek() {
-                Some('N') | Some('n') => {
-                    ch.next();
-                    out.push('\n');
-                }
-                Some('h') => {
-                    ch.next();
-                    out.push(' ');
-                }
-                _ => out.push('\\'),
-            },
-            '\r' => {}
-            _ => out.push(c),
-        }
-    }
-    out.trim().to_string()
-}
-
 pub use plx_base::eventlog::log; // event-log sink (crate-wide single copy in lib.rs)
 
 fn find(h: &[u8], n: &[u8]) -> bool {
@@ -3532,106 +3412,86 @@ mod tests {
         rect(0, 0, 1024, (bytes / per_row) as i32)
     }
 
-    /// One second, in the cue stores' unit. The offset is set in MILLISECONDS and every cue is in
+    /// One second, in the cue store's unit. The offset is set in MILLISECONDS and every cue is in
     /// NANOSECONDS; mixing the two is how this test once put a 1 000 ns cue under a 1 s offset.
     const SEC: i64 = 1_000_000_000;
 
-    /// A positive offset draws a cue later, a negative one earlier, by exactly the offset.
+    /// A positive offset reads the subtitle clock later, a negative one earlier, by exactly the
+    /// offset (the clock every store and the libass source share).
     #[test]
-    fn subtitle_offset_shifts_text_lookup_in_both_directions() {
+    fn subtitle_offset_shifts_the_subtitle_clock_in_both_directions() {
         let _g = plx_base::testlock::serial();
-        SHARED.sub_cues.lock().unwrap().clear();
         SHARED.playpos_ns.store(0, Relaxed);
-        SHARED.desired_sub_idx.store(0, Relaxed);
         set_subtitle_offset(0);
-        push_subtitle_text(0, SEC, 2 * SEC, "cue".into());
-
-        assert_eq!(active_subtitle(SEC + SEC / 2).as_deref(), Some("cue"));
+        assert_eq!(subtitle_clock_ns(5 * SEC), 5 * SEC);
 
         set_subtitle_offset(1_000);
-        assert_eq!(active_subtitle(SEC + SEC / 2), None, "a positive offset delays the caption");
-        assert_eq!(active_subtitle(2 * SEC + SEC / 2).as_deref(), Some("cue"));
-        assert_eq!(active_subtitle(3 * SEC), None, "…and ends it as late as it started it");
+        assert_eq!(subtitle_clock_ns(5 * SEC), 4 * SEC, "a positive offset delays the caption");
 
-        // only a sidecar takes an advance (`subtitle_offset_range_ms`); the subtraction is the
-        // one every store shares, so the embedded lookup still proves its direction
+        // only a sidecar takes an advance (`subtitle_offset_range_ms`)
         sidecar::select_without_fetch_for_test(42);
         set_subtitle_offset(-1_000);
-        assert_eq!(active_subtitle(SEC / 2).as_deref(), Some("cue"), "a negative one advances it");
-        assert_eq!(active_subtitle(SEC + SEC / 2), None);
+        assert_eq!(subtitle_clock_ns(5 * SEC), 6 * SEC, "a negative one advances it");
 
         set_subtitle_offset(0);
         sidecar::reset();
-        SHARED.sub_cues.lock().unwrap().clear();
-        SHARED.desired_sub_idx.store(-1, Relaxed);
     }
 
-    /// **A delayed cue is still in the store when its moment comes.** Both stores prune cues more
-    /// than two seconds behind the playhead on every push; under a +5 s offset the cue on screen
+    /// **A delayed set is still in the store when its moment comes.** The store prunes sets more
+    /// than two seconds behind the playhead on every push; under a +5 s offset the set on screen
     /// at playhead 6.5 s is the one authored for 1.5 s, which the playhead-only floor had already
     /// thrown away when the next cue arrived.
     #[test]
-    fn a_delayed_cue_survives_the_prune_until_the_offset_has_shown_it() {
+    fn a_delayed_set_survives_the_prune_until_the_offset_has_shown_it() {
         let _g = plx_base::testlock::serial();
-        SHARED.sub_cues.lock().unwrap().clear();
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(0, Relaxed);
         set_subtitle_offset(5_000);
         SHARED.playpos_ns.store(0, Relaxed);
-        push_subtitle_text(0, SEC, 2 * SEC, "early".into());
         push_subtitle_bitmap(0, SEC, 1920, 1080, vec![rect(0, 0, 8, 8)]);
         close_subtitle_bitmap(0, 2 * SEC);
 
         // the playhead reaches 6.5 s and the demuxer pushes the next cues, which prunes
         SHARED.playpos_ns.store(6 * SEC + SEC / 2, Relaxed);
-        push_subtitle_text(0, 9 * SEC, 10 * SEC, "later".into());
         push_subtitle_bitmap(0, 9 * SEC, 1920, 1080, vec![rect(0, 0, 8, 8)]);
 
         let now = 6 * SEC + SEC / 2;
-        assert_eq!(active_subtitle(now).as_deref(), Some("early"), "text");
         assert_eq!(active_bitmap_key(now), Some(SEC), "image");
 
         set_subtitle_offset(0);
         SHARED.playpos_ns.store(0, Relaxed);
-        SHARED.sub_cues.lock().unwrap().clear();
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(-1, Relaxed);
     }
 
     /// **Raising the delay mid-playback finds the cues already read.** The demuxer never
-    /// republishes a cue, so the stores must hold the whole window the LARGEST delay could ask
+    /// republishes a cue, so the store must hold the whole window the LARGEST delay could ask
     /// for whatever the offset is now: a viewer at offset 0 who steps to +60 s wants the cue
     /// authored 60 s ago at once, not after the window has refilled. A floor that followed the
     /// current offset kept 2 s of history at 0 and blanked every raised delay.
     #[test]
-    fn raising_the_delay_mid_playback_finds_the_cues_already_read() {
+    fn raising_the_delay_mid_playback_finds_the_sets_already_read() {
         let _g = plx_base::testlock::serial();
-        SHARED.sub_cues.lock().unwrap().clear();
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(0, Relaxed);
         set_subtitle_offset(0);
         SHARED.playpos_ns.store(SEC, Relaxed);
-        push_subtitle_text(0, SEC, 2 * SEC, "early".into());
         push_subtitle_bitmap(0, SEC, 1920, 1080, vec![rect(0, 0, 8, 8)]);
         close_subtitle_bitmap(0, 2 * SEC);
 
         // playback goes on at offset 0 and the demuxer pushes the next cues, which prunes
         SHARED.playpos_ns.store(61 * SEC + SEC / 2, Relaxed);
-        push_subtitle_text(0, 62 * SEC, 63 * SEC, "later".into());
         push_subtitle_bitmap(0, 62 * SEC, 1920, 1080, vec![rect(0, 0, 8, 8)]);
 
         // the viewer steps straight to the latest delay: the clock is back at 1.5 s
         set_subtitle_offset(SUBTITLE_OFFSET_LATEST_MS);
         let now = 61 * SEC + SEC / 2;
-        let text = active_subtitle(now);
         let image = active_bitmap_key(now);
 
         set_subtitle_offset(0);
         SHARED.playpos_ns.store(0, Relaxed);
-        SHARED.sub_cues.lock().unwrap().clear();
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(-1, Relaxed);
-        assert_eq!(text.as_deref(), Some("early"), "text: a raised delay finds the cue read at offset 0");
         assert_eq!(image, Some(SEC), "image: a raised delay finds the set read at offset 0");
     }
 
