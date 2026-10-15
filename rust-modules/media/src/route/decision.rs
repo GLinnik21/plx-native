@@ -9228,12 +9228,26 @@ pub fn playing_quality(ps: &PlaybackSession) -> PlayingQuality {
     }
 }
 
+/// **Is the selected subtitle an external sidecar the app can draw itself?** `cur_sub_sidecar`
+/// alone only says the pick has no demuxer ordinal; an image sidecar the client cannot draw has
+/// none either and needs the server's burn.
+fn sidecar_drawn_by_client(ps: &PlaybackSession) -> bool {
+    ps.cur_sub_sidecar && ps.cur_sub_client_drawable
+}
+
+/// **Is a subtitle selected that the client cannot draw at all?** Then a direct play of the
+/// Original candidate would show nothing, so the route must keep the server's burn.
+fn subtitle_undrawable(ps: &PlaybackSession) -> bool {
+    ps.cur_sub_sid != 0 && !ps.cur_sub_client_drawable
+}
+
 /// What the picked subtitle does to the route: nothing, a sidecar the client draws itself, or an
 /// embedded track the server would have to burn to keep. Two session fields, read in place.
 fn subtitle_effect_of(ps: &PlaybackSession) -> SubtitleEffect {
     match ps.cur_sub_sid {
         0 => SubtitleEffect::None,
-        _ if ps.cur_sub_sidecar || side_subs_allowed(ps) => SubtitleEffect::Sidecar,
+        // A sidecar the app cannot draw (an image .sup/.idx) is a burn, never "unaffected".
+        _ if sidecar_drawn_by_client(ps) || side_subs_allowed(ps) => SubtitleEffect::Sidecar,
         _ => SubtitleEffect::Embedded,
     }
 }
@@ -9421,7 +9435,7 @@ fn live_is_original_burn(ps: &PlaybackSession) -> bool {
         && ps.cur_contract.ceiling.is_none()
         && !ps.cur_contract.no_video_copy
         && ps.cur_sub_sid != 0
-        && !ps.cur_sub_sidecar
+        && !sidecar_drawn_by_client(ps)
 }
 
 /// **The family the enhancement's own bookkeeping should read the live route as.** Identical to
@@ -9523,7 +9537,9 @@ pub fn enhancement_step(ps: &PlaybackSession) -> EnhancementStep {
     }
     if applied.any() && !want.any() {
         return match ps.auto_original.as_ref() {
-            Some(candidate) if candidate.feeds_part() => EnhancementStep::ReleaseToDirect,
+            Some(candidate) if candidate.feeds_part() && !subtitle_undrawable(ps) => {
+                EnhancementStep::ReleaseToDirect
+            }
             // An embedded subtitle still on screen is kept by the plain burn, never dropped by a
             // plain remux (which cannot carry it, M4/M7).
             Some(_) => EnhancementStep::Remux(enhanced_remux_contract(
@@ -10449,10 +10465,7 @@ fn commit_subtitle_selection_inner(
         RouteFamily::Direct | RouteFamily::Remux => {
             let pick = (stream_id != 0).then_some(sub_idx);
             if let Some(candidate) = ps.auto_original.as_mut() {
-                if !candidate.retarget_subtitle(pick, client_renderable) {
-                    ps.auto_original = None;
-                    ps.original_declined = Some(OriginalDeclined::TrackPickDropped);
-                }
+                candidate.retarget_subtitle(pick);
             }
         }
     }

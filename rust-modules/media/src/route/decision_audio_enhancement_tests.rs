@@ -147,6 +147,9 @@ fn install(
         },
         "960001",
     );
+    // What a real resolve records for a subtitle with a render ordinal
+    // (`plan.sub_render_ordinal.is_some()`); the candidate's ordinal stands in for it here.
+    ps.cur_sub_client_drawable = sub_sid != 0 && ps.auto_original.as_ref().is_some_and(|c| c.subtitle_ordinal.is_some());
 }
 
 /// The toggle row minus persistence (`request_audio_enhancement` also retains a session write,
@@ -4471,16 +4474,81 @@ fn embedded_subtitle_enabled_midplay_offers_the_same_burn_as_one_at_start() {
     assert_eq!(midplay, at_start);
 }
 
-/// Repro: a pick the client does not draw (`client_renderable == false`, e.g. an external image
-/// sidecar listed on a transcoding route) makes `retarget_subtitle` return false, which DROPS the
-/// candidate (`TrackPickDropped`), so the Audio tab reads Disabled(NotCopyable) for the rest of
-/// the playback, while the same subtitle at start is Offered(Burn).
+/// A pick the client does not draw (`client_renderable == false`, e.g. an external image sidecar)
+/// used to DROP the candidate (`TrackPickDropped`), so the Audio tab read Disabled(NotCopyable) for
+/// the rest of the playback while the same subtitle at start is Offered(Burn). It now keeps it.
 #[test]
-#[ignore = "repro: mid-play non-client-renderable subtitle drops auto_original; start-with-sub offers Burn"]
 fn non_drawable_subtitle_enabled_midplay_offers_the_same_burn_as_one_at_start() {
     let at_start = availability_when_started_with(78, None);
     let (midplay, kept) = availability_after_midplay_pick(-1, 78, false);
     assert_eq!(at_start, EnhancementAvailability::Offered(EnhancementRoute::Burn));
     assert!(kept, "the Original candidate must survive a pick it can only burn");
     assert_eq!(midplay, at_start);
+}
+
+/// An image sidecar (`.sup`/`.idx`: no ordinal, no sidecar key) on a standing enhanced Burn.
+fn undrawable_sidecar_on_burn(ps: &mut PlaybackSession, live: &Live) {
+    install(ps, live, Delivery::Burn(PREF), a1(), Some(candidate(true, a1(), None)), 78);
+    ps.cur_sub_sidecar = true;
+    ps.cur_sub_client_drawable = false;
+}
+
+/// The plain Original route is untouched by the kept candidate: with no enhancement wanted, a
+/// non-drawable pick on direct play leaves the step alone and records no drop.
+#[test]
+fn non_drawable_subtitle_midplay_leaves_the_plain_original_route_alone() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(NONE);
+    install(&mut ps, &live, Delivery::Direct, a1(), Some(candidate(true, a1(), None)), 0);
+    commit_subtitle_selection(&mut ps, -1, 78, false);
+    assert!(ps.auto_original.is_some() && ps.original_declined.is_none());
+    assert_eq!(ps.auto_original.as_ref().and_then(|c| c.subtitle_ordinal), None);
+    assert_eq!(live_subtitle_effect(&ps), SubtitleEffect::Embedded, "never a drawable sidecar");
+    assert_eq!(enhancement_step(&ps), EnhancementStep::NotInvolved);
+    assert!(!is_transcoding(&ps), "still the direct play it was");
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// Releasing the enhancement while the undrawable subtitle is still selected must keep the
+/// burn, never return to a direct play that would show nothing.
+#[test]
+fn releasing_the_enhancement_with_a_non_drawable_subtitle_keeps_the_burn() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(NONE);
+    undrawable_sidecar_on_burn(&mut ps, &live);
+    assert_eq!(live_subtitle_effect(&ps), SubtitleEffect::Embedded);
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(NONE, true)));
+    live.finish();
+    cleanup(&mut ps);
+}
+
+/// Turning the subtitle Off afterwards: the enhancement stays wanted as a plain enhanced remux
+/// (no burn), and once it is released too the way back is the direct play.
+#[test]
+fn turning_a_non_drawable_subtitle_off_lands_on_the_plain_routes() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    undrawable_sidecar_on_burn(&mut ps, &live);
+    commit_subtitle_selection(&mut ps, -1, 0, false);
+    reset_player_control_for_test(&ps);
+    assert_eq!(ps.cur_sub_sid, 0);
+    assert!(ps.auto_original.is_some());
+    assert_eq!(enhancement_step(&ps), EnhancementStep::Remux(enhanced_remux_contract(PREF, false)));
+    crate::player::restore_audio_enhancements(NONE);
+    assert_eq!(enhancement_step(&ps), EnhancementStep::ReleaseToDirect);
+    live.finish();
+    cleanup(&mut ps);
 }
