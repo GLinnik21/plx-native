@@ -1811,6 +1811,15 @@ pub(crate) fn note_speed_audio_report(b: &[u8]) {
     SHARED.speed_audio_verdict.store(if ok { SPEED_AUDIO_OK } else { SPEED_AUDIO_BAD }, Relaxed);
     log(&format!("speed: pipeline audio {kind} {khz} kHz x{channels} -> {}", if ok { "ok" } else { "NOT what was declared" }));
 }
+/// What the pipeline reported for this speed session's audio, for the Stats for nerds read-out:
+/// `None` before any report, `Some(true)` for the declared 48 kHz stereo, `Some(false)` otherwise.
+pub fn speed_audio_report() -> Option<bool> {
+    match SHARED.speed_audio_verdict.load(Relaxed) {
+        SPEED_AUDIO_OK => Some(true),
+        SPEED_AUDIO_BAD => Some(false),
+        _ => None,
+    }
+}
 pub(crate) const SPEED_AUDIO_UNKNOWN: u8 = 0;
 pub(crate) const SPEED_AUDIO_OK: u8 = 1;
 pub(crate) const SPEED_AUDIO_BAD: u8 = 2;
