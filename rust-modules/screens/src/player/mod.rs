@@ -308,8 +308,11 @@ impl PlayerScreen {
         match g {
             GROUP_REPAIR => self.repair_alert.is_open() && self.repair_alert.settled(),
             GROUP_FAILURE => !self.repair_alert.visible() && player_hud::failure_row_drawn(self.busy),
-            GROUP_SCRUB | GROUP_ROW => hud_drawn && !failed && self.transport,
-            GROUP_TABS => hud_drawn && !failed,
+            GROUP_SCRUB => hud_drawn && !failed && self.transport,
+            // faded away by a live scrub (and until they are back) means not hoverable or
+            // clickable: `Motion::chrome_interactive`
+            GROUP_ROW => hud_drawn && !failed && self.transport && self.row.chrome_interactive(),
+            GROUP_TABS => hud_drawn && !failed && self.row.chrome_interactive(),
             _ => false,
         }
     }
@@ -375,6 +378,10 @@ impl PlayerScreen {
             mix(pos as u64);
             mix(plx_media::player::seek_display_ns() as u64);
             mix(plx_media::player::TX.scrub_ns.load(Relaxed) as u64);
+            // the scrub's fades, card and knob clock: a frame is owed for as long as one runs
+            if self.row.scrub_motion_animating(now) {
+                mix(u64::from(now));
+            }
         }
         mix(u64::from(plx_media::player::TX.paused.load(Relaxed)));
         // …subtitles are NOT conditional: they are drawn on every frame of the route, HUD or no
@@ -2662,6 +2669,43 @@ mod scrub_ownership_tests {
                 "{kind:?} {cx:?}: {row:?}"
             );
         }
+    }
+
+    /// **The chrome a live scrub fades away takes no pointer.** The control row and the bottom tabs
+    /// are not registered as stops from the moment a scrub starts until they are back (an invisible
+    /// disc must neither highlight nor act under the card), while the scrubber's own stop stays.
+    #[test]
+    fn faded_chrome_is_not_hit_registered_during_a_scrub() {
+        use std::sync::atomic::Ordering::Relaxed;
+        use plx_ui::screen::DrawFrame;
+        let _g = plx_base::testlock::serial();
+        let _f = Fixture::new(false);
+        let elems = |page: &PlayerScreen| {
+            let cx = cx();
+            let mut f = DrawFrame::new(&cx, plx_ui::Painter::root());
+            page.record_stops(&mut f, true);
+            let mut v: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
+            v.sort_unstable();
+            v
+        };
+        let step = |page: &mut PlayerScreen, now: u32| page.row.step(ControlSlot::Discs, 0, 0, 0.016, now);
+        let mut page = page_on_the_bar();
+        page.transport = true;
+        step(&mut page, 1_000);
+        let before = elems(&page);
+        assert!(before.contains(&player_hud::ELEM_ROW_BASE) && before.contains(&player_hud::ELEM_TAB_BASE));
+        assert!(before.contains(&player_hud::ELEM_SCRUB));
+
+        plx_media::player::TX.scrub_ns.store(60_000_000_000, Relaxed);
+        step(&mut page, 1_016);
+        let during = elems(&page);
+        assert_eq!(during, vec![player_hud::ELEM_SCRUB], "only the bar takes the pointer: {during:?}");
+
+        plx_media::player::TX.scrub_ns.store(-1, Relaxed);
+        step(&mut page, 2_000);
+        assert_eq!(elems(&page), vec![player_hud::ELEM_SCRUB], "still hidden in the 150 ms wait");
+        step(&mut page, 2_300);
+        assert_eq!(elems(&page), before, "back, and clickable again");
     }
 
     /// **(c) The scrubber's stop is a SEEK target, and a drag previews across it.**
