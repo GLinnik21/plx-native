@@ -2,10 +2,10 @@
 //! notification connection, when a dropped one is retried, and what a reconnect owes the screens.
 //! The protocol is `plx_plex::plex::notify`; this is the policy around it.
 //!
-//! **It ships OFF.** [`NOTIFY_ENABLED`] is `false` and a connection opens only to a server this
-//! account OWNS: a friend's share, a household member's server and a server nothing has described
-//! yet all stay dark. The feed names other people's playback, and the owner turns it on only after
-//! the TV checks in `docs/pms-api.md` §9 have passed.
+//! **It ships ON, for owned servers only.** [`NOTIFY_ENABLED`] is `true` and a connection opens
+//! only to a server this account OWNS: a friend's share, a household member's server and a server
+//! nothing has described yet all stay dark. The feed names other people's playback, so that rule is
+//! the one that must not loosen. The TV checks in `docs/pms-api.md` §9 passed before it was turned on.
 //!
 //! **A notification here is a hint, never a playback event.** Nothing in this module calls
 //! `enqueue_stop`, adds an end-of-stream candidate or publishes an Offset: a stranger's `stopped`
@@ -30,9 +30,10 @@ use plx_plex::plex::ServerId;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Ships `false`. Flipping it is the owner's decision after the L2-2 TV checks (`docs/pms-api.md`
-/// §9); `notify_tests::disabled_const_never_connects` is the tripwire that makes it a deliberate edit.
-pub const NOTIFY_ENABLED: bool = false;
+/// Ships `true`, after the TV checks (`docs/pms-api.md` §9). The owned-only rule is separate and
+/// unconditional; `notify_tests::enabled_const_connects_to_an_owned_server` and
+/// `non_owned_never_connects` pin both halves.
+pub const NOTIFY_ENABLED: bool = true;
 
 /// Pumps per second the backoff is written against (the frame loop's rate).
 pub const FRAMES_PER_S: u64 = 60;
@@ -302,32 +303,9 @@ pub struct NotifyStore {
     gate: fn(&plx_plex::plex::Client) -> bool,
 }
 
-/// Is the feed on for this process? The shipped constant, or (a `devtriggers` build only) the
-/// developer's `/tmp/plxnative-notify`, which exists so the TV checks can run a debug build
-/// BEFORE the constant is flipped. A pure function so the rule is testable without a trigger.
-fn enabled_by(shipped: bool, dev_override: bool) -> bool {
-    shipped || dev_override
-}
-
-/// The `notify` developer trigger. `devtrig::flag` is `false` at compile time without the
-/// `devtriggers` feature, so a stable/release build cannot arm it; a test never reads `/tmp`.
-fn dev_override() -> bool {
-    #[cfg(any(test, feature = "test-support"))]
-    return false;
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        let on = plx_base::devtrig::flag("notify");
-        #[cfg(feature = "devtriggers")]
-        if on {
-            plx_base::eventlog::log("notify: enabled by the developer trigger");
-        }
-        on
-    }
-}
-
 impl Default for NotifyStore {
     fn default() -> Self {
-        Self::new(enabled_by(NOTIFY_ENABLED, dev_override()), default_connector())
+        Self::new(NOTIFY_ENABLED, default_connector())
     }
 }
 

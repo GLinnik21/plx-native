@@ -164,10 +164,6 @@ const DIAG: [&str; 40] = [
     // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",
-    // Turns the PMS notification feed ON in a devtriggers build before `NOTIFY_ENABLED` ships
-    // (`data::stores::notify`). It opens a read-only stream and changes no screen, and the TV checks
-    // boot with `--guest` through the picker like everyone else.
-    "plxnative-notify",
 ];
 
 /// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.

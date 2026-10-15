@@ -2440,7 +2440,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // every route for the same reason (a refused write is put right here, not by a refetch).
         let endpoints = app.bridge.reconcile_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
-        // The PMS notification feed (ships off: opens nothing while `NOTIFY_ENABLED` is false) and
+        // The PMS notification feed (on, for owned servers only: opens nothing until one is described) and
         // the reads its hints owe the pages on the stack, visible and covered. Route-unconditional
         // like its neighbours; it never touches the stop queue or the playback Offset.
         let content: Vec<plx_screens::registry::ContentArg> = app.pages.nav.tabs.stack.entries.iter()

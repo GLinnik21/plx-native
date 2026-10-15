@@ -1,6 +1,6 @@
 //! **What a PMS notification asks of the screens** (layer-2 view state, L2-4): the mapping from
 //! [`NotifyOut`] (what other clients are playing, already stripped of our own sessions) to reads of
-//! OUR state. It ships dark with the feed (`notify::NOTIFY_ENABLED`).
+//! OUR state. It runs with the feed (`notify::NOTIFY_ENABLED`, owned servers only).
 //!
 //! **A notification is a hint, never a playback event** (S5). Nothing here calls
 //! `enqueue_stop`, adds an end-of-stream candidate or publishes an Offset: a stranger's `stopped`

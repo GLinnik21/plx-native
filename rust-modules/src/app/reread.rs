@@ -327,15 +327,15 @@ mod tests {
         assert_eq!(keys, ["d"], "the resume reads the visible Detail back");
     }
 
-    /// The notification wiring ships dark: with the feed off, a frame's pump owes no read-back and
+    /// With no owned server described there is no connection: a frame's pump owes no read-back and
     /// reports no gap, whatever pages are on the stack.
     #[test]
-    fn notify_pump_ships_off_and_owes_nothing() {
+    fn notify_pump_without_an_owned_server_owes_nothing() {
         let _g = plx_base::testlock::serial();
         let (_pages, mut rig, _n) = mounted();
         let held = [ContentArg::Detail { sid: ServerId::UNSET, rk: "d".into() }];
         for _ in 0..5 {
-            assert!(!rig.notify_pump(&held, plx_data::stores::notify_map::Shown::ALL), "no feed, no gap");
+            assert!(!rig.notify_pump(&held, plx_data::stores::notify_map::Shown::ALL), "no owned server, no feed, no gap");
         }
         assert!(rig.read_back_pending_for_test().is_empty());
     }

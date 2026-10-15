@@ -1256,10 +1256,10 @@ it is a 400).
 
 ---
 
-## 9. Notifications (SSE) — `/:/eventsource/notifications` (measured on PMS 1.43.4, Guest token; ships OFF)
+## 9. Notifications (SSE) — `/:/eventsource/notifications` (measured on PMS 1.43.4, Guest token; ON for owned servers)
 
 The server pushes what other clients are doing. The app reads it with `plex::notify` (the protocol)
-and `stores::notify` (the policy); both ship dark (`NOTIFY_ENABLED = false`) and the feed opens
+and `stores::notify` (the policy); both ship on (`NOTIFY_ENABLED = true`) and the feed opens
 only to a server the account OWNS. Notifications are hints about a stranger's playback: they never
 reach a timeline, a stop, an end-of-stream candidate or a resume point.
 
@@ -1319,9 +1319,14 @@ Connection policy: idle 25 s ends a stream as `Silent`; `Silent`, `Closed`, a tr
 other 4xx, a build that cannot stream, and a request the credential gate refused park it for the
 session; a background cancels every stream and a foreground reopens them.
 
-TV checks owed before the owner flips the constant: connects on an owned server; ten idle minutes with
-no churn; background and foreground; the network pulled, backoff, reconnect; a profile switch
-reconnects with the new token and never with a blank one.
+TV checks (debug install signed in through `tests/mock_pms.py`'s own plex.tv, so the mock's server
+arrives OWNED and the owned-only rule runs unmodified; `tools/tv-session.sh up --mock-plextv`):
+connects and goes live on an owned server (passed); ten idle minutes with no churn (0 reconnects, 0
+ends in 600 s; passed); the mock stopped and restarted: `Transport` end, escalating Backoff, reconnect,
+exactly one resync (passed); another client's `playing` then `stopped` refetches Continue Watching
+once, and an open Detail re-reads in place with its layout and focus unchanged (passed). NOT
+determined: background and foreground on the set, a profile switch (no sanctioned driver), and
+whether Home focus stays put under a tile update (only the Detail page was captured).
 
 ---
 

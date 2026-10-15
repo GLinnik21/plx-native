@@ -95,7 +95,7 @@ pub struct Stores {
     pub viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
     /// The read-back of landed view-state writes. Appended after ViewState's other owners.
     pub reconcile: viewreconcile::ViewReconcileStore,
-    /// The PMS notification feed's owner. Ships off (`notify::NOTIFY_ENABLED`); no `StoreId`, no
+    /// The PMS notification feed's owner. Ships on for owned servers (`notify::NOTIFY_ENABLED`); no `StoreId`, no
     /// `StoreCmd`: the application pumps it and tells it the lifecycle (`Bridge::notify_*`).
     pub notify: notify::NotifyStore,
     /// What the feed's play-state hints owe the screens (`notify_map`); nothing is read until it is

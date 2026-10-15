@@ -448,9 +448,10 @@ fn data_io_disabled_mid_stream_cancels_it() {
 }
 
 #[test]
-fn disabled_const_never_connects() {
-    // S6: the shipped constant is false, and the store built the way production builds it obeys it.
-    assert!(!NOTIFY_ENABLED, "notifications ship OFF until the owner's TV checks pass (docs/pms-api.md §9)");
+fn enabled_const_connects_to_an_owned_server() {
+    // The shipped constant is true, and the store built the way production builds it (its flag from
+    // the constant) opens exactly one connection to an owned server.
+    assert!(NOTIFY_ENABLED, "notifications ship ON for owned servers (docs/pms-api.md §9)");
     let lock = plx_base::testlock::serial();
     plex::reset_servers_for_test();
     let sid = plex::register_for_test("machine-a", "127.0.0.1", 9, "tok", "cid-own");
@@ -460,12 +461,7 @@ fn disabled_const_never_connects() {
     for _ in 0..10 {
         let _ = store.pump(false);
     }
-    assert_eq!(fake.connects(), 0);
-    // …and a default-built store has no connector that could open one.
-    let mut default = NotifyStore::default();
-    for _ in 0..10 {
-        let _ = default.pump(false);
-    }
+    assert_eq!(fake.connects(), 1);
     plex::reset_servers_for_test();
     drop(lock);
 }
@@ -565,16 +561,4 @@ fn a_worker_ending_after_a_cancel_is_never_read() {
     r.store.resume();
     r.pump_n(1);
     assert_eq!(r.fake.connects(), 2, "the cancelled connection's end cannot park its successor");
-}
-
-#[test]
-fn dev_trigger_enables_a_build_whose_constant_is_off() {
-    // The TV checks run a debug build before the constant ships on: the trigger is the only other
-    // way in, and a build without it (`dev_override` is a compile-time `false` then) stays as shipped.
-    assert!(enabled_by(false, true));
-    assert!(enabled_by(true, false));
-    assert!(enabled_by(true, true));
-    assert!(!enabled_by(false, false));
-    // Under test the override never reads `/tmp`, so a default store is exactly the shipped rule.
-    assert!(!dev_override());
 }

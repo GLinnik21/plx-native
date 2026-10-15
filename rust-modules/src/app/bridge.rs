@@ -1249,8 +1249,8 @@ impl Bridge {
     }
 
     /// The PMS notification feed's per-frame pass (`stores::notify`), and the mapping of what it
-    /// brought to reads of our own state (`Stores::notify_map`). Ships off: with `NOTIFY_ENABLED`
-    /// false the feed opens nothing and there is nothing to map. `pages` are the content pages on
+    /// brought to reads of our own state (`Stores::notify_map`). Only a server the account OWNS
+    /// gets a connection, so with none described the feed opens nothing and there is nothing to map. `pages` are the content pages on
     /// the navigation stack, visible and covered, and `shown` says which list pages (Home, Library, Search)
     /// are on it: what they hold decides which hints are read back.
     /// A notification never reaches the stop queue or the playback Offset (S5). The event log gets

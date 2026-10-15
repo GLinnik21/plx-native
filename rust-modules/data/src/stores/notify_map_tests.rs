@@ -62,8 +62,8 @@ fn detail(rk: &str) -> ContentArg {
 }
 
 #[test]
-fn notifications_ship_off() {
-    assert!(!NOTIFY_ENABLED, "S6: flipping the constant is the owner's decision after the TV checks");
+fn notifications_ship_on() {
+    assert!(NOTIFY_ENABLED, "notifications ship ON; the owned-only rule (S6) is what keeps others dark");
 }
 
 #[test]
