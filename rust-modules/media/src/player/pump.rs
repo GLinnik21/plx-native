@@ -3741,6 +3741,34 @@ mod native_seek_pump_tests {
         assert_ended_paused();
     }
 
+    /// THE reported path: a direct-play (native) session, the viewer paused, then another audio
+    /// track picked. `native_audio_tail` -> `switch_audio_native` -> `reload_at` arms a demuxer seek
+    /// at the playhead but is NOT a seek the pump dispatched (`SHARED.seeking` stays false), so
+    /// neither seek preroll covers it.
+    #[test]
+    fn a_paused_native_audio_track_switch_primes_a_first_frame_and_ends_paused() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new(None);
+        SHARED.frames.store(1, Relaxed);
+        rig.viewer_pause();
+        let pos = SHARED.playpos_ns.load(Relaxed);
+        // The real entry the tail calls; this rig has no route, so it logs and returns NoRoute.
+        let _ = super::super::engine::switch_audio_native(&mut rig.ps, &mut rig.pa, 2, pos);
+        assert_eq!(reloads(), vec![pos], "the audio switch reloaded at the playhead");
+        assert_eq!(SHARED.desired_audio_idx.load(Relaxed), 2);
+        // What `reload_at` leaves once its route accepts: the session reset keeping the Pause, a
+        // demuxer seek armed at the playhead, a fresh Engine awaiting its keyframe's rebase.
+        rig.complete_reload(pos);
+        SHARED.seeking.store(false, Relaxed);
+        assert_eq!(SHARED.frames.load(Relaxed), 0);
+        rig.frame();
+        assert!(TX.feed_allowed(), "the new audio session must be allowed to feed its first keyframe");
+        let plays = rig.land_and_present(pos);
+        assert!(plays >= 1, "the prime Play fired through the opened gate before the frame was presented");
+        assert_eq!(reloads(), vec![pos], "no second reload");
+        assert_ended_paused();
+    }
+
     #[test]
     fn a_pause_pressed_on_an_initial_hold_before_any_frame_primes_one_and_ends_paused() {
         let _serial = plx_base::testlock::serial();
