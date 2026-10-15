@@ -208,9 +208,11 @@ fn belarusian_long_month_day_captions_take_the_genitive() {
     let cx = LocaleContext::resolve(Preference::Be, None, None, None, None);
     assert_eq!(cx.month_day(1, 1, MonthWidth::Long).as_deref(), Some("1 студзеня"));
     assert_eq!(cx.month_day(12, 31, MonthWidth::Long).as_deref(), Some("31 снежня"));
-    // The abbreviated form is a dotted stem, not the nominative word.
-    assert_eq!(cx.month_day(3, 12, MonthWidth::Medium).as_deref(), Some("12 сак."));
-    assert!(captions.iter().all(|(medium, _)| medium.ends_with('.')));
+    // CLDR `be` abbreviated format: three letters, no dot, "мая" for May.
+    assert_eq!(cx.month_day(3, 12, MonthWidth::Medium).as_deref(), Some("12 сак"));
+    assert_eq!(cx.month_day(5, 9, MonthWidth::Medium).as_deref(), Some("9 мая"));
+    assert_eq!(cx.month_day(4, 1, MonthWidth::Medium).as_deref(), Some("1 кра"));
+    assert!(captions.iter().all(|(medium, _)| !medium.ends_with('.')));
 }
 
 #[test]
