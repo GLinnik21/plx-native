@@ -215,3 +215,29 @@ fn reset_forgets_the_queue_and_the_flights() {
     store.reset();
     assert!(!store.is_busy() && store.dirty_for_test().is_empty());
 }
+
+/// A read is stamped when it is SPAWNED, so a press whose write has not landed yet would sit before
+/// that stamp and be undone by the read's older body. The read is therefore not spawned while the
+/// owner has a write queued or out; it waits in the queue and goes when the burst is idle.
+#[test]
+fn a_read_is_not_spawned_while_a_write_is_queued_so_the_press_survives_it() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library_holding_item(&pms);
+    press(&mut stores, sid, Write::Watched);
+    assert_eq!(tile(&stores), (true, false));
+    assert!(stores.viewstate.borrow().is_busy_for_test(), "the write has not landed");
+    stores.reconcile.enqueue([(sid, "1".to_string())]); // an earlier burst's read-back, still waiting
+    let directory = DirectorySnapshot::default();
+    for _ in 0..200 { // the reconcile owner alone, as when a press lands between two frames
+        stores.reconcile_pump(directory.view());
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0, "no read goes out over a queued write");
+    assert_eq!(stores.reconcile.pending_for_test().len(), 1, "it waits");
+    assert_eq!(tile(&stores), (true, false), "the press stands");
+
+    drive(&mut stores, |s| settled(s) && pms.truth.reads.load(Ordering::SeqCst) >= 1);
+    assert_eq!(tile(&stores), (true, false), "the read that follows the write confirms it");
+    drop(stores);
+}

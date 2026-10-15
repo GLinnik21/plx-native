@@ -40,13 +40,25 @@ ordinals) is the read-back of a view-state write. ViewState hands it the `(serve
 item whose write landed, taken or refused, once its burst is idle; it reads them with one
 `metadata_many` per server (one in flight per server, an item asked for again meanwhile is marked dirty
 and re-queued once), stamps the batch from the ledger, drops any row a newer press covers, and publishes
-the rest as `ViewFact::Facts` edits at leaf scope, which patch Home's hubs and Browse. A refused scrobble
-therefore returns the tile to what the server holds. Facts are not recorded in the ledger (they are the
-server's word). `Bridge::reconcile_pump` runs it after `viewstate_pump` every frame, and also pumps Browse
-while a Browse section is owed a membership re-query (below): a covered Library page is not ticked.
+the rest as `ViewFact::Facts` edits at leaf scope, which patch Home's hubs and Browse. Home counts a Facts
+row as a hit (a merge, a commit, a notice) only when it differs from the row. The read-back never spawns a
+read while a view-state write is queued or out (the stamp is taken at spawn, so a press whose write had not
+landed would otherwise sit before it and be undone by the read's older body); queued items wait for the
+burst to be idle. A refused scrobble returns the tile to what the server holds, for the item (and the
+copies the fan-out took) a read-back asks about: a refused Show- or Season-scope press re-reads only the show
+or season row, and the episode rows the optimistic edit flipped in Browse listings stand until their next
+fetch. Facts are not recorded in the ledger (they are the server's word). `Bridge::reconcile_pump` runs it
+after `viewstate_pump` every frame, and also pumps Browse while a Browse section is owed a membership
+re-query (below): a Library page with another page pushed over it is not ticked.
 Browse marks a section whose membership depends on viewing (Unwatched filter, `lastViewedAt` sort) stale
-when a Facts edit lands in it; the Library screen asks for the re-query (`LibraryWork::Requery`) only while
-covered, never while visible, so tiles do not leave under the cursor.
+when a Facts edit lands in it. The Library screen asks for the re-query (`LibraryWork::Requery`) only once a
+PAGE has been pushed over it (`WillLeave(Deeper)`, then `Cover`), never while it is visible and never under a
+modal such as a compact menu (Sort, Filter, the item menu), which leaves the page visible and ticking; so tiles
+do not leave under the cursor. The re-query is a refresh of the SAME query: the fetch generation moves (a page
+still out for the old fetch is dropped) but `ListingId::query` does not, so the Library screen sees no query
+edit and keeps its scroll and its focus on the reader's tile (the bookmark names the item). A stale section
+that is not the current one is not refreshed in place: it forgets its pages and its cursor (like a first
+visit), so when the reader switches back to it the listing is fetched afresh and opens at the top.
 `Stores::person` owns the open model, generation, retry ladders and dev-seed latch alongside a
 rotated `Arc<PersonAdapter>` containing the unchanged indexed fetch claims/mailboxes. `AppViews`
 lends its `PersonView` to Person, Filmography and PersonBio; `person-owner` rejects every old free

@@ -512,10 +512,12 @@ pub enum LibraryWork {
         hi: usize,
     },
     Retry,
-    /// Re-run the current section's query if a read-back made its membership stale (the Unwatched
-    /// switch, ordering by last viewed). The Library page asks while it is COVERED, never while it
-    /// is visible: the reader's ground does not move under the cursor, and the page is fresh when
-    /// it is shown again.
+    /// Re-fetch the current section's query if a read-back made its membership stale (the Unwatched
+    /// switch, ordering by last viewed). The Library page asks once a PAGE has been pushed over it,
+    /// never while it is visible or under a modal (a compact menu): the reader's ground does not
+    /// move under the cursor, and the listing is fresh when the page is shown again. It is the
+    /// same query refreshed, so [`crate::browse::view::ListingId::query`] does not move and the
+    /// page keeps its scroll and focus.
     Requery,
 }
 

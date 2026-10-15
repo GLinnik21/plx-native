@@ -251,13 +251,14 @@ impl Stores {
     pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>) -> bool {
         let owed = self.viewstate.borrow_mut().take_reread();
         self.reconcile.enqueue(owed);
+        let idle = !self.viewstate.borrow().is_busy();
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
         let person = &mut self.person;
         let collection = &mut self.collection;
         let search = &mut self.search;
         let metadata = &mut self.metadata;
-        self.reconcile.pump_with_gate(&self.landgate, &mut |change| crate::viewstate::publish_view(
+        self.reconcile.pump_with_gate(&self.landgate, idle, &mut |change| crate::viewstate::publish_view(
             change,
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),

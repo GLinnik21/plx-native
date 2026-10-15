@@ -133,6 +133,11 @@ impl ViewStateStore {
         self.state.take_reread()
     }
 
+    /// Is a write queued or in flight?
+    pub fn is_busy(&self) -> bool {
+        self.state.is_busy()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn is_busy_for_test(&self) -> bool {
         self.state.is_busy()

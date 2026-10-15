@@ -307,7 +307,7 @@ impl super::BrowseState {
         let id = self.sections().get(sec).and_then(|section| {
             Some(ListingId {
                 epoch: self.table_epoch(),
-                query: self.query_gen(),
+                query: self.listing_query(),
                 sid: self.section_sid(sec)?,
                 section: section.key,
             })

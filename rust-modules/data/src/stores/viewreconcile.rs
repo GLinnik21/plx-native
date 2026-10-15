@@ -16,11 +16,16 @@
 //!   `(server, ratingKey)` of the item and of every copy the fan-out took
 //!   ([`crate::viewstate::ViewStateState::take_reread`]) once its burst is idle. On success the
 //!   answer confirms the optimistic edit; on refusal it is the only thing that returns the tile to
-//!   what the server holds, because the ledger entry of a refused write is retired.
+//!   what the server holds, because the ledger entry of a refused write is retired. Only the rows
+//!   it reads are put right: a refused Show- or Season-scope press re-reads the show or season row,
+//!   and the episode rows the optimistic edit flipped in Browse listings stand until their next fetch.
 //! * **One read in flight per item, plus a dirty flag.** Items are batched per server into one
 //!   `metadata_many` (`/library/metadata/{k1,k2,…}`, already used by the hub windows and the person
 //!   page), one batch per server at a time. An item asked for while its read is out is not read
 //!   twice at once: it is marked dirty and re-queued ONCE when that read lands. There is no time cap.
+//! * **No read is spawned while a write is queued or out.** The stamp below is taken at spawn, and
+//!   items can wait in the queue (one flight per server, [`BATCH_KEYS`], the retry wait) past a
+//!   later press; the spawn is gated on the same idleness `take_reread` is.
 //! * **A result older than a press is dropped.** Each batch is stamped from the shared
 //!   [`crate::viewledger::ViewLedger`] when it is requested. A row some edit published AFTER that
 //!   stamp covers (a press made while the read was out) is discarded: the read describes the server
@@ -207,9 +212,15 @@ impl ViewReconcileStore {
     /// Land what arrived, hand each surviving row to `publish` as a facts change, re-queue the
     /// items that went dirty, and send the next reads. MAIN THREAD, route-unconditional. True when
     /// a landing changed something a screen may be drawing.
+    ///
+    /// `may_spawn` is false while a view-state write is queued or out: a read's stamp is taken when
+    /// it is spawned, so a press whose write has not landed would sit before the stamp and the
+    /// read's body (from before that write) would undo it. Queued items wait for the burst to be
+    /// idle; landings are always taken.
     pub fn pump_with_gate(
         &mut self,
         gate: &plx_machine::landgate::Gate,
+        may_spawn: bool,
         publish: &mut dyn FnMut(ViewChange),
     ) -> bool {
         let adapter = Arc::clone(&self.adapter);
@@ -263,7 +274,9 @@ impl ViewReconcileStore {
             self.pending.extend(again);
             changed = true;
         }
-        self.kick();
+        if may_spawn {
+            self.kick();
+        }
         if changed {
             self.bump();
         }

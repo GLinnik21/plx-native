@@ -1205,7 +1205,7 @@ impl Bridge {
     }
 
     /// The read-back worker's pass (`stores::viewreconcile`), and the Browse pump a membership
-    /// re-query needs while the Library page is covered and so is not ticked to pump its own store.
+    /// re-query needs while a page is pushed over the Library page and so it is not ticked to pump its own store.
     pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         if self.stores.reconcile_pump(self.directory.view()) {
             plx_machine::idle::invalidate();

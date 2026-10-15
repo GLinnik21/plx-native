@@ -810,7 +810,13 @@ pub struct BrowseState {
     /// The sections left most recently, newest first, each with the window it last showed (see
     /// [`RECENT_SECTIONS`]).
     left: Vec<(usize, (usize, usize))>,
+    /// The FETCH generation: moves on every re-query and every section switch, and a page that
+    /// lands under an older one is dropped. Not what the screen sees — that is [`Self::edit_gen`].
     gen: u32,
+    /// The QUERY identity the screen sees (`ListingId::query`): moves only when the listing is a
+    /// different query (a section switch or a query edit), never on a membership re-query, which
+    /// refreshes the same query under the reader's place.
+    edit_gen: u32,
     /// The `gen` a membership re-query was started under: while it stands and the first page is
     /// out, the store is owed a pump even with no Library page on top ([`BrowseState::requery_owed`]).
     requery_gen: Option<u32>,
@@ -912,6 +918,7 @@ impl Default for BrowseState {
             focus: None,
             left: Vec::new(),
             gen: 0,
+            edit_gen: 0,
             requery_gen: None,
             sections_gen: 0,
             epoch: 0,
@@ -1035,6 +1042,11 @@ impl BrowseState {
     fn query_gen(&self) -> u32 {
         self.gen
     }
+    /// The query identity the screen is shown ([`ListingId::query`]) and its saved cursor is
+    /// addressed with; see [`Self::edit_gen`].
+    fn listing_query(&self) -> u32 {
+        self.edit_gen
+    }
     fn sections_gen(&self) -> u32 {
         self.sections_gen
     }
@@ -1051,12 +1063,22 @@ impl BrowseState {
     fn bump_source_facts_gen(&mut self) {
         self.src_facts_gen = self.src_facts_gen.wrapping_add(1);
     }
+    /// A different query: both generations move.
     fn bump_gen(&mut self) -> u32 {
+        self.edit_gen = self.edit_gen.wrapping_add(1);
+        self.refetch_gen()
+    }
+    /// The same query fetched again: only the fetch generation moves, so a page still out for the
+    /// old fetch is dropped while the screen sees no query change.
+    fn refetch_gen(&mut self) -> u32 {
         self.gen = self.gen.wrapping_add(1);
         self.gen
     }
     fn requery(&mut self) {
         self.bump_gen();
+        self.reset_current_listing();
+    }
+    fn reset_current_listing(&mut self) {
         let current = self.cur();
         if let Some(state) = self.states.get_mut(current) {
             state.reset_listing();
@@ -1221,8 +1243,10 @@ impl BrowseState {
     /// A read-back's [`ViewEdit::Facts`] that lands on a row of a listing whose MEMBERSHIP depends on
     /// viewing (the Unwatched switch, or ordered by last viewed) also marks that section stale: the
     /// row is patched where it stands, but the server would now list it elsewhere or not at all.
-    /// The current section waits for the Library page to be covered ([`BrowseState::requery_stale`]);
-    /// any other section simply forgets its pages, which is what a first visit looks like.
+    /// The current section waits for a page to be pushed over the Library page
+    /// ([`BrowseState::requery_stale`]); any other section simply forgets its pages AND its
+    /// cursor (`reset_listing`), which is what a first visit looks like: switching back to it
+    /// fetches afresh and opens at the top.
     fn apply_view_local(&mut self, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
         let current = self.cur();
         let facts = matches!(edit, crate::viewstate::ViewEdit::Facts { .. });
@@ -1242,13 +1266,16 @@ impl BrowseState {
         }
         hit
     }
-    /// Re-run the current section's query because a read-back changed what it would list. The
-    /// reader's place (`cursor`) survives, unlike a query edit. True when a re-query was started.
+    /// Re-fetch the current section's query because a read-back changed what it would list. The
+    /// reader's place survives, unlike a query edit: the cursor is kept and only the FETCH
+    /// generation moves ([`Self::query_gen`], which drops a page still out), not the query
+    /// identity the screen sees ([`Self::listing_query`]). True when a re-fetch was started.
     fn requery_stale(&mut self) -> bool {
         let current = self.cur();
         let Some(state) = self.states.get_mut(current).filter(|s| s.membership_stale) else { return false };
         let cursor = state.cursor.clone();
-        self.requery();
+        self.refetch_gen();
+        self.reset_current_listing();
         if let Some(state) = self.states.get_mut(current) {
             state.cursor = cursor;
         }
@@ -1558,7 +1585,7 @@ impl BrowseState {
         };
         match work {
             LibraryWork::SaveCursor { query, cursor } => {
-                query == self.query_gen() && self.save_cursor(index, cursor)
+                query == self.listing_query() && self.save_cursor(index, cursor)
             }
             LibraryWork::Commit {
                 select,

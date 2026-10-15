@@ -234,6 +234,18 @@ impl ViewAt {
 }
 
 impl ViewEdit {
+    /// Would [`ViewEdit::apply`] alter this row? A press always counts (the optimistic edit is the
+    /// moment the screen answers, and the same press twice is still a press); the server's `Facts`
+    /// count only when they differ from the row, so a read-back that agrees with the optimistic
+    /// edit rebuilds nothing.
+    pub fn changes(self, m: &crate::pms::PmsMovie) -> bool {
+        match self {
+            ViewEdit::Facts { watched, unwatched, resume_ms } => {
+                m.watched != watched || m.unwatched != unwatched || m.resume_ms != resume_ms
+            }
+            ViewEdit::Watched(_) | ViewEdit::LeftDeck => true,
+        }
+    }
     /// Apply to one row already known to be covered. `LeftDeck` changes no field of a row — leaving
     /// the deck is a membership change the deck's owner makes.
     pub fn apply(self, m: &mut crate::pms::PmsMovie) {

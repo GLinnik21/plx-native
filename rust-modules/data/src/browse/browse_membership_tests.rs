@@ -79,9 +79,12 @@ fn requery_stale_runs_the_query_once_and_keeps_the_readers_place() {
     resident(sid, &mut browse);
     assert!(apply(&mut browse, sid, WATCHED_FACTS));
     let gen = browse.state.query_gen();
+    let shown = browse.state.listing_snapshot().view().id().unwrap().query;
 
     assert!(browse.state.requery_stale());
-    assert_eq!(browse.state.query_gen(), gen.wrapping_add(1), "exactly one re-query");
+    assert_eq!(browse.state.query_gen(), gen.wrapping_add(1), "exactly one re-fetch: a late page of the old fetch is dropped");
+    assert_eq!(browse.state.listing_snapshot().view().id().unwrap().query, shown,
+        "…but the screen-facing query identity stands: a membership refresh is not a query edit");
     assert!(!stale(&mut browse), "the flag is spent");
     let state = &browse.state.states()[0];
     assert_eq!((state.fetch, state.total), (SecFetch::Loading, -1));
@@ -90,6 +93,10 @@ fn requery_stale_runs_the_query_once_and_keeps_the_readers_place() {
 
     assert!(!browse.state.requery_stale(), "a second ask has nothing to do");
     assert_eq!(browse.state.query_gen(), gen.wrapping_add(1));
+
+    browse.state.set_unwatched(false); // a real query edit
+    assert_ne!(browse.state.listing_snapshot().view().id().unwrap().query, shown, "a query edit still moves it");
+    browse.state.set_unwatched(true);
 
     browse.state.set_unwatched(false); // the reader does something else: the Library page is ticking again
     assert!(!browse.state.requery_owed());

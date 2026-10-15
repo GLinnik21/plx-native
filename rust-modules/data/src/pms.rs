@@ -743,14 +743,14 @@ fn apply_edit(b: &mut SourceBuild, at: &ViewAt, edit: ViewEdit) -> bool {
         ViewEdit::Watched(_) | ViewEdit::Facts { .. } => {
             let mut hit = false;
             for c in b.cw.iter_mut().chain(b.lane.rows.iter_mut()) {
-                if mine(&*c.m) {
+                if mine(&*c.m) && edit.changes(&*c.m) {
                     edit.apply(Arc::make_mut(&mut c.m));
                     hit = true;
                 }
             }
             for m in b.shelves.iter_mut().flat_map(|s| s.items.iter_mut()) {
                 // test the shared card first: `make_mut` clones only the card that matches
-                if mine(&**m) {
+                if mine(&**m) && edit.changes(&**m) {
                     edit.apply(Arc::make_mut(m));
                     hit = true;
                 }
