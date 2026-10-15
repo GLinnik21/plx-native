@@ -27,7 +27,8 @@ fn a_gbk_subrip_track_reads_as_chinese_not_replacement_characters() {
     unsafe {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/gbk-subrip.mkv");
         let path = CString::new(path.to_str().unwrap()).unwrap();
-        let mut fmt = std::ptr::null_mut();
+        let mut fmt = avformat_alloc_context();
+        assert!(!fmt.is_null());
         assert!(avformat_open_input(&mut fmt, path.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) >= 0);
         let mut pkt = av_packet_alloc();
         assert!(!pkt.is_null());
@@ -84,7 +85,8 @@ fn a_packet_without_a_duration_is_clipped_by_the_cue_after_it() {
     unsafe {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/gbk-subrip.mkv");
         let path = CString::new(path.to_str().unwrap()).unwrap();
-        let mut fmt = std::ptr::null_mut();
+        let mut fmt = avformat_alloc_context();
+        assert!(!fmt.is_null());
         assert!(avformat_open_input(&mut fmt, path.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) >= 0);
         let mut pkt = av_packet_alloc();
         let mut subs = SubTracks::open(fmt, fmt.as_ref().expect("avformat_open_input succeeded").streams);
