@@ -62,7 +62,7 @@ impl Transitions {
     }
 
     /// One line per pump that saw a transition; nothing otherwise.
-    fn log(&self) {
+    fn emit(&self) {
         if self.0.iter().all(|n| *n == 0) {
             return;
         }
@@ -283,7 +283,7 @@ impl Stores {
                     }
                 }
             }
-            changed.log();
+            changed.emit();
         }
         self.spend_notify_owed(directory)
     }
