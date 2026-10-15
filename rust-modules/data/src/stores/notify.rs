@@ -19,8 +19,11 @@
 //!
 //! **One connection per owned server**, keyed by `(instance_gen, token_gen)` of that server's
 //! client: a re-pointed client or a profile switch is a new key, which cancels the old connection
-//! and discards whatever its worker still pushes. A connection that comes up again after having
-//! been live bumps [`NotifyStore::resync_epoch`]: events were missed in between.
+//! and discards whatever its worker still pushes. A feed that comes back after
+//! being lost UNEXPECTEDLY while live bumps [`NotifyStore::resync_epoch`]: events were missed in
+//! between. A deliberate drop (suspend, network change) is no gap, the foreground re-reads itself;
+//! a flapping feed backs off instead of resetting on its first frame and resyncs once per
+//! escalation, the rest waiting until it has stayed live for a while.
 
 use plx_plex::plex::notify::{Notification, NotifyEnd, PlaySession};
 use plx_plex::plex::ServerId;
@@ -36,6 +39,10 @@ pub const FRAMES_PER_S: u64 = 60;
 /// First retry delay and the ceiling the doubling stops at, in seconds.
 const BACKOFF_BASE_S: u64 = 2;
 const BACKOFF_MAX_S: u64 = 60;
+
+/// A connection that stayed live this long (the protocol's idle window) is healthy: its backoff
+/// starts over, and a resync it owed but skipped while flapping is delivered.
+const STABLE_FRAMES: u64 = 25 * FRAMES_PER_S;
 
 /// `(instance_gen, token_gen)` of the client a connection was opened for.
 type Key = (u32, u32);
@@ -124,7 +131,7 @@ fn default_connector() -> Box<dyn Connector> {
 enum Park {
     /// A 401: parked until the token changes (a new key).
     Token,
-    /// Any other refusal: parked until [`NotifyStore::reset`].
+    /// A 4xx other than 401, or a device that cannot stream: parked until [`NotifyStore::reset`].
     Session,
 }
 
@@ -144,10 +151,33 @@ struct Conn {
     key: Key,
     link: Option<Link>,
     state: State,
-    /// This connection (or an earlier one for the same server) has been live.
-    was_live: bool,
-    /// Consecutive failed connections; drives the backoff, zero once one goes live.
+    /// A live connection was lost unexpectedly: events were missed, and the next time the feed
+    /// is live the screens are owed a re-read. A deliberate drop (suspend, network change) is
+    /// not a gap: the foreground re-reads on its own.
+    gap_owed: bool,
+    /// A resync was delivered since this server's feed was last stable. While it is set a flapping
+    /// connection does not bump again; the debt waits for stability.
+    resynced_unstable: bool,
+    /// The frame the connection went live on.
+    live_since: u64,
+    /// Consecutive short-lived connections; drives the backoff, zero once one stays live for
+    /// [`STABLE_FRAMES`].
     attempts: u32,
+}
+
+/// Bump `sid`'s epoch in `resync` and record it in `out`.
+fn bump_epoch(resync: &mut Vec<(ServerId, u32)>, sid: ServerId, out: &mut NotifyOut) {
+    let epoch = match resync.iter_mut().find(|(s, _)| *s == sid) {
+        Some((_, e)) => {
+            *e += 1;
+            *e
+        }
+        None => {
+            resync.push((sid, 1));
+            1
+        }
+    };
+    out.resynced.push((sid, epoch));
 }
 
 impl Conn {
@@ -163,7 +193,8 @@ impl Conn {
         let frames = secs * FRAMES_PER_S;
         // Up to a quarter more, picked by the frame count: servers that dropped together do not
         // all knock again on the same frame.
-        let jitter = frame % (frames / 4).max(1);
+        // The server id is mixed in so two servers drained in the same pump still differ.
+        let jitter = frame.wrapping_add(u64::from(self.sid.raw()).wrapping_mul(7919)) % (frames / 4).max(1);
         self.attempts = self.attempts.saturating_add(1);
         self.state = State::Backoff { until: frame + frames + jitter };
     }
@@ -182,25 +213,24 @@ impl Conn {
             }
             if self.state == State::Connecting {
                 self.state = State::Live;
-                self.attempts = 0;
-                if self.was_live {
-                    let epoch = match resync.iter_mut().find(|(s, _)| *s == self.sid) {
-                        Some((_, e)) => {
-                            *e += 1;
-                            *e
-                        }
-                        None => {
-                            resync.push((self.sid, 1));
-                            1
-                        }
-                    };
-                    out.resynced.push((self.sid, epoch));
+                self.live_since = frame;
+                if self.gap_owed && !self.resynced_unstable {
+                    bump_epoch(resync, self.sid, out);
+                    self.gap_owed = false;
+                    self.resynced_unstable = true;
                 }
-                self.was_live = true;
                 plx_base::eventlog::log(&format!("notify: live sid={}", self.sid.raw()));
             }
             if let Notification::Play(mut s) = n {
                 sessions.append(&mut s);
+            }
+        }
+        if self.state == State::Live && frame.saturating_sub(self.live_since) >= STABLE_FRAMES {
+            self.attempts = 0;
+            self.resynced_unstable = false;
+            if std::mem::take(&mut self.gap_owed) {
+                bump_epoch(resync, self.sid, out);
+                self.resynced_unstable = true;
             }
         }
         if !sessions.is_empty() {
@@ -208,11 +238,16 @@ impl Conn {
         }
         if let Some(end) = end {
             self.link = None;
+            if self.state == State::Live {
+                // Lost while live: whatever the server said meanwhile was missed.
+                self.gap_owed = true;
+            }
             self.state = match end {
                 NotifyEnd::Refused { status: 401 } => State::Parked(Park::Token),
-                // Any other refusal says retrying will not help: another 4xx, a request this build
-                // refused to send (status 0: the credential gate), or a device that cannot stream.
-                NotifyEnd::Refused { status: 0 | 400..=499 } | NotifyEnd::Unsupported => {
+                // Another 4xx or a device that cannot stream: retrying will not help. Status 0 (this
+                // build's own gate refused the request) is NOT here: it is a state of the moment (a
+                // plaintext grant a foreground cleared and discovery will mint again), so it backs off.
+                NotifyEnd::Refused { status: 400..=499 } | NotifyEnd::Unsupported => {
                     State::Parked(Park::Session)
                 }
                 _ => {
@@ -262,6 +297,8 @@ pub struct NotifyStore {
     seen: (u32, u32),
     frame: u64,
     suspended: bool,
+    /// May this client's token ride its origin now? Production: the grant authority's live answer.
+    gate: fn(&plx_plex::plex::Client) -> bool,
 }
 
 impl Default for NotifyStore {
@@ -278,13 +315,19 @@ impl Drop for NotifyStore {
 
 impl NotifyStore {
     fn new(enabled: bool, connector: Box<dyn Connector>) -> Self {
-        Self { enabled, connector, conns: Vec::new(), resync: Vec::new(), seen: (0, 0), frame: 0, suspended: false }
+        Self { enabled, connector, conns: Vec::new(), resync: Vec::new(), seen: (0, 0), frame: 0, suspended: false, gate: plx_plex::plex::Client::credential_transport_open }
     }
 
     /// A store with `connector` and the enable rule overridden: the only way a test runs one.
     #[cfg(any(test, feature = "test-support"))]
     pub fn with_connector_for_test(connector: Box<dyn Connector>) -> Self {
         Self::new(true, connector)
+    }
+
+    /// Test seam: replace the credential-transport gate.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_gate_for_test(&mut self, gate: fn(&plx_plex::plex::Client) -> bool) {
+        self.gate = gate;
     }
 
     /// How many times `sid`'s feed came back after having been live.
@@ -310,7 +353,7 @@ impl NotifyStore {
         }
         self.sync_roster();
         let frame = self.frame;
-        let Self { conns, connector, resync, suspended, .. } = self;
+        let Self { conns, connector, resync, suspended, gate, .. } = self;
         for conn in conns.iter_mut() {
             // `sync_roster` kept only servers with a client, but a sign-out can land between.
             let Some(client) = plx_plex::plex::client_for(conn.sid) else {
@@ -325,13 +368,23 @@ impl NotifyStore {
                 conn.drop_link();
                 conn.key = key;
                 conn.attempts = 0;
+                if conn.state == State::Live {
+                    conn.gap_owed = true;
+                }
                 if conn.state != State::Parked(Park::Session) {
                     conn.state = State::Idle;
                 }
             }
-            let allowed = !*suspended && !armed && client.has_token() && !client.data_io_disabled();
+            let allowed = !*suspended
+                && !armed
+                && client.has_token()
+                && !client.data_io_disabled()
+                && gate(client);
             if !allowed {
                 conn.drop_link();
+                if conn.state == State::Live {
+                    conn.gap_owed = true;
+                }
                 if matches!(conn.state, State::Connecting | State::Live) {
                     conn.state = State::Idle;
                 }
@@ -377,7 +430,9 @@ impl NotifyStore {
                 key: (client.instance_gen(), client.token_gen()),
                 link: None,
                 state: State::Idle,
-                was_live: false,
+                gap_owed: false,
+                resynced_unstable: false,
+                live_since: 0,
                 attempts: 0,
             });
         }
@@ -388,6 +443,8 @@ impl NotifyStore {
         self.suspended = true;
         for conn in &mut self.conns {
             conn.drop_link();
+            // Deliberate: the foreground re-reads every covered page itself.
+            conn.gap_owed = false;
             if matches!(conn.state, State::Connecting | State::Live) {
                 conn.state = State::Idle;
             }
@@ -411,6 +468,7 @@ impl NotifyStore {
     pub fn network_changed(&mut self) {
         for conn in &mut self.conns {
             conn.drop_link();
+            conn.gap_owed = false;
             if !matches!(conn.state, State::Parked(_)) {
                 conn.state = State::Idle;
                 conn.attempts = 0;

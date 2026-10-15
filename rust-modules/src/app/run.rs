@@ -952,7 +952,8 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // step) that re-proves eligibility before minting again (`plex::grant`).
             plx_plex::plex::grant::network_changed();
             // …and the same doubt applies to the notification feed's open sockets: drop them, let
-            // the feed connect again (a backoff is forgiven), and owe the screens a re-read.
+            // the feed connect again (a backoff is forgiven). This is no feed gap: `reread.resume()` below
+            // re-reads every page, so the reconnect owes no second resync.
             app.bridge.notify_network_changed();
             app.bridge.notify_resume();
             // The television may have been away long enough for every page to be stale.

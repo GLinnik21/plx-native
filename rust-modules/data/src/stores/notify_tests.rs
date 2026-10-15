@@ -204,7 +204,131 @@ fn network_changed_cancels_and_reconnects() {
     r.pump_n(1);
     assert_eq!(r.fake.connects(), 2);
     r.fake.link(1).push(Notification::Ping);
-    assert_eq!(r.pump().resynced, vec![(r.sid, 1)], "a live connection was lost, so the gap is owed");
+    assert!(r.pump().resynced.is_empty(), "the foreground re-reads on its own: a deliberate reconnect is no gap");
+}
+
+#[test]
+fn foreground_reconnect_does_not_resync() {
+    let mut r = rig();
+    r.pump_n(1);
+    r.fake.link(0).push(Notification::Ping);
+    r.pump_n(1);
+    // DID foreground: suspend (WILL), then network_changed + resume.
+    r.store.suspend();
+    r.store.network_changed();
+    r.store.resume();
+    r.pump_n(1);
+    assert_eq!(r.fake.connects(), 2);
+    r.fake.link(1).push(Notification::Ping);
+    assert!(r.pump().resynced.is_empty());
+    assert_eq!(r.store.resync_epoch(r.sid), 0);
+    // An unexpected end afterwards still owes one.
+    r.fake.link(1).finish(NotifyEnd::Closed);
+    r.pump_n(2 * FRAMES_PER_S * 2);
+    r.fake.link(2).push(Notification::Ping);
+    assert_eq!(r.pump().resynced, vec![(r.sid, 1)]);
+}
+
+#[test]
+fn flapping_server_backs_off_and_resyncs_once() {
+    let mut r = rig();
+    r.pump_n(1);
+    let mut gaps = Vec::new();
+    for _ in 0..5 {
+        let n = r.fake.connects();
+        r.fake.link(n - 1).push(Notification::Ping);
+        r.pump_n(1);
+        r.fake.link(n - 1).finish(NotifyEnd::Closed);
+        let mut waited = 0u64;
+        while r.fake.connects() == n {
+            r.pump_n(1);
+            waited += 1;
+            assert!(waited < 100 * FRAMES_PER_S, "never redialled");
+        }
+        gaps.push(waited);
+    }
+    assert!(gaps[4] > gaps[0] * 4, "a flapping server escalates its backoff: {gaps:?}");
+    assert!(r.store.resync_epoch(r.sid) <= 1, "one resync per escalation, got {}", r.store.resync_epoch(r.sid));
+    // Held live past the idle window, it is healthy again: the next drop starts from the base.
+    let n = r.fake.connects();
+    r.fake.link(n - 1).push(Notification::Ping);
+    r.pump_n(26 * FRAMES_PER_S);
+    r.fake.link(n - 1).finish(NotifyEnd::Closed);
+    r.pump_n(1);
+    r.pump_n(2 * FRAMES_PER_S * 2);
+    assert_eq!(r.fake.connects(), n + 1, "a stable connection resets the backoff");
+}
+
+#[test]
+fn servers_ending_in_one_pump_get_different_deadlines() {
+    let mut r = rig();
+    let sid_b = plex::register_for_test("machine-b", "127.0.0.2", 9, "tok-b", "cid-own");
+    plex::describe_server(sid_b, "Server B", "", GrantEvidence::ours());
+    r.pump_n(1);
+    assert_eq!(r.fake.connects(), 2);
+    for n in 0..2 {
+        r.fake.link(n).push(Notification::Ping);
+    }
+    r.pump_n(1);
+    for n in 0..2 {
+        r.fake.link(n).finish(NotifyEnd::Closed);
+    }
+    r.pump_n(1);
+    let untils: Vec<u64> = r
+        .store
+        .conns
+        .iter()
+        .map(|c| match c.state {
+            State::Backoff { until } => until,
+            s => panic!("{s:?}"),
+        })
+        .collect();
+    assert_eq!(untils.len(), 2);
+    assert_ne!(untils[0], untils[1], "servers that dropped together must not knock on the same frame");
+}
+
+fn refuse_gate(_: &plex::Client) -> bool {
+    false
+}
+fn open_gate(_: &plex::Client) -> bool {
+    true
+}
+
+#[test]
+fn a_refused_origin_is_not_dialled_and_reconnects_when_the_grant_returns() {
+    let mut r = rig();
+    r.store.set_gate_for_test(refuse_gate);
+    r.pump_n(70 * FRAMES_PER_S);
+    assert_eq!(r.fake.connects(), 0, "a plaintext origin with no live grant is not dialled");
+    r.store.set_gate_for_test(open_gate);
+    r.pump_n(1);
+    assert_eq!(r.fake.connects(), 1, "discovery re-minting the grant brings the feed back");
+}
+
+#[test]
+fn a_gate_refusal_mid_stream_cancels_and_recovers() {
+    let mut r = rig();
+    r.pump_n(1);
+    r.fake.link(0).push(Notification::Ping);
+    r.pump_n(1);
+    r.store.set_gate_for_test(refuse_gate);
+    r.pump_n(1);
+    assert!(r.fake.link(0).is_cancelled());
+    r.store.set_gate_for_test(open_gate);
+    r.pump_n(1);
+    assert_eq!(r.fake.connects(), 2);
+    r.fake.link(1).push(Notification::Ping);
+    assert_eq!(r.pump().resynced, vec![(r.sid, 1)], "the stream was lost while the app ran: a gap is owed");
+}
+
+#[test]
+fn a_local_refusal_backs_off_rather_than_parking() {
+    let mut r = rig();
+    r.pump_n(1);
+    r.fake.link(0).finish(NotifyEnd::Refused { status: 0 });
+    r.pump_n(1);
+    r.pump_n(2 * FRAMES_PER_S * 2);
+    assert_eq!(r.fake.connects(), 2, "status 0 is this build's own gate: retried, never parked for the session");
 }
 
 #[test]
@@ -256,11 +380,10 @@ fn parked_on_401_until_token_gen() {
 }
 
 #[test]
-fn parked_on_other_4xx_unsupported_and_local_refusal() {
+fn parked_on_other_4xx_and_unsupported() {
     for end in [
         NotifyEnd::Refused { status: 403 },
         NotifyEnd::Refused { status: 404 },
-        NotifyEnd::Refused { status: 0 },
         NotifyEnd::Unsupported,
     ] {
         let mut r = rig();

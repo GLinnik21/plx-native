@@ -80,6 +80,9 @@ impl SseParser {
         let overflow = std::mem::take(&mut self.line_overflow);
         let raw = std::mem::take(&mut self.line);
         if overflow {
+            // A line is missing from whatever frame this is: dispatching it would hand over a
+            // frame with its middle gone. The next blank line discards the frame.
+            self.data_overflow = true;
             return;
         }
         if raw.is_empty() {
@@ -270,6 +273,14 @@ impl Client {
     /// `on` receives each [`Notification`] as it arrives, pings included and own sessions already
     /// dropped. Refused up front, without a socket, when the token is blank or data I/O is off.
     #[track_caller]
+    /// May this server's token ride its origin RIGHT NOW (TLS, a developer build, or a live
+    /// consented grant)? The pure read of the gate `http::stream` applies, asked before a dial so a
+    /// refused origin is not connected to at all (a foreground clears every plaintext grant until
+    /// discovery mints it again).
+    pub fn credential_transport_open(&self) -> bool {
+        crate::plex::grant::credential_allowed(&self.origin)
+    }
+
     pub fn notifications(
         &self,
         _off: &plx_base::task::OffFrame,
@@ -358,6 +369,23 @@ mod tests {
     fn a_blank_line_with_nothing_pending_dispatches_nothing_and_unknown_fields_are_ignored() {
         let got = frames(&[b"\n\nid: 7\nretry: 100\n\n"]);
         assert!(got.is_empty(), "{got:?}");
+    }
+
+    #[test]
+    fn an_overlong_data_line_inside_a_frame_drops_the_whole_frame() {
+        let mut big = b"data: first\ndata: ".to_vec();
+        big.extend(std::iter::repeat(b'x').take(MAX_LINE + 10));
+        big.extend_from_slice(b"\ndata: last\n\ndata: ok\n\n");
+        let got = frames(&[&big]);
+        assert_eq!(got, vec![msg("message", "ok")], "a frame with its middle missing must not dispatch");
+    }
+
+    #[test]
+    fn an_overlong_data_line_alone_dispatches_nothing() {
+        let mut big = b"data: ".to_vec();
+        big.extend(std::iter::repeat(b'x').take(MAX_LINE + 10));
+        big.extend_from_slice(b"\n\n");
+        assert!(frames(&[&big]).is_empty());
     }
 
     #[test]
