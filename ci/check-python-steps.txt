@@ -263,3 +263,5 @@ python3 ci/test_check_debug_files.py
 # The ASS header fixture generator's Matroska parsing and validation, on synthetic input (no ffmpeg run).
 python3 ci/test_ass_header_fixture.py
 python3 ci/test_dependencies.py
+# ci/deps-update.py: update-source schema, tag/version handling per source type (fixtures), bump rewriting, dependency-graph snapshot shape, deps-update.yml security shape. No network.
+python3 ci/test_deps_update.py
