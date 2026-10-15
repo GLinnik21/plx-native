@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T10:22:03Z",
+ "generated": "2026-10-15T10:24:08Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -7.8,
+   "change7_pct": -8.1,
    "d30": null,
    "delta30": null,
-   "delta7": -33,
+   "delta7": -34.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 129,
-   "now": 388,
+   "now": 387.0,
    "prev7": 421,
    "shown": true,
    "state": "flat",
@@ -291,14 +291,14 @@
    "change7_pct": -9.6,
    "d30": null,
    "delta30": null,
-   "delta7": -23.0,
+   "delta7": -23,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 111,
-   "now": 217.0,
+   "now": 217,
    "prev7": 240,
    "shown": true,
    "state": "flat",
@@ -312,14 +312,14 @@
    "change7_pct": -63.7,
    "d30": null,
    "delta30": null,
-   "delta7": -326.0,
+   "delta7": -326,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 111,
-   "now": 186.0,
+   "now": 186,
    "prev7": 512,
    "shown": true,
    "state": "better",
@@ -372,17 +372,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -12.3,
+   "change7_pct": -11.9,
    "d30": null,
    "delta30": null,
-   "delta7": -19.5,
+   "delta7": -19,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 63,
-   "now": 139.5,
+   "now": 140,
    "prev7": 159,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 111,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 49.1,
    "commits": [
     {
-     "pr": 732,
-     "sha": "12dc65c0d",
-     "title": "libass 7c: bucketed subtitle texture upload with glTexSubImage2D (gfx)"
-    },
-    {
      "pr": 734,
      "sha": "d6c4f0468",
      "title": "libass 7b: sidecar SRT/VTT render through libass; delete the plain-text sidecar path"
@@ -615,6 +610,11 @@
      "pr": 736,
      "sha": "b0232cb7b",
      "title": "View state 8: Detail folds into the view-state system (DetailReconcile)"
+    },
+    {
+     "pr": 747,
+     "sha": "a6ce794bd",
+     "title": "net: a streaming HTTPS read for long-lived responses (layer-2 view state 1/6)"
     }
    ],
    "from": 220,
@@ -628,11 +628,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 732,
-     "sha": "12dc65c0d",
-     "title": "libass 7c: bucketed subtitle texture upload with glTexSubImage2D (gfx)"
-    },
-    {
      "pr": 734,
      "sha": "d6c4f0468",
      "title": "libass 7b: sidecar SRT/VTT render through libass; delete the plain-text sidecar path"
@@ -676,6 +671,11 @@
      "pr": 736,
      "sha": "b0232cb7b",
      "title": "View state 8: Detail folds into the view-state system (DetailReconcile)"
+    },
+    {
+     "pr": 747,
+     "sha": "a6ce794bd",
+     "title": "net: a streaming HTTPS read for long-lived responses (layer-2 view state 1/6)"
     }
    ],
    "from": 277,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 217.0
+   "now": 217
   }
  ],
  "slowest_local": [
