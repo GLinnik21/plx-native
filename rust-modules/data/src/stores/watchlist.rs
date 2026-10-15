@@ -278,30 +278,42 @@ impl WatchlistStore {
     /// `(server, ratingKey)` updates that tile's watch state in place. Facts about other items are
     /// ignored. Returns whether a tile changed.
     pub fn apply_view(&mut self, change: &ViewChange) -> bool {
-        let Ok(rk) = change.rk.parse::<i64>() else { return false };
-        let matched = self.state.table.by_guid.values().flatten().any(|(sid, a)| {
-            matches!(a, Asked::Held(m) if *sid == change.sid && m.rating_key == rk)
+        let dur_ms = match change.fact {
+            ViewFact::Offset { dur_ms, .. } => Some(dur_ms),
+            _ => None,
+        };
+        self.apply_edit(change.sid, &change.rk, change.edit(), dur_ms)
+    }
+
+    /// [`Self::apply_view`] for a caller that holds the edit rather than the whole change (the
+    /// optimistic press and the fan-out reach the stores as `ViewAt` + `ViewEdit`). `dur_ms` is the
+    /// duration an Offset fact carried, when there is one.
+    pub fn apply_edit(&mut self, sid: ServerId, rk: &str, edit: ViewEdit, dur_ms: Option<i64>) -> bool {
+        let Ok(rk) = rk.parse::<i64>() else { return false };
+        let matched = self.state.table.by_guid.values().flatten().any(|(s, a)| {
+            matches!(a, Asked::Held(m) if *s == sid && m.rating_key == rk)
         });
         if !matched {
             return false;
         }
-        let entry = self.state.facts.entry((change.sid, rk)).or_default();
+        let entry = self.state.facts.entry((sid, rk)).or_default();
         let before = *entry;
-        match (change.edit(), change.fact) {
-            (ViewEdit::Watched(on), _) => {
+        match edit {
+            ViewEdit::Watched(on) => {
                 entry.watched = on;
                 entry.resume_ms = 0;
             }
-            (ViewEdit::Facts { watched, resume_ms, .. }, _) => {
+            ViewEdit::Facts { watched, resume_ms, .. } => {
                 entry.watched = watched;
                 entry.resume_ms = resume_ms;
             }
-            (ViewEdit::Offset { ms }, ViewFact::Offset { dur_ms, .. }) => {
+            ViewEdit::Offset { ms } => {
                 entry.resume_ms = ms;
-                entry.dur_ms = dur_ms;
+                if let Some(d) = dur_ms {
+                    entry.dur_ms = d;
+                }
             }
-            (ViewEdit::Offset { ms }, _) => entry.resume_ms = ms,
-            (ViewEdit::LeftDeck, _) => {}
+            ViewEdit::LeftDeck => {}
         }
         let changed = *entry != before;
         if changed {
@@ -1185,6 +1197,31 @@ mod tests {
         mock.facts_gen.fetch_add(1, Ordering::SeqCst);
         s.pump();
         assert!(s.held_keys().is_empty(), "an unreachable server is not read back");
+    }
+
+    /// The user's OWN press reaches `publish_view` directly (optimistic edit), never the stop
+    /// path or the read-back: the Stores wrapper must still patch the matched tile at the press.
+    #[test]
+    fn a_press_through_the_stores_patches_a_matched_tile_before_any_reconcile() {
+        use crate::viewstate::Write;
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("wl-press", "127.0.0.1", 9, "t", "wl-press-client");
+        let mock = three();
+        mock.held.lock().unwrap().insert((sid, guid(2)), "42".into());
+        let mut stores = crate::stores::Stores::default();
+        stores.watchlist = store(&mock);
+        load(&mut stores.watchlist);
+        assert_eq!(stores.watchlist.view().state(1), Some(TileState::Available));
+        assert_eq!(stores.watchlist.view().facts(1), None);
+        let directory = crate::stores::browse::DirectorySnapshot::default();
+        assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+            sid, rk: "42".into(), write: Write::Watched, scope: Scope::Leaf, guid: String::new(),
+        }, directory.view()));
+        assert_eq!(stores.watchlist.view().facts(1).map(|f| f.watched), Some(true),
+            "patched at the press, before any pump or reconcile");
+        drop(stores);
+        plx_plex::plex::reset_servers_for_test();
     }
 
     #[test]

@@ -249,9 +249,10 @@ impl Stores {
         let collection = &mut self.collection;
         let search = &mut self.search;
         let metadata = &mut self.metadata;
+        let watchlist = &mut self.watchlist;
         self.viewstate.borrow_mut().run(
             cmd,
-            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
             &mut |cmd| collection.run(cmd),
@@ -272,9 +273,10 @@ impl Stores {
         let collection = &mut self.collection;
         let search = &mut self.search;
         let metadata = &mut self.metadata;
+        let watchlist = &mut self.watchlist;
         self.viewstate.borrow_mut().pump_with_gate(
             &self.landgate,
-            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
             &mut |cmd| collection.run(cmd),
@@ -901,3 +903,18 @@ mod notify_map_tests;
 #[cfg(test)]
 #[path = "held_keys_tests.rs"]
 mod held_keys_tests;
+
+/// ViewState publishes a press (and each fan-out copy) through `publish_view`, whose first
+/// consumer is Browse's `ApplyView`. The Watchlist is patched from that same command, so the user's
+/// own watched/unwatched press reaches a matched tile at the press frame like every other surface
+/// rather than waiting for the read-back.
+fn watchlist_tee(
+    watchlist: &mut watchlist::WatchlistStore,
+    cmd: browse::BrowseCmd,
+    run: impl FnOnce(browse::BrowseCmd) -> bool,
+) -> bool {
+    if let browse::BrowseCmd::ApplyView { at, edit } = &cmd {
+        watchlist.apply_edit(at.sid, &at.rk, *edit, None);
+    }
+    run(cmd)
+}
