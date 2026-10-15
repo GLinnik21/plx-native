@@ -193,7 +193,14 @@ impl PlayerScreen {
     pub fn publish(&self) {
         use std::sync::atomic::Ordering::Relaxed;
         plx_media::player::TX.hud_until.store(self.hud.until, Relaxed);
-        plx_media::player::TX.scrub_ns.store(self.scrub.ns, Relaxed);
+        // A reveal (LEFT/RIGHT on a hidden transport, `ScrubPress::Reveal`) has armed the gesture
+        // with its preview on the playhead, but nothing has travelled: it is not yet a scrub, so
+        // it is not published as one. `TX.scrub_ns >= 0` is what fades the title, control row and
+        // tabs away and floats the card, and a tap that only raises the transport must not blink
+        // them. The bar shows the same position either way (the seed IS the playhead); the ramp
+        // retires `reveal` on real travel and the preview is published from that frame.
+        let live = if self.scrub.reveal { -1 } else { self.scrub.ns };
+        plx_media::player::TX.scrub_ns.store(live, Relaxed);
     }
 
     /// **A teardown or an engine reload has retired the transport's mailboxes.**
@@ -2828,6 +2835,54 @@ mod scrub_ownership_tests {
         assert_eq!(elems(&page), vec![player_hud::ELEM_SCRUB], "still hidden in the 150 ms wait");
         step(&mut page, 2_300);
         assert_eq!(elems(&page), before, "back, and clickable again");
+        plx_media::player::restore_state_for_test(was);
+    }
+
+    /// **A reveal tap is not a scrub, so it does not blink the chrome.** LEFT/RIGHT on a HIDDEN
+    /// transport only raises it (`ScrubPress::Reveal`): the gesture is armed with its preview on
+    /// the playhead, but nothing has travelled, and what is published for the draw path
+    /// (`TX.scrub_ns`) is the signal that fades the title, control row and tabs out for a live
+    /// scrub. It must stay `-1` until the hold has really moved the preview.
+    #[test]
+    fn a_reveal_tap_does_not_publish_a_live_scrub() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let _g = plx_base::testlock::serial();
+        let _f = Fixture::new(false);
+        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Playing);
+        playhead(50 * S);
+        let mut page = PlayerScreen::new(ENTRY);
+        page.transport = true;
+        assert!(!page.hud.visible_at_press, "the fixture: the transport is hidden");
+        let step = |page: &mut PlayerScreen, now: u32| page.row.step(ControlSlot::Discs, 0, 0, 0.016, now);
+
+        key(&mut page, SDLK_RIGHT, Edge::Down, 1_000);
+        page.publish();
+        assert!(page.scrub.reveal && page.scrub.ns >= 0, "the fixture: a reveal is armed on the seed");
+        assert_eq!(plx_media::player::TX.scrub_ns.load(Relaxed), -1, "…but no scrub is published");
+        for t in [1_000, 1_016, 1_100, 1_300] {
+            step(&mut page, t);
+            assert!(page.row.chrome_interactive(), "{t} ms: the chrome stays up, unfaded, and takes the pointer");
+        }
+
+        // the key comes up: still nothing, and the gesture is retired without a seek
+        let (_, reqs) = key(&mut page, SDLK_RIGHT, Edge::Up, 1_320);
+        page.publish();
+        assert!(seeks(reqs).is_empty());
+        assert_eq!(plx_media::player::TX.scrub_ns.load(Relaxed), -1);
+
+        // …whereas a hold that really TRAVELS is a scrub, and is published as one
+        let mut page = PlayerScreen::new(ENTRY);
+        page.transport = true;
+        key(&mut page, SDLK_RIGHT, Edge::Down, 2_000);
+        key(&mut page, SDLK_RIGHT, Edge::Repeat, 2_050);
+        tick(&mut page, 2_400);
+        page.publish();
+        assert!(!page.scrub.reveal && page.scrub.ns > 50 * S, "the fixture: the hold travelled");
+        assert_eq!(plx_media::player::TX.scrub_ns.load(Relaxed), page.scrub.ns);
+        step(&mut page, 2_416);
+        assert!(!page.row.chrome_interactive(), "a travelled hold is a scrub: the chrome is away");
+
+        page.transport_reset(true);
         plx_media::player::restore_state_for_test(was);
     }
 
