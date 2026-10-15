@@ -262,3 +262,9 @@ python3 tests/paging_link.py --selftest
 python3 ci/test_check_debug_files.py
 # The ASS header fixture generator's Matroska parsing and validation, on synthetic input (no ffmpeg run).
 python3 ci/test_ass_header_fixture.py
+# THIRD-PARTY-NOTICES.md section 2.4's package tables are generated from rust-modules/Cargo.lock (ci/gen-third-party-notices.py;
+# inputs in ci/third-party-crates.json): the gate fails when a dependency bump moved a version, a crate entered the lock
+# unclassified, or the std snapshot's nightly is not the one the workflows pin. Reads files only, no cargo; the self-test
+# runs on synthetic locks and data.
+python3 ci/test_gen_notices.py
+python3 ci/gen-third-party-notices.py --check

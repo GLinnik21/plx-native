@@ -1701,6 +1701,15 @@ check-c-unit:
 check-python-rest:
 	@python3 tools/check-parallel.py --steps ci/check-python-steps.txt
 
+# `make notices` — regenerate THIRD-PARTY-NOTICES.md section 2.4's package tables from
+# rust-modules/Cargo.lock after a dependency bump (`make check` runs the same script with --check).
+# `make notices-verify` also proves the data file against `cargo tree` and the pinned nightly's rust-src.
+.PHONY: notices notices-verify
+notices:
+	@python3 ci/gen-third-party-notices.py
+notices-verify:
+	@python3 ci/gen-third-party-notices.py --check --verify-graph --verify-toolchain
+
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
 # real arm, so OK on the Subtitles/Audio discs did nothing at all — no menu, no log line — and rustc
