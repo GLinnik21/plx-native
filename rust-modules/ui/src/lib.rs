@@ -594,6 +594,19 @@ impl Painter {
     fn out_rgb(self) -> f32 {
         self.rgb * OUTPUT_GAIN.with(|g| g.get())
     }
+    /// A glass face's scrim and edge colours through the gain: RGB scaled, ALPHA as authored (they
+    /// never took the cascade's alpha; the glass fades through its tint).
+    fn gain_face(self, face: plx_gfx::gfx::GlassFace) -> plx_gfx::gfx::GlassFace {
+        let g = self.out_rgb();
+        let dim = |c: [f32; 4]| [c[0] * g, c[1] * g, c[2] * g, c[3]];
+        plx_gfx::gfx::GlassFace {
+            scrim_top: dim(face.scrim_top),
+            scrim_bot: dim(face.scrim_bot),
+            rim: dim(face.rim),
+            rim_lit: dim(face.rim_lit),
+            ..face
+        }
+    }
     #[inline]
     fn c(self, c: [f32; 4]) -> [f32; 4] {
         let g = self.out_rgb();
@@ -713,6 +726,7 @@ impl Painter {
             self.px(w),
             c.as_ptr(),
             0.0,
+            self.out_rgb(),
         );
     }
     /// Soft drop-shadow of `r` (corner `radius`, `w/2` = circle) with `blur` px of penumbra, its box
@@ -823,6 +837,7 @@ impl Painter {
             self.px(theme::CARD_SHEEN_W),
             rim.as_ptr(),
             0.0,
+            self.out_rgb(),
         );
     }
     /// [`rect_sheened`](Self::rect_sheened) with the rim colour named rather than assumed — for a
@@ -883,6 +898,7 @@ impl Painter {
             self.px(rim_w),
             rim.as_ptr(),
             rim_top * self.a,
+            self.out_rgb(),
         );
     }
     /// A CONTROL FACE: [`rect_rimmed_w`](Self::rect_rimmed_w) plus the two things only a control
@@ -934,6 +950,7 @@ impl Painter {
             self.px(rim_w),
             rim.as_ptr(),
             rim_top * self.a,
+            self.out_rgb(),
             args.as_ref(),
             glow.as_ref(),
         );
@@ -957,6 +974,7 @@ impl Painter {
             self.px(theme::CARD_SHEEN_W),
             rim.as_ptr(),
             0.0,
+            self.out_rgb(),
         );
     }
     pub fn tex(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
@@ -1031,6 +1049,7 @@ impl Painter {
             return true;
         }
         let t = self.c(tint);
+        let face = self.gain_face(face);
         let m = self.place(r);
         plx_gfx::gfx::draw_blur_backdrop(
             m.x,
@@ -1749,6 +1768,22 @@ mod tests {
             assert_eq!(Painter::root().wash_corners([[0.8, 0.4, 0.2]; 4]), [[0.4, 0.2, 0.1]; 4]);
         });
         assert_eq!(Painter::root().c(col), col, "the scope ends with its closure");
+    }
+
+    #[test]
+    fn output_gain_reaches_a_glass_face_and_leaves_its_alpha() {
+        let face = plx_gfx::gfx::GlassFace {
+            scrim_top: [0.8, 0.6, 0.4, 0.5],
+            scrim_bot: [0.2, 0.2, 0.2, 0.7],
+            rim: [1.0, 1.0, 1.0, 0.2],
+            rim_lit: [1.0, 1.0, 1.0, 0.3],
+            rim_w: 1.0,
+        };
+        let lit = output_gain(0.5, || Painter::root().gain_face(face));
+        assert_eq!(lit.scrim_top, [0.4, 0.3, 0.2, 0.5]);
+        assert_eq!(lit.rim, [0.5, 0.5, 0.5, 0.2]);
+        assert_eq!(lit.rim_lit, [0.5, 0.5, 0.5, 0.3]);
+        assert_eq!(Painter::root().gain_face(face).rim, face.rim, "no scope, no change");
     }
 
     #[test]
