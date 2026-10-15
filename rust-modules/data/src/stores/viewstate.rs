@@ -21,6 +21,8 @@ pub enum ViewStateCmd {
         sid: ServerId,
         rk: String,
         write: crate::viewstate::Write,
+        /// How far down the library the press reaches: a show's or season's episode rows too.
+        scope: crate::viewstate::Scope,
         /// The originating Detail page, if this press should reconcile one after the burst.
         detail: Option<DetailRefresh>,
         /// Portable item identity when the caller has the exact item's guid; empty asks the worker
@@ -51,6 +53,11 @@ impl Default for ViewStateStore {
 }
 
 impl ViewStateStore {
+    /// Join the owner's view-state publish order (`Stores::view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.ledger = ledger.clone();
+    }
+
     fn bump(&self) -> u32 {
         self.notice_dirty.store(true, Ordering::Relaxed);
         self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1

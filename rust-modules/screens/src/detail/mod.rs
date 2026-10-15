@@ -803,13 +803,14 @@ impl DetailScreen {
         &self,
         focus: Option<FocusKey<u32>>,
         meta: plx_data::metadata::MetadataView<'_>,
-    ) -> Option<(String, PosterMark)> {
+    ) -> Option<(String, String, i64, PosterMark)> {
         if meta.season_loading() {
             return None;
         }
         let i = self.focused_index(focus, season::SEASON_GROUP, meta)?;
-        let s = self.detail(meta)?.seasons.get(i)?;
-        (!s.rk.is_empty()).then(|| (s.rk.clone(), season::watch_state(s)))
+        let d = self.detail(meta)?;
+        let s = d.seasons.get(i)?;
+        (!s.rk.is_empty()).then(|| (s.rk.clone(), d.rk.clone(), s.index, season::watch_state(s)))
     }
 
     /// The focused card of a poster shelf that is some other item — Related, or the collection
@@ -1894,6 +1895,21 @@ impl DetailScreen {
             Located::About(1) => d.is_some() && self.tracks_available(meta),
             Located::About(_) => false,
         }
+    }
+}
+
+/// The scope of the hero's Mark watched/unwatched button: a show reaches all its episodes, a season
+/// (reached through a collection's members) the episodes of its own number under its show
+/// ([`Detail::parent_rk`], not `show_rk`, which is the grandparent key and empty for a season),
+/// anything else the one item.
+fn hero_mark_scope(d: &Detail) -> plx_data::viewstate::Scope {
+    use plx_data::viewstate::Scope;
+    if d.is_show {
+        Scope::Show
+    } else if d.kind == "season" && !d.parent_rk.is_empty() {
+        Scope::Season { show_rk: d.parent_rk.clone(), index: d.index }
+    } else {
+        Scope::Leaf
     }
 }
 
@@ -4234,6 +4250,9 @@ impl DetailScreen {
                         StoreCmd::ViewState(ViewStateCmd::Request {
                             sid: d.sid,
                             rk: d.rk.clone(),
+                            // a show's (or season's) hero toggle changes every episode of it,
+                            // wherever held
+                            scope: hero_mark_scope(d),
                             write: if ctl == hero::HeroCtl::MarkWatched {
                                 plx_data::viewstate::Write::Watched
                             } else {
@@ -4436,5 +4455,30 @@ mod preview_plane_tests {
             !keyed_ground_over_plane(false, 1, 1.0, false),
             "opaque art covers the wash"
         );
+    }
+}
+
+#[cfg(test)]
+mod hero_mark_scope_tests {
+    use super::{hero_mark_scope, Detail};
+    use plx_data::viewstate::Scope;
+
+    /// A season opened as its own page (a collection's member) marks the episodes of that season
+    /// under its show; before, the hero sent `Leaf` and only the season row itself changed.
+    #[test]
+    fn the_hero_scopes_a_show_a_season_and_a_leaf() {
+        let show = Detail { is_show: true, kind: "show".into(), ..Default::default() };
+        assert_eq!(hero_mark_scope(&show), Scope::Show);
+        let season = Detail {
+            kind: "season".into(),
+            parent_rk: "show-1".into(),
+            index: 4,
+            ..Default::default()
+        };
+        assert_eq!(hero_mark_scope(&season), Scope::Season { show_rk: "show-1".into(), index: 4 });
+        let orphan = Detail { kind: "season".into(), index: 4, ..Default::default() };
+        assert_eq!(hero_mark_scope(&orphan), Scope::Leaf, "no parent key, no season address");
+        let ep = Detail { kind: "episode".into(), show_rk: "show-1".into(), ..Default::default() };
+        assert_eq!(hero_mark_scope(&ep), Scope::Leaf);
     }
 }

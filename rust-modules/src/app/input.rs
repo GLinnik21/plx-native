@@ -483,7 +483,7 @@ mod activate_card_tests {
         for (card, expect, season_index) in [(&show, "show-1", None), (&season, "show-1", Some(4))] {
             let mut menu_play_await = None;
             let req = |act, item| plx_screens::registry::ItemMenuReq {
-                act, sid, item, loaded_episode: false, from_home: false };
+                act, sid, item, season: None, loaded_episode: false, from_home: false };
             // a key that is not the captured row's: nothing happens
             unsafe { apply_item_action(&mut ps, &mut pa, req(Action::Play("other".into()), Some(card.clone())),
                 &mut pages, &mut bridge, &mut crate::app::playback::LivePlaybackResources,
@@ -557,6 +557,22 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
     }
 }
 
+/// The [`Scope`](plx_data::viewstate::Scope) of a Mark watched/unwatched row: the captured row's own
+/// ([`Scope::of_row`](plx_data::viewstate::Scope::of_row)), or the season tab the menu was opened
+/// on when the item is no catalog row. Anything else is the one leaf it names.
+fn mark_scope(
+    rk: &str,
+    item: Option<&plx_data::pms::PmsMovie>,
+    season: Option<&(String, i64)>,
+) -> plx_data::viewstate::Scope {
+    use plx_data::viewstate::Scope;
+    match (item.filter(|m| m.rk == rk), season) {
+        (Some(row), _) => Scope::of_row(row),
+        (None, Some((show_rk, index))) => Scope::Season { show_rk: show_rk.clone(), index: *index },
+        (None, None) => Scope::Leaf,
+    }
+}
+
 /// Perform an item-menu [`Action`](plx_screens::item_menu::Action) — the ONE dispatch, drained
 /// from `AppFx::ItemMenu` after every dispatcher frame (`content::content_requests`). The menu
 /// itself only reports the choice; every route flip, server call and refresh is here.
@@ -594,7 +610,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
 ) {
     let mut playback = LiveItemPlayback(resources);
     use plx_screens::item_menu::Action;
-    let plx_screens::registry::ItemMenuReq { act, sid, item, loaded_episode, from_home } = req;
+    let plx_screens::registry::ItemMenuReq { act, sid, item, season, loaded_episode, from_home } = req;
     // `sid` is WHICH SERVER this menu's rows are about, captured when the panel was presented.
     // Every arm below turns an rk into a fetch, a scrobble or a play, and resolving one against
     // `plex::current_server()` is the reported bug itself: on a merged Continue Watching shelf,
@@ -656,8 +672,11 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // detail page is holding belongs to the SHOW when this rk is one of its episodes. A
             // guid that is merely close marks a DIFFERENT title watched on every other source, so
             // `viewstate` looks the right one up from `(sid, rk)` on its own worker instead.
+            // A show or season row also changes every episode row under it, wherever one is held
+            // (a Search result, a Continue Watching card): the scope is read off the row in hand.
+            let scope = mark_scope(rk, item.as_ref(), season.as_ref());
             bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
-                sid, rk: rk.to_string(), write: w, detail, guid: String::new(),
+                sid, rk: rk.to_string(), write: w, scope, detail, guid: String::new(),
             });
         }
         Action::RemoveFromDeck(rk) => {
@@ -666,7 +685,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // left off. That is why this is NOT `unscrobble`, which would throw the position
             // away. See `plex::Client::remove_from_continue_watching`.
             //
-            // The card leaves the deck on THIS frame (`pms::LocalEdit::LeftTheDeck` — it must
+            // The card leaves the deck on THIS frame (`ViewEdit::LeftDeck` — it must
             // not still sit under the user's cursor after they removed it) and the refetch
             // follows the write. The shelf is sourced from `/hubs/continueWatching`, which is
             // the hub this action actually affects — built from `/hubs`'s `home.continue` it
@@ -678,7 +697,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // row is yours, and hiding a friend's item from it is not a claim about their deck.
             bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
                 sid, rk: rk.to_string(), write: plx_data::viewstate::Write::RemoveFromDeck,
-                detail: None, guid: String::new(),
+                scope: plx_data::viewstate::Scope::Leaf, detail: None, guid: String::new(),
             });
         }
         // The deck card's Play row (OK opens the page): the same captured-row launch as Play from
@@ -1579,4 +1598,29 @@ pub(crate) fn back_at_root() {
 /// host left for a fade to run over (what `settings::hide()` used to say).
 pub(crate) fn delete_all_local_data_and_sign_out(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     super::bridge::execute_session_command(pages, plx_session::auth::SessionCmd::EraseLocal);
+}
+
+#[cfg(test)]
+mod mark_scope_tests {
+    use super::mark_scope;
+    use plx_data::viewstate::Scope;
+
+    /// The detail page's season tab has no catalog row, so the scope a Mark watched press
+    /// publishes comes from the season the menu carries: without it the write was `Leaf`, the
+    /// season's other episodes kept their ticks until a refetch, and the page's own tab counts
+    /// never moved. A card row still reads its scope off the row.
+    #[test]
+    fn a_season_tab_marks_its_season_and_a_card_its_own_row() {
+        let season = ("show-1".to_string(), 4);
+        assert_eq!(
+            mark_scope("season-9", None, Some(&season)),
+            Scope::Season { show_rk: "show-1".into(), index: 4 },
+            "the season strip's menu carries no row; its address is the scope"
+        );
+        let show = plx_data::pms::PmsMovie { rk: "show-1".into(), kind: 1, ..Default::default() };
+        assert_eq!(mark_scope("show-1", Some(&show), None), Scope::Show);
+        let ep = plx_data::pms::PmsMovie { rk: "e1".into(), kind: 3, ..Default::default() };
+        assert_eq!(mark_scope("e1", Some(&ep), None), Scope::Leaf);
+        assert_eq!(mark_scope("e1", None, None), Scope::Leaf, "the filmstrip: one leaf");
+    }
 }

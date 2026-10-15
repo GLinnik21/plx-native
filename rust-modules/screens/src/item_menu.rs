@@ -306,7 +306,7 @@ fn build_with(
                 nav.push(go_item(plx_platform::i18n::msg::browse_menu_go_episode()));
             }
             if has_show && !ok_opens_show {
-                nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_show(), &m.show_rk, m.season_index));
+                nav.push(go_show(plx_platform::i18n::msg::browse_menu_go_show(), &m.show_rk, m.season_index.max(0)));
             }
         }
         // a show or season deck card whose OK opens the page: that page IS the "go to" row's
@@ -559,7 +559,7 @@ impl ItemMenuScreen {
                 build_with(row, *from_deck, plx_media::route::deck_press(), trailer.as_ref())
             }
             ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark),
-            ItemMenuKind::Season { mark } => build_season(&self.arg.rk, *mark),
+            ItemMenuKind::Season { mark, .. } => build_season(&self.arg.rk, *mark),
         };
         // a short list of one-line actions — BODY labels, not menu-size HEADLINE
         self.form.table.compact = true;
@@ -610,6 +610,10 @@ impl ItemMenuScreen {
                 sid: self.arg.sid,
                 item: match &self.arg.kind {
                     ItemMenuKind::Card { row, .. } => Some((**row).clone()),
+                    _ => None,
+                },
+                season: match &self.arg.kind {
+                    ItemMenuKind::Season { show_rk, index, .. } => Some((show_rk.clone(), *index)),
                     _ => None,
                 },
                 loaded_episode: self.arg.loaded_episode,
@@ -1578,6 +1582,36 @@ mod tests {
         assert!(
             req.loaded_episode,
             "…and says so, which is what routes it there"
+        );
+    }
+
+    #[test]
+    fn a_season_tab_menu_carries_its_season_to_the_mark_request() {
+        let mut tab = ItemMenuScreen::new(
+            EntryId(8),
+            ItemMenuArg {
+                sid: plx_plex::plex::ServerId::from_raw(3),
+                rk: "season-9".into(),
+                kind: ItemMenuKind::Season {
+                    mark: PosterMark::None,
+                    show_rk: "show-1".into(),
+                    index: 4,
+                },
+                host: EntryId(1),
+                focus: None,
+                anchor: [0; 4],
+                loaded_episode: false,
+                from_home: false,
+            },
+        );
+        tab.build_rows(test_store().view());
+        let elem = first_action(&tab, |a| matches!(a, Action::MarkWatched(_)));
+        let req = commit(&mut tab, elem);
+        assert!(req.item.is_none(), "the tab is no catalog row");
+        assert_eq!(
+            req.season,
+            Some(("show-1".to_string(), 4)),
+            "the season's address is what scopes the write to its episodes"
         );
     }
 

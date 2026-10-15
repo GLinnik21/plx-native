@@ -9100,7 +9100,7 @@ pub enum BurnReason {
 
 /// **The live [`SubtitlePresenter`]**, from the committed selection (`cur_sub_sid`, written for
 /// every route by `commit_subtitle_selection`) and the live route. A transcode burns whatever is
-/// selected and the client then draws nothing (`player_hud::draw_subtitles` is silenced by
+/// selected and the client then draws nothing (the libass source is silenced by
 /// [`subtitles_burned`] the same way) — except a sidecar, or an admitted embedded track, over a remux, which the app draws
 /// ([`SubtitlePresenter::ClientOverRemux`]); direct play draws it in the app. The reason is the
 /// audio conversion when the live family is a remux or the burn is the enhancement's own or the

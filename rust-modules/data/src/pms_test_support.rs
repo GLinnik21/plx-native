@@ -88,7 +88,8 @@ pub(super) fn src(slot: u16, handle: &str, state: HubState, last: Option<SourceB
 
 /// Install a source table and the merge of it — the state a run of landings would have reached.
 /// Bypasses the roster, because a host test has no server registry to derive one from.
-pub(super) fn seed(state: &mut PmsState, srcs: Vec<Src>) {
+pub(super) fn seed(state: &mut PmsState, mut srcs: Vec<Src>) {
+    for s in &mut srcs { s.ledger = state.ledger.clone(); }
     let build = merge(&srcs);
     state.srcs = srcs;
     // leave `sync_roster` idle — both halves, see `seed_for_test`

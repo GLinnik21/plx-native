@@ -466,7 +466,7 @@ impl Bridge {
         let preferences = initial.session.persisted.clone();
         let (state, adapter) = initial.home.restore(mt).expect("validated Home initial state");
         let mut stores = plx_data::stores::Stores::default();
-        stores.hubs = plx_data::stores::hubs::HubsStore::from_parts(state, adapter);
+        stores.hubs = plx_data::stores::hubs::HubsStore::from_parts(state, adapter, &stores.view_ledger);
         let hubs = stores.hubs.snapshot();
         // Arms controlled-content recording/replay's admission ledger over detail terminals —
         // exactly the decision the retired crate-global `record::reset(initial.content.is_some())`
@@ -1027,8 +1027,10 @@ impl Bridge {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             let meta = <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx);
-            if let Some((rk, mark)) = page.focused_season(ret.focus, meta) {
-                return Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark }, entry, ret.focus, rect));
+            if let Some((rk, show_rk, index, mark)) = page.focused_season(ret.focus, meta) {
+                // the season's address rides on the menu: the strip's item is no catalog row, so
+                // the write's scope cannot be read off one (`apply_item_action`)
+                return Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark, show_rk, index }, entry, ret.focus, rect));
             }
             if let Some((rk, mark)) = page.focused_episode(ret.focus, meta) {
                 // the ONE entry point whose item is a leaf of the season this page has loaded

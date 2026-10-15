@@ -80,8 +80,8 @@
 //!   (`pump_related`, at the start of the frame, installs it).
 //! - `SeekRelated{at, seen}` → `metadata::ask_related` with `RelatedAsk::Seek` — the same read, opened at a tail position.
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
-//! - `SetWatchedLocal{sid, rk, on}` → `metadata::set_watched_local` — the optimistic half of a
-//!   view-state write, answers whether it actually changed anything.
+//! - `ApplyView{at, edit}` → `metadata::set_watched_local` — the optimistic half of a view-state
+//!   change, answers whether it actually changed anything.
 //! - `InstallPlaying(Option<PlayingItem>)` → `metadata::install_playing` — the playback plan's leaf
 //!   (`route.rs`).
 //! - `MarkSkipped(Marker)` → `metadata::mark_skipped`.
@@ -215,8 +215,8 @@ pub enum MetadataCmd {
     /// discarded when it lands, and one landed but not yet installed is dropped.
     CancelRelated,
     SetNowPlaying(Option<crate::metadata::NowPlaying>),
-    /// The optimistic half of a view-state write on the loaded item, its episodes and Related.
-    SetWatchedLocal { sid: ServerId, rk: String, on: bool },
+    /// The optimistic half of a view-state change on the loaded item, its episodes and Related.
+    ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
     /// The playback plan's leaf (`route.rs`).
     InstallPlaying(Option<crate::metadata::PlayingItem>),
     /// A subtitle the server just installed for the PLAYING item (the player's subtitle search),
@@ -271,6 +271,11 @@ impl Default for MetadataStore {
 }
 
 impl MetadataStore {
+    /// Join the owner's view-state publish order (`Stores::view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.ledger = ledger.clone();
+    }
+
     fn bump(&self) -> u32 {
         self.notice_dirty.store(true, Ordering::Relaxed);
         self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1

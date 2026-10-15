@@ -225,8 +225,8 @@ pub struct SecHubs {
     /// The set the current layout was built from. Empty and `committed == false` is "nothing
     /// published yet"; empty and `committed == true` is the answer "this library has no shelves",
     /// which is a real state the design draws as "this screen with a shorter top".
-    committed: Arc<Vec<Shelf>>,
-    revision: u64,
+    pub(super) committed: Arc<Vec<Shelf>>,
+    pub(super) revision: u64,
     /// Has anything ever been published? Distinct from `committed.is_empty()` for that reason.
     published: bool,
     /// A landing held back because publishing it would move a grid the user is looking at.
@@ -518,7 +518,7 @@ impl SecHubs {
     /// so nothing can be SEEN to move) and, on a visible page, only once a BACK-driven head
     /// transition has settled. Returns whether anything was published, so the caller knows to
     /// re-resolve focus against the POST-commit layout.
-    fn commit_staged(&mut self, may_move: bool) -> bool {
+    pub(super) fn commit_staged(&mut self, may_move: bool) -> bool {
         if !may_move {
             return false;
         }
@@ -592,6 +592,7 @@ impl super::BrowseState {
             return;
         }
         let epoch = self.table_epoch();
+        self.hubs_stamp = self.ledger.stamp();
         let worker_adapter = Arc::clone(adapter);
         let worker_ask = ask.clone();
         if let Some(st) = self.state_mut(sec) { st.hubs.inflight = Some((ask.clone(), false)); }
@@ -631,6 +632,7 @@ impl super::BrowseState {
             return;
         }
         let epoch = self.table_epoch();
+        self.hubs_stamp = self.ledger.stamp();
         let worker_adapter = Arc::clone(&adapter);
         let hold = self.states().get(sec).map_or((0, HOLD_ROWS - 1), |st| st.hubs.held());
         let spawned = plx_base::task::spawn_small("libhubs", move || {
@@ -688,11 +690,13 @@ impl super::BrowseState {
             }
             return false;
         }
+        let (ledger, stamp) = (self.ledger.clone(), self.hubs_stamp);
         let Some(state) = self.state_mut(result.sec) else {
             return false;
         };
         match result.outcome {
-            Outcome::Row { ask, shelf } => {
+            Outcome::Row { ask, mut shelf } => {
+                if let Some(shelf) = shelf.as_mut() { replay_since_request(&ledger, stamp, std::slice::from_mut(shelf)); }
                 let failed = shelf.is_none();
                 if failed {
                     plx_base::eventlog::log(&format!("libhubs: section {} row {} read failed", result.sec, ask.id));
@@ -702,7 +706,8 @@ impl super::BrowseState {
                 return moved || failed;
             }
             Outcome::List(Some(parsed)) => {
-                let shelves = parsed.shelves;
+                let mut shelves = parsed.shelves;
+                replay_since_request(&ledger, stamp, &mut shelves);
                 // The harness (`tests/mock_fps.py`, `LIBHUBS_RE`) reads the section and the shelf
                 // count; new fields go AFTER them.
                 plx_base::eventlog::log(&format!(
@@ -813,15 +818,15 @@ impl super::BrowseState {
             .unwrap_or(false)
     }
 
-    pub(super) fn hubs_set_watched_local(&mut self, sid: ServerId, rk: &str, on: bool) -> bool {
+    pub(super) fn hubs_set_watched_local(&mut self, at: &crate::viewstate::ViewAt, on: bool) -> bool {
         let mut hit = false;
         for st in self.states_mut() {
-            if edit_watched(&mut st.hubs.committed, sid, rk, on) {
+            if edit_watched(&mut st.hubs.committed, at, on) {
                 st.hubs.revised();
                 hit = true;
             }
             if let Some(staged) = st.hubs.staged.as_mut() {
-                edit_watched(staged, sid, rk, on);
+                edit_watched(staged, at, on);
             }
         }
         hit
@@ -866,11 +871,26 @@ fn carry_windows(old: &[Shelf], new: &mut [Shelf]) {
     }
 }
 
-fn edit_watched(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str, on: bool) -> bool {
+/// The read describes the server from when it was requested: the view-state edits published since
+/// ([`crate::viewledger`]) are made again on the shelves it brought — a marked card stays marked
+/// and a card taken off Continue Watching stays off.
+pub(super) fn replay_since_request(ledger: &crate::viewledger::ViewLedger, stamp: crate::viewledger::Stamp,
+    shelves: &mut [Shelf]) {
+    ledger.patch(stamp, shelves.iter_mut().flat_map(|shelf| shelf.items.iter_mut()));
+    for (at, edit) in ledger.since(stamp) {
+        if let crate::viewstate::ViewEdit::LeftDeck = edit {
+            for shelf in shelves.iter_mut().filter(|shelf| shelf.is_continue) {
+                shelf.items.retain(|item| !at.is_item(item.sid, &item.rk));
+            }
+        }
+    }
+}
+
+fn edit_watched(shelves: &mut Arc<Vec<Shelf>>, at: &crate::viewstate::ViewAt, on: bool) -> bool {
     if !shelves
         .iter()
         .flat_map(|shelf| shelf.items.iter())
-        .any(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk)))
+        .any(|item| at.covers(item))
     {
         return false;
     }
@@ -878,8 +898,8 @@ fn edit_watched(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str, on: bool
         .iter_mut()
         .flat_map(|shelf| shelf.items.iter_mut())
     {
-        if plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk)) {
-            crate::pms::set_watched(item, on);
+        if at.covers(item) {
+            crate::viewstate::ViewEdit::Watched(on).apply(item);
         }
     }
     true
@@ -1096,6 +1116,19 @@ impl HubResult {
     pub(super) fn failed_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
         token_gen: u32) -> Self {
         Self { epoch, sec, client, token_gen, outcome: Outcome::List(None) }
+    }
+
+    /// A successful whole-list answer for `sec` carrying `shelves`, as a worker posts it.
+    pub(super) fn list_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
+        token_gen: u32, shelves: Vec<Shelf>) -> Self {
+        Self { epoch, sec, client, token_gen, outcome: Outcome::List(Some(Parsed { shelves })) }
+    }
+
+    /// A successful read of row `(id, key)` of `sec`, one page forward, carrying `shelf`.
+    pub(super) fn row_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
+        token_gen: u32, id: &str, key: &str, shelf: Shelf) -> Self {
+        let ask = RowAsk { id: id.into(), key: key.into(), before: false, reload: false };
+        Self { epoch, sec, client, token_gen, outcome: Outcome::Row { ask, shelf: Some(shelf) } }
     }
 }
 
@@ -1759,9 +1792,9 @@ mod tests {
         let revision = before.view().revision();
         let item = &before.view().shelves()[0].items[0];
         let (sid, rk) = (item.sid, item.rk.clone());
-        assert!(!state.hubs_set_watched_local(sid, "absent-item", true));
+        assert!(!state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, "absent-item"), true));
         assert_eq!(state.hubs_snapshot(sec).view().revision(), revision);
-        assert!(state.hubs_set_watched_local(sid, &rk, true));
+        assert!(state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, &rk), true));
         let edited = state.hubs_snapshot(sec);
         assert_ne!(edited.view().revision(), revision);
         assert!(!before.view().shelves()[0].items[0].watched);
@@ -1778,7 +1811,7 @@ mod tests {
             .unwrap()
             .hubs
             .land_ok(vec![staged]);
-        assert!(!state.hubs_set_watched_local(sid, "staged-only", true));
+        assert!(!state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, "staged-only"), true));
         assert_eq!(state.hubs_snapshot(sec).view().revision(), edited.view().revision());
         assert!(state.hubs_commit_staged(sec, true));
         let published = state.hubs_snapshot(sec);
@@ -1886,7 +1919,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .clone();
-        assert!(!state.hubs_set_watched_local(sid, "not-present", true));
+        assert!(!state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, "not-present"), true));
         let after_miss = state.hubs_snapshot(sec);
         assert!(Arc::ptr_eq(
             retained.data.as_ref().unwrap(),
@@ -1902,7 +1935,7 @@ mod tests {
                 .unwrap()
         ));
 
-        assert!(state.hubs_set_watched_local(sid, &rk, true));
+        assert!(state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, &rk), true));
         let edited = state.hubs_snapshot(sec);
         assert!(!Arc::ptr_eq(
             retained.data.as_ref().unwrap(),
