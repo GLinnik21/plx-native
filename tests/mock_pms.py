@@ -106,7 +106,9 @@ and two connections: an `https://<dashed-ip>.<hash>.plex.direct:<port>` one with
 FAILS (a real TCP listener that accepts and immediately closes, i.e. a genuine TLS handshake
 failure — or, with `--insecure-fail-mode unreachable`, a port nothing listens on at all), and a
 plain `http://<advertise-ip>:<port>` one with `local=true` that is THIS SAME server, answering
-`/identity` tokenless. `--advertise-ip` sets the LAN address the resources row carries (default:
+`/identity` tokenless. `--advertise-ip` sets the LAN address the resources row carries (alone, without
+this mode, it is the address of the ordinary mode's one owned server connection, which is how a TV
+signs in through the mock's plex.tv and reaches the mock: `tools/tv-session.sh up --mock-plextv`; default:
 this host's detected primary LAN IPv4, else `127.0.0.1` with a startup warning — 127.0.0.1 is
 loopback, which the app's own eligibility check classifies as NOT a LAN address, so the consent
 path this mode exists to exercise will never trigger with that fallback; pass a real address).
@@ -3534,8 +3536,10 @@ def main():
                          "\"Connect without encryption?\", never a dead end. The full reproduction "
                          "(store policy trigger, QR sign-in, expected log lines) follows below.")
     ap.add_argument("--advertise-ip",
-                    help="with --plaintext-only-lan: the LAN IPv4 the resources row advertises; "
-                         "default: this host's detected primary LAN IPv4, else 127.0.0.1 WITH A "
+                    help="the LAN IPv4 the resources row advertises. Alone (ordinary mode) it is the "
+                         "address of the one owned server's plain connection, so a device on the LAN "
+                         "reaches the mock after a mock plex.tv sign-in; with --plaintext-only-lan the "
+                         "default is this host's detected primary LAN IPv4, else 127.0.0.1 WITH A "
                          "STARTUP WARNING — 127.0.0.1 is loopback, which the app classifies as "
                          "NOT LAN-eligible, so the consent path never triggers against that "
                          "fallback")
@@ -3629,8 +3633,8 @@ def main():
         ap.error("--shows 1..200, --seasons 1..20, --episodes 1..900")
     if not 0 <= a.movies <= 1000:
         ap.error("--movies must be between 0 and 1000")
-    if (a.advertise_ip or a.insecure_fail_mode != "handshake") and not a.plaintext_only_lan:
-        ap.error("--advertise-ip/--insecure-fail-mode need --plaintext-only-lan")
+    if a.insecure_fail_mode != "handshake" and not a.plaintext_only_lan:
+        ap.error("--insecure-fail-mode needs --plaintext-only-lan")
     if not 1 <= a.home_users <= 16:
         ap.error("--home-users must be between 1 and 16")
     if a.authorize_after is not None and a.authorize_after < 1:
