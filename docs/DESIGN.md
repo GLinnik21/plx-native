@@ -121,9 +121,9 @@ shelf pitch, `consts::TITLE_DY + CARD_DY` (see `related.rs`, `cast.rs`, `extras.
 heading-to-card distance Home and the Library use, quoted as the sum rather than as a number this
 file would then have to keep in step.
 
-Surfaces over a page stand on the page's own latched light: `widgets::panel_ground` draws the
+Surfaces over a page are glass when a live backdrop exists (DS6: `popover_glass`, gradient face, 1 px rim, soft shadow, 30% scrim) and otherwise stand on the page's own latched light: `widgets::panel_ground` draws the
 underlay field the modal dim latched, windowed to the panel's rect and graded toward the panel
-material under its frost. Backdrop-blur glass (`Glass::DYNAMIC_BACKDROP`) is chrome-only — the top
+material under its frost. Outside `popover_glass`, backdrop-blur glass (`Glass::DYNAMIC_BACKDROP`) is chrome-only — the top
 bar's track and the profile chip — plus the one non-interactive standing note, the "Hold OK for options"
 capsule (`ui::hold_hint`: standing on Home, and once per screen kind per run on the other card screens). See `docs/liquid-glass.md`.
 

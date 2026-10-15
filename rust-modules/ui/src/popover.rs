@@ -29,10 +29,12 @@
 //!   scrim included. The scrim and the [`Opener`] lift stay LIVE above the quad, which they must:
 //!   the scrim ramps with the appear spring, and a lift baked into the snapshot would then be
 //!   dimmed by the live scrim drawn over it, which is the exact bug the lift exists to fix.
-//! - **A panel's ground reads no framebuffer at all.** It is the latched underlay field (the one
-//!   the modal dim draws, `ui::underlay`) sampled at the panel's own rect under the frost — see
-//!   [`crate::widgets::panel_ground`] — so nothing about the snapshot constrains it, and nothing
-//!   about it constrains the snapshot.
+//! - **A panel's ground is glass over the captured host page (DS6), and falls back to a field that
+//!   reads no framebuffer.** [`crate::widgets::panel_ground`] draws `popover_glass` when a live
+//!   backdrop exists, which samples the page this snapshot holds, so the snapshot must be the
+//!   undimmed page (above). With no live backdrop it uses the latched underlay field (the one the
+//!   modal dim draws, `ui::underlay`) sampled at the panel's own rect under the frost, which
+//!   constrains nothing.
 //! - **HOST DAMAGE refreshes the snapshot; the popover's OWN activity does not.** That distinction
 //!   was the bio panel's private `OWN_DAMAGE` ledger and is now [`own_motion`] / [`host::live`] /
 //!   [`host::input_scope`] / [`host::page_pass`], shared — attributed at the source and counted

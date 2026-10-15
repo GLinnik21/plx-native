@@ -155,9 +155,10 @@ pub fn declare_chrome_glass_for_test(p: Painter, rects: &[Rect]) {
 /// Never a blank, and never the frost alone — [`theme::PANEL_FROST_TOP`] is only legal over the
 /// field it is frosting.
 ///
-/// **Glass is chrome-only now**: the top bar's standing track and the profile chip's capsule still
-/// sample a live blur, because the page under them moves — and the standing hold hint
-/// (`hold_hint`, a non-interactive note); nothing that is a popover does.
+/// **DS6 put glass back on popovers**: `popover_glass::draw` runs first (above) and wins whenever a
+/// live backdrop exists; everything described below is the FALLBACK ground for a frame without
+/// one. The chrome (the top bar's track, the profile chip's capsule, the hold hint) is the other
+/// live-blur user.
 pub fn panel_ground(
     p: Painter,
     r: Rect,

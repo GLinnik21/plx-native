@@ -56,6 +56,10 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
    paint): use `ui::label::Label` (single run) or `ui::text_view::TextView` (multi-line, pixel-
    wrapped), or if you must call `Painter::text` directly, derive the y from `text::text_vcenter_y` /
    `text::text_cap_band`. See `label.rs`'s module docs for the rule.
+   Tracking (DS8): a string that needs letter-spacing goes through `Painter::text_tracked` with a
+   named constant (`theme::TRACKING_TITLE_TIGHT`, -0.5 px, the Watchlist header's); at `0.0` it is
+   exactly `text`. The gaps are n-1 between characters (CSS adds one after the last too, a
+   sub-pixel difference shipped code keeps), and no screen adopts it yet.
 
 4. **Improve a component before forking one.** If a shared widget almost does what you need, add a
    builder method / style variant to it (e.g. `Button::style(ControlStyle)`), don't copy it. A new
@@ -456,10 +460,20 @@ tried first. None of it is reconstructable from the code without repeating the m
   glass's own and higher layers, checks occlusion and compares the ordered draw arguments beneath
   each sampling region.
 
-- **A popover panel does not frost a backdrop blur.** Every panel stands on
-  `widgets::panel_ground` — the 15×8 underlay field the modal dim already latched (`ui::underlay`,
-  reaching a surface as `DrawFrame::underlay`), windowed to the panel's rect and graded under
-  `PANEL_LUMA_MAX`. A source-grep test keeps `Glass` out of every other file.
+- **A popover panel is glass whenever a live backdrop exists (DS6).** Every panel stands on
+  `widgets::panel_ground`, whose first act is `popover_glass::draw`: a `Glass::DYNAMIC_BACKDROP`
+  surface wearing a gradient face (`FACE_TOP`/`FACE_BOT`), the 1 px `theme::GLASS_RIM`, the lit top
+  edge `GLASS_RIM_LIGHT` and `GlassRim::Menu` — the shader (`fs_glass.frag`) refracts the rim from
+  the captured host page with the SAME rounded-rect SDF that rounds the panel, so there is no extra
+  pass — and then a soft shadow cut out around the panel's rounded shape. The scrim behind a compact
+  menu is `theme::underlay::DIM_COMPACT`, 30%. Only when no live backdrop exists (a unit test, a
+  surface over the video plane, a frozen page outside `host::live`) does `draw` return `false` and
+  the panel fall back to the 15×8 underlay field the modal dim latched (`ui::underlay`, reaching a
+  surface as `DrawFrame::underlay`), windowed to the panel's rect and graded under `PANEL_LUMA_MAX`.
+  This reverses the 2026-09-19 "popovers are not glass" policy: the cost of the panel's blur on the
+  television (`docs/liquid-glass.md`) is NOT yet re-measured, and `MENU_SHARP` is a guess for the
+  TV feel check to settle. A source-grep test keeps `Glass` out of every file except the chrome
+  list, `popover_glass.rs` being the ONE popover-side entry — no screen names `Glass` itself.
 
 - **A modal's dim is DRAWN, never applied to the source.** The variant that multiplied the host
   page's RGB going into the backdrop was measured and removed: dimming the source destroys the

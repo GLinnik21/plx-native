@@ -5,7 +5,13 @@ The backdrop-blur material (`gfx.rs`'s blur chain + `shaders/fs_glass.frag`, dra
 **envelope it can be designed inside** — the limits that come from the television rather than from
 taste, so a design can be drawn against them instead of into them.
 
-**Glass is CHROME-ONLY since 2026-09-19.** Its users are the top bar's standing track, the profile
+**Update (DS6, Watchlist wave 2): popover menus are glass again** when a live backdrop exists —
+`widgets::panel_ground` calls `popover_glass::draw` first (gradient face, 1 px rim, top highlight,
+soft shadow, `GlassRim::Menu` rim refraction from the captured host page, 30% compact scrim) and the
+field ground described next is the fallback. The cost of that blur on the set has NOT been
+re-measured; read the 2026-09-19 text below as the pre-DS6 history it is.
+
+**Glass was CHROME-ONLY from 2026-09-19 until DS6.** Its users are the top bar's standing track, the profile
 chip's capsule, the dev tile band and the one non-interactive standing note, the "Hold OK for
 options" capsule (`ui::hold_hint`: Home's, and on the other card screens once per screen kind per run). Popover panels — the menus, the alert panels, the person bio,
 the decision alert — no longer frost a backdrop blur: they stand on `widgets::panel_ground`, the
@@ -318,7 +324,7 @@ popup menu is too pixelated" was, 2026-08-20 to 2026-08-21.
 **Glass: the chrome and one standing note.** The top bar's standing track and the profile chip's capsule, and the
 "Hold OK for options" capsule (`ui::hold_hint`, on Home and, once per screen kind per run, on Collection, Person, Search, Library and Detail — the track's material at a fixed weight, its own
 source in the page layer rather than a member of the shared top band, flat fallback when glass is refused), on
-`Glass::DYNAMIC_BACKDROP` (the one preset left). **Popovers and sheets over a UI page are not glass**:
+`Glass::DYNAMIC_BACKDROP` (the one preset left). **Popovers and sheets over a UI page were not glass, until DS6 (they are again when a live backdrop exists; the field below is the fallback ground)**:
 Sort, Filter, Sources, the item menu, *Also available*, *Track information*, *About*, Account, the
 person biography and the decision alert all draw their ground through `widgets::panel_ground` over
 the latched underlay field — the surfaces reach it as `DrawFrame::underlay`, the decision alert
