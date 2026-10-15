@@ -10,6 +10,48 @@ read-out anchor 540 (#337), bookmark tab = shipped 60×60 Search-pill geometry.
 
 ---
 
+## Design source (owner decision 2026-10-15: the canvas is the visual source of truth)
+Canvas: https://claude.ai/artifact/QBFG5q83M4r9U4u83uhApw (Design artifact "Watchlist", version 42
+or later). Each board is `project/<Board>.dc.html`; `project/canvas.json` lists them. The board
+HTML carries the exact values inline: px positions and sizes, colours (DS tokens), copy, icon
+paths and DS component props. The prose in this plan and in INPUT 1 paraphrases these boards;
+where the two differ, the board wins.
+
+| row | board | what it is |
+|---|---|---|
+| 1 | Main | Home with the bookmark tab focused, next to Search |
+| 1 | Watchlist | the page: title, one Sort & Filter pill, grid, ground in the focused title's colours |
+| 1 | WatchlistOptions | Sort & Filter open on glass |
+| 1 | WatchlistFiltered | filters narrowed the list to nothing (read-out) |
+| 1 | WatchlistEmpty | empty list (read-out) |
+| 1 | WatchlistHeaderB | REJECTED alternative header (title + three chips) — reference only, build nothing from it |
+| 2 | Detail | Detail, title not on the list (outline bookmark disc after Resume) |
+| 2 | DetailOnList | Detail, on the list (filled disc) |
+| 2 | DetailAdded | Detail right after OK on the bookmark |
+| 2 | DetailNotOnServer | coming soon: key art, the date, Trailer, labelled pill |
+| 2 | DetailOffline | server offline: "On Watchlist" |
+| 3 | HoldMenu | hold menu with "Add Show to Watchlist" |
+| 3 | WatchlistHold | Watchlist grid hold menu with "Remove from Watchlist" |
+| 3 | WatchlistHoldUnplayable | hold menu on an unplayable title |
+| 3 | WatchlistRemoved | the grid after a removal |
+| 3 | TileStates | unplayable tile marks (clock, server-slash, no-server wash, veil) |
+| 3 | Motion | animated: the Remove card replays the #737 landing springs; the Sort & Filter card holds the morph spring values (numbers also in INPUT 1 "Motion") |
+
+Version 42 or later: every board's `renderVals()` TABS matches the drawn strip (Home, Movies, TV
+Shows, bookmark icon, search icon).
+
+### Hard rule for every implementing agent (UI PRs)
+1. Before writing UI code, read that PR's boards from the artifact (Artifact tool, `action:"read"`
+   with `path: "project/<Board>.dc.html"`).
+2. Take every value from them: geometry, sizes, colours, states, copy, and the icon paths (they
+   match `assets/icons` from 40b4cd14).
+3. Map each value onto the existing theme tokens and constants; never paste a raw literal
+   (ui/src/CLAUDE.md rules 1–4).
+4. Where a board and the shipped code disagree, the shipped component wins; record the difference
+   in the PR body for the owner (known: TAB_GAP, the 60×60 icon pill, FULL_ANCHOR_TOP 540).
+5. Each UI PR body pairs a simulator (or TV) screenshot with its board, side by side.
+6. Motion values come from the Motion board.
+
 # PLAN
 Every file:line is on origin/main adf73d81a.
 
@@ -275,25 +317,25 @@ PMS hub/section/search/CW rows carry guid/grandparentGuid without includeGuids? 
 Discover trailer playable?
 
 ### 2.3 Design-system PRs (each its own decision + PR)
-- **DS1 Icons:** cherry-pick 40b4cd14; `Icon::{Bookmark, BookmarkFill, Clock, ServerSlash}` +
+- **DS1 Icons** (boards: TileStates; icon paths also in Main/Detail): cherry-pick 40b4cd14; `Icon::{Bookmark, BookmarkFill, Clock, ServerSlash}` +
   ink/band. Host + ui-sim at 28/112 px.
-- **DS2 Tick veil:** rgba(0,0,0,.55) as a theme role token, DS-wide. ui-sim + TV capture.
-- **DS3 Bright verdict:** TEXT_PRIMARY verdict, secondary body, everywhere; amend idiom #4.
+- **DS2 Tick veil** (boards: TileStates): rgba(0,0,0,.55) as a theme role token, DS-wide. ui-sim + TV capture.
+- **DS3 Bright verdict** (boards: WatchlistEmpty, WatchlistFiltered): TEXT_PRIMARY verdict, secondary body, everywhere; amend idiom #4.
   ui-sim captures of every read-out.
-- **DS4 Grid landings:** `Scene` → slot→(x,y); `GridSpec::animate_landings`; ghost on K_SCALE,
+- **DS4 Grid landings** (boards: WatchlistRemoved + Motion's Remove card): `Scene` → slot→(x,y); `GridSpec::animate_landings`; ghost on K_SCALE,
   survivors K_SCROLL, no stagger; line-break reflow = straight 2-D spring; off-screen snap; focus
   next. Cards Tier-1 + conformance; update "Grid has none yet". Host + ui-sim + TV feel.
-- **DS5 Strip N icon tabs (neutral):** `TabFace::{Label, Icon}` replaces "last label is Search";
+- **DS5 Strip N icon tabs (neutral)** (board: Main, strip geometry only — the bookmark tab itself lands in W45): `TabFace::{Label, Icon}` replaces "last label is Search";
   shipped 60×60 pill, 32 px mark, 16 px gap, `TabPill::mixed_ink`; positional maps → key lookups
   (Search +3, chip +4 unchanged); reword widgets.rs docs (~5575-5585, ~6405) and docs/search.md
   §1. Pin untouched; overscan_rects test (no scroll at 5 stops). Host + ui-sim + check-replay.
-- **DS6 Glass menus + 30% scrim:** gradient panel, rims, shadow; fs_glass rim refraction from the
+- **DS6 Glass menus + 30% scrim** (boards: WatchlistOptions, HoldMenu, WatchlistHold): gradient panel, rims, shadow; fs_glass rim refraction from the
   captured host, same SDF, no extra pass; amend ui CLAUDE.md Glass section + grep test.
   ui-sim + TV (profile-tv, LG pixels).
-- **DS7 Morph open style:** pill→panel rect (w k≈620, h k≈950, critically damped), radius
+- **DS7 Morph open style** (board: Motion's Sort & Filter card; end state WatchlistOptions): pill→panel rect (w k≈620, h k≈950, critically damped), radius
   pill→22 with bulge, rows 0.82→1 (zeta 0.6, k≈720), ~190/150 ms, cross-dissolve, never empty
   glass; fade+scale fallback const. TV mandatory (profile-tv).
-- **DS8 Text tracking:** −0.5 px in gfx text (Q10). Host + TV LG raster.
+- **DS8 Text tracking** (board: Watchlist header title): −0.5 px in gfx text (Q10). Host + TV LG raster.
 
 ### 2.4 Feature PRs
 - **NET1 (optional):** CURLOPT_HEADERFUNCTION → ETag in `Resp`. fw-compat + bind-tv-lib-abi
@@ -308,7 +350,7 @@ Discover trailer playable?
   the flip tick routes on drawn state; comparator. Host.
 - **W3 i18n:** `MD` medium/long ("12 Mar"/"12 March"), Be genitive, Fr; new strings En/Es/Be/Fr;
   measure icu_datetime name-data size (UNVERIFIED). Host.
-- **W45 strip destination + page (Bump A):** `HomeTab::Watchlist`, `STRIP_BASE+5`,
+- **W45 strip destination + page (Bump A)** (boards: Main, Watchlist, WatchlistOptions, WatchlistFiltered, WatchlistEmpty, WatchlistRemoved; NOT WatchlistHeaderB): `HomeTab::Watchlist`, `STRIP_BASE+5`,
   `TabFace::Icon(Bookmark)` before Search, route word `"watchlist"`; 6-col 250×375 grid; header
   (DISPLAY 48 bold; tracking after DS8) + "Sort & Filter · <summary>" pill → popover (morph if
   DS7 landed): Type / Sort+direction / Show; empty + filtered read-outs at 540; marks/states;
@@ -325,9 +367,9 @@ Discover trailer playable?
 - **W-notify (optional, after W45, gated on Q12 + capture):** timeline subscription, parser,
   itemID→re-match mapping, mock + sim; pms-api.md §9 gains the measured timeline frames and scan
   rate; doc-claim audit.
-- **W6a appkit::hero_layout extraction:** behaviour-neutral; host geometry test, Detail
+- **W6a appkit::hero_layout extraction** (boards: Detail for reference; no visual change): behaviour-neutral; host geometry test, Detail
   conformance row, unchanged pin.
-- **W6 Detail + catalog + menus (Bump B):** P4 first; `PmsMovie` guid/show_guid; Detail disc;
+- **W6 Detail + catalog + menus (Bump B)** (boards: Detail, DetailOnList, DetailAdded, DetailNotOnServer, DetailOffline, HoldMenu, WatchlistHold, WatchlistHoldUnplayable): P4 first; `PmsMovie` guid/show_guid; Detail disc;
   CatalogStore + CatalogScreen; item_menu rows + Catalog kind; tab pulse. Tests: hero control
   tables, menu row tables, the press table. Same mock-only rule; TV for fill, ribbon, pulse.
 - **W7 doc sweep:** docs/search.md (line 8, §6); docs/parity-gaps.md (:8, :80, :271-274, :348,
