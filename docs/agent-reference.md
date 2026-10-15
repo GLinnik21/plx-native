@@ -373,7 +373,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `Cargo.lock`, `build.rs`, `build_support/`, a `.cargo/config.toml`, `.github/workflows/`, or the
   module layout (moving, splitting or merging files under `rust-modules/src/`) pastes the table from
   `make build-bench` taken on the base commit and on the change, on the same machine in the same
-  sitting. **Reading noise:** before every run the script samples the 1-minute load average
+  sitting. Dependabot PRs are exempt (a bot cannot run it): the maintainer who merges a grouped bump
+  measures first when it moves the toolchain or the compiled dependency set, and a bump of the Cargo
+  dependencies also needs `make notices` (THIRD-PARTY-NOTICES.md section 2.4 is generated from
+  `Cargo.lock`; `make check` fails until it is regenerated). **Reading noise:** before every run the script samples the 1-minute load average
   (`uptime`) and swap (`sysctl vm.swapusage`) and prints `WARNING: <scenario> run N: load X > <cores>
   cores` or `swap N% used` when load exceeds the core count or swap is over 90% full; this Mac is
   shared with other sessions and its swap is often full, so such numbers are noisy. A warning does
