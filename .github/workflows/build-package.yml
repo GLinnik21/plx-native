@@ -78,7 +78,8 @@ on:
         default: true
       caches:
         description: >
-          Enable the Rust incremental cache and the vendored-FFmpeg cache. Release deliberately
+          Enable the Rust incremental cache, the vendored-FFmpeg cache and the pinned-downloads
+          cache (vendor/downloads: the FFmpeg, Sentry Native, libass and nanosvg archives). Release deliberately
           builds uncached (a release must be reproducible from a clean checkout); nightly also
           builds uncached today (it runs once a day, so the turnaround benefit is smaller). The
           flag stays for a caller that wants the trade.
@@ -537,7 +538,7 @@ jobs:
         if: inputs.source-asset
         run: |
           set -euo pipefail
-          tarball=$(ls vendor/downloads/ffmpeg-*.tar.xz)
+          tarball=$(python3 ci/deps.py fetch ffmpeg)
           cp "$tarball" pkg/
           cp ci/build-ffmpeg.sh pkg/
           echo "LGPL source: $(basename "$tarball") + build-ffmpeg.sh" >> "$GITHUB_STEP_SUMMARY"

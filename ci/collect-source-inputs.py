@@ -2,6 +2,7 @@
 """Collect pinned public dependency sources from explicit archives and installed Rust sources."""
 import argparse
 import json
+import os
 import html
 from pathlib import Path
 import re
@@ -62,7 +63,8 @@ def main():
     # Every dependency the manifest marks `bundled` rides the source bundle with its exact
     # upstream inputs (FFmpeg and Sentry Native, the statically contained libass font stack, the
     # nanosvg headers), not URL offers. The archives are read from the cache the build filled
-    # (`vendor/downloads` of --archive-root); nothing is downloaded here.
+    # (`vendor/downloads` of --archive-root, or $PLX_DEPS_CACHE when set, the way ci/deps.py
+    # resolves it); nothing is downloaded here.
     manifest = json.loads((root / 'ci/dependencies.json').read_text())
     recipes = {'ffmpeg': ['ci/build-ffmpeg.sh'], 'sentry-native': ['ci/build-sentry-native.sh'],
                'nanosvg': ['Makefile', 'src/svg.c']}
@@ -75,8 +77,12 @@ def main():
             continue
         sources = []
         for asset in deps_module.assets_of(dep).values():
-            relative = deps_module.cached_path(dep, asset, Path('vendor/downloads'))
-            data, _ = read_regular(args.archive_root.resolve(), relative.as_posix())
+            if os.environ.get('PLX_DEPS_CACHE'):
+                data, _ = read_regular(deps_module.cache_dir().resolve(),
+                                       deps_module.cached_path(dep, asset, Path('.')).as_posix())
+            else:
+                relative = deps_module.cached_path(dep, asset, Path('vendor/downloads'))
+                data, _ = read_regular(args.archive_root.resolve(), relative.as_posix())
             if digest(data) != asset['sha256']:
                 fail('pinned source archive checksum mismatch: ' + asset['name'])
             (output / asset['name']).write_bytes(data)

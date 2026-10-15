@@ -44,7 +44,12 @@ complete copy of that licence is supplied with this package at `licenses/LGPL-2.
 from <https://ffmpeg.org/releases/> — is attached to every PlxNative release alongside the `.ipk`.
 The sources are **unmodified**: no patches are applied. The complete configure invocation that
 produced them, including every enabled component, is `ci/build-ffmpeg.sh` in the PlxNative
-repository, which is also attached to each release.
+repository, which is also attached to each release. The attached script takes the version, the
+digest and the tarball from its environment, so it needs no network and none of the manifest
+tooling: from a checkout of the release's tag (or its source bundle), with the attached tarball,
+`FFMPEG_VERSION=9.0 FFMPEG_SHA256=7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52 FFMPEG_TARBALL=/path/to/ffmpeg-9.0.tar.xz ci/build-ffmpeg.sh`
+(the script also reads the checkout's `ci/arm-cc.py` and `ci/check-link-evidence.py`, which it
+has always done).
 
 **Configuration.** Built with `--disable-everything` plus an explicit component list, **without**
 `--enable-gpl`, `--enable-version3` or `--enable-nonfree`, so no GPL-licensed or non-free FFmpeg
@@ -416,7 +421,7 @@ enable it) — verified absent from the binary. `rustc-literal-escaper`, `proc_m
 out-of-process `sentry-crash` handler is shipped beside it. The handler is built with its HTTP
 transport disabled: it writes a crash envelope for PlxNative's consent-aware sender to deliver on
 the next launch. The source is patched for webOS's glibc 2.12 syscall surface and the 32-bit ARM
-APCS frame layout; the pinned source hash and complete patch are in `ci/build-sentry-native.sh` and
+APCS frame layout; the pinned source hash is in `ci/dependencies.json` and the complete patch is
 `ci/patches/sentry-native-0001-webos-arm32.patch`.
 
 **libunwind** (the copy vendored by Sentry Native) — Copyright (c) 2002 Hewlett-Packard Co.
@@ -514,6 +519,7 @@ runtime notices listed below:
 | `licenses/ICU4X.txt` | ICU4X runtime code and compiled locale data, including its Unicode and IBM notices (§2.4) |
 | `licenses/libm.txt` | Registry libm and its upstream musl/CORE-MATH attributions (§2.4) |
 | `licenses/qrcodegen.txt` | Project Nayuki QR code generator, complete upstream MIT notice (§2.4) |
+| `licenses/jsmpeg.txt` | jsmpeg, complete upstream MIT licence (§6): a development tool, downloaded from its pinned upstream commit and not in the package; the text is kept with the others |
 | `licenses/Zlib.txt` | nanosvg (§2.1), FreeType's built-in gzip reader (§1.2) |
 | `licenses/libass-ISC.txt` | libass (§1.2), including its copyright notice |
 | `licenses/FreeType.txt` | FreeType's elected FTL and contributed module notices (§1.2) |
@@ -538,7 +544,8 @@ the GPL-3.0-or-later election. Also retain `licenses/GCC-exception-3.1.txt` and
 Two third-party components exist in the PlxNative source repository but are **not** part of this
 package, and therefore carry no obligation discharged here: **libjpeg-turbo**
 (`libturbojpeg.so.0`, copied to developer televisions by the development deploy step only) and
-**jsmpeg** (a host-side development tool). Neither is present in the installed application.
+**jsmpeg** (a host-side development tool; `tools/stream-screen.py` downloads it at the upstream commit
+`ci/dependencies.json` pins, so no copy of it is in the repository; its licence is `licenses/jsmpeg.txt`). Neither is present in the installed application.
 
 ## Source-only attribution
 
@@ -552,6 +559,5 @@ then-current MIT grant. That original grant and Gleb Linnik notice are preserved
 `licenses/PlxNative-historical-MIT.txt`; no ownership transfer is claimed.
 
 Source bundles also contain SDL2 Zlib headers, embedded Mesa/Khronos MIT and SGI-B-2.0
-header blocks, Khronos GLES2 MIT/Apache-2.0 headers, and the MIT-licensed jsmpeg tool
-(Copyright (c) 2017 Dominic Szablewski). Preserve their original embedded notices. Exact per-file
+header blocks and Khronos GLES2 MIT/Apache-2.0 headers. Preserve their original embedded notices. Exact per-file
 license assignments are in the inventory; the SGI text is in `licenses/SGI-B-2.0.txt`; none of `include/` is claimed as original LG ABI work.

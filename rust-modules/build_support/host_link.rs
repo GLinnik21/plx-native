@@ -60,8 +60,11 @@ pub fn emit(repo: &Path) {
 
 /// Put the pinned nanosvg headers in `vendor/nanosvg` (gitignored): they are not in the repository.
 ///
-/// `ci/deps.py` downloads them at the commit `ci/dependencies.json` names, checks each against its
-/// sha256, and leaves a file that already matches alone, so this is offline once they are there.
+/// `ci/deps.py` returns at once when every header is already there and matches its sha256 in
+/// `ci/dependencies.json` (offline, whatever `vendor/downloads` holds). Otherwise it takes them from
+/// `vendor/downloads`, then from the machine-wide store under `$PLX_BUILD_CACHE` (default
+/// `~/.cache/plxnative`) that every worktree shares, and only then downloads them at the pinned
+/// commit, checking each against its sha256 and filling both caches.
 /// Several build scripts (this crate's, `plx_gfx`'s, ...) can run it at once: every write is a
 /// rename of a private file, so none sees another's partial download. The directory is relative to
 /// the repository, not `$HOME`, because some `make check` steps run with an empty home.

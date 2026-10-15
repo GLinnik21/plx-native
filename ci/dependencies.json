@@ -159,5 +159,15 @@
       }
     },
     "patches": []
+  },
+  {
+    "id": "jsmpeg",
+    "version": "924acfbd96fdf15e6748d1368a36d79d8f4cecf6",
+    "license": "MIT",
+    "upstream": "https://github.com/phoboslab/jsmpeg",
+    "archive": "jsmpeg.min.js",
+    "url": "https://raw.githubusercontent.com/phoboslab/jsmpeg/924acfbd96fdf15e6748d1368a36d79d8f4cecf6/jsmpeg.min.js",
+    "sha256": "c0286ac82193fc9c9d5490ade425db04c446d9115bfe6823bf9bc0b0703c7760",
+    "patches": []
   }
 ]

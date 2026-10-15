@@ -260,7 +260,7 @@ SYSROOT      = $(WEBOS_SDK)/arm-webos-linux-gnueabi/sysroot
 # wrapper, Starfish/ACB seam and nanosvg rasterizer) and it built without this gate until
 # 2026-08-15 — so the crash tracer and the 15-symbol C++ seam, the two places where a sloppy cast is
 # least survivable, were compiled at gcc's bare default. Turning it on cost nothing: the only hit
-# in the tree is inside vendored nanosvg, suppressed at its include in src/svg.c.
+# in the tree is inside the fetched nanosvg, suppressed at its include in src/svg.c.
 #
 # -Werror is safe to pin HERE in a way it would not be on a moving toolchain: the NDK is a fixed
 # GCC 12 installed by `make setup-env`, so no compiler upgrade can invent a new diagnostic under

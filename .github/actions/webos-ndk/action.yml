@@ -1,7 +1,7 @@
 name: Provision webOS NDK
 description: >
-  Cache, download, checksum, extract and relocate the webosbrew buildroot SDK pinned by the
-  Makefile's NDK_REL, then prove its sysroot can satisfy LIBS_REAL before any build runs.
+  Cache, download, checksum, extract and relocate the webosbrew buildroot SDK pinned in
+  ci/dependencies.json (`webos-ndk`), then prove its sysroot can satisfy LIBS_REAL before any build runs.
 
 # WHY runs-on MUST be an arm64 Linux runner (ubuntu-24.04-arm):
 # webosbrew/native-toolchain publishes exactly three host builds for the pinned release —

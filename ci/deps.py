@@ -14,7 +14,9 @@ and gets the bytes with
 
     python3 ci/deps.py fetch ffmpeg --into vendor/downloads      # prints the verified path
     python3 ci/deps.py stage nanosvg --into vendor/nanosvg       # fetch, then copy under its file names
+    python3 ci/deps.py fetch-all --exclude webos-ndk             # everything a CI cache entry must hold
     python3 ci/deps.py cache-dir                                 # where fetched archives live
+    (every fetch also reads and fills the machine-wide store under $PLX_BUILD_CACHE/deps)
     python3 ci/deps.py verify sentry-native                      # its patches still match their digests
     python3 ci/deps.py check                                     # schema + patch digests, no network
 
@@ -55,6 +57,38 @@ HEX = set('0123456789abcdef')
 def cache_dir():
     """The directory fetched archives live in: $PLX_DEPS_CACHE, else vendor/downloads."""
     return Path(os.environ.get('PLX_DEPS_CACHE') or DEFAULT_CACHE)
+
+
+def machine_cache():
+    """The machine-wide store shared by every checkout and worktree: $PLX_BUILD_CACHE/deps (the
+    variable ci/build-ffmpeg.sh keys its tree and tarball by, default ~/.cache/plxnative), or None
+    when PLX_BUILD_CACHE is set empty. A fresh worktree finds its archives here without a network."""
+    root = os.environ['PLX_BUILD_CACHE'] if 'PLX_BUILD_CACHE' in os.environ else str(Path.home() / '.cache/plxnative')
+    return Path(root).resolve() / 'deps' if root else None
+
+
+def shared_path(asset):
+    """Where the machine-wide store keeps one asset: named by its digest, so two pins never collide."""
+    store = machine_cache()
+    return None if store is None else store / asset['sha256'][:16] / asset['name']
+
+
+def publish(source, target):
+    """Copy a verified file to `target` by rename of a pid-unique file. Best effort for a cache:
+    a read-only or full volume must not fail a build that already holds the bytes."""
+    target = Path(target)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, candidate = tempfile.mkstemp(prefix=target.name + '.', dir=str(target.parent))
+        os.close(fd)
+        try:
+            shutil.copyfile(source, candidate)
+            os.chmod(candidate, 0o644)
+            os.replace(candidate, target)
+        finally:
+            Path(candidate).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def digest(path):
@@ -117,6 +151,12 @@ def fetch_asset(asset, target, label='deps'):
     target = Path(target)
     if target.is_file() and digest(target) == asset['sha256']:
         return target
+    shared = shared_path(asset)
+    if shared is not None and shared.is_file() and digest(shared) == asset['sha256']:
+        publish(shared, target)
+        if target.is_file() and digest(target) == asset['sha256']:
+            print(label + ': ' + asset['name'] + ' taken from ' + str(shared), flush=True)
+            return target
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, candidate = tempfile.mkstemp(prefix=target.name + '.', dir=str(target.parent))
     os.close(fd)
@@ -134,6 +174,8 @@ def fetch_asset(asset, target, label='deps'):
             if digest(candidate) != asset['sha256']:
                 raise ValueError('source checksum mismatch: ' + asset['name'] + ' from ' + url)
             os.replace(candidate, target)
+            if shared is not None:
+                publish(target, shared)
             print(label + ': ' + asset['name'] + ' fetched from ' + url, flush=True)
             return target
         raise ValueError('could not download ' + asset['name'] + ' from any source: ' + '; '.join(failures))
@@ -156,8 +198,15 @@ def stage(dep, destination, folder=None):
     """Fetch every asset of `dep`, then place each under `destination` by its file name.
 
     The copy is a rename of a pid-unique file, and an already-correct file is left alone, so
-    several build scripts staging at once leave one consistent directory."""
+    several build scripts staging at once leave one consistent directory. When every file is
+    already there and matches, it returns without touching the download directory or the network."""
     destination = Path(destination)
+    # Already in place and correct: nothing to fetch, so an intact destination works offline even
+    # when the download directory is gone.
+    wanted = [destination / asset['name'] for asset in assets_of(dep).values()]
+    if all(path.is_file() and digest(path) == asset['sha256']
+           for path, asset in zip(wanted, assets_of(dep).values())):
+        return
     destination.mkdir(parents=True, exist_ok=True)
     for key, source in fetch(dep, folder).items():
         asset = assets_of(dep)[key]
@@ -256,6 +305,9 @@ def main(argv=None):
     p = sub.add_parser('stage', help='fetch every asset and place it under DIR by its file name')
     p.add_argument('name')
     p.add_argument('--into', required=True)
+    p = sub.add_parser('fetch-all', help='fetch every asset of every entry, except those named by --exclude')
+    p.add_argument('--exclude', action='append', default=[], help='an entry id to skip (repeatable)')
+    p.add_argument('--into', help='cache directory (default: $PLX_DEPS_CACHE or vendor/downloads)')
     sub.add_parser('cache-dir', help='print the directory fetched archives live in')
     p = sub.add_parser('verify', help='check the patches of one entry against their pinned digests (offline)')
     p.add_argument('name')
@@ -273,6 +325,19 @@ def main(argv=None):
             for line in found:
                 print('deps: ' + line, file=sys.stderr)
             return 1 if found else 0
+        if args.command == 'fetch-all':
+            entries = load()
+            unknown = set(args.exclude) - {dep['id'] for dep in entries}
+            if unknown:
+                raise ValueError('no dependency named ' + ', '.join(sorted(unknown)))
+            sys.stdout, real = sys.stderr, sys.stdout
+            try:
+                for dep in entries:
+                    if dep['id'] not in args.exclude:
+                        fetch(dep, args.into)
+            finally:
+                sys.stdout = real
+            return 0
         dep = entry(args.name)
         if args.command == 'get':
             print(get(dep, args.field))

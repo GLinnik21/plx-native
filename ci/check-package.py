@@ -1678,7 +1678,7 @@ NEEDED_LICENCES = {
     "Apache-2.0.txt": "Material Icons, moxcms, pxfm, compiler_builtins",
     "LLVM-exception.txt": "compiler_builtins",
     "Unicode-3.0.txt": "the Unicode tables inside Rust core",
-    "Zlib.txt": "nanosvg — vendored and compiled into the binary",
+    "Zlib.txt": "nanosvg — fetched at a pinned commit and compiled into the binary",
     "ICU4X.txt": "ICU4X locale code/data — Unicode and IBM adaptation notices",
     "libm.txt": "registry libm — complete upstream math attributions",
     "qrcodegen.txt": "Project Nayuki QR code generator — upstream MIT notice",

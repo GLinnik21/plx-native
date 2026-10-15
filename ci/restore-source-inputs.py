@@ -2,6 +2,7 @@
 """Restore checked source inputs into a fresh tree and an isolated pinned Rust sysroot."""
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 import shutil
@@ -80,7 +81,8 @@ def main():
     destination.mkdir(parents=True)
     extract_regular(args.archive, destination)
     # The bundled upstream inputs go where the build looks for them: the download cache
-    # (`vendor/downloads`), under the names the manifest gives them. A build then finds each one
+    # (`vendor/downloads` of the destination, or $PLX_DEPS_CACHE when set, the way ci/deps.py
+    # resolves it), under the names the manifest gives them. A build then finds each one
     # present and verified, and fetches nothing.
     pins = destination / 'ci/dependencies.json'
     if pins.is_file():
@@ -90,9 +92,15 @@ def main():
             by_name = {Path(entry['path']).name: entry for entry in deps[dep['id']]['sources']}
             for asset in deps_module.assets_of(dep).values():
                 source = destination / by_name[asset['name']]['path']
-                target = destination / deps_module.cached_path(dep, asset, Path('vendor/downloads'))
+                shared = bool(os.environ.get('PLX_DEPS_CACHE'))
+                if shared:
+                    target = deps_module.cached_path(dep, asset, deps_module.cache_dir().resolve())
+                else:
+                    target = destination / deps_module.cached_path(dep, asset, Path('vendor/downloads'))
+                if shared and target.is_file() and deps_module.digest(target) == asset['sha256']:
+                    continue  # a shared cache may already hold the verified bytes
                 if target.exists():
-                    fail('recipe source path already exists: ' + str(target.relative_to(destination)))
+                    fail('recipe source path already exists: ' + str(target))
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, target)
     crate_root = destination / 'rust-modules'

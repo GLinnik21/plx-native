@@ -8,9 +8,12 @@ manifest, so it fails here.
 """
 import json
 import re
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'ci'))
@@ -86,6 +89,73 @@ class NoSecondCopy(unittest.TestCase):
         sh = (ROOT / 'ci/build-ffmpeg.sh').read_text()
         self.assertIn('get ffmpeg version', sh)
         self.assertIn('get ffmpeg sha256', sh)
+
+    def test_the_attached_ffmpeg_script_runs_without_the_manifest_tooling(self):
+        sh = (ROOT / 'ci/build-ffmpeg.sh').read_text()
+        for name in ('FFMPEG_VERSION', 'FFMPEG_SHA256', 'FFMPEG_TARBALL'):
+            self.assertIn(name, sh)
+        notices = (ROOT / 'THIRD-PARTY-NOTICES.md').read_text()
+        self.assertIn('FFMPEG_TARBALL=', notices)
+        self.assertIn(deps.entry('ffmpeg')['sha256'], notices)
+
+
+class Offline(unittest.TestCase):
+    """stage() and fetch() work without a network whenever the bytes are already somewhere."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__('shutil').rmtree(self.tmp, ignore_errors=True))
+        self.body = b'pinned bytes\n'
+        sha = __import__('hashlib').sha256(self.body).hexdigest()
+        # An unreachable source: any attempt to download fails this test.
+        self.dep = {'id': 'fake', 'version': '1', 'license': 'x', 'assets': {
+            'one': {'name': 'one.h', 'url': 'https://127.0.0.1:9/one.h', 'sha256': sha}}}
+        self.env = mock.patch.dict(os.environ, {'PLX_BUILD_CACHE': str(self.tmp / 'machine'),
+                                                'PLX_DEPS_CACHE': str(self.tmp / 'downloads')})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.asset = self.dep['assets']['one']
+
+    def test_an_intact_destination_needs_neither_downloads_nor_network(self):
+        dest = self.tmp / 'vendor/nanosvg'
+        dest.mkdir(parents=True)
+        (dest / 'one.h').write_bytes(self.body)
+        deps.stage(self.dep, dest)  # would raise on the unreachable source if it fetched
+        self.assertFalse((self.tmp / 'downloads').exists())
+
+    def test_a_wrong_destination_file_is_not_trusted(self):
+        dest = self.tmp / 'vendor/nanosvg'
+        dest.mkdir(parents=True)
+        (dest / 'one.h').write_bytes(b'tampered')
+        with self.assertRaises(ValueError):
+            deps.stage(self.dep, dest)
+
+    def test_the_machine_wide_cache_serves_a_fresh_checkout(self):
+        shared = deps.shared_path(self.asset)
+        shared.parent.mkdir(parents=True)
+        shared.write_bytes(self.body)
+        dest = self.tmp / 'vendor/nanosvg'
+        deps.stage(self.dep, dest)
+        self.assertEqual((dest / 'one.h').read_bytes(), self.body)
+        self.assertEqual((self.tmp / 'downloads/fake-1/one.h').read_bytes(), self.body)
+
+    def test_a_corrupt_machine_cache_entry_is_not_used(self):
+        shared = deps.shared_path(self.asset)
+        shared.parent.mkdir(parents=True)
+        shared.write_bytes(b'corrupt')
+        with self.assertRaises(ValueError):
+            deps.fetch(self.dep)
+
+    def test_a_download_fills_the_machine_wide_cache(self):
+        source = self.tmp / 'src.h'
+        source.write_bytes(self.body)
+        self.asset['url'] = source.as_uri()
+        deps.fetch(self.dep)
+        self.assertEqual(deps.shared_path(self.asset).read_bytes(), self.body)
+
+    def test_an_empty_PLX_BUILD_CACHE_disables_the_machine_cache(self):
+        with mock.patch.dict(os.environ, {'PLX_BUILD_CACHE': ''}):
+            self.assertIsNone(deps.machine_cache())
 
 
 if __name__ == '__main__':

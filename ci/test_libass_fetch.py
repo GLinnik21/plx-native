@@ -76,6 +76,10 @@ class Fetch(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.folder = Path(self.temp.name)
+        # The machine-wide store must not remember (or serve) a fixture across tests.
+        patch = mock.patch.dict(os.environ, {'PLX_BUILD_CACHE': str(self.folder / 'machine')})
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def dep(self, url, mirrors=None):
         dep = {'id': 'fixture', 'version': '1', 'archive': 'fixture-1.tar.xz',
