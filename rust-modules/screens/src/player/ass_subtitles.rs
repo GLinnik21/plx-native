@@ -473,10 +473,12 @@ mod tests {
         for position in SubtitlePosition::LADDER {
             for size in SubtitleSize::LADDER {
                 let style = style(size, position);
+                // The middle cue sits more than half a Huge pitch (43 px) above the High block's
+                // line, so the lift cannot take it for one of that block's lines.
                 let dys = dys_of(
                     text(style),
                     true,
-                    &[(100, 48), (500, 48), line_at(style, 12)],
+                    &[(100, 48), (450, 48), line_at(style, 12)],
                     UNKNOWN_ALIGNS,
                 );
                 assert_eq!(dys, [0.0, 0.0, -200.0], "{position:?} {size:?}");

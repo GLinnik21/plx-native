@@ -124,8 +124,7 @@ fn ink_bottom(rects: &[Rect]) -> i32 {
     ink(rects).bands.last().expect("ink").1 + 1
 }
 
-const SIZES: [SubtitleSize; 4] =
-    [SubtitleSize::Small, SubtitleSize::Medium, SubtitleSize::Large, SubtitleSize::ExtraLarge];
+const SIZES: [SubtitleSize; 5] = SubtitleSize::LADDER;
 const POSITIONS: [SubtitlePosition; 3] = [SubtitlePosition::Low, SubtitlePosition::Middle, SubtitlePosition::High];
 
 /// libass's line box for a one-line Inter Bold cue: `win ascent` above the baseline and `win
@@ -143,7 +142,7 @@ fn near(what: &str, got: f32, want: f32, tolerance: f32) {
 }
 
 /// Plan §2.2: the ink baseline of a one-line "Hxg" cue is within 2 px of today's, at all three
-/// positions and all four sizes. This is the measurement `INK_TRIM` was fixed by: with `MarginV =
+/// positions and every size. This is the measurement `INK_TRIM` was fixed by: with `MarginV =
 /// BOTTOM_GAP` the Medium baseline was 968 against today's 971.
 #[test]
 #[ignore = "requires the pinned native host libass artifact and packaged fonts"]

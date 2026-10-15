@@ -3166,7 +3166,7 @@ mod tests {
 
     /// `text_style::today_baseline`/`today_layout` are a port of `caption_geometry`/`caption_layout`
     /// with hard-coded constants (the synthesized ASS header is built from them); this pins that the
-    /// port and the code it replaces cannot drift: 3 positions x 4 sizes x HUD up/down, 1-3 lines.
+    /// port and the code it replaces cannot drift: 3 positions x 5 sizes x HUD up/down, 1-3 lines.
     #[test]
     fn text_style_baseline_ties_to_caption_geometry_and_layout() {
         use plx_media::player::text_style::{today_baseline, today_layout};
