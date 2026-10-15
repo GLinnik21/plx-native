@@ -2194,7 +2194,13 @@ impl BucketTex {
         self.tex != 0 && w <= self.alloc_w && h <= self.alloc_h
     }
 
-    /// The UV of the used part's far corner, for `Painter::tex_uv` as `(0, 0, u, v)`.
+    /// The UV rectangle of the used part, for `Painter::tex_uv`.
+    pub fn uv(&self) -> [f32; 4] {
+        let (u, v) = self.uv_max();
+        [0.0, 0.0, u, v]
+    }
+
+    /// The UV of the used part's far corner.
     pub fn uv_max(&self) -> (f32, f32) {
         if self.alloc_w == 0 || self.alloc_h == 0 {
             return (0.0, 0.0);
@@ -2205,10 +2211,13 @@ impl BucketTex {
 
 /// Like [`upload_rgba`], for content that changes size often (libass subtitle frames): the
 /// texture is allocated at the image size rounded up to [`UPLOAD_BUCKET`], and a later image that
-/// fits is copied in with `glTexSubImage2D` rather than re-specifying the texture (the driver
-/// reallocates on every `glTexImage2D`, 4.3 ms at 4K on the television). Only a first or a
-/// larger image allocates, zero-filled so the unused margin samples as transparent. Draw
-/// `[0, uv_max()]` of the result. Main-thread only. A `w` or `h` of 0 uploads nothing.
+/// fits is copied in with `glTexSubImage2D` rather than re-specifying the texture (assup max
+/// 4.3 ms on the PR 7a TV run, #730, srt-rapid at 1080p; max 3.9 ms at rapid-4k60 in the earlier
+/// probe). Only a first or a larger image allocates. After every image a transparent 1-px guard
+/// column and row are written just outside it, so stale ink from a previous larger image is never
+/// sampled by the linear filter at the used edge; draw `[0, uv_max()]` exactly. Every non-empty
+/// upload bumps `tex_ledger::revision`, like [`upload_rgba`]. Main-thread only. A `w` or `h` of 0
+/// uploads nothing.
 pub fn upload_rgba_bucketed(prev: BucketTex, w: c_int, h: c_int, pixels: *const u8) -> BucketTex {
     let mut t = prev;
     t.used_w = w.max(0);
@@ -2225,8 +2234,6 @@ pub fn upload_rgba_bucketed(prev: BucketTex, w: c_int, h: c_int, pixels: *const 
         if !prev.fits(w, h) {
             t.alloc_w = bucket_dim(w).max(prev.alloc_w);
             t.alloc_h = bucket_dim(h).max(prev.alloc_h);
-            tex_ledger::specified(t.tex, t.alloc_w, t.alloc_h);
-            let blank = vec![0u8; t.alloc_w as usize * t.alloc_h as usize * 4];
             glTexImage2D(
                 GL_TEXTURE_2D,
                 0,
@@ -2236,13 +2243,14 @@ pub fn upload_rgba_bucketed(prev: BucketTex, w: c_int, h: c_int, pixels: *const 
                 0,
                 GL_RGBA,
                 GL_UNSIGNED_BYTE,
-                blank.as_ptr() as *const c_void,
+                std::ptr::null(),
             );
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         }
+        tex_ledger::specified(t.tex, t.alloc_w, t.alloc_h);
         glTexSubImage2D(
             GL_TEXTURE_2D,
             0,
@@ -2254,6 +2262,14 @@ pub fn upload_rgba_bucketed(prev: BucketTex, w: c_int, h: c_int, pixels: *const 
             GL_UNSIGNED_BYTE,
             pixels as *const c_void,
         );
+        let zeros = vec![0u8; t.alloc_w.max(t.alloc_h) as usize * 4];
+        let zp = zeros.as_ptr() as *const c_void;
+        if w < t.alloc_w {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, w, 0, 1, (h + 1).min(t.alloc_h), GL_RGBA, GL_UNSIGNED_BYTE, zp);
+        }
+        if h < t.alloc_h {
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, h, (w + 1).min(t.alloc_w), 1, GL_RGBA, GL_UNSIGNED_BYTE, zp);
+        }
     }
     t
 }
@@ -6652,6 +6668,7 @@ mod tests {
     fn uv_max_is_used_over_allocated() {
         let t = BucketTex { tex: 7, alloc_w: 128, alloc_h: 64, used_w: 64, used_h: 16 };
         assert_eq!(t.uv_max(), (0.5, 0.25));
+        assert_eq!(t.uv(), [0.0, 0.0, 0.5, 0.25]);
         assert_eq!(BucketTex::default().uv_max(), (0.0, 0.0));
     }
 
