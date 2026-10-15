@@ -1781,10 +1781,11 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             hide_cursor();
             app.ptr.cur_hidden = true;
         }
-        // re-pause after a resume the INSTANT the seek's frame is on screen. `frames()` counts
-        // real "frame presented" callbacks (reset on seek), so >= 1 means the target frame is
+        // re-pause the foreground restore's paused load the INSTANT its resume frame is on screen
+        // (a seek armed under a viewer Pause is closed by the pump itself, `pump::settle_paused_seek`).
+        // `frames()` counts real "frame presented" callbacks, so >= 1 means the target frame is
         // already composited — re-freezing then shows it with the shortest possible play-blip
-        // (a paused scrub must briefly Play to decode the frame; buffer-feed has no preroll).
+        // (a paused load must briefly Play to decode the frame; buffer-feed has no preroll).
         if resume_pend()
             && matches!(app.route(), AppArg::Player)
             && plx_media::player::seek_preroll_active()
@@ -4530,7 +4531,6 @@ mod lifecycle_regression_tests {
             &mut rig.app.bridge,
             &mut rig.app.ok_armed,
             &mut rig.app.input.press,
-            &mut rig.app.repause_at,
         );
         frame(&mut rig.app, 48);
         assert!(super::super::bridge::player(&rig.app.pages).is_none());

@@ -3101,8 +3101,9 @@ mod tests {
     }
 
     /// A resume the user asked for while the playhead is also travelling: the travel is the newer
-    /// fact and the slot is one glyph, so it wins. (This is the frame after a paused scrub commits
-    /// — `commit_seek` drops `paused` to let the pipeline prime the new position.)
+    /// fact and the slot is one glyph, so it wins. (A Play pressed while a seek is still travelling;
+    /// a paused scrub is not this frame, it keeps `paused` set throughout — the pump opens a
+    /// bounded seek preroll for the new position and re-pauses on the landing.)
     #[test]
     fn travel_outranks_the_resume_mark() {
         assert_eq!(
