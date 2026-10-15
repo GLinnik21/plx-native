@@ -546,16 +546,16 @@ distinction §6.1 draws.
 
 | key | effect |
 |---|---|
-| **OK** | on the scrubber band, toggle play/pause; on a focused control, activate it |
-| **Play** / **Pause** / **Play-Pause** | the corresponding transition, from anywhere |
+| **OK** | on the scrubber band, toggle play/pause — except on a paused film with a seek target pending, where it takes the target and resumes from it (§6.6); on a focused control, activate it |
+| **Play** / **Pause** / **Play-Pause** | the corresponding transition, from anywhere — except that Play and Play-Pause on a paused film with a seek target pending take the target and resume from it (§6.6); Pause leaves the target alone |
 | **LEFT / RIGHT** | seek, or move within the focused band — §6.6 |
 | **Rewind / Fast-forward** | the same as LEFT / RIGHT (§1.2) |
 | **UP / DOWN** | move between the HUD's three bands; a press on a hidden HUD is spent raising it |
 | **Stop** | leave the player |
-| **BACK** | leave the player |
+| **BACK** | cancel a scrub in progress, else undo a scrub that just committed (§6.6); otherwise hide the HUD if it is up, and leave the player from a bare picture |
 | **EXIT** | terminate the app (§2.3) |
 
-**Stop and BACK do the same thing here**: both run one teardown ritual — cancel any play still being
+**Stop, and a BACK that finds nothing to cancel, undo or hide, do the same thing here**: both run one teardown ritual — cancel any play still being
 resolved, close every panel, stop the buffer feed — and return to **the page playback started
 from**. For an episode that is the **show page, scrolled to the episode that played**, not the
 generic show root. The final position is reported to the server on the way out, so the item resumes
@@ -612,15 +612,40 @@ Seeking is a **preview-then-commit** gesture, not one immediate jump per press.
   band being dragged is on screen.
 - **With the HUD up and the scrubber focused, one press moves the preview by the Skip interval — 10 s unless Settings > Playback says otherwise.** The picture does
   not move yet; the scrubber shows the target, and the state mark shows the direction.
-- **Holding engages a continuous scrub that accelerates** — 60× playback speed, doubling every second up to 480× — and
-  the key release commits it. A lost key-up is caught by a 400 ms watchdog (700 ms right after a key bounce, while the remote's
+- **Holding engages a continuous scrub that accelerates** — 60× playback speed, doubling every second up to 480× — and,
+  on a playing film, the key release commits it. A lost key-up is caught by a 400 ms watchdog (700 ms right after a key bounce, while the remote's
   repeat delay restarts), so a dropped release cannot leave the scrub running.
-- **Quick repeated taps accumulate into one seek.** The commit waits ~450 ms after the last tap, so
+- **Quick repeated taps accumulate into one seek.** On a playing film the commit waits ~450 ms after the last tap, so
   "back thirty seconds" is three presses at the default 10 s step and a single seek rather than three. That matters beyond
   feel: back-to-back in-flight seeks are what stress the demux pipeline.
 - The seek target is clamped to the item, stopping 3 s short of the end.
+- **On a paused film a key scrub only moves a target; it commits nothing.** Whether the film is paused
+  is read when the scrub starts and held to its end. A paused tap or hold moves the target on the
+  bar, and neither the key release, the ~450 ms debounce nor the lost-key watchdog seeks: the target
+  stays pending (the HUD stays up while the film is paused), and a later tap or hold goes on from the
+  target, not from the playhead. **OK, Play or Play-Pause takes the target** — one seek to it, and
+  the film resumes from there. Pause leaves it alone. **BACK drops it** (below), as does leaving the
+  scrubber with UP/DOWN, and a target left over when the film is resumed some other way is retired.
 
-The pointer can drag the scrubber directly, under the same commit rule.
+The pointer can drag the scrubber directly. The button coming up commits the drag, on a paused film
+too, where it seeks and the film stays paused.
+
+**BACK around a scrub.** Three meanings, tried in this order:
+
+1. **While a scrub is live, BACK cancels it.** Live means a key held (or its release still waiting
+   out the bounce), a tap's ~450 ms commit pending, a pointer drag in progress, or — on a paused
+   film — a target pending. Nothing is sought, the preview goes, the knob eases back to the
+   playhead over about 0.3 s, and the HUD stays up; BACK did not hide it or leave.
+2. **For 5 s after a scrub commits on a playing film, BACK undoes it**: one more seek, back to where
+   the scrub started (clamped like any target, so never inside the last 3 s), once. It covers a
+   tap's, a hold's and a pointer drag's commit, and the HUD is kept up for the window and its
+   0.3 s fade. While it is open the bar shows a faint tick at that spot and a chip, the Back word in
+   capitals and the time (`BACK · 1:23`), on the knob clock's line. A paused film's commit opens no
+   window. The window closes when it is used, when a new scrub starts, when the HUD is hidden or
+   dismissed, when a panel opens over the player, when the Skip Intro / Skip Credits button is
+   pressed, at a teardown, and at 5 s; BACK only undoes with the HUD on screen at the press.
+3. **Otherwise BACK is the ordinary one**: with the HUD up it hides it (the film keeps playing), and
+   from a bare picture it leaves the player (§6.4).
 
 ### 6.7 The control row — subtitles and audio, and what replaces them
 
