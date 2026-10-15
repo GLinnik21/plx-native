@@ -66,7 +66,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 39] = [
+const DIAG: [&str; 40] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -164,6 +164,10 @@ const DIAG: [&str; 39] = [
     // The side subtitle reader (`media::player::subside`): content = the 0-based position of the
     // embedded subtitle stream to draw over a plain remux, read at each playback start.
     "plxnative-subside",
+    // Turns the PMS notification feed ON in a devtriggers build before `NOTIFY_ENABLED` ships
+    // (`data::stores::notify`). It opens a read-only stream and changes no screen, and the TV checks
+    // boot with `--guest` through the picker like everyone else.
+    "plxnative-notify",
 ];
 
 /// **Turn on the TELEVISION'S OWN GStreamer logging** — `/tmp/plxnative-gstlog`.

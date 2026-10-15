@@ -43,6 +43,25 @@ pub const MAX_SESSIONS: usize = 64;
 
 type Key = (ServerId, String);
 
+/// One line per pump that delivered sessions: how many, by state. Counts only: a session names
+/// another household member's playback, so no key, title or client id is ever logged.
+fn log_arrivals(out: &NotifyOut) {
+    let mut by = [0usize; 5];
+    for s in out.plays.iter().flat_map(|p| &p.sessions) {
+        by[match s.state {
+            PlayState::Playing => 0,
+            PlayState::Paused => 1,
+            PlayState::Buffering => 2,
+            PlayState::Stopped => 3,
+            PlayState::Other => 4,
+        }] += 1;
+    }
+    plx_base::eventlog::log(&format!(
+        "notify: sessions playing={} paused={} buffering={} stopped={} other={}",
+        by[0], by[1], by[2], by[3], by[4]
+    ));
+}
+
 /// What one [`Stores::notify_map`] call actually spent.
 #[derive(Default, Debug, PartialEq)]
 pub struct Spent {
@@ -223,6 +242,7 @@ impl Stores {
             self.notify_map.forget_server(*sid);
         }
         if !out.plays.is_empty() {
+            log_arrivals(out);
             let held = self.held(pages, shown);
             for plays in &out.plays {
                 for s in &plays.sessions {
@@ -260,6 +280,13 @@ impl Stores {
             return spent;
         }
         let owed = std::mem::take(&mut self.notify_map.owed);
+        plx_base::eventlog::log(&format!(
+            "notify: owes reads={} (detail={}) refetch={} invalidate={}",
+            owed.reads.len(),
+            owed.reads.iter().filter(|(_, d)| *d).count(),
+            owed.refetch.len(),
+            owed.invalidate.len()
+        ));
         for (key, owing) in owed.reads {
             if owing {
                 self.reconcile.enqueue([key]);

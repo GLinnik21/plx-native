@@ -178,6 +178,7 @@ fn bump_epoch(resync: &mut Vec<(ServerId, u32)>, sid: ServerId, out: &mut Notify
         }
     };
     out.resynced.push((sid, epoch));
+    plx_base::eventlog::log(&format!("notify: resync sid={} epoch={epoch}", sid.raw()));
 }
 
 impl Conn {
@@ -301,9 +302,32 @@ pub struct NotifyStore {
     gate: fn(&plx_plex::plex::Client) -> bool,
 }
 
+/// Is the feed on for this process? The shipped constant, or (a `devtriggers` build only) the
+/// developer's `/tmp/plxnative-notify`, which exists so the TV checks can run a debug build
+/// BEFORE the constant is flipped. A pure function so the rule is testable without a trigger.
+fn enabled_by(shipped: bool, dev_override: bool) -> bool {
+    shipped || dev_override
+}
+
+/// The `notify` developer trigger. `devtrig::flag` is `false` at compile time without the
+/// `devtriggers` feature, so a stable/release build cannot arm it; a test never reads `/tmp`.
+fn dev_override() -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    return false;
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        let on = plx_base::devtrig::flag("notify");
+        #[cfg(feature = "devtriggers")]
+        if on {
+            plx_base::eventlog::log("notify: enabled by the developer trigger");
+        }
+        on
+    }
+}
+
 impl Default for NotifyStore {
     fn default() -> Self {
-        Self::new(NOTIFY_ENABLED, default_connector())
+        Self::new(enabled_by(NOTIFY_ENABLED, dev_override()), default_connector())
     }
 }
 
@@ -440,6 +464,7 @@ impl NotifyStore {
 
     /// WILL background: every connection is cancelled now and none opens until [`Self::resume`].
     pub fn suspend(&mut self) {
+        plx_base::eventlog::log(&format!("notify: suspend conns={}", self.conns.len()));
         self.suspended = true;
         for conn in &mut self.conns {
             conn.drop_link();
@@ -454,6 +479,7 @@ impl NotifyStore {
     /// DID foreground: connections may open again, and a pending backoff is forgiven. A parked
     /// server stays parked.
     pub fn resume(&mut self) {
+        plx_base::eventlog::log(&format!("notify: resume conns={}", self.conns.len()));
         self.suspended = false;
         for conn in &mut self.conns {
             if matches!(conn.state, State::Backoff { .. }) {
@@ -466,6 +492,7 @@ impl NotifyStore {
     /// The network may have changed under every open connection: cancel them all and reconnect.
     /// Backoff is forgiven; a parked server stays parked (a refusal is not about the network).
     pub fn network_changed(&mut self) {
+        plx_base::eventlog::log(&format!("notify: network changed conns={}", self.conns.len()));
         for conn in &mut self.conns {
             conn.drop_link();
             conn.gap_owed = false;

@@ -566,3 +566,15 @@ fn a_worker_ending_after_a_cancel_is_never_read() {
     r.pump_n(1);
     assert_eq!(r.fake.connects(), 2, "the cancelled connection's end cannot park its successor");
 }
+
+#[test]
+fn dev_trigger_enables_a_build_whose_constant_is_off() {
+    // The TV checks run a debug build before the constant ships on: the trigger is the only other
+    // way in, and a build without it (`dev_override` is a compile-time `false` then) stays as shipped.
+    assert!(enabled_by(false, true));
+    assert!(enabled_by(true, false));
+    assert!(enabled_by(true, true));
+    assert!(!enabled_by(false, false));
+    // Under test the override never reads `/tmp`, so a default store is exactly the shipped rule.
+    assert!(!dev_override());
+}
