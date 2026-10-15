@@ -19,6 +19,14 @@
     "value": "Qualità",
     "description": "Option or section label in the player overflow menu."
   },
+  "widgets.menu.speed": {
+    "value": "Velocità di riproduzione",
+    "description": "Row in the player overflow menu that opens the playback speed choices (0.5x to 2x)."
+  },
+  "widgets.speed.normal": {
+    "value": "Normale",
+    "description": "Playback speed choice for regular 1x speed, beside 0.5×, 0.75×, 1.25×, 1.5×, 1.75× and 2×."
+  },
   "widgets.menu.stats": {
     "value": "Statistiche per nerd",
     "description": "Option or section label in the player overflow menu."

@@ -4,6 +4,8 @@
   "widgets.diagnostics.failed": "Échec de l’envoi des diagnostics",
   "widgets.menu.options": "Options",
   "widgets.menu.quality": "Qualité",
+  "widgets.menu.speed": "Vitesse de lecture",
+  "widgets.speed.normal": "Normale",
   "widgets.menu.stats": "Statistiques avancées",
   "widgets.menu.diagnostics": "Envoyer les diagnostics",
   "widgets.badge.forced": "FORCÉ",
