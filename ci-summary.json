@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T21:21:16Z",
+ "generated": "2026-10-15T21:25:02Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.9,
+   "change7_pct": 15.6,
    "d30": null,
    "delta30": null,
-   "delta7": 57.0,
+   "delta7": 56,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 118,
+   "n_now": 119,
    "n_prev": 125,
-   "now": 415.0,
+   "now": 414,
    "prev7": 358,
    "shown": true,
    "state": "flat",
@@ -291,14 +291,14 @@
    "change7_pct": -5.5,
    "d30": null,
    "delta30": null,
-   "delta7": -13.0,
+   "delta7": -13,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 107,
-   "now": 222.0,
+   "now": 222,
    "prev7": 235,
    "shown": true,
    "state": "flat",
@@ -333,14 +333,14 @@
    "change7_pct": -61.1,
    "d30": null,
    "delta30": null,
-   "delta7": -289.0,
+   "delta7": -289,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 107,
-   "now": 184.0,
+   "now": 184,
    "prev7": 473,
    "shown": true,
    "state": "better",
@@ -396,14 +396,14 @@
    "change7_pct": -9.6,
    "d30": null,
    "delta30": null,
-   "delta7": -15.0,
+   "delta7": -15,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 71,
-   "now": 142.0,
+   "now": 142,
    "prev7": 157,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 110,
+   "n_now": 111,
    "n_prev": 107,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 80.6,
    "commits": [
     {
-     "pr": 758,
-     "sha": "7064a117c",
-     "title": "Player: a real stop's Starfish Unload runs off the frame that handled BACK"
-    },
-    {
      "pr": 759,
      "sha": "bb9fdd0c1",
      "title": "Player: a paused preroll on the ACB route re-pauses only once the video plane is bound"
@@ -615,6 +610,11 @@
      "pr": 771,
      "sha": "fbab7cf29",
      "title": "Add Italian localization (it)"
+    },
+    {
+     "pr": 781,
+     "sha": "f15b24805",
+     "title": "input: OK under a transparent pointer arrives as a click; turn it back into OK"
     }
    ],
    "from": 213.5,
@@ -628,11 +628,6 @@
    "change_pct": 41.5,
    "commits": [
     {
-     "pr": 758,
-     "sha": "7064a117c",
-     "title": "Player: a real stop's Starfish Unload runs off the frame that handled BACK"
-    },
-    {
      "pr": 759,
      "sha": "bb9fdd0c1",
      "title": "Player: a paused preroll on the ACB route re-pauses only once the video plane is bound"
@@ -676,6 +671,11 @@
      "pr": 771,
      "sha": "fbab7cf29",
      "title": "Add Italian localization (it)"
+    },
+    {
+     "pr": 781,
+     "sha": "f15b24805",
+     "title": "input: OK under a transparent pointer arrives as a click; turn it back into OK"
     }
    ],
    "from": 275.0,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 222.0
+   "now": 222
   }
  ],
  "slowest_local": [
