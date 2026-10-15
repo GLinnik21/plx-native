@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T12:56:51Z",
+ "generated": "2026-10-15T13:00:52Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 0.8,
+   "change7_pct": -0.3,
    "d30": null,
    "delta30": null,
-   "delta7": 3.0,
+   "delta7": -1.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 115,
+   "n_now": 116,
    "n_prev": 128,
-   "now": 400,
+   "now": 396.0,
    "prev7": 397.0,
    "shown": true,
    "state": "flat",
@@ -296,9 +296,9 @@
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 105,
+   "n_now": 106,
    "n_prev": 110,
-   "now": 221,
+   "now": 221.0,
    "prev7": 241.5,
    "shown": true,
    "state": "flat",
@@ -309,17 +309,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -63.9,
+   "change7_pct": -63.8,
    "d30": null,
    "delta30": null,
-   "delta7": -325.0,
+   "delta7": -324.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 105,
+   "n_now": 106,
    "n_prev": 110,
-   "now": 184,
+   "now": 184.5,
    "prev7": 509.0,
    "shown": true,
    "state": "better",
@@ -401,9 +401,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 105,
+   "n_now": 106,
    "n_prev": 64,
-   "now": 140,
+   "now": 140.0,
    "prev7": 159.0,
    "shown": true,
    "state": "flat",
@@ -487,9 +487,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 105,
+   "n_now": 106,
    "n_prev": 110,
-   "now": 17,
+   "now": 17.0,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 57.0,
    "commits": [
     {
-     "pr": 733,
-     "sha": "b2b329c97",
-     "title": "View state: parent rows in the read-back (season and show facts)"
-    },
-    {
      "pr": 736,
      "sha": "b0232cb7b",
      "title": "View state 8: Detail folds into the view-state system (DetailReconcile)"
@@ -615,6 +610,11 @@
      "pr": 756,
      "sha": "2f04b614c",
      "title": "Player: a screensaver that takes back the video decoder parks playback until the next key press"
+    },
+    {
+     "pr": 697,
+     "sha": "938195acb",
+     "title": "Starfish Load declares what is fed: a ms-timebase rate's own class, and a fixed quality's ceiling on start.mkv (#665)"
     }
    ],
    "from": 220,
@@ -628,11 +628,6 @@
    "change_pct": 33.2,
    "commits": [
     {
-     "pr": 733,
-     "sha": "b2b329c97",
-     "title": "View state: parent rows in the read-back (season and show facts)"
-    },
-    {
      "pr": 736,
      "sha": "b0232cb7b",
      "title": "View state 8: Detail folds into the view-state system (DetailReconcile)"
@@ -676,6 +671,11 @@
      "pr": 756,
      "sha": "2f04b614c",
      "title": "Player: a screensaver that takes back the video decoder parks playback until the next key press"
+    },
+    {
+     "pr": 697,
+     "sha": "938195acb",
+     "title": "Starfish Load declares what is fed: a ms-timebase rate's own class, and a fixed quality's ceiling on start.mkv (#665)"
     }
    ],
    "from": 277,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 221
+   "now": 221.0
   }
  ],
  "slowest_local": [
