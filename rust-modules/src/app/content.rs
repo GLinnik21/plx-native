@@ -888,6 +888,25 @@ fn library_publication_command(
     }
 }
 
+/// What the store may land of the reads it staged quietly, this frame: Home is looked at when it
+/// is the page on top and the dip is not holding it dark. The store decides in data
+/// ([`plx_data::stores::hubs::HubsCmd::Publish`]); the press check and the command are adjacent,
+/// like [`library_publication_command`].
+fn home_publication_command(app: &App) -> plx_data::stores::hubs::HubsCmd {
+    let visible = app.route() == AppArg::Home && !app.pages.nav.tabs.stack.transition.floor_held();
+    plx_data::stores::hubs::HubsCmd::Publish {
+        home_top_visible: visible,
+        focused_hub: app.bridge.home_focused_hub(&app.pages),
+        press_live: app.pages.input.press.is_live(),
+    }
+}
+
+/// Once a frame, beside the other Home store work.
+pub(super) fn publish_staged_hubs(app: &mut App) {
+    let command = home_publication_command(app);
+    let _ = app.bridge.hubs_run(command);
+}
+
 #[cfg(test)]
 mod library_publication_tests {
     use super::*;

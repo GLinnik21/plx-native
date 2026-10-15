@@ -438,3 +438,19 @@ fn a_page_landing_drops_what_was_staged_for_its_source() {
     assert!(r.o.state.srcs[0].staged.is_none(),
         "the window moved under the staged copy, whose rows would put it back");
 }
+
+#[test]
+fn a_quiet_read_in_flight_does_not_unsettle_the_source() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig(1);
+    let sid0 = r.sid(0);
+    assert!(source_settled(&r.o.state, sid0), "premise: nothing is out");
+    let mut quiet = r.quiet(0);
+    assert!(r.o.state.srcs[0].fetching, "premise: the quiet read is out");
+    assert!(source_settled(&r.o.state, sid0),
+        "the return hold waits for a prompted read; a quiet one is not what it is waiting for");
+    // …and a prompted read for the same source is
+    let _prompted = r.run(Some(HubsCmd::RefetchHubs), 0.0);
+    assert!(!source_settled(&r.o.state, sid0));
+    let _ = r.apply(&quiet.remove(0).complete(None)); // (dropped: its generation has gone)
+}

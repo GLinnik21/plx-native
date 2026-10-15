@@ -1673,6 +1673,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // generation is not the signal). A refused launch settles at once. Nothing here can extend
         // the hold: the bound is the dip's own, on the frame clock.
         super::playback::return_hold_settle(app, fr.now);
+        // What quiet reads staged for Home lands here when the store says nothing in view moves
+        // (`HubsCmd::Publish`); with nothing staged this is a no-op that raises no notice.
+        super::content::publish_staged_hubs(app);
         // (The lost-keyup safety net and the CLIENT-SIDE LONG-PRESS REPEAT stood here — the one
         // hold-to-move path for every discrete focus list, driven by `App::held_key` at 110 ms so
         // the feel was identical everywhere and independent of the remote's hardware repeat delay.
@@ -5491,6 +5494,40 @@ mod lifecycle_regression_tests {
         assert_eq!(probe.cw_elems.first().copied(), Some(tile), "the same tile now shows episode 2");
         assert_eq!(home_focus(&rig.app), Some(tile), "and holds the focus");
         assert!(animated, "the other cells animate in (a card left and a card arrived)");
+    }
+
+    /// **A quiet refetch during the hold is nobody's wait.** The prompted read is parked at the
+    /// server; a quiet ask for the same source is skipped (the prompted read will publish what it
+    /// would have staged), so it neither supersedes the prompted read nor stands in for it: the wait
+    /// is still on the prompted read, and when that lands Home shows its content.
+    #[test]
+    fn a_quiet_refetch_during_the_return_hold_leaves_the_prompted_read_alone() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        let tile = home_focus(&rig.app).expect("focus on the tile");
+        server.hold_hubs.store(true, Ordering::SeqCst);
+        back_out_to_the_floor(&mut rig, &mut t);
+        poll_until("the prompted read never went out", || {
+            step_clock(&mut rig.app, &mut t, 0);
+            !rig.app.bridge.hub_source_settled(rig.sid)
+        });
+        assert!(rig.app.pages.nav.tabs.stack.transition.floor_held(), "premise: the hold is armed");
+        let gen = rig.app.bridge.hub_refetches_for_test();
+        let _ = rig.app.bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchSourceQuiet { sid: rig.sid });
+        assert_eq!(rig.app.bridge.hub_refetches_for_test(), gen, "a quiet ask never moves the generation");
+        assert!(!rig.app.bridge.hub_source_settled(rig.sid), "the prompted read is still what the wait is on");
+        for _ in 0..4 { step(&mut rig.app, &mut t, vec![]); }
+        assert!(rig.app.pages.nav.tabs.stack.transition.floor_held(), "and the quiet ask did not end the hold");
+        server.hold_hubs.store(false, Ordering::SeqCst);
+        poll_until("the prompted read never landed", || {
+            step(&mut rig.app, &mut t, vec![]);
+            first_cw_rk(&rig.app) == "2"
+        });
+        assert_eq!(home_probe(&rig.app).cw_elems.first().copied(), Some(tile), "episode 2 sits in the same tile");
     }
 
     /// **10c, a key during the hold**: the dip is dark and waiting on a refetch that has not

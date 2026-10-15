@@ -283,7 +283,8 @@ pub fn owed(adapter: &PmsAdapter) -> bool {
 /// for a slot the roster does not hold, which has nothing to wait for. Unlike [`owed`] this is ONE
 /// source's answer, so a slow friend's server does not make everyone else's landing wait.
 pub fn source_settled(state: &PmsState, sid: ServerId) -> bool {
-    state.srcs.iter().find(|s| s.sid == sid).is_none_or(|s| !s.fetching && !s.deferred)
+    // a quiet read is nobody's wait: the return hold ends on the prompted read alone
+    state.srcs.iter().find(|s| s.sid == sid).is_none_or(|s| s.quiet || (!s.fetching && !s.deferred))
 }
 
 fn published_home(state: &PmsState) -> &Arc<HomeCatalog> {
@@ -3608,6 +3609,20 @@ pub fn edit_test_item(state: &mut PmsState, rk: &str, edit: &dyn Fn(&mut PmsMovi
     }
     let build = merge(&state.srcs);
     commit(state, build);
+}
+
+/// Test hook: what a quiet read of the first source brought, without the read: its answer is its
+/// last one with every shelf item `rk` rewritten by `edit`, held in `staged` for
+/// [`HubsCmd::Publish`](crate::stores::hubs::HubsCmd) to land. Publishes nothing.
+#[cfg(any(test, feature = "test-support"))]
+pub fn stage_test_item(state: &mut PmsState, rk: &str, edit: &dyn Fn(&mut PmsMovie)) {
+    plx_base::testlock::assert_held("the pms hub catalog (stage_test_item)");
+    let source = state.srcs.first_mut().expect("a seeded source");
+    let mut staged = source.last.clone().expect("a source that has answered");
+    for shelf in &mut staged.shelves {
+        for item in shelf.items.iter_mut().filter(|item| item.rk == rk) { edit(Arc::make_mut(item)); }
+    }
+    source.staged = Some(staged);
 }
 
 /// Test hook: move the shelf item `rk` to the front of its shelf and republish: Continue Watching

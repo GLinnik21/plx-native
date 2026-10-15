@@ -874,6 +874,12 @@ impl Bridge {
         self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx).is_some()).unwrap_or(false)
     }
 
+    /// The catalog row Home's focus is on, when it is on a card of one (`None`: the billboard, a
+    /// heading, the top bar or no Home mounted).
+    pub(crate) fn home_focused_hub(&self, d: &Dispatcher<AppHost>) -> Option<usize> {
+        self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)).flatten().map(|(row, _)| row)
+    }
+
     #[cfg(feature = "devtriggers")]
     pub(crate) fn home_grid_position(&self, d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
         self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)).flatten()
