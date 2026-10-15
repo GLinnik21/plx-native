@@ -45,6 +45,8 @@ pub mod sidecar;
 pub mod subside; // the side subtitle reader's thread and state (dev trigger `plxnative-subside`)
 #[cfg(feature = "hostsim")]
 pub mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
+pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
+pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
 pub mod threads;
 pub mod video_geometry;
 pub mod vp9_hdr; // HDR10 for a VP9 stream: the container's PQ tag, written into the sourceInfo envelope ACB is sent

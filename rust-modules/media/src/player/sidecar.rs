@@ -40,6 +40,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::text_ass::timing_line;
+
 /// One cue with its whole text. Production keeps a [`Span`] per cue and cuts the text out only
 /// when it is drawn; the tests read a file as whole cues through [`parse`].
 #[cfg(test)]
@@ -550,42 +552,10 @@ fn index_srt(text: &str) -> Vec<Span> {
     out
 }
 
-/// `00:01:02,500 --> 00:01:05,000` (SubRip), `01:02.500 --> 01:05.000 line:0` (WebVTT).
-fn timing_line(line: &str) -> Option<(i64, i64)> {
-    let (a, b) = line.split_once("-->")?;
-    let start = timestamp(a.trim())?;
-    let end = timestamp(b.split_whitespace().next()?)?;
-    Some((start, end))
-}
-
-/// `[H+:]MM:SS[,.]fff` → ns. The fraction is read as written (`.5` is half a second, `.50` too).
-fn timestamp(s: &str) -> Option<i64> {
-    let (clock, frac) = match s.rsplit_once([',', '.']) {
-        Some((c, f)) => (c, f),
-        None => (s, ""),
-    };
-    let mut secs: i64 = 0;
-    let mut fields = 0;
-    for part in clock.split(':') {
-        let v: i64 = part.trim().parse().ok().filter(|v| *v >= 0)?;
-        secs = secs.checked_mul(60)?.checked_add(v)?;
-        fields += 1;
-    }
-    if !(2..=3).contains(&fields) {
-        return None;
-    }
-    let mut frac_ns: i64 = 0;
-    let mut scale: i64 = 100_000_000;
-    for ch in frac.chars().take(9) {
-        frac_ns += ch.to_digit(10)? as i64 * scale;
-        scale /= 10;
-    }
-    secs.checked_mul(1_000_000_000)?.checked_add(frac_ns)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::text_ass::timestamp;
     use std::sync::atomic::Ordering::Relaxed;
 
     fn finish_download() {
