@@ -608,7 +608,7 @@ mod tests {
     fn row(kind: &str, thumb: &str, parent: &str, grandparent: &str) -> plx_plex::plex::Metadata {
         plx_plex::plex::Metadata { rating_key: "9".into(), kind: kind.into(), title: "Pilot".into(),
             thumb: thumb.into(), parent_thumb: parent.into(), grandparent_thumb: grandparent.into(),
-            parent_index: 3, index: 4, grandparent_title: "Show".into(), ..Default::default() }
+            parent_index: Some(3), index: 4, grandparent_title: "Show".into(), ..Default::default() }
     }
 
     /// The page names the member order the collection's owner chose, from the header's

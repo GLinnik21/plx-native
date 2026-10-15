@@ -475,3 +475,34 @@ fn a_show_or_season_scoped_change_marks_the_loaded_shows_episodes_and_season_cou
     assert_eq!((d.seasons[0].viewed_leaf_count, d.seasons[1].viewed_leaf_count), (0, 0));
     clear(test_state(), test_adapter());
 }
+
+#[test]
+fn unmarking_one_season_of_a_watched_show_clears_the_shows_own_watched_flag() {
+    use crate::viewstate::{Scope, ViewAt};
+    let _serial = plx_base::testlock::serial();
+    set_current_for_test(test_state(), Some(Detail {
+        sid: SRV_A,
+        rk: "show".into(),
+        is_show: true,
+        kind: "show".into(),
+        watched: true,
+        seasons: vec![
+            Season { rk: "sk1".into(), index: 1, title: "S1".into(), leaf_count: 2, viewed_leaf_count: 2 },
+            Season { rk: "sk2".into(), index: 2, title: "S2".into(), leaf_count: 2, viewed_leaf_count: 2 },
+        ],
+        episodes: vec![
+            Episode { rk: "e1".into(), season: 1, watched: true, ..Default::default() },
+        ].into(),
+        ..Default::default()
+    }));
+    let season = ViewAt {
+        sid: SRV_A,
+        rk: "sk1".into(),
+        scope: Scope::Season { show_rk: "show".into(), index: 1 },
+    };
+    assert!(set_watched_local(test_state(), &season, false));
+    let d = current(test_state()).unwrap();
+    assert!(!d.watched, "a show with an unwatched season is not watched");
+    assert_eq!((d.seasons[0].viewed_leaf_count, d.seasons[1].viewed_leaf_count), (0, 2));
+    clear(test_state(), test_adapter());
+}

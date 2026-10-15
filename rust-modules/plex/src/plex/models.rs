@@ -372,8 +372,10 @@ pub struct Metadata {
     pub child_count: i64,
     #[serde(rename = "updatedAt", default, deserialize_with = "de_i64")]
     pub updated_at: i64,
-    #[serde(rename = "parentIndex", default, deserialize_with = "de_i64")]
-    pub parent_index: i64,
+    /// `None` when the server sent none — kept apart from a real `0` (Specials), which a plain
+    /// default would fold it into.
+    #[serde(rename = "parentIndex", default, deserialize_with = "de_opt_i64")]
+    pub parent_index: Option<i64>,
     #[serde(rename = "parentRatingKey", default)]
     pub parent_rating_key: String, // season → its show
     #[serde(rename = "parentTitle", default)]

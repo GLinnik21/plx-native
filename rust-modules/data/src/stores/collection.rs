@@ -19,7 +19,7 @@ pub enum CollectionCmd {
     Restore { total: usize, counts: Vec<u8> },
     Close,
     Reset,
-    /// Optimistic view-state edit (`Stores::publish_view`), including the fan-out's copies.
+    /// Optimistic view-state edit (`viewstate::publish_view`), including the fan-out's copies.
     ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
 }
 

@@ -131,6 +131,10 @@ pub struct ItemMenuReq {
     pub act: crate::item_menu::Action,
     pub sid: plx_plex::plex::ServerId,
     pub item: Option<plx_data::pms::PmsMovie>,
+    /// The detail page's season tab the menu was opened on, as `(show_rk, season index)`
+    /// ([`ItemMenuKind::Season`]); `None` for every other entry point. It is what a Mark
+    /// watched/unwatched row scopes its write to when `item` carries no row to read the scope off.
+    pub season: Option<(String, i64)>,
     pub loaded_episode: bool,
     pub from_home: bool,
 }
@@ -349,8 +353,10 @@ pub enum ItemMenuKind {
     /// `ep_state` that draws the still's own state line, so the tile and the menu opened on it
     /// cannot describe one episode two ways.
     Episode { mark: plx_ui::widgets::PosterMark },
-    /// The detail page's season tabs.
-    Season { mark: plx_ui::widgets::PosterMark },
+    /// The detail page's season tabs. `show_rk` is the show the page has loaded and `index` the
+    /// tab's season number (`Season::index`): together the address of the season's episodes, which
+    /// is all a season-scoped write reaches them by (`viewstate::Scope::Season`).
+    Season { mark: plx_ui::widgets::PosterMark, show_rk: String, index: i64 },
 }
 
 /// **Identity, not contents.** `PmsMovie` is a wire DTO with no `PartialEq` of its own, and one
@@ -364,7 +370,8 @@ impl PartialEq for ItemMenuKind {
             (Self::Card { row: a, from_deck: da }, Self::Card { row: b, from_deck: db }) =>
                 da == db && a.sid == b.sid && a.rk == b.rk && a.kind == b.kind,
             (Self::Episode { mark: a }, Self::Episode { mark: b }) => a == b,
-            (Self::Season { mark: a }, Self::Season { mark: b }) => a == b,
+            (Self::Season { mark: a, show_rk: sa, index: ia }, Self::Season { mark: b, show_rk: sb, index: ib }) =>
+                a == b && sa == sb && ia == ib,
             _ => false,
         }
     }
@@ -387,7 +394,7 @@ impl plx_machine::machine::LogicalState for ItemMenuArg {
         match &self.kind {
             ItemMenuKind::Card { row, from_deck } => { c.u32(0).bool(*from_deck).u32(row.kind as u32); }
             ItemMenuKind::Episode { mark } => { c.u32(1).u32(*mark as u32); }
-            ItemMenuKind::Season { mark } => { c.u32(2).u32(*mark as u32); }
+            ItemMenuKind::Season { mark, show_rk, index } => { c.u32(2).u32(*mark as u32).str(show_rk).u64(*index as u64); }
         }
         c.u32(self.host.0);
         c.option(self.focus, |c, key| { c.u32(key.entry.0).u32(key.elem); });

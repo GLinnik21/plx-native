@@ -195,33 +195,6 @@ impl Stores {
         )
     }
 
-    /// Publish one view-state change to every store that shows it, synchronously: Home's hubs, the
-    /// Browse listing and section shelves, Search, Person, Collection and the loaded Detail each
-    /// apply the change's [`ViewEdit`](crate::viewstate::ViewEdit) to the rows it covers
-    /// (`ViewAt::covers`, so a show or season change also reaches its episodes) and raise their own
-    /// notice. The same fan-out the optimistic path of a view-state write uses.
-    pub fn publish_view(
-        &mut self,
-        change: crate::viewstate::ViewChange,
-        directory: browse::DirectoryView<'_>,
-    ) {
-        let browse = std::rc::Rc::clone(&self.browse);
-        let hubs = &mut self.hubs;
-        let person = &mut self.person;
-        let collection = &mut self.collection;
-        let search = &mut self.search;
-        let metadata = &mut self.metadata;
-        crate::viewstate::publish_view(
-            change,
-            &mut |cmd| browse.borrow_mut().run(cmd),
-            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
-            &mut |cmd| person.run(cmd),
-            &mut |cmd| collection.run(cmd),
-            &mut |cmd| search.run_with_directory(cmd, directory),
-            &mut |cmd| metadata.run(cmd),
-        );
-    }
-
     /// ViewState's route-unconditional landing pass. Fan-out edits and the terminal section-hubs
     /// invalidation are applied to this aggregate's Browse owner before the pump returns.
     pub fn viewstate_pump(

@@ -22,7 +22,7 @@ pub enum HubsCmd {
     Retry,
     /// The profile/account switch.
     Reset,
-    /// The optimistic half of a view-state change on the hub catalog (`Stores::publish_view`).
+    /// The optimistic half of a view-state change on the hub catalog (`viewstate::publish_view`).
     ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
 }
 

@@ -66,6 +66,11 @@ pub fn listable(type_str: &str) -> bool {
 /// a shelf, never the number of shelves.
 pub(crate) const HUB_FETCH_COUNT: i64 = 12;
 
+/// `PmsMovie::season_index` of an EPISODE whose server sent no `parentIndex`. Distinct from `0`
+/// (Specials), so a `Scope::Season { index: 0 }` change does not reach a row whose season is merely
+/// unknown. Every reader that shows or opens by season already tests `> 0`.
+pub const SEASON_UNKNOWN: c_int = -1;
+
 /// A catalog row — owned strings (the old C-ABI fixed `[u8; N]` buffers are gone; no C
 /// consumer remains). Fields pub so the UI / route / player read them directly.
 #[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
@@ -104,7 +109,7 @@ pub struct PmsMovie {
     pub kind: c_int, // 0 = movie, 1 = show, 2 = season, 3 = episode, 4 = collection
     pub resume_ms: i64,  // viewOffset — drives the Continue Watching resume bar
     pub show_rk: String, // parent show rk (episode: grandparent; season: parent)
-    pub season_index: c_int, // season number (episode: parentIndex; season: index)
+    pub season_index: c_int, // season number (episode: parentIndex, or [`SEASON_UNKNOWN`]; season: index)
     pub show_title: String, // episode: grandparentTitle; season: parentTitle
     pub ep_index: c_int, // episode only: episode number within the season
     /// Fully unwatched (movie/episode: no viewCount; show/season: zero viewed leaves).
@@ -342,7 +347,7 @@ pub fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
         3 => {
             // episode: parent show = grandparent, season number = parentIndex
             m.show_rk = clean(&it.grandparent_rating_key);
-            m.season_index = it.parent_index as c_int;
+            m.season_index = it.parent_index.map_or(SEASON_UNKNOWN, |i| i as c_int);
             m.show_title = clean(&it.grandparent_title);
             m.ep_index = it.index as c_int;
         }

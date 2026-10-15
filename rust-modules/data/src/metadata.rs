@@ -1551,6 +1551,14 @@ pub struct Detail {
     pub kind: String, // this item's own type: movie | episode | show | season
     pub show_title: String, // grandparentTitle — the show name, when this item is an episode
     pub show_rk: String, // grandparentRatingKey — the show's rk (episode → its show)
+    /// A SEASON's show (`parentRatingKey`), else empty. Separate from [`Detail::show_rk`], which is
+    /// the GRAND-parent key and so stays empty for a season: its readers (the resolve's language
+    /// settings, the episode-row matching in `set_watched_local`) mean "my show, via my season".
+    ///
+    /// Not serialized while empty, so the committed replay recordings (which predate it, and carry
+    /// no season page) still round-trip canonically (`record::validate`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub parent_rk: String,
     pub season: i64,  // parentIndex — season number, when an episode
     pub index: i64,   // index — episode number, when an episode
     pub title: String,
@@ -1880,6 +1888,12 @@ fn set_watched_local(state: &mut MetadataState, at: &crate::viewstate::ViewAt, o
         _ => None,
     };
     if let Some(season) = whole {
+        // A show page whose one season was just unmarked is no longer "all watched"; marking one
+        // season watched proves nothing about the others, so only the clearing direction moves it.
+        if !on {
+            d.watched = false;
+            hit = true;
+        }
         let rks: Vec<String> = d.episodes.iter_loaded()
             .filter(|(_, e)| season.is_none_or(|i| e.season == i))
             .map(|(_, e)| e.rk.clone())
@@ -2168,7 +2182,8 @@ fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, Stri
         kind: it.kind.clone(),
         show_title: it.grandparent_title.clone(),
         show_rk: it.grandparent_rating_key.clone(),
-        season: it.parent_index,
+        parent_rk: if it.kind == "season" { it.parent_rating_key.clone() } else { String::new() },
+        season: it.parent_index.unwrap_or(0),
         index: it.index,
         title: it.title.clone(),
         year: it.year,
@@ -3194,7 +3209,7 @@ fn convert_episode(x: &plx_plex::plex::Metadata) -> Episode {
     Episode {
         rk: x.rating_key.clone(),
         index: x.index,
-        season: x.parent_index,
+        season: x.parent_index.unwrap_or(0),
         title: x.title.clone(),
         summary: x.summary.clone(),
         aired: x.originally_available_at.clone(),

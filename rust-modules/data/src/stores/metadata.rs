@@ -80,7 +80,7 @@
 //!   (`pump_related`, at the start of the frame, installs it).
 //! - `SeekRelated{at, seen}` → `metadata::ask_related` with `RelatedAsk::Seek` — the same read, opened at a tail position.
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
-//! - `ApplyView{at, edit}` → `metadata::apply_view` — the optimistic half of a view-state
+//! - `ApplyView{at, edit}` → `metadata::set_watched_local` — the optimistic half of a view-state
 //!   change, answers whether it actually changed anything.
 //! - `InstallPlaying(Option<PlayingItem>)` → `metadata::install_playing` — the playback plan's leaf
 //!   (`route.rs`).

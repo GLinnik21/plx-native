@@ -88,8 +88,8 @@
 //! oversight (see [`kick`]), and the single deferred refresh at the end of a burst is unchanged.
 //!
 //! **What the other copies look like on the press frame: unchanged, and that is deliberate.**
-//! [`request`]'s optimistic edit can only reach the `(sid, rk)` the user pressed, because no other
-//! key is KNOWN yet — the resolve is what discovers them, and it is off-thread by construction.
+//! [`request`]'s optimistic edit reaches only this server's copy of the item and its descendants
+//! (`ViewAt::covers`), because no other server's key is KNOWN yet — the resolve is what discovers them, and it is off-thread by construction.
 //! The copies are flipped locally when the fan-out reports ([`ViewStateState::pump`] publishes a
 //! [`ViewChange`] for each
 //! one the server took), and the hub refetch that already follows every write reconciles whatever
@@ -147,7 +147,7 @@ pub enum ViewFact {
 }
 
 /// One change to what the app knows about an item's view state, published to every store that
-/// shows it (`Stores::publish_view`).
+/// shows it (`viewstate::publish_view`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewChange {
     pub sid: ServerId,
@@ -450,7 +450,7 @@ impl ViewStateState {
 /// ask for a repaint. Each store applies the [`ViewEdit`] to the rows the change [covers]
 /// ([`ViewAt::covers`]) and raises its own notice; every store is a no-op where the item does not
 /// appear, so a Home press with no detail page mounted costs one catalog walk and nothing else.
-/// `Stores::publish_view` is the public door; this is the part that owns the per-store closures.
+/// This is the one door: both callers hand it the per-store closures they were given.
 ///
 /// Called from two places, for one reason. [`request`] calls it optimistically for the copy the
 /// user pressed, and [`pump`] calls it for each OTHER source's copy the fan-out reached — which
@@ -1678,5 +1678,41 @@ mod tests {
             &mut |_| false);
 
         assert_eq!(state.take_detail_refresh(), Some(target));
+    }
+
+    /// `ViewAt::covers_parts` as a table: what each scope reaches among rows of the same and other
+    /// servers, parents, seasons, leaves and rows whose season is unknown.
+    #[test]
+    fn covers_parts_table() {
+        use crate::pms::SEASON_UNKNOWN;
+        let at = |scope| ViewAt { sid: SRV_A, rk: "pressed".into(), scope };
+        let show = Scope::Show;
+        let s1 = Scope::Season { show_rk: "show".into(), index: 1 };
+        let s0 = Scope::Season { show_rk: "show".into(), index: 0 };
+        let i = |n: i32| i64::from(n);
+        // (case, scope, sid, rk, kind, show_rk, season_index, covered)
+        let table: &[(&str, Scope, ServerId, &str, i32, &str, i64, bool)] = &[
+            ("the item itself, any scope", Scope::Leaf, SRV_A, "pressed", 3, "", 0, true),
+            ("same rk on another server is another item", Scope::Leaf, SRV_B, "pressed", 3, "", 0, false),
+            ("a show reaches its episode", show.clone(), SRV_A, "e", 3, "pressed", 1, true),
+            ("a show reaches its season row", show.clone(), SRV_A, "s", 2, "pressed", 1, true),
+            ("same show_rk on a different sid", show.clone(), SRV_B, "e", 3, "pressed", 1, false),
+            ("empty show_rk under Show", show.clone(), SRV_A, "e", 3, "", 1, false),
+            ("another show's episode", show.clone(), SRV_A, "e", 3, "other", 1, false),
+            ("a movie row with a stale show_rk", show.clone(), SRV_A, "m", 0, "pressed", 0, false),
+            ("a season reaches its episodes", s1.clone(), SRV_A, "e", 3, "show", 1, true),
+            ("a season misses another season", s1.clone(), SRV_A, "e", 3, "show", 2, false),
+            ("a season row under Season", s1.clone(), SRV_A, "s", 2, "show", 1, false),
+            ("Season on a different sid", s1.clone(), SRV_B, "e", 3, "show", 1, false),
+            ("Season with empty show_rk", s1.clone(), SRV_A, "e", 3, "", 1, false),
+            ("Specials are season 0", s0.clone(), SRV_A, "e", 3, "show", 0, true),
+            ("index 0 does not reach an unknown season", s0, SRV_A, "e", 3, "show", i(SEASON_UNKNOWN), false),
+            ("Unknown acts as a leaf: not descendants", Scope::Unknown, SRV_A, "e", 3, "pressed", 1, false),
+            ("Unknown acts as a leaf: itself", Scope::Unknown, SRV_A, "pressed", 3, "", 0, true),
+            ("Leaf reaches no descendant", Scope::Leaf, SRV_A, "e", 3, "pressed", 1, false),
+        ];
+        for (case, scope, sid, rk, kind, show_rk, idx, want) in table {
+            assert_eq!(at(scope.clone()).covers_parts(*sid, rk, *kind, show_rk, *idx), *want, "{case}");
+        }
     }
 }
