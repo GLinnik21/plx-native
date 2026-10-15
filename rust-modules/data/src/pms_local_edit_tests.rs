@@ -308,8 +308,8 @@ fn a_source_read_in_flight_across_edits_lands_with_them_made_again() {
     let _g = plx_base::testlock::serial();
     let mut s = Src::new(sid(0), String::new());
     s.stamp = s.ledger.stamp(); // the read goes out…
-    s.ledger.record(&ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)); // …then two presses
-    s.ledger.record(&ViewAt::leaf(sid(0), "8"), ViewEdit::LeftDeck);
+    let p7 = s.ledger.record(&ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)); // …then two presses
+    let p8 = s.ledger.record(&ViewAt::leaf(sid(0), "8"), ViewEdit::LeftDeck);
     let mut brought = SourceBuild { lane: Default::default(),
         cw: vec![CwItem { last_viewed_at: 9, m: started(0, "7"), position: 0 },
             CwItem { last_viewed_at: 8, m: started(0, "8"), position: 1 }],
@@ -323,9 +323,33 @@ fn a_source_read_in_flight_across_edits_lands_with_them_made_again() {
     assert_eq!(brought.cw.iter().map(|c| c.m.rk.as_str()).collect::<Vec<_>>(), ["7"],
         "a card taken off the deck while the read was out stays off");
 
-    s.stamp = s.ledger.stamp(); // a read issued after the presses carries them already
+    s.ledger.landed(p7); // both writes reach the server…
+    s.ledger.landed(p8);
+    s.stamp = s.ledger.stamp(); // …and a read issued after that carries them already
     let mut later = SourceBuild { lane: Default::default(), cw: Vec::new(),
         shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7"])] };
     replay_since_request(&s, &mut later);
     assert!(!later.shelves[0].items[0].watched, "its answer stands");
+}
+
+/// The stamp is taken by the request itself (`Src::begin_request`), not assigned: an edit published
+/// before the request is on the server by then and is not made again, one published while the read
+/// is out is.
+#[test]
+fn a_source_request_takes_its_ledger_stamp_at_the_request() {
+    let _g = plx_base::testlock::serial();
+    plx_plex::plex::reset_servers_for_test();
+    let registered = plx_plex::plex::register_for_test("pms-ledger", "127.0.0.1", 9, "t", "cid");
+    assert_eq!(registered, sid(0));
+    let client = plx_plex::plex::client_for(registered).unwrap();
+    let mut s = Src::new(sid(0), String::new());
+    s.ledger.record(&ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)); // before the request
+    assert!(s.begin_request(client, 1, || 1).is_some());
+    s.ledger.record(&ViewAt::leaf(sid(0), "8"), ViewEdit::Watched(true)); // while it is out
+    let mut brought = SourceBuild { lane: Default::default(), cw: Vec::new(),
+        shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])] };
+    replay_since_request(&s, &mut brought);
+    assert!(!brought.shelves[0].items[0].watched, "the server already had the first press");
+    assert!(brought.shelves[0].items[1].watched, "the second was made while the read was out");
+    plx_plex::plex::reset_servers_for_test();
 }

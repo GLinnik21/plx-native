@@ -426,3 +426,33 @@ fn a_row_whose_every_landing_meets_a_stale_ask_still_reaches_its_last_card() {
     seen.dedup();
     assert_eq!(seen, numbers(0..300));
 }
+
+/// The REAL request path (`pump` -> `maybe_spawn`) takes the source's ledger stamp when the read
+/// goes out: a press recorded after that, before the answer is taken, is made again on the answer;
+/// one recorded before it is not. (Deleting the stamp line in `maybe_spawn` fails this.)
+#[test]
+fn a_spawned_source_read_replays_only_the_presses_made_after_its_request() {
+    use crate::viewstate::{ViewAt, ViewEdit};
+    let _fresh = fresh();
+    let mut owner = Owner::default();
+    register(&mut owner, 1);
+    let (_hook, _fake) = Hook::set(Fake::new().movies(2));
+    owner.set_query("wallace");
+    let sid = ServerId::from_raw(0);
+    // a press (write never landed) before the read goes out: the stamp is taken after it
+    owner.state.ledger.record(&ViewAt::leaf(sid, "0"), ViewEdit::Watched(true));
+    let mut guard = 0;
+    while !owner.adapter.mailbox(0).busy() {
+        owner.pump(0.3);
+        guard += 1;
+        assert!(guard < 40, "the read never went out");
+    }
+    // the answer is in the mailbox, not yet taken: a second press lands in the gap
+    owner.state.ledger.record(&ViewAt::leaf(sid, "1"), ViewEdit::Watched(true));
+    owner.pump(0.3);
+    let marks: Vec<(String, bool)> = owner.state.src[0].items[0].iter().filter_map(|it| match it {
+        Item::Media(m) => Some((m.rk.clone(), m.watched)),
+        _ => None,
+    }).collect();
+    assert_eq!(marks, [("0".to_string(), false), ("1".to_string(), true)]);
+}

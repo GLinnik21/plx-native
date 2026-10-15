@@ -119,10 +119,6 @@ pub struct MetadataState {
     pub(crate) ledger: crate::viewledger::ViewLedger,
     /// Where in that order the detail read now out was issued ([`MetadataCmd::RequestDetail`]).
     detail_stamp: crate::viewledger::Stamp,
-    /// Where in that order the loaded page stood when it was installed. A season, episode-page or
-    /// related-window read is issued after that, so every edit published since is made again on
-    /// what such a read brings ([`replay_since_install`]).
-    page_stamp: crate::viewledger::Stamp,
     current: Option<Detail>,
     now: Option<NowPlaying>,
     playing: Option<PlayingItem>,
@@ -3983,7 +3979,6 @@ fn install_landed_detail(state: &mut MetadataState, adapter: &std::sync::Arc<Met
     // The read describes the server from when it was requested: the edits published since are
     // made again on the page it installed (`crate::viewledger`).
     replay_views(state, state.detail_stamp);
-    state.page_stamp = state.ledger.stamp();
     // if this load is a playing leaf (episode/movie), refresh the Info card's descriptor from it
     sync_now_playing(state);
     true
@@ -3997,13 +3992,6 @@ fn replay_views(state: &mut MetadataState, since: crate::viewledger::Stamp) {
             set_watched_local(state, &at, on);
         }
     }
-}
-
-/// [`replay_views`] for a season, episode-page or related-window landing. Such a read was issued
-/// after the page was installed, so the install is a safe (early) stamp for it: replaying an edit
-/// the read already carried only repeats it.
-fn replay_since_install(state: &mut MetadataState) {
-    replay_views(state, state.page_stamp);
 }
 
 /// A re-read of the page already loaded (a return from the player, a watched toggle) lands with
@@ -4677,6 +4665,8 @@ struct SeasonResult {
     idx: usize,                // the season it was for
     prev: usize, // the season `cur_season` held before the optimistic flip — restored on failure
     eps: Option<EpisodeList>, // None = the fetch failed or panicked — the row keeps its episodes
+    /// Where in the view-state publish order this fetch was requested ([`crate::viewledger`]).
+    stamp: crate::viewledger::Stamp,
 }
 
 /// Post a finished season fetch to the mailbox. MONOTONE: an older fetch landing late must never
@@ -4692,6 +4682,7 @@ fn land_season(
     idx: usize,
     prev: usize,
     eps: Option<EpisodeList>,
+    stamp: crate::viewledger::Stamp,
 ) {
     let mut slot = adapter.season_result.lock().unwrap_or_else(|e| e.into_inner());
     if slot.as_ref().map(|r| r.gen < gen).unwrap_or(true) {
@@ -4702,6 +4693,7 @@ fn land_season(
             idx,
             prev,
             eps,
+            stamp,
         });
     }
 }
@@ -4742,6 +4734,8 @@ fn load_season(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
     if let Some(d) = state.current.as_mut() {
         d.cur_season = idx;
     }
+    // Stamped at THIS request, not at the page's install: the season may be asked for long after.
+    let stamp = state.ledger.stamp();
     let gen = adapter.season_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let adapter_worker = std::sync::Arc::clone(adapter);
     let spawned = plx_base::task::spawn_small("season", move || {
@@ -4749,7 +4743,7 @@ fn load_season(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
         // FAILURE (None), not as an empty season: a panic is not "this season has no episodes",
         // and otherwise season_loading() would report an in-flight fetch forever
         let eps = catch_unwind(|| fetch_episodes(sid, &season_rk)).unwrap_or(None);
-        land_season(&adapter_worker, gen, sid, rk, idx, prev, eps);
+        land_season(&adapter_worker, gen, sid, rk, idx, prev, eps, stamp);
     });
     if !spawned {
         // no worker means nothing will ever land: catch DONE up or the episode row keeps its
@@ -4787,6 +4781,8 @@ struct EpLanded {
     /// `None` = the GET failed or panicked: nothing installs, and the page is asked for again by
     /// the next [`want_episodes`].
     rows: Option<Vec<Episode>>,
+    /// Where in the view-state publish order the job that fetched this page was requested.
+    stamp: crate::viewledger::Stamp,
 }
 
 /// Record what the screen needs of the selected season's episodes and fetch the pages of it that
@@ -4830,12 +4826,13 @@ fn want_episodes(
     let worker = std::sync::Arc::clone(adapter);
     let job = want.clone();
     let season_job = season.clone();
+    let stamp = state.ledger.stamp(); // at the request, before any page of the job is read
     let spawned = plx_base::task::spawn_small("episode-pages", move || {
         for page in job {
             let rows = catch_unwind(|| fetch_episode_page(sid, &season_job, page)).unwrap_or(None);
             let mut ep = worker.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
             ep.inflight.retain(|k| *k != (sid, season_job.clone(), page));
-            ep.landed.push(EpLanded { sid, show: show.clone(), season: season_job.clone(), page, rows });
+            ep.landed.push(EpLanded { sid, show: show.clone(), season: season_job.clone(), page, rows, stamp });
         }
     });
     if !spawned {
@@ -4857,11 +4854,14 @@ pub fn pump_episode_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
     };
     let Some(d) = state.current.as_mut() else { return false };
     let mut changed = false;
+    // the oldest request among the pages installed: every edit after it is made again
+    let mut since = crate::viewledger::Stamp::MAX;
     for page in landed {
         let ours = plx_plex::plex::same_item((d.sid, &d.rk), (page.sid, &page.show))
             && d.seasons.get(d.cur_season).is_some_and(|s| s.rk == page.season);
         if let (true, Some(rows)) = (ours, page.rows) {
             d.episodes.set_page(page.page, rows);
+            since = since.min(page.stamp);
             changed = true;
         }
     }
@@ -4869,7 +4869,7 @@ pub fn pump_episode_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
         d.episodes.evict(&keep);
     }
     if changed {
-        replay_since_install(state);
+        replay_views(state, since);
     }
     changed
 }
@@ -4903,6 +4903,8 @@ struct RelLanded {
     /// stands (the shelf at either edge; `pump_seek` in the detail screen for a restore).
     window: Option<(Vec<crate::stores::paging::Row>, crate::stores::paging::PageInfo, Vec<TailHub>,
         crate::stores::paging::RowState)>,
+    /// Where in the view-state publish order this read was requested ([`crate::viewledger`]).
+    stamp: crate::viewledger::Stamp,
 }
 
 /// One page of the tail positions `start..start+size`: the hubs' listings past their previews end
@@ -5006,6 +5008,7 @@ fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
         rel.withdrawn = false;
         rel.out = Some((d.sid, d.rk.clone(), seen, before, seek_at));
     }
+    let stamp = state.ledger.stamp(); // at the request, before the worker reads
     let (sid, rk) = (d.sid, d.rk.clone());
     let info = PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };
     // A seek opens its window on the listing alone: the window it replaces is not an overlap to
@@ -5039,7 +5042,7 @@ fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
         rel.inflight = false;
         rel.out = None;
         if std::mem::take(&mut rel.withdrawn) { return; }
-        rel.landed.push(RelLanded { sid, rk, from: (info.offset, info.end), window });
+        rel.landed.push(RelLanded { sid, rk, from: (info.offset, info.end), window, stamp });
     });
     if !spawned {
         let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
@@ -5076,6 +5079,7 @@ pub fn land_related_for_test(adapter: &MetadataAdapter, from: (usize, usize), ne
     let info = crate::stores::paging::PageInfo { offset: t.offset, end: t.end, total: t.total, more: t.more, unstable: false };
     adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).landed.push(RelLanded {
         sid: next.sid, rk: next.rk.clone(), from, window: Some((rows, info, t.hubs.clone(), t.row.clone())),
+        stamp: 0,
     });
 }
 
@@ -5089,6 +5093,7 @@ pub fn pump_related_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
     };
     let Some(d) = state.current.as_mut() else { return false };
     let mut changed = false;
+    let mut since = crate::viewledger::Stamp::MAX;
     for l in landed {
         let t = &mut d.related_tail;
         if !plx_plex::plex::same_item((d.sid, &d.rk), (l.sid, &l.rk)) || (t.offset, t.end) != l.from {
@@ -5099,10 +5104,11 @@ pub fn pump_related_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
         t.positions = rows.iter().map(|(position, _)| *position).collect();
         d.related.extend(rows.into_iter().map(|(_, m)| std::sync::Arc::try_unwrap(m).unwrap_or_else(|m| (*m).clone())));
         (t.offset, t.end, t.total, t.more, t.hubs, t.row) = (info.offset, info.end, info.total, info.more, hubs, state);
+        since = since.min(l.stamp);
         changed = true;
     }
     if changed {
-        replay_since_install(state);
+        replay_views(state, since);
     }
     changed
 }
@@ -5158,7 +5164,7 @@ pub fn pump_season_with_gate(state: &mut MetadataState, adapter: &MetadataAdapte
             // the old list's wanted range means nothing to the new one
             adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner()).keep = None;
             d.cur_season = r.idx;
-            replay_since_install(state);
+            replay_views(state, r.stamp);
             true
         }
         None => {

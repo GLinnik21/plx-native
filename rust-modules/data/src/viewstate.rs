@@ -302,6 +302,9 @@ struct RequestId(u64);
 
 struct Req {
     id: RequestId,
+    /// Where [`crate::viewledger::ViewLedger::record`] numbered this press. The landing renumbers
+    /// (`landed`) or retires that exact entry; a newer press that replaced it is left alone.
+    seq: crate::viewledger::Stamp,
     sid: ServerId,
     rk: String,
     w: Write,
@@ -435,12 +438,13 @@ impl ViewStateState {
     // from now. Only THIS copy — the other sources' keys are not known until the fan-out resolves
     // them, which is what [`pump`] finishes the job with.
     let change = ViewChange { sid, rk: rk.to_string(), scope: scope.clone(), fact: w.fact() };
-    self.ledger.record(&change.at(), change.edit());
+    let seq = self.ledger.record(&change.at(), change.edit());
     publish_view(change, browse, hubs, person, collection, search, metadata);
     self.coalesce(sid, rk, w);
     let id = self.mint_request_id();
     self.queue.push(Req {
         id,
+        seq,
         sid,
         rk: rk.to_string(),
         w,
@@ -533,6 +537,7 @@ impl ViewStateState {
                 req.w.name(),
                 req.sid.raw()
             ));
+            self.ledger.retire(req.seq); // it never left, so nothing will ever confirm it
             continue;
         };
         let (id, sid, rk, w, guid) = (req.id, req.sid, req.rk.clone(), req.w, req.guid.clone());
@@ -622,6 +627,14 @@ pub fn pump_with_gate(
             done.ok as i32,
             done.also.len()
         ));
+        // The ledger learns the outcome of THIS press: a taken write is renumbered so a read that
+        // was requested after the press but answered before the write arrived still replays it; a
+        // refused one is retired so it stops replaying over the server's own answer.
+        if done.ok {
+            self.ledger.landed(r.seq);
+        } else {
+            self.ledger.retire(r.seq);
+        }
         // The other sources' copies could not be flipped at the press — their keys are exactly
         // what the resolve DISCOVERS — so they are flipped here, on the main thread, and only
         // the ones their server took. A press that reached no other source does nothing here,
@@ -633,6 +646,7 @@ pub fn pump_with_gate(
             let scope = match &r.scope { Scope::Show => Scope::Show, Scope::Leaf => Scope::Leaf,
                 Scope::Season { .. } | Scope::Unknown => Scope::Unknown };
             let change = ViewChange { sid: *osid, rk: ork.clone(), scope, fact: r.w.fact() };
+            // the server took this copy already, so its number is the landing's
             self.ledger.record(&change.at(), change.edit());
             publish_view(change, browse, hubs, person, collection, search, metadata);
         }
@@ -687,6 +701,7 @@ pub fn hold_inflight_for_test(&mut self, sid: ServerId, rk: &str) {
         let id = self.mint_request_id();
         self.sent = Some(Req {
             id,
+            seq: 0,
             sid,
             rk: rk.into(),
             w: Write::Watched,
@@ -720,6 +735,7 @@ impl ViewStateState {
         let id = self.mint_request_id();
         Req {
             id,
+            seq: 0,
             sid: ServerId::UNSET,
             rk: rk.into(),
             w: Write::Watched,
@@ -924,6 +940,9 @@ fn reset(&mut self) {
     self.retry_cd = 0;
     self.want_hubs = false;
     self.want_detail = None;
+    // The edits describe the identity that just changed (sign-in, profile or server switch): they
+    // must never be made again on a read of the next one's rows.
+    self.ledger.reset();
 }
 
 pub fn run(
@@ -1155,7 +1174,7 @@ mod tests {
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
         let id = state.mint_request_id();
-        state.sent = Some(Req { id, sid: origin, rk: "7".into(), w: Write::Watched,
+        state.sent = Some(Req { id, seq: 0, sid: origin, rk: "7".into(), w: Write::Watched,
             scope: Scope::Leaf, detail: None, guid: "plex://movie/7".into() });
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) = Some(Completion {
             id,
@@ -1236,6 +1255,7 @@ mod tests {
         let id = state.mint_request_id();
         Req {
             id,
+            seq: 0,
             sid: ServerId::UNSET,
             rk: rk.into(),
             w,
@@ -1624,6 +1644,7 @@ mod tests {
         let id = state.mint_request_id();
         state.sent = Some(Req {
             id,
+            seq: 0,
             sid: SRV_A,
             rk: "4".into(),
             w: Write::Watched,
@@ -1654,6 +1675,93 @@ mod tests {
         );
 
         crate::metadata::install_for_test(metadata_store.state_mut(), None);
+    }
+
+    /// Land one write of `ok` through the pump, with its ledger entry numbered at the press, and
+    /// hand back the ledger plus a stamp taken BETWEEN the press and the landing (a read requested
+    /// after the press that the server answered before the write arrived).
+    fn press_then_land(ok: bool) -> (crate::viewledger::ViewLedger, crate::viewledger::Stamp) {
+        let mut state = ViewStateState::default();
+        let adapter = Arc::new(ViewStateAdapter::default());
+        let at = ViewAt::leaf(SRV_A, "4");
+        let seq = state.ledger.record(&at, ViewEdit::Watched(true));
+        let read_stamp = state.ledger.stamp();
+        let id = state.mint_request_id();
+        state.sent = Some(Req {
+            id, seq, sid: SRV_A, rk: "4".into(), w: Write::Watched, scope: Scope::Leaf, detail: None,
+            guid: String::new(),
+        });
+        *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(Completion { id, done: Done { ok, also: Vec::new() } });
+        let _ = state.pump(&adapter, &mut |_| false, &mut |_cmd| crate::stores::StoreOutcome::default(),
+            &mut |_| false, &mut |_| false, &mut |_| false, &mut |_| false);
+        (state.ledger.clone(), read_stamp)
+    }
+
+    /// A press, then a read REQUESTED after it that the server answered before the write landed:
+    /// it describes the server from before the press, and must not undo it.
+    #[test]
+    fn a_taken_write_is_renumbered_so_a_read_requested_before_its_landing_still_replays_the_press() {
+        let (ledger, read_stamp) = press_then_land(true);
+        let mut row = crate::pms::PmsMovie::default();
+        row.sid = SRV_A;
+        row.rk = "4".into();
+        row.unwatched = true;
+        ledger.patch(read_stamp, std::iter::once(&mut row));
+        assert!(row.watched, "the press survives a read that was answered before its write landed");
+        let after = ledger.stamp();
+        let mut later = crate::pms::PmsMovie::default();
+        later.sid = SRV_A;
+        later.rk = "4".into();
+        later.unwatched = true;
+        ledger.patch(after, std::iter::once(&mut later));
+        assert!(later.unwatched, "a read requested after the landing is the server's own word");
+    }
+
+    /// The server refused the write: later landings show the server's state, not the refused edit.
+    #[test]
+    fn a_refused_write_is_retired_so_later_landings_show_the_servers_state() {
+        let (ledger, read_stamp) = press_then_land(false);
+        assert!(ledger.since(0).is_empty(), "a refused edit is not kept");
+        let mut row = crate::pms::PmsMovie::default();
+        row.sid = SRV_A;
+        row.rk = "4".into();
+        row.unwatched = true;
+        ledger.patch(read_stamp, std::iter::once(&mut row));
+        assert!(row.unwatched && !row.watched, "the server's state stands");
+    }
+
+    /// A newer press replaced the entry while the older write was in flight: the older landing must
+    /// not renumber the newer press's entry (its own write has not landed).
+    #[test]
+    fn an_older_landing_leaves_the_entry_of_a_newer_press_alone() {
+        let mut state = ViewStateState::default();
+        let adapter = Arc::new(ViewStateAdapter::default());
+        let at = ViewAt::leaf(SRV_A, "4");
+        let first = state.ledger.record(&at, ViewEdit::Watched(true));
+        state.ledger.record(&at, ViewEdit::Watched(false));
+        let stamp = state.ledger.stamp();
+        let id = state.mint_request_id();
+        state.sent = Some(Req {
+            id, seq: first, sid: SRV_A, rk: "4".into(), w: Write::Watched, scope: Scope::Leaf, detail: None,
+            guid: String::new(),
+        });
+        *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some(Completion { id, done: Done { ok: true, also: Vec::new() } });
+        let _ = state.pump(&adapter, &mut |_| false, &mut |_cmd| crate::stores::StoreOutcome::default(),
+            &mut |_| false, &mut |_| false, &mut |_| false, &mut |_| false);
+        assert!(state.ledger.since(stamp).is_empty());
+    }
+
+    /// Sign-in, profile and server switches reset the ViewState owner; the edits go with them.
+    #[test]
+    fn a_reset_clears_the_ledger() {
+        let mut state = ViewStateState::default();
+        state.ledger.record(&ViewAt::leaf(SRV_A, "4"), ViewEdit::Watched(true));
+        let stamp = state.ledger.stamp();
+        state.reset();
+        assert!(state.ledger.since(0).is_empty());
+        assert!(state.ledger.stamp() > stamp);
     }
 
     #[test]

@@ -509,25 +509,59 @@ fn unmarking_one_season_of_a_watched_show_clears_the_shows_own_watched_flag() {
 
 /// The detail read was requested, the user pressed Mark Watched on a related tile while it was out,
 /// and the read installs the page as the server described it before the press. The ledger makes
-/// the press again, through the same edit the press used.
+/// the press again, through the same edit the press used. The stamp is taken by the REAL request
+/// (`MetadataCmd::RequestDetail`), not assigned.
 #[test]
 fn a_detail_read_in_flight_across_a_watched_edit_installs_with_it_made_again() {
+    use crate::stores::metadata::MetadataCmd;
     let _serial = plx_base::testlock::serial();
     let mut state = MetadataState::default();
     let adapter = test_adapter();
     let sid = plx_plex::plex::ServerId::UNSET;
     let tile = || related_tile(sid, "rel");
     let fresh = || Detail { sid, rk: "42".into(), related: vec![tile()], ..Default::default() };
-
-    state.detail_stamp = state.ledger.stamp(); // the read goes out…
-    state.ledger.record(&crate::viewstate::ViewAt::leaf(sid, "rel"), crate::viewstate::ViewEdit::Watched(true)); // …then the press
-    assert!(install_landed_detail(&mut state, adapter, Some(fresh())));
     let tile_state = |state: &MetadataState| state.current.as_ref().map(|d| (d.related[0].watched, d.related[0].resume_ms));
+    let at = crate::viewstate::ViewAt::leaf(sid, "rel");
+
+    // an older press, before the request: the server has it, so the read must not undo the server
+    let older = state.ledger.record(&crate::viewstate::ViewAt::leaf(sid, "older"), crate::viewstate::ViewEdit::Watched(true));
+    state.ledger.landed(older);
+    assert!(run(&mut state, adapter, MetadataCmd::RequestDetail { sid, rk: "42".into() })); // the read goes out…
+    let pressed = state.ledger.record(&at, crate::viewstate::ViewEdit::Watched(true)); // …then the press
+    assert!(install_landed_detail(&mut state, adapter, Some(fresh())));
     assert_eq!(tile_state(&state), Some((true, 0)));
 
-    state.detail_stamp = state.ledger.stamp(); // a read requested after the press
+    // a read requested after the press's write LANDED: the server has it, its answer stands
+    state.ledger.landed(pressed);
+    assert!(run(&mut state, adapter, MetadataCmd::RequestDetail { sid, rk: "42".into() }));
     assert!(install_landed_detail(&mut state, adapter, Some(fresh())));
-    assert_eq!(tile_state(&state), Some((false, 4)), "it carries the press already; its answer stands");
+    assert_eq!(tile_state(&state), Some((false, 4)), "the server's answer stands");
+}
+
+/// The season count steps only when the episode row's own watched state flips, so making the same
+/// edit again (a ledger replay of a press the row already shows) leaves the count alone.
+#[test]
+fn replaying_a_single_episode_edit_does_not_step_the_season_count_twice() {
+    use crate::viewstate::ViewAt;
+    let _serial = plx_base::testlock::serial();
+    set_current_for_test(test_state(), Some(Detail {
+        sid: SRV_A,
+        rk: "show".into(),
+        is_show: true,
+        kind: "show".into(),
+        seasons: vec![Season { rk: "sk1".into(), index: 1, title: "S1".into(), leaf_count: 3, viewed_leaf_count: 0 }],
+        episodes: vec![Episode { rk: "e1".into(), season: 1, ..Default::default() }].into(),
+        ..Default::default()
+    }));
+    let count = || current(test_state()).unwrap().seasons[0].viewed_leaf_count;
+    let ep = ViewAt::leaf(SRV_A, "e1");
+    set_watched_local(test_state(), &ep, true);
+    set_watched_local(test_state(), &ep, true);
+    assert_eq!(count(), 1, "the second, identical edit changes nothing");
+    set_watched_local(test_state(), &ep, false);
+    set_watched_local(test_state(), &ep, false);
+    assert_eq!(count(), 0);
+    clear(test_state(), test_adapter());
 }
 
 fn related_tile(sid: plx_plex::plex::ServerId, rk: &str) -> crate::pms::PmsMovie {

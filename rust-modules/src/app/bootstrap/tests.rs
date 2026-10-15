@@ -347,7 +347,7 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
     let mut parsed: Option<plx_ui::rec::Recording> = None;
     for replay in [false, true] {
         let (state, adapter) = initial.restore(&mt).unwrap();
-        let mut hubs = plx_data::stores::hubs::HubsStore::from_parts(state, adapter);
+        let mut hubs = plx_data::stores::hubs::HubsStore::from_parts(state, adapter, &Default::default());
         let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
         let mut io = HomeIo { replay,preferences:Default::default(),requests:Vec::new(),
             admissions:Default::default(),failure:None,profile:publisher.snapshot() };

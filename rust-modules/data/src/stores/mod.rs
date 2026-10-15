@@ -76,7 +76,7 @@ pub struct Stores {
     pub viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
     /// The publish order of view-state edits (`crate::viewledger`): `viewstate` records into it, and
     /// every store that reads stamps a read from it and re-patches the read when it lands. A store
-    /// replaced after construction is re-attached with [`Stores::share_view_ledger`].
+    /// replaced after construction takes it as an argument (`HubsStore::from_parts`).
     pub view_ledger: crate::viewledger::ViewLedger,
 }
 
@@ -101,9 +101,9 @@ impl Default for Stores {
 }
 
 impl Stores {
-    /// Hand [`Stores::view_ledger`] to every store that reads. Called by `default`, and again by a
-    /// caller that swaps a whole store in afterwards (`HubsStore::from_parts` at boot).
-    pub fn share_view_ledger(&mut self) {
+    /// Hand [`Stores::view_ledger`] to every store that reads, once, at construction. A store built
+    /// afterwards takes the ledger as a constructor argument instead (`HubsStore::from_parts`).
+    fn share_view_ledger(&mut self) {
         let ledger = &self.view_ledger;
         self.browse.borrow_mut().share_ledger(ledger);
         self.hubs.share_ledger(ledger);

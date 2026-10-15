@@ -55,7 +55,7 @@ impl Default for SearchStore {
 }
 
 impl SearchStore {
-    /// Join the owner's view-state publish order (`Stores::share_view_ledger`).
+    /// Join the owner's view-state publish order (`Stores::view_ledger`).
     pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
         self.state.ledger = ledger.clone();
     }

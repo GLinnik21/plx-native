@@ -225,8 +225,8 @@ pub struct SecHubs {
     /// The set the current layout was built from. Empty and `committed == false` is "nothing
     /// published yet"; empty and `committed == true` is the answer "this library has no shelves",
     /// which is a real state the design draws as "this screen with a shorter top".
-    committed: Arc<Vec<Shelf>>,
-    revision: u64,
+    pub(super) committed: Arc<Vec<Shelf>>,
+    pub(super) revision: u64,
     /// Has anything ever been published? Distinct from `committed.is_empty()` for that reason.
     published: bool,
     /// A landing held back because publishing it would move a grid the user is looking at.
@@ -518,7 +518,7 @@ impl SecHubs {
     /// so nothing can be SEEN to move) and, on a visible page, only once a BACK-driven head
     /// transition has settled. Returns whether anything was published, so the caller knows to
     /// re-resolve focus against the POST-commit layout.
-    fn commit_staged(&mut self, may_move: bool) -> bool {
+    pub(super) fn commit_staged(&mut self, may_move: bool) -> bool {
         if !may_move {
             return false;
         }
@@ -1116,6 +1116,19 @@ impl HubResult {
     pub(super) fn failed_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
         token_gen: u32) -> Self {
         Self { epoch, sec, client, token_gen, outcome: Outcome::List(None) }
+    }
+
+    /// A successful whole-list answer for `sec` carrying `shelves`, as a worker posts it.
+    pub(super) fn list_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
+        token_gen: u32, shelves: Vec<Shelf>) -> Self {
+        Self { epoch, sec, client, token_gen, outcome: Outcome::List(Some(Parsed { shelves })) }
+    }
+
+    /// A successful read of row `(id, key)` of `sec`, one page forward, carrying `shelf`.
+    pub(super) fn row_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
+        token_gen: u32, id: &str, key: &str, shelf: Shelf) -> Self {
+        let ask = RowAsk { id: id.into(), key: key.into(), before: false, reload: false };
+        Self { epoch, sec, client, token_gen, outcome: Outcome::Row { ask, shelf: Some(shelf) } }
     }
 }
 

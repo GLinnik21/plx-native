@@ -234,3 +234,22 @@ fn a_watch_flip_on_an_evicted_episode_does_nothing() {
     assert!(!test_state().current.as_mut().unwrap().episodes.edit("e500", |e| e.watched = true));
     assert!(!set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(test_state().current.as_ref().unwrap().sid, "e500"), true));
 }
+
+/// An episode page is asked for long after the season was installed. Its read describes the server
+/// from ITS request: an edit published before that request is not made again, one published while
+/// it was out is. Driven through `want_episodes`, the real request site.
+#[test]
+fn an_episode_page_replays_only_the_edits_published_after_its_own_request() {
+    use crate::viewstate::{ViewAt, ViewEdit};
+    let _serial = plx_base::testlock::serial();
+    let server = serve(1000, true);
+    let sid = open_season(&server);
+    let ledger = test_state().ledger.clone();
+
+    ledger.record(&ViewAt::leaf(sid, "e300"), ViewEdit::Watched(true)); // before the request
+    want(300, 330, Some(300), None);
+    ledger.record(&ViewAt::leaf(sid, "e301"), ViewEdit::Watched(true)); // while the page is out
+    settle(|| show(300).is_some());
+    let watched = |i: usize| list().get(i).map(|e| e.watched);
+    assert_eq!((watched(300), watched(301)), (Some(false), Some(true)));
+}

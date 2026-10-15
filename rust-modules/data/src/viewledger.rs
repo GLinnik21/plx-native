@@ -13,9 +13,24 @@
 //!   the number with the read's other bookkeeping (the same place it keeps the read's generation).
 //! * **Patch on landing.** When the read comes back the store hands the rows it is about to place to
 //!   [`ViewLedger::patch`] (or walks [`ViewLedger::since`] itself where its rows are not
-//!   `PmsMovie`s). Every edit published AFTER the stamp is made again on those rows, in the order
-//!   it was published; an edit published before the stamp is not, because the server had it when
-//!   it answered.
+//!   `PmsMovie`s). Every edit whose sequence number is greater than the stamp is made again on
+//!   those rows, in sequence order; an edit at or below the stamp is not.
+//!
+//! ## What a sequence number means
+//!
+//! An edit's number is NOT only when it was pressed. It is "the last moment a read could still
+//! have been answered without it": [`ViewLedger::record`] gives it a number at the press, and
+//! [`ViewLedger::landed`] gives it a NEW, higher one when the server has taken the write. The
+//! write is queued behind others and then travels, so a read requested after the press can still
+//! be answered by the server before the write arrived; with the press-time number alone such a
+//! read would be treated as having seen the edit and would undo it. After the landing renumbers
+//! the entry, every read requested before the landing replays it and every read requested after
+//! it does not (the server has it). A write the server REFUSES is [`ViewLedger::retire`]d, so an
+//! edit that did not take never keeps replaying over the server's own state.
+//!
+//! The guarantee is therefore: a press survives every read that was requested before its write
+//! landed, and is never held against a read requested after. Between the press and the landing
+//! the entry stands (a server that never answers leaves the edit standing, as `viewstate` says).
 //!
 //! ## What is kept
 //!
@@ -35,7 +50,9 @@
 //! it calls the stores. The stamp travels into a worker with the request as a plain `u64`; the
 //! table itself never leaves the main thread.
 //!
-//! Entries are not pruned. Deciding that no outstanding read predates an entry is a per-store
+//! Entries are dropped by [`ViewLedger::reset`] when the data they describe stops being the
+//! current one (sign-out, profile switch, a changed server roster); stamps stay valid across it.
+//! Otherwise entries are not pruned. Deciding that no outstanding read predates an entry is a per-store
 //! proof (every store has its own supersede and abandon paths), and until each store's is written
 //! down the bounded-by-items-touched table is the safe side to err on.
 
@@ -81,6 +98,35 @@ impl ViewLedger {
         seq
     }
 
+    /// The write for the edit recorded at `seq` has been TAKEN by the server: renumber that entry
+    /// to a fresh, higher number, so every read stamped before now (it may have been answered by the
+    /// server before the write arrived) still replays it. Does nothing when a newer press on the
+    /// same item has replaced the entry meanwhile: that press's own write has not landed, and its
+    /// own entry carries it.
+    pub fn landed(&self, seq: Stamp) {
+        let mut t = self.0.borrow_mut();
+        let Some(i) = t.entries.iter().position(|e| e.seq == seq) else { return };
+        let mut entry = t.entries.remove(i);
+        t.seq += 1;
+        entry.seq = t.seq;
+        t.entries.push(entry);
+    }
+
+    /// The write for the edit recorded at `seq` was REFUSED (or never left): forget the entry, so a
+    /// refused edit does not keep replaying over what the server actually says. Does nothing for an
+    /// entry a newer press already replaced.
+    pub fn retire(&self, seq: Stamp) {
+        self.0.borrow_mut().entries.retain(|e| e.seq != seq);
+    }
+
+    /// Forget every entry, keeping the sequence so stamps already handed out stay ordered. For the
+    /// moments the data the entries describe stops being the current one.
+    pub fn reset(&self) {
+        let mut t = self.0.borrow_mut();
+        t.entries.clear();
+        t.seq += 1; // every read in flight is now older than anything recorded after this
+    }
+
     /// The stamp for a read issued now.
     pub fn stamp(&self) -> Stamp {
         self.0.borrow().seq
@@ -97,23 +143,20 @@ impl ViewLedger {
     }
 
     /// Make every edit published after `stamp` again on `rows`, which a read stamped `stamp` is
-    /// about to place. Returns whether any row changed. A deck removal is not a field of a row, so
+    /// about to place. A deck removal is not a field of a row, so
     /// only the stores that own a deck act on it (via [`ViewLedger::since`]).
-    pub fn patch<'a>(&self, stamp: Stamp, rows: impl IntoIterator<Item = &'a mut crate::pms::PmsMovie>) -> bool {
+    pub fn patch<'a>(&self, stamp: Stamp, rows: impl IntoIterator<Item = &'a mut crate::pms::PmsMovie>) {
         let edits = self.since(stamp);
         if edits.is_empty() {
-            return false;
+            return;
         }
-        let mut hit = false;
         for m in rows {
             for (at, edit) in &edits {
                 if matches!(edit, ViewEdit::Watched(_)) && at.covers(m) {
                     edit.apply(m);
-                    hit = true;
                 }
             }
         }
-        hit
     }
 }
 
@@ -139,7 +182,7 @@ mod tests {
         let stamp = ledger.stamp();
         ledger.record(&ViewAt::leaf(ServerId::UNSET, "2"), ViewEdit::Watched(true));
         let mut rows = [row("1"), row("2")];
-        assert!(ledger.patch(stamp, rows.iter_mut()));
+        ledger.patch(stamp, rows.iter_mut());
         assert!(rows[0].unwatched, "the server already had edit 1 when this read was answered");
         assert!(rows[1].watched && rows[1].resume_ms == 0);
     }
@@ -175,7 +218,64 @@ mod tests {
         let ledger = ViewLedger::default();
         ledger.record(&ViewAt::leaf(ServerId::UNSET, "1"), ViewEdit::Watched(true));
         let mut rows = [row("1")];
-        assert!(!ledger.patch(ledger.stamp(), rows.iter_mut()));
+        ledger.patch(ledger.stamp(), rows.iter_mut());
         assert!(rows[0].unwatched);
+    }
+
+    /// The read was requested after the press but answered before the write reached the server,
+    /// so it carries the pre-press body. The landing renumbers the entry; the read still replays it.
+    #[test]
+    fn a_press_survives_a_read_requested_after_it_and_answered_before_its_write_landed() {
+        let ledger = ViewLedger::default();
+        let at = ViewAt::leaf(ServerId::UNSET, "1");
+        let pressed = ledger.record(&at, ViewEdit::Watched(true));
+        let read_stamp = ledger.stamp(); // requested after the press, before the write landed
+        assert!(ledger.since(read_stamp).is_empty(), "press-time numbering alone would skip the press");
+        ledger.landed(pressed);
+        let mut rows = [row("1")];
+        ledger.patch(read_stamp, rows.iter_mut());
+        assert!(rows[0].watched, "the press must survive that read");
+        // A read requested after the landing has the edit server-side and is left alone.
+        let later = ledger.stamp();
+        let mut rows = [row("1")];
+        ledger.patch(later, rows.iter_mut());
+        assert!(rows[0].unwatched, "a read requested after the landing is the server's own word");
+    }
+
+    #[test]
+    fn a_refused_write_stops_replaying() {
+        let ledger = ViewLedger::default();
+        let seq = ledger.record(&ViewAt::leaf(ServerId::UNSET, "1"), ViewEdit::Watched(true));
+        let stamp = ledger.stamp();
+        ledger.retire(seq);
+        let mut rows = [row("1")];
+        ledger.patch(0, rows.iter_mut());
+        assert!(rows[0].unwatched, "the server refused it, so its state is the truth");
+        assert!(ledger.since(stamp).is_empty());
+    }
+
+    #[test]
+    fn a_landing_does_not_renumber_an_entry_a_newer_press_replaced() {
+        let ledger = ViewLedger::default();
+        let at = ViewAt::leaf(ServerId::UNSET, "1");
+        let first = ledger.record(&at, ViewEdit::Watched(true));
+        let second = ledger.record(&at, ViewEdit::Watched(false));
+        let stamp = ledger.stamp();
+        ledger.landed(first); // the first write landed; the second has not
+        assert!(ledger.since(stamp).is_empty(), "the second press keeps its own number until its write lands");
+        ledger.landed(second);
+        assert_eq!(ledger.since(stamp).len(), 1);
+    }
+
+    #[test]
+    fn reset_forgets_every_entry_and_keeps_stamps_ordered() {
+        let ledger = ViewLedger::default();
+        ledger.record(&ViewAt::leaf(ServerId::UNSET, "1"), ViewEdit::Watched(true));
+        let stamp = ledger.stamp();
+        ledger.reset();
+        assert!(ledger.since(0).is_empty());
+        assert!(ledger.stamp() > stamp);
+        ledger.record(&ViewAt::leaf(ServerId::UNSET, "2"), ViewEdit::Watched(true));
+        assert_eq!(ledger.since(stamp).len(), 1);
     }
 }

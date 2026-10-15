@@ -150,8 +150,8 @@ fn a_late_failure_cannot_unsay_an_answer_this_source_already_gave() {
 }
 
 /// A source's answer read before a Mark Watched was pressed lands carrying the pre-press body; the
-/// ledger makes the press again on it, and only on the stamped read — one requested after the
-/// press already carries it.
+/// ledger makes the press again on it. A press whose write had LANDED before the read went out is
+/// not held against the answer (the server had it), which `landed` models by renumbering the entry.
 #[test]
 fn a_source_answer_in_flight_across_a_watched_edit_lands_watched() {
     let _g = plx_base::testlock::serial();
@@ -171,11 +171,13 @@ fn a_source_answer_in_flight_across_a_watched_edit_lands_watched() {
         }).collect()
     };
     source_mut(&mut state, 0).stamp = state.ledger.stamp(); // the read goes out…
-    state.ledger.record(&pressed, crate::viewstate::ViewEdit::Watched(true)); // …then the press
+    let seq = state.ledger.record(&pressed, crate::viewstate::ViewEdit::Watched(true)); // …then the press
     record(&mut state, 0, Some(unwatched()));
     assert_eq!(marks(&state), [(true, 0), (false, 9)], "the pressed item stays watched, the other as the server said");
 
-    source_mut(&mut state, 0).stamp = state.ledger.stamp(); // a read requested after the press
+    // the write lands, then a read goes out: the server has the press, so its answer stands
+    state.ledger.landed(seq);
+    source_mut(&mut state, 0).stamp = state.ledger.stamp();
     record(&mut state, 0, Some(unwatched()));
-    assert_eq!(marks(&state), [(false, 9), (false, 9)], "that read carries the press already; its answer stands");
+    assert_eq!(marks(&state), [(false, 9), (false, 9)], "a read requested after the landing carries the press already");
 }

@@ -792,26 +792,41 @@ mod tests {
     }
 
     /// A members page read while a Mark Watched was pressed lands with the member as the server
-    /// described it before the press; the ledger makes the press again on it.
+    /// described it before the press; the ledger makes the press again on it, and only the ones
+    /// published after the read's own request. The stamp is taken by the REAL request
+    /// (`maybe_spawn`, against a registered but unreachable server), not assigned.
     #[test]
     fn a_members_page_in_flight_across_a_watched_edit_lands_watched() {
+        use crate::viewstate::{ViewAt, ViewEdit};
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("collection-ledger", "127.0.0.1", 9, "t", "cid");
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { target: set_target("50003", 9, "Set") });
+        let mut target = set_target("50003", 9, "Set");
+        target.id.sid = sid;
+        state.run(&adapter, CollectionCmd::Open { target });
         let generation = state.generation();
+        // the header request goes out for real; what it brings is replaced by a canned header
+        let _ = state.pump_with_gate(&adapter, plx_machine::landgate::fixture_gate());
+        plx_base::task::drain_workers_for_test();
+        let _ = adapter.fetch.take();
         adapter.land(generation, Landing::Header { rk: None, head: header("Set", 2) });
         assert!(state.take_landing_for_test(&adapter));
-        // the read is out: stamped now, before the press
-        state.stamp = state.ledger.stamp();
-        let sid = state.current.as_ref().unwrap().id.sid;
-        let at = crate::viewstate::ViewAt::leaf(sid, "m1");
-        state.ledger.record(&at, crate::viewstate::ViewEdit::Watched(true));
+
+        let older = state.ledger.record(&ViewAt::leaf(sid, "m0"), ViewEdit::Watched(true));
+        state.ledger.landed(older); // before the page request: the server has it
+        state.maybe_spawn(&adapter); // the members page request goes out
+        state.ledger.record(&ViewAt::leaf(sid, "m1"), ViewEdit::Watched(true)); // …then the press
+        plx_base::task::drain_workers_for_test();
+        let _ = adapter.fetch.take(); // the unreachable server's answer
         let member = |rk: &str| PmsMovie { sid, rk: rk.into(), unwatched: true, resume_ms: 7, ..Default::default() };
-        adapter.land(generation, Landing::Page { start: 0, got: 2, pages: vec![vec![member("m1"), member("m2")]], total: 2 });
+        adapter.land(generation, Landing::Page { start: 0, got: 3, pages: vec![vec![member("m0"), member("m1"), member("m2")]], total: 3 });
         assert!(state.take_landing_for_test(&adapter));
         let c = state.current.as_ref().unwrap();
         let marks: Vec<_> = (0..c.shown()).filter_map(|i| c.pages.get(i)).map(|m| (m.rk.clone(), m.watched, m.resume_ms)).collect();
-        assert_eq!(marks, vec![("m1".to_string(), true, 0), ("m2".to_string(), false, 7)]);
+        assert_eq!(marks, vec![("m0".to_string(), false, 7), ("m1".to_string(), true, 0), ("m2".to_string(), false, 7)]);
+        plx_plex::plex::reset_servers_for_test();
     }
 
     /// A tag route resolves from the section's collection listing, whose row IS the collection's

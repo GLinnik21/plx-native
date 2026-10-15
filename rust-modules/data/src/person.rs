@@ -1363,7 +1363,10 @@ fn src_of(p: &Person, i: usize) -> Option<(ServerId, usize)> {
 
 /// Install ONE landing on the open person. Returns whether anything actually changed.
 fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
-    let (ledger, stamp) = (state.ledger.clone(), state.stamps.get(&i).copied().unwrap_or(0));
+    // The stamp is the request's. A landing with none recorded was not requested through this
+    // path, so there is no earlier moment to replay from: the answer stands (never `0`, which
+    // would make every edit ever published replay over it).
+    let (ledger, stamp) = (state.ledger.clone(), state.stamps.get(&i).copied().unwrap_or_else(|| state.ledger.stamp()));
     let Some(p) = state.current.as_mut() else {
         return false;
     };
@@ -2431,30 +2434,54 @@ mod tests {
 
     /// A filmography read goes out, the user presses Mark Watched on one of its tiles, and the read
     /// lands with the tile as the server described it before the press. The ledger makes the press
-    /// again on it — for the read stamped before the press, and for that one only.
+    /// again on it — for the read requested before the press, and for that one only. The stamp is
+    /// taken by the REAL request (`open`, which spawns the read), not assigned.
     #[test]
     fn a_filmography_read_in_flight_across_a_watched_edit_lands_watched() {
+        use crate::viewstate::{ViewAt, ViewEdit};
         let mut owner = Owner::default();
         let _g = plx_base::testlock::serial();
         plx_plex::plex::reset_servers_for_test();
         owner.reset();
         let a = plx_plex::plex::register_for_test("person-ledger", "127.0.0.1", 1, "a", "cid");
-        owner.open(a, "7", "plex://person/7", "Actor", "");
         let slot = fx(a, K_MEDIA).unwrap();
-        let tile = || PmsMovie { unwatched: true, resume_ms: 9, ..movie_on(a, "4") };
+        let tile = |rk: &str| PmsMovie { unwatched: true, resume_ms: 9, ..movie_on(a, rk) };
         let landed = |owner: &Owner| {
-            let m = &owner.current().unwrap().srcs[0].shelves[0].items[0];
-            (m.watched, m.resume_ms)
+            let items = &owner.current().unwrap().srcs[0].shelves[0].items;
+            items.iter().map(|m| (m.rk.clone(), m.watched)).collect::<Vec<_>>()
         };
 
-        owner.state.stamps.insert(slot, owner.state.ledger.stamp()); // the read goes out…
-        owner.state.ledger.record(&crate::viewstate::ViewAt::leaf(a, "4"), crate::viewstate::ViewEdit::Watched(true)); // …then the press
-        owner.apply(slot, media(vec![tile()], Vec::new()));
-        assert_eq!(landed(&owner), (true, 0));
+        let older = owner.state.ledger.record(&ViewAt::leaf(a, "3"), ViewEdit::Watched(true));
+        owner.state.ledger.landed(older); // before the request: the server has it
+        owner.open(a, "7", "plex://person/7", "Actor", ""); // the read goes out…
+        owner.pump();
+        assert!(owner.state.stamps.contains_key(&slot), "the request site stamped it");
+        owner.state.ledger.record(&ViewAt::leaf(a, "4"), ViewEdit::Watched(true)); // …then the press
+        owner.apply(slot, media(vec![tile("3"), tile("4")], Vec::new()));
+        assert_eq!(landed(&owner), [("3".to_string(), false), ("4".to_string(), true)],
+            "the pressed tile stays watched; the server's own earlier answer is not made again");
+        plx_base::task::drain_workers_for_test();
+        owner.reset();
+        plx_plex::plex::reset_servers_for_test();
+    }
 
-        owner.state.stamps.insert(slot, owner.state.ledger.stamp()); // a read requested after the press
-        owner.apply(slot, media(vec![tile()], Vec::new()));
-        assert_eq!(landed(&owner), (false, 9), "it carries the press already; its answer stands");
+    /// A landing with no recorded request stamp (a slot nothing requested) is not made to replay the
+    /// whole ledger: the server's answer stands.
+    #[test]
+    fn a_landing_without_a_request_stamp_replays_nothing() {
+        use crate::viewstate::{ViewAt, ViewEdit};
+        let mut owner = Owner::default();
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        owner.reset();
+        let a = plx_plex::plex::register_for_test("person-ledger-nostamp", "127.0.0.1", 1, "a", "cid");
+        owner.open(a, "7", "plex://person/7", "Actor", "");
+        let slot = fx(a, K_MEDIA).unwrap();
+        owner.state.stamps.remove(&slot);
+        owner.state.ledger.record(&ViewAt::leaf(a, "4"), ViewEdit::Watched(true));
+        owner.apply(slot, media(vec![PmsMovie { unwatched: true, ..movie_on(a, "4") }], Vec::new()));
+        assert!(!owner.current().unwrap().srcs[0].shelves[0].items[0].watched);
+        plx_base::task::drain_workers_for_test();
         owner.reset();
         plx_plex::plex::reset_servers_for_test();
     }
