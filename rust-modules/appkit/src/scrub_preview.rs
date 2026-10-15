@@ -204,14 +204,15 @@ pub fn scaled_about(r: Rect, ox: f32, oy: f32, s: f32) -> Rect {
 pub fn draw(p: Painter, r: Rect, tex: u32, tw: f32, th: f32, prev: Option<(u32, f32)>) {
     p.shadow(r, CARD_RAD, CARD_SHADOW_BLUR, CARD_SHADOW_DY, theme::scrim_black(CARD_SHADOW_A));
     let inner = fit_rect(r, tw, th);
-    if inner != r {
+    let boxed = inner != r;
+    if boxed {
         // the letterbox bars: the card's own ground
         p.rrect(r, CARD_RAD, CARD_RAD, theme::scrim_black(1.0));
     }
-    let rad = if inner == r { CARD_RAD } else { 0.0 };
-    if let Some((old, _)) = prev {
+    let rad = if boxed { 0.0 } else { CARD_RAD };
+    if let Some((old, t)) = prev {
         p.tex(old, inner, rad, theme::TINT_WHITE);
-        p.alpha(prev.map_or(1.0, |(_, t)| t)).tex(tex, inner, rad, theme::TINT_WHITE);
+        p.alpha(t).tex(tex, inner, rad, theme::TINT_WHITE);
     } else {
         p.tex(tex, inner, rad, theme::TINT_WHITE);
     }

@@ -51,7 +51,6 @@ pub struct Undo {
 /// only reads it back.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Chip {
-    text: String,
     c: std::ffi::CString,
     /// `(size, width)` as measured; kept only when the measure is the process's live font
     /// (`Measure::live_font`), so a recording or replay still sees every query it is graded on.
@@ -62,8 +61,8 @@ impl Chip {
     /// `None` when the text cannot be a C string (an embedded NUL, which no shipped word has).
     fn new(back_word: &str, origin_ns: i64) -> Option<Self> {
         let text = chip_text(back_word, origin_ns);
-        let c = std::ffi::CString::new(text.as_str()).ok()?;
-        Some(Self { text, c, width: None })
+        let c = std::ffi::CString::new(text).ok()?;
+        Some(Self { c, width: None })
     }
 
     /// The text, for `Painter::text`.
@@ -78,7 +77,7 @@ impl Chip {
                 return w;
             }
         }
-        let w = measure.width_str(&self.text, sz, false);
+        let w = measure.width(&self.c, sz, false);
         // `text_width` reads 0 until the font is up: never keep that
         if w > 0.0 && measure.live_font() {
             self.width = Some((sz, w));

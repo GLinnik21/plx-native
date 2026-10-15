@@ -215,9 +215,7 @@ impl PlayerScreen {
     /// is retired; a real stop ends the session, so the HUD's timer, its dismissal and the Up Next
     /// countdown go with it.
     pub fn transport_reset(&mut self, for_reload: bool) {
-        self.scrub.ns = -1;
-        self.scrub.disengage();
-        self.scrub.commit_at = 0;
+        self.scrub.cancel();
         self.row.close_undo();
         if !for_reload {
             self.hud.until = 0;
@@ -1274,9 +1272,7 @@ impl PlayerScreen {
             ));
             self.commit_scrub(now, fx);
         }
-        self.scrub.ns = -1;
-        self.scrub.disengage();
-        self.scrub.commit_at = 0;
+        self.scrub.cancel();
     }
 
     /// The continuous accelerating scrub's per-frame advance while a KEY is held, and the

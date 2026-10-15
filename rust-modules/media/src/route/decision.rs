@@ -5317,14 +5317,10 @@ pub fn cur_audio_sid(ps: &PlaybackSession) -> i64 {
 /// The currently-playing item's Part id. Written once per item by `build_stream` from its own
 /// `part` argument. In-playback callers (audio switch, subtitle toggle, retranscode) want this;
 /// `build_stream` must pass its freshly-derived local instead, since this is not yet updated
-/// for the item being started.
-fn cur_part_id(ps: &PlaybackSession) -> i64 {
-    ps.cur_part_id
-}
-/// The playing item's Part id, for a reader outside the route — the scrub preview names its BIF
+/// for the item being started. Also read outside the route: the scrub preview names its BIF
 /// stills by it. 0 with no item.
-pub fn part_id(ps: &PlaybackSession) -> i64 {
-    cur_part_id(ps)
+pub fn cur_part_id(ps: &PlaybackSession) -> i64 {
+    ps.cur_part_id
 }
 /// The stable app-owned playback generation (and the first encoder's PMS session id).
 pub fn sess(ps: &PlaybackSession) -> String {

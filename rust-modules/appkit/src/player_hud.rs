@@ -1950,58 +1950,56 @@ pub fn draw_hud(
         // has `is_episode == true` (it still labels "Go to Show" elsewhere) but no real S#/E# address,
         // so it takes this same "Trailer" ctxline + title treatment a movie trailer already gets,
         // instead of a fabricated `S0 · E0` kicker.
-        if !chrome {
-            // faded out entirely: nothing of the title block or the control row to draw
-        } else if let Some(n) = meta.now_playing().filter(|n| n.is_real_episode) {
-            // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
-            // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
-            // caption already read it, and the whole point is that all three say the same thing).
-            let kicker = CString::new(plx_ui::fmt::episode_kicker(
-                n.season,
-                n.index,
-                &n.ep_title,
-            ))
-            .unwrap_or_default();
-            // `if let Ok`, not `.unwrap_or_default()`: before this function was factored out, an
-            // interior-NUL title (the one CString::new can fail on) simply drew nothing — the
-            // refactor was supposed to be visual-no-op, and an `unwrap_or_default()` here draws an
-            // EMPTY title line instead of skipping it, which is a real (if rare) behavior change.
-            if let Ok(title) = CString::new(n.title.clone()) {
-                draw_title(pc, Kicker::Episode(kicker.as_ptr()), title.as_ptr());
-            }
-        } else {
-            draw_title(
-                pc,
-                Kicker::Context(plx_media::route::ctxline_cptr(ps)),
-                plx_media::route::title_cptr(ps),
-            );
-        }
-
-        // The right control row, from the slot the CALLER resolved — so what is drawn and what a
-        // keypress activates are the same value, not two derivations of it.
         if chrome {
-        match slot {
-            ControlSlot::UpNext(_) => {
-                crate::up_next::draw(ps, row, up, pc, focus == 1, btn, now, measure);
+            if let Some(n) = meta.now_playing().filter(|n| n.is_real_episode) {
+                // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
+                // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
+                // caption already read it, and the whole point is that all three say the same thing).
+                let kicker = CString::new(plx_ui::fmt::episode_kicker(
+                    n.season,
+                    n.index,
+                    &n.ep_title,
+                ))
+                .unwrap_or_default();
+                // `if let Ok`, not `.unwrap_or_default()`: before this function was factored out, an
+                // interior-NUL title (the one CString::new can fail on) simply drew nothing — the
+                // refactor was supposed to be visual-no-op, and an `unwrap_or_default()` here draws an
+                // EMPTY title line instead of skipping it, which is a real (if rare) behavior change.
+                if let Ok(title) = CString::new(n.title.clone()) {
+                    draw_title(pc, Kicker::Episode(kicker.as_ptr()), title.as_ptr());
+                }
+            } else {
+                draw_title(
+                    pc,
+                    Kicker::Context(plx_media::route::ctxline_cptr(ps)),
+                    plx_media::route::title_cptr(ps),
+                );
             }
-            ControlSlot::Skip(pr) => {
-                crate::skip_pill::draw(row, pc, pr, focus == 1, measure);
-            }
-            ControlSlot::Discs => {
-                for i in 0..BTN_N {
-                    let pop = row.scale(i);
-                    TransportButton::new(i, Rect::new(btn_x(i), BTN_Y, BTN_S, BTN_S))
-                        .focused(focus == 1 && btn == i)
-                        // The whole control row stands on the VIDEO PLANE — see `ControlGround`. It is
-                        // the HUD's own bottom ramp (drawn at the top of this function) that makes the
-                        // unkeyed face legal: the picture is unreadable, but the ground under these
-                        // discs is known to be dark.
-                        .ground(ControlGround::Unkeyed)
-                        .scale(pop)
-                        .draw(&e, pc);
+
+            // The right control row, from the slot the CALLER resolved — so what is drawn and what a
+            // keypress activates are the same value, not two derivations of it.
+            match slot {
+                ControlSlot::UpNext(_) => {
+                    crate::up_next::draw(ps, row, up, pc, focus == 1, btn, now, measure);
+                }
+                ControlSlot::Skip(pr) => {
+                    crate::skip_pill::draw(row, pc, pr, focus == 1, measure);
+                }
+                ControlSlot::Discs => {
+                    for i in 0..BTN_N {
+                        let pop = row.scale(i);
+                        TransportButton::new(i, Rect::new(btn_x(i), BTN_Y, BTN_S, BTN_S))
+                            .focused(focus == 1 && btn == i)
+                            // The whole control row stands on the VIDEO PLANE — see `ControlGround`. It is
+                            // the HUD's own bottom ramp (drawn at the top of this function) that makes the
+                            // unkeyed face legal: the picture is unreadable, but the ground under these
+                            // discs is known to be dark.
+                            .ground(ControlGround::Unkeyed)
+                            .scale(pop)
+                            .draw(&e, pc);
+                    }
                 }
             }
-        }
         }
 
         let mut bar = Playbar::live(ps, busy, focus, row.since_play_ms(now), now);
@@ -2041,6 +2039,11 @@ pub fn draw_hud(
     }
 }
 
+/// The bar's x for a position `pos_ns` of `dur_ns`, clamped to the bar's ends.
+fn bar_x(pos_ns: i64, dur_ns: i64) -> f32 {
+    SB_X + (sb_w() as f64 * (pos_ns as f64 / dur_ns.max(1) as f64).clamp(0.0, 1.0)) as f32
+}
+
 /// **The undo window's marks** ([`crate::scrub_undo`]): a ghost tick on the bar at the position the
 /// last committed scrub started from, and the chip `BACK · m:ss` on the knob clock's line, on the
 /// side of the tick. Both at the window's opacity, so they leave together.
@@ -2057,8 +2060,7 @@ fn draw_undo(
         return;
     }
     let a = u.alpha(now);
-    let frac = (u.origin_ns() as f64 / bar.dur_ns as f64).clamp(0.0, 1.0);
-    let ox = SB_X + (sb_w() as f64 * frac) as f32;
+    let ox = bar_x(u.origin_ns(), bar.dur_ns);
     let white = theme::TINT_WHITE;
     p.alpha(a * scrub_undo::TICK_A)
         .rect(scrub_undo::tick_rect(ox, SB_Y + SB_H * 0.5), 0.0, white, white, 0.0);
@@ -2076,12 +2078,8 @@ fn draw_undo(
 /// nothing for a part with no BIF index, and nothing until the first still lands.
 fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, row: &mut TransportRow, bar: Playbar) {
     use crate::scrub_preview::{card_rect, card_size, draw, scaled_about, still_ms, still_path, Look, REQ_H, REQ_W};
-    let part = plx_media::route::part_id(ps);
+    let part = plx_media::route::cur_part_id(ps);
     let sid = plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw();
-    let knob_x = |bar: &Playbar| {
-        let frac = (bar.pos_ns as f64 / bar.dur_ns.max(1) as f64).clamp(0.0, 1.0);
-        SB_X + (sb_w() as f64 * frac) as f32
-    };
     let show = if plx_media::player::TX.scrub_ns.load(Relaxed) < 0 {
         row.preview.motion.exit(bar.now)
     } else if bar.dur_ns <= 0 {
@@ -2101,7 +2099,7 @@ fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, row: &
         };
         let shown = row.preview.step((part, &generation), target, bar.now, look);
         let absent = row.preview.absent();
-        row.preview.motion.observe(shown, target, absent, knob_x(&bar), bar.now)
+        row.preview.motion.observe(shown, target, absent, bar_x(bar.pos_ns, bar.dur_ns), bar.now)
     };
     let Some(sh) = show else { return };
     let (tex, tw, th) = plx_ui::tex::resolve_wh_on(sid, &still_path(part, sh.ms), REQ_W, REQ_H, false);
