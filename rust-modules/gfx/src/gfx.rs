@@ -3594,6 +3594,11 @@ pub enum GlassRim {
     /// plastic, which is the same failure the note below records measuring — the hairline is part
     /// of the backdrop, so over a bright ground it clips to white before the scrim gets to it.
     Standing,
+    /// A popover's panel (DS6): the standing container's chamfer and lens, plus the sharp second
+    /// source switched ON — the rim refracts the captured host page, unblurred, through the same
+    /// rounded-rect SDF displacement. No extra pass: the grab is the one `Standing` can already
+    /// copy at a non-zero [`GlassRim::sharp`]. Numbers: `tokens::MENU_*`.
+    Menu,
 }
 
 impl GlassRim {
@@ -3621,6 +3626,7 @@ impl GlassRim {
         match self {
             Self::Bevelled => 0.0,
             Self::Standing => sharp_sweep().unwrap_or(STANDING_SHARP),
+            Self::Menu => tokens::MENU_SHARP,
         }
     }
 
@@ -3631,6 +3637,7 @@ impl GlassRim {
         match self {
             Self::Bevelled => 0.0,
             Self::Standing => rimclear_sweep().unwrap_or(STANDING_RIMCLEAR),
+            Self::Menu => tokens::MENU_RIMCLEAR,
         }
     }
 
@@ -3638,10 +3645,11 @@ impl GlassRim {
         let base = match self {
             Self::Bevelled => (GLASS_BEVEL, GLASS_LENS, GLASS_SPEC),
             Self::Standing => (STANDING_BEVEL, STANDING_LENS, [0.0, 0.0, 1.0, 0.0]),
+            Self::Menu => (tokens::MENU_BEVEL, tokens::MENU_LENS, [0.0, 0.0, 1.0, 0.0]),
         };
         match self {
             Self::Standing => standing_sweep().unwrap_or(base),
-            Self::Bevelled => base,
+            Self::Bevelled | Self::Menu => base,
         }
     }
 }
