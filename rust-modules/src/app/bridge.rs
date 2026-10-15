@@ -1263,6 +1263,12 @@ impl Bridge {
         self.stores.hubs.snapshot()
     }
 
+    /// Does a Hubs worker still owe this owner a landing? False once every spawned fetch has been
+    /// taken (applied or failed) and for a launch that was refused.
+    pub(crate) fn hubs_owed(&self) -> bool {
+        self.stores.hubs.owed()
+    }
+
     /// Synchronous addressed Hubs command against this owner's retained Browse directory. Used by
     /// callers outside the per-frame dispatch (server activation, boot).
     pub(crate) fn hubs_run(&mut self, cmd: plx_data::stores::hubs::HubsCmd) -> plx_data::stores::StoreOutcome {

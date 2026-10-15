@@ -777,6 +777,11 @@ pub struct HomeMemory {
     pub scroll_y: f32,
     /// Stable group keys, not row ordinals: provider reorder must not transfer a viewport.
     pub row_scroll: Vec<(u32, f32)>,
+    /// The Continue Watching cards the page showed when it left, as `(element, server, rating key,
+    /// show)`, and the window offset they were read at: what lets a return to a changed row hand a
+    /// show's element to the card that replaced its episode (`HomeScreen::adopt_shows`).
+    pub cw_shows: Vec<(u32, plx_plex::plex::ServerId, String, String)>,
+    pub cw_offset: usize,
 }
 
 #[derive(Clone, Debug, Default)]

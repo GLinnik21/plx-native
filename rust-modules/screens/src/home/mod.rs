@@ -472,6 +472,9 @@ pub struct HomeScreen {
     /// `Arc` clone each, not the catalog), so the NEXT publication can fade out the ones it
     /// removes. Not canon.
     cw_cards: HashMap<u32, Arc<PmsMovie>>,
+    /// The server offset of the window `cw_cards` was taken from: a rebind (`rebind_shows`) is a
+    /// replacement inside one window, never a window that slid. Not canon.
+    cw_offset: usize,
     /// The cards the Continue Watching row removed, by [`ui_cards::elem_key`], kept while its
     /// landing is pending (a later publication adds to them and cannot change one) and let go
     /// once nothing fades. Not canon.
@@ -542,6 +545,7 @@ impl HomeScreen {
             group_index: HashMap::new(),
             projected_generation: None,
             cw_cards: HashMap::new(),
+            cw_offset: 0,
             ghost_cards: HashMap::new(),
             restored_scroll: Vec::new(),
             restore_reveal: false,
@@ -588,8 +592,12 @@ impl HomeScreen {
                     existing.last_col = saved.last_col;
                 }
             } else {
-                assert!(taken_elems.insert(saved.elem), "restored Home element collision");
-                self.push_item(saved.clone());
+                // An element a fresh key already holds is either one `adopt_shows` handed on to the
+                // card that replaced this one, or a card that took the number while the page was
+                // away: this key's card is not in the row, and the remembered cursor recovers.
+                if taken_elems.insert(saved.elem) {
+                    self.push_item(saved.clone());
+                }
             }
         }
         self.next_group = self.next_group.max(memory.next_group).max(FIRST_HUB_GROUP);
@@ -764,6 +772,10 @@ impl HomeScreen {
             let elems = match reused {
                 Some(elems) => elems,
                 None => {
+                    if identity == HomeHubIdentity::ContinueWatching && !placeholders {
+                        let old = old_at.get(&identity).map(|&at| &old_rows[at]);
+                        self.rebind_shows(&identity, hub.items, hub.offset, old);
+                    }
                     let mut elems = Vec::with_capacity(hub.items.len().min(MAX_ITEMS));
                     for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate() {
                         let item_ref = if item.rk.is_empty() {
@@ -827,6 +839,99 @@ impl HomeScreen {
         self.reconcile_carousel(view);
     }
 
+    /// **Focus follows the show** (layer-1 view state, 3g). A show's Continue Watching tile is its
+    /// episode, so when the episode is watched the server answers with the NEXT one under another
+    /// rating key, and the key table would mint a new element for it: the old element leaves the
+    /// page, focus clamps off it with a `FocusMoved`, and the row plays a remove and an insert for
+    /// what the viewer sees as the same tile changing its art. Here the old element is INHERITED
+    /// instead: a card of the previous projection that this window no longer holds hands its key
+    /// to a card this window adds for the same show on the same server, so the element, the focus
+    /// on it and its remembered cursor are all unchanged and only the art differs.
+    ///
+    /// Narrow on purpose. Only the Continue Watching row (the one that animates its landings);
+    /// only episodes of a show (a movie has no show, so it keeps the clamp); the match includes
+    /// the server (the same rating key and the same show on a friend's server are different
+    /// cards); a card that is already keyed does not inherit (it is not new); one old key goes to
+    /// one new card, pairs taken in column order (two tiles of one show); and never across a
+    /// window that slid (`offset`), where a card leaving is paging, not a replacement.
+    fn rebind_shows(
+        &mut self,
+        hub: &HomeHubIdentity,
+        items: &[Arc<PmsMovie>],
+        offset: usize,
+        old: Option<&HubProjection>,
+    ) {
+        let Some(old) = old else { return };
+        if self.cw_cards.is_empty() || self.cw_offset != offset {
+            return;
+        }
+        let items = &items[..items.len().min(MAX_ITEMS)];
+        let held: HashSet<(plx_plex::plex::ServerId, &str)> =
+            items.iter().filter(|item| !item.rk.is_empty()).map(|item| (item.sid, item.rk.as_str())).collect();
+        // Cards the previous projection showed that this window does not hold, in column order.
+        let mut gone: Vec<(u32, &PmsMovie)> = old.elems.iter()
+            .filter_map(|elem| Some((*elem, &**self.cw_cards.get(elem)?)))
+            .filter(|(_, card)| show_of(card).is_some() && !held.contains(&(card.sid, card.rk.as_str())))
+            .collect();
+        let mut inherited: Vec<(u32, plx_plex::plex::ServerId, String)> = Vec::new();
+        for item in items {
+            let Some(show) = show_of(item) else { continue };
+            if item.rk.is_empty() || self.item_slot(hub, ItemRef::Item { sid: item.sid, rk: &item.rk }).is_some() {
+                continue;
+            }
+            let Some(at) = gone.iter().position(|(_, card)| card.sid == item.sid && show_of(card) == Some(show)) else { continue };
+            let (elem, _) = gone.remove(at);
+            inherited.push((elem, item.sid, item.rk.clone()));
+        }
+        if inherited.is_empty() {
+            return;
+        }
+        let keys = Arc::make_mut(&mut self.items);
+        for (elem, sid, rk) in inherited {
+            if let Some(key) = keys.iter_mut().find(|key| key.elem == elem) {
+                key.identity = HomeItemIdentity::Item { hub: hub.clone(), sid, rk };
+            }
+        }
+        self.rebuild_indexes();
+    }
+
+    /// The return half of [`Self::rebind_shows`]. A page that was left and comes back is mounted
+    /// on the CURRENT catalog before its memory arrives, so a show whose next episode replaced the
+    /// one it remembers (the hold on the return from the player lets that land first) holds a
+    /// fresh element for the new card while the memory names the old. Hand the remembered element
+    /// to the new card, so the tile, and the focus on it, are the same; a fresh key that held that
+    /// element takes the displaced one's number (both are fresh, and the next projection rebuilds
+    /// the rows from the keys). Same rules as `rebind_shows`: the same server and show, a card the
+    /// row no longer holds, and not a window that slid.
+    fn adopt_shows(&mut self, memory: &HomeMemory, view: HubsView<'_>) {
+        if memory.cw_shows.is_empty() { return }
+        let Some(hub) = self.rows.iter().position(|r| r.identity == HomeHubIdentity::ContinueWatching)
+            .and_then(|row| self.hub(view, row)) else { return };
+        if hub.offset != memory.cw_offset { return }
+        let items = &hub.items[..hub.items.len().min(MAX_ITEMS)];
+        let held: HashSet<(plx_plex::plex::ServerId, &str)> =
+            items.iter().filter(|item| !item.rk.is_empty()).map(|item| (item.sid, item.rk.as_str())).collect();
+        let mut gone: Vec<&(u32, plx_plex::plex::ServerId, String, String)> = memory.cw_shows.iter()
+            .filter(|(_, sid, rk, _)| !held.contains(&(*sid, rk.as_str()))).collect();
+        let keys = Arc::make_mut(&mut self.items);
+        let mut changed = false;
+        for item in items {
+            let Some(show) = show_of(item) else { continue };
+            if item.rk.is_empty() { continue }
+            let named = |key: &HomeItemKey| matches!(&key.identity,
+                HomeItemIdentity::Item { hub, sid, rk } if *hub == HomeHubIdentity::ContinueWatching && *sid == item.sid && *rk == item.rk);
+            if memory.items.iter().any(named) { continue }
+            let Some(at) = gone.iter().position(|(_, sid, _, s)| *sid == item.sid && s == show) else { continue };
+            let (elem, ..) = *gone.remove(at);
+            let (Some(mine), other) = (keys.iter().position(named), keys.iter().position(|k| k.elem == elem)) else { continue };
+            let displaced = keys[mine].elem;
+            if let Some(other) = other { keys[other].elem = displaced; }
+            keys[mine].elem = elem;
+            changed = true;
+        }
+        if changed { self.rebuild_indexes(); }
+    }
+
     /// Keep the Continue Watching cards the projection just removed (by element, so a later
     /// publication cannot make a ghost show another card) and remember the row's cards for the next.
     fn stash_removed_continue_watching(&mut self, view: HubsView<'_>) {
@@ -840,6 +945,8 @@ impl HomeScreen {
             }
         }
         self.cw_cards = now;
+        self.cw_offset = self.rows.iter().position(|r| r.identity == HomeHubIdentity::ContinueWatching)
+            .and_then(|row| self.hub(view, row)).map_or(0, |hub| hub.offset);
     }
 
     /// Bound the key tables. A key is only needed while its card is shown, was just shown (so a
@@ -2011,7 +2118,7 @@ impl LogicalState for HomeScreen {
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
             // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
-            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold_sent: _, carousel: _,
+            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold_sent: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
@@ -2361,6 +2468,26 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 }
 
+/// What a host test outside this crate may read of the Continue Watching row: its elements in
+/// column order, and whether its landing is still playing (an animation, or a ghost still fading).
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, PartialEq, Eq)]
+pub struct HomeProbe {
+    pub cw_elems: Vec<u32>,
+    pub animating: bool,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl HomeScreen {
+    pub fn probe_for_test(&self) -> HomeProbe {
+        let row = self.rows.iter().position(|r| r.identity == HomeHubIdentity::ContinueWatching);
+        HomeProbe {
+            cw_elems: row.map(|row| self.rows[row].elems.clone()).unwrap_or_default(),
+            animating: row.is_some_and(|row| self.grid.shelves[row].landing_pending() || self.grid.shelves[row].has_ghosts()),
+        }
+    }
+}
+
 impl HomeScreen {
     /// The column of `elem` in row `row`.
     fn item_col(&self, row: usize, elem: u32) -> Option<usize> {
@@ -2459,6 +2586,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 Handled::Yes
             }
             ScreenEvent::RestoreMemory(PageMemory::Home(memory)) => {
+                self.adopt_shows(memory, H::hubs(cx));
                 self.restore(memory);
                 self.sync_catalog(cx);
                 self.cta_available = hero_group_len(H::hubs(cx)) > 0;
@@ -2711,6 +2839,10 @@ impl<H: HomeLike> Screen<H> for HomeScreen {
             row_scroll: self.rows.iter().enumerate()
                 .map(|(index, row)| (row.group.0, self.grid.scroll_x(index)))
                 .chain(self.restored_scroll.iter().copied()).collect(),
+            cw_shows: self.cw_cards.iter()
+                .filter_map(|(&elem, card)| Some((elem, card.sid, card.rk.clone(), show_of(card)?.to_owned())))
+                .collect(),
+            cw_offset: self.cw_offset,
         })
     }
     fn memory_at(&self, _focus: Option<FocusKey<u32>>) -> H::Memory {
@@ -2926,6 +3058,11 @@ fn hero_art(tex: (u32, f32, f32), snap: f32, alpha: f32) -> plx_ui::widgets::Was
         uv: plx_gfx::gfx::UV_FULL,
         tint: theme::with_a(theme::TINT_WHITE, alpha * (1.0 - snap)),
     }
+}
+/// The show an episode card belongs to: `None` for a movie, a season, a collection or an episode
+/// that names no show (the cards that have no "next one" to follow).
+fn show_of(item: &PmsMovie) -> Option<&str> {
+    (item.kind == 3 && !item.show_rk.is_empty()).then_some(item.show_rk.as_str())
 }
 fn hero_logo_rk(item: &PmsMovie) -> &str {
     if item.kind == 3 && !item.show_rk.is_empty() {

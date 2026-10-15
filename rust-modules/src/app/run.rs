@@ -1638,15 +1638,23 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                 }
             }
         }
+        super::playback::hold_return_to_home(app.refresh_hubs, &mut app.pages);
+        // A key press ends the return hold: the viewer is acting on a screen that is still dark,
+        // and an input must not wait behind a refetch. The key itself is not consumed; it goes to
+        // the dispatcher this same frame.
+        if !app.inputs.is_empty() {
+            app.pages.nav.tabs.stack.transition.release_floor();
+        }
         // post-playback home refresh (armed by every exit_player): refetch the hubs so
         // Continue Watching shows the new resume point / next episode. It waits for the stop
         // report to have reached the server (`timeline_stop_landed`), not for a clock: a read that
         // lands before the `stopped` timeline POST is the stale resume point, and a slow share
         // makes that window seconds wide. It is owed once per exit and held while the player is
-        // on top. The request is worker-only; the landing logs the
-        // resulting item count when it actually commits.
+        // on top — except on the return to Home, where the dip waits at its floor for this very
+        // read (`CW_RETURN_HOLD_MS`) and the route still reads Player until it crosses. The request
+        // is worker-only; the landing logs the resulting item count when it actually commits.
         if app.refresh_hubs
-            && !matches!(app.route(), AppArg::Player)
+            && (!matches!(app.route(), AppArg::Player) || app.pages.nav.tabs.stack.transition.floor_held())
             && plx_media::route::timeline_stop_landed()
         {
             app.refresh_hubs = false;
@@ -1659,6 +1667,14 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             // Bridge-owned Browse store through `Bridge::browse_run`.
             app.bridge.browse_run(plx_data::stores::browse::BrowseCmd::HubsInvalidateAll);
             log("home: hubs refresh queued after playback");
+        }
+        // The return hold ends when the refetch it waits for has SETTLED: it was issued (the owed
+        // flag is spent) and every worker it spawned has been taken, whether it brought a catalog
+        // or failed (a failure keeps the content and moves no generation, so the generation is
+        // not the signal). A refused launch owes nothing, so it settles at once. Nothing here can
+        // extend the hold: the bound is the dip's own, on the frame clock.
+        if app.pages.nav.tabs.stack.transition.floor_held() && !app.refresh_hubs && !app.bridge.hubs_owed() {
+            app.pages.nav.tabs.stack.transition.release_floor();
         }
         // (The lost-keyup safety net and the CLIENT-SIDE LONG-PRESS REPEAT stood here — the one
         // hold-to-move path for every discrete focus list, driven by `App::held_key` at 110 ms so
@@ -4622,6 +4638,16 @@ mod lifecycle_regression_tests {
         }
     }
 
+    /// `settle` for the frames after BACK from the player to Home: the page dip may wait dark at its
+    /// floor for the hubs refetch for up to `CW_RETURN_HOLD_MS` (300 ms of frame time, 19 frames),
+    /// and a stop that is still in flight keeps the refetch from being issued, so the whole bound
+    /// is spent before Home is on top.
+    fn settle_after_back(app: &mut App, t: &mut u32) {
+        for _ in 0..24 + (super::super::playback::CW_RETURN_HOLD_MS / 16 + 2) {
+            step(app, t, vec![]);
+        }
+    }
+
     /// A REAL card hold on Home's grid, driven through the whole chain the television runs: the OK
     /// key goes down and stays down, the dispatcher's `InputMachine::tick` delivers `PressHold`
     /// at `LONG_MS`, Home answers it with `HomeReq::ItemMenu`, `content_requests` drains that and
@@ -5165,7 +5191,7 @@ mod lifecycle_regression_tests {
         // exactly this call (`engine.rs`, `route::scrobble_stop`); it is made here, once BACK's own
         // transcode stop has drained, so the held report is the only stop in flight.
         plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
-        settle(&mut rig.app, &mut t);
+        settle_after_back(&mut rig.app, &mut t);
         assert!(super::super::bridge::player(&rig.app.pages).is_none(), "premise: BACK left the player");
         poll_until("premise: the stopped timeline never reached the server", || stop_seen.load(Ordering::SeqCst));
         assert!(!plx_media::route::scrobble_settled(), "premise: the stop is still in flight");
@@ -5219,7 +5245,7 @@ mod lifecycle_regression_tests {
         // first, so the worker's second leg is the held `transcode_stop`.
         plx_media::route::install_active_encoder_for_test("rig-encoder");
         plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
-        settle(&mut rig.app, &mut t);
+        settle_after_back(&mut rig.app, &mut t);
         assert!(super::super::bridge::player(&rig.app.pages).is_none(), "premise: BACK left the player");
         poll_until("premise: the encoder stop never reached the server", || encoder_stop_seen.load(Ordering::SeqCst));
         assert!(!plx_media::route::scrobble_settled(), "premise: the worker is inside the held encoder stop");
@@ -5232,6 +5258,277 @@ mod lifecycle_regression_tests {
             refetches, before + 1,
             "the hubs waited for the server-side encoder stop, though `stopped` had landed",
         );
+    }
+
+    // ---- layer-1 view state, item 10c: Home's return hold ---------------------------------------
+
+    /// A server whose Continue Watching holds episode `1` of show `S` (and two movies) until a
+    /// `stopped` timeline has arrived, then the show's NEXT episode `2` (the movie `7` gone, a new
+    /// movie `9` in). While `hold_hubs` is set the hub read parks before it answers.
+    struct ReturnServer {
+        stopped: Arc<AtomicBool>,
+        hold_hubs: Arc<AtomicBool>,
+        /// The hub read answers with something that is not a catalog (the fetch fails).
+        break_hubs: Arc<AtomicBool>,
+    }
+
+    impl ReturnServer {
+        fn new() -> Self {
+            Self {
+                stopped: Arc::new(AtomicBool::new(false)),
+                hold_hubs: Arc::new(AtomicBool::new(false)),
+                break_hubs: Arc::new(AtomicBool::new(false)),
+            }
+        }
+
+        fn rig(&self) -> Option<Rig> {
+            let (stopped, hold, broken) = (self.stopped.clone(), self.hold_hubs.clone(), self.break_hubs.clone());
+            Rig::serving_with(move |request: &str| {
+                if request.contains("/decision?") {
+                    return r#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#.into();
+                }
+                if request.contains("/:/timeline") {
+                    if request.contains("state=stopped") {
+                        stopped.store(true, Ordering::SeqCst);
+                    }
+                    return r#"{"MediaContainer":{}}"#.into();
+                }
+                if request.starts_with("GET /hubs/continueWatching") {
+                    // Bounded by count, not by a clock: a failing test must not hang.
+                    for _ in 0..5_000 {
+                        if !hold.load(Ordering::SeqCst) { break; }
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    if broken.load(Ordering::SeqCst) { return "not a catalog".into(); }
+                    let (episode, movies) = if stopped.load(Ordering::SeqCst) { ("2", ["8", "9"]) } else { ("1", ["7", "8"]) };
+                    return format!(r#"{{"MediaContainer":{{"size":1,"Hub":[{{"key":"/hubs/continueWatching",
+                      "title":"Continue Watching","hubIdentifier":"home.continue","size":3,"Metadata":[
+                      {{"ratingKey":"{episode}","type":"episode","title":"Episode {episode}","thumb":"/t/{episode}",
+                        "grandparentRatingKey":"S","grandparentTitle":"Show","parentIndex":1,"index":{episode},"duration":60000}},
+                      {{"ratingKey":"{}","type":"movie","title":"Movie","thumb":"/t/m","duration":60000}},
+                      {{"ratingKey":"{}","type":"movie","title":"Movie","thumb":"/t/m","duration":60000}}]}}]}}}}"#, movies[0], movies[1]);
+                }
+                if request.starts_with("GET /hubs") {
+                    return r#"{"MediaContainer":{"size":0}}"#.into();
+                }
+                queue_body(request, false).to_owned()
+            })
+        }
+    }
+
+    /// `step` with the frame clock moved by `advance` ms instead of 16: `0` is a PARKED clock, the
+    /// same `Tick::ms` again, for waiting on a worker without the hold's frame-time bound running.
+    fn step_clock(app: &mut App, t: &mut u32, advance: u32) {
+        *t += advance;
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        fr.now = *t;
+        fr.dt = advance as f32 / 1000.0;
+        let was_player = super::super::bridge::player(&app.pages).is_some();
+        unsafe { playback_tick(app, &mut fr); }
+        super::super::bridge::frame(&mut app.pages, &mut app.bridge,
+            plx_machine::machine::Tick { ms: *t, dt_us: advance * 1000 }, std::mem::take(&mut app.inputs));
+        if was_player && super::super::bridge::player(&app.pages).is_none() {
+            restore_played_entry(app);
+        }
+        content_requests(app, &fr);
+        loop_requests(app);
+        unsafe { update(app, &mut fr); }
+    }
+
+    fn home_probe(app: &App) -> plx_screens::home::HomeProbe {
+        let entry = app.pages.nav.tabs.stack.entries.iter().find(|e| e.arg == AppArg::Home).expect("a Home entry").id;
+        app.pages.nav.entry(entry).and_then(|e| e.inst.as_ref()).and_then(|i| i.screen.as_any())
+            .and_then(|s| s.downcast_ref::<plx_screens::home::HomeScreen>())
+            .expect("a mounted Home").probe_for_test()
+    }
+
+    fn home_focus(app: &App) -> Option<u32> {
+        let entry = app.pages.nav.tabs.stack.entries.iter().find(|e| e.arg == AppArg::Home)?.id;
+        app.pages.input.engine.current(plx_machine::machine::InputOwner::Entry(entry)).map(|key| key.elem)
+    }
+
+    /// The first Continue Watching card's rating key in the hubs the app holds right now.
+    fn first_cw_rk(app: &App) -> String {
+        let snapshot = app.bridge.hubs_snapshot();
+        snapshot.view().hub(0).and_then(|hub| hub.items.first().map(|item| item.rk.to_string())).unwrap_or_default()
+    }
+
+    /// Home with its Continue Watching row read from the server (episode 1 first), focus on that
+    /// first tile, and the product's page transition on the stack.
+    fn home_with_continue_watching(rig: &mut Rig, t: &mut u32) {
+        rig.release.send(()).unwrap(); // nothing parks: the first request answers at once
+        rig.app.bridge.seed_registered_browse_for_test([rig.sid, rig.sid]);
+        let _ = rig.app.bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs);
+        poll_until("Home never read its Continue Watching", || {
+            step(&mut rig.app, t, vec![]);
+            rig.app.bridge.hub_len_for_test(0) == 3
+        });
+        settle(&mut rig.app, t);
+        let entry = rig.app.pages.nav.top_page().unwrap().id;
+        let instance = rig.app.pages.nav.instance_of(entry).unwrap();
+        rig.app.pages.emit(plx_machine::machine::MachineId::Nav, plx_machine::machine::Fx::Deliver(
+            plx_machine::machine::MachineId::Instance(instance),
+            plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(
+                plx_screens::registry::AppMsg::Home(plx_screens::registry::HomeCmd::FocusGrid { row: 0, col: 0 })))));
+        for _ in 0..12 { step(&mut rig.app, t, vec![]); }
+        assert_eq!(first_cw_rk(&rig.app), "1", "premise: Continue Watching opens on episode 1");
+        assert_eq!(home_focus(&rig.app), home_probe(&rig.app).cw_elems.first().copied(),
+            "premise: focus is on the first Continue Watching tile");
+    }
+
+    /// Play episode 1 from Home and leave the player with BACK, the stop the engine would report
+    /// posted at once. Returns the frames until the dip reaches its dark floor (`(alpha, route)`
+    /// sampled after each), stopping there.
+    fn back_out_to_the_floor(rig: &mut Rig, t: &mut u32) {
+        play_with_a_landing_inside_the_dip(rig, t);
+        let back = back_key(*t + 16);
+        step(&mut rig.app, t, vec![back]);
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
+        for _ in 0..40 {
+            if rig.app.pages.nav.tabs.stack.transition.page_alpha() == 0.0 { return; }
+            step(&mut rig.app, t, vec![]);
+        }
+        panic!("the dip never reached its floor");
+    }
+
+    /// **10c (i)**: the hubs answer within the bound. The dip waits dark at its floor for the
+    /// refetch, and the first frame Home is on top shows the NEXT episode in the tile that held
+    /// the first, focused, with nothing animating: Home appears already correct.
+    #[test]
+    fn a_refetch_landing_inside_the_return_hold_shows_on_the_first_home_frame() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        let tile = home_focus(&rig.app).expect("focus on the tile");
+        back_out_to_the_floor(&mut rig, &mut t);
+        let at_floor = t;
+        // The clock is parked while the worker answers (real time), so the bound cannot run out.
+        // (Without a hold the dip has already crossed its floor and there is nothing to wait for.)
+        if super::super::bridge::player(&rig.app.pages).is_some() {
+            // (Settled, not merely changed: the refetch owes one read per source in scope.)
+            poll_until("the refetch never landed", || {
+                step_clock(&mut rig.app, &mut t, 0);
+                !rig.app.refresh_hubs && !rig.app.bridge.hubs_owed()
+            });
+        }
+        assert_eq!(t, at_floor, "premise: the landing came inside the hold");
+        // Frame by frame to the first frame Home is the page on top.
+        for _ in 0..40 {
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert!(t - at_floor < 300, "premise: inside the 300 ms hold ({} ms)", t - at_floor);
+        assert!(matches!(rig.app.route(), AppArg::Home), "premise: Home is on top");
+        assert_eq!(first_cw_rk(&rig.app), "2", "the refetch is in");
+        let probe = home_probe(&rig.app);
+        assert_eq!(probe.cw_elems.first().copied(), Some(tile), "episode 2 sits in episode 1's tile");
+        assert_eq!(home_focus(&rig.app), Some(tile), "and the focus never left it");
+        assert!(!probe.animating, "Home is already correct: no row animation on its first frame");
+    }
+
+    /// **10c (ii)**: the hubs answer after the bound. The hold ends at 300 ms past the floor with the
+    /// OLD content on the first Home frame; when the read lands the same tile shows episode 2 (the
+    /// element is the same one, no ghost for it) while the other cells animate.
+    #[test]
+    fn a_refetch_later_than_the_return_hold_animates_in_after_the_hold_is_released() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        let tile = home_focus(&rig.app).expect("focus on the tile");
+        server.hold_hubs.store(true, Ordering::SeqCst);
+        back_out_to_the_floor(&mut rig, &mut t);
+        let at_floor = t;
+        for _ in 0..40 {
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        let held = t - at_floor;
+        assert!(matches!(rig.app.route(), AppArg::Home), "premise: Home is on top");
+        assert!((284..=316).contains(&held), "the hold ran its 300 ms and no longer: {held} ms past the floor");
+        assert_eq!(first_cw_rk(&rig.app), "1", "the refetch is still out: Home shows what it had");
+        assert!(!home_probe(&rig.app).animating);
+        // 600 ms past the floor the read lands.
+        while t - at_floor < 600 { step(&mut rig.app, &mut t, vec![]); }
+        assert_eq!(first_cw_rk(&rig.app), "1");
+        server.hold_hubs.store(false, Ordering::SeqCst);
+        let gen = rig.app.bridge.hubs_catalog_gen_for_test();
+        let mut animated = false;
+        poll_until("the late refetch never landed", || {
+            step(&mut rig.app, &mut t, vec![]);
+            rig.app.bridge.hubs_catalog_gen_for_test() != gen
+        });
+        for _ in 0..4 {
+            animated |= home_probe(&rig.app).animating;
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert_eq!(first_cw_rk(&rig.app), "2");
+        let probe = home_probe(&rig.app);
+        assert_eq!(probe.cw_elems.first().copied(), Some(tile), "the same tile now shows episode 2");
+        assert_eq!(home_focus(&rig.app), Some(tile), "and holds the focus");
+        assert!(animated, "the other cells animate in (a card left and a card arrived)");
+    }
+
+    /// **10c, a key during the hold**: the dip is dark and waiting on a refetch that has not
+    /// answered. A key press ends the wait on the spot (the key is not consumed), so input never
+    /// queues behind the read; Home appears with the content it has.
+    #[test]
+    fn a_key_press_ends_the_return_hold_at_once() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        server.hold_hubs.store(true, Ordering::SeqCst);
+        back_out_to_the_floor(&mut rig, &mut t);
+        let at_floor = t;
+        for _ in 0..4 { step(&mut rig.app, &mut t, vec![]); }
+        assert!(super::super::bridge::player(&rig.app.pages).is_some(), "premise: the dip is still waiting");
+        let key = plx_ui::fixture::key(plx_machine::machine::Key::Right, plx_ui::fixture::tick(t + 16));
+        step(&mut rig.app, &mut t, vec![key]);
+        for _ in 0..40 {
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert!(matches!(rig.app.route(), AppArg::Home), "Home is on top");
+        assert!(t - at_floor < 150, "the key ended the wait ({} ms past the floor, bound 300)", t - at_floor);
+        assert_eq!(first_cw_rk(&rig.app), "1", "the refetch was still out");
+        server.hold_hubs.store(false, Ordering::SeqCst);
+    }
+
+    /// **10c, a refetch that fails**: a failure moves no catalog generation, but it still settles
+    /// the hold: the dip does not sit out its bound for an answer that is never coming.
+    #[test]
+    fn a_failed_refetch_ends_the_return_hold_at_once() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        server.break_hubs.store(true, Ordering::SeqCst);
+        back_out_to_the_floor(&mut rig, &mut t);
+        let at_floor = t;
+        // Parked clock while the worker fails (real time), so the bound cannot be what ends it.
+        if super::super::bridge::player(&rig.app.pages).is_some() {
+            poll_until("the failed refetch never settled", || {
+                step_clock(&mut rig.app, &mut t, 0);
+                !rig.app.refresh_hubs && !rig.app.bridge.hubs_owed()
+            });
+        }
+        for _ in 0..40 {
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert!(matches!(rig.app.route(), AppArg::Home), "Home is on top");
+        assert!(t - at_floor < 150, "the failure ended the wait ({} ms past the floor, bound 300)", t - at_floor);
+        assert_eq!(first_cw_rk(&rig.app), "1", "Home keeps what it had");
     }
 
     // ---- layer-1 view state, item 6: what a stop tells the screens -----------------------------
@@ -5562,7 +5859,7 @@ mod lifecycle_regression_tests {
         let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
         let back = back_key(t + 16);
         step(&mut rig.app, &mut t, vec![back]);
-        settle(&mut rig.app, &mut t);
+        settle_after_back(&mut rig.app, &mut t);
         assert!(matches!(rig.app.route(), AppArg::Home));
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
     }

@@ -3418,6 +3418,41 @@ pub fn retag_test_item_as_collection(state: &mut PmsState, rk: &str) {
     commit(state, build);
 }
 
+/// Test hook: rewrite every shelf item `rk` in place (it may change its own rating key, kind, show
+/// or server) and republish: the server answering a finished episode with the show's next one.
+#[cfg(any(test, feature = "test-support"))]
+pub fn edit_test_item(state: &mut PmsState, rk: &str, edit: &dyn Fn(&mut PmsMovie)) {
+    plx_base::testlock::assert_held("the pms hub catalog (edit_test_item)");
+    for source in state.srcs.iter_mut() {
+        if let Some(build) = source.last.as_mut() {
+            for shelf in &mut build.shelves {
+                for item in shelf.items.iter_mut().filter(|item| item.rk == rk) {
+                    edit(Arc::make_mut(item));
+                }
+            }
+        }
+    }
+    let build = merge(&state.srcs);
+    commit(state, build);
+}
+
+/// Test hook: the server offset every shelf's window now starts at (a window that slid under the
+/// cards it held), republished.
+#[cfg(any(test, feature = "test-support"))]
+pub fn slide_test_window(state: &mut PmsState, offset: usize) {
+    plx_base::testlock::assert_held("the pms hub catalog (slide_test_window)");
+    for source in state.srcs.iter_mut() {
+        if let Some(build) = source.last.as_mut() {
+            for shelf in &mut build.shelves {
+                shelf.end = offset + shelf.items.len();
+                shelf.offset = offset;
+            }
+        }
+    }
+    let build = merge(&state.srcs);
+    commit(state, build);
+}
+
 #[cfg(test)]
 #[path = "pms_test_support.rs"]
 mod test_support;

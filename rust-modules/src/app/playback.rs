@@ -725,6 +725,34 @@ pub(crate) fn exit_player(
     *refresh_hubs = true;
 }
 
+/// **Home appears already correct** (layer-1 view state, owner decision 2): when the page being
+/// left is the player and the return it asked for is to Home, the page dip waits dark at its floor
+/// for the hubs that exit owes, for at most [`CW_RETURN_HOLD_MS`] of frame time. The refetch is
+/// issued inside the hold, and the hold ends when its answer is in (`run`'s refetch block), a key is
+/// pressed, or the bound is reached. Any other destination returns exactly as before.
+///
+/// Called once a frame after the container's frame, because `exit_player`'s `PopTo` only PARKS the
+/// navigation: the pending op, and the dip that carries it, exist from the next frame. Asking again
+/// is harmless (a dip waits once) and what makes it work from either side of that frame.
+pub(crate) fn hold_return_to_home(
+    refresh_hubs: bool,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+) {
+    if refresh_hubs
+        && matches!(pages.top_arg(), Some(AppArg::Player))
+        && matches!(pages.nav.tabs.stack.pending_dest(), Some(AppArg::Home))
+    {
+        pages.nav.tabs.stack.transition.hold_floor(CW_RETURN_HOLD_MS);
+    }
+}
+
+/// How long (ms of frame time, past the moment the page dip reaches its dark floor) the return
+/// from playback to Home waits for the Continue Watching refetch before it reveals Home with the
+/// content it has. A refetch that lands later animates in (`plx_ui::cards`). A hold that is too
+/// long reads as a stall in the middle of a transition; one that is too short shows the old tile
+/// and moves it a beat later. 300 ms is the plan's proposal, not yet judged on the television.
+pub(crate) const CW_RETURN_HOLD_MS: u32 = 300;
+
 /// The episode is OVER — drained to EOS, or the user skipped a `final` credits marker.
 /// Starts the queued episode when the show has one, else leaves the player exactly as
 /// `exit_player` would. There is no interstitial: "always the next episode" — except under the
