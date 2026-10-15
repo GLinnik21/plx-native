@@ -573,13 +573,17 @@ int sf_set_volume(int volume) {
     snprintf(json, sizeof json, "{\"volume\":%d}", volume);
     return SMP_setVolume(object, json) & 0xff;   /* bool in r0: only the low byte is defined */
 }
-/* The pipeline's current volume as the first integer in getVolume()'s string, -1 when nothing is
+/* The pipeline's current volume: the first integer after the "volume" key in getVolume()'s string, -1 when nothing is
  * loaded or the library returns no digits. */
 int sf_get_volume(void) {
     void *object = sf_ready_object();
     if (!object) return -1;
     const char *s = SMP_getVolume(object);
     if (!s) return -1;
+    /* Skip to the "volume" key when the string is a JSON object, so a number in front of it (an
+     * "ease" block) cannot be read as the volume; a bare number has no key and is read as is. */
+    const char *key = strstr(s, "volume");
+    if (key) s = key + 6;
     for (; *s; s++)
         if (*s >= '0' && *s <= '9') return atoi(s);
     return -1;
