@@ -992,7 +992,9 @@ store, `active_subtitle*`): do not look for a second text renderer. Image subtit
 (PGS/VobSub) keep their bitmap path. The one text the sidecar still draws itself is its failure notice
 (`sidecar::notice()`), drawn by the player screen with `appkit::player_hud::draw_subtitle_message`.
 Fonts are bundled Inter plus per-script Noto Bold faces; because libass runs with no font provider, a
-missing or unloadable libass removes every text subtitle and leaves only that notice.
+missing or unloadable libass removes every text subtitle and the screen draws the libass fault message
+(`ass::Fault::message`, via `AssSubtitles::error`) instead; the sidecar's own failure notice
+(`sidecar::notice()`) is only for a sidecar that fetched or converted to nothing.
 
 ### Module-cycle ratchet (`ci/check-module-cycle.py`)
 
