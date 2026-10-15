@@ -73,7 +73,7 @@ pub const SEASON_UNKNOWN: c_int = -1;
 
 /// A catalog row — owned strings (the old C-ABI fixed `[u8; N]` buffers are gone; no C
 /// consumer remains). Fields pub so the UI / route / player read them directly.
-#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PmsMovie {
     /// WHICH SERVER this row came from. Every other identity on it — `rk`, `show_rk`, `part` — is a
@@ -687,6 +687,8 @@ fn request_refetch_hubs_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapte
         s.abandoned.clear();
         s.adoptable = false;
         s.page = None;
+        s.staged = None; // a prompted read supersedes what a quiet one brought
+        s.quiet = false;
     }
     let mut turn = fanout_turn(&mut state.fanout, &srcs, |_| true);
     for s in srcs.iter_mut() {
@@ -729,6 +731,9 @@ fn edit_item_with_scope(
         if let Some(b) = s.last.as_mut() {
             hit |= apply_edit(b, at, edit);
         }
+        // what a quiet read brought is the server from before this edit; it must carry the edit
+        // when it lands, and it is not what the person sees, so it never decides `hit`
+        if let Some(b) = s.staged.as_mut() { apply_edit(b, at, edit); }
     }
     if !hit {
         return false; // the item is on no shelf (a Library-grid or Related item): nothing to redraw
@@ -1068,6 +1073,7 @@ fn settle_deck(srcs: &mut [Src], refreshed: bool) {
 
 /// Moves the deck one page in a direction; a lane that could not be read stays where it is.
 fn advance_deck(srcs: &mut [Src], before: bool) {
+    for s in srcs.iter_mut() { s.staged = None; } // its lane would put the deck back
     let (idx, mut lanes) = take_lanes(srcs);
     deck::advance(&mut lanes, !before, deck::PAGE);
     put_lanes(srcs, &idx, lanes);
@@ -1331,6 +1337,122 @@ fn pump_reloads(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
     }
     state.srcs = srcs;
     endpoints
+}
+
+/// Drops what a quiet read holds for `s`. A quiet read still out is superseded rather than left to
+/// land as an ordinary full read, which would publish at its own time.
+fn drop_staged(s: &mut Src) {
+    s.staged = None;
+    if std::mem::take(&mut s.quiet) {
+        s.fetching = false;
+        s.deferred = false;
+        s.seq = s.seq.wrapping_add(1);
+    }
+}
+
+/// A quiet read that could not be started or answered: the source stays exactly as it was, with no
+/// backoff and no failed state. Rediscovery is still owed, as for any failed read.
+fn quiet_failed(s: &mut Src) -> crate::stores::EndpointRefresh {
+    s.quiet = false;
+    s.deferred = false;
+    crate::stores::EndpointRefresh { sid: s.sid }
+}
+
+/// `HubsCmd::RefetchSourceQuiet`: read ONE source's hubs again without publishing. Never bumps
+/// `hub_gen` and touches no other source. Skipped while the source is fetching or paging, is not
+/// Ready, or an ordinary (prompted) read of any source is out: that one publishes what this would
+/// have staged.
+fn refetch_source_quiet(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope, sid: ServerId,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    let mut endpoints = crate::stores::EndpointRefreshSet::default();
+    let mut srcs = std::mem::take(&mut state.srcs);
+    let prompted_out = srcs.iter().any(|s| (s.fetching || s.deferred) && !s.quiet);
+    if let Some(i) = srcs.iter().position(|s| s.sid == sid) {
+        let s = &srcs[i];
+        if !prompted_out && !s.fetching && !s.deferred && s.page.is_none() && s.state == HubState::Ready {
+            srcs[i].quiet = true;
+            let gen = state.hub_gen;
+            let mut turn = fanout_turn(&mut state.fanout, &srcs, source_waiting);
+            if let Some(request) = kick_gated(&mut turn, gen, adapter, &mut srcs[i], scope, launch) { endpoints.insert(request); }
+        }
+    }
+    state.srcs = srcs;
+    endpoints
+}
+
+/// What the staged answers would change in the published catalog.
+enum Shift {
+    /// Nothing the person could see.
+    None,
+    /// A row added, removed or moved: the ground itself shifts.
+    Structural,
+    /// These rows hold different cards.
+    Rows(Vec<usize>),
+}
+
+fn shift(old: &HomeCatalog, new: &HubBuild) -> Shift {
+    if old.hubs.len() != new.1.len() { return Shift::Structural; }
+    let mut rows = Vec::new();
+    for (k, (was, now)) in old.hubs.iter().zip(&new.1).enumerate() {
+        if (&was.hub_id, &was.key, &was.title, &was.source) != (&now.hub_id, &now.key, &now.title, &now.source) {
+            return Shift::Structural;
+        }
+        let cards = |items: &[Arc<PmsMovie>], row: &HubRow| items.get(row.start..row.start + row.len).map(<[_]>::to_vec);
+        let (a, b) = (cards(&old.items, was), cards(&new.0, now));
+        let same = match (&a, &b) {
+            (Some(a), Some(b)) => a.len() == b.len() && a.iter().zip(b).all(|(x, y)| Arc::ptr_eq(x, y) || **x == **y),
+            _ => false,
+        };
+        if !same { rows.push(k); }
+    }
+    if rows.is_empty() { Shift::None } else { Shift::Rows(rows) }
+}
+
+/// `HubsCmd::Publish`: lands what quiet reads staged when nothing the person is looking at moves.
+/// Home covered: everything lands at once. Home showing: a row added, removed or moved waits, so
+/// does a changed row inside the held range, and Continue Watching waits while the focus is on it or
+/// a press is live; a change only to rows off screen, or to Continue Watching with the focus
+/// elsewhere, lands. The decision is made on the catalog the staged answers would build, so it is
+/// data here and not a rule each screen repeats.
+fn publish_staged(state: &mut PmsState, scope: &BrowseScope, home_top_visible: bool,
+    focused_hub: Option<usize>, press_live: bool) {
+    if !state.srcs.iter().any(|s| s.staged.is_some()) { return; }
+    let mut srcs = std::mem::take(&mut state.srcs);
+    // swap the staged answers in; `olds` is what goes back if the commit waits
+    let mut olds: Vec<(usize, Option<SourceBuild>)> = Vec::new();
+    for (i, s) in srcs.iter_mut().enumerate() {
+        let Some(mut new) = s.staged.take() else { continue };
+        if let Some(old) = s.last.as_ref() { carry_descriptors(old, &mut new); }
+        olds.push((i, s.last.replace(new)));
+    }
+    settle_deck(&mut srcs, true);
+    let candidate = merge_with_scope(&srcs, scope);
+    let change = shift(published_home(state), &candidate);
+    let deck = candidate.1.len().saturating_sub(published_order(&srcs, &scope.pins).len());
+    let (lo, hi) = clamp_hold(state.hold);
+    let waits = home_top_visible && match &change {
+        Shift::None => false,
+        Shift::Structural => true,
+        Shift::Rows(rows) => rows.iter().any(|&k| if k < deck {
+            press_live || focused_hub.is_some_and(|f| f < deck)
+        } else {
+            (lo..=hi).contains(&k)
+        }),
+    };
+    if waits {
+        for (i, old) in olds {
+            srcs[i].staged = std::mem::replace(&mut srcs[i].last, old);
+        }
+        state.srcs = srcs;
+        return;
+    }
+    let commit_it = !matches!(change, Shift::None);
+    let build = commit_it.then(|| merge_held(&mut srcs, scope, state.hold).0);
+    state.srcs = srcs;
+    if let Some(mut build) = build {
+        if home_top_visible { preserve_heroes(state, &mut build); }
+        commit(state, build);
+    }
 }
 
 /// `HubsCmd::Hold`: the screen holds rows `lo..=hi`. Rows that left the range give their cards up;
@@ -1927,6 +2049,14 @@ struct Src {
     /// failure never blank a populated Home; `None` (never answered) is what makes a dead source
     /// contribute nothing at all — no heading, no empty shelf, no spinner row.
     last: Option<SourceBuild>,
+    /// What a QUIET read ([`HubsCmd::RefetchSourceQuiet`](crate::stores::hubs::HubsCmd)) brought,
+    /// held back from `last` until [`HubsCmd::Publish`](crate::stores::hubs::HubsCmd) lets it land.
+    staged: Option<SourceBuild>,
+    /// The read this source has out, or is owed by the fan-out gate, is a quiet one: its landing is
+    /// staged, and a failure leaves the source exactly as it was. Kept here, not on the request or
+    /// the landing, so a quiet ask the gate deferred is still quiet when a tick launches it and so
+    /// the recorded landing format does not change.
+    quiet: bool,
 }
 
 impl Src {
@@ -1962,7 +2092,7 @@ impl Src {
         self.token_gen = request.token_gen;
         self.fetching = true;
         self.stamp = self.ledger.stamp(); // this read already carries every edit published so far
-        if self.page.is_none() { self.state = HubState::Loading; }
+        if self.page.is_none() && !self.quiet { self.state = HubState::Loading; }
         self.retry_s = 0.0;
         self.seq = request.seq;
         Some(request)
@@ -1988,6 +2118,8 @@ impl Src {
             ledger: Default::default(),
             stamp: 0,
             last: None,
+            staged: None,
+            quiet: false,
         }
     }
 }
@@ -2017,6 +2149,8 @@ fn refresh_src_lifecycle(s: &mut Src) -> bool {
     s.abandoned.clear();
     s.adoptable = false;
     s.page = None;
+    s.staged = None;
+    s.quiet = false;
     // Retained cards may still paint during the new profile's fetch, but its request must
     // start at the preview rather than reuse the previous profile's listing positions.
     if let Some(build) = s.last.as_mut() {
@@ -2432,6 +2566,7 @@ fn sync_roster_with_scope(state: &mut PmsState, scope: &BrowseScope) {
                 let mut keep = srcs.remove(i);
                 restamped |= keep.handle != handle && keep.last.is_some();
                 keep.handle = handle;
+                drop_staged(&mut keep);
                 // Preserve the last good shelves while the replacement lifecycle fetches, but
                 // release and supersede the old single-flight so it cannot wedge this slot.
                 refresh_src_lifecycle(&mut keep);
@@ -2498,6 +2633,7 @@ fn landed_ok(s: &mut Src, b: SourceBuild) {
     let mut b = b;
     if let Some(old) = s.last.as_ref() { carry_descriptors(old, &mut b); }
     s.last = Some(b);
+    s.staged = None; // this answer is newer than anything a quiet read held
     s.state = HubState::Ready;
     s.retry_n = 0;
     s.retry_s = 0.0;
@@ -2554,6 +2690,7 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, l
     // redirect a fetch that is already out (`plex::servers` leaks each client precisely so that
     // reference stays live).
     let Some(c) = plx_plex::plex::client_for(s.sid) else {
+        if s.quiet { return Some(quiet_failed(s)); }
         return Some(landed_fail(s));
     };
     let Some(mut request) = s.begin_request(c, gen,
@@ -2566,6 +2703,7 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, l
         // nothing will ever fill the mailbox (the thread limit refused us), so release the latch
         // here and back off — `pump` will try again on the ladder.
         s.fetching = false;
+        if s.quiet { return Some(quiet_failed(s)); }
         if s.page.is_some() {
             // The system refusing a thread says nothing about the server, so a page ask does not
             // spend one of its three attempts on it; it backs off and asks again.
@@ -2841,6 +2979,18 @@ fn run_with_scope(
             reset_with_scope(state, adapter, scope);
             crate::stores::StoreOutcome::changed(true)
         }
+        HubsCmd::RefetchSourceQuiet { sid } => {
+            let mut launch = |r| spawn_fetch(adapter, r);
+            crate::stores::StoreOutcome {
+                changed: false,
+                endpoints: refetch_source_quiet(state, adapter, scope, sid, &mut launch),
+            }
+        }
+        HubsCmd::Publish { home_top_visible, focused_hub, press_live } => {
+            let before = state.catalog_gen;
+            publish_staged(state, scope, home_top_visible, focused_hub, press_live);
+            crate::stores::StoreOutcome::changed(state.catalog_gen != before)
+        }
     }
 }
 
@@ -2862,11 +3012,12 @@ fn controlled_work_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, c
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
     use crate::stores::hubs::HubsCmd;
     let before = state.catalog_gen;
-    let command = cmd.as_ref().is_some_and(|cmd| !cmd.is_paging());
+    let command = cmd.as_ref().is_some_and(|cmd| !cmd.is_paging() && !cmd.is_background());
     let endpoints = match cmd {
         Some(paging) if paging.is_paging() => run_page_cmd(state, adapter, scope, paging, launch),
         Some(HubsCmd::RefetchHubs) => request_refetch_hubs_with_scope(state, adapter, scope, launch),
         Some(HubsCmd::Hold { lo, hi }) => run_hold(state, adapter, scope, lo, hi, launch),
+        Some(HubsCmd::RefetchSourceQuiet { sid }) => refetch_source_quiet(state, adapter, scope, sid, launch),
         Some(HubsCmd::Retry) => {
             let gen = state.hub_gen;
             let mut srcs = std::mem::take(&mut state.srcs);
@@ -2925,6 +3076,8 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         });
         if l.gen != cur || l.seq != s.seq || !lifecycle_matches {
             if l.gen == cur && l.seq == s.seq && !lifecycle_matches {
+                s.staged = None;
+                s.quiet = false;
                 s.fetching = false;
                 s.abandoned.clear();
                 s.adoptable = false;
@@ -2938,10 +3091,23 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
             continue;
         }
         s.fetching = false;
+        if std::mem::take(&mut s.quiet) {
+            // a quiet read stages its answer and publishes nothing; a failure is not a failed source
+            match l.build {
+                Some(mut b) => {
+                    replay_since_request(s, &mut b);
+                    if let Some(old) = s.last.as_ref() { carry_descriptors(old, &mut b); }
+                    s.staged = Some(b);
+                }
+                None => { endpoints.insert(crate::stores::EndpointRefresh { sid: s.sid }); }
+            }
+            continue;
+        }
         match l.build {
             Some(mut b) => {
                 replay_since_request(s, &mut b);
                 if let Some(page) = s.page.take() {
+                    s.staged = None; // the window moved under it
                     dirty |= if page.id == DECK_ID { land_lane(s, b) } else if page.reload { land_reload(s, &page, b) } else { land_page(s, &page, b) };
                     paged = true;
                     s.retry_n = 0;
@@ -3511,6 +3677,10 @@ mod recent_paging_tests;
 #[cfg(test)]
 #[path = "pms_owed_tests.rs"]
 mod owed_tests;
+
+#[cfg(test)]
+#[path = "pms_staged_tests.rs"]
+mod staged_tests;
 
 /// The library's tile abstraction (restructure spec §10) over a catalog row: the one place a
 /// `PmsMovie` becomes a `Tile`, so a widget that draws a tile asks the trait and never this type.

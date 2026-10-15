@@ -24,17 +24,41 @@ pub enum HubsCmd {
     Reset,
     /// The optimistic half of a view-state change on the hub catalog (`viewstate::publish_view`).
     ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
+    /// Read source `sid` again WITHOUT publishing it: the answer is held on the source
+    /// (`pms::Src::staged`) until [`HubsCmd::Publish`] says it may land. Unlike `RefetchHubs` it
+    /// never supersedes a flight, touches no other source and moves no generation, so a read in
+    /// flight for the person is never dropped by it. Ignored while the source is loading, fetching
+    /// or paging, and while any other source has an ordinary read out.
+    ///
+    /// The caller gates it: nothing sends it while `app.refresh_hubs || bridge.hubs_owed()`
+    /// (a prompted refetch is owed or out, and would supersede it anyway). The first senders are
+    /// the re-read on resume and on reveal (layer-2 L2-5) and the notification mapping (L2-4).
+    RefetchSourceQuiet { sid: plx_plex::plex::ServerId },
+    /// Sent every frame by the application: may what is staged land now? Nothing staged does
+    /// nothing. `home_top_visible` is "Home is the page the person is looking at"; `focused_hub`
+    /// is the catalog row (the index `HubsView::hub` takes) the focus is in, if it is in a row;
+    /// `press_live` is "a press is armed". While Home is hidden the staged answer lands at once.
+    /// While it is visible it lands only if nothing the person can see or is pointing at moves:
+    /// no row added, removed or reordered, and every row that changed is outside the held window
+    /// or is Continue Watching with the focus elsewhere.
+    Publish { home_top_visible: bool, focused_hub: Option<usize>, press_live: bool },
 }
 
 impl HubsCmd {
     /// Page requests move a window, not the catalog, so they do not bump the notice generation.
     pub fn is_paging(&self) -> bool { matches!(self, HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }) }
 
+    /// Commands the application sends on no one's behalf (a quiet read, the per-frame publish
+    /// check): they raise the notice only through what they changed, never because they ran.
+    pub fn is_background(&self) -> bool {
+        matches!(self, HubsCmd::RefetchSourceQuiet { .. } | HubsCmd::Publish { .. })
+    }
+
     /// Does this command raise the notice whatever it changed? Paging does not (see above), and a
     /// report of what the server holds (`Facts`, `Offset`) raises it only through the rows it
     /// altered: one every row already agrees with relays nothing out.
     fn always_notifies(&self) -> bool {
-        !self.is_paging() && !matches!(self, HubsCmd::ApplyView {
+        !self.is_paging() && !self.is_background() && !matches!(self, HubsCmd::ApplyView {
             edit: crate::viewstate::ViewEdit::Facts { .. } | crate::viewstate::ViewEdit::Offset { .. }, ..
         })
     }
@@ -323,6 +347,31 @@ mod contract_tests {
             store.queue_test_landing(Some(1));
             assert_eq!(store.take_results().len(), 1, "{path} lost a new worker's landing");
         }
+    }
+
+    /// The per-frame publish check and a quiet ask are background chatter: they raise the notice only
+    /// through what they changed, so a Home with nothing staged is not repainted every frame.
+    #[test]
+    fn background_commands_raise_the_notice_only_when_they_change_something() {
+        let _guard = plx_base::testlock::serial();
+        let directory = crate::stores::browse::DirectorySnapshot::fixture(0, 0, vec![]);
+        let mut store = HubsStore::default();
+        store.seed_for_test(2, crate::pms::HubState::Ready);
+        let before = store.gen();
+        for visible in [true, false] {
+            let out = store.run_with_directory(
+                HubsCmd::Publish { home_top_visible: visible, focused_hub: None, press_live: false }, directory.view());
+            assert!(!out.changed);
+        }
+        assert_eq!(store.gen(), before, "Publish with nothing staged does not raise the notice");
+        assert_eq!(store.take_notice(), None);
+        let out = store.controlled_with_directory(
+            Some(HubsCmd::Publish { home_top_visible: true, focused_hub: None, press_live: false }), 0.0,
+            directory.view(), &mut |_| false);
+        assert!(!out.changed);
+        assert_eq!(store.gen(), before, "…on the controlled path too");
+        assert!(HubsCmd::Publish { home_top_visible: true, focused_hub: None, press_live: false }.is_background());
+        assert!(!HubsCmd::RefetchHubs.is_background());
     }
 
     fn section(sid: plx_plex::plex::ServerId, section: usize, pinned: bool)
