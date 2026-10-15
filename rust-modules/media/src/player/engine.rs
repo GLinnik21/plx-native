@@ -921,7 +921,7 @@ fn sink_envelope_now(ps: &crate::route::PlaybackSession, video: LoadVideo) -> Si
     sink_envelope(
         video,
         crate::route::sink_max_raster(ps),
-        crate::route::stream_fps(ps),
+        fed_fps(crate::route::stream_fps(ps), super::applied_rate_permille()),
         plx_platform::devcaps::caps(),
         plx_platform::devcaps::measured() && !crate::route::forced_direct_play(ps),
     )
@@ -958,6 +958,15 @@ fn build_av_payload(ps: &crate::route::PlaybackSession, video: &str, audio: &str
     let mut p = PAYLOAD_AV
         .replace(r#""video":"H264""#, &format!(r#""video":"{video}""#))
         .replace(r#""audio":"AC3""#, &format!(r#""audio":"{audio}""#))
+        // PCM (playback speed) needs its format. libpf 3.9.3 reads `sampleRate` with getFloat and
+        // matches it against a KILOHERTZ table (48, 44.1, 32, …): `48000` matches nothing and
+        // silently falls back to 44.1, which plays 48 kHz audio 9% slow and resyncs every few
+        // seconds (measured 2026-10-15). `channelMode` is one of mono/dual/stereo/joint stereo.
+        .replace(r#""esInfo":"#, if audio == "PCM" {
+            r#""pcmInfo":{"bitsPerSample":16,"sampleRate":48,"channelMode":"stereo"},"esInfo":"#
+        } else {
+            r#""esInfo":"#
+        })
         .replace(r#""maxWidth":1920"#, &format!(r#""maxWidth":{}"#, env.w))
         .replace(r#""maxHeight":1080"#, &format!(r#""maxHeight":{}"#, env.h))
         .replace(
@@ -978,7 +987,7 @@ fn build_av_payload(ps: &crate::route::PlaybackSession, video: &str, audio: &str
     if plx_base::devtrig::flag("nofps") {
         #[cfg(feature = "devtriggers")]
         log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
-    } else if let Some((num, den)) = fps_rational(crate::route::stream_fps(ps)) {
+    } else if let Some((num, den)) = fed_fps_rational(crate::route::stream_fps(ps), super::applied_rate_permille()) {
         p = p
             .replace(
                 r#""seperatedPTS":true}"#,
@@ -1176,6 +1185,26 @@ fn with_window_id(mt: &MainThread, p: &str) -> String {
 
 /// Plex decimal fps → (value, scale) rational for the Load esInfo. Broadcast rates map to their
 /// exact NTSC/film ratios; integer rates to n/1; anything else to milli-fps. None if fps is unknown.
+/// The frame rate the pipeline is actually FED: at a playback speed every frame is fed, `rate`
+/// times closer together (`player::to_sink_ns`), so a 30p film at 2x arrives at 60. What the Load
+/// declares (the envelope's `maxFrameRate`, `videoFpsValue`/`videoFpsScale`) must be this, not the
+/// file's: newer sets allocate the decoder against the declaration.
+fn fed_fps(fps: f64, rate_permille: i32) -> f64 {
+    fps * rate_permille as f64 / 1000.0
+}
+
+/// [`fps_rational`] of the fed rate, scaled exactly: 24000/1001 at 1.5x is 36000/1001.
+fn fed_fps_rational(fps: f64, rate_permille: i32) -> Option<(i64, i64)> {
+    let (num, den) = fps_rational(fps)?;
+    let (num, den) = (num * rate_permille as i64, den * 1000);
+    let g = gcd(num, den);
+    Some((num / g, den / g))
+}
+
+fn gcd(a: i64, b: i64) -> i64 {
+    if b == 0 { a.abs().max(1) } else { gcd(b, a % b) }
+}
+
 fn fps_rational(fps: f64) -> Option<(i64, i64)> {
     if fps <= 0.0 {
         return None;
@@ -1457,6 +1486,15 @@ fn start_bufferfeed_inner(
     // written ONCE (`LoadVideo`): the `load:` line below would otherwise re-read the route and
     // re-derive it.
     let mut video_declared: &str = "-";
+    // Playback speed for THIS Load (`player::session_rate_for`), published before the demuxer is
+    // spawned: it reads it to decide whether to decode the audio, and every timestamp crossing to
+    // the pipeline is scaled by it (`player::to_sink_ns`). After any `reset_session`, which puts
+    // it back to 1x.
+    let session_rate = if stream { super::session_rate_for(ps) } else { super::RATE_NORMAL };
+    SHARED.applied_rate_permille.store(session_rate, Ordering::Relaxed);
+    if session_rate != super::RATE_NORMAL {
+        log(&format!("speed: this Load plays at {session_rate} (audio decoded in the app, fed as PCM)"));
+    }
     let payload_str: &str = if stream {
         let stream_vcodec = crate::route::stream_vcodec(ps);
         let Some(lv) = LoadVideo::of_stream(&stream_vcodec) else {
@@ -1501,6 +1539,8 @@ fn start_bufferfeed_inner(
                 return Err(crate::route::RouteStartResult::StartFailed);
             };
             SHARED.dg_load_a.store(diagnostic, Ordering::Relaxed);
+            // At a speed the sound is decoded and stretched in the app (`ff::SpeedDecoder`).
+            let ac = if session_rate != super::RATE_NORMAL { "PCM" } else { ac };
             audio_declared = ac;
             // The sink envelope — `adaptiveStreaming`'s maxWidth/maxHeight/maxFrameRate — used
             // to be the panel max (4K60) for every codec and every source, on the reasoning that
@@ -2489,6 +2529,14 @@ impl FeedPace {
     /// The position to throttle against at `now_ms`, given the current raw `pres_fed`.
     /// [`PRES_NONE`] passes through untouched (feed freely) and forgets the last report.
     pub fn reference(&mut self, pres: i64, now_ms: u32) -> i64 {
+        self.reference_at(pres, now_ms, super::RATE_NORMAL)
+    }
+
+    /// [`Self::reference`] for a pipeline playing at `rate_permille` (1500 = 1.5x): between two
+    /// reports the playhead moves that much media per wall-clock ms, so the run-on scales with it.
+    /// Run on at 1x under a faster pipeline, the estimate would trail the real playhead and the
+    /// lane would feed less lead than the throttle means to keep.
+    pub fn reference_at(&mut self, pres: i64, now_ms: u32, rate_permille: i32) -> i64 {
         if pres == PRES_NONE {
             self.last = None;
             return pres;
@@ -2501,7 +2549,7 @@ impl FeedPace {
             }
         };
         let run_on = now_ms.saturating_sub(at).min(FEED_PACE_CAP_MS) as i64;
-        pres.saturating_add(run_on * 1_000_000)
+        pres.saturating_add(run_on * 1_000 * i64::from(rate_permille.max(0)))
     }
 }
 
@@ -2962,7 +3010,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                     // not fed yet, so Seek cannot race a Feed. Never a negative millis: Seek
                     // refuses it, and a negative PTS is unparseable by Feed.
                     SHARED.pts_shift.store(0, Ordering::Relaxed);
-                    let ms = pts.max(0) / 1_000_000;
+                    let ms = super::to_sink_ns(pts.max(0)) / 1_000_000;
                     let rv = unsafe { sink().seek(mt, ms) };
                     log(&format!("in-place seek(native): Seek({ms}) rv={rv}"));
                     if rv == 0 {
@@ -3004,13 +3052,13 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
                     // this re-anchors the sink WITHOUT a reload/decoder re-init. disp_base=0 +
                     // pts_shift=0 → playpos = presented real pts = content time.
                     SHARED.pts_shift.store(0, Ordering::Relaxed);
-                    let ok = unsafe { sink().set_time_to_decode(mt, pts) };
+                    let ok = unsafe { sink().set_time_to_decode(mt, super::to_sink_ns(pts)) };
                     // setTimeToDecode returns 0 on webOS<11 (it needs PausedState); fall back to
                     // the content-info path (loadSpi_getInfo + setContentInfo(ptsToDecode)), which
                     // re-anchors the decode position while Playing. Then always inject the fresh
                     // GStreamer SEGMENT so the sink re-bases instead of stalling.
                     let ci = if ok == 0 {
-                        unsafe { sink().set_content_info(mt, pts) }
+                        unsafe { sink().set_content_info(mt, super::to_sink_ns(pts)) }
                     } else {
                         1
                     };
@@ -3071,7 +3119,11 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         // Skipped while priming (to reach PRIME_NS before Play; the per-tick slice below is waived
         // until the lane holds its prime depth, then spreads the rest). Each lane's queue is
         // pts-ordered, so if the head is over budget everything behind it is too; breaking is right.
-        let pres = eng.feed_pace.reference(SHARED.pres_fed.load(Ordering::Relaxed), super::vclock_ms());
+        let pres = eng.feed_pace.reference_at(
+            SHARED.pres_fed.load(Ordering::Relaxed),
+            super::vclock_ms(),
+            SHARED.applied_rate_permille.load(Ordering::Relaxed),
+        );
         if !eng.prime_play {
             let budget = if es == 1 {
                 MAX_FEED_AHEAD_NS
@@ -3104,7 +3156,8 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         } else {
             false
         };
-        let r = plx_base::diag::spans::span("sfv", || unsafe { sink().feed(mt, data, len as u32, fp, es) });
+        let sink_pts = super::to_sink_ns(fp);
+        let r = plx_base::diag::spans::span("sfv", || unsafe { sink().feed(mt, data, len as u32, sink_pts, es) });
         if presentation_probe {
             if (r as u8) == b'O' {
                 if !SHARED.commit_native_presentation_probe(eng.native_epoch, |num| {
@@ -3194,7 +3247,11 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
     // arm writes it, on this same thread), and one pres_fed sample per tick is plenty against the
     // multi-second audio budget.
     let shift = SHARED.pts_shift.load(Ordering::Relaxed);
-    let pres = eng.feed_pace.reference(SHARED.pres_fed.load(Ordering::Relaxed), super::vclock_ms());
+    let pres = eng.feed_pace.reference_at(
+        SHARED.pres_fed.load(Ordering::Relaxed),
+        super::vclock_ms(),
+        SHARED.applied_rate_permille.load(Ordering::Relaxed),
+    );
     let slice = FeedSlice::begin();
     let mut fed = 0;
     while fed < 120 {
@@ -3239,7 +3296,8 @@ fn feed_audio_lane(mt: &MainThread, eng: &mut Engine) {
         if slice.spent(fed, starved) {
             break;
         }
-        let r = plx_base::diag::spans::span("sfa", || unsafe { sink().feed(mt, data, len as u32, fp, es) });
+        let sink_pts = super::to_sink_ns(fp);
+        let r = plx_base::diag::spans::span("sfa", || unsafe { sink().feed(mt, data, len as u32, sink_pts, es) });
         // Accepted only — see the video lane's note.
         if (r as u8) == b'O' && fp > eng.max_fed_audio_pts {
             eng.max_fed_audio_pts = fp;
@@ -3423,6 +3481,25 @@ mod feed_pace_tests {
         assert_eq!(pace.reference(5_000 * MS, 100_000), 5_000 * MS + FEED_PACE_CAP_MS as i64 * MS);
         assert_eq!(pace.reference(PRES_NONE, 100_001), PRES_NONE);
         assert_eq!(pace.reference(5_000 * MS, 100_002), 5_000 * MS, "a fresh report restarts the run-on");
+    }
+
+    /// At 1.5x the playhead moves 1.5 ms of media per wall-clock ms between reports, so the
+    /// estimate runs on that much faster; capped by the same wall-clock bound.
+    #[test]
+    fn the_run_on_follows_the_pipeline_rate() {
+        let mut pace = FeedPace::default();
+        assert_eq!(pace.reference_at(5_000 * MS, 100, 1500), 5_000 * MS);
+        assert_eq!(pace.reference_at(5_000 * MS, 150, 1500), 5_075 * MS);
+        assert_eq!(pace.reference_at(5_000 * MS, 200, 500), 5_050 * MS, "half speed runs on at half");
+        assert_eq!(
+            pace.reference_at(5_000 * MS, 100_000, 2000),
+            5_000 * MS + 2 * FEED_PACE_CAP_MS as i64 * MS,
+            "the cap is wall-clock time; at 2x it covers twice the media"
+        );
+        assert_eq!(
+            FeedPace::default().reference(5_000 * MS, 100),
+            FeedPace::default().reference_at(5_000 * MS, 100, crate::player::RATE_NORMAL)
+        );
     }
 }
 
@@ -6124,6 +6201,8 @@ mod load_in_flight_tests {
         );
         stop_bufferfeed(&mut ps, &mut pa);
     }
+
+
 }
 
 /// **The webOS 10.3.1 refusal, replayed.** `docs/webos10-lab-report.md` §3.2 records the exact
@@ -6256,6 +6335,36 @@ mod sink_envelope_tests {
         let p = build_av_payload(&ps, "H265", "AC3 PLUS", ENVELOPE_UHD60);
         assert!(p.contains(r#""maxWidth":3840"#) && p.contains(r#""maxHeight":2160"#), "{p}");
         assert!(!p.contains(r#""maxFrameRate":30"#), "the template's 30 must be replaced: {p}");
+    }
+
+    /// A playback-speed Load declares PCM with its format, the sample rate in KILOHERTZ (libpf
+    /// matches `48`; `48000` silently became 44.1 on the 3.9.3 set). Compressed audio carries no
+    /// `pcmInfo` at all, so every playback without a speed is byte-for-byte what it was.
+    #[test]
+    fn a_pcm_load_declares_its_format_and_compressed_audio_does_not() {
+        let ps = crate::route::PlaybackSession::IDLE;
+        let p = build_av_payload(&ps, "H264", "PCM", ENVELOPE_FHD60);
+        assert!(p.contains(r#""audio":"PCM""#), "{p}");
+        assert!(
+            p.contains(r#""pcmInfo":{"bitsPerSample":16,"sampleRate":48,"channelMode":"stereo"},"esInfo":"#),
+            "{p}"
+        );
+        assert_eq!(p.matches("pcmInfo").count(), 1);
+        for audio in ["AAC", "AC3", "AC3 PLUS", "DTS"] {
+            assert!(!build_av_payload(&ps, "H264", audio, ENVELOPE_FHD60).contains("pcmInfo"), "{audio}");
+        }
+    }
+
+    /// At a speed the Load declares the rate actually fed, exactly: 23.976 at 1.5x is 36000/1001,
+    /// and at 1x every declaration is what it was.
+    #[test]
+    fn a_speed_declares_the_fed_frame_rate() {
+        assert_eq!(super::fed_fps_rational(23.976, 1000), Some((24000, 1001)));
+        assert_eq!(super::fed_fps_rational(23.976, 1500), Some((36000, 1001)));
+        assert_eq!(super::fed_fps_rational(25.0, 2000), Some((50, 1)));
+        assert_eq!(super::fed_fps_rational(29.97, 500), Some((15000, 1001)));
+        assert_eq!(super::fed_fps_rational(0.0, 1500), None);
+        assert!((super::fed_fps(30.0, 2000) - 60.0).abs() < 1e-9);
     }
 
     /// The static payloads' declared envelopes, read out of the strings that are actually sent.
@@ -6661,6 +6770,21 @@ mod native_seek_tests {
         assert!(crate::player::pump::seek_reloads(SeekMode::Reload));
         assert!(!crate::player::pump::seek_reloads(SeekMode::Segment));
         assert!(!crate::player::pump::seek_reloads(SeekMode::NativeSeek));
+    }
+
+    /// A speed is applied only to a freshly loaded pipeline, so a seek that carries a speed
+    /// change, and every seek while the speed is not 1x, reloads in EVERY mode; at 1x with no
+    /// change pending each mode keeps its own answer.
+    #[test]
+    fn a_speed_makes_every_direct_play_seek_a_reload() {
+        use crate::player::pump::seek_must_reload;
+        let normal = crate::player::RATE_NORMAL;
+        for mode in [SeekMode::Reload, SeekMode::Segment, SeekMode::NativeSeek] {
+            assert!(seek_must_reload(mode, 1500, false), "{mode:?} at 1.5x");
+            assert!(seek_must_reload(mode, 500, false), "{mode:?} at 0.5x");
+            assert!(seek_must_reload(mode, normal, true), "{mode:?}: the change back to 1x reloads too");
+            assert_eq!(seek_must_reload(mode, normal, false), crate::player::pump::seek_reloads(mode), "{mode:?} at 1x");
+        }
     }
 
     #[test]

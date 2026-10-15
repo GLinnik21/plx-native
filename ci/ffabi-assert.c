@@ -109,6 +109,25 @@ SAME64(offsetof(AVFrame, format), 116, "OFF_FRAME_FORMAT != 80 [host]");
    likely to be got wrong by reading a struct definition on a 64-bit machine. This assertion is
    the reason the FFmpeg 9 bump did not ship a wrong PTS: it fired here, on a desk. */
 SAME32(offsetof(AVFrame, pts), 96, "OFF_FRAME_PTS != 96 (ARM EABI int64 alignment)");
+/* The audio half, read by ff.rs's SpeedDecoder (playback speed). */
+SAME32(offsetof(AVFrame, extended_data), 64, "OFF_AFRAME_EXTENDED_DATA != 64");
+SAME64(offsetof(AVFrame, extended_data), 96, "OFF_AFRAME_EXTENDED_DATA != 96 [host]");
+SAME32(offsetof(AVFrame, nb_samples), 76, "OFF_AFRAME_NB_SAMPLES != 76");
+SAME64(offsetof(AVFrame, nb_samples), 112, "OFF_AFRAME_NB_SAMPLES != 112 [host]");
+SAME32(offsetof(AVFrame, sample_rate), 132, "OFF_AFRAME_SAMPLE_RATE != 132");
+SAME64(offsetof(AVFrame, sample_rate), 180, "OFF_AFRAME_SAMPLE_RATE != 180 [host]");
+SAME32(offsetof(AVFrame, ch_layout) + offsetof(AVChannelLayout, nb_channels), 260, "OFF_AFRAME_NB_CHANNELS != 260");
+SAME64(offsetof(AVFrame, ch_layout) + offsetof(AVChannelLayout, nb_channels), 388, "OFF_AFRAME_NB_CHANNELS != 388 [host]");
+SAME(AV_SAMPLE_FMT_U8, 0, "speed_audio::SampleFormat::from_av U8");
+SAME(AV_SAMPLE_FMT_S16, 1, "speed_audio::SampleFormat::from_av S16");
+SAME(AV_SAMPLE_FMT_S32, 2, "speed_audio::SampleFormat::from_av S32");
+SAME(AV_SAMPLE_FMT_FLT, 3, "speed_audio::SampleFormat::from_av FLT");
+SAME(AV_SAMPLE_FMT_DBL, 4, "speed_audio::SampleFormat::from_av DBL");
+SAME(AV_SAMPLE_FMT_U8P, 5, "speed_audio::SampleFormat::from_av U8P");
+SAME(AV_SAMPLE_FMT_S16P, 6, "speed_audio::SampleFormat::from_av S16P");
+SAME(AV_SAMPLE_FMT_S32P, 7, "speed_audio::SampleFormat::from_av S32P");
+SAME(AV_SAMPLE_FMT_FLTP, 8, "speed_audio::SampleFormat::from_av FLTP");
+SAME(AV_SAMPLE_FMT_DBLP, 9, "speed_audio::SampleFormat::from_av DBLP");
 SAME64(offsetof(AVFrame, pts), 136, "OFF_FRAME_PTS != 96 (ARM EABI int64 alignment) [host]");
 
 /* --- AVPacket: modelled field-by-field in ff.rs. Never allocated by us (av_packet_alloc does),

@@ -4,6 +4,8 @@
   "widgets.diagnostics.failed": "Error al enviar los diagnósticos",
   "widgets.menu.options": "Opciones",
   "widgets.menu.quality": "Calidad",
+  "widgets.menu.speed": "Velocidad de reproducción",
+  "widgets.speed.normal": "Normal",
   "widgets.menu.stats": "Estadísticas",
   "widgets.menu.diagnostics": "Enviar diagnósticos",
   "widgets.badge.forced": "FORZADOS",

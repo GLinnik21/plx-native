@@ -166,8 +166,12 @@ fi
 #              h264/hevc are the raw Annex-B paths (/tmp/sample.h264 and the dev triggers).
 #   parsers    needed by avformat_find_stream_info to fill AVCodecParameters.
 #   bsf        AVCC -> Annex-B for mp4-family video, which the Starfish pipeline requires.
-#   decoders   SUBTITLES ONLY. Video and audio are decoded by the TV's hardware via Starfish;
-#              FFmpeg here never touches a video frame.
+#   decoders   SUBTITLES, and AUDIO FOR PLAYBACK SPEED ONLY. Video and audio are decoded by the
+#              TV's hardware via Starfish; FFmpeg here never touches a video frame. The audio
+#              decoders run only while the viewer has picked a speed other than 1x: LG's pipeline
+#              cannot change rate itself (see docs/parity-gaps.md, Playback Speed), so the app
+#              decodes the sound, time-stretches it (rust-modules/media/src/speed_audio.rs) and
+#              feeds it as PCM. All are LGPL; the AC-3 patents have expired.
 #   encoder/   mpeg1video + mpegts are the DEV capture stream only, dropped by RELEASE=1 along
 #   muxer      with swscale, which nothing else uses.
 #
@@ -220,6 +224,7 @@ set -- "$@" \
   --enable-parser=h264,hevc,aac,ac3,dvdsub,dvbsub \
   --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,extract_extradata \
   --enable-decoder=pgssub,dvdsub,dvbsub,ass,srt,subrip,text,mov_text,webvtt \
+  --enable-decoder=aac,ac3,eac3,dca,mp3,mp2,flac,opus,vorbis,truehd,mlp,alac,pcm_s16le,pcm_s24le \
   --enable-protocol=file
 
 if [ "${RELEASE:-}" = "1" ]; then
