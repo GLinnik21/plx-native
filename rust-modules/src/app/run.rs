@@ -5457,15 +5457,17 @@ mod lifecycle_regression_tests {
         while t - at_floor < 600 { step(&mut rig.app, &mut t, vec![]); }
         assert_eq!(first_cw_rk(&rig.app), "1");
         server.hold_hubs.store(false, Ordering::SeqCst);
-        let gen = rig.app.bridge.hubs_catalog_gen_for_test();
         let mut animated = false;
+        // Until the tile reads episode 2 (the read answers in real time, whatever else is landing),
+        // watching every frame for the row's animation.
         poll_until("the late refetch never landed", || {
             step(&mut rig.app, &mut t, vec![]);
-            rig.app.bridge.hubs_catalog_gen_for_test() != gen
+            animated |= home_probe(&rig.app).animating;
+            first_cw_rk(&rig.app) == "2"
         });
         for _ in 0..4 {
-            animated |= home_probe(&rig.app).animating;
             step(&mut rig.app, &mut t, vec![]);
+            animated |= home_probe(&rig.app).animating;
         }
         assert_eq!(first_cw_rk(&rig.app), "2");
         let probe = home_probe(&rig.app);
