@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T10:13:23Z",
+ "generated": "2026-10-15T10:18:47Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -48,15 +48,15 @@
    "change7_pct": -41.6,
    "d30": 950.0,
    "delta30": -491.0,
-   "delta7": -327.5,
+   "delta7": -327,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 243,
-   "n_prev": 216,
+   "n_prev": 215,
    "now": 459,
-   "prev7": 786.5,
+   "prev7": 786,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -7.7,
+   "change7_pct": -7.8,
    "d30": null,
    "delta30": null,
-   "delta7": -32.5,
+   "delta7": -33,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 108,
+   "n_now": 109,
    "n_prev": 129,
-   "now": 388.5,
+   "now": 388,
    "prev7": 421,
    "shown": true,
    "state": "flat",
@@ -291,14 +291,14 @@
    "change7_pct": -9.6,
    "d30": null,
    "delta30": null,
-   "delta7": -23,
+   "delta7": -23.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 97,
+   "n_now": 98,
    "n_prev": 111,
-   "now": 217,
+   "now": 217.0,
    "prev7": 240,
    "shown": true,
    "state": "flat",
@@ -312,14 +312,14 @@
    "change7_pct": -63.7,
    "d30": null,
    "delta30": null,
-   "delta7": -326,
+   "delta7": -326.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 97,
+   "n_now": 98,
    "n_prev": 111,
-   "now": 186,
+   "now": 186.0,
    "prev7": 512,
    "shown": true,
    "state": "better",
@@ -372,17 +372,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -11.9,
+   "change7_pct": -12.3,
    "d30": null,
    "delta30": null,
-   "delta7": -19,
+   "delta7": -19.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 97,
+   "n_now": 98,
    "n_prev": 63,
-   "now": 140,
+   "now": 139.5,
    "prev7": 159,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 97,
+   "n_now": 98,
    "n_prev": 111,
-   "now": 17,
+   "now": 17.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 49.1,
    "commits": [
     {
-     "pr": 730,
-     "sha": "d06116593",
-     "title": "libass 7a: embedded text subtitle tracks render through libass"
-    },
-    {
      "pr": 732,
      "sha": "12dc65c0d",
      "title": "libass 7c: bucketed subtitle texture upload with glTexSubImage2D (gfx)"
@@ -615,6 +610,11 @@
      "pr": 733,
      "sha": "b2b329c97",
      "title": "View state: parent rows in the read-back (season and show facts)"
+    },
+    {
+     "pr": 736,
+     "sha": "b0232cb7b",
+     "title": "View state 8: Detail folds into the view-state system (DetailReconcile)"
     }
    ],
    "from": 220,
@@ -628,11 +628,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 730,
-     "sha": "d06116593",
-     "title": "libass 7a: embedded text subtitle tracks render through libass"
-    },
-    {
      "pr": 732,
      "sha": "12dc65c0d",
      "title": "libass 7c: bucketed subtitle texture upload with glTexSubImage2D (gfx)"
@@ -676,6 +671,11 @@
      "pr": 733,
      "sha": "b2b329c97",
      "title": "View state: parent rows in the read-back (season and show facts)"
+    },
+    {
+     "pr": 736,
+     "sha": "b0232cb7b",
+     "title": "View state 8: Detail folds into the view-state system (DetailReconcile)"
     }
    ],
    "from": 277,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 217
+   "now": 217.0
   }
  ],
  "slowest_local": [
