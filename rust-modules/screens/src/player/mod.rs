@@ -438,9 +438,18 @@ impl PlayerScreen {
     /// OK/BACK, a pointer miss through `OnMiss::Dismiss`, a playback teardown) `hud.dismissed` is
     /// set, so the transport does not reappear over the film just because the capsule stopped
     /// hiding it. It stays down until a bound key raises it, exactly like an UP-hide.
+    ///
+    /// **The five-second undo window ends with the page being the viewer's** (`scrub_undo`): on a
+    /// surface taking it (the rising edge out of [`HudPolicy::Normal`]) — Chapters and *From
+    /// Beginning* seek from inside their panel, and the panel's own BACK is not the scrub's — and on
+    /// that dismissal, since a transport that is not on screen has nothing to undo.
     pub fn set_hud_policy(&mut self, policy: HudPolicy) {
         if self.hud_policy == HudPolicy::Hidden && policy != HudPolicy::Hidden {
             self.hud.dismissed = true;
+            self.row.close_undo();
+        }
+        if self.hud_policy == HudPolicy::Normal && policy != HudPolicy::Normal {
+            self.row.close_undo();
         }
         self.hud_policy = policy;
     }
@@ -509,8 +518,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
     /// **BACK, UNDO and the paused scrub** (`scrub_undo`, in `appkit`). On a PLAYING film the
     /// commits above stand, and BACK means two more things: while a scrub is live (a hold, a tap's
     /// pending 450 ms, a seated drag) it CANCELS it — no seek, the knob springs home — and for
-    /// five seconds after a scrub commits it seeks back to where the scrub started, once (the
-    /// window closes on use, on a new scrub, and when the transport is hidden). On a PAUSED film
+    /// five seconds after a scrub commits it seeks back to where the scrub started, once, and only
+    /// while the transport is on screen at the press (the window closes on use, on a new scrub,
+    /// wherever the transport is dismissed, when a panel takes the page, and when the control row's
+    /// Skip pill seeks). On a PAUSED film
     /// (latched at the scrub's start, `Scrub::paused`) a key scrub only MOVES the target and
     /// commits nothing on a release, a debounce or any other timer: OK or PLAY takes it and
     /// resumes from it ([`PlayerReq::SeekTo`]), BACK drops it, and a pointer drag still commits on
@@ -755,7 +766,7 @@ impl PlayerScreen {
             e if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&e) => {
                 self.hud.nav.focus = 1;
                 self.hud.nav.btn = (e - ELEM_ROW_BASE) as i32;
-                Self::ask(fx, PlayerReq::ArmControlRow);
+                self.arm_control_row(fx);
                 Handled::Yes
             }
             e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => {
@@ -890,7 +901,8 @@ impl PlayerScreen {
             // leaves. `visible_at_press` and not `hud_up`, for the reason its own doc gives.
             Key::Back
                 if edge == Edge::Down
-                    && (self.scrub.is_live() || self.row.undo_origin(now).is_some()) =>
+                    && (self.scrub.is_live()
+                        || (self.hud.visible_at_press && self.row.undo_origin(now).is_some())) =>
             {
                 self.key_back_scrub(now, fx);
                 Handled::Yes
@@ -954,7 +966,7 @@ impl PlayerScreen {
         if self.take_paused_target(now, fx) {
             // OK took the target and resumes from it; that is all this press means
         } else if vis && self.hud.nav.focus == 1 {
-            Self::ask(fx, PlayerReq::ArmControlRow);
+            self.arm_control_row(fx);
         } else if vis && self.hud.nav.focus == 2 {
             let kind = if self.hud.nav.tab == 0 {
                 Some(overlay::OverlayKind::Info)
@@ -971,6 +983,16 @@ impl PlayerScreen {
         }
         self.hud.extend(now, input::HUD_LINGER_MS);
         self.publish();
+    }
+
+    /// The control row's deferred press (`PlayerReq::ArmControlRow`). When the row holds the *Skip
+    /// Intro* / *Skip Credits* pill the press is a seek the scrub did not make, so the undo window
+    /// closes with it: BACK afterwards must not jump back over the skip.
+    fn arm_control_row<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
+        if matches!(self.slot, ControlSlot::Skip(_)) {
+            self.row.close_undo();
+        }
+        Self::ask(fx, PlayerReq::ArmControlRow);
     }
 
     /// Port of `key_player_updown`: walk the HUD's ring (scrubber ↔ control row ↔ tabs), or reveal
@@ -3216,6 +3238,87 @@ mod scrub_ownership_tests {
         let (at, _) = tap_and_commit(&mut page, 1_000);
         page.transport_reset(true);
         assert_eq!(page.row.undo_origin(at + 100), None);
+    }
+
+    /// **BACK undoes only what the viewer can see, and only while nothing else has moved the
+    /// film.** Four ways the five-second window used to stay armed with its transport gone or its
+    /// meaning stale; in each the next BACK is the ordinary one (hide the transport, or leave).
+    #[test]
+    fn back_does_not_undo_after_skip_intro() {
+        use plx_data::metadata::{Marker, MarkerKind};
+        use plx_appkit::player_hud::{ControlSlot, ELEM_ROW_BASE};
+        let _g = plx_base::testlock::serial();
+        let _f = Fixture::new(false);
+        let marker = Marker { kind: MarkerKind::Intro, start_ms: 1_000, end_ms: 2_000, final_seg: false };
+        let skip = player_hud::slot_for(Some(marker), false, plx_media::route::NextEpisodeMode::Countdown);
+        assert!(matches!(skip, ControlSlot::Skip(_)), "the fixture: the pill is on the row");
+        for by_key in [true, false] {
+            playhead(50 * S);
+            let mut page = page_on_the_bar();
+            let (at, _) = tap_and_commit(&mut page, 1_000);
+            assert_eq!(page.row.undo_origin(at), Some(50 * S), "the fixture: the window is open");
+            page.slot = skip;
+            let reqs = if by_key {
+                page.hud.nav.focus = 1;
+                key(&mut page, SDLK_RETURN, Edge::Down, at + 100).1
+            } else {
+                let (mx, my) = (0.0, 0.0);
+                pointer(&mut page, InputKind::Click { x: mx, y: my, hit: Some(ELEM_ROW_BASE) }, at + 100).1
+            };
+            assert_eq!(reqs, vec![PlayerReq::ArmControlRow], "the pill is activated (by_key {by_key})");
+            assert_eq!(page.row.undo_origin(at + 200), None, "a skip moved the film: nothing to undo");
+            playhead(70 * S); // the skip landed
+            let (_, reqs) = back(&mut page, at + 300);
+            assert!(seeks(reqs).is_empty(), "BACK after Skip Intro must not jump back (by_key {by_key})");
+            assert!(page.hud.dismissed, "it is the ordinary BACK: hide the transport");
+        }
+    }
+
+    /// …a panel read over the page ends the window (Chapters and From Beginning seek from
+    /// there, and the panel's own BACK is not the scrub's)…
+    #[test]
+    fn back_does_not_undo_after_a_panel_took_the_page() {
+        let _g = plx_base::testlock::serial();
+        let _f = Fixture::new(false);
+        playhead(50 * S);
+        let mut page = page_on_the_bar();
+        let (at, _) = tap_and_commit(&mut page, 1_000);
+        assert_eq!(page.row.undo_origin(at), Some(50 * S));
+        page.set_hud_policy(HudPolicy::Lifted); // Chapters / Info / Tracks / More opened
+        assert_eq!(page.row.undo_origin(at + 100), None);
+        page.set_hud_policy(HudPolicy::Normal); // …and closed, perhaps after a chapter seek
+        playhead(80 * S);
+        let (_, reqs) = back(&mut page, at + 300);
+        assert!(seeks(reqs.clone()).is_empty(), "BACK after a Chapters jump must not jump back: {reqs:?}");
+    }
+
+    /// …the Timing capsule's close is a dismissal like any other…
+    #[test]
+    fn back_does_not_undo_after_the_capsule_dismissed_the_transport() {
+        let _g = plx_base::testlock::serial();
+        let _f = Fixture::new(false);
+        playhead(50 * S);
+        let mut page = page_on_the_bar();
+        let (at, _) = tap_and_commit(&mut page, 1_000);
+        page.set_hud_policy(HudPolicy::Hidden);
+        page.set_hud_policy(HudPolicy::Normal);
+        assert!(page.hud.dismissed, "the fixture: the capsule's close hid the transport");
+        assert_eq!(page.row.undo_origin(at + 100), None, "…and an invisible window is no window");
+    }
+
+    /// …and a BACK that finds NO transport on screen is never an undo, whatever window is armed:
+    /// nothing drawn says what it would do.
+    #[test]
+    fn back_on_a_hidden_transport_does_not_undo() {
+        let _g = plx_base::testlock::serial();
+        let _f = Fixture::new(false);
+        playhead(50 * S);
+        let mut page = page_on_the_bar();
+        let (at, _) = tap_and_commit(&mut page, 1_000);
+        assert_eq!(page.row.undo_origin(at), Some(50 * S), "the fixture: the window is open");
+        page.hud.visible_at_press = false; // the transport is not on screen at the press
+        let (_, reqs) = back(&mut page, at + 500);
+        assert_eq!(reqs, vec![PlayerReq::Exit], "an ordinary BACK over a bare picture: {reqs:?}");
     }
 
     /// **B.5 — paused: taps move the target and commit NOTHING**, not on release and not after the
