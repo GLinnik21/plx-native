@@ -94,7 +94,7 @@ of the strip even it can move on screen. There is no cap on the cards diffed (a 
 on-axis at either end get a spring, a fade or a ghost, the rest cut. A slide of the window the source holds
 (`global` / `page_epoch` moved) is adopted whole. These springs are layout motion, so a landing seen while the page
 is a held transition image starts at once (the first live frame shows the start state) and steps once the
-image is released (`containers::transition::page_image_held`). Off by default; `Grid` has none yet.
+image is released (`containers::transition::page_image_held`). Off by default. A `Grid` built from a `GridSpec` with `.animate_landings(true)` plays the same landing over 2-D slots (`Scene::slot` is index -> (x, y), the scroll shift is an (x, y) pair): a removed card is a ghost (`ghost_keys()`, `paint_ghosts`) that fades in its cell on `style.k_scale`, easing from its lifted scale when it was the focused card; every card that stays springs to its new cell on `style.k_scroll`, ALL on the frame of the change (no stagger); a card that crosses a line break moves as one straight 2-D spring (an x and a y spring of one stiffness started together, so no arc and no two phases); a card with neither end on screen snaps (no cap: a map, not a scan); focus lands on the card that took the removed card's index, the next card (the engine's reconcile; `conformance::removal_focuses_next`). Slots are measured under the caption bands as they stand, and the page shift a landing needs (`landed_shift`) is carried into the ghost, which stays where it stood on screen. The owner must keep the removed card for the ghost, as Home does for the shelf.
 
 A row that goes on past an edge (`CardSource::more_after`, `more()` unless the source overrides it, / `more_before`, `false`
 unless the source says its window slid off the start: Home, Library and Search do) paints the skeleton of an unloaded poster in the cells past that edge, a screenful at
@@ -379,9 +379,7 @@ presentation in a design pass.
    small glyph in that same indicator slot at the clock's cap height — never a control, and never a
    fourth entry in the HUD control row (`appkit/player_hud.rs`'s `BTN_N`, currently 3).
 
-4. **Failure read-outs are never red — the app does not scold.** A failed verdict is inked bold at
-   `size::TITLE` in `theme::TEXT_SECONDARY`, per the design system's `StatusOverlay` contract.
-   Home, Library, sign-in and the player's failure read-outs share ONE placement: the verdict hangs
+4. **Failure read-outs are never red — the app does not scold.** A read-out's verdict, the bold line that says what happened (a `Failed` read-out, and an `Empty` read-out's caption), is inked `theme::TEXT_PRIMARY`: bright, because it is the line the eye lands on. Its body, the reason under it, is `theme::TEXT_SECONDARY`. Emphasis is ink only: never a warning colour, a rule, a capsule or a tint. A `Failed` verdict is bold `size::TITLE` (per the design system's `StatusOverlay` contract). Home, Library, sign-in and the player's failure read-outs share ONE placement: the verdict hangs
    from `FULL_ANCHOR_TOP` with the reason and action row stacked directly under it, and a 112 px
    `theme::TEXT_SECONDARY` glyph above the verdict (`StatusOverlay::page`'s `glyph` argument). A
    read-out centred in its own container instead lands visibly off that verdict line and reads as a

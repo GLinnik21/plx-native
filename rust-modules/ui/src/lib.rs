@@ -1414,6 +1414,34 @@ impl Painter {
         let c = self.c(col);
         plx_gfx::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold, self.screen_zoom())
     }
+    /// [`text`](Self::text) with `letter_spacing` px of tracking between glyphs (DS8; negative
+    /// tightens, `plx_gfx::text::TRACKING_TITLE_TIGHT` is the Watchlist header's). At `0.0` this IS
+    /// `text`. The discovery and recording passes see the string's untracked declaration (the
+    /// tracked draw only moves glyph gaps inside it), so only a live draw takes the tracked path.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_tracked(
+        self,
+        s: *const c_char,
+        x: f32,
+        y: f32,
+        sz: c_int,
+        col: [f32; 4],
+        align: c_int,
+        bold: c_int,
+        letter_spacing: f32,
+    ) -> f32 {
+        if letter_spacing == 0.0 || frame::backdrop::discovering() || self.records() {
+            return self.text(s, x, y, sz, col, align, bold);
+        }
+        let c = self.c(col);
+        plx_gfx::text::draw_text_tracked(
+            s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold, self.screen_zoom(), letter_spacing,
+        )
+    }
+    /// Width of `s` with `letter_spacing` tracking; at `0.0` the ordinary text width.
+    pub fn text_width_tracked(self, s: *const c_char, sz: c_int, bold: c_int, letter_spacing: f32) -> f32 {
+        plx_gfx::text::text_width_tracked(s, sz, bold, letter_spacing)
+    }
     /// [`text`](Self::text) with a horizontal fade-out: glyph alpha runs 1→0 between
     /// `fade_from`..`fade_to` px from the string's left edge (see `text::draw_text_fade`).
     #[allow(clippy::too_many_arguments)]

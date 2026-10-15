@@ -3957,24 +3957,26 @@ impl<'a> StatusOverlay<'a> {
     }
     /// **The verdict's face — rung, weight and ink — by kind**, the design system's
     /// `StatusOverlay` contract in one place: a `Failed` verdict is bold `size::TITLE` in
-    /// `TEXT_SECONDARY` ("the app does not scold": a failure is never tinted a warning colour);
-    /// `Working` is `size::BODY` secondary and `Empty` `size::BODY` tertiary, as they always were.
+    /// `TEXT_PRIMARY` (bright, the line the eye lands on; "the app does not scold": a failure is
+    /// never tinted a warning colour); an `Empty` caption is `size::BODY` primary too (DS3) and
+    /// `Working` stays `size::BODY` secondary.
     /// Every `Failed` read-out uses this face, the player's full-screen failure included: it is a
     /// page-placed read-out (`page`, spec "1A") like Home's and sign-in's, with the same 112px
     /// `TEXT_SECONDARY` glyph drawn by this widget.
     pub fn verdict_face(kind: StatusKind) -> (c_int, bool, [f32; 4]) {
         match kind {
             StatusKind::Working => (STATUS_CAP_SZ, false, theme::TEXT_SECONDARY),
-            StatusKind::Failed => (STATUS_FAILED_VERDICT_SZ, true, theme::TEXT_SECONDARY),
-            StatusKind::Empty => (STATUS_CAP_SZ, false, theme::TEXT_TERTIARY),
+            StatusKind::Failed => (STATUS_FAILED_VERDICT_SZ, true, theme::TEXT_PRIMARY),
+            StatusKind::Empty => (STATUS_CAP_SZ, false, theme::TEXT_PRIMARY),
         }
     }
     /// The reason's rung and ink by kind: a `Failed` reason is regular `size::BODY` in
-    /// `TEXT_SECONDARY` (the design system's), the others keep the quiet caption line.
+    /// `TEXT_SECONDARY` (the design system's), the others keep the quiet caption line, also
+    /// `TEXT_SECONDARY` (DS3: every body is secondary).
     pub fn reason_face(kind: StatusKind) -> (c_int, [f32; 4]) {
         match kind {
             StatusKind::Failed => (STATUS_FAILED_REASON_SZ, theme::TEXT_SECONDARY),
-            StatusKind::Working | StatusKind::Empty => (STATUS_REASON_SZ, theme::TEXT_TERTIARY),
+            StatusKind::Working | StatusKind::Empty => (STATUS_REASON_SZ, theme::TEXT_SECONDARY),
         }
     }
     /// Whether the reason sits in the design system's RESERVED TWO-LINE slot — every `Failed`

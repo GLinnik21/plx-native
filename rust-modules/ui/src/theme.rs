@@ -857,6 +857,8 @@ pub const TILE_MARK_INK: [f32; 4] = COOL_0;
 /// ONE veil role: every tile corner mark — the watched tick, and any unplayable mark added later —
 /// reads it, never a literal alpha.
 pub const TILE_MARK_VEIL: [f32; 4] = with_a(BLACK, 0.55);
+/// Letter-spacing of the Watchlist header title (DS8): aliases the gfx text const, no literal.
+pub const TRACKING_TITLE_TIGHT: f32 = plx_gfx::text::TRACKING_TITLE_TIGHT;
 /// The tick's own soft drop shadow, INSIDE the veil — belt and braces on a bright frame, and what
 /// keeps the mark from dissolving into a busy one (the design's `drop-shadow(0 2px 7px …)`).
 pub const TILE_MARK_SHADOW: [f32; 4] = with_a(BLACK, 0.60);
