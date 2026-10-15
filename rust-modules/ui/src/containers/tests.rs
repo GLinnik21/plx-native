@@ -152,7 +152,9 @@ fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
         let chrome = read.chrome.expect("the fixture rig supplied chrome");
         assert_eq!(chrome.profile.name.to_bytes(), b"Captured A");
         assert_eq!(chrome.profile.initial.to_bytes(), b"A");
-        assert_eq!(chrome.labels.labels, ["Home", "Movies", ""]);
+        assert_eq!(chrome.labels.faces, [super::super::widgets::TabFace::Label("Home".into()),
+            super::super::widgets::TabFace::Label("Movies".into()),
+            super::super::widgets::TabFace::Icon(crate::icons::Icon::Search)]);
         assert!((chrome.chip_expand - 0.625).abs() < 1e-6);
         let face = read.bar_material.expect("the frame plan supplied the tab face");
         assert_eq!(face.scrim_top, [0.1, 0.2, 0.3, 0.4]);
