@@ -9175,6 +9175,16 @@ pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
     }
 }
 
+/// **Is "Original" picked while the video on screen is NOT the original?** The quality in force
+/// (the picker, which the HUD's Quality row reads) says Original, but the route playing is neither
+/// a direct play nor a codec-preserving remux: a fixed rung or HLS is still on screen, or the
+/// server is re-encoding the video (a burned subtitle, a forced fallback). Built on the same
+/// `quality()` fact [`facts`] hands the Audio note, so a Quality read-out that uses it can never
+/// disagree with that note. No caller yet: the Quality row's design is pending.
+pub fn original_is_converted(ps: &PlaybackSession) -> bool {
+    quality() == Quality::Original && live_family(ps) == RouteFamily::Other
+}
+
 /// What the picked subtitle does to the route: nothing, a sidecar the client draws itself, or an
 /// embedded track the server would have to burn to keep. Two session fields, read in place.
 fn subtitle_effect_of(ps: &PlaybackSession) -> SubtitleEffect {
