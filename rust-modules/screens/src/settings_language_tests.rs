@@ -131,7 +131,7 @@ fn contribution_is_focusable_and_right_opens_the_guide() {
     let cx = cx(Some(key));
     assert!(<LanguagePage as Focusable<InnerHost>>::place(&page, &key.elem, &cx, At::SpringTarget).is_some());
     assert!(matches!(<LanguagePage as Focusable<InnerHost>>::neighbour(&page,
-        FocusKey { entry: key.entry, elem: lang(Preference::It) }, Dir::Down, &cx), Step::Move(next) if next == key));
+        FocusKey { entry: key.entry, elem: lang(*Preference::SHIPPED.last().unwrap()) }, Dir::Down, &cx), Step::Move(next) if next == key));
     let mut out = Vec::new();
     let mut present = Present::new();
     let mut fx = Effects::new(&mut out, MachineId::Instance(InstanceId(0)), &mut present);
@@ -160,4 +160,19 @@ fn signed_out_settings_reaches_language_and_back_restores_it_after_contribution(
         Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
             focus: FocusTarget::Elem(key),
         }))) if key == contribution)), "Back restores the contribution row, not the initial language seat");
+}
+
+#[test]
+fn language_page_row_keys_are_distinct_and_pinned_languages_keep_theirs() {
+    let mut keys: Vec<u32> = LANGUAGES.iter().map(|p| LangId::Choice(*p).key().0).collect();
+    keys.push(LangId::Contribute.key().0);
+    let mut unique = keys.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), keys.len(), "two Language rows share a key: {keys:?}");
+    assert_eq!(LangId::Choice(Preference::System).key().0, 0);
+    assert_eq!(LangId::Contribute.key().0, 1000);
+    for (p, key) in [(Preference::En, 1), (Preference::Es, 2), (Preference::Be, 3), (Preference::Fr, 5)] {
+        assert_eq!(LangId::Choice(p).key().0, key, "{p:?}: a shipped language's row identity moved");
+    }
 }

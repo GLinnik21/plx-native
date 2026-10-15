@@ -1602,11 +1602,16 @@ fn preference_name(preference: plx_platform::i18n::Preference) -> &'static str {
     }
 }
 
-const LANGUAGES: [plx_platform::i18n::Preference; 6] = [
-    plx_platform::i18n::Preference::System, plx_platform::i18n::Preference::En,
-    plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be,
-    plx_platform::i18n::Preference::Fr, plx_platform::i18n::Preference::It,
-];
+/// System, then every shipped language in the registry's (display) order.
+const LANGUAGES: [plx_platform::i18n::Preference; plx_platform::i18n::SHIPPED.len() + 1] = {
+    let mut all = [plx_platform::i18n::Preference::System; plx_platform::i18n::SHIPPED.len() + 1];
+    let mut i = 0;
+    while i < plx_platform::i18n::SHIPPED.len() {
+        all[i + 1] = plx_platform::i18n::SHIPPED[i];
+        i += 1;
+    }
+    all
+};
 
 /// A Language row's identity: the preference a `Choice` row saves, or the contribution guide.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -1617,15 +1622,11 @@ enum LangId {
 
 impl FormId for LangId {
     fn key(&self) -> RowKey {
-        use plx_platform::i18n::Preference as P;
         RowKey(match self {
-            LangId::Choice(P::System) => 0,
-            LangId::Choice(P::En) => 1,
-            LangId::Choice(P::Es) => 2,
-            LangId::Choice(P::Be) => 3,
-            LangId::Choice(P::Fr) => 5,
-            LangId::Choice(P::It) => 6,
-            LangId::Contribute => 4,
+            // System is 0 and each language keeps the row its registry entry names; the guide
+            // sits above the registry's language range, so no new language can take its key.
+            LangId::Choice(p) => p.settings_row(),
+            LangId::Contribute => 1000,
         })
     }
 }

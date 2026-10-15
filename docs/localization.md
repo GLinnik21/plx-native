@@ -38,8 +38,9 @@ phrase. Never translate protocol identifiers, URLs, brand names or server-return
 Double braces (`{{` and `}}`) render literal braces. A placeholder accepts `str` or `i64`;
 integers are formatted with the TV's regional settings. A plural message's `count` selects a
 CLDR cardinal category for the UI language. Other arguments must appear in every form; count
-may be omitted when the form spells it out. Belarusian needs `one`, `few`, `many`, and `other`;
-Spanish, French and Italian need `one`, `many`, and `other`; English needs `one` and `other`.
+may be omitted when the form spells it out. Each language needs exactly the categories its
+`plurals` entry in `locales/languages.json` declares, no more: Belarusian `one`, `few`, `many`, and
+`other`; Spanish, French and Italian `one`, `many`, and `other`; English `one` and `other`.
 
 Use readable, natural wording. Belarusian switch labels use `Укл.` and `Выкл.`. Preserve the meaning of consent and privacy disclosures exactly.
 Third-party license texts stay verbatim. Screenshots of the affected screen help reviewers assess
@@ -47,7 +48,7 @@ context and wrapping; do not include tokens, private server addresses or persona
 
 ## Check and submit
 
-Run `make check` to validate catalogs and run the host checks. Let it finish before starting
+Run `make check` (or, while iterating, `make test-crate C=plx_platform T=catalog`) to validate catalogs and run the host checks. Let it finish before starting
 another build in the same checkout: its structure-gate tests temporarily modify source files. Every build rejects duplicate,
 missing or unknown keys, invalid placeholders, and incomplete plural forms. The generated
 accessors also make unknown message keys and wrong argument types compilation errors. Source
@@ -84,12 +85,28 @@ a sentence. Note any wording they changed and why.
 
 ## Adding a language
 
-Add a catalog directory using its BCP-47 language tag, translating all source keys. This currently
-also requires a code change: extend the compiler's locale list and plural requirements, the
-runtime language and preference enums, the Settings choices, and tests. Select CLDR plural rules
-for that language, add launcher metadata, and verify every character in both bundled font faces.
-The current renderer supports the shipped Latin and Cyrillic languages; Arabic/Hebrew and other
-scripts requiring shaping or bidirectional layout need renderer work before being offered.
+A UI language is `locales/<tag>/` plus its entry in `locales/languages.json`; no Rust file changes.
+
+1. Add the catalog directory, named by the bare language tag (`it`, not `it-IT`), translating all
+   source keys. A translation is a bare string or a plural map; `value`, `description` and `args`
+   belong only in `locales/en`.
+2. Add one line to `locales/languages.json`: `tag`, `native_name` (the name in that language, shown
+   in Settings), `region` (`<tag>-XX`, the formatting locale), `script` (`Latn` or `Cyrl`),
+   `plurals` (the language's CLDR cardinal categories) and `row` (an unused number from 1 to 999,
+   in list order; a shipped language never changes its row or tag). A test compares `plurals` with
+   ICU's own data, and another checks that ICU has the language's number and plural data.
+3. Add launcher metadata, `pkg/resources/<tag>/appinfo.json`, and verify every character in both
+   bundled font faces (the build tests do).
+4. Run `make test-crate C=plx_platform T=catalog`. A directory with no registry entry, an entry with
+   no directory, a missing or extra key, a missing or never-selected plural form and a wrapped
+   translation are build errors that name the file and key, all listed at once.
+
+The rule for code: a UI language is its directory and registry entry. Code never lists languages:
+every "each language" loop uses `i18n::SHIPPED` (`ci/check-language-lists.py` fails a hand-written
+list), and production code never `match`es on `Language` or `Preference` outside `i18n`. A test that
+pins a reviewed translation iterates its own table and never falls back with `_ =>`. The current
+renderer supports the shipped Latin and Cyrillic languages; Arabic/Hebrew and other scripts
+requiring shaping or bidirectional layout need renderer work before being offered.
 
 ## Runtime behavior
 
