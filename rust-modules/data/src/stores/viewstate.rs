@@ -21,6 +21,8 @@ pub enum ViewStateCmd {
         sid: ServerId,
         rk: String,
         write: crate::viewstate::Write,
+        /// How far down the library the press reaches: a show's or season's episode rows too.
+        scope: crate::viewstate::Scope,
         /// The originating Detail page, if this press should reconcile one after the burst.
         detail: Option<DetailRefresh>,
         /// Portable item identity when the caller has the exact item's guid; empty asks the worker

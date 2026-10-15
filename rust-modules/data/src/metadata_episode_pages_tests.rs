@@ -232,5 +232,5 @@ fn a_watch_flip_on_an_evicted_episode_does_nothing() {
     let server = serve(1000, true);
     open_season(&server);
     assert!(!test_state().current.as_mut().unwrap().episodes.edit("e500", |e| e.watched = true));
-    assert!(!set_watched_local(test_state(), test_state().current.as_ref().unwrap().sid, "e500", true));
+    assert!(!set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(test_state().current.as_ref().unwrap().sid, "e500"), true));
 }

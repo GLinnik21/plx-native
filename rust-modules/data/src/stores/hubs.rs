@@ -22,8 +22,8 @@ pub enum HubsCmd {
     Retry,
     /// The profile/account switch.
     Reset,
-    /// The optimistic half of a view-state write on the hub catalog (`pms::LocalEdit`).
-    EditItem { sid: plx_plex::plex::ServerId, rk: String, edit: crate::pms::LocalEdit },
+    /// The optimistic half of a view-state change on the hub catalog (`viewstate::publish_view`).
+    ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
 }
 
 impl HubsCmd {

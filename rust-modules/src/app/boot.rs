@@ -1843,7 +1843,7 @@ pub(crate) unsafe fn construct(
     let pause_resume_at: Option<u32> = None;
     let prev = 0u32;
     // Home data refresh, armed on every player exit (Stop/BACK/EOS): the hubs are refetched once
-    // the stop report has settled (`route::scrobble_settled`), so the `stopped` timeline POST
+    // the stop report has settled (`route::timeline_stop_landed`), so the `stopped` timeline POST
     // lands first — Continue Watching then shows the new resume point / next episode instead of
     // the state from boot.
     let refresh_hubs = false;

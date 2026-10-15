@@ -1,7 +1,6 @@
 //! Physically owned Collection model and its worker adapter.
 
 use crate::collection::{CollectionAdapter, CollectionState, CollectionTarget, CollectionView};
-use plx_plex::plex::ServerId;
 use plx_machine::machine::{Cx, Effects, Handled, Host, Machine};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -20,8 +19,8 @@ pub enum CollectionCmd {
     Restore { total: usize, counts: Vec<u8> },
     Close,
     Reset,
-    /// Optimistic watched-state edit from the view-state fan-out (see `viewstate::fan_out`).
-    SetWatchedLocal { sid: ServerId, rk: String, on: bool },
+    /// Optimistic view-state edit (`viewstate::publish_view`), including the fan-out's copies.
+    ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
 }
 
 pub struct CollectionStore {

@@ -21,8 +21,8 @@ pub enum PersonCmd {
     Close,
     /// The profile/account switch.
     Reset,
-    /// The optimistic half of a view-state write, on the person's shelves.
-    SetWatchedLocal { sid: ServerId, rk: String, on: bool },
+    /// The optimistic half of a view-state change, on the person's shelves.
+    ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
 }
 
 /// One Person owner: logical state, the worker adapter all current requests capture, and notice.

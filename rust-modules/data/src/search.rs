@@ -901,9 +901,10 @@ fn set_query_with_directory(
     plx_machine::idle::invalidate();
 }
 
-/// Flip `(sid, rk)`'s watched state in the result set — the optimistic half of a view-state write,
-/// for the Search screen's own tiles. `pms::edit_item`'s twin, for `browse::set_watched_local`'s
-/// reason: that one reaches the HOME hubs alone, so a film marked watched from a search result's
+/// Apply a view-state change to every result row it covers — the optimistic half of a view-state
+/// write, for the Search screen's own tiles. A show or season change also reaches the EPISODE rows
+/// of that show (`ViewAt::covers`), which a search for an actor or a title can hold beside it.
+/// `pms::edit_item`'s twin, for `browse::set_watched_local`'s reason: that one reaches the HOME hubs alone, so a film marked watched from a search result's
 /// context menu kept its old mark until a refetch.
 ///
 /// **Both stores, and no `rebuild`.** A source owns its rows and `SearchState::shelves` is a
@@ -913,12 +914,14 @@ fn set_query_with_directory(
 /// itself.
 ///
 /// Returns whether anything matched. **MAIN THREAD.**
-fn set_watched_local(state: &mut SearchState, sid: ServerId, rk: &str, on: bool) -> bool {
+fn apply_view(state: &mut SearchState, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
+    // A result tile has no deck: a removal from Continue Watching changes nothing here.
+    let crate::viewstate::ViewEdit::Watched(_) = edit else { return false };
     let mut hit = false;
     let mut flip = |it: &mut Item| {
         if let Item::Media(m) = it {
-            if plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)) {
-                crate::pms::set_watched(m, on);
+            if at.covers(m) {
+                edit.apply(m);
                 hit = true;
             }
         }
@@ -932,8 +935,7 @@ fn set_watched_local(state: &mut SearchState, sid: ServerId, rk: &str, on: bool)
     if let Some(shelves) = &mut state.shelves {
         // A write outside the visible result cap must not clone a retained catalog it cannot
         // change. The catalog itself is bounded by KINDS × WINDOW, never library-sized.
-        if shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it,
-            Item::Media(m) if plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)))) {
+        if shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it, Item::Media(m) if at.covers(m))) {
             for it in Arc::make_mut(shelves).iter_mut().flat_map(|s| &mut s.items) { flip(it); }
         }
     }
@@ -1867,7 +1869,7 @@ fn run_with_optional_directory(
             reset(state, adapter);
             true
         }
-        SearchCmd::SetWatchedLocal { sid, rk, on } => set_watched_local(state, sid, &rk, on),
+        SearchCmd::ApplyView { at, edit } => apply_view(state, &at, edit),
         SearchCmd::Page { kind, before, seen } => page(state, kind, before, seen),
         SearchCmd::PageCancel { kind, seen } => cancel_page(state, kind, seen),
     }
@@ -1885,7 +1887,7 @@ pub fn set_watched_local_for_test(
     rk: &str,
     on: bool,
 ) -> bool {
-    set_watched_local(state, sid, rk, on)
+    apply_view(state, &crate::viewstate::ViewAt::leaf(sid, rk), crate::viewstate::ViewEdit::Watched(on))
 }
 
 #[cfg(any(test, feature = "test-support"))]

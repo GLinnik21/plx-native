@@ -856,8 +856,8 @@ fn resettle(p: &mut Person) {
     p.landed = p.srcs.iter().any(Src::has_content) || p.srcs.iter().all(Src::settled);
 }
 
-/// Flip `(sid, rk)`'s watched state on this person's shelves — the optimistic half of a view-state
-/// write. `pms::edit_item`'s twin, for `browse::set_watched_local`'s reason: that one reaches the
+/// Apply a view-state change to the rows of this person's shelves it covers — the optimistic half of
+/// a view-state write. `pms::edit_item`'s twin, for `browse::set_watched_local`'s reason: that one reaches the
 /// HOME hubs alone, so a film marked watched from a filmography tile's context menu kept its old
 /// mark until a refetch.
 ///
@@ -866,7 +866,9 @@ fn resettle(p: &mut Person) {
 /// undone by the next landing.
 ///
 /// Returns whether anything matched. **MAIN THREAD.**
-fn set_watched_local(state: &mut PersonState, sid: ServerId, rk: &str, on: bool) -> bool {
+fn apply_view(state: &mut PersonState, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
+    // A person's tiles have no deck: a removal from Continue Watching changes nothing here.
+    let crate::viewstate::ViewEdit::Watched(_) = edit else { return false };
     let Some(p) = state.current.as_mut() else {
         return false;
     };
@@ -877,8 +879,8 @@ fn set_watched_local(state: &mut PersonState, sid: ServerId, rk: &str, on: bool)
         .flat_map(|s| s.shelves.iter_mut())
         .flat_map(|sh| sh.items.iter_mut())
     {
-        if plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk)) {
-            crate::pms::set_watched(m, on);
+        if at.covers(m) {
+            edit.apply(m);
             hit = true;
         }
     }
@@ -1094,9 +1096,7 @@ impl PersonState {
                 reset(self, adapter);
                 true
             }
-            PersonCmd::SetWatchedLocal { sid, rk, on } => {
-                set_watched_local(self, sid, &rk, on)
-            }
+            PersonCmd::ApplyView { at, edit } => apply_view(self, &at, edit),
         }
     }
 }

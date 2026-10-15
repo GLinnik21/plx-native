@@ -70,7 +70,7 @@ fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_co
         resume_ms: 900_000,
         ..Default::default()
     }));
-    assert!(set_watched_local(test_state(), SRV_A, "42", true));
+    assert!(set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "42"), true));
     assert!(current(test_state()).unwrap().watched);
     assert_eq!(
         current(test_state()).unwrap().resume_ms,
@@ -80,7 +80,7 @@ fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_co
 
     // …and the SHARE's 42 is a different film, so neither its press nor ours reaches the other
     assert!(
-        !set_watched_local(test_state(), SRV_B, "42", false),
+        !set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_B, "42"), false),
         "another server's key names nothing here"
     );
     assert!(
@@ -127,7 +127,7 @@ fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_co
     }));
 
     assert!(
-        set_watched_local(test_state(), SRV_A, "e2", true),
+        set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "e2"), true),
         "an episode of the loaded season"
     );
     let d = current(test_state()).unwrap();
@@ -149,7 +149,7 @@ fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_co
 
     // idempotent: pressing watched on an already-watched episode must not double-count the
     // season, which would make a part-watched season read as finished
-    assert!(set_watched_local(test_state(), SRV_A, "e2", true));
+    assert!(set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "e2"), true));
     assert_eq!(
         current(test_state()).unwrap().seasons[1].viewed_leaf_count,
         2,
@@ -158,8 +158,8 @@ fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_co
 
     // …and the reverse, clamped at zero rather than going negative
     for _ in 0..5 {
-        assert!(set_watched_local(test_state(), SRV_A, "e2", false));
-        assert!(set_watched_local(test_state(), SRV_A, "e1", false));
+        assert!(set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "e2"), false));
+        assert!(set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "e1"), false));
     }
     assert_eq!(
         current(test_state()).unwrap().seasons[1].viewed_leaf_count,
@@ -168,7 +168,7 @@ fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_co
     );
 
     assert!(
-        !set_watched_local(test_state(), SRV_A, "not-here", true),
+        !set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "not-here"), true),
         "an rk on neither the item nor its row"
     );
     clear(test_state(), test_adapter());
@@ -221,7 +221,7 @@ fn an_optimistic_watch_flip_reaches_the_related_shelf_the_menu_was_opened_on() {
     // …and the tile is reached even though the page's own rk did not match and the rk is on no
     // episode — the two arms that both return early
     assert!(
-        set_watched_local(test_state(), SRV_A, "r1", true),
+        set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "r1"), true),
         "the Related tile is a hit, not a miss"
     );
     let d = current(test_state()).unwrap();
@@ -238,14 +238,14 @@ fn an_optimistic_watch_flip_reaches_the_related_shelf_the_menu_was_opened_on() {
     assert!(!d.episodes.get(0).expect("the show has one episode").watched, "…nor is any episode of it");
 
     // the way back, from the second row a part-watched tile offers
-    assert!(set_watched_local(test_state(), SRV_A, "r1", false));
+    assert!(set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "r1"), false));
     let d = current(test_state()).unwrap();
     assert!(d.related[1].unwatched && !d.related[1].watched);
 
     // A SHARE's `r0` is a different film that happens to carry the same number. The row's own
     // `sid` is what keeps the press off it — a bare-key walk would flip the tile here.
     assert!(
-        !set_watched_local(test_state(), SRV_B, "r0", true),
+        !set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_B, "r0"), true),
         "another server's key names nothing on this shelf"
     );
     assert!(
@@ -274,12 +274,12 @@ fn an_optimistic_watch_flip_reaches_the_collection_shelf() {
         }),
         ..Default::default()
     }));
-    assert!(set_watched_local(test_state(), SRV_A, "m2", true));
+    assert!(set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "m2"), true));
     let d = current(test_state()).unwrap();
     let members = &d.collection.as_ref().unwrap().members;
     assert!(members[1].watched && !members[1].unwatched, "the pressed member ticks");
     assert!(members[0].unwatched && !d.watched, "nothing else moved");
-    assert!(set_watched_local(test_state(), SRV_A, "m1", true));
+    assert!(set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(SRV_A, "m1"), true));
     let d = current(test_state()).unwrap();
     assert!(d.watched && d.collection.as_ref().unwrap().members[0].watched,
         "the page's own film and its own tile agree");
@@ -434,4 +434,75 @@ fn a_season_is_watched_only_when_the_server_counted_episodes_and_all_of_them_are
     // viewedLeafCount can lead leafCount right after a scrobble of a season being re-indexed;
     // more-watched-than-exists is still watched, never a negative remainder.
     assert!(season(10, 11).watched(), "an over-count is still watched");
+}
+
+#[test]
+fn a_show_or_season_scoped_change_marks_the_loaded_shows_episodes_and_season_counts() {
+    use crate::viewstate::{Scope, ViewAt};
+    let _serial = plx_base::testlock::serial();
+    set_current_for_test(test_state(), Some(Detail {
+        sid: SRV_A,
+        rk: "show".into(),
+        is_show: true,
+        kind: "show".into(),
+        seasons: vec![
+            Season { rk: "sk1".into(), index: 1, title: "S1".into(), leaf_count: 2, viewed_leaf_count: 0 },
+            Season { rk: "sk2".into(), index: 2, title: "S2".into(), leaf_count: 2, viewed_leaf_count: 0 },
+        ],
+        episodes: vec![
+            Episode { rk: "e1".into(), season: 1, resume_ms: 5, ..Default::default() },
+            Episode { rk: "e2".into(), season: 1, ..Default::default() },
+        ].into(),
+        ..Default::default()
+    }));
+    let season = ViewAt {
+        sid: SRV_A,
+        rk: "sk1".into(),
+        scope: Scope::Season { show_rk: "show".into(), index: 1 },
+    };
+    assert!(set_watched_local(test_state(), &season, true));
+    let d = current(test_state()).unwrap();
+    assert!(d.episodes.get(0).unwrap().watched && d.episodes.get(1).unwrap().watched);
+    assert_eq!(d.episodes.get(0).unwrap().resume_ms, 0);
+    assert_eq!((d.seasons[0].viewed_leaf_count, d.seasons[1].viewed_leaf_count), (2, 0),
+        "only the named season's count moves");
+    assert!(!d.watched, "a season does not finish the show");
+
+    let show = ViewAt { sid: SRV_A, rk: "show".into(), scope: Scope::Show };
+    assert!(set_watched_local(test_state(), &show, false));
+    let d = current(test_state()).unwrap();
+    assert!(d.episodes.get(0).is_some_and(|e| !e.watched) && d.episodes.get(1).is_some_and(|e| !e.watched));
+    assert_eq!((d.seasons[0].viewed_leaf_count, d.seasons[1].viewed_leaf_count), (0, 0));
+    clear(test_state(), test_adapter());
+}
+
+#[test]
+fn unmarking_one_season_of_a_watched_show_clears_the_shows_own_watched_flag() {
+    use crate::viewstate::{Scope, ViewAt};
+    let _serial = plx_base::testlock::serial();
+    set_current_for_test(test_state(), Some(Detail {
+        sid: SRV_A,
+        rk: "show".into(),
+        is_show: true,
+        kind: "show".into(),
+        watched: true,
+        seasons: vec![
+            Season { rk: "sk1".into(), index: 1, title: "S1".into(), leaf_count: 2, viewed_leaf_count: 2 },
+            Season { rk: "sk2".into(), index: 2, title: "S2".into(), leaf_count: 2, viewed_leaf_count: 2 },
+        ],
+        episodes: vec![
+            Episode { rk: "e1".into(), season: 1, watched: true, ..Default::default() },
+        ].into(),
+        ..Default::default()
+    }));
+    let season = ViewAt {
+        sid: SRV_A,
+        rk: "sk1".into(),
+        scope: Scope::Season { show_rk: "show".into(), index: 1 },
+    };
+    assert!(set_watched_local(test_state(), &season, false));
+    let d = current(test_state()).unwrap();
+    assert!(!d.watched, "a show with an unwatched season is not watched");
+    assert_eq!((d.seasons[0].viewed_leaf_count, d.seasons[1].viewed_leaf_count), (0, 2));
+    clear(test_state(), test_adapter());
 }

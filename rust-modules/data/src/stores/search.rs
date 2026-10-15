@@ -18,8 +18,8 @@ pub enum SearchCmd {
     ClearRecents { profile_generation: u32 },
     /// Sign-out / profile switch: drop the query and every shelf.
     Reset,
-    /// The optimistic half of a view-state write, on the result shelves.
-    SetWatchedLocal { sid: plx_plex::plex::ServerId, rk: String, on: bool },
+    /// The optimistic half of a view-state change, on the result shelves.
+    ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
     /// Slide a row's window half a window on (`before` false) or back. Every hit of the row is
     /// reached by repeating it; the cards move when the sources that must read have answered.
     /// `seen` is the row's window in the view the ask was computed from, its start

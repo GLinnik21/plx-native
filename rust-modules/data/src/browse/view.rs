@@ -762,7 +762,7 @@ mod tests {
             retained,
             &state.cur_state().unwrap().items.pages
         ));
-        state.set_watched_local(before.sid, &before.rk, false);
+        state.set_watched_local(&crate::viewstate::ViewAt::leaf(before.sid, &before.rk), false);
         assert!(state.listing_snapshot().view().item(0).unwrap().unwatched);
         assert_eq!(first.view().item(0).unwrap().unwatched, before.unwatched);
         state.requery();

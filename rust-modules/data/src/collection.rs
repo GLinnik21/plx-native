@@ -266,13 +266,15 @@ impl CollectionState {
             // The item menu's Mark watched/unwatched reaches every store that can be drawing the
             // item (`viewstate`'s fan-out); a member's disc must flip on this page too, not one
             // refetch later.
-            CollectionCmd::SetWatchedLocal { sid, rk, on } => {
+            CollectionCmd::ApplyView { at, edit } => {
+                // A member has no deck to leave.
+                let crate::viewstate::ViewEdit::Watched(_) = edit else { return false };
                 let Some(c) = self.current.as_mut() else { return false };
                 let mut hit = false;
                 for i in 0..c.shown() {
                     c.pages.edit(i, |item| {
-                        if plx_plex::plex::same_item((item.sid, &item.rk), (sid, &rk)) {
-                            crate::pms::set_watched(item, on);
+                        if at.covers(item) {
+                            edit.apply(item);
                             hit = true;
                         }
                     });
@@ -606,7 +608,7 @@ mod tests {
     fn row(kind: &str, thumb: &str, parent: &str, grandparent: &str) -> plx_plex::plex::Metadata {
         plx_plex::plex::Metadata { rating_key: "9".into(), kind: kind.into(), title: "Pilot".into(),
             thumb: thumb.into(), parent_thumb: parent.into(), grandparent_thumb: grandparent.into(),
-            parent_index: 3, index: 4, grandparent_title: "Show".into(), ..Default::default() }
+            parent_index: Some(3), index: 4, grandparent_title: "Show".into(), ..Default::default() }
     }
 
     /// The page names the member order the collection's owner chose, from the header's
@@ -800,10 +802,12 @@ mod tests {
         state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         state.install_for_test(vec![PmsMovie { rk: "a".into(), unwatched: true, ..Default::default() }],
             CollectionStatus::Ready);
-        assert!(!state.run(&adapter, CollectionCmd::SetWatchedLocal { sid: ServerId::UNSET,
-            rk: "b".into(), on: true }), "an item not on the page changes nothing");
-        assert!(state.run(&adapter, CollectionCmd::SetWatchedLocal { sid: ServerId::UNSET,
-            rk: "a".into(), on: true }));
+        assert!(!state.run(&adapter, CollectionCmd::ApplyView {
+            at: crate::viewstate::ViewAt::leaf(ServerId::UNSET, "b"),
+            edit: crate::viewstate::ViewEdit::Watched(true) }), "an item not on the page changes nothing");
+        assert!(state.run(&adapter, CollectionCmd::ApplyView {
+            at: crate::viewstate::ViewAt::leaf(ServerId::UNSET, "a"),
+            edit: crate::viewstate::ViewEdit::Watched(true) }));
         let item = &state.view().current().unwrap().item(0).unwrap();
         assert!(item.watched && !item.unwatched);
     }

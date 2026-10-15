@@ -813,15 +813,15 @@ impl super::BrowseState {
             .unwrap_or(false)
     }
 
-    pub(super) fn hubs_set_watched_local(&mut self, sid: ServerId, rk: &str, on: bool) -> bool {
+    pub(super) fn hubs_set_watched_local(&mut self, at: &crate::viewstate::ViewAt, on: bool) -> bool {
         let mut hit = false;
         for st in self.states_mut() {
-            if edit_watched(&mut st.hubs.committed, sid, rk, on) {
+            if edit_watched(&mut st.hubs.committed, at, on) {
                 st.hubs.revised();
                 hit = true;
             }
             if let Some(staged) = st.hubs.staged.as_mut() {
-                edit_watched(staged, sid, rk, on);
+                edit_watched(staged, at, on);
             }
         }
         hit
@@ -866,11 +866,11 @@ fn carry_windows(old: &[Shelf], new: &mut [Shelf]) {
     }
 }
 
-fn edit_watched(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str, on: bool) -> bool {
+fn edit_watched(shelves: &mut Arc<Vec<Shelf>>, at: &crate::viewstate::ViewAt, on: bool) -> bool {
     if !shelves
         .iter()
         .flat_map(|shelf| shelf.items.iter())
-        .any(|item| plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk)))
+        .any(|item| at.covers(item))
     {
         return false;
     }
@@ -878,8 +878,8 @@ fn edit_watched(shelves: &mut Arc<Vec<Shelf>>, sid: ServerId, rk: &str, on: bool
         .iter_mut()
         .flat_map(|shelf| shelf.items.iter_mut())
     {
-        if plx_plex::plex::same_item((item.sid, &item.rk), (sid, rk)) {
-            crate::pms::set_watched(item, on);
+        if at.covers(item) {
+            crate::viewstate::ViewEdit::Watched(on).apply(item);
         }
     }
     true
@@ -1759,9 +1759,9 @@ mod tests {
         let revision = before.view().revision();
         let item = &before.view().shelves()[0].items[0];
         let (sid, rk) = (item.sid, item.rk.clone());
-        assert!(!state.hubs_set_watched_local(sid, "absent-item", true));
+        assert!(!state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, "absent-item"), true));
         assert_eq!(state.hubs_snapshot(sec).view().revision(), revision);
-        assert!(state.hubs_set_watched_local(sid, &rk, true));
+        assert!(state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, &rk), true));
         let edited = state.hubs_snapshot(sec);
         assert_ne!(edited.view().revision(), revision);
         assert!(!before.view().shelves()[0].items[0].watched);
@@ -1778,7 +1778,7 @@ mod tests {
             .unwrap()
             .hubs
             .land_ok(vec![staged]);
-        assert!(!state.hubs_set_watched_local(sid, "staged-only", true));
+        assert!(!state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, "staged-only"), true));
         assert_eq!(state.hubs_snapshot(sec).view().revision(), edited.view().revision());
         assert!(state.hubs_commit_staged(sec, true));
         let published = state.hubs_snapshot(sec);
@@ -1886,7 +1886,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .clone();
-        assert!(!state.hubs_set_watched_local(sid, "not-present", true));
+        assert!(!state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, "not-present"), true));
         let after_miss = state.hubs_snapshot(sec);
         assert!(Arc::ptr_eq(
             retained.data.as_ref().unwrap(),
@@ -1902,7 +1902,7 @@ mod tests {
                 .unwrap()
         ));
 
-        assert!(state.hubs_set_watched_local(sid, &rk, true));
+        assert!(state.hubs_set_watched_local(&crate::viewstate::ViewAt::leaf(sid, &rk), true));
         let edited = state.hubs_snapshot(sec);
         assert!(!Arc::ptr_eq(
             retained.data.as_ref().unwrap(),

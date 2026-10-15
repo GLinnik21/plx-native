@@ -92,8 +92,10 @@ pub fn set_transport_paused(
     }
 }
 
-/// Resume if a seek landed while paused — the twin of `commit_seek`, which is the
-/// stay-paused variant. Written out four separate times in `app::playback` before it had a name.
+/// Resume if a seek landed while paused. Its stay-paused counterpart is the pump's
+/// `settle_paused_seek`, which re-pauses a paused-seek preroll the pump itself opened;
+/// `app::playback::commit_seek` is a bare seek and holds nothing. Written out four separate times
+/// in `app::playback` before it had a name.
 pub fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
     if viewer_paused() {
         set_transport_paused(pa, false);
