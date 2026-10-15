@@ -466,7 +466,7 @@ impl Bridge {
         let preferences = initial.session.persisted.clone();
         let (state, adapter) = initial.home.restore(mt).expect("validated Home initial state");
         let mut stores = plx_data::stores::Stores::default();
-        stores.hubs = plx_data::stores::hubs::HubsStore::from_parts(state, adapter);
+        stores.hubs = plx_data::stores::hubs::HubsStore::from_parts(state, adapter, &stores.view_ledger);
         let hubs = stores.hubs.snapshot();
         // Arms controlled-content recording/replay's admission ledger over detail terminals —
         // exactly the decision the retired crate-global `record::reset(initial.content.is_some())`
@@ -874,6 +874,12 @@ impl Bridge {
         self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx).is_some()).unwrap_or(false)
     }
 
+    /// The catalog row Home's focus is on, when it is on a card of one (`None`: the billboard, a
+    /// heading, the top bar or no Home mounted).
+    pub(crate) fn home_focused_hub(&self, d: &Dispatcher<AppHost>) -> Option<usize> {
+        self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)).flatten().map(|(row, _)| row)
+    }
+
     #[cfg(feature = "devtriggers")]
     pub(crate) fn home_grid_position(&self, d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
         self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)).flatten()
@@ -1027,8 +1033,10 @@ impl Bridge {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             let meta = <AppHost as plx_screens::registry::MetadataLike>::metadata(&cx);
-            if let Some((rk, mark)) = page.focused_season(ret.focus, meta) {
-                return Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark }, entry, ret.focus, rect));
+            if let Some((rk, show_rk, index, mark)) = page.focused_season(ret.focus, meta) {
+                // the season's address rides on the menu: the strip's item is no catalog row, so
+                // the write's scope cannot be read off one (`apply_item_action`)
+                return Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark, show_rk, index }, entry, ret.focus, rect));
             }
             if let Some((rk, mark)) = page.focused_episode(ret.focus, meta) {
                 // the ONE entry point whose item is a leaf of the season this page has loaded
@@ -1180,7 +1188,7 @@ impl Bridge {
     /// synchronous step, which for Metadata means one thing: a reconciliation whose `Requested`
     /// phase becomes observable the moment the command returns (trap T2). Screen-issued Metadata
     /// commands that are not same-turn boundaries still cross `AppFx::Store` like every other
-    /// store's; see `app/content.rs`'s `refresh_content`.
+    /// store's; see `app/content.rs`'s `reconcile_details`.
     pub(crate) fn metadata_run(&mut self, cmd: plx_data::stores::metadata::MetadataCmd) -> bool {
         self.stores.metadata_run(cmd)
     }
@@ -1198,12 +1206,118 @@ impl Bridge {
         self.stores.viewstate_run(cmd, self.directory.view())
     }
 
+    /// Keep the view-state reconcile network work owed while the player is on top
+    /// (`Stores::hold_network`); the patches are not held.
+    pub(crate) fn hold_network(&mut self, player_on_top: bool) {
+        self.stores.hold_network(player_on_top);
+    }
+
+    /// Take the stops whose `stopped` POST was attempted or abandoned, patch each item's resume
+    /// point at once, and owe it a read-back (`Stores::stops_landed`). Route-unconditional: an Up
+    /// Next chain stops one episode after another without ever leaving the player.
+    pub(crate) fn stops_pump(&mut self) {
+        let stops = plx_data::stores::take_landings_owed(
+            &self.stores.landgate,
+            plx_data::stores::StoreId::ViewStop,
+            |got: &[plx_data::viewstate::StopRecord]| got.is_empty() && plx_media::route::stops_owed(),
+            plx_media::route::take_landed_stops,
+        );
+        if !stops.is_empty() {
+            self.stores.stops_landed(stops, self.directory.view());
+            plx_machine::idle::invalidate();
+        }
+    }
+
     pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         self.stores.viewstate_pump(self.directory.view())
     }
 
-    pub(crate) fn take_detail_refresh(&self) -> Option<plx_data::stores::viewstate::DetailRefresh> {
-        self.stores.take_detail_refresh()
+    /// The read-back worker's pass (`stores::viewreconcile`), and the Browse pump a membership
+    /// re-query needs while a page is pushed over the Library page and so it is not ticked to pump its own store.
+    pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
+        if self.stores.reconcile_pump(self.directory.view()) {
+            plx_machine::idle::invalidate();
+        }
+        if self.stores.network_held() {
+            return Default::default(); // a membership re-query is a network read
+        }
+        let mut browse = self.stores.browse.borrow_mut();
+        if browse.requery_owed() {
+            return browse.pump_with_gate(&self.stores.landgate).endpoints;
+        }
+        Default::default()
+    }
+
+    /// The PMS notification feed's per-frame pass (`stores::notify`). Ships off: with
+    /// `NOTIFY_ENABLED` false it opens nothing. What it produces is only counted into the event
+    /// log here (server slots and counts, never a session, key or identifier); the event mapping
+    /// that acts on it is a later change, and notifications never reach the stop queue or Offset.
+    /// `true` when a feed came back after a gap, so the caller owes the covered pages a re-read.
+    pub(crate) fn notify_pump(&mut self) -> bool {
+        let out = self.stores.notify_pump();
+        for plays in &out.plays {
+            plx_base::eventlog::log(&format!("notify: sid={} sessions={}", plays.sid.raw(), plays.sessions.len()));
+        }
+        for (sid, epoch) in &out.resynced {
+            plx_base::eventlog::log(&format!("notify: sid={} resync epoch={epoch}", sid.raw()));
+        }
+        !out.resynced.is_empty()
+    }
+
+    /// WILL background: the feed's connections are cancelled now and stay closed until resume.
+    pub(crate) fn notify_suspend(&mut self) {
+        self.stores.notify.suspend();
+    }
+
+    /// DID foreground: the feed may connect again, and a pending backoff is forgiven.
+    pub(crate) fn notify_resume(&mut self) {
+        self.stores.notify.resume();
+    }
+
+    /// The network may have changed under every open connection (the foreground edge, beside
+    /// `plex::grant::network_changed`): cancel them and reconnect.
+    pub(crate) fn notify_network_changed(&mut self) {
+        self.stores.notify.network_changed();
+    }
+
+    /// May a covered page's re-read be spent now (`Stores::reread_allowed`)?
+    pub(crate) fn reread_allowed(&self) -> bool {
+        self.stores.reread_allowed()
+    }
+
+    /// Owe the read-back of what a page holds on screen (`Stores::owe_read_back`).
+    pub(crate) fn owe_read_back(&mut self, keys: plx_data::stores::HeldKeys) {
+        self.stores.owe_read_back(keys);
+    }
+
+    /// Owe the read-back of a Detail page's own item, which owes the page its in-place re-read
+    /// (`Stores::owe_page_read`).
+    pub(crate) fn owe_page_read(&mut self, keys: plx_data::stores::HeldKeys) {
+        self.stores.owe_page_read(keys);
+    }
+
+    /// The items the page for `arg` holds cards for, from the store that feeds it: Library's
+    /// current section, Search's results, and the Person / Filmography / Collection store when it
+    /// is showing that very page. Nothing for any other page.
+    pub(crate) fn held_keys(&self, arg: &AppArg) -> plx_data::stores::HeldKeys {
+        match arg {
+            AppArg::Library => self.stores.library_held_keys(),
+            AppArg::Search => self.stores.search.held_keys(),
+            AppArg::Content(content @ (ContentArg::Person { .. } | ContentArg::Filmography { .. })) =>
+                self.stores.person.held_keys(content),
+            AppArg::Content(content @ ContentArg::Collection(_)) => self.stores.collection.held_keys(content),
+            _ => Default::default(),
+        }
+    }
+
+    /// The Home sources, in display order: what a Home re-read asks one quiet refetch of each.
+    pub(crate) fn hub_source_ids(&self) -> Vec<plx_plex::plex::ServerId> {
+        self.stores.hubs.source_ids()
+    }
+
+    /// The rows the read-back has landed since the last call (`Stores::take_landed_views`).
+    pub(crate) fn take_landed_views(&mut self) -> Vec<(plx_plex::plex::ServerId, String)> {
+        self.stores.take_landed_views()
     }
 
     /// Search commands snapshot their initial favourite-library ranking from the same retained
@@ -1218,8 +1332,24 @@ impl Bridge {
 
     /// A fresh Hubs publication captured from this owner's store, for a caller that must not read
     /// the frame's retained `self.hubs` publication (e.g. a same-turn action after a command).
+    /// Is a quiet read's answer waiting to land? The per-frame publish asks this first.
+    pub(crate) fn hubs_have_staged(&self) -> bool {
+        self.stores.hubs.has_staged()
+    }
+
     pub(crate) fn hubs_snapshot(&self) -> plx_data::pms::HubsSnapshot {
         self.stores.hubs.snapshot()
+    }
+
+    /// Does a Hubs worker still owe this owner a landing? False once every spawned fetch has been
+    /// taken (applied or failed) and for a launch that was refused.
+    pub(crate) fn hubs_owed(&self) -> bool {
+        self.stores.hubs.owed()
+    }
+
+    /// Is no prompted Hubs read of source `sid` out or waiting for room? (A quiet read is not one.)
+    pub(crate) fn hub_source_settled(&self, sid: plx_plex::plex::ServerId) -> bool {
+        self.stores.hubs.source_settled(sid)
     }
 
     /// Synchronous addressed Hubs command against this owner's retained Browse directory. Used by
@@ -1289,6 +1419,23 @@ impl Bridge {
         self.refresh_browse_directory();
     }
 
+    /// The Library grid holds `count` items of `sid` (ratingKeys "1"...), none watched, on a
+    /// registered two-source table.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn seed_library_grid_for_test(&mut self, sid: plx_plex::plex::ServerId, count: usize) {
+        self.seed_registered_browse_for_test([sid, sid]);
+        self.stores.browse.borrow_mut().seed_items_for_test(count);
+    }
+
+    /// `(watched, unwatched, resume_ms)` of the Library grid's `index`th tile.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn grid_tile_for_test(&self, index: usize) -> Option<(bool, bool, i64)> {
+        let mut browse = self.stores.browse.borrow_mut();
+        let snapshot = browse.listing_snapshot();
+        let view = snapshot.view();
+        view.item(index).map(|m| (m.watched, m.unwatched, m.resume_ms))
+    }
+
     /// Test hook: seed this owner's Hubs store directly — `stores` is private outside this file's
     /// own descendant modules, so a fixture built outside `app::bridge` (`app::recorder`'s own
     /// `mod tests`) reaches its owned `(state, adapter)` pair through here rather than the deleted
@@ -1296,6 +1443,24 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn seed_hubs_for_test(&mut self, items: usize, hub_state: plx_data::pms::HubState) {
         self.stores.hubs.seed_for_test(items, hub_state);
+    }
+
+    /// Test hook: publish `shelves` as Search's results.
+    #[cfg(test)]
+    pub(crate) fn publish_search_for_test(&mut self, shelves: Vec<plx_data::search::Shelf>) {
+        self.stores.search.publish_shelves_for_test(shelves);
+    }
+
+    /// Test hook: the keys owed a read-back and not yet sent.
+    #[cfg(test)]
+    pub(crate) fn read_back_pending_for_test(&self) -> plx_data::stores::HeldKeys {
+        self.stores.reconcile.pending_for_test()
+    }
+
+    /// Is a view-state write queued or in flight?
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn viewstate_busy_for_test(&self) -> bool {
+        self.stores.viewstate.borrow().is_busy_for_test()
     }
 
     /// How many hub refetches Home's store has started.

@@ -562,6 +562,10 @@ struct SecState {
     total: i64,      // -1 = unknown (first fetch of this query still out)
     items: SecItems,
     cursor: Option<Arc<Cursor>>,
+    /// A read-back changed a row this section's QUERY depends on (see
+    /// [`BrowseState::apply_view_local`]): what it lists is out of date though every row on screen
+    /// is right. Cleared by any re-query.
+    membership_stale: bool,
 }
 
 /// A section's items, CHUNKED BY PAGE (restructure phase 4, the O(result) rule of spec §5.2 —
@@ -682,15 +686,18 @@ impl SecItems {
             }
         }
     }
-    /// A read scan first: an optimistic edit must not clone unrelated retained pages.
-    fn set_watched(&mut self, sid: ServerId, rk: &str, on: bool) -> bool {
-        let matches = |m: &PmsMovie| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk));
-        let mut hit = false;
+    /// A read scan first: an optimistic edit must not clone unrelated retained pages. Returns
+    /// `(covered, changed)`: whether any loaded row is one the edit addresses, and whether any
+    /// of them actually changed. A read-back that agrees with the row covers it and changes
+    /// nothing: no page is copied and no notice rises, but the listing still has to learn it.
+    fn apply_view(&mut self, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> (bool, bool) {
+        let covered = |m: &PmsMovie| at.covers(m);
+        let matches = |m: &PmsMovie| at.covers(m) && edit.changes(m);
+        let (mut any_covered, mut changed) = (false, false);
         for p in 0..self.pages.len() {
-            if !self.pages[p]
-                .as_ref()
-                .is_some_and(|page| page.iter().flatten().any(matches))
-            {
+            let Some(page) = self.pages[p].as_ref() else { continue };
+            any_covered |= page.iter().flatten().any(covered);
+            if !page.iter().flatten().any(matches) {
                 continue;
             }
             let page = Arc::make_mut(&mut self.pages)[p].as_mut().unwrap();
@@ -699,11 +706,11 @@ impl SecItems {
                 .flatten()
                 .filter(|m| matches(m))
             {
-                crate::pms::set_watched(m, on);
-                hit = true;
+                edit.apply(m);
+                changed = true;
             }
         }
-        hit
+        (any_covered, changed)
     }
     #[cfg(any(test, feature = "test-support"))]
     fn from_vec(v: Vec<Option<PmsMovie>>) -> Self {
@@ -738,11 +745,27 @@ impl Default for SecState {
             total: -1,
             items: SecItems::default(),
             cursor: None,
+            membership_stale: false,
         }
     }
 }
 
 impl SecState {
+    /// Does the server's answer to this section's query change when an item is watched: the
+    /// Unwatched switch drops it, ordering by last viewed moves it? (Plex's sort key for "Last
+    /// Viewed" is `lastViewedAt`.)
+    fn membership_depends_on_viewing(&self) -> bool {
+        (self.unwatched && self.library_type.filters())
+            || self.sorts.get(self.sort_idx).is_some_and(|sort| sort.key == "lastViewedAt")
+    }
+    /// Forget the listing, as a query edit does: the next visit fetches it afresh.
+    fn reset_listing(&mut self) {
+        self.fetch = SecFetch::Loading;
+        self.total = -1;
+        self.items.clear();
+        self.cursor = None;
+        self.membership_stale = false;
+    }
     fn query_filters(&self, section_kind: SecKind) -> Vec<(String, String)> {
         let mut filters = Vec::new();
         if let Some(kind) = self.library_type.plex_type(section_kind) {
@@ -769,6 +792,14 @@ impl SecState {
 /// sibling [`BrowseAdapter`]; everything whose identity belongs to a Browse instance lives here.
 #[derive(Clone)]
 pub struct BrowseState {
+    /// The publish order of view-state edits, shared with every other store
+    /// (`stores::Stores::default`); a standalone state owns a private one.
+    pub(crate) ledger: crate::viewledger::ViewLedger,
+    /// The ledger stamp of the listing page read in flight (single flight: `BrowseAdapter::fetching`),
+    /// taken when it was requested. Its landing is patched with every edit published since.
+    page_stamp: crate::viewledger::Stamp,
+    /// The same for the section-hubs read in flight (`BrowseAdapter::hubs.fetching` is its claim).
+    hubs_stamp: crate::viewledger::Stamp,
     session_generation: u64,
     sources: Vec<BrowseSource>,
     sections: Vec<BrowseSection>,
@@ -782,7 +813,16 @@ pub struct BrowseState {
     /// The sections left most recently, newest first, each with the window it last showed (see
     /// [`RECENT_SECTIONS`]).
     left: Vec<(usize, (usize, usize))>,
+    /// The FETCH generation: moves on every re-query and every section switch, and a page that
+    /// lands under an older one is dropped. Not what the screen sees — that is [`Self::edit_gen`].
     gen: u32,
+    /// The QUERY identity the screen sees (`ListingId::query`): moves only when the listing is a
+    /// different query (a section switch or a query edit), never on a membership re-query, which
+    /// refreshes the same query under the reader's place.
+    edit_gen: u32,
+    /// The `gen` a membership re-query was started under: while it stands and the first page is
+    /// out, the store is owed a pump even with no Library page on top ([`BrowseState::requery_owed`]).
+    requery_gen: Option<u32>,
     sections_gen: u32,
     epoch: u32,
     src_facts_gen: u32,
@@ -870,6 +910,9 @@ impl BrowseAdapter {
 impl Default for BrowseState {
     fn default() -> Self {
         Self {
+            ledger: Default::default(),
+            page_stamp: 0,
+            hubs_stamp: 0,
             sources: Vec::new(),
             sections: Vec::new(),
             states: Vec::new(),
@@ -878,6 +921,8 @@ impl Default for BrowseState {
             focus: None,
             left: Vec::new(),
             gen: 0,
+            edit_gen: 0,
+            requery_gen: None,
             sections_gen: 0,
             epoch: 0,
             src_facts_gen: 0,
@@ -1000,6 +1045,11 @@ impl BrowseState {
     fn query_gen(&self) -> u32 {
         self.gen
     }
+    /// The query identity the screen is shown ([`ListingId::query`]) and its saved cursor is
+    /// addressed with; see [`Self::edit_gen`].
+    fn listing_query(&self) -> u32 {
+        self.edit_gen
+    }
     fn sections_gen(&self) -> u32 {
         self.sections_gen
     }
@@ -1016,18 +1066,25 @@ impl BrowseState {
     fn bump_source_facts_gen(&mut self) {
         self.src_facts_gen = self.src_facts_gen.wrapping_add(1);
     }
+    /// A different query: both generations move.
     fn bump_gen(&mut self) -> u32 {
+        self.edit_gen = self.edit_gen.wrapping_add(1);
+        self.refetch_gen()
+    }
+    /// The same query fetched again: only the fetch generation moves, so a page still out for the
+    /// old fetch is dropped while the screen sees no query change.
+    fn refetch_gen(&mut self) -> u32 {
         self.gen = self.gen.wrapping_add(1);
         self.gen
     }
     fn requery(&mut self) {
         self.bump_gen();
+        self.reset_current_listing();
+    }
+    fn reset_current_listing(&mut self) {
         let current = self.cur();
         if let Some(state) = self.states.get_mut(current) {
-            state.fetch = SecFetch::Loading;
-            state.total = -1;
-            state.items.clear();
-            state.cursor = None;
+            state.reset_listing();
         }
     }
     fn set_cur(&mut self, i: usize) {
@@ -1060,6 +1117,28 @@ impl BrowseState {
     fn want(&mut self, lo: usize, hi: usize, focus: Option<usize>) {
         self.want = (lo, hi);
         self.focus = focus;
+    }
+    /// The items the Library page addressed by `target` holds on screen: the section's hold-window
+    /// shelves and, when it is the current section, the grid rows in its wanted window. Empty when
+    /// the address no longer names a section (a table epoch moved).
+    pub fn held_keys(&self, target: crate::stores::browse::SectionAddress) -> crate::stores::HeldKeys {
+        let mut keys = crate::stores::HeldKeys::new();
+        let Some(index) = self.resolve_section(target.epoch, target.sid, target.section) else {
+            return keys;
+        };
+        let Some(st) = self.states.get(index) else { return keys };
+        for m in st.hubs.held_items() {
+            crate::stores::push_held(&mut keys, m.sid, &m.rk);
+        }
+        if index == self.cur {
+            let (lo, hi) = self.want;
+            for i in lo..hi.min(st.items.len) {
+                if let Some(m) = st.items.get(i) {
+                    crate::stores::push_held(&mut keys, m.sid, &m.rk);
+                }
+            }
+        }
+        keys
     }
     pub fn resolve_section(&self, epoch: u32, sid: ServerId, key: i64) -> Option<usize> {
         if epoch != self.table_epoch() {
@@ -1184,12 +1263,58 @@ impl BrowseState {
             },
         }
     }
-    fn set_watched_local(&mut self, sid: ServerId, rk: &str, on: bool) -> bool {
+    /// Edit every listing row the change covers, in every section's loaded pages.
+    ///
+    /// A read-back's [`ViewEdit::Facts`] that COVERS a row of a listing whose MEMBERSHIP depends on
+    /// viewing (the Unwatched switch, or ordered by last viewed) also marks that section stale,
+    /// whether or not it changes the row: the server's answer is what marks staleness, and a
+    /// read-back that agrees with the optimistic row is exactly that answer. The row is patched
+    /// where it stands, but the server would now list it elsewhere or not at all.
+    /// Returns true when a row changed or a section was newly marked stale or reset.
+    /// The current section waits for a page to be pushed over the Library page
+    /// ([`BrowseState::requery_stale`]); any other section simply forgets its pages AND its
+    /// cursor (`reset_listing`), which is what a first visit looks like: switching back to it
+    /// fetches afresh and opens at the top.
+    fn apply_view_local(&mut self, at: &crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit) -> bool {
+        let current = self.cur();
+        let facts = matches!(edit,
+            crate::viewstate::ViewEdit::Facts { .. } | crate::viewstate::ViewEdit::Offset { .. });
         let mut hit = false;
-        for state in &mut self.states {
-            hit |= state.items.set_watched(sid, rk, on);
+        for (i, state) in self.states.iter_mut().enumerate() {
+            let (covered, changed) = state.items.apply_view(at, edit);
+            hit |= changed;
+            if covered && facts && state.membership_depends_on_viewing() {
+                if i == current {
+                    hit |= !state.membership_stale;
+                    state.membership_stale = true;
+                } else {
+                    state.reset_listing();
+                    hit = true;
+                }
+            }
         }
         hit
+    }
+    /// Re-fetch the current section's query because a read-back changed what it would list. The
+    /// reader's place survives, unlike a query edit: the cursor is kept and only the FETCH
+    /// generation moves ([`Self::query_gen`], which drops a page still out), not the query
+    /// identity the screen sees ([`Self::listing_query`]). True when a re-fetch was started.
+    fn requery_stale(&mut self) -> bool {
+        let current = self.cur();
+        let Some(state) = self.states.get_mut(current).filter(|s| s.membership_stale) else { return false };
+        let cursor = state.cursor.clone();
+        self.refetch_gen();
+        self.reset_current_listing();
+        if let Some(state) = self.states.get_mut(current) {
+            state.cursor = cursor;
+        }
+        self.requery_gen = Some(self.gen);
+        true
+    }
+    /// Is a membership re-query's first page still owed, so that the store must be pumped even
+    /// though no Library page is on top to do it?
+    pub fn requery_owed(&self) -> bool {
+        self.requery_gen == Some(self.gen) && self.cur_state().is_some_and(|s| s.fetch == SecFetch::Loading)
     }
     fn note_library_choice(&mut self, i: usize) {
         let (Some(kind), Some(section)) = (self.section_kind(i), self.sections.get(i)) else {
@@ -1489,7 +1614,7 @@ impl BrowseState {
         };
         match work {
             LibraryWork::SaveCursor { query, cursor } => {
-                query == self.query_gen() && self.save_cursor(index, cursor)
+                query == self.listing_query() && self.save_cursor(index, cursor)
             }
             LibraryWork::Commit {
                 select,
@@ -1560,6 +1685,9 @@ impl BrowseState {
                     LibraryWork::Letters => self.kick_letters(adapter),
                     LibraryWork::Genres => self.kick_genres(adapter),
                     LibraryWork::Retry => self.retry_cur_source(),
+                    LibraryWork::Requery => {
+                        self.requery_stale();
+                    }
                     LibraryWork::Commit { .. }
                     | LibraryWork::Hubs { .. }
                     | LibraryWork::HubPage { .. }
@@ -2316,12 +2444,18 @@ impl BrowseState {
                 self.hubs_invalidate_all(adapter);
                 true
             }
-            BrowseCmd::SetWatchedLocal { sid, rk, on } => {
-                let listing = self.set_watched_local(sid, &rk, on);
-                let hubs = self.hubs_set_watched_local(sid, &rk, on);
-                listing || hubs
-            }
-            BrowseCmd::LeftTheDeck { sid, rk } => self.hubs_left_the_deck(sid, &rk),
+            BrowseCmd::ApplyView { at, edit } => match edit {
+                crate::viewstate::ViewEdit::Watched(on) => {
+                    let listing = self.apply_view_local(&at, edit);
+                    let hubs = self.hubs_set_watched_local(&at, on);
+                    listing || hubs
+                }
+                // The section shelves are re-read whole after every burst (`HubsInvalidateAll`).
+                crate::viewstate::ViewEdit::Facts { .. } | crate::viewstate::ViewEdit::Offset { .. } => {
+                    self.apply_view_local(&at, edit)
+                }
+                crate::viewstate::ViewEdit::LeftDeck => self.hubs_left_the_deck(at.sid, &at.rk),
+            },
         }
     }
     fn maybe_discover_owned(
@@ -2470,6 +2604,7 @@ impl BrowseState {
         let Some(client) = plx_plex::plex::client_for(sid) else { return };
         let token_gen = client.token_gen();
         adapter.fetching.store(true, Ordering::SeqCst);
+        self.page_stamp = self.ledger.stamp();
         let worker_adapter = Arc::clone(adapter);
         let spawned = plx_base::task::spawn_small("page", move || {
             let page = catch_unwind(|| {
@@ -2545,6 +2680,7 @@ impl BrowseState {
         // visible rows, the focused slot's page and the page a restore lands on.
         let wanted = self.want;
         let focus = self.focus;
+        let (ledger, stamp) = (self.ledger.clone(), self.page_stamp);
         let page = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
             || adapter.fetching.load(Ordering::SeqCst), || {
             adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -2621,7 +2757,11 @@ impl BrowseState {
                                     focus,
                                     restore: state.cursor.as_deref().map(Cursor::slot),
                                 };
-                                state.items.land(result.start, result.items, &keep);
+                                // The read describes the server from when it was requested; an
+                                // edit published since (a press while it was out) is made again.
+                                let mut items = result.items;
+                                ledger.patch(stamp, items.iter_mut());
+                                state.items.land(result.start, items, &keep);
                                 changed = true;
                             }
                         }
@@ -3825,3 +3965,11 @@ mod localized_type_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "browse_view_ledger_tests.rs"]
+mod view_ledger_tests;
+
+#[cfg(test)]
+#[path = "browse_membership_tests.rs"]
+mod membership_tests;

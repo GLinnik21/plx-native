@@ -1,18 +1,24 @@
-//! A sidecar `.ass` script fed to the renderer a window at a time, the way an embedded track is
-//! (`ass_source`): libass is handed the script's header plus the dialogue lines around the playhead,
-//! never the whole script, so the native library's own event guard (20 000 per track) is never
-//! approached however long the script is, and what libass holds stays one window of lines.
+//! A sidecar script (an authored `.ass`, or a converted SubRip/WebVTT file) fed to the renderer a
+//! window at a time, the way an embedded track is (`ass_source`): libass is handed the script's
+//! header plus the dialogue lines around the playhead, never the whole script, so the native
+//! library's own event guard (20 000 per track) is never approached however long the script is, and
+//! what libass holds stays one window of lines, within [`WINDOW_BYTES`] as well.
 //!
 //! The script is still read by libass itself (`plx_ass_load` with `script = 1`), so its grammar,
 //! Format orders and timestamp rules are libass's; this module only decides WHICH `Dialogue:` lines
 //! go in with the header. The lines are kept in file order, which libass uses to stack overlapping
 //! events of one layer.
 use super::ass_timing::{effect_animated, libass_clock_ms, text_animated, Motion, Span};
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 /// Dialogue lines in one window: the embedded tracks' forward window (`ass_source`), far under the
-/// native guard. A script with no more events than this is loaded whole, as it always was.
+/// native guard. A script with no more events than this (and no more bytes than [`WINDOW_BYTES`]) is loaded whole.
 pub const WINDOW_EVENTS: usize = 8192;
+/// Bytes in one window, header included: the bound a script loaded whole answers to, so a
+/// window is never bigger than the largest script the renderer takes in one piece. A script past
+/// it is fed in windows whatever its line count.
+pub const WINDOW_BYTES: usize = 8 * 1024 * 1024;
 /// How far behind the playhead a window reaches, so a short step back stays inside it.
 const BACK_MS: i64 = 10_000;
 /// "Alive for ever": a line whose times cannot be read is kept in every window (libass decides what
@@ -55,8 +61,14 @@ impl Window {
 }
 
 impl ScriptIndex {
+    /// Whether a script of `len` bytes can be indexed at all (line offsets are 32-bit): the only
+    /// size past which a script is refused rather than windowed.
+    pub fn indexable(len: usize) -> bool {
+        u32::try_from(len).is_ok()
+    }
+
     pub fn parse(raw: &Arc<[u8]>) -> Option<Self> {
-        if u32::try_from(raw.len()).is_err() {
+        if !Self::indexable(raw.len()) {
             return None;
         }
         let (mut start_at, mut end_at, mut fields) = (1usize, 2usize, 10usize);
@@ -106,9 +118,9 @@ impl ScriptIndex {
         })
     }
 
-    /// More lines than one window holds: the script must be fed in windows.
+    /// More lines, or more bytes, than one window holds: the script must be fed in windows.
     pub fn windowed(&self) -> bool {
-        self.lines.len() > WINDOW_EVENTS
+        self.lines.len() > WINDOW_EVENTS || self.raw.len() > WINDOW_BYTES
     }
 
     pub fn len(&self) -> usize {
@@ -128,29 +140,56 @@ impl ScriptIndex {
     }
 
     /// The window for a playhead at `now_ms`: the header and, in file order, the first
-    /// [`WINDOW_EVENTS`] lines (by start) that had not ended `BACK_MS` before it. Every line alive
-    /// at a playhead the window answers for is in it: lines are taken by start, so a line that
-    /// starts before the cut is taken before any that starts after it.
+    /// [`WINDOW_EVENTS`] lines (by start, and within [`WINDOW_BYTES`] with the header, but never
+    /// fewer than one) that had not ended `BACK_MS` before it. Every line alive at a playhead the
+    /// window answers for is in it: lines are taken by start, so a line that starts before the cut
+    /// is taken before any that starts after it, and when the bound is reached the lines already
+    /// over before the playhead are let go of first, and only to make room for a line that starts by
+    /// the playhead (a later line that does not fit is cut off instead; a count that is reached
+    /// cuts too). The window then answers from the end of the last one it let go, not from
+    /// `BACK_MS` back. Every window is within [`WINDOW_BYTES`] except a single line larger than the
+    /// bound, which the renderer refuses.
     pub fn window(&self, now_ms: i64) -> Window {
-        let lo_ms = now_ms.saturating_sub(BACK_MS);
-        let mut taken: Vec<u32> = Vec::new();
+        let mut lo_ms = now_ms.saturating_sub(BACK_MS);
+        let mut taken: VecDeque<u32> = VecDeque::new();
+        let mut bytes = self.header.len();
         let mut hi_ms = i64::MAX;
         for &i in &self.by_start {
             let line = &self.lines[i as usize];
             if line.end_ms <= lo_ms {
                 continue;
             }
-            if taken.len() == WINDOW_EVENTS {
+            let over_bytes = |taken: &VecDeque<u32>, bytes: usize| {
+                !taken.is_empty() && bytes.saturating_add(line.len as usize) > WINDOW_BYTES
+            };
+            // Look-back is let go of only to make room for a line that starts by the playhead; a
+            // later line that does not fit is cut off (`hi_ms`) and the window keeps its `BACK_MS`.
+            while line.start_ms <= now_ms && over_bytes(&taken, bytes) {
+                match taken.front().map(|&f| &self.lines[f as usize]) {
+                    Some(old) if old.end_ms <= now_ms => {
+                        bytes -= old.len as usize;
+                        lo_ms = lo_ms.max(old.end_ms);
+                        taken.pop_front();
+                    }
+                    _ => break,
+                }
+            }
+            if taken.len() == WINDOW_EVENTS || over_bytes(&taken, bytes) {
                 hi_ms = line.start_ms;
                 break;
             }
-            taken.push(i);
+            if line.end_ms <= lo_ms {
+                continue; // let go of with the lines before it
+            }
+            bytes += line.len as usize;
+            taken.push_back(i);
         }
         // More than a window of lines starting together cannot all be held; the window still has to
         // answer for the playhead it was cut for, or it would be cut again every frame.
         let hi_ms = hi_ms.max(now_ms.saturating_add(1));
+        let mut taken: Vec<u32> = taken.into();
         taken.sort_unstable();
-        let mut text = Vec::with_capacity(self.header.len() + taken.len() * 96);
+        let mut text = Vec::with_capacity(bytes);
         text.extend_from_slice(&self.header);
         for i in taken {
             let line = &self.lines[i as usize];

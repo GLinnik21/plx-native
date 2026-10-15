@@ -1360,7 +1360,10 @@ mod tests {
             ..Default::default()
         }));
         assert!(test_store().run(
-            plx_data::stores::metadata::MetadataCmd::SetWatchedLocal { sid, rk: "movie".into(), on: true }
+            plx_data::stores::metadata::MetadataCmd::ApplyView {
+                at: plx_data::viewstate::ViewAt::leaf(sid, "movie"),
+                edit: plx_data::viewstate::ViewEdit::Watched(true),
+            }
         ));
         let movie = test_store().view().current().unwrap();
         assert_eq!(hero_mark(movie), PosterMark::Watched);
@@ -1388,7 +1391,10 @@ mod tests {
             ..Default::default()
         }));
         assert!(test_store().run(
-            plx_data::stores::metadata::MetadataCmd::SetWatchedLocal { sid, rk: "show".into(), on: true }
+            plx_data::stores::metadata::MetadataCmd::ApplyView {
+                at: plx_data::viewstate::ViewAt::leaf(sid, "show"),
+                edit: plx_data::viewstate::ViewEdit::Watched(true),
+            }
         ));
         assert_eq!(
             hero_mark(test_store().view().current().unwrap()),

@@ -232,5 +232,51 @@ fn a_watch_flip_on_an_evicted_episode_does_nothing() {
     let server = serve(1000, true);
     open_season(&server);
     assert!(!test_state().current.as_mut().unwrap().episodes.edit("e500", |e| e.watched = true));
-    assert!(!set_watched_local(test_state(), test_state().current.as_ref().unwrap().sid, "e500", true));
+    assert!(!set_watched_local(test_state(), &crate::viewstate::ViewAt::leaf(test_state().current.as_ref().unwrap().sid, "e500"), true));
+}
+
+/// An episode page is asked for long after the season was installed. Its read describes the server
+/// from ITS request: an edit published before that request is not made again, one published while
+/// it was out is. Driven through `want_episodes`, the real request site.
+#[test]
+fn an_episode_page_replays_only_the_edits_published_after_its_own_request() {
+    use crate::viewstate::{ViewAt, ViewEdit};
+    let _serial = plx_base::testlock::serial();
+    let server = serve(1000, true);
+    let sid = open_season(&server);
+    let ledger = test_state().ledger.clone();
+
+    ledger.record(&ViewAt::leaf(sid, "e300"), ViewEdit::Watched(true)); // before the request
+    want(300, 330, Some(300), None);
+    ledger.record(&ViewAt::leaf(sid, "e301"), ViewEdit::Watched(true)); // while the page is out
+    settle(|| show(300).is_some());
+    let watched = |i: usize| list().get(i).map(|e| e.watched);
+    assert_eq!((watched(300), watched(301)), (Some(false), Some(true)));
+}
+
+/// A fresh read of the same season keeps the pages the strip had reached; the read's own page 0
+/// wins; another season (another length, another key) starts at page 0.
+#[test]
+fn a_re_read_of_the_same_season_carries_the_pages_the_strip_reached() {
+    let page = |p: usize, tag: &str| -> Vec<Episode> { (p * 60..(p + 1) * 60).map(|i| episode(&format!("{tag}{i}"))).collect() };
+    let show = |total: usize, season: &str, pages: &[(usize, &str)]| {
+        let mut d = Detail { sid: plx_plex::plex::ServerId::UNSET, rk: "show".into(), ..Default::default() };
+        d.seasons = vec![crate::metadata::Season { rk: season.into(), index: 1, title: String::new(), leaf_count: 0, viewed_leaf_count: 0 }];
+        d.episodes = EpisodeList::with_total(total);
+        for &(p, tag) in pages { d.episodes.set_page(p, page(p, tag)); }
+        d
+    };
+    let old = show(150, "sk1", &[(0, "old"), (1, "old")]);
+    let mut fresh = show(150, "sk1", &[(0, "new")]);
+    carry_episode_window(&old, &mut fresh);
+    assert_eq!(fresh.episodes.get(0).map(|e| e.rk.as_str()), Some("new0"), "the server's page 0 stands");
+    assert_eq!(fresh.episodes.get(70).map(|e| e.rk.as_str()), Some("old70"), "page 1 is carried");
+    assert!(fresh.episodes.get(130).is_none(), "and a page never held stays a hole");
+
+    let mut other_len = show(151, "sk1", &[(0, "new")]);
+    carry_episode_window(&old, &mut other_len);
+    assert!(other_len.episodes.get(70).is_none(), "a season of another length is another listing");
+    let mut other_season = show(150, "sk2", &[(0, "new")]);
+    carry_episode_window(&old, &mut other_season);
+    assert!(other_season.episodes.get(70).is_none(), "another season starts at page 0");
 }

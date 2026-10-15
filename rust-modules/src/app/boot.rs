@@ -853,6 +853,8 @@ pub(super) fn activate_server_owned(
     let _ = bridge.hubs_run(plx_data::stores::hubs::HubsCmd::Reset).changed;
     bridge.person_run(plx_data::stores::person::PersonCmd::Reset);
     bridge.collection_run(plx_data::stores::collection::CollectionCmd::Reset);
+    // before the stores reset: a stop the previous identity left in flight must not land on this one
+    plx_media::route::retire_pending_stops();
     bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
     bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::Reset);
     let mut endpoints = bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints;
@@ -1843,7 +1845,7 @@ pub(crate) unsafe fn construct(
     let pause_resume_at: Option<u32> = None;
     let prev = 0u32;
     // Home data refresh, armed on every player exit (Stop/BACK/EOS): the hubs are refetched once
-    // the stop report has settled (`route::scrobble_settled`), so the `stopped` timeline POST
+    // the stop report has settled (`route::timeline_stop_landed`), so the `stopped` timeline POST
     // lands first — Continue Watching then shows the new resume point / next episode instead of
     // the state from boot.
     let refresh_hubs = false;
@@ -1881,8 +1883,9 @@ pub(crate) unsafe fn construct(
         menu_play_await: None,
         prev,
         refresh_hubs,
-        refresh_detail: None,
+        return_hold: Default::default(),
         plaintext_upgrade: Default::default(),
+        reread: Default::default(),
         ev,
         remote,
         win,

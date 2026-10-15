@@ -272,7 +272,6 @@ pub(crate) unsafe fn run(app: &mut App) {
         // dithers on every frame.)
         fr.underlay_moving |= tree_report.underlay_moving;
         if was_player && super::bridge::player(&app.pages).is_none() { restore_played_entry(app); }
-        refresh_after_playback(app);
         content_requests(app, fr);
         crate::dev::scenarios::advance_content_boot(app, fr);
         loop_requests(app);
@@ -865,6 +864,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // Outside the player guard below on purpose: this is the OS taking the screen from
         // whatever is on it, not a fact about playback.
         super::bridge::background(&mut app.pages);
+        // The notification feed is a live socket the OS will not keep: cancel it at the first edge
+        // that says the screen is going (idempotent on the second), reopened by DID foreground.
+        app.bridge.notify_suspend();
         // Revoke our borrowed SDL proxies before another frame can use them while backgrounded.
         // SDL owns their lifetime; foreground must query its current window again.
         release_borrowed_window(plx_platform::tv::window::release);
@@ -949,6 +951,13 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // lost one is queued for a fresh discovery (requested by the upgrade retry's frame
             // step) that re-proves eligibility before minting again (`plex::grant`).
             plx_plex::plex::grant::network_changed();
+            // …and the same doubt applies to the notification feed's open sockets: drop them, let
+            // the feed connect again (a backoff is forgiven). This is no feed gap: `reread.resume()` below
+            // re-reads every page, so the reconnect owes no second resync.
+            app.bridge.notify_network_changed();
+            app.bridge.notify_resume();
+            // The television may have been away long enough for every page to be stale.
+            app.reread.resume();
             // Reacquire only on DID foreground, before playback restoration and rendering.
             restore_window(app.win);
             plx_machine::idle::invalidate();
@@ -1639,18 +1648,25 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                 }
             }
         }
+        // The return hold (`playback::ReturnHold`): armed for an exit that reported a stop, ended
+        // by a fresh key press or click. That press is NOT delivered this frame: the page that
+        // would take it is still the player (input is step 2 of the frame, the dip crosses its
+        // floor at step 4), so the whole batch goes to Home on the next frame.
+        super::playback::return_hold_inputs(app, fr.now);
         // post-playback home refresh (armed by every exit_player): refetch the hubs so
         // Continue Watching shows the new resume point / next episode. It waits for the stop
-        // report to have reached the server (`scrobble_settled`), not for a clock: a read that
+        // report to have reached the server (`timeline_stop_landed`), not for a clock: a read that
         // lands before the `stopped` timeline POST is the stale resume point, and a slow share
         // makes that window seconds wide. It is owed once per exit and held while the player is
-        // on top. The request is worker-only; the landing logs the
-        // resulting item count when it actually commits.
+        // on top — except on the return to Home, where the dip waits at its floor for this very
+        // read (`CW_RETURN_HOLD_MS`) and the route still reads Player until it crosses. The request
+        // is worker-only; the landing logs the resulting item count when it actually commits.
         if app.refresh_hubs
-            && !matches!(app.route(), AppArg::Player)
-            && plx_media::route::scrobble_settled()
+            && (!matches!(app.route(), AppArg::Player) || app.pages.nav.tabs.stack.transition.floor_held())
+            && plx_media::route::timeline_stop_landed()
         {
             app.refresh_hubs = false;
+            app.return_hold.refetch_issued();
             super::bridge::execute_endpoint_outcomes(
                 &mut app.pages,
                 app.bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints,
@@ -1661,6 +1677,15 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             app.bridge.browse_run(plx_data::stores::browse::BrowseCmd::HubsInvalidateAll);
             log("home: hubs refresh queued after playback");
         }
+        // The return hold ends when the refetch it waits for has SETTLED for the played item's
+        // source: issued (the owed flag is spent) and that source's read taken, whether it brought
+        // a catalog or failed (a failure keeps the content and moves no generation, so the
+        // generation is not the signal). A refused launch settles at once. Nothing here can extend
+        // the hold: the bound is the dip's own, on the frame clock.
+        super::playback::return_hold_settle(app, fr.now);
+        // What quiet reads staged for Home lands here when the store says nothing in view moves
+        // (`HubsCmd::Publish`); with nothing staged this is a no-op that raises no notice.
+        super::content::publish_staged_hubs(app);
         // (The lost-keyup safety net and the CLIENT-SIDE LONG-PRESS REPEAT stood here — the one
         // hold-to-move path for every discrete focus list, driven by `App::held_key` at 110 ms so
         // the feel was identical everywhere and independent of the remote's hardware repeat delay.
@@ -1781,10 +1806,11 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             hide_cursor();
             app.ptr.cur_hidden = true;
         }
-        // re-pause after a resume the INSTANT the seek's frame is on screen. `frames()` counts
-        // real "frame presented" callbacks (reset on seek), so >= 1 means the target frame is
+        // re-pause the foreground restore's paused load the INSTANT its resume frame is on screen
+        // (a seek armed under a viewer Pause is closed by the pump itself, `pump::settle_paused_seek`).
+        // `frames()` counts real "frame presented" callbacks, so >= 1 means the target frame is
         // already composited — re-freezing then shows it with the shortest possible play-blip
-        // (a paused scrub must briefly Play to decode the frame; buffer-feed has no preroll).
+        // (a paused load must briefly Play to decode the frame; buffer-feed has no preroll).
         if resume_pend()
             && matches!(app.route(), AppArg::Player)
             && plx_media::player::seek_preroll_active()
@@ -2316,8 +2342,25 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // unconditional for the same reason as the two pumps around it — the user can walk off
         // Home or off the detail page between pressing and the server answering, and the refresh
         // is owed either way. Invalidates from inside, per landing.
+        // The player is on top: the reconcile reads stay owed until it leaves (an Up Next chain
+        // costs one batch at its exit); the patches below are not held.
+        app.bridge.hold_network(matches!(app.route(), AppArg::Player));
+        // Stops first: the resume patch lands before any read of the item is asked for.
+        app.bridge.stops_pump();
         let endpoints = app.bridge.viewstate_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
+        // …and the read-back it owes: what the server now says about the item(s) just written, on
+        // every route for the same reason (a refused write is put right here, not by a refetch).
+        let endpoints = app.bridge.reconcile_pump();
+        super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
+        // The PMS notification feed (ships off: opens nothing while `NOTIFY_ENABLED` is false).
+        // Route-unconditional like its neighbours; its output is only logged until the event
+        // mapping lands, and it never touches the stop queue or the playback Offset.
+        if app.bridge.notify_pump() {
+            app.reread.resync(); // a lost stream: events were missed, every covered page is owed a re-read
+        }
+        // …and the covered pages' own re-read, once each cover episode (`app/reread.rs`).
+        super::reread::run(&mut app.reread, &mut app.pages, &mut app.bridge);
         // A server on a plaintext grant keeps trying HTTPS (`plex::grant::UpgradeRetry`): its
         // endpoint re-discovery races every HTTPS route first and retires the grant when one
         // verifies. Route-unconditional — the upgrade is owed whatever is on screen.
@@ -2325,8 +2368,11 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         super::bridge::execute_endpoint_outcomes(&mut app.pages, upgrades);
         app.bridge.person_pump();
         app.bridge.collection_pump();
-        if let Some(target) = app.bridge.take_detail_refresh() {
-            refresh_content(&mut app.pages, &mut app.bridge, target);
+        // …and the Detail pages whose item, season or show it just spoke about: re-read from the
+        // server's word, wherever on the stack they are (`content::reconcile_details`).
+        let landed = app.bridge.take_landed_views();
+        if !landed.is_empty() {
+            reconcile_details(&mut app.pages, &mut app.bridge, &landed);
         }
         // …and the cross-source resolve it kicked off. Route-unconditional for the same reason,
         // and separate because it lands one round trip per source LATER than the page does —
@@ -3147,8 +3193,9 @@ mod lifecycle_regression_tests {
             menu_play_await: Default::default(),
             prev: Default::default(),
             refresh_hubs: Default::default(),
-            refresh_detail: None,
+            return_hold: Default::default(),
             plaintext_upgrade: Default::default(),
+            reread: Default::default(),
             ev: [0; 128],
             remote: Default::default(),
             win: Default::default(),
@@ -3758,6 +3805,7 @@ mod lifecycle_regression_tests {
         /// request still parks until [`Self::resolve`] releases it.
         fn serving_with(respond: impl Fn(&str) -> String + Send + 'static) -> Option<Rig> {
             plx_plex::plex::reset_servers_for_test();
+            plx_media::route::retire_pending_stops(); // the stop mailbox is process-global
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -3806,7 +3854,12 @@ mod lifecycle_regression_tests {
                         let _ = wait.recv_timeout(Duration::from_secs(5));
                     }
                     let body = respond(&request);
-                    let _ = write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    // a handler answers `!503` for a refusal: a 5xx with an empty body
+                    let (status, body) = match body.as_str() {
+                        "!503" => ("503 Service Unavailable", String::new()),
+                        _ => ("200 OK", body),
+                    };
+                    let _ = write!(socket, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                 }
             }) {
                 Some(h) => h,
@@ -4530,7 +4583,6 @@ mod lifecycle_regression_tests {
             &mut rig.app.bridge,
             &mut rig.app.ok_armed,
             &mut rig.app.input.press,
-            &mut rig.app.repause_at,
         );
         frame(&mut rig.app, 48);
         assert!(super::super::bridge::player(&rig.app.pages).is_none());
@@ -4586,7 +4638,6 @@ mod lifecycle_regression_tests {
         if was_player && super::super::bridge::player(&app.pages).is_none() {
             restore_played_entry(app);
         }
-        refresh_after_playback(app);
         content_requests(app, &fr);
         loop_requests(app);
         unsafe { update(app, &mut fr); }
@@ -4603,6 +4654,16 @@ mod lifecycle_regression_tests {
 
     fn settle(app: &mut App, t: &mut u32) {
         for _ in 0..24 {
+            step(app, t, vec![]);
+        }
+    }
+
+    /// `settle` for the frames after BACK from the player to Home: the page dip may wait dark at its
+    /// floor for the hubs refetch for up to `CW_RETURN_HOLD_MS` (300 ms of frame time, 19 frames),
+    /// and a stop that is still in flight keeps the refetch from being issued, so the whole bound
+    /// is spent before Home is on top.
+    fn settle_after_back(app: &mut App, t: &mut u32) {
+        for _ in 0..24 + (super::super::playback::CW_RETURN_HOLD_MS / 16 + 2) {
             step(app, t, vec![]);
         }
     }
@@ -4888,18 +4949,17 @@ mod lifecycle_regression_tests {
         step(&mut rig.app, &mut t, vec![back]);
         settle(&mut rig.app, &mut t);
         assert!(super::super::bridge::player(&rig.app.pages).is_none(), "premise: BACK left the player");
-        // The re-read waits for the stop report, which a worker thread posts. These frames take no
-        // wall time, so counting them races that thread (a loaded host lost the race and the page
-        // had re-read nothing "yet"). Wait for the report itself, then give the loop the one frame
-        // in which `refresh_after_playback` finds it settled.
+        // The re-read waits for the stop report AND the read-back it owes (`Stores::stops_landed`),
+        // both of which a worker thread answers, and these frames take no wall time: wait for the
+        // generation itself rather than counting frames.
+        // The rig's engine decodes no frame, so its own teardown has no final position to report:
+        // post the stop it would have (the production path past that point, mail and read-back).
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
         plx_media::route::drain_scrobble();
-        step(&mut rig.app, &mut t, vec![]);
-        let reads_after = plx_data::metadata::detail_generation_for_test(rig.app.bridge.metadata_mut().adapter_ref());
-        assert!(
-            reads_after > reads_before,
-            "returning to the page re-read nothing: its resume point is still the one it opened with",
-        );
-        assert!(rig.app.refresh_detail.is_none(), "the re-read is asked for once, not left owed");
+        poll_until("returning to the page re-read nothing: its resume point is still the one it opened with", || {
+            step(&mut rig.app, &mut t, vec![]);
+            plx_data::metadata::detail_generation_for_test(rig.app.bridge.metadata_mut().adapter_ref()) > reads_before
+        });
     }
 
     /// **Issue #680**: a show's Detail page, an episode played to its end, and the episode strip
@@ -4971,13 +5031,152 @@ mod lifecycle_regression_tests {
         plx_media::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
         settle(&mut rig.app, &mut t);
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin), "EOS returned to the page");
+        // The rig's engine decodes no frame, so its own teardown has no final position to report:
+        // post the stop it would have (the production path past that point, mail and read-back).
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 60_000, 60_000)), None);
         plx_media::route::drain_scrobble();
-        step(&mut rig.app, &mut t, vec![]);
+        // The page learns of the stop from the read-back of the episode (and of its show, which the
+        // episode's answer names), each a worker round trip: wait for the re-read, not for frames.
+        poll_until("the episode strip still shows the read the page opened with", || {
+            step(&mut rig.app, &mut t, vec![]);
+            rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+            rig.app.bridge.metadata_mut().pump_detail();
+            watched(&mut rig) == Some(("1".into(), true))
+        });
+        settle(&mut rig.app, &mut t);
+        assert_eq!(watched(&mut rig), Some(("1".into(), true)));
+    }
+
+    /// A show (100) of one season (200) of two episodes, served as the server holds it: nothing is
+    /// watched until a `/:/scrobble` arrives, then everything is (the show's and the season's
+    /// `viewedLeafCount` included). `marked` is that flag; `reads` counts the metadata reads the
+    /// server answered after it, so a test can see a re-read go out.
+    /// `partial`: the server takes the write but only gets as far as the first episode, so what it
+    /// then holds (one of two watched) differs from what the optimistic patch drew (both).
+    fn marked_show_server(marked: Arc<AtomicBool>, partial: bool) -> impl Fn(&str) -> String + Send + 'static {
+        move |request: &str| {
+            let done = marked.load(Ordering::SeqCst);
+            let (count, viewed) = if done { (r#","viewCount":1"#, if partial { 1 } else { 2 }) } else { ("", 0) };
+            let second = if done && !partial { count } else { "" };
+            if request.contains("/:/scrobble") {
+                marked.store(true, Ordering::SeqCst);
+                return "{}".into();
+            }
+            if request.contains("/library/metadata/200/children") {
+                return format!(r#"{{"MediaContainer":{{"size":2,"totalSize":2,"Metadata":[
+                  {{"ratingKey":"1","type":"episode","index":1,"parentIndex":1,"title":"First","duration":60000{count}}},
+                  {{"ratingKey":"2","type":"episode","index":2,"parentIndex":1,"title":"Next","duration":60000{second}}}]}}}}"#);
+            }
+            if request.contains("/library/metadata/100/children") {
+                return format!(r#"{{"MediaContainer":{{"Metadata":[{{"ratingKey":"200","type":"season","index":1,"title":"Season 1","leafCount":2,"viewedLeafCount":{viewed}}}]}}}}"#);
+            }
+            if request.contains("/related") || request.contains("/extras") || request.contains("/:/timeline") {
+                return r#"{"MediaContainer":{}}"#.into();
+            }
+            if request.contains("/library/metadata/100") {
+                return format!(r#"{{"MediaContainer":{{"Metadata":[{{"ratingKey":"100","type":"show","title":"Show","childCount":1,"leafCount":2,"viewedLeafCount":{viewed}}}]}}}}"#);
+            }
+            r#"{"MediaContainer":{}}"#.into()
+        }
+    }
+
+    /// The show page open and landed (the fixture parks its first request until released).
+    fn open_marked_show(rig: &mut Rig, t: &mut u32) {
+        rig.release.send(()).unwrap();
+        settle(&mut rig.app, t);
+        super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "100", None, None);
+        settle(&mut rig.app, t);
+        land_detail_reads(rig, t);
+    }
+
+    /// Run the held detail fetches (tests do not race a worker) and install what they brought.
+    fn land_detail_reads(rig: &mut Rig, t: &mut u32) {
         rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
         rig.app.bridge.metadata_mut().pump_detail();
+        settle(&mut rig.app, t);
+    }
+
+    /// A Person page pushed over the page on top (a cast member opened from it).
+    fn cover_with_person(rig: &mut Rig, t: &mut u32) {
+        let below = rig.app.pages.nav.top_page().unwrap().id;
+        super::super::bridge::nav_push(&mut rig.app.pages, AppArg::Content(plx_screens::registry::ContentArg::Person {
+            sid: rig.sid, key: "9".into(), guid: "tag://9".into(), name: String::new(), thumb: String::new(),
+        }));
+        settle(&mut rig.app, t);
+        assert_ne!(rig.app.pages.nav.top_page().map(|e| e.id), Some(below), "premise: the Person page covers it");
+    }
+
+    /// The filmography menu's Mark watched on the show (a Show-scope press from a catalog row), run
+    /// until the server has taken it and been asked what it now holds.
+    fn mark_show_and_read_back(rig: &mut Rig, t: &mut u32) {
+        assert!(rig.app.bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
+            sid: rig.sid, rk: "100".into(), write: plx_data::viewstate::Write::Watched,
+            scope: plx_data::viewstate::Scope::Show, guid: String::new(),
+        }));
+        poll_until("the write and its read-back never finished", || {
+            step(&mut rig.app, t, vec![]);
+            let seen = rig.requests.lock().unwrap();
+            seen.iter().position(|r| r.contains("/:/scrobble"))
+                .is_some_and(|at| seen.iter().skip(at).any(|r| r.contains("GET /library/metadata/100") && !r.contains("children")))
+        });
+        for _ in 0..12 { step(&mut rig.app, t, vec![]); }
+    }
+
+    /// The loaded show's episodes as `(rk, watched)`, and its season's `viewedLeafCount`.
+    fn strip(rig: &Rig) -> (Vec<(String, bool)>, Option<i64>) {
+        let view = rig.app.bridge.metadata_view();
+        let Some(d) = view.current().filter(|d| d.rk == "100") else { return (Vec::new(), None) };
+        let eps = (0..2).filter_map(|i| d.episodes.get(i).map(|e| (e.rk.clone(), e.watched))).collect();
+        (eps, d.seasons.first().map(|s| s.viewed_leaf_count))
+    }
+
+    /// **Plan item 9**: Detail(show S) -> Person -> mark S watched from the filmography menu ->
+    /// Back. The Detail page was COVERED when the server's answer came back, and the only thing
+    /// that reached it was the optimistic patch; the page it returns to must show what the server
+    /// now holds for every episode, season tab included.
+    #[test]
+    fn a_show_marked_watched_under_a_covered_detail_page_is_all_watched_on_return() {
+        let _serial = plx_base::testlock::serial();
+        let marked = Arc::new(AtomicBool::new(false));
+        let Some(mut rig) = Rig::serving_with(marked_show_server(marked.clone(), false)) else { return };
+        let mut t = product_transition(&mut rig.app);
+        open_marked_show(&mut rig, &mut t);
+        assert_eq!(strip(&rig), (vec![("1".into(), false), ("2".into(), false)], Some(0)),
+            "premise: the page opened on an unwatched show");
+        let detail = rig.app.pages.nav.top_page().unwrap().id;
+        cover_with_person(&mut rig, &mut t);
+        mark_show_and_read_back(&mut rig, &mut t);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
         settle(&mut rig.app, &mut t);
-        assert_eq!(watched(&mut rig), Some(("1".into(), true)),
-            "the episode strip still shows the read the page opened with");
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(detail), "premise: Back returned to the show");
+        land_detail_reads(&mut rig, &mut t);
+        assert_eq!(strip(&rig), (vec![("1".into(), true), ("2".into(), true)], Some(2)),
+            "the strip is not all watched on return");
+    }
+
+    /// The same covered page when what the server holds is NOT what the optimistic patch drew:
+    /// the write is taken but only the first episode got marked. The patch is all a covered page
+    /// ever received, so without a re-read of its own it comes back showing a lie.
+    #[test]
+    fn a_covered_detail_page_shows_what_the_server_holds_after_a_partial_write() {
+        let _serial = plx_base::testlock::serial();
+        let marked = Arc::new(AtomicBool::new(false));
+        let Some(mut rig) = Rig::serving_with(marked_show_server(marked.clone(), true)) else { return };
+        let mut t = product_transition(&mut rig.app);
+        open_marked_show(&mut rig, &mut t);
+        let detail = rig.app.pages.nav.top_page().unwrap().id;
+        cover_with_person(&mut rig, &mut t);
+        mark_show_and_read_back(&mut rig, &mut t);
+        assert_eq!(strip(&rig), (vec![("1".into(), true), ("2".into(), true)], Some(2)),
+            "premise: the covered page holds the optimistic patch");
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        settle(&mut rig.app, &mut t);
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(detail), "premise: Back returned to the show");
+        land_detail_reads(&mut rig, &mut t);
+        assert_eq!(strip(&rig), (vec![("1".into(), true), ("2".into(), false)], Some(1)),
+            "the page came back showing the optimistic patch, not the server's word");
     }
 
     /// **Layer-1 view state, G1**: Home's hubs (Continue Watching) are re-read after a playback
@@ -5012,7 +5211,7 @@ mod lifecycle_regression_tests {
         // exactly this call (`engine.rs`, `route::scrobble_stop`); it is made here, once BACK's own
         // transcode stop has drained, so the held report is the only stop in flight.
         plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
-        settle(&mut rig.app, &mut t);
+        settle_after_back(&mut rig.app, &mut t);
         assert!(super::super::bridge::player(&rig.app.pages).is_none(), "premise: BACK left the player");
         poll_until("premise: the stopped timeline never reached the server", || stop_seen.load(Ordering::SeqCst));
         assert!(!plx_media::route::scrobble_settled(), "premise: the stop is still in flight");
@@ -5029,6 +5228,874 @@ mod lifecycle_regression_tests {
         assert_eq!(rig.app.bridge.hub_refetches_for_test(), before + 1, "the refetch runs once the stop landed");
         for _ in 0..4 { step(&mut rig.app, &mut t, vec![]); }
         assert_eq!(rig.app.bridge.hub_refetches_for_test(), before + 1, "and only once");
+    }
+
+    /// **Layer-1 view state, G1 on a transcoded play.** The stop worker posts `stopped` and THEN
+    /// asks the server to stop the encoder; a slow PMS holds that second round trip for a full
+    /// timeout. The resume point is committed by the first, so the hubs refetch must not wait for
+    /// the second. The rig plays direct, so the encoder is registered through the media crate's
+    /// test seam (what `apply_plan` does for a real transcode); the encoder stop is held while
+    /// `stopped` is answered at once.
+    #[test]
+    fn hubs_are_refetched_once_stopped_lands_even_while_the_encoder_stop_is_held() {
+        let _serial = plx_base::testlock::serial();
+        let (hold, held) = mpsc::channel::<()>();
+        let held = Mutex::new(held);
+        let encoder_stop_seen = Arc::new(AtomicBool::new(false));
+        let seen = encoder_stop_seen.clone();
+        let Some(mut rig) = Rig::serving_with(move |request: &str| {
+            if request.contains("/video/:/transcode/universal/stop?session=rig-encoder") {
+                seen.store(true, Ordering::SeqCst);
+                let _ = held.lock().unwrap().recv_timeout(Duration::from_secs(20));
+                return String::new();
+            }
+            if request.contains("/:/timeline") {
+                return r#"{"MediaContainer":{}}"#.into();
+            }
+            queue_body(request, false).to_owned()
+        }) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        let before = rig.app.bridge.hub_refetches_for_test();
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        // As in `hubs_are_refetched_after_the_stop_lands_not_after_a_timer`: the engine's own
+        // `scrobble_stop` call, made once BACK's stop has drained. The encoder is registered
+        // first, so the worker's second leg is the held `transcode_stop`.
+        plx_media::route::install_active_encoder_for_test("rig-encoder");
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
+        settle_after_back(&mut rig.app, &mut t);
+        assert!(super::super::bridge::player(&rig.app.pages).is_none(), "premise: BACK left the player");
+        poll_until("premise: the encoder stop never reached the server", || encoder_stop_seen.load(Ordering::SeqCst));
+        assert!(!plx_media::route::scrobble_settled(), "premise: the worker is inside the held encoder stop");
+        t += 5_000;
+        for _ in 0..4 { step(&mut rig.app, &mut t, vec![]); }
+        let refetches = rig.app.bridge.hub_refetches_for_test();
+        hold.send(()).unwrap();
+        plx_media::route::drain_scrobble();
+        assert_eq!(
+            refetches, before + 1,
+            "the hubs waited for the server-side encoder stop, though `stopped` had landed",
+        );
+    }
+
+    // ---- layer-1 view state, item 10c: Home's return hold ---------------------------------------
+
+    /// A server whose Continue Watching holds episode `1` of show `S` (and two movies) until a
+    /// `stopped` timeline has arrived, then the show's NEXT episode `2` (the movie `7` gone, a new
+    /// movie `9` in). While `hold_hubs` is set the hub read parks before it answers.
+    struct ReturnServer {
+        stopped: Arc<AtomicBool>,
+        hold_hubs: Arc<AtomicBool>,
+        /// The hub read answers with something that is not a catalog (the fetch fails).
+        break_hubs: Arc<AtomicBool>,
+        /// Continue Watching is ordered by last viewed: before the stop the show's episode is the
+        /// LAST tile, and after it the next episode comes FIRST.
+        jump: Arc<AtomicBool>,
+    }
+
+    impl ReturnServer {
+        fn new() -> Self {
+            Self {
+                stopped: Arc::new(AtomicBool::new(false)),
+                hold_hubs: Arc::new(AtomicBool::new(false)),
+                break_hubs: Arc::new(AtomicBool::new(false)),
+                jump: Arc::new(AtomicBool::new(false)),
+            }
+        }
+
+        fn rig(&self) -> Option<Rig> {
+            let (stopped, hold, broken, jump) =
+                (self.stopped.clone(), self.hold_hubs.clone(), self.break_hubs.clone(), self.jump.clone());
+            Rig::serving_with(move |request: &str| {
+                if request.contains("/decision?") {
+                    return r#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#.into();
+                }
+                if request.contains("/:/timeline") {
+                    if request.contains("state=stopped") {
+                        stopped.store(true, Ordering::SeqCst);
+                    }
+                    return r#"{"MediaContainer":{}}"#.into();
+                }
+                if request.starts_with("GET /hubs/continueWatching") {
+                    // Bounded by count, not by a clock: a failing test must not hang.
+                    for _ in 0..5_000 {
+                        if !hold.load(Ordering::SeqCst) { break; }
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    if broken.load(Ordering::SeqCst) { return "not a catalog".into(); }
+                    let done = stopped.load(Ordering::SeqCst);
+                    let (episode, movies) = if done { ("2", ["8", "9"]) } else { ("1", ["7", "8"]) };
+                    let episode_card = format!(r#"{{"ratingKey":"{episode}","type":"episode","title":"Episode {episode}","thumb":"/t/{episode}",
+                        "grandparentRatingKey":"S","grandparentTitle":"Show","parentIndex":1,"index":{episode},"duration":60000}}"#);
+                    let movie = |rk: &str| format!(r#"{{"ratingKey":"{rk}","type":"movie","title":"Movie","thumb":"/t/m","duration":60000}}"#);
+                    // `jump`: the episode is last until it is watched, then first.
+                    let cards = if jump.load(Ordering::SeqCst) && !done {
+                        [movie(movies[0]), movie(movies[1]), episode_card]
+                    } else {
+                        [episode_card, movie(movies[0]), movie(movies[1])]
+                    };
+                    return format!(r#"{{"MediaContainer":{{"size":1,"Hub":[{{"key":"/hubs/continueWatching",
+                      "title":"Continue Watching","hubIdentifier":"home.continue","size":3,"Metadata":[{}]}}]}}}}"#, cards.join(","));
+                }
+                if request.starts_with("GET /hubs") {
+                    return r#"{"MediaContainer":{"size":0}}"#.into();
+                }
+                queue_body(request, false).to_owned()
+            })
+        }
+    }
+
+    /// `step` with the frame clock moved by `advance` ms instead of 16: `0` is a PARKED clock, the
+    /// same `Tick::ms` again, for waiting on a worker without the hold's frame-time bound running.
+    fn step_clock(app: &mut App, t: &mut u32, advance: u32) {
+        *t += advance;
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        fr.now = *t;
+        fr.dt = advance as f32 / 1000.0;
+        let was_player = super::super::bridge::player(&app.pages).is_some();
+        unsafe { playback_tick(app, &mut fr); }
+        super::super::bridge::frame(&mut app.pages, &mut app.bridge,
+            plx_machine::machine::Tick { ms: *t, dt_us: advance * 1000 }, std::mem::take(&mut app.inputs));
+        if was_player && super::super::bridge::player(&app.pages).is_none() {
+            restore_played_entry(app);
+        }
+        content_requests(app, &fr);
+        loop_requests(app);
+        unsafe { update(app, &mut fr); }
+    }
+
+    fn home_probe(app: &App) -> plx_screens::home::HomeProbe {
+        let entry = app.pages.nav.tabs.stack.entries.iter().find(|e| e.arg == AppArg::Home).expect("a Home entry").id;
+        app.pages.nav.entry(entry).and_then(|e| e.inst.as_ref()).and_then(|i| i.screen.as_any())
+            .and_then(|s| s.downcast_ref::<plx_screens::home::HomeScreen>())
+            .expect("a mounted Home").probe_for_test()
+    }
+
+    fn home_focus(app: &App) -> Option<u32> {
+        let entry = app.pages.nav.tabs.stack.entries.iter().find(|e| e.arg == AppArg::Home)?.id;
+        app.pages.input.engine.current(plx_machine::machine::InputOwner::Entry(entry)).map(|key| key.elem)
+    }
+
+    /// The first Continue Watching card's rating key in the hubs the app holds right now.
+    fn first_cw_rk(app: &App) -> String { cw_rk(app, 0) }
+
+    fn cw_rk(app: &App, col: usize) -> String {
+        let snapshot = app.bridge.hubs_snapshot();
+        snapshot.view().hub(0).and_then(|hub| hub.items.get(col).map(|item| item.rk.to_string())).unwrap_or_default()
+    }
+
+    /// Home with its Continue Watching row read from the server (episode 1 first), focus on that
+    /// first tile, and the product's page transition on the stack.
+    fn home_with_continue_watching(rig: &mut Rig, t: &mut u32) {
+        home_with_continue_watching_at(rig, t, 0);
+    }
+
+    /// [`home_with_continue_watching`] with focus on Continue Watching tile `col`, which must hold
+    /// episode 1.
+    fn home_with_continue_watching_at(rig: &mut Rig, t: &mut u32, col: usize) {
+        rig.release.send(()).unwrap(); // nothing parks: the first request answers at once
+        rig.app.bridge.seed_registered_browse_for_test([rig.sid, rig.sid]);
+        let _ = rig.app.bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs);
+        poll_until("Home never read its Continue Watching", || {
+            step(&mut rig.app, t, vec![]);
+            rig.app.bridge.hub_len_for_test(0) == 3
+        });
+        settle(&mut rig.app, t);
+        let entry = rig.app.pages.nav.top_page().unwrap().id;
+        let instance = rig.app.pages.nav.instance_of(entry).unwrap();
+        rig.app.pages.emit(plx_machine::machine::MachineId::Nav, plx_machine::machine::Fx::Deliver(
+            plx_machine::machine::MachineId::Instance(instance),
+            plx_machine::machine::Delivery::Screen(plx_ui::screen::ScreenEvent::App(
+                plx_screens::registry::AppMsg::Home(plx_screens::registry::HomeCmd::FocusGrid { row: 0, col })))));
+        for _ in 0..12 { step(&mut rig.app, t, vec![]); }
+        assert_eq!(cw_rk(&rig.app, col), "1", "premise: the focused Continue Watching tile holds episode 1");
+        assert_eq!(home_focus(&rig.app), home_probe(&rig.app).cw_elems.get(col).copied(),
+            "premise: focus is on that Continue Watching tile");
+    }
+
+    /// Play episode 1 from Home and leave the player with BACK, the stop the engine would report
+    /// posted at once. Returns the frames until the dip reaches its dark floor (`(alpha, route)`
+    /// sampled after each), stopping there.
+    fn back_out_to_the_floor(rig: &mut Rig, t: &mut u32) {
+        play_with_a_landing_inside_the_dip(rig, t);
+        let back = back_key(*t + 16);
+        step(&mut rig.app, t, vec![back]);
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
+        for _ in 0..40 {
+            if rig.app.pages.nav.tabs.stack.transition.page_alpha() == 0.0 { return; }
+            step(&mut rig.app, t, vec![]);
+        }
+        panic!("the dip never reached its floor");
+    }
+
+    /// **10c (i)**: the hubs answer within the bound. The dip waits dark at its floor for the
+    /// refetch, and the first frame Home is on top shows the NEXT episode in the tile that held
+    /// the first, focused, with nothing animating: Home appears already correct.
+    #[test]
+    fn a_refetch_landing_inside_the_return_hold_shows_on_the_first_home_frame() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        let tile = home_focus(&rig.app).expect("focus on the tile");
+        back_out_to_the_floor(&mut rig, &mut t);
+        let at_floor = t;
+        // The clock is parked while the worker answers (real time), so the bound cannot run out.
+        // (Without a hold the dip has already crossed its floor and there is nothing to wait for.)
+        if super::super::bridge::player(&rig.app.pages).is_some() {
+            // (Settled, not merely changed: the refetch owes one read per source in scope.)
+            poll_until("the refetch never landed", || {
+                step_clock(&mut rig.app, &mut t, 0);
+                !rig.app.refresh_hubs && !rig.app.bridge.hubs_owed()
+            });
+        }
+        assert_eq!(t, at_floor, "premise: the landing came inside the hold");
+        // Frame by frame to the first frame Home is the page on top.
+        for _ in 0..40 {
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert!(t - at_floor < 300, "premise: inside the 300 ms hold ({} ms)", t - at_floor);
+        assert!(matches!(rig.app.route(), AppArg::Home), "premise: Home is on top");
+        assert_eq!(first_cw_rk(&rig.app), "2", "the refetch is in");
+        let probe = home_probe(&rig.app);
+        assert_eq!(probe.cw_elems.first().copied(), Some(tile), "episode 2 sits in episode 1's tile");
+        assert_eq!(home_focus(&rig.app), Some(tile), "and the focus never left it");
+        assert!(!probe.animating, "Home is already correct: no row animation on its first frame");
+    }
+
+    /// **10c (ii)**: the hubs answer after the bound. The hold ends at 300 ms past the floor with the
+    /// OLD content on the first Home frame; when the read lands the same tile shows episode 2 (the
+    /// element is the same one, no ghost for it) while the other cells animate.
+    #[test]
+    fn a_refetch_later_than_the_return_hold_animates_in_after_the_hold_is_released() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        let tile = home_focus(&rig.app).expect("focus on the tile");
+        server.hold_hubs.store(true, Ordering::SeqCst);
+        back_out_to_the_floor(&mut rig, &mut t);
+        let at_floor = t;
+        for _ in 0..40 {
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        let held = t - at_floor;
+        assert!(matches!(rig.app.route(), AppArg::Home), "premise: Home is on top");
+        assert!((284..=316).contains(&held), "the hold ran its 300 ms and no longer: {held} ms past the floor");
+        assert_eq!(first_cw_rk(&rig.app), "1", "the refetch is still out: Home shows what it had");
+        assert!(!home_probe(&rig.app).animating);
+        // 600 ms past the floor the read lands.
+        while t - at_floor < 600 { step(&mut rig.app, &mut t, vec![]); }
+        assert_eq!(first_cw_rk(&rig.app), "1");
+        server.hold_hubs.store(false, Ordering::SeqCst);
+        let mut animated = false;
+        // Until the tile reads episode 2 (the read answers in real time, whatever else is landing),
+        // watching every frame for the row's animation.
+        poll_until("the late refetch never landed", || {
+            step(&mut rig.app, &mut t, vec![]);
+            animated |= home_probe(&rig.app).animating;
+            first_cw_rk(&rig.app) == "2"
+        });
+        for _ in 0..4 {
+            step(&mut rig.app, &mut t, vec![]);
+            animated |= home_probe(&rig.app).animating;
+        }
+        assert_eq!(first_cw_rk(&rig.app), "2");
+        let probe = home_probe(&rig.app);
+        assert_eq!(probe.cw_elems.first().copied(), Some(tile), "the same tile now shows episode 2");
+        assert_eq!(home_focus(&rig.app), Some(tile), "and holds the focus");
+        assert!(animated, "the other cells animate in (a card left and a card arrived)");
+    }
+
+    /// **A quiet read out when the player exits is not the return hold's wait, and the prompted
+    /// refetch supersedes it.** A quiet read of the played source is out (parked at the server) when
+    /// the person backs out. The prompted refetch the exit owes supersedes it, so the dip waits at
+    /// its floor on the prompted read alone, and when that lands Home shows its content: the quiet
+    /// read's landing neither stands in for it nor takes its place.
+    #[test]
+    fn a_quiet_read_out_at_the_exit_is_superseded_by_the_prompted_refetch_the_hold_waits_on() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        let tile = home_focus(&rig.app).expect("focus on the tile");
+        // Back out as `back_out_to_the_floor` does, but with the quiet read going out between the
+        // server taking the stop and the app issuing the refetch it owes (the fixture serves one
+        // request at a time, so the parked read must come after the stop).
+        play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
+        poll_until("the server never took the stop", || server.stopped.load(Ordering::SeqCst));
+        server.hold_hubs.store(true, Ordering::SeqCst);
+        let gen = rig.app.bridge.hub_refetches_for_test();
+        let _ = rig.app.bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchSourceQuiet { sid: rig.sid });
+        assert_eq!(rig.app.bridge.hub_refetches_for_test(), gen, "a quiet ask never moves the generation");
+        assert!(rig.app.bridge.hub_source_settled(rig.sid), "premise: a quiet read is nobody's wait");
+        assert!(rig.app.bridge.hubs_owed(), "premise: and it is out");
+        for _ in 0..40 {
+            if rig.app.pages.nav.tabs.stack.transition.page_alpha() == 0.0 { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert!(rig.app.pages.nav.tabs.stack.transition.page_alpha() == 0.0, "the dip reached its floor");
+        let at_floor = t;
+        poll_until("the prompted refetch never went out", || {
+            step_clock(&mut rig.app, &mut t, 0);
+            !rig.app.bridge.hub_source_settled(rig.sid)
+        });
+        assert!(rig.app.bridge.hub_refetches_for_test() > gen, "the exit's refetch is authoritative");
+        for _ in 0..8 { step_clock(&mut rig.app, &mut t, 0); }
+        assert!(rig.app.pages.nav.tabs.stack.transition.floor_held(), "the dip waits dark at its floor");
+        assert!(!rig.app.bridge.hub_source_settled(rig.sid), "on the prompted read, which is still out");
+        assert_eq!(t, at_floor);
+        server.hold_hubs.store(false, Ordering::SeqCst);
+        poll_until("the prompted read never landed", || {
+            step_clock(&mut rig.app, &mut t, 0);
+            !rig.app.refresh_hubs && rig.app.bridge.hub_source_settled(rig.sid)
+        });
+        for _ in 0..40 {
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert!(matches!(rig.app.route(), AppArg::Home), "premise: Home is on top");
+        assert_eq!(first_cw_rk(&rig.app), "2", "the prompted read's content is what Home shows");
+        assert_eq!(home_probe(&rig.app).cw_elems.first().copied(), Some(tile), "episode 2 sits in the same tile");
+    }
+
+    /// **10c, a key during the hold**: the dip is dark and waiting on a refetch that has not
+    /// answered. A fresh key press ends the wait on the spot, so input never queues behind the
+    /// read; Home appears with the content it has. The press is NOT delivered to the player that is
+    /// still on top for this frame: it is held out of the frame that releases the dip and goes to
+    /// Home, the page the viewer is looking at, on the next one (focus moves one tile right).
+    #[test]
+    fn a_key_press_ends_the_return_hold_at_once() {
+        let _serial = plx_base::testlock::serial();
+        plx_base::eventlog::with_private_log(|| {
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        let tiles = home_probe(&rig.app).cw_elems;
+        server.hold_hubs.store(true, Ordering::SeqCst);
+        back_out_to_the_floor(&mut rig, &mut t);
+        let at_floor = t;
+        for _ in 0..4 { step(&mut rig.app, &mut t, vec![]); }
+        assert!(super::super::bridge::player(&rig.app.pages).is_some(), "premise: the dip is still waiting");
+        assert!(rig.app.pages.nav.tabs.stack.transition.floor_held(), "premise: the hold is armed");
+        assert_eq!(home_focus(&rig.app), Some(tiles[0]), "premise: focus is on the first tile");
+        let key = plx_ui::fixture::key(plx_machine::machine::Key::Right, plx_ui::fixture::tick(t + 16));
+        step(&mut rig.app, &mut t, vec![key]);
+        assert_eq!(home_focus(&rig.app), Some(tiles[0]),
+            "the press went to no page this frame: the player is still on top and must not get it");
+        for _ in 0..40 {
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert!(matches!(rig.app.route(), AppArg::Home), "Home is on top");
+        assert!(t - at_floor < 150, "the key ended the wait ({} ms past the floor, bound 300)", t - at_floor);
+        assert_eq!(first_cw_rk(&rig.app), "1", "the refetch was still out");
+        for _ in 0..3 { step(&mut rig.app, &mut t, vec![]); }
+        assert_eq!(home_focus(&rig.app), Some(tiles[1]), "the press reached Home: focus moved one tile right");
+        let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+        assert!(log.contains("return hold released by key after"), "the release is logged with its cause: {log}");
+        server.hold_hubs.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// **10c, the key that left the player is not the key that ends the hold.** BACK exits on its
+    /// Down; its own Up arrives a frame or two later, while the dip is dark. A release, a repeat, a
+    /// pointer move or a system-keyboard event is not a decision to act on the new screen.
+    #[test]
+    fn the_backs_own_key_up_does_not_end_the_return_hold() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        server.hold_hubs.store(true, Ordering::SeqCst);
+        play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
+        step(&mut rig.app, &mut t, vec![]);
+        let up = plx_ui::fixture::key_up(plx_machine::machine::Key::Back, plx_ui::fixture::tick(t + 16));
+        step(&mut rig.app, &mut t, vec![up]);
+        let mut repeat = plx_ui::fixture::key(plx_machine::machine::Key::Back, plx_ui::fixture::tick(t + 32));
+        if let plx_machine::machine::InputKind::Key { edge, .. } = &mut repeat.kind {
+            *edge = plx_machine::machine::Edge::Repeat;
+        }
+        step(&mut rig.app, &mut t, vec![repeat]);
+        assert!(rig.app.pages.nav.tabs.stack.transition.floor_held(),
+            "BACK's own Up and Repeat leave the hold armed");
+        assert!(super::super::bridge::player(&rig.app.pages).is_some());
+        server.hold_hubs.store(false, Ordering::SeqCst);
+    }
+
+    /// **10c, nothing was stopped: nothing is waited for.** A play that never started (a refused
+    /// decision, a BACK during the load) announces no stop, so the return is not held for a refetch
+    /// that has no reason to differ.
+    #[test]
+    fn an_exit_that_reported_no_stop_does_not_hold_the_return() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        server.hold_hubs.store(true, Ordering::SeqCst);
+        play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        // The stop this exit announced is accounted for, as an exit that announces none leaves it.
+        rig.app.return_hold.refetch_issued();
+        let at = t;
+        let mut held = false;
+        for _ in 0..40 {
+            held |= rig.app.pages.nav.tabs.stack.transition.floor_held();
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert!(matches!(rig.app.route(), AppArg::Home), "Home is on top");
+        assert!(!held, "no stop was announced, so the dip never waited");
+        assert!(t - at < 200, "and Home came at the dip's own pace ({} ms)", t - at);
+        server.hold_hubs.store(false, Ordering::SeqCst);
+    }
+
+    /// **10c, the played item's source is the one waited for.** A second source that is slow to
+    /// answer keeps the adapter owing a landing, but it is not what the viewer returned to see:
+    /// the hold ends when the played item's own server has answered.
+    #[test]
+    fn a_slow_second_source_does_not_spend_the_return_hold() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        // A friend's server that accepts the connection and never answers.
+        let hole = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        hole.set_nonblocking(true).unwrap();
+        let hole_port = hole.local_addr().unwrap().port();
+        let hole_open = Arc::new(AtomicBool::new(true));
+        let open = hole_open.clone();
+        // Accepts and holds every connection without a word until the test is over.
+        let holder = plx_base::task::spawn_small_keeping("return-hold-silent-server", move || {
+            let mut held = Vec::new();
+            while open.load(Ordering::SeqCst) {
+                match plx_base::testnet::accept(&hole) {
+                    Ok((socket, _)) => held.push(socket),
+                    Err(_) => std::thread::sleep(Duration::from_millis(2)),
+                }
+            }
+        });
+        let slow = plx_plex::plex::register_for_test("slow-friend", "127.0.0.1", hole_port as i32,
+            "synthetic", "slow-friend");
+        // (Not in Browse's pin table, so undecided, so it feeds Home: `pms::feeds_home`.)
+        let _ = slow;
+        back_out_to_the_floor(&mut rig, &mut t);
+        let at_floor = t;
+        // Parked clock while the played source answers (real time).
+        poll_until("the played source never answered", || {
+            step_clock(&mut rig.app, &mut t, 0);
+            first_cw_rk(&rig.app) == "2"
+        });
+        assert!(rig.app.bridge.hubs_owed(), "premise: the slow source still owes its landing");
+        for _ in 0..40 {
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert!(matches!(rig.app.route(), AppArg::Home), "Home is on top");
+        assert!(t - at_floor < 150, "the slow source did not hold the return ({} ms past the floor, bound 300)", t - at_floor);
+        assert_eq!(first_cw_rk(&rig.app), "2");
+        hole_open.store(false, Ordering::SeqCst);
+        holder.expect("the silent server's thread").join().unwrap();
+    }
+
+    /// **10b/10c, the next episode comes first.** Continue Watching is ordered by last viewed, so
+    /// the finished episode's tile (the last one) is answered by the next episode in column 0. The
+    /// element goes with the card: the focus never leaves it, and it is the first tile now.
+    #[test]
+    fn a_next_episode_that_jumps_to_column_zero_keeps_the_focus_inside_the_hold() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        server.jump.store(true, Ordering::SeqCst);
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching_at(&mut rig, &mut t, 2);
+        let tile = home_focus(&rig.app).expect("focus on the tile");
+        back_out_to_the_floor(&mut rig, &mut t);
+        if super::super::bridge::player(&rig.app.pages).is_some() {
+            poll_until("the refetch never settled", || {
+                step_clock(&mut rig.app, &mut t, 0);
+                !rig.app.refresh_hubs && !rig.app.bridge.hubs_owed()
+            });
+        }
+        for _ in 0..40 {
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert!(matches!(rig.app.route(), AppArg::Home), "premise: Home is on top");
+        assert_eq!(first_cw_rk(&rig.app), "2", "the next episode is the first card");
+        assert_eq!(home_probe(&rig.app).cw_elems.first().copied(), Some(tile), "on the element that held episode 1");
+        assert_eq!(home_focus(&rig.app), Some(tile), "and the focus never left it");
+    }
+
+    /// The same, landing after the hold was released: the old order shows first, then the tile
+    /// moves to column 0 with the focus on it.
+    #[test]
+    fn a_next_episode_that_jumps_to_column_zero_keeps_the_focus_when_it_lands_late() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        server.jump.store(true, Ordering::SeqCst);
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching_at(&mut rig, &mut t, 2);
+        let tile = home_focus(&rig.app).expect("focus on the tile");
+        server.hold_hubs.store(true, Ordering::SeqCst);
+        back_out_to_the_floor(&mut rig, &mut t);
+        for _ in 0..40 {
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert!(matches!(rig.app.route(), AppArg::Home), "premise: Home is on top");
+        assert_eq!(cw_rk(&rig.app, 2), "1", "premise: the refetch is still out");
+        while t % 16 != 0 || t < 700 { step(&mut rig.app, &mut t, vec![]); }
+        server.hold_hubs.store(false, Ordering::SeqCst);
+        poll_until("the late refetch never landed", || {
+            step(&mut rig.app, &mut t, vec![]);
+            first_cw_rk(&rig.app) == "2"
+        });
+        for _ in 0..30 { step(&mut rig.app, &mut t, vec![]); }
+        assert_eq!(home_probe(&rig.app).cw_elems.first().copied(), Some(tile), "the element moved to column 0 with its card");
+        assert_eq!(home_focus(&rig.app), Some(tile), "and holds the focus");
+    }
+
+    /// **10c, a refetch that fails**: a failure moves no catalog generation, but it still settles
+    /// the hold: the dip does not sit out its bound for an answer that is never coming.
+    #[test]
+    fn a_failed_refetch_ends_the_return_hold_at_once() {
+        let _serial = plx_base::testlock::serial();
+        let server = ReturnServer::new();
+        let Some(mut rig) = server.rig() else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        home_with_continue_watching(&mut rig, &mut t);
+        server.break_hubs.store(true, Ordering::SeqCst);
+        back_out_to_the_floor(&mut rig, &mut t);
+        let at_floor = t;
+        // Parked clock while the worker fails (real time), so the bound cannot be what ends it.
+        if super::super::bridge::player(&rig.app.pages).is_some() {
+            poll_until("the failed refetch never settled", || {
+                step_clock(&mut rig.app, &mut t, 0);
+                !rig.app.refresh_hubs && !rig.app.bridge.hubs_owed()
+            });
+        }
+        for _ in 0..40 {
+            if super::super::bridge::player(&rig.app.pages).is_none() { break; }
+            step(&mut rig.app, &mut t, vec![]);
+        }
+        assert!(matches!(rig.app.route(), AppArg::Home), "Home is on top");
+        assert!(t - at_floor < 150, "the failure ended the wait ({} ms past the floor, bound 300)", t - at_floor);
+        assert_eq!(first_cw_rk(&rig.app), "1", "Home keeps what it had");
+    }
+
+    // ---- layer-1 view state, item 6: what a stop tells the screens -----------------------------
+
+    /// A server for the stop tests. Item `1` reads back as watched once a `stopped` timeline has
+    /// arrived and `ends` is set (the stream reached its end), else with a resume point of 150 s (PMS
+    /// stores no `stopped` under about a minute, so a mid-way stop in these tests is a realistic one).
+    /// Metadata reads park while `hold_reads` is set, so a test can look at the screens between the
+    /// stop and the server's answer.
+    struct StopServer {
+        stopped: Arc<AtomicBool>,
+        hold_reads: Arc<AtomicBool>,
+        /// While set, the `stopped` timeline POST parks before it is answered.
+        hold_stop: Arc<AtomicBool>,
+        /// While set, the `stopped` timeline POST is answered 503 and the server keeps nothing.
+        refuse_stop: Arc<AtomicBool>,
+    }
+
+    impl StopServer {
+        fn new() -> Self {
+            Self {
+                stopped: Arc::new(AtomicBool::new(false)),
+                hold_reads: Arc::new(AtomicBool::new(false)),
+                hold_stop: Arc::new(AtomicBool::new(false)),
+                refuse_stop: Arc::new(AtomicBool::new(false)),
+            }
+        }
+
+        fn rig(&self, ends: bool) -> Option<Rig> {
+            let (stopped, hold, hold_stop) = (self.stopped.clone(), self.hold_reads.clone(), self.hold_stop.clone());
+            let refuse = self.refuse_stop.clone();
+            Rig::serving_with(move |request: &str| {
+                if request.contains("/decision?") {
+                    return r#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#.into();
+                }
+                if request.contains("/:/timeline") {
+                    if request.contains("state=stopped") {
+                        for _ in 0..5_000 {
+                            if !hold_stop.load(Ordering::SeqCst) { break; }
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        if refuse.load(Ordering::SeqCst) {
+                            return "!503".into();
+                        }
+                        stopped.store(true, Ordering::SeqCst);
+                    }
+                    return r#"{"MediaContainer":{}}"#.into();
+                }
+                if request.contains("/:/scrobble") {
+                    return "{}".into();
+                }
+                if request.starts_with("GET /library/metadata/") {
+                    // Bounded by count, not by a clock: a failing test must not hang.
+                    for _ in 0..5_000 {
+                        if !hold.load(Ordering::SeqCst) { break; }
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    let seen = stopped.load(Ordering::SeqCst);
+                    let facts = match (seen, ends) {
+                        (true, true) => r#","viewCount":1"#,
+                        (true, false) => r#","viewOffset":150000"#,
+                        (false, _) => "",
+                    };
+                    return format!(r#"{{"MediaContainer":{{"Metadata":[{{"ratingKey":"1","type":"movie","title":"First","duration":600000{facts}}}]}}}}"#);
+                }
+                queue_body(request, false).to_owned()
+            })
+        }
+    }
+
+    fn requests_matching(rig: &Rig, needle: &str, from: usize) -> usize {
+        rig.requests.lock().unwrap().iter().skip(from).filter(|r| r.contains(needle)).count()
+    }
+
+    /// The Library page on top of a grid holding `items` unwatched items of the rig's server.
+    fn library_with_grid(rig: &mut Rig, t: &mut u32, items: usize) {
+        rig.release.send(()).unwrap(); // nothing parks: the first request answers at once
+        rig.app.bridge.seed_library_grid_for_test(rig.sid, items);
+        super::super::bridge::nav_select_tab(&mut rig.app.pages, AppArg::Library);
+        settle(&mut rig.app, t);
+        assert!(matches!(rig.app.route(), AppArg::Library), "premise: the Library is on top");
+    }
+
+    /// Play item 1 from the page on top (the fixture's first request is already released) and wait
+    /// for the player to be mounted.
+    fn play_from_here(rig: &mut Rig, t: &mut u32) {
+        rig.request();
+        rig.accept_start();
+        poll_until("the plan did not land through update", || {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            fr.now = *t;
+            unsafe { update(&mut rig.app, &mut fr); }
+            rig.app.adapters.player.is_live()
+        });
+        settle(&mut rig.app, t);
+        assert!(super::super::bridge::player(&rig.app.pages).is_some(), "premise: the player is on top");
+    }
+
+    /// **The plan's headline test.** Library -> play -> the stream reaches its end -> back on the
+    /// Library: the grid tile reads watched, without the page being re-opened, and the origin
+    /// server was not scrobbled a second time (the stop it reported made the view count).
+    #[test]
+    fn library_play_to_the_end_returns_with_the_tile_watched() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(true) else { return };
+        // A second source: with one server the end-of-stream fan-out has nowhere to go and is never
+        // queued, which would leave the "no second scrobble" check below guarding nothing.
+        plx_plex::plex::register_for_test("lifecycle-fixture-copy", "127.0.0.1", 9, "synthetic", "lifecycle-copy");
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        library_with_grid(&mut rig, &mut t, 1);
+        assert_eq!(rig.app.bridge.grid_tile_for_test(0), Some((false, false, 0)), "premise: an untouched tile");
+        let origin = rig.app.pages.nav.top_page().unwrap().id;
+        play_from_here(&mut rig, &mut t);
+        plx_media::player::SHARED.ended.store(true, Ordering::Relaxed);
+        settle(&mut rig.app, &mut t);
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin), "the end returned to the Library");
+        // the rig has no engine, so teardown posts no `stopped`: the engine's own call, at the end
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 600_000, 600_000)), None);
+        plx_media::route::drain_scrobble();
+        poll_until("the grid tile never read watched", || {
+            step(&mut rig.app, &mut t, vec![]);
+            rig.app.bridge.grid_tile_for_test(0) == Some((true, false, 0))
+        });
+        // The read-back that found the end queued the fan-out-only request (a second server is
+        // registered, so there is a copy to reach); only once ViewState has run it is "no second
+        // scrobble" a statement about it and not about the moment before it started.
+        poll_until("ViewState never went idle", || {
+            step(&mut rig.app, &mut t, vec![]);
+            !rig.app.bridge.viewstate_busy_for_test()
+        });
+        assert_eq!(requests_matching(&rig, "/:/scrobble", 0), 0, "no second scrobble on the origin");
+    }
+
+    /// A stop in the middle: the tile shows the new resume point on the frame the stop lands, with
+    /// the server's answer still parked, and the answer then agrees with it.
+    #[test]
+    fn a_stop_in_the_middle_shows_its_resume_point_before_the_server_answers() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(false) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        library_with_grid(&mut rig, &mut t, 1);
+        play_from_here(&mut rig, &mut t);
+        server.hold_reads.store(true, Ordering::SeqCst); // the play's own reads are done
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 150_000, 600_000)), None);
+        plx_media::route::drain_scrobble();
+        poll_until("the tile never showed the resume point", || {
+            step(&mut rig.app, &mut t, vec![]);
+            rig.app.bridge.grid_tile_for_test(0).is_some_and(|tile| tile.2 == 150_000)
+        });
+        server.hold_reads.store(false, Ordering::SeqCst);
+        for _ in 0..8 { step(&mut rig.app, &mut t, vec![]); }
+        assert_eq!(rig.app.bridge.grid_tile_for_test(0).map(|tile| tile.2), Some(150_000));
+    }
+
+    /// **A stop never outlives the identity it was made under.** A `stopped` POST stalled on a slow
+    /// server returns after the user switched profile; the new identity must get no read-back (a
+    /// request on its token) from the old one's stop.
+    #[test]
+    fn a_stop_that_lands_after_an_identity_change_reads_nothing_back() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(false) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        library_with_grid(&mut rig, &mut t, 1);
+        play_from_here(&mut rig, &mut t);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        let from = rig.requests.lock().unwrap().len();
+        server.hold_stop.store(true, Ordering::SeqCst);
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 150_000, 600_000)), None);
+        poll_until("premise: the stopped POST never reached the server", || {
+            requests_matching(&rig, "state=stopped", from) == 1
+        });
+        let _ = super::super::boot::activate_server_owned(&mut rig.app.bridge); // the identity changed
+        server.hold_stop.store(false, Ordering::SeqCst);
+        plx_media::route::drain_scrobble();
+        assert!(!plx_media::route::stops_owed(), "the retired stop is no longer owed");
+        // before any frame: the mailbox itself, which the app would otherwise drain into the new stores
+        assert!(plx_media::route::take_landed_stops().is_empty(), "the old identity's stop reached the mailbox");
+        for _ in 0..12 { step(&mut rig.app, &mut t, vec![]); }
+        assert_eq!(requests_matching(&rig, "GET /library/metadata/", from), 0, "the old identity's stop was read back");
+    }
+
+    /// **A stop the server refused still reaches the page it returns to** (a #575 regression the
+    /// read-back alone cannot fix: a refused stop asks for none). The Detail page shows the
+    /// position the viewer reached the frame the stop lands, with its own re-read still out, and
+    /// that re-read, asked for by the stop itself, then puts the server's word back (nothing was
+    /// stored, so the resume point is the one the server holds).
+    #[test]
+    fn a_refused_stop_patches_the_detail_page_and_the_page_then_re_reads_itself() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(false) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        rig.release.send(()).unwrap(); // nothing parks: the first request answers at once
+        super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "1", None, None);
+        settle(&mut rig.app, &mut t);
+        land_detail_reads(&mut rig, &mut t);
+        let resume = |rig: &Rig| rig.app.bridge.metadata_view().current().map(|d| (d.rk.clone(), d.resume_ms));
+        assert_eq!(resume(&rig), Some(("1".into(), 0)), "premise: the Detail page is loaded, unplayed");
+        play_from_here(&mut rig, &mut t);
+        server.refuse_stop.store(true, Ordering::SeqCst);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        settle(&mut rig.app, &mut t);
+        assert!(rig.app.route().same_instance(&detail_arg(rig.sid)), "premise: Back returned to the Detail page");
+        // Back re-requests the page it uncovers; that read is out (held) when the stop lands
+        let asked = plx_data::metadata::detail_generation_for_test(rig.app.bridge.metadata_mut().adapter_ref());
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 150_000, 600_000)), None);
+        plx_media::route::drain_scrobble();
+        poll_until("the Detail page never showed the position the viewer reached", || {
+            step(&mut rig.app, &mut t, vec![]);
+            resume(&rig) == Some(("1".into(), 150_000))
+        });
+        assert!(!server.stopped.load(Ordering::SeqCst), "premise: the server kept nothing");
+        assert!(plx_data::metadata::detail_generation_for_test(rig.app.bridge.metadata_mut().adapter_ref()) > asked,
+            "the refused stop asked the page for a re-read of its own");
+        let from = rig.requests.lock().unwrap().len();
+        land_detail_reads(&mut rig, &mut t);
+        assert!(requests_matching(&rig, "GET /library/metadata/1", from) >= 1, "the page read the server");
+        assert_eq!(resume(&rig), Some(("1".into(), 0)), "and settled on the server's word");
+    }
+
+    /// Network reconcile work is held while the player is on top: a mark-watched that lands under
+    /// the player owes a read-back and a hubs refetch, and neither goes out until the player leaves.
+    #[test]
+    fn no_reconcile_read_goes_out_while_the_player_is_on_top() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(false) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        library_with_grid(&mut rig, &mut t, 1);
+        play_from_here(&mut rig, &mut t);
+        let (reads_from, refetches) = (rig.requests.lock().unwrap().len(), rig.app.bridge.hub_refetches_for_test());
+        assert!(rig.app.bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
+            sid: rig.sid, rk: "1".into(), write: plx_data::viewstate::Write::Watched,
+            scope: plx_data::viewstate::Scope::Leaf, guid: String::new(),
+        }));
+        poll_until("the write never reached the server", || {
+            step(&mut rig.app, &mut t, vec![]);
+            requests_matching(&rig, "/:/scrobble", reads_from) == 1
+        });
+        for _ in 0..12 { step(&mut rig.app, &mut t, vec![]); }
+        assert!(super::super::bridge::player(&rig.app.pages).is_some(), "premise: still under the player");
+        assert_eq!(requests_matching(&rig, "GET /library/metadata/", reads_from), 0, "a read-back went out under the player");
+        assert_eq!(rig.app.bridge.hub_refetches_for_test(), refetches, "a hubs refetch started under the player");
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        poll_until("the read-back never went out after the player left", || {
+            step(&mut rig.app, &mut t, vec![]);
+            requests_matching(&rig, "GET /library/metadata/", reads_from) >= 1
+        });
+        for _ in 0..12 { step(&mut rig.app, &mut t, vec![]); }
+        assert_eq!(requests_matching(&rig, "GET /library/metadata/", reads_from), 1, "one batch, at the exit");
+    }
+
+    /// An Up Next chain stops one episode after another with no frame between them (the previous
+    /// worker may be stalled, and the main thread joins it before the next stop): every episode
+    /// still gets its own patch.
+    #[test]
+    fn two_stops_with_no_frame_between_them_each_patch_their_own_tile() {
+        let _serial = plx_base::testlock::serial();
+        let server = StopServer::new();
+        let Some(mut rig) = server.rig(false) else { return };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        library_with_grid(&mut rig, &mut t, 2);
+        play_from_here(&mut rig, &mut t);
+        server.hold_reads.store(true, Ordering::SeqCst); // the play's own reads are done
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
+        plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("2".into(), 20_000, 60_000)), None);
+        plx_media::route::drain_scrobble();
+        step(&mut rig.app, &mut t, vec![]);
+        let resumes = |rig: &Rig| [0, 1].map(|i| rig.app.bridge.grid_tile_for_test(i).map(|tile| tile.2));
+        assert_eq!(resumes(&rig), [Some(30_000), Some(20_000)], "an episode's stop was lost");
+        server.hold_reads.store(false, Ordering::SeqCst);
     }
 
     /// The same session drained to its end with nothing queued after it: `finish_playback` leaves
@@ -5074,7 +6141,7 @@ mod lifecycle_regression_tests {
         let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
         let back = back_key(t + 16);
         step(&mut rig.app, &mut t, vec![back]);
-        settle(&mut rig.app, &mut t);
+        settle_after_back(&mut rig.app, &mut t);
         assert!(matches!(rig.app.route(), AppArg::Home));
         assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
     }

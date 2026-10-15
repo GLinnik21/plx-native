@@ -14,7 +14,29 @@ use std::sync::Arc;
 struct Hubs {
     port: i32,
     stop: Arc<AtomicBool>,
+    /// While set, the server takes a connection and answers it only once this clears: a test that
+    /// asserts on the state of a read that is OUT holds the answer back instead of racing the
+    /// worker against loopback speed.
+    hold: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Hubs {
+    /// Hold every answer back until [`Hubs::release`].
+    fn hold(&self) {
+        self.hold.store(true, AtomicOrdering::SeqCst);
+    }
+
+    fn release(&self) {
+        self.hold.store(false, AtomicOrdering::SeqCst);
+    }
+}
+
+/// Blocks while `hold` is set (and the server has not been told to stop).
+fn wait_while_held(hold: &AtomicBool, stop: &AtomicBool) {
+    while hold.load(AtomicOrdering::SeqCst) && !stop.load(AtomicOrdering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 fn param(request: &str, name: &str) -> Option<usize> {
@@ -28,6 +50,8 @@ fn serve(totals: Vec<(u32, usize)>, rename: fn(u32, usize) -> String) -> Hubs {
     let port = listener.local_addr().unwrap().port() as i32;
     let stop = Arc::new(AtomicBool::new(false));
     let halt = stop.clone();
+    let hold = Arc::new(AtomicBool::new(false));
+    let held = hold.clone();
     let thread = std::thread::spawn(move || {
         while !halt.load(AtomicOrdering::SeqCst) {
             let Ok((mut conn, _)) = listener.accept() else {
@@ -35,6 +59,7 @@ fn serve(totals: Vec<(u32, usize)>, rename: fn(u32, usize) -> String) -> Hubs {
                 continue;
             };
             conn.set_nonblocking(false).unwrap();
+            wait_while_held(&held, &halt);
             let mut buf = [0u8; 4096];
             let n = conn.read(&mut buf).unwrap_or(0);
             let request = String::from_utf8_lossy(&buf[..n]).into_owned();
@@ -58,7 +83,7 @@ fn serve(totals: Vec<(u32, usize)>, rename: fn(u32, usize) -> String) -> Hubs {
             );
         }
     });
-    Hubs { port, stop, thread: Some(thread) }
+    Hubs { port, stop, hold, thread: Some(thread) }
 }
 
 impl Drop for Hubs {
@@ -228,6 +253,8 @@ fn serve_live(listing: Vec<String>, hook: impl Fn(usize, &mut Vec<String>) + Sen
     let port = listener.local_addr().unwrap().port() as i32;
     let stop = Arc::new(AtomicBool::new(false));
     let halt = stop.clone();
+    let hold = Arc::new(AtomicBool::new(false));
+    let held = hold.clone();
     let thread = std::thread::spawn(move || {
         let (mut listing, mut reads) = (listing, 0usize);
         let item = |key: &str| format!(r#"{{"ratingKey":"{key}","type":"movie","title":"T{key}","thumb":"/t/{key}"}}"#);
@@ -237,6 +264,7 @@ fn serve_live(listing: Vec<String>, hook: impl Fn(usize, &mut Vec<String>) + Sen
                 continue;
             };
             conn.set_nonblocking(false).unwrap();
+            wait_while_held(&held, &halt);
             let mut buf = [0u8; 4096];
             let n = conn.read(&mut buf).unwrap_or(0);
             let request = String::from_utf8_lossy(&buf[..n]).into_owned();
@@ -263,7 +291,7 @@ fn serve_live(listing: Vec<String>, hook: impl Fn(usize, &mut Vec<String>) + Sen
                 body.len());
         }
     });
-    Hubs { port, stop, thread: Some(thread) }
+    Hubs { port, stop, hold, thread: Some(thread) }
 }
 
 /// Walks the tail forward to its end over a listing that changes under the walk. A card is never
@@ -381,10 +409,14 @@ fn a_withdrawn_read_never_installs_its_window() {
     open(&server, &mc);
     let at = || (detail().related_tail.offset, detail().related_tail.end);
     let was = at();
+    // The server holds its answer, so the read is OUT for as long as the assertions below need it;
+    // left to loopback speed the worker could land (and clear the latch) before `cancel_related`.
+    server.hold();
     assert!(want_related(test_state(), test_adapter(), false, was), "a request starts");
     cancel_related(test_adapter());
     assert!(test_adapter().rel_pages.lock().unwrap().inflight, "the worker is still reading, so the latch is held");
     assert!(!want_related(test_state(), test_adapter(), true, was) || at() == was, "an ask for another direction starts nothing beside it");
+    server.release();
     wait_for_related_read();
     assert!(!pump_related_pages(test_state(), test_adapter()), "nothing landed to install");
     assert_eq!(at(), was);
@@ -402,9 +434,11 @@ fn an_ask_for_the_window_a_withdrawn_read_is_reading_adopts_that_read() {
     open(&server, &mc);
     let at = || (detail().related_tail.offset, detail().related_tail.end);
     let was = at();
+    server.hold();
     assert!(want_related(test_state(), test_adapter(), false, was), "a request starts");
     cancel_related(test_adapter());
     assert!(!want_related(test_state(), test_adapter(), false, was), "no second read starts");
+    server.release();
     wait_for_related_read();
     assert!(pump_related_pages(test_state(), test_adapter()), "the adopted read's window installs");
     assert_ne!(at(), was);
@@ -498,20 +532,24 @@ fn a_repeated_related_ask_starts_one_read_and_one_refused_during_a_withdrawn_rea
     open(&server, &mc);
     let at = || (detail().related_tail.offset, detail().related_tail.end);
     let was = at();
+    server.hold();
     assert!(want_related(test_state(), test_adapter(), false, was), "the first ask starts the read");
     for _ in 0..5 {
         assert!(!want_related(test_state(), test_adapter(), false, was), "a repeat while it is out starts nothing");
         assert!(!ask_related(test_state(), test_adapter(), RelatedAsk::Seek(150), was), "nor does a seek beside it");
     }
+    server.release();
     wait_for_related_read();
     assert_eq!(test_adapter().rel_pages.lock().unwrap().landed.len(), 1, "one read answered all of them");
     assert!(pump_related_pages(test_state(), test_adapter()));
     let next = at();
     assert_ne!(next, was);
     // the reader walked away from this read; a seek meanwhile is refused, and taken once it is over
+    server.hold();
     assert!(want_related(test_state(), test_adapter(), false, next));
     cancel_related(test_adapter());
     assert!(!ask_related(test_state(), test_adapter(), RelatedAsk::Seek(150), next), "refused beside the withdrawn read");
+    server.release();
     wait_for_related_read();
     assert!(!pump_related_pages(test_state(), test_adapter()), "the withdrawn read installs nothing");
     assert_eq!(at(), next);
@@ -536,7 +574,7 @@ fn every_installed_related_landing_reports_a_change_even_when_the_window_is_the_
     assert!(pump_related_pages(test_state(), test_adapter()), "the same window, landed, is still a landing");
     assert_eq!((detail().related_tail.offset, detail().related_tail.end), at);
     test_adapter().rel_pages.lock().unwrap().landed.push(RelLanded {
-        sid: detail().sid, rk: detail().rk.clone(), from: at, window: None });
+        sid: detail().sid, rk: detail().rk.clone(), from: at, window: None, stamp: 0 });
     assert!(!pump_related_pages(test_state(), test_adapter()), "a failed read changes nothing and is not announced");
 }
 
@@ -604,4 +642,29 @@ fn a_collection_that_fills_the_preview_leaves_a_one_card_head_that_goes_on() {
     let head: Vec<&str> = rows.related.iter().map(|m| m.rk.as_str()).collect();
     assert_eq!(head, ["1-7"], "the members are not also Related tiles");
     assert_eq!((rows.tail.head, rows.tail.more, rows.tail.hubs.len()), (1, true, 1), "and the hub goes on past its preview");
+}
+
+/// A Related window is asked for long after the page was installed. Its read describes the server
+/// from ITS request: an edit published before that request is not made again, one published while
+/// it was out is. Driven through `want_related`, the real request site.
+#[test]
+fn a_related_window_replays_only_the_edits_published_after_its_own_request() {
+    use crate::viewstate::{ViewAt, ViewEdit};
+    let _serial = plx_base::testlock::serial();
+    let server = serve(vec![(1, 112)], plain);
+    let mc = related_response(&[(1, 12, 112, true)], "");
+    open(&server, &mc);
+    let (sid, ledger) = (detail().sid, test_state().ledger.clone());
+    let seen = (detail().related_tail.offset, detail().related_tail.end);
+
+    ledger.record(&ViewAt::leaf(sid, &plain(1, 12)), ViewEdit::Watched(true)); // before the request
+    assert!(want_related(test_state(), test_adapter(), false, seen), "a request starts");
+    ledger.record(&ViewAt::leaf(sid, &plain(1, 13)), ViewEdit::Watched(true)); // while it is out
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while (detail().related_tail.offset, detail().related_tail.end) == seen && std::time::Instant::now() < until {
+        pump_related_pages(test_state(), test_adapter());
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let watched = |rk: &str| detail().related.iter().find(|m| m.rk == rk).map(|m| m.watched);
+    assert_eq!((watched(&plain(1, 12)), watched(&plain(1, 13))), (Some(false), Some(true)));
 }

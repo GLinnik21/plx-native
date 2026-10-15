@@ -165,7 +165,7 @@ fn a_card_removed_from_the_deck_leaves_the_window_and_the_next_page_repeats_noth
     move_deck(&mut owner, &listings, false, None);
     let gone = rks(&owner.state, 0)[3].clone();
     let sid0 = owner.state.srcs[0].sid;
-    assert!(edit_item(&mut owner.state, sid0, &gone, LocalEdit::LeftTheDeck));
+    assert!(edit_item(&mut owner.state, &ViewAt::leaf(sid0, &gone), ViewEdit::LeftDeck));
     assert!(!rks(&owner.state, 0).contains(&gone));
     // The server drops it too, as `removeFromContinueWatching` does.
     let a = Listing { items: a.items.iter().filter(|(key, _)| *key != gone).cloned().collect() };
@@ -217,7 +217,8 @@ fn a_card_removed_while_a_deck_page_is_in_flight_does_not_come_back_when_it_land
     let answers = read_in_flight(&mut owner, &listings);
     let gone = rks(&owner.state, 0).pop().unwrap();
     let sid0 = owner.state.srcs[0].sid;
-    assert!(edit_item(&mut owner.state, sid0, &gone, LocalEdit::LeftTheDeck));
+    owner.state.ledger.record(&ViewAt::leaf(sid0, &gone), ViewEdit::LeftDeck);
+    assert!(edit_item(&mut owner.state, &ViewAt::leaf(sid0, &gone), ViewEdit::LeftDeck));
     assert!(answers[0].1.as_ref().unwrap().lane.rows.iter().any(|row| row.m.rk == gone), "the read holds the card");
     land_all(&mut owner, answers);
     let lane = &owner.state.srcs[0].last.as_ref().unwrap().lane;
@@ -235,12 +236,12 @@ fn a_card_marked_watched_while_a_deck_page_is_in_flight_stays_watched_when_it_la
     let answers = read_in_flight(&mut owner, &listings);
     let marked = rks(&owner.state, 0).pop().unwrap();
     let sid0 = owner.state.srcs[0].sid;
-    assert!(edit_item(&mut owner.state, sid0, &marked, LocalEdit::Watched(true)));
+    owner.state.ledger.record(&ViewAt::leaf(sid0, &marked), ViewEdit::Watched(true));
+    assert!(edit_item(&mut owner.state, &ViewAt::leaf(sid0, &marked), ViewEdit::Watched(true)));
     land_all(&mut owner, answers);
     let lane = &owner.state.srcs[0].last.as_ref().unwrap().lane;
     assert!(lane.rows.iter().any(|row| row.m.rk == marked), "the landed lane holds the card");
     assert!(lane.rows.iter().filter(|row| row.m.rk == marked).all(|row| row.m.watched), "the landing undid the mark");
-    assert!(owner.state.srcs[0].edits.is_empty(), "the record of edits ends with the read it covered");
     plx_plex::plex::reset_servers_for_test();
 }
 

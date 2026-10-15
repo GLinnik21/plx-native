@@ -1256,6 +1256,56 @@ it is a 400).
 
 ---
 
+## 9. Notifications (SSE) — `/:/eventsource/notifications` (measured on PMS 1.43.4, Guest token; ships OFF)
+
+The server pushes what other clients are doing. The app reads it with `plex::notify` (the protocol)
+and `stores::notify` (the policy); both ship dark (`NOTIFY_ENABLED = false`) and the feed opens
+only to a server the account OWNS. Notifications are hints about a stranger's playback: they never
+reach a timeline, a stop, an end-of-stream candidate or a resume point.
+
+```
+GET /:/eventsource/notifications?filters=playing        (Accept: text/event-stream; X-Plex-Token in the query)
+```
+
+Measured against a local server with a Guest token:
+
+- **The query parameter is `filters`, and the path is `/:/eventsource/`.** `plex-openapi.json`
+  documents the path as `/:/eventsource/notifications` but the parameter as `filter`; the WebSocket
+  twin is `/:/websockets/notifications` on the server and `/:/websocket/notifications` in the spec.
+  The measurements win.
+- **A Guest token receives only `playing` events** (session key, the playing client's
+  `clientIdentifier`, `ratingKey`, `viewOffset`, `state`). `filters=playing` is requested anyway; whether
+  a non-Guest token honours it, and which other types arrive, is owed to the TV checks (watch only).
+- **A ping about every 10 seconds**, and **no replay**: events missed while disconnected are gone,
+  so a reconnect after a live stream must re-read what the screens show (`resync_epoch`).
+- **Scrobble and unscrobble emit nothing.** The feed does not tell a client that an item became
+  watched; the re-read backstop does.
+- **No `ETag`** on any related read.
+- **One persisted client identifier.** Every new `X-Plex-Client-Identifier` the server sees raises
+  a new-device alert on the account, so the feed sends the same identifier the rest of the app does
+  and never mints one per connection. It sends the identity headers (`Client-Identifier`, `Product`,
+  `Version`, `Platform`, `Platform-Version`, `Device`, `Device-Name`) and no `X-Plex-Provides`: this
+  client is not a controllable player.
+
+What the parser accepts, leniently: a `data` JSON whose `NotificationContainer.type` is `playing`
+(or absent) and whose `PlaySessionStateNotification` array lists the sessions; every field optional,
+ids as strings or numbers, unknown fields and unknown types ignored. A session whose
+`clientIdentifier` is this device's own is dropped before anything else sees it. The envelope's field
+names are the parser's reading and are not yet confirmed by a capture committed here: a verbatim
+frame would carry the session's key, client id and rating key, so it stays out of the repository
+(scrubbed captures hold only the ping cadence).
+
+Connection policy: idle 25 s ends a stream as `Silent`; `Silent`, `Closed`, a transport failure and a
+5xx retry after 2, 4, 8 ... 60 s counted in frames; a 401 parks the server until its token changes; any
+other 4xx, a build that cannot stream, and a request the credential gate refused park it for the
+session; a background cancels every stream and a foreground reopens them.
+
+TV checks owed before the owner flips the constant: connects on an owned server; ten idle minutes with
+no churn; background and foreground; the network pulled, backoff, reconnect; a profile switch
+reconnects with the new token and never with a blank one.
+
+---
+
 ## Paging, observed
 
 Observed on PMS 1.43.4 with a small library, by read-only GETs. Only the endpoints in the table were

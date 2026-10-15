@@ -22,7 +22,8 @@ pub struct AssSubtitles {
     uploaded: u64,
     viewport: Viewport,
     /// The origin `frame` was requested under. The source's current origin can already differ
-    /// (a restyle bumps the revision at once; the worker's re-render follows), and the lift is
+    /// (a restyle bumps the revision when its worker publishes; the libass worker's re-render
+    /// follows), and the lift is
     /// decided by the frame on screen (plan `libass-text-subs` §2.4).
     frame_origin: ass::Origin,
     /// The alignment classes of the cues in one frame, by its serial (Text origin only).
@@ -84,6 +85,20 @@ impl AssSubtitles {
 
     pub fn fingerprint(&self) -> u64 {
         self.frame.as_ref().map_or(0, |f| f.serial)
+    }
+
+    /// Present a frame with `serial` and no regions, as the worker's answer to a cue change would:
+    /// what the player's frame-fingerprint test moves.
+    #[cfg(test)]
+    pub(super) fn set_frame_serial_for_test(&mut self, serial: u64) {
+        self.frame = Some(Arc::new(ass::Frame {
+            source_id: self.source,
+            serial,
+            width: 0,
+            height: 0,
+            rects: Vec::new(),
+            error: None,
+        }));
     }
 
     /// `lift` is the transport HUD being up. It moves a text subtitle's bottom regions and nothing

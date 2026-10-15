@@ -5,7 +5,7 @@
 //!
 //! - [`convert`]: one cue's text, in one of the [`TextDialect`]s, to the body of an ASS event plus
 //!   the cue's numpad alignment. It ports the semantics of the `sub_text` the bespoke caption draw
-//!   used and then escapes the result for libass, which reads `\N`, `\n`, `\h`, `\{` and `\}` as
+//!   used (kept in `tests.rs` as the oracle) and then escapes the result for libass, which reads `\N`, `\n`, `\h`, `\{` and `\}` as
 //!   escapes, so a literal backslash must never be allowed to form one by accident.
 //! - [`header`]: the synthesized `[Script Info]`/`[V4+ Styles]` for the viewer's size and position
 //!   ([`TextStyle`](super::text_style::TextStyle)), one style per numpad alignment so the position
@@ -15,9 +15,8 @@
 //! - [`event_payload`]: the Matroska packet an embedded cue becomes (what `ass_source::push`
 //!   takes).
 //!
-//! The embedded switch is wired: `ass_source::push_text` converts every embedded text cue here. The
-//! sidecar files ([`script_from_srt`], [`script_from_vtt`]) are not read yet; the module and its items
-//! are `pub` so the dead-code lint does not fire before the sidecar switch uses them.
+//! Both switches are wired: `ass_source::push_text` converts every embedded text cue here, and
+//! `sidecar::decode` converts a sidecar file with [`script_from_srt`] / [`script_from_vtt`].
 
 use super::text_style::{self, TextStyle};
 

@@ -110,6 +110,13 @@ impl Collection {
         self.pages.loaded_rows().find(|(_, m)| plx_plex::plex::same_item((m.sid, &m.rk), (sid, rk))).map(|(i, _)| i)
     }
 
+    /// The loaded members inside the window the screen asked for (see [`CollectionCmd::Window`]).
+    pub(crate) fn held_keys(&self, keys: &mut crate::stores::HeldKeys) {
+        for (i, m) in self.pages.loaded_rows() {
+            if self.wanted.contains(&i) { crate::stores::push_held(keys, m.sid, &m.rk); }
+        }
+    }
+
     /// Every row held, with its absolute index.
     pub fn loaded_rows(&self) -> impl Iterator<Item = (usize, &PmsMovie)> + '_ { self.pages.loaded_rows() }
 
@@ -191,6 +198,11 @@ impl<'a> CollectionView<'a> {
 }
 
 pub struct CollectionState {
+    /// The publish order of view-state edits, shared by `stores::Stores`.
+    pub(crate) ledger: crate::viewledger::ViewLedger,
+    /// Where in that order the read now out (single flight) was issued; its landing is made again
+    /// with every edit published since.
+    stamp: crate::viewledger::Stamp,
     current: Option<Collection>,
     generation: u32,
     /// The content counter [`CollectionView::revision`] reads.
@@ -199,7 +211,9 @@ pub struct CollectionState {
 }
 
 impl Default for CollectionState {
-    fn default() -> Self { Self { current: None, generation: 0, revision: 0, retry_cd: 0 } }
+    fn default() -> Self {
+        Self { ledger: Default::default(), stamp: 0, current: None, generation: 0, revision: 0, retry_cd: 0 }
+    }
 }
 
 impl CollectionState {
@@ -266,13 +280,16 @@ impl CollectionState {
             // The item menu's Mark watched/unwatched reaches every store that can be drawing the
             // item (`viewstate`'s fan-out); a member's disc must flip on this page too, not one
             // refetch later.
-            CollectionCmd::SetWatchedLocal { sid, rk, on } => {
+            CollectionCmd::ApplyView { at, edit } => {
+                // A member has no deck to leave.
+                if let crate::viewstate::ViewEdit::LeftDeck = edit { return false }
                 let Some(c) = self.current.as_mut() else { return false };
                 let mut hit = false;
                 for i in 0..c.shown() {
                     c.pages.edit(i, |item| {
-                        if plx_plex::plex::same_item((item.sid, &item.rk), (sid, &rk)) {
-                            crate::pms::set_watched(item, on);
+                        // `changes`: the server's `Facts`/`Offset` that agree touch nothing
+                        if at.covers(item) && edit.changes(item) {
+                            edit.apply(item);
                             hit = true;
                         }
                     });
@@ -345,6 +362,7 @@ impl CollectionState {
         let generation = self.generation;
         let sid = c.id.sid;
         adapter.fetch.claim(generation);
+        self.stamp = self.ledger.stamp();
         let worker_adapter = Arc::clone(adapter);
         let request = serde_json::json!({"store":"collection","slot":0,"gen":generation,
             "sid":sid.raw(),"client":client.instance_gen(),"job":job});
@@ -362,6 +380,7 @@ impl CollectionState {
     }
 
     fn apply_landing(&mut self, landing: Landing) -> bool {
+        let (ledger, stamp) = (self.ledger.clone(), self.stamp);
         let Some(c) = self.current.as_mut() else { return false };
         match landing {
             Landing::Header { rk, head } => {
@@ -377,7 +396,10 @@ impl CollectionState {
                 c.status = CollectionStatus::Loading;
                 true
             }
-            Landing::Page { start, got, pages, total } => {
+            Landing::Page { start, got, mut pages, total } => {
+                // The read describes the server from when it was issued: edits published since
+                // are made again on its rows (`crate::viewledger`).
+                ledger.patch(stamp, pages.iter_mut().flatten());
                 // A page is read at its own offset: the frontier, or a re-read of a page whose
                 // count is known. Anything past the frontier was never asked for in order.
                 if start % PAGE_SIZE != 0 { return false; }
@@ -606,7 +628,7 @@ mod tests {
     fn row(kind: &str, thumb: &str, parent: &str, grandparent: &str) -> plx_plex::plex::Metadata {
         plx_plex::plex::Metadata { rating_key: "9".into(), kind: kind.into(), title: "Pilot".into(),
             thumb: thumb.into(), parent_thumb: parent.into(), grandparent_thumb: grandparent.into(),
-            parent_index: 3, index: 4, grandparent_title: "Show".into(), ..Default::default() }
+            parent_index: Some(3), index: 4, grandparent_title: "Show".into(), ..Default::default() }
     }
 
     /// The page names the member order the collection's owner chose, from the header's
@@ -777,6 +799,44 @@ mod tests {
         assert!(state.job().is_none());
     }
 
+    /// A members page read while a Mark Watched was pressed lands with the member as the server
+    /// described it before the press; the ledger makes the press again on it, and only the ones
+    /// published after the read's own request. The stamp is taken by the REAL request
+    /// (`maybe_spawn`, against a registered but unreachable server), not assigned.
+    #[test]
+    fn a_members_page_in_flight_across_a_watched_edit_lands_watched() {
+        use crate::viewstate::{ViewAt, ViewEdit};
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("collection-ledger", "127.0.0.1", 9, "t", "cid");
+        let adapter = Arc::new(CollectionAdapter::default());
+        let mut state = CollectionState::default();
+        let mut target = set_target("50003", 9, "Set");
+        target.id.sid = sid;
+        state.run(&adapter, CollectionCmd::Open { target });
+        let generation = state.generation();
+        // the header request goes out for real; what it brings is replaced by a canned header
+        let _ = state.pump_with_gate(&adapter, plx_machine::landgate::fixture_gate());
+        plx_base::task::drain_workers_for_test();
+        let _ = adapter.fetch.take();
+        adapter.land(generation, Landing::Header { rk: None, head: header("Set", 2) });
+        assert!(state.take_landing_for_test(&adapter));
+
+        let older = state.ledger.record(&ViewAt::leaf(sid, "m0"), ViewEdit::Watched(true));
+        state.ledger.landed(older); // before the page request: the server has it
+        state.maybe_spawn(&adapter); // the members page request goes out
+        state.ledger.record(&ViewAt::leaf(sid, "m1"), ViewEdit::Watched(true)); // …then the press
+        plx_base::task::drain_workers_for_test();
+        let _ = adapter.fetch.take(); // the unreachable server's answer
+        let member = |rk: &str| PmsMovie { sid, rk: rk.into(), unwatched: true, resume_ms: 7, ..Default::default() };
+        adapter.land(generation, Landing::Page { start: 0, got: 3, pages: vec![vec![member("m0"), member("m1"), member("m2")]], total: 3 });
+        assert!(state.take_landing_for_test(&adapter));
+        let c = state.current.as_ref().unwrap();
+        let marks: Vec<_> = (0..c.shown()).filter_map(|i| c.pages.get(i)).map(|m| (m.rk.clone(), m.watched, m.resume_ms)).collect();
+        assert_eq!(marks, vec![("m0".to_string(), false, 7), ("m1".to_string(), true, 0), ("m2".to_string(), false, 7)]);
+        plx_plex::plex::reset_servers_for_test();
+    }
+
     /// A tag route resolves from the section's collection listing, whose row IS the collection's
     /// header — the resolution lands it, so the next job is the first page, not a second GET of
     /// `/library/metadata/{rk}` for the same fields.
@@ -800,12 +860,37 @@ mod tests {
         state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         state.install_for_test(vec![PmsMovie { rk: "a".into(), unwatched: true, ..Default::default() }],
             CollectionStatus::Ready);
-        assert!(!state.run(&adapter, CollectionCmd::SetWatchedLocal { sid: ServerId::UNSET,
-            rk: "b".into(), on: true }), "an item not on the page changes nothing");
-        assert!(state.run(&adapter, CollectionCmd::SetWatchedLocal { sid: ServerId::UNSET,
-            rk: "a".into(), on: true }));
+        assert!(!state.run(&adapter, CollectionCmd::ApplyView {
+            at: crate::viewstate::ViewAt::leaf(ServerId::UNSET, "b"),
+            edit: crate::viewstate::ViewEdit::Watched(true) }), "an item not on the page changes nothing");
+        assert!(state.run(&adapter, CollectionCmd::ApplyView {
+            at: crate::viewstate::ViewAt::leaf(ServerId::UNSET, "a"),
+            edit: crate::viewstate::ViewEdit::Watched(true) }));
         let item = &state.view().current().unwrap().item(0).unwrap();
         assert!(item.watched && !item.unwatched);
+    }
+
+    #[test]
+    fn the_servers_facts_and_offset_patch_a_member_only_where_they_differ() {
+        use crate::viewstate::{ViewAt, ViewEdit};
+        let adapter = Arc::new(CollectionAdapter::default());
+        let mut state = CollectionState::default();
+        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        state.install_for_test(vec![
+            PmsMovie { rk: "a".into(), unwatched: true, resume_ms: 4, ..Default::default() },
+            PmsMovie { rk: "b".into(), unwatched: true, ..Default::default() },
+        ], CollectionStatus::Ready);
+        let mut run = |rk: &str, edit| state.run(&adapter, CollectionCmd::ApplyView {
+            at: ViewAt::leaf(ServerId::UNSET, rk), edit });
+        let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
+        assert!(run("a", facts));
+        assert!(!run("a", facts), "facts that agree with the member change nothing");
+        assert!(run("b", ViewEdit::Offset { ms: 55 }));
+        assert!(!run("b", ViewEdit::Offset { ms: 55 }));
+        let c = state.view().current().unwrap();
+        let (a, b) = (c.item(0).unwrap(), c.item(1).unwrap());
+        assert_eq!((a.watched, a.unwatched, a.resume_ms), (true, false, 0));
+        assert_eq!((b.watched, b.unwatched, b.resume_ms), (false, true, 55), "an offset leaves the watched state alone");
     }
 
     /// A collection opened and its header landed, reading nothing yet.

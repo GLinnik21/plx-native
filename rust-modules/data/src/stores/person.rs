@@ -21,8 +21,8 @@ pub enum PersonCmd {
     Close,
     /// The profile/account switch.
     Reset,
-    /// The optimistic half of a view-state write, on the person's shelves.
-    SetWatchedLocal { sid: ServerId, rk: String, on: bool },
+    /// The optimistic half of a view-state change, on the person's shelves.
+    ApplyView { at: crate::viewstate::ViewAt, edit: crate::viewstate::ViewEdit },
 }
 
 /// One Person owner: logical state, the worker adapter all current requests capture, and notice.
@@ -45,6 +45,11 @@ impl Default for PersonStore {
 }
 
 impl PersonStore {
+    /// Join the owner's view-state publish order (`Stores::view_ledger`).
+    pub(crate) fn share_ledger(&mut self, ledger: &crate::viewledger::ViewLedger) {
+        self.state.ledger = ledger.clone();
+    }
+
     fn bump(&self) -> u32 {
         self.notice_dirty.store(true, Ordering::Relaxed);
         self.notice_gen.fetch_add(1, Ordering::Relaxed) + 1
@@ -60,6 +65,26 @@ impl PersonStore {
 
     pub fn view(&self) -> crate::person::PersonView<'_> {
         self.state.view()
+    }
+
+    /// The items the page for `arg` shows (every shelf), or nothing when the store holds a different
+    /// person. The store is single-current, so the identity check keeps a covered Person page from
+    /// naming the items of the one that replaced it.
+    pub fn held_keys(&self, arg: &super::content_arg::ContentArg) -> super::HeldKeys {
+        use super::content_arg::ContentArg;
+        let mut keys = super::HeldKeys::new();
+        let Some(p) = self.state.view().current() else { return keys };
+        let same = match arg {
+            ContentArg::Person { .. } => arg.same_item(&ContentArg::Person {
+                sid: p.sid, key: p.key.clone(), guid: p.guid.clone(), name: String::new(), thumb: String::new() }),
+            ContentArg::Filmography { sid, key } => plx_plex::plex::same_item((p.sid, &p.key), (*sid, key)),
+            _ => false,
+        };
+        if !same { return keys; }
+        for m in p.shelves.iter().flat_map(|shelf| shelf.items.iter()) {
+            super::push_held(&mut keys, m.sid, &m.rk);
+        }
+        keys
     }
 
     /// Synchronous addressed command path. Reset rotates the adapter before clearing state, so an

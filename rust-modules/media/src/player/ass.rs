@@ -10,7 +10,7 @@ mod mailbox;
 use mailbox::{Job, Kind, Mailbox, Rendered};
 use super::ass_timing::{self, Validity};
 
-const MAX_SCRIPT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SCRIPT_BYTES: usize = super::ass_script::WINDOW_BYTES;
 const MAX_EVENT_BYTES: usize = 256 * 1024;
 // No event-count bound here: `ass_source` holds an embedded track, and `ass_script` a long sidecar
 // script, to a window far under the native library's own guard (`plx_ass_chunk` refuses past
@@ -402,7 +402,13 @@ fn worker() {
 pub(super) fn validate(source: &Source) -> Result<(), Fault> {
     match &source.content {
         Content::Script { bytes, .. } => {
-            if bytes.is_empty() || bytes.len() > MAX_SCRIPT_BYTES || bytes.contains(&0) {
+            // The whole-script bound is for a script loaded whole; one past it is fed in windows
+            // (`ScriptIndex::windowed`), each within the same bound except a single line larger than it,
+            // which the renderer refuses.
+            if bytes.is_empty()
+                || (bytes.len() > MAX_SCRIPT_BYTES && !super::ass_script::ScriptIndex::indexable(bytes.len()))
+                || bytes.contains(&0)
+            {
                 return Err(Fault::InvalidFile);
             }
         }
@@ -941,8 +947,8 @@ impl Native {
         // Inter, Inter Bold, then the per-script Noto faces (`fonts.rs`: the order is load-bearing,
         // and the files are read here, per renderer, never kept). The CJK face is libass's DEFAULT
         // path (`plx_ass_create`), which maps the file instead of copying it; as a memory font it
-        // was a ~13 MB malloc+copy per renderer reachable only by the family name "Noto Sans CJK KR",
-        // while glyph fallback never went through it.
+        // would cost a ~13 MB malloc+copy per renderer, reachable only by the family name
+        // "Noto Sans CJK KR", while glyph fallback never goes through it.
         for path in fonts::bundled(asset_dir())? {
             let bytes = std::fs::read(&path).map_err(|_| Fault::FontsUnavailable)?;
             if bytes.len() > MAX_FONT_BYTES {

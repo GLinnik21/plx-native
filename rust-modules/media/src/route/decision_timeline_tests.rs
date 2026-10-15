@@ -271,6 +271,93 @@ fn replacement_timeline_waits_for_the_announced_old_stop_boundary() {
     reset_player_control_for_test(&ps);
 }
 
+/// The refetch gate waits for the resume point to be committed, not for the whole stop worker.
+/// The worker posts `stopped`, THEN asks the server to stop the encoder (a second round trip that
+/// a slow PMS holds for ~17 s). `timeline_stop_landed` must read true between the two while
+/// `scrobble_settled` (the whole worker) still reads false.
+#[test]
+fn timeline_stop_landed_reads_true_once_stopped_was_posted_while_the_encoder_stop_is_held() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    drain_scrobble();
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+
+    // One connection per request, in order: the 1st (the `stopped` timeline) waits on `gate_stopped`,
+    // the 2nd (the encoder stop) on `gate_encoder`. Every request line is reported on `seen`.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().unwrap().port() as i32;
+    let (seen_tx, seen_rx) = mpsc::channel::<String>();
+    let (gate_stopped_tx, gate_stopped_rx) = mpsc::channel::<()>();
+    let (gate_encoder_tx, gate_encoder_rx) = mpsc::channel::<()>();
+    let server = std::thread::spawn(move || {
+        for gate in [gate_stopped_rx, gate_encoder_rx] {
+            let Some(Ok(mut socket)) = listener.incoming().next() else { return };
+            let mut line = String::new();
+            let _ = BufReader::new(&socket).read_line(&mut line);
+            let _ = seen_tx.send(line);
+            let _ = gate.recv();
+            let _ = socket.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+        }
+    });
+    let sid = plx_plex::plex::register_for_test(
+        "timeline-stop-landed",
+        "127.0.0.1",
+        port,
+        "tok",
+        "timeline-client",
+    );
+    apply_plan(
+        &mut ps,
+        Plan {
+            sid,
+            sess: "logical-landed".into(),
+            ..Default::default()
+        },
+        "rk-landed",
+    );
+    install_active_encoder("wire-landed");
+
+    scrobble_stop(&mut ps, Some(("rk-landed".into(), 11_000, 20_000)), None);
+    let first = seen_rx.recv_timeout(Duration::from_secs(5)).expect("no stopped POST");
+    assert!(first.contains("state=stopped"), "first request was not stopped: {first}");
+    assert!(
+        !timeline_stop_landed() && !scrobble_settled(),
+        "premise: the stop is announced and the worker has not finished"
+    );
+
+    gate_stopped_tx.send(()).unwrap();
+    let second = seen_rx.recv_timeout(Duration::from_secs(5)).expect("no encoder stop");
+    assert!(second.contains("/transcode/universal/stop"), "second request: {second}");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !timeline_stop_landed() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        timeline_stop_landed(),
+        "the stopped POST was answered, so the resume point is committed"
+    );
+    assert!(
+        !scrobble_settled(),
+        "the worker is still inside the held encoder stop"
+    );
+
+    gate_encoder_tx.send(()).unwrap();
+    drain_scrobble();
+    assert!(scrobble_settled() && timeline_stop_landed());
+    server.join().unwrap();
+    plx_plex::plex::reset_servers_for_test();
+    reset_session(&mut ps);
+    install_active_encoder("");
+    reset_player_control_for_test(&ps);
+}
+
 #[test]
 fn every_concurrent_scrobble_drain_waits_for_the_same_taken_handle() {
     use std::time::Duration;
@@ -414,4 +501,67 @@ fn a_film_request_retires_the_previous_trailers_preview_mark() {
     let _ = wait_resolve_workers_for_test(std::time::Duration::from_secs(10));
     reset_player_control_for_test(&ps);
     reset_session(&mut ps);
+}
+
+/// The record a stop leaves for the app: position from the final report, parentage and the
+/// "was it watched when the play began" from the item's play-queue row (fetched at play start), and
+/// `was_watched = true` when no row can be found (an unknown must never fan a scrobble out). With no
+/// client the POST cannot be taken, and the record still arrives, as not taken.
+#[test]
+fn a_stop_leaves_a_record_with_the_queue_rows_parentage_and_prior_watched_state() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    drain_scrobble();
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    let _ = take_landed_stops();
+    ps.queue = vec![plx_plex::plex::QueueRow {
+        item_id: 11, rk: "7".into(), show_rk: "S".into(), season: 2, watched: false, ..Default::default()
+    }];
+    ps.pq_item_id = "11".into();
+    scrobble_stop(&mut ps, Some(("7".into(), 30_000, 60_000)), None);
+    drain_scrobble();
+    ps.pq_item_id = "99".into();
+    scrobble_stop(&mut ps, Some(("8".into(), 1_000, 60_000)), None);
+    drain_scrobble();
+    let stops = take_landed_stops();
+    assert_eq!(stops.len(), 2, "both stops arrive, oldest first");
+    let first = &stops[0];
+    assert_eq!(first.rk.as_str(), "7");
+    assert_eq!((first.pos_ms, first.dur_ms, first.ok, first.was_watched), (30_000, 60_000, false, false));
+    assert!(stops[1].was_watched, "no queue row for the item: read as watched, never fanned out");
+    assert!(!stops_owed());
+    reset_player_control_for_test(&ps);
+}
+
+/// **A stop never outlives the identity it was made under.** A `stopped` POST stalled on a slow
+/// server can land after a profile switch; its record would then patch, read back and fan out on the
+/// NEW profile. `retire_pending_stops` (called where every store is reset) drops both the record
+/// already in the mailbox and the one a worker posts afterwards, and leaves nothing owed.
+#[test]
+fn a_stop_posted_after_the_identity_changed_is_dropped() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    drain_scrobble();
+    reset_session(&mut ps);
+    let _ = take_landed_stops();
+    let rec = |rk: &str| plx_data::viewstate::StopRecord {
+        sid: ServerId::from_raw(0), rk: rk.into(),
+        pos_ms: 30_000, dur_ms: 60_000, ok: false, was_watched: false,
+    };
+    let mut landed_before = PendingStop::new(rec("1"));
+    let mut stalled = PendingStop::new(rec("2"));
+    landed_before.post(true);
+    assert!(stops_owed());
+
+    retire_pending_stops();
+    assert!(take_landed_stops().is_empty(), "the posted record was emptied with the mailbox");
+    stalled.post(true); // the stalled worker's POST returns after the switch
+    assert!(take_landed_stops().is_empty(), "the late record is another identity's");
+    assert!(!stops_owed(), "a dropped record is no longer owed");
+
+    let mut fresh = PendingStop::new(rec("3"));
+    fresh.post(true);
+    assert_eq!(take_landed_stops().len(), 1, "a stop made after the switch lands as ever");
+    reset_player_control_for_test(&ps);
 }

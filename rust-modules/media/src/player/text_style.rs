@@ -2,11 +2,10 @@
 //! constants the synthesized ASS header (`text_ass::header`) and the screen's HUD lift are built
 //! from. Pure; nothing here touches libass, a font or the screen.
 //!
-//! These values used to live in `appkit::player_hud`, which drew the caption itself. Media cannot
-//! use appkit, and the synthesized header needs them, so the mapping lives here and appkit reads it
-//! (plan `libass-text-subs` §2.5). [`today_baseline`] and its companions are a port of the maths
-//! `player_hud::caption_geometry`/`caption_layout` use today, kept with hard-coded constants so a
-//! tie test in appkit can pin that this module and the code it replaces cannot drift apart.
+//! Media cannot use appkit and the synthesized header needs these values, so the mapping lives
+//! here and appkit reads it (plan `libass-text-subs` §2.5). [`today_baseline`] and its companions
+//! mirror the maths `player_hud::caption_geometry`/`caption_layout` use, kept with hard-coded
+//! constants so a tie test in appkit can pin that the two cannot drift apart.
 
 use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
 
@@ -38,8 +37,8 @@ pub const CAPTION_ANCHOR_LINES: usize = 3;
 pub const BOTTOM_GAP: f32 = 100.0;
 
 /// How much nearer the frame's bottom libass's `MarginV` sits than [`BOTTOM_GAP`], so the ink
-/// baseline of a one-line cue lands where [`today_ink_baseline`] puts it. Fixed by the PR 5b
-/// native golden (`ass::tests::synth`): with `MarginV = BOTTOM_GAP`, libass's Inter Bold baseline
+/// baseline of a one-line cue lands where [`today_ink_baseline`] puts it. Fixed by the native
+/// golden (`ass::tests::synth`): with `MarginV = BOTTOM_GAP`, libass's Inter Bold baseline
 /// sat 3.56 / 3 / 2 / 2 px ABOVE today's at the four sizes (971 / 968 / 966 / 963 against
 /// 974.56 / 971 / 968 / 965 at Low), because the two layouts put the line on different boxes;
 /// shifting every size down by 3 px leaves each within 1. It costs 3 px of the clearance the HUD
@@ -53,7 +52,7 @@ pub const CAPTION_TEXT_INSET: f32 = 4.0;
 
 /// The top of the transport HUD's control row (`player_hud::BTN_Y`, which is this constant). A
 /// text caption lifted with the HUD up must end above it, deep marks included (plan §2.4, as
-/// amended by PR 5b: the golden's criterion is this row, not `SUB_CEIL_Y`).
+/// amended: the golden's criterion is this row, not `SUB_CEIL_Y`).
 pub const HUD_CONTROLS_TOP_Y: f32 = SCR_H - 288.0;
 
 /// The `MarginV` of the top-aligned styles: independent of the Position setting.

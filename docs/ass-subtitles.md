@@ -16,7 +16,12 @@ and the screen lifts its bottom-anchored cues clear of the transport. A change o
 pick re-synthesizes the header of the selected track lazily (the revision bumps once; the renderer swaps
 the track in place). The track's events are a newest-wins view of the cues: a cue's end is clipped to
 the start of the next cue of the same alignment class, so an overlap never leaves the old text up beside
-the new one. External SRT/VTT files are still drawn by the bespoke caption path (`player_hud::draw_subtitles`).
+the new one. External SRT/VTT files take the same road: `player::sidecar` charset-decodes the file,
+`text_ass::script_from_srt`/`script_from_vtt` convert it to one script (WebVTT `line:0` puts a cue at the
+top), and `sidecar::ass_source` serves it as an `Origin::Text` source, restyled lazily like an embedded
+track. A long or large converted script is fed to libass a window at a time (`ass_script`: at most 8192
+lines and 8 MiB per window, except a single line larger than that, which the renderer refuses); only a script loaded whole is bound by 8 MiB. The one thing the sidecar still
+draws itself is the failure notice (`sidecar::notice()`, drawn by `draw_subtitle_message`).
 
 `ci/build-libass.py` builds a pinned libass with private FreeType, FriBidi, HarfBuzz and
 libunibreak (Unicode line breaking, so a line with no spaces, as in Chinese or Japanese, can
@@ -116,6 +121,31 @@ the transport HUD appears.
 The device fixture generator requires FFmpeg/ffprobe and MKVToolNix (`mkvmerge`). It verifies
 subtitle packet counts, timestamps and mux interleaving before publishing a video.
 
+## Look changes from the old renderer
+
+Release notes in this repository (`docs/release-notes/vX.Y.Z.md`) are written when a release is cut
+(`cut-release`); there is no running changelog, so the next release's note takes this list. Text
+subtitles (SubRip, WebVTT, mov_text, SAMI and the other text codecs, embedded or sidecar) used to be
+drawn by a private caption renderer and now go through libass, with these deliberate differences:
+
+- Italic, underline, strike-through and colour in the subtitle are shown, and `{\an8}`/`{\an5}`
+  places a cue at the top or the middle.
+- The outline is a true 2 px stroke instead of four offset copies of the text.
+- A cue is no longer split into pages or shrunk to fit. A tall cue grows upward, and may cover the Timing
+  capsule.
+- A lone brace is shown as written, `\h` is a non-breaking space, and the line breaks of SAMI, RealText,
+  MicroDVD and MPL2 are honoured.
+- Chinese, Japanese and other cues with no spaces wrap at a break the Unicode rules allow.
+- ASS that names a font the app does not have ("Inter") now gets Bold Noto glyphs for the scripts Noto
+  covers, instead of the CJK default's missing-glyph boxes.
+
+Unchanged by design: the text size and the 48 px line pitch, the bottom baseline at every position and
+size, the lift of bottom-anchored cues clear of the transport (200 px), the Timing capsule's position,
+newest-wins for overlapping cues of the same alignment, tone and the timing offset. Authored ASS is never
+lifted with the transport showing. Not done: dictionary line breaking for Thai, Lao, Khmer and Myanmar
+(they break at spaces, as before), stacking of overlapping cues, and WebVTT cue settings other than
+`line:0` on a sidecar file.
+
 Verification commands (set `MOCK_PMS_PORT` to an unused local port and configure the developer
 build to reach that mock server):
 
@@ -152,7 +182,8 @@ waited behind an Ahead job already rendering; the partial window is written when
 deselected) and
 one `assperf: worker tid=<n>` line when the worker starts, which `tools/tv-sched-trace.sh --tid <n>`
 follows. The UI-thread texture upload is the `assup` span on `FRAMEDROP spans=` (spans print only on
-`FRAMEDROP` lines, with `/tmp/plxnative-framedrop` armed). Nothing is
+`FRAMEDROP` lines, with `/tmp/plxnative-framedrop` armed); each changed region uploads with a full
+`glTexImage2D` (a bucketed `glTexSubImage2D` variant that reused the texture was measured on the TV and gave no gain, #735). Nothing is
 logged while no styled source is selected, and a render costs one clock pair. The worker renders
 only when the screen needs a frame (a new key, a playhead outside the published frame's validity
 window, an animated cue) and renders the next boundary ahead of its time, so a steady cue costs no

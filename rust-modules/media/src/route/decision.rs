@@ -2477,6 +2477,7 @@ pub fn force_applying_for_test(serial: u64) {
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_player_control_for_test(ps: &PlaybackSession) {
+    retire_pending_stops(); // the stop mailbox is process-global, like the control it sits beside
     let projection = route_projection(ps);
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     control.engine_epoch = next_generation(control.engine_epoch);
@@ -5239,6 +5240,13 @@ pub fn install_transcode_for_test(ps: &mut PlaybackSession, remux: bool, hls: bo
         plx_plex::plex::TranscodeDelivery::ProgressiveMkv
     };
 }
+/// Test-only: register `session` as the live encoder the next [`scrobble_stop`] closes, so a
+/// suite outside this crate can drive the stop worker's server-side `transcode_stop` leg (the one
+/// [`timeline_stop_landed`] must not wait for).
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_active_encoder_for_test(session: &str) {
+    install_active_encoder(session);
+}
 /// select the subtitle to BURN into any transcode of the current item (0 = none). This
 /// is the transcode path; direct-play uses the client renderer (player::request_subtitle).
 pub fn set_subtitle(ps: &mut PlaybackSession, sid: i64) {
@@ -5621,6 +5629,87 @@ struct ScrobbleWork {
     subtitle_stream_id: i64,
     transcode_session: String,
     timeline_stop: Option<TimelineStopCompletion>,
+    /// The record the app learns this stop from; posted just before `timeline_stop` completes.
+    stop_mail: Option<PendingStop>,
+}
+
+/// The stops whose `stopped` POST has been attempted or abandoned, waiting for the app to take
+/// them. **A queue, not the plan's one slot.** `scrobble_stop` joins the previous worker
+/// (`drain_scrobble`) on the main thread before it announces the next stop; if that worker was
+/// stalled on a slow server the app has had no frame in between, so the next worker's record would
+/// land on top of the previous one in a single slot and an Up Next chain would lose an episode.
+/// The app drains it every frame ([`take_landed_stops`]); it holds at most the stops that happened
+/// since the last frame.
+static STOP_MAIL: Mutex<Vec<plx_data::viewstate::StopRecord>> = Mutex::new(Vec::new());
+/// Stops with a record built and not yet posted: what a replay's landing gate waits for. A stop
+/// retired by [`retire_pending_stops`] stays owed until its worker posts (and is dropped), so the
+/// count never reaches zero while a worker still holds a record, and never goes negative.
+static STOPS_OWED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// The identity epoch a stop record is built under. A record belongs to whoever was signed in when
+/// the stop began; one that lands after [`retire_pending_stops`] bumped this is another identity's
+/// and is dropped on posting.
+static STOP_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Posts its record exactly once; dropped unposted (a panicking worker) it posts it as not taken,
+/// so the viewer's position still shows and nothing is owed forever.
+struct PendingStop {
+    rec: Option<plx_data::viewstate::StopRecord>,
+    epoch: u64,
+}
+
+impl PendingStop {
+    /// Owes `rec` under the current identity epoch.
+    fn new(rec: plx_data::viewstate::StopRecord) -> Self {
+        // under the mailbox lock, so `retire_pending_stops` cannot slip between the two reads
+        let mail = STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner());
+        STOPS_OWED.fetch_add(1, Ordering::SeqCst);
+        let epoch = STOP_EPOCH.load(Ordering::SeqCst);
+        drop(mail);
+        Self { rec: Some(rec), epoch }
+    }
+
+    fn post(&mut self, ok: bool) {
+        if let Some(mut rec) = self.rec.take() {
+            rec.ok = ok;
+            {
+                let mut mail = STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner());
+                if STOP_EPOCH.load(Ordering::SeqCst) == self.epoch {
+                    mail.push(rec);
+                } else {
+                    plx_base::eventlog::log("viewstate: a stop from a retired identity was dropped");
+                }
+            }
+            STOPS_OWED.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Drop for PendingStop {
+    fn drop(&mut self) {
+        self.post(false);
+    }
+}
+
+/// **The identity changed: no stop of the old one may reach the new one.** Bumps the epoch (every
+/// record still being posted is now stale and is dropped when its worker posts it) and empties the
+/// mailbox of the ones already posted. A stalled `stopped` POST by one profile would otherwise land
+/// after a switch and patch, read back and fan out on the NEW profile's token. MAIN THREAD, from
+/// the same place every store is reset.
+pub fn retire_pending_stops() {
+    let mut mail = STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner());
+    STOP_EPOCH.fetch_add(1, Ordering::SeqCst);
+    mail.clear();
+}
+
+/// The stops posted since the last call, oldest first. MAIN THREAD, once a frame.
+pub fn take_landed_stops() -> Vec<plx_data::viewstate::StopRecord> {
+    std::mem::take(&mut *STOP_MAIL.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Is a stop's record still being posted? True from `scrobble_stop` to the end of its `stopped`
+/// attempt: what the landing gate waits on in dump mode.
+pub fn stops_owed() -> bool {
+    STOPS_OWED.load(Ordering::SeqCst) > 0
 }
 
 impl ScrobbleWork {
@@ -5632,6 +5721,7 @@ impl ScrobbleWork {
         if let Some(t) = self.report_th.take() {
             plx_base::task::join("timeline", t);
         }
+        let mut posted = false;
         if let Some((rk, t_ms, d_ms)) = self.final_report.take() {
             let ok = {
                 let _effect = TIMELINE_EFFECT.lock().unwrap_or_else(|e| e.into_inner());
@@ -5655,6 +5745,11 @@ impl ScrobbleWork {
                 d_ms / 1000,
                 ok as i32,
             ));
+            posted = ok;
+        }
+        // BEFORE the fence completes, so a completed fence implies the record is in the mailbox.
+        if let Some(mut mail) = self.stop_mail.take() {
+            mail.post(posted);
         }
         // This is the semantic publication boundary: old reporter joined, then old stopped was
         // attempted in the common effect lane. Wake replacement reporters before the unrelated
@@ -5719,6 +5814,22 @@ pub fn scrobble_stop(
     // item, and letting two race would let an older one land last. Normally free — the measured
     // baseline for a finished worker is 0 ms.
     drain_scrobble();
+    let stop_mail = final_report.as_ref().map(|(rk, pos_ms, dur_ms)| {
+        let sid = cur_sid(ps);
+        // The item's row in the play queue, fetched when the play began: its watched state is the
+        // "before" of this stop. A row that cannot be found reads as watched, so an unknown never
+        // fans out a scrobble nobody asked for.
+        let row = plx_plex::plex::queue_index_of(&ps.queue, ps.pq_item_id.parse().unwrap_or(0), sid, rk)
+            .map(|i| &ps.queue[i]);
+        PendingStop::new(plx_data::viewstate::StopRecord {
+            sid,
+            rk: rk.clone(),
+            pos_ms: *pos_ms,
+            dur_ms: *dur_ms,
+            ok: false,
+            was_watched: row.is_none_or(|r| r.watched),
+        })
+    });
     let timeline_stop =
         (final_report.is_some() || report_th.is_some()).then(|| TIMELINE_STOP_FENCE.announce());
     let work = std::sync::Arc::new(std::sync::Mutex::new(Some(ScrobbleWork {
@@ -5732,6 +5843,7 @@ pub fn scrobble_stop(
         subtitle_stream_id: sub,
         transcode_session: tsession,
         timeline_stop,
+        stop_mail,
     })));
     let worker = work.clone();
     let join_generation = SCROBBLE_JOIN.reserve();
@@ -5816,9 +5928,10 @@ impl ScrobbleJoin {
         self.changed.notify_all();
     }
 
-    /// Whether no stop report is still on its way to the server: no worker was ever reserved, the
-    /// last one has been joined, or its thread has returned. Never blocks, and never joins - the
-    /// frame loop asks this every frame while it waits to re-read what the stop committed.
+    /// Whether the whole stop worker, including the server-side `transcode_stop`, has returned: no
+    /// worker was ever reserved, the last one has been joined, or its thread has returned. Never
+    /// blocks, and never joins. The gate for re-reading what the stop committed is
+    /// [`timeline_stop_landed`], not this.
     fn settled(&self) -> bool {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.completed >= state.generation
@@ -5904,6 +6017,12 @@ impl TimelineStopFence {
             .announced
     }
 
+    /// Every announced stop has completed. Vacuously true before the first announce.
+    fn landed(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.completed >= state.announced
+    }
+
     fn wait(&self, required: u64) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         while state.completed < required {
@@ -5953,11 +6072,35 @@ pub fn drain_scrobble() {
     SCROBBLE_JOIN.drain();
 }
 
-/// Whether the last [`scrobble_stop`] has finished posting (see [`ScrobbleJoin::settled`]): true
-/// once the server holds the resume point the stop reported, so a re-read of the item sees it.
-/// Non-blocking, unlike [`drain_scrobble`].
+/// Whether the last [`scrobble_stop`]'s whole worker has returned (see [`ScrobbleJoin::settled`]),
+/// including the server-side `transcode_stop`. The re-read gate is [`timeline_stop_landed`], which
+/// opens once the `stopped` POST has landed; this one only says the worker is done. Non-blocking,
+/// unlike [`drain_scrobble`].
 pub fn scrobble_settled() -> bool {
     SCROBBLE_JOIN.settled()
+}
+
+/// Whether the last announced `state=stopped` timeline report has been *attempted or abandoned*:
+/// the worker has finished its POST (answered, failed or timed out), or the work was dropped
+/// (panic, thread refusal). It does NOT mean the server accepted it.
+///
+/// Earlier than [`scrobble_settled`], which also waits for the server-side `transcode_stop` round
+/// trip that follows the POST (up to a full PMS timeout, ~17 s, on a slow server). A re-read of
+/// the item only needs the resume point, so the post-playback refreshes gate on this one.
+///
+/// **It reads true when no stop was announced at all** (nothing playing, a reporter-less preview,
+/// or a stop with nothing to post), so it is only meaningful behind an owed flag that
+/// `exit_player` sets *after* [`scrobble_stop`] announced the fence on the same (main) thread
+/// (`App::refresh_hubs`). Non-blocking.
+pub fn timeline_stop_landed() -> bool {
+    TIMELINE_STOP_FENCE.landed()
+}
+
+/// How many `state=stopped` reports have ever been announced. A caller that remembers the value it
+/// last saw can tell whether an exit announced one of its own (the count moved) or ended a play
+/// that never started and reported nothing.
+pub fn timeline_stops_announced() -> u64 {
+    TIMELINE_STOP_FENCE.announced()
 }
 
 /// Seek within a LIVE TRANSCODE by restarting it at a time offset — a transcode has no byte-Cues,
@@ -9069,7 +9212,7 @@ pub enum BurnReason {
 
 /// **The live [`SubtitlePresenter`]**, from the committed selection (`cur_sub_sid`, written for
 /// every route by `commit_subtitle_selection`) and the live route. A transcode burns whatever is
-/// selected and the client then draws nothing (`player_hud::draw_subtitles` is silenced by
+/// selected and the client then draws nothing (the libass source is silenced by
 /// [`subtitles_burned`] the same way) — except a sidecar, or an admitted embedded track, over a remux, which the app draws
 /// ([`SubtitlePresenter::ClientOverRemux`]); direct play draws it in the app. The reason is the
 /// audio conversion when the live family is a remux or the burn is the enhancement's own or the

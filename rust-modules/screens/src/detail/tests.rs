@@ -333,6 +333,75 @@ fn refresh_obligation_is_logical_state_without_a_restore_intent() {
     assert!(probe.contains("restore=false") && probe.contains("refresh=Requested"));
 }
 
+/// **A server-driven re-read moves nothing.** `DetailReconcile` is the obligation alone: unlike
+/// `DetailRestore` (the deliberate re-seat after playback) it neither sets a focus-restore intent
+/// nor sends the page back to the top.
+#[test]
+fn a_reconcile_owes_the_re_read_but_moves_neither_focus_nor_scroll() {
+    let sid = ServerId::UNSET;
+    let guard = install(detail(sid, "show"));
+    for phase in [DetailRefreshPhase::Deferred, DetailRefreshPhase::Requested] {
+        let mut screen = bare(&guard, sid, "show");
+        screen.sync_keys(test_store().view());
+        let focus = episode_key(&screen, 1, episodes::Row::Still).expect("the second episode is keyed");
+        let want = FocusKey { entry: EntryId(7), elem: focus };
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let held = |screen: &DetailScreen| Focusable::<TestHost>::reconcile(screen, want, &cx(&measure, Some(focus))).elem;
+        screen.scroll_target = 480.0;
+        screen.scroll.pos = 480.0;
+        let _ = step(&mut screen, &ScreenEvent::App(AppMsg::DetailReconcile { refresh: phase }), Some(focus));
+        assert_eq!(screen.refresh, phase);
+        assert!(screen.restore_intent.is_none(), "no focus is re-seated ({phase:?})");
+        assert!(!screen.return_pending, "nothing was queued to move focus ({phase:?})");
+        assert_eq!(screen.scroll_target, 480.0, "the page does not scroll to the top ({phase:?})");
+        assert_eq!(screen.scroll.pos, 480.0);
+        assert_eq!(held(&screen), focus, "the obligation leaves the focus where it was ({phase:?})");
+
+        // …and neither does the re-read it asks for, when it lands
+        let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
+        {
+            let (state, adapter) = test_store().split_for_test();
+            plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, Some(detail(sid, "show")));
+        }
+        test_store().pump_detail();
+        let _ = step(&mut screen, &ScreenEvent::Tick(plx_machine::machine::Tick { ms: 16, dt_us: 16_667 }), Some(focus));
+        assert_eq!(episode_key(&screen, 1, episodes::Row::Still), Some(focus), "the episode keeps its key ({phase:?})");
+        assert_eq!(held(&screen), focus, "the landing leaves the focus where it was ({phase:?})");
+        assert!(screen.restore_intent.is_none() && !screen.return_pending, "and seats nothing ({phase:?})");
+        assert_eq!((screen.scroll_target, screen.scroll.pos), (480.0, 480.0), "the landing does not scroll ({phase:?})");
+    }
+    clear();
+}
+
+#[test]
+fn a_reconcile_landing_holds_the_focus_on_an_episode_past_the_first_page() {
+    let total = 150;
+    let guard = install(long_season(total, &[0, 1]));
+    let sid = ServerId::UNSET;
+    let mut screen = bare(&guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let focus = episode_key(&screen, 70, episodes::Row::Still).expect("page 1 is keyed");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let want = FocusKey { entry: EntryId(7), elem: focus };
+    let held = |screen: &DetailScreen| Focusable::<TestHost>::reconcile(screen, want, &cx(&measure, Some(focus))).elem;
+    assert_eq!(held(&screen), focus);
+
+    let _ = step(&mut screen, &ScreenEvent::App(AppMsg::DetailReconcile { refresh: DetailRefreshPhase::Requested }), Some(focus));
+    assert_eq!(held(&screen), focus, "the obligation alone moves nothing");
+
+    // the re-read lands: the server's page 0 of the same season
+    let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
+    {
+        let (state, adapter) = test_store().split_for_test();
+        plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, Some(long_season(total, &[0])));
+    }
+    test_store().pump_detail();
+    screen.sync_keys(test_store().view());
+    assert_eq!(episode_key(&screen, 70, episodes::Row::Still), Some(focus), "episode 70 keeps the key it had");
+    assert_eq!(held(&screen), focus, "the landing left the focus on episode 70, not on the hero");
+    clear();
+}
+
 #[test]
 fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
     let guard = plx_base::testlock::serial();
@@ -403,7 +472,7 @@ fn detail_enter_preserves_the_refresh_truth_table_without_focus_restoration() {
 /// (`Some(false)`) left by the PREVIOUS reconciliation at this exact `(sid, rk)` address.
 ///
 /// Closed by IDENTITY, not synchrony: `DetailScreen::step` has no same-turn boundary the way
-/// `app::content::refresh_content` does for `DetailRestore` (see C1fix, `3b628b23`) — `Cx`
+/// `app::content::reconcile_details` does for `DetailReconcile` (see C1fix, `3b628b23`) — `Cx`
 /// publishes stores as read-only views, so there is no `&mut Stores` here by construction. Rather
 /// than widen `Cx`/`Rig`, `start_reconciliation` now records `self.refresh_gen =
 /// meta.detail_generation()` — the generation that already existed BEFORE this promotion's own
@@ -2386,14 +2455,11 @@ fn a_watch_disc_press_emits_an_addressed_viewstate_effect_without_global_apply()
     let addressed: Vec<_> = effects.iter().filter_map(|effect| match &effect.fx {
         Fx::App(AppFx::Store(StoreId::ViewState,
             plx_data::stores::StoreCmd::ViewState(ViewStateCmd::Request {
-                sid, rk, write, detail, guid,
-            }))) => Some((*sid, rk.as_str(), *write, detail.as_ref(), guid.as_str())),
+                sid, rk, write, guid, ..
+            }))) => Some((*sid, rk.as_str(), *write, guid.as_str())),
         _ => None,
     }).collect();
-    assert_eq!(addressed, [(sid, "movie", plx_data::viewstate::Write::Watched,
-        Some(&plx_data::stores::viewstate::DetailRefresh {
-            sid, rk: "movie".into(), keep: None,
-        }), "")],
+    assert_eq!(addressed, [(sid, "movie", plx_data::viewstate::Write::Watched, "")],
         "Detail must address the typed ViewState command to its owning Bridge");
     assert!(!test_store().view().current().unwrap().watched,
         "the screen must not call the process-global compatibility facade itself");
