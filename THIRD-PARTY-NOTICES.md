@@ -81,7 +81,7 @@ uses `libass-plx-host.so.0`.
 | libass | 0.17.5 | ISC (`licenses/libass-ISC.txt`) |
 | FreeType | 2.14.3 | Elected FreeType License; contributed MIT and Zlib code (`licenses/FreeType.txt`, `licenses/Zlib.txt`) |
 | FriBidi | 1.0.17 | LGPL-2.1-or-later (`licenses/LGPL-2.1.txt`) |
-| HarfBuzz | 14.5.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
+| HarfBuzz | 14.6.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
 | libunibreak | 8.0 | zlib (`licenses/libunibreak-Zlib.txt`) |
 
 Portions of this software are copyright © 2026 The FreeType Project
