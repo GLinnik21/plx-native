@@ -123,9 +123,9 @@ impl Shelf {
     }
 
     /// Play a content landing no focus move announced over frames (`landing.rs`): a removed card
-    /// fades out where it stood ([`paint_ghosts`](Self::paint_ghosts), from the PREVIOUS source),
-    /// the cards after it slide into the gap and an inserted card fades in. The focused tile does
-    /// not move. Off by default: a section that keeps no previous source for the ghosts still gets
+    /// fades out where it stood ([`paint_ghosts`](Self::paint_ghosts)), the cards after it slide
+    /// into the gap and an inserted card fades in. The focused tile is held at its slot by the
+    /// landing rule. Off by default: a section that keeps no removed cards for the ghosts still gets
     /// the slide and the fade-in, but its removed cards would cut.
     pub const fn animate_landings(mut self, on: bool) -> Self {
         self.landing.set_enabled(on);
