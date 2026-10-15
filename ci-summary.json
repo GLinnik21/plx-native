@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T10:39:36Z",
+ "generated": "2026-10-15T10:43:36Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -45,18 +45,18 @@
   },
   {
    "change30_pct": -51.6,
-   "change7_pct": -39.1,
+   "change7_pct": -37.8,
    "d30": 950.0,
    "delta30": -490.0,
-   "delta7": -295.5,
+   "delta7": -280.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 246,
-   "n_prev": 216,
+   "n_prev": 215,
    "now": 460.0,
-   "prev7": 755.5,
+   "prev7": 740,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -7.8,
+   "change7_pct": -8.1,
    "d30": null,
    "delta30": null,
-   "delta7": -33,
+   "delta7": -34.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 111,
+   "n_now": 112,
    "n_prev": 129,
-   "now": 388,
+   "now": 387.0,
    "prev7": 421,
    "shown": true,
    "state": "flat",
@@ -288,17 +288,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -9.4,
+   "change7_pct": -9.2,
    "d30": null,
    "delta30": null,
-   "delta7": -22.5,
+   "delta7": -22,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 111,
-   "now": 217.5,
+   "now": 218,
    "prev7": 240,
    "shown": true,
    "state": "flat",
@@ -312,14 +312,14 @@
    "change7_pct": -63.7,
    "d30": null,
    "delta30": null,
-   "delta7": -326.0,
+   "delta7": -326,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 111,
-   "now": 186.0,
+   "now": 186,
    "prev7": 512,
    "shown": true,
    "state": "better",
@@ -375,14 +375,14 @@
    "change7_pct": -11.9,
    "d30": null,
    "delta30": null,
-   "delta7": -19.0,
+   "delta7": -19,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 63,
-   "now": 140.0,
+   "now": 140,
    "prev7": 159,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 111,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 52.0,
    "commits": [
     {
-     "pr": 739,
-     "sha": "ac67711dd",
-     "title": "libass 8: the player screen stops drawing the old caption path"
-    },
-    {
      "pr": 742,
      "sha": "7201de034",
      "title": "libass 9: appkit deletes the old caption path"
@@ -615,6 +610,11 @@
      "pr": 737,
      "sha": "bdea64ea3",
      "title": "Cards: animated landings with ghosts from the previous snapshot (10a)"
+    },
+    {
+     "pr": 738,
+     "sha": "75733781e",
+     "title": "Home: focus follows the show (10b) and the return hold (10c)"
     }
    ],
    "from": 220,
@@ -628,11 +628,6 @@
    "change_pct": 27.3,
    "commits": [
     {
-     "pr": 739,
-     "sha": "ac67711dd",
-     "title": "libass 8: the player screen stops drawing the old caption path"
-    },
-    {
      "pr": 742,
      "sha": "7201de034",
      "title": "libass 9: appkit deletes the old caption path"
@@ -676,6 +671,11 @@
      "pr": 737,
      "sha": "bdea64ea3",
      "title": "Cards: animated landings with ghosts from the previous snapshot (10a)"
+    },
+    {
+     "pr": 738,
+     "sha": "75733781e",
+     "title": "Home: focus follows the show (10b) and the return hold (10c)"
     }
    ],
    "from": 277,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 217.5
+   "now": 218
   }
  ],
  "slowest_local": [
