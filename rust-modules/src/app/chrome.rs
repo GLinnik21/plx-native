@@ -2,9 +2,9 @@
 //! borrowed strings and never opens the session file or polls the Browse vocabulary.
 
 use plx_ui::containers::tabs::StripMember;
-use plx_ui::dispatch::STRIP_BASE;
 use plx_machine::machine::{FocusKey, Measure};
-use plx_ui::widgets::{self, ChromeRead, ProfileChipRead, TabLabels, TopFocus};
+use plx_ui::icons::Icon;
+use plx_ui::widgets::{self, ChromeRead, ProfileChipRead, TabFace, TabLabels, TopFocus};
 use plx_data::stores::browse::{DirectoryView, SecKind};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -58,7 +58,7 @@ pub(crate) struct ChromeSnapshot {
     tabs_generation: Option<u32>,
     profile_generation: Option<u32>,
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
-    labels: Vec<String>,
+    faces: Vec<TabFace>,
     keys: Vec<u32>,
     widths: Vec<f32>,
     thumb: String,
@@ -76,21 +76,21 @@ impl ChromeSnapshot {
         captured: Option<(&plx_plex::plex::session::CurrentProfile, &plx_plex::plex::session::Session)>) {
         let generation = directory.tabs_gen();
         if self.tabs_generation != Some(generation) {
-            self.labels.clear();
+            self.faces.clear();
             self.keys.clear();
-            self.labels.push(plx_platform::i18n::msg::browse_chrome_home().into());
-            self.keys.push(STRIP_BASE);
+            self.faces.push(TabFace::Label(plx_platform::i18n::msg::browse_chrome_home().into()));
+            self.keys.push(widgets::TAB_KEY_HOME);
             for i in 0..directory.tab_count() {
                 let Some(kind) = directory.tab_kind(i) else { continue };
-                self.labels.push(match kind { SecKind::Movie => plx_platform::i18n::msg::browse_kind_movies(), SecKind::Show => plx_platform::i18n::msg::browse_kind_tv_shows() }.into());
-                self.keys.push(STRIP_BASE + match kind {
-                    SecKind::Movie => 1,
-                    SecKind::Show => 2,
+                self.faces.push(TabFace::Label(match kind { SecKind::Movie => plx_platform::i18n::msg::browse_kind_movies(), SecKind::Show => plx_platform::i18n::msg::browse_kind_tv_shows() }.into()));
+                self.keys.push(match kind {
+                    SecKind::Movie => widgets::TAB_KEY_MOVIES,
+                    SecKind::Show => widgets::TAB_KEY_SHOWS,
                 });
             }
-            self.labels.push(String::new());
-            self.keys.push(STRIP_BASE + 3);
-            self.widths = widgets::tab_widths(&self.labels, measure);
+            self.faces.push(TabFace::Icon(Icon::Search));
+            self.keys.push(widgets::TAB_KEY_SEARCH);
+            self.widths = widgets::tab_widths(&self.faces, measure);
             self.tabs_generation = Some(generation);
         }
         let generation = captured.map_or_else(plx_plex::plex::session::current_gen, |(profile, _)| profile.generation);
@@ -110,16 +110,16 @@ impl ChromeSnapshot {
     }
 
     pub(crate) fn labels(&self) -> TabLabels<'_> {
-        TabLabels { generation: self.tabs_generation.unwrap_or(0), labels: &self.labels }
+        TabLabels { generation: self.tabs_generation.unwrap_or(0), faces: &self.faces }
     }
 
     pub(crate) fn library_selection(&self, kind: SecKind) -> u32 {
-        let elem = STRIP_BASE + match kind { SecKind::Movie => 1, SecKind::Show => 2 };
+        let elem = match kind { SecKind::Movie => widgets::TAB_KEY_MOVIES, SecKind::Show => widgets::TAB_KEY_SHOWS };
         self.keys.iter().position(|key| *key == elem).unwrap_or(0) as u32
     }
 
     pub(crate) fn search_selection(&self) -> u32 {
-        self.keys.iter().position(|key| *key == STRIP_BASE + 3).unwrap_or(0) as u32
+        self.keys.iter().position(|key| *key == widgets::TAB_KEY_SEARCH).unwrap_or(0) as u32
     }
 
     pub(crate) fn profile(&self) -> ProfileChipRead<'_> {
@@ -135,7 +135,7 @@ impl ChromeSnapshot {
 
     pub(crate) fn focus(&self, focus: Option<FocusKey<u32>>) -> TopFocus {
         match focus.map(|focus| focus.elem) {
-            Some(key) if key == STRIP_BASE + 4 => TopFocus::Chip,
+            Some(key) if key == widgets::TAB_KEY_CHIP => TopFocus::Chip,
             Some(key) => self.keys.iter().position(|&id| id == key).map(TopFocus::Pill).unwrap_or(TopFocus::Away),
             None => TopFocus::Away,
         }
@@ -146,16 +146,16 @@ impl ChromeSnapshot {
     /// own; the `Bridge` methods that call this are the one place both live.
     pub(crate) fn members(&self, selected: i32, focus: Option<FocusKey<u32>>, scroll: f32, out: &mut Vec<StripMember<u32>>) {
         out.clear();
-        out.push(StripMember::new(STRIP_BASE + 4, widgets::CHIP_FRAME));
+        out.push(StripMember::new(widgets::TAB_KEY_CHIP, widgets::CHIP_FRAME));
         widgets::tab_members(&self.widths, &self.keys, selected, self.focus(focus), scroll, out);
     }
 
     #[cfg(test)]
     pub(crate) fn seed_for_test(&mut self, name: &str, initial: &str, labels: &[&str], measure: &dyn Measure) {
         self.tabs_generation = Some(1);
-        self.labels = labels.iter().map(|s| (*s).to_owned()).collect();
-        self.keys = (0..self.labels.len()).map(|i| STRIP_BASE + i as u32).collect();
-        self.widths = widgets::tab_widths(&self.labels, measure);
+        self.faces = labels.iter().map(|s| TabFace::Label((*s).to_owned())).collect();
+        self.keys = (0..self.faces.len()).map(|i| plx_ui::dispatch::STRIP_BASE + i as u32).collect();
+        self.widths = widgets::tab_widths(&self.faces, measure);
         self.profile_generation = Some(1);
         self.thumb.clear();
         (self.initial, self.name, self.name_w) =
@@ -200,13 +200,14 @@ mod tests {
 
     #[test]
     fn published_bar_focus_uses_destination_identity_not_position() {
-        let snapshot = ChromeSnapshot { labels: vec!["Home".into(), "TV Shows".into(), String::new()],
-            keys: vec![STRIP_BASE, STRIP_BASE + 2, STRIP_BASE + 3], ..Default::default() };
-        let at = |id| Some(FocusKey { entry: EntryId(1), elem: STRIP_BASE + id });
-        assert_eq!(snapshot.focus(at(2)), TopFocus::Pill(1));
-        assert_eq!(snapshot.focus(at(3)), TopFocus::Pill(2));
-        assert_eq!(snapshot.focus(at(1)), TopFocus::Away);
-        assert_eq!(snapshot.focus(at(4)), TopFocus::Chip);
+        let snapshot = ChromeSnapshot { faces: vec![TabFace::Label("Home".into()),
+                TabFace::Label("TV Shows".into()), TabFace::Icon(Icon::Search)],
+            keys: vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_SEARCH], ..Default::default() };
+        let at = |elem| Some(FocusKey { entry: EntryId(1), elem });
+        assert_eq!(snapshot.focus(at(widgets::TAB_KEY_SHOWS)), TopFocus::Pill(1));
+        assert_eq!(snapshot.focus(at(widgets::TAB_KEY_SEARCH)), TopFocus::Pill(2));
+        assert_eq!(snapshot.focus(at(widgets::TAB_KEY_MOVIES)), TopFocus::Away);
+        assert_eq!(snapshot.focus(at(widgets::TAB_KEY_CHIP)), TopFocus::Chip);
         for elem in [0, 1] {
             assert_eq!(snapshot.focus(Some(FocusKey { entry: EntryId(1), elem })), TopFocus::Away);
         }
@@ -219,12 +220,19 @@ mod tests {
             profile_generation: Some(plx_plex::plex::session::current_gen()), ..Default::default()
         };
         snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
-        assert_eq!(snapshot.keys, vec![STRIP_BASE, STRIP_BASE + 1, STRIP_BASE + 2, STRIP_BASE + 3]);
-        assert_eq!(&snapshot.labels[..3], &["Home", "Movies", "TV Shows"]);
+        assert_eq!(snapshot.keys, vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
+            widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_SEARCH]);
+        let words: Vec<&str> = snapshot.faces.iter().filter_map(|face| match face {
+            TabFace::Label(word) => Some(word.as_str()),
+            TabFace::Icon(_) => None,
+        }).collect();
+        assert_eq!(&words[..3], &["Home", "Movies", "TV Shows"]);
+        assert_eq!(snapshot.faces.last(), Some(&TabFace::Icon(Icon::Search)));
         let mut members = Vec::new();
         snapshot.members(0, None, 0.0, &mut members);
         assert_eq!(members.iter().map(|member| member.elem).collect::<Vec<_>>(),
-            vec![STRIP_BASE + 4, STRIP_BASE, STRIP_BASE + 1, STRIP_BASE + 2, STRIP_BASE + 3]);
+            vec![widgets::TAB_KEY_CHIP, widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
+                widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_SEARCH]);
     }
 
     #[test]

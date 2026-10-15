@@ -5579,13 +5579,21 @@ impl TabStrip {
 /// (`browse::tab_has_favorite`). This doc said "never remove or reorder"; half of it is still the
 /// deliverable and half of it is now the opposite, which is why [`Pill::Section`] carries a
 /// `SecKind` — a bare index means something different once a pill can vanish.
-/// The Search pill is SQUARE: 60×60, the icon's own air rather than a word's, so a mark does not
-/// wear the padding a label needs (`ui_kits/tv-app/SearchScreen.jsx`). Every other pill keeps
-/// [`TAB_PILL_PAD`].
+/// An icon face ([`TabFace::Icon`], the Search mark today) is SQUARE: 60×60, the icon's own air
+/// rather than a word's, so a mark does not wear the padding a label needs
+/// (`ui_kits/tv-app/SearchScreen.jsx`). Every [`TabFace::Label`] pill keeps [`TAB_PILL_PAD`].
 const TAB_ICON_PILL_W: f32 = TAB_PILL_H;
 /// The mark inside it, at 1.15× the strip's own type rung (BODY 28 → 32) — the design system's
 /// `--btn-icon-ratio`, the same ratio every icon-and-label control in the app uses.
 const TAB_ICON_D: f32 = 32.0;
+/// The strip's control keys, by destination identity. A destination is looked up by its key, never
+/// by its position among the captured faces: Search is always `+3` and the profile chip `+4`,
+/// whatever type pills sit between Home and Search.
+pub const TAB_KEY_HOME: u32 = crate::dispatch::STRIP_BASE;
+pub const TAB_KEY_MOVIES: u32 = crate::dispatch::STRIP_BASE + 1;
+pub const TAB_KEY_SHOWS: u32 = crate::dispatch::STRIP_BASE + 2;
+pub const TAB_KEY_SEARCH: u32 = crate::dispatch::STRIP_BASE + 3;
+pub const TAB_KEY_CHIP: u32 = crate::dispatch::STRIP_BASE + 4;
 /// The top chrome band's y — the chip and the pills sit on it (Home and Library alike).
 ///
 /// **Derived from the overscan safe area, not chosen.** It was a bare `44.0` until 2026-08-23, which
@@ -5650,6 +5658,38 @@ pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     ));
     out.push(("profile chip", CHIP_FRAME));
     out.push(("profile chip, focused capsule", CHIP_CAP_MAX));
+}
+
+/// The overscan rect and the strip's real geometry agree at the widest the strip is shown: five
+/// focus stops (Home, both type pills, the Search mark, the chip) fit without scrolling.
+#[cfg(test)]
+mod overscan_strip_tests {
+    use super::*;
+
+    #[test]
+    fn five_stops_do_not_scroll_and_the_drawn_track_clears_the_overscan_rect() {
+        let faces = [
+            TabFace::Label("Home".into()),
+            TabFace::Label("Movies".into()),
+            TabFace::Label("TV Shows".into()),
+            TabFace::Icon(crate::icons::Icon::Search),
+        ];
+        // A generous per-glyph measure: wider than any shipped label at BODY.
+        let widths = tab_metrics_from(&faces, |s| s.to_bytes().len() as f32 * 20.0).1;
+        assert!(tab_content_w(&widths) <= TAB_VIEW_MAX, "four pills must fit the strip's viewport");
+        for idx in 0..faces.len() {
+            assert_eq!(tab_scroll_target(&widths, idx, 0.0), 0.0, "stop {idx} must not scroll the strip");
+        }
+        let geometry = tab_geometry(&widths, 0.0);
+        let mut rects = Vec::new();
+        overscan_rects(&mut rects);
+        let (_, outer) = rects.iter().copied().find(|(name, _)| *name == "top tab track (widest)")
+            .expect("the strip publishes its widest track to the audit");
+        let track = geometry.track;
+        assert!(track.x >= outer.x && track.x + track.w <= outer.x + outer.w + 0.5,
+            "the drawn track must sit inside the widest track the audit checks");
+        assert!(track.y >= outer.y && track.y + track.h <= outer.y + outer.h + 0.5);
+    }
 }
 
 /// The strip's scroll stiffness. The detail page's season-tab row springs at the same 240 — same
@@ -6400,32 +6440,47 @@ latched_flag!(
 // label byte. A PERMANENT entry in `ci/allow/statics.txt`, not an ownership path: every caller
 // supplies Bridge-owned `TabLabels`, and a key mismatch deterministically replaces the memo. Like
 // `text_view.rs`'s `WRAP_CACHE`, it is never read as logical state.
-static mut TAB_CACHE: Option<(u32, Vec<std::ffi::CString>, Vec<f32>)> = None;
+/// The memo's key is the generation AND the captured faces; `CString`s are kept beside them because
+/// paint hands `TabPill` a raw pointer into them.
+type TabMetrics = (u32, Vec<TabFace>, Vec<std::ffi::CString>, Vec<f32>);
+static mut TAB_CACHE: Option<TabMetrics> = None;
 
-/// The shared strip's captured labels, including Home first and an empty Search icon label last.
-/// Supplied by the application; no Browse/Plex type is part of the renderer's vocabulary.
+/// What one pill of the shared strip shows: a captured word, or a mark. The strip never reads the
+/// application's vocabulary to decide which pill is the mark — the application says so per pill.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TabFace {
+    Label(String),
+    Icon(crate::icons::Icon),
+}
+
+/// The shared strip's captured faces, in pill order (Home first, Search's mark last), as the
+/// application built them. Supplied by the application; no Browse/Plex type is part of the
+/// renderer's vocabulary.
 #[derive(Clone, Copy)]
 pub struct TabLabels<'a> {
     pub generation: u32,
-    pub labels: &'a [String],
+    pub faces: &'a [TabFace],
 }
 
 /// Build glyph runs and widths from an explicitly supplied vocabulary. The application's
-/// `ChromeSnapshot` owns those labels; both normal chrome and its scrim lift borrow the same
+/// `ChromeSnapshot` owns those faces; both normal chrome and its scrim lift borrow the same
 /// snapshot, so this renderer never reconstructs vocabulary from app globals.
-fn tab_metrics_from(labels: &[String], measure: impl Fn(&std::ffi::CStr) -> f32) -> (Vec<CString>, Vec<f32>) {
-    let words: Vec<CString> = labels.iter().map(|label| CString::new(label.as_str()).unwrap_or_default()).collect();
-    let widths = words.iter().enumerate().map(|(i, word)| {
-        if i + 1 == words.len() { TAB_ICON_PILL_W }
-        else { measure(word) + 2.0 * TAB_PILL_PAD }
+fn tab_metrics_from(faces: &[TabFace], measure: impl Fn(&std::ffi::CStr) -> f32) -> (Vec<CString>, Vec<f32>) {
+    let words: Vec<CString> = faces.iter().map(|face| match face {
+        TabFace::Label(label) => CString::new(label.as_str()).unwrap_or_default(),
+        TabFace::Icon(_) => CString::default(),
+    }).collect();
+    let widths = faces.iter().zip(&words).map(|(face, word)| match face {
+        TabFace::Label(_) => measure(word) + 2.0 * TAB_PILL_PAD,
+        TabFace::Icon(_) => TAB_ICON_PILL_W,
     }).collect();
     (words, widths)
 }
 
 /// Measure a published vocabulary once when it changes. The same metric rule feeds paint and
 /// input geometry; the capability keeps host fixtures independent of a loaded SDL font.
-pub fn tab_widths(labels: &[String], measure: &dyn plx_machine::machine::Measure) -> Vec<f32> {
-    tab_metrics_from(labels, |word| measure.width(word, theme::size::BODY, true)).1
+pub fn tab_widths(faces: &[TabFace], measure: &dyn plx_machine::machine::Measure) -> Vec<f32> {
+    tab_metrics_from(faces, |word| measure.width(word, theme::size::BODY, true)).1
 }
 
 /// Publish control geometry from the strip's actual scroll and its current destination. Keys
@@ -6457,9 +6512,8 @@ fn tab_members_at(widths: &[f32], keys: &[u32], scroll: f32, target: f32,
     }
 }
 
-fn tab_cache_matches(cache: &(u32, Vec<CString>, Vec<f32>), data: TabLabels<'_>) -> bool {
-    cache.0 == data.generation && cache.1.len() == data.labels.len()
-        && cache.1.iter().zip(data.labels).all(|(a, b)| a.to_bytes() == b.as_bytes())
+fn tab_cache_matches(cache: &TabMetrics, data: TabLabels<'_>) -> bool {
+    cache.0 == data.generation && cache.1.as_slice() == data.faces
 }
 
 /// Run `f` with the tab row's labels + pill widths, rebuilding them when the full vocabulary key
@@ -6470,7 +6524,7 @@ fn tab_cache_matches(cache: &(u32, Vec<CString>, Vec<f32>), data: TabLabels<'_>)
 /// nested rebuild would free the `CString`s a caller is still handing to `TabPill` as a raw
 /// `*const c_char`. Scoping it here makes that impossible to write by accident — so do NOT call
 /// this again from inside `f`.
-fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[CString], &[f32]) -> R) -> R {
+fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[TabFace], &[CString], &[f32]) -> R) -> R {
     use std::ptr::addr_of_mut;
     let cache = unsafe { &mut *addr_of_mut!(TAB_CACHE) };
     if cache.as_ref().is_none_or(|c| !tab_cache_matches(c, data)) {
@@ -6483,15 +6537,14 @@ fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[CString], &[f32
         // identical glyph widths on both paths.
         use plx_machine::machine::Measure as _;
         let measure = LegacyMeasure;
-        let (labels, widths) = tab_metrics_from(data.labels,
+        // An icon face has no word to measure: it gets the fixed square width, so `faces.len()`
+        // stays the pill count, which is what the draw and the hit test both walk.
+        let (words, widths) = tab_metrics_from(data.faces,
             |l| measure.width(l, theme::size::BODY, true));
-        // The Search pill, last. It carries an EMPTY label so nothing here has to special-case a
-        // missing entry — `labels.len()` stays the pill count, which is what the draw and the hit
-        // test both walk — and a fixed square width, because a mark is not measured like a word.
-        *cache = Some((data.generation, labels, widths));
+        *cache = Some((data.generation, data.faces.to_vec(), words, widths));
     }
-    let (_, labels, widths) = cache.as_ref().unwrap();
-    f(labels, widths)
+    let (_, faces, words, widths) = cache.as_ref().unwrap();
+    f(faces, words, widths)
 }
 
 /// Content width of the whole pill strip: the pills plus the air between them.
@@ -6609,7 +6662,7 @@ impl StripRender {
         // Both reads happen inside the ONE `with_tab_metrics` closure — its doc forbids nesting, and
         // the capsules must be placed from the SAME widths the pills are laid out with, so a capsule
         // can never come to rest somewhere no pill is.
-        let t = with_tab_metrics_for(data, |_, w| {
+        let t = with_tab_metrics_for(data, |_, _, w| {
             let target = tab_scroll_target(w, idx, cur.pos);
             let span = |i: usize| (i < w.len()).then(|| (tab_pill_x(w, i), w[i]));
             self.top_strip.update(selected, focused, span, SelMark::Travels, dt);
@@ -6635,7 +6688,7 @@ impl StripRender {
 impl StripRender {
     pub fn reveal(&mut self, data: TabLabels<'_>, idx: usize) {
         let cur = self.tab_scroll;
-        let t = with_tab_metrics_for(data, |_, w| tab_scroll_target(w, idx, cur.pos));
+        let t = with_tab_metrics_for(data, |_, _, w| tab_scroll_target(w, idx, cur.pos));
         self.tab_scroll.jump(t);
     }
 }
@@ -6657,8 +6710,8 @@ impl StripRender {
                    // return below must leave [`profile_chip_with`] on the flat capsule rather than on the stops some
                    // previous frame solved. See [`BarMaterial`].
     band.material = BarMaterial::Flat;
-    with_tab_metrics_for(data, |labels, widths| {
-        let n = labels.len();
+    with_tab_metrics_for(data, |faces, words, widths| {
+        let n = faces.len();
         if n == 0 {
             return;
         }
@@ -6856,22 +6909,20 @@ impl StripRender {
                 // booleans, or a mid-travel label could darken toward ACCENT_INK with nothing bright
                 // under it (`cap_cover` is the one rule both sides read).
                 let (fm, sm) = self.top_strip.mixes((px, widths[i]));
-                if i + 1 == n {
-                    // The Search pill is a MARK, and it takes its ink from exactly the same
+                match &faces[i] {
+                    // An icon face is a MARK, and it takes its ink from exactly the same
                     // `mixed_ink` the labels do — so it darkens toward ACCENT_INK under the focus
                     // capsule in step with its neighbours instead of being a separate colour story.
-                    let d = TAB_ICON_D;
-                    let ir = Rect::new(r.x + (r.w - d) * 0.5, r.y + (r.h - d) * 0.5, d, d);
-                    crate::icons::draw(
-                        p,
-                        crate::icons::Icon::Search,
-                        ir,
-                        TabPill::mixed_ink(fm, sm),
-                    );
-                } else {
-                    TabPill::new(labels[i].as_ptr(), theme::size::BODY, r)
-                        .mix(fm, sm)
-                        .draw(&env, p);
+                    TabFace::Icon(icon) => {
+                        let d = TAB_ICON_D;
+                        let ir = Rect::new(r.x + (r.w - d) * 0.5, r.y + (r.h - d) * 0.5, d, d);
+                        crate::icons::draw(p, *icon, ir, TabPill::mixed_ink(fm, sm));
+                    }
+                    TabFace::Label(_) => {
+                        TabPill::new(words[i].as_ptr(), theme::size::BODY, r)
+                            .mix(fm, sm)
+                            .draw(&env, p);
+                    }
                 }
             }
         }
