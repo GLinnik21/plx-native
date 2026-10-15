@@ -522,9 +522,15 @@ impl Engine {
         }
         let window = held.index.window(now_ms);
         (held.lo, held.hi) = (window.lo_ms, window.hi_ms);
-        self.native = None;
-        self.native = Some(Native::open_data(fonts, &window.text, 1)?);
-        Ok(())
+        // Every window repeats the script's header, `[Fonts]` included, so the held renderer
+        // already has the fonts: swap the track in place rather than reopening every face.
+        match self.native.as_mut() {
+            Some(native) => native.replace_track(&window.text, 1),
+            None => {
+                self.native = Some(Native::open_data(fonts, &window.text, 1)?);
+                Ok(())
+            }
+        }
     }
 
     fn render(&mut self, request: &Request) -> Arc<Frame> {
@@ -658,6 +664,23 @@ pub struct NativeFrame {
     regions: *const Bitmap,
 }
 
+/// `PlxAssStats` in `include/ass.h`.
+#[repr(C)]
+#[derive(Default)]
+pub struct NativeStats {
+    library_fonts: u32,
+    font_scans: u32,
+    tracks: u32,
+}
+
+/// The facade ABI this file is written against (`PLX_ASS_ABI_VERSION` in `include/ass.h`); a
+/// library reporting any other number is not loaded.
+const NATIVE_ABI: u32 = 3;
+
+/// libass's glyph-count and bitmap-MiB cache bounds for every renderer.
+const CACHE_GLYPHS: i32 = 1000;
+const CACHE_BITMAP_MIB: i32 = 24;
+
 plx_base::dynlib! {
     native_ass: ["libass-plx-host.so.0", "libass-plx.so.0", "libass-plx.0.dylib"] {
         fn plx_ass_abi_version() -> u32;
@@ -668,6 +691,11 @@ plx_base::dynlib! {
         fn plx_ass_chunk(ctx: *mut c_void, data: *const u8, len: usize, start_ms: i64, duration_ms: i64) -> i32;
         fn plx_ass_prune_before(ctx: *mut c_void, deadline_ms: i64);
         fn plx_ass_flush_events(ctx: *mut c_void);
+        fn plx_ass_replace_track(ctx: *mut c_void, data: *const u8, len: usize, script: i32) -> i32;
+        fn plx_ass_set_features(ctx: *mut c_void, wrap_unicode: i32) -> i32;
+        fn plx_ass_set_cache_limits(ctx: *mut c_void, glyph_max: i32, bitmap_mib: i32) -> i32;
+        fn plx_ass_set_line_spacing(ctx: *mut c_void, spacing: f64) -> i32;
+        fn plx_ass_stats(ctx: *const c_void, out: *mut NativeStats) -> i32;
         fn plx_ass_render(ctx: *mut c_void, now_ms: i64, width: i32, height: i32, storage_width: i32, storage_height: i32, frame: *mut NativeFrame) -> i32;
     }
 }
@@ -715,7 +743,7 @@ impl Native {
     fn open_data(fonts: &[Font], data: &[u8], script: i32) -> Result<Self, Fault> {
         static LOADED: OnceLock<bool> = OnceLock::new();
         let loaded = *LOADED.get_or_init(|| {
-            native_ass::load(Some(asset_dir())).ok() && unsafe { plx_ass_abi_version() } == 2
+            native_ass::load(Some(asset_dir())).ok() && unsafe { plx_ass_abi_version() } == NATIVE_ABI
         });
         if !loaded {
             return Err(Fault::Unavailable);
@@ -728,6 +756,7 @@ impl Native {
             return Err(Fault::InitFailed);
         }
         let mut native = Self(ptr);
+        native.configure()?;
         for name in ["appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf"] {
             let bytes = std::fs::read(asset_dir().join(name))
                 .map_err(|_| Fault::FontsUnavailable)?;
@@ -751,6 +780,46 @@ impl Native {
             return Err(Fault::Unreadable);
         }
         Ok(native)
+    }
+
+    /// The renderer settings every renderer starts with. Authored scripts break lines the way
+    /// they always have (at spaces and `\N`), with no extra line spacing.
+    fn configure(&mut self) -> Result<(), Fault> {
+        let applied = unsafe {
+            plx_ass_set_cache_limits(self.0, CACHE_GLYPHS, CACHE_BITMAP_MIB) >= 0
+                && plx_ass_set_features(self.0, 0) >= 0
+                && plx_ass_set_line_spacing(self.0, 0.0) >= 0
+        };
+        applied.then_some(()).ok_or(Fault::InitFailed)
+    }
+
+    /// Break lines by the Unicode rules (libunibreak) in the loaded track and every later one.
+    #[cfg(test)]
+    fn set_wrap_unicode(&mut self, on: bool) -> bool {
+        unsafe { plx_ass_set_features(self.0, i32::from(on)) >= 0 }
+    }
+
+    /// Extra pixels between lines at the render size; negative tightens.
+    #[cfg(test)]
+    fn set_line_spacing(&mut self, spacing: f64) -> bool {
+        unsafe { plx_ass_set_line_spacing(self.0, spacing) >= 0 }
+    }
+
+    /// Swap the loaded track for `data` on the same library and renderer, keeping every opened
+    /// face. Only for a track whose `[Fonts]` section is the first one's (a window of the same
+    /// script, or a header without one): the new track's fonts are not extracted.
+    fn replace_track(&mut self, data: &[u8], script: i32) -> Result<(), Fault> {
+        if unsafe { plx_ass_replace_track(self.0, data.as_ptr(), data.len(), script) } < 0 {
+            return Err(Fault::Unreadable);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn stats(&self) -> NativeStats {
+        let mut stats = NativeStats::default();
+        assert!(unsafe { plx_ass_stats(self.0, &mut stats) } >= 0);
+        stats
     }
 
     fn font(&mut self, name: &str, bytes: &[u8]) -> Result<(), Fault> {

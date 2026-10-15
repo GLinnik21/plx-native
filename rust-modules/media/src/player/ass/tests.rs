@@ -587,3 +587,319 @@ fn native_a_thirty_thousand_event_sidecar_renders_around_the_playhead_and_after_
     }
     assert_eq!(pixel(&render(&mut engine, &source, 20_000_950), 20, 20), [0; 4], "and gone between lines");
 }
+
+// ---- facade ABI 3: features, cache limits, line spacing, replace_track, grown font faces ----
+
+/// A renderer holding `fonts` and the script `text`, opened the way `Engine::open` opens one.
+fn native_with(fonts: &[Font], text: &str) -> Native {
+    Native::open_data(fonts, text.as_bytes(), 1)
+        .expect("native fixture requires the built host library in pkg")
+}
+
+fn native_key(now_ms: i64) -> Key {
+    Key {
+        epoch: 1,
+        source_id: 1,
+        revision: 1,
+        now_ms,
+        width: 320,
+        height: 180,
+        storage_width: 320,
+        storage_height: 180,
+    }
+}
+
+/// The frame at `now_ms`; `None` is libass's "identical to the last frame".
+fn native_frame(native: &mut Native, now_ms: i64) -> Option<Vec<Rect>> {
+    native
+        .render(native_key(now_ms), &[])
+        .expect("render of a valid track")
+}
+
+/// The pixel rows holding any ink, as `(first, last)` bands of consecutive rows, and the columns
+/// the ink spans.
+struct Ink {
+    bands: Vec<(i32, i32)>,
+    left: i32,
+    right: i32,
+}
+
+fn ink(rects: &[Rect]) -> Ink {
+    let mut rows = std::collections::BTreeSet::new();
+    let (mut left, mut right) = (i32::MAX, i32::MIN);
+    for rect in rects {
+        for y in 0..rect.height {
+            for x in 0..rect.width {
+                if rect.rgba[((y * rect.width + x) * 4 + 3) as usize] > 8 {
+                    rows.insert(rect.y + y);
+                    left = left.min(rect.x + x);
+                    right = right.max(rect.x + x + 1);
+                }
+            }
+        }
+    }
+    let mut bands: Vec<(i32, i32)> = Vec::new();
+    for y in rows {
+        match bands.last_mut() {
+            Some((_, last)) if *last + 1 == y => *last = y,
+            _ => bands.push((y, y)),
+        }
+    }
+    Ink { bands, left, right }
+}
+
+const FACE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/ass-faces");
+
+/// The 14 committed one-glyph faces of the family `PlxFaces` (`tests/fixtures/make_ass_faces.py`).
+fn fixture_faces(count: usize) -> Vec<Font> {
+    (0..count)
+        .map(|i| Font {
+            name: format!("face-{i:02}.ttf"),
+            data: std::fs::read(format!("{FACE_DIR}/face-{i:02}.ttf"))
+                .expect("committed fixture face")
+                .into(),
+        })
+        .collect()
+}
+
+/// A script in the `PlxFaces` family: a 320x180 canvas, 100 px type, top-left, no margins.
+fn faces_script(lines: &str) -> String {
+    HEADER.replace("Style: Default,Inter,24", "Style: Default,PlxFaces,100") + lines
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_the_facade_is_abi_three() {
+    assert!(native_ass::load(Some(asset_dir())).ok());
+    assert_eq!(unsafe { plx_ass_abi_version() }, 3);
+    assert_eq!(NATIVE_ABI, 3);
+}
+
+/// The bundled libass was built without libunibreak until the ABI 3 bump, so a CJK line with no
+/// space could not wrap at all: it ran off the edge of the frame.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_long_cjk_line_wraps_inside_the_margins_with_unicode_line_breaking() {
+    let cue = format!(
+        "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,20,20,0,,{{\\an7\\pos(20,10)}}{}\n",
+        "中".repeat(30)
+    );
+    let text = format!("{HEADER}{cue}");
+
+    let mut plain = native_with(&[], &text);
+    let unwrapped = ink(&native_frame(&mut plain, 100).expect("first frame"));
+    assert_eq!(unwrapped.bands.len(), 1, "without the rules one CJK line stays one line");
+    assert!(unwrapped.right > 300, "and runs past the right margin: {}", unwrapped.right);
+
+    let mut wrapping = native_with(&[], &text);
+    assert!(wrapping.set_wrap_unicode(true), "the bundled libass has libunibreak");
+    let wrapped = ink(&native_frame(&mut wrapping, 100).expect("first frame"));
+    assert!(wrapped.bands.len() >= 2, "a 30-glyph line wraps: {:?}", wrapped.bands);
+    assert!(wrapped.left >= 20 - 1, "inside the left margin: {}", wrapped.left);
+    assert!(wrapped.right <= 300 + 1, "inside the right margin: {}", wrapped.right);
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_line_spacing_changes_the_line_pitch_by_exactly_its_value() {
+    let cue = "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(10,10)}\u{e000}\\N\u{e000}\n";
+    let text = faces_script(cue);
+    let pitch = |spacing: f64| {
+        let mut native = native_with(&fixture_faces(1), &text);
+        assert!(native.set_line_spacing(spacing));
+        let bands = ink(&native_frame(&mut native, 100).expect("first frame")).bands;
+        assert_eq!(bands.len(), 2, "two lines at spacing {spacing}: {bands:?}");
+        bands[1].0 - bands[0].0
+    };
+    let base = pitch(0.0);
+    assert_eq!(base, 100, "one line is one em when nothing is added");
+    assert_eq!(pitch(-3.5) - base, -4, "-3.5 px tightens the pitch (rounded to the grid)");
+    assert_eq!(pitch(10.0) - base, 10);
+    let mut native = native_with(&[], &text);
+    assert!(!native.set_line_spacing(f64::NAN), "a non-finite spacing is refused");
+    assert!(!native.set_line_spacing(1e6), "so is one beyond the bound");
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_cache_limits_are_validated() {
+    let native = native_with(&[], &script_text("Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,x\n"));
+    unsafe {
+        assert_eq!(plx_ass_set_cache_limits(native.0, 400, 12), 0);
+        assert_eq!(plx_ass_set_cache_limits(native.0, 0, 12), -1);
+        assert_eq!(plx_ass_set_cache_limits(native.0, 400, 0), -1);
+        assert_eq!(plx_ass_set_cache_limits(std::ptr::null_mut(), 400, 12), -1);
+    }
+}
+
+fn script_text(lines: &str) -> String {
+    format!("{HEADER}{lines}")
+}
+
+/// A track replaced in place keeps every face the renderer opened: `ass_set_fonts` (which reopens
+/// every font in memory) runs once per renderer, and the frame after a replace is a full frame
+/// even when libass would call it unchanged.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_replace_track_keeps_the_fonts_and_the_next_frame_is_never_unchanged() {
+    let one = faces_script("Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(10,10)}\u{e000}\n");
+    let mut native = native_with(&fixture_faces(2), &one);
+    let before = native.stats();
+    assert_eq!((before.font_scans, before.tracks), (1, 1));
+    assert_eq!(before.library_fonts, 5, "three bundled faces and the two fixtures");
+    let first = native_frame(&mut native, 100).expect("first frame");
+    assert_eq!(ink(&first).bands.len(), 1);
+    assert!(native_frame(&mut native, 100).is_none(), "the same instant is unchanged");
+
+    // The same text replaced in place: the frame is new, never "unchanged".
+    native.replace_track(one.as_bytes(), 1).expect("replace");
+    let again = native_frame(&mut native, 100).expect("a replaced track starts with a full frame");
+    assert_eq!(again, first, "and it is the same picture");
+    // A different track at the same instant shows its own events.
+    let other = faces_script("Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(10,10)}\u{e001}\n");
+    native.replace_track(other.as_bytes(), 1).expect("replace");
+    let second = native_frame(&mut native, 100).expect("full frame");
+    assert_ne!(second, first, "the second face's square is bigger");
+    // An empty replaced track clears the picture rather than leaving the old one.
+    let none = faces_script("Dialogue: 0,0:00:10.00,0:00:12.00,Default,,0,0,0,,x\n");
+    native.replace_track(none.as_bytes(), 1).expect("replace");
+    assert_eq!(native_frame(&mut native, 100), Some(Vec::new()));
+
+    let after = native.stats();
+    assert_eq!(after.font_scans, 1, "no face was reopened by a replace");
+    assert_eq!(after.tracks, 4);
+    assert_eq!(after.library_fonts, before.library_fonts);
+    assert!(native.replace_track(b"not a script", 1).is_err());
+}
+
+/// ASS `[Fonts]` encoding: 3 bytes to 4 characters of `6 bits + 33`, 80 characters a line.
+fn ass_font_section(name: &str, data: &[u8]) -> String {
+    let mut encoded = String::new();
+    for chunk in data.chunks(3) {
+        let mut word = [0u8; 3];
+        word[..chunk.len()].copy_from_slice(chunk);
+        let six = [
+            word[0] >> 2,
+            (word[0] & 3) << 4 | word[1] >> 4,
+            (word[1] & 15) << 2 | word[2] >> 6,
+            word[2] & 63,
+        ];
+        encoded.extend(six[..chunk.len() + 1].iter().map(|&v| char::from(v + 33)));
+    }
+    let lines: Vec<&str> = encoded
+        .as_bytes()
+        .chunks(80)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect();
+    format!("[Fonts]\nfontname: {name}\n{}\n\n", lines.join("\n"))
+}
+
+/// A sidecar script with an embedded font and `events` one-second signs, each a different glyph's
+/// worth of text at its own second.
+fn font_script(font_name: &str, face: usize, events: usize) -> Arc<Source> {
+    let data = std::fs::read(format!("{FACE_DIR}/face-{face:02}.ttf")).unwrap();
+    let (styles, events_section) = HEADER.split_once("[Events]").unwrap();
+    let mut text = styles.replace("Style: Default,Inter,24", "Style: Default,PlxFaces,100");
+    text.push_str(&ass_font_section(font_name, &data));
+    text.push_str("[Events]");
+    text.push_str(events_section);
+    let t = |ms: i64| format!("{}:{:02}:{:02}.{:02}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, ms % 1000 / 10);
+    for i in 0..events as i64 {
+        text.push_str(&format!(
+            "Dialogue: 0,{},{},Default,,0,0,0,,{{\\an7\\pos(10,10)}}{}\n",
+            t(i * 1000),
+            t(i * 1000 + 900),
+            char::from_u32(0xE000 + face as u32).unwrap()
+        ));
+    }
+    Arc::new(Source {
+        id: next_source_id(),
+        revision: 1,
+        content: Content::Script { bytes: text.into_bytes().into(), fonts: Arc::from([]) },
+    })
+}
+
+/// Every window of a long script repeats the script's `[Fonts]`. On the reused renderer each slide
+/// would add another copy of the font to the library for nothing, because the faces are only read
+/// when a renderer first loads.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_fifty_slides_of_a_script_with_embedded_fonts_keep_the_font_count_flat() {
+    let source = font_script("slide.ttf", 3, 20_000);
+    let mut engine = Engine::default();
+    let first = render(&mut engine, &source, 100);
+    assert_eq!(ink(&first.rects).bands.len(), 1, "the embedded face draws its square");
+    let opened = engine.native.as_ref().unwrap().stats();
+    assert_eq!(opened.library_fonts, 4, "three bundled faces and the one from [Fonts]");
+    for i in 0..50 {
+        // Far apart, so every render leaves the window the last one fed.
+        let now = if i % 2 == 0 { 19_000_100 } else { 100 };
+        let frame = render(&mut engine, &source, now);
+        assert_eq!(ink(&frame.rects).bands.len(), 1, "slide {i}: the font still renders");
+    }
+    let slid = engine.native.as_ref().unwrap().stats();
+    assert_eq!(slid.library_fonts, opened.library_fonts, "no font was added by a slide");
+    assert_eq!(slid.font_scans, 1, "and no face was reopened");
+    assert!(slid.tracks > 40, "the slides did replace the track: {}", slid.tracks);
+}
+
+/// A switch between two authored scripts, each with its own `[Fonts]`, is a new renderer, and the
+/// second script's font renders.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_a_switch_between_authored_scripts_with_different_fonts_opens_one_new_renderer() {
+    let a = font_script("a.ttf", 5, 4);
+    let b = font_script("b.ttf", 9, 4);
+    let mut engine = Engine::default();
+    let frame = render(&mut engine, &a, 100);
+    let a_ink = ink(&frame.rects);
+    assert_eq!(a_ink.bands.len(), 1);
+    let opened = engine.native.as_ref().unwrap().stats();
+    let frame = render(&mut engine, &b, 100);
+    let b_ink = ink(&frame.rects);
+    assert_eq!(b_ink.bands.len(), 1, "script B's own face renders");
+    assert_ne!(
+        b_ink.bands[0].1 - b_ink.bands[0].0,
+        a_ink.bands[0].1 - a_ink.bands[0].0,
+        "and it is B's face (a bigger square), not A's"
+    );
+    let switched = engine.native.as_ref().unwrap().stats();
+    assert_eq!(
+        (switched.font_scans, switched.tracks, switched.library_fonts),
+        (1, 1, opened.library_fonts),
+        "the new renderer scanned its fonts once, for B alone"
+    );
+}
+
+/// libass fixes one font at 10 faces upstream; the bundled build grows the arrays. 14 faces of one
+/// family, one glyph each, on one renderer, one cue per glyph: every glyph must draw. On unpatched
+/// 0.17.5 the 11th glyph onward found no room for its face and drew `.notdef`, which is empty here.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_fourteen_faces_of_one_family_all_render() {
+    let mut cues = String::new();
+    for i in 0..14u32 {
+        cues.push_str(&format!(
+            "Dialogue: 0,0:00:{:02}.00,0:00:{:02}.00,Default,,0,0,0,,{{\\an7\\pos(10,10)}}{}\n",
+            i,
+            i + 1,
+            char::from_u32(0xE000 + i).unwrap()
+        ));
+    }
+    let mut native = native_with(&fixture_faces(14), &faces_script(&cues));
+    for i in 0..14i32 {
+        let rects = native_frame(&mut native, i64::from(i) * 1000 + 500).expect("a new cue");
+        let drawn = ink(&rects);
+        assert_eq!(drawn.bands.len(), 1, "glyph {i} drew nothing (.notdef)");
+        let side = (400 + 20 * i) * 100 / 1000;
+        let (top, bottom) = drawn.bands[0];
+        assert!(
+            (bottom - top + 1 - side).abs() <= 2 && (drawn.right - drawn.left - side).abs() <= 2,
+            "glyph {i}: the square of face {i} ({side} px), got {}x{}",
+            drawn.right - drawn.left,
+            bottom - top + 1
+        );
+    }
+    // Back to the first: the faces stay for the renderer's lifetime.
+    assert_eq!(ink(&native_frame(&mut native, 500).unwrap()).bands.len(), 1);
+}
