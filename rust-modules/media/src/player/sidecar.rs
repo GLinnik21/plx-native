@@ -554,7 +554,6 @@ fn index_srt(text: &str) -> Vec<Span> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::text_ass::timestamp;
     use std::sync::atomic::Ordering::Relaxed;
 
     fn finish_download() {
@@ -868,17 +867,6 @@ mod tests {
         assert_eq!(at(601 * S), Some("c"));
         assert_eq!(at(S + S / 2), Some("a"), "…and back again after a backward seek");
         assert_eq!(at(3 * S), Some("b"), "an end time is exclusive");
-    }
-
-    #[test]
-    fn timestamps_accept_both_separators_and_refuse_nonsense() {
-        assert_eq!(timestamp("00:00:01,000"), Some(S));
-        assert_eq!(timestamp("00:01.5"), Some(S + S / 2));
-        assert_eq!(timestamp("1:02:03.250"), Some(3723 * S + S / 4));
-        assert_eq!(timestamp("12"), None, "a bare counter line is not a time");
-        assert_eq!(timestamp("a:b:c"), None);
-        assert_eq!(timestamp("1:2:3:4"), None);
-        assert_eq!(timestamp("-1:00:00,000"), None);
     }
 
     /// Issue #266 I6: the route withholds the audio enhancement exactly when this restore would

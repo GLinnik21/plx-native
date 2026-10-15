@@ -66,7 +66,9 @@ fn edges_are_trimmed_and_empty_lines_collapse() {
         assert_eq!(convert(empty, TextDialect::Srt), None, "{empty:?}");
         assert_eq!(convert(empty, TextDialect::Plain), None, "{empty:?}");
     }
-    assert_eq!(plain("\\h").as_str(), "\\h", "a hard space is visible");
+    assert_eq!(plain("\\h").as_str(), "\\h", "a whole cue of one hard space stays an event");
+    assert_eq!(plain("a\\N\\h\\Nb"), "a\\Nb", "a line of only hard spaces is an empty line");
+    assert_eq!(plain("a\\hb"), "a\\hb", "an interior hard space is kept");
 }
 
 #[test]
@@ -222,6 +224,7 @@ fn microdvd_and_mpl2_pipes_and_italics() {
         ("one|two", "one\\Ntwo"),
         ("{y:i}text", "{\\i1}text"),
         ("{Y:i}a|b", "{\\i1}a\\Nb"),
+        ("{y:i}a|b", "{\\i1}a{\\i0}\\Nb"),
         ("{y:b}x", "x"),
         ("{c:$0000FF}x", "x"),
         ("{f:Arial}{s:20}x", "x"),
@@ -322,6 +325,21 @@ fn what_libass_reads_is_what_the_cue_said() {
                 want.pop();
             }
             want.dedup_by(|a, b| *a == BREAK && *b == BREAK);
+            // A hard space at a line's edge is edge whitespace; a cue of nothing else is one event.
+            let had_nbsp = want.contains(&'\u{a0}');
+            let lines: Vec<Vec<char>> = want
+                .split(|&c| c == BREAK)
+                .map(|l| {
+                    let a = l.iter().position(|&c| c != '\u{a0}').unwrap_or(l.len());
+                    let b = l.iter().rposition(|&c| c != '\u{a0}').map_or(a, |k| k + 1);
+                    l[a..b].to_vec()
+                })
+                .filter(|l| !l.is_empty())
+                .collect();
+            want = lines.join(&BREAK);
+            if want.is_empty() && had_nbsp {
+                want = vec!['\u{a0}'];
+            }
             let got = convert(&input, TextDialect::Plain);
             if want.is_empty() {
                 assert_eq!(got, None, "{input:?}");
@@ -491,7 +509,7 @@ fn event_payload_is_a_matroska_packet() {
 // ---- newest wins ------------------------------------------------------------------------------
 
 fn cue(start: i64, end: i64, class: AlignClass) -> ClipCue {
-    ClipCue { start, end, class }
+    ClipCue { start, end, class, seq: 0 }
 }
 
 #[test]
@@ -544,6 +562,16 @@ fn clip_takes_cues_in_any_order_and_answers_in_input_order() {
     assert_eq!(got, [Some((3000, 7000)), Some((0, 1000)), Some((1000, 1500))]);
 }
 
+#[test]
+fn clip_ties_follow_seq_not_slice_position() {
+    // A map keyed (start, end) hands the newer, shorter cue first; `seq` still says which arrived last.
+    let b = AlignClass::Bottom;
+    let old = ClipCue { start: 0, end: 3000, class: b, seq: 1 };
+    let new = ClipCue { start: 0, end: 2000, class: b, seq: 2 };
+    assert_eq!(clip_newest_wins(&[new, old]), [Some((0, 2000)), None]);
+    assert_eq!(clip_newest_wins(&[old, new]), [None, Some((0, 2000))]);
+}
+
 // ---- files ------------------------------------------------------------------------------------
 
 #[test]
@@ -557,6 +585,11 @@ fn timing_lines_and_timestamps() {
     assert_eq!(timing_line_settings("00:01.000 --> 00:02.000"), Some((S, 2 * S, "")));
     assert_eq!(timestamp("1:02:03.250"), Some(3723 * S + S / 4));
     assert_eq!(timestamp("12"), None);
+    assert_eq!(timestamp("00:00:01,000"), Some(S));
+    assert_eq!(timestamp("00:01.5"), Some(S + S / 2));
+    assert_eq!(timestamp("a:b:c"), None);
+    assert_eq!(timestamp("1:2:3:4"), None);
+    assert_eq!(timestamp("-1:00:00,000"), None);
 }
 
 #[test]

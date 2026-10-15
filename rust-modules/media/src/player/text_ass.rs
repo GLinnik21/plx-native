@@ -178,6 +178,8 @@ struct Parser {
     line_start: bool,
     /// An MPL2 line that began with `/` is italic until its end.
     mpl2_italic: bool,
+    /// MicroDVD `{y:i}`: italic to the end of this line (uppercase `{Y:i}` covers the cue).
+    line_italic: bool,
 }
 
 impl Parser {
@@ -188,6 +190,7 @@ impl Parser {
             in_rt: false,
             line_start: true,
             mpl2_italic: false,
+            line_italic: false,
         };
         let chars: Vec<char> = text.chars().collect();
         let mut i = 0;
@@ -268,8 +271,9 @@ impl Parser {
     }
 
     fn line_break(&mut self) {
-        if self.mpl2_italic {
+        if self.mpl2_italic || self.line_italic {
             self.mpl2_italic = false;
+            self.line_italic = false;
             self.push(Piece::Tag("\\i0".into()));
         }
         self.push(Piece::Break);
@@ -284,6 +288,7 @@ impl Parser {
         if self.dialect == TextDialect::MicroDvd {
             if let Some(rest) = inner.strip_prefix("y:").or_else(|| inner.strip_prefix("Y:")) {
                 if rest.contains(['i', 'I']) {
+                    self.line_italic = inner.starts_with('y');
                     self.push(Piece::Tag("\\i1".into()));
                 }
                 return;
@@ -444,10 +449,15 @@ fn normalize(pieces: Vec<Piece>) -> Option<Vec<Piece>> {
     let mut pending_break = false;
     let mut line_visible = false;
     let mut any_visible = false;
+    let mut any_nbsp = false;
     for piece in pieces {
         match piece {
             Piece::Tag(_) => deferred.push(piece),
             Piece::Ch(c) if c.is_whitespace() => deferred.push(piece),
+            Piece::Nbsp => {
+                any_nbsp = true;
+                deferred.push(piece);
+            }
             Piece::Break => {
                 if line_visible {
                     // The tags that came before the break belong to the line it ends.
@@ -473,7 +483,12 @@ fn normalize(pieces: Vec<Piece>) -> Option<Vec<Piece>> {
             }
         }
     }
-    any_visible.then_some(out)
+    if any_visible {
+        Some(out)
+    } else {
+        // A cue that is only hard spaces is still an event (SAMI's `&nbsp;` clear packets).
+        any_nbsp.then(|| vec![Piece::Nbsp])
+    }
 }
 
 /// Pieces to ASS text. A literal backslash that would form an escape with what follows it (`N`,
@@ -559,6 +574,10 @@ pub struct ClipCue {
     pub start: i64,
     pub end: i64,
     pub class: AlignClass,
+    /// Arrival order (a Matroska ReadOrder, a sidecar's file index). Cues with one start are
+    /// ordered by it, never by their place in the slice, so a caller may build the slice from a
+    /// map ordered by end time and still get the newest cue.
+    pub seq: u32,
 }
 
 /// The newest-wins view of a set of cues (D10): each cue's end is clipped to the start of the next
@@ -568,11 +587,11 @@ pub struct ClipCue {
 ///
 /// The result has one entry per input cue, in input order: the clipped `(start, end)`, or `None`
 /// for a cue that is dropped, never emitted, because its clipped duration is not positive (two
-/// cues with one start: the later one in `cues` is the newer and wins) or it had none to begin
-/// with. `cues` may be in any order; equal starts are ordered by position.
+/// cues with one start: the one with the higher `seq` is the newer and wins) or it had none to begin
+/// with. `cues` may be in any order; equal starts are ordered by `seq`.
 pub fn clip_newest_wins(cues: &[ClipCue]) -> Vec<Option<(i64, i64)>> {
     let mut order: Vec<usize> = (0..cues.len()).filter(|&i| cues[i].end > cues[i].start).collect();
-    order.sort_by_key(|&i| (cues[i].start, i));
+    order.sort_by_key(|&i| (cues[i].start, cues[i].seq, i));
     let mut next_start: [Option<i64>; 3] = [None; 3];
     let slot = |c: AlignClass| match c {
         AlignClass::Bottom => 0,
@@ -730,7 +749,7 @@ fn script_from(text: &str, dialect: TextDialect) -> TextScript {
         let Some(c) = convert_aligned(&cue.text, dialect, top.then_some(8)) else {
             continue;
         };
-        cues.push(ClipCue { start: cue.start_ns, end: cue.end_ns, class: c.class() });
+        cues.push(ClipCue { start: cue.start_ns, end: cue.end_ns, class: c.class(), seq: cues.len() as u32 });
         converted.push(c);
     }
     let clipped = clip_newest_wins(&cues);
