@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T10:06:04Z",
+ "generated": "2026-10-15T10:07:40Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -7.8,
+   "change7_pct": -8.1,
    "d30": null,
    "delta30": null,
-   "delta7": -33,
+   "delta7": -34.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 107,
+   "n_now": 108,
    "n_prev": 129,
-   "now": 388,
+   "now": 387.0,
    "prev7": 421,
    "shown": true,
    "state": "flat",
@@ -291,14 +291,14 @@
    "change7_pct": -9.6,
    "d30": null,
    "delta30": null,
-   "delta7": -23.0,
+   "delta7": -23,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 96,
+   "n_now": 97,
    "n_prev": 111,
-   "now": 217.0,
+   "now": 217,
    "prev7": 240,
    "shown": true,
    "state": "flat",
@@ -312,14 +312,14 @@
    "change7_pct": -63.7,
    "d30": null,
    "delta30": null,
-   "delta7": -326.0,
+   "delta7": -326,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 96,
+   "n_now": 97,
    "n_prev": 111,
-   "now": 186.0,
+   "now": 186,
    "prev7": 512,
    "shown": true,
    "state": "better",
@@ -375,14 +375,14 @@
    "change7_pct": -11.9,
    "d30": null,
    "delta30": null,
-   "delta7": -19.0,
+   "delta7": -19,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 96,
+   "n_now": 97,
    "n_prev": 63,
-   "now": 140.0,
+   "now": 140,
    "prev7": 159,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 96,
+   "n_now": 97,
    "n_prev": 111,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 51.4,
    "commits": [
     {
-     "pr": 729,
-     "sha": "5927b6bf8",
-     "title": "libass 5b: native goldens for the synthesized text style; MarginV trimmed to today's ink baseline"
-    },
-    {
      "pr": 730,
      "sha": "d06116593",
      "title": "libass 7a: embedded text subtitle tracks render through libass"
@@ -615,6 +610,11 @@
      "pr": 731,
      "sha": "4332cb40c",
      "title": "View state 6: Facts and Offset reach Search, Person, Collection and Detail's Related and collection tiles"
+    },
+    {
+     "pr": 733,
+     "sha": "b2b329c97",
+     "title": "View state: parent rows in the read-back (season and show facts)"
     }
    ],
    "from": 220,
@@ -628,11 +628,6 @@
    "change_pct": 20.6,
    "commits": [
     {
-     "pr": 729,
-     "sha": "5927b6bf8",
-     "title": "libass 5b: native goldens for the synthesized text style; MarginV trimmed to today's ink baseline"
-    },
-    {
      "pr": 730,
      "sha": "d06116593",
      "title": "libass 7a: embedded text subtitle tracks render through libass"
@@ -676,6 +671,11 @@
      "pr": 731,
      "sha": "4332cb40c",
      "title": "View state 6: Facts and Offset reach Search, Person, Collection and Detail's Related and collection tiles"
+    },
+    {
+     "pr": 733,
+     "sha": "b2b329c97",
+     "title": "View state: parent rows in the read-back (season and show facts)"
     }
    ],
    "from": 277,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 217.0
+   "now": 217
   }
  ],
  "slowest_local": [
