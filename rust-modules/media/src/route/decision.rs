@@ -9180,9 +9180,46 @@ pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
 /// a direct play nor a codec-preserving remux: a fixed rung or HLS is still on screen, or the
 /// server is re-encoding the video (a burned subtitle, a forced fallback). Built on the same
 /// `quality()` fact [`facts`] hands the Audio note, so a Quality read-out that uses it can never
-/// disagree with that note. No caller yet: the Quality row's design is pending.
+/// disagree with that note.
 pub fn original_is_converted(ps: &PlaybackSession) -> bool {
     quality() == Quality::Original && live_family(ps) == RouteFamily::Other
+}
+
+/// What the Quality row reads after the picked choice ("Auto · 720p", "Original · Converted").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PlayingQuality {
+    /// The stream has not resolved, or a switch is pending: the row shows the choice alone.
+    Unsettled,
+    /// The original picture plays (a direct play, or a remux that keeps the video).
+    Original,
+    /// Original is picked but the server is converting the picture ([`original_is_converted`]).
+    Converted,
+    /// Auto (or a fixed rung) is on a converted stream at this picture height, in lines.
+    Rung(i64),
+}
+
+/// **What is actually playing, for the Quality row.** Read when the popover opens or rebuilds,
+/// never while it is on screen. Settled means no start, switch or user edit is in flight.
+pub fn playing_quality(ps: &PlaybackSession) -> PlayingQuality {
+    let settled = {
+        let c = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+        matches!(c.phase, ControlPhase::Idle | ControlPhase::Stable)
+            && c.pending_user.is_none()
+            && c.pending_auto.is_none()
+    };
+    if !settled {
+        return PlayingQuality::Unsettled;
+    }
+    if live_family(ps) != RouteFamily::Other {
+        return PlayingQuality::Original;
+    }
+    if original_is_converted(ps) {
+        return PlayingQuality::Converted;
+    }
+    match ps.cur_contract.ceiling {
+        Some(c) if c.max_h > 0 => PlayingQuality::Rung(c.max_h),
+        _ => PlayingQuality::Unsettled,
+    }
 }
 
 /// What the picked subtitle does to the route: nothing, a sidecar the client draws itself, or an
@@ -10069,6 +10106,8 @@ pub struct EnhTestFixture {
     pub quality: Quality,
     /// Why `base_present: false` is so (see [`OriginalDeclined`]); `None` = a fixed rung.
     pub declined: Option<OriginalDeclined>,
+    /// The ladder rung an Auto stream is converting to (`cur_contract.ceiling`).
+    pub rung: Option<crate::abr::Rung>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -10091,6 +10130,7 @@ impl Default for EnhTestFixture {
             memory_note: false,
             quality: Quality::Original,
             declined: None,
+            rung: None,
         }
     }
 }
@@ -10144,7 +10184,7 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
         remux: matches!(route.remux, Some(true)) && !(route.applied_burn && route.applied.any()),
         delivery: plx_plex::plex::TranscodeDelivery::ProgressiveMkv,
         no_video_copy: false,
-        ceiling: None,
+        ceiling: route.rung.map(|r| r.ceiling()),
         audio: route.applied,
     };
     ps.tsession = if route.remux.is_some() { "enh-menu-test-session".to_owned() } else { String::new() };

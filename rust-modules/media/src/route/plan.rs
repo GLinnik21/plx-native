@@ -677,9 +677,12 @@ pub enum DisabledReason {
     NotOriginalQuality,
     /// Settings > Force Direct Play is on, so the server cannot add the enhancement.
     ForcedDirectPlay,
-    /// Original is in force (or cannot be reached by picking it) but this video cannot be offered
-    /// the enhancement as it plays: a relay link, a video that must be converted, a track pick the
-    /// Original route could not follow. The viewer cannot act on the differences, so one reason.
+    /// Original is picked but the server is converting the video ([`original_is_converted`]
+    /// in the live session): the Quality row reads "Original · Converted" and this note agrees.
+    ServerConverting,
+    /// Original is in force and the route copies the video, but no Original candidate exists to
+    /// decorate (a relay link, a video that had to be converted, a track pick the Original route
+    /// could not follow). The viewer cannot act on the differences, so one reason.
     NotCopyable,
     /// This playback's server already refused or ignored the params once.
     ServerRefused,
@@ -708,9 +711,11 @@ pub(super) fn enhancement_availability(f: &EnhancementFacts, target: RouteFamily
     // The reason is the true one: "only at Original quality" is said ONLY when the quality in
     // force is not Original (a fixed rung, Auto on HLS) — saying it under "Quality: Original"
     // contradicts the Quality row. A missing candidate names why it is missing.
+    let converting = f.quality == Quality::Original && !matches!(target, RouteFamily::Direct | RouteFamily::Remux);
     let unreachable = || {
         Disabled(match f.declined {
             Some(OriginalDeclined::ForcedDirectPlay) => DisabledReason::ForcedDirectPlay,
+            _ if converting => DisabledReason::ServerConverting,
             Some(_) => DisabledReason::NotCopyable,
             None if f.quality != Quality::Original => DisabledReason::NotOriginalQuality,
             None => DisabledReason::NotCopyable,
@@ -723,7 +728,7 @@ pub(super) fn enhancement_availability(f: &EnhancementFacts, target: RouteFamily
         return Disabled(if f.quality != Quality::Original {
             DisabledReason::NotOriginalQuality
         } else {
-            DisabledReason::NotCopyable
+            DisabledReason::ServerConverting
         });
     }
     // I7: an unusable Dolby Vision base layer is never copied at all — nothing to decorate.

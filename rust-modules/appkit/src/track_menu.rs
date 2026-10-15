@@ -1786,6 +1786,7 @@ impl TrackMenuState {
             DisabledReason::DolbyVisionSubtitle => plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_subtitle(),
             DisabledReason::NotOriginalQuality => plx_platform::i18n::msg::widgets_tracks_enh_reason_quality(),
             DisabledReason::ForcedDirectPlay => plx_platform::i18n::msg::widgets_tracks_enh_reason_forced(),
+            DisabledReason::ServerConverting => plx_platform::i18n::msg::widgets_tracks_enh_reason_converting(),
             DisabledReason::NotCopyable => plx_platform::i18n::msg::widgets_tracks_enh_reason_not_copyable(),
             DisabledReason::ServerRefused => plx_platform::i18n::msg::widgets_tracks_enh_reason_refused(),
         }
@@ -3555,7 +3556,6 @@ mod enhancement_menu_tests {
     fn enh_rows_disabled_under_original_never_blames_quality() {
         let _g = plx_base::testlock::serial();
         for fixture in [
-            EnhTestFixture { remux: Some(false), ..Default::default() },
             EnhTestFixture {
                 base_present: false,
                 declined: Some(plx_media::route::OriginalDeclined::Relay),
@@ -3580,6 +3580,19 @@ mod enhancement_menu_tests {
             assert_ne!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_quality());
             teardown(&ps);
         }
+    }
+
+    /// Original picked and the server converting the video: the Quality row reads
+    /// "Original · Converted" and the note agrees (one fact).
+    #[test]
+    fn enh_rows_disabled_while_the_server_converts() {
+        let _g = plx_base::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::ServerConverting));
+        assert!(plx_media::route::original_is_converted(&ps));
+        let note = menu.form.table.sections[1].rows.last().unwrap();
+        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_converting());
+        teardown(&ps);
     }
 
     /// Force Direct Play never computes an `auto_original` candidate; the note names the setting.
@@ -4220,6 +4233,7 @@ mod enhancement_menu_tests {
                 ("enh_reason_dv_unusable", plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_unusable()),
                 ("enh_reason_dv_subtitle", plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_subtitle()),
                 ("enh_reason_quality", plx_platform::i18n::msg::widgets_tracks_enh_reason_quality()),
+                ("enh_reason_converting", plx_platform::i18n::msg::widgets_tracks_enh_reason_converting()),
                 ("enh_reason_forced", plx_platform::i18n::msg::widgets_tracks_enh_reason_forced()),
                 ("enh_reason_not_copyable", plx_platform::i18n::msg::widgets_tracks_enh_reason_not_copyable()),
                 ("enh_reason_refused", plx_platform::i18n::msg::widgets_tracks_enh_reason_refused()),
