@@ -187,13 +187,13 @@ impl BrowseStore {
         self.discover_pump_with_gate(plx_machine::landgate::fixture_gate())
     }
 
-    /// Is a membership re-query's first page still out with no Library page on top to pump it? The
-    /// application pumps this store itself while it holds (`Bridge::reconcile_pump`).
     /// The items the addressed Library page holds (see [`BrowseState::held_keys`]).
     pub fn held_keys(&self, target: SectionAddress) -> super::HeldKeys {
         self.state.held_keys(target)
     }
 
+    /// Is a membership re-query's first page still out with no Library page on top to pump it? The
+    /// application pumps this store itself while it holds (`Bridge::reconcile_pump`).
     pub fn requery_owed(&self) -> bool {
         self.state.requery_owed()
     }
@@ -649,7 +649,8 @@ mod contract_tests {
         let held = browse.held_keys(target);
         let grid: Vec<_> = rks(&held).into_iter().filter(|k| k.parse::<usize>().is_ok_and(|n| (4..=6).contains(&n))).collect();
         assert_eq!(grid, ["4", "5", "6"], "the grid window is items 3..6: {:?}", rks(&held));
-        assert!(held.len() >= shelf_only.len() + 3 - 4, "shelf keys stay held alongside the grid");
+        assert!(shelf_only.iter().all(|k| held.contains(k)), "shelf keys stay held alongside the grid");
+        assert_eq!(held.len(), shelf_only.len() + 3, "the shelves plus the three grid items: {:?}", rks(&held));
         assert!(!rks(&held).contains(&"7".to_string()), "past the window");
         assert!(browse.held_keys(SectionAddress { epoch: target.epoch + 1, ..target }).is_empty(), "a stale address holds nothing");
     }

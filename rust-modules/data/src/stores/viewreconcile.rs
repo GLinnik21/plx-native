@@ -129,6 +129,10 @@ pub struct ViewReconcileStore {
     /// Rows published since the last [`Self::take_landed`]: the application's cue to re-read the
     /// Detail pages that show them.
     landed: Vec<Key>,
+    /// Queued or out for a quiet re-read ([`Self::enqueue_reread`]): when one lands it publishes
+    /// its facts but owes no Detail page ([`Self::owe_page`]). The seasons and shows its answer
+    /// names ride along quiet.
+    quiet: Vec<Key>,
     retry_cd: u32,
     next_id: u64,
     notice_gen: AtomicU32,
@@ -147,6 +151,7 @@ impl Default for ViewReconcileStore {
             candidates: Vec::new(),
             watched_ends: Vec::new(),
             landed: Vec::new(),
+            quiet: Vec::new(),
             retry_cd: 0,
             next_id: 1,
             notice_gen: AtomicU32::new(0),
@@ -182,11 +187,30 @@ impl ViewReconcileStore {
     /// Owe a read of each `(server, ratingKey)`. An item whose read is out is marked dirty instead.
     pub fn enqueue(&mut self, keys: impl IntoIterator<Item = Key>) {
         for key in keys {
+            self.quiet.retain(|k| !plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1)));
             let out = self.flights.iter()
                 .any(|f| f.sid == key.0 && f.keys.iter().any(|k| plx_plex::plex::same_item((f.sid, k), (key.0, &key.1))));
             let list = if out { &mut self.dirty } else { &mut self.pending };
             if !list.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1))) {
                 list.push(key);
+            }
+        }
+    }
+
+    /// Owe a QUIET read of each key (a page re-read, L2-5): its answer is published as facts like
+    /// any other, but owes no Detail page a re-read, so the Detail on screen is not re-fetched for
+    /// the sake of the page under it. A key already queued or out is left to its own owner: a
+    /// quiet ask never downgrades an owing one.
+    pub fn enqueue_reread(&mut self, keys: impl IntoIterator<Item = Key>) {
+        let held = |s: &Self, key: &Key| s.pending.iter().chain(&s.pending_parents).chain(&s.dirty)
+            .any(|k| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1)))
+            || s.flights.iter().any(|f| f.sid == key.0
+                && f.keys.iter().any(|k| plx_plex::plex::same_item((f.sid, k), (key.0, &key.1))));
+        for key in keys {
+            let fresh = !held(self, &key);
+            self.enqueue([key.clone()]);
+            if fresh {
+                self.quiet.push(key);
             }
         }
     }
@@ -231,6 +255,7 @@ impl ViewReconcileStore {
         self.candidates.clear();
         self.watched_ends.clear();
         self.landed.clear();
+        self.quiet.clear();
         self.retry_cd = 0;
         self.bump();
     }
@@ -342,6 +367,11 @@ impl ViewReconcileStore {
                 continue;
             };
             let flight = self.flights.remove(at);
+            // Quiet only for this flight: a later ask for the same key is its own.
+            let quiet: Vec<Key> = flight.keys.iter().map(|k| (flight.sid, k.clone()))
+                .filter(|key| self.quiet.iter().any(|q| plx_plex::plex::same_item((q.0, &q.1), (key.0, &key.1))))
+                .collect();
+            self.quiet.retain(|q| !quiet.contains(q));
             // Everything the user pressed after this read was requested: it describes the server
             // from before those presses.
             let overtaking: Vec<_> = self.ledger.since(flight.stamp).into_iter()
@@ -360,6 +390,7 @@ impl ViewReconcileStore {
                         if overtaking.iter().any(|at| at.covers(&m)) {
                             continue;
                         }
+                        let is_quiet = quiet.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (m.sid, &m.rk)));
                         let is_parent = flight.parents.iter().any(|p| plx_plex::plex::same_item((flight.sid, p), (m.sid, &m.rk)));
                         if !is_parent {
                             // Its season and its show hold counts of their own, which this item's
@@ -371,6 +402,9 @@ impl ViewReconcileStore {
                                 let key = (flight.sid, up);
                                 let queued = |list: &[Key]| list.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1)));
                                 if !queued(&self.pending) && !queued(&self.pending_parents) {
+                                    if is_quiet {
+                                        self.quiet.push(key.clone());
+                                    }
                                     self.pending_parents.push(key);
                                 }
                             }
@@ -383,7 +417,9 @@ impl ViewReconcileStore {
                                 self.watched_ends.push(key);
                             }
                         }
-                        self.owe_page((m.sid, m.rk.clone()));
+                        if !is_quiet {
+                            self.owe_page((m.sid, m.rk.clone()));
+                        }
                         publish(ViewChange {
                             sid: m.sid,
                             rk: m.rk.clone(),

@@ -288,11 +288,18 @@ impl Stores {
 
     /// Owe the read-back of `keys` (what a page holds on screen, see [`HeldKeys`]) to the
     /// reconcile worker. Never a stop: nothing here scrobbles or feeds an end-of-stream decision.
+    /// Quiet: the facts are published but no Detail page is owed a re-read of its own.
     pub fn owe_read_back(&mut self, keys: HeldKeys) {
+        self.reconcile.enqueue_reread(keys);
+    }
+
+    /// Owe the read-back of `keys` the OWING way: each row that lands also owes the Detail pages
+    /// showing it a re-read of their own (`take_landed_views`). The visible Detail's resume.
+    pub fn owe_page_read(&mut self, keys: HeldKeys) {
         self.reconcile.enqueue(keys);
     }
 
-    /// What the Library page now on the current section holds (its shelves in the hold window, the
+        /// What the Library page now on the current section holds (its shelves in the hold window, the
     /// grid rows in the wanted window), or nothing before a listing exists.
     pub fn library_held_keys(&self) -> HeldKeys {
         let mut browse = self.browse.borrow_mut();

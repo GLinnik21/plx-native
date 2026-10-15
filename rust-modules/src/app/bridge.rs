@@ -1258,7 +1258,13 @@ impl Bridge {
         self.stores.owe_read_back(keys);
     }
 
-    /// The items the page for `arg` holds cards for, from the store that feeds it: Library's
+    /// Owe the read-back of a Detail page's own item, which owes the page its in-place re-read
+    /// (`Stores::owe_page_read`).
+    pub(crate) fn owe_page_read(&mut self, keys: plx_data::stores::HeldKeys) {
+        self.stores.owe_page_read(keys);
+    }
+
+        /// The items the page for `arg` holds cards for, from the store that feeds it: Library's
     /// current section, Search's results, and the Person / Filmography / Collection store when it
     /// is showing that very page. Nothing for any other page.
     pub(crate) fn held_keys(&self, arg: &AppArg) -> plx_data::stores::HeldKeys {

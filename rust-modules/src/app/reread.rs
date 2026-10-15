@@ -9,13 +9,15 @@
 //!   ([`Reread::resync`]), is re-read once per cover episode. Uncovering a page starts nothing and
 //!   forgets the episode.
 //! * On foreground ([`Reread::resume`]) the epoch moves, so every covered page follows that rule,
-//!   and the VISIBLE page gets read-back patches only: the keys it holds, never a page re-fetch.
+//!   and the VISIBLE page is read back in place: a list page the keys it holds (patches only), a
+//!   Detail page its own item, which owes it the obligation-only re-read.
 //!
 //! "Re-read" is per page kind ([`action`]): Library, Search, Person, Filmography and Collection
 //! owe the read-back of the keys they hold (`Stores::owe_read_back`, the layer-1 reconcile worker,
 //! never a stop and never an end-of-stream candidate); Home owes one quiet refetch per source
 //! (`HubsCmd::RefetchSourceQuiet`); a Detail page under the top is told `Deferred`, which the page
-//! turns into its own re-read when it owns the Metadata slot again.
+//! turns into its own re-read when it owns the Metadata slot again. The read-backs of a covered
+//! list page are quiet (they publish facts, they owe no Detail page: `enqueue_reread`).
 //!
 //! Time is counted in frames (the wall gate forbids clocks here): [`Reread::step`] is called once
 //! per loop iteration. What is owed is committed as spent only when `allowed`, so a blocked frame
@@ -110,6 +112,9 @@ pub(crate) enum Action {
     ReadBack,
     /// Tell a Detail page under the top to re-read when it owns its slot.
     DetailDeferred,
+    /// The visible Detail page, after a resume: its own item read back, which owes the page its
+    /// in-place re-read (`content::reconcile_details`, obligation only: no focus or scroll move).
+    DetailRead,
     Nothing,
 }
 
@@ -121,6 +126,7 @@ pub(crate) fn action(arg: &AppArg, covered: bool) -> Action {
         AppArg::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. } | ContentArg::Collection(_)) =>
             Action::ReadBack,
         AppArg::Content(ContentArg::Detail { .. }) if covered => Action::DetailDeferred,
+        AppArg::Content(ContentArg::Detail { .. }) => Action::DetailRead,
         _ => Action::Nothing,
     }
 }
@@ -151,6 +157,9 @@ pub(super) fn run(
                     Delivery::Screen(ScreenEvent::App(AppMsg::DetailReconcile {
                         refresh: DetailRefreshPhase::Deferred,
                     }))));
+            },
+            Action::DetailRead => if let AppArg::Content(ContentArg::Detail { sid, rk }) = &arg {
+                bridge.owe_page_read(vec![(*sid, rk.clone())]);
             },
             Action::Nothing => {}
         }
@@ -227,8 +236,8 @@ mod tests {
         assert_eq!(owed, [Owed::Covered(stack[0]), Owed::Visible(stack[1])], "covered follow the rule, top is patched");
         assert!(steps(&mut r, &stack, 5, true).is_empty(), "once");
         assert_eq!(action(&AppArg::Home, false), Action::HomeQuiet, "a visible Home refetches quietly");
-        assert_eq!(action(&detail("x"), false), Action::Nothing,
-            "a visible Detail is never page-re-read by a resume");
+        assert_eq!(action(&detail("x"), false), Action::DetailRead,
+            "a visible Detail is read back in place on resume");
     }
 
     #[test]
@@ -296,6 +305,27 @@ mod tests {
         assert_eq!(keys, ["s1", "s2"], "spent on the first free frame");
         for _ in 0..COVER_FRAMES { run(&mut r, &mut pages, &mut rig); }
         assert_eq!(rig.read_back_pending_for_test().len(), 2, "and not again in the same episode");
+    }
+
+    /// The Detail on top is read back (in place, obligation only) on a resume and not otherwise:
+    /// merely being visible, or uncovered, reads nothing.
+    #[test]
+    fn visible_detail_is_read_back_on_resume_only() {
+        let _g = plx_base::testlock::serial();
+        let (mut pages, mut rig, mut n) = mounted();
+        let mut r = Reread::default();
+        bridge::show_page(&mut pages, AppArg::Search);
+        frame(&mut pages, &mut rig, &mut n);
+        bridge::nav_push(&mut pages, detail("d"));
+        frame(&mut pages, &mut rig, &mut n);
+        rig.hold_network(true); // keep the covered Search's own re-read out of the way
+        for _ in 0..COVER_FRAMES * 2 { run(&mut r, &mut pages, &mut rig); }
+        rig.hold_network(false);
+        assert!(rig.read_back_pending_for_test().is_empty(), "visible and uncovered: nothing is read");
+        r.resume();
+        run(&mut r, &mut pages, &mut rig);
+        let keys: Vec<_> = rig.read_back_pending_for_test().into_iter().map(|(_, k)| k).collect();
+        assert_eq!(keys, ["d"], "the resume reads the visible Detail back");
     }
 
     /// A Detail page under the top is told `Deferred`; the top page is untouched.
