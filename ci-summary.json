@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T13:53:44Z",
+ "generated": "2026-10-15T13:59:02Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 2.0,
+   "change7_pct": 1.5,
    "d30": null,
    "delta30": null,
-   "delta7": 8.0,
+   "delta7": 6.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 116,
+   "n_now": 117,
    "n_prev": 128,
-   "now": 402.0,
+   "now": 400,
    "prev7": 394.0,
    "shown": true,
    "state": "flat",
@@ -291,14 +291,14 @@
    "change7_pct": -7.9,
    "d30": null,
    "delta30": null,
-   "delta7": -19,
+   "delta7": -19.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 107,
+   "n_now": 108,
    "n_prev": 109,
-   "now": 221,
+   "now": 221.0,
    "prev7": 240,
    "shown": true,
    "state": "flat",
@@ -309,17 +309,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -63.4,
+   "change7_pct": -63.3,
    "d30": null,
    "delta30": null,
-   "delta7": -321,
+   "delta7": -320.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 107,
+   "n_now": 108,
    "n_prev": 109,
-   "now": 185,
+   "now": 185.5,
    "prev7": 506,
    "shown": true,
    "state": "better",
@@ -401,9 +401,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 107,
+   "n_now": 108,
    "n_prev": 64,
-   "now": 140,
+   "now": 140.0,
    "prev7": 159.0,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 107,
+   "n_now": 108,
    "n_prev": 109,
-   "now": 17,
+   "now": 17.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 60.8,
    "commits": [
     {
-     "pr": 747,
-     "sha": "a6ce794bd",
-     "title": "net: a streaming HTTPS read for long-lived responses (layer-2 view state 1/6)"
-    },
-    {
      "pr": 737,
      "sha": "bdea64ea3",
      "title": "Cards: animated landings with ghosts from the previous snapshot (10a)"
@@ -615,6 +610,11 @@
      "pr": 750,
      "sha": "62a5ac56d",
      "title": "Player: a reload while paused shows its first frame, and a paused idle player shows no Buffering spinner"
+    },
+    {
+     "pr": 757,
+     "sha": "5dfa6ce49",
+     "title": "base: worker threads carry their names in shipping builds"
     }
    ],
    "from": 219.5,
@@ -628,11 +628,6 @@
    "change_pct": 33.9,
    "commits": [
     {
-     "pr": 747,
-     "sha": "a6ce794bd",
-     "title": "net: a streaming HTTPS read for long-lived responses (layer-2 view state 1/6)"
-    },
-    {
      "pr": 737,
      "sha": "bdea64ea3",
      "title": "Cards: animated landings with ghosts from the previous snapshot (10a)"
@@ -676,6 +671,11 @@
      "pr": 750,
      "sha": "62a5ac56d",
      "title": "Player: a reload while paused shows its first frame, and a paused idle player shows no Buffering spinner"
+    },
+    {
+     "pr": 757,
+     "sha": "5dfa6ce49",
+     "title": "base: worker threads carry their names in shipping builds"
     }
    ],
    "from": 277.0,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 221
+   "now": 221.0
   }
  ],
  "slowest_local": [
