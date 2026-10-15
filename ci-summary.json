@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T05:44:08Z",
+ "generated": "2026-10-15T05:48:35Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -53,9 +53,9 @@
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 102,
+   "n_now": 103,
    "n_prev": 126,
-   "now": 368.0,
+   "now": 368,
    "prev7": 445.5,
    "shown": true,
    "state": "better",
@@ -288,17 +288,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -10.0,
+   "change7_pct": -9.8,
    "d30": null,
    "delta30": null,
-   "delta7": -24.0,
+   "delta7": -23.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 90,
+   "n_now": 91,
    "n_prev": 108,
-   "now": 215.5,
+   "now": 216,
    "prev7": 239.5,
    "shown": true,
    "state": "flat",
@@ -309,17 +309,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -63.9,
+   "change7_pct": -64.0,
    "d30": null,
    "delta30": null,
-   "delta7": -332.0,
+   "delta7": -332.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 90,
+   "n_now": 91,
    "n_prev": 108,
-   "now": 187.5,
+   "now": 187,
    "prev7": 519.5,
    "shown": true,
    "state": "better",
@@ -393,17 +393,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -21.1,
+   "change7_pct": -21.7,
    "d30": null,
    "delta30": null,
-   "delta7": -37.0,
+   "delta7": -38.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 90,
+   "n_now": 91,
    "n_prev": 60,
-   "now": 138.0,
+   "now": 137,
    "prev7": 175.0,
    "shown": true,
    "state": "better",
@@ -487,9 +487,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 90,
+   "n_now": 91,
    "n_prev": 108,
-   "now": 17.0,
+   "now": 17,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 37.7,
    "commits": [
     {
-     "pr": 710,
-     "sha": "7c45da454",
-     "title": "app: re-read Home's hubs after a playback once the stop has landed, not 800 ms later"
-    },
-    {
      "pr": 709,
      "sha": "a8dbad982",
      "title": "Fonts: subset appfont-cjk.ttf to cmap-reachable glyphs so webOS 3/4 FreeType opens it (#628)"
@@ -615,6 +610,11 @@
      "pr": 729,
      "sha": "5927b6bf8",
      "title": "libass 5b: native goldens for the synthesized text style; MarginV trimmed to today's ink baseline"
+    },
+    {
+     "pr": 730,
+     "sha": "d06116593",
+     "title": "libass 7a: embedded text subtitle tracks render through libass"
     }
    ],
    "from": 221.5,
@@ -655,7 +655,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 215.5
+   "now": 216
   }
  ],
  "slowest_local": [
