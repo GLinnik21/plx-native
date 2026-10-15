@@ -394,6 +394,10 @@ pub struct PendingRelease {
     _engine: Engine,
 }
 
+/// Test seam: make [`release_off_frame`] see the OS refuse the `sf-unload` thread.
+#[cfg(test)]
+static FAIL_UNLOAD_SPAWN_FOR_TEST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Start the off-frame release of `epoch`'s object, or release it here when it cannot be handed
 /// off (no dispatchable object, an epoch that no longer owns `Active`, or the OS refusing the
 /// thread). `Some` = the worker is running and the caller must park it with the Engine.
@@ -403,6 +407,13 @@ fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Opt
         return None;
     }
     let ticket = UnloadTicket::issue(mt);
+    #[cfg(test)]
+    let th = if FAIL_UNLOAD_SPAWN_FOR_TEST.load(Ordering::Relaxed) {
+        None
+    } else {
+        plx_base::task::spawn("sf-unload", move || unsafe { sink().unload(&ticket) })
+    };
+    #[cfg(not(test))]
     let th = plx_base::task::spawn("sf-unload", move || unsafe { sink().unload(&ticket) });
     sp.mark("unload_handoff");
     if th.is_none() {
@@ -3087,7 +3098,7 @@ fn feed_stream(mt: &MainThread, eng: &mut Engine) {
         if presentation_probe {
             if (r as u8) == b'O' {
                 if !SHARED.commit_native_presentation_probe(eng.native_epoch, |num| {
-                    super::sf_on_event_inner(0, num, std::ptr::null())
+                    super::sf_on_event_inner(0, num, std::ptr::null(), super::shared::EventScope::Live)
                 }) {
                     log("rebase: native presentation probe lost its epoch after accepted Feed");
                 }
@@ -5164,6 +5175,103 @@ mod off_frame_release_tests {
         pa.finish_release();
         assert!(!pa.has_pending_release(), "finish_release must not return with the Unload running");
         assert_eq!(ready_now(), 0);
+        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
+    }
+
+    #[test]
+    fn the_releases_own_unloadcompleted_does_not_count_into_the_next_sessions_diagnostics() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(50);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.has_pending_release());
+        pa.finish_release();
+        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the release must still D1");
+        assert_eq!(
+            SHARED.dg_cb_count.load(Ordering::Relaxed),
+            0,
+            "the stopped object's UNLOADCOMPLETED (after reset_session) counted into the next session's callback census"
+        );
+        assert_eq!(SHARED.dg_cb_err_at.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn taking_the_token_or_splitting_waits_for_a_running_unload() {
+        for use_split in [false, true] {
+            let mut ps = crate::route::PlaybackSession::IDLE;
+            let _serial = plx_base::testlock::serial();
+            let mut pa = arm(&ps);
+            let _cleanup = Cleanup;
+            playing_engine(&mut pa);
+            crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
+            let started = std::time::Instant::now();
+            stop_bufferfeed(&mut ps, &mut pa);
+            assert!(pa.has_pending_release());
+            if use_split {
+                let _ = pa.split();
+            } else {
+                let _ = pa.mt();
+            }
+            assert!(
+                started.elapsed() >= std::time::Duration::from_millis(UNLOAD_MS),
+                "{} returned while the Unload was still running",
+                if use_split { "split()" } else { "mt()" }
+            );
+            assert!(!pa.has_pending_release(), "nothing may be pending once the token is handed out");
+            assert_eq!(ready_now(), 0);
+            assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
+        }
+    }
+
+    #[test]
+    fn a_refused_unload_thread_unloads_on_the_main_thread_and_still_d1s() {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                FAIL_UNLOAD_SPAWN_FOR_TEST.store(false, Ordering::Relaxed);
+            }
+        }
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let _reset = Reset;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(150);
+        FAIL_UNLOAD_SPAWN_FOR_TEST.store(true, Ordering::Relaxed);
+        let started = std::time::Instant::now();
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(150),
+            "with no thread the Unload must have run synchronously inside the stop"
+        );
+        assert!(!pa.has_pending_release(), "no worker exists, so nothing may be parked");
+        assert_eq!(ready_now(), 0, "the object must be destroyed");
+        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the fallback must end in a D1");
+    }
+
+    #[test]
+    fn an_unloadcompleted_from_the_wrong_epoch_during_the_release_is_not_evidence() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let epoch = playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.has_pending_release());
+        let before = SHARED.dg_cb_count.load(Ordering::Relaxed);
+        super::super::sf_on_event(epoch + 1, 23, 0, std::ptr::null());
+        super::super::sf_on_event(0, 23, 0, std::ptr::null());
+        assert_eq!(SHARED.dg_cb_count.load(Ordering::Relaxed), before, "a wrong-epoch event was processed");
+        assert!(
+            !SHARED.native_unload_completed(epoch),
+            "a wrong-epoch UNLOADCOMPLETED counted as the release's D1 evidence"
+        );
+        pa.finish_release();
         assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
     }
 }

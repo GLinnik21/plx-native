@@ -318,6 +318,13 @@ pub enum NativeEventClass {
     Other,
 }
 
+/// Whose state a native callback may write; see [`Shared::with_native_session_scoped`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventScope {
+    Live,
+    Release,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HlsPauseCompletion {
     Accepted,
@@ -1441,6 +1448,20 @@ impl Shared {
         num: i64,
         event: impl FnOnce() -> R,
     ) -> Option<R> {
+        self.with_native_session_scoped(epoch, class, num, |_| event())
+    }
+
+    /// [`with_native_session`](Self::with_native_session), telling the event whose state it may
+    /// write: [`EventScope::Live`] for the session that owns the process-long diagnostics,
+    /// [`EventScope::Release`] for the lifecycle evidence of an object already handed to a release
+    /// (the main thread reset that state for the NEXT session before this callback arrived).
+    pub fn with_native_session_scoped<R>(
+        &self,
+        epoch: u32,
+        class: NativeEventClass,
+        num: i64,
+        event: impl FnOnce(EventScope) -> R,
+    ) -> Option<R> {
         let mut state = self
             .native_session
             .lock()
@@ -1451,7 +1472,7 @@ impl Shared {
             if epoch == 0 || abandoned != epoch || class != NativeEventClass::UnloadCompleted {
                 return None;
             }
-            let result = event();
+            let result = event(EventScope::Release);
             state.phase = NativeSessionPhase::Unloaded { epoch };
             return Some(result);
         }
@@ -1462,7 +1483,7 @@ impl Shared {
             if epoch == 0 || *releasing != epoch || class != NativeEventClass::UnloadCompleted {
                 return None;
             }
-            let result = event();
+            let result = event(EventScope::Release);
             *unload_completed = true;
             return Some(result);
         }
@@ -1487,7 +1508,7 @@ impl Shared {
                 }
             }
         }
-        let result = event();
+        let result = event(EventScope::Live);
         if class == NativeEventClass::UnloadCompleted {
             state.phase = NativeSessionPhase::Unloaded { epoch };
         }
