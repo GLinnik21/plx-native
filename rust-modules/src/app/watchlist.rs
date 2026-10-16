@@ -307,6 +307,12 @@ impl Bridge {
     pub(crate) fn watchlist_for_test(&mut self) -> &mut plx_data::stores::watchlist::WatchlistStore {
         &mut self.stores.watchlist
     }
+
+    /// The hold window the feed last sent the store.
+    #[cfg(test)]
+    pub(crate) fn watchlist_window_for_test(&self) -> Option<std::ops::Range<usize>> {
+        self.watchlist.window.clone()
+    }
 }
 
 /// Present the Sort & Filter surface (a compact menu hung off the header pill).
