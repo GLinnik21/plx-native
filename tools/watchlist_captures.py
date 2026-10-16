@@ -11,7 +11,9 @@ The ONE capture recipe (the scenario's `comment` repeats it):
   3. arm the capture's `triggers`, boot, wait `boot_wait_s`, send each key through
      `plxnative-remote` (`hold` is okdown, 1.2 s, okup), then `shot`;
      A key `mock:<json>` POSTs <json> to /_mock/discover mid-walk (`{"pms":"fail"}` makes the PMS side
-     answer 503 so a title matched there reads ServerOffline);
+     answer 503: once a library read fails and the list is read again, a title matched there reads
+     ServerOffline); `sleep:<s>` waits <s> seconds; any other key, `ck:<x>,<y>` (a click at logical
+     1920x1080 pixels) included, goes to the FIFO as it is;
      A capture with `unreachable` aims the plex.tv and Discover triggers at a closed loopback port
      AFTER the sign-in, so the stored mock session is the account but the service cannot answer
      (the "plex.tv unreachable" state);
