@@ -293,6 +293,25 @@ pub mod draw_census {
     }
 
     thread_local! {
+        static TEXT: RefCell<Option<Vec<(String, Rect)>>> = const { RefCell::new(None) };
+    }
+    /// A recorded text run: WHAT it says and where (`rect` is the run's anchor and measured width).
+    pub fn note_text(s: String, r: Rect) {
+        TEXT.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push((s, r));
+            }
+        });
+    }
+    /// Every text run a recording painter is handed while `f` runs, as `(string, screen rect)`: the
+    /// census for a test that asks WHICH words a frame drew and where.
+    pub fn capture_text(f: impl FnOnce()) -> Vec<(String, Rect)> {
+        TEXT.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        TEXT.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
+    thread_local! {
         static TEX: RefCell<Option<Vec<(u32, Rect, f32)>>> = const { RefCell::new(None) };
     }
     /// A recorded textured quad: WHICH texture, where, at what cascaded alpha.
@@ -1457,6 +1476,13 @@ impl Painter {
     ) -> f32 {
         if frame::backdrop::discovering() {
             let (width,height)=declared_text_bounds(s,sz,bold);
+            #[cfg(any(test, feature = "test-support"))]
+            if !s.is_null() {
+                draw_census::note_text(
+                    unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned(),
+                    self.place(Rect::new(match align { 1 => x-width*0.5, 2 => x-width, _ => x },y,width,height)),
+                );
+            }
             self.declare(Rect::new(match align { 1 => x-width*0.5, 2 => x-width, _ => x },y,width,height),100,|data| {
                 use frame::backdrop::Value;
                 frame::backdrop::text_value(s,data);
@@ -1471,7 +1497,11 @@ impl Painter {
             plx_gfx::text::queue_prewarm(s, sz, bold);
             let w = recorded_text_width(s, sz, bold);
             #[cfg(any(test, feature = "test-support"))]
-            draw_census::note(100, self.place(Rect::new(x, y, w, 0.0)));
+            {
+                let at = self.place(Rect::new(x, y, w, 0.0));
+                draw_census::note(100, at);
+                draw_census::note_text(unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned(), at);
+            }
             return w;
         }
         let c = self.c(col);

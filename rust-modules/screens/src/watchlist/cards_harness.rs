@@ -127,6 +127,25 @@ impl Harness {
         sources
     }
 
+    /// Every text run the page's draw declares, as `(string, screen rect)` (`plx_ui::draw_census::capture_text`).
+    pub(crate) fn draw_texts(&mut self) -> Vec<(String, Rect)> {
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_gfx::gfx::backdrop::Sources::default()));
+        let cx = Cx {
+            views: (),
+            tick: Tick { ms: self.ms, dt_us: 16_667 },
+            measure: &FixtureMeasure,
+            press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
+            focus: FocusRead { current: self.focus, ..Default::default() },
+            owner: InputOwner::Entry(ENTRY),
+        };
+        let screen = &mut self.screen;
+        plx_ui::draw_census::capture_text(|| {
+            let _discovery = plx_ui::frame::backdrop::discover(sources.clone());
+            let mut f = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+            Screen::<WatchHost>::draw(screen, &mut f);
+        })
+    }
+
     /// Every primitive the page's draw declares, as `(tag, screen rect)` (`plx_ui::draw_census`),
     /// drawn with `lifted` as the element a surface over the page has lifted out of it
     /// (`DrawFrame::lifted`, the dispatcher's `lifted_opener`).
