@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-16T00:10:51Z",
+ "generated": "2026-10-16T00:11:31Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -66,17 +66,17 @@
   },
   {
    "change30_pct": -58.6,
-   "change7_pct": 16.2,
+   "change7_pct": 16.0,
    "d30": 998,
-   "delta30": -584.5,
-   "delta7": 57.5,
+   "delta30": -585,
+   "delta7": 57,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 122,
+   "n_now": 123,
    "n_prev": 123,
-   "now": 413.5,
+   "now": 413,
    "prev7": 356,
    "shown": true,
    "state": "flat",
@@ -290,15 +290,15 @@
    "change30_pct": 128.3,
    "change7_pct": -3.8,
    "d30": 99,
-   "delta30": 127,
-   "delta7": -9,
+   "delta30": 127.0,
+   "delta7": -9.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 115,
+   "n_now": 116,
    "n_prev": 107,
-   "now": 226,
+   "now": 226.0,
    "prev7": 235,
    "shown": true,
    "state": "flat",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 148.6,
-   "change7_pct": -56.7,
+   "change30_pct": 149.3,
+   "change7_pct": -56.6,
    "d30": 74,
-   "delta30": 110,
-   "delta7": -241,
+   "delta30": 110.5,
+   "delta7": -240.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 115,
+   "n_now": 116,
    "n_prev": 107,
-   "now": 184,
+   "now": 184.5,
    "prev7": 425,
    "shown": true,
    "state": "better",
@@ -372,17 +372,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -7.0,
+   "change7_pct": -6.7,
    "d30": null,
    "delta30": null,
-   "delta7": -11.0,
+   "delta7": -10.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 115,
+   "n_now": 116,
    "n_prev": 74,
-   "now": 146,
+   "now": 146.5,
    "prev7": 157.0,
    "shown": true,
    "state": "flat",
@@ -481,15 +481,15 @@
    "change30_pct": 0.0,
    "change7_pct": 6.2,
    "d30": 17,
-   "delta30": 0,
-   "delta7": 1,
+   "delta30": 0.0,
+   "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 115,
+   "n_now": 116,
    "n_prev": 107,
-   "now": 17,
+   "now": 17.0,
    "prev7": 16,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 83.3,
    "commits": [
     {
-     "pr": 777,
-     "sha": "be825d6a4",
-     "title": "Dependencies: one manifest for every non-Rust dependency, no copied upstream code"
-    },
-    {
      "pr": 771,
      "sha": "fbab7cf29",
      "title": "Add Italian localization (it)"
@@ -615,6 +610,11 @@
      "pr": 788,
      "sha": "68f170d86",
      "title": "Dependencies: freetype -> 2.15.0"
+    },
+    {
+     "pr": 800,
+     "sha": "4490753db",
+     "title": "Player: the menu dim is neutral, not keyed from the item's UltraBlur"
     }
    ],
    "from": 213,
@@ -628,11 +628,6 @@
    "change_pct": 46.7,
    "commits": [
     {
-     "pr": 777,
-     "sha": "be825d6a4",
-     "title": "Dependencies: one manifest for every non-Rust dependency, no copied upstream code"
-    },
-    {
      "pr": 771,
      "sha": "fbab7cf29",
      "title": "Add Italian localization (it)"
@@ -676,6 +671,11 @@
      "pr": 788,
      "sha": "68f170d86",
      "title": "Dependencies: freetype -> 2.15.0"
+    },
+    {
+     "pr": 800,
+     "sha": "4490753db",
+     "title": "Player: the menu dim is neutral, not keyed from the item's UltraBlur"
     }
    ],
    "from": 271,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 226
+   "now": 226.0
   }
  ],
  "slowest_local": [

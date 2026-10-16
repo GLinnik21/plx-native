@@ -1,4 +1,4 @@
-{"updated":"2026-10-16T00:10:04Z",
+{"updated":"2026-10-16T00:11:12Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -2889,7 +2889,8 @@
 {"id":38825693944,"at":"2026-10-15T23:47:44Z","sha":"68f170d86","title":"Dependencies: freetype -> 2.15.0","pr":788,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":14,"Linux simulator build + launch":260,"macOS simulator build + launch":313,"macOS tests against bundled FFmpeg and ASS":244}},
 {"id":38826034353,"at":"2026-10-15T23:51:11Z","sha":"f189c9e77","title":"Enhancement: gate release and Original recovery on what the candidate shows","pr":808,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":150,"Windows launcher syntax":18,"macOS tests against bundled FFmpeg and ASS":123,"Linux simulator build + launch":261}},
 {"id":38826187444,"at":"2026-10-15T23:52:42Z","sha":"f68feb716","title":"Scrub previews: simplify pass over the PR (no behaviour change)","pr":767,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"Linux simulator build + launch":317,"macOS simulator build + launch":177,"macOS tests against bundled FFmpeg and ASS":150}},
-{"id":38827353390,"at":"2026-10-16T00:04:29Z","sha":"ffabf2fa1","title":"Merge squash of #796 (ours)","pr":808,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":25,"macOS tests against bundled FFmpeg and ASS":167,"Linux simulator build + launch":288,"macOS simulator build + launch":175}}
+{"id":38827353390,"at":"2026-10-16T00:04:29Z","sha":"ffabf2fa1","title":"Merge squash of #796 (ours)","pr":808,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":25,"macOS tests against bundled FFmpeg and ASS":167,"Linux simulator build + launch":288,"macOS simulator build + launch":175}},
+{"id":38827379104,"at":"2026-10-16T00:04:44Z","sha":"4490753db","title":"Player: the menu dim is neutral, not keyed from the item's UltraBlur","pr":800,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":186,"Linux simulator build + launch":246,"macOS tests against bundled FFmpeg and ASS":165,"Windows launcher syntax":21}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
