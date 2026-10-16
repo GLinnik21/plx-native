@@ -427,15 +427,15 @@ impl Painter {
             // `paint` would discard this unconditionally (see its comment); skip building
             // `values` at all rather than build it only to throw it away.
             //
-            // Only the SURFACES half of that gate is a programming error for a glass. The other
-            // half — content under a frozen host boundary (the tab bar's glass on Home while an
-            // account or item menu holds Home as a snapshot) — is dead content that `paint`
-            // discards by the same rule, and asserting there panicked every such frame.
-            debug_assert!(
-                tag != frame::backdrop::GLASS_COMMAND || !frame::backdrop::in_surfaces_band(),
-                "a glass command was declared at/above the surfaces band, where recording is \
-                 skipped; this glass would never resolve"
-            );
+            // A GLASS command lands here on both halves of that gate, and neither is a bug. Under
+            // a frozen host boundary (the tab bar's glass on Home while an account or item menu
+            // holds Home as a snapshot) it is dead content. In the SURFACES band it is a menu's
+            // own glass (DS6, `popover_glass::draw`, drawn inside its surface's layer, above the
+            // scrim): its backdrop entry was already requested by `surface_with` before this
+            // call, and the entry's source is the page and scrim recorded below the band. What is
+            // skipped is only this command's own `Paint` — the word a glass ABOVE it would read,
+            // and nothing above the surfaces band is ever recorded or reads one. An assertion
+            // here once fired on every frame a menu was up (`popover_glass` tests).
             return true;
         }
         use frame::backdrop::Value;
@@ -2022,12 +2022,14 @@ mod tests {
         assert!(skipped, "an occluded glass is consumed without recording");
     }
 
-    /// …while a glass declared IN the surfaces band still trips the assertion: nothing there is
-    /// ever resolved, so the declaration itself is the bug.
+    /// …and so is a glass declared IN the surfaces band — a menu's own glass (DS6), which the
+    /// dispatcher draws inside its surface's layer. Its entry is requested before the declare and
+    /// resolves against the page below (`popover_glass::tests::a_menu_glass_inside_a_surface_…`);
+    /// only its command word goes unrecorded, as everything at/above the band does. This was a
+    /// `should_panic` pin until the menus became glass, when it panicked every menu frame of a
+    /// debug build.
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "surfaces band")]
-    fn a_glass_in_the_surfaces_band_still_asserts() {
+    fn a_glass_in_the_surfaces_band_is_consumed_without_recording() {
         use frame::backdrop::{self, Sources, Z};
         use std::{cell::RefCell, rc::Rc};
         let _guard = plx_base::testlock::serial();
@@ -2035,7 +2037,10 @@ mod tests {
         sources.borrow_mut().begin(vec![]);
         let _walk = backdrop::discover(sources.clone());
         let _surface = backdrop::layer(Z::surface(0), true);
-        let _ = Painter::root().declare(Rect::new(0.0, 0.0, 100.0, 40.0), backdrop::GLASS_COMMAND, |_| {});
+        assert!(backdrop::recording_excluded(), "the surfaces band records nothing");
+        let consumed = Painter::root().declare(Rect::new(0.0, 0.0, 100.0, 40.0), backdrop::GLASS_COMMAND, |_| {});
+        assert!(consumed, "the command is consumed, not drawn");
+        assert!(sources.borrow().paints.is_empty(), "and nothing is recorded for it");
     }
 }
 

@@ -1537,6 +1537,11 @@ above — in the first place, rather than building it only to have `paint` disca
 declared up there, rather than silently starving it of data. Regression tests:
 `content_at_or_above_the_surfaces_band_is_never_recorded` (red without the fix: recorded 3 paints
 instead of 1) and `a_glass_command_above_the_surfaces_band_trips_the_debug_assert`.
+(2026-10-16: that `debug_assert` is gone. The DS6 menus are glass drawn inside their surface's
+layer, so a glass command in the band is legitimate: its entry is requested by `surface_with` and
+resolves against the page and scrim below, and only the unread command word is dropped. The
+assertion fired on every menu frame of a debug build; the pin is now
+`a_glass_command_in_the_surfaces_band_is_dropped_but_its_entry_resolves`.)
 
 Both fixes are inside the general mechanism: no special case for a screen, no ceiling change, no
 exemption from the "every changed source refreshes each present" rule, and the ambient wash still

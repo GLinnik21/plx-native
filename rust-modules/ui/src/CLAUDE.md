@@ -475,7 +475,13 @@ tried first. None of it is reconstructable from the code without repeating the m
   surface wearing a gradient face (`FACE_TOP`/`FACE_BOT`), the 1 px `theme::GLASS_RIM`, the lit top
   edge `GLASS_RIM_LIGHT` and `GlassRim::Menu` — the shader (`fs_glass.frag`) refracts the rim from
   the captured host page with the SAME rounded-rect SDF that rounds the panel — and then a soft
-  shadow cut out around the panel's rounded shape. The scrim behind a compact menu is
+  shadow cut out around the panel's rounded shape. **A menu's glass lives in the SURFACES band**:
+  the dispatcher draws a menu inside its surface's layer (`Z::surface(index)`, above the scrim's
+  `Z::DIM`), so it is the one glass declared at or above that band. Its entry is requested there
+  and resolves against the page and scrim below; the band records no `Paint` (nothing reads one),
+  so `Painter::declare` drops the glass's command word silently — it once asserted there, and every
+  menu frame of a debug build panicked. A glass stacked in a HIGHER surface would see nothing of
+  the surface between in its source, a known limit. The scrim behind a compact menu is
   `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
   (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha and a
   sliding panel passes its rest lift (`Painter::rest_lift`) so the open slide re-grabs nothing.

@@ -270,8 +270,9 @@ fn recording_painters_do_not_declare_live_glass_or_underlay_damage() {
 fn content_at_or_above_the_surfaces_band_is_never_recorded() {
     // The `nav.modals.surfaces` draw loop (Settings/AccountMenu/ItemMenu/About's own content,
     // `dispatch.rs::draw_with`) is not gated by `host_render`/`PagePlan`, so it walks fully on
-    // every discovered frame — but no glass entry ever lives at or above `Z::surface(0)`, so
-    // recording what it declares was pure cost for data nothing reads. This is the modal-100 /
+    // every discovered frame — but nothing reads a `Paint` recorded at or above `Z::surface(0)`
+    // (the one glass there, a menu's own, reads the prefix BELOW it), so recording what it
+    // declares was pure cost for data nothing reads. This is the modal-100 /
     // push-100 stress-bench regression's second cause (see docs/backdrop-blur-profiling.md).
     let _guard = plx_base::testlock::serial();
     let sources = Rc::new(RefCell::new(Sources::default()));
@@ -300,24 +301,27 @@ fn content_at_or_above_the_surfaces_band_is_never_recorded() {
 }
 
 #[test]
-fn a_glass_command_above_the_surfaces_band_trips_the_debug_assert() {
-    // `Painter::declare`'s fast pre-check must never silently eat a glass command: if one is
-    // ever declared inside a surface (none is today — grep-verified), the debug build has to
-    // say so immediately rather than let that glass quietly never resolve.
+fn a_glass_command_in_the_surfaces_band_is_dropped_but_its_entry_resolves() {
+    // A menu's glass (DS6) is declared inside its surface's layer. `Painter::declare`'s pre-check
+    // drops its command word, as it drops everything at/above the band (nothing there is ever
+    // read), but the backdrop entry it requested is real and is captured. This was a "must assert"
+    // pin while no glass lived in a surface; once menus became glass it panicked every menu frame.
     let _guard = plx_base::testlock::serial();
     let sources = Rc::new(RefCell::new(Sources::default()));
     sources.borrow_mut().begin(vec![]);
     {
         let _walk = discover(sources.clone());
         let p = crate::Painter::root();
+        p.rect(rect(0.0), 0.0, [0.0; 4], [0.0; 4], 0.0);
         let _layer = layer(Z::surface(0), false);
-        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            declare_glass(p, rect(0.0));
-        }));
-        if cfg!(debug_assertions) {
-            assert!(caught.is_err(), "a glass command above the band must assert");
-        }
+        declare_glass(p, rect(0.0));
     }
+    let mut s = sources.borrow_mut();
+    assert!(s.paints.iter().all(|p| p.glass.is_none()), "no glass command is recorded in the band");
+    s.resolve();
+    let z = *s.entries.keys().next().expect("the glass's entry exists");
+    assert!(z >= Z::surface(0));
+    assert!(s.jobs().iter().any(|&(jz, _)| jz == z), "and it is captured");
 }
 
 #[test]

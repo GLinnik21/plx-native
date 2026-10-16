@@ -138,6 +138,46 @@ pub(crate) mod tests {
         assert!(full[0] == expected(p, r, 24.0, FACE)[0], "at full opacity the face is FACE");
     }
 
+    /// A menu's glass is declared where the dispatcher draws a menu: INSIDE a surface's layer
+    /// (`dispatch.rs`'s surfaces loop, `backdrop::layer(Z::surface(index), ..)`), above the page
+    /// and the modal scrim. That is the DS6 design, and the glass resolves there: `surface_with`
+    /// requests its entry before the declare, and the entry's prefix is the page and the scrim
+    /// beneath it. `declared_glass` above walks at the default `Z::PAGE`, which is why it never
+    /// saw this. Red on the build that asserted "a glass command was declared at/above the
+    /// surfaces band … would never resolve" on every frame a menu was up (a debug build's frame
+    /// guard caught the panic and the menu never drew).
+    #[test]
+    fn a_menu_glass_inside_a_surface_resolves_against_the_page_and_the_scrim() {
+        use crate::frame::backdrop::{discover, layer, Sources, Z};
+        use std::{cell::RefCell, rc::Rc};
+        let _g = plx_base::testlock::serial();
+        let r = Rect::new(1200.0, 220.0, 320.0, 600.0);
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        {
+            let _walk = discover(sources.clone());
+            let p = Painter::root();
+            // The page under the menu, then the modal scrim in the DIM band, as `draw_with` orders them.
+            p.rect(Rect::new(0.0, 0.0, 1920.0, 1080.0), 0.0, [0.2, 0.2, 0.2, 1.0], [0.2, 0.2, 0.2, 1.0], 0.0);
+            {
+                let _dim = layer(Z::DIM, false);
+                p.rect(Rect::new(0.0, 0.0, 1920.0, 1080.0), 0.0, [0.0, 0.0, 0.0, 0.3], [0.0, 0.0, 0.0, 0.3], 0.0);
+            }
+            let _surface = layer(Z::surface(0), false);
+            assert!(draw(p, r, 24.0), "a live discovery pass takes the menu's glass");
+        }
+        let mut s = sources.borrow_mut();
+        s.resolve();
+        let (&z, entry) = s
+            .entries
+            .iter()
+            .find(|(&z, _)| z >= Z::surface(0))
+            .expect("the menu glass requested a backdrop entry in its surface's band");
+        assert!(z < Z::surface(1), "the entry belongs to the menu's own surface");
+        assert_eq!(entry.underlay.len(), 2, "its source is the page and the scrim under it");
+        assert!(s.jobs().iter().any(|&(jz, _)| jz == z), "the entry is captured: it resolves");
+    }
+
     /// The tint arithmetic itself: scrim and rim alphas scale by the opacity.
     #[test]
     fn the_face_scales_every_alpha() {

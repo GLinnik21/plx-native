@@ -313,17 +313,20 @@ pub fn paint(rect: Rect, values: Vec<u64>) {
         let Some(w) = w.as_ref().filter(|w| w.discovery) else {
             return;
         };
-        // No glass entry is ever created at or above the surfaces band: every
-        // `Glass::DYNAMIC_BACKDROP.backdrop(...)` call site sits inside the CHROME layer scope
-        // (grep-verified against the whole crate), and popovers stood off the blur chain
-        // entirely on 2026-09-19 — they use the frozen-host snapshot in `popover.rs`, which
-        // feeds its own synthetic `Paint` straight into `Sources::begin`, never through this
-        // function. So nothing downstream ever reads a `Paint` recorded above that boundary, yet
-        // the surfaces loop in `dispatch.rs::draw_with` (Settings/AccountMenu/ItemMenu/About's
-        // own content) runs unconditionally on both the no-GL discovery pass and the real draw
-        // pass — recording its entire primitive stream every discovered frame, whether or not
-        // anything changed, was pure waste, and the heaviest-text screens paid for it most (see
-        // the dated addendum in docs/backdrop-blur-profiling.md). This is the authoritative gate;
+        // Nothing at or above the surfaces band is recorded, because nothing ever reads a
+        // `Paint` recorded there: a glass's source is the prefix of paints BELOW its own z, and
+        // the only glass in a surface is a menu's own panel (DS6, `ui::popover_glass::draw`),
+        // whose prefix is the page and the modal scrim under the band. Its entry is requested by
+        // `surface_with`, not here, so it resolves; dropping its command word only matters to a
+        // glass stacked above it in a higher surface, which would read nothing of the surface
+        // between: a menu presented over another surface (`ModalStack::present` stacks) may
+        // miss that surface's changes in its cached blur — a known limit, not ruled out by
+        // any gate, and the reason a second glass surface band would need recording. The surfaces
+        // loop in `dispatch.rs::draw_with` (Settings/AccountMenu/ItemMenu/About's own content)
+        // runs unconditionally on both the no-GL discovery pass and the real draw pass —
+        // recording its entire primitive stream every discovered frame, whether or not anything
+        // changed, was pure waste, and the heaviest-text screens paid for it most (see the dated
+        // addendum in docs/backdrop-blur-profiling.md). This is the authoritative gate;
         // `Painter::declare`'s `recording_excluded` check exists only to skip building `values`
         // in the first place for this same content.
         if w.current >= Z::surface(0) {
@@ -366,16 +369,6 @@ pub fn recording_excluded() -> bool {
             w.discovery
                 && (w.current >= Z::surface(0) || fully_occluded(w.current, &w.sources.borrow().layers))
         })
-    })
-}
-
-/// True once a DISCOVERY walk has reached the surfaces band — the half of
-/// [`recording_excluded`] where a glass declaration is a bug rather than dead content.
-pub fn in_surfaces_band() -> bool {
-    WALK.with(|w| {
-        w.borrow()
-            .as_ref()
-            .is_some_and(|w| w.discovery && w.current >= Z::surface(0))
     })
 }
 
