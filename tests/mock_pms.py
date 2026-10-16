@@ -1719,6 +1719,185 @@ def plaintext_only_lan_resources(lib, ip, http_port, fail_port, access_token):
 
 # ---------------------------------------------------------------- the server ----------------
 
+# ---------------------------------------------------------------- Discover -----------------
+
+class DiscoverFixture:
+    """The plex.tv Watchlist's Discover service, in memory (docs/watchlist-plan.md W45, §1.3-§1.4).
+
+    The same listener answers it as the PMS: the app's `discover()` base is the loopback stand-in
+    named by `/tmp/plxnative-discover` (`http://127.0.0.1:<port>`), and the paths cannot collide
+    (`/library/sections/watchlist/...`, `/actions/{add,remove}...`, a 24-hex `/library/metadata/<hex>`).
+    Wire shapes are the plan's INPUT 2 live probe: list items carry NO `watchlistedAt`; `userState`
+    answers an ARRAY and carries `watchlistedAt` only while the item is on the list; add/remove
+    answer `{"MediaContainer":{"size":0}}`; a page Size over 100 answers 400.
+
+    Synthetic data only. 16 catalog titles, 14 of them on the list at the start (newest first):
+
+      * 1-6   released, held by this mock PMS (guid matches a library item)      -> Available
+      * 7     NOT released (future date), held by this mock PMS                   -> ComingSoonMatched
+      * 8, 9  NOT released, held nowhere                                          -> ComingSoon
+      * 10-14 released, held nowhere (13 is a catalog-only show)                  -> NotOnAnyServer
+
+    The other two states need a roster this single mock cannot be: ServerOffline (a matching
+    server that later goes Unreachable) and Unknown (no match while some server is silent). The
+    `POST /_mock/discover {"guid_lookup": "fail"}` switch makes `GET /library/all?guid=` answer 503
+    so an unmatched title re-matches as Unknown; ServerOffline comes from a second roster entry.
+    Two catalog titles (15, 16) are NOT listed, so a bookmark press on a catalog page can add them.
+    """
+
+    # (kind, title, year, date, released, held_by_pms). A future date is far enough out to stay
+    # future; the released ones are in the past.
+    TITLES = (
+        ("movie", "Harbor Lights", 2019, "2019-06-14", True, True),
+        ("show", "The Long Meridian", 2021, "2021-09-03", True, True),
+        ("movie", "Paper Kites", 2016, "2016-03-11", True, True),
+        ("show", "Quiet Orbit", 2023, "2023-01-20", True, True),
+        ("movie", "Salt and Cedar", 2008, "2008-10-24", True, True),
+        ("movie", "A Winter Errand", 2012, "2012-12-07", True, True),
+        ("movie", "The Glass Orchard", 2031, "2031-03-12", False, True),
+        ("movie", "Northbound Tide", 2031, "2031-07-25", False, False),
+        ("show", "Lanterns of Vale", 2032, "2032-02-06", False, False),
+        ("movie", "Marrow Road", 2014, "2014-05-30", True, False),
+        ("show", "Copper Hollow", 2018, "2018-11-09", True, False),
+        ("movie", "The Last Ferryman", 2005, "2005-04-15", True, False),
+        ("show", "Static Bloom", 2020, "2020-08-28", True, False),
+        ("movie", "Ninefold", 2011, "2011-09-16", True, False),
+        ("movie", "Ember Rooms", 2017, "2017-02-03", True, False),
+        ("show", "Low Season", 2022, "2022-06-10", True, False),
+    )
+    LISTED = 14
+    BASE_ADDED_AT = 1_760_000_000  # synthetic; entry i was added i days before it
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.catalog = []  # dicts: hex, guid, kind, title, ..., released, held
+        for i, (kind, title, year, date, released, held) in enumerate(self.TITLES):
+            hx = "5d7768%02x" % i + hashlib.md5(f"watchlist-fixture-{i}".encode()).hexdigest()[:16]
+            sort_title = title.lower()
+            for article in ("the ", "a "):
+                sort_title = sort_title.removeprefix(article)
+            self.catalog.append({
+                "hex": hx, "guid": f"plex://{kind}/{hx}", "kind": kind, "title": title,
+                "titleSort": sort_title,
+                "year": year, "date": date, "released": released, "held": held,
+                "rating": round(5.0 + (i * 7 % 40) / 10.0, 1),
+                "summary": f"{title} is a synthetic Discover title for the mock Watchlist.",
+                "genres": ["Drama", "Mystery"] if i % 2 else ["Comedy", "Adventure"],
+            })
+        # Newest first, as `sort=watchlistedAt:desc` answers: [(hex, watchlistedAt)].
+        self.order = [(c["hex"], self.BASE_ADDED_AT - n * 86_400)
+                      for n, c in enumerate(self.catalog[:self.LISTED])]
+        self.guid_lookup_fails = False
+
+    def by_hex(self, hx):
+        return next((c for c in self.catalog if c["hex"] == hx), None)
+
+    def bind(self, lib):
+        """Give the held titles a PMS twin: the first movies/shows of `lib` take the fixture guid,
+        so `GET /library/all?type=&guid=` finds them. A library too small to hold them all just
+        leaves the rest unmatched."""
+        for kind in ("movie", "show"):
+            rows = sorted((it for it in lib.items.values() if it.get("type") == kind),
+                          key=lambda it: int(it["ratingKey"]))
+            wanted = [c for c in self.catalog if c["kind"] == kind and c["held"]]
+            for row, c in zip(rows, wanted):
+                row["guid"] = c["guid"]
+
+    def _entry(self, c, added_at=None):
+        e = {"ratingKey": c["hex"], "key": f"/library/metadata/{c['hex']}", "guid": c["guid"],
+             "type": c["kind"], "title": c["title"], "titleSort": c["titleSort"], "year": c["year"],
+             "originallyAvailableAt": c["date"], "rating": c["rating"], "summary": c["summary"],
+             "thumb": f"/library/metadata/{c['hex']}/thumb/1"}
+        if added_at is not None:
+            e["watchlistedAt"] = added_at
+        return e
+
+    @staticmethod
+    def _container(**kw):
+        return {"MediaContainer": dict({"size": 0}, **kw)}
+
+    def _listing(self, variant, q, headers):
+        with self.lock:
+            rows = [self.by_hex(hx) for hx, _ in self.order]
+        if variant == "released":
+            rows = [c for c in rows if c["released"]]
+        start = max(0, int(q.get("X-Plex-Container-Start", headers.get("X-Plex-Container-Start", 0))))
+        size = int(q.get("X-Plex-Container-Size", headers.get("X-Plex-Container-Size", 50)))
+        if size > 100 or size < 0:
+            return 400, {"error": "Size over 100"}
+        page = [self._entry(c) for c in rows[start:start + size]]
+        return 200, self._container(size=len(page), totalSize=len(rows), offset=start,
+                                    librarySectionID="watchlist", librarySectionTitle="Watchlist",
+                                    Metadata=page)
+
+    def handle(self, method, p, q, headers, lib):
+        """`(status, content_type, bytes)` for a Discover path, or None when `p` is not one."""
+        segs = [s for s in p.split("/") if s]
+        j = lambda obj, status=200: (status, "application/json", json.dumps(obj).encode())
+        hexid = lambda s: len(s) == 24 and all(ch in "0123456789abcdef" for ch in s.lower())
+        if (len(segs) == 4 and segs[:3] == ["library", "sections", "watchlist"]
+                and segs[3] in ("all", "released")):
+            if method != "GET":
+                return j({"error": "method not allowed"}, 405)
+            status, obj = self._listing(segs[3], q, headers)
+            return j(obj, status)
+        if len(segs) >= 3 and segs[:2] == ["library", "metadata"] and hexid(segs[2]):
+            c = self.by_hex(segs[2])
+            if c is None:
+                return j({"Error": {"message": "Not Found"}}, 404)
+            if len(segs) == 5 and segs[3] == "thumb":
+                return (200, "image/png", flat_png(q.get("width", 250), q.get("height", 375),
+                                                   colour_for(segs[2])))
+            if len(segs) == 4 and segs[3] == "userState":
+                with self.lock:
+                    added = dict(self.order).get(segs[2])
+                state = {"ratingKey": segs[2], "type": c["kind"], "viewCount": 0, "viewOffset": 0}
+                if added is not None:
+                    state["watchlistedAt"] = added
+                return j(self._container(size=1, UserState=[state]))
+            if len(segs) == 3:
+                e = self._entry(c)
+                e.update({"contentRating": "PG-13", "duration": 6_000_000,
+                          "Genre": [{"tag": g} for g in c["genres"]]})
+                return j(self._container(size=1, Metadata=[e]))
+            return None
+        if (len(segs) == 2 and segs[0] == "actions"
+                and segs[1] in ("addToWatchlist", "removeFromWatchlist")):
+            if method != "PUT":
+                return j({"error": "method not allowed"}, 405)
+            hx = q.get("ratingKey", "")
+            if not hexid(hx):
+                return j({"error": "bad ratingKey"}, 400)
+            if self.by_hex(hx) is None:
+                return j({"Error": {"message": "Not Found"}}, 404)
+            with self.lock:
+                listed = any(h == hx for h, _ in self.order)
+                if segs[1] == "addToWatchlist" and not listed:
+                    self.order.insert(0, (hx, int(time.time())))  # a repeated PUT is a no-op
+                elif segs[1] == "removeFromWatchlist":
+                    self.order = [(h, t) for h, t in self.order if h != hx]
+            return j(self._container())
+        if p == "/library/all" and method == "GET" and "guid" in q:
+            # The PMS half: which of these guids does this server hold? (`find_by_guids`)
+            if self.guid_lookup_fails:
+                return j({"error": "unavailable"}, 503)
+            want = {urllib.parse.unquote(g) for g in q["guid"].split(",")}
+            kind = {"1": "movie", "2": "show"}.get(q.get("type", ""))
+            rows = [it for it in lib.items.values()
+                    if it.get("guid") in want and (kind is None or it.get("type") == kind)]
+            return j({"MediaContainer": {"size": len(rows), "Metadata": rows}})
+        return None
+
+    def configure(self, patch):
+        """`POST /_mock/discover`: `{"guid_lookup": "fail"|"ok"}`."""
+        if not isinstance(patch, dict) or set(patch) - {"guid_lookup"}:
+            return 400, {"error": "need {guid_lookup: fail|ok}"}
+        if patch.get("guid_lookup") not in ("fail", "ok"):
+            return 400, {"error": "guid_lookup is fail or ok"}
+        self.guid_lookup_fails = patch["guid_lookup"] == "fail"
+        return 200, {"guid_lookup": patch["guid_lookup"]}
+
+
 class MockPms:
     def section_pad_hubs(self, key, kind, count, rows=12):
         """`count` synthetic hubs for `/hubs/sections/<key>` (#412), after the library's own.
@@ -1757,6 +1936,10 @@ class MockPms:
 
     def __init__(self, lib):
         self.lib = lib
+        # The plex.tv Watchlist's Discover stand-in (see its class); held titles take library guids.
+        self.discover = DiscoverFixture()
+        if not isinstance(lib, CatalogLibrary):  # the demo catalog's recorded guids are pinned by fixtures
+            self.discover.bind(lib)
         # `--home-hubs N` (#395): `/hubs` answers exactly N hubs; 0 keeps the library's own.
         self.home_hubs = 0
         # `--section-hubs N` (#412): `/hubs/sections/<id>` answers exactly N hubs; 0 keeps the
@@ -2002,6 +2185,21 @@ class MockPms:
                     setattr(self, key, bool(value))
                 current = {k: getattr(self, k) for k in allowed}
             return j(current)
+
+        if p == "/_mock/discover":
+            if method != "POST":
+                return j({"error": "method not allowed"}, 405)
+            try:
+                patch = json.loads(body or b"{}")
+            except json.JSONDecodeError:
+                return j({"error": "invalid JSON body"}, 400)
+            status, obj = self.discover.configure(patch)
+            return j(obj, status)
+        answered = self.discover.handle(method, p, q, headers, lib)
+        if answered is not None:
+            if method == "PUT":
+                self.note_write(method, path, body)
+            return answered
 
         def paged(rows):
             """PMS pages a listing only when the request carries the window's start, as a query
