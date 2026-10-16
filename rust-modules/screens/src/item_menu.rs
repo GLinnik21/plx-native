@@ -44,6 +44,8 @@
 
 /// The Watchlist grid's hold-menu rows (`ItemMenuKind::Catalog`, plan §1.9).
 pub mod hold;
+/// The Watchlist rows of the card / episode / season menus and the Catalog menu's membership row.
+pub mod watchlist;
 
 use std::borrow::Cow;
 use std::convert::Infallible;
@@ -132,6 +134,12 @@ impl Action {
             Action::MarkUnwatched(_) => Some(plx_data::viewstate::Write::Unwatched),
             _ => None,
         }
+    }
+
+    /// Does the action name what it acts on? A ratingKey-keyed action needs a non-empty key; a
+    /// catalog-keyed [`Action::WatchlistAdd`] carries its 12-byte id instead and has no key.
+    pub fn has_subject(&self) -> bool {
+        matches!(self, Action::WatchlistAdd { .. }) || !self.rk().is_empty()
     }
 
     /// The ratingKey this action acts on.
@@ -289,7 +297,7 @@ fn build_with(
     deck_press: DeckPress,
     trailer: Option<&plx_data::metadata::Extra>,
 ) -> ItemForm {
-    build_card(m, from_deck, deck_press, trailer, None)
+    build_card(m, from_deck, deck_press, trailer, None, None)
 }
 
 /// `deck_press` is the Continue Watching setting. It changes this menu for a card FROM the deck
@@ -309,6 +317,7 @@ fn build_card(
     deck_press: DeckPress,
     trailer: Option<&plx_data::metadata::Extra>,
     watchlist_guid: Option<&str>,
+    face: Option<&watchlist::Face>,
 ) -> ItemForm {
     let leaf = m.kind == 0 || m.kind == 3;
     let opens_details = from_deck && !deck_press.press_plays();
@@ -415,6 +424,10 @@ fn build_card(
             Action::WatchlistRemove(guid.to_string()),
             Row::new(plx_platform::i18n::msg::watchlist_action_remove()).licon(Icon::Close).destructive(true),
         );
+    } else {
+        // A Watchlist tile's own Remove (above) is the membership row there; everywhere else the
+        // face adds Add / Remove, last, with the one other destructive row.
+        sec = watchlist::push_face(sec, face);
     }
     Form::new().section(sec)
 }
@@ -509,8 +522,9 @@ fn state_rows(
 /// episode two ways — and with no nav group there is no separator either ([`build`]'s rule: the
 /// divider only exists when there is a group above it). An episode is a LEAF, so all three states are
 /// reachable and a part-watched one gets the pair, exactly as a shelf card does.
-fn build_episode(rk: &str, mark: PosterMark) -> ItemForm {
-    Form::new().section(state_rows(FormSection::new(""), rk, mark, true, None, ""))
+fn build_episode(rk: &str, mark: PosterMark, face: Option<&watchlist::Face>) -> ItemForm {
+    let sec = state_rows(FormSection::new(""), rk, mark, true, None, "");
+    Form::new().section(watchlist::push_face(sec, face))
 }
 
 /// The Watchlist grid's hold menu (plan §1.9): [`self::hold::rows_for`] bound to
@@ -518,7 +532,11 @@ fn build_episode(rk: &str, mark: PosterMark) -> ItemForm {
 /// page (`guid`); Remove is destructive, so the menu opens on the "go" row, never on it. W6's
 /// catalog-only rows (Add/Remove are the whole Catalog menu today) would join here.
 fn build_catalog(
-    state: plx_data::watchlist::model::TileState, kind: plx_data::watchlist::model::Kind, rk: &str, guid: &str,
+    state: plx_data::watchlist::model::TileState,
+    kind: plx_data::watchlist::model::Kind,
+    rk: &str,
+    guid: &str,
+    member: plx_data::catalog::Membership,
 ) -> ItemForm {
     use self::hold::HoldRowId;
     let mut sec = FormSection::new("");
@@ -526,7 +544,14 @@ fn build_catalog(
         let (id, action) = match r.id {
             HoldRowId::GoToDetail => (ItemRow::GoToItem, Action::GoToItem(rk.to_string())),
             HoldRowId::GoToCatalog => (ItemRow::GoToCatalog, Action::GoToCatalog(guid.to_string())),
-            HoldRowId::Remove => (ItemRow::WatchlistRemove, Action::WatchlistRemove(guid.to_string())),
+            // The membership row: Remove for a title on the list (every Watchlist tile), Add for
+            // one that is not, both captured now.
+            HoldRowId::Remove => {
+                if let Some((id, action, row)) = watchlist::catalog_row(member, guid) {
+                    sec = sec.item(id, RowKind::Button, action, row);
+                }
+                continue;
+            }
         };
         sec = sec.item_if(
             true,
@@ -546,8 +571,9 @@ fn build_catalog(
 /// would have to pick a leaf, which is a second decision the row does not state. Starting a season
 /// from its beginning is what the first episode's own tile does, exactly and visibly. So
 /// `leaf: false` — the same flag [`build`] passes for a show, for the same reason.
-fn build_season(rk: &str, mark: PosterMark) -> ItemForm {
-    Form::new().section(state_rows(FormSection::new(""), rk, mark, false, None, ""))
+fn build_season(rk: &str, mark: PosterMark, face: Option<&watchlist::Face>) -> ItemForm {
+    let sec = state_rows(FormSection::new(""), rk, mark, false, None, "");
+    Form::new().section(watchlist::push_face(sec, face))
 }
 
 /// Beside the card, never over it: to its RIGHT by default, flipped to its LEFT when that would run
@@ -596,6 +622,9 @@ pub struct ItemMenuScreen {
     /// four take, reused rather than copied.
     repeat: RepeatGate,
     built: bool,
+    /// The Watchlist subject captured when the menu opened; `None` omits the membership row
+    /// (plex.tv unreachable, or the item has no catalog guid). See [`watchlist::Face`].
+    face: Option<watchlist::Face>,
 }
 
 /// Play Trailer only when the already-loaded Detail is this movie/show and already has a trailer.
@@ -623,7 +652,14 @@ impl ItemMenuScreen {
             form: FormTable::new(crate::registry::BAND),
             repeat: RepeatGate::IDLE,
             built: false,
+            face: None,
         }
+    }
+
+    /// The Watchlist subject the app captured at open (identity and membership as read THEN).
+    pub fn with_watchlist(mut self, face: Option<watchlist::Face>) -> Self {
+        self.face = face;
+        self
     }
 
     /// The rows, built ONCE at `Mount`. A hub refetch can re-order the catalog underneath an open
@@ -639,14 +675,16 @@ impl ItemMenuScreen {
                 let trailer = cached_trailer(self.arg.sid, row, meta);
                 // A Watchlist tile with a reachable copy is a card of that copy, and Remove joins it.
                 let remove = self.arg.catalog.as_ref().map(|c| c.guid.as_str());
-                build_card(row, *from_deck, plx_media::route::deck_press(), trailer.as_ref(), remove)
+                build_card(row, *from_deck, plx_media::route::deck_press(), trailer.as_ref(), remove, self.face.as_ref())
             }
-            ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark),
-            ItemMenuKind::Season { mark, .. } => build_season(&self.arg.rk, *mark),
+            ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark, self.face.as_ref()),
+            ItemMenuKind::Season { mark, .. } => build_season(&self.arg.rk, *mark, self.face.as_ref()),
             ItemMenuKind::Catalog { state } => {
                 let guid = self.arg.catalog.as_ref().map_or("", |c| c.guid.as_str());
                 let kind = self.arg.catalog.as_ref().map_or(plx_data::watchlist::model::Kind::Movie, |c| c.kind);
-                build_catalog(*state, kind, &self.arg.rk, guid)
+                // A Watchlist tile is on the list by definition; a face says otherwise.
+                let member = self.face.as_ref().map_or(plx_data::catalog::Membership::On, |f| f.member);
+                build_catalog(*state, kind, &self.arg.rk, guid, member)
             }
         };
         // a short list of one-line actions — BODY labels, not menu-size HEADLINE
@@ -692,7 +730,7 @@ impl ItemMenuScreen {
         // empty one would fetch nothing and land on a blank page. `build` already refuses to offer
         // such a row — this is the belt to that braces, since the rows are data-driven off hub
         // rows. A key that names no row (the separator has none) only dismisses.
-        if let Some(act) = act.filter(|act| !act.rk().is_empty()) {
+        if let Some(act) = act.filter(Action::has_subject) {
             fx.push(Fx::App(AppFx::ItemMenu(ItemMenuReq {
                 act,
                 sid: self.arg.sid,
@@ -996,10 +1034,10 @@ mod tests {
         built(super::build_with(m, from_deck, mode, None))
     }
     fn build_episode(rk: &str, mark: PosterMark) -> Built {
-        built(super::build_episode(rk, mark))
+        built(super::build_episode(rk, mark, None))
     }
     fn build_season(rk: &str, mark: PosterMark) -> Built {
-        built(super::build_season(rk, mark))
+        built(super::build_season(rk, mark, None))
     }
     impl Built {
         /// The row ids in drawn order (the separator is not a row).
@@ -2196,7 +2234,7 @@ mod tests {
             TileState::ServerOffline,
             TileState::Unknown,
         ] {
-            let menu = built(super::build_catalog(state, plx_data::watchlist::model::Kind::Movie, "42", "plex://movie/abc"));
+            let menu = built(super::build_catalog(state, plx_data::watchlist::model::Kind::Movie, "42", "plex://movie/abc", plx_data::catalog::Membership::On));
             let go_detail = matches!(state, TileState::Available | TileState::ComingSoonMatched);
             assert_eq!(menu.ids(), vec![
                 if go_detail { ItemRow::GoToItem } else { ItemRow::GoToCatalog },
@@ -2217,7 +2255,7 @@ mod tests {
     #[test]
     fn a_playable_catalog_hold_menu_is_the_card_menu_plus_remove() {
         let movie = item(0, PosterMark::None);
-        let menu = built(super::build_card(&movie, false, DeckPress::Play, None, Some("plex://movie/abc")));
+        let menu = built(super::build_card(&movie, false, DeckPress::Play, None, Some("plex://movie/abc"), None));
         let ids = menu.ids();
         for row in [ItemRow::GoToItem, ItemRow::MarkWatched, ItemRow::PlayFromStart] {
             assert!(ids.contains(&row), "the card's {row:?} row is there: {ids:?}");
@@ -2235,7 +2273,7 @@ mod tests {
         use plx_data::watchlist::model::{Kind, TileState};
         let _guard = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
         let label = |kind| {
-            let menu = built(super::build_catalog(TileState::Available, kind, "42", "plex://movie/abc"));
+            let menu = built(super::build_catalog(TileState::Available, kind, "42", "plex://movie/abc", plx_data::catalog::Membership::On));
             menu.0.table.sections.iter().flat_map(|s| s.rows.iter()).next().map(|r| r.label.to_string())
         };
         assert_ne!(label(Kind::Show), label(Kind::Movie));
@@ -2251,7 +2289,7 @@ mod tests {
         for language in SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             for state in [TileState::Available, TileState::ComingSoon] {
-                let mut menu = built(super::build_catalog(state, plx_data::watchlist::model::Kind::Movie, "1", "g"));
+                let mut menu = built(super::build_catalog(state, plx_data::watchlist::model::Kind::Movie, "1", "g", plx_data::catalog::Membership::On));
                 menu.0.table.compact = true;
                 let name = format!("{} catalog {state:?}", language.tag());
                 let table = &menu.0.table;
