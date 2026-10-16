@@ -2186,12 +2186,15 @@ fn request_tls_sink(
                         CURLOPT_WRITEDATA,
                         (&mut sink as *mut BodySink) as *mut c_void,
                     );
-                    curl_easy_setopt_ptr(easy.0, CURLOPT_HEADERFUNCTION, header_cb as *const c_void);
-                    curl_easy_setopt_ptr(
-                        easy.0,
-                        CURLOPT_HEADERDATA,
-                        (&mut sink as *mut BodySink) as *mut c_void,
-                    );
+                    // HEADERDATA without a HEADERFUNCTION would send header bytes to the write
+                    // callback (into the body), so the data is set only once the function took.
+                    if curl_easy_setopt_ptr(easy.0, CURLOPT_HEADERFUNCTION, header_cb as *const c_void) == 0 {
+                        curl_easy_setopt_ptr(
+                            easy.0,
+                            CURLOPT_HEADERDATA,
+                            (&mut sink as *mut BodySink) as *mut c_void,
+                        );
+                    }
                 }
                 Some(stream) => {
                     stream.begin_attempt(
