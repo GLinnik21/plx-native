@@ -5,7 +5,7 @@
   "widgets.menu.options": "Opzioni",
   "widgets.menu.quality": "Qualità",
   "widgets.menu.quality_converted": "Convertito",
-  "widgets.menu.quality_converted_note": "Il tuo server Plex sta convertendo questo video.",
+  "widgets.menu.quality_converted_note": "Il server Plex sta convertendo il video.",
   "widgets.menu.stats": "Statistiche per nerd",
   "widgets.menu.diagnostics": "Invia dati diagnostici",
   "widgets.badge.forced": "FORZATI",
