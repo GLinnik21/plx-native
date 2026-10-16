@@ -189,7 +189,7 @@
   },
   {
    "file": "w6/detail-offline.png",
-   "board": "DetailOffline",
+   "board": "DetailOffline (NOT MET: this is the plex.tv-unreachable Detail; the board is the catalog page of a ServerOffline tile, which no sim route reaches yet - see mock key {\"pms\":\"fail\"})",
    "mock": "default",
    "unreachable": true,
    "triggers": {

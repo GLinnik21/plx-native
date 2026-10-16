@@ -1790,6 +1790,7 @@ class DiscoverFixture:
         self.order = [(c["hex"], self.BASE_ADDED_AT - n * 86_400)
                       for n, c in enumerate(self.catalog[:self.LISTED])]
         self.guid_lookup_fails = False
+        self.pms_fails = False  # `{"pms": "fail"}`: the PMS side answers 503 (the server-offline capture)
 
     def by_hex(self, hx):
         return next((c for c in self.catalog if c["hex"] == hx), None)
@@ -1881,7 +1882,7 @@ class DiscoverFixture:
             return j(self._container())
         if p == "/library/all" and method == "GET" and "guid" in q:
             # The PMS half: which of these guids does this server hold? (`find_by_guids`)
-            if self.guid_lookup_fails:
+            if self.guid_lookup_fails or self.pms_fails:
                 return j({"error": "unavailable"}, 503)
             want = {urllib.parse.unquote(g) for g in q["guid"].split(",")}
             kind = {"1": "movie", "2": "show"}.get(q.get("type", ""))
@@ -1911,15 +1912,19 @@ class DiscoverFixture:
     def configure(self, patch, lib=None):
         """`POST /_mock/discover`: `{"guid_lookup": "fail"|"ok"}` and/or
         `{"list": "default"|"empty"|"movies_only"|"first_movie_off"}` (the list reset; the capture recipe)."""
-        keys = {"guid_lookup", "list", "guids"}
+        keys = {"guid_lookup", "list", "guids", "pms"}
         if not isinstance(patch, dict) or not patch or set(patch) - keys:
             return 400, {"error": "need {guid_lookup: fail|ok}, {list: default|empty|movies_only|first_movie_off} and/or {guids: all}"}
+        if "pms" in patch and patch["pms"] not in ("fail", "ok"):
+            return 400, {"error": "pms is fail or ok"}
         if "guids" in patch and patch["guids"] != "all":
             return 400, {"error": "guids is all"}
         if "guid_lookup" in patch and patch["guid_lookup"] not in ("fail", "ok"):
             return 400, {"error": "guid_lookup is fail or ok"}
         if "list" in patch and patch["list"] not in self.LIST_MODES:
             return 400, {"error": "list is default, empty, movies_only or first_movie_off"}
+        if "pms" in patch:
+            self.pms_fails = patch["pms"] == "fail"
         if "guid_lookup" in patch:
             self.guid_lookup_fails = patch["guid_lookup"] == "fail"
         if "list" in patch:
@@ -2249,6 +2254,10 @@ class MockPms:
             if method == "PUT":
                 self.note_write(method, path, body)
             return answered
+        if self.discover.pms_fails and not p.startswith("/api/") and not p.startswith("/_mock/"):
+            # The server-offline capture: after the Watchlist matched a title here, every PMS request
+            # fails, so the app's generic-request reachability commit marks this server Unreachable.
+            return j({"error": "unavailable"}, 503)
 
         def paged(rows):
             """PMS pages a listing only when the request carries the window's start, as a query
