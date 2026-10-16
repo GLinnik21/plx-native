@@ -199,6 +199,8 @@ const GL_TEXTURE0: c_uint = 0x84C0;
 const GL_TEXTURE1: c_uint = 0x84C1;
 /// The shared dither tile's unit — see `gfx::bind_dither_tile`.
 const GL_TEXTURE2: c_uint = 0x84C2;
+/// `fs_glass.frag`'s composite-time dim field — see `draw_blur_backdrop`.
+const GL_TEXTURE3: c_uint = 0x84C3;
 
 extern "C" {
     fn glGetString(name: c_uint) -> *const c_char;
@@ -3324,8 +3326,13 @@ pub struct BackdropImage {
     chain: BlurChain,
     texture: std::rc::Rc<BackdropTexture>,
     alpha_invariant: bool,
+    /// The replay that filled this image left the band's dim out ([`backdrop::dim_deferred`]),
+    /// so the composite owes it ([`backdrop::deferred_dim`]). An inline framebuffer capture
+    /// never does: the dim is already on the framebuffer it copies.
+    dim_excluded: bool,
 }
 impl BackdropImage {
+    pub fn dim_excluded(&self) -> bool { self.dim_excluded }
     pub fn covers(&self, r: Rect) -> bool { blur_region_covers(self.chain.reg,r.x,r.y,r.w,r.h) }
     pub fn bytes(&self) -> usize { self.chain.mw as usize * self.chain.mh as usize * 4 }
 }
@@ -3349,7 +3356,10 @@ pub fn retain_backdrop(z: backdrop::Z) -> bool {
         let mut chain = c.clone();
         chain.out=texture.0; chain.mid=texture.0; chain.mw=w; chain.mh=h;
         let alpha_invariant = backdrop::source_alpha(z).is_some();
-        backdrop::captured(z, BackdropImage { chain, texture, alpha_invariant });
+        // Asked of the walk this is called in: the direct job's own (ceiling `z`) right after its
+        // replay, or the visible one for an inline capture, which never defers.
+        let dim_excluded = backdrop::dim_deferred();
+        backdrop::captured(z, BackdropImage { chain, texture, alpha_invariant, dim_excluded });
         true
     }
 }
@@ -3765,6 +3775,10 @@ static mut GL_RIMCLEAR: c_int = 0;
 static mut GL_DEEP: c_int = 0;
 static mut GL_SOURCE_ALPHA: c_int = 0;
 static mut GL_SOURCE_GROUND: c_int = 0;
+static mut GL_DIM: c_int = 0;
+static mut GL_DIM_UV: c_int = 0;
+static mut GL_DIM_FIELD: c_int = 0;
+static mut GL_DIM_TEX: c_int = 0;
 
 /// Invalidate the scratch snapshot used by the synthetic load dial and navigation experiments.
 /// Live surfaces own separate retained outputs through the frame's layer/region registry.
@@ -4092,9 +4106,16 @@ fn blur_lazy_init() -> bool {
         GL_DEEP = glGetUniformLocation(GPROG, c"u_deep".as_ptr());
         GL_SOURCE_ALPHA = glGetUniformLocation(GPROG, c"u_source_alpha".as_ptr());
         GL_SOURCE_GROUND = glGetUniformLocation(GPROG, c"u_source_ground".as_ptr());
+        GL_DIM = glGetUniformLocation(GPROG, c"u_dim".as_ptr());
+        GL_DIM_UV = glGetUniformLocation(GPROG, c"u_dim_uv".as_ptr());
+        GL_DIM_FIELD = glGetUniformLocation(GPROG, c"u_dim_field".as_ptr());
+        GL_DIM_TEX = glGetUniformLocation(GPROG, c"u_dim_tex".as_ptr());
         use_prog(GPROG);
         glUniform2f(GL_SCREEN, SCR_W, SCR_H);
         glUniform1i(GL_TEX, 0);
+        // The composite-time dim's field, on unit 3 (0 is the snapshot, 1 the sharp grab, 2 the
+        // dither tile). Bound per draw, and only by a draw that owes a field dim.
+        glUniform1i(GL_DIM_TEX, 3);
         // The rim's second source lives on unit 1 for the life of the program; only the texture
         // bound there changes, and only when a chain is rebuilt.
         glUniform1i(GL_SHARP, 1);
@@ -5673,6 +5694,39 @@ pub fn draw_blur_backdrop(
         let ground = tokens::CLEAR_RGB;
         glUniform1f(GL_SOURCE_ALPHA, source_alpha);
         glUniform3f(GL_SOURCE_GROUND, ground.0, ground.1, ground.2);
+        // THE MODAL DIM, at composite. A band whose dim is the last draw under it filters the
+        // UNDIMMED prefix once (`backdrop::dim_deferred` skipped the dim in the replay) and takes
+        // this frame's dim here, in `srcRGB`, before the sharp rim mix — the sharp grab is off the
+        // finished framebuffer, which carries the dim already. Blur is linear and the ink is a
+        // smooth field, so this is the picture the in-source dim made, without re-filtering the
+        // page every frame its alpha ramps or its field re-latches (`backdrop::Dim`).
+        let dim = if retained.as_ref().is_some_and(|image| image.dim_excluded) {
+            live.and_then(|request| backdrop::deferred_dim(request.z))
+        } else {
+            None
+        };
+        match dim {
+            Some(d) if d.tint[3] > 0.0 => {
+                glUniform4f(GL_DIM, d.tint[0], d.tint[1], d.tint[2], d.tint[3]);
+                glUniform1f(GL_DIM_FIELD, if d.tex != 0 { 1.0 } else { 0.0 });
+                if d.tex != 0 {
+                    // `v_cuv` back to the screen point, then over the screen: the field maps the
+                    // whole screen top-down (`ui::underlay::panel_uv`). `blur_uv_rect` inverted.
+                    let su = c.reg[2] / (span[0] * SCR_W);
+                    let ou = c.reg[0] / SCR_W;
+                    let (sv, ov) = if c.bottom_up {
+                        (-c.reg[3] / (span[1] * SCR_H), (c.reg[1] + c.reg[3]) / SCR_H)
+                    } else {
+                        (c.reg[3] / (span[1] * SCR_H), c.reg[1] / SCR_H)
+                    };
+                    glUniform4f(GL_DIM_UV, su, sv, ou, ov);
+                    glActiveTexture(GL_TEXTURE3);
+                    glBindTexture(GL_TEXTURE_2D, d.tex);
+                    glActiveTexture(GL_TEXTURE0);
+                }
+            }
+            _ => glUniform4f(GL_DIM, 0.0, 0.0, 0.0, 0.0),
+        }
         // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
         // — moving or not: a panel's glass is a fraction of the screen and the tile is one fetch,
         // and gating it on motion (one day, 2026-09-04) flickered the bands in and out on every

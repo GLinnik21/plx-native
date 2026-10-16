@@ -178,6 +178,126 @@ pub(crate) mod tests {
         assert!(s.jobs().iter().any(|&(jz, _)| jz == z), "the entry is captured: it resolves");
     }
 
+    /// One frame of a menu over a page and its modal dim, the order `dispatch.rs::draw_with` walks
+    /// them in: the page, the dim (`ModalStack::draw_scrims` → `UnderlayField::draw` as
+    /// `Role::Dim`) and, when `lift` is set, an opener lift drawn ABOVE the dim under the menu's
+    /// footprint, then the menu's own glass in its surface band. Returns whether the menu's source
+    /// owes a capture this frame (a job), and marks it captured, as a successful GPU job does.
+    fn menu_frame(
+        sources: &std::rc::Rc<std::cell::RefCell<crate::frame::backdrop::Sources>>,
+        field: &crate::underlay::UnderlayField,
+        alpha: f32,
+        lift: bool,
+    ) -> bool {
+        use crate::frame::backdrop::{commit, discover, layer, Z};
+        let r = Rect::new(1200.0, 220.0, 320.0, 600.0);
+        sources.borrow_mut().begin(vec![]);
+        {
+            let _walk = discover(sources.clone());
+            let p = Painter::root();
+            p.rect(Rect::new(0.0, 0.0, 1920.0, 1080.0), 0.0, [0.2, 0.3, 0.4, 1.0], [0.2, 0.3, 0.4, 1.0], 0.0);
+            {
+                let _dim = layer(Z::DIM, false);
+                field.draw(p, Rect::FULL, crate::underlay::Role::Dim { weight: theme::underlay::TINT }, alpha);
+                if lift {
+                    p.rect(Rect::new(1180.0, 200.0, 80.0, 80.0), 8.0, [0.9; 4], [0.9; 4], 0.0);
+                }
+            }
+            let _surface = layer(Z::surface(0), false);
+            assert!(draw(p, r, 24.0));
+        }
+        let owed = {
+            let mut s = sources.borrow_mut();
+            s.resolve();
+            s.jobs().iter().any(|&(z, _)| z >= Z::surface(0))
+        };
+        commit(sources);
+        owed
+    }
+
+    /// **A menu's dim ramping in front of a still page re-blurs nothing.** The dim is linear in its
+    /// alpha (`mix(page, ink, a)`) and its ink is the page's own smooth light, so the menu's glass
+    /// filters the page ONCE and applies this frame's dim at composite — the PageDip precedent
+    /// (`Layer::composite_alpha`), with the dim's ink as the ground. Red on the build that keyed
+    /// the source on the dim's alpha: every frame of an appear (and of a close) re-ran the whole
+    /// direct source pass, `blur.scene` replaying the page plus both taps — the Sort & Filter and
+    /// account menus' GLASSDIFF on the television named `field` arg 15 (the tint's alpha) on 18
+    /// of SFopen's 24 frames.
+    #[test]
+    fn a_ramping_dim_under_a_menu_captures_its_source_once() {
+        let _g = plx_base::testlock::serial();
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
+        let flat = crate::underlay::UnderlayField::new();
+        let mut composite = Vec::new();
+        let owed: Vec<bool> = (0..12)
+            .map(|i| {
+                let a = 0.025 * i as f32;
+                let o = menu_frame(&sources, &flat, a, false);
+                let s = sources.borrow();
+                let z = *s.entries.keys().find(|&&z| z >= crate::frame::backdrop::Z::surface(0)).unwrap();
+                composite.push((a, s.composite_dim(z).map(|d| d.tint[3])));
+                o
+            })
+            .collect();
+        assert_eq!(owed.iter().filter(|&&o| o).count(), 1, "one capture for the whole ramp: {owed:?}");
+        assert!(owed[0], "and it is the first frame's");
+        // …and what the composite applies is THIS frame's dim, the scrim ink at this alpha.
+        for (a, applied) in composite {
+            assert_eq!(applied, Some(a), "the composite takes the frame's own alpha");
+        }
+        // The band's direct replay skips the dim it applies; the visible walk always draws it.
+        let z = *sources.borrow().entries.keys().find(|&&z| z >= crate::frame::backdrop::Z::surface(0)).unwrap();
+        {
+            let _job = crate::frame::backdrop::enter(sources.clone(), z);
+            assert!(crate::frame::backdrop::dim_deferred(), "the job's replay leaves the dim out");
+        }
+        {
+            let _visible = crate::frame::backdrop::enter(sources.clone(), crate::frame::backdrop::Z::ALL);
+            assert!(!crate::frame::backdrop::dim_deferred(), "the visible frame draws it");
+        }
+    }
+
+    /// **Nor does the dim's FIELD being re-latched** under a standing menu. Every host re-capture
+    /// re-reads the page's light into the field (`ModalUnderlay::sync` on a new `page_epoch`),
+    /// which re-specifies its texture; the composite reads the field live, so the source does not
+    /// have to be re-taken for it. Red on the build that recorded the texture's revision in the
+    /// dim's arguments: the tab pulse after "Add to Watchlist" re-captured the host on each of its
+    /// frames, and each one re-ran the menu's source pass (GLASSDIFF `field` arg 10, HWCNT 19.4M a
+    /// frame for the pulse's 0.55 s against 9.2M after it).
+    #[test]
+    fn a_relatched_dim_field_under_a_menu_captures_its_source_once() {
+        let _g = plx_base::testlock::serial();
+        let tex = 9_731;
+        plx_gfx::gfx::tex_ledger::specified(tex, 60, 32);
+        let field = crate::underlay::UnderlayField::latched_for_test(tex);
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
+        let owed: Vec<bool> = (0..8)
+            .map(|_| {
+                let o = menu_frame(&sources, &field, theme::underlay::DIM_COMPACT, false);
+                plx_gfx::gfx::tex_ledger::specified(tex, 60, 32); // the next frame's re-latch
+                o
+            })
+            .collect();
+        plx_gfx::gfx::tex_ledger::deleted(tex);
+        assert_eq!(owed.iter().filter(|&&o| o).count(), 1, "one capture: {owed:?}");
+    }
+
+    /// **The guard: anything drawn ABOVE the dim under the menu keeps the dim in the source.** A
+    /// composite-time dim would darken that content too (an opener lift is drawn over the dim so
+    /// that it does NOT recede), so such a menu keys on the dim's real arguments, as before, and
+    /// re-captures when its alpha moves.
+    #[test]
+    fn content_above_the_dim_keeps_the_dim_in_the_menus_source() {
+        let _g = plx_base::testlock::serial();
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
+        let flat = crate::underlay::UnderlayField::new();
+        let owed: Vec<bool> = (0..6).map(|i| menu_frame(&sources, &flat, 0.05 * i as f32, true)).collect();
+        assert_eq!(owed, vec![true; 6], "every alpha step is a new source");
+        let s = sources.borrow();
+        let z = *s.entries.keys().find(|&&z| z >= crate::frame::backdrop::Z::surface(0)).unwrap();
+        assert_eq!(s.composite_dim(z), None, "and the composite applies no second dim");
+    }
+
     /// The tint arithmetic itself: scrim and rim alphas scale by the opacity.
     #[test]
     fn the_face_scales_every_alpha() {

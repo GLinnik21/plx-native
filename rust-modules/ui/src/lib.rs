@@ -417,6 +417,17 @@ pub fn text_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
 
 impl Painter {
     fn declare(self, r: Rect, tag: u64, values: impl FnOnce(&mut Vec<u64>)) -> bool {
+        self.declare_as(r, tag, None, values)
+    }
+    /// [`declare`](Self::declare), with `dim` saying the primitive is a modal dim a glass above it
+    /// may apply at composite (`frame::backdrop::paint_dim`).
+    fn declare_as(
+        self,
+        r: Rect,
+        tag: u64,
+        dim: Option<frame::backdrop::Dim>,
+        values: impl FnOnce(&mut Vec<u64>),
+    ) -> bool {
         if self.records() {
             #[cfg(any(test, feature = "test-support"))]
             draw_census::note(tag, self.place(r));
@@ -453,7 +464,10 @@ impl Painter {
         values(&mut data);
         // The primitive AA/rim can paint just outside its nominal rectangle.
         let bounds=Rect::new(m.x-4.0,m.y-4.0,m.w+8.0,m.h+8.0);
-        frame::backdrop::paint(bounds,data);
+        match dim {
+            Some(dim) => frame::backdrop::paint_dim(bounds, data, dim),
+            None => frame::backdrop::paint(bounds, data),
+        }
         true
     }
 
@@ -1338,6 +1352,29 @@ impl Painter {
         let t = self.c(tint);
         let m = self.place(r);
         plx_gfx::gfx::draw_field(m.x, m.y, m.w, m.h, tex, t.as_ptr());
+    }
+    /// **A modal DIM over `r`**: the field `tex` multiplied by `tint`, or — `tex == 0` — the flat
+    /// colour `tint` (`ui::underlay::plan`'s two answers). It draws exactly what
+    /// [`field`](Self::field) / [`rect`](Self::rect) would, and declares itself as a dim
+    /// (`frame::backdrop::Dim`), so a glass above it whose region it is the last draw under applies
+    /// it at composite: that glass's direct source replay skips it here, and its signature no
+    /// longer holds the alpha, ink or field revision. A ramping dim, or a field re-latched under a
+    /// standing menu, then re-filters nothing. `ModalStack::draw_scrims` is the one caller, through
+    /// `UnderlayField::draw`'s `Role::Dim`.
+    pub fn dim(self, r: Rect, tex: u32, tint: [f32; 4]) {
+        let ink = frame::backdrop::Dim { tex, tint: self.c(tint) };
+        if self.declare_as(r, 24, Some(ink), |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            plx_gfx::gfx::tex_ledger::revision(tex).record(data);
+            tint.record(data);
+        }) { return; }
+        if self.records() || frame::backdrop::dim_deferred() { return; }
+        if tex != 0 {
+            self.field(r, tex, tint);
+        } else {
+            self.rect(r, 0.0, tint, tint, 0.0);
+        }
     }
     /// [`field`](Self::field) as an OPAQUE GROUND — the field counterpart of
     /// [`ambient`](Self::ambient), and it reads a fade the same way that one does: an alpha below 1

@@ -140,6 +140,15 @@ uniform vec2 u_deep;
 // re-running the source/reduction chain for every alpha step.
 uniform float u_source_alpha;
 uniform vec3 u_source_ground;
+// A MODAL DIM applied here rather than filtered into the snapshot (`backdrop::Dim`): the dim is
+// `mix(below, ink, a)`, linear in what it covers, and its ink is a smooth field (the page's own
+// latched light times a weight, or one flat colour), so dimming the filtered page equals filtering
+// the dimmed one. `u_dim.a = 0` disables it; `u_dim_field` says whether the ink is `u_dim.rgb`
+// times the field texture at the screen point (`u_dim_uv` maps snapshot UV there) or `u_dim.rgb`.
+uniform vec4 u_dim;
+uniform highp vec4 u_dim_uv;
+uniform float u_dim_field;
+uniform sampler2D u_dim_tex;
 uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
 // THE LIT EDGE IS ITS OWN COLOUR, and that is not a refinement — it is the difference between the
 // two polarities being one material and being two. The lamp is above; the grain facing it catches
@@ -162,7 +171,18 @@ vec3 srcRGB(highp vec2 uv){
     c += texture2D(u_tex, uv + vec2(-d.x, -d.y)).rgb;
     c *= 0.2;
   }
-  return mix(u_source_ground, c, u_source_alpha);
+  c = mix(u_source_ground, c, u_source_alpha);
+  if (u_dim.a > 0.0) {
+    vec3 ink = u_dim.rgb;
+    float a = u_dim.a;
+    if (u_dim_field > 0.0) {
+      vec4 f = texture2D(u_dim_tex, uv * u_dim_uv.xy + u_dim_uv.zw);
+      ink *= f.rgb;
+      a *= f.a;
+    }
+    c = mix(c, ink, a);
+  }
+  return c;
 }
 
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){
