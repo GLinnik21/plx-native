@@ -157,6 +157,15 @@ blanked). Detail and catalog controls draw the outline face when membership is u
 row is omitted when there is no face to offer, and a press flips then reverts. Reproduce with
 `/tmp/plxnative-nowan` or the failing-closure tests.
 
+**The count (Q7, decided: option D).** The Watchlist header carries the list's count as plain text
+just left of the Sort & Filter pill: LABEL 26 regular in `TEXT_SECONDARY`, centred on the pill's line,
+right-aligned `space::MD` (24 px) clear of it, so the pill does not move and nothing sits beside the
+title. It reads "{n} titles" (plural forms in every shipped language) while no Type or Show filter
+narrows the list (Sort alone does not), and "{shown} of {total}" when one does, including "0 of N"
+beside the filtered-empty read-out. It is derived from the list state (no `SCREEN_SHAPES` change),
+absent until the list has landed and on the empty-list and unavailable read-outs, and follows a Remove
+with the landing. It stays under the Sort & Filter menu's scrim; only the pill is lifted.
+
 ## The catalog page
 
 `CatalogScreen` (`ContentArg::Catalog { hex }`) is the page for a Discover-only title. It is not a

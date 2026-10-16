@@ -13,6 +13,7 @@ use plx_data::watchlist::model::Reach;
 use plx_data::watchlist::{encode_hex, WatchlistAuth, WatchlistIo};
 use plx_plex::plex::watchlist::{WatchItem, WatchKind, WatchPage, WatchlistError};
 use plx_plex::plex::{GuidKind, GuidLookupError, GuidMatch, ServerId};
+use plx_screens::watchlist::header::Count;
 use plx_screens::watchlist::options::{ShowFilter, WatchlistOptionsState};
 use plx_screens::watchlist::page::{ListState, WatchlistScreen};
 use plx_screens::watchlist::readout::Readout;
@@ -175,7 +176,7 @@ fn a_mounted_page_opens_the_store_and_is_fed_the_ordered_list() {
     // Date Added, newest first: the script's `added_at` falls as the number rises.
     assert_eq!(guids(&d), vec![guid(1), guid(2), guid(3)]);
     assert_eq!(page(&d).list(), ListState::Ready { total: 3 });
-    assert_eq!(page(&d).count(), Some(3), "Q7: the count beside the title");
+    assert_eq!(page(&d).count(), Some(Count::All(3)), "Q7: the count beside the pill");
 }
 
 #[test]

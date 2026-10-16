@@ -36,7 +36,7 @@ use plx_plex::plex::ServerId;
 use plx_ui::{Painter, Rect};
 
 use super::caption;
-use super::header::{self, draw_header, HeaderFace};
+use super::header::{self, draw_header, Count, HeaderFace};
 use super::options::{ShowFilter, TypeFilter, WatchlistOptionsState};
 use super::readout::{draw_readout, unreachable_overlay, Readout};
 use super::tiles;
@@ -326,13 +326,22 @@ impl Page {
         }
     }
 
-    /// Q7: the count beside the title, once the list has landed: the titles shown, or, while the
-    /// options show everything, the list's whole length (the service's own, while later pages are
-    /// still arriving) so the count does not climb as they land.
-    fn count(&self) -> Option<usize> {
+    /// Q7: the count just left of the pill, once the list has landed and is not empty: the list's
+    /// whole length while the options show everything (the service's own, while later pages are
+    /// still arriving, so the count does not climb as they land), else the titles shown of the
+    /// whole list. Sort alone does not narrow. A filter that leaves nothing still counts "0 of N";
+    /// the empty list and the unavailable reads show none.
+    fn count(&self) -> Option<Count> {
         let ListState::Ready { total } = self.list else { return None };
+        if total == 0 {
+            return None;
+        }
         let unfiltered = self.options.type_ == TypeFilter::All && self.options.show == ShowFilter::All;
-        Some(if unfiltered { total.max(self.tiles.len()) } else { self.tiles.len() })
+        Some(if unfiltered {
+            Count::All(total.max(self.tiles.len()))
+        } else {
+            Count::Of { shown: self.tiles.len(), total }
+        })
     }
 
     /// The grid's length: the loaded rows and the reserved cells past them.
@@ -588,7 +597,7 @@ impl<H: ContentLike> StackPage<H> for Page {
                 // out of this pass): the menu draws the only copy, dissolving into its panel.
                 let lifted = f.lifted.is_some_and(|key| key.entry == self.entry && key.elem == PILL_ELEM);
                 if lifted {
-                    header::draw_title(p, head_frame(r.y), &face);
+                    header::draw_title(p, head_frame(r.y), f.measure, &face);
                 } else {
                     draw_header(p, head_frame(r.y), f.measure, &face);
                 }
@@ -689,8 +698,8 @@ impl WatchlistScreen {
         self.page.readout()
     }
 
-    /// Q7: the count beside the title.
-    pub fn count(&self) -> Option<usize> {
+    /// Q7: the count just left of the pill.
+    pub fn count(&self) -> Option<Count> {
         self.page.count()
     }
 

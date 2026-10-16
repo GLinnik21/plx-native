@@ -286,10 +286,13 @@ fn every_watchlist_key_exists_in_all_four_catalogs() {
         };
         assert_eq!(keys(&catalog), keys(&english), "{tag} watchlist keys differ from English");
         for (key, value) in &catalog {
-            assert!(
-                value.as_str().is_some_and(|s| !s.trim().is_empty()),
-                "{tag} {key} is empty"
-            );
+            // A plural message is an object of forms; every form must be filled.
+            let filled = |v: &serde_json::Value| v.as_str().is_some_and(|s| !s.trim().is_empty());
+            let ok = match value.as_object() {
+                Some(forms) => !forms.is_empty() && forms.values().all(filled),
+                None => filled(value),
+            };
+            assert!(ok, "{tag} {key} is empty");
         }
     }
 }
