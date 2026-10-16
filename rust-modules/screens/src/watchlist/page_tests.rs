@@ -379,6 +379,20 @@ fn a_reserved_cell_keeps_its_place_when_its_row_lands() {
     assert_eq!(CardSource::<H>::index_of(&src, &far), None, "the landed cell's reserved key is retired");
 }
 
+/// **The page lays down the app's ground itself, before its own** (a read-out after Sort & Filter
+/// closed left the menu's last frames on screen): `PageGround::draw` skips a ground resolved to
+/// the app surface because the frame clear already painted that colour, so a page that does not
+/// clear shows whatever the back buffer held. Home, the Library, Search and Detail all clear first.
+#[test]
+fn the_page_clears_the_frame_under_a_flat_ground() {
+    let mut h = Harness::new(vec![]);
+    h.screen.input(WatchlistIn::List(ListState::Ready { total: 3 }));
+    assert_eq!(h.screen.readout(), Some(Readout::Filtered));
+    assert_eq!(h.screen.ground_goal(), [theme::SURFACE_APP; 4], "the read-out's ground is flat");
+    let sources = h.draw_discovered();
+    assert!(!sources.borrow().paints.is_empty(), "the page's draw laid down no frame clear");
+}
+
 /// **Discover art needs a reachable server's photo proxy** (Q9): an unmatched title asks for its
 /// poster through one, and draws the skeleton when none is reachable.
 #[test]

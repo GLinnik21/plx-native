@@ -10,7 +10,7 @@
     {"file": "empty.png", "board": "WatchlistEmpty", "mock": "empty", "triggers": {"watchlist": ""}, "keys": []},
     {"file": "filtered.png", "board": "WatchlistFiltered", "mock": "movies_only", "triggers": {"watchlist": ""}, "keys": ["down", "up", "ok", "down", "down", "ok", "back"]},
     {"file": "hold-menu.png", "board": "HoldMenu", "mock": "default", "triggers": {"watchlist": ""}, "keys": ["down", "right", "hold"]},
-    {"file": "after-removal.png", "board": "WatchlistRemoved", "mock": "default", "triggers": {"watchlist": ""}, "keys": ["down", "right", "hold", "down", "ok"], "expect_write": "PUT /actions/removeFromWatchlist"},
+    {"file": "after-removal.png", "board": "WatchlistRemoved", "mock": "default", "triggers": {"watchlist": ""}, "keys": ["down", "right", "hold", "down", "down", "ok"], "expect_write": "PUT /actions/removeFromWatchlist"},
     {"file": "watched-tick-new.png", "board": "TileStates", "mock": "default", "triggers": {"library": "0", "libgrid": "0,2"}, "keys": [], "compare": "watched-tick-base.png"},
     {"file": "account-menu-new.png", "board": "(unchanged sheet)", "mock": "default", "triggers": {"heropin": "0", "acct": "800"}, "keys": [], "compare": "account-menu-base.png"},
     {"file": "item-menu-new.png", "board": "(unchanged sheet)", "mock": "default", "triggers": {"heropin": "0", "itemmenu": ""}, "keys": [], "compare": "item-menu-base.png"}

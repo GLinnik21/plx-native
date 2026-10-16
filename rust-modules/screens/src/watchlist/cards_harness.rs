@@ -99,9 +99,18 @@ impl Harness {
         }
     }
 
-    /// Draw the screen once through a recording painter.
+    /// Draw the screen once through a recording painter. The draw runs inside a discovery walk
+    /// (`draw_discovered`) because the page's frame clear would otherwise reach GL.
     pub(crate) fn draw(&mut self) {
+        self.draw_discovered();
+    }
+
+    /// Draw the screen once inside a backdrop DISCOVERY walk with a recording painter: every
+    /// `Painter` primitive is recorded away, so what reaches the returned sources is only what the
+    /// page laid down outside its painter (`gfx::frame_clear`). No GL call is made.
+    pub(crate) fn draw_discovered(&mut self) -> std::rc::Rc<std::cell::RefCell<plx_gfx::gfx::backdrop::Sources>> {
         use plx_ui::screen::Screen;
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_gfx::gfx::backdrop::Sources::default()));
         let cx = Cx {
             views: (),
             tick: Tick { ms: self.ms, dt_us: 16_667 },
@@ -110,8 +119,12 @@ impl Harness {
             focus: FocusRead { current: self.focus, ..Default::default() },
             owner: InputOwner::Entry(ENTRY),
         };
-        let mut f = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
-        Screen::<WatchHost>::draw(&mut self.screen, &mut f);
+        {
+            let _discovery = plx_ui::frame::backdrop::discover(sources.clone());
+            let mut f = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+            Screen::<WatchHost>::draw(&mut self.screen, &mut f);
+        }
+        sources
     }
 
     /// Step one event; returns the effects it queued and whether the step reported page motion.

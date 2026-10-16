@@ -697,6 +697,12 @@ impl WatchlistScreen {
         (self.focus < self.page.tiles.len()).then_some(self.focus)
     }
 
+    /// The focused cell's position in the grid, a reserved cell past the loaded tail included:
+    /// where the hold window follows the focus to.
+    pub fn cursor(&self) -> usize {
+        self.focus
+    }
+
     /// The element of the tile at `index`.
     pub fn elem_at(&self, index: usize) -> Option<u32> {
         self.page.cells.get(index).map(|c| c.elem)
@@ -1037,6 +1043,9 @@ impl<H: ContentLike> Screen<H> for WatchlistScreen {
     }
     fn prepare(&mut self, _budget: &mut plx_ui::frame::Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+        // The app's ground first, as every owned page lays it: `PageGround::draw` skips a ground
+        // resolved to the flat app surface (the read-outs) because this clear already painted it.
+        plx_gfx::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let p = f.painter.alpha(f.page_alpha);
         self.ground.draw(p, Rect::FULL);
         self.stack.view(&self.page).paint(f);
