@@ -1,0 +1,262 @@
+//! Sort & Filter state, summary, the glass menu's morph wiring, the header and the read-outs.
+use super::super::header::{self, HeaderFace};
+use super::super::readout::{self, Readout};
+use super::*;
+use plx_base::fontcov::advances::ShippedMeasure;
+use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
+use plx_ui::fit::HEADROOM;
+use plx_ui::fixture::FixtureMeasure;
+use plx_ui::table::MENU_MAX_W;
+use plx_ui::widgets::{StatusKind, StatusOverlay};
+use std::ffi::CString;
+
+const LANGUAGES: [Preference; 4] = [Preference::En, Preference::Es, Preference::Be, Preference::Fr];
+
+fn default_state() -> WatchlistOptionsState {
+    WatchlistOptionsState::default()
+}
+
+// ---- state transitions ----
+
+#[test]
+fn a_type_or_show_press_sets_the_choice_and_a_repeat_changes_nothing() {
+    let mut s = default_state();
+    assert!(OptionsRow::Type(TypeFilter::Shows).apply(&mut s));
+    assert_eq!(s.type_, TypeFilter::Shows);
+    assert!(!OptionsRow::Type(TypeFilter::Shows).apply(&mut s), "already chosen: no change");
+    assert!(OptionsRow::Show(ShowFilter::OnYourServers).apply(&mut s));
+    assert_eq!(s.show, ShowFilter::OnYourServers);
+    assert_eq!((s.sort, s.descending), (SortKey::DateAdded, true), "the other sections stay");
+}
+
+#[test]
+fn a_new_sort_key_lands_on_its_natural_direction_and_the_active_key_flips() {
+    let mut s = default_state();
+    assert!(OptionsRow::Sort(SortKey::Title).apply(&mut s));
+    assert_eq!((s.sort, s.descending), (SortKey::Title, false), "Title reads A to Z");
+    assert!(OptionsRow::Sort(SortKey::Title).apply(&mut s), "the active key flips direction");
+    assert!(s.descending);
+    assert!(OptionsRow::Sort(SortKey::Rating).apply(&mut s));
+    assert_eq!((s.sort, s.descending), (SortKey::Rating, true), "Rating is highest first");
+    assert!(OptionsRow::Sort(SortKey::DateAdded).apply(&mut s));
+    assert_eq!(s, default_state(), "back on Date Added the value is the default again");
+}
+
+#[test]
+fn every_row_is_in_all_once_and_exactly_one_per_section_is_chosen() {
+    let s = default_state();
+    let chosen = |f: fn(&OptionsRow) -> bool| OptionsRow::ALL.iter().filter(|r| f(r) && r.is_chosen(&s)).count();
+    assert_eq!(chosen(|r| matches!(r, OptionsRow::Type(_))), 1);
+    assert_eq!(chosen(|r| matches!(r, OptionsRow::Sort(_))), 1);
+    assert_eq!(chosen(|r| matches!(r, OptionsRow::Show(_))), 1);
+    assert_eq!(OptionsRow::ALL.len(), 10);
+}
+
+#[test]
+fn sections_are_type_sort_show_with_the_direction_chevron_on_the_active_key() {
+    use plx_ui::icons::Icon;
+    let mut s = default_state();
+    let secs = sections(&s);
+    assert_eq!(secs.len(), 3);
+    assert_eq!(secs.iter().map(|x| x.rows.len()).collect::<Vec<_>>(), [3, 4, 3]);
+    assert_eq!(secs[1].rows[0].ticon, Some(Icon::ChevronDown), "Date Added descending");
+    assert!(secs[1].rows.iter().skip(1).all(|r| r.ticon.is_none()));
+    s.descending = false;
+    assert_eq!(sections(&s)[1].rows[0].ticon, Some(Icon::ChevronUp));
+    assert!(sections(&s).iter().all(|x| x.rows.iter().filter(|r| r.checked).count() == 1));
+}
+
+// ---- summary ----
+
+#[test]
+fn the_summary_is_default_until_something_changes_then_lists_the_changes_in_section_order() {
+    let _g = language_on_this_thread_for_test(Preference::En);
+    let mut s = default_state();
+    assert_eq!(s.summary(), "Default");
+    OptionsRow::Type(TypeFilter::Movies).apply(&mut s);
+    assert_eq!(s.summary(), "Movies");
+    OptionsRow::Sort(SortKey::Title).apply(&mut s);
+    OptionsRow::Sort(SortKey::Title).apply(&mut s);
+    assert_eq!(s.summary(), "Movies, Title", "the direction is the menu's chevron, not the pill's");
+    OptionsRow::Show(ShowFilter::Released).apply(&mut s);
+    assert_eq!(s.summary(), "Movies, Title, Released");
+    let mut d = default_state();
+    d.descending = false;
+    assert_eq!(d.summary(), "Date Added", "a flipped default key is still a changed sort");
+}
+
+#[test]
+fn the_pill_text_is_the_catalogs_sentence_split_at_the_label() {
+    let _g = language_on_this_thread_for_test(Preference::En);
+    let frame = header::header_frame(1771.0);
+    let r = header::pill_rect(frame, &FixtureMeasure, "Default");
+    // "Sort & Filter" + " · Default" measured as the chip measures them.
+    let w = plx_ui::value_chip::ValueChip::width(&FixtureMeasure, c"Sort & Filter", c" · Default", None);
+    assert_eq!(r.w, w);
+}
+
+// ---- the menu: glass ground, morph, geometry ----
+
+fn open_menu() -> (OptionsMenu, Rect, WatchlistOptionsState) {
+    let state = default_state();
+    let frame = header::header_frame(1771.0);
+    let pill = header::pill_rect(frame, &ShippedMeasure, &state.summary());
+    let mut m = OptionsMenu::new();
+    m.open(pill, &state);
+    (m, pill, state)
+}
+
+#[test]
+fn the_menu_is_a_morphing_popover_that_grows_out_of_the_pill_and_ends_on_the_panel_radius() {
+    let (mut m, pill, _) = open_menu();
+    assert_eq!(m.popover().open_style(), plx_ui::popover::OpenStyle::Morph);
+    let panel = m.panel_rect(&ShippedMeasure);
+    let f0 = m.popover().morph_frame(Some(pill), panel, PANEL_RAD).unwrap();
+    assert!(f0.rect.w <= panel.w && f0.rect.h < panel.h, "frame 0 is the pill, not the panel");
+    for _ in 0..120 {
+        m.update(1.0 / 60.0, &ShippedMeasure);
+    }
+    let f = m.popover().morph_frame(Some(pill), panel, PANEL_RAD).unwrap();
+    assert!((f.radius - PANEL_RAD).abs() < 0.05, "the morph ends on the panel's radius");
+    assert!((f.rect.h - panel.h).abs() < 0.5 && (f.rect.w - panel.w).abs() < 0.5);
+    assert!(m.is_open());
+    m.dismiss();
+    assert!(!m.is_open());
+}
+
+#[test]
+fn the_panel_hangs_under_the_pill_right_aligned_inside_the_safe_frame() {
+    let (m, pill, _) = open_menu();
+    let panel = m.panel_rect(&ShippedMeasure);
+    let safe = plx_ui::consts::SAFE;
+    assert!((panel.x + panel.w - (pill.x + pill.w)).abs() < 0.5, "right edges align");
+    assert_eq!(panel.y, pill.y + pill.h + theme::space::SM);
+    assert!(panel.x >= safe.x && panel.y + panel.h <= safe.y + safe.h + 0.01);
+    assert!(panel.w >= plx_ui::table::MENU_MIN_W && panel.w <= MENU_MAX_W);
+}
+
+#[test]
+fn a_press_edits_the_value_and_keeps_the_highlight_on_its_row() {
+    let (mut m, _, mut state) = open_menu();
+    assert_eq!(m.selected(), Some(OptionsRow::Type(TypeFilter::All)));
+    m.move_sel(1);
+    assert_eq!(m.selected(), Some(OptionsRow::Type(TypeFilter::Movies)));
+    assert!(m.press(&mut state));
+    assert_eq!(state.type_, TypeFilter::Movies);
+    assert_eq!(m.selected(), Some(OptionsRow::Type(TypeFilter::Movies)), "rebuilt in place");
+    assert!(!m.press(&mut state), "the chosen row again is not a change");
+    m.move_sel(3);
+    assert_eq!(m.selected(), Some(OptionsRow::Sort(SortKey::Title)));
+    assert!(m.press(&mut state));
+    assert_eq!((state.sort, state.descending), (SortKey::Title, false));
+}
+
+#[test]
+fn the_dissolving_pill_still_records_its_label() {
+    let (m, pill, state) = open_menu();
+    let log = plx_ui::draw_census::capture(|| {
+        let face = HeaderFace { title: "Watchlist", count: Some(12), summary: &state.summary(), pill_focused: false };
+        header::draw_pill(m.pill_painter(plx_ui::Painter::recording()), pill, &face);
+    });
+    assert!(log.iter().any(|(tag, _)| *tag == 100), "the pill's label is a text run");
+    // `OptionsMenu::draw` paints through the root painter (GL glass), so the panel itself is graded
+    // by the simulator capture, not here.
+}
+
+// ---- header ----
+
+#[test]
+fn the_pill_is_right_aligned_and_centred_on_the_title_line() {
+    let frame = header::header_frame(1771.0);
+    let r = header::pill_rect(frame, &FixtureMeasure, "Default");
+    assert_eq!(r.x + r.w, frame.x + frame.w);
+    assert_eq!(r.y + r.h * 0.5, header::HEADER_CY);
+    assert_eq!(frame.x, plx_ui::consts::MARGIN_X);
+    assert_eq!(frame.y, 172.0, "board: title top 172");
+    assert_eq!(header::HEADER_CY, 196.0);
+}
+
+// ---- read-outs ----
+
+#[test]
+fn the_readout_hangs_its_verdict_from_540_with_the_reason_under_it() {
+    let frame = Rect::FULL;
+    let (cap, reason) = readout::bands(frame, &FixtureMeasure);
+    assert_eq!(cap.y, 540.0);
+    assert_eq!(cap.y, StatusOverlay::FULL_ANCHOR_TOP);
+    assert_eq!(reason.y, cap.y + cap.h + theme::space::SM);
+    assert!(reason.w <= StatusOverlay::REASON_W);
+    assert!((reason.cx() - frame.cx()).abs() < 0.01, "centred on the page");
+}
+
+#[test]
+fn the_readout_wears_the_bright_verdict_faces() {
+    let (sz, bold, ink) = StatusOverlay::verdict_face(StatusKind::Failed);
+    assert_eq!((sz, bold, ink), (theme::size::TITLE, true, theme::TEXT_PRIMARY));
+    let (rsz, rink) = StatusOverlay::reason_face(StatusKind::Failed);
+    assert_eq!((rsz, rink), (theme::size::BODY, theme::TEXT_SECONDARY));
+}
+
+#[test]
+fn each_readout_has_its_own_verdict_and_only_the_list_ones_have_a_body() {
+    let _g = language_on_this_thread_for_test(Preference::En);
+    assert_eq!(Readout::Empty.verdict(), "Your watchlist is empty");
+    assert_eq!(Readout::Filtered.verdict(), "Nothing matches these filters");
+    assert_eq!(Readout::NoToken.verdict(), "Watchlist isn't available for this profile");
+    assert!(Readout::Empty.body().is_some() && Readout::Filtered.body().is_some());
+    assert!(Readout::NoToken.body().is_none());
+    let log = plx_ui::draw_census::capture(|| readout::draw_readout(Readout::Empty, plx_ui::Painter::recording(), Rect::FULL));
+    assert_eq!(log.iter().filter(|(tag, _)| *tag == 100).count(), 2, "a verdict and a reason");
+}
+
+// ---- text fit, every shipped language, the device's own advances ----
+
+#[test]
+fn the_menu_pill_and_readouts_fit_in_every_shipped_language() {
+    let mut bad = Vec::new();
+    for language in LANGUAGES {
+        let _g = language_on_this_thread_for_test(language);
+        let tag = language.tag();
+        // The widest menu state: every section's longest label, the active key's chevron.
+        let mut state = default_state();
+        state.sort = SortKey::Release;
+        let mut table = plx_ui::table::TableView::new();
+        table.compact = true;
+        table.open_sections(sections(&state));
+        if let Some(f) = table.menu_cap_failure(&ShippedMeasure, &format!("{tag} sort & filter menu")) {
+            bad.push(f);
+        }
+        // The pill with the longest summary the menu can compose.
+        let mut long = default_state();
+        long.type_ = TypeFilter::Shows;
+        long.sort = SortKey::Release;
+        long.descending = false;
+        long.show = ShowFilter::OnYourServers;
+        let frame = header::header_frame(1771.0);
+        let pill = header::pill_rect(frame, &ShippedMeasure, &long.summary());
+        // The title (tracked) and a five-digit count, then the air `space::MD` the count keeps.
+        let title = CString::new(msg::watchlist_page_title()).unwrap();
+        let title_w = plx_machine::machine::Measure::width(&ShippedMeasure, &title, theme::size::DISPLAY, true)
+            + theme::TRACKING_TITLE_TIGHT * title.as_bytes().len() as f32;
+        let count_w = plx_machine::machine::Measure::width(&ShippedMeasure, c"88888", theme::size::HEADLINE, false);
+        let title_end = plx_ui::consts::MARGIN_X + title_w + theme::space::MD + count_w + theme::space::LG;
+        if pill.x < title_end {
+            bad.push(format!("{tag} pill {:.0}px wide runs into the title (needs x >= {title_end:.0}, is {:.0})", pill.w, pill.x));
+        }
+        // Verdicts: one line inside the page margins; bodies in the reason's two-line slot.
+        for r in [Readout::Empty, Readout::Filtered, Readout::NoToken] {
+            let c = CString::new(r.verdict()).unwrap();
+            let w = plx_machine::machine::Measure::width(&ShippedMeasure, &c, theme::size::TITLE, true) / HEADROOM;
+            if w > plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X {
+                bad.push(format!("{tag} verdict {:?} is {w:.0}px", r.verdict()));
+            }
+            if let Some(b) = r.body() {
+                let c = CString::new(b).unwrap();
+                if StatusOverlay::failed_reason_truncates(&c, &ShippedMeasure, HEADROOM) {
+                    bad.push(format!("{tag} body {b:?} would end in an ellipsis"));
+                }
+            }
+        }
+    }
+    assert!(bad.is_empty(), "does not fit:\n  {}", bad.join("\n  "));
+}
