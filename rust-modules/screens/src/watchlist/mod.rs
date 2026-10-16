@@ -11,8 +11,15 @@
 //! * [`hold`]: the grid's hold-menu rows and results.
 //!
 //! No sibling screen is named here: a Detail or catalog target leaves as an output the app routes.
+pub mod caption;
 pub mod header;
 pub mod hold;
 pub mod options;
 pub mod page;
 pub mod readout;
+pub mod tiles;
+
+#[cfg(test)]
+pub(crate) mod cards_harness;
+#[cfg(test)]
+mod page_tests;
