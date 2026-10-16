@@ -330,6 +330,19 @@ pub struct ItemMenuArg {
     pub anchor: [u32; 4],
     pub loaded_episode: bool,
     pub from_home: bool,
+    /// The catalog title a [`ItemMenuKind::Catalog`] menu is about (a Watchlist tile with no
+    /// playable copy); `None` for every PMS kind.
+    pub catalog: Option<CatalogRef>,
+}
+
+/// **A discover-catalog title**, the subject of an [`ItemMenuKind::Catalog`] menu: identity only,
+/// captured when the menu opened. No `Debug`: the title is a household's viewing.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CatalogRef {
+    /// `plex://movie|show/<24 hex>`.
+    pub guid: String,
+    pub kind: plx_data::watchlist::model::Kind,
+    pub title: String,
 }
 
 /// Which of the three menus this is, and the data its row set is built from.
@@ -357,6 +370,10 @@ pub enum ItemMenuKind {
     /// tab's season number (`Season::index`): together the address of the season's episodes, which
     /// is all a season-scoped write reaches them by (`viewstate::Scope::Season`).
     Season { mark: plx_ui::widgets::PosterMark, show_rk: String, index: i64 },
+    /// A Watchlist tile that is not playable on a reachable server (plan §1.9): no PMS item, so
+    /// `sid` is `UNSET` and `rk` empty; the subject is [`ItemMenuArg::catalog`] and `state` picks the
+    /// rows (`watchlist::hold::rows_for`).
+    Catalog { state: plx_data::watchlist::model::TileState },
 }
 
 /// **Identity, not contents.** `PmsMovie` is a wire DTO with no `PartialEq` of its own, and one
@@ -372,6 +389,7 @@ impl PartialEq for ItemMenuKind {
             (Self::Episode { mark: a }, Self::Episode { mark: b }) => a == b,
             (Self::Season { mark: a, show_rk: sa, index: ia }, Self::Season { mark: b, show_rk: sb, index: ib }) =>
                 a == b && sa == sb && ia == ib,
+            (Self::Catalog { state: a }, Self::Catalog { state: b }) => a == b,
             _ => false,
         }
     }
@@ -383,7 +401,7 @@ impl PartialEq for ItemMenuArg {
         self.sid == other.sid && self.rk == other.rk && self.kind == other.kind
             && self.host == other.host && self.focus == other.focus
             && self.anchor == other.anchor && self.loaded_episode == other.loaded_episode
-            && self.from_home == other.from_home
+            && self.from_home == other.from_home && self.catalog == other.catalog
     }
 }
 impl Eq for ItemMenuArg {}
@@ -395,11 +413,13 @@ impl plx_machine::machine::LogicalState for ItemMenuArg {
             ItemMenuKind::Card { row, from_deck } => { c.u32(0).bool(*from_deck).u32(row.kind as u32); }
             ItemMenuKind::Episode { mark } => { c.u32(1).u32(*mark as u32); }
             ItemMenuKind::Season { mark, show_rk, index } => { c.u32(2).u32(*mark as u32).str(show_rk).u64(*index as u64); }
+            ItemMenuKind::Catalog { state } => { c.u32(3).u32(*state as u32); }
         }
         c.u32(self.host.0);
         c.option(self.focus, |c, key| { c.u32(key.entry.0).u32(key.elem); });
         for value in self.anchor { c.u32(value); }
         c.bool(self.loaded_episode).bool(self.from_home);
+        c.option(self.catalog.as_ref(), |c, r| { c.str(&r.guid); });
     }
     fn probe(&self, out: &mut String) { out.push_str("item_menu_arg"); }
 }
@@ -2017,6 +2037,7 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             anchor: [0; 4],
             loaded_episode: false,
             from_home: false,
+            catalog: None,
         }),
         // The Detail page's own two panels. Presented over Home here like every other
         // non-player surface: `Screen::name` is a constant of the screen, so the word it

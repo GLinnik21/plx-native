@@ -2744,6 +2744,7 @@ pub(crate) fn card_menu_arg(
         anchor: anchor_bits(rect),
         loaded_episode: false,
         from_home,
+        catalog: None,
     }
 }
 
@@ -2767,6 +2768,7 @@ fn strip_menu_arg(
         focus,
         anchor: anchor_bits(rect),
         from_home: false,
+        catalog: None,
     }
 }
 

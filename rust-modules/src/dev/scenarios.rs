@@ -2574,6 +2574,7 @@ fn modal_bench_open(app: &mut App, target: bench::ModalTarget) {
                 anchor: [anchor_rect.x.to_bits(), anchor_rect.y.to_bits(), anchor_rect.w.to_bits(), anchor_rect.h.to_bits()],
                 loaded_episode: false,
                 from_home: true,
+                catalog: None,
             };
             crate::app::bridge::open_item_menu(&mut app.pages, arg);
         }

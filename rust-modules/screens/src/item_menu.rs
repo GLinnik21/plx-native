@@ -560,6 +560,9 @@ impl ItemMenuScreen {
             }
             ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark),
             ItemMenuKind::Season { mark, .. } => build_season(&self.arg.rk, *mark),
+            // TODO(W45H): the Watchlist hold rows (`watchlist::hold::rows_for`) need their
+            // `Action`s (WatchlistRemove / GoToCatalog); until they exist the panel has no rows.
+            ItemMenuKind::Catalog { .. } => Form::new().section(FormSection::new("")),
         };
         // a short list of one-line actions — BODY labels, not menu-size HEADLINE
         self.form.table.compact = true;
@@ -1570,6 +1573,7 @@ mod tests {
                 anchor: [0; 4],
                 loaded_episode: true,
                 from_home: false,
+                catalog: None,
             },
         );
         strip.build_rows(test_store().view());
@@ -1602,6 +1606,7 @@ mod tests {
                 anchor: [0; 4],
                 loaded_episode: false,
                 from_home: false,
+                catalog: None,
             },
         );
         tab.build_rows(test_store().view());
@@ -1831,6 +1836,7 @@ mod tests {
             anchor: [0; 4],
             loaded_episode: false,
             from_home: true,
+            catalog: None,
         }
     }
 
