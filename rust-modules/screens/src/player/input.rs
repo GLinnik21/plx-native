@@ -94,10 +94,6 @@ pub struct Scrub {
     /// the accelerating ramp from `Tick`, and a drag must not — the pointer says where the preview
     /// is, once per motion event, and an advance underneath it would fight the hand.
     pub drag: bool,
-    /// **Where the film was when this scrub began**, in ns: the position BACK returns to for
-    /// five seconds after the scrub commits (`scrub_undo`). Meaningful only while `ns >= 0` and
-    /// until the commit hands it to the transport row's undo window.
-    pub origin_ns: i64,
 }
 impl Scrub {
     /// No scrub in progress and no target pending — where the loop starts.
@@ -106,7 +102,6 @@ impl Scrub {
         reveal: false,
         ns: -1,
         drag: false,
-        origin_ns: 0,
     };
     /// Start a WHOLE gesture in `now`/`fwd` — every field, not the four a press happens to care
     /// about.
@@ -514,7 +509,7 @@ mod hud_visibility_tests {
         key.press(11, true);
         key.repeat(12);
         key.release(13);
-        let mut scrub = Scrub { key, reveal: true, ns: 15, drag: true, origin_ns: 0 };
+        let mut scrub = Scrub { key, reveal: true, ns: 15, drag: true };
         scrub.disengage();
         assert_eq!((scrub.key.dir, scrub.key.engaged, scrub.reveal, scrub.drag), (0, false, false, false));
         assert!(!scrub.key.release_pending(), "…nor a release still waiting out the bounce window");

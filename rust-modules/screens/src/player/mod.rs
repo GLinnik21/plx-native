@@ -216,7 +216,6 @@ impl PlayerScreen {
     /// countdown go with it.
     pub fn transport_reset(&mut self, for_reload: bool) {
         self.scrub.cancel();
-        self.row.close_undo();
         if !for_reload {
             self.hud.until = 0;
             self.hud.dismissed = false;
@@ -384,8 +383,6 @@ impl PlayerScreen {
             mix(pos as u64);
             mix(plx_media::player::seek_display_ns() as u64);
             mix(plx_media::player::TX.scrub_ns.load(Relaxed) as u64);
-            // the undo window opening, expiring and fading out: the deadline owes a frame
-            mix(u64::from(self.row.undo_phase(now)));
             // the scrub's fades, card and knob clock: a frame is owed for as long as one runs
             if self.row.scrub_motion_animating(now) {
                 mix(u64::from(now));
@@ -437,19 +434,16 @@ impl PlayerScreen {
     /// set, so the transport does not reappear over the film just because the capsule stopped
     /// hiding it. It stays down until a bound key raises it, exactly like an UP-hide.
     ///
-    /// **The five-second undo window, and a pending scrub target, end with the page being the
-    /// viewer's** (`scrub_undo`): on a surface taking it (the rising edge out of
-    /// [`HudPolicy::Normal`]) — Chapters and *From Beginning* seek from inside their panel, and the
-    /// panel's own BACK is not the scrub's, and OK there is not the scrub's confirmation — and on
-    /// that dismissal, since a transport that is not on screen has nothing to undo or to confirm.
-    /// The target is CANCELLED there, never committed.
+    /// **A pending scrub target ends with the page being the viewer's**: on a surface taking it
+    /// (the rising edge out of [`HudPolicy::Normal`]) — Chapters and *From Beginning* seek from
+    /// inside their panel, and the panel's own BACK is not the scrub's, and OK there is not the
+    /// scrub's confirmation — and on that dismissal, since a transport that is not on screen has
+    /// nothing to confirm. The target is CANCELLED there, never committed.
     pub fn set_hud_policy(&mut self, policy: HudPolicy) {
         if self.hud_policy == HudPolicy::Hidden && policy != HudPolicy::Hidden {
             self.hud.dismissed = true;
-            self.row.close_undo();
         }
         if self.hud_policy == HudPolicy::Normal && policy != HudPolicy::Normal {
-            self.row.close_undo();
             self.scrub.cancel();
             self.publish();
         }
@@ -529,13 +523,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
     /// transport ([`Self::set_hud_policy`]), UP/DOWN off the scrubber, a Skip offer or the control
     /// row's press, a teardown: a target is cancelled, never committed, by the transport going away.
     ///
-    /// **BACK and UNDO** (`scrub_undo`, in `appkit`). BACK means two things around a scrub: while a
-    /// target is live (a hold, a pending target, a seated drag) it CANCELS it — no seek, the knob
-    /// springs home — and for five seconds after a scrub commits (OK / PLAY, or a drag's release on
-    /// a film that then plays) it seeks back to where the scrub started, once, and only while the
-    /// transport is on screen at the press (the window closes on use, on a new scrub, wherever the
-    /// transport is dismissed, when a panel takes the page, and when the control row's Skip pill
-    /// seeks).
+    /// **BACK around a scrub.** While a target is live (a hold, a pending target, a seated drag) BACK
+    /// CANCELS it — no seek, the knob springs home (`knob_spring`, in `appkit`). A commit (OK / PLAY,
+    /// or a drag's release) is final: BACK afterwards is BACK's ordinary meaning, there is no way
+    /// back to where the scrub started.
     ///
     /// The POINTER half is here for the same reason. A click on the scrubber's registered stop
     /// seeds the preview under the pointer, an `InputKind::Drag` carries it (§7.5: a drag drives
@@ -755,7 +746,6 @@ impl PlayerScreen {
                 let dur = plx_media::player::duration_ns();
                 if dur > 0 {
                     self.hud.nav.focus = 0;
-                    self.begin_gesture(ps);
                     self.scrub.ns = self.pointed_ns(x, dur);
                     self.scrub.drag = true; // the release commits; nothing else does
                     self.hud.extend(now, input::HUD_LINGER_MS);
@@ -824,7 +814,7 @@ impl PlayerScreen {
         self.scrub.drag = false;
         if self.scrub.ns >= 0 {
             plx_base::eventlog::log(&format!("scrub: pointer commit ns={}", self.scrub.ns));
-            self.commit_scrub(false, now, fx);
+            self.commit_scrub(false, fx);
         }
         self.scrub.disengage();
         self.hud.extend(now, input::HUD_LINGER_MS);
@@ -899,19 +889,14 @@ impl PlayerScreen {
             // …except a BACK that finds the transport ON SCREEN: that one hides it, the way an
             // UP-hide does, and the film keeps playing. A second BACK, now over a bare picture,
             // leaves. `visible_at_press` and not `hud_up`, for the reason its own doc gives.
-            Key::Back
-                if edge == Edge::Down
-                    && (self.scrub.is_live()
-                        || (self.hud.visible_at_press && self.row.undo_origin(now).is_some())) =>
-            {
-                self.key_back_scrub(now, fx);
+            Key::Back if edge == Edge::Down && self.scrub.is_live() => {
+                self.key_back_scrub(now);
                 Handled::Yes
             }
             Key::Back if edge == Edge::Down && self.hud.visible_at_press => {
                 self.hud.nav.focus = 0;
                 self.scrub.ns = -1;
                 self.scrub.disengage();
-                self.row.close_undo();
                 self.hud.dismissed = true;
                 self.publish();
                 Handled::Yes
@@ -986,14 +971,9 @@ impl PlayerScreen {
     }
 
     /// The control row's deferred press (`PlayerReq::ArmControlRow`). It takes the page from the
-    /// scrubber, so a pending target is cancelled with it. When the row holds the *Skip Intro* /
-    /// *Skip Credits* pill the press is a seek the scrub did not make, so the undo window closes
-    /// too: BACK afterwards must not jump back over the skip.
+    /// scrubber, so a pending target is cancelled with it.
     fn arm_control_row<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
         self.scrub.cancel();
-        if matches!(self.slot, ControlSlot::Skip(_)) {
-            self.row.close_undo();
-        }
         Self::ask(fx, PlayerReq::ArmControlRow);
     }
 
@@ -1025,7 +1005,6 @@ impl PlayerScreen {
             self.scrub.disengage();
         }
         if hide {
-            self.row.close_undo();
             self.hud.dismissed = true;
         } else {
             self.hud.extend(now, input::HUD_LINGER_MS);
@@ -1059,17 +1038,6 @@ impl PlayerScreen {
         }
     }
 
-    /// **A scrub begins** (no preview yet): note where the film is, which the undo window returns
-    /// to, and close an undo window that belongs to the scrub before. Called at every seed; a
-    /// gesture already under way keeps its own.
-    fn begin_gesture(&mut self, ps: &plx_media::route::PlaybackSession) {
-        if self.scrub.ns >= 0 {
-            return;
-        }
-        self.scrub.origin_ns = plx_media::player::intended_pos_ns(ps);
-        self.row.close_undo();
-    }
-
     /// **OK or PLAY on a pending key target — the confirmation**: seek there and leave the film
     /// playing ([`PlayerReq::SeekTo`], which resumes a paused film and is only a seek on a playing
     /// one). `false` when there is none, and the press means what it always did. A pointer drag in
@@ -1083,27 +1051,18 @@ impl PlayerScreen {
             "scrub: target taken {}s",
             self.scrub.ns / 1_000_000_000
         ));
-        self.commit_scrub(true, now, fx);
+        self.commit_scrub(true, fx);
         self.scrub.disengage(); // a key may still be down: the gesture ends with its target
         self.hud.extend(now, input::HUD_LINGER_MS);
         self.publish();
         true
     }
 
-    /// **BACK while a scrub is live, or inside the undo window.** A live scrub is cancelled — no
-    /// seek, the preview gone, the knob springs home (`scrub_undo::KnobSpring`) — a pending key
-    /// target is dropped the same way. Otherwise the window returns the film to where the last
-    /// committed scrub started, once: the window closes on use, so a second BACK is the ordinary
-    /// one.
-    fn key_back_scrub<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) {
-        if self.scrub.is_live() {
-            plx_base::eventlog::log("scrub: BACK cancels the scrub");
-            self.scrub.cancel();
-        } else if let Some(origin) = self.row.undo_origin(now) {
-            plx_base::eventlog::log(&format!("scrub: BACK undoes the seek to {}s", origin / 1_000_000_000));
-            Self::ask(fx, PlayerReq::CommitSeek(origin));
-            self.row.close_undo();
-        }
+    /// **BACK while a scrub is live**: the scrub is cancelled — no seek, the preview gone, the knob
+    /// springs home (`knob_spring::KnobSpring`) — a pending key target is dropped the same way.
+    fn key_back_scrub(&mut self, now: u32) {
+        plx_base::eventlog::log("scrub: BACK cancels the scrub");
+        self.scrub.cancel();
         self.hud.extend(now, input::HUD_LINGER_MS);
         self.publish();
     }
@@ -1143,7 +1102,6 @@ impl PlayerScreen {
             input::ScrubPress::Reveal => {
                 self.hud.nav.focus = 0;
                 if dur > 0 {
-                    self.begin_gesture(ps);
                     self.scrub.begin(now, fwd);
                     self.scrub.reveal = true;
                     self.scrub.ns = plx_media::player::intended_pos_ns(ps);
@@ -1166,7 +1124,6 @@ impl PlayerScreen {
                 // this package's first regression.
                 self.scrub.reveal = false; // a visible press is a real gesture whatever raised the HUD
                 if self.scrub.key.dir == 0 && self.scrub.ns < 0 {
-                    self.begin_gesture(ps);
                     self.scrub.ns = plx_media::player::intended_pos_ns(ps);
                 }
                 if !self.scrub.key.engaged {
@@ -1237,28 +1194,13 @@ impl PlayerScreen {
     /// `app::playback::commit_seek` used to reach into this gesture and blank it, which is a write
     /// to another owner's state.
     ///
-    /// A commit after which the film is PLAYING opens the five-second undo window (`scrub_undo`)
-    /// at the position the scrub started from, and keeps the transport up for it and its fade. A
-    /// paused film's drag commits too and stays paused — with no window: the picture is a held
-    /// frame, not something that played on past where the user was.
-    fn commit_scrub<H: AppLike>(&mut self, resume: bool, now: u32, fx: &mut Effects<'_, H>) {
+    /// A commit is final: nothing remembers where the scrub started.
+    fn commit_scrub<H: AppLike>(&mut self, resume: bool, fx: &mut Effects<'_, H>) {
         if self.scrub.ns < 0 {
             return;
         }
         let target = self.scrub.ns;
         Self::ask(fx, if resume { PlayerReq::SeekTo(target) } else { PlayerReq::CommitSeek(target) });
-        // The undo returns to where the scrub started, clamped like any target: a scrub that began
-        // inside the last three seconds cannot be returned to (the pipeline cannot prime there),
-        // and the window, its tick and its chip all name the spot BACK will really seek to.
-        let origin = Scrub::clamp_target(self.scrub.origin_ns, plx_media::player::duration_ns());
-        let plays_on = resume || !plx_media::player::lifecycle::viewer_paused();
-        if plays_on && target != origin {
-            self.row.open_undo(origin, now);
-            self.hud.extend(
-                now,
-                plx_appkit::scrub_undo::UNDO_MS + plx_appkit::scrub_undo::UNDO_FADE_MS,
-            );
-        }
         self.scrub.ns = -1;
     }
 
@@ -2998,7 +2940,7 @@ mod scrub_ownership_tests {
         );
     }
 
-    // ---- click-to-confirm, BACK and UNDO (docs: the `step` doc, and ux-scenario §6.6) -------------
+    // ---- click-to-confirm and BACK (docs: the `step` doc, and ux-scenario §6.6) -------------
 
     const S: i64 = 1_000_000_000;
 
@@ -3015,7 +2957,7 @@ mod scrub_ownership_tests {
     }
 
     /// A RIGHT tap at `ms`, then OK 100 ms later; returns the instant of the OK and the seeks it
-    /// made — the commit every undo case below starts from.
+    /// made.
     fn tap_and_commit(page: &mut PlayerScreen, ms: u32) -> (u32, Vec<PlayerReq>) {
         key(page, SDLK_RIGHT, Edge::Down, ms);
         key(page, SDLK_RIGHT, Edge::Up, ms + 20);
@@ -3052,7 +2994,6 @@ mod scrub_ownership_tests {
             all.extend(seeks(tick(&mut page, t).1));
         }
         assert!(all.is_empty(), "a cancelled hold never commits: {all:?}");
-        assert_eq!(page.row.undo_origin(2_500), None, "…and a cancel is nothing to undo");
     }
 
     /// **A.3 — BACK cancels a pending key target** — a tap's, whenever it is pressed: no seek, now
@@ -3072,7 +3013,6 @@ mod scrub_ownership_tests {
             assert!(!page.hud.dismissed, "BACK spent itself on the target; the transport stays");
             let (_, reqs) = tick(&mut page, at + input::HUD_LINGER_MS + 50);
             assert!(seeks(reqs).is_empty(), "nothing is left to commit");
-            assert_eq!(page.row.undo_origin(at + 100), None, "a cancel is nothing to undo");
         }
     }
 
@@ -3125,89 +3065,7 @@ mod scrub_ownership_tests {
         assert!(seeks(reqs.clone()).is_empty(), "no jump back after a key commit: {reqs:?}");
         assert!(page.hud.dismissed, "BACK hides the transport");
 
-        let mut page = page_on_the_bar();
-        let (mx, my) = on_the_bar(0.9);
-        pointer(&mut page, InputKind::Click { x: mx, y: my, hit: Some(player_hud::ELEM_SCRUB) }, 10_000);
-        let target = page.scrub.ns;
-        assert_eq!(seeks(key(&mut page, SDLK_RETURN, Edge::Up, 10_080).1), vec![PlayerReq::CommitSeek(target)]);
-        playhead(target);
-        let (_, reqs) = back(&mut page, 11_000);
-        assert!(seeks(reqs.clone()).is_empty(), "no jump back after a drag's release: {reqs:?}");
-        assert!(page.hud.dismissed, "BACK hides the transport");
-    }
-
-    /// **A.4 — a committed tap can be undone with BACK for five seconds**, by one more seek to the
-    /// position before the scrub; the transport stays up for the window; a second BACK is not a
-    /// redo but BACK's normal meaning.
-    #[test]
-    fn back_within_five_seconds_of_a_tap_commit_returns_to_where_it_started() {
-        let _g = plx_base::testlock::serial();
-        let _f = Fixture::new(false);
-        playhead(50 * S);
-        let mut page = page_on_the_bar();
-        let (at, commit) = tap_and_commit(&mut page, 1_000);
-        assert_eq!(commit, vec![PlayerReq::SeekTo(60 * S)]);
-        assert!(page.hud.until >= at + 5_000, "the transport is kept up for the window: {}", page.hud.until);
-        assert_eq!(page.row.undo_origin(at), Some(50 * S));
-        playhead(60 * S); // the seek landed
-
-        let (handled, reqs) = back(&mut page, at + 3_000);
-        assert_eq!(handled, Handled::Yes);
-        assert_eq!(reqs, vec![PlayerReq::CommitSeek(50 * S)], "back to where the scrub started");
-        assert!(!page.hud.dismissed, "the undo is not a hide");
-
-        let (_, reqs) = back(&mut page, at + 3_100);
-        assert!(seeks(reqs).is_empty(), "a second BACK is not a redo");
-        assert!(page.hud.dismissed, "it is BACK's normal meaning: hide the transport");
-    }
-
-    /// **A.4 — the window is five seconds**: armed just inside it, ordinary BACK at it.
-    #[test]
-    fn back_after_the_five_seconds_has_its_normal_meaning() {
-        let _g = plx_base::testlock::serial();
-        let _f = Fixture::new(false);
-        for (after, undoes) in [(4_999, true), (5_000, false), (8_000, false)] {
-            playhead(50 * S);
-            let mut page = page_on_the_bar();
-            let (at, _) = tap_and_commit(&mut page, 1_000);
-            let (_, reqs) = back(&mut page, at + after);
-            assert_eq!(seeks(reqs).len(), usize::from(undoes), "{after} ms after the commit");
-            assert_eq!(page.hud.dismissed, !undoes, "{after} ms: a normal BACK hides the transport");
-        }
-    }
-
-    /// **A.4 — the undo lands where a seek legally can.** A scrub that began inside the last three
-    /// seconds (where the pipeline cannot prime) has an origin BACK cannot return to as it stands:
-    /// the undo is clamped like any target, and a window whose clamped origin IS the commit's
-    /// target is not opened at all, since BACK would seek to where the film already is.
-    #[test]
-    fn the_undo_target_is_clamped_like_any_scrub_target() {
-        use plx_ui::consts::SDLK_LEFT;
-        let _g = plx_base::testlock::serial();
-        let _f = Fixture::new(false);
-        playhead(98 * S); // DUR is 100 s: the last 3 s start at 97 s
-        let mut page = page_on_the_bar();
-        key(&mut page, SDLK_LEFT, Edge::Down, 1_000);
-        key(&mut page, SDLK_LEFT, Edge::Up, 1_020);
-        let at = 1_120;
-        assert_eq!(seeks(key(&mut page, SDLK_RETURN, Edge::Down, at).1), vec![PlayerReq::SeekTo(88 * S)]);
-        playhead(88 * S);
-        let (_, reqs) = back(&mut page, at + 500);
-        assert_eq!(reqs, vec![PlayerReq::CommitSeek(97 * S)], "the last primable second, not 98 s");
-
-        // 99 s, one tap forward: clamps to 97 s, which is also where BACK would go
-        playhead(99 * S);
-        let mut page = page_on_the_bar();
-        let (at, commit) = tap_and_commit(&mut page, 10_000);
-        assert_eq!(commit, vec![PlayerReq::SeekTo(97 * S)]);
-        assert_eq!(page.row.undo_origin(at), None, "nothing to return to: no window");
-    }
-
-    /// **A.4 — a HOLD's commit is undoable too**, back to the playhead the hold started from.
-    #[test]
-    fn back_undoes_a_committed_hold() {
-        let _g = plx_base::testlock::serial();
-        let _f = Fixture::new(false);
+        // a HOLD's commit is no different
         playhead(20 * S);
         let mut page = page_on_the_bar();
         key(&mut page, SDLK_RIGHT, Edge::Down, 1_000);
@@ -3219,148 +3077,28 @@ mod scrub_ownership_tests {
         assert_eq!(seeks(key(&mut page, SDLK_RETURN, Edge::Down, at).1).len(), 1, "the fixture: OK committed the hold");
         playhead(30 * S);
         let (_, reqs) = back(&mut page, at + 1_000);
-        assert_eq!(reqs, vec![PlayerReq::CommitSeek(20 * S)]);
-    }
+        assert!(seeks(reqs.clone()).is_empty(), "no jump back after a hold's commit: {reqs:?}");
+        assert!(page.hud.dismissed);
 
-    /// **A.4 — a pointer drag's commit is undoable too.**
-    #[test]
-    fn back_undoes_a_committed_drag() {
-        let _g = plx_base::testlock::serial();
-        let _f = Fixture::new(false);
-        playhead(50 * S);
         let mut page = page_on_the_bar();
         let (mx, my) = on_the_bar(0.9);
-        pointer(&mut page, InputKind::Click { x: mx, y: my, hit: Some(player_hud::ELEM_SCRUB) }, 1_000);
+        pointer(&mut page, InputKind::Click { x: mx, y: my, hit: Some(player_hud::ELEM_SCRUB) }, 10_000);
         let target = page.scrub.ns;
-        assert_eq!(seeks(key(&mut page, SDLK_RETURN, Edge::Up, 1_080).1), vec![PlayerReq::CommitSeek(target)]);
+        assert_eq!(seeks(key(&mut page, SDLK_RETURN, Edge::Up, 10_080).1), vec![PlayerReq::CommitSeek(target)]);
         playhead(target);
-        let (_, reqs) = back(&mut page, 2_000);
-        assert_eq!(reqs, vec![PlayerReq::CommitSeek(50 * S)]);
+        let (_, reqs) = back(&mut page, 11_000);
+        assert!(seeks(reqs.clone()).is_empty(), "no jump back after a drag's release: {reqs:?}");
+        assert!(page.hud.dismissed, "BACK hides the transport");
     }
 
-    /// **A.4 — a new scrub replaces the window.** It closes when the new scrub starts (the bar then
-    /// shows the new scrub, not the old one's tick), and the next commit opens one of its own,
-    /// whose origin is where THAT scrub started.
+    /// …and a BACK that finds NO transport on screen leaves, as it always did.
     #[test]
-    fn a_new_scrub_replaces_the_undo_window() {
+    fn back_on_a_hidden_transport_after_a_commit_leaves() {
         let _g = plx_base::testlock::serial();
         let _f = Fixture::new(false);
         playhead(50 * S);
         let mut page = page_on_the_bar();
         let (at, _) = tap_and_commit(&mut page, 1_000);
-        playhead(60 * S);
-        assert_eq!(page.row.undo_origin(at + 100), Some(50 * S));
-
-        key(&mut page, SDLK_RIGHT, Edge::Down, at + 1_000);
-        assert_eq!(page.row.undo_origin(at + 1_001), None, "the old window closed when the new scrub began");
-        key(&mut page, SDLK_RIGHT, Edge::Up, at + 1_020);
-        let at2 = at + 1_120;
-        assert_eq!(seeks(key(&mut page, SDLK_RETURN, Edge::Down, at2).1), vec![PlayerReq::SeekTo(70 * S)]);
-        playhead(70 * S);
-
-        let (_, reqs) = back(&mut page, at2 + 100);
-        assert_eq!(reqs, vec![PlayerReq::CommitSeek(60 * S)], "the second scrub's origin, not the first's");
-    }
-
-    /// **The undo window ends with the transport it is drawn on**: hiding the transport by hand
-    /// (UP from the control row) closes it, and so does a teardown or reload
-    /// (`transport_reset`). A window that outlived its tick and chip would undo a seek nothing on
-    /// screen still offers.
-    #[test]
-    fn the_undo_window_ends_with_the_transport_it_is_drawn_on() {
-        let _g = plx_base::testlock::serial();
-        let _f = Fixture::new(false);
-        playhead(50 * S);
-        let mut page = page_on_the_bar();
-        let (at, _) = tap_and_commit(&mut page, 1_000);
-        // UP from the control row hides the transport by hand
-        page.hud.nav.focus = 1;
-        key(&mut page, plx_ui::consts::SDLK_UP, Edge::Down, at + 100);
-        assert!(page.hud.dismissed, "the fixture: the transport is hidden");
-        assert_eq!(page.row.undo_origin(at + 200), None, "nothing invisible is left to undo");
-        // and a teardown closes it too
-        let mut page = page_on_the_bar();
-        let (at, _) = tap_and_commit(&mut page, 1_000);
-        page.transport_reset(true);
-        assert_eq!(page.row.undo_origin(at + 100), None);
-    }
-
-    /// **BACK undoes only what the viewer can see, and only while nothing else has moved the
-    /// film.** Four ways the five-second window used to stay armed with its transport gone or its
-    /// meaning stale; in each the next BACK is the ordinary one (hide the transport, or leave).
-    #[test]
-    fn back_does_not_undo_after_skip_intro() {
-        use plx_data::metadata::{Marker, MarkerKind};
-        use plx_appkit::player_hud::{ControlSlot, ELEM_ROW_BASE};
-        let _g = plx_base::testlock::serial();
-        let _f = Fixture::new(false);
-        let marker = Marker { kind: MarkerKind::Intro, start_ms: 1_000, end_ms: 2_000, final_seg: false };
-        let skip = player_hud::slot_for(Some(marker), false, plx_media::route::NextEpisodeMode::Countdown);
-        assert!(matches!(skip, ControlSlot::Skip(_)), "the fixture: the pill is on the row");
-        for by_key in [true, false] {
-            playhead(50 * S);
-            let mut page = page_on_the_bar();
-            let (at, _) = tap_and_commit(&mut page, 1_000);
-            assert_eq!(page.row.undo_origin(at), Some(50 * S), "the fixture: the window is open");
-            page.slot = skip;
-            let reqs = if by_key {
-                page.hud.nav.focus = 1;
-                key(&mut page, SDLK_RETURN, Edge::Down, at + 100).1
-            } else {
-                let (mx, my) = (0.0, 0.0);
-                pointer(&mut page, InputKind::Click { x: mx, y: my, hit: Some(ELEM_ROW_BASE) }, at + 100).1
-            };
-            assert_eq!(reqs, vec![PlayerReq::ArmControlRow], "the pill is activated (by_key {by_key})");
-            assert_eq!(page.row.undo_origin(at + 200), None, "a skip moved the film: nothing to undo");
-            playhead(70 * S); // the skip landed
-            let (_, reqs) = back(&mut page, at + 300);
-            assert!(seeks(reqs).is_empty(), "BACK after Skip Intro must not jump back (by_key {by_key})");
-            assert!(page.hud.dismissed, "it is the ordinary BACK: hide the transport");
-        }
-    }
-
-    /// …a panel read over the page ends the window (Chapters and From Beginning seek from
-    /// there, and the panel's own BACK is not the scrub's)…
-    #[test]
-    fn back_does_not_undo_after_a_panel_took_the_page() {
-        let _g = plx_base::testlock::serial();
-        let _f = Fixture::new(false);
-        playhead(50 * S);
-        let mut page = page_on_the_bar();
-        let (at, _) = tap_and_commit(&mut page, 1_000);
-        assert_eq!(page.row.undo_origin(at), Some(50 * S));
-        page.set_hud_policy(HudPolicy::Lifted); // Chapters / Info / Tracks / More opened
-        assert_eq!(page.row.undo_origin(at + 100), None);
-        page.set_hud_policy(HudPolicy::Normal); // …and closed, perhaps after a chapter seek
-        playhead(80 * S);
-        let (_, reqs) = back(&mut page, at + 300);
-        assert!(seeks(reqs.clone()).is_empty(), "BACK after a Chapters jump must not jump back: {reqs:?}");
-    }
-
-    /// …the Timing capsule's close is a dismissal like any other…
-    #[test]
-    fn back_does_not_undo_after_the_capsule_dismissed_the_transport() {
-        let _g = plx_base::testlock::serial();
-        let _f = Fixture::new(false);
-        playhead(50 * S);
-        let mut page = page_on_the_bar();
-        let (at, _) = tap_and_commit(&mut page, 1_000);
-        page.set_hud_policy(HudPolicy::Hidden);
-        page.set_hud_policy(HudPolicy::Normal);
-        assert!(page.hud.dismissed, "the fixture: the capsule's close hid the transport");
-        assert_eq!(page.row.undo_origin(at + 100), None, "…and an invisible window is no window");
-    }
-
-    /// …and a BACK that finds NO transport on screen is never an undo, whatever window is armed:
-    /// nothing drawn says what it would do.
-    #[test]
-    fn back_on_a_hidden_transport_does_not_undo() {
-        let _g = plx_base::testlock::serial();
-        let _f = Fixture::new(false);
-        playhead(50 * S);
-        let mut page = page_on_the_bar();
-        let (at, _) = tap_and_commit(&mut page, 1_000);
-        assert_eq!(page.row.undo_origin(at), Some(50 * S), "the fixture: the window is open");
         page.hud.visible_at_press = false; // the transport is not on screen at the press
         let (_, reqs) = back(&mut page, at + 500);
         assert_eq!(reqs, vec![PlayerReq::Exit], "an ordinary BACK over a bare picture: {reqs:?}");
@@ -3452,8 +3190,7 @@ mod scrub_ownership_tests {
 
     /// **B.6 — OK or PLAY (or the play/pause key) takes the target and leaves the film PLAYING from
     /// it** — `SeekTo`, the request that seeks and resumes a paused film (and is only a seek on a
-    /// playing one), one request and nothing else; PAUSE does not take it. The commit opens the
-    /// undo window, from either state.
+    /// playing one), one request and nothing else; PAUSE does not take it.
     #[test]
     fn ok_or_play_commits_the_target_and_the_film_plays_on_from_it() {
         use plx_ui::consts::{WCODE_PAUSE, WCODE_PLAY, WCODE_PLAYPAUSE};
@@ -3472,15 +3209,12 @@ mod scrub_ownership_tests {
             let (_, reqs) = key(&mut page, SDLK_RETURN, Edge::Down, 2_000);
             assert_eq!(reqs, vec![PlayerReq::SeekTo(60 * S)], "paused {paused}: OK: seek and resume, nothing else");
             assert_eq!(page.scrub.ns, -1);
-            assert_eq!(page.row.undo_origin(2_100), Some(50 * S), "paused {paused}: the commit opens the undo window");
-            assert!(page.hud.until >= 2_000 + 5_000, "…and keeps the transport up for it");
 
             for wcode in [WCODE_PLAY, WCODE_PLAYPAUSE] {
                 let mut page = pending();
                 let (_, reqs) = key_w(&mut page, 0, wcode, Edge::Down, 2_000);
                 assert_eq!(reqs, vec![PlayerReq::SeekTo(60 * S)], "paused {paused}: wcode {wcode}");
                 assert_eq!(page.scrub.ns, -1);
-                assert_eq!(page.row.undo_origin(2_100), Some(50 * S));
             }
 
             // the key coming up afterwards, and every frame after, adds nothing
@@ -3565,8 +3299,8 @@ mod scrub_ownership_tests {
     }
 
     /// **B.9 — a Magic Remote DRAG still commits on release**, which is the pointer's own
-    /// confirmation: a playing film plays on (and BACK can undo it), a paused one stays paused with
-    /// no undo window (`CommitSeek` holds the pause).
+    /// confirmation: a playing film plays on, a paused one stays paused (`CommitSeek` holds the
+    /// pause).
     #[test]
     fn a_drag_release_commits_a_playing_film_plays_on_and_a_paused_one_stays_paused() {
         for paused in [false, true] {
@@ -3579,17 +3313,12 @@ mod scrub_ownership_tests {
             let target = page.scrub.ns;
             let (_, reqs) = key(&mut page, SDLK_RETURN, Edge::Up, 1_080);
             assert_eq!(reqs, vec![PlayerReq::CommitSeek(target)], "paused {paused}: one request, not a resuming one");
-            assert_eq!(
-                page.row.undo_origin(1_100),
-                if paused { None } else { Some(50 * S) },
-                "paused {paused}: the undo window follows a PLAYING film's drag only",
-            );
         }
     }
 
     /// **C — paused: a drag's release commits and the film STAYS paused** (`CommitSeek` is the
     /// request that holds the pause; the pump re-pauses on the landing — "seek: paused frame
-    /// restored"), with no undo window, and BACK during the drag cancels it.
+    /// restored"), and BACK during the drag cancels it.
     #[test]
     fn a_paused_drag_commits_and_stays_paused_and_back_cancels_it() {
         let _g = plx_base::testlock::serial();
@@ -3601,7 +3330,6 @@ mod scrub_ownership_tests {
         let target = page.scrub.ns;
         let (_, reqs) = key(&mut page, SDLK_RETURN, Edge::Up, 1_080);
         assert_eq!(reqs, vec![PlayerReq::CommitSeek(target)], "one request, and not a resuming one");
-        assert_eq!(page.row.undo_origin(1_100), None);
 
         let mut page = page_on_the_bar();
         pointer(&mut page, InputKind::Click { x: mx, y: my, hit: Some(player_hud::ELEM_SCRUB) }, 1_000);

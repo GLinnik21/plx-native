@@ -27,7 +27,7 @@ pub mod info_panel;
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)
 pub mod player_hud;
 pub mod scrub_preview; // the still above the knob while scrubbing, from the part's BIF index
-pub mod scrub_undo; // the scrub's way back: the knob's spring to the playhead and the undo window after a commit
+pub mod knob_spring; // the knob's spring to the playhead when a scrub is cancelled
 pub mod skip_pill; // the Skip Intro / Skip Credits pill — a `ControlSlot` occupant of the player HUD's control row
 pub mod source_list; // the Sources ROW MODEL, shared by the Library panel and that route
 pub mod timing_capsule; // the on-video Subtitle Timing capsule (plan `subtitle-menu-capsule` §4)

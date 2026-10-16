@@ -552,10 +552,10 @@ distinction §6.1 draws.
 | **Rewind / Fast-forward** | the same as LEFT / RIGHT (§1.2) |
 | **UP / DOWN** | move between the HUD's three bands; a press on a hidden HUD is spent raising it |
 | **Stop** | leave the player |
-| **BACK** | cancel a scrub in progress, else undo a scrub that just committed (§6.6); otherwise hide the HUD if it is up, and leave the player from a bare picture |
+| **BACK** | cancel a scrub in progress (§6.6); otherwise hide the HUD if it is up, and leave the player from a bare picture |
 | **EXIT** | terminate the app (§2.3) |
 
-**Stop, and a BACK that finds nothing to cancel, undo or hide, do the same thing here**: both run one teardown ritual — cancel any play still being
+**Stop, and a BACK that finds nothing to cancel or hide, do the same thing here**: both run one teardown ritual — cancel any play still being
 resolved, close every panel, stop the buffer feed — and return to **the page playback started
 from**. For an episode that is the **show page, scrolled to the episode that played**, not the
 generic show root. The final position is reported to the server on the way out, so the item resumes
@@ -634,23 +634,16 @@ when the viewer says so.
 The pointer can drag the scrubber directly, and **that is its own confirmation**: the button coming
 up commits the drag. A playing film plays on from the new spot; a paused film seeks and stays paused.
 
-**BACK around a scrub.** Three meanings, tried in this order:
+**BACK around a scrub.** Two meanings, tried in this order:
 
 1. **While a scrub is live, BACK cancels it.** Live means a key held (or its release still waiting
    out the bounce), a target pending, or a pointer drag in progress. Nothing is sought, the preview
    goes, the knob eases back to the playhead over about 0.3 s, and the HUD stays up; BACK did not
    hide it or leave.
-2. **For 5 s after a scrub commits, BACK undoes it**: one more seek, back to where the scrub
-   started (clamped like any target, so never inside the last 3 s), once. It covers an OK / Play
-   confirmation's commit and a pointer drag's commit on a film that then plays; the HUD is kept up
-   for the window and its 0.3 s fade. While it is open the bar shows a faint tick at that spot and a
-   chip, the Back word in capitals and the time (`BACK · 1:23`), on the knob clock's line. A drag
-   on a film that stays paused opens no window. The window closes when it is used, when a new scrub
-   starts, when the HUD is hidden or dismissed, when a panel opens over the player, when the Skip
-   Intro / Skip Credits button is pressed, at a teardown, and at 5 s; BACK only undoes with the HUD
-   on screen at the press.
-3. **Otherwise BACK is the ordinary one**: with the HUD up it hides it (the film keeps playing), and
-   from a bare picture it leaves the player (§6.4).
+2. **Otherwise BACK is the ordinary one**: with the HUD up it hides it (the film keeps playing), and
+   from a bare picture it leaves the player (§6.4). **A committed scrub is final** — an OK / Play
+   confirmation or a pointer drag's release is not followed by a way back to where the scrub
+   started; BACK straight afterwards hides the HUD like any other BACK.
 
 ### 6.7 The control row — subtitles and audio, and what replaces them
 
