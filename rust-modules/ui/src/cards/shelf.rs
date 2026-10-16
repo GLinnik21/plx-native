@@ -784,7 +784,7 @@ impl Shelf {
             let pr = pr.alpha(a);
             let rect = Rect::new(x, at.y - pr.dy(), self.style.w, self.style.h).scaled(s);
             card_row::draw_tile(pr, ghosts.art(j), rect, s, self.style, ghosts.progress(j));
-            let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused: false };
+            let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused: g.focused };
             ghosts.overlay(pr, j, &tile, f.measure);
         }
     }

@@ -149,6 +149,17 @@ impl Harness {
         })
     }
 
+    /// The opener lift's own frame for `focus` (`Screen::redraw_focused`), through a recording
+    /// painter inside a discovery walk.
+    pub(crate) fn redraw_lift(&mut self, focus: Option<FocusKey<u32>>) {
+        use plx_ui::screen::Screen;
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_gfx::gfx::backdrop::Sources::default()));
+        let cx = self.cx();
+        let _discovery = plx_ui::frame::backdrop::discover(sources);
+        let mut f = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+        Screen::<WatchHost>::redraw_focused(&self.screen, &mut f, focus);
+    }
+
     /// Step one event; returns the effects it queued and whether the step reported page motion.
     pub(crate) fn step_fx(&mut self, ev: ScreenEvent<WatchHost>) -> (Vec<plx_machine::machine::Stamped<WatchHost>>, bool) {
         let mut present = plx_machine::present::Present::new();

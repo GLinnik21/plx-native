@@ -54,6 +54,8 @@ struct Cards {
     drawn: std::cell::RefCell<Vec<(u32, Rect)>>,
     /// The same paints in call order with the alpha each was painted at.
     painted: std::cell::RefCell<Vec<(u32, Rect, f32)>>,
+    /// The same paints with the `Tile::focused` the overlay was told (a state's wash reads it).
+    focused: std::cell::RefCell<Vec<(u32, bool)>>,
     /// Cards from this index on are not interned yet: `elem` answers the shared header id `0`
     /// (`Members::elem`'s `unwrap_or(HEADER_ELEM)`) and `index_of` knows no such element.
     unindexed_from: usize,
@@ -67,7 +69,7 @@ struct Cards {
 
 impl Cards {
     fn new(elems: Vec<u32>, more: bool) -> Self {
-        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0 }
+        Self { elems, more, epoch: 0, before: false, drawn: Default::default(), painted: Default::default(), focused: Default::default(), unindexed_from: usize::MAX, unloaded: 0..0, first: 0, sweep: 1.0 }
     }
 }
 
@@ -108,6 +110,7 @@ impl CardSource<FixtureHost> for Cards {
     fn overlay(&self, p: Painter, i: usize, tile: &super::Tile, _measure: &dyn plx_machine::machine::Measure) {
         self.drawn.borrow_mut().push((self.elems[i], p.to_screen(tile.rect).1));
         self.painted.borrow_mut().push((self.elems[i], p.to_screen(tile.rect).1, p.opacity()));
+        self.focused.borrow_mut().push((self.elems[i], tile.focused));
     }
 }
 
@@ -3469,6 +3472,56 @@ fn a_grid_ghost_fades_in_its_cell_on_k_scale() {
     r.run(600);
     assert!(r.sect.ghost_probe().0.is_empty() && grid_ghost_paint(&r.sect, &r.cx(), &[108]).is_empty(), "gone once faded");
     assert!(!r.sect.landing_pending() && !r.sect.has_ghosts() && !r.run(1), "and the grid is quiet");
+}
+
+/// **A ghost the opener lift carries is drawn once, by the lift, at its lift and full alpha**: the
+/// page pass (`lifted` names it) leaves it out and says so, the lift's frame (`lifting`) paints it
+/// alone, and a frame with neither paints it as ever. Under the menu's veil it holds where it
+/// stood, lifted and opaque.
+#[test]
+fn a_lifted_ghost_is_left_out_of_the_page_pass_and_drawn_by_the_lift() {
+    use crate::containers::modal::set_veil;
+    use crate::popover::{lift_owns, set_lift_owns};
+    let mut r = animated_grid(40, 108, GRID);
+    set_veil(1.0);
+    let was = <Rig<Grid> as CardHarness>::place(&r, 108, At::Drawn).unwrap().rect;
+    r.src.elems.remove(10);
+    remove_focused_grid(&mut r, 8);
+    r.run(3);
+    let order: Vec<u32> = r.sect.ghost_keys().map(|k| [108, 110].into_iter().find(|&e| super::elem_key(&e) == k).unwrap()).collect();
+    assert_eq!(order.len(), 2, "premise: two ghosts");
+    assert!(r.sect.departing::<FixtureHost>(r.key(108)), "the removed card is departing");
+    assert!(!r.sect.departing::<FixtureHost>(r.key(109)), "a card on the page is not");
+    let cx = r.cx();
+    let ghosts = Cards::new(order, false);
+    set_lift_owns(false);
+    let mut page = DrawFrame::new(&cx, Painter::recording());
+    page.lifted = Some(r.key(108));
+    r.sect.paint_ghosts(&page, page.painter, &ghosts);
+    let drawn: Vec<u32> = ghosts.drawn.take().into_iter().map(|(e, _)| e).collect();
+    assert_eq!(drawn, vec![110], "the page pass leaves the lifted ghost out, and only it");
+    assert!(lift_owns(), "…and says the lift owns it");
+    let mut lift = DrawFrame::new(&cx, Painter::recording());
+    lift.lifting = Some(r.key(108));
+    ghosts.painted.borrow_mut().clear();
+    r.sect.paint_ghosts(&lift, lift.painter, &ghosts);
+    let painted = ghosts.painted.take();
+    assert_eq!(painted.len(), 1, "the lift paints that ghost alone: {painted:?}");
+    let (e, rect, a) = painted[0];
+    assert!(e == 108 && rect_close(rect, was) && a == 1.0, "where it stood, lifted, opaque: {rect:?} {was:?} {a}");
+    let plain = DrawFrame::new(&cx, Painter::recording());
+    ghosts.focused.borrow_mut().clear();
+    r.sect.paint_ghosts(&plain, plain.painter, &ghosts);
+    assert!(ghosts.drawn.take().iter().any(|&(e, _)| e == 108), "a frame with no lift paints it as ever");
+    // the focused card goes as the focused card: its state's treatment (a wash) does not snap to
+    // the unfocused one on the frame it leaves; a card that was not focused goes as it stood
+    let mut marks = ghosts.focused.take();
+    marks.sort();
+    assert_eq!(marks, vec![(108, true), (110, false)], "each ghost keeps the focus it had");
+    set_veil(0.0);
+    set_lift_owns(false);
+    r.run(600);
+    assert!(!r.sect.departing::<FixtureHost>(r.key(108)), "gone once faded");
 }
 
 /// Every card the grid paints this frame, in call order, with its alpha.

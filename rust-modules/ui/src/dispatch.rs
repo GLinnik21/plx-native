@@ -669,7 +669,11 @@ where
         if self.nav.top_page().map(|e| e.id) != Some(entry) { return None; }
         if surface.phase == Phase::Closing {
             let live = self.focus().filter(|k| k.entry == entry);
-            if live.is_some() && live != opener { return None; }
+            // focus moved off the opener: the lift stands down, unless the opener LEFT the page and
+            // is still drawn going (a removed card's ghost), which the lift keeps above the dim
+            let departing = || opener.is_some_and(|k| self.nav.entry(entry).and_then(|e| e.inst.as_ref())
+                .is_some_and(|i| i.screen.opener_departing(k)));
+            if live.is_some() && live != opener && !departing() { return None; }
         }
         Some((entry, opener))
     }

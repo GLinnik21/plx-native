@@ -88,6 +88,9 @@ pub(crate) struct Ghost {
     pub alpha: Spring,
     /// Its pop scale, from what it was drawn at to rest.
     pub lift: Spring,
+    /// It was the focused card: it goes as one (`Tile::focused`), so a state's focused treatment
+    /// does not snap to the unfocused one on the frame it leaves.
+    pub focused: bool,
 }
 
 /// What a tick tells the landing about the section this frame.
@@ -359,7 +362,7 @@ impl Landing {
                     next.takeover = Some(was);
                 }
                 let s = lifted.map_or(1.0, |(_, s)| s.max(1.0));
-                next.ghosts.push(Ghost { key: k, was, shift, alpha: Spring::at(1.0), lift: Spring::at(s) });
+                next.ghosts.push(Ghost { key: k, was, shift, alpha: Spring::at(1.0), lift: Spring::at(s), focused: lifted.is_some() });
             }
         }
         // a landing over one still waiting waits with it; a fresh one owes no beat yet

@@ -906,6 +906,18 @@ impl<K: Copy + Eq, P> StackView<'_, K, P> {
     {
         let (s, page) = (self.stack, self.page);
         let Some(key) = focus.filter(|k| k.entry == s.entry) else { return };
+        // an opener that left the page: the lift carries its landing ghost above the dim
+        for (i, body) in s.bodies.iter().enumerate() {
+            if let Body::Grid(g) = body {
+                if g.departing::<H>(key) {
+                    let p = f.painter.alpha(f.page_alpha);
+                    let was = f.lifting.replace(key);
+                    page.paint_ghosts(s.specs[i].key, g, f, p);
+                    f.lifting = was;
+                    return;
+                }
+            }
+        }
         let Some(i) = s.owner(page, f.cx, &key.elem) else { return };
         let Some(src) = page.cards(f.cx, s.specs[i].key) else { return };
         let p = f.painter.alpha(f.page_alpha);
@@ -914,6 +926,12 @@ impl<K: Copy + Eq, P> StackView<'_, K, P> {
             Body::Grid(g) => g.redraw_focused(f, p, &src, focus),
             Body::Plain => {}
         }
+    }
+
+    /// Whether `key`'s card left a grid section and is still fading as its ghost
+    /// ([`Screen::opener_departing`](crate::screen::Screen::opener_departing)).
+    pub fn opener_departing<H: Host>(&self, key: FocusKey<H::Elem>) -> bool {
+        key.entry == self.stack.entry && self.stack.bodies.iter().any(|b| matches!(b, Body::Grid(g) if g.departing::<H>(key)))
     }
 
     /// The live pop of card `elem` (no press), in whichever card section shows it.

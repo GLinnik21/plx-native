@@ -1034,6 +1034,9 @@ impl<H: ContentLike> Screen<H> for WatchlistScreen {
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
         self.stack.view(&self.page).redraw_focused(f, focus);
     }
+    fn opener_departing(&self, key: FocusKey<u32>) -> bool {
+        self.stack.view(&self.page).opener_departing::<H>(key)
+    }
     fn name(&self) -> &'static str {
         Self::WORD
     }

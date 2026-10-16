@@ -450,6 +450,31 @@ fn a_removed_tile_is_drawn_while_it_fades() {
     assert!(h.screen.ghost_draws() > before, "the removed tile's poster was drawn");
 }
 
+/// **The menu's lift carries a removed tile's ghost above the dim** (Remove from Watchlist): the page
+/// says the opener is departing while its ghost fades, the page pass leaves that ghost out when it
+/// is lifted, and the lift's own frame draws it, so it is drawn once and never drops into the dim
+/// on the OK frame.
+#[test]
+fn the_menu_lift_carries_a_removed_tile_ghost_above_the_dim() {
+    use plx_ui::cards::conformance::{CardHarness, Landing};
+    use plx_ui::screen::Screen;
+    type H = super::cards_harness::WatchHost;
+    let mut h = Harness::new(tiles(12));
+    h.focus_index(2);
+    let gone = h.focus.expect("focused");
+    assert!(!Screen::<H>::opener_departing(&h.screen, gone), "a card still on the page is not departing");
+    h.landing(Landing::RemoveFocused).unwrap();
+    assert_ne!(h.focus, Some(gone), "premise: focus reconciled off the removed tile");
+    assert!(Screen::<H>::opener_departing(&h.screen, gone), "the removed tile is departing while its ghost fades");
+    let before = h.screen.ghost_draws();
+    h.draw_census(Some(gone));
+    assert_eq!(h.screen.ghost_draws(), before, "the page pass leaves the lifted ghost out");
+    h.redraw_lift(Some(gone));
+    assert!(h.screen.ghost_draws() > before, "the lift draws the ghost");
+    h.run(600);
+    assert!(!Screen::<H>::opener_departing(&h.screen, gone), "and lets it go once it has faded");
+}
+
 /// **Cells past the loaded tail are reserved** (plan §1.3): the grid is as long as the list, and
 /// a cell past the rows is a skeleton that opens nothing.
 #[test]

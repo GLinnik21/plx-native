@@ -330,6 +330,9 @@ pub struct FixtureScreen {
     /// `DrawFrame::lifted` as the page pass last handed it to this page's visible or captured draw
     /// (the element the opener lift owns); `None` when none was. Render bookkeeping, not state.
     pub lifted: Option<FocusKey<u32>>,
+    /// The element this page says is departing (`Screen::opener_departing`): a removed card it
+    /// still draws as it goes.
+    pub departing: Option<u32>,
 }
 
 crate::focusable_via_composed!(FixtureScreen, FixtureHost);
@@ -462,7 +465,11 @@ impl Machine<FixtureHost> for FixtureScreen {
 }
 
 impl Screen<FixtureHost> for FixtureScreen {
+    fn opener_departing(&self, key: FocusKey<u32>) -> bool {
+        self.departing == Some(key.elem)
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { Some(self) }
     fn covered_surfaces_ready(&self) -> bool {
         // Page 901 models a remounted owner awaiting an identity-matched store notice.
         self.arg != FixtureArg::Page(901) || self.state.items_seen > 0
@@ -645,7 +652,7 @@ impl FixtureModal {
                                     kind: ElemKind::Card,
                                 },
                                 draw_at: 0,
-                                recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
+                                recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None, departing: None,
                             }),
                             inflight: Vec::new(),
                             staged: false,
@@ -933,7 +940,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 kind,
             },
             draw_at: 0,
-            recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None,
+            recorded_draws: 0, recorded_at: 0, speculative_draws: 0, lifted: None, departing: None,
         })
     }
 }

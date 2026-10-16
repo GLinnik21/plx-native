@@ -253,6 +253,14 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>)> {
         None
     }
+    /// **The opener element LEFT this page and is still drawn as it goes** (a removed card's
+    /// landing ghost). While a menu fades, the opener lift stands down once focus moves off the
+    /// opener; a page answering `true` here keeps it up instead, because focus moved only because
+    /// the card left, and the lift ([`redraw_focused`](Self::redraw_focused)) carries the ghost
+    /// above the dim until the menu is gone. `false` (the default) for every other page.
+    fn opener_departing(&self, _key: FocusKey<H::Elem>) -> bool {
+        false
+    }
     /// **What a HELD surface still shows.** A surface is held (`PopoverMotion::held`) on its
     /// capture frame and while its text warms: at appear 0, its `draw` walked through the text
     /// recorder, which paints nothing. For a surface that redraws its own [`opener`](Self::opener)
@@ -805,6 +813,11 @@ pub struct DrawFrame<'a, 'views, H: Host> {
     /// a stale (dipped) copy under the growing one and the release spring of a taken hold is not
     /// page damage. `None` on every frame the lift does not run, and on the lift's own frame.
     pub lifted: Option<FocusKey<H::Elem>>,
+    /// **The lift's own frame for an opener that left the page** ([`Screen::opener_departing`]):
+    /// the element whose landing ghost the lift carries above the dim. A grid's
+    /// `paint_ghosts` paints that ghost alone on such a frame (and the page pass, whose `lifted`
+    /// names it, leaves it out). `None` on every other frame.
+    pub lifting: Option<FocusKey<H::Elem>>,
     stops: Vec<Stop<H::Elem>>,
 }
 
@@ -856,6 +869,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
             press: cx.press,
             underlay: None,
             lifted: None,
+            lifting: None,
             stops: Vec::new(),
         }
     }

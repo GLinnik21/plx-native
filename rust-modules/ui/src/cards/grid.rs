@@ -687,6 +687,15 @@ impl Grid {
         self.landing.ghosts().iter().map(|g| g.key)
     }
 
+    /// Whether `key`'s card left this grid and is still fading as a landing ghost: an opener that
+    /// is departing ([`Screen::opener_departing`](crate::screen::Screen::opener_departing)).
+    pub fn departing<H: Host>(&self, key: FocusKey<H::Elem>) -> bool {
+        key.entry == self.entry && {
+            let k = super::elem_key(&key.elem);
+            self.landing.ghosts().iter().any(|g| g.key == k && g.alpha.pos > 0.0)
+        }
+    }
+
     /// Whether [`paint_ghosts`](Self::paint_ghosts) has a card to draw this frame.
     pub fn has_ghosts(&self) -> bool {
         self.landing.has_ghosts()
@@ -701,9 +710,17 @@ impl Grid {
     /// and only what is on screen.
     pub fn paint_ghosts<H: Host, G: CardSource<H> + ?Sized>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, ghosts: &G) {
         let bands = self.bands.geometry();
+        // A ghost the opener lift carries is drawn by the lift alone (`DrawFrame::lifting`) and left
+        // out of the page pass (`DrawFrame::lifted`), as a lifted card is.
+        let key = |k: Option<FocusKey<H::Elem>>| k.filter(|k| k.entry == self.entry).map(|k| super::elem_key(&k.elem));
+        let (lifted, lifting) = (key(f.lifted), key(f.lifting));
         for (j, g) in self.landing.ghosts().iter().enumerate().filter(|(j, _)| *j < ghosts.len() && ghosts.loaded(*j)) {
             let a = g.alpha.pos.clamp(0.0, 1.0);
-            if a <= 0.0 {
+            if a <= 0.0 || lifting.is_some_and(|k| k != g.key) {
+                continue;
+            }
+            if lifted == Some(g.key) {
+                crate::popover::set_lift_owns(true);
                 continue;
             }
             let cell = self.cell(g.was, &bands);
@@ -714,7 +731,7 @@ impl Grid {
             }
             let pr = p.alpha(a);
             card_row::draw_tile(pr, ghosts.art(j), rect, s, &self.spec.style, ghosts.progress(j));
-            let tile = Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused: false };
+            let tile = Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused: g.focused };
             ghosts.overlay(pr, j, &tile, f.measure);
         }
     }

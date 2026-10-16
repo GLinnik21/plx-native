@@ -952,6 +952,49 @@ fn the_lifted_element_reaches_the_page_pass_and_every_change_of_it_retakes_the_s
 }
 
 
+/// **An opener that LEFT the page keeps its lift while the menu fades** (Remove from Watchlist): the
+/// focus reconciles to the next card, but the opener element is not a card focus moved off — it is
+/// the removed card, still drawn as its landing's ghost. Standing the lift down there dropped the
+/// ghost from above the dim into it on the OK frame (sim render 2026-10-16: luminance 103 to 64 in
+/// one frame). The lift holds while the page says the opener is departing, and stands down as
+/// before once it is not.
+#[test]
+fn a_departing_opener_keeps_its_lift_while_the_menu_fades() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    let opener = FocusKey { entry: home, elem: 0 };
+    let mut ms = 16;
+    let mut step = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, keys: Vec<_>| {
+        ms += 16;
+        let r = d.frame(rig, tick(ms), keys, vec![], &mut NoTap);
+        d.draw(rig, true);
+        d.prune(&r.unmounted);
+    };
+    d.set_focus(Some(opener));
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    step(&mut d, &mut rig, vec![]);
+    let id = d.nav.modals.top().expect("presented").entry.id;
+    modal_mut(&mut d, id).opener = Some((home, Some(opener)));
+    step(&mut d, &mut rig, vec![]);
+    step(&mut d, &mut rig, vec![key(Key::Back, tick(0))]);
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Closing);
+    fn page(d: &mut Dispatcher<FixtureHost>, home: EntryId) -> &mut crate::fixture::FixtureScreen {
+        d.nav.entry_mut(home).unwrap().inst.as_mut().unwrap().screen.as_any_mut().unwrap()
+            .downcast_mut::<crate::fixture::FixtureScreen>().unwrap()
+    }
+    // the opener card was removed: focus reconciles to the next one, the page still draws it going
+    page(&mut d, home).departing = Some(opener.elem);
+    d.set_focus(Some(FocusKey { entry: home, elem: 6 }));
+    step(&mut d, &mut rig, vec![]);
+    assert_eq!(d.lifted_opener(), Some((home, Some(opener))), "the lift holds the departing opener");
+    // once it is gone, the lift stands down as for any focus that moved off
+    page(&mut d, home).departing = None;
+    step(&mut d, &mut rig, vec![]);
+    assert_eq!(d.lifted_opener(), None, "nothing departing: the lift stands down");
+}
+
 #[test]
 fn a_request_freezes_inactive_group_cursors_before_focus_moves_during_the_fade() {
     use plx_machine::machine::GroupId;
