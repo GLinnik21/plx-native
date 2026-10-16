@@ -1906,6 +1906,8 @@ impl Bridge {
             AppFx::Player(req) => self.player_reqs.push(req),
             AppFx::ItemMenu(req) => self.item_menu_reqs.push(req),
             AppFx::Watchlist(req) => self.watchlist_reqs.push((from, req, self.effect_return.clone())),
+            // Staged by the W6 weave: the app glue (queue the write, pulse the tab) lands with the next package.
+            AppFx::Catalog(_) => {}
         }
     }
 

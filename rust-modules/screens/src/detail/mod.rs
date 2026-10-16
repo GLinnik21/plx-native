@@ -2955,6 +2955,7 @@ impl DetailScreen {
                         hero::HeroCtl::Trailer => plx_ui::icons::Icon::Trailer,
                         hero::HeroCtl::MarkWatched => plx_ui::icons::Icon::Check,
                         hero::HeroCtl::MarkUnwatched => plx_ui::icons::Icon::Minus,
+                        hero::HeroCtl::Watchlist => hero::face_icon(hero::face(plx_data::catalog::Membership::Unknown)),
                         _ => unreachable!(),
                     };
                     let mut button = CircleButton::new(c"".as_ptr())
@@ -4258,6 +4259,7 @@ impl DetailScreen {
                     );
                 }
             }
+            hero::HeroCtl::Watchlist => {}
             hero::HeroCtl::MarkWatched | hero::HeroCtl::MarkUnwatched => {
                 if let Some(d) = self.detail(meta) {
                     fx.push(Fx::App(AppFx::Store(

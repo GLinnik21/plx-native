@@ -24,3 +24,6 @@ pub mod stores; // stores as machines (restructure phase 4): one command vocabul
 pub mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
 pub mod watchlist; // plex.tv Watchlist: rows, match table, tile states, intent ledger, sort/filter
 pub mod viewledger; // the publish order of view-state edits, so a read in flight is re-patched on landing
+
+#[cfg(test)]
+mod watchlist_guid_tests;

@@ -109,6 +109,11 @@ pub struct PmsMovie {
     pub kind: c_int, // 0 = movie, 1 = show, 2 = season, 3 = episode, 4 = collection
     pub resume_ms: i64,  // viewOffset — drives the Continue Watching resume bar
     pub show_rk: String, // parent show rk (episode: grandparent; season: parent)
+    /// The title's catalog id, decoded once from `guid` (`plex://movie|show/<24 hex>`); `None` when
+    /// the listing carried none or it is not that form (the write worker then resolves it).
+    pub guid: Option<[u8; 12]>,
+    /// The parent show's catalog id, from `grandparentGuid` (episode); `None` as above.
+    pub show_guid: Option<[u8; 12]>,
     pub season_index: c_int, // season number (episode: parentIndex, or [`SEASON_UNKNOWN`]; season: index)
     pub show_title: String, // episode: grandparentTitle; season: parentTitle
     pub ep_index: c_int, // episode only: episode number within the season
@@ -367,6 +372,8 @@ pub fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
         ..Default::default()
     };
     m.aired = clean(&it.originally_available_at);
+    m.guid = it.guid_hex();
+    m.show_guid = it.show_guid_hex();
     m.kind = match it.kind.as_str() {
         "show" => 1,
         "season" => 2,

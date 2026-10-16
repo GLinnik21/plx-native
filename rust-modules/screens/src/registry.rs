@@ -61,6 +61,7 @@ pub enum AppFx {
     /// The Watchlist page's and its Sort & Filter menu's requests (plan §2.4 W45): everything the
     /// page asks of the app that has no existing effect spelling.
     Watchlist(crate::watchlist::page::WatchlistOut),
+    Catalog(crate::catalog::CatalogOut),
     /// Player-route requests — what an overlay panel on the player's own `ModalStack` asks of the
     /// loop, because the thing being asked for needs the `MainThread` token, the route or the
     /// trail (§14). Executed by `app/playback.rs`'s drain.
@@ -1975,9 +1976,7 @@ where
                 if let PageMemory::Collection(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
-            // CONTRACT FREEZE: the `CatalogScreen` package replaces this arm. Nothing pushes
-            // `ContentArg::Catalog` yet (the app still drops `OpenCatalog`), so it is not reached.
-            AppArg::Content(ContentArg::Catalog { .. }) => unimplemented!("CatalogScreen lands in the W6 catalog-screen package"),
+            AppArg::Content(ContentArg::Catalog { hex }) => Box::new(crate::catalog::CatalogScreen::new(entry, *hex)),
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
             // word stays the loop's while the loop still names the page
             AppArg::Onboard => Box::new(crate::onboard::OnboardScreen::first_run(
@@ -2198,6 +2197,7 @@ pub const SCREEN_SHAPES: &[&str] = &[
     crate::preferences::PICKER_SHAPE,
     crate::watchlist::page::WatchlistScreen::SHAPE,
     crate::watchlist::menu::SHAPE,
+    crate::catalog::CatalogScreen::SHAPE,
 ];
 
 /// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
