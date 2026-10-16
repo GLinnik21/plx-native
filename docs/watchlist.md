@@ -20,7 +20,7 @@ catalog id name the same film in two unrelated id spaces; the only join between 
 | ids and ledger | `data::watchlist` (`model`, `ledger`, `order`) | rows, match table, `TileState`, intent ledger, comparator |
 | store | `stores::watchlist::WatchlistStore` | main-thread state plus a mailbox adapter; `StoreId::Watchlist` |
 | catalog | `data::catalog`, `stores::catalog::CatalogStore` | one Discover-only item; `StoreId::Catalog`, appended last |
-| screens | `screens::watchlist`, `screens::catalog`, the Detail hero disc, `item_menu/watchlist.rs` | the page, the catalog page, the disc, the menu rows |
+| screens | `screens::watchlist`, `screens::catalog`, the Detail and Home hero discs, `item_menu/watchlist.rs` | the page, the catalog page, the disc, the menu rows |
 | app | `app/watchlist.rs`, `app/input.rs`, `app/chrome.rs` | feed, presses, the tab pulse, the routes |
 
 Layers: `data` names `plx_plex` and below, never `net` or `media`; screens never name a sibling
@@ -91,13 +91,13 @@ question Q5). It is incremental for new guids and fully recomputed when the serv
 copy a tile opens is chosen current server first, then owned, then shared, Reachable only.
 
 **The other direction.** A `PmsMovie` carries `guid` and `show_guid` (an episode's `grandparentGuid`),
-each decoded once to `[u8; 12]`. The Detail disc and the hold-menu rows use them to name the catalog
+each decoded once to `[u8; 12]`. The Detail and Home hero discs and the hold-menu rows use them to name the catalog
 id. `resolve_catalog_hex(known, fetch)` (`plex/models.rs`) is the helper for a row that lacks one: it
 fetches `client.metadata(rk or show_rk).guid` only when the id is not already known. A hold-menu card
 whose row carries no guid asks for it (`WatchlistStore::want_hex`, a worker reading the item's own
 server record, an episode's SHOW record): the menu being opened omits the row, the next one offers it
 once the record named a portable id (tests in `app/watchlist_press_tests.rs`). The Detail disc reads
-the guid of the loaded record. Real
+the guid of the loaded record; the Home hero's disc reads the hero row's own (`PmsMovie::watchlist_subject`) and, unlike the menu, does not ask the server record for a missing one: its presence moves the focus row, so it appears only for a row that already names a title. Real
 PMS guids are hex; the mock's default placeholder guids are not, which is why `mock_pms` has a
 `{"guids":"all"}` mode for menu captures.
 
@@ -139,6 +139,13 @@ this id lives on another service with another token). `IntentLedger`:
 outline when off the list, filled when on; the fill rises from the bottom with a 3 px ribbon drop on a
 flip, not on the first answer). It exists only for an item whose guid is `plex://movie|show/<hex>`
 (`HeroSet::watchlist`).
+The **Home hero** carries the same disc, second after Play/Continue and before Info (Play, disc, Info, with
+the shipped 12 px between controls). It is present when the hero row stands for a title
+(`PmsMovie::watchlist_subject`: a movie or show itself, a season or episode its SHOW, "Add Show"
+semantics) with a known id. The application feeds it the membership of the title the hero shows
+(`HomeScreen::watchlist_hex` / `set_watchlist`, `app::watchlist::catalog_feed`); it flips only on a real
+membership change of that title, never on open or when the hero rotates to another title. A press is the
+same `AppFx::ItemMenu` write as Detail's. Face, glyphs and flip are `plx_appkit::watchlist_disc`, shared.
 The item menu offers `Add to Watchlist` / `Remove from Watchlist` for a movie and `Add Show to
 Watchlist` / `Remove Show...` for an episode or season, with the identity captured when the menu
 opened. A catalog page's primary pill reads `Add to Watchlist` / `On Watchlist`. An add from a menu
@@ -153,7 +160,7 @@ the difference. The Remove row's wording is `Remove Show...` for an episode (pla
 brief's `Remove Show from Watchlist`.
 
 **plex.tv unreachable.** The page shows the full-screen read-out with Retry (a populated list is never
-blanked). Detail and catalog controls draw the outline face when membership is unknown, the item-menu
+blanked). Detail, Home hero and catalog controls draw the outline face when membership is unknown, the item-menu
 row is omitted when there is no face to offer, and a press flips then reverts. Reproduce with
 `/tmp/plxnative-nowan` or the failing-closure tests.
 

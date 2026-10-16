@@ -1914,13 +1914,15 @@ class DiscoverFixture:
     def configure(self, patch, lib=None):
         """`POST /_mock/discover`: `{"guid_lookup": "fail"|"ok"}` and/or
         `{"list": "default"|"empty"|"movies_only"|"first_movie_off"}` (the list reset; the capture recipe)."""
-        keys = {"guid_lookup", "list", "guids", "pms"}
+        keys = {"guid_lookup", "list", "guids", "pms", "episode_shows"}
         if not isinstance(patch, dict) or not patch or set(patch) - keys:
-            return 400, {"error": "need {guid_lookup: fail|ok}, {list: default|empty|movies_only|first_movie_off} and/or {guids: all}"}
+            return 400, {"error": "need {guid_lookup: fail|ok}, {list: default|empty|movies_only|first_movie_off} and/or {guids: all} and/or {episode_shows: catalog}"}
         if "pms" in patch and patch["pms"] not in ("fail", "ok"):
             return 400, {"error": "pms is fail or ok"}
         if "guids" in patch and patch["guids"] != "all":
             return 400, {"error": "guids is all"}
+        if "episode_shows" in patch and patch["episode_shows"] != "catalog":
+            return 400, {"error": "episode_shows is catalog"}
         if "guid_lookup" in patch and patch["guid_lookup"] not in ("fail", "ok"):
             return 400, {"error": "guid_lookup is fail or ok"}
         if "list" in patch and patch["list"] not in self.LIST_MODES:
@@ -1934,7 +1936,19 @@ class DiscoverFixture:
         if patch.get("guids") == "all":
             if lib is not None:
                 self.bind_all(lib)
+        if patch.get("episode_shows") == "catalog" and lib is not None:
+            self.bind_episode_shows(lib)
         return 200, dict(patch)
+
+    def bind_episode_shows(self, lib):
+        """`{"episode_shows": "catalog"}`: every episode's show takes the guid of the fixture's first
+        show (a catalogued title: the list can hold it, `by_hex` finds it), so a Continue Watching
+        hero (an episode, which acts on its show) has a title the Discover stand-in knows. Applied
+        after `guids: all`; the Home hero captures (`home-hero/`) use it for both faces."""
+        show = next(c for c in self.catalog if c["kind"] == "show")
+        for it in lib.items.values():
+            if it.get("type") == "episode" and it.get("grandparentRatingKey"):
+                it["grandparentGuid"] = show["guid"]
 
     def bind_all(self, lib):
         """`{"guids": "all"}`: every library title (and every episode's show) carries a synthetic

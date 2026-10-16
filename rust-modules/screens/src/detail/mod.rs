@@ -299,7 +299,7 @@ pub struct DetailScreen {
     /// of the list.
     watchlist: plx_data::catalog::Membership,
     /// 0 = the outline face at rest, 1 = the filled one; the flip between them is
-    /// [`hero::flip_frame`]. Stepped toward `watchlist` inside `idle::decorative`.
+    /// [`plx_appkit::watchlist_disc::flip_frame`]. Stepped toward `watchlist` inside `idle::decorative`.
     watchlist_flip: Spring,
     /// The loaded item's catalog id (movie or show guid, decoded once), mirrored for the app's feed.
     watchlist_hex: Option<[u8; 12]>,
@@ -2993,11 +2993,7 @@ impl DetailScreen {
                         hero::HeroCtl::MarkWatched => plx_ui::icons::Icon::Check,
                         hero::HeroCtl::MarkUnwatched => plx_ui::icons::Icon::Minus,
                         // At either rest the plain face; only a flip in flight layers the fill.
-                        hero::HeroCtl::Watchlist => if self.watchlist_flip.pos >= 1.0 {
-                            hero::face_icon(hero::Face::Filled)
-                        } else {
-                            hero::face_icon(hero::Face::Outline)
-                        },
+                        hero::HeroCtl::Watchlist => plx_appkit::watchlist_disc::paint(self.watchlist_flip.pos).0,
                         _ => unreachable!(),
                     };
                     let mut button = CircleButton::new(c"".as_ptr())
@@ -3010,9 +3006,10 @@ impl DetailScreen {
                     if let Some((slot, label)) = hero::disc_verb(ctl, self.named_show(meta)) {
                         button = button.label(label.as_ptr(), self.disc_unfurl[slot].pos);
                     }
-                    if ctl == hero::HeroCtl::Watchlist && self.watchlist_flip.pos > 0.0 && self.watchlist_flip.pos < 1.0 {
-                        let frame = hero::flip_frame(self.watchlist_flip.pos);
-                        button = button.icon_fill(hero::face_icon(hero::Face::Filled), frame.fill, frame.ribbon_dy);
+                    if ctl == hero::HeroCtl::Watchlist {
+                        if let Some(frame) = plx_appkit::watchlist_disc::paint(self.watchlist_flip.pos).1 {
+                            button = button.icon_fill(hero::face_icon(hero::Face::Filled), frame.fill, frame.ribbon_dy);
+                        }
                     }
                     button.draw(&Env::inert(), p);
                 }
@@ -3670,7 +3667,7 @@ impl DetailScreen {
         // The bookmark disc's flip, and the identity the app's feed reads. Decorative: it moves
         // no layout, so it never holds a page image.
         self.watchlist_hex = self.detail(meta).and_then(|d| plx_plex::plex::catalog_hex_of_guid(&d.guid));
-        let flip_target = f32::from(hero::face(self.watchlist) == hero::Face::Filled);
+        let flip_target = plx_appkit::watchlist_disc::target(self.watchlist);
         plx_machine::idle::decorative(|| {
             self.watchlist_flip.step(flip_target, plx_ui::widgets::K_DISC_UNFURL, dt);
         });

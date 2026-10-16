@@ -247,6 +247,15 @@ pub fn encode_hex(hex: &[u8; 12]) -> String {
     hex.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// `plex://movie|show/<24 hex>`: the guid string a Remove write and a page's removal landing are keyed by.
+pub fn guid_of(kind: model::Kind, hex: &[u8; 12]) -> String {
+    let k = match kind {
+        model::Kind::Movie => "movie",
+        model::Kind::Show => "show",
+    };
+    format!("plex://{k}/{}", encode_hex(hex))
+}
+
 /// A stored row from a decoded item, or `None` for a kind the page does not show or an id the
 /// service did not give in the form it takes. `order` is the row's server-side position.
 pub fn row_of(item: &WatchItem, order: u32) -> Option<WatchRow> {

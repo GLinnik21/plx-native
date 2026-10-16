@@ -324,62 +324,7 @@ pub fn disc_verb(ctl: HeroCtl, name_show: bool) -> Option<(usize, &'static CStr)
 
 use plx_data::catalog::Membership;
 
-/// The two faces the bookmark disc wears. Membership picks one; an UNKNOWN membership (the list has
-/// not landed, or plex.tv is unreachable) wears the outline, the Add face — the PUT is idempotent,
-/// so a press on it is still allowed.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Face {
-    Outline,
-    Filled,
-}
-
-/// The face for `m`.
-pub fn face(m: Membership) -> Face {
-    if m == Membership::On { Face::Filled } else { Face::Outline }
-}
-
-/// The glyph a face draws. The pair share one silhouette (`icons.rs`), so a flip never moves an edge.
-pub fn face_icon(f: Face) -> plx_ui::icons::Icon {
-    match f {
-        Face::Outline => plx_ui::icons::Icon::Bookmark,
-        Face::Filled => plx_ui::icons::Icon::BookmarkFill,
-    }
-}
-
-/// How far the ribbon drops at the middle of a flip, px (the board's 3 px). `theme` has no token for
-/// a glyph nudge this small — the nearest, `space::XS`, is eight — so the board's value is named here.
-pub const RIBBON_DROP: f32 = 3.0;
-
-/// One instant of the flip between the faces, from the face's progress `p` (0 = outline at rest,
-/// 1 = filled at rest — the spring the screen steps toward the target face).
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct FlipFrame {
-    /// How much of the filled glyph is revealed, measured up from the glyph's bottom edge (0..1).
-    pub fill: f32,
-    /// The ribbon's downward offset, px: 0 at both rests, [`RIBBON_DROP`] at the middle.
-    pub ribbon_dy: f32,
-}
-
-/// The flip's frame at progress `p` (clamped to 0..1). Both rests are exact (`fill` 0 / 1, no
-/// offset), so a settled disc is the plain outline or filled icon with nothing left of the animation.
-pub fn flip_frame(p: f32) -> FlipFrame {
-    let p = p.clamp(0.0, 1.0);
-    FlipFrame { fill: p, ribbon_dy: RIBBON_DROP * 4.0 * p * (1.0 - p) }
-}
-
-/// The part of the glyph's box `frame` reveals the filled face in: bottom-anchored, `fill` of the
-/// height. The outline draws under it over the whole box.
-#[cfg(test)]
-pub fn fill_clip(glyph: Rect, frame: FlipFrame) -> Rect {
-    let h = glyph.h * frame.fill;
-    Rect::new(glyph.x, glyph.y + glyph.h - h, glyph.w, h)
-}
-
-/// The glyph's box moved down by the ribbon drop.
-#[cfg(test)]
-pub fn dropped(glyph: Rect, frame: FlipFrame) -> Rect {
-    Rect::new(glyph.x, glyph.y + frame.ribbon_dy, glyph.w, glyph.h)
-}
+pub use plx_appkit::watchlist_disc::{face, face_icon, Face};
 
 /// The 12 hex bytes of a PMS item's `plex://movie|show/<hex>` guid, `None` for any other shape.
 pub fn guid_hex(guid: &str) -> Option<[u8; 12]> {

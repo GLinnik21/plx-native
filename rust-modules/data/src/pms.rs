@@ -146,6 +146,21 @@ pub struct PmsMovie {
 }
 
 impl PmsMovie {
+    /// **The Watchlist title this row stands for**, as `(kind, catalog id, from_episode)`: a movie or
+    /// a show is itself, a season or an episode is its SHOW (`from_episode`, so the labels say
+    /// "Show"). The id is the one the row was decoded with, `None` when the server sent no
+    /// `plex://movie|show` guid; a collection (kind 4) stands for no title at all. THE rule for the
+    /// item menu's row and the Home hero's bookmark disc, so the two cannot name different titles.
+    pub fn watchlist_subject(&self) -> Option<(crate::watchlist::model::Kind, Option<[u8; 12]>, bool)> {
+        use crate::watchlist::model::Kind;
+        match self.kind {
+            0 => Some((Kind::Movie, self.guid, false)),
+            1 => Some((Kind::Show, self.guid, false)),
+            2 | 3 => Some((Kind::Show, self.show_guid, true)),
+            _ => None,
+        }
+    }
+
     /// Played fraction for the amber resume bar, or None when not in progress — THE one
     /// resume-bar rule, shared by the home shelves and the Library grid (it was copy-pasted
     /// into both screens before), and the definition of `PosterMark::InProgress`.

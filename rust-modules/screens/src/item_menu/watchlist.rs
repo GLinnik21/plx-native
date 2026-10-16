@@ -36,11 +36,7 @@ pub struct Face {
 
 /// `plex://movie|show/<24 hex>`, the key the Remove write and the page's removal landing use.
 pub fn guid_of(kind: Kind, hex: &[u8; 12]) -> String {
-    let k = match kind {
-        Kind::Movie => "movie",
-        Kind::Show => "show",
-    };
-    format!("plex://{k}/{}", plx_data::watchlist::encode_hex(hex))
+    plx_data::watchlist::guid_of(kind, hex)
 }
 
 /// The catalog id at the tail of a `plex://movie|show/<24 hex>` guid.
