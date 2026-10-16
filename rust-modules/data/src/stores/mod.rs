@@ -60,6 +60,7 @@ pub(crate) fn push_held(keys: &mut HeldKeys, sid: plx_plex::plex::ServerId, rk: 
 }
 
 pub mod browse;
+pub mod catalog;
 pub mod fanout;
 mod content_arg;
 pub use content_arg::ContentArg;
@@ -98,6 +99,8 @@ pub struct Stores {
     pub reconcile: viewreconcile::ViewReconcileStore,
     /// The plex.tv Watchlist (`crate::watchlist`). Appended last, like its `StoreId`.
     pub watchlist: watchlist::WatchlistStore,
+    /// The catalog page's discover record (`crate::catalog`). Appended last, like its `StoreId`.
+    pub catalog: catalog::CatalogStore,
     /// The PMS notification feed's owner. Ships on for owned servers (`notify::NOTIFY_ENABLED`); no `StoreId`, no
     /// `StoreCmd`: the application pumps it and tells it the lifecycle (`Bridge::notify_*`).
     pub notify: notify::NotifyStore,
@@ -129,6 +132,7 @@ impl Default for Stores {
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
             reconcile: viewreconcile::ViewReconcileStore::default(),
             watchlist: watchlist::WatchlistStore::default(),
+            catalog: catalog::CatalogStore::default(),
             notify: notify::NotifyStore::default(),
             notify_map: Default::default(),
             view_ledger: Default::default(),
@@ -435,6 +439,7 @@ impl Stores {
             StoreId::ViewState => self.viewstate.borrow().gen(),
             StoreId::ViewReconcile => self.reconcile.gen(),
             StoreId::Watchlist => self.watchlist.gen(),
+            StoreId::Catalog => self.catalog.gen(),
             // A landing gate slot only: the stop mailbox is not a store and has no generation.
             StoreId::ViewStop => 0,
         }
@@ -472,6 +477,9 @@ impl Stores {
         if let Some(generation) = self.watchlist.take_notice() {
             notices.push((StoreId::Watchlist, generation));
         }
+        if let Some(generation) = self.catalog.take_notice() {
+            notices.push((StoreId::Catalog, generation));
+        }
         notices
     }
 }
@@ -497,6 +505,8 @@ pub enum StoreId {
     ViewStop,
     /// Appended for the same reason: the plex.tv Watchlist (`crate::watchlist`).
     Watchlist,
+    /// Appended for the same reason: the catalog page's discover record (`crate::catalog`).
+    Catalog,
 }
 
 /// Route-scoped background work, distinct from a user command. Polling an idle store must not
@@ -522,7 +532,7 @@ impl StoreWork {
 }
 
 impl StoreId {
-    pub const ALL: [StoreId; 11] = [
+    pub const ALL: [StoreId; 12] = [
         StoreId::Browse,
         StoreId::Hubs,
         StoreId::Metadata,
@@ -534,6 +544,7 @@ impl StoreId {
         StoreId::ViewReconcile,
         StoreId::ViewStop,
         StoreId::Watchlist,
+        StoreId::Catalog,
     ];
 
     /// The library's ordinal for this store (spec §5.1: the library never names `StoreId`).
@@ -558,6 +569,7 @@ impl StoreId {
             StoreId::ViewReconcile => "viewreconcile",
             StoreId::ViewStop => "viewstop",
             StoreId::Watchlist => "watchlist",
+            StoreId::Catalog => "catalog",
         }
     }
 }

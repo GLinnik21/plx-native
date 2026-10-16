@@ -34,6 +34,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         // manifest intentionally records that opaque modal as `route=person`.
         AppArg::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. }) => "person",
         AppArg::Content(ContentArg::Collection(_)) => "collection",
+        AppArg::Content(ContentArg::Catalog { .. }) => "catalog",
         AppArg::Search => "search",
         AppArg::Watchlist => "watchlist",
         AppArg::Player => "player",

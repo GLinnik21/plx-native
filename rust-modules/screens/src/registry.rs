@@ -1824,6 +1824,8 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::Content(ContentArg::Person { .. }) => 9,
             AppArg::Content(ContentArg::Filmography { .. }) => 14,
             AppArg::Content(ContentArg::Collection(_)) => 23,
+            // 27, forward of the Watchlist menu's 26: the catalog page (plan W6).
+            AppArg::Content(ContentArg::Catalog { .. }) => 27,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -1973,6 +1975,9 @@ where
                 if let PageMemory::Collection(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
+            // CONTRACT FREEZE: the `CatalogScreen` package replaces this arm. Nothing pushes
+            // `ContentArg::Catalog` yet (the app still drops `OpenCatalog`), so it is not reached.
+            AppArg::Content(ContentArg::Catalog { .. }) => unimplemented!("CatalogScreen lands in the W6 catalog-screen package"),
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
             // word stays the loop's while the loop still names the page
             AppArg::Onboard => Box::new(crate::onboard::OnboardScreen::first_run(

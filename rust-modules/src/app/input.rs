@@ -627,6 +627,8 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
         // The Watchlist hold menu's Remove: the store flips the tile at once, the page plays its
         // removal landing and a refused write puts the tile back with no toast (Q8).
         Action::WatchlistRemove(guid) => { bridge.watchlist_remove(&guid); }
+        // Contract freeze: the write is queued; the tab pulse joins in the menu package.
+        Action::WatchlistAdd { hex } => { bridge.watchlist_press(hex, plx_data::watchlist::ledger::Intent::Add); }
         // TODO(W6): route to the catalog page once ContentArg::Catalog exists.
         Action::GoToCatalog(_guid) => {}
         Action::GoToShow(show_rk, season) => {

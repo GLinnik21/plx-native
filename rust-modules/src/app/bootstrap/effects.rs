@@ -13,6 +13,7 @@ fn content(arg: &plx_screens::registry::ContentArg) -> Value {
         ContentArg::Person { sid, key, guid, name, thumb } => json!({"person":[sid.raw(),key,guid,name,thumb]}),
         ContentArg::Filmography { sid, key } => json!({"filmography":[sid.raw(),key]}),
         ContentArg::Collection(id) => json!({"collection":[id.sid.raw(),id.rk,id.sec,id.tag,id.name]}),
+        ContentArg::Catalog { hex } => json!({"catalog":plx_data::watchlist::encode_hex(hex)}),
     }
 }
 fn argument(arg: &plx_screens::registry::AppArg) -> Result<Value, &'static str> {

@@ -232,6 +232,8 @@ impl Stores {
                 }
                 ContentArg::Person { .. } | ContentArg::Filmography { .. } => add(self.person.held_keys(page)),
                 ContentArg::Collection(_) => add(self.collection.held_keys(page)),
+                // A title no server holds: no card of its own to owe a read-back.
+                ContentArg::Catalog { .. } => {}
             }
         }
         Held { cards, details }

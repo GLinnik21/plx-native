@@ -109,6 +109,11 @@ pub enum Action {
     GoToCatalog(String),
     /// Watchlist hold menu: take this discover guid off the Watchlist (`DELETE` on discover).
     WatchlistRemove(String),
+    /// Add the title with this catalog id (the 12 bytes of its discover guid) to the Watchlist.
+    /// Hex-keyed, identity captured when the menu opened; the app queues the write and owns the
+    /// tab pulse. (`GoToCatalog` / `WatchlistRemove` above stay discover-guid keyed: the hex is
+    /// the guid's tail, `plx_data::watchlist::decode_hex`.)
+    WatchlistAdd { hex: [u8; 12] },
 }
 
 impl Action {
@@ -142,6 +147,8 @@ impl Action {
             | Action::GoToCatalog(rk)
             | Action::WatchlistRemove(rk) => rk,
             Action::PlayTrailer { rk, .. } => rk,
+            // No ratingKey: the subject is a catalog id.
+            Action::WatchlistAdd { .. } => "",
         }
     }
 
@@ -158,8 +165,12 @@ impl Action {
             Action::Play(_) => 8,
             Action::GoToCatalog(_) => 9,
             Action::WatchlistRemove(_) => 10,
+            Action::WatchlistAdd { .. } => 11,
         };
         c.u32(tag).str(self.rk());
+        if let Action::WatchlistAdd { hex } = self {
+            c.str(&plx_data::watchlist::encode_hex(hex));
+        }
         if let Action::GoToShow(_, season) = self {
             c.u32(*season as u32);
         }
@@ -217,6 +228,8 @@ pub enum ItemRow {
     GoToCatalog,
     /// Watchlist hold menu: Remove from Watchlist (destructive).
     WatchlistRemove,
+    /// Add to Watchlist (movie) / Add Show to Watchlist (episode, catalog page menu).
+    WatchlistAdd,
 }
 
 impl ItemRow {
@@ -240,6 +253,7 @@ impl FormId for ItemRow {
             ItemRow::Play => 8,
             ItemRow::GoToCatalog => 9,
             ItemRow::WatchlistRemove => 10,
+            ItemRow::WatchlistAdd => 11,
         })
     }
 }
