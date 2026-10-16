@@ -904,7 +904,7 @@ mod tests {
         for id in StoreId::ALL {
             assert_eq!(StoreId::from_ord(id.ord()), Some(id));
         }
-        assert_eq!(StoreId::from_ord(StoreOrd(11)), None);
+        assert_eq!(StoreId::from_ord(StoreOrd(12)), None);
     }
 }
 
