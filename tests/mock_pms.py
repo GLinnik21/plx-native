@@ -1743,6 +1743,8 @@ class DiscoverFixture:
     `POST /_mock/discover {"guid_lookup": "fail"}` switch makes `GET /library/all?guid=` answer 503
     so an unmatched title re-matches as Unknown; ServerOffline comes from a second roster entry.
     Two catalog titles (15, 16) are NOT listed, so a bookmark press on a catalog page can add them.
+    `POST /_mock/discover {"list": "empty"|"movies_only"|"default"}` resets the list (the Watchlist
+    capture recipe, tests/scenarios/watchlist_captures.json): empty, the movies among the 14, or all 14.
     """
 
     # (kind, title, year, date, released, held_by_pms). A future date is far enough out to stay
@@ -1888,14 +1890,34 @@ class DiscoverFixture:
             return j({"MediaContainer": {"size": len(rows), "Metadata": rows}})
         return None
 
+    LIST_MODES = ("default", "empty", "movies_only")
+
+    def set_list(self, mode):
+        """Reset the list to a named starting state: `default` is the first LISTED titles, `empty`
+        none, `movies_only` the movies among those (so a Type = TV Shows filter matches nothing)."""
+        with self.lock:
+            base = self.catalog[:self.LISTED]
+            if mode == "empty":
+                base = []
+            elif mode == "movies_only":
+                base = [c for c in base if c["kind"] == "movie"]
+            self.order = [(c["hex"], self.BASE_ADDED_AT - n * 86_400) for n, c in enumerate(base)]
+
     def configure(self, patch):
-        """`POST /_mock/discover`: `{"guid_lookup": "fail"|"ok"}`."""
-        if not isinstance(patch, dict) or set(patch) - {"guid_lookup"}:
-            return 400, {"error": "need {guid_lookup: fail|ok}"}
-        if patch.get("guid_lookup") not in ("fail", "ok"):
+        """`POST /_mock/discover`: `{"guid_lookup": "fail"|"ok"}` and/or
+        `{"list": "default"|"empty"|"movies_only"}` (the list reset; the capture recipe)."""
+        keys = {"guid_lookup", "list"}
+        if not isinstance(patch, dict) or not patch or set(patch) - keys:
+            return 400, {"error": "need {guid_lookup: fail|ok} and/or {list: default|empty|movies_only}"}
+        if "guid_lookup" in patch and patch["guid_lookup"] not in ("fail", "ok"):
             return 400, {"error": "guid_lookup is fail or ok"}
-        self.guid_lookup_fails = patch["guid_lookup"] == "fail"
-        return 200, {"guid_lookup": patch["guid_lookup"]}
+        if "list" in patch and patch["list"] not in self.LIST_MODES:
+            return 400, {"error": "list is default, empty or movies_only"}
+        if "guid_lookup" in patch:
+            self.guid_lookup_fails = patch["guid_lookup"] == "fail"
+        if "list" in patch:
+            self.set_list(patch["list"])
+        return 200, dict(patch)
 
 
 class MockPms:

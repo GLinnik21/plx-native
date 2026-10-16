@@ -2309,8 +2309,8 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // The Watchlist page and its Sort & Filter surface (W45D): `SCREEN_SHAPES` gains
 // `WatchlistScreen::SHAPE` and `watchlist::menu::SHAPE` (appended after the preferences picker).
 // The argument alphabet they join (`AppArg::Watchlist`, `AppArg::WatchlistMenu`, the Catalog
-// item-menu kind and its subject) is `ARG_SHAPE`'s, hashed with the app census, not here; the
-// previous pin was 0x6a55_c53a_d931_3acf.
+// item-menu kind and its subject) is `ARG_SHAPE`'s, and `SCREEN_SHAPES[0]` IS `ARG_SHAPE`, so this
+// pin covers those AppArg / menu-arg changes too; the previous pin was 0x6a55_c53a_d931_3acf.
 const SCREEN_SHAPES_PIN: u64 = 0xdb5b_e029_dd4f_0a88;
 
 #[cfg(test)]

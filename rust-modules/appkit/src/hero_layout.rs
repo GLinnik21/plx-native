@@ -72,6 +72,10 @@ pub struct HeroWidths {
 /// The accumulation itself, PURE: the drawn frame of control `i` in a row whose controls, in drawn
 /// order, are `widths` wide (`CGAP` apart, from the page margin). An index past the end lands one
 /// gap after the last control, as the Detail row always has.
+///
+/// `widths` is never empty from the Detail row (`hero_ctls` always yields Play and a watch face).
+/// The Detail-only fallback the old inline loop had for an empty row (`cw.pill`) is therefore
+/// unreachable and was not carried over: an empty slice yields a zero-width control at the margin.
 pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
     let mut x = plx_ui::consts::MARGIN_X;
     let mut w = widths.first().copied().unwrap_or(0.0);

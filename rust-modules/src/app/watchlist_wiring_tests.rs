@@ -391,3 +391,24 @@ fn a_playable_titles_hold_is_the_card_menu_of_its_copy() {
     let arg = rig.watchlist_hold_arg(&mut d, entry, None, &guid(2), TileState::NotOnAnyServer, None).unwrap();
     assert!(matches!(arg.kind, ItemMenuKind::Catalog { .. }), "no copy: the catalog rows");
 }
+
+/// Plan §1.9: a Catalog hold menu has sid UNSET and an empty rk, even when the tile still knows a
+/// (cached) copy, as a ServerOffline tile does.
+#[test]
+fn a_catalog_hold_carries_no_pms_identity_even_with_a_cached_copy() {
+    use plx_data::watchlist::model::{ServerMatch, TileState};
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&THREE, true);
+    let (mut d, mut rig) = mounted(&script);
+    settle(&mut d, &mut rig, 2);
+    let entry = d.nav.top_page().unwrap().id;
+    let copy = ServerMatch { server_id: ServerId::from_raw(1), rating_key: 42, blur: None };
+    for state in [TileState::ServerOffline, TileState::Unknown, TileState::ComingSoon, TileState::NotOnAnyServer] {
+        let arg = rig.watchlist_hold_arg(&mut d, entry, None, &guid(2), state, Some(copy)).expect("on the page");
+        assert!(matches!(arg.kind, ItemMenuKind::Catalog { .. }), "{state:?}: the catalog rows");
+        assert_eq!(arg.sid, ServerId::UNSET, "{state:?}: no server");
+        assert!(arg.rk.is_empty(), "{state:?}: no rating key, got {:?}", arg.rk);
+    }
+    let arg = rig.watchlist_hold_arg(&mut d, entry, None, &guid(2), TileState::Available, Some(copy)).unwrap();
+    assert_eq!((arg.sid, arg.rk.as_str()), (ServerId::from_raw(1), "42"), "a card keeps its copy");
+}

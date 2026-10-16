@@ -251,13 +251,18 @@ impl Bridge {
         // Plan §1.9: a playable title (and a coming-soon one with a reachable copy, Q6) is a
         // card of that copy plus Remove; any other title gets the catalog rows.
         let playable = matches!(state, plx_data::watchlist::model::TileState::Available | plx_data::watchlist::model::TileState::ComingSoonMatched);
-        let kind = match copy.filter(|_| playable) {
-            Some(c) => ItemMenuKind::Card { row: Box::new(self.matched_card(&tile.row, c)), from_deck: false },
-            None => ItemMenuKind::Catalog { state },
+        // A Catalog menu carries no PMS identity at all (§1.9: sid UNSET, rk empty) even when a copy
+        // is known, as for a ServerOffline tile: the cached copy must not reach a PMS row.
+        let (kind, sid, rk) = match copy.filter(|_| playable) {
+            Some(c) => (
+                ItemMenuKind::Card { row: Box::new(self.matched_card(&tile.row, c)), from_deck: false },
+                c.server_id, c.rating_key.to_string(),
+            ),
+            None => (ItemMenuKind::Catalog { state }, plx_plex::plex::ServerId::UNSET, String::new()),
         };
         Some(plx_screens::registry::ItemMenuArg {
-            sid: copy.map_or(plx_plex::plex::ServerId::UNSET, |c| c.server_id),
-            rk: copy.map(|c| c.rating_key.to_string()).unwrap_or_default(),
+            sid,
+            rk,
             kind,
             host: entry,
             focus,

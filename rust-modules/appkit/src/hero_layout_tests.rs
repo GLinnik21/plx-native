@@ -40,6 +40,13 @@ fn row_rect_past_the_end_lands_one_gap_after_the_last_control() {
 }
 
 #[test]
+fn row_rect_of_an_empty_row_is_a_zero_width_control_at_the_margin() {
+    // Not reachable from the Detail row (see `row_rect`); pinned so a change is deliberate.
+    let r = row_rect(&[], 0, 3.0);
+    assert_eq!((r.x, r.y, r.w, r.h), (plx_ui::consts::MARGIN_X, 3.0, 0.0, CD));
+}
+
+#[test]
 fn pill_w_adds_icon_boxes_only_when_asked() {
     let label = CString::new("Play").unwrap();
     let text = 4.0 * GLYPH;

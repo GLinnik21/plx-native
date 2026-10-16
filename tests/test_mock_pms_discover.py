@@ -161,6 +161,41 @@ class DiscoverMock(unittest.TestCase):
         self.assertEqual(call(pms, "GET", f"/library/all?type=1&guid={guid}")[0], 200)
         self.assertEqual(pms.discover.configure({"x": 1})[0], 400)
 
+    def test_list_modes_reset_the_list_over_the_control(self):
+        pms = make()
+        status, ctype, data = pms.handle("POST", "/_mock/discover", json.dumps({"list": "empty"}).encode(), {})
+        self.assertEqual(status, 200)
+        empty = page(pms)
+        self.assertEqual((empty["totalSize"], empty.get("Metadata", [])), (0, []))
+        self.assertEqual(page(pms, "released")["totalSize"], 0)
+        pms.discover.configure({"list": "movies_only"})
+        movies = page(pms)
+        self.assertEqual({m["type"] for m in movies["Metadata"]}, {"movie"})
+        listed_movies = [c for c in pms.discover.catalog[:DiscoverFixture.LISTED] if c["kind"] == "movie"]
+        self.assertEqual(movies["totalSize"], len(listed_movies))
+        self.assertLess(movies["totalSize"], 14)
+        self.assertGreater(movies["totalSize"], 0)
+        pms.discover.configure({"list": "default"})
+        self.assertEqual(page(pms)["totalSize"], 14)
+        # Add/remove still work from a reset state.
+        pms.discover.configure({"list": "empty"})
+        jcall(pms, "PUT", f"/actions/addToWatchlist?ratingKey={pms.discover.catalog[0]['hex']}")
+        self.assertEqual(page(pms)["totalSize"], 1)
+
+    def test_list_mode_validation(self):
+        pms = make()
+        self.assertEqual(pms.discover.configure({"list": "bogus"})[0], 400)
+        self.assertEqual(pms.discover.configure({})[0], 400)
+        self.assertEqual(page(pms)["totalSize"], 14)  # a refused patch changes nothing
+        self.assertEqual(pms.discover.configure({"list": "empty", "x": 1})[0], 400)
+        self.assertEqual(page(pms)["totalSize"], 14)
+
+    def test_scenario_modes_are_all_known_to_the_mock(self):
+        scenario = json.loads((pathlib.Path(__file__).resolve().parent / "scenarios"
+                               / "watchlist_captures.json").read_text())
+        modes = {c["mock"] for c in scenario["captures"]}
+        self.assertLessEqual(modes, set(DiscoverFixture.LIST_MODES))
+
     def test_ordinary_pms_paths_are_untouched(self):
         pms = make()
         self.assertGreater(len(jcall(pms, "GET", "/library/sections/1/all")["Metadata"]), 0)
