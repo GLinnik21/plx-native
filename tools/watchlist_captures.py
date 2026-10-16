@@ -10,6 +10,8 @@ The ONE capture recipe (the scenario's `comment` repeats it):
      session is the account; no `token` trigger is armed);
   3. arm the capture's `triggers`, boot, wait `boot_wait_s`, send each key through
      `plxnative-remote` (`hold` is okdown, 1.2 s, okup), then `shot`;
+     A key `mock:<json>` POSTs <json> to /_mock/discover mid-walk (`{"pms":"fail"}` makes the PMS side
+     answer 503 so a title matched there reads ServerOffline);
      A capture with `unreachable` aims the plex.tv and Discover triggers at a closed loopback port
      AFTER the sign-in, so the stored mock session is the account but the service cannot answer
      (the "plex.tv unreachable" state);
@@ -122,6 +124,11 @@ def capture(sim, spec, scenario, out_dir):
                     send("okdown")
                     time.sleep(1.2)
                     send("okup")
+                elif key.startswith("mock:"):
+                    # `mock:{"pms":"fail"}`: POST that body to /_mock/discover mid-walk (the PMS goes
+                    # away after the Watchlist matched a title on it: the server-offline state).
+                    post(port, "/_mock/discover", json.loads(key[5:]))
+                    continue
                 elif key.startswith("sleep:"):
                     time.sleep(float(key[6:]))
                     continue
