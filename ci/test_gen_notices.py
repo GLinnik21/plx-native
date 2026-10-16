@@ -2,7 +2,7 @@
 """ci/gen-third-party-notices.py on synthetic locks and data: the version column follows the lock (a
 bumped crate changes the rendered table, two lock versions render "A and B", a std snapshot version is
 merged in), a lock package that is neither a row nor `not_shipped` is refused, so is a stale
-`not_shipped` entry or a row in no lock, a moved nightly pin is refused, the `compiler_builtins` version in
+`not_shipped` entry or a row in no lock, a moved toolchain pin is refused, the `compiler_builtins` version in
 the prose follows the std snapshot, rendering is idempotent, and the REAL repository's data file and
 notices pass the gate (so a hand edit of a generated table, or a bump without `make notices`, fails here
 as well as in the gate). Nothing here runs cargo or touches the network."""
@@ -27,7 +27,7 @@ def lock(*pkgs):
 
 def data():
     return {
-        'toolchain': {'pin': 'nightly-2030-01-01', 'rustc': 'rustc 2.0.0-nightly (abc 2030-01-01)', 'backtrace': '9.9.9'},
+        'toolchain': {'pin': '2.0.0', 'rustc': 'rustc 2.0.0 (abc 2030-01-01)', 'backtrace': '9.9.9'},
         'std_lock': {'libc': '0.2.1', 'compiler_builtins': '0.1.5'},
         'not_shipped': ['syn'],
         'groups': [
@@ -48,7 +48,7 @@ def notices():
     return '\n'.join(parts) + '\n'
 
 
-PINS = {'nightly-2030-01-01'}
+PINS = {'2.0.0'}
 
 
 class Render(unittest.TestCase):
@@ -58,7 +58,7 @@ class Render(unittest.TestCase):
         out = gen.render(notices(), data(), self.project)
         self.assertIn('| serde | 1.0.1 | MIT | D |', out)
         self.assertIn('| libc | 0.2.9 and 0.2.1 | MIT | R |', out)
-        self.assertIn('| std | rustc 2.0.0-nightly (abc 2030-01-01) | MIT | Rust |', out)
+        self.assertIn('| std | rustc 2.0.0 (abc 2030-01-01) | MIT | Rust |', out)
         self.assertIn('| icu_x | 2.0.0 |', out)
         self.assertIn('**compiler_builtins 0.1.5**', out)
         self.assertNotIn('stale', out)
@@ -113,10 +113,10 @@ class Classification(unittest.TestCase):
         project = {'serde': ['1.0.1'], 'libc': ['0.2.9'], 'icu_x': ['2.0.0'], 'syn': ['2.0.0']}
         self.assertEqual(gen.problems_in(d, project, PINS), [])
 
-    def test_a_moved_nightly_pin_is_refused(self):
+    def test_a_moved_toolchain_pin_is_refused(self):
         project = {'serde': ['1.0.1'], 'libc': ['0.2.9'], 'icu_x': ['2.0.0'], 'syn': ['2.0.0']}
-        self.assertTrue(any('pin' in p for p in gen.problems_in(data(), project, {'nightly-2030-02-02'})))
-        self.assertTrue(any('pin' in p for p in gen.problems_in(data(), project, PINS | {'nightly-2030-02-02'})))
+        self.assertTrue(any('pin' in p for p in gen.problems_in(data(), project, {'2.0.1'})))
+        self.assertTrue(any('pin' in p for p in gen.problems_in(data(), project, PINS | {'2.0.1'})))
 
 
 class Graph(unittest.TestCase):
@@ -164,7 +164,7 @@ class Modes(unittest.TestCase):
         (root / 'ci').mkdir()
         (root / 'rust-modules').mkdir()
         (root / '.github' / 'workflows').mkdir(parents=True)
-        (root / '.github' / 'workflows' / 'w.yml').write_text('toolchain: nightly-2030-01-01\n')
+        (root / 'rust-modules' / 'rust-toolchain.toml').write_text('[toolchain]\nchannel = "2.0.0"\n')
         (root / 'ci' / 'third-party-crates.json').write_text(json.dumps(data()))
         (root / 'rust-modules' / 'Cargo.lock').write_text(lock(*lock_pkgs))
         (root / 'THIRD-PARTY-NOTICES.md').write_text(notices())
@@ -172,8 +172,8 @@ class Modes(unittest.TestCase):
 
     def run_gen(self, root, *flags):
         import io, contextlib
-        saved = (gen.ROOT, gen.DATA, gen.NOTICES, gen.LOCK, gen.WORKFLOWS)
-        self.addCleanup(lambda: [setattr(gen, k, v) for k, v in zip(('ROOT', 'DATA', 'NOTICES', 'LOCK', 'WORKFLOWS'), saved)])
+        saved = (gen.ROOT, gen.DATA, gen.NOTICES, gen.LOCK, gen.WORKFLOWS, gen.TOOLCHAIN_FILE)
+        self.addCleanup(lambda: [setattr(gen, k, v) for k, v in zip(('ROOT', 'DATA', 'NOTICES', 'LOCK', 'WORKFLOWS', 'TOOLCHAIN_FILE'), saved)])
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             code = gen.main(['--root', str(root), *flags])

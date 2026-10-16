@@ -30,6 +30,7 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
+from rust_toolchain import pinned
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BUDGETS = ROOT / "ci" / "build-budgets.json"
@@ -150,7 +151,7 @@ def graph_metrics(trees: dict, workspace: Path) -> dict[str, int]:
 
 
 def run_cargo_tree(no_default_features: bool) -> dict:
-    toolchain = os.environ.get("RUST_ARM_TOOLCHAIN") or os.environ.get("RUST_NIGHTLY", "nightly")
+    toolchain = pinned()
     return cargo_trees(ROOT / "rust-modules", toolchain, no_default_features)
 
 

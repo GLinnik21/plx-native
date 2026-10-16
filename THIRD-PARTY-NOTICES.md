@@ -267,8 +267,8 @@ library or title name draws instead of an empty box.
 
 ### 2.4 Rust code statically linked into `plxnative`
 
-The application core is Rust. The Rust standard library is compiled from source
-(`-Z build-std`) and linked in, together with the crates below. All of this code is
+The application core is Rust. The Rust standard library (the pinned stable toolchain's
+prebuilt armv7 `std`) is linked in, together with the crates below. All of this code is
 redistributed in the binary. Where a package offers a choice of licences, our election is
 stated; election does not alter your rights under the other arms.
 
@@ -278,10 +278,10 @@ stated; election does not alter your rights under the other arms.
 
 | Package | Version(s) | Declared licence | Copyright |
 |---|---|---|---|
-| The Rust standard library (`core`, `alloc`, `std`, `panic_unwind`, `unwind`, and the `rustc-std-workspace-*` shims) | rustc 1.98.0-nightly (4c9d2bfe4 2026-07-01) | MIT OR Apache-2.0 | The Rust Project Developers |
+| The Rust standard library (`core`, `alloc`, `std`, `panic_unwind`, `unwind`, and the `rustc-std-workspace-*` shims) | rustc 1.99.1 (58cf8f9c3 2026-10-13) | MIT OR Apache-2.0 | The Rust Project Developers |
 | — its in-tree backtrace support (`library/backtrace`) | 0.3.76 | MIT OR Apache-2.0 | 2014 Alex Crichton |
 | — its in-tree mpmc channels (`library/std/src/sync/mpmc`) | in-tree | MIT OR Apache-2.0 | 2019 The Crossbeam Project Developers |
-| addr2line | 0.25.1 | Apache-2.0 OR MIT | The `addr2line` authors |
+| addr2line | 0.27.1 | Apache-2.0 OR MIT | The `addr2line` authors |
 | adler2 | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | Jonas Schievink, oyvindln |
 | bitflags | 2.13.0 | MIT OR Apache-2.0 | 2014 The Rust Project Developers |
 | bytemuck | 1.25.0 | Zlib OR Apache-2.0 OR MIT | 2019 Daniel "Lokathor" Gee |
@@ -293,17 +293,17 @@ stated; election does not alter your rights under the other arms.
 | encoding_rs | 0.8.42 | (Apache-2.0 OR MIT) AND BSD-3-Clause | Mozilla Foundation. Its encoding tables derive from the WHATWG Encoding Standard, whose data files are BSD-3-Clause (`licenses/WHATWG-BSD-3-Clause.txt`) |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | The image-rs Developers |
 | flate2 | 1.1.9 | MIT OR Apache-2.0 | 2014-2026 Alex Crichton |
-| gimli | 0.32.3 | MIT OR Apache-2.0 | The `gimli` authors |
+| gimli | 0.34.0 | MIT OR Apache-2.0 | The `gimli` authors |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | Amanieu d'Antras |
 | image | 0.25.10 | MIT OR Apache-2.0 | The image-rs Developers |
 | itoa | 1.0.18 | MIT OR Apache-2.0 | David Tolnay |
-| libc | 0.2.190 and 0.2.185 | MIT OR Apache-2.0 | The Rust Project Developers |
-| memchr | 2.8.2 and 2.7.6 | Unlicense OR MIT | 2015 Andrew Gallant |
-| miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | 2013-2014 RAD Game Tools and Valve Software; 2010-2014 Rich Geldreich and Tenacious Software LLC; (c) 2017 Frommi; (c) 2017-2024 oyvindln |
+| libc | 0.2.190 and 0.2.189 | MIT OR Apache-2.0 | The Rust Project Developers |
+| memchr | 2.8.3 and 2.8.2 | Unlicense OR MIT | 2015 Andrew Gallant |
+| miniz_oxide | 0.9.1 and 0.8.9 | MIT OR Zlib OR Apache-2.0 | 2013-2014 RAD Game Tools and Valve Software; 2010-2014 Rich Geldreich and Tenacious Software LLC; (c) 2017 Frommi; (c) 2017-2024 oyvindln |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 | 2014 The Rust Project Developers |
-| object | 0.37.3 | Apache-2.0 OR MIT | The `object` authors |
+| object | 0.39.1 | Apache-2.0 OR MIT | The `object` authors |
 | png | 0.18.1 | MIT OR Apache-2.0 | 2015 nwin |
-| rustc-demangle | 0.1.27 | MIT/Apache-2.0 | Alex Crichton |
+| rustc-demangle | 0.1.28 | MIT/Apache-2.0 | Alex Crichton |
 | scopeguard | 1.2.0 | MIT OR Apache-2.0 | 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers |
 | serde | 1.0.229 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
@@ -326,7 +326,7 @@ stated; election does not alter your rights under the other arms.
 | qrcodegen | 1.8.0 | Copyright (c) Project Nayuki. The complete upstream MIT notice is preserved in `licenses/qrcodegen.txt` |
 | simd-adler32 | 0.3.9 | (c) 2021 Marvin Countryman |
 | zmij | 1.0.21 | David Tolnay (a Rust port of Victor Zverovich's C++ `zmij`) |
-| rust-lang/libm — compiled *inside* `compiler_builtins` and exposed as intrinsics on this target | as vendored in rustc 1.98.0-nightly | (c) 2018 Jorge Aparicio; musl libc (c) 2005-2020 Rich Felker, et al.; CORE-MATH; and the fdlibm-derived notice: (c) 1993, 2004 Sun Microsystems; (c) 2003-2011 David Schultz; (c) 2003-2009 Steven G. Kargl; (c) 2003-2009 Bruce D. Evans; (c) 2008 Stephen L. Moshier; (c) 2017-2018 Arm Limited |
+| rust-lang/libm — compiled *inside* `compiler_builtins` and exposed as intrinsics on this target | as vendored in rustc 1.99.1 | (c) 2018 Jorge Aparicio; musl libc (c) 2005-2020 Rich Felker, et al.; CORE-MATH; and the fdlibm-derived notice: (c) 1993, 2004 Sun Microsystems; (c) 2003-2011 David Schultz; (c) 2003-2009 Steven G. Kargl; (c) 2003-2009 Bruce D. Evans; (c) 2008 Stephen L. Moshier; (c) 2017-2018 Arm Limited |
 
 <!-- END GENERATED notices:mit-only -->
 
@@ -398,17 +398,17 @@ attributions. `qrcodegen` supplies the QR code linking viewers to the translatio
 guide; its source-header licence notice is preserved verbatim in `licenses/qrcodegen.txt`.
 
 The versions above are the ones in `rust-modules/Cargo.lock` (and, for the standard library's own
-crates, the pinned nightly's `library/Cargo.lock`), which `cargo tree --locked --no-default-features
---target arm-unknown-linux-gnueabi --edges normal,no-proc-macro` resolves to the ARM runtime graph. CI
+crates, the pinned toolchain's `library/Cargo.lock`), which `cargo tree --locked --no-default-features
+--target armv7-unknown-linux-gnueabi --edges normal,no-proc-macro` resolves to the ARM runtime graph. CI
 (`ci.yml`, host-lint) runs `ci/gen-third-party-notices.py --check --verify-graph` on every pull request: the
 set of crates in that graph must equal the rows above, and no listed version may be one that only a build
 or dev dependency uses. Dev dependencies, build dependencies and host proc-macro implementations are not
-shipped and have no row. A second version of `libc` below is the standard library's own, built from
-source.
+shipped and have no row. A second version of `libc` below is the standard library's own, as the pinned
+release built it (its corresponding source ships in the GPL source bundle).
 
 The four package tables above are generated, not typed: `ci/gen-third-party-notices.py` fills the
 version column from `rust-modules/Cargo.lock` (and, for the standard library's own crates, from the
-`library/Cargo.lock` of the pinned nightly), keeps the licence and copyright columns from
+`library/Cargo.lock` of the pinned toolchain), keeps the licence and copyright columns from
 `ci/third-party-crates.json`, and `make check` fails when this section disagrees with the lockfile.
 After a dependency bump, run `make notices` and commit the result.
 
@@ -446,7 +446,7 @@ IJG code is copyright (C) 1991-2014, Thomas G. Lane, Guido Vollbeding.
 code to the shipped binary. `foldhash` appears in the Rust source tree but is **not** compiled
 here (the standard library takes `hashbrown` with default features disabled, which does not
 enable it) — verified absent from the binary. `rustc-literal-escaper`, `proc_macro`,
-`panic_abort` are build-std source components; final object inclusion is recorded in the linker evidence. `std_detect` supplies CPU capability detection in the Rust runtime and is covered by the Rust notices above.
+`panic_abort` are standard-library source components; final object inclusion is recorded in the linker evidence. `std_detect` supplies CPU capability detection in the Rust runtime and is covered by the Rust notices above.
 
 ### 2.5 Compiler runtime fragments statically linked into `plxnative`
 

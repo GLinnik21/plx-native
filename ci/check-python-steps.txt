@@ -274,7 +274,14 @@ python3 ci/test_dependencies.py
 python3 ci/test_deps_update.py
 # THIRD-PARTY-NOTICES.md section 2.4's package tables are generated from rust-modules/Cargo.lock (ci/gen-third-party-notices.py;
 # inputs in ci/third-party-crates.json): the gate fails when a dependency bump moved a version, a crate entered the lock
-# unclassified, or the std snapshot's nightly is not the one the workflows pin. Reads files only, no cargo; the self-test
+# unclassified, or the std snapshot's toolchain is not the one rust-modules/rust-toolchain.toml pins. Reads files only, no cargo; the self-test
 # runs on synthetic locks and data.
 python3 ci/test_gen_notices.py
 python3 ci/gen-third-party-notices.py --check
+# The soft-float guard: `-C target-feature=-soft-float` (what gives our crates VFP on the armv7 target) is an UNSTABLE
+# feature flag on stable rustc, so a release may stop honouring it. check-vfp.py compiles a tiny float probe with the
+# Makefile's exact codegen flags and fails on any __aeabi_f* libcall or a missing VFP op, with a negative control; its
+# self-test drives the scan and verdict on canned assembly and, where the pinned toolchain is installed, the real probe.
+# --skip-if-missing only so a runner without Rust is not red here: CI's host-lint job runs it strict.
+python3 ci/test_check_vfp.py
+python3 ci/check-vfp.py --skip-if-missing

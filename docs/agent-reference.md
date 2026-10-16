@@ -66,7 +66,7 @@ entry needs an `update` object; `ci/test_deps_update.py` fails without one.
 ## Build / deploy / run
 
 The `Makefile` is the entire dev loop. Requires the **webOS NDK** (install with `make
-setup-env`), a **Rust nightly toolchain + `rust-src`** (for `-Z build-std`), CMake (Homebrew, for
+setup-env`), the **pinned stable Rust toolchain** (the `channel` of `rust-modules/rust-toolchain.toml`, with the `armv7-unknown-linux-gnueabi` rust-std, clippy and rustfmt; `make setup-rust` installs it, `make -s print-rust-toolchain` prints it), CMake (Homebrew, for
 the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use your ssh key first and need it only when the TV refuses the key). See the
 **`setup-environment` skill** (`.agents/skills/`) for the full one-time setup + troubleshooting.
 
@@ -129,25 +129,26 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   and `summary.txt` and to `profile-graphics`'s; `tests/test_arm_profile_guard.py` pins the rule.
   Graders that only read captured evidence (`tools/image-cache-stress.py`, `tools/analyze-*`) cannot
   know which binary produced it: run that evidence on a `release` deploy. The staticlib lands in
-  `rust-modules/<tdir>/arm-unknown-linux-gnueabi/<profile>/`, and a non-`release` profile adds
+  `rust-modules/<tdir>/armv7-unknown-linux-gnueabi/<profile>/`, and a non-`release` profile adds
   `+profile:tvdev` to `pkg/.build-config` (nothing is added for `release`, so shipped stamps are
   unchanged), so switching profile relinks rather than reusing the other profile's archive.
-- **`HOST_THREADS` — rustc's parallel front end for the local host test builds.** The crate stack
-  is mostly a chain, so cargo has little to run side by side and the front end (parse, type-check,
-  borrow-check) is single-threaded per crate by default. A plain local build therefore passes
-  `-Zthreads=N` (N = the core count, capped at 8) to the host `cargo test` recipes
-  (`check-cargo-unit-default`, `check-cargo-unit-hostsim`, `test-fast`, `test-crate`, `build-bench`)
-  through `CARGO_BUILD_RUSTFLAGS`. Measured 2026-10-05 on an M4 (10 cores), `make build-bench`
+- **`HOST_THREADS` — OPT-IN: rustc's parallel front end for the local host test builds.** The crate
+  stack is mostly a chain, so cargo has little to run side by side and the front end (parse,
+  type-check, borrow-check) is single-threaded per crate by default. `-Zthreads=N` (N = the core
+  count, capped at 8) parallelises it for the host `cargo test` recipes (`check-cargo-unit-default`,
+  `check-cargo-unit-hostsim`, `test-fast`, `test-crate`, `build-bench`) through
+  `CARGO_BUILD_RUSTFLAGS`. Measured 2026-10-05 on an M4 (10 cores) on nightly, `make build-bench`
   non-incremental edit-rebuilds, medians of 5: `plx_base` leaf 20.1 s to 17.8 s, `plx_ui` 10.7 to
   7.8, `plx_screens` 8.3 to 5.7, app 4.8 to 2.9; the incremental `test-fast` loop is unchanged
-  within noise. It costs about 20% more CPU-seconds to finish sooner. It is 0 (off) under
-  `RELEASE=1`, `SYMBOLS=1`, `FLAVOR=stable|nightly` and a CI environment, the same set as
-  `ARM_PROFILE`, and then no recipe names it; it is never exported, so the ARM staticlib, the
-  simulators, clippy and the packaging steps never see it. `make HOST_THREADS=0 ...` (command line or
-  environment) turns it off, `HOST_THREADS=N` picks N, and a `RUSTFLAGS` you exported yourself wins.
-  Artifacts built with and without it coexist in one target dir, so toggling it costs no rebuild the
-  second time. `ci/test_host_threads.py` pins the scoping and that the toolchain still accepts the
-  spelling (`rustc -Zhelp` already calls `-Zthreads` deprecated for `--jobs-frontend`).
+  within noise. It costs about 20% more CPU-seconds to finish sooner. It used to be on by default;
+  the host suites now run on the pinned STABLE toolchain, whose rustc rejects every `-Z` flag, so the
+  default is 0 and `make RUST_TOOLCHAIN=nightly HOST_THREADS=8 test-fast` is the way to ask for it. A
+  `HOST_THREADS` above 1 on a toolchain that is not nightly is a Makefile `$(error)`, not a cargo
+  failure mid-recipe. It is never exported, so the ARM staticlib, the simulators, clippy and the
+  packaging steps never see it, and a `RUSTFLAGS` you exported yourself wins. Artifacts built with
+  and without it coexist in one target dir. `ci/test_host_threads.py` pins the scoping, the error
+  and, when a nightly is installed, that the toolchain still accepts the spelling (`rustc -Zhelp`
+  already calls `-Zthreads` deprecated for `--jobs-frontend`).
 - `make deploy` — ships the binary and the native crash handler through a `.new` + `mv` dance (a
   running process holds their inodes), the bundled FFmpeg libraries with a retirement loop for any
   previous major, and — since 2026-09-02 — **everything else in ONE scp from `DEPLOY_FILES`**,
@@ -256,8 +257,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   gate (rustc's own warnings still print). It exists for one bug class the unit suite cannot reach:
   a **shadowed branch**. A duplicated `else if` with an empty body once hid the arm that opens the
   player's track menu — rustc does not warn on a repeated condition, and the dispatch is inside the
-  SDL event loop where no host test can see it. Needs the **clippy component on nightly** (rustup's
-  default profile ships it; a `--profile minimal` nightly does not).
+  SDL event loop where no host test can see it. Needs the **clippy component of the pinned toolchain** (`make setup-rust` installs it with
+  `--profile minimal --component clippy`).
 - `make test-fast [T=filter]` — **opt-in** incremental inner loop: the same default-feature
   `cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens` as `check-cargo-unit-default` (throwaway runtime root, telemetry env), but
   with `CARGO_INCREMENTAL=1` in its own `rust-modules/target-fast` (gitignored). `T=route::`
@@ -305,7 +306,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     without it and getting `Fresh` for `plxnative-modules` both ways, so the step moves the compile
     rather than adding one). Download `cargo-timings-host-unit-default` from the run page
     ("Artifacts", kept 14 days) and open `cargo-timing.html`: it names the crates on the critical
-    path. Locally: `cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --no-run --timings` writes
+    path. Locally: `cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --no-run --timings` writes
     `target/cargo-timings/cargo-timing.html`.
   - *Trends.* `tools/ci-durations.py [--runs 30] [--recent 5] [--json]` reads the last 30 successful
     `main` runs of CI and Simulator CI through `gh api` and prints, per job, the median and p90 and
@@ -318,7 +319,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   - *Budgets.* `ci/build-budgets.json` holds the deterministic ceilings and `ci/check-build-budgets.py`
     enforces them: the stripped ARM `plxnative` that `make ipk` stages (the cross-build job, dev
     flavour, `release` profile: CI selects it by itself, a local `make ipk` needs `ARM_PROFILE=release`), the number of third-party packages in the app crate's resolved graph for
-    `arm-unknown-linux-gnueabi` (normal + build edges, dev-dependencies excluded; asked for both with
+    `armv7-unknown-linux-gnueabi` (normal + build edges, dev-dependencies excluded; asked for both with
     default features and with `--no-default-features`, which is what ships), and the number of crate
     names present in two versions on the normal-edge graph (what `cargo tree -d --edges normal`
     prints). The graph budgets run in `host-lint` from `cargo tree`, which compiles nothing and resolves
@@ -365,7 +366,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   local **build benchmark** (`tools/build-bench.py`), so a build-affecting change pastes a
   before/after table instead of an ad-hoc scratch-script number. It prints a Markdown table (median /
   min / max over `--runs`, default 3, the scenarios interleaved round by round) and, with `--json`,
-  a machine-readable document (git sha, `rustc +nightly -V`, host, per-run load and swap). Rows:
+  a machine-readable document (git sha, `rustc -V` of the pinned toolchain, host, per-run load and swap). Rows:
   a **no-op** host test build (`cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --no-run`; it reports from cargo's JSON `fresh`
   flag whether the app crate was rebuilt and flags a recompile as UNEXPECTED, the
   `ci/test_build_not_always_dirty.py` hazard); an **edit-rebuild** after appending a comment to a
@@ -648,8 +649,8 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   2026-09-18 the same file also sets `[profile.dev] debug = "line-tables-only"` and `debug = false`
   for third-party packages in lanes (main keeps full DWARF). A lane's target dirs are also no longer
   all built from scratch: in a linked worktree the Makefile seeds an ABSENT target dir with an APFS
-  clone of the third-party output (registry crates and the build-std sysroot, about 40% of a lane's
-  target bytes) from `~/.cache/plxnative/cargo-seed/`, via `tools/cargo-seed.py`; the app crate is
+  clone of the third-party output (registry crates, once also the build-std sysroot, about 40% of a lane's
+  target bytes then) from `~/.cache/plxnative/cargo-seed/`, via `tools/cargo-seed.py`; the app crate is
   stripped from the seed, builds stay per-checkout, and `PLX_CARGO_SEED=off` disables it. Because
   a clone shares blocks, **`du` (and so `make disk`'s per-checkout numbers) counts them in full:
   `df` is what is really free.** None of this reclaim has to be run by
@@ -828,11 +829,15 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
 **Cross-compile toolchain:** the webosbrew **native-toolchain** buildroot NDK —
 `arm-webos-linux-gnueabi-gcc` (GCC 12, **glibc 2.12, armv7-a soft-float**; default `cortex-a9`
 codegen, so we do *not* pin `-mcpu`). It ships a **sysroot** with the TV's own SONAME'd libs,
-which the Makefile links against. Rust is a static lib built with `cargo +nightly rustc --lib
---crate-type staticlib -Z build-std --target arm-unknown-linux-gnueabi` (the crate itself declares
+which the Makefile links against. Rust is a static lib built on the pinned STABLE toolchain with `cargo +$(RUST_TOOLCHAIN) rustc --lib
+--crate-type staticlib --target armv7-unknown-linux-gnueabi` (the crate itself declares
 `rlib` only; a staticlib needs no linker, so no external
-cross-linker — but `-Z build-std` + `-C target-cpu=cortex-a9` is load-bearing: the default
-ARMv6 codegen emits the CP15 barrier that SIGILLs on the A53; see the Makefile comment). Headers
+cross-linker). The target is load-bearing: `armv7-unknown-linux-gnueabi` ships a prebuilt ARMv7 std,
+where the old `arm-unknown-linux-gnueabi` std was ARMv6 and carried the CP15 barrier that SIGILLs on
+the A53 (that is what `-Z build-std` on nightly used to rebuild away). So are the codegen flags
+(`-C target-cpu=cortex-a9 -C target-feature=-neon,-soft-float`): `-soft-float` is an UNSTABLE
+target feature on stable rustc, and `ci/check-vfp.py` (`make check`, CI host-lint) fails if a rustc
+stops honouring it; see the Makefile comment). Headers
 come from `include/` (the TV's SDL2 2.0.x-fork headers, kept ahead of the sysroot's newer copies
 so we compile against the ABI the TV runs). The ipk needs **no `ar` at all** — `ci/mkipk.py` writes
 the archive itself; this line used to say the opposite ("uses the NDK's `ar` (GNU format; macOS BSD
@@ -1713,17 +1718,18 @@ documented 59 before that, which was five times stale before anyone noticed — 
 of this paragraph was stale within one *commit*, because two agents were adding tests to the same
 batch that documented it. Three numbers have now rotted here, so do not add a fourth: the only
 count worth having is the one you take yourself, with
-`cd rust-modules && cargo +nightly test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens -- --list | grep -c ': test'`. **The per-module counts
+`cd rust-modules && cargo test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens -- --list | grep -c ': test'`. **The per-module counts
 below have the same disease and are worse**, because a stale one reads as precise rather than round
 — several were written when the module was a third its present size, and two bullets have now
 outlived the file they named: `ui/home.rs` (retired to `screens/home/`) and `route.rs` (split in
 phase 9 into `route/plan.rs` + `route/decision.rs`, below). Read those bullets as **what each module covers**,
 which is stable and is why they are here, and never as a census. **Run it with the same toolchain
-the Makefile does.** A bare
-`cargo test` uses the default toolchain; `make check` uses `cargo +$(RUST_NIGHTLY)`, and the two
-have disagreed — `task.rs`'s refused-spawn test passed 284/284 on stable while panicking inside
-`std` on nightly, which reads as flakiness and is not. Nightly is the gate, because `-Z build-std`
-means nightly is what ships. `make check` is that command **plus `make lint`** (three
+the Makefile does.** From the repository root a bare `cargo test` uses your default toolchain, while
+`make check` uses `cargo +$(RUST_TOOLCHAIN)`, the pin in `rust-modules/rust-toolchain.toml` (inside
+`rust-modules/` a bare `cargo` honours that file too, but `cargo +x` on the command line outranks it).
+The two used to disagree — `task.rs`'s refused-spawn test passed 284/284 on stable while panicking
+inside `std` on nightly, which read as flakiness and was not — back when nightly shipped. One pinned
+release now serves the ARM build and the host gates, so the pin is the gate. `make check` is that command **plus `make lint`** (three
 named clippy lints, see the build section — the shadowed-branch gate, ~1s warm); it is deliberately
 **not** a prerequisite of `all`, so an ordinary `make` still cross-compiles without ever invoking a
 host toolchain run. Run it before `make test` — it is free by comparison, and it is the only signal

@@ -552,7 +552,7 @@ class BuildBenchWorkflow(unittest.TestCase):
     def test_every_action_is_pinned_to_a_commit(self):
         for line in code(self.NAME).splitlines():
             m = re.match(r"\s*(?:- )?uses: (\S+)", line)
-            if m:
+            if m and not m.group(1).startswith("./"):  # a composite action in this repository is not a pin target
                 self.assertRegex(m.group(1), r"@[0-9a-f]{40}$", line)
 
     def test_the_daily_set_is_one_the_benchmark_knows(self):

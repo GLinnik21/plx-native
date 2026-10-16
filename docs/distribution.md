@@ -860,7 +860,7 @@ Inter if you're willing to re-tune the size ladder.
 | libjpeg-turbo 2.1.4 | IJG + BSD-3 + Zlib | Currently **not** in the ipk (only `make deploy`-ed). The moment it ships: IJG attribution + the complete Modified BSD text. |
 | jsmpeg (fetched by `ci/deps.py` for `tools/stream-screen.py`) | MIT, Dominic Szablewski | Not in the repository (it was a banner-less copy at `tools/jsmpeg.min.js`); upstream licence text is `licenses/jsmpeg.txt`. |
 | Rust crates (30 third-party) | 100% permissive, **zero copyleft** | Standard MIT/Apache notices. `moxcms` and `pxfm` are `BSD-3-Clause OR Apache-2.0` — elect Apache to avoid BSD-3's binary-reproduction clause. |
-| Rust std via `-Z build-std` | MIT OR Apache-2.0 | One notices entry. **Plus `compiler_builtins 0.1.160`, whose licence is a *conjunction*: `MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)`** — the LLVM-exception text must be reproduced. This is the most-missed entry in Rust NOTICES files. |
+| Rust std (the pinned stable toolchain's prebuilt armv7 std) | MIT OR Apache-2.0 | One notices entry. **Plus `compiler_builtins 0.1.160`, whose licence is a *conjunction*: `MIT AND Apache-2.0 WITH LLVM-exception AND (MIT OR Apache-2.0)`** — the LLVM-exception text must be reproduced. This is the most-missed entry in Rust NOTICES files. |
 | webosbrew NDK | n/a | A compiler doesn't licence its output. Just never add `-static` (that would pull LGPL §6(a) in for glibc). |
 
 ### 5.5 Trademarks — the part with real teeth
@@ -1386,11 +1386,15 @@ Verified on the device, not just by binary size: the release build deployed to t
 Makefile derives `IPK_VERSION` and the ipk filename from it, `check-package.py` asserts
 `ipkroot/ctl/control` agrees, and `release.yml`'s `guard` asserts the git tag does too.
 
-**Nightly pinning.** A `rust-toolchain.toml` would **not** work: `cargo +nightly` on the command
-line outranks the file. The pin therefore comes through a new `RUST_NIGHTLY ?= nightly` Makefile
-variable — dev machines behave exactly as before, and CI passes `RUST_NIGHTLY=nightly-YYYY-MM-DD`
-(set the `RUST_NIGHTLY` repo variable). `-Z build-std` recompiles std from source, which is the
-most drift-sensitive thing this build does.
+**Toolchain pinning.** (Superseded: this section described pinning a nightly through a `RUST_NIGHTLY`
+repo variable, because `-Z build-std` recompiled std from source and that was the most
+drift-sensitive thing the build did.) The build now runs on ONE stable release, written once as the
+`channel` of `rust-modules/rust-toolchain.toml`. The Makefile reads that line into `RUST_TOOLCHAIN`
+and passes `+$(RUST_TOOLCHAIN)` to every cargo call, because a `cargo +toolchain` on the command line
+outranks the file; CI reads it through `.github/actions/rust-toolchain`; `ci/rust_toolchain.py`
+serves the Python gates; the notices generator and the GPL source bundle name the same release. There
+is no repo variable and no nightly. The ARM build uses `armv7-unknown-linux-gnueabi`'s prebuilt std,
+so `rust-src` is bundled in the source release only as the corresponding source of that std.
 
 **Two traps encoded in `release.yml`, both of which fail silently:**
 1. `gen-manifest` writes a **bare filename** into `ipkUrl`, resolved relative to the manifest URL —

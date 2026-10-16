@@ -5199,8 +5199,8 @@ def do_build(tv, timing=False):
     Functional runs keep the fast default. The profile that actually landed is checked afterwards by
     `require_release_binary`, which also covers a binary deployed without this flag.
     """
-    # The Makefile owns the whole build (it drives cargo +nightly with the load-bearing
-    # cortex-a9 flags itself) — shelling out to it keeps run.py from drifting a second
+    # The Makefile owns the whole build (it drives cargo on the pinned stable toolchain with the
+    # load-bearing cortex-a9 flags itself) — shelling out to it keeps run.py from drifting a second
     # copy of the toolchain invocation (the old hand-rolled zigbuild here did exactly that).
     profile_args = ["ARM_PROFILE=release"] if timing else []
     print("=== BUILD: make -> make deploy" + (" (ARM_PROFILE=release: timing run)" if timing else "") + " ===")

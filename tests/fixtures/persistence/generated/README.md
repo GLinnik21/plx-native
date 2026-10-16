@@ -20,7 +20,7 @@ the library test build, which needs one import path changed (`crate::state` to `
 
 Regenerate from the repository root with, for each of `v0.6.0`, `v0.6.5` and `v0.6.6` in that
 order: `git worktree add --detach <dir> <tag>`, apply that tag's part of `generators.patch`, then
-`PLX_FIXTURE_OUT=<out> cargo +nightly test --lib plx_fixture_gen`. The DB8 record carries random
+`PLX_FIXTURE_OUT=<out> cargo test --lib plx_fixture_gen`. The DB8 record carries random
 operation and auth-generation IDs, so a regenerated file is equivalent rather than byte-identical.
 
 These are host-produced. Secure-envelope contents and a real television's DB8 cannot be produced

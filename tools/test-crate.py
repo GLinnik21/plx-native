@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build and run only the lib tests of the crate(s) you touched: `make test-crate C=plx_ui`.
 
-    tools/test-crate.py --suite 'plxnative-modules plx_base ...' [--cargo 'cargo +nightly']
+    tools/test-crate.py --suite 'plxnative-modules plx_base ...' [--cargo 'cargo +<pinned>']
                         [--deps] [--filter NAME] [--dry-run] CRATE [CRATE ...]
 
 An edit in a low crate makes `cargo test --lib -p <all 14>` rebuild and relink every dependent

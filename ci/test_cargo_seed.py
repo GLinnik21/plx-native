@@ -88,8 +88,8 @@ class SeedCase(unittest.TestCase):
             "FAKE_RUSTC": "a",
             "CARGO_HOME": os.path.join(self.tmp, "cargo-home"),
         }
-        saved = {k: os.environ.get(k) for k in list(self.env) + ["PLX_CARGO_SEED", "RUST_NIGHTLY"]}
-        for k in ("PLX_CARGO_SEED", "RUST_NIGHTLY"):
+        saved = {k: os.environ.get(k) for k in list(self.env) + ["PLX_CARGO_SEED", "RUST_TOOLCHAIN"]}
+        for k in ("PLX_CARGO_SEED", "RUST_TOOLCHAIN"):
             os.environ.pop(k, None)
         os.environ.update(self.env)
         self.addCleanup(self.restore_env, saved)
@@ -191,12 +191,12 @@ class Harvest(SeedCase):
         self.build_tdir()
         self.harvest()
         shutil.rmtree(self.tdir)
-        touch(os.path.join(self.tdir, "arm-unknown-linux-gnueabi", "release", "deps", "libcore-3333.rlib"))
-        touch(os.path.join(self.tdir, "arm-unknown-linux-gnueabi", "release", "deps", "libplxnative_modules-9999.a"))
+        touch(os.path.join(self.tdir, "armv7-unknown-linux-gnueabi", "release", "deps", "libcore-3333.rlib"))
+        touch(os.path.join(self.tdir, "armv7-unknown-linux-gnueabi", "release", "deps", "libplxnative_modules-9999.a"))
         self.harvest()
         files = tree(self.seed_dir())
         self.assertIn(os.path.join("debug", "deps", "libserde-1111.rlib"), files)
-        self.assertIn(os.path.join("arm-unknown-linux-gnueabi", "release", "deps", "libcore-3333.rlib"), files)
+        self.assertIn(os.path.join("armv7-unknown-linux-gnueabi", "release", "deps", "libcore-3333.rlib"), files)
         self.assertFalse(any("plxnative" in f for f in files))
         self.assertEqual(sorted(os.listdir(os.path.join(self.cache, "cargo-seed"))), ["target", "target.lock"])
 

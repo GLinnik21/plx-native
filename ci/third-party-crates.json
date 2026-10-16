@@ -1,22 +1,22 @@
 {
  "_comment": "Inputs of ci/gen-third-party-notices.py (THIRD-PARTY-NOTICES.md section 2.4). Versions are NOT here: they come from rust-modules/Cargo.lock and the std snapshot below.",
  "toolchain": {
-  "pin": "nightly-2026-07-02",
-  "rustc": "rustc 1.98.0-nightly (4c9d2bfe4 2026-07-01)",
+  "pin": "1.99.1",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
   "backtrace": "0.3.76"
  },
  "std_lock": {
-  "addr2line": "0.25.1",
+  "addr2line": "0.27.1",
   "adler2": "2.0.1",
   "cfg-if": "1.0.4",
   "compiler_builtins": "0.1.160",
-  "gimli": "0.32.3",
+  "gimli": "0.34.0",
   "hashbrown": "0.17.1",
-  "libc": "0.2.185",
-  "memchr": "2.7.6",
-  "miniz_oxide": "0.8.9",
-  "object": "0.37.3",
-  "rustc-demangle": "0.1.27"
+  "libc": "0.2.189",
+  "memchr": "2.8.3",
+  "miniz_oxide": "0.9.1",
+  "object": "0.39.1",
+  "rustc-demangle": "0.1.28"
  },
  "not_shipped": [
   "asn1-rs",

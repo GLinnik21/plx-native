@@ -400,8 +400,9 @@ mod tests {
     /// page — `stack_size + page_size - 1` — and on `usize::MAX` that addition overflows, so a
     /// debug-assertions build panics *inside std* before `pthread_create` is ever reached. The
     /// test then fails claiming the very thing it exists to prove. It is toolchain-dependent
-    /// (green on 1.96 stable, red on 1.98-nightly) and this crate is nightly-only for
-    /// `-Z build-std`, so `make check` was the one that saw it.
+    /// (green on 1.96 stable, red on 1.98-nightly; the ARM build was nightly-only for
+    /// `-Z build-std` then, so `make check` was the one that saw it, and one pinned stable release
+    /// now serves both).
     ///
     /// Half the address space is just as unsatisfiable — no allocator anywhere will find 8 EiB —
     /// while leaving room for the page rounding to land, and it stays correct on the 32-bit

@@ -64,7 +64,7 @@ def defaults():
         "readelf:-n": "Build ID: " + "a" * 40 + "\n",
         "readelf:-d": "Shared library: [libalpha.so]\nShared library: [libbeta.so]\n",
         "readelf:-d:plxnative-storage": "Shared library: [libgamma.so]\nShared library: [libalpha.so]\n",
-        "objdump": "  00: dmb ish\n" * 101,
+        "objdump": "  00: dmb ish\n" * 101 + "  04: vmul.f32 s0, s1, s2\n" * 200 + "  08: bl 0x100 <__aeabi_fmul>\n" * 5,
         "strings": "YOUR_PMS_HOST\n",
     }.items()}
 
@@ -187,7 +187,12 @@ class ElfGateTests(unittest.TestCase):
                                  ("readelf:-n", "Build ID: abc\n"),
                                  ("readelf:-d", "Shared library: [unexpected.so]\n"),
                                  ("readelf:--dyn-syms", ""), ("strings", "no placeholder\n"),
-                                 ("objdump", "  00: dmb ish\n")]:
+                                 ("objdump", "  00: dmb ish\n"),
+                                 # float math without VFP: no vmul.f32 at all, and a libcall instead
+                                 ("objdump", "  00: dmb ish\n" * 101 + "  04: bl 0x100 <__aeabi_fmul>\n" * 200),
+                                 # VFP present but the libcalls are not the rare exception (the bound is 1 call per 20 vmul.f32)
+                                 ("objdump", "  00: dmb ish\n" * 101 + "  04: vmul.f32 s0, s1, s2\n" * 150
+                                  + "  08: bl 0x100 <__aeabi_fmul>\n" * 20)]:
             with self.subTest(key=key):
                 spec = defaults()
                 spec[key]["output"] = replacement

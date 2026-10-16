@@ -15,13 +15,13 @@ the std workspace lock, and the rest (licence election, copyright holders, the g
     python3 ci/gen-third-party-notices.py --verify-graph       also compare the data file's crate set with
                                                                `cargo tree` for the ARM runtime graph (needs cargo)
     python3 ci/gen-third-party-notices.py --verify-toolchain   also compare the std snapshot and rustc string with the
-                                                               pinned nightly's rust-src (needs rustup + that toolchain)
+                                                               pinned toolchain's rust-src (needs rustup + that toolchain)
 
 WHAT THE OFFLINE CHECK PROVES. Every registry package in `rust-modules/Cargo.lock` is either a row in
 the data file (it ships) or listed in `not_shipped` (it was looked at and does not), so a crate a bump
 pulls in cannot reach the binary unclassified; every row exists in a lock; each version cell and the
-`compiler_builtins` version in the prose equal the lock's; and the nightly the data file names is the one
-the workflows pin. It cannot tell which side of that line a NEW crate belongs on: that is the human act
+`compiler_builtins` version in the prose equal the lock's; and the toolchain the data file names is the one
+rust-modules/rust-toolchain.toml pins. It cannot tell which side of that line a NEW crate belongs on: that is the human act
 the failure message asks for, and `--verify-graph` re-derives it from cargo. `not_shipped` is by NAME
 and holds common crates (once_cell, thiserror, base64, ...) that dev and build dependencies pull in, so
 only the graph proves that no shipping crate has come to depend on one: `ci.yml`'s host-lint job runs
@@ -30,12 +30,14 @@ script), and the same pass rejects a version cell that only a build or dev depen
 and copyright columns come from the data file, not from any lock: nothing here notices that a crate's
 licence changed in a new release, so a major bump needs them re-read by a person.
 
-THE STD HALF. The standard library is built from source (`-Z build-std`), so its crates' versions come
-from the lock inside the pinned nightly's rust-src, `library/Cargo.lock`, which a host without that
-toolchain does not have. `std_lock` in the data file is the snapshot of the rows that link; the offline
-check trusts it, `--verify-toolchain` proves it against rust-src when the toolchain is installed
-(the nightly the workflows pin; `rustup toolchain install nightly-YYYY-MM-DD --component rust-src`).
-Moving the pin (build-package.yml) fails the offline check until `toolchain.pin` is moved with it.
+THE STD HALF. The standard library is the pinned stable toolchain's PREBUILT armv7 std, so its
+crates' versions are the ones that release was built from: the lock inside its rust-src,
+`library/Cargo.lock`, which a host without that component does not have. `std_lock` in the data file
+is the snapshot of the rows that link; the offline check trusts it, `--verify-toolchain` proves it
+against rust-src when the toolchain is installed (`rustup toolchain install 1.99.1 --profile minimal
+--component rust-src`, the channel in rust-modules/rust-toolchain.toml). `compiler_builtins` is a path
+member of that workspace, not a registry package, so its version is read from the lock row without a
+`source` too. Moving the pin fails the offline check until `toolchain.pin` is moved with it.
 
 EXIT CODES. 0: ok (or, without --check, the file was rewritten). 1: the tree is inconsistent or stale
 (a moved version in --check mode, a stale row, a moved pin). 2: a registry package in the lock has no
@@ -59,16 +61,19 @@ NOTICES = ROOT / 'THIRD-PARTY-NOTICES.md'
 LOCK = ROOT / 'rust-modules' / 'Cargo.lock'
 WORKFLOWS = ROOT / '.github' / 'workflows'
 REGENERATE = 'python3 ci/gen-third-party-notices.py'
-PIN = re.compile(r'nightly-\d{4}-\d{2}-\d{2}')
+TOOLCHAIN_FILE = ROOT / 'rust-modules' / 'rust-toolchain.toml'
 REGISTRY = 'registry+'
 
 
-def parse_lock(text):
-    """{name: [versions]} of the registry packages in a Cargo.lock (workspace members have no `source`)."""
+def parse_lock(text, path_packages=()):
+    """{name: [versions]} of the registry packages in a Cargo.lock (workspace members have no `source`).
+
+    `path_packages` names members to include anyway (std's `compiler_builtins` is one in its workspace).
+    """
     found, current = {}, {}
     for line in text.splitlines() + ['[[package]]']:
         if line.startswith('[[package]]'):
-            if current.get('source', '').startswith(REGISTRY):
+            if current.get('source', '').startswith(REGISTRY) or current.get('name') in path_packages:
                 found.setdefault(current['name'], []).append(current['version'])
             current = {}
         m = re.match(r'(name|version|source) = "([^"]*)"', line)
@@ -145,10 +150,9 @@ def render(text, data, project):
 
 
 def workflow_pins():
-    pins = set()
-    for wf in sorted(WORKFLOWS.glob('*.yml')):
-        pins |= set(PIN.findall(wf.read_text()))
-    return pins
+    """The toolchain pin(s): the `channel` of rust-modules/rust-toolchain.toml, the repository's one pin."""
+    m = re.search(r'^channel\s*=\s*"([^"]+)"', TOOLCHAIN_FILE.read_text(), re.M)
+    return {m.group(1)} if m else set()
 
 
 def unclassified(data, project):
@@ -176,20 +180,21 @@ def problems_in(data, project, pins):
     for name in sorted({n for n in seen if seen.count(n) > 1}):
         problems.append(f'{name} has more than one row.')
     if pins != {data['toolchain']['pin']}:
-        problems.append(f'the workflows pin {sorted(pins)} but ci/third-party-crates.json "toolchain.pin" is '
-                        f'{data["toolchain"]["pin"]}: the std crates and rustc string of the notices describe the pinned nightly. '
+        problems.append(f'rust-modules/rust-toolchain.toml pins {sorted(pins)} but ci/third-party-crates.json "toolchain.pin" is '
+                        f'{data["toolchain"]["pin"]}: the std crates and rustc string of the notices describe the pinned toolchain. '
                         f'Re-derive "toolchain" and "std_lock" ({REGENERATE} --verify-toolchain on that toolchain) and move the pin.')
     return problems
 
 
 def set_root(root):
     """Point every path at another checkout (the code stays this script's)."""
-    global ROOT, DATA, NOTICES, LOCK, WORKFLOWS
+    global ROOT, DATA, NOTICES, LOCK, WORKFLOWS, TOOLCHAIN_FILE
     ROOT = Path(root).resolve()
     DATA = ROOT / 'ci' / 'third-party-crates.json'
     NOTICES = ROOT / 'THIRD-PARTY-NOTICES.md'
     LOCK = ROOT / 'rust-modules' / 'Cargo.lock'
     WORKFLOWS = ROOT / '.github' / 'workflows'
+    TOOLCHAIN_FILE = ROOT / 'rust-modules' / 'rust-toolchain.toml'
 
 
 def load():
@@ -209,7 +214,7 @@ def verify_toolchain(data):
     if lib is None or not (lib / 'Cargo.lock').exists():
         return [f'{pin} with rust-src is not installed (`rustup toolchain install {pin} --profile minimal --component rust-src`)']
     problems = []
-    std = parse_lock((lib / 'Cargo.lock').read_text())
+    std = parse_lock((lib / 'Cargo.lock').read_text(), path_packages=('compiler_builtins',))
     for name, version in sorted(data['std_lock'].items()):
         if version not in std.get(name, ()):
             problems.append(f'std_lock {name} {version}: the {pin} std lock has {std.get(name)}')
@@ -266,7 +271,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--check', action='store_true', help='fail instead of rewriting when the file would change')
     ap.add_argument('--verify-graph', action='store_true', help='compare the crate set with `cargo tree` (needs cargo)')
-    ap.add_argument('--verify-toolchain', action='store_true', help='compare the std snapshot with the pinned nightly\'s rust-src')
+    ap.add_argument('--verify-toolchain', action='store_true', help='compare the std snapshot with the pinned toolchain\'s rust-src')
     ap.add_argument('--root', help='operate on the checkout at this directory instead of the script\'s own')
     args = ap.parse_args(argv)
     if args.root:

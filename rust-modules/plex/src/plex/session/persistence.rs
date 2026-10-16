@@ -1309,7 +1309,7 @@ mod db8_policy_tests {
     /// Confirmed red by temporarily commenting out the early `return
     /// ClearCleanupOutcome::AuthorityNotConfirmed;` line at the top of
     /// `cleanup_after_confirmed_clear()` (so a fresh/`Missing` root falls through into the sweep
-    /// loop instead of returning early), running only this test via `cargo +nightly test --lib
+    /// loop instead of returning early), running only this test via `cargo test --lib
     /// plex::session::persistence::db8_policy_tests::cleanup_after_confirmed_clear_distinguishes_an_unconfirmed_authority_from_a_confirmed_one`,
     /// and observing the first assertion fail — the fall-through sweep finds zero candidates,
     /// trivially "completes", and reports `Confirmed` where the test asserts
@@ -1326,7 +1326,7 @@ mod db8_policy_tests {
     /// `redirect_for_test(None)` restored and, immediately before the first assertion, a stray
     /// file written to `super::super::fallback_file()` with permissive (group/other-writable)
     /// mode bits — plausible residue, since `plx_platform::storage::read_owned_bytes` treats such a mode
-    /// as untrusted — `cargo +nightly test --lib
+    /// as untrusted — `cargo test --lib
     /// plex::session::persistence::db8_policy_tests::cleanup_after_confirmed_clear_distinguishes_an_unconfirmed_authority_from_a_confirmed_one`
     /// failed the SECOND assertion: `left: LegacyRetireFailed, right: Confirmed`. That is this
     /// test's own verdict, not a different test's, so the experiment discriminates the isolation

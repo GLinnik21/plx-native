@@ -594,8 +594,8 @@ suite is 5603 tests before and after (157 + 66 + 218 + 5162). What it taught bey
   (the only files with C declarations in the layer; there is no `#[link]` and no `dynlib!` in it)
   differ from their old text in `pub(crate)` alone, and the new build script links nothing, so
   `LIBS_REAL` and `ci/expected-dt-needed.txt` are untouched. The host never compiles the ARM arms:
-  `cargo check --target arm-unknown-linux-gnueabi --lib -p plxnative-modules` (`.cargo/config.toml`'s
-  `build-std`, no NDK, no link step) does, and passes with and without default features; use it for
+  `cargo +$(make -s print-rust-toolchain) check --target armv7-unknown-linux-gnueabi --lib -p plxnative-modules` (the target's
+  prebuilt std since the move to stable; it was `.cargo/config.toml`'s `build-std` on nightly; no NDK, no link step) does, and passes with and without default features; use it for
   any split that moves FFI when no NDK is at hand.
 - **Gates scoped by the path of a moved file stopped seeing it, and some by its spelling.**
   `ci/check-deps.sh` reads `SRC_PLATFORM` where it read `SRC_MACHINE`; the `frame` and `uistorage`

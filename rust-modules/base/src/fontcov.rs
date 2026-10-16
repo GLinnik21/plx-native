@@ -297,7 +297,7 @@ fn parse_format6(t: &[u8], cov: &mut Coverage) -> Option<()> {
 fn parse_format12_13(t: &[u8], many_to_one: bool, cov: &mut Coverage) -> Option<()> {
     let n = be32(t, 12)? as usize;
     // The bounds check is done in u64, and that is load-bearing rather than tidy: **`usize` is
-    // 32 BITS on `arm-unknown-linux-gnueabi`**, the only target that ships. A `numGroups` of
+    // 32 BITS on `armv7-unknown-linux-gnueabi`**, the only target that ships. A `numGroups` of
     // 357_913_941 makes `n * 12` exactly 0xFFFF_FFFC, so `16 + n * 12` WRAPS to 12 — which is
     // ≤ `t.len()` — and the indexing below then panics out of the SDL main thread on the second
     // group. Release builds have overflow checks off, so it wraps silently rather than aborting.
