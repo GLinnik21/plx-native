@@ -27,11 +27,13 @@
 //! **No measured opener, no morph.** [`Frame`] with `from == None` is the fade+scale FALLBACK:
 //! the panel scales about its centre from [`FALLBACK_SCALE_FROM`] to 1 and fades.
 
-use crate::{Rect, Spring};
+use crate::{Rect, Spring, Zoom};
 
-/// The panel's corner radius at rest — the board's morph ends on `border-radius: 22px`.
-/// (Shipped panels state their own radius and keep it; this is the morph's own end value, so the
-/// handover from the morphing rect to the settled panel does not jump.)
+/// The board's panel corner radius, `border-radius: 22px` — what the design board's morph ends on.
+/// The shipped morph does NOT end here: shipped panels state their own radius (20/24/26) and the
+/// morph's end radius IS the caller's ([`Morph::frame`]'s `panel_radius`), so the handover to the
+/// settled panel and the hand-back at the start of a close do not snap. This is the stand-in for
+/// a caller with no panel of its own (the rows' painter, which reads no radius).
 pub const PANEL_RADIUS: f32 = 22.0;
 /// How far past the straight pill-to-panel radius ramp the corner swells mid-open, in px. The
 /// board's radius runs 19 -> 34 -> 22 for a 38 px pill (a swell of about 13 over the ramp's 20).
@@ -105,11 +107,27 @@ pub fn rect_at(from: Option<Rect>, panel: Rect, t: f32) -> Rect {
     rect_at_xy(from, panel, t, t)
 }
 
-/// The corner radius at height progress `ph`: the straight ramp from the pill's own radius to
-/// [`PANEL_RADIUS`], plus a [`RADIUS_BULGE`] swell that is zero at both ends.
-pub fn radius_at(pill_radius: f32, ph: f32) -> f32 {
+/// The corner radius at height progress `ph`: the straight ramp from the pill's own radius to the
+/// panel's (`end_radius`, the CALLER's), plus a [`RADIUS_BULGE`] swell that is zero at both ends.
+pub fn radius_at(pill_radius: f32, end_radius: f32, ph: f32) -> f32 {
     let ph = ph.clamp(0.0, 1.0);
-    pill_radius + (PANEL_RADIUS - pill_radius) * ph + RADIUS_BULGE * 4.0 * ph * (1.0 - ph)
+    pill_radius + (end_radius - pill_radius) * ph + RADIUS_BULGE * 4.0 * ph * (1.0 - ph)
+}
+
+/// The point the rows scale about while the morph runs: the point of the final `panel` nearest
+/// the opener's centre (the edge of the panel the pill sits on), or the panel's centre when the
+/// opener has no rect. Rows grow out of the pill instead of out of the middle of the glass.
+pub fn rows_anchor(from: Option<Rect>, panel: Rect) -> (f32, f32) {
+    match from {
+        Some(f) => (f.cx().clamp(panel.x, panel.x + panel.w), f.cy().clamp(panel.y, panel.y + panel.h)),
+        None => (panel.cx(), panel.cy()),
+    }
+}
+
+/// The scale the rows are drawn under at one instant: `scale` about [`rows_anchor`].
+pub fn rows_zoom(from: Option<Rect>, panel: Rect, scale: f32) -> Zoom {
+    let (ox, oy) = rows_anchor(from, panel);
+    Zoom { s: scale, ox, oy }
 }
 
 /// The morph's motion state. `const`-constructible so a `static Popover` can hold one.
@@ -159,15 +177,18 @@ impl Morph {
 
     /// The draw state now, for the opener rect `from` (`None` = the fade+scale fallback) and the
     /// final `panel` rect.
-    pub fn frame(&self, from: Option<Rect>, panel: Rect) -> Frame {
+    ///
+    /// `panel_radius` is the caller's own panel corner radius: the morph ENDS on it (and a close
+    /// starts from it), so the settled ground and the morphing one are the same shape.
+    pub fn frame(&self, from: Option<Rect>, panel: Rect, panel_radius: f32) -> Frame {
         let (pw, ph) = (self.w.pos.clamp(0.0, 1.0), self.h.pos.clamp(0.0, 1.0));
         let rp = self.rows_progress();
         let content_alpha = (rp / ROWS_OPAQUE_AT).clamp(0.0, 1.0);
         let ground_alpha = (rp / GROUND_OPAQUE_AT).clamp(0.0, 1.0);
-        let pill_radius = from.map_or(PANEL_RADIUS, |f| f.w.min(f.h) * 0.5);
+        let pill_radius = from.map_or(panel_radius, |f| f.w.min(f.h) * 0.5);
         Frame {
             rect: rect_at_xy(from, panel, pw, ph),
-            radius: if from.is_some() { radius_at(pill_radius, ph) } else { PANEL_RADIUS },
+            radius: if from.is_some() { radius_at(pill_radius, panel_radius, ph) } else { panel_radius },
             ground_alpha,
             content_alpha,
             rows_scale: self.rows.pos,
@@ -189,13 +210,15 @@ mod tests {
     const DT: f32 = 1.0 / 60.0;
     const PILL: Rect = Rect::new(1500.0, 40.0, 196.0, 38.0);
     const PANEL: Rect = Rect::new(1380.0, 40.0, 316.0, 400.0);
+    /// A caller's own panel radius, deliberately not the board's 22.
+    const RAD: f32 = 26.0;
 
     fn open_frames() -> Vec<(Morph, Frame)> {
         let mut m = Morph::new();
-        let mut out = vec![(m, m.frame(Some(PILL), PANEL))];
+        let mut out = vec![(m, m.frame(Some(PILL), PANEL, RAD))];
         for _ in 0..120 {
             m.step(true, DT);
-            out.push((m, m.frame(Some(PILL), PANEL)));
+            out.push((m, m.frame(Some(PILL), PANEL, RAD)));
         }
         out
     }
@@ -230,7 +253,7 @@ mod tests {
         for _ in 0..6 {
             m.step(true, DT);
         }
-        let fr = m.frame(Some(PILL), PANEL);
+        let fr = m.frame(Some(PILL), PANEL, RAD);
         let (pw, ph) = ((fr.rect.w - PILL.w) / (PANEL.w - PILL.w), (fr.rect.h - PILL.h) / (PANEL.h - PILL.h));
         assert!(ph > pw, "the stiffer height spring is ahead of the width ({ph} vs {pw})");
     }
@@ -241,12 +264,12 @@ mod tests {
         for _ in 0..(0.19 / DT).round() as usize {
             m.step(true, DT);
         }
-        let fr = m.frame(Some(PILL), PANEL);
+        let fr = m.frame(Some(PILL), PANEL, RAD);
         assert!((fr.rect.w - PANEL.w).abs() < 0.07 * (PANEL.w - PILL.w), "open lands by ~190 ms");
         for _ in 0..(0.15 / DT).round() as usize {
             m.step(false, DT);
         }
-        let fr = m.frame(Some(PILL), PANEL);
+        let fr = m.frame(Some(PILL), PANEL, RAD);
         assert!((fr.rect.w - PILL.w).abs() < 0.12 * (PANEL.w - PILL.w), "close is near the pill by ~150 ms");
         for _ in 0..120 {
             m.step(false, DT);
@@ -255,15 +278,37 @@ mod tests {
     }
 
     #[test]
-    fn radius_bulges_and_ends_at_the_panel_radius() {
+    fn radius_bulges_and_ends_at_the_callers_panel_radius() {
         let f = open_frames();
         let pill_r = PILL.h * 0.5;
         assert_eq!(f[0].1.radius, pill_r);
         let peak = f.iter().map(|(_, fr)| fr.radius).fold(0.0_f32, f32::max);
-        assert!(peak > PANEL_RADIUS + 8.0, "the corner swells past both ends ({peak})");
-        assert!((f.last().unwrap().1.radius - PANEL_RADIUS).abs() < 0.05);
-        assert_eq!(radius_at(pill_r, 0.0), pill_r);
-        assert_eq!(radius_at(pill_r, 1.0), PANEL_RADIUS);
+        assert!(peak > RAD + 8.0, "the corner swells past both ends ({peak})");
+        assert!((f.last().unwrap().1.radius - RAD).abs() < 0.05, "the morph ends on the caller's radius, not 22");
+        assert_eq!(radius_at(pill_r, RAD, 0.0), pill_r);
+        assert_eq!(radius_at(pill_r, RAD, 1.0), RAD);
+    }
+
+    /// The handover frames carry no radius snap: from the first frame `settled()` reports, to the
+    /// caller's own radius, the step is a sub-pixel; and the first close frame is the same value.
+    #[test]
+    fn the_radius_is_continuous_into_and_out_of_the_settled_panel() {
+        let mut m = Morph::new();
+        let mut prev = m.frame(Some(PILL), PANEL, RAD).radius;
+        let mut settled_at = None;
+        for _ in 0..240 {
+            m.step(true, DT);
+            let r = m.frame(Some(PILL), PANEL, RAD).radius;
+            if settled_at.is_none() && m.settled() {
+                settled_at = Some(r);
+                assert!((r - RAD).abs() < 0.05, "settling hands the caller's radius {RAD} a {r}");
+                assert!((r - prev).abs() < 1.0, "no snap at settle ({prev} -> {r})");
+            }
+            prev = r;
+        }
+        assert!(settled_at.is_some());
+        let at_rest = m.frame(Some(PILL), PANEL, RAD).radius;
+        assert!((at_rest - RAD).abs() < 0.05, "the close starts on the caller's radius ({at_rest})");
     }
 
     #[test]
@@ -289,7 +334,7 @@ mod tests {
         }
         for _ in 0..120 {
             m.step(false, DT);
-            frames.push(m.frame(Some(PILL), PANEL));
+            frames.push(m.frame(Some(PILL), PANEL, RAD));
         }
         for fr in frames {
             assert!(fr.content_alpha >= fr.ground_alpha, "rows lead the glass: {fr:?}");
@@ -303,7 +348,7 @@ mod tests {
     #[test]
     fn without_an_opener_rect_the_panel_fades_and_scales_about_its_centre() {
         let m = Morph::new();
-        let fr = m.frame(None, PANEL);
+        let fr = m.frame(None, PANEL, RAD);
         assert!((fr.rect.w - PANEL.w * FALLBACK_SCALE_FROM).abs() < 1e-3);
         assert!((fr.rect.cx() - PANEL.cx()).abs() < 1e-3 && (fr.rect.cy() - PANEL.cy()).abs() < 1e-3);
         assert_eq!(rect_at(None, PANEL, 1.0), PANEL);

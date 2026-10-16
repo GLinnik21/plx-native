@@ -15,19 +15,16 @@
 //!
 //! ## Three things here are not obvious
 //!
-//! **1. Its ground is glass over the live page, the page's own light is the fallback, and its dim is heavier than a menu's.**
-//! The sheet stands on `widgets::panel_ground`, which draws `popover_glass` (DS6) whenever a live
-//! backdrop exists and otherwise the container's underlay field, sampled from the UNDIMMED page at
-//! the head of the dim (`containers::modal::ModalUnderlay`), drawn through the panel's own window
-//! and frosted. This panel once dropped its dynamic backdrop because a CACHED snapshot taken while
+//! **1. Its ground is the page's own light (never glass, DS6 is for menus only), and its dim is heavier than a menu's.**
+//! The sheet stands on `widgets::panel_ground` with `Ground::Sheet`: the container's underlay
+//! field, sampled from the UNDIMMED page at the head of the dim
+//! (`containers::modal::ModalUnderlay`), drawn through the panel's own window and frosted. This panel once dropped its dynamic backdrop because a CACHED snapshot taken while
 //! its own scrim was still ramping through zero frosted an undimmed page, and on this page that is
 //! not hypothetical: `person.rs` draws the person's own name at `size::DISPLAY` (48) at x~474,
 //! y~96, *directly behind this panel's top-left corner*, where the eyebrow and the identity line
-//! sit. The glass ground now grabs around the panel's REST rect (`Painter::lifted`, so the slide
-//! re-grabs nothing) and blurs it under the gradient face; whether that frosts the name far enough
-//! to keep the eyebrow legible is a ui-sim capture question, not settled by this comment. The
-//! fallback field (a 15x8 box cannot carry lettering, and `theme::underlay::PANEL_LUMA_MAX` caps
-//! it) is what a frame without a backdrop shows. The page around the panel is still dimmed
+//! sit. The field (a 15x8 box cannot carry lettering, and `theme::underlay::PANEL_LUMA_MAX` caps
+//! it) is the ground on every frame. The panel's painter still carries its slide as
+//! `Painter::lifted`, which only a glass ground reads. The page around the panel is still dimmed
 //! at [`theme::underlay::DIM_PROSE`] — the measured text-legibility floor [`theme::SCRIM_TEXT_A`],
 //! as the PROSE role's weight — because a panel of fine print over a headline should stand further
 //! forward than a menu does.
@@ -161,10 +158,10 @@ impl PersonBioScreen {
         field: Option<&plx_ui::underlay::UnderlayField>,
     ) {
         let slide = RISE * (1.0 - appear);
-        // `lifted`, not `translate`: the glass ground grabs around the REST rect (`rest_lift`).
+        // `lifted`, not `translate`: the slide is remembered as `rest_lift` (read by a glass ground only).
         let p = Painter::root().alpha(appear).lifted(slide);
         let panel = panel_rect();
-        plx_ui::widgets::panel_ground(p, panel, theme::ALERT_PANEL_RAD, field);
+        plx_ui::widgets::panel_ground(p, panel, theme::ALERT_PANEL_RAD, field, plx_ui::widgets::Ground::Sheet);
 
         let c = content_rect();
         draw_head(p, person, c, measure);

@@ -510,12 +510,12 @@ impl Material {
 /// are still there, so it reads as glass rather than as paint. The reference agrees — iOS's own
 /// context menu passes almost nothing of the page behind it.
 ///
-/// **A panel spends both halves since DS6.** `widgets::panel_ground` draws `popover_glass` first,
-/// a live backdrop blur that re-samples at `deep()`, for EVERY popover panel (menus, the centred
-/// alerts, About, Track information, the person bio, the decision alert); only a frame with no
-/// live backdrop falls back to the latched underlay field, which spends the `frost()` half alone.
-/// A growing panel (the bio) therefore has a blur region that grows with it, unmeasured: a TV-phase
-/// item (the budget tests cover the menus' fixed sizes).
+/// **A menu spends both halves since DS6.** `widgets::panel_ground` with `Ground::Menu` draws
+/// `popover_glass` first, a live backdrop blur that re-samples at `deep()`, for the MENUS only
+/// (Sort & Filter, the account menu, the item hold menu); a `Ground::Sheet` (the centred alerts,
+/// About, Track information, the person bio, the decision alert) never does, and a menu on a frame
+/// with no live backdrop falls back to the latched underlay field, which spends the `frost()`
+/// half alone. A morphing menu's blur region grows with it, unmeasured: a TV-phase item.
 pub const PANEL_MATERIAL: Material = Material::UltraThick;
 // The five `MODAL_*` tokens that stood here — `MODAL_SAMPLE_MATERIAL`, `MODAL_FROST_ALPHA`,
 // `MODAL_BLUR_TAPS`, `MODAL_BLUR_TINT`, `MODAL_BLUR_SATURATION` — were the material of a

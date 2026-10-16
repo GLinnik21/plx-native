@@ -29,8 +29,9 @@
 //!   scrim included. The scrim and the [`Opener`] lift stay LIVE above the quad, which they must:
 //!   the scrim ramps with the appear spring, and a lift baked into the snapshot would then be
 //!   dimmed by the live scrim drawn over it, which is the exact bug the lift exists to fix.
-//! - **A panel's ground is glass over the captured host page (DS6), and falls back to a field that
-//!   reads no framebuffer.** [`crate::widgets::panel_ground`] draws `popover_glass` when a live
+//! - **A MENU's ground is glass over the captured host page (DS6), and falls back to a field that
+//!   reads no framebuffer; a sheet's ground never is glass.** [`crate::widgets::panel_ground`]
+//!   draws `popover_glass` for a [`Ground::Menu`](crate::widgets::Ground) when a live
 //!   backdrop exists, which samples the page this snapshot holds, so the snapshot must be the
 //!   undimmed page (above). With no live backdrop it uses the latched underlay field (the one the
 //!   modal dim draws, `ui::underlay`) sampled at the panel's own rect under the frost, which
@@ -363,12 +364,15 @@ impl Popover {
     }
     /// The morph's draw state for the opener rect `from` and the settled `panel` rect; `None` for
     /// a popover that is not [`morphing`](Self::morphing).
+    ///
+    /// `rad` is the panel's own corner radius: the morph ends on it.
     pub fn morph_frame(
         &self,
         from: Option<Rect>,
         panel: Rect,
+        rad: f32,
     ) -> Option<crate::popover_morph::Frame> {
-        (self.style == OpenStyle::Morph).then(|| self.morph.frame(from, panel))
+        (self.style == OpenStyle::Morph).then(|| self.morph.frame(from, panel, rad))
     }
     /// [`open`](Self::open) for a [`morphing`](Self::morphing) popover whose opener has a measured
     /// rect: the panel grows out of `from` (the pill). Pass [`Opener::rect`]; `None` is the
@@ -537,7 +541,7 @@ impl Popover {
         if self.style == OpenStyle::Morph {
             // The morph owns the panel's arrival: the rows' alpha leads the glass's (never an
             // empty glass frame) and nothing slides; `rise` is the appear style's.
-            let a = self.morph.frame(None, Rect::default()).content_alpha;
+            let a = self.morph.frame(None, Rect::default(), 0.0).content_alpha;
             return Painter::root().alpha(a * crate::nav::page_alpha());
         }
         let a = self.appear();
@@ -636,17 +640,53 @@ impl Popover {
     ///
     /// **Not for the player's panels.** Behind those is punch-through alpha to the hardware video
     /// plane, which GL cannot read; they keep `p.rect(…, PANEL_TOP, PANEL_BOT, …)` on purpose.
+    ///
+    /// `ground` is the caller's explicit choice of material ([`widgets::Ground`](crate::widgets::Ground)):
+    /// glass for a MENU, the pre-DS6 field ground for a sheet or an alert.
     pub fn panel(
         &self,
         p: Painter,
         r: Rect,
         rad: f32,
         field: Option<&crate::underlay::UnderlayField>,
+        ground: crate::widgets::Ground,
     ) {
         if let Some((r, rad, mul)) = self.ground(r, rad) {
-            crate::widgets::panel_ground(p.alpha(mul), r, rad, field);
+            crate::widgets::panel_ground(p.alpha(mul), r, rad, field, ground);
         }
         self.ground_done();
+    }
+
+    /// Draw a MORPHING popover's rows through `draw`, in the shared choreography the board states:
+    ///
+    /// - the rows are **clipped to the current glass rect** ([`ClipScope`](crate::screen::ClipScope),
+    ///   which nests with a table's own clip), so nothing draws outside the small glass;
+    /// - they are **scaled about the panel anchor** ([`popover_morph::rows_anchor`](crate::popover_morph::rows_anchor))
+    ///   by the row spring, 0.82 -> 1 (and back on close);
+    /// - their alpha is the content painter's (`p` should come from [`content_painter`](Self::content_painter)),
+    ///   which leads the ground's, so a glass rect larger than the pill always has rows on it.
+    ///
+    /// `panel` and `rad` are the same arguments as [`panel`](Self::panel). Anything but an
+    /// unsettled morph (the fade+slide, or a morph at rest) draws through `p` as it always did.
+    pub fn morph_rows(&self, p: Painter, panel: Rect, rad: f32, draw: impl FnOnce(Painter)) {
+        if self.style != OpenStyle::Morph || self.morph.settled() {
+            return draw(p);
+        }
+        let f = self.morph.frame(self.from, panel, rad);
+        let _clip = crate::screen::ClipScope::open_in(p, f.rect);
+        let zoom = crate::popover_morph::rows_zoom(self.from, panel, f.rows_scale);
+        draw(p.clipped(f.rect).zoomed(zoom));
+    }
+
+    /// The painter for the OPENER PILL's label (and anything else the pill wears) while the panel
+    /// morphs out of it: `p` at the pill's share of the cross-dissolve, `1 - ground alpha`, so the
+    /// label dissolves out as the rows come in and returns as they leave on close. A popover that
+    /// is not morphing, or has no opener rect to dissolve, leaves `p` as it was.
+    pub fn pill_painter(&self, p: Painter) -> Painter {
+        if self.style != OpenStyle::Morph || self.from.is_none() {
+            return p;
+        }
+        p.alpha(self.morph.frame(self.from, Rect::default(), 0.0).pill_alpha)
     }
 
     /// What [`panel`](Self::panel) draws as the ground this frame: `(rect, radius, alpha factor on
@@ -658,7 +698,7 @@ impl Popover {
         if self.style != OpenStyle::Morph || self.morph.settled() {
             return Some((r, rad, 1.0));
         }
-        let f = self.morph.frame(self.from, r);
+        let f = self.morph.frame(self.from, r, rad);
         if f.ground_alpha <= 0.0 || f.content_alpha <= 0.0 {
             return None;
         }

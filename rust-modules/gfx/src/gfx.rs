@@ -3596,8 +3596,13 @@ pub enum GlassRim {
     Standing,
     /// A popover's panel (DS6): the standing container's chamfer and lens, plus the sharp second
     /// source switched ON — the rim refracts the captured host page, unblurred, through the same
-    /// rounded-rect SDF displacement. No extra pass: the grab is the one `Standing` can already
-    /// copy at a non-zero [`GlassRim::sharp`]. Numbers: `tokens::MENU_*`.
+    /// rounded-rect SDF displacement. **It is not free:** a non-zero [`GlassRim::sharp`] turns on
+    /// the sharp BAND COPY (the panel plus the lens margin, `glCopyTexSubImage2D` off the finished
+    /// page), ONE per menu glass draw, re-grabbed EVERY frame (it is taken from the live page, never
+    /// cached with the blur snapshot), and while a morph rect moves the band's rect changes each
+    /// frame too, so nothing is reused. `Standing` (sharp 0) takes no such copy. Measured on the
+    /// standing container: the band copy is +2.7% GPU_ACTIVE; the menu's own figure is a TV-phase
+    /// item. Numbers: `tokens::MENU_*`.
     Menu,
 }
 

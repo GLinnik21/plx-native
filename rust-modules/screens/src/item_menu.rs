@@ -800,7 +800,7 @@ impl<H: AppLike + crate::registry::MetadataLike> Screen<H> for ItemMenuScreen {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         let r = self.frame(f.measure);
-        plx_ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay);
+        plx_ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay, plx_ui::widgets::Ground::Menu);
         self.form.table.draw(p, r, f.measure);
         for elem in self.focusable().collect::<Vec<_>>() {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {

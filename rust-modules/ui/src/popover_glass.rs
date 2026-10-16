@@ -3,16 +3,19 @@
 //! highlight on the rim, and a soft shadow. The 30% scrim behind it is the compact-menu dim role
 //! (`theme::underlay::DIM_COMPACT`), not a number stated here.
 //!
-//! **One entry point.** [`draw`] is called by [`widgets::panel_ground`](crate::widgets::panel_ground),
-//! the one door every popover panel's ground goes through, so no screen restates any of this. It
+//! **One entry point.** [`draw`] is called by [`widgets::panel_ground`](crate::widgets::panel_ground)
+//! for a [`Ground::Menu`](crate::widgets::Ground) only (menus, not sheets or alerts), so no screen
+//! restates any of this. It
 //! reports `false` — and the caller draws the latched-underlay ground it always did — whenever no
 //! live backdrop exists: a unit test with no frame, a surface over the hardware video plane, a
 //! frozen page outside [`host::live`](crate::popover::host::live).
 //!
 //! **The refraction is the shader's, not this module's.** The panel asks for [`GlassRim::Menu`]:
 //! `fs_glass.frag` already bends the captured page around the rim using the SAME rounded-rect SDF
-//! it rounds the panel with, and mixes in the unblurred grab at `tokens::MENU_SHARP`. There is no
-//! extra pass here; this module only names the material.
+//! it rounds the panel with, and mixes in the unblurred grab at `tokens::MENU_SHARP`. That sharp
+//! source is NOT free: `GlassRim::Menu` turns on the sharp band copy, one per menu glass draw,
+//! re-grabbed every frame (and with a new rect every frame while a morph moves). This module adds
+//! no pass of its own; it only names the material.
 //!
 //! **Board against shipped code** (shipped code wins, recorded): the board's panel radius is 26 and
 //! the design system's `--radius-panel` is 24, while the shipped panels state their own

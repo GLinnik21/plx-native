@@ -61,11 +61,10 @@
 //! it spends whatever is left inside the screen's glass keep-out and never less than one line. Prose
 //! beyond that budget scrolls (see above) rather than being cut.
 //!
-//! **Its ground is `widgets::panel_ground`, which is glass since DS6** whenever a live backdrop
-//! exists: a live blur whose region grows with the panel (unmeasured past the menus' fixed sizes;
-//! a TV-phase item). Only a frame without one falls back to the latched underlay field: the page
-//! under it sampled once into the 15×8 field the modal dim already latched, windowed to the
-//! panel's own rect and graded toward the panel material, under the frost. It still clears the
+//! **Its ground is `widgets::panel_ground` with `Ground::Sheet`: NOT glass** (DS6 put glass on
+//! menus only). The latched underlay field: the page under it sampled once into the 15×8 field the
+//! modal dim already latched, windowed to the panel's own rect and graded toward the panel
+//! material, under the frost. It still clears the
 //! design's `--glass-edge-clear` 68 on all four sides ([`EDGE_CLEAR`]) — a layout margin now.
 
 use plx_ui::consts::{SCR_H, SCR_W};
@@ -377,7 +376,7 @@ impl AboutPanelScreen {
         let r = panel_rect(s.h);
 
         // ---- ground ----
-        plx_ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field);
+        plx_ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field, plx_ui::widgets::Ground::Sheet);
 
         // ---- content ----
         let cx = r.x + PAD;
@@ -619,7 +618,7 @@ impl<H: crate::registry::AppLike + crate::registry::MetadataLike + crate::regist
     ///
     /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): the
     /// panel's ground once sampled the framebuffer (`Glass::CACHED`), so the dim had to be down
-    /// before the backdrop was taken; the ground is live glass now (`popover_glass`, DS6), with the latched underlay field as its fallback, latched at the
+    /// before the backdrop was taken; the ground is the latched underlay field (a sheet is never glass; DS6 glass is for menus), latched at the
     /// head of the dims from the undimmed page. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
     /// earlier than the surface pass this `draw` runs in — and multiplies by the appear spring and
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
@@ -677,8 +676,7 @@ fn rule(p: Painter, r: Rect, y: f32) {
 }
 
 /// The painter every frame of the sheet draws through: the appear fade and the rise, with the rise
-/// REMEMBERED (`Painter::lifted`) so the glass ground grabs its backdrop around the rest rect and
-/// the open slide re-grabs nothing.
+/// REMEMBERED (`Painter::lifted`); only a glass ground reads it, and a sheet's is the field.
 fn sheet_painter(appear: f32) -> Painter {
     Painter::root().alpha(appear).lifted(RISE * (1.0 - appear))
 }
@@ -687,8 +685,8 @@ fn sheet_painter(appear: f32) -> Painter {
 mod tests {
     use super::*;
 
-    /// The sheet's painter carries its rise as `rest_lift`, so `popover_glass::draw` takes the
-    /// rising grab. A hand-made `translate` leaves it `None` and re-grabs every slide frame.
+    /// The sheet's painter carries its rise as `rest_lift` (read only by a glass ground, which a
+    /// sheet does not wear). A hand-made `translate` leaves it `None`.
     #[test]
     fn the_sheet_painter_remembers_its_rise() {
         assert_eq!(sheet_painter(0.25).rest_lift(), Some(RISE * 0.75));

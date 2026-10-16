@@ -373,9 +373,13 @@ presentation in a design pass.
    **Popover open styles.** Two exist. `Appear` (default) is the shared `K_APPEAR` fade+slide.
    `Morph` (`Popover::morphing()` is the one selector; open with `open_from(opener.rect)`) is the glass opener's pill-to-panel
    morph in `popover_morph.rs`: width spring k 620 and height spring k 950 critically damped, radius
-   pill -> 22 with a bulge, rows 0.82 -> 1 at zeta 0.6 k 720, and a 0.92 -> 1 fade+scale fallback
-   when the opener has no rect. Content alpha always leads ground alpha (never an empty glass
-   frame). The item hold menu keeps lift+appear. A new morph constant is named in `popover_morph.rs`.
+   pill -> THE CALLER'S panel radius with a bulge (so settle and the start of a close do not snap),
+   rows 0.82 -> 1 at zeta 0.6 k 720, and a 0.92 -> 1 fade+scale fallback when the opener has no
+   rect. Content alpha always leads ground alpha (never an empty glass frame). The shared
+   painters are `Popover::panel` (the ground at the morphing rect), `Popover::morph_rows` (the
+   rows, clipped to the current glass rect and scaled about the panel anchor by the row spring)
+   and `Popover::pill_painter` (the opener label, dissolving out as the rows come in and back on
+   close). The item hold menu keeps lift+appear. A new morph constant is named in `popover_morph.rs`.
 
 2. **Clickable text marks are ALL CAPS.** `MORE` and every other pressable text mark is
    capitalised, overriding the design system's sentence-case rule for app-written text: the mark is
@@ -390,7 +394,7 @@ presentation in a design pass.
    small glyph in that same indicator slot at the clock's cap height — never a control, and never a
    fourth entry in the HUD control row (`appkit/player_hud.rs`'s `BTN_N`, currently 3).
 
-4. **Failure read-outs are never red — the app does not scold.** A read-out's verdict, the bold line that says what happened (a `Failed` read-out, and an `Empty` read-out's caption), is inked `theme::TEXT_PRIMARY`: bright, because it is the line the eye lands on. Its body, the reason under it, is `theme::TEXT_SECONDARY`. Emphasis is ink only: never a warning colour, a rule, a capsule or a tint. A `Failed` verdict is bold `size::TITLE` (per the design system's `StatusOverlay` contract). Home, Library, sign-in and the player's failure read-outs share ONE placement: the verdict hangs
+4. **Failure read-outs are never red — the app does not scold.** A read-out's verdict (DS3) is inked `theme::TEXT_PRIMARY`: bright, because it is the line the eye lands on — a `Failed` read-out's verdict, and an `Empty` read-out's caption, which is not bold. Its body, the reason under it, is `theme::TEXT_SECONDARY`. Emphasis is ink only: never a warning colour, a rule, a capsule or a tint. A `Failed` verdict is bold `size::TITLE` (per the design system's `StatusOverlay` contract). Home, Library, sign-in and the player's failure read-outs share ONE placement: the verdict hangs
    from `FULL_ANCHOR_TOP` with the reason and action row stacked directly under it, and a 112 px
    `theme::TEXT_SECONDARY` glyph above the verdict (`StatusOverlay::page`'s `glyph` argument). A
    read-out centred in its own container instead lands visibly off that verdict line and reads as a
@@ -460,24 +464,37 @@ tried first. None of it is reconstructable from the code without repeating the m
   glass's own and higher layers, checks occlusion and compares the ordered draw arguments beneath
   each sampling region.
 
-- **A popover panel is glass whenever a live backdrop exists (DS6).** Every panel stands on
-  `widgets::panel_ground`, whose first act is `popover_glass::draw`: a `Glass::DYNAMIC_BACKDROP`
+- **A MENU is glass whenever a live backdrop exists (DS6); nothing else is.** The scope is
+  MENUS ONLY (owner decision, wave 2 review): Sort & Filter, the account menu, the item hold menu
+  (the player's "…" menu stands over the video plane and has no live backdrop to read). Every
+  other `panel_ground` user — the alerts, About, Track information, the person bio, the
+  Also-available sheet, the decision alert — keeps the pre-DS6 ground, the latched underlay field
+  under the frost. The choice is explicit at each call, `widgets::Ground::Menu` or
+  `Ground::Sheet` (`panel_ground`'s last argument, `Popover::panel`'s too); there is no global
+  switch. A `Menu` ground's first act is `popover_glass::draw`: a `Glass::DYNAMIC_BACKDROP`
   surface wearing a gradient face (`FACE_TOP`/`FACE_BOT`), the 1 px `theme::GLASS_RIM`, the lit top
   edge `GLASS_RIM_LIGHT` and `GlassRim::Menu` — the shader (`fs_glass.frag`) refracts the rim from
-  the captured host page with the SAME rounded-rect SDF that rounds the panel, so there is no extra
-  pass — and then a soft shadow cut out around the panel's rounded shape. The scrim behind a compact
-  menu is `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
+  the captured host page with the SAME rounded-rect SDF that rounds the panel — and then a soft
+  shadow cut out around the panel's rounded shape. The scrim behind a compact menu is
+  `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
   (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha and a
   sliding panel passes its rest lift (`Painter::rest_lift`) so the open slide re-grabs nothing.
-  This applies to EVERY `panel_ground` user (alerts, About, bio), so a growing panel's blur
-  region is unmeasured — a TV-phase item. Only when no live backdrop exists (a unit test, a
-  surface over the video plane, a frozen page outside `host::live`) does `draw` return `false` and
-  the panel fall back to the 15×8 underlay field the modal dim latched (`ui::underlay`, reaching a
-  surface as `DrawFrame::underlay`), windowed to the panel's rect and graded under `PANEL_LUMA_MAX`.
-  This reverses the 2026-09-19 "popovers are not glass" policy: the cost of the panel's blur on the
-  television (`docs/liquid-glass.md`) is NOT yet re-measured, and `MENU_SHARP` is a guess for the
-  TV feel check to settle. A source-grep test keeps `Glass` out of every file except the chrome
-  list, `popover_glass.rs` being the ONE popover-side entry — no screen names `Glass` itself.
+  **Menu glass is not free: `GlassRim::Menu` turns on the sharp band copy** (the panel plus the
+  lens margin, off the finished page, `MENU_SHARP` > 0), **one per menu glass draw, re-grabbed
+  EVERY frame** — it is taken from the live page, never cached with the blur snapshot — and while
+  a morph rect moves its band changes every frame too, so nothing is reused (the standing
+  container, sharp 0, takes none). Measured on the standing container the band copy is +2.7%
+  GPU_ACTIVE; the menu's figure and a growing menu's blur region are unmeasured, a TV-phase item.
+  Only when no live backdrop exists (a unit test, a surface over the video plane, a frozen page
+  outside `host::live`) does `draw` return `false` and the menu fall back to the 15×8 underlay
+  field the modal dim latched (`ui::underlay`, reaching a surface as `DrawFrame::underlay`),
+  windowed to the panel's rect and graded under `PANEL_LUMA_MAX`. This reverses the 2026-09-19
+  "popovers are not glass" policy for menus only: the cost of the menu's blur on the television
+  (`docs/liquid-glass.md`) is NOT yet re-measured, and `MENU_SHARP` is a guess for the TV feel
+  check to settle. A source-grep test (`widgets_glass_budget_tests`) keeps `Glass` out of every
+  file except the chrome list, `popover_glass.rs` being the ONE popover-side entry — no screen
+  names `Glass` itself — and pins the scope: the three menu files name `Ground::Menu`, the five
+  sheet files `Ground::Sheet`, and none names the other.
 
 - **A modal's dim is DRAWN, never applied to the source.** The variant that multiplied the host
   page's RGB going into the backdrop was measured and removed: dimming the source destroys the

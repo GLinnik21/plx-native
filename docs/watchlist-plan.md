@@ -330,7 +330,7 @@ Discover trailer playable?
   (Search +3, chip +4 unchanged); reword widgets.rs docs (~5575-5585, ~6405) and docs/search.md
   §1. Pin untouched; overscan_rects test (no scroll at 5 stops). Host + ui-sim + check-replay.
 - **DS6 Glass menus + 30% scrim** (boards: WatchlistOptions, HoldMenu, WatchlistHold): gradient panel, rims, shadow; fs_glass rim refraction from the
-  captured host, same SDF, no extra pass; amend ui CLAUDE.md Glass section + grep test.
+  captured host, same SDF; menus only (owner decision, wave 2 review), and `GlassRim::Menu` turns on the sharp band copy (one per menu glass draw, re-grabbed every frame); amend ui CLAUDE.md Glass section + grep test.
   ui-sim + TV (profile-tv, LG pixels).
 - **DS7 Morph open style** (board: Motion's Sort & Filter card; end state WatchlistOptions): pill→panel rect (w k≈620, h k≈950, critically damped), radius
   pill→22 with bulge, rows 0.82→1 (zeta 0.6, k≈720), ~190/150 ms, cross-dissolve, never empty
@@ -535,7 +535,7 @@ menus, 30% scrim, icon-tab pill, darker tick veil, bright-verdict rule, new icon
    Engine: today every popover opens with one shared fade-and-slide (`Popover`, `K_APPEAR`
    300, `ui/src/popover.rs`). Morph = second open style for glass openers (Sort & Filter pill,
    profile chip→account menu, player "…"). Item hold menu keeps lift+appear. Glass rect reuses
-   captured host page + fs_glass SDF (no extra pass). Menu TEXT blur is the Mali cost;
+   captured host page + fs_glass SDF (plus the sharp band copy of `GlassRim::Menu`, re-grabbed every frame while the rect moves). Menu TEXT blur is the Mali cost;
    fallback fade+scale; decide by TV measurement (profile-tv).
    Rejected: focus tilt, light sweep, release-day clock sweep, shrink-and-stagger remove.
 

@@ -132,10 +132,21 @@ pub fn declare_chrome_glass_for_test(p: Painter, rects: &[Rect]) {
     }
 }
 
+/// Which ground a popover panel stands on — the caller's explicit, per-call choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ground {
+    /// A MENU (Sort & Filter, the account menu, the item hold menu): glass over the live backdrop
+    /// (`popover_glass`), the latched-field ground only when no live backdrop exists.
+    Menu,
+    /// Everything else that stands on a panel (alerts, About, Tracks, the person bio, the decision
+    /// alert): the pre-DS6 ground, the latched underlay field under the frost. Never glass.
+    Sheet,
+}
+
 /// **A popover panel's GROUND — the page under it, carried into it, WHERE it is.**
 ///
 /// Every popover in the app stands on this: the menus, the alert panels, the person bio, the
-/// decision alert. It used to be a real backdrop blur of the host (`Glass::CACHED.panel`, and the
+/// decision alert (only the menus wear glass, see the end of this comment). It used to be a real backdrop blur of the host (`Glass::CACHED.panel`, and the
 /// bio's `DYNAMIC_BACKDROP`) tinted by a fixed frost — ~11% of a frame's GPU cycles on the
 /// account panel (`docs/backdrop-blur-profiling.md`), for a picture the frost then covered all but
 /// 15% of. What survives a frost that dense is the page's COLOUR and where it is, which is exactly
@@ -155,19 +166,25 @@ pub fn declare_chrome_glass_for_test(p: Painter, rects: &[Rect]) {
 /// Never a blank, and never the frost alone — [`theme::PANEL_FROST_TOP`] is only legal over the
 /// field it is frosting.
 ///
-/// **DS6 put glass back on popovers**: `popover_glass::draw` runs first (above) and wins whenever a
-/// live backdrop exists; everything described below is the FALLBACK ground for a frame without
-/// one. The chrome (the top bar's track, the profile chip's capsule, the hold hint) is the other
+/// **DS6 put glass back on MENUS, and only menus** (owner decision, wave 2 review): the caller
+/// states which ground it wants with a [`Ground`], per call, and there is no global switch.
+/// [`Ground::Menu`] runs `popover_glass::draw` first and wins whenever a live backdrop exists;
+/// everything described above is the ground of [`Ground::Sheet`] (alerts, About, Tracks, the person
+/// bio, the decision alert) and the FALLBACK ground of a menu on a frame without a live backdrop.
+/// The chrome (the top bar's track, the profile chip's capsule, the hold hint) is the other
 /// live-blur user.
 pub fn panel_ground(
     p: Painter,
     r: Rect,
     radius: f32,
     field: Option<&crate::underlay::UnderlayField>,
+    ground: Ground,
 ) {
     // DS6: a menu is glass whenever a live backdrop exists (`popover_glass`); the field ground below
-    // is the fallback for a frame without one.
-    if crate::profile::phase("panel.glass", || crate::popover_glass::draw(p, r, radius)) {
+    // is the fallback for a frame without one. A sheet never takes this branch.
+    if ground == Ground::Menu
+        && crate::profile::phase("panel.glass", || crate::popover_glass::draw(p, r, radius))
+    {
         return;
     }
     let boost = theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3];
