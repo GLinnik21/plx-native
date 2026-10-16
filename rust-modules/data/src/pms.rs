@@ -110,7 +110,8 @@ pub struct PmsMovie {
     pub resume_ms: i64,  // viewOffset — drives the Continue Watching resume bar
     pub show_rk: String, // parent show rk (episode: grandparent; season: parent)
     /// The title's catalog id, decoded once from `guid` (`plex://movie|show/<24 hex>`); `None` when
-    /// the listing carried none or it is not that form (the write worker then resolves it).
+    /// the listing carried none or it is not that form: such a card offers no Watchlist row (the
+    /// helper `plex::models::resolve_catalog_hex` can fetch it, but no press path calls it yet).
     pub guid: Option<[u8; 12]>,
     /// The parent show's catalog id, from `grandparentGuid` (episode); `None` as above.
     pub show_guid: Option<[u8; 12]>,

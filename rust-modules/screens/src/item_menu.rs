@@ -107,7 +107,7 @@ pub enum Action {
     /// `plex::Client::remove_from_continue_watching`).
     RemoveFromDeck(String),
     /// Watchlist hold menu: open the catalog page of this discover guid (a title with no playable
-    /// copy). The app routes it; until W6 adds `ContentArg::Catalog` the arm is a TODO there.
+    /// copy). The app routes it to `ContentArg::Catalog` (`app::input::apply_item_action`).
     GoToCatalog(String),
     /// Watchlist hold menu: take this discover guid off the Watchlist (`DELETE` on discover).
     WatchlistRemove(String),

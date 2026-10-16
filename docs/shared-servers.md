@@ -564,7 +564,7 @@ Step 1's registry now has its first real consumer, and deliverable A of the desi
   favourite, a stranger's included.
 - **The tab strip's vocabulary is permanent; its LENGTH is not.** A library pill names a type, never
   a discovered row, so it survives reset and failed/delayed discovery — but a type with no favourite
-  library draws no pill at all, so the row is `Home … Search` with two to four stops in between.
+  library draws no pill at all, so the row is `Home … Search` (the Watchlist bookmark sits before Search) with the row three to five stops in all.
   Store a `Pill`, never a `usize`. The
   selected type resolves to the library this profile last chose, else household-first, then to the
   first usable outside section; the Source panel

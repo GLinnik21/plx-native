@@ -345,7 +345,7 @@ the crew credits that are currently parsed and discarded.
 
 ### 5c. The detail-page action row, and watched-state granularity
 
-The reference detail page has **six circular action buttons**; we have two (`detail.rs:88` `NBTN = 2`):
+The reference detail page has **six circular action buttons**; we had two (`detail.rs:88` `NBTN = 2`) when audited; now we have three, Play/Resume, the Watchlist bookmark disc and the watched toggle:
 
 | # | Button | Us |
 |---|---|---|
@@ -479,9 +479,9 @@ player, transport and tracks auditors, and is counted once in the themes above.
   Plex Discover/catalog results and optional `sectionId` scoping remain outside that surface.
 
 - **Library sections past the 4th were unreachable from Home** — **closed 2026-09-01.**
-  The global row is `Home`, one pill per type, then `Search`; Movies and TV Shows name
+  The global row is `Home`, one pill per type, the Watchlist bookmark, then `Search`; Movies and TV Shows name
   types rather than individual Plex sections. (Its VOCABULARY is permanent, its LENGTH is not: since
-  2026-09-05 a type with no favourite library draws no pill, so the row holds two to four stops and
+  2026-09-05 a type with no favourite library draws no pill, so the row holds three to five stops (the bookmark and Search always draw) and
   a pill's index is not its identity — store a `Pill`.) The Library Source panel selects additional owned or
   shared sections of that type, so discovery no longer changes the row and no section is hidden by
   a tab cap.
@@ -607,7 +607,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Verified:* CONFIRMED, and slightly worse than described. ui/detail.rs:1179-1181 is `if is_show() { play_episode_at(0) }`; fetch_full (metadata.rs:632-651) leaves cur_season at Default 0 and fills d.episodes from d.seasons.first(). fetch_seasons (metadata.rs:549-563) filters kind=="season" and preserves server order, so seasons[0] is whatever /children returns first — on a show with a Specials season (index 0) that is a SPECIAL, not even S1E1. Zero hits for onDeck/on_deck/viewedLeafCount-per-season anywhere outside plex/models.rs:151-153 and the show-level watched test at metadata.rs:330. Label is the con
 
 - **No "play from start" / restart control** — `major` / `small`
-  The reference action row's second circular button is restart (↺) — start the item from 00:00 even when a resume point exists. We have exactly two hero controls, Play and the watched toggle, and Play unconditionally applies the resume rule, so an item with a viewOffset can only be resumed from the detail page.
+  The reference action row's second circular button is restart (↺) — start the item from 00:00 even when a resume point exists. We have no restart control (the hero holds Play, the Watchlist disc and the watched toggle), and Play unconditionally applies the resume rule, so an item with a viewOffset can only be resumed from the detail page.
   *Where:* ui/detail.rs (`NBTN`, `draw_buttons`, `on_ok`, `set_resume` — a restart arm just passes 0); a `Restart`/`Replay` icon must be added to ui/icons.rs + assets/icons (the enum at ui/icons.rs:13 has no such mask).
   *Verified:* CONFIRMED absent — grepped restart|Restart|from_start|play_from|Replay across the crate; the only hits are transcode-encode restarts (route.rs:225, player/engine.rs:447-460) and unrelated prose. ui/detail.rs:88 NBTN=2; draw_buttons (ui/detail.rs:824-849) draws exactly Play + the watched disc; both play arms call set_resume (ui/detail.rs:1191-1194, 1389) which applies metadata::resume_ns unconditionally, and last_resume_ns is the only value start_playback arms (app.rs:677-679). icons.rs:13-31 has 13 icons, none of them a replay/restart glyph, and assets/icons/ holds exactly those 13 SVGs. Sever
 
@@ -927,7 +927,7 @@ player, transport and tracks auditors, and is counted once in the themes above.
   fallback is a queued full per-source Home refresh.
 
 - **No "Play from Start" anywhere outside the player, and the detail Play button silently resumes** — `major` / `small`
-  The reference offers Resume and Play from Start as two distinct rows. Our detail hero has exactly two controls (Play + the watched disc), the Play label is the hard-coded literal c"Play" regardless of resume state, and it always applies the resume rule — so an item with a viewOffset can only be resumed, never restarted, until you are already inside playback and open the Info card. The home hero does relabel to "Continue" but likewise offers no restart.
+  The reference offers Resume and Play from Start as two distinct rows. Our detail hero has no start-over control (Play, the Watchlist disc and the watched disc), the Play label is the hard-coded literal c"Play" regardless of resume state, and it always applies the resume rule — so an item with a viewOffset can only be resumed, never restarted, until you are already inside playback and open the Info card. The home hero does relabel to "Continue" but likewise offers no restart.
   *Where:* ui/detail.rs (NBTN/draw_buttons/on_ok — relabel to Resume + add a start-over control or route it through the new item menu), ui/item_menu.rs (the Resume / Play from Start rows), app.rs's start_playback call sites which already take a `resume_ns` argument (pass 0). No new PMS endpoint.
   *Verified:* CONFIRMED verbatim. detail.rs:88 NBTN=2; detail.rs:833 is the literal `Button::new(c"Play".as_ptr(), …)` with no resume branch (grep of detail.rs for Continue/Resume finds only comments at :29/:1156); detail.rs:1191-1194 unconditionally set_resume(d.resume_ms, d.dur_ms), and the episode path does the same at detail.rs:1389 (set_resume(ep.resume_ms, ep.dur_ms)) — so an episode can't be restarted either. home.rs:425 does relabel (`if hero.resume_ms > 0 { c"Continue" } else { c"Play" }`) but offers no restart. The lone restart is info_panel.rs:49 "From Beginning", and note it is a request_seek(0)
 
