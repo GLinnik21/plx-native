@@ -51,8 +51,8 @@
 #   (the UI's per-frame math is float). `ci/check-vfp.py` therefore compiles a tiny float function
 #   for this target with the Makefile's exact flags and FAILS the build (`make check`, and CI's
 #   host-lint job) unless the assembly has VFP arithmetic and no `__aeabi_f*` call, and
-#   `ci/check-elf.sh` repeats the count on the linked binary (~3057 `vmul.f32` against ~5
-#   `bl __aeabi_fmul`, the five from core's float parsing: std is prebuilt, its float code stays
+#   `ci/check-elf.sh` repeats the count on the linked binary (~3057 `vmul.f32` against 2
+#   `bl __aeabi_fmul`, both from core's float parsing: std is prebuilt, its float code stays
 #   soft). Do not "fix" the warning by dropping the flag: the gate would go red, correctly.
 #
 # * `-neon` is the one this tree cannot do without, as measured on NIGHTLY on 2026-08-15 (not

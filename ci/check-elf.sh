@@ -119,9 +119,9 @@ else
   # binary then still links and runs, only every float multiply in the app becomes a call to
   # __aeabi_fmul: nothing fails, the UI just gets slower. ci/check-vfp.py catches the flag
   # directly with a probe compile; this is the same question asked of the linked binary.
-  # Measured on the stable build: ~3057 `vmul.f32` against ~5 `bl __aeabi_fmul`, the five coming
-  # from core's float PARSING (std is prebuilt, its float code stays soft). So the test is a ratio,
-  # not zero. Both objdumps (GNU, llvm) print `bl\t<addr> <__aeabi_fmul>`.
+  # Measured on the stable build (2026-10-16, -lm ahead of the staticlib): 3057 `vmul.f32` against
+  # 2 `bl __aeabi_fmul`, both in core's float PARSING (std is prebuilt, its float code stays soft).
+  # So the test is a ratio, not zero. Both objdumps (GNU, llvm) print `bl\t<addr> <__aeabi_fmul>`.
   VFPMUL=$(grep -cE '[[:space:]]vmul\.f32[[:space:]]+s[0-9]' <<<"$D" || true)
   SOFTMUL=$(grep -cE '[[:space:]]bl[[:space:]].*<__aeabi_fmul' <<<"$D" || true)
   # Positive control, as for dmb: a floor far below the measured count but far above noise, so an
@@ -129,6 +129,25 @@ else
   [ "$VFPMUL" -gt 100 ] || fail "only $VFPMUL vmul.f32 instructions — our crates are not using VFP (is -C target-feature=-soft-float still in RUST_CODEGEN?) or the disassembly scan is not working"
   [ $((SOFTMUL * 20)) -lt "$VFPMUL" ] || fail "$SOFTMUL calls to __aeabi_fmul against $VFPMUL vmul.f32 — float math is going through software libcalls"
   ok "$VFPMUL vmul.f32, $SOFTMUL __aeabi_fmul calls (core's float parsing)"
+
+  echo "== libm calls reach glibc, not compiler_builtins' soft-float copies =="
+  # round/floor/ceil/trunc/fmod/cbrt (and C's sqrtf) are CALLS on ARMv7: there is no VFPv3
+  # instruction for them. The prebuilt armv7 std ships WEAK definitions of those names inside
+  # compiler_builtins, compiled +soft-float (roundf's body is a call to __aeabi_fadd). A weak
+  # definition taken from an archive member is a regular-object definition, which a shared library
+  # later on the command line never overrides, so with `-lm` only at the end of the link every
+  # roundf in the app (119 call sites, text and layout among them) ran soft. The Makefile names -lm
+  # AHEAD of the staticlib so the names are already defined by libm.so and those members are never
+  # extracted. The residue is about 9 soft arithmetic calls in core's prebuilt float parsing (the
+  # bound below is 16), and the i64<->float conversions (__aeabi_d2lz, __aeabi_l2d & co), which are
+  # libcalls on ARMv7 whatever the float ABI, VFPv3 having no instruction for them; the pattern
+  # below leaves those out.
+  LOCALMATH=$(grep -oE '^[0-9a-f]+ <(roundf?|floorf?|ceilf?|truncf?|sqrtf?|fmaf?|cbrtf?|fmodf?)>:$' <<<"$D" \
+    | sed -E 's/.*<(.*)>:/\1/' | tr '\n' ' ' || true)
+  [ -z "$LOCALMATH" ] || fail "local definitions of libm functions ($LOCALMATH) — compiler_builtins' soft-float copies won over glibc's libm; is -lm still ahead of the Rust staticlib on the link?"
+  SOFTARITH=$(grep -cE '[[:space:]]bl[[:space:]].*<__aeabi_[fd](add|sub|rsub|mul|div|cmp[a-z]*|2f|2d)>' <<<"$D" || true)
+  [ "$SOFTARITH" -le 16 ] || fail "$SOFTARITH soft-float arithmetic libcalls (measured 9: core's float parsing) — some float code is running in software"
+  ok "no local libm bodies, $SOFTARITH soft-float arithmetic calls"
 fi
 
 echo "== DT_NEEDED =="

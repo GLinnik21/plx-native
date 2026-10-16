@@ -1027,9 +1027,14 @@ SMP_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=$(SMP_CALLBACK_HOOK)
 # explicitly. `ci/check-elf.sh` only asserts that the Starfish interposer is exported (and that
 # Load-with-context is not a loader dependency); it does not assert that nothing else is defined.
 GC_SECTIONS_LDFLAG = -Wl,--gc-sections
+# `-lm` AHEAD of $(RUST_LIB) as well as at the end: the prebuilt armv7 std's compiler_builtins
+# carries WEAK +soft-float definitions of roundf/floorf/ceilf/fmodf/cbrtf/sqrtf/... (roundf is a
+# call to __aeabi_fadd). With libm.so first, those names are already defined when the archive is
+# scanned and the members are never extracted, so every call (Rust's and svg.c's) binds to glibc's
+# VFP libm. `ci/check-elf.sh` fails if a local definition of one of them comes back.
 pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
 	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(GC_SECTIONS_LDFLAG) $(SMP_INTERPOSER_LDFLAG) \
-	  $(OBJS) $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
+	  $(OBJS) -lm $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
 	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
 
 # --- NDK bootstrap -----------------------------------------------------------
