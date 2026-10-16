@@ -70,7 +70,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
 /// holds one and asks about it. Its two readers are this module's word derivation and
 /// `app::bridge`'s argument tests, which used to keep a second copy of the same list.
 #[cfg(test)]
-pub(crate) fn every_route() -> [AppArg; 11] {
+pub(crate) fn every_route() -> [AppArg; 12] {
     use plx_screens::registry::ContentArg;
     let sid = plx_plex::plex::ServerId::UNSET;
     [
@@ -84,6 +84,7 @@ pub(crate) fn every_route() -> [AppArg; 11] {
             sid, key: String::new(), guid: String::new(), name: String::new(), thumb: String::new(),
         }),
         AppArg::Content(ContentArg::Collection(plx_plex::plex::collections::CollectionRef::by_tag(sid, 0, 1, ""))),
+        AppArg::Content(ContentArg::Catalog { hex: [0; 12] }),
         AppArg::Search,
         AppArg::Watchlist,
         AppArg::Player,
