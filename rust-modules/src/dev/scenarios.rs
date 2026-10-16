@@ -1188,6 +1188,13 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
         if plx_base::devtrig::flag("watchlist") {
             crate::app::bridge::nav_select_tab(&mut app.pages, AppArg::Watchlist);
         }
+        // `/tmp/plxnative-catalog=<24 hex>` — boot straight onto the catalog page of that title (a
+        // `ContentArg::Catalog` push over Home, as a Watchlist tile's OK opens it). The page reads
+        // the discover host like the Watchlist page, so pair it with `plxnative-discover=<mock
+        // url>`; a value that is not 24 hex digits arms nothing.
+        if let Some(hex) = plx_base::devtrig::read("catalog").and_then(|v| plx_data::watchlist::decode_hex(v.trim())) {
+            crate::app::bridge::open_catalog(&mut app.pages, hex, None);
+        }
         if let Some(s) = plx_base::devtrig::read("heroidx") {
             if let Ok(n) = s.parse::<c_int>() {
                 app.bridge.home_command(HomeCmd::SelectHero(n));
