@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-15T23:59:43Z",
+ "generated": "2026-10-16T00:01:42Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -44,18 +44,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -48.6,
-   "change7_pct": 21.2,
+   "change30_pct": -48.5,
+   "change7_pct": 21.4,
    "d30": 920,
-   "delta30": -447.5,
-   "delta7": 82.5,
+   "delta30": -446.5,
+   "delta7": 83.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 268,
+   "n_now": 270,
    "n_prev": 213,
-   "now": 472.5,
+   "now": 473.5,
    "prev7": 390,
    "shown": true,
    "state": "flat",
@@ -65,18 +65,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -58.5,
-   "change7_pct": 16.1,
+   "change30_pct": -58.6,
+   "change7_pct": 16.0,
    "d30": 998,
-   "delta30": -584,
-   "delta7": 57.5,
+   "delta30": -584.5,
+   "delta7": 57.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 121,
+   "n_now": 122,
    "n_prev": 124,
-   "now": 414,
+   "now": 413.5,
    "prev7": 356.5,
    "shown": true,
    "state": "flat",
@@ -287,18 +287,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 127.3,
-   "change7_pct": -4.3,
+   "change30_pct": 128.3,
+   "change7_pct": -3.8,
    "d30": 99,
-   "delta30": 126.0,
-   "delta7": -10.0,
+   "delta30": 127,
+   "delta7": -9.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 114,
+   "n_now": 115,
    "n_prev": 108,
-   "now": 225.0,
+   "now": 226,
    "prev7": 235.0,
    "shown": true,
    "state": "flat",
@@ -332,15 +332,15 @@
    "change30_pct": 148.6,
    "change7_pct": -57.6,
    "d30": 74,
-   "delta30": 110.0,
+   "delta30": 110,
    "delta7": -249.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 114,
+   "n_now": 115,
    "n_prev": 108,
-   "now": 184.0,
+   "now": 184,
    "prev7": 433.5,
    "shown": true,
    "state": "better",
@@ -372,6 +372,27 @@
   },
   {
    "change30_pct": null,
+   "change7_pct": -7.0,
+   "d30": null,
+   "delta30": null,
+   "delta7": -11.0,
+   "group": "ci",
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "kind": "job",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "n_now": 115,
+   "n_prev": 74,
+   "now": 146,
+   "prev7": 157.0,
+   "shown": true,
+   "state": "flat",
+   "state30": "new",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
    "change7_pct": -15.4,
    "d30": null,
    "delta30": null,
@@ -388,27 +409,6 @@
    "state": "flat",
    "state30": "new",
    "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": -7.6,
-   "d30": null,
-   "delta30": null,
-   "delta7": -12.0,
-   "group": "ci",
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
-   "kind": "job",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 114,
-   "n_prev": 74,
-   "now": 145.0,
-   "prev7": 157.0,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 30.0,
    "threshold_pct": 20.0,
    "unit": "s"
   },
@@ -481,15 +481,15 @@
    "change30_pct": 0.0,
    "change7_pct": 6.2,
    "d30": 17,
-   "delta30": 0.0,
+   "delta30": 0,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 114,
+   "n_now": 115,
    "n_prev": 108,
-   "now": 17.0,
+   "now": 17,
    "prev7": 16.0,
    "shown": false,
    "state": "flat",
@@ -567,11 +567,6 @@
    "change_pct": 83.3,
    "commits": [
     {
-     "pr": 770,
-     "sha": "57e28903e",
-     "title": "Dependencies: Dependabot for cargo, Actions, pip and npm; generated crate notices"
-    },
-    {
      "pr": 777,
      "sha": "be825d6a4",
      "title": "Dependencies: one manifest for every non-Rust dependency, no copied upstream code"
@@ -615,6 +610,11 @@
      "pr": 799,
      "sha": "81d930be2",
      "title": "First-run pages paint the default ambient ground, not a hero-keyed one"
+    },
+    {
+     "pr": 788,
+     "sha": "68f170d86",
+     "title": "Dependencies: freetype -> 2.15.0"
     }
    ],
    "from": 213.0,
@@ -628,11 +628,6 @@
    "change_pct": 45.9,
    "commits": [
     {
-     "pr": 770,
-     "sha": "57e28903e",
-     "title": "Dependencies: Dependabot for cargo, Actions, pip and npm; generated crate notices"
-    },
-    {
      "pr": 777,
      "sha": "be825d6a4",
      "title": "Dependencies: one manifest for every non-Rust dependency, no copied upstream code"
@@ -676,6 +671,11 @@
      "pr": 799,
      "sha": "81d930be2",
      "title": "First-run pages paint the default ambient ground, not a hero-keyed one"
+    },
+    {
+     "pr": 788,
+     "sha": "68f170d86",
+     "title": "Dependencies: freetype -> 2.15.0"
     }
    ],
    "from": 272.5,
@@ -716,7 +716,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 225.0
+   "now": 226
   }
  ],
  "slowest_local": [
