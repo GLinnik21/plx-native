@@ -667,7 +667,7 @@ extern "C" fn header_cb(
 impl BodySink {
     /// One raw header line: a status line clears the validator, an `ETag:` line sets it.
     fn note_header(&mut self, line: &[u8]) {
-        if line.len() >= 5 && line[..5].eq_ignore_ascii_case(b"HTTP/") {
+        if line.starts_with(b"HTTP/") {
             self.etag = None;
             return;
         }
