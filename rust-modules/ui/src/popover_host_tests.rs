@@ -403,15 +403,19 @@ fn the_opener_face_starts_and_ends_as_the_pill_and_crosses_to_the_glass() {
         let f = pop.morph_frame(Some(pill), panel, RAD).unwrap();
         let (plates, label) = plate(pop);
         if f.pill_alpha <= 0.0 {
-            assert!(plates.is_empty() && label.is_none(), "no face once the fill is glass: {f:?}");
+            assert!(plates.is_empty(), "no plate once the fill is glass: {f:?}");
+        } else {
+            assert_eq!(plates, vec![[f.rect.x, f.rect.y, f.rect.w, f.rect.h]], "the plate is the surface: {f:?}");
+        }
+        if f.label_alpha <= 0.0 {
+            assert!(label.is_none(), "no label once it has dissolved: {f:?}");
             return;
         }
-        assert_eq!(plates, vec![[f.rect.x, f.rect.y, f.rect.w, f.rect.h]], "the plate is the surface: {f:?}");
-        let (a, clip) = label.expect("the label rides the plate");
-        assert!((a - f.pill_alpha).abs() < 1e-6, "the label at the plate's alpha");
+        let (a, clip) = label.expect("the label outlasts the plate");
+        assert!((a - f.label_alpha).abs() < 1e-6, "the label at its own alpha");
         let near = (clip.x - f.rect.x).abs() + (clip.y - f.rect.y).abs() + (clip.w - f.rect.w).abs() + (clip.h - f.rect.h).abs();
         assert!(near < 1e-2, "the label is clipped to the surface: {clip:?} vs {:?}", f.rect);
-        if f.pill_alpha < 1.0 {
+        if f.label_alpha < 1.0 {
             crossed += 1;
         }
     };
