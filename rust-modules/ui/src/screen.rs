@@ -244,10 +244,12 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// without checking that the page has not moved on.
     fn redraw_focused(&self, _f: &mut DrawFrame<'_, '_, H>, _focus: Option<FocusKey<H::Elem>>) {}
     /// **The page element this surface lifts back out of the dim** (`(host page, element)`), for a
-    /// surface that has one: the item menu's captured opener. The dispatcher folds it with the
-    /// surface's phase and the engine's focus into [`Dispatcher::lifted_opener`] and keeps that
-    /// element OUT of the frozen page pass (`DrawFrame::lifted`), so the lift is its only copy.
-    /// `None` (the default) for every other screen.
+    /// surface that has one: the item menu's captured opener, and the Watchlist Sort & Filter
+    /// menu's pill (which the surface itself redraws, dissolving into its morphing panel). The
+    /// dispatcher folds it with the surface's phase and the engine's focus into
+    /// [`Dispatcher::lifted_opener`] and keeps that element OUT of the frozen page pass
+    /// (`DrawFrame::lifted`), so the lift is its only copy. `None` (the default) for every other
+    /// screen.
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>)> {
         None
     }

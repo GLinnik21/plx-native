@@ -233,9 +233,10 @@ pub const PANEL_RAD: f32 = 24.0;
 /// DS7), its rows a [`TableView`]. A component the mounting surface owns, like the profile menu's
 /// table: it holds the open/morph state, the row cursor and the geometry, and answers `draw`.
 ///
-/// The host surface draws the 30% scrim and, ABOVE it, the pill again through
+/// The host surface draws the 30% scrim and, ABOVE it, the pill through
 /// [`pill_painter`](Self::pill_painter), so the label dissolves as the rows come in and returns on
-/// close (`Popover::pill_painter`).
+/// close (`Popover::pill_painter`). That copy is the only pill while the menu is up: the surface
+/// names the pill as its `opener`, and the page leaves it out of its own pass.
 pub struct OptionsMenu {
     popover: Popover,
     table: TableView,
@@ -312,7 +313,9 @@ impl OptionsMenu {
         let h = self.table.measured_height().min(safe.h);
         // Hung under the pill; when the whole menu (ten rows, three headings) is taller than the
         // room below it, it slides up over the pill rather than cutting its last rows off, the
-        // pill having dissolved into the panel by then (DS7).
+        // pill having dissolved into the panel by then (DS7). The page draws no pill under it
+        // while the menu is up (`WatchlistMenuScreen::opener`): left there, the glass rim's lens
+        // pulled its label into the panel's top edge.
         let y = (self.pill.y + self.pill.h + theme::space::SM).min(safe.y + safe.h - h);
         Rect::new(x, y, w, h)
     }

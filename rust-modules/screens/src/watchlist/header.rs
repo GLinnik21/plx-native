@@ -75,7 +75,8 @@ pub fn draw_title(p: Painter, frame: Rect, face: &HeaderFace<'_>) -> f32 {
     w
 }
 
-/// The pill alone, at `rect` (from [`pill_rect`]). The page passes the painter the open menu's
+/// The pill alone, at `rect` (from [`pill_rect`]). While the Sort & Filter menu is up the page
+/// leaves its pill out and the menu surface draws it here through the painter
 /// `OptionsMenu::pill_painter` hands back, so the label dissolves while the panel morphs out of it.
 pub fn draw_pill(p: Painter, rect: Rect, face: &HeaderFace<'_>) {
     let (name, value) = pill_text(face.summary);

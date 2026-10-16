@@ -578,18 +578,21 @@ impl<H: ContentLike> StackPage<H> for Page {
                 let p = p.alpha(head_alpha(scroll));
                 let summary = self.options.summary();
                 let on = f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == PILL_ELEM);
+                let face = HeaderFace {
+                    title: plx_platform::i18n::msg::watchlist_page_title(),
+                    count: self.count(),
+                    summary: &summary,
+                    pill_focused: on,
+                };
                 // The header rides the page: its frame is the section's own top, scroll included.
-                draw_header(
-                    p,
-                    head_frame(r.y),
-                    f.measure,
-                    &HeaderFace {
-                        title: plx_platform::i18n::msg::watchlist_page_title(),
-                        count: self.count(),
-                        summary: &summary,
-                        pill_focused: on,
-                    },
-                );
+                // While the Sort & Filter menu is up the pill is the menu's (its `opener`, lifted
+                // out of this pass): the menu draws the only copy, dissolving into its panel.
+                let lifted = f.lifted.is_some_and(|key| key.entry == self.entry && key.elem == PILL_ELEM);
+                if lifted {
+                    header::draw_title(p, head_frame(r.y), &face);
+                } else {
+                    draw_header(p, head_frame(r.y), f.measure, &face);
+                }
             }
             Sec::Status => match self.readout() {
                 Some(readout) if readout.retries() => {

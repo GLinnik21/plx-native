@@ -127,6 +127,28 @@ impl Harness {
         sources
     }
 
+    /// Every primitive the page's draw declares, as `(tag, screen rect)` (`plx_ui::draw_census`),
+    /// drawn with `lifted` as the element a surface over the page has lifted out of it
+    /// (`DrawFrame::lifted`, the dispatcher's `lifted_opener`).
+    pub(crate) fn draw_census(&mut self, lifted: Option<FocusKey<u32>>) -> Vec<(u64, Rect)> {
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_gfx::gfx::backdrop::Sources::default()));
+        let cx = Cx {
+            views: (),
+            tick: Tick { ms: self.ms, dt_us: 16_667 },
+            measure: &FixtureMeasure,
+            press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
+            focus: FocusRead { current: self.focus, ..Default::default() },
+            owner: InputOwner::Entry(ENTRY),
+        };
+        let screen = &mut self.screen;
+        plx_ui::draw_census::capture(|| {
+            let _discovery = plx_ui::frame::backdrop::discover(sources.clone());
+            let mut f = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+            f.lifted = lifted;
+            Screen::<WatchHost>::draw(screen, &mut f);
+        })
+    }
+
     /// Step one event; returns the effects it queued and whether the step reported page motion.
     pub(crate) fn step_fx(&mut self, ev: ScreenEvent<WatchHost>) -> (Vec<plx_machine::machine::Stamped<WatchHost>>, bool) {
         let mut present = plx_machine::present::Present::new();

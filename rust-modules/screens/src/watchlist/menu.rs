@@ -80,12 +80,14 @@ impl WatchlistMenuScreen {
         }
     }
 
-    /// The header pill again, above the scrim, through the popover's pill painter: its label
-    /// cross-dissolves with the panel's rows as the panel morphs out of it (DS7), and comes back
-    /// as the close morph runs.
+    /// The header pill — its ONLY copy while the menu is up (the page leaves it out, `opener`) —
+    /// above the scrim, through the popover's pill painter: it cross-dissolves with the panel's
+    /// rows as the panel morphs out of it (DS7), and comes back as the close morph runs. Drawn
+    /// focused, as the page drew it on both ends of the morph: OK on the focused pill opened the
+    /// menu, and focus returns to it when the menu goes.
     fn draw_pill(&self, p: plx_ui::Painter) {
         let summary = self.options.summary();
-        let face = HeaderFace { title: "", count: None, summary: &summary, pill_focused: false };
+        let face = HeaderFace { title: "", count: None, summary: &summary, pill_focused: true };
         header::draw_pill(self.menu.pill_painter(p), anchor_rect(&self.arg), &face);
     }
 
@@ -185,6 +187,14 @@ impl<H: ContentLike> Focusable<H> for WatchlistMenuScreen {
 }
 
 impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
+    /// The pill the panel grew out of is THIS surface's while it is up (DS7: the pill's glass
+    /// becomes the panel), so the page leaves it out of its pass (`DrawFrame::lifted`) and
+    /// [`draw_pill`](Self::draw_pill) is its only copy. Left on the page, the pill sat under the
+    /// scrim for the whole menu, and the settled panel — slid up over it, being taller than the
+    /// room below — refracted its label into the glass rim.
+    fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
+        Some((self.arg.host, Some(FocusKey { entry: self.arg.host, elem: super::page::PILL_ELEM })))
+    }
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }

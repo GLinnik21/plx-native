@@ -379,7 +379,10 @@ presentation in a design pass.
    painters are `Popover::panel` (the ground at the morphing rect), `Popover::morph_rows` (the
    rows, clipped to the current glass rect and scaled about the panel anchor by the row spring)
    and `Popover::pill_painter` (the opener label, dissolving out as the rows come in and back on
-   close). The item hold menu keeps lift+appear. A new morph constant is named in `popover_morph.rs`.
+   close). That dissolving copy is the opener's ONLY copy: a morphing surface names its opener
+   (`Screen::opener`), so the page leaves it out of its pass (`DrawFrame::lifted`) — a pill left
+   on the page sits under the menu's glass, and the rim's lens refracts its label into the panel's
+   edge. The item hold menu keeps lift+appear. A new morph constant is named in `popover_morph.rs`.
 
 2. **Clickable text marks are ALL CAPS.** `MORE` and every other pressable text mark is
    capitalised, overriding the design system's sentence-case rule for app-written text: the mark is

@@ -278,6 +278,38 @@ fn the_pill_is_one_rect_for_paint_focus_and_anchor() {
     assert!(focus.x + focus.w < plx_ui::consts::SCR_W);
 }
 
+/// **While Sort & Filter is up the pill is the menu's, not the page's** (DS7: "the pill's glass
+/// becomes the panel"). The menu names the pill as its opener, so the dispatcher lifts it out of
+/// the page pass and the menu's own copy (`OptionsMenu::pill_painter`, dissolving as the rows come
+/// in) is the only pill drawn. Red when the page kept drawing its pill under the scrim: the
+/// settled menu, slid up over the pill because it is taller than the room below it, refracted
+/// that pill's label into its glass rim (`GlassRim::Menu`'s sharp band) — a ghost "Sort & Filter
+/// · Default" along the panel's top edge.
+#[test]
+fn the_open_menu_lifts_the_pill_out_of_the_page() {
+    use super::cards_harness::{WatchHost, ENTRY};
+    use super::menu::WatchlistMenuScreen;
+    use plx_machine::machine::{EntryId, FocusKey};
+    use plx_ui::screen::Screen;
+    let mut h = Harness::new(tiles(3));
+    let pill = h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure);
+    let arg = crate::registry::WatchlistMenuArg {
+        host: ENTRY,
+        options: WatchlistOptionsState::default(),
+        anchor: [pill.x, pill.y, pill.w, pill.h].map(f32::to_bits),
+    };
+    let menu = WatchlistMenuScreen::new(EntryId(ENTRY.0 + 1), arg);
+    let key = FocusKey { entry: ENTRY, elem: PILL_ELEM };
+    assert_eq!(Screen::<WatchHost>::opener(&menu), Some((ENTRY, Some(key))), "the menu's opener is the page's pill");
+    let label_in_pill = |log: &[(u64, plx_ui::Rect)]| {
+        log.iter().filter(|(tag, r)| *tag == 100 && r.cx() > pill.x && r.cx() < pill.x + pill.w && r.cy() > pill.y && r.cy() < pill.y + pill.h).count()
+    };
+    assert!(label_in_pill(&h.draw_census(None)) > 0, "premise: the page draws the pill's label");
+    let lifted = h.draw_census(Some(key));
+    assert_eq!(label_in_pill(&lifted), 0, "a lifted pill is not drawn by the page");
+    assert!(lifted.iter().any(|(tag, r)| *tag == 100 && r.x < pill.x), "the title still is");
+}
+
 /// **A removed tile is kept as a ghost for the landing to fade (DS4)**: the grid names it and the
 /// page can paint it.
 #[test]

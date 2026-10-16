@@ -143,6 +143,12 @@ def capture(sim, spec, scenario, out_dir):
         if proc is not None:
             proc.kill()
             proc.wait()
+            # The run's event log (a panic, a frame guard's catch) and console are kept beside the
+            # capture as <file stem>.log / .out.
+            stem = pathlib.Path(spec["file"]).stem
+            for name, ext in (("plxnative-events.log", ".log"), ("sim.out", ".out")):
+                if (runtime / name).is_file():
+                    shutil.copy(runtime / name, out_dir / (stem + ext))
         srv.shutdown()
         shutil.rmtree(runtime, ignore_errors=True)
 
