@@ -279,6 +279,9 @@ mod tests {
         assert_eq!(action(&AppArg::Search, true), Action::ReadBack);
         assert_eq!(action(&AppArg::Watchlist, true), Action::WatchlistRead, "covered Watchlist");
         assert_eq!(action(&AppArg::Watchlist, false), Action::WatchlistRead, "visible Watchlist on resume");
+        let catalog = AppArg::Content(ContentArg::Catalog { hex: [7; 12] });
+        assert_eq!(action(&catalog, true), Action::CatalogRead, "covered catalog page owes its re-match");
+        assert_eq!(action(&catalog, false), Action::CatalogRead, "visible catalog page on resume");
         assert_eq!(action(&AppArg::Player, true), Action::Nothing);
     }
 

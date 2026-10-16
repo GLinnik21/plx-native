@@ -1922,10 +1922,7 @@ impl Bridge {
             AppFx::Watchlist(req) => self.watchlist_reqs.push((from, req, self.effect_return.clone())),
             // The catalog page's pill: the same write the item menu's rows make, so an Add pulses
             // the tab here too. The page flips nothing itself; the store's ledger flips the face.
-            AppFx::Catalog(plx_screens::catalog::CatalogOut::Add { hex }) => self.watchlist_add(hex),
-            AppFx::Catalog(plx_screens::catalog::CatalogOut::Remove { hex }) => {
-                self.watchlist_press(hex, plx_data::watchlist::ledger::Intent::Remove);
-            }
+            AppFx::Catalog(out) => self.catalog_effect(out),
         }
     }
 
@@ -3900,6 +3897,10 @@ mod strip_home_pill_tests;
 #[path = "watchlist.rs"]
 mod watchlist;
 pub(crate) use watchlist::{hex_of_guid, open_catalog, open_watchlist_menu};
+
+#[cfg(test)]
+#[path = "watchlist_press_tests.rs"]
+mod watchlist_press_tests;
 
 #[cfg(test)]
 #[path = "watchlist_wiring_tests.rs"]

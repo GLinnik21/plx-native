@@ -293,3 +293,38 @@ fn a_stale_pill_index_clamps_instead_of_panicking() {
     );
     assert_eq!(tab_scroll_target(&[], 0, 12.0), 0.0);
 }
+
+/// The tab pulse rises from rest to its peak and comes back to exactly rest; it ends on its own.
+#[test]
+fn the_tab_pulse_envelope_is_zero_at_both_ends_and_one_at_the_peak() {
+    assert_eq!(tab_pulse_envelope(0.0), 0.0);
+    assert!((tab_pulse_envelope(TAB_PULSE_S * 0.5) - 1.0).abs() < 1e-6, "the peak");
+    assert_eq!(tab_pulse_envelope(TAB_PULSE_S), 0.0, "settled");
+    assert_eq!(tab_pulse_envelope(-1.0), 0.0);
+    assert_eq!(tab_pulse_envelope(TAB_PULSE_S * 3.0), 0.0);
+    assert!(tab_pulse_envelope(TAB_PULSE_S * 0.25) < tab_pulse_envelope(TAB_PULSE_S * 0.5), "rising");
+}
+
+/// A pulse runs for [`TAB_PULSE_S`] and is then gone, and while it runs the page is never held for
+/// it: it is decorative, so it adds no layout motion.
+#[test]
+fn a_tab_pulse_runs_its_beat_then_is_gone_without_holding_the_page() {
+    let faces = [TabFace::Label("Home".into()), TabFace::Icon(crate::icons::Icon::Bookmark)];
+    let labels = TabLabels { generation: 1, faces: &faces };
+    let mut strip = StripRender::new();
+    // The strip's own springs settle first, so what is measured below is the pulse alone.
+    for _ in 0..600 {
+        strip.update(labels, 0, TopFocus::Away, 1.0 / 60.0);
+    }
+    assert_eq!(strip.pulse_read(), None);
+    strip.pulse(1);
+    assert_eq!(strip.pulse_read(), Some((1, 0.0)));
+    plx_machine::idle::reset_for_test();
+    strip.update(labels, 0, TopFocus::Away, TAB_PULSE_S * 0.5);
+    let (at, env) = strip.pulse_read().expect("still running at the peak");
+    assert_eq!(at, 1);
+    assert!(env > 0.99, "peak envelope {env}");
+    assert!(!plx_machine::idle::page_layout_moving(), "a pulse is not layout motion");
+    strip.update(labels, 0, TopFocus::Away, TAB_PULSE_S);
+    assert_eq!(strip.pulse_read(), None, "ended on its own");
+}

@@ -222,6 +222,16 @@ impl Bridge {
         self.chrome.pulse(plx_ui::widgets::TAB_KEY_WATCHLIST);
     }
 
+    /// What the catalog page's pill asked for (`AppFx::Catalog`): the same write the item menu's rows
+    /// make, so an Add pulses the tab here too. The page flips nothing itself; the ledger does.
+    pub(crate) fn catalog_effect(&mut self, out: plx_screens::catalog::CatalogOut) {
+        use plx_screens::catalog::CatalogOut;
+        match out {
+            CatalogOut::Add { hex } => self.watchlist_add(hex),
+            CatalogOut::Remove { hex } => self.watchlist_press(hex, Intent::Remove),
+        }
+    }
+
     /// A bookmark press (or the hold menu's Remove) on the catalog id `hex`.
     pub(crate) fn watchlist_press(&mut self, hex: [u8; 12], intent: Intent) {
         self.stores.watchlist.run(WatchlistCmd::Press { hex, intent });

@@ -66,7 +66,7 @@ pub(crate) struct ChromeSnapshot {
     profile_generation: Option<u32>,
     session_watch: plx_plex::plex::session::VisibleSessionWatch,
     faces: Vec<TabFace>,
-    keys: Vec<u32>,
+    pub(crate) keys: Vec<u32>,
     widths: Vec<f32>,
     thumb: String,
     initial: std::ffi::CString,
