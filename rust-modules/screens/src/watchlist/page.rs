@@ -253,6 +253,9 @@ struct Page {
     /// The tiles a landing is fading out, by `elem_key` (DS4): kept from the removal until the
     /// grid has nothing left to fade, since the snapshot no longer knows them. Not logical state.
     ghosts: HashMap<u64, (WatchTile, Cell)>,
+    /// The count a Remove replaced, kept on the header until the grid's landing starts (so the
+    /// number and the tiles move on one frame, after the hold menu is gone). Not logical state.
+    count_hold: Option<CountHold>,
     /// Test support: how many ghost posters the grid has drawn.
     #[cfg(test)]
     ghost_draws: std::cell::Cell<usize>,
@@ -332,6 +335,14 @@ impl Page {
     /// whole list. Sort alone does not narrow. A filter that leaves nothing still counts "0 of N";
     /// the empty list and the unavailable reads show none.
     fn count(&self) -> Option<Count> {
+        if let Some(hold) = &self.count_hold {
+            return Some(hold.count);
+        }
+        self.live_count()
+    }
+
+    /// [`count`](Self::count) from the current list, ignoring a hold.
+    fn live_count(&self) -> Option<Count> {
         let ListState::Ready { total } = self.list else { return None };
         if total == 0 {
             return None;
@@ -453,6 +464,12 @@ impl<H: ContentLike> CardSource<H> for Titles<'_> {
     fn unread(&self, _i: usize) -> bool {
         false
     }
+}
+
+/// The count a Remove replaced and the header still shows (`Page::count_hold`).
+#[derive(Clone, Copy)]
+struct CountHold {
+    count: Count,
 }
 
 /// The tiles a landing is fading out, in the order the grid names them (`Grid::ghost_keys`); one
@@ -648,6 +665,7 @@ impl WatchlistScreen {
             index: HashMap::new(),
             art_server: None,
             ghosts: HashMap::new(),
+            count_hold: None,
             #[cfg(test)]
             ghost_draws: std::cell::Cell::new(0),
             #[cfg(test)]
@@ -742,6 +760,9 @@ impl WatchlistScreen {
             WatchlistIn::Removed(guid) => {
                 let rows: Vec<WatchTile> = self.page.tiles.iter().filter(|t| t.row.guid != guid).cloned().collect();
                 let gone = rows.len() < self.page.tiles.len();
+                if gone && self.page.count_hold.is_none() {
+                    self.page.count_hold = self.page.count().map(|count| CountHold { count });
+                }
                 self.page.facts.remove(&guid);
                 if let (ListState::Ready { total }, true) = (&mut self.page.list, gone) {
                     *total = total.saturating_sub(1);
@@ -806,6 +827,22 @@ impl WatchlistScreen {
             .map_or([theme::SURFACE_APP; 4], |blur| AmbientWash::keyed(blur, PageGround::CARD_W))
     }
 
+    /// The header's count follows a Remove when the grid's landing STARTS: not at the commit (the
+    /// hold menu is still up), not under the menu's veil or the landing's beat, but on the frame
+    /// the springs step. A removal the grid made no landing for releases on the next tick.
+    fn release_count_hold(&mut self) {
+        if self.page.count_hold.is_none() {
+            return;
+        }
+        let grid = self.stack.grid(Sec::Items);
+        let pending = grid.is_some_and(|g| g.landing_pending());
+        let waiting = grid.is_some_and(|g| g.landing_waiting());
+        if !(pending && waiting) {
+            self.page.count_hold = None;
+            self.page.touch();
+        }
+    }
+
     fn tick<H: ContentLike>(&mut self, t: Tick, cx: &Cx<'_, H>) {
         // The focused cell's index, a reserved one included: `focused()` then answers no title,
         // and the ground falls back to the flat surface, rather than keying a title left behind.
@@ -824,6 +861,7 @@ impl WatchlistScreen {
         {
             self.page.ghosts.clear();
         }
+        self.release_count_hold();
         let target = self.ground_target();
         if self.ground_seeded {
             self.ground.key_target(target, t.dt());
@@ -889,6 +927,12 @@ impl WatchlistScreen {
     #[cfg(test)]
     pub(crate) fn ground_goal(&self) -> [[f32; 4]; 4] {
         self.ground_target()
+    }
+
+    /// Test support: the grid's removal landing has stepped (it is playing and no longer waiting).
+    #[cfg(test)]
+    pub(crate) fn landing_started(&self) -> bool {
+        self.stack.grid(Sec::Items).is_some_and(|g| g.landing_pending() && !g.landing_waiting())
     }
 
     /// Test support: the grid's ghost keys (`Grid::ghost_keys`) and the keys of the removed tiles

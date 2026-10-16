@@ -661,6 +661,12 @@ impl Grid {
         self.landing.pending()
     }
 
+    /// A landing is playing but has not stepped yet: a menu veils the page, its beat is counting,
+    /// or the page is a held image. An owner pairs its own change with the landing's first step.
+    pub fn landing_waiting(&self) -> bool {
+        self.landing.waiting()
+    }
+
     /// What a landing is doing to card `i` of `n` right now: `((x, y) offset px, alpha)`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn landing_probe(&self, n: usize, i: usize) -> ((f32, f32), f32) {

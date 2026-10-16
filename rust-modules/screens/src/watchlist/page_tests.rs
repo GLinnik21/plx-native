@@ -629,13 +629,49 @@ fn the_count_is_all_or_shown_of_total_and_absent_off_the_landed_list() {
     }
 }
 
-/// **A Remove updates the count with the landing**, narrowed or not.
+/// **A Remove updates the count when the grid's landing STARTS**, narrowed or not: not at the commit
+/// (the hold menu is still up), not under the menu's veil nor the landing's beat, but on the frame
+/// the tiles begin to move, so the number and the grid change together.
 #[test]
-fn a_remove_lowers_the_count() {
-    let mut s = screen(3);
-    let guid = "plex://movie/g0".to_string();
-    s.input(WatchlistIn::Removed(guid));
-    assert_eq!(s.count(), Some(Count::All(2)));
+fn a_remove_lowers_the_count_when_the_landing_starts() {
+    use plx_ui::cards::conformance::{CardHarness, Landing};
+    use plx_ui::containers::modal::{set_veil, VEIL_CLEAR};
+    let mut h = Harness::new(tiles(12));
+    h.focus_index(2);
+    assert_eq!(h.screen.count(), Some(Count::All(12)));
+    set_veil(1.0);
+    h.landing(Landing::RemoveFocused).unwrap();
+    assert_eq!(h.screen.tiles().len(), 11, "premise: committed");
+    for frame in 0..30 {
+        h.run(1);
+        assert_eq!(h.screen.count(), Some(Count::All(12)), "frame {frame}: the menu is still up");
+    }
+    set_veil(VEIL_CLEAR * 0.5);
+    let mut lowered_at_start = false;
+    for frame in 0..40 {
+        h.run(1);
+        let started = h.screen.landing_started();
+        let lowered = h.screen.count() == Some(Count::All(11));
+        assert_eq!(lowered, started, "frame {frame}: the count moves with the landing's first step");
+        if lowered {
+            lowered_at_start = true;
+            break;
+        }
+    }
+    assert!(lowered_at_start, "the landing began and the count followed");
+    set_veil(0.0);
+}
+
+/// A Remove no menu veiled starts its landing at once, so the count follows on the first frame.
+#[test]
+fn an_unveiled_remove_lowers_the_count_on_its_first_frame() {
+    use plx_ui::cards::conformance::{CardHarness, Landing};
+    use plx_ui::containers::modal::set_veil;
+    set_veil(0.0);
+    let mut h = Harness::new(tiles(12));
+    h.focus_index(2);
+    h.landing(Landing::RemoveFocused).unwrap();
+    assert_eq!(h.screen.count(), Some(Count::All(11)));
 }
 
 /// **`SHAPE` lists the fields in the order `write` emits them**, and the options in the canonical
