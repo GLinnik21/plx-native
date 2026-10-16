@@ -4308,6 +4308,11 @@ mod request_tests {
 #[path = "net_roots_tests.rs"]
 mod roots_tests;
 
+/// The response `ETag` the header callback keeps (plan item NET1), alone and through libcurl.
+#[cfg(test)]
+#[path = "net_response_header_tests.rs"]
+mod response_header_tests;
+
 /// The `User-Agent` the transport installs: one header value, whichever path sends it.
 #[cfg(test)]
 #[path = "net_user_agent_tests.rs"]
