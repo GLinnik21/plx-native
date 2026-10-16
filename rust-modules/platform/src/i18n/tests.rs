@@ -72,7 +72,20 @@ fn locale_resolution_separates_language_from_formatting() {
             "{tag}"
         );
     }
-    for tag in ["de-DE", "be-Latn", "fr-Cyrl", "it-Cyrl", "garbage\r\nheader", "C"] {
+    for tag in ["de-DE", "de_AT.UTF-8", "de-CH", "de-LI"] {
+        let cx = LocaleContext::resolve(Preference::System, Some(tag), None, None, None);
+        assert_eq!(cx.language(), Language::De, "{tag}");
+        assert_eq!(cx.preference(), Preference::System);
+    }
+    assert_eq!(
+        LocaleContext::resolve(Preference::System, Some("de-AT"), None, None, None).format_locale(),
+        "de-AT"
+    );
+    let de = LocaleContext::resolve(Preference::De, None, None, None, None);
+    assert_eq!(de.format_locale(), "de-DE");
+    assert_eq!(de.number(12345), "12.345");
+    assert_eq!(de.decimal(45, 1), "4,5");
+    for tag in ["nl-NL", "be-Latn", "fr-Cyrl", "it-Cyrl", "de-Cyrl", "garbage\r\nheader", "C"] {
         assert_eq!(
             LocaleContext::resolve(Preference::System, Some(tag), None, None, None).language(),
             Language::En
@@ -109,6 +122,11 @@ fn plural_rules_follow_the_message_language() {
     assert_eq!(pt.plural(1), PluralCategory::One);
     assert_eq!(pt.plural(2), PluralCategory::Other);
     assert_eq!(pt.plural(1_000_000), PluralCategory::Many);
+    let de = LocaleContext::resolve(Preference::De, None, None, None, None);
+    assert_eq!(de.plural(0), PluralCategory::Other);
+    assert_eq!(de.plural(1), PluralCategory::One);
+    assert_eq!(de.plural(2), PluralCategory::Other);
+    assert_eq!(de.plural(1_000_000), PluralCategory::Other);
     let it = LocaleContext::resolve(Preference::It, None, None, None, None);
     assert_eq!(it.plural(0), PluralCategory::Other);
     assert_eq!(it.plural(1), PluralCategory::One);

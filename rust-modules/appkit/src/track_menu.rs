@@ -5550,6 +5550,7 @@ mod localized_offset_tests {
             (Preference::Es, "es-ES", "-0,1 s", "+1,3 s"),
             (Preference::Be, "be-BY", "-0,1 с", "+1,3 с"),
             (Preference::Fr, "fr-FR", "-0,1 s", "+1,3 s"),
+            (Preference::De, "de-DE", "-0,1 s", "+1,3 s"),
         ] {
             let locale = LocaleContext::resolve(preference, None, Some(region), None, None);
             assert_eq!(crate::timing_capsule::offset_seconds_in(-100, true, &locale), negative);
