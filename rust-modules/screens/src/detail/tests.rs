@@ -4843,3 +4843,22 @@ fn the_first_membership_answer_snaps_and_a_later_change_animates() {
         "a flip from a known face animates"
     );
 }
+
+/// A flip Off -> On, ticked until idle, rests EXACTLY on the filled face (not 0.999 drawing a clip).
+#[test]
+fn the_bookmark_flip_snaps_to_its_target_at_rest() {
+    let _guard = install(movie_with_guid(WL_GUID));
+    let mut screen = bare(&_guard, ServerId::UNSET, "movie");
+    screen.set_watchlist(plx_data::catalog::Membership::Off);
+    tick_page(&mut screen, None, 16);
+    screen.set_watchlist(plx_data::catalog::Membership::On);
+    for n in 0..600 {
+        tick_page(&mut screen, None, 16 * n);
+    }
+    assert_eq!(screen.watchlist_flip.pos, 1.0);
+    screen.set_watchlist(plx_data::catalog::Membership::Off);
+    for n in 0..600 {
+        tick_page(&mut screen, None, 16 * n);
+    }
+    assert_eq!(screen.watchlist_flip.pos, 0.0);
+}
