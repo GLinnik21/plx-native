@@ -399,3 +399,8 @@ installed with `tools/plxnative-rec rerecord`, anchors retained. The mock now bi
 fixture's guids onto the first library movies and shows (`DiscoverFixture.bind`), so Detail's
 guid matches carry seven fixture guids; `ALPHABET.json` lists them literally (never as a general
 24-hex pattern). Targets and Resolve both report SAME with every difference counter at zero.
+
+The Watchlist wave-3 fixes (SHAPE field order and canonical option encoding, pin
+`0xdb5b_e029_dd4f_0a88`) moved the state shape again; all three anchors were observed being refused
+by `Recording::parse`, freshly recorded with `tests/focusfp.sh --rec`, replaced with
+`tools/plxnative-rec rerecord`, and replayed in both modes with every difference counter at zero.
