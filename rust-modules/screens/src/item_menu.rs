@@ -1697,6 +1697,7 @@ mod tests {
                 loaded_episode: true,
                 from_home: false,
                 catalog: None,
+                watchlist: None,
             },
         );
         strip.build_rows(test_store().view());
@@ -1730,6 +1731,7 @@ mod tests {
                 loaded_episode: false,
                 from_home: false,
                 catalog: None,
+                watchlist: None,
             },
         );
         tab.build_rows(test_store().view());
@@ -1960,6 +1962,7 @@ mod tests {
             loaded_episode: false,
             from_home: true,
             catalog: None,
+            watchlist: None,
         }
     }
 

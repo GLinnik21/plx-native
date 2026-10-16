@@ -153,6 +153,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(),
         disc_unfurl: [Spring::at(0.0); 3],
+        watchlist: plx_data::catalog::Membership::Unknown, watchlist_flip: Spring::at(0.0), watchlist_hex: None,
         season_metrics: season::Metrics::new(),
         about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP),
