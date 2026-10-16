@@ -101,6 +101,11 @@ pub enum Action {
     /// playing the item again picks up where it left off (see
     /// `plex::Client::remove_from_continue_watching`).
     RemoveFromDeck(String),
+    /// Watchlist hold menu: open the catalog page of this discover guid (a title with no playable
+    /// copy). The app routes it; until W6 adds `ContentArg::Catalog` the arm is a TODO there.
+    GoToCatalog(String),
+    /// Watchlist hold menu: take this discover guid off the Watchlist (`DELETE` on discover).
+    WatchlistRemove(String),
 }
 
 impl Action {
@@ -130,7 +135,9 @@ impl Action {
             | Action::MarkUnwatched(rk)
             | Action::Play(rk)
             | Action::PlayFromStart(rk)
-            | Action::RemoveFromDeck(rk) => rk,
+            | Action::RemoveFromDeck(rk)
+            | Action::GoToCatalog(rk)
+            | Action::WatchlistRemove(rk) => rk,
             Action::PlayTrailer { rk, .. } => rk,
         }
     }
@@ -146,6 +153,8 @@ impl Action {
             Action::RemoveFromDeck(_) => 6,
             Action::PlayTrailer { .. } => 7,
             Action::Play(_) => 8,
+            Action::GoToCatalog(_) => 9,
+            Action::WatchlistRemove(_) => 10,
         };
         c.u32(tag).str(self.rk());
         if let Action::GoToShow(_, season) = self {
@@ -201,6 +210,10 @@ pub enum ItemRow {
     PlayTrailer,
     RemoveFromDeck,
     Play,
+    /// Watchlist hold menu: the catalog page.
+    GoToCatalog,
+    /// Watchlist hold menu: Remove from Watchlist (destructive).
+    WatchlistRemove,
 }
 
 impl ItemRow {
@@ -222,6 +235,8 @@ impl FormId for ItemRow {
             ItemRow::PlayTrailer => 6,
             ItemRow::RemoveFromDeck => 7,
             ItemRow::Play => 8,
+            ItemRow::GoToCatalog => 9,
+            ItemRow::WatchlistRemove => 10,
         })
     }
 }
@@ -458,6 +473,30 @@ fn build_episode(rk: &str, mark: PosterMark) -> ItemForm {
     Form::new().section(state_rows(FormSection::new(""), rk, mark, true, None, ""))
 }
 
+/// The Watchlist grid's hold menu (plan §1.9): [`crate::watchlist::hold::rows_for`] bound to
+/// actions. The "go" row is Detail (`rk`, the matched copy on [`ItemMenuArg::sid`]) or the catalog
+/// page (`guid`); Remove is destructive, so the menu opens on the "go" row, never on it. W6's
+/// catalog-only rows (Add/Remove are the whole Catalog menu today) would join here.
+fn build_catalog(state: plx_data::watchlist::model::TileState, rk: &str, guid: &str) -> ItemForm {
+    use crate::watchlist::hold::HoldRowId;
+    let mut sec = FormSection::new("");
+    for r in crate::watchlist::hold::rows_for(state) {
+        let (id, action) = match r.id {
+            HoldRowId::GoToDetail => (ItemRow::GoToItem, Action::GoToItem(rk.to_string())),
+            HoldRowId::GoToCatalog => (ItemRow::GoToCatalog, Action::GoToCatalog(guid.to_string())),
+            HoldRowId::Remove => (ItemRow::WatchlistRemove, Action::WatchlistRemove(guid.to_string())),
+        };
+        sec = sec.item_if(
+            true,
+            id,
+            RowKind::Button,
+            action,
+            Row::new(r.label).licon(r.icon).destructive(r.destructive),
+        );
+    }
+    Form::new().section(sec)
+}
+
 /// The DETAIL page's season strip: [`build_episode`]'s row set with the one difference a season
 /// makes — **no "Play from Start"**.
 ///
@@ -560,9 +599,10 @@ impl ItemMenuScreen {
             }
             ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark),
             ItemMenuKind::Season { mark, .. } => build_season(&self.arg.rk, *mark),
-            // TODO(W45H): the Watchlist hold rows (`watchlist::hold::rows_for`) need their
-            // `Action`s (WatchlistRemove / GoToCatalog); until they exist the panel has no rows.
-            ItemMenuKind::Catalog { .. } => Form::new().section(FormSection::new("")),
+            ItemMenuKind::Catalog { state } => {
+                let guid = self.arg.catalog.as_ref().map_or("", |c| c.guid.as_str());
+                build_catalog(*state, &self.arg.rk, guid)
+            }
         };
         // a short list of one-line actions — BODY labels, not menu-size HEADLINE
         self.form.table.compact = true;
@@ -2093,6 +2133,57 @@ mod tests {
                 out.extend(table.menu_cap_failure(&measure, &format!("{} {name}", language.tag())));
                 out.extend(table.app_fit_failures(widest, &format!("{} {name}", language.tag())));
                 out.extend(table.app_fit_failures_hugged(&format!("{} {name}", language.tag())));
+            }
+        }
+        plx_ui::table::assert_no_fit_failures(&out);
+    }
+
+    /// **The Watchlist hold menu** is `watchlist::hold::rows_for` bound to actions: the go row
+    /// names the matched rk or the guid, Remove names the guid, and only Remove is destructive.
+    #[test]
+    fn the_catalog_menu_binds_the_hold_rows() {
+        use plx_data::watchlist::model::TileState;
+        for state in [
+            TileState::Available,
+            TileState::ComingSoon,
+            TileState::ComingSoonMatched,
+            TileState::NotOnAnyServer,
+            TileState::ServerOffline,
+            TileState::Unknown,
+        ] {
+            let menu = built(super::build_catalog(state, "42", "plex://movie/abc"));
+            let go_detail = matches!(state, TileState::Available | TileState::ComingSoonMatched);
+            assert_eq!(menu.ids(), vec![
+                if go_detail { ItemRow::GoToItem } else { ItemRow::GoToCatalog },
+                ItemRow::WatchlistRemove,
+            ], "{state:?}");
+            assert_eq!(
+                menu.action(if go_detail { ItemRow::GoToItem } else { ItemRow::GoToCatalog }),
+                if go_detail { Action::GoToItem("42".into()) } else { Action::GoToCatalog("plex://movie/abc".into()) },
+            );
+            assert_eq!(menu.action(ItemRow::WatchlistRemove), Action::WatchlistRemove("plex://movie/abc".into()));
+            assert!(menu.is_destructive(ItemRow::WatchlistRemove));
+            assert!(!menu.is_destructive(ItemRow::GoToItem) && !menu.is_destructive(ItemRow::GoToCatalog));
+        }
+    }
+
+    /// The Remove row's label fits the widest panel in every shipped language.
+    #[test]
+    fn the_catalog_menu_fits_in_every_language() {
+        use plx_data::watchlist::model::TileState;
+        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
+        let measure = plx_base::fontcov::advances::ShippedMeasure;
+        let mut out = Vec::new();
+        for language in SHIPPED {
+            let _guard = language_on_this_thread_for_test(language);
+            for state in [TileState::Available, TileState::ComingSoon] {
+                let mut menu = built(super::build_catalog(state, "1", "g"));
+                menu.0.table.compact = true;
+                let name = format!("{} catalog {state:?}", language.tag());
+                let table = &menu.0.table;
+                out.extend(table.menu_cap_failure(&measure, &name));
+                out.extend(table.app_fit_failures(MENU_MAX_W, &name));
+                out.extend(table.app_fit_failures_hugged(&name));
             }
         }
         plx_ui::table::assert_no_fit_failures(&out);
