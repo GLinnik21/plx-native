@@ -67,3 +67,7 @@ pub fn rows_for(state: TileState) -> Vec<ItemMenuRow> {
         },
     ]
 }
+
+#[cfg(test)]
+#[path = "hold_tests.rs"]
+mod hold_tests;
