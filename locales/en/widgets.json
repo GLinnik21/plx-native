@@ -1,14 +1,17 @@
 {
   "widgets.diagnostics.uploading": {
     "value": "Uploading diagnostics…",
+    "translate": false,
     "description": "Status toast after the viewer requests a diagnostic upload."
   },
   "widgets.diagnostics.uploaded": {
     "value": "Diagnostics uploaded",
+    "translate": false,
     "description": "Status toast after the viewer requests a diagnostic upload."
   },
   "widgets.diagnostics.failed": {
     "value": "Diagnostics upload failed",
+    "translate": false,
     "description": "Status toast after the viewer requests a diagnostic upload."
   },
   "widgets.menu.options": {
@@ -516,39 +519,48 @@
   },
   "widgets.panel.jail": {
     "value": "this install's sandbox blocks access to /dev/rtkmem; PlxNative can offer a confirmed repair through rooted Homebrew Channel access",
-    "description": "panel jail"
+    "translate": false,
+    "description": "Playback verdict line: the install's sandbox blocks the video-plane device node."
   },
   "widgets.panel.refused": {
     "value": "the server refused the item at /decision — it can neither direct play nor convert it",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the server refused the item at the /decision endpoint."
   },
   "widgets.panel.audio_only_no_pass": {
     "value": "server sent audio only — it found no usable video transcode target (server has no Plex Pass)",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the server sent audio only because it found no usable video, and the account has no Plex Pass."
   },
   "widgets.panel.audio_only": {
     "value": "server sent audio only — it found no usable video transcode target",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the server sent audio only because it found no usable video."
   },
   "widgets.panel.no_video": {
     "value": "the stream carries no video track",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the stream has no video track."
   },
   "widgets.panel.open": {
     "value": "the media stream could not be opened or read",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the media stream could not be opened or read."
   },
   "widgets.panel.stopped": {
     "value": "the media producer stopped before playback completed",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the media producer stopped before playback completed."
   },
   "widgets.panel.tv_rejected": {
     "value": "the television media pipeline rejected the stream",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the television's media pipeline rejected the stream."
   },
   "widgets.panel.unknown": {
     "value": "the player stopped without a reported cause",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the player stopped without a reported cause."
   },
   "widgets.failure.load_timeout": {
     "value": "Playback failed — the TV did not finish starting the stream",
@@ -556,7 +568,8 @@
   },
   "widgets.panel.load_timeout": {
     "value": "the television media pipeline did not finish starting the stream in time",
-    "description": "panel load_timeout"
+    "translate": false,
+    "description": "Playback verdict line: the television's media pipeline did not finish starting."
   },
   "widgets.reason.load_timeout": {
     "value": "This TV did not finish starting the video stream in time",
@@ -568,7 +581,8 @@
   },
   "widgets.panel.forced_playback": {
     "value": "Force Direct Play could not use the original stream; automatic fallback is disabled",
-    "description": "panel forced_playback"
+    "translate": false,
+    "description": "Playback verdict line: Force Direct Play could not use the original stream."
   },
   "widgets.reason.forced_playback": {
     "value": "Force Direct Play could not play this stream",
@@ -760,6 +774,7 @@
   },
   "widgets.runtime.main_thread": {
     "value": "MAIN THREAD {kind} {milliseconds}ms · {label}",
+    "translate": false,
     "description": "Developer warning; kind and label are technical diagnostic identifiers",
     "args": {
       "kind": "str",

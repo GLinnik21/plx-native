@@ -2114,6 +2114,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
     crate::tracks_panel::SHAPE,
     crate::about_panel::SHAPE,
     crate::person_bio::SHAPE,
+    // Descriptive only, and already behind the shipped list (no fr, no it): never generate this
+    // from the language registry, or every added language moves SCREEN_SHAPES_PIN and forces the
+    // replay fixtures to be re-recorded.
     "LocalizationSettingsV4{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,busy:bool,failed:bool},Contribute:QrLink,LoginReportAlert:{send:bool,scroll_target_bits:u32},ConsentDisclosure:{scroll_target_bits:u32,scroll_owner:answer_band},ConsentDeleteDisclosure:{scroll_target_bits:u32},BandPart:MeasuredRowOrColumn}",
     crate::preferences::SHAPE,
     crate::preferences::PICKER_SHAPE,

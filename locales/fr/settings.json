@@ -253,8 +253,6 @@
   "settings.login.report_failed": "Le rapport n’a pas pu être envoyé.",
   "settings.login.save_failed_title": "Impossible d’enregistrer votre connexion",
   "settings.login.save_failed_body": "Votre connexion n’a pas pu être enregistrée sur cette TV. Vous pouvez continuer, mais vous devrez vous reconnecter la prochaine fois.",
-  "settings.login.unknown_device": "appareil inconnu",
-  "settings.login.your_servers": "vos serveurs",
   "settings.language.saving": "Enregistrement de la langue…",
   "settings.audio.error_retry": "{reason} Sélectionnez Réessayer.",
   "settings.login.report_id": "ID du rapport : {id}",

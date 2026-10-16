@@ -60,6 +60,10 @@ python3 ci/test_source_bundle.py
 ci/check-deps.sh
 # Catalog completeness is checked by the Rust build; these check the UI text entry points too.
 make --no-print-directory check-localization
+# A UI language is a locales/ directory plus its languages.json entry: no hand-written list of
+# languages in Rust, "each language" loops read i18n::SHIPPED (docs/localization.md).
+python3 ci/check-language-lists.py
+python3 ci/test_check_language_lists.py
 python3 tests/test_mock_pms_library.py
 # `tools/tv-ssh`, the ssh/scp front door every TV caller shares, against FAKE ssh/sshpass on
 # PATH: key accepted -> sshpass never run; key refused -> sshpass; unreachable -> no password
