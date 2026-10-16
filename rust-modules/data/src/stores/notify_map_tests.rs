@@ -437,3 +437,58 @@ fn a_loaded_details_related_tiles_are_read_quiet_and_only_while_it_is_the_page()
     assert_eq!(pending(&stores), ["r1"]);
     assert!(stores.reconcile.is_quiet_for_test(&(SID, "r1".into())), "a tile is patched in place, no Detail re-fetch");
 }
+
+/// A store aggregate whose Watchlist page holds a title matched as `rk` on the first server.
+fn watchlist_holding(rk: &str) -> (Stores, ServerId) {
+    let mut stores = Stores::default();
+    stores.watchlist = super::watchlist::tests::holding_for_test(ServerId::from_raw(0), rk);
+    (stores, ServerId::from_raw(0))
+}
+
+fn pending_on(stores: &Stores) -> Vec<(ServerId, String)> {
+    stores.reconcile.pending_for_test()
+}
+
+fn on_watchlist(sid: ServerId, key: &str, rk: &str, state: PlayState) -> NotifyOut {
+    NotifyOut {
+        plays: vec![NotifyPlays { sid, sessions: vec![session(key, rk, state)] }],
+        resynced: Vec::new(),
+    }
+}
+
+/// A title the Watchlist page shows (matched on a reachable server) owes a read-back of our state
+/// when someone else's session on it changes, as any held card does.
+#[test]
+fn a_watchlist_held_key_owes_a_quiet_read() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, sid) = watchlist_holding("11");
+    assert!(stores.holds(sid, "11", &[], Shown::ALL), "the page holds its matched copy");
+    map(&mut stores, &on_watchlist(sid, "1", "11", PlayState::Stopped), &[]);
+    assert_eq!(pending_on(&stores), [(sid, "11".to_string())]);
+}
+
+/// With the Watchlist page off the stack its store's last rows hold nothing and owe nothing.
+#[test]
+fn a_popped_watchlist_holds_nothing() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, sid) = watchlist_holding("11");
+    let not_watchlist = Shown { watchlist: false, ..Shown::ALL };
+    assert!(stores.holds(sid, "11", &[], Shown::ALL), "held while the page is on the stack");
+    assert!(!stores.holds(sid, "11", &[], not_watchlist));
+    map_shown(&mut stores, &on_watchlist(sid, "1", "11", PlayState::Stopped), &[], not_watchlist);
+    assert!(pending_on(&stores).is_empty(), "Shown.watchlist = false owes nothing");
+}
+
+/// The Watchlist read-back waits for the network like any other: `!reread_allowed` keeps it queued.
+#[test]
+fn a_watchlist_read_waits_for_the_network() {
+    let _g = plx_base::testlock::serial();
+    let (mut stores, sid) = watchlist_holding("11");
+    stores.hold_network(true);
+    map(&mut stores, &on_watchlist(sid, "1", "11", PlayState::Stopped), &[]);
+    assert!(pending_on(&stores).is_empty(), "nothing is spent under the player");
+    assert!(!stores.notify_owed_for_test().is_empty(), "queued, not dropped");
+    stores.hold_network(false);
+    map(&mut stores, &NotifyOut::default(), &[]);
+    assert_eq!(pending_on(&stores), [(sid, "11".to_string())]);
+}

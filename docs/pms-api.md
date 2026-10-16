@@ -1306,7 +1306,8 @@ frame would carry the session's key, client id and rating key, so it stays out o
 What a hint does (`stores::notify_map`): a session that is new or changed state on an item a page
 HOLDS owes that item a read-back of OUR state. A page holds what its store enumerates while the page
 is on the navigation stack, visible or covered: Home's, the Library page's and Search's rows only
-while those pages are on it (a popped page holds nothing), a Person, Filmography or Collection page's
+while those pages are on it (a popped page holds nothing), the Watchlist page's matched copies
+on reachable servers inside its hold window (the same rule), a Person, Filmography or Collection page's
 rows, and a Detail page's own item, plus, while it is the loaded Detail, the episodes of its current
 season window (read the owing way) and its related and collection tiles (read quiet). A steady
 `playing` ping owes nothing, `buffering` counts as `playing` and an unknown state is ignored, and two

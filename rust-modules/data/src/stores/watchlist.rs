@@ -815,7 +815,7 @@ impl<H: Host> Machine<H> for WatchlistStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::viewstate::Scope;
     use crate::watchlist::model::Reach;
@@ -990,6 +990,19 @@ mod tests {
     fn titles(s: &WatchlistStore) -> Vec<String> {
         let v = s.view();
         (0..v.len()).map(|i| v.row(i).unwrap().title.clone()).collect()
+    }
+
+    /// A loaded store whose one title is matched on reachable server `sid` as numeric ratingKey `rk` and
+    /// whose hold window covers it: what `Stores::holds` enumerates for the Watchlist page.
+    pub(in crate::stores) fn holding_for_test(sid: ServerId, rk: &str) -> WatchlistStore {
+        let mock = Mock::new(vec![item(1, "Alpha")]);
+        *mock.roster.lock().unwrap() = vec![sid];
+        *mock.up.lock().unwrap() = vec![sid];
+        mock.held.lock().unwrap().insert((sid, guid(1)), rk.into());
+        let mut s = store(&mock);
+        load(&mut s);
+        s.run(WatchlistCmd::Window { wanted: 0..1 });
+        s
     }
 
     fn three() -> Arc<Mock> {

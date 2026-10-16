@@ -121,6 +121,9 @@ pub(crate) enum Action {
 pub(crate) fn action(arg: &AppArg, covered: bool) -> Action {
     match arg {
         AppArg::Home => Action::HomeQuiet,
+        // The Watchlist page reads back the matched copies it holds (`WatchlistStore::held_keys`).
+        // TODO(W6): `ContentArg::Catalog` (the catalog page for a title no server holds) owes the
+        // re-match for its guid; it has no arm until W6 adds the variant.
         AppArg::Library | AppArg::Search | AppArg::Watchlist => Action::ReadBack,
         AppArg::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. } | ContentArg::Collection(_)) =>
             Action::ReadBack,
@@ -257,6 +260,8 @@ mod tests {
         assert_eq!(action(&detail, true), Action::DetailDeferred);
         assert_eq!(action(&AppArg::Library, true), Action::ReadBack);
         assert_eq!(action(&AppArg::Search, true), Action::ReadBack);
+        assert_eq!(action(&AppArg::Watchlist, true), Action::ReadBack, "covered Watchlist");
+        assert_eq!(action(&AppArg::Watchlist, false), Action::ReadBack, "visible Watchlist on resume");
         assert_eq!(action(&AppArg::Player, true), Action::Nothing);
     }
 

@@ -495,6 +495,13 @@ player, transport and tracks auditors, and is counted once in the themes above.
   without blocking the frame loop, and stale same-slot landings are rejected by client lifecycle,
   token generation, hub generation and sequence.
 
+> **Watchlist live-update note (2026-10).** The Watchlist page is a held page: a session hint on a
+> title it shows (matched, reachable, inside its hold window) owes a quiet read-back, and a resume or
+> long cover re-reads it (`app/reread.rs`). Two gaps remain: a title no server holds has no copy to
+> read back, so a server that gains it is seen only on the next re-match (the catalog page owes that
+> re-match, W6), and the PMS timeline feed that would announce a newly scanned item is not
+> subscribed (W-notify).
+
 - **Watchlist is absent (adjacent catalog: plex.tv Discover)** — `major` / `large`
   The official rail carries Watchlist between Home and the libraries, plus an 'Add to Watchlist' action on items. This is a plex.tv Discover feature rather than a PMS library feature, but it is a first-class movie/show surface in the reference client. We have no watchlist state, screen, or API binding.
   *Where:* New rust-modules/src/plex/discover.rs (metadata.provider.plex.tv / discover.provider.plex.tv over net.rs's libcurl TLS transport, since stream.rs cannot do DNS/TLS) + a new rust-modules/src/ui/watchlist.rs screen and a rail entry in rust-modules/src/ui/widgets.rs.

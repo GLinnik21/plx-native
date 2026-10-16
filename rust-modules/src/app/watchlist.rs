@@ -17,7 +17,7 @@
 //! * **Presses.** A bookmark press or the hold menu's Remove goes to the store as an intent
 //!   ([`Bridge::watchlist_press`]); the store flips at once, a refused or unreachable write puts the
 //!   flip back with no toast (Q8), and a debug build refuses the write unless the discover
-//!   stand-in is armed (Q11, `plex::watchlist::write_refused`).
+//!   stand-in is armed (Q11, `plex::watchlist::permit_write`).
 //! * **Re-read.** A burst of landed writes owes one re-read (`take_reread_owed`), issued two
 //!   seconds later so the burst is over.
 //!
