@@ -61,6 +61,7 @@ ci/check-deps.sh
 # Catalog completeness is checked by the Rust build; these check the UI text entry points too.
 make --no-print-directory check-localization
 python3 tests/test_mock_pms_library.py
+python3 tests/test_mock_pms_discover.py
 # `tools/tv-ssh`, the ssh/scp front door every TV caller shares, against FAKE ssh/sshpass on
 # PATH: key accepted -> sshpass never run; key refused -> sshpass; unreachable -> no password
 # attempt; no address or password on any line; and the Makefile's echoed commands stay silent about both.

@@ -8,12 +8,10 @@
 //! * [`options`]: [`options::WatchlistOptionsState`], the Sort & Filter value.
 //! * [`header`]: the title + pill header ([`header::draw_header`]).
 //! * [`readout`]: the empty / filtered / no-token read-outs anchored at `FULL_ANCHOR_TOP`.
-//! * [`hold`]: the grid's hold-menu rows and results.
 //!
 //! No sibling screen is named here: a Detail or catalog target leaves as an output the app routes.
 pub mod caption;
 pub mod header;
-pub mod hold;
 pub mod menu;
 pub mod options;
 pub mod page;

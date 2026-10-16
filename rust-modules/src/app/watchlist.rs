@@ -23,7 +23,6 @@
 //!
 //! What the application does with the page's requests is `content::watchlist_requests`.
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use plx_data::stores::watchlist::{Status, WatchlistCmd};
 use plx_data::watchlist::ledger::Intent;
@@ -34,7 +33,7 @@ use plx_screens::watchlist::page::{ListState, MatchedFacts, WatchTile, Watchlist
 use super::*;
 
 /// How long after a burst of landed writes the list is read again.
-const REREAD_DELAY: Duration = Duration::from_secs(2);
+const REREAD_DELAY_MS: u32 = 2_000;
 /// Titles kept in the hold window either side of the focus: three screens of six-wide rows.
 const WINDOW_BEHIND: usize = 18;
 const WINDOW_AHEAD: usize = 36;
@@ -53,7 +52,7 @@ pub(crate) struct Feed {
     facts: HashMap<String, MatchedFacts>,
     /// A tile the user just removed: the page plays its landing before the rows replace it.
     removed: Option<String>,
-    reread_at: Option<Instant>,
+    reread_at: Option<u32>,
 }
 
 /// The catalog id of a `plex://movie|show/<24 hex>` guid.
@@ -96,12 +95,14 @@ impl Bridge {
     pub(crate) fn watchlist_feed(&mut self, d: &mut Dispatcher<AppHost>) {
         let store = &mut self.stores.watchlist;
         let feed = &mut self.watchlist;
-        if feed.reread_at.is_some_and(|at| Instant::now() >= at) {
+        let now = crate::app::clock::now();
+        // The app's logical clock (ms, wrapping), not a wall-clock read: due once `now` passes `at`.
+        if feed.reread_at.is_some_and(|at| now.wrapping_sub(at) as i32 >= 0) {
             feed.reread_at = None;
             store.run(WatchlistCmd::Reread);
         }
         if store.take_reread_owed() {
-            feed.reread_at = Some(Instant::now() + REREAD_DELAY);
+            feed.reread_at = Some(now.wrapping_add(REREAD_DELAY_MS));
         }
         let Some((instance, screen)) = Self::watchlist_page(d) else {
             // Popped: the next page starts from nothing, and the store's hold window is empty.

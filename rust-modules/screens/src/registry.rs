@@ -399,7 +399,7 @@ pub enum ItemMenuKind {
     Season { mark: plx_ui::widgets::PosterMark, show_rk: String, index: i64 },
     /// A Watchlist tile that is not playable on a reachable server (plan §1.9): no PMS item, so
     /// `sid` is `UNSET` and `rk` empty; the subject is [`ItemMenuArg::catalog`] and `state` picks the
-    /// rows (`watchlist::hold::rows_for`).
+    /// rows (`item_menu::hold::rows_for`).
     Catalog { state: plx_data::watchlist::model::TileState },
 }
 
