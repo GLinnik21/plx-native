@@ -1,4 +1,4 @@
-{"updated":"2026-10-16T12:42:53Z",
+{"updated":"2026-10-16T12:47:13Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -2921,7 +2921,8 @@
 {"id":38899491718,"at":"2026-10-16T12:17:31Z","sha":"a4c5f15b3","title":"Merge remote-tracking branch 'origin/main' into tmp-land-783","pr":795,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":18,"Linux simulator build + launch":255,"macOS simulator build + launch":170,"macOS tests against bundled FFmpeg and ASS":116}},
 {"id":38900485719,"at":"2026-10-16T12:26:11Z","sha":"4e605e724","title":"Portuguese (Portugal): land #802 on the language registry","pr":815,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":22,"macOS simulator build + launch":173,"Linux simulator build + launch":252,"macOS tests against bundled FFmpeg and ASS":200}},
 {"id":38901037037,"at":"2026-10-16T12:30:50Z","sha":"559d5a698","title":"Italian localization: wire Italian as a UI language, replace #771's uncompiled catalogs","pr":795,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":186,"Linux simulator build + launch":218,"macOS simulator build + launch":178,"Windows launcher syntax":15}},
-{"id":38901107086,"at":"2026-10-16T12:31:25Z","sha":"d45a44eb3","title":"Merge commit '559d5a698' into tmp-reg","pr":801,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":193,"Windows launcher syntax":17,"Linux simulator build + launch":247,"macOS tests against bundled FFmpeg and ASS":165}}
+{"id":38901107086,"at":"2026-10-16T12:31:25Z","sha":"d45a44eb3","title":"Merge commit '559d5a698' into tmp-reg","pr":801,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":193,"Windows launcher syntax":17,"Linux simulator build + launch":247,"macOS tests against bundled FFmpeg and ASS":165}},
+{"id":38902512474,"at":"2026-10-16T12:43:15Z","sha":"646859f9c","title":"i18n: language registry \u2014 a locales/ directory is a language or a build error","pr":801,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":219,"Windows launcher syntax":19,"macOS simulator build + launch":131,"Linux simulator build + launch":203}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
