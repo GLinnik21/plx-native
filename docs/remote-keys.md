@@ -298,10 +298,15 @@ same loop iteration, so an unbound press cannot carry it anywhere.
 swapping in a transparent cursor. The system still thinks its pointer is up, so the Magic Remote's
 OK arrives as a pointer click at the invisible pointer's position, not as an OK key: arrow to a
 control, press OK, and the click lands on whatever is under the hidden pointer (in the player, the
-picture, which toggles pause). `app/input.rs::click_is_ok` names the case: D-pad mode, pointer
-hidden, transparent-cursor set. The loop then pushes an OK key-down for the button-down and an OK
-key-up for its button-up. Motion past the gate still leaves D-pad mode first, so a deliberate
-click on a shown pointer stays a click.
+picture, which toggles pause). `app/input.rs::click_is_ok` names the case: D-pad mode on a
+transparent-cursor set, and either less than `DPAD_MOTION_GATE` of pointer travel since the last
+arrow press or a click that lands on no control. The loop then pushes an OK key-down for the button-down and an OK key-up for its
+button-up. It is not keyed on the pointer being hidden: pressing OK jiggles the remote, any motion
+shows the pointer again, and a version keyed on "hidden" never fired on the set. Nor on travel
+alone: travel is summed since the last arrow press, so a hand holding the remote drifts past any
+gate (159–600 px measured between arrowing to a disc and pressing OK), and over full-screen video
+the player never leaves D-pad mode. A click that lands on a control after real travel is still
+that control's, so pointing at a button and clicking it keeps working.
 
 **The one place it deliberately over-approximates.** The digits count as bound *everywhere*, because
 the who's-watching PIN keypad types from them, so a number press on Home or during playback still
