@@ -635,7 +635,11 @@ impl Grid {
         if focused {
             let row = i / self.spec.cols;
             let open = bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
-            let label = src.label(i).revealed(card_row::band_reveal(open));
+            // The focused card left as a ghost that is still waiting for the landing to step: the
+            // ghost keeps the caption as drawn ([`paint_ghosts`](Self::paint_ghosts)); the card
+            // focus reconciled to takes it up with the landing's first step.
+            let label = if self.caption_held() { super::TileLabel::default() } else { src.label(i) };
+            let label = label.revealed(card_row::band_reveal(open));
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_card();
             card_row::draw_focused(p, src.art(i), rect, s, &self.spec.style, src.progress(i), &label, f.measure);
@@ -649,6 +653,12 @@ impl Grid {
             card_row::draw_tile(p, src.art(i), rect, s, &self.spec.style, src.progress(i));
         }
         src.overlay(p, i, &Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused }, f.measure);
+    }
+
+    /// The focused card left as a ghost and the landing has not stepped: the caption is still the
+    /// ghost's, and the card focus reconciled to draws none yet.
+    fn caption_held(&self) -> bool {
+        self.landing.waiting() && self.landing.ghosts().iter().any(|g| g.focused)
     }
 
     /// The cards a landing moved to another row, fading out where they stood (at rest, never
@@ -737,8 +747,9 @@ impl Grid {
     /// The cards a landing removed, fading out in the cell they stood in (held in place on screen
     /// when the scroll moved to keep focus where it was): paint them BEFORE [`draw`](Self::draw), so
     /// the cards that slid over their cells cover them. `ghosts` holds the removed cards in
-    /// [`ghost_keys`](Self::ghost_keys) order (only `art`, `progress`, `loaded` and `overlay` are
-    /// read; a ghost is never captioned or registered as a stop; one that was the focused card eases
+    /// [`ghost_keys`](Self::ghost_keys) order (only `art`, `progress`, `loaded`, `overlay` and, for
+    /// the focused card's ghost, `label` are read; a ghost is never registered as a stop, and is
+    /// captioned only while the landing waits to step, so the caption stays as drawn; one that was the focused card eases
     /// from its lifted scale to rest while it fades). Nothing is drawn when no landing is playing,
     /// and only what is on screen.
     pub fn paint_ghosts<H: Host, G: CardSource<H> + ?Sized>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, ghosts: &G) {
@@ -766,6 +777,15 @@ impl Grid {
             card_row::draw_tile(pr, ghosts.art(j), rect, s, &self.spec.style, ghosts.progress(j));
             let tile = Tile { rect, scale: s, radius: self.spec.style.tile_radius(rect, s), focused: g.focused };
             ghosts.overlay(pr, j, &tile, f.measure);
+            // The focused card's caption stays as drawn until the landing steps: from then on it is
+            // the new focus card's, which moves with the focus.
+            if g.focused && self.landing.waiting() {
+                let open = bands.iter().find(|band| band.row == g.was / self.spec.cols).map_or(0.0, |band| band.expansion);
+                let label = ghosts.label(j).revealed(card_row::band_reveal(open));
+                if label.reveal > 0.0 {
+                    card_row::draw_label(pr.alpha(label.reveal), rect, s, &self.spec.style, &label, f.measure);
+                }
+            }
         }
     }
 

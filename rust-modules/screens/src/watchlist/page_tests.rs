@@ -696,6 +696,9 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
     let before: Vec<(u32, plx_ui::Rect, f32)> =
         h.cards().into_iter().map(|e| (e, h.drawn_rect(e, 1.0).unwrap(), h.scale(e).unwrap())).collect();
     let removed = h.focused().unwrap();
+    // every word the frame draws and where: the focus caption (title and year line) among them
+    let words_before = h.draw_texts();
+    assert!(words_before.iter().any(|(w, _)| w == "2002"), "premise: the removed title's caption is drawn: {words_before:?}");
     set_veil(1.0);
     let guid = h.screen.tiles()[h.screen.index_of(removed).unwrap()].row.guid.clone();
     h.screen.input(WatchlistIn::Removed(guid));
@@ -704,6 +707,7 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
         h.reconcile();
         let now = h.focused().unwrap();
         assert_ne!(now, removed, "premise: focus reconciled off the removed tile");
+        assert_eq!(h.draw_texts(), words_before, "frame {frame}: the caption (text and anchor) is as drawn before the commit");
         let leaving = h.screen.leaving_probe();
         for (e, rect, scale) in &before {
             if *e == removed || rect.y > 1080.0 {
@@ -729,13 +733,16 @@ fn a_remove_changes_nothing_on_the_grid_until_the_landing_starts() {
     let now = h.focused().unwrap();
     let mut last = 1.0f32;
     let mut rose = false;
+    let mut moved = false;
     for frame in 0..120 {
         h.run(1);
+        moved |= h.draw_texts().iter().any(|(w, _)| w == "2003");
         let s = h.scale(now).unwrap();
         assert!(s + 1e-4 >= last, "frame {frame}: the new focus collapsed from {last} to {s}");
         rose |= s > 1.001;
         last = s;
     }
     assert!(rose && (last - h.focus_scale()).abs() < 1e-3, "the new focus rose once to the pop and rests there");
+    assert!(moved, "the landing's start moved the caption to the new focus");
     set_veil(0.0);
 }

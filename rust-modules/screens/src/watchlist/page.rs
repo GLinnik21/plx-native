@@ -499,8 +499,12 @@ impl<H: ContentLike> CardSource<H> for GhostTitles<'_> {
         self.drawn.set(self.drawn.get() + 1);
         Art::Poster(self.tiles.get(i).copied().flatten().map(|(t, c)| tile_facts(t, c)))
     }
-    fn label(&self, _i: usize) -> TileLabel {
-        TileLabel::default()
+    /// Read only for the focused card's ghost, which keeps its caption until the landing steps.
+    fn label(&self, i: usize) -> TileLabel {
+        match self.tiles.get(i).copied().flatten() {
+            Some((t, _)) => TileLabel::titled(&t.row.title, &caption::caption(&t.row, t.state)),
+            None => TileLabel::default(),
+        }
     }
     fn progress(&self, i: usize) -> Option<f32> {
         self.tiles.get(i).copied().flatten().and_then(|(_, c)| c.resume)
