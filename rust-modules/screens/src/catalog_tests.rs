@@ -164,6 +164,8 @@ fn the_status_line_icon_table() {
     assert_eq!(status_text(Status::NotOnAnyServer, None), Some("On no server"));
     assert_eq!(status_text(Status::ComingSoon, dated), None);
     assert_eq!(status_text(Status::None, None), None);
+    assert_eq!(status_icon(Status::ServerOffline, dated), Some(Icon::ServerSlash));
+    assert_eq!(status_text(Status::ServerOffline, dated), Some("Server offline"));
 }
 
 /// **The Coming line** is the long month-and-day phrase, and only an unreleased title with a

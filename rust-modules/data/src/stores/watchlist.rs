@@ -82,6 +82,11 @@ pub struct WatchlistAdapter {
     mail: Mutex<VecDeque<Landed>>,
     list_busy: AtomicBool,
     write_busy: AtomicBool,
+    /// Card rows asked to be resolved by `(server, rk)` (`WatchlistStore::want_hex`), spawned by the
+    /// next pump. Behind a lock because a menu asks from `&self`.
+    wanted: Mutex<Vec<(ServerId, String)>>,
+    /// Resolved ids, landed by the resolve workers.
+    resolved: Mutex<Vec<(ServerId, String, Option<[u8; 12]>)>>,
 }
 
 impl WatchlistAdapter {
@@ -136,6 +141,11 @@ struct WatchlistState {
     sort: SortSpec,
     filter: FilterSpec,
     members: HashSet<[u8; 12]>,
+    /// Catalog ids read off a card row's own server record, by `(server, rk)`; `None` is an
+    /// answered "no portable id" (or no answer), not asked again this epoch.
+    resolved: HashMap<(ServerId, String), Option<[u8; 12]>>,
+    /// Asked and not yet answered.
+    resolving: HashSet<(ServerId, String)>,
     index: Vec<usize>,
     window: Range<usize>,
     list_wanted: bool,
@@ -167,6 +177,8 @@ impl WatchlistState {
             sort,
             filter,
             members: HashSet::new(),
+            resolved: HashMap::new(),
+            resolving: HashSet::new(),
             index: Vec::new(),
             window: 0..0,
             list_wanted: false,
@@ -568,6 +580,7 @@ impl WatchlistStore {
             self.rederive();
             changed = true;
         }
+        changed |= self.pump_resolves();
         self.maybe_spawn();
         if changed {
             self.bump();
@@ -681,6 +694,50 @@ impl WatchlistStore {
         }
     }
 
+    /// A card row carried no catalog id: ask for it to be read off the item's own server record
+    /// (`client.metadata(rk).guid`, on a worker, at the next pump). Idempotent per `(server, rk)`.
+    /// The answer is [`WatchlistView::resolved_hex`]; a menu opened after it lands offers the row.
+    pub fn want_hex(&self, sid: ServerId, rk: &str) {
+        let key = (sid, rk.to_owned());
+        if self.state.resolved.contains_key(&key) || self.state.resolving.contains(&key) {
+            return;
+        }
+        let mut wanted = self.adapter.wanted.lock().unwrap_or_else(|e| e.into_inner());
+        if !wanted.contains(&key) {
+            wanted.push(key);
+        }
+    }
+
+    /// Spawn a worker per asked-for record and land the answers. Needs no account: the read is
+    /// the user's own server's.
+    fn pump_resolves(&mut self) -> bool {
+        let mut changed = false;
+        let answers: Vec<_> = self.adapter.resolved.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
+        for (sid, rk, hex) in answers {
+            self.state.resolving.remove(&(sid, rk.clone()));
+            self.state.resolved.insert((sid, rk), hex);
+            changed = true;
+        }
+        let wanted: Vec<_> = self.adapter.wanted.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
+        for (sid, rk) in wanted {
+            if self.state.resolved.contains_key(&(sid, rk.clone())) || !self.state.resolving.insert((sid, rk.clone())) {
+                continue;
+            }
+            let (adapter, io) = (Arc::clone(&self.adapter), Arc::clone(&self.io));
+            let key = rk.clone();
+            let spawned = (self.spawn)("wlist-resolve", Box::new(move || {
+                let hex = plx_plex::plex::resolve_catalog_hex(None, || io.guid_of(sid, &key));
+                adapter.resolved.lock().unwrap_or_else(|e| e.into_inner()).push((sid, key, hex));
+                plx_machine::idle::invalidate();
+            }));
+            if !spawned {
+                // Nothing will run: forget it so the next menu asks again.
+                self.state.resolving.remove(&(sid, rk));
+            }
+        }
+        changed
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn pump(&mut self) -> bool {
         self.pump_with_gate(plx_machine::landgate::fixture_gate())
@@ -749,6 +806,21 @@ impl WatchlistView<'_> {
     /// The matched copy a tile opens, if any.
     pub fn copy(&self, i: usize) -> Option<ServerMatch> {
         self.store.copy_of(*self.store.state.index.get(i)?)
+    }
+
+    /// The committed tile state of the title with catalog id `hex`, over EVERY row (the options
+    /// narrowing the page do not hide it from the catalog page). `None` when the title is not a
+    /// row of the list read.
+    pub fn tile_state_of(&self, hex: &[u8; 12]) -> Option<TileState> {
+        let s = &self.store.state;
+        let i = s.rows.iter().position(|r| r.hex == *hex)?;
+        s.states.get(i).copied()
+    }
+
+    /// The catalog id read off a card row's own server record: `None` not asked or not answered
+    /// yet, `Some(None)` answered with no portable id. See [`WatchlistStore::want_hex`].
+    pub fn resolved_hex(&self, sid: ServerId, rk: &str) -> Option<Option<[u8; 12]>> {
+        self.store.state.resolved.get(&(sid, rk.to_owned())).copied()
     }
 
     /// Is this catalog id on the watchlist, intents in flight included?

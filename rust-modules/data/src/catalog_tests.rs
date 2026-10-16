@@ -374,3 +374,14 @@ fn membership_without_a_title_is_unknown() {
     let w = watchlist(Wl { members: vec![hex()], list_fails: false });
     assert_eq!(s.membership(&w), Membership::Unknown);
 }
+
+#[test]
+fn a_tile_state_dictates_the_status_line_and_a_silent_server_never_says_on_no_server() {
+    use crate::watchlist::model::TileState as T;
+    assert_eq!(CatalogStatus::of_tile(T::ComingSoon), CatalogStatus::ComingSoon);
+    assert_eq!(CatalogStatus::of_tile(T::ComingSoonMatched), CatalogStatus::ComingSoon);
+    assert_eq!(CatalogStatus::of_tile(T::NotOnAnyServer), CatalogStatus::NotOnAnyServer);
+    assert_eq!(CatalogStatus::of_tile(T::ServerOffline), CatalogStatus::ServerOffline);
+    assert_eq!(CatalogStatus::of_tile(T::Unknown), CatalogStatus::None);
+    assert_eq!(CatalogStatus::of_tile(T::Available), CatalogStatus::None);
+}

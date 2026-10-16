@@ -200,7 +200,7 @@ fn the_hold_menus_remove_flips_the_tile_and_writes_the_remove() {
     let script = Script::new(&THREE, true);
     let (mut d, mut rig) = mounted(&script);
     settle(&mut d, &mut rig, 2);
-    assert!(rig.watchlist_remove(&guid(2)));
+    assert!(rig.watchlist_remove(&guid(2), true));
     settle(&mut d, &mut rig, 10);
     assert_eq!(guids(&d), vec![guid(1), guid(3)], "the tile left the page");
     assert_eq!(*script.writes.lock().unwrap(), vec![([2u8; 12], Intent::Remove)]);
@@ -217,7 +217,7 @@ fn a_write_that_fails_puts_the_tile_back_with_nothing_said() {
     script.fail_writes.store(true, Ordering::SeqCst);
     let (mut d, mut rig) = mounted(&script);
     settle(&mut d, &mut rig, 2);
-    assert!(rig.watchlist_remove(&guid(2)));
+    assert!(rig.watchlist_remove(&guid(2), true));
     settle(&mut d, &mut rig, 10);
     assert_eq!(*script.writes.lock().unwrap(), vec![([2u8; 12], Intent::Remove)], "the write was tried");
     assert_eq!(guids(&d), vec![guid(1), guid(2), guid(3)], "and the flip reverted");
