@@ -3469,6 +3469,21 @@ fn sharp_sweep() -> Option<f32> {
 fn sharp_sweep() -> Option<f32> {
     None
 }
+/// `/tmp/plxnative-menusharp=<w>` — a MENU glass's sharp-source weight, swept. `0` also drops the
+/// per-frame band copy it costs (`GlassRim::Menu`), which is what makes it an A/B on one binary.
+#[cfg(feature = "devtriggers")]
+fn menu_sharp_sweep() -> Option<f32> {
+    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = plx_base::devtrig::read("menusharp")?.trim().parse::<f32>().ok()?;
+        plx_base::eventlog::log(&format!("glass: menu rim sharp source swept to {v}"));
+        Some(v.clamp(0.0, 1.0))
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn menu_sharp_sweep() -> Option<f32> {
+    None
+}
 /// `/tmp/plxnative-paneldeep=<px>` — the panel's extra sample radius, swept. `0` is the bar's own
 /// single-fetch material.
 #[cfg(feature = "devtriggers")]
@@ -3641,7 +3656,7 @@ impl GlassRim {
         match self {
             Self::Bevelled => 0.0,
             Self::Standing => sharp_sweep().unwrap_or(STANDING_SHARP),
-            Self::Menu => tokens::MENU_SHARP,
+            Self::Menu => menu_sharp_sweep().unwrap_or(tokens::MENU_SHARP),
         }
     }
 
