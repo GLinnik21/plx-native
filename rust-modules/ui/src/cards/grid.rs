@@ -248,7 +248,7 @@ impl Grid {
         }
         self.seen = Seen::Nothing;
         self.anchor = pool::anchor_of(src, focus);
-        self.play_landing(src, sy0, lifted, dt);
+        self.play_landing(src, sy0, lifted, dt, cx.tick.ms);
         // the focused card left as a ghost: the card focus reconciled to rises from rest as it sinks
         if let (Some(_), Some(i)) = (self.landing.take_takeover(), focus) {
             self.pop.rise(i);
@@ -278,7 +278,7 @@ impl Grid {
     /// scroll before the landing rule moved it (own mode); an external owner's move is `self.shift`.
     /// Slots are DOCUMENT points under the caption bands as they stand now, so a card crossing a line
     /// breaks measures old and new cells under the same bands.
-    fn play_landing<H: Host, S: CardSource<H>>(&mut self, src: &S, sy0: f32, lifted: Option<(usize, f32)>, dt: f32) {
+    fn play_landing<H: Host, S: CardSource<H>>(&mut self, src: &S, sy0: f32, lifted: Option<(usize, f32)>, dt: f32, ms: u32) {
         let scroll_moved = match self.spec.scroll {
             ScrollMode::Own => self.scroll.pos - sy0,
             ScrollMode::External => self.shift,
@@ -291,7 +291,7 @@ impl Grid {
         };
         let on = |_: f32, y: f32| crate::on_axis(y - scroll, h, SCR_H, 0.0);
         self.landing.observe(src, &Scene { shift: (0.0, scroll_moved), slot: &slot, on: &on, lifted });
-        self.landing.step(dt, (self.spec.style.k_scroll, self.spec.style.k_scale));
+        self.landing.step(dt, ms, (self.spec.style.k_scroll, self.spec.style.k_scale));
     }
 
     /// The focused element moved from cell `p` to cell `q` because the CONTENT changed: its pop goes

@@ -351,7 +351,7 @@ impl Shelf {
         let (pitch, margin_x) = (self.pitch(), self.style.margin_x);
         let slot = |i: usize| (margin_x + i as f32 * pitch, 0.0);
         self.landing.observe(src, &Scene { shift: (scroll - sx0, 0.0), slot: &slot, on: &on, lifted });
-        self.landing.step(dt, (self.style.k_scroll, self.style.k_scale));
+        self.landing.step(dt, cx.tick.ms, (self.style.k_scroll, self.style.k_scale));
         if focus.is_some() || !self.row.at_exact_rest() {
             self.row.update(src.len(), focus, self.style, dt);
             if focus.is_none() {

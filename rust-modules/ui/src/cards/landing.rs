@@ -41,7 +41,7 @@
 //! Remove from the card's hold menu) does not step while a menu still veils the page
 //! ([`page_veiled`](crate::containers::modal::page_veiled): a surface opening, open, or not yet
 //! faded below [`VEIL_CLEAR`](crate::containers::modal::VEIL_CLEAR)), and once the veil clears
-//! it waits a further [`LANDING_BEAT_S`] before every spring starts together. Run under the
+//! it waits a further [`LANDING_BEAT_MS`] before every spring starts together. Run under the
 //! menu's fade, the tiles slid beneath its text, and their motion forced a page pass under the
 //! menu's cached host on every frame of the fade (`popover::host_refresh`). While the landing
 //! waits under the veil it reports no motion at all (the fading menu presents those frames); only
@@ -70,9 +70,9 @@ use super::pool::key;
 use super::CardSource;
 use crate::Spring;
 
-/// The pause between a menu leaving the page and the landing it started, s: long enough to read
-/// as "the menu went, then the grid answered", short enough not to read as lag.
-pub(crate) const LANDING_BEAT_S: f32 = 0.12;
+/// The pause between a menu leaving the page and the landing it started, ms of the tick clock:
+/// long enough to read as "the menu went, then the grid answered", short enough not to read as lag.
+pub(crate) const LANDING_BEAT_MS: u32 = 120;
 
 /// A removed card still on screen.
 #[derive(Clone, Copy)]
@@ -165,10 +165,9 @@ pub(crate) struct Landing {
     /// (the sum of the landing shifts of the ticks that saw the change).
     shift: (f32, f32),
     anim: Option<Anim>,
-    /// A menu veiled the page since the playing landing began: its beat is still owed.
-    veiled: bool,
-    /// How long the page has been clear of the veil while the beat is owed, s.
-    beat: f32,
+    /// The tick (`Tick::ms`) of the last frame a menu veiled the page while this landing waited:
+    /// its beat is owed, counted from there.
+    veiled: Option<u32>,
     /// The last [`step`](Self::step) did not advance anything (veiled, in the beat, or under a
     /// held page image).
     paused: bool,
@@ -176,7 +175,7 @@ pub(crate) struct Landing {
 
 impl Landing {
     pub(crate) const fn new() -> Self {
-        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None, veiled: false, beat: 0.0, paused: false }
+        Self { on: false, keys: Vec::new(), loaded: false, window: (0, 0), revision: None, shift: (0.0, 0.0), anim: None, veiled: None, paused: false }
     }
 
     pub(crate) const fn set_enabled(&mut self, on: bool) {
@@ -193,7 +192,7 @@ impl Landing {
         self.revision = src.revision();
         self.shift = (0.0, 0.0);
         self.anim = None;
-        self.veiled = false;
+        self.veiled = None;
         self.paused = false;
     }
 
@@ -359,8 +358,7 @@ impl Landing {
         }
         // a landing over one still waiting waits with it; a fresh one owes no beat yet
         if !playing {
-            self.veiled = false;
-            self.beat = 0.0;
+            self.veiled = None;
             self.paused = false;
         }
         self.anim = (!next.empty()).then_some(next);
@@ -372,8 +370,8 @@ impl Landing {
 
     /// One frame of the animation. Nothing steps while the page is a held image (the first live
     /// frame after it shows the start state), nor while a menu veils the page and for
-    /// [`LANDING_BEAT_S`] after it cleared (module doc).
-    pub(crate) fn step(&mut self, dt: f32, k: (f32, f32)) {
+    /// [`LANDING_BEAT_MS`] after it cleared (module doc). `now_ms` is the frame's `Tick::ms`.
+    pub(crate) fn step(&mut self, dt: f32, now_ms: u32, k: (f32, f32)) {
         let Some(a) = self.anim.as_mut() else { return };
         self.paused = true;
         if crate::containers::transition::page_image_held() {
@@ -381,18 +379,16 @@ impl Landing {
         }
         if crate::containers::modal::page_veiled() {
             // the menu's own fade presents these frames: nothing of the page moves under it
-            self.veiled = true;
-            self.beat = 0.0;
+            self.veiled = Some(now_ms);
             return;
         }
-        if self.veiled {
-            self.beat += dt;
-            if self.beat < LANDING_BEAT_S {
+        if let Some(at) = self.veiled {
+            if now_ms.wrapping_sub(at) < LANDING_BEAT_MS {
                 // the beat's frames are this landing's own: ask for the next one
                 plx_machine::idle::note_motion();
                 return;
             }
-            self.veiled = false;
+            self.veiled = None;
         }
         self.paused = false;
         for s in a.off.values_mut() {

@@ -3616,7 +3616,7 @@ fn a_landing_waits_for_the_menu_to_leave_then_a_beat_then_moves_at_once() {
         assert!(rect_close(drawn, stood), "frame {frame}: 109 is not where it stood: {drawn:?} {stood:?}");
     }
     set_veil(VEIL_CLEAR * 0.5);
-    let beat = (super::landing::LANDING_BEAT_S / 0.016_667).ceil() as u32;
+    let beat = super::landing::LANDING_BEAT_MS.div_ceil(MS);
     for frame in 0..beat - 1 {
         assert!(r.run(1), "beat frame {frame}: the beat asks for its frames");
         assert_eq!(r.sect.landing_probe(n, 8), start, "beat frame {frame}: moved inside the beat");
