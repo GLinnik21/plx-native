@@ -409,6 +409,20 @@ presentation in a design pass.
    or focus pop — and an accent underline was rejected on sight. A punch-list line like "make focus
    more visible" is satisfied WITHIN the contract (widen the ink step), never with a new primitive.
 
+6. **An icon tab and a bookmark disc are both a mark, never a label.** The strip's faces are
+   `TabFace::{Label, Icon}` (the Watchlist bookmark and Search are `Icon` faces: square, 60 x 60,
+   the mark at `TAB_ICON_D`), and a destination is found by its KEY (`TAB_KEY_WATCHLIST` is
+   `STRIP_BASE + 5`, drawn before Search), never by "the last face". The strip PULSES a mark once
+   after a title is put on the list: `StripRender::pulse(idx)` (`TAB_PULSE_S`, `TAB_PULSE_SCALE`
+   about 1.35x, a `TAB_PULSE_GLOW_A` glow disc over `theme::ACCENT`) is time-driven, ends at exactly
+   rest, and runs inside `idle::decorative` so a page image is never held for it. The APPLICATION asks
+   (`ChromeSnapshot::pulse`); no screen does, and a screen that wants one reports an `AppFx`. A
+   hero disc that swaps a glyph for its filled twin (the Detail bookmark) uses
+   `CircleButton::icon_fill(filled, fill, dy)`: the filled glyph is revealed from the box's bottom
+   up with a downward nudge, the two icons share one silhouette, and a settled control passes the
+   resting icon alone so nothing of the animation lingers. The 3 px ribbon drop is a named constant
+   in the screen (`RIBBON_DROP`), since no theme token is 3 px.
+
 ## The route family says where BACK goes ONCE, as a crumb
 
 Every Settings-family route — Settings, Privacy & data, Legal notices, a legal document, About, the

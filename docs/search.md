@@ -5,8 +5,8 @@ lost — the **research into the television's on-screen keyboard**, which is whe
 went. If you read one section of this file before touching text entry, make it §3.
 
 **Scope: the user's own servers, and nothing else.** Every result comes from a PMS the account can
-reach. Plex Discover / Watchlist / the "Movies & Shows on Plex" catalog are deliberately absent —
-see §6.
+reach. Plex Discover and the "Movies & Shows on Plex" catalog are deliberately absent from the
+results, and the Watchlist is its own strip destination rather than a search scope — see §6.
 
 ---
 
@@ -40,13 +40,16 @@ as "0 post-warmup samples", which is indistinguishable from a real regression.
 ### The pill goes LAST
 
 Search is always the LAST pill: `app/chrome.rs` builds the strip's faces as `Home`, the type pills,
-then `TabFace::Icon(Icon::Search)`. Nothing reads "the last face" as the Search pill: the strip's
+the Watchlist bookmark (`TabFace::Icon(Icon::Bookmark)`, key `TAB_KEY_WATCHLIST`, `STRIP_BASE + 5`,
+appended after the chip's `+4` so no existing key moved but drawn before Search), then
+`TabFace::Icon(Icon::Search)`. Nothing reads "the last face" as the Search pill: the strip's
 destinations are found by KEY (`widgets::TAB_KEY_SEARCH`, `STRIP_BASE + 3`, and `TAB_KEY_CHIP` at
 `+4`), `app/chrome.rs` builds the faces and the keys together from one `strip_keys` list, and
 `Pill::Search` resolves to wherever that key sits, so an icon pill inserted before it moves no
 other destination. The library and search pages map a pressed key to its destination with those
 constants. The row is
-`Home`, then one pill per type that has a FAVOURITE library, then Search: two to four stops, because
+`Home`, then one pill per type that has a FAVOURITE library, then the bookmark, then Search: three to
+five stops, because
 `browse::tab_count()` now counts `tab_kinds()`, and a type whose last favourite is switched off
 draws no pill. Movies and TV Shows are still type destinations whose concrete owned/shared section
 is resolved later.
@@ -427,7 +430,7 @@ refuses outright to grade a log carrying the simulator's `sim=1` tag against dev
 
 ---
 
-## 6. Out of scope: Discover, Watchlist, and the catalog
+## 6. Out of scope: Discover results and the catalog (the Watchlist is not a search scope)
 
 The official client's search returns Plex's own catalog and Discover results alongside server ones.
 **Ours does not, by decision.** Those live on `discover.provider.plex.tv` /
@@ -436,6 +439,12 @@ The official client's search returns Plex's own catalog and Discover results alo
 tracked them as their own gap from the start. Adding a catalog row to this screen is a separate
 feature with its own client, its own store and its own failure modes — not a wider `limit=` on
 `/hubs/search`.
+
+The Watchlist did ship, but as a destination of its own: the bookmark tab before the Search pill,
+backed by `plex::watchlist`, `WatchlistStore` and the Watchlist page, with the Discover-only
+`CatalogScreen` for titles no server holds (`docs/watchlist.md`). It reads the account's list, not a
+search; typing a query still searches servers only, and a catalog title never appears among the
+results.
 
 What this screen closes, and what it does not, is written up in `docs/parity-gaps.md` under the
 search entries.
