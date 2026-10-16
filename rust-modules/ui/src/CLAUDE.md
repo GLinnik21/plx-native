@@ -413,9 +413,11 @@ presentation in a design pass.
    `TabFace::{Label, Icon}` (the Watchlist bookmark and Search are `Icon` faces: square, 60 x 60,
    the mark at `TAB_ICON_D`), and a destination is found by its KEY (`TAB_KEY_WATCHLIST` is
    `STRIP_BASE + 5`, drawn before Search), never by "the last face". The strip PULSES a mark once
-   after a title is put on the list: `StripRender::pulse(idx)` (`TAB_PULSE_S`, `TAB_PULSE_SCALE`
-   about 1.35x, a `TAB_PULSE_GLOW_A` glow disc over `theme::ACCENT`) is time-driven, ends at exactly
-   rest, and runs inside `idle::decorative` so a page image is never held for it. The APPLICATION asks
+   after a title is put on the list: `StripRender::pulse(idx)` (`TAB_PULSE_S` 0.4 s, the GLYPH
+   grown to `TAB_PULSE_SCALE` about 1.35x with a soft white `TAB_PULSE_GLOW_A` glow around it,
+   `tab_pulse_look`) is time-driven, ends at exactly rest, reports through `idle::note_motion`, and
+   runs inside `idle::decorative` so a page image is never held for it. **No plate behind the
+   mark**: a disc there is the strip's selected plate and reads as "this tab is selected". The APPLICATION asks
    (`ChromeSnapshot::pulse`); no screen does, and a screen that wants one reports an `AppFx`. A
    hero disc that swaps a glyph for its filled twin (the Detail bookmark) uses
    `CircleButton::icon_fill(filled, fill, dy)`: the filled glyph is revealed from the box's bottom

@@ -361,9 +361,62 @@ fn a_running_tab_pulse_reports_motion_not_page_damage() {
         assert!(!plx_machine::idle::page_layout_moving(), "frame {frames}: decorative, not layout");
         assert_eq!(plx_machine::idle::take_local_damage(), 0, "frame {frames}: and raises no damage");
     }
-    assert!(frames >= 30, "the pulse ran its beat ({frames} frames)");
+    // A 0.4 s beat at 60 Hz: 24 frames, less the frame that crosses the end.
+    assert!(frames >= 22, "the pulse ran its beat ({frames} frames)");
     // What that buys under the fading menu: the page is redrawn live, and an OPEN menu's frozen
     // host pauses it, as every decoration on a page the user cannot reach is paused.
     assert!(crate::popover::host_refresh(true, false, true));
     assert!(!crate::popover::host_refresh(false, false, true));
+}
+
+/// Every draw `f` declares in a backdrop discovery pass, in order.
+fn declared(f: impl FnOnce()) -> Vec<std::rc::Rc<crate::frame::backdrop::Paint>> {
+    use crate::frame::backdrop::{discover, Sources};
+    let sources = std::rc::Rc::new(std::cell::RefCell::new(Sources::default()));
+    sources.borrow_mut().begin(vec![]);
+    {
+        let _walk = discover(sources.clone());
+        f();
+    }
+    let paints = sources.borrow().paints.clone();
+    paints
+}
+
+/// **The pulse is the GLYPH, not a plate.** The mark grows about its own centre, 1 → 1.35 → 1,
+/// with a brief soft white glow around it, and nothing is filled behind it: a disc there is the
+/// strip's selected plate and reads as "Watchlist selected" (the design session's frame dump of
+/// Add from the Home hold menu, n372 on). Red on the build that drew a `TAB_PULSE_GLOW_A` accent
+/// rrect the pill's size behind the mark.
+#[test]
+fn the_tab_pulse_grows_the_glyph_with_a_white_glow_and_draws_no_plate() {
+    let _g = plx_base::testlock::serial();
+    let ir = Rect::new(900.0, 30.0, TAB_ICON_D, TAB_ICON_D);
+    let (cx, cy) = (ir.x + ir.w * 0.5, ir.y + ir.h * 0.5);
+    // At rest, and at both ends of the beat: the glyph at its own rect and nothing else.
+    for env in [0.0, tab_pulse_envelope(0.0), tab_pulse_envelope(TAB_PULSE_S)] {
+        let look = tab_pulse_look(ir, env);
+        assert_eq!(look.glyph, ir);
+        assert!(look.glow.is_none());
+    }
+    let peak = tab_pulse_look(ir, tab_pulse_envelope(TAB_PULSE_S * 0.5));
+    assert!((peak.glyph.w / ir.w - TAB_PULSE_SCALE).abs() < 1e-3, "the glyph itself grows 1.35x: {:?}", peak.glyph);
+    assert!((peak.glyph.x + peak.glyph.w * 0.5 - cx).abs() < 1e-3 && (peak.glyph.y + peak.glyph.h * 0.5 - cy).abs() < 1e-3, "about its centre");
+    let glow = peak.glow.expect("a glow at the peak");
+    assert_eq!(&glow.col[..3], &[1.0, 1.0, 1.0], "white, not the accent");
+    // What is declared besides the glyph (`draw_tab_mark` draws the icon after this; a test has no
+    // rasteriser for it): the glow is an outside-only penumbra, never a filled shape.
+    let paints = declared(|| draw_tab_glow(Painter::root(), tab_pulse_look(ir, 1.0)));
+    assert!(
+        paints.iter().all(|p| !matches!(p.kind().as_str(), "rect" | "rrect" | "rrect_sheened" | "rect_rimmed")),
+        "no plate behind the mark: {:?}",
+        paints.iter().map(|p| p.kind()).collect::<Vec<_>>()
+    );
+    assert!(paints.iter().any(|p| p.kind() == "shadow_outside"), "the glow is drawn");
+    assert!(declared(|| draw_tab_glow(Painter::root(), tab_pulse_look(ir, 0.0))).iter().all(|p| p.kind() != "shadow_outside"), "and nothing extra at rest");
+}
+
+/// The beat is about 400 ms, up and back.
+#[test]
+fn the_tab_pulse_is_a_400_ms_beat() {
+    assert!((TAB_PULSE_S - 0.4).abs() < 1e-6);
 }

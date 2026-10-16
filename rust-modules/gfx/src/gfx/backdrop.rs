@@ -182,6 +182,15 @@ impl PartialEq for Paint {
 /// Reserved command tag shared by the painter and the source dependency walk.
 pub const GLASS_COMMAND: u64 = 999;
 impl Paint {
+    /// The draw's kind, as a GLASSDIFF line names it (`rrect`, `shadow_outside`, …): what a frame
+    /// test reads a declared list by.
+    pub fn kind(&self) -> String {
+        kind_name(self.values.first().copied().unwrap_or(0))
+    }
+    /// The draw's placed rect (logical px) from its recorded words, `[x, y, w, h]`.
+    pub fn placed(&self) -> [f32; 4] {
+        rect_of(self)
+    }
     fn rect(&self) -> Rect {
         let r = self.bounds.map(f32::from_bits);
         Rect::new(r[0], r[1], r[2], r[3])

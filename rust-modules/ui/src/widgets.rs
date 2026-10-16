@@ -5785,12 +5785,16 @@ pub struct StripRender {
     pulse: Option<TabPulse>,
 }
 
-/// How long the tab pulse runs, seconds: up to its peak and back, one beat.
-pub const TAB_PULSE_S: f32 = 0.6;
-/// The pulsed mark's peak scale (the app's `ChromeSnapshot::pulse`: ~1.35x).
+/// How long the tab pulse runs, seconds: up to its peak and back, one beat (the design session:
+/// about 400 ms).
+pub const TAB_PULSE_S: f32 = 0.4;
+/// The pulsed GLYPH's peak scale (the app's `ChromeSnapshot::pulse`: ~1.35x).
 pub const TAB_PULSE_SCALE: f32 = 1.35;
-/// The peak alpha of the glow disc behind the pulsed mark, over [`theme::ACCENT`].
-pub const TAB_PULSE_GLOW_A: f32 = 0.35;
+/// The peak alpha of the soft WHITE glow around the pulsed glyph. A glow, never a plate: a disc
+/// behind the mark is the strip's selected plate and reads as "this tab is selected".
+pub const TAB_PULSE_GLOW_A: f32 = 0.45;
+/// The glow's peak blur, px.
+pub const TAB_PULSE_GLOW_BLUR: f32 = 14.0;
 
 #[derive(Clone, Copy)]
 struct TabPulse {
@@ -5805,6 +5809,52 @@ pub fn tab_pulse_envelope(age: f32) -> f32 {
         return 0.0;
     }
     (std::f32::consts::PI * age / TAB_PULSE_S).sin().max(0.0)
+}
+
+/// The pulsed mark at one envelope value: where the glyph is drawn and the glow around it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabPulseLook {
+    pub glyph: Rect,
+    pub glow: Option<TabPulseGlow>,
+}
+/// The pulse's glow: drawn around `rect` with corner `radius` and blur `blur`, in `col`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TabPulseGlow {
+    pub rect: Rect,
+    pub radius: f32,
+    pub blur: f32,
+    pub col: [f32; 4],
+}
+/// The mark's glyph rect `ir` under the pulse at envelope `env` (0 = rest): the glyph grown about
+/// its centre, and the soft white glow around it.
+pub fn tab_pulse_look(ir: Rect, env: f32) -> TabPulseLook {
+    if env <= 0.0 {
+        return TabPulseLook { glyph: ir, glow: None };
+    }
+    let grow = 1.0 + (TAB_PULSE_SCALE - 1.0) * env;
+    let glyph = ir.scaled(grow);
+    // Brief: the glow rides the envelope squared, so it is up only around the peak. It is an
+    // OUTSIDE penumbra around the glyph's core (`shadow_outside` cuts its own shape out), so the
+    // outline glyph stays an outline with nothing filled under it.
+    let g = env * env;
+    let core = glyph.scaled(0.6);
+    TabPulseLook {
+        glyph,
+        glow: Some(TabPulseGlow { rect: core, radius: core.h * 0.5, blur: TAB_PULSE_GLOW_BLUR * g, col: [1.0, 1.0, 1.0, TAB_PULSE_GLOW_A * g] }),
+    }
+}
+/// Draw an icon mark of the strip at `ir` in `ink`, pulsed at envelope `env`
+/// ([`tab_pulse_look`]): no plate, no fill — the glyph itself is the pulse.
+pub(crate) fn draw_tab_mark(p: Painter, icon: crate::icons::Icon, ir: Rect, ink: [f32; 4], env: f32) {
+    let look = tab_pulse_look(ir, env);
+    draw_tab_glow(p, look);
+    crate::icons::draw(p, icon, look.glyph, ink);
+}
+/// Everything the pulse draws besides the glyph: the glow, and only the glow.
+fn draw_tab_glow(p: Painter, look: TabPulseLook) {
+    if let Some(g) = look.glow.filter(|g| g.col[3] > 0.0) {
+        p.shadow_outside(g.rect, g.radius, g.blur, 0.0, g.col);
+    }
 }
 
 impl StripRender {
@@ -7026,16 +7076,9 @@ impl StripRender {
                     // capsule in step with its neighbours instead of being a separate colour story.
                     TabFace::Icon(icon) => {
                         let d = TAB_ICON_D;
-                        let mut ir = Rect::new(r.x + (r.w - d) * 0.5, r.y + (r.h - d) * 0.5, d, d);
-                        // The pulse: a glow disc behind the mark, and the mark grown about its centre.
-                        if let Some(env) = pulse.filter(|&(at, _)| at == i).map(|(_, e)| e).filter(|&e| e > 0.0) {
-                            let a = theme::ACCENT;
-                            let grow = 1.0 + (TAB_PULSE_SCALE - 1.0) * env;
-                            p.rrect(r.scaled(grow), r.h * 0.5, r.h * 0.5,
-                                [a[0], a[1], a[2], a[3] * TAB_PULSE_GLOW_A * env]);
-                            ir = ir.scaled(grow);
-                        }
-                        crate::icons::draw(p, *icon, ir, TabPill::mixed_ink(fm, sm));
+                        let ir = Rect::new(r.x + (r.w - d) * 0.5, r.y + (r.h - d) * 0.5, d, d);
+                        let env = pulse.filter(|&(at, _)| at == i).map_or(0.0, |(_, e)| e);
+                        draw_tab_mark(p, *icon, ir, TabPill::mixed_ink(fm, sm), env);
                     }
                     TabFace::Label(_) => {
                         TabPill::new(words[i].as_ptr(), theme::size::BODY, r)
