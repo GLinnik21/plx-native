@@ -22,6 +22,7 @@
 #![allow(dead_code)]
 
 pub mod chapters_panel;
+pub mod hero_layout; // shared hero row geometry and meta line (Detail and the catalog page)
 pub mod held_key; // the key-hold half of hold-to-scrub, shared by the player HUD and the trailer transport
 pub mod info_panel;
 pub mod more_menu; // the player's `…` overflow popover (holds the Stats for nerds toggle)

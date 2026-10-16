@@ -624,6 +624,10 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             let _ = from_home; // see the note below `apply_item_action`
             super::bridge::open_detail(pages, bridge, sid, &rk, None, None);
         }
+        // TODO(W45D): run the watchlist remove through WatchlistStore with the captured guid.
+        Action::WatchlistRemove(_guid) => {}
+        // TODO(W6): route to the catalog page once ContentArg::Catalog exists.
+        Action::GoToCatalog(_guid) => {}
         Action::GoToShow(show_rk, season) => {
             super::bridge::open_detail(pages, bridge, sid, &show_rk, (season > 0).then_some(season), None);
         }
