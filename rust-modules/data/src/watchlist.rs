@@ -84,7 +84,8 @@ pub trait WatchlistIo: Reach + Send + Sync {
     fn today(&self) -> Option<String>;
     /// WORKER THREAD. The `guid` of the item `rk` on `server`'s own record
     /// (`client.metadata(rk).guid`): what a card row that carried no catalog id is resolved by
-    /// (`plex::resolve_catalog_hex`). `None` when the server did not answer. The default answers
+    /// (`plex::resolve_catalog_hex`). `None` when the server did not answer (the caller then forgets the
+    /// attempt and asks again at the next menu; a guid that is not portable answers `Some`). The default answers
     /// nothing, so a script that never resolves needs no line for it.
     fn guid_of(&self, _server: ServerId, _rk: &str) -> Option<String> {
         None

@@ -85,8 +85,9 @@ pub struct WatchlistAdapter {
     /// Card rows asked to be resolved by `(server, rk)` (`WatchlistStore::want_hex`), spawned by the
     /// next pump. Behind a lock because a menu asks from `&self`.
     wanted: Mutex<Vec<(ServerId, String)>>,
-    /// Resolved ids, landed by the resolve workers.
-    resolved: Mutex<Vec<(ServerId, String, Option<[u8; 12]>)>>,
+    /// Resolved ids, landed by the resolve workers. The outer `None` is "the server did not
+    /// answer": that attempt is forgotten, not memoized, so the next menu asks again.
+    resolved: Mutex<Vec<(ServerId, String, Option<Option<[u8; 12]>>)>>,
 }
 
 impl WatchlistAdapter {
@@ -715,8 +716,10 @@ impl WatchlistStore {
         let answers: Vec<_> = self.adapter.resolved.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
         for (sid, rk, hex) in answers {
             self.state.resolving.remove(&(sid, rk.clone()));
-            self.state.resolved.insert((sid, rk), hex);
-            changed = true;
+            if let Some(hex) = hex {
+                self.state.resolved.insert((sid, rk), hex);
+                changed = true;
+            }
         }
         let wanted: Vec<_> = self.adapter.wanted.lock().unwrap_or_else(|e| e.into_inner()).drain(..).collect();
         for (sid, rk) in wanted {
@@ -726,7 +729,7 @@ impl WatchlistStore {
             let (adapter, io) = (Arc::clone(&self.adapter), Arc::clone(&self.io));
             let key = rk.clone();
             let spawned = (self.spawn)("wlist-resolve", Box::new(move || {
-                let hex = plx_plex::plex::resolve_catalog_hex(None, || io.guid_of(sid, &key));
+                let hex = io.guid_of(sid, &key).map(|g| plx_plex::plex::resolve_catalog_hex(None, || Some(g)));
                 adapter.resolved.lock().unwrap_or_else(|e| e.into_inner()).push((sid, key, hex));
                 plx_machine::idle::invalidate();
             }));
@@ -944,6 +947,8 @@ pub(super) mod tests {
         /// Entries per page the decoder "dropped": counted in `raw`, absent from `items`; also
         /// withholds `totalSize` while non-zero.
         dropped: AtomicU32,
+        /// Scripted `guid_of` answers, front first; empty = no answer.
+        guid_answers: Mutex<Vec<Option<String>>>,
     }
 
     impl Mock {
@@ -967,6 +972,7 @@ pub(super) mod tests {
                 ranks: Mutex::new(HashMap::new()),
                 starts: Mutex::new(Vec::new()),
                 dropped: AtomicU32::new(0),
+                guid_answers: Mutex::new(Vec::new()),
             })
         }
     }
@@ -1035,6 +1041,10 @@ pub(super) mod tests {
         }
         fn today(&self) -> Option<String> {
             Some("2026-10-15".into())
+        }
+        fn guid_of(&self, _: ServerId, _: &str) -> Option<String> {
+            let mut q = self.guid_answers.lock().unwrap();
+            if q.is_empty() { None } else { q.remove(0) }
         }
     }
 
@@ -1233,6 +1243,30 @@ pub(super) mod tests {
             s.pump();
         }
         assert_eq!(*mock.writes.lock().unwrap(), [(id(3), Intent::Remove), (id(1), Intent::Remove)]);
+    }
+
+    #[test]
+    fn a_silent_server_is_not_memoized_as_no_portable_id() {
+        let mock = three();
+        let sid = ServerId::from_raw(0);
+        let mut s = store(&mock);
+        // First read: no answer at all.
+        s.want_hex(sid, "7");
+        s.pump();
+        s.pump();
+        assert_eq!(s.view().resolved_hex(sid, "7"), None, "no answer is not an answer");
+        // The next menu asks again and now gets a portable guid.
+        mock.guid_answers.lock().unwrap().push(Some("plex://movie/abababababababababababab".into()));
+        s.want_hex(sid, "7");
+        s.pump();
+        s.pump();
+        assert_eq!(s.view().resolved_hex(sid, "7"), Some(Some([0xab; 12])));
+        // A server that answers with a non-portable guid IS memoized.
+        mock.guid_answers.lock().unwrap().push(Some("local://1".into()));
+        s.want_hex(sid, "8");
+        s.pump();
+        s.pump();
+        assert_eq!(s.view().resolved_hex(sid, "8"), Some(None));
     }
 
     #[test]
