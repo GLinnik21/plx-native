@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-16T15:02:59Z",
+ "generated": "2026-10-16T15:18:28Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -65,19 +65,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -48.0,
-   "change7_pct": 32.4,
+   "change30_pct": -48.2,
+   "change7_pct": 30.3,
    "d30": 920,
-   "delta30": -442,
-   "delta7": 117.0,
+   "delta30": -443.0,
+   "delta7": 111.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 277,
-   "n_prev": 210,
-   "now": 478,
-   "prev7": 361.0,
+   "n_now": 276,
+   "n_prev": 212,
+   "now": 477.0,
+   "prev7": 366.0,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -789,7 +789,7 @@
    "to": 405
   },
   {
-   "change_pct": 32.4,
+   "change_pct": 30.3,
    "commits": [
     {
      "pr": 808,
@@ -842,12 +842,12 @@
      "title": "Build: stable Rust 1.99.1 for the ARM and host builds, no nightly or build-std"
     }
    ],
-   "from": 361.0,
+   "from": 366.0,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-16",
    "threshold_pct": 25.0,
-   "to": 478
+   "to": 477.0
   },
   {
    "change_pct": 21.0,
