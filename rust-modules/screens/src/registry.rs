@@ -162,15 +162,15 @@ pub enum PlayerReq {
     /// neither and is carried as `None`.
     Transport(Option<bool>),
     /// Seek to this position in ns and resume if paused — the Chapters strip's OK, and OK or PLAY
-    /// taking a paused film's pending scrub target.
+    /// taking the scrub's pending key target (a playing film simply seeks and plays on).
     SeekTo(i64),
     /// **Commit a SCRUB to this position, and leave a paused film paused** (restructure phase 12,
     /// PX-PLAYER) — `app::playback::commit_seek`, the other half of the pair above.
     ///
     /// The difference is the reason there are two. [`SeekTo`](PlayerReq::SeekTo) RESUMES, because
-    /// a viewer who picked a chapter asked to watch it. A scrub does not: a pointer drag on the
-    /// bar is how a PAUSED film is moved (a paused KEY scrub only moves its target, and OK or PLAY
-    /// resumes from it with `SeekTo`), and starting it there is a behaviour nobody asked for. Holding
+    /// a viewer who picked a chapter asked to watch it. A pointer drag does not: its release on the
+    /// bar is how a PAUSED film is moved (a KEY scrub never commits by itself — OK or PLAY takes its
+    /// target with `SeekTo`, playing or paused), and starting it there is a behaviour nobody asked for. Holding
     /// the pause across the seek is the media layer's: the pump opens the bounded seek-preroll feed
     /// override when it arms the seek, decodes the landed frame without publishing a viewer
     /// Resume, and re-pauses on the landing — which is why this is a request rather than something
@@ -2231,7 +2231,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // About panel scroll: `AboutPanelScreen{}` gains the synopsis viewport's cursor and spring
 // (`page:usize,scroll:Spring{pos:f32,vel:f32}`, person_bio's shape); the previous pin was
 // 0x7435_d234_b769_60c2.
-const SCREEN_SHAPES_PIN: u64 = 0x6a55_c53a_d931_3acf;
+// Scrub click-to-confirm: a key scrub never commits by itself, so the player's tap-commit debounce
+// is gone and `PlayerScreen`'s shape loses `scrub.commit_at:u32`; the previous pin was
+// 0x6a55_c53a_d931_3acf. Replay fixtures need `tools/plxnative-rec rerecord`.
+const SCREEN_SHAPES_PIN: u64 = 0xedcd_d7d2_87ac_4e6a;
 
 #[cfg(test)]
 mod arg_tests {

@@ -6,8 +6,9 @@
 //! reuse rather than growing a second easing). `TransportRow` owns one of each; the player screen
 //! decides WHEN (`open`, `close`) and the HUD draws what they answer.
 //!
-//! **The undo window.** A scrub that started while the film was playing and then committed leaves
-//! the position it started from behind: for [`UNDO_MS`] a BACK returns there (one more seek). The
+//! **The undo window.** A scrub that committed on a film that then plays — OK / PLAY confirming a
+//! key target, or a pointer drag's release — leaves the position it started from behind: for
+//! [`UNDO_MS`] a BACK returns there (one more seek). The
 //! bar shows where "there" is as a ghost tick at the origin, and a chip, `BACK · m:ss`, says what
 //! the key will do; both fade out over [`UNDO_FADE_MS`] once the window closes. The window is a
 //! deadline on the wall clock and nothing else — it is not held open by anything on screen.

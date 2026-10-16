@@ -1517,7 +1517,7 @@ pub const LINGER_MS: u32 = 4500;
 // `ci/check-deps.sh`'s `sibling` gate forbids a file under `screens/detail/` from naming
 // `crate::screens::player` at all, the same rule that keeps `LINGER_MS` above defined here rather
 // than in `screens::player::input` for `trailer.rs` to import from a sibling. What stays per screen
-// is the preview position, the tap debounce and the HUD's reveal/drag flags.
+// is the preview position, the trailer's tap debounce and the HUD's reveal/drag flags.
 // `screens::player::input::Scrub::clamp_target` is a thin call-through to
 // [`scrub_clamp_target`] below so its own many call sites are untouched.
 /// What one fresh press hops: the Skip interval preference (10 s unless Settings changed it),
@@ -1542,14 +1542,15 @@ pub fn scrub_speed(held_ms: u32) -> f32 {
     let doublings = (held_ms / SCRUB_STEP_MS).min(16);
     (SCRUB_BASE * (1u32 << doublings) as f32).min(SCRUB_MAX)
 }
-// tap released → commit after this (further taps accumulate); see `screens::player::input`'s own
-// doc for why this debounce exists (coalescing a rapid tap burst into one Load/reload).
+// tap released → commit after this (further taps accumulate into one Load/reload). The TRAILER
+// transport's debounce (`screens::detail::trailer`); the player has none — its keys only move a
+// target that OK confirms (`screens::player`'s `step` doc).
 pub const TAP_COMMIT_MS: u32 = 450;
-pub const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
+pub const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup (the trailer commits, the player lets go)
 /// How long a key-up of a HELD scrub waits before it counts as the release. The remote's key
 /// driver was measured delivering `Up` and a fresh `Down` 0-17 ms apart in the middle of a hold; a
 /// thumb cannot release and press again that fast, so a same-direction `Down` inside this window
-/// is the same hold. Short enough that a true release commits imperceptibly later.
+/// is the same hold. Short enough that a true release lands imperceptibly later.
 pub const SCRUB_RELEASE_DEBOUNCE_MS: u32 = 50;
 /// How long the lost-keyup net waits after such a bounce: the re-press restarts the remote's
 /// ~500 ms auto-repeat delay (measured 499-519 ms), so no repeat can arrive sooner.
