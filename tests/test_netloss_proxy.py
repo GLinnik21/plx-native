@@ -144,6 +144,27 @@ class Blackhole(ProxyCase):
             s.recv(1)
 
 
+class UpstreamRetry(ProxyCase):
+    def test_a_connect_refused_at_the_burst_is_retried_until_the_upstream_answers(self):
+        free = socket.socket()
+        free.bind(("127.0.0.1", 0))
+        port = free.getsockname()[1]
+        free.close()
+        self.proxy.upstream = ("127.0.0.1", port)
+        s = self.connect(timeout=5)
+        s.sendall(b"late")
+        time.sleep(0.3)  # the first attempts are refused: nothing listens yet
+        late = Echo.__new__(Echo)
+        late.srv = socket.socket()
+        late.srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        late.srv.bind(("127.0.0.1", port))
+        late.srv.listen(4)
+        late.accepts = 0
+        threading.Thread(target=late._loop, daemon=True).start()
+        self.addCleanup(late.close)
+        self.assertEqual(s.recv(10), b"late")
+
+
 class Reset(ProxyCase):
     def test_existing_connections_get_a_rst_and_new_ones_are_reset_on_accept(self):
         s = self.connect()

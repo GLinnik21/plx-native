@@ -47,6 +47,7 @@ import time
 
 MODES = ("pass", "blackhole", "reset", "refuse")
 CHUNK = 65536
+UPSTREAM_TRIES = 6
 POLL = 0.25  # how often a blocked pump looks at the mode / its connection's fate
 
 
@@ -207,10 +208,19 @@ class NetlossProxy:
         # comes back (or its client gives up and the pump finds the EOF).
         if not self._gate(conn):
             return self._finish(conn)
-        try:
-            up = socket.create_connection(self.upstream, timeout=10)
-        except OSError as e:
-            return self._kill(conn, f"upstream connect failed: {e}", rst=True)
+        up, err = None, None
+        for attempt in range(UPSTREAM_TRIES):
+            # A restore releases every held connection at once, and the mock's small accept queue
+            # can answer the burst with a reset: that is the mock's, not the link's, so retry.
+            try:
+                up = socket.create_connection(self.upstream, timeout=10)
+                break
+            except OSError as e:
+                err = e
+                if conn.dead or self._stop.wait(0.15 * (attempt + 1)):
+                    break
+        if up is None:
+            return self._kill(conn, f"upstream connect failed: {err}", rst=True)
         up.settimeout(POLL)
         conn.client.settimeout(POLL)
         conn.upstream = up

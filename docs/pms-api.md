@@ -1347,10 +1347,34 @@ on-set evidence is that it reconnected, not what it sent. Roster rebuilds right 
 show a second `connecting` before the first `live` (the first connection is cancelled by the new
 key). A silent peer (the mock process SIGSTOPped for 60 s with its socket open, nothing sent):
 two `ended Silent -> Backoff` with their reconnects in 60 s, then on SIGCONT one `resync` and `live`
-(passed). NOT determined: a real network loss. Making the set's route fail needs either the set's
-firewall (`tv-session.sh wan off`, which edits the television's network configuration) or a host
-packet filter (root); neither was used, and stopping or silencing the mock is not a loss of the
-link. Also not determined: whether Home focus stays put under a tile update (only the Detail page
+(passed). A REAL-LOOKING network loss (2026-10-16; `tools/netloss-proxy.py`, a host-side TCP proxy between the set and the mock, no
+root and no change to the set's network: the mock was started with `--advertise-ip <host LAN IPv4>
+--advertise-port <proxy port>` so every PMS connection the app opened, the feed included, crossed
+it; `tv-session.sh up --mock-plextv` for the owned sign-in, then `POST /_proxy/mode`): the proxy's
+`blackhole` keeps existing connections open and stops forwarding in both directions (no FIN, no
+RST; new connections are accepted and never answered), `reset` RSTs everything and resets each new
+connection on accept. Heartbeat counts are `loop=` lines (about one a second) and every one read
+`dropped=0`. (1) Blackhole 60 s on the idle picker: `ended Silent -> Backoff` twice (the stream was
+silent 25 s each time), two reconnects accepted by the proxy and never answered (+24 s, +54 s), no
+park; 62 heartbeat lines in the 62 s window, so the loop never stalled; on restore ONE `resync epoch=1`
+and `live` (passed). (2) Reset, restored after 30 s: `ended Transport` four times with reconnects at
++2.4, +6.9, +16.7 s (each reset on accept) and +36 s (the first after restore), one `resync`, `live`
+(passed; 33 heartbeat lines in the 32 s of reset). (3) Blackhole 300 s: six `ended Silent` and six reconnects, the gaps
+between connects 29.7, 33.7, 41.6, 59.4, 89.7 s (the 25 s silence plus the 2, 4, 8, 16 ... up to
+60 s backoff), no park; the sixth connection, held since +279 s, went `live` when the link came
+back, with ONE `resync` (passed; 299 heartbeat lines in the 302 s window). (4) Normal requests during a 60 s blackhole
+(re-picking a profile through the who's-watching picker, which re-reads the server): `pms: server 0
+info unavailable (GET / failed)`, `browse: source 0 ... did not answer`, `hubs: source 0 FAILED
+(attempt 1) - retrying in 2s`, `auth: ... probe timed out`; the page showed its "Couldn't load
+libraries / Try again" read-out, BACK and OK were still handled during the loss, and 81 heartbeat
+lines in the 82 s window all read `dropped=0`, with `fps=60` while the spinner ran (passed). A restore that releases
+many held connections at once can overrun the mock's small accept queue (six of 24 were reset by
+it once); the proxy retries its upstream connect, so that is the mock's artefact, not the link's.
+NOT determined: the cases a lit Home would add (only the picker and the library-choice page carry
+PMS traffic without pressing *Start watching*, which this run did not), a loss on the set's own
+route (the proxy is a userland analogue: the TCP stack on the set still sees an ordinary peer that
+went quiet or reset), and a lossy rather than dead link (no partial loss, latency or reordering).
+Also not determined: whether Home focus stays put under a tile update (only the Detail page
 was captured).
 
 ---
