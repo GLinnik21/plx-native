@@ -161,6 +161,18 @@ impl GridPop {
         }
     }
 
+    /// The focused card left as a ghost and focus has not been reconciled yet: the pop belongs to
+    /// no card and nothing lets go (the card now in that cell was never lifted; the ghost eases
+    /// itself).
+    pub fn vacate(&mut self) {
+        if let Some(c) = self.pop.0 {
+            if self.shrink.0 == Some(c) {
+                self.shrink = (None, Spring::at(1.0));
+            }
+        }
+        self.pop = (None, Spring::at(1.0));
+    }
+
     /// Cell `to` is focused with no deliberate move (a restore, a reconcile): FULL scale at once
     /// and nothing lets go, the cell it left is simply at rest.
     pub fn adopt(&mut self, to: usize, style: &RowStyle) {

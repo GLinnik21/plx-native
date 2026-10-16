@@ -249,9 +249,17 @@ impl Grid {
         self.seen = Seen::Nothing;
         self.anchor = pool::anchor_of(src, focus);
         self.play_landing(src, sy0, lifted, dt, cx.tick.ms);
-        // the focused card left as a ghost: the card focus reconciled to rises from rest as it sinks
-        if let (Some(_), Some(i)) = (self.landing.take_takeover(), focus) {
-            self.pop.rise(i);
+        // the focused card left as a ghost: the card focus reconciled to rises from rest as it sinks.
+        // The app reconciles focus a frame after the card leaves: until it does the pop belongs to
+        // no card (the ghost carries the lift), and the takeover waits for the focus.
+        if self.landing.has_takeover() {
+            match focus {
+                Some(i) => {
+                    self.landing.take_takeover();
+                    self.pop.rise(i);
+                }
+                None => self.pop.vacate(),
+            }
         }
         let home = if self.spec.home_when_unfocused { 0.0 } else { self.target };
         let wanted = focus.map(|i| {

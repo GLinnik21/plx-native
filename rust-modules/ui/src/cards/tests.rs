@@ -3634,6 +3634,30 @@ fn a_landing_waits_for_the_menu_to_leave_then_a_beat_then_moves_at_once() {
     assert!(!r.sect.landing_pending() && !r.run(1));
 }
 
+/// The app reconciles focus a frame AFTER the card leaves (the landing's first tick sees the focused
+/// element gone, so no focus): the takeover still rises from rest with the landing, never popping
+/// to full the frame focus comes back (`--trigger watchlist=` Remove render, 2026-10-16).
+#[test]
+fn a_takeover_reconciled_a_frame_late_still_rises_from_rest_with_the_landing() {
+    use crate::containers::modal::set_veil;
+    let mut r = animated_grid(40, 108, GRID);
+    set_veil(1.0);
+    r.src.elems.remove(8);
+    r.run(1);
+    assert!(r.scale(109).unwrap() < 1.0 + 1e-4, "the frame before focus is reconciled: 109 is not lifted");
+    let next = r.reconcile_after_removal(8);
+    r.land_focus(next, By::Reconcile);
+    assert_eq!(r.focus.map(|k| k.elem), Some(109));
+    for frame in 0..20 {
+        r.run(1);
+        assert_eq!(r.scale(109), Some(1.0), "frame {frame}: the late-reconciled takeover is lifted under the menu");
+        assert!(lifted(&r) <= 1, "frame {frame}: more than one tile lifted");
+    }
+    set_veil(0.0);
+    r.run(600);
+    assert!((r.scale(109).unwrap() - poster_grid::STYLE.focus_scale).abs() < 1e-4, "and it ends lifted");
+}
+
 /// A landing no menu veiled starts on its first frame: no beat.
 #[test]
 fn a_landing_with_no_menu_starts_at_once() {

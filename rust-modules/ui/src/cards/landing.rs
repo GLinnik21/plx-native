@@ -229,6 +229,12 @@ impl Landing {
         self.anim.as_mut().and_then(|a| a.takeover.take())
     }
 
+    /// Whether a takeover is still waiting for its owner to take it (the owner's focus can come
+    /// back a frame after the card left: the app reconciles it then).
+    pub(crate) fn has_takeover(&self) -> bool {
+        self.anim.as_ref().is_some_and(|a| a.takeover.is_some())
+    }
+
     /// The cards that changed row, of `n`: each one's index, its leaving copy's offset from its
     /// slot (px, where it stood on screen) and the copy's alpha (`1 -` the card's own).
     pub(crate) fn leaving(&self, n: usize) -> impl Iterator<Item = (usize, (f32, f32), f32)> + '_ {
