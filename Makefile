@@ -238,8 +238,8 @@ disk-watch-uninstall: ; @./tools/install-disk-watch.sh --uninstall
 # --- webOS NDK toolchain -----------------------------------------------------
 WEBOS_SDK   ?= $(HOME)/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot
 # Which nightly to use. Defaults to whatever rustup calls `nightly` (the dev-machine behaviour
-# this has always had). CI pins an exact date — `make RUST_NIGHTLY=nightly-2026-07-02 …` — because
-# `-Z build-std` recompiles std from source and is the most drift-sensitive thing this build does.
+# this has always had). It now serves the HOST side only (tests, clippy, rustfmt, -Zthreads); the
+# ARM build is stable, see RUST_ARM_TOOLCHAIN below.
 # NB a rust-toolchain.toml would NOT work here: a `cargo +toolchain` on the command line outranks
 # the file, so the pin has to come through this variable.
 RUST_NIGHTLY ?= nightly
@@ -355,8 +355,8 @@ endif
 # rather than appending to it. Anything added here must keep the full list intact — a partial
 # RUSTFLAGS silently drops target-cpu, and the ARMv6 CP15 barrier SIGILLs on the A53.
 #
-# --remap-path-prefix makes the binary independent of WHO built it. `-Z build-std` compiles std
-# from rust-src under $RUSTUP_HOME and every dependency from $CARGO_HOME, and rustc writes each
+# --remap-path-prefix makes the binary independent of WHO built it. Every dependency compiles
+# from $CARGO_HOME (and, historically, `-Z build-std` compiled std from $RUSTUP_HOME), and rustc writes each
 # absolute path into .rodata as a panic location: 252 of them on this machine before this landed
 # (113 rustup + 139 registry), which is what ci/check-elf.sh's build-host section gates on.
 # It is NOT only a privacy fix. Those paths are why two developers at the same commit and the
