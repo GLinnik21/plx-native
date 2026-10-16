@@ -2422,6 +2422,19 @@ fn avio_stopped(s: &mut AvioState) -> c_int {
 /// Reopens [`read_cb`] tries, within one read, after the transfer is cut mid-body.
 const BODY_HEAL_ATTEMPTS: u8 = 3;
 
+/// How long a direct-play socket read waits for a byte before the transfer counts as cut.
+#[cfg(not(test))]
+const BODY_SILENCE: std::time::Duration = std::time::Duration::from_secs(15);
+#[cfg(test)]
+const BODY_SILENCE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Reopen the source at the byte reached, through the same path a seek takes.
+fn heal_at_offset(s: &mut AvioState) -> bool {
+    let at = s.off;
+    crate::player::log(&format!("ff: body ended early at byte {at} of {}, reopening there", s.size));
+    seek_cb(s as *mut AvioState as *mut c_void, at, SEEK_SET) == at
+}
+
 extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
     unsafe {
         let s = &mut *(op as *mut AvioState);
@@ -2468,7 +2481,14 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                         owner: BlockingDeadlineOwner::Reserve,
                     })
                 });
-            let live_deadline = blocking_deadline.map(|deadline| deadline.at);
+            // A direct-play socket read has no other clock, so a server that stops sending without
+            // closing would block it forever. Silence this long is answered like a cut: a reopen.
+            let direct_play = s.acquisition.is_none();
+            let silence_deadline = (direct_play
+                && blocking_deadline.is_none()
+                && matches!(s.src, Src::Socket { .. }))
+            .then(|| std::time::Instant::now() + BODY_SILENCE);
+            let live_deadline = blocking_deadline.map(|deadline| deadline.at).or(silence_deadline);
             // Both sources use the same three-way return — >0 bytes, 0 clean end, <0 error — so
             // the EOF decision below stays one branch rather than one per transport.
             let read_started = std::time::Instant::now();
@@ -2564,7 +2584,13 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 // Direct play only: an HLS segment read carries an acquisition runtime whose
                 // checkpoint and deadlines bound the transfer, but `cs.seek` reopens through
                 // `start()` with neither, and a failed segment is the HLS retry policy's to answer.
-                let direct_play = s.acquisition.is_none();
+                let inside = s.off >= 0 && (s.size < 0 || s.off < s.size);
+                if direct_play && inside && heals < BODY_HEAL_ATTEMPTS && matches!(s.src, Src::Socket { .. }) {
+                    heals += 1;
+                    if heal_at_offset(s) {
+                        continue;
+                    }
+                }
                 if let Src::Curl(cs) = &mut s.src {
                     let cut = cs
                         .body_failure()
@@ -2581,6 +2607,14 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 // result here is therefore a real transport/range failure.
                 s.io_failed = true;
                 return AVERROR_IO;
+            }
+            // A clean close before the length is a cut too (a server that ends the response early
+            // rather than resetting it): reopen at the byte reached.
+            if r == 0 && direct_play && s.size > 0 && s.off >= 0 && s.off < s.size && heals < BODY_HEAL_ATTEMPTS {
+                heals += 1;
+                if heal_at_offset(s) {
+                    continue;
+                }
             }
             if r == 0 {
                 if let Some(acquisition) = &mut s.acquisition {
@@ -9236,3 +9270,5 @@ mod late_audio_tests;
 #[cfg(test)]
 #[path = "ff_eof_seek_tests.rs"]
 mod eof_seek_tests;
+#[path = "ff_body_heal_tests.rs"]
+mod body_heal_tests;
