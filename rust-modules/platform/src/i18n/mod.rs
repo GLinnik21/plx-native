@@ -94,8 +94,9 @@ impl LocaleContext {
             )
             .expect("compiled English date data")
         });
+        // The regional locale, not the bare tag: pt-PT counts 0 as plural where bare `pt` (pt-BR) does not.
         let plural =
-            PluralRules::try_new_cardinal(language.tag().parse::<Locale>().unwrap().into())
+            PluralRules::try_new_cardinal(language.regional().parse::<Locale>().unwrap().into())
                 .expect("compiled catalog plural data");
         Self {
             preference,

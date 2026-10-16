@@ -196,6 +196,7 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
         ("es", "Audio fuera del idioma de subtítulos"),
         ("fr", "Audio hors langue des sous-titres"),
         ("it", "Se audio e sottotitoli hanno lingue diverse"),
+        ("pt", "Áudio fora do idioma das legendas"),
         ("be", "Калі гук не на мове субцітраў"),
     ];
     for (tag, _) in WANT {

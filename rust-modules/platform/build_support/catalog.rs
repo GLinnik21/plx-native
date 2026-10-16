@@ -204,6 +204,8 @@ pub struct LanguageSpec {
     pub region: String,
     pub script: String,
     pub plurals: Vec<String>,
+    /// Regions of this language that resolve to English instead (pt: BR, which has no catalog).
+    pub excluded_regions: Vec<String>,
     pub row: u32,
 }
 #[derive(Clone, Debug)]
@@ -235,7 +237,7 @@ pub fn parse_registry(text: &str) -> Result<Vec<LanguageSpec>, Vec<String>> {
         let name = m.get("tag").and_then(Value::as_str).unwrap_or("?").to_string();
         let here = format!("{at}: {name}");
         for k in m.keys() {
-            if !["tag", "native_name", "region", "script", "plurals", "row"].contains(&k.as_str()) {
+            if !["tag", "native_name", "region", "script", "plurals", "excluded_regions", "row"].contains(&k.as_str()) {
                 errors.push(format!("{here}: unknown field {k}"));
             }
         }
@@ -255,6 +257,26 @@ pub fn parse_registry(text: &str) -> Result<Vec<LanguageSpec>, Vec<String>> {
             .and_then(Value::as_array)
             .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
             .unwrap_or_default();
+        let excluded_regions: Vec<String> = match m.get("excluded_regions") {
+            None => Vec::new(),
+            Some(v) => match v.as_array() {
+                Some(a) if a.iter().all(Value::is_string) => {
+                    a.iter().filter_map(Value::as_str).map(str::to_string).collect()
+                }
+                _ => {
+                    errors.push(format!("{here}: excluded_regions must be an array of region codes"));
+                    Vec::new()
+                }
+            },
+        };
+        for r in &excluded_regions {
+            if r.len() != 2 || !r.bytes().all(|c| c.is_ascii_uppercase()) {
+                errors.push(format!("{here}: excluded_regions entry {r:?} must be two upper-case letters, such as BR"));
+            }
+        }
+        if (1..excluded_regions.len()).any(|i| excluded_regions[..i].contains(&excluded_regions[i])) {
+            errors.push(format!("{here}: excluded_regions lists a region twice"));
+        }
         if !(2..=3).contains(&tag.len()) || !tag.bytes().all(|c| c.is_ascii_lowercase()) {
             errors.push(format!(
                 "{here}: tag must be 2-3 lower-case letters; a region- or script-qualified UI language (pt-BR) needs matcher work, see {GUIDE}"
@@ -316,6 +338,7 @@ pub fn parse_registry(text: &str) -> Result<Vec<LanguageSpec>, Vec<String>> {
             region,
             script,
             plurals,
+            excluded_regions,
             row: u32::try_from(row).unwrap_or(0),
         });
     }
@@ -696,10 +719,17 @@ fn languages_rs(specs: &[&LanguageSpec]) -> String {
     o.push_str("            Self::Pseudo => \"en\",\n        }\n    }\n    fn regional(self) -> &'static str {\n        match self {\n");
     o.push_str(&each(&|_, s| format!("            Self::{} => {:?},\n", s.variant, s.region)));
     o.push_str("            Self::Pseudo => \"en-US\",\n        }\n    }\n    fn parse(s: &str) -> Self {\n        let Ok(l) = s.parse::<Locale>() else {\n            return Self::En;\n        };\n        match l.id.language.as_str() {\n");
-    o.push_str(&each(&|_, s| format!(
-        "            {:?} if l.id.script.is_none_or(|s| s.as_str() == {:?}) => Self::{},\n",
-        s.tag, s.script, s.variant
-    )));
+    o.push_str(&each(&|_, s| {
+        let excluded = s
+            .excluded_regions
+            .iter()
+            .map(|r| format!(" && l.id.region.is_none_or(|r| r.as_str() != {r:?})"))
+            .collect::<String>();
+        format!(
+            "            {:?} if l.id.script.is_none_or(|s| s.as_str() == {:?}){excluded} => Self::{},\n",
+            s.tag, s.script, s.variant
+        )
+    }));
     o.push_str("            _ => Self::En,\n        }\n    }\n    /// Position in `SHIPPED`; `Pseudo` follows the last.\n    pub fn index(self) -> usize {\n        match self {\n");
     o.push_str(&each(&|i, s| format!("            Self::{} => {i},\n", s.variant)));
     o.push_str(&format!("            Self::Pseudo => {n},\n        }}\n    }}\n"));
@@ -960,6 +990,23 @@ mod tests {
         assert!(bad("\"row\":3", "\"row\":9").contains("row order"));
         assert!(parse_registry(&REGISTRY.replace("\"tag\":\"en\"", "\"tag\":\"nl\"")).err().unwrap().join("\n").contains("English"));
         assert_eq!(specs()[3].variant, "Fr");
+    }
+    #[test]
+    fn excluded_regions_are_validated_and_generate_the_matcher_guard() {
+        let with = |list: &str| REGISTRY.replace("\"row\":5", &format!("\"excluded_regions\":{list},\"row\":5"));
+        let errors = |list: &str| parse_registry(&with(list)).err().expect("rejected").join("\n");
+        assert!(errors("\"BR\"").contains("excluded_regions must be an array"));
+        assert!(errors("[\"br\"]").contains("two upper-case letters"));
+        assert!(errors("[\"BRA\"]").contains("two upper-case letters"));
+        assert!(errors("[\"BR\",\"BR\"]").contains("lists a region twice"));
+        let specs = parse_registry(&with("[\"CA\"]")).expect("valid");
+        assert_eq!(specs[3].excluded_regions, ["CA"]);
+        assert!(specs[0].excluded_regions.is_empty());
+        let (en, mut langs) = catalogs();
+        langs[2].spec.excluded_regions = vec!["CA".into()];
+        let languages = compile(&en, &langs).expect("compiles").languages;
+        assert!(languages.contains("\"fr\" if l.id.script.is_none_or(|s| s.as_str() == \"Latn\") && l.id.region.is_none_or(|r| r.as_str() != \"CA\") => Self::Fr"), "{languages}");
+        assert!(languages.contains("\"es\" if l.id.script.is_none_or(|s| s.as_str() == \"Latn\") => Self::Es"), "{languages}");
     }
     #[test]
     fn a_non_ascii_tag_is_an_error_not_a_panic() {

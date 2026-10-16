@@ -1,7 +1,7 @@
 # Help translate PlxNative
 
-PlxNative's interface is available in English, Spanish, French, Italian and Belarusian (official Cyrillic
-orthography). Help improve a translation or contribute another language through a pull request
+PlxNative's interface is available in English, Spanish, French, Italian, European Portuguese and Belarusian (official
+Cyrillic orthography). Help improve a translation or contribute another language through a pull request
 at https://github.com/GLinnik21/plx-native.
 
 ## Translate a message
@@ -47,7 +47,7 @@ integers are formatted with the TV's regional settings. A plural message's `coun
 CLDR cardinal category for the UI language. Other arguments must appear in every form; count
 may be omitted when the form spells it out. Each language needs exactly the categories its
 `plurals` entry in `locales/languages.json` declares, no more: Belarusian `one`, `few`, `many`, and
-`other`; Spanish, French and Italian `one`, `many`, and `other`; English `one` and `other`.
+`other`; Spanish, French, Italian and Portuguese `one`, `many`, and `other`; English `one` and `other`.
 
 Use readable, natural wording. Belarusian switch labels use `Укл.` and `Выкл.`. Preserve the meaning of consent and privacy disclosures exactly.
 Third-party license texts stay verbatim. Screenshots of the affected screen help reviewers assess
@@ -99,7 +99,10 @@ A UI language is `locales/<tag>/` plus its entry in `locales/languages.json`; no
    belong only in `locales/en`.
 2. Add one line to `locales/languages.json`: `tag`, `native_name` (the name in that language, shown
    in Settings), `region` (`<tag>-XX`, the formatting locale), `script` (`Latn` or `Cyrl`),
-   `plurals` (the language's CLDR cardinal categories) and `row` (an unused number from 1 to 999,
+   `plurals` (the language's CLDR cardinal categories), optionally `excluded_regions` (region codes
+   of this language that keep the English fallback because no catalog serves them: Portuguese
+   excludes `BR`, so a pt-BR television shows English while pt, pt-PT and pt-AO show Portuguese;
+   the build rejects anything but two upper-case letters) and `row` (an unused number from 1 to 999,
    in list order; a shipped language never changes its row or tag). A test compares `plurals` with
    ICU's own data, and another checks that ICU has the language's number and plural data.
 3. Add launcher metadata, `pkg/resources/<tag>/appinfo.json`, and verify every character in both
@@ -117,8 +120,8 @@ requiring shaping or bidirectional layout need renderer work before being offere
 
 ## Runtime behavior
 
-Settings → Language defaults to the television's UI language. Explicit English, Spanish, French, Italian and
-Belarusian choices apply the next time the app starts. The running UI and Plex request language
+Settings → Language defaults to the television's UI language. Explicit English, Spanish, French, Italian,
+Portuguese and Belarusian choices apply the next time the app starts. The running UI and Plex request language
 remain unchanged until then; playback is not interrupted. The contribution action displays this
 guide's URL and QR code for opening on another device.
 
