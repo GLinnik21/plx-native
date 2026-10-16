@@ -14,6 +14,7 @@
 pub mod caption;
 pub mod header;
 pub mod hold;
+pub mod menu;
 pub mod options;
 pub mod page;
 pub mod readout;

@@ -624,8 +624,9 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             let _ = from_home; // see the note below `apply_item_action`
             super::bridge::open_detail(pages, bridge, sid, &rk, None, None);
         }
-        // TODO(W45D): run the watchlist remove through WatchlistStore with the captured guid.
-        Action::WatchlistRemove(_guid) => {}
+        // The Watchlist hold menu's Remove: the store flips the tile at once, the page plays its
+        // removal landing and a refused write puts the tile back with no toast (Q8).
+        Action::WatchlistRemove(guid) => { bridge.watchlist_remove(&guid); }
         // TODO(W6): route to the catalog page once ContentArg::Catalog exists.
         Action::GoToCatalog(_guid) => {}
         Action::GoToShow(show_rk, season) => {

@@ -181,7 +181,7 @@ def capture(binary, scene, defaults, hero, keep):
     port = srv.server_address[1]
     rt = pathlib.Path(tempfile.mkdtemp(prefix=f"plxnative-shot-{scene['name']}-"))
     try:
-        triggers = {"plextv": f"http://127.0.0.1:{port}", "stillclock": str(defaults["stillclock_ms"])}
+        triggers = {"plextv": f"http://127.0.0.1:{port}", "discover": f"http://127.0.0.1:{port}", "stillclock": str(defaults["stillclock_ms"])}
         if not scene.get("no_token"):
             triggers["token"] = PLACEHOLDER_TOKEN
         triggers.update(scene.get("triggers", {}))

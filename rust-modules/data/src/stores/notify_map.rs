@@ -169,18 +169,19 @@ impl NotifyMap {
     }
 }
 
-/// Which of the app's list pages are on the navigation stack, visible or covered. The Home, Library
-/// and Search stores each keep the last page's rows after the page is popped, so what they
+/// Which of the app's list pages are on the navigation stack, visible or covered. The Home, Library,
+/// Search and Watchlist stores each keep the last page's rows after the page is popped, so what they
 /// enumerate is held only while their page is still there.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Shown {
     pub home: bool,
     pub library: bool,
     pub search: bool,
+    pub watchlist: bool,
 }
 
 impl Shown {
-    pub const ALL: Self = Self { home: true, library: true, search: true };
+    pub const ALL: Self = Self { home: true, library: true, search: true, watchlist: true };
 }
 
 /// What the pages hold: the stores' enumerated cards, and the items of the Detail pages on the stack.
@@ -214,6 +215,9 @@ impl Stores {
         }
         if shown.search {
             add(self.search.held_keys());
+        }
+        if shown.watchlist {
+            add(self.watchlist.held_keys());
         }
         let mut details = Vec::new();
         for page in pages {

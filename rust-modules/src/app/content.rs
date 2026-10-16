@@ -475,6 +475,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
     home_requests(app, fr.now);
     library_requests(app, fr.now);
     search_requests(app);
+    watchlist_requests(app);
     // The player's overlays are surfaces on its own stack, so what they decide reaches the
     // loop the same way every other owned screen's decision does — as requests, drained here,
     // after the dispatcher and before the frame's own arms (`playback::player_requests`).
@@ -745,6 +746,52 @@ fn search_requests(app: &mut App) {
                 bridge::open_item_menu(&mut app.pages, arg);
                 app.ok_armed = false;
             }
+        }
+    }
+}
+
+/// What the Watchlist page and its Sort & Filter surface asked (`screens::watchlist`). The page
+/// names no sibling, so every navigation it makes is a request here: the strip's tabs and chip,
+/// BACK, the hold menu, the options surface.
+fn watchlist_requests(app: &mut App) {
+    use plx_screens::watchlist::page::WatchlistOut;
+    for (source, request, ret) in app.bridge.take_watchlist_reqs() {
+        let MachineId::Instance(instance) = source else { continue };
+        let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
+        // The Sort & Filter value comes from the surface over the page, not from the page.
+        if let WatchlistOut::SetOptions(options) = &request {
+            if app.pages.nav.tabs.stack.entries.iter().any(|e| e.arg == AppArg::Watchlist) {
+                app.bridge.watchlist_set_options(options);
+            }
+            continue;
+        }
+        if app.route() != AppArg::Watchlist || app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) { continue; }
+        match request {
+            WatchlistOut::Back => bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home, None, Some(ret)),
+            WatchlistOut::Tab(tab) => {
+                if !app.bridge.search_tab_available(tab) || matches!(tab, HomeTab::Watchlist) { continue; }
+                match tab {
+                    HomeTab::Home => bridge::nav_home_pill(&mut app.pages, &mut app.bridge, Some(ret)),
+                    other => bridge::nav_tab(&mut app.pages, &mut app.bridge, other, None, Some(ret)),
+                }
+            }
+            WatchlistOut::Account => chip_activate(&mut app.pages),
+            WatchlistOut::OpenOptions => {
+                let Some(arg) = app.bridge.watchlist_menu_arg(&mut app.pages, entry) else { continue };
+                bridge::open_watchlist_menu(&mut app.pages, arg);
+            }
+            WatchlistOut::Hold { guid, state, copy, .. } => {
+                let Some(arg) = app.bridge.watchlist_hold_arg(&mut app.pages, entry, ret.focus, &guid, state, copy)
+                    else { continue };
+                bridge::open_item_menu(&mut app.pages, arg);
+                app.ok_armed = false;
+            }
+            // TODO(W6): the catalog page of a title no server holds. `ContentArg::Catalog` does not
+            // exist yet, so OK on such a tile is a no-op until W6 adds the page and this arm pushes it.
+            WatchlistOut::OpenCatalog(_) => {}
+            // The page pushes a matched copy's Detail itself (`ContentReq::Push`), and the surface
+            // is the only sender of the options value (handled above).
+            WatchlistOut::OpenDetail(_) | WatchlistOut::SetOptions(_) => {}
         }
     }
 }

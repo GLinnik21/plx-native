@@ -2269,9 +2269,9 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
             });
             fr.underlay_moving |= moving;
         } else if !super::bridge::host_frozen(&app.pages)
-            && matches!(app.route(), AppArg::Search)
+            && matches!(app.route(), AppArg::Search | AppArg::Watchlist)
         {
-            // Search wears the same shared bar as Home/Library (`ScreenArg::chrome() ==
+            // Search and the Watchlist wear the same shared bar as Home/Library (`ScreenArg::chrome() ==
             // Chrome::TabBar`, `screens/registry.rs`), and
             // `SearchScreen::tick` only steps the screen's OWN rows/springs — it never touches
             // the strip's capsule/scroll/chip springs, which live in `Bridge`'s own
@@ -2438,6 +2438,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // Stops first: the resume patch lands before any read of the item is asked for.
         app.bridge.stops_pump();
         app.bridge.watchlist_pump();
+        app.bridge.watchlist_feed(&mut app.pages);
         let endpoints = app.bridge.viewstate_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
         // …and the read-back it owes: what the server now says about the item(s) just written, on
@@ -2456,6 +2457,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                     AppArg::Home => shown.home = true,
                     AppArg::Library => shown.library = true,
                     AppArg::Search => shown.search = true,
+                    AppArg::Watchlist => shown.watchlist = true,
                     _ => {}
                 }
                 shown
@@ -2861,6 +2863,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 AppArg::Content(plx_screens::registry::ContentArg::Collection(_)) =>
                     crate::focusprobe::Screen::Collection,
                 AppArg::Search => crate::focusprobe::Screen::Search,
+                AppArg::Watchlist => crate::focusprobe::Screen::Watchlist,
                 // The same words the heartbeat's `overlay=` uses, and — since phase 9 — from the
                 // same place: the SURFACE that is up. There is no second table; see
                 // `heartbeat_word_tests::focusprobe_player_overlay_delegates_to_the_shared_overlay_word_function`.
@@ -2874,6 +2877,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 | AppArg::FirstRunConsent(_)
                 | AppArg::LibraryMenu(_)
                 | AppArg::AccountMenu
+                | AppArg::WatchlistMenu(_)
                 | AppArg::ItemMenu(_)
                 | AppArg::PlayerOverlay(_)
                 | AppArg::AltSources(_)

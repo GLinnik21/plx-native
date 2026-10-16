@@ -5628,6 +5628,10 @@ pub const TAB_KEY_MOVIES: u32 = crate::dispatch::STRIP_BASE + 1;
 pub const TAB_KEY_SHOWS: u32 = crate::dispatch::STRIP_BASE + 2;
 pub const TAB_KEY_SEARCH: u32 = crate::dispatch::STRIP_BASE + 3;
 pub const TAB_KEY_CHIP: u32 = crate::dispatch::STRIP_BASE + 4;
+/// The Watchlist mark, `+5`: appended after the chip's `+4` so no existing key moves, and placed
+/// BEFORE Search in the strip's visual order (`app::chrome::strip_keys`) — a key is a destination's
+/// identity, never its position.
+pub const TAB_KEY_WATCHLIST: u32 = crate::dispatch::STRIP_BASE + 5;
 /// The top chrome band's y — the chip and the pills sit on it (Home and Library alike).
 ///
 /// **Derived from the overscan safe area, not chosen.** It was a bare `44.0` until 2026-08-23, which
@@ -5694,23 +5698,24 @@ pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     out.push(("profile chip, focused capsule", CHIP_CAP_MAX));
 }
 
-/// The overscan rect and the strip's real geometry agree at the widest the strip is shown: five
-/// focus stops (Home, both type pills, the Search mark, the chip) fit without scrolling.
+/// The overscan rect and the strip's real geometry agree at the widest the strip is shown: six
+/// focus stops (Home, both type pills, the Watchlist and Search marks, the chip) fit without scrolling.
 #[cfg(test)]
 mod overscan_strip_tests {
     use super::*;
 
     #[test]
-    fn five_stops_do_not_scroll_and_the_drawn_track_clears_the_overscan_rect() {
+    fn six_stops_do_not_scroll_and_the_drawn_track_clears_the_overscan_rect() {
         let faces = [
             TabFace::Label("Home".into()),
             TabFace::Label("Movies".into()),
             TabFace::Label("TV Shows".into()),
+            TabFace::Icon(crate::icons::Icon::Bookmark),
             TabFace::Icon(crate::icons::Icon::Search),
         ];
         // A generous per-glyph measure: wider than any shipped label at BODY.
         let widths = tab_metrics_from(&faces, |s| s.to_bytes().len() as f32 * 20.0).1;
-        assert!(tab_content_w(&widths) <= TAB_VIEW_MAX, "four pills must fit the strip's viewport");
+        assert!(tab_content_w(&widths) <= TAB_VIEW_MAX, "five pills must fit the strip's viewport");
         for idx in 0..faces.len() {
             assert_eq!(tab_scroll_target(&widths, idx, 0.0), 0.0, "stop {idx} must not scroll the strip");
         }

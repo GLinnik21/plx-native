@@ -60,6 +60,45 @@ impl WatchlistOptionsState {
         (SortSpec { key: self.sort, desc: self.descending }, FilterSpec { kind, show })
     }
 
+    /// The canonical bytes of this value (the menu argument's and the menu screen's state hash).
+    pub fn write_canon(&self, c: &mut plx_machine::machine::Canon) {
+        c.u32(match self.type_ {
+            TypeFilter::All => 0,
+            TypeFilter::Movies => 1,
+            TypeFilter::Shows => 2,
+        })
+        .u32(match self.sort {
+            SortKey::Title => 0,
+            SortKey::DateAdded => 1,
+            SortKey::Release => 2,
+            SortKey::Rating => 3,
+        })
+        .bool(self.descending)
+        .u32(match self.show {
+            ShowFilter::All => 0,
+            ShowFilter::Released => 1,
+            ShowFilter::OnYourServers => 2,
+        });
+    }
+
+    /// The value the store's specs stand for: the inverse of [`specs`](Self::specs).
+    pub fn from_specs(sort: SortSpec, filter: FilterSpec) -> Self {
+        Self {
+            type_: match filter.kind {
+                None => TypeFilter::All,
+                Some(Kind::Movie) => TypeFilter::Movies,
+                Some(Kind::Show) => TypeFilter::Shows,
+            },
+            sort: sort.key,
+            descending: sort.desc,
+            show: match filter.show {
+                Show::All => ShowFilter::All,
+                Show::Released => ShowFilter::Released,
+                Show::OnYourServers => ShowFilter::OnYourServers,
+            },
+        }
+    }
+
     /// The pill's `<summary>` half: "Default" when nothing is changed, else the changed choices in
     /// section order (Type, Sort, Show) joined by a comma, each by its menu label ("Movies, Title").
     /// The direction is not spelled: the open menu shows it as the active key's chevron, and the
@@ -273,6 +312,22 @@ impl OptionsMenu {
         let y = self.pill.y + self.pill.h + theme::space::SM;
         let h = self.table.measured_height().min(safe.y + safe.h - y);
         Rect::new(x, y, w, h)
+    }
+
+    /// The `row`-th row's drawn frame inside the settled panel (`OptionsRow::ALL` order), for the
+    /// focus engine's placement and the hit stops.
+    pub fn row_frame(&self, row: usize, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
+        self.table.row_frame(self.panel_rect(measure), i32::try_from(row).ok()?)
+    }
+
+    /// Put the highlight on `row` (the engine's focus moved there).
+    pub fn set_selected(&mut self, row: usize) {
+        self.table.sel = i32::try_from(row).unwrap_or(-1);
+    }
+
+    /// The table's motion state, for the screen's canonical hash.
+    pub fn write_motion(&self, c: &mut plx_machine::machine::Canon) {
+        self.table.write_motion(c);
     }
 
     /// Step the morph and the table.

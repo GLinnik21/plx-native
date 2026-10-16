@@ -7,12 +7,11 @@
 //! read-outs. Unlike Collection it is not windowed: the app hands it the WHOLE snapshot, already
 //! ordered and filtered by the options ([`WatchlistIn::Rows`]), so there are no holes and no paging.
 //!
-//! **Routing.** A screen names no sibling and the registry has no Watchlist request yet, so a press
-//! becomes either an effect that already exists (OK on a matched title is a Detail push, BACK is a
-//! `ContentReq::Back`) or an entry in the page's outbox ([`WatchlistScreen::take_out`]) that the
-//! app drains after each step. What leaves through the outbox is exactly what has no registry
-//! spelling yet: the catalog page of an unmatched title (TODO(W6): `ContentArg::Catalog`), the
-//! Sort & Filter menu and the hold menu.
+//! **Routing.** A screen names no sibling, so a press becomes an effect: OK on a matched title is
+//! a Detail push (`ContentReq::Push`), and everything else leaves as `AppFx::Watchlist` (the
+//! registry's spelling of [`WatchlistOut`]) for the application to route: the strip's tabs and the
+//! profile chip, BACK, the Sort & Filter menu, the hold menu, and the catalog page of an unmatched
+//! title (TODO(W6): `ContentArg::Catalog` does not exist yet, so the application drops that one).
 use std::collections::HashMap;
 
 use plx_data::watchlist::model::{Kind as WatchKind, ServerMatch, TileState, WatchRow};
@@ -40,7 +39,7 @@ use super::header::{draw_header, HeaderFace};
 use super::options::{ShowFilter, TypeFilter, WatchlistOptionsState};
 use super::readout::{draw_readout, Readout};
 use super::tiles;
-use crate::registry::{AppFx, ContentArg, ContentLike, ContentReq};
+use crate::registry::{AppFx, ContentArg, ContentLike, ContentReq, HomeTab};
 
 /// One row of the snapshot the page draws: the stored row, its committed tile state and the
 /// matched copy a press opens (if any). Built by the app from `WatchlistView`.
@@ -94,6 +93,12 @@ pub enum WatchlistOut {
     OpenOptions,
     /// BACK.
     Back,
+    /// A press on the shared strip's other tabs (Home, Movies, TV Shows, Search).
+    Tab(HomeTab),
+    /// A press on the profile chip.
+    Account,
+    /// The Sort & Filter menu changed the value (sent by the menu surface, not the page).
+    SetOptions(WatchlistOptionsState),
 }
 
 /// What the app tells the page.
@@ -371,7 +376,7 @@ impl<H: ContentLike> StackPage<H> for Page {
             kind: GroupKind::Free,
             seat: Seat::First,
             reachable: AxisMask::VERTICAL,
-            edge: [EdgeRule::Stop, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
+            edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
             extent,
             len: 1,
             elem: ElemKind::Bare,
@@ -415,9 +420,6 @@ pub struct WatchlistScreen {
     /// The focused title's index as the engine last told us (the last one while the pill holds
     /// focus): the screen keeps no focus of its own, this mirrors the engine's for `press`.
     focus: usize,
-    /// What the page asked of the app that has no effect spelling yet; drained by
-    /// [`take_out`](Self::take_out).
-    outbox: Vec<WatchlistOut>,
 }
 
 impl WatchlistScreen {
@@ -450,8 +452,16 @@ impl WatchlistScreen {
             ground: PageGround::new(),
             ground_seeded: false,
             focus: 0,
-            outbox: Vec::new(),
         }
+    }
+
+    /// The page as it mounts: nothing landed yet, so no tiles and no read-out. The application
+    /// feeds it the list state, the rows and the options ([`WatchlistIn`]) from its store.
+    pub fn loading(entry: EntryId) -> Self {
+        let mut screen = Self::new(Vec::new(), WatchlistOptionsState::default()).at_entry(entry);
+        screen.page.list = ListState::Loading;
+        screen.page.touch();
+        screen
     }
 
     /// The same page mounted as `entry`.
@@ -566,12 +576,6 @@ impl WatchlistScreen {
         self.hold_at(self.focused()?)
     }
 
-    /// What the page asked of the app since the last call, oldest first. The app drains this after
-    /// every step it gives the page.
-    pub fn take_out(&mut self) -> Vec<WatchlistOut> {
-        std::mem::take(&mut self.outbox)
-    }
-
     /// The ground the focused title keys, as a target: its matched item's UltraBlur colours, else
     /// the flat app surface. A discover row carries no colours of its own (plan §1.6), so the
     /// matched PMS item's are the only source.
@@ -601,17 +605,32 @@ impl WatchlistScreen {
         }
     }
 
-    /// Send `out` where it goes: an existing effect, or the outbox.
+    /// Send `out` where it goes: an existing content effect, or the Watchlist request the
+    /// application routes (`app::content::watchlist_requests`).
     fn route<H: ContentLike>(&mut self, out: WatchlistOut, fx: &mut Effects<'_, H>) {
         match out {
             WatchlistOut::OpenDetail(m) => fx.push(plx_machine::machine::Fx::App(AppFx::Content(ContentReq::Push(
                 ContentArg::Detail { sid: m.server_id, rk: m.rating_key.to_string() },
             )))),
-            WatchlistOut::Back => fx.push(plx_machine::machine::Fx::App(AppFx::Content(ContentReq::Back))),
             other => {
-                self.outbox.push(other);
+                fx.push(plx_machine::machine::Fx::App(AppFx::Watchlist(other)));
                 fx.invalidate(Provenance::Input);
             }
+        }
+    }
+
+    /// A press on the shared strip (the container composes it above the page): the other tabs and
+    /// the chip are requests; the Watchlist mark is the page the user is already on.
+    fn strip_press(elem: u32) -> Option<Option<WatchlistOut>> {
+        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+        match elem {
+            TAB_KEY_HOME => Some(Some(WatchlistOut::Tab(HomeTab::Home))),
+            TAB_KEY_MOVIES => Some(Some(WatchlistOut::Tab(HomeTab::Movies))),
+            TAB_KEY_SHOWS => Some(Some(WatchlistOut::Tab(HomeTab::Shows))),
+            TAB_KEY_SEARCH => Some(Some(WatchlistOut::Tab(HomeTab::Search))),
+            TAB_KEY_CHIP => Some(Some(WatchlistOut::Account)),
+            TAB_KEY_WATCHLIST => Some(None),
+            _ => None,
         }
     }
 
@@ -683,12 +702,16 @@ impl LogicalState for WatchlistScreen {
     }
 
     fn probe(&self, out: &mut String) {
+        let (list, total) = match self.page.list {
+            ListState::Loading => ("loading", 0),
+            ListState::Ready { total } => ("ready", total),
+            ListState::Unavailable => ("unavailable", 0),
+        };
         out.push_str(&format!(
-            "watchlist tiles={} next={} focus={} list={:?}",
+            "watchlist tiles={} next={} focus={} list={list} total={total}",
             self.page.tiles.len(),
             self.page.keys.next,
             self.focus,
-            self.page.list
         ));
     }
 }
@@ -718,6 +741,17 @@ impl<H: ContentLike> Machine<H> for WatchlistScreen {
                 self.route(WatchlistOut::OpenOptions, fx);
                 Handled::Yes
             }
+            ScreenEvent::Activate(elem) if *elem >= plx_ui::dispatch::STRIP_BASE => {
+                match Self::strip_press(*elem) {
+                    Some(out) => {
+                        if let Some(out) = out {
+                            self.route(out, fx);
+                        }
+                        Handled::Yes
+                    }
+                    None => Handled::No,
+                }
+            }
             ScreenEvent::PressCommit(_) => {
                 if let Some(CardEvent::Activate(elem)) = card {
                     if let Some(out) = self.index_of(elem).and_then(|i| self.press_at(i)) {
@@ -746,6 +780,12 @@ impl<H: ContentLike> Machine<H> for WatchlistScreen {
 }
 
 impl<H: ContentLike> Screen<H> for WatchlistScreen {
+    /// Where the focused tile sits, for the hold menu's anchor. A title is not carried by it: the
+    /// hold request names the guid, so the menu never re-reads the list.
+    fn focused_card_rect(&self, cx: &Cx<'_, H>, focus: Option<FocusKey<u32>>, at: plx_ui::screen::At) -> Option<Rect> {
+        let key = focus.filter(|k| k.entry == self.page.entry && k.elem >= FIRST_CARD_ELEM)?;
+        Focusable::<H>::place(self, &key.elem, cx, at).map(|placed| placed.rect)
+    }
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<FocusKey<u32>>) {
         self.stack.view(&self.page).redraw_focused(f, focus);
     }

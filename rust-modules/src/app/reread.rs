@@ -121,7 +121,7 @@ pub(crate) enum Action {
 pub(crate) fn action(arg: &AppArg, covered: bool) -> Action {
     match arg {
         AppArg::Home => Action::HomeQuiet,
-        AppArg::Library | AppArg::Search => Action::ReadBack,
+        AppArg::Library | AppArg::Search | AppArg::Watchlist => Action::ReadBack,
         AppArg::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. } | ContentArg::Collection(_)) =>
             Action::ReadBack,
         AppArg::Content(ContentArg::Detail { .. }) if covered => Action::DetailDeferred,

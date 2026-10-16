@@ -138,13 +138,53 @@ fn a_press_opens_the_copy_or_the_catalog() {
     }
 }
 
-/// **The pill asks for the Sort & Filter menu through the outbox.**
+/// The Watchlist requests a step queued, oldest first.
+fn requests(fx: Vec<plx_machine::machine::Stamped<super::cards_harness::WatchHost>>) -> Vec<WatchlistOut> {
+    use plx_machine::machine::Fx;
+    fx.into_iter()
+        .filter_map(|e| match e.fx {
+            Fx::App(crate::registry::AppFx::Watchlist(out)) => Some(out),
+            _ => None,
+        })
+        .collect()
+}
+
+/// **The pill asks for the Sort & Filter menu as a Watchlist request.**
 #[test]
 fn the_pill_opens_the_options() {
     let mut h = Harness::new(tiles(3));
-    h.step(plx_ui::screen::ScreenEvent::Activate(PILL_ELEM));
-    assert_eq!(h.screen.take_out(), vec![WatchlistOut::OpenOptions]);
-    assert!(h.screen.take_out().is_empty());
+    let (fx, _) = h.step_fx(plx_ui::screen::ScreenEvent::Activate(PILL_ELEM));
+    assert_eq!(requests(fx), vec![WatchlistOut::OpenOptions]);
+}
+
+/// **The strip's other tabs and the chip are requests; the Watchlist mark asks for nothing.**
+#[test]
+fn a_strip_press_is_a_tab_request() {
+    use crate::registry::HomeTab;
+    use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_SEARCH, TAB_KEY_WATCHLIST};
+    let mut h = Harness::new(tiles(3));
+    for (key, want) in [
+        (TAB_KEY_HOME, vec![WatchlistOut::Tab(HomeTab::Home)]),
+        (TAB_KEY_SEARCH, vec![WatchlistOut::Tab(HomeTab::Search)]),
+        (TAB_KEY_CHIP, vec![WatchlistOut::Account]),
+        (TAB_KEY_WATCHLIST, vec![]),
+    ] {
+        let (fx, _) = h.step_fx(plx_ui::screen::ScreenEvent::Activate(key));
+        assert_eq!(requests(fx), want, "{key:#x}");
+    }
+}
+
+/// **BACK leaves the page as a request** (the application takes it to Home), not a content pop.
+#[test]
+fn back_is_a_request() {
+    use plx_machine::machine::{Edge, InputEvent, InputKind, Key, Source, Tick};
+    let mut h = Harness::new(tiles(3));
+    let (fx, _) = h.step_fx(plx_ui::screen::ScreenEvent::Input(InputEvent {
+        at: Tick { ms: 0, dt_us: 0 },
+        source: Source::Script,
+        kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+    }));
+    assert_eq!(requests(fx), vec![WatchlistOut::Back]);
 }
 
 /// **The read-out follows the list's state, never the tile count alone.**
