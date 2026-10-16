@@ -253,7 +253,7 @@ thread_local! {
 /// appear of a `Closing` one, the largest of them, 0 for none. Thread-local, like
 /// [`page_image_held`](super::transition::page_image_held), and for the same reader: a page's
 /// layout animation that must not run under a menu ([`page_veiled`]).
-pub(crate) fn set_veil(v: f32) {
+pub fn set_veil(v: f32) {
     VEIL.with(|c| c.set(v));
 }
 

@@ -170,6 +170,34 @@ fn a_press_edits_the_value_and_keeps_the_highlight_on_its_row() {
     assert_eq!((state.sort, state.descending), (SortKey::Title, false));
 }
 
+/// **The morph ends in the pill AS IT WILL REST.** Focus back on the pill: the accent plate all
+/// the way. Focus gone elsewhere: the plate is the idle fill from the first close frame, so the
+/// glass never passes through the accent.
+#[test]
+fn a_close_lands_in_the_pill_as_it_will_rest() {
+    use plx_ui::value_chip::ValueChip;
+    let (mut m, _, _) = open_menu();
+    for _ in 0..120 {
+        m.update(1.0 / 60.0, &ShippedMeasure);
+    }
+    assert_eq!(m.plate_fill(), ValueChip::fill(true), "open from the focused pill");
+    m.dismiss();
+    for _ in 0..60 {
+        m.update(1.0 / 60.0, &ShippedMeasure);
+        assert_eq!(m.plate_fill(), ValueChip::fill(true), "focus returns to the pill: accent throughout");
+    }
+    let (mut m, _, _) = open_menu();
+    for _ in 0..120 {
+        m.update(1.0 / 60.0, &ShippedMeasure);
+    }
+    m.dismiss_resting(false);
+    assert_ne!(ValueChip::fill(false), ValueChip::fill(true), "premise: the two fills differ");
+    for _ in 0..60 {
+        m.update(1.0 / 60.0, &ShippedMeasure);
+        assert_eq!(m.plate_fill(), ValueChip::fill(false), "focus went elsewhere: idle fill, never the accent");
+    }
+}
+
 #[test]
 fn the_pill_face_still_records_its_label() {
     let (m, _, state) = open_menu();

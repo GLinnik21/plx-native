@@ -171,7 +171,15 @@ title. It reads "{n} titles" (plural forms in every shipped language) while no T
 narrows the list (Sort alone does not), and "{shown} of {total}" when one does, including "0 of N"
 beside the filtered-empty read-out. It is derived from the list state (no `SCREEN_SHAPES` change),
 absent until the list has landed and on the empty-list and unavailable read-outs, and follows a Remove
-with the landing. It stays under the Sort & Filter menu's scrim; only the pill is lifted.
+when the grid's landing STARTS (after the hold menu has gone and the landing's beat), not at the
+commit, so the number and the tiles move on one frame. It stays under the Sort & Filter menu's scrim; only the pill is lifted.
+
+**The Remove landing (DS4).** Remove from the hold menu commits at once but the grid waits for the
+menu: between the commit and the landing's first step nothing on the grid changes (tile slots and
+scales, the caption under the focused row, the count). Then, on one frame, the removed tile's ghost
+fades, the survivors move, and focus transfers to the next title, whose pop RISES from rest into the
+focus pop as the ghost sinks. That rise is the intended look (the design Motion board's "takeover"
+spring), not a departure from the design.
 
 ## The catalog page
 

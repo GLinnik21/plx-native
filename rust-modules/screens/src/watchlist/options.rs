@@ -243,6 +243,11 @@ pub struct OptionsMenu {
     table: TableView,
     /// The pill the panel grows from and hangs under.
     pill: Rect,
+    /// Whether the pill will REST focused once the menu is gone: the face's plate and label end on
+    /// the pill as it will be (focus back on it: the accent plate; focus gone elsewhere: the idle
+    /// fill), never on a colour it will not have. True while open, since the menu is opened from
+    /// the focused pill.
+    rest_focused: bool,
 }
 
 impl Default for OptionsMenu {
@@ -256,19 +261,34 @@ impl OptionsMenu {
         let mut table = TableView::new();
         // A menu of one-word choices: BODY regular labels (the Library's sort menu does the same).
         table.compact = true;
-        Self { popover: Popover::new().morphing(), table, pill: Rect::default() }
+        Self { popover: Popover::new().morphing(), table, pill: Rect::default(), rest_focused: true }
     }
 
     /// Open on `state`, growing out of `pill` (the header pill's rect).
     pub fn open(&mut self, pill: Rect, state: &WatchlistOptionsState) {
         self.pill = pill;
+        self.rest_focused = true;
         self.table.open_sections(sections(state));
         self.popover.open_from(Some(pill));
     }
 
-    /// BACK / OK: run the morph in reverse; input returns to the page now.
+    /// BACK / OK: run the morph in reverse; input returns to the page now, focus on the pill.
     pub fn dismiss(&mut self) {
+        self.dismiss_resting(true);
+    }
+
+    /// Run the morph in reverse so that it lands on the pill as it will REST: `pill_focused` is
+    /// whether focus returns to the pill (the accent plate) or goes elsewhere (the idle fill, so
+    /// the glass never passes through the accent).
+    pub fn dismiss_resting(&mut self, pill_focused: bool) {
+        self.rest_focused = pill_focused;
         self.popover.dismiss();
+    }
+
+    /// The plate the face draws under the label: the pill's fill as it will rest
+    /// ([`header::pill_fill`](super::header::pill_fill)).
+    pub fn plate_fill(&self) -> [f32; 4] {
+        super::header::pill_fill(self.rest_focused)
     }
 
     pub fn is_open(&self) -> bool {
@@ -367,9 +387,9 @@ impl OptionsMenu {
     pub fn draw_face(&self, base: Painter, measure: &dyn plx_machine::machine::Measure, state: &WatchlistOptionsState) {
         let p = self.popover.content_painter_on(base, 0.0);
         let summary = state.summary();
-        let face = super::header::HeaderFace { title: "", count: None, summary: &summary, pill_focused: true };
+        let face = super::header::HeaderFace { title: "", count: None, summary: &summary, pill_focused: self.rest_focused };
         let pill = self.pill;
-        self.popover.morph_face(p, self.panel_rect(measure), PANEL_RAD, super::header::pill_fill(true), |p| {
+        self.popover.morph_face(p, self.panel_rect(measure), PANEL_RAD, self.plate_fill(), |p| {
             super::header::draw_pill_label(p, pill, &face)
         });
     }

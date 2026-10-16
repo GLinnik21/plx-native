@@ -223,7 +223,12 @@ impl Grid {
         // has already armed the pop on its new cell: the anchor is the cell focus left)
         let was = slid.map(|(_, (p, _))| p).or(prev).map(|p| self.cell(p, &self.bands.geometry()).y);
         // A focus the reader did not move (a restore, a landing) adopts its band settled.
-        self.bands.focus(focus.map(|i| i / self.spec.cols), false);
+        // No focus is settled AFTER the landing has diffed: while the focused card leaves as a ghost
+        // (focus is off it for a frame, until the app reconciles), its row's caption band stays as
+        // drawn, or the cards below would jump up under the menu that chose the removal.
+        if focus.is_some() {
+            self.bands.focus(focus.map(|i| i / self.spec.cols), false);
+        }
         if let Some((i, (p, q))) = slid {
             self.carry(p, q, was);
             prev = Some(q);
@@ -249,6 +254,9 @@ impl Grid {
         self.seen = Seen::Nothing;
         self.anchor = pool::anchor_of(src, focus);
         self.play_landing(src, sy0, lifted, dt, cx.tick.ms);
+        if focus.is_none() && !self.landing.has_takeover() {
+            self.bands.focus(None, false);
+        }
         // the focused card left as a ghost: the card focus reconciled to rises from rest as it sinks.
         // The app reconciles focus a frame after the card leaves: until it does the pop belongs to
         // no card (the ghost carries the lift), and the takeover waits for the focus.
@@ -493,6 +501,12 @@ impl Grid {
             Some(Drawn::Rest) => return 1.0,
             None => {}
         }
+        // The takeover is owed but the pop has no cell: the card focus reconciled to rests until the
+        // landing's first step raises it, never the "not told yet" full scale (that read as the
+        // new card jumping to the pop under the menu that chose the removal).
+        if focus == Some(i) && self.pop.cell() != Some(i) && self.landing.has_takeover() {
+            return 1.0;
+        }
         self.pop.scale(i, focus == Some(i), &self.spec.style)
     }
 
@@ -655,10 +669,29 @@ impl Grid {
         }
     }
 
+    /// The leaving copies a landing draws now, `(index, rect, alpha)`: where each card that changed
+    /// row stood on screen, fading out.
+    pub fn leaving_rects(&self, n: usize) -> Vec<(usize, Rect, f32)> {
+        let bands = self.bands.geometry();
+        self.landing
+            .leaving(n)
+            .map(|(i, (dx, dy), a)| {
+                let c = self.cell(i, &bands);
+                (i, Rect::new(c.x + dx, c.y + dy, c.w, c.h), a)
+            })
+            .collect()
+    }
+
     /// A landing is playing: an owner that keeps the cards it removed for
     /// [`paint_ghosts`](Self::paint_ghosts) keeps them while this holds.
     pub fn landing_pending(&self) -> bool {
         self.landing.pending()
+    }
+
+    /// A landing is playing but has not stepped yet: a menu veils the page, its beat is counting,
+    /// or the page is a held image. An owner pairs its own change with the landing's first step.
+    pub fn landing_waiting(&self) -> bool {
+        self.landing.waiting()
     }
 
     /// What a landing is doing to card `i` of `n` right now: `((x, y) offset px, alpha)`.

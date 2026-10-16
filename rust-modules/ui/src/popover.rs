@@ -690,7 +690,7 @@ impl Popover {
 
     /// Draw a MORPHING popover's opener FACE: the opener's own fill (`fill`, the focused pill's
     /// plate) at the morph's rect and radius, then `label` (the opener's label, with no fill of
-    /// its own) clipped to that rect, both at [`Frame::pill_alpha`](crate::popover_morph::Frame::pill_alpha).
+    /// its own) clipped to that rect, the plate at [`Frame::pill_alpha`](crate::popover_morph::Frame::pill_alpha), the label at [`Frame::label_alpha`](crate::popover_morph::Frame::label_alpha).
     /// Call it after [`panel`](Self::panel) and before [`morph_rows`](Self::morph_rows): the
     /// plate fades OFF the glass laid under it.
     ///
@@ -704,13 +704,17 @@ impl Popover {
             return;
         }
         let f = self.morph.frame(self.from, panel, rad);
-        if f.pill_alpha <= 0.0 {
+        if f.pill_alpha <= 0.0 && f.label_alpha <= 0.0 {
             return;
         }
-        let p = p.alpha(f.pill_alpha);
-        p.rrect(f.rect, f.radius, f.radius, fill);
-        let _clip = crate::screen::ClipScope::open_in(p, f.rect);
-        label(p.clipped(f.rect));
+        if f.pill_alpha > 0.0 {
+            p.alpha(f.pill_alpha).rrect(f.rect, f.radius, f.radius, fill);
+        }
+        if f.label_alpha > 0.0 {
+            let p = p.alpha(f.label_alpha);
+            let _clip = crate::screen::ClipScope::open_in(p, f.rect);
+            label(p.clipped(f.rect));
+        }
     }
 
     /// Draw a MORPHING popover's rows through `draw`, in the shared choreography the board states:
