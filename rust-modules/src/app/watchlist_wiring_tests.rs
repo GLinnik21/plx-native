@@ -334,6 +334,38 @@ fn a_resume_with_the_page_live_reads_the_list_again() {
     assert_eq!(guids(&d), vec![guid(1), guid(2), guid(3)], "and the page still shows it");
 }
 
+/// The hold window follows the page's cursor, a reserved cell past the loaded tail included: the
+/// focus read there is no title, and reading it as "none" sent the window back to the head.
+#[test]
+fn the_hold_window_follows_the_cursor_onto_a_reserved_cell() {
+    let _serial = plx_base::testlock::serial();
+    let titles: Vec<(u8, String)> = (1..=12).map(|n| (n, format!("Title {n}"))).collect();
+    let refs: Vec<(u8, &str)> = titles.iter().map(|(n, t)| (*n, t.as_str())).collect();
+    let script = Script::new(&refs, true);
+    let (mut d, mut rig) = mounted(&script);
+    settle(&mut d, &mut rig, 2);
+    assert_eq!(page(&d).tiles().len(), 12);
+    // The service says more are coming than have landed: cells 12.. are reserved.
+    {
+        let id = d.nav.tabs.stack.entries.iter().find(|e| e.arg == AppArg::Watchlist).unwrap().id;
+        let screen = d.nav.entry_mut(id).unwrap().inst.as_mut().unwrap().screen.as_any_mut().unwrap()
+            .downcast_mut::<WatchlistScreen>().unwrap();
+        screen.input(plx_screens::watchlist::page::WatchlistIn::List(ListState::Ready { total: 250 }));
+    }
+    let mut t = 20;
+    while page(&d).cursor() < 12 && t < 60 {
+        super::frame(&mut d, &mut rig, tick(t), super::script_key(Key::Down, tick(t)));
+        super::frame(&mut d, &mut rig, tick(t + 1), vec![]);
+        t += 2;
+    }
+    let cursor = page(&d).cursor();
+    assert!(cursor >= 12, "DOWN reached a reserved cell (cursor {cursor})");
+    assert_eq!(page(&d).focused(), None, "a reserved cell is no title");
+    rig.watchlist_feed(&mut d);
+    assert_eq!(rig.watchlist_window_for_test(), Some(cursor.saturating_sub(18)..cursor + 36),
+        "the window is centred on the cursor, not the head");
+}
+
 /// Plan §1.9: a playable title's hold menu is the PMS card menu of its copy (sid, rk) plus Remove;
 /// a title with no reachable copy keeps the catalog rows.
 #[test]

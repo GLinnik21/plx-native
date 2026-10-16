@@ -122,8 +122,9 @@ impl Bridge {
             *feed = Feed { instance: Some(instance), reread_at: feed.reread_at, ..Feed::default() };
             store.run(WatchlistCmd::Open);
         }
-        // The window follows the focus (the page's own cursor), over the whole list.
-        let focus = screen.focused().unwrap_or(0);
+        // The window follows the focus (the page's own cursor, a reserved cell past the loaded
+        // tail included), over the whole list.
+        let focus = screen.cursor();
         let wanted = focus.saturating_sub(WINDOW_BEHIND)..focus.saturating_add(WINDOW_AHEAD);
         if feed.window.as_ref() != Some(&wanted) {
             feed.window = Some(wanted.clone());
@@ -305,6 +306,12 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn watchlist_for_test(&mut self) -> &mut plx_data::stores::watchlist::WatchlistStore {
         &mut self.stores.watchlist
+    }
+
+    /// The hold window the feed last sent the store.
+    #[cfg(test)]
+    pub(crate) fn watchlist_window_for_test(&self) -> Option<std::ops::Range<usize>> {
+        self.watchlist.window.clone()
     }
 }
 

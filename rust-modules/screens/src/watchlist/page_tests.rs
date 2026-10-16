@@ -314,20 +314,83 @@ fn a_removed_tile_is_drawn_while_it_fades() {
 }
 
 /// **Cells past the loaded tail are reserved** (plan §1.3): the grid is as long as the list, and
-/// the cells past the rows are not loaded, so nothing is drawn or pressed there.
+/// a cell past the rows is a skeleton that opens nothing.
 #[test]
-fn cells_past_the_loaded_tail_are_reserved_and_unloaded() {
+fn cells_past_the_loaded_tail_are_reserved_skeletons() {
     use plx_ui::cards::CardSource;
+    type H = super::cards_harness::WatchHost;
     let mut s = screen(100);
     s.input(WatchlistIn::List(ListState::Ready { total: 250 }));
     let src = s.cards_for_test();
-    assert_eq!(CardSource::<super::cards_harness::WatchHost>::len(&src), 250);
-    let loaded = |i| CardSource::<super::cards_harness::WatchHost>::loaded(&src, i);
-    assert!(loaded(99) && !loaded(100) && !loaded(249));
-    let elem = |i| CardSource::<super::cards_harness::WatchHost>::elem(&src, i);
-    assert_eq!(CardSource::<super::cards_harness::WatchHost>::index_of(&src, &elem(150)), Some(150));
+    assert_eq!(CardSource::<H>::len(&src), 250);
+    let loaded = |i| CardSource::<H>::loaded(&src, i);
+    assert!(loaded(99) && loaded(100) && loaded(249), "a reserved cell is painted, as a skeleton");
+    let unread = |i| CardSource::<H>::unread(&src, i);
+    assert!(!unread(150), "the list worker reads every page itself: the grid has nothing to ask");
+    let elem = |i| CardSource::<H>::elem(&src, i);
+    assert_eq!(CardSource::<H>::index_of(&src, &elem(150)), Some(150));
     assert_eq!(s.press_at(150), None, "a reserved cell opens nothing");
     assert_eq!(s.hold_at(150), None);
+}
+
+/// **Focus can enter the reserved cells, sees a skeleton there, and keeps its cell when the row
+/// lands**: DOWN from the last loaded row lands on a drawn skeleton, a reserved cell's key names
+/// one absolute position (so a landing page never hands it to another cell), and when that
+/// position's row lands, focus moves to the title now in the cell it was on.
+#[test]
+fn a_reserved_cell_keeps_its_place_when_its_row_lands() {
+    use plx_ui::cards::conformance::{CardHarness, Nb};
+    use plx_ui::cards::CardSource;
+    use plx_ui::screen::{By, Dir};
+    type H = super::cards_harness::WatchHost;
+    let mut h = Harness::new(tiles(100));
+    h.screen.input(WatchlistIn::List(ListState::Ready { total: 250 }));
+    h.run(1);
+    h.focus_index(99);
+    let Nb::To(below) = h.neighbour(h.screen.elem_at(99).unwrap(), Dir::Down) else {
+        panic!("DOWN from the last loaded row reaches the reserved cells")
+    };
+    let at = CardSource::<H>::index_of(&h.screen.cards_for_test(), &below);
+    assert_eq!(at, Some(105), "DOWN goes one row down, into the reserved cells");
+    h.focus_elem(below, By::Dir);
+    h.run(60);
+    h.screen.take_skeleton_draws();
+    h.draw();
+    assert!(h.screen.take_skeleton_draws().contains(&105), "the focused reserved cell is drawn as a skeleton");
+
+    // A cell further down, scrolled to: its skeleton is drawn too.
+    let far = CardSource::<H>::elem(&h.screen.cards_for_test(), 150);
+    h.focus_elem(far, By::Dir);
+    h.run(120);
+    h.draw();
+    assert!(h.screen.take_skeleton_draws().contains(&150), "a scrolled-to reserved cell is a skeleton");
+
+    // The next page lands: 150 is now a title, and focus moves to it in the same cell.
+    h.screen.input(WatchlistIn::Rows(tiles(200)));
+    h.run(1);
+    h.reconcile();
+    let focused = h.focus.map(|k| k.elem).unwrap();
+    assert_eq!(h.screen.index_of(focused), Some(150), "focus stays on the cell it was on");
+    assert_eq!(h.screen.focused(), Some(150));
+    assert_eq!(h.screen.tiles()[150].row.title, "150");
+    // and the reserved keys past the new tail still name their own absolute positions
+    let src = h.screen.cards_for_test();
+    assert_eq!(CardSource::<H>::index_of(&src, &CardSource::<H>::elem(&src, 220)), Some(220));
+    assert_eq!(CardSource::<H>::index_of(&src, &far), None, "the landed cell's reserved key is retired");
+}
+
+/// **The page lays down the app's ground itself, before its own** (a read-out after Sort & Filter
+/// closed left the menu's last frames on screen): `PageGround::draw` skips a ground resolved to
+/// the app surface because the frame clear already painted that colour, so a page that does not
+/// clear shows whatever the back buffer held. Home, the Library, Search and Detail all clear first.
+#[test]
+fn the_page_clears_the_frame_under_a_flat_ground() {
+    let mut h = Harness::new(vec![]);
+    h.screen.input(WatchlistIn::List(ListState::Ready { total: 3 }));
+    assert_eq!(h.screen.readout(), Some(Readout::Filtered));
+    assert_eq!(h.screen.ground_goal(), [theme::SURFACE_APP; 4], "the read-out's ground is flat");
+    let sources = h.draw_discovered();
+    assert!(!sources.borrow().paints.is_empty(), "the page's draw laid down no frame clear");
 }
 
 /// **Discover art needs a reachable server's photo proxy** (Q9): an unmatched title asks for its

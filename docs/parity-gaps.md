@@ -271,7 +271,7 @@ full-screen sheet, not a centred modal. Construction, from the reference:
 - Reference rows, in order: `Go to Episode` · `Go to Show` — separator — `Remove from Watchlist` ·
   `Mark as Watched` · `Browse Continue Watching`.
 
-Our rows, adapted (Watchlist doesn't exist yet; see the account domain):
+Our rows, adapted (only the Watchlist page's own hold menu carries `Remove from Watchlist`; see the account domain):
 
 | Row | Status |
 |---|---|
@@ -502,10 +502,10 @@ player, transport and tracks auditors, and is counted once in the themes above.
 > re-match, W6), and the PMS timeline feed that would announce a newly scanned item is not
 > subscribed (W-notify).
 
-- **Watchlist is absent (adjacent catalog: plex.tv Discover)** — `major` / `large`
-  The official rail carries Watchlist between Home and the libraries, plus an 'Add to Watchlist' action on items. This is a plex.tv Discover feature rather than a PMS library feature, but it is a first-class movie/show surface in the reference client. The Watchlist read side is now built: a plex.tv Discover client, `data::watchlist`, and a Watchlist strip destination and page. What remains open is the add action on items and the detail-page button (see the other Watchlist bullets).
-  *Where:* New rust-modules/src/plex/discover.rs (metadata.provider.plex.tv / discover.provider.plex.tv over net.rs's libcurl TLS transport, since stream.rs cannot do DNS/TLS) + a new rust-modules/src/ui/watchlist.rs screen and a rail entry in rust-modules/src/ui/widgets.rs.
-  *Verified:* Confirmed: case-insensitive grep for 'watchlist' over rust-modules/src returns nothing, and over docs/ nothing. plex/account.rs is only PIN create/poll (account.rs:60-80), GET /api/v2/resources (account.rs:83-90), GET /api/v2/home/users and POST .../switch (account.rs:92-110) — no discover.provider.plex.tv or metadata.provider.plex.tv client. One correction in the fix plan's favour: the TLS transport already exists and is already used for plex.tv — net.rs (libcurl) is what AccountClient rides on, precisely because stream.rs does no DNS/TLS — so a Discover client is a new module over an existin
+- **Watchlist add action absent (adjacent catalog: plex.tv Discover)** — `major` / `medium`
+  The official rail carries Watchlist between Home and the libraries, plus an 'Add to Watchlist' action on items. This is a plex.tv Discover feature rather than a PMS library feature, but it is a first-class movie/show surface in the reference client. The Watchlist read side is built: a plex.tv Discover client, `data::watchlist`, and a Watchlist strip destination (the bookmark tab) and page whose hold menu removes a title. What remains open is the add action on items, the detail-page Watchlist button (§5c) and the catalog page for titles no server holds (W6).
+  *Where:* The shipped read side: rust-modules/plex/src/plex/watchlist.rs and discover.rs (the Discover client), rust-modules/data/src/stores/watchlist.rs (`WatchlistStore`), rust-modules/screens/src/watchlist/ (the page, its tiles, options and hold menu) and rust-modules/src/app/watchlist.rs (the application wiring). The add action belongs on the item hold menu (`screens::item_menu`) and the Detail action row.
+  *Verified:* The page, the strip tab (`TAB_KEY_WATCHLIST` in rust-modules/ui/src/widgets.rs) and Remove from Watchlist exist under the paths above; no item hold menu or Detail row offers 'Add to Watchlist' (case-insensitive grep for 'add to watchlist' over rust-modules finds no action).
 
 - **No persistent left navigation rail** — `minor` / `large`
   The official client has an always-present left sidebar, collapsed to icons and expanding to labels on focus, holding avatar/username, Search, Home, Watchlist, libraries, Playlists, On Plex, Discover and More. We have a centered top pill row instead, and in grid view it is not reachable by D-pad at all: LEFT at column 0 is a no-op and UP at row 0 snaps back to the hero, so global navigation requires leaving the grid first.

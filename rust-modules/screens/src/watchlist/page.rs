@@ -138,9 +138,23 @@ pub const PILL_ELEM: u32 = 1;
 pub const RETRY_ELEM: u32 = 2;
 /// The first card's element; cards count up from here, never reused within a page.
 const FIRST_CARD_ELEM: u32 = 0x1000;
-/// The first element of the reserved cells past the loaded tail (plan §1.3): the card keys count up
-/// to here, so the two ranges never meet, and a reserved cell is the `n`th past the last row.
+/// The base of the reserved cells' keys past the loaded tail (plan §1.3): the card keys count up
+/// to here, so the two ranges never meet. A reserved cell at list position `i` is keyed
+/// `UNLOADED_ELEM + i` — its ABSOLUTE position, not its distance past the tail — so a page landing
+/// never hands one cell's key to another cell; when position `i`'s row lands, the key is retired and
+/// `StackPage::supersede` moves focus to the title keyed in the same cell.
 const UNLOADED_ELEM: u32 = plx_ui::geom::NAMESPACE_FLOOR / 2;
+
+/// The key of the reserved cell at list position `i`. A list longer than the key range left below
+/// the namespace floor (some 134 million titles) is the loud failure of an impossible state, not a
+/// limit on the list.
+fn reserved_elem(i: usize) -> u32 {
+    u32::try_from(i)
+        .ok()
+        .and_then(|i| UNLOADED_ELEM.checked_add(i))
+        .filter(|&e| e < plx_ui::geom::NAMESPACE_FLOOR)
+        .expect("watchlist reserved-cell key space exhausted")
+}
 
 const GRID_GROUP: GroupId = GroupId(0);
 const HEADER_GROUP: GroupId = GroupId(1);
@@ -243,6 +257,9 @@ struct Page {
     /// Test support: how many ghost posters the grid has drawn.
     #[cfg(test)]
     ghost_draws: std::cell::Cell<usize>,
+    /// Test support: the reserved cells the grid has drawn, by index.
+    #[cfg(test)]
+    skeleton_draws: std::cell::RefCell<Vec<usize>>,
     /// Moves whenever anything the sections read moves (`StackPage::revision`).
     rev: u64,
 }
@@ -319,6 +336,24 @@ impl Page {
         Some(if unfiltered { total.max(self.tiles.len()) } else { self.tiles.len() })
     }
 
+    /// The grid's length: the loaded rows and the reserved cells past them.
+    fn len(&self) -> usize {
+        self.cells.len() + self.unloaded()
+    }
+
+    /// The cell showing `e`: a title's, or a reserved cell still past the loaded tail.
+    fn cell_of(&self, e: u32) -> Option<usize> {
+        match self.reserved_at(e) {
+            Some(i) => (i >= self.cells.len() && i < self.len()).then_some(i),
+            None => self.index.get(&e).copied(),
+        }
+    }
+
+    /// The list position a reserved cell's key names, or `None` for any other key.
+    fn reserved_at(&self, e: u32) -> Option<usize> {
+        e.checked_sub(UNLOADED_ELEM).filter(|_| e < plx_ui::geom::NAMESPACE_FLOOR).map(|n| n as usize)
+    }
+
     /// The cells the list has that no row has landed for yet (plan §1.3): the service's total less
     /// the loaded rows, while the options show everything (a narrowed list has no total to compare).
     fn unloaded(&self) -> usize {
@@ -365,24 +400,25 @@ struct Titles<'a> {
 impl<H: ContentLike> CardSource<H> for Titles<'_> {
     /// The loaded rows and the reserved cells past them, so the grid's extent is the list's.
     fn len(&self) -> usize {
-        self.page.cells.len() + self.page.unloaded()
+        self.page.len()
     }
     fn elem(&self, i: usize) -> u32 {
         match self.page.cells.get(i) {
             Some(c) => c.elem,
-            None => UNLOADED_ELEM + (i - self.page.cells.len()) as u32,
+            None => reserved_elem(i),
         }
     }
     fn index_of(&self, e: &u32) -> Option<usize> {
-        match e.checked_sub(UNLOADED_ELEM) {
-            Some(n) => ((n as usize) < self.page.unloaded()).then_some(self.page.cells.len() + n as usize),
-            None => self.page.index.get(e).copied(),
-        }
+        self.page.cell_of(*e)
     }
     fn art(&self, i: usize) -> Art<'_> {
         match (self.page.tiles.get(i), self.page.cells.get(i)) {
             (Some(t), Some(c)) => Art::Poster(Some(tile_facts(t, c))),
-            _ => Art::Poster(None),
+            _ => {
+                #[cfg(test)]
+                self.page.skeleton_draws.borrow_mut().push(i);
+                Art::Poster(None)
+            }
         }
     }
     fn label(&self, i: usize) -> TileLabel {
@@ -399,9 +435,15 @@ impl<H: ContentLike> CardSource<H> for Titles<'_> {
             tiles::paint(p, t.state, tile);
         }
     }
-    /// A reserved cell has no row to paint yet: the grid keeps its place and draws nothing there.
-    fn loaded(&self, i: usize) -> bool {
-        i < self.page.cells.len()
+    /// Every cell is painted: a reserved one, whose row has not landed, as the skeleton poster
+    /// (`art` answers `Poster(None)`), so focus that enters it is on something drawn.
+    fn loaded(&self, _i: usize) -> bool {
+        true
+    }
+    /// Nothing is for the grid to ask: the list worker reads every page of the list on its own
+    /// (`WatchlistStore`), so a reserved cell is waiting for a read already under way.
+    fn unread(&self, _i: usize) -> bool {
+        false
     }
 }
 
@@ -478,6 +520,11 @@ impl<H: ContentLike> StackPage<H> for Page {
 
     fn cards<'a>(&'a self, _cx: &'a Cx<'_, H>, k: Sec) -> Option<Titles<'a>> {
         (k == Sec::Items && !self.cells.is_empty()).then_some(Titles { page: self })
+    }
+
+    /// A reserved cell whose row has landed: the title now keyed in the same cell stands for it.
+    fn supersede(&self, _cx: &Cx<'_, H>, want: &u32) -> Option<u32> {
+        self.reserved_at(*want).and_then(|i| self.cells.get(i)).map(|c| c.elem)
     }
 
     fn elem_of(&self, k: Sec) -> Option<u32> {
@@ -592,6 +639,8 @@ impl WatchlistScreen {
             ghosts: HashMap::new(),
             #[cfg(test)]
             ghost_draws: std::cell::Cell::new(0),
+            #[cfg(test)]
+            skeleton_draws: Default::default(),
             rev: 0,
         };
         page.rebuild();
@@ -648,6 +697,12 @@ impl WatchlistScreen {
         (self.focus < self.page.tiles.len()).then_some(self.focus)
     }
 
+    /// The focused cell's position in the grid, a reserved cell past the loaded tail included:
+    /// where the hold window follows the focus to.
+    pub fn cursor(&self) -> usize {
+        self.focus
+    }
+
     /// The element of the tile at `index`.
     pub fn elem_at(&self, index: usize) -> Option<u32> {
         self.page.cells.get(index).map(|c| c.elem)
@@ -697,7 +752,9 @@ impl WatchlistScreen {
                 }
             }
         }
-        self.focus = self.focus.min(self.page.tiles.len().saturating_sub(1));
+        // A focus past the new end (a removal at the tail) is clamped; one on a reserved cell
+        // keeps its position, which `focused()` answers as no title.
+        self.focus = self.focus.min(self.page.len().saturating_sub(1));
     }
 
     /// OK on the tile at `index`, per the plan §1.9 table. Reads the drawn, committed state.
@@ -739,11 +796,13 @@ impl WatchlistScreen {
     }
 
     fn tick<H: ContentLike>(&mut self, t: Tick, cx: &Cx<'_, H>) {
+        // The focused cell's index, a reserved one included: `focused()` then answers no title,
+        // and the ground falls back to the flat surface, rather than keying a title left behind.
         if let Some(i) = cx
             .focus
             .current
             .filter(|key| key.entry == self.page.entry)
-            .and_then(|key| self.page.index.get(&key.elem).copied())
+            .and_then(|key| self.page.cell_of(key.elem))
         {
             self.focus = i;
         }
@@ -833,6 +892,12 @@ impl WatchlistScreen {
     #[cfg(test)]
     pub(crate) fn cards_for_test(&self) -> impl ui_cards::CardSource<crate::watchlist::cards_harness::WatchHost> + '_ {
         Titles { page: &self.page }
+    }
+
+    /// Test support: the reserved cells drawn since the last call, by index.
+    #[cfg(test)]
+    pub(crate) fn take_skeleton_draws(&self) -> Vec<usize> {
+        std::mem::take(&mut *self.page.skeleton_draws.borrow_mut())
     }
 
     /// Test support: the ghost posters the grid has drawn so far.
@@ -978,6 +1043,9 @@ impl<H: ContentLike> Screen<H> for WatchlistScreen {
     }
     fn prepare(&mut self, _budget: &mut plx_ui::frame::Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+        // The app's ground first, as every owned page lays it: `PageGround::draw` skips a ground
+        // resolved to the flat app surface (the read-outs) because this clear already painted it.
+        plx_gfx::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
         let p = f.painter.alpha(f.page_alpha);
         self.ground.draw(p, Rect::FULL);
         self.stack.view(&self.page).paint(f);
