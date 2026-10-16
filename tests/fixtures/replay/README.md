@@ -404,3 +404,15 @@ The Watchlist wave-3 fixes (SHAPE field order and canonical option encoding, pin
 `0xdb5b_e029_dd4f_0a88`) moved the state shape again; all three anchors were observed being refused
 by `Recording::parse`, freshly recorded with `tests/focusfp.sh --rec`, replaced with
 `tools/plxnative-rec rerecord`, and replayed in both modes with every difference counter at zero.
+
+The Sort & Filter morph (`6a0724459`: the pill and the panel are one surface) changed recorded
+behaviour without moving the shape: a surface held under a capture now gets a zero-length tick
+(`held_tick`, `dt_us: 0`) where it used to be skipped, so the recorded `Deliver tick` payload on the
+capture/text-warm frames differs. `6-settings-family` and `12-filmography-detail-return` diverged
+with `effect_diffs=2` at frames 31/32 (recorded `dt_us` 19000/17000) in both modes, every other
+counter zero; `1-boot-home-chip-grid` stayed SAME. The divergence was attributed by bisecting the
+branch: `fdbc7182e`, the commit before it, replayed all three SAME, and `6a0724459` reproduced the
+four failures. The two anchors were recorded afresh on the unchanged shape (`tests/focusfp.sh --rec
+--only 6,12`, old fixtures removed, `tools/plxnative-rec import`, manifests restored byte for byte,
+`anchor: true` kept) and replayed SAME in Targets and Resolve (`tests/replay_fixtures.py`, three
+consecutive runs) with every difference counter zero.
