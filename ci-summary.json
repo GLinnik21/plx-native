@@ -1,6 +1,27 @@
 {
- "generated": "2026-10-16T11:22:37Z",
+ "generated": "2026-10-16T11:40:13Z",
  "metrics": [
+  {
+   "change30_pct": null,
+   "change7_pct": 220.7,
+   "d30": null,
+   "delta30": null,
+   "delta7": 118.7,
+   "group": "local",
+   "id": "bench.tests",
+   "kind": "local",
+   "label": "Unit suite",
+   "n_now": 6,
+   "n_prev": 3,
+   "now": 172.5,
+   "prev7": 53.8,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
   {
    "change30_pct": null,
    "change7_pct": 91.7,
@@ -45,18 +66,18 @@
   },
   {
    "change30_pct": -48.2,
-   "change7_pct": 31.4,
+   "change7_pct": 32.1,
    "d30": 920,
-   "delta30": -443.0,
-   "delta7": 114.0,
+   "delta30": -443,
+   "delta7": 116.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 268,
-   "n_prev": 213,
-   "now": 477.0,
-   "prev7": 363,
+   "n_now": 269,
+   "n_prev": 212,
+   "now": 477,
+   "prev7": 361.0,
    "shown": true,
    "state": "worse",
    "state30": "better",
@@ -87,20 +108,20 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": null,
+   "change7_pct": 27.1,
    "d30": null,
    "delta30": null,
-   "delta7": null,
+   "delta7": 4.9,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 8,
-   "n_prev": 2,
-   "now": 22.3,
-   "prev7": null,
+   "n_now": 7,
+   "n_prev": 3,
+   "now": 22.9,
+   "prev7": 18.1,
    "shown": true,
-   "state": "new",
+   "state": "flat",
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
@@ -108,20 +129,20 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": null,
+   "change7_pct": 20.7,
    "d30": null,
    "delta30": null,
-   "delta7": null,
+   "delta7": 7.5,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 8,
-   "n_prev": 2,
-   "now": 42.9,
-   "prev7": null,
+   "n_now": 7,
+   "n_prev": 3,
+   "now": 44.0,
+   "prev7": 36.5,
    "shown": true,
-   "state": "new",
+   "state": "flat",
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
@@ -129,20 +150,20 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": null,
+   "change7_pct": -2.0,
    "d30": null,
    "delta30": null,
-   "delta7": null,
+   "delta7": -0.9,
    "group": "local",
    "id": "bench.ui",
    "kind": "local",
    "label": "Rebuild after editing plx_ui",
-   "n_now": 8,
-   "n_prev": 2,
-   "now": 46.5,
-   "prev7": null,
+   "n_now": 7,
+   "n_prev": 3,
+   "now": 46.0,
+   "prev7": 47.0,
    "shown": true,
-   "state": "new",
+   "state": "flat",
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
@@ -150,41 +171,20 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": null,
+   "change7_pct": 0.2,
    "d30": null,
    "delta30": null,
-   "delta7": null,
+   "delta7": 0.2,
    "group": "local",
    "id": "bench.leaf",
    "kind": "local",
    "label": "Rebuild after editing plx_base",
-   "n_now": 8,
-   "n_prev": 2,
-   "now": 108.8,
-   "prev7": null,
-   "shown": true,
-   "state": "new",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": null,
-   "d30": null,
-   "delta30": null,
-   "delta7": null,
-   "group": "local",
-   "id": "bench.tests",
-   "kind": "local",
-   "label": "Unit suite",
    "n_now": 7,
-   "n_prev": 2,
-   "now": 165.7,
-   "prev7": null,
+   "n_prev": 3,
+   "now": 114.7,
+   "prev7": 114.4,
    "shown": true,
-   "state": "new",
+   "state": "flat",
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
@@ -200,19 +200,19 @@
    "id": "bench.check",
    "kind": "local",
    "label": "make check, the whole gate",
-   "n_now": 6,
-   "n_prev": 1,
-   "now": 1343.6,
+   "n_now": 5,
+   "n_prev": 2,
+   "now": 1418.8,
    "parts": [
     {
      "id": "bench.check.cargo",
      "label": "make check: cargo branch",
-     "now": 1342.0
+     "now": 1417.0
     },
     {
      "id": "bench.check.python",
      "label": "make check: python branch",
-     "now": 952.0
+     "now": 1001.0
     }
    ],
    "prev7": null,
@@ -443,9 +443,9 @@
    "id": "bench.check.cargo",
    "kind": "local",
    "label": "make check: cargo branch",
-   "n_now": 6,
-   "n_prev": 1,
-   "now": 1342.0,
+   "n_now": 5,
+   "n_prev": 2,
+   "now": 1417.0,
    "parent": "bench.check",
    "prev7": null,
    "shown": false,
@@ -465,9 +465,9 @@
    "id": "bench.check.python",
    "kind": "local",
    "label": "make check: python branch",
-   "n_now": 6,
-   "n_prev": 1,
-   "now": 952.0,
+   "n_now": 5,
+   "n_prev": 2,
+   "now": 1001.0,
    "parent": "bench.check",
    "prev7": null,
    "shown": false,
@@ -584,20 +584,20 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": null,
+   "change7_pct": 28.8,
    "d30": null,
    "delta30": null,
-   "delta7": null,
+   "delta7": 0.2,
    "group": "local",
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 8,
-   "n_prev": 2,
+   "n_now": 7,
+   "n_prev": 3,
    "now": 0.8,
-   "prev7": null,
+   "prev7": 0.6,
    "shown": false,
-   "state": "new",
+   "state": "flat",
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
@@ -605,6 +605,67 @@
   }
  ],
  "regressions": [
+  {
+   "change_pct": 220.7,
+   "commits": [
+    {
+     "pr": 789,
+     "sha": "a3b63b4f8",
+     "title": "Dependencies: harfbuzz -> 14.6.0"
+    },
+    {
+     "pr": 790,
+     "sha": "9b674c348",
+     "title": "Dependencies: drop the copied SDL2/GLES2/KHR headers"
+    },
+    {
+     "pr": 792,
+     "sha": "100d384a7",
+     "title": "Dependencies: updater tests read a frozen fixture manifest; no pinned version in scripts or prose"
+    },
+    {
+     "pr": 793,
+     "sha": "8ae3a2849",
+     "title": "Home: a hero that leaves the pool hands the billboard to its successor, never a bare frame"
+    },
+    {
+     "pr": 799,
+     "sha": "81d930be2",
+     "title": "First-run pages paint the default ambient ground, not a hero-keyed one"
+    },
+    {
+     "pr": 788,
+     "sha": "68f170d86",
+     "title": "Dependencies: freetype -> 2.15.0"
+    },
+    {
+     "pr": 800,
+     "sha": "4490753db",
+     "title": "Player: the menu dim is neutral, not keyed from the item's UltraBlur"
+    },
+    {
+     "pr": 808,
+     "sha": "440959492",
+     "title": "Enhancement: keep Boost available after picking an undrawable subtitle mid-play"
+    },
+    {
+     "pr": 810,
+     "sha": "cd8c5a7a8",
+     "title": "tools: netloss-proxy, a fault-injecting TCP proxy for real-looking network loss"
+    },
+    {
+     "pr": 813,
+     "sha": "1c89b0301",
+     "title": "CI: start on every pull request so the required checks always report"
+    }
+   ],
+   "from": 53.8,
+   "id": "bench.tests",
+   "label": "Unit suite",
+   "since": "2026-10-12",
+   "threshold_pct": 25.0,
+   "to": 172.5
+  },
   {
    "change_pct": 91.7,
    "commits": [
@@ -728,7 +789,7 @@
    "to": 402.0
   },
   {
-   "change_pct": 31.4,
+   "change_pct": 32.1,
    "commits": [
     {
      "pr": 789,
@@ -781,12 +842,12 @@
      "title": "CI: start on every pull request so the required checks always report"
     }
    ],
-   "from": 363,
+   "from": 361.0,
    "id": "pr_wait",
    "label": "PR CI wait",
    "since": "2026-10-16",
    "threshold_pct": 25.0,
-   "to": 477.0
+   "to": 477
   },
   {
    "change_pct": 19.9,
@@ -888,31 +949,31 @@
    "group": "local",
    "id": "bench.check",
    "label": "make check, the whole gate",
-   "now": 1343.6
+   "now": 1418.8
   },
   {
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 165.7
+   "now": 172.5
   },
   {
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 108.8
+   "now": 114.7
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 46.5
+   "now": 46.0
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 42.9
+   "now": 44.0
   }
  ],
  "thresholds": {
