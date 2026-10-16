@@ -1838,7 +1838,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                 // the DISMISSAL and the ring in one act, because raising the timer alone left
                 // the tile behind a transport nobody drew. `HudState::raise_for_offer` is where
                 // that rule, its resting-position clause and the bug are written down.
-                player.hud.raise_for_offer(fr.now, fr.ctrl.primary_btn());
+                player.raise_for_offer(fr.now, fr.ctrl.primary_btn());
             } else if plx_appkit::player_hud::standin_left_the_ring(
                 player.hud.was_standin,
                 fr.ctrl,
