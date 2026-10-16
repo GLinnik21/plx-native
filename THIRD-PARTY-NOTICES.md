@@ -34,20 +34,20 @@ they no longer do, because the TV's version moves with the firmware (libavformat
 
 | Shipped file | Upstream | Licence |
 |---|---|---|
-| `libavutil-plx.so.61`, `libavcodec-plx.so.63`, `libavformat-plx.so.63` | FFmpeg **9.0**, unmodified | LGPL-2.1-or-later |
+| `libavutil-plx.so.61`, `libavcodec-plx.so.63`, `libavformat-plx.so.63` | FFmpeg **9.0.2**, unmodified | LGPL-2.1-or-later |
 
 **These libraries are covered by the GNU Lesser General Public License, version 2.1 or later.** A
 complete copy of that licence is supplied with this package at `licenses/LGPL-2.1.txt`.
 
 **Complete corresponding source.** The exact upstream tarball these were built from —
-`ffmpeg-9.0.tar.xz`, sha256 `7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52`,
+`ffmpeg-9.0.2.tar.xz`, sha256 `8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e`,
 from <https://ffmpeg.org/releases/> — is attached to every PlxNative release alongside the `.ipk`.
 The sources are **unmodified**: no patches are applied. The complete configure invocation that
 produced them, including every enabled component, is `ci/build-ffmpeg.sh` in the PlxNative
 repository, which is also attached to each release. The attached script takes the version, the
 digest and the tarball from its environment, so it needs no network and none of the manifest
 tooling: from a checkout of the release's tag (or its source bundle), with the attached tarball,
-`FFMPEG_VERSION=9.0 FFMPEG_SHA256=7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52 FFMPEG_TARBALL=/path/to/ffmpeg-9.0.tar.xz ci/build-ffmpeg.sh`
+`FFMPEG_VERSION=9.0.2 FFMPEG_SHA256=8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e FFMPEG_TARBALL=/path/to/ffmpeg-9.0.2.tar.xz ci/build-ffmpeg.sh`
 (the script also reads the checkout's `ci/arm-cc.py` and `ci/check-link-evidence.py`, which it
 has always done).
 
@@ -79,9 +79,9 @@ uses `libass-plx-host.so.0`.
 | Component | Version | Licence |
 |---|---|---|
 | libass | 0.17.5 | ISC (`licenses/libass-ISC.txt`) |
-| FreeType | 2.14.3 | Elected FreeType License; contributed MIT and Zlib code (`licenses/FreeType.txt`, `licenses/Zlib.txt`) |
+| FreeType | 2.15.0 | Elected FreeType License; contributed MIT and Zlib code (`licenses/FreeType.txt`, `licenses/Zlib.txt`) |
 | FriBidi | 1.0.17 | LGPL-2.1-or-later (`licenses/LGPL-2.1.txt`) |
-| HarfBuzz | 14.5.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
+| HarfBuzz | 14.6.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
 | libunibreak | 8.0 | zlib (`licenses/libunibreak-Zlib.txt`) |
 
 Portions of this software are copyright © 2026 The FreeType Project
@@ -249,6 +249,22 @@ added (family and full name "PlxSubs" and "Inter", under non-English language ID
 selects them as fallbacks. The recipe is `tools/cut-noto-subs.py`; the manifest
 `fonts/subs/manifest.json` records every input and output hash.
 
+**Noto Emoji** — `appfont-emoji.ttf`
+Copyright 2013-2026 Google LLC, per the font's own name table. Version 3.006, the monochrome Noto
+Emoji, taken from the `@fontsource/noto-emoji` npm package version 5.3.2 (file
+`files/noto-emoji-emoji-400-normal.woff`, the static weight-400 build).
+Licence: **SIL Open Font License 1.1**, the same text that ships in this package as `OFL.txt`.
+The font declares **no Reserved Font Name**, so the family name "Noto Emoji" is retained.
+*Modified*: converted from WOFF to TrueType; the `GSUB`, `vhea`, `vmtx` and `STAT` tables removed
+(SDL2_ttf 2.0.x performs no shaping and no vertical layout); every codepoint above U+FFFF given a
+second cmap entry in the Private Use Area (U+E000 onward) pointing at the same glyph, because
+SDL2_ttf before 2.0.18 cannot address a glyph above U+FFFF; and the OFL licence description added
+to the name table (ID 13). **No codepoint was removed.** The recipe is `tools/cut-noto-emoji.py`,
+which pins the input by sha256.
+
+*Why it ships:* it is the emoji link of the application's font fallback chain, so an emoji in a
+library or title name draws instead of an empty box.
+
 ### 2.4 Rust code statically linked into `plxnative`
 
 The application core is Rust. The Rust standard library is compiled from source
@@ -274,23 +290,24 @@ stated; election does not alter your rights under the other arms.
 | chardetng | 1.0.0 | Apache-2.0 OR MIT | Mozilla Foundation |
 | crc32fast | 1.5.0 | MIT OR Apache-2.0 | 2018 Sam Rijs, Alex Crichton and contributors |
 | either | 1.18.0 | MIT OR Apache-2.0 | Copyright (c) 2015 (the upstream notice names no holder) |
-| encoding_rs | 0.8.35 | (Apache-2.0 OR MIT) AND BSD-3-Clause | Mozilla Foundation. Its encoding tables derive from the WHATWG Encoding Standard, whose data files are BSD-3-Clause (`licenses/WHATWG-BSD-3-Clause.txt`) |
+| encoding_rs | 0.8.42 | (Apache-2.0 OR MIT) AND BSD-3-Clause | Mozilla Foundation. Its encoding tables derive from the WHATWG Encoding Standard, whose data files are BSD-3-Clause (`licenses/WHATWG-BSD-3-Clause.txt`) |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | The image-rs Developers |
 | flate2 | 1.1.9 | MIT OR Apache-2.0 | 2014-2026 Alex Crichton |
 | gimli | 0.32.3 | MIT OR Apache-2.0 | The `gimli` authors |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | Amanieu d'Antras |
 | image | 0.25.10 | MIT OR Apache-2.0 | The image-rs Developers |
 | itoa | 1.0.18 | MIT OR Apache-2.0 | David Tolnay |
-| libc | 0.2.186 and 0.2.185 | MIT OR Apache-2.0 | The Rust Project Developers |
+| libc | 0.2.190 and 0.2.185 | MIT OR Apache-2.0 | The Rust Project Developers |
 | memchr | 2.8.2 and 2.7.6 | Unlicense OR MIT | 2015 Andrew Gallant |
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 | 2013-2014 RAD Game Tools and Valve Software; 2010-2014 Rich Geldreich and Tenacious Software LLC; (c) 2017 Frommi; (c) 2017-2024 oyvindln |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 | 2014 The Rust Project Developers |
 | object | 0.37.3 | Apache-2.0 OR MIT | The `object` authors |
 | png | 0.18.1 | MIT OR Apache-2.0 | 2015 nwin |
 | rustc-demangle | 0.1.27 | MIT/Apache-2.0 | Alex Crichton |
-| serde | 1.0.228 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
-| serde_core | 1.0.228 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
-| serde_json | 1.0.150 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
+| scopeguard | 1.2.0 | MIT OR Apache-2.0 | 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers |
+| serde | 1.0.229 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
+| serde_core | 1.0.229 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
+| serde_json | 1.0.154 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
 | smallvec | 1.16.2 | MIT OR Apache-2.0 | Copyright (c) 2018 The Servo Project Developers |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | Copyright (c) 2017 Robert Grosse |
 | zune-core | 0.5.1 | MIT OR Apache-2.0 OR Zlib | The zune-image developers |
@@ -443,7 +460,7 @@ enable it) — verified absent from the binary. `rustc-literal-escaper`, `proc_m
 
 ### 2.6 Native crash capture
 
-**Sentry Native 0.16.6** — Copyright (c) 2019 Sentry and individual contributors. Licence:
+**Sentry Native 0.17.3** — Copyright (c) 2019 Sentry and individual contributors. Licence:
 **MIT** (`licenses/MIT.txt`). Its client library is statically linked into `plxnative`; the
 out-of-process `sentry-crash` handler is shipped beside it. The handler is built with its HTTP
 transport disabled: it writes a crash envelope for PlxNative's consent-aware sender to deliver on
@@ -484,7 +501,7 @@ of a bundled copy alone does not establish that no obligation applies.
 
 | Library | Version on this build | Licence | Note |
 |---|---|---|---|
-| FFmpeg (libavformat / libavcodec / libavutil) | **9.0, shipped in this package** | LGPL-2.1-or-later | See section 1.1 |
+| FFmpeg (libavformat / libavcodec / libavutil) | **9.0.2, shipped in this package** | LGPL-2.1-or-later | See section 1.1 |
 | GLib | 2.48.2 | LGPL-2.1-or-later | See section 1 |
 | GNU C Library | 2.24 | LGPL-2.1-or-later | See section 1 |
 | SDL2 (LG fork) | 2.0.4 | Zlib | Copyright (C) 1997-2016 Sam Lantinga |
@@ -585,6 +602,4 @@ and `ci/check-packaged-elf.py`, which is what proves the old archive is absent f
 then-current MIT grant. That original grant and Gleb Linnik notice are preserved in
 `licenses/PlxNative-historical-MIT.txt`; no ownership transfer is claimed.
 
-Source bundles also contain SDL2 Zlib headers, embedded Mesa/Khronos MIT and SGI-B-2.0
-header blocks and Khronos GLES2 MIT/Apache-2.0 headers. Preserve their original embedded notices. Exact per-file
-license assignments are in the inventory; the SGI text is in `licenses/SGI-B-2.0.txt`; none of `include/` is claimed as original LG ABI work.
+The repository carries no copy of the SDL2, GLES2 or KHR headers; `include/` holds only the project's own `ass.h` facade.

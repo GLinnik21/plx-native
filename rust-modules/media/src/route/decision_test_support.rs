@@ -427,7 +427,7 @@ pub(super) fn fourk_item_with_subs(
         dovi: plx_data::metadata::Dovi::NONE,
         markers: Vec::new(),
         chapters: Vec::new(),
-        blur: None,
+        hdr: false,
     }
 }
 

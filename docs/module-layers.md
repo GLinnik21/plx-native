@@ -549,7 +549,7 @@ suite is 5603 tests before and after (157 + 66 + 218 + 5162). What it taught bey
 
 - **The generated code is the layer's, and so is the build script that generates it.**
   `platform/build.rs` runs the catalog generator (`platform/build_support/catalog.rs`, reading
-  `locales/`) and the install-identity generator (`rust-modules/build_support/install_identities.rs`,
+  `locales/` and the language registry `locales/languages.json`) and the install-identity generator (`rust-modules/build_support/install_identities.rs`,
   which stays where it is because the storage helper's build script calls it too). It reads no
   `PLX_*` variable and emits no `rustc-link-*`, so it is never dirty on a second run:
   `ci/test_build_not_always_dirty.py` now fails on `plx_platform` as well as on the application

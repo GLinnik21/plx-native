@@ -1785,6 +1785,9 @@ impl TrackMenuState {
             DisabledReason::DolbyVisionUnusable => plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_unusable(),
             DisabledReason::DolbyVisionSubtitle => plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_subtitle(),
             DisabledReason::NotOriginalQuality => plx_platform::i18n::msg::widgets_tracks_enh_reason_quality(),
+            DisabledReason::ForcedDirectPlay => plx_platform::i18n::msg::widgets_tracks_enh_reason_forced(),
+            DisabledReason::ServerConverting => plx_platform::i18n::msg::widgets_tracks_enh_reason_converting(),
+            DisabledReason::NotCopyable => plx_platform::i18n::msg::widgets_tracks_enh_reason_not_copyable(),
             DisabledReason::ServerRefused => plx_platform::i18n::msg::widgets_tracks_enh_reason_refused(),
         }
         .to_string()
@@ -3363,6 +3366,7 @@ mod enhancement_menu_tests {
 
     fn teardown(ps: &plx_media::route::PlaybackSession) {
         reset_player_control_for_test(ps);
+        plx_media::route::restore_quality(plx_media::route::Quality::Original);
         plx_plex::plex::reset_servers_for_test();
     }
 
@@ -3518,13 +3522,16 @@ mod enhancement_menu_tests {
         teardown(&ps);
     }
 
-    /// I5 excludes every non-Direct/Remux shape identically (HLS, a fixed rung, a relay); one
-    /// `Other`-family route stands for the group, since the predicate cannot tell them apart. M7:
-    /// visible-and-dim, not hidden — "only at Original quality" is a plain reason.
+    /// A quality that is NOT Original in force (Auto on HLS, a fixed rung) is the one case that
+    /// may say "only at Original quality"; M7: visible-and-dim, not hidden.
     #[test]
-    fn enh_rows_disabled_hls() {
+    fn enh_rows_disabled_hls_under_auto_blames_quality() {
         let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture {
+            remux: Some(false),
+            quality: plx_media::route::Quality::Auto,
+            ..Default::default()
+        });
         assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
         let note = menu.form.table.sections[1].rows.last().unwrap();
         assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_quality());
@@ -3532,28 +3539,120 @@ mod enhancement_menu_tests {
     }
 
     #[test]
-    fn enh_rows_disabled_reencode_rung() {
+    fn enh_rows_disabled_fixed_rung_blames_quality() {
         let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture {
+            remux: Some(false),
+            base_present: false,
+            quality: plx_media::route::Quality::P720,
+            ..Default::default()
+        });
         assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
         teardown(&ps);
     }
 
+    /// The owner's report: the note said "only at Original quality" while the Quality row read
+    /// Original. A non-copy route under Original must never blame the quality.
     #[test]
-    fn enh_rows_disabled_relay() {
+    fn enh_rows_disabled_under_original_never_blames_quality() {
         let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
+        for fixture in [
+            EnhTestFixture {
+                base_present: false,
+                declined: Some(plx_media::route::OriginalDeclined::Relay),
+                ..Default::default()
+            },
+            EnhTestFixture {
+                base_present: false,
+                declined: Some(plx_media::route::OriginalDeclined::VideoNeedsConverting),
+                ..Default::default()
+            },
+            EnhTestFixture {
+                base_present: false,
+                declined: Some(plx_media::route::OriginalDeclined::TrackPickDropped),
+                ..Default::default()
+            },
+            EnhTestFixture { base_present: false, ..Default::default() },
+        ] {
+            let (menu, ps) = audio_tab(fixture);
+            assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotCopyable));
+            let note = menu.form.table.sections[1].rows.last().unwrap();
+            assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_not_copyable());
+            assert_ne!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_quality());
+            teardown(&ps);
+        }
+    }
+
+    /// A track pick the Original route could not follow dropped the candidate; under Auto (on HLS)
+    /// the quality in force is the honest reason.
+    #[test]
+    fn enh_rows_disabled_after_a_dropped_pick_under_auto_blames_quality() {
+        let _g = plx_base::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture {
+            remux: Some(false),
+            base_present: false,
+            quality: plx_media::route::Quality::Auto,
+            declined: Some(plx_media::route::OriginalDeclined::TrackPickDropped),
+            ..Default::default()
+        });
         assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
         teardown(&ps);
     }
 
-    /// A forced direct play (or a fixed rung/relay/non-Original MDE) never computes an
-    /// `auto_original` candidate at all — `base_present: false` reproduces exactly that.
+    /// A burn re-encodes the picture, so the Quality row says "Converted"; the Audio tab explains
+    /// its own state there (the burn note) rather than a converting reason.
+    #[test]
+    fn enh_rows_under_a_burn_explain_the_burn_not_a_conversion() {
+        let _g = plx_base::testlock::serial();
+        for fixture in [
+            EnhTestFixture {
+                subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+                applied: plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+                applied_burn: true,
+                ..Default::default()
+            },
+            EnhTestFixture {
+                subtitle_effect: plx_media::route::SubtitleEffect::Embedded,
+                remux: Some(false),
+                ..Default::default()
+            },
+        ] {
+            let (menu, ps) = audio_tab(fixture);
+            assert!(plx_media::route::original_is_converted(&ps), "the picture is re-encoded");
+            assert_eq!(menu.enhance_route, Some(plx_media::route::EnhancementRoute::Burn));
+            assert_eq!(menu.enhance_disabled, None);
+            let note = menu.form.table.sections[1].rows.last().unwrap();
+            assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_note_burn());
+            teardown(&ps);
+        }
+    }
+
+    /// Original picked and the server converting the video: the Quality row reads
+    /// "Original · Converted" and the note agrees (one fact).
+    #[test]
+    fn enh_rows_disabled_while_the_server_converts() {
+        let _g = plx_base::testlock::serial();
+        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::ServerConverting));
+        assert!(plx_media::route::original_is_converted(&ps));
+        let note = menu.form.table.sections[1].rows.last().unwrap();
+        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_converting());
+        teardown(&ps);
+    }
+
+    /// Force Direct Play never computes an `auto_original` candidate; the note names the setting.
     #[test]
     fn enh_rows_disabled_forced() {
         let _g = plx_base::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestFixture { base_present: false, ..Default::default() });
-        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::NotOriginalQuality));
+        let (menu, ps) = audio_tab(EnhTestFixture {
+            base_present: false,
+            quality: plx_media::route::Quality::Auto,
+            declined: Some(plx_media::route::OriginalDeclined::ForcedDirectPlay),
+            ..Default::default()
+        });
+        assert_eq!(menu.enhance_disabled, Some(plx_media::route::DisabledReason::ForcedDirectPlay));
+        let note = menu.form.table.sections[1].rows.last().unwrap();
+        assert_eq!(note.label, plx_platform::i18n::msg::widgets_tracks_enh_reason_forced());
         teardown(&ps);
     }
 
@@ -4157,7 +4256,7 @@ mod enhancement_menu_tests {
     /// never heard the word "remux" and should not need to.
     #[test]
     fn enh_notes_and_reasons_never_use_jargon() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test};
         const BANNED: &[&str] = &[
             "remux",
             "transcode",
@@ -4169,7 +4268,7 @@ mod enhancement_menu_tests {
             "base layer",
             "hdr10",
         ];
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::PtPt] {
+        for language in plx_platform::i18n::SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             for (name, value) in [
                 ("enh_note_sidecar", plx_platform::i18n::msg::widgets_tracks_enh_note_sidecar()),
@@ -4179,6 +4278,9 @@ mod enhancement_menu_tests {
                 ("enh_reason_dv_unusable", plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_unusable()),
                 ("enh_reason_dv_subtitle", plx_platform::i18n::msg::widgets_tracks_enh_reason_dv_subtitle()),
                 ("enh_reason_quality", plx_platform::i18n::msg::widgets_tracks_enh_reason_quality()),
+                ("enh_reason_converting", plx_platform::i18n::msg::widgets_tracks_enh_reason_converting()),
+                ("enh_reason_forced", plx_platform::i18n::msg::widgets_tracks_enh_reason_forced()),
+                ("enh_reason_not_copyable", plx_platform::i18n::msg::widgets_tracks_enh_reason_not_copyable()),
                 ("enh_reason_refused", plx_platform::i18n::msg::widgets_tracks_enh_reason_refused()),
                 ("sub_burn_audio", plx_platform::i18n::msg::widgets_tracks_sub_burn_audio()),
                 ("sub_burn_quality", plx_platform::i18n::msg::widgets_tracks_sub_burn_quality()),
@@ -4542,9 +4644,9 @@ mod enhancement_menu_tests {
     /// `enh_rows_fit_menu_cap_es_be` over the Audio panel.
     #[test]
     fn subtitles_locked_note_fits_menu_cap_es_be() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::PtPt] {
+        for language in plx_platform::i18n::SHIPPED {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             // the audio-conversion reason (a remux) and the quality reason, as well as the own burn
@@ -5448,7 +5550,6 @@ mod localized_offset_tests {
             (Preference::Es, "es-ES", "-0,1 s", "+1,3 s"),
             (Preference::Be, "be-BY", "-0,1 с", "+1,3 с"),
             (Preference::Fr, "fr-FR", "-0,1 s", "+1,3 s"),
-            (Preference::PtPt, "pt-PT", "-0,1 s", "+1,3 s"),
         ] {
             let locale = LocaleContext::resolve(preference, None, Some(region), None, None);
             assert_eq!(crate::timing_capsule::offset_seconds_in(-100, true, &locale), negative);
@@ -5892,9 +5993,9 @@ mod style_page_tests {
     /// notes), and each picker page, judged by the same gates as the rest of the menu.
     #[test]
     fn every_style_page_fits_the_panel_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::PtPt] {
+        for language in plx_platform::i18n::SHIPPED {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             for codec in ["srt", "pgs", "ass"] {
@@ -5925,7 +6026,7 @@ mod style_page_tests {
     fn the_style_note_fits_two_lines_at_the_player_menu_floor() {
         use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
         let measure = plx_base::fontcov::advances::ShippedMeasure;
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::PtPt] {
+        for language in plx_platform::i18n::SHIPPED {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             for codec in ["pgs", "ass"] {
@@ -6469,9 +6570,9 @@ mod language_page_tests {
     /// judged by the same gates as the rest of the menu.
     #[test]
     fn the_language_pages_fit_the_panel_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr, Preference::PtPt] {
+        for language in plx_platform::i18n::SHIPPED {
             let _g = plx_base::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
             let (mut menu, ps, store) = open(subs_with_vobsub());

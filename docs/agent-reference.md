@@ -43,6 +43,26 @@ identifies nobody and removing it would break the loop for key-less machines. Ap
 install, `com.beb.plxnative.debug`, can sit beside it on the same set (`FLAVOR`, below;
 `docs/two-installs.md`).
 
+## Non-Rust dependencies (`ci/dependencies.json`)
+
+Every non-Rust input (FFmpeg, Sentry Native, the libass font stack, nanosvg, jsmpeg, the webOS NDK,
+the webosbrew toolbox) is declared once in `ci/dependencies.json`: version, URLs (plus transport-only
+mirrors), sha256, pinned patches, licence, and an `update` object saying where its releases come from
+(`github-release`, `github-tags`, `github-commit`, `listing`, `manual`; an optional `hold` string freezes
+the entry and is the reason). `ci/deps.py` reads and fetches it; nothing else writes a version or digest.
+
+Dependabot cannot read that file, so `ci/deps-update.py` does its job: `--report` prints pinned vs
+latest per entry, `--bump NAME` downloads the new asset, recomputes the sha256 and rewrites
+the entry's version, URLs and digest (never a patch; a patch that no longer applies exits 3 and
+the PR says so). `.github/workflows/deps-update.yml` runs weekly, opens one PR per outdated
+dependency on `deps/<name>-<version>` and dispatches `ci.yml` on it (a `GITHUB_TOKEN` push starts no
+CI by itself). Reviewing such a PR: FFmpeg, Sentry Native, curl-adjacent and NDK bumps need the
+`fw-compat-reviewer` agent, and every bump needs a `THIRD-PARTY-NOTICES.md` check. The same workflow
+submits the manifest to GitHub's dependency graph on every push that changes it
+(`deps-update.py --snapshot`). Held today: `webos-ndk` (pinned to the TV firmware ABI) and
+`webosbrew-toolbox` (independent release tag, package version and firmware symbol data). A new
+entry needs an `update` object; `ci/test_deps_update.py` fails without one.
+
 ## Build / deploy / run
 
 The `Makefile` is the entire dev loop. Requires the **webOS NDK** (install with `make
@@ -132,7 +152,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   running process holds their inodes), the bundled FFmpeg libraries with a retirement loop for any
   previous major, and — since 2026-09-02 — **everything else in ONE scp from `DEPLOY_FILES`**,
   which is `APP_FILES` (the exact list `ipk` stages into the `.ipk`) minus those three carve-outs:
-  this flavour's `appinfo.json`, both icon sizes, `pkg/splash.png`, the three font files
+  this flavour's `appinfo.json`, both icon sizes, `pkg/splash.png`, the font files
   (UNCONDITIONALLY, including the 13 MB CJK face — the old `test -f || scp` guard on the fonts
   meant a changed one could never reach the TV, and a separate md5 guard on the CJK face alone had
   the same failure mode by omission: it kept `pkg/splash.png`, both icons, `pkg/OFL.txt` and
@@ -1450,7 +1470,7 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   256 KiB durable-record ceiling; the importer still rejects an oversized envelope rather than
   claiming a bound for an arbitrary 256-LWP process. The JSON therefore carries ARM registers and
   real multi-frame stacks for all successfully captured threads, plus modules and both Linux-kernel
-  and webOS firmware context. The pin is **0.16.6** (`ci/build-sentry-native.sh`). The ARM32
+  and webOS firmware context. The pin is the Sentry Native entry in `ci/dependencies.json`. The ARM32
   registers-in-the-event and dual-frame-record walk (GCC leaves `fp` on the LR slot
   (`[fp-4]`/`[fp]`), rustc/LLVM on the saved-fp slot (`[fp]`/`[fp+4]`), and one process here holds
   both) and the pointer-width stack reads that make the walk safe on a 32-bit target are now

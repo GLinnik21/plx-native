@@ -538,7 +538,7 @@ static mut LOC_RADIUS: c_int = 0;
 static mut LOC_COLTOP: c_int = 0;
 static mut LOC_COLBOT: c_int = 0;
 static mut LOC_FOCUS: c_int = 0;
-static mut LOC_FOCUS_RGB: c_int = 0;
+static mut LOC_RGB_CAP: c_int = 0;
 static mut LOC_RADR: c_int = 0;
 static mut LOC_RIMW: c_int = 0;
 static mut LOC_RIMCOL: c_int = 0;
@@ -1006,7 +1006,7 @@ pub fn init_gl() {
         LOC_COLTOP = glGetUniformLocation(PROG, c"u_colTop".as_ptr());
         LOC_COLBOT = glGetUniformLocation(PROG, c"u_colBot".as_ptr());
         LOC_FOCUS = glGetUniformLocation(PROG, c"u_focus".as_ptr());
-        LOC_FOCUS_RGB = glGetUniformLocation(PROG, c"u_focus_rgb".as_ptr());
+        LOC_RGB_CAP = glGetUniformLocation(PROG, c"u_rgb_cap".as_ptr());
         LOC_RADR = glGetUniformLocation(PROG, c"u_radR".as_ptr());
         LOC_RIMW = glGetUniformLocation(PROG, c"u_rimw".as_ptr());
         LOC_RIMCOL = glGetUniformLocation(PROG, c"u_rimcol".as_ptr());
@@ -1337,7 +1337,7 @@ pub fn draw_rect(
     top: *const f32,
     bot: *const f32,
     focus: f32,
-    focus_rgb: f32,
+    rgb_cap: f32,
 ) {
     if culled(x, y, w, h) || gate(Class::Rect, x, y, w, h) {
         return;
@@ -1372,11 +1372,10 @@ pub fn draw_rect(
         glUniform4fv(LOC_COLTOP, 1, top);
         glUniform4fv(LOC_COLBOT, 1, bot);
         glUniform1f(LOC_FOCUS, focus);
-        // Fill/rim colours arrive pre-scaled by Painter::rgb. The focus ring/glow is generated in
-        // the shader, so it needs the same RGB gain explicitly while its alpha coverage stays put.
-        if focus > 0.001 {
-            glUniform1f(LOC_FOCUS_RGB, focus_rgb);
-        }
+        // Fill/rim colours arrive pre-scaled by the Painter's RGB gain; `rgb_cap` is that gain
+        // itself, the ceiling the shader holds the SUM of fill, rim, glow and focus ring to (see
+        // `fs_src.frag`'s `u_rgb_cap`). Every PROG draw sets it: uniforms persist per program.
+        glUniform1f(LOC_RGB_CAP, rgb_cap);
         glUniform1f(LOC_RIMW, 0.0);
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
         glUniform1f(LOC_RIMTOP, 0.0);
@@ -1399,9 +1398,10 @@ pub fn draw_rect_sheened(
     rimw: f32,
     rimcol: *const f32,
     rimtop: f32,
+    rgb_cap: f32,
 ) {
     draw_rect_shaped(
-        x, y, w, h, radius, top, bot, rimw, rimcol, rimtop, None, None,
+        x, y, w, h, radius, top, bot, rimw, rimcol, rimtop, rgb_cap, None, None,
     )
 }
 
@@ -1422,6 +1422,7 @@ pub fn draw_rect_shaped(
     rimw: f32,
     rimcol: *const f32,
     rimtop: f32,
+    rgb_cap: f32,
     pill: Option<&PillArgs>,
     glow: Option<&GlowArgs>,
 ) {
@@ -1442,6 +1443,7 @@ pub fn draw_rect_shaped(
         glUniform1f(LOC_RIMW, rimw);
         glUniform4fv(LOC_RIMCOL, 1, rimcol);
         glUniform1f(LOC_RIMTOP, rimtop);
+        glUniform1f(LOC_RGB_CAP, rgb_cap);
         pill_on(pill, glow);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
@@ -1640,6 +1642,7 @@ pub fn draw_rrect(x: f32, y: f32, w: f32, h: f32, rad_l: f32, rad_r: f32, col: *
         glUniform1f(LOC_RIMW, 0.0);
         glUniform4f(LOC_RIMCOL, 0.0, 0.0, 0.0, 0.0); // no edge-sheen (default)
         glUniform1f(LOC_RIMTOP, 0.0);
+        glUniform1f(LOC_RGB_CAP, 1.0); // no rim, glow or ring to hold
         pill_off();
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
@@ -1657,6 +1660,7 @@ pub fn draw_rrect_sheened(
     rimw: f32,
     rimcol: *const f32,
     rimtop: f32,
+    rgb_cap: f32,
 ) {
     if culled(x, y, w, h) || gate(Class::Rect, x, y, w, h) {
         return;
@@ -1676,6 +1680,7 @@ pub fn draw_rrect_sheened(
         glUniform1f(LOC_RIMW, rimw);
         glUniform4fv(LOC_RIMCOL, 1, rimcol);
         glUniform1f(LOC_RIMTOP, rimtop);
+        glUniform1f(LOC_RGB_CAP, rgb_cap);
         pill_off();
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
@@ -7027,6 +7032,31 @@ mod tests {
     /// copies — the ones the shader keeps as plain distances/fractions rather than folding into an
     /// algebraic form (unlike `CARD_GLARE_EASE`, which the shader halves into `chh * 0.32` rather
     /// than `(2*chh) * 0.16`; that transform is checked numerically below instead of by text).
+    /// The focus ring, rim and glow are ADDED to the fill in `fs_src.frag`, so under an RGB gain
+    /// (`ui::output_gain`, the HDR overlay dim) the sum overshoots it: a focused disc measured a
+    /// full-brightness ring (232) round a half-brightness fill (123) at 50%. The shader holds the
+    /// result to `u_rgb_cap`, and every draw that runs that program has to say what the cap is,
+    /// because uniforms persist per program and a stale cap would clamp the next fill.
+    #[test]
+    fn the_rect_program_caps_its_additive_edge_at_the_gain() {
+        let frag = include_str!("shaders/fs_src.frag");
+        assert!(
+            frag.contains("gl_FragColor = vec4(min(rgb, vec3(u_rgb_cap)), a);"),
+            "the SDF path must cap rgb at the gain after the rim, glow and ring are added"
+        );
+        // the model of the line above, at the measured figures: 0.5 * 0.96 fill + 0.5 * 1.0 rim
+        let (fill, rim, gain) = (0.96_f32 * 0.5, 1.0_f32 * 0.5, 0.5_f32);
+        assert!(fill + rim > 0.97, "uncapped, the dimmed ring is near full brightness");
+        assert_eq!((fill + rim).min(gain), 0.5, "capped, it is the gain");
+        let src = include_str!("gfx.rs");
+        let draws = ["pub fn draw_rect(", "pub fn draw_rrect(", "pub fn draw_rrect_sheened(", "pub fn draw_rect_shaped("];
+        for d in draws {
+            let at = src.find(d).expect(d);
+            let body = &src[at..at + src[at..].find("\n}\n").unwrap()];
+            assert!(body.contains("glUniform1f(LOC_RGB_CAP,"), "{d} must set the cap");
+        }
+    }
+
     #[test]
     fn image_focus_geometry_matches_the_shader_literals() {
         use crate::gfx::tokens::{

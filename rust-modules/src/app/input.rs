@@ -46,6 +46,9 @@ pub(crate) struct Pointer {
     /// decides whether a motion event is dispatched as `InputKind::Pointer` or `InputKind::Drag`.
     pub(crate) button_down: bool,
     pub(crate) last_wheel: u32,  // last wheel tick, for the wheel's own debounce
+    /// The button now held went DOWN as an OK key, not a click ([`click_is_ok`]), so its up must
+    /// be an OK key-up too.
+    pub(crate) ok_from_click: bool,
 }
 impl Pointer {
     /// Pointer mode, cursor shown, nothing held or dragging — where the loop starts.
@@ -58,7 +61,25 @@ impl Pointer {
         last_motion: 0,
         button_down: false,
         last_wheel: 0,
+        ok_from_click: false,
     };
+}
+
+/// **Is this pointer click really the remote's OK button?**
+///
+/// On a set without LG's `SDL_webOSCursorVisibility` (webOS 3.9.3's SDL 2.0.4, issue #642) the
+/// app hides the pointer by swapping in a transparent cursor (`boot::hide_cursor`). The system
+/// still believes its pointer is up, so the Magic Remote's OK arrives as a CLICK at wherever that
+/// invisible pointer sits, never as an OK key: the viewer arrows to the `…` disc, presses OK, and
+/// the click lands on the picture and toggles pause. (Measured on an OLED55B7V-Z, 3.9.3,
+/// 2026-10-15: Up, Right, Right, no OK key in the event log, and the player paused.) Where LG's
+/// call exists the system hides its own pointer and OK arrives as a key, so the click never comes.
+///
+/// So while the D-pad owns focus and the pointer is hidden by the transparent cursor, a click that
+/// was not preceded by enough motion to leave D-pad mode is the OK key on the focused control.
+/// Motion past the gate still turns the pointer back on and makes the next click a real one.
+pub(crate) fn click_is_ok(dpad_mode: bool, cur_hidden: bool, transparent_cursor: bool) -> bool {
+    dpad_mode && cur_hidden && transparent_cursor
 }
 
 // `home_activate` (the OK/pointer activation ladder for the legacy Home grid) was retired with
@@ -1609,5 +1630,27 @@ mod mark_scope_tests {
         let ep = plx_data::pms::PmsMovie { rk: "e1".into(), kind: 3, ..Default::default() };
         assert_eq!(mark_scope("e1", Some(&ep), None), Scope::Leaf);
         assert_eq!(mark_scope("e1", None, None), Scope::Leaf, "the filmstrip: one leaf");
+    }
+}
+
+#[cfg(test)]
+mod click_is_ok_tests {
+    use super::click_is_ok;
+
+    /// Issue #642's set: arrows hid the pointer by the transparent cursor, so OK arrives as a
+    /// click — it is the OK key. Anywhere else a click is a click: the pointer is in use
+    /// (`dpad_mode` false after motion, or shown), or LG's own hide made OK a real key already.
+    #[test]
+    fn only_a_click_under_a_transparent_hidden_pointer_in_dpad_mode_is_ok() {
+        assert!(click_is_ok(true, true, true));
+        for (dpad, hidden, transparent) in [
+            (false, true, true),
+            (true, false, true),
+            (true, true, false),
+            (false, false, true),
+            (false, false, false),
+        ] {
+            assert!(!click_is_ok(dpad, hidden, transparent), "{dpad} {hidden} {transparent}");
+        }
     }
 }

@@ -170,7 +170,7 @@ pub struct AuthContext {
 /// show (`plex::session::prefs::TrackMemoryEntry`), which name a `machineIdentifier` and a show
 /// and belong to the account that watched it.
 ///
-/// `profile_prefs` is each profile's own value of the nine player settings and of hero trailer autoplay
+/// `profile_prefs` is each profile's own value of the ten player settings and of hero trailer autoplay
 /// (`plex::session::prefs::ProfilePrefsRecord`); a record carries the stamp of the account that
 /// picked it, and it is a household member's habits, so it goes with the credentials. The
 /// install-wide top-level keys of the same names stay (they are the fallback every profile reads

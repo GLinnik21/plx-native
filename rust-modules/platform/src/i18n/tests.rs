@@ -42,21 +42,37 @@ fn locale_resolution_separates_language_from_formatting() {
         LocaleContext::resolve(Preference::Fr, None, None, None, None).format_locale(),
         "fr-FR"
     );
-    for tag in ["pt-PT", "pt_PT.UTF-8", "pt", "pt-AO"] {
+    for tag in ["it-IT", "it_CH", "it-SM"] {
         let cx = LocaleContext::resolve(Preference::System, Some(tag), None, None, None);
-        assert_eq!(cx.language(), Language::PtPt, "{tag}");
+        assert_eq!(cx.language(), Language::It);
+        assert_eq!(cx.preference(), Preference::System);
+    }
+    assert_eq!(
+        LocaleContext::resolve(Preference::It, None, None, None, None).format_locale(),
+        "it-IT"
+    );
+    // Portuguese resolves for every region except the excluded Brazilian one (registry
+    // `excluded_regions`), which keeps the English fallback.
+    for tag in ["pt-PT", "pt_PT.UTF-8", "pt", "pt-AO", "pt-MZ"] {
+        let cx = LocaleContext::resolve(Preference::System, Some(tag), None, None, None);
+        assert_eq!(cx.language(), Language::Pt, "{tag}");
         assert_eq!(cx.preference(), Preference::System);
     }
     assert_eq!(
         LocaleContext::resolve(Preference::System, Some("pt-AO"), None, None, None).format_locale(),
         "pt-AO"
     );
-    let pt = LocaleContext::resolve(Preference::PtPt, None, None, None, None);
+    let pt = LocaleContext::resolve(Preference::Pt, None, None, None, None);
     assert_eq!(pt.format_locale(), "pt-PT");
     assert_eq!(pt.decimal(45, 1), "4,5");
-    assert_eq!(Preference::from_tag(Preference::PtPt.tag()), Preference::PtPt);
-    assert_eq!(serde_json::to_string(&Preference::PtPt).unwrap(), r#""pt-PT""#);
-    for tag in ["de-DE", "be-Latn", "fr-Cyrl", "pt-BR", "pt_BR.UTF-8", "garbage\r\nheader", "C"] {
+    for tag in ["pt-BR", "pt_BR.UTF-8", "pt-Latn-BR"] {
+        assert_eq!(
+            LocaleContext::resolve(Preference::System, Some(tag), None, None, None).language(),
+            Language::En,
+            "{tag}"
+        );
+    }
+    for tag in ["de-DE", "be-Latn", "fr-Cyrl", "it-Cyrl", "garbage\r\nheader", "C"] {
         assert_eq!(
             LocaleContext::resolve(Preference::System, Some(tag), None, None, None).language(),
             Language::En
@@ -88,11 +104,16 @@ fn plural_rules_follow_the_message_language() {
     assert_eq!(fr.plural(2), PluralCategory::Other);
     assert_eq!(fr.plural(1_000_000), PluralCategory::Many);
     // European Portuguese, not Brazilian: zero takes the plural form ("0 episódios").
-    let pt = LocaleContext::resolve(Preference::PtPt, None, None, None, None);
+    let pt = LocaleContext::resolve(Preference::Pt, None, None, None, None);
     assert_eq!(pt.plural(0), PluralCategory::Other);
     assert_eq!(pt.plural(1), PluralCategory::One);
     assert_eq!(pt.plural(2), PluralCategory::Other);
     assert_eq!(pt.plural(1_000_000), PluralCategory::Many);
+    let it = LocaleContext::resolve(Preference::It, None, None, None, None);
+    assert_eq!(it.plural(0), PluralCategory::Other);
+    assert_eq!(it.plural(1), PluralCategory::One);
+    assert_eq!(it.plural(2), PluralCategory::Other);
+    assert_eq!(it.plural(1_000_000), PluralCategory::Many);
 }
 
 #[test]
@@ -151,4 +172,119 @@ fn pseudo_locale_exercises_expansion_without_changing_arguments() {
     assert!(msg::core_system_default_in(&cx).len() > "System default".len());
     assert!(!msg::settings_language_contribute_body_in(&cx).contains("github.com"),
         "only the guide caption belongs to the translated catalog, never its address");
+}
+
+#[test]
+fn declared_plural_categories_are_the_languages_own_cldr_categories() {
+    for lang in Language::SHIPPED {
+        let rules = PluralRules::try_new_cardinal(lang.tag().parse::<Locale>().unwrap().into())
+            .expect("compiled plural data");
+        let mut icu: Vec<String> = rules.categories().map(|c| format!("{c:?}").to_lowercase()).collect();
+        icu.sort();
+        let (_, declared) = Language::PLURALS.iter().find(|(l, _)| *l == lang).expect("declared");
+        let mut declared: Vec<String> = declared.iter().map(|s| s.to_string()).collect();
+        declared.sort();
+        assert_eq!(declared, icu, "{}: languages.json plurals differ from CLDR", lang.tag());
+    }
+}
+
+/// Baked ICU data falls back to root for a locale it lacks and still "succeeds", so a constructor
+/// that returns Ok proves nothing: ask the data provider which locale actually answered.
+#[test]
+fn every_shipped_language_has_its_own_icu_data_not_root() {
+    use icu_provider::prelude::*;
+    fn answered_by<M: DataMarker>(
+        provider: &impl DataProvider<M>,
+        locale: &Locale,
+    ) -> Option<DataLocale> {
+        let data_locale = DataLocale::from(locale.clone());
+        let id = DataIdentifierBorrowed::for_locale(&data_locale);
+        let response = provider
+            .load(DataRequest { id, ..Default::default() })
+            .unwrap_or_else(|e| panic!("{locale}: {e}"));
+        response.metadata.locale
+    }
+    // English is CLDR's root: its data is stored once, under und, so it answers for "en" legitimately.
+    for lang in Language::SHIPPED.into_iter().filter(|l| *l != Language::En) {
+        for tag in [lang.tag(), lang.regional()] {
+            let locale: Locale = tag.parse().unwrap();
+            for (what, got) in [
+                ("decimal symbols", answered_by::<icu_decimal::provider::DecimalSymbolsV1>(&icu_decimal::provider::Baked, &locale)),
+                ("plurals", answered_by::<icu_plurals::provider::PluralsCardinalV1>(&icu_plurals::provider::Baked, &locale)),
+            ] {
+                if let Some(got) = got {
+                    assert_eq!(
+                        got.language.as_str(),
+                        lang.tag(),
+                        "{tag}: {what} data was answered by {got}, not the language's own"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn registered_languages_keep_their_persisted_identity() {
+    // A subset, never an equality: a release that shipped a language pins its (tag, row) here.
+    const HISTORICAL: &[(&str, u32)] = &[("en", 1), ("es", 2), ("be", 3), ("fr", 5)];
+    for (tag, row) in HISTORICAL {
+        let p = Preference::from_tag(tag);
+        assert!(SHIPPED.contains(&p), "{tag} is no longer shipped");
+        assert_eq!(p.tag(), *tag);
+        assert_eq!(p.settings_row(), *row, "{tag}: Settings row identity moved");
+        assert_eq!(serde_json::to_string(&p).unwrap(), format!("\"{tag}\""));
+    }
+    for p in SHIPPED {
+        assert_eq!(Preference::from_tag(p.tag()), p);
+        assert_eq!(serde_json::to_string(&p).unwrap(), format!("\"{}\"", p.tag()));
+        assert_eq!(serde_json::from_str::<Preference>(&format!("\"{}\"", p.tag())).unwrap(), p);
+        assert_eq!(Preference::from_slot(p.slot()), p);
+        assert_eq!(p.language().map(Language::tag), Some(p.tag()));
+        assert!((1..1000).contains(&p.settings_row()));
+    }
+    assert_eq!(serde_json::to_string(&Preference::System).unwrap(), "\"system\"");
+    assert_eq!(Preference::from_tag("xx"), Preference::System);
+    assert_eq!(Preference::from_slot(Preference::System.slot()), Preference::System);
+}
+
+#[test]
+fn every_registered_language_has_launcher_metadata() {
+    let resources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../pkg/resources");
+    for p in SHIPPED.iter().filter(|p| **p != Preference::En) {
+        assert!(
+            resources.join(p.tag()).join("appinfo.json").is_file(),
+            "pkg/resources/{}/appinfo.json: the launcher's name for this language (docs/localization.md#adding-a-language)",
+            p.tag()
+        );
+    }
+}
+
+#[test]
+fn english_only_plural_uses_english_rules() {
+    let _be = language_on_this_thread_for_test(Preference::Be);
+    // Belarusian plural(21) is One; the panel's English-only tally must still say "callbacks".
+    assert_eq!(msg::browse_diagnostics_callbacks(21), "21 callbacks");
+    assert_eq!(msg::browse_diagnostics_callbacks(1), "1 callback");
+}
+
+#[test]
+fn english_only_ignores_pseudo() {
+    let _pseudo = pseudo_on_this_thread_for_test();
+    assert_eq!(msg::browse_diagnostics_nothing_demuxed(), "NOTHING demuxed");
+    assert_eq!(msg::browse_diagnostics_nothing_demuxed_c().to_str(), Ok("NOTHING demuxed"));
+}
+
+#[test]
+fn render_in_english_is_scoped_and_nests() {
+    let _be = language_on_this_thread_for_test(Preference::Be);
+    assert_eq!(current().language(), Language::Be);
+    let inside = render_in_english(|| {
+        assert_eq!(current().language(), Language::En);
+        render_in_english(|| assert_eq!(current().language(), Language::En));
+        assert_eq!(current().language(), Language::En);
+        current().decimal(35, 1)
+    });
+    assert_eq!(inside, "3.5");
+    assert_eq!(current().language(), Language::Be);
 }

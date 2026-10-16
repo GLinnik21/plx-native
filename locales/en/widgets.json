@@ -1,14 +1,17 @@
 {
   "widgets.diagnostics.uploading": {
     "value": "Uploading diagnostics…",
+    "translate": false,
     "description": "Status toast after the viewer requests a diagnostic upload."
   },
   "widgets.diagnostics.uploaded": {
     "value": "Diagnostics uploaded",
+    "translate": false,
     "description": "Status toast after the viewer requests a diagnostic upload."
   },
   "widgets.diagnostics.failed": {
     "value": "Diagnostics upload failed",
+    "translate": false,
     "description": "Status toast after the viewer requests a diagnostic upload."
   },
   "widgets.menu.options": {
@@ -18,6 +21,14 @@
   "widgets.menu.quality": {
     "value": "Quality",
     "description": "Option or section label in the player overflow menu."
+  },
+  "widgets.menu.quality_converted": {
+    "value": "Converted",
+    "description": "Second part of the player More menu's Quality row value ('Original \u00b7 Converted'): Original is picked but the video playing is not the original file because the server is converting the picture. A short value, never a sentence; the picked choice stays checked."
+  },
+  "widgets.menu.quality_converted_note": {
+    "value": "Your Plex server is converting this video.",
+    "description": "One-line sub-label under the checked entry of the player's Quality page when the Quality row reports a conversion the viewer did not pick by name ('Original \u00b7 Converted', 'Auto \u00b7 720p'). Always the same neutral sentence; it names no cause."
   },
   "widgets.menu.stats": {
     "value": "Stats for nerds",
@@ -508,39 +519,48 @@
   },
   "widgets.panel.jail": {
     "value": "this install's sandbox blocks access to /dev/rtkmem; PlxNative can offer a confirmed repair through rooted Homebrew Channel access",
-    "description": "panel jail"
+    "translate": false,
+    "description": "Playback verdict line: the install's sandbox blocks the video-plane device node."
   },
   "widgets.panel.refused": {
     "value": "the server refused the item at /decision — it can neither direct play nor convert it",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the server refused the item at the /decision endpoint."
   },
   "widgets.panel.audio_only_no_pass": {
     "value": "server sent audio only — it found no usable video transcode target (server has no Plex Pass)",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the server sent audio only because it found no usable video, and the account has no Plex Pass."
   },
   "widgets.panel.audio_only": {
     "value": "server sent audio only — it found no usable video transcode target",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the server sent audio only because it found no usable video."
   },
   "widgets.panel.no_video": {
     "value": "the stream carries no video track",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the stream has no video track."
   },
   "widgets.panel.open": {
     "value": "the media stream could not be opened or read",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the media stream could not be opened or read."
   },
   "widgets.panel.stopped": {
     "value": "the media producer stopped before playback completed",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the media producer stopped before playback completed."
   },
   "widgets.panel.tv_rejected": {
     "value": "the television media pipeline rejected the stream",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the television's media pipeline rejected the stream."
   },
   "widgets.panel.unknown": {
     "value": "the player stopped without a reported cause",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "translate": false,
+    "description": "Playback verdict line: the player stopped without a reported cause."
   },
   "widgets.failure.load_timeout": {
     "value": "Playback failed — the TV did not finish starting the stream",
@@ -548,7 +568,8 @@
   },
   "widgets.panel.load_timeout": {
     "value": "the television media pipeline did not finish starting the stream in time",
-    "description": "panel load_timeout"
+    "translate": false,
+    "description": "Playback verdict line: the television's media pipeline did not finish starting."
   },
   "widgets.reason.load_timeout": {
     "value": "This TV did not finish starting the video stream in time",
@@ -560,7 +581,8 @@
   },
   "widgets.panel.forced_playback": {
     "value": "Force Direct Play could not use the original stream; automatic fallback is disabled",
-    "description": "panel forced_playback"
+    "translate": false,
+    "description": "Playback verdict line: Force Direct Play could not use the original stream."
   },
   "widgets.reason.forced_playback": {
     "value": "Force Direct Play could not play this stream",
@@ -668,7 +690,19 @@
   },
   "widgets.tracks.enh_reason_quality": {
     "value": "Available only at Original quality.",
-    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when the live route is not Direct/Remux (a fixed quality rung, HLS, a relay) or no Original candidate exists."
+    "description": "Issue #266/M7. One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows ONLY when the quality in force is not Original (a fixed quality rung, or Auto currently on HLS); picking Original is the way in. Never shown under \"Quality: Original\"."
+  },
+  "widgets.tracks.enh_reason_converting": {
+    "value": "Not available while your Plex server converts this video.",
+    "description": "One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows whenever the Quality row reads 'Original \u00b7 Converted' (Original picked, the server converting the video). Same fact as that row."
+  },
+  "widgets.tracks.enh_reason_forced": {
+    "value": "Not available while Force Direct Play is on. Set Direct Play to Auto in Settings to use it.",
+    "description": "One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when Settings > Force Direct Play is on, so the server never gets to change the sound."
+  },
+  "widgets.tracks.enh_reason_not_copyable": {
+    "value": "Your Plex server can't add this to this video right now.",
+    "description": "One-line reason under the DISABLED (dim) Boost dialog / Normalize loudness rows when Original quality is in force (or cannot be reached by picking it) but the video cannot be offered the enhancement as it plays: a relay link, a video the server must convert, a track pick the Original route could not follow. Deliberately generic: the viewer cannot act on the differences."
   },
   "widgets.tracks.enh_reason_refused": {
     "value": "Your Plex server couldn't turn this on for this video.",
@@ -740,6 +774,7 @@
   },
   "widgets.runtime.main_thread": {
     "value": "MAIN THREAD {kind} {milliseconds}ms · {label}",
+    "translate": false,
     "description": "Developer warning; kind and label are technical diagnostic identifiers",
     "args": {
       "kind": "str",

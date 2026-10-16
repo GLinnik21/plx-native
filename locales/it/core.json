@@ -1,243 +1,48 @@
 {
-  "core.system_default": {
-    "value": "Predefinita di sistema",
-    "description": "Language option that follows the television"
-  },
-  "core.converts_on_server": {
-    "value": "Conversione sul server",
-    "args": {},
-    "description": "Shared display formatter: converts_on_server"
-  },
-  "core.duration_short_hours": {
-    "value": "{hours}h {minutes}m",
-    "args": {
-      "hours": "i64",
-      "minutes": "i64"
-    },
-    "description": "Shared display formatter: duration_short_hours"
-  },
-  "core.duration_short_minutes": {
-    "value": "{minutes}m",
-    "args": {
-      "minutes": "i64"
-    },
-    "description": "Shared display formatter: duration_short_minutes"
-  },
-  "core.duration_long_hours": {
-    "value": "{hours} h {minutes} min",
-    "args": {
-      "hours": "i64",
-      "minutes": "i64"
-    },
-    "description": "Shared display formatter: duration_long_hours"
-  },
-  "core.duration_long_minutes": {
-    "value": "{minutes} min",
-    "args": {
-      "minutes": "i64"
-    },
-    "description": "Shared display formatter: duration_long_minutes"
-  },
-  "core.time_left_hours": {
-    "value": "{hours} h {minutes} min rimanenti",
-    "args": {
-      "hours": "i64",
-      "minutes": "i64"
-    },
-    "description": "Shared display formatter: time_left_hours"
-  },
-  "core.time_left_minutes": {
-    "value": "{minutes} min rimanenti",
-    "args": {
-      "minutes": "i64"
-    },
-    "description": "Shared display formatter: time_left_minutes"
-  },
-  "core.seconds": {
-    "value": "{seconds} s",
-    "args": {
-      "seconds": "str"
-    },
-    "description": "Shared display formatter: seconds"
-  },
-  "core.season": {
-    "value": "S{season}",
-    "args": {
-      "season": "i64"
-    },
-    "description": "Shared display formatter: season"
-  },
-  "core.episode": {
-    "value": "E{episode}",
-    "args": {
-      "episode": "i64"
-    },
-    "description": "Shared display formatter: episode"
-  },
-  "core.episode_ordinal": {
-    "value": "S{season}, E{episode}",
-    "args": {
-      "season": "i64",
-      "episode": "i64"
-    },
-    "description": "Shared display formatter: episode_ordinal"
-  },
-  "core.shared_by": {
-    "value": "Condiviso da {handle}",
-    "args": {
-      "handle": "str"
-    },
-    "description": "Shared display formatter: shared_by"
-  },
-  "core.preview_fault": {
-    "value": "Fallback errore C",
-    "description": "Heading in consent technical report preview"
-  },
-  "core.preview_panic": {
-    "value": "Fallback panic Rust",
-    "description": "Heading in consent technical report preview"
-  },
-  "core.preview_domains": {
-    "value": "Domini chiusi per errori di riproduzione gestiti:",
-    "description": "Heading in consent technical report preview"
-  },
-  "core.preview_domain_line": {
-    "value": "{label}: {values}",
-    "args": {
-      "label": "str",
-      "values": "str"
-    },
-    "description": "One line of the consent preview's list of possible values: a field name, then its possible technical codes."
-  },
-  "core.preview_domain_failure_kind": {
-    "value": "tipo di errore (inclusi i codici storici mantenuti)",
-    "description": "Field name in the consent preview's list of possible playback-error values."
-  },
-  "core.preview_domain_delivery": {
-    "value": "trasmissione",
-    "description": "Field name in the consent preview's list of possible playback-error values: how the video was delivered."
-  },
-  "core.preview_domain_refusal_codes": {
-    "value": "codici decisione del server, generali e transcodifica (solo segnalazioni per piano rifiutato)",
-    "description": "Field name in the consent preview's list of possible playback-error values: the numeric verdict codes the media server gave when it refused to play or convert an item. Only reports about a refusal carry it."
-  },
-  "core.preview_domain_attempted_delivery": {
-    "value": "trasmissione tentata",
-    "description": "Field name in the consent preview's list of possible playback-error values: which way of delivering the video the app was opening when the failure happened, which after a mid-playback quality switch can differ from the delivery before the switch. For a refused plan it is the way the app asked the server for before the server refused."
-  },
-  "core.preview_domain_source_video": {
-    "value": "codec video sorgente (solo segnalazioni per piano rifiutato)",
-    "description": "Field name in the consent preview's list of possible playback-error values: the video format class of the file the server refused. Only reports about a refusal carry it."
-  },
-  "core.preview_domain_source_audio": {
-    "value": "codec audio sorgente (solo segnalazioni per piano rifiutato)",
-    "description": "Field name in the consent preview's list of possible playback-error values: the audio format class of the file the server refused. Only reports about a refusal carry it."
-  },
-  "core.preview_domain_quality": {
-    "value": "qualità",
-    "description": "Field name in the consent preview's list of possible playback-error values."
-  },
-  "core.preview_domain_observed_rate": {
-    "value": "velocità osservata",
-    "description": "Field name in the consent preview's list of possible playback-error values: the measured bitrate class."
-  },
-  "core.preview_domain_raster": {
-    "value": "risoluzione quadro",
-    "description": "Field name in the consent preview's list of possible playback-error values: the picture size class."
-  },
-  "core.preview_domain_pipeline": {
-    "value": "pipeline",
-    "description": "Field name in the consent preview's list of possible playback-error values: the playback pipeline stage."
-  },
-  "core.preview_domain_pipeline_error": {
-    "value": "numero errore firmware TV (0 = nessuno registrato)",
-    "description": "Field name in the consent preview's list of possible playback-error values: the whole number the television's own video pipeline reported with its first error, or 0 when it reported none. Its possible values are a range of integers rather than a list of codes."
-  },
-  "core.preview_domain_attempt_started": {
-    "value": "immagine mostrata in questo tentativo",
-    "description": "Field name in the consent preview's list of possible playback-error values: whether the attempt that failed (the latest opening of the video, such as after a quality switch) had put a picture on screen before it failed, as against the playback as a whole. Its possible values are yes and no."
-  },
-  "core.preview_domain_attempt_origin": {
-    "value": "motivo di questo tentativo",
-    "description": "Field name in the consent preview's list of possible playback-error values: what led to the attempt that failed, such as the first press of Play, a Retry, a quality change the viewer made, a switch the app made on its own, a recovery after a failed attempt, reopening after the app returned to the foreground, or the trailer that plays behind a detail page."
-  },
-  "core.preview_domain_attempt_ordinal": {
-    "value": "numero del tentativo in questa riproduzione (da 1 a 9, poi 9+)",
-    "description": "Field name in the consent preview's list of possible playback-error values: how many times the video had been opened during this playback, counting the failed attempt, every Retry and every switch. Its possible values are the numbers 1 to 9 and then 9+."
-  },
-  "core.preview_domain_http_status": {
-    "value": "codice di stato HTTP (0 = nessuno)",
-    "description": "Field name in the consent preview's list of possible playback-error values: the exact HTTP status number the media server answered with, from 100 to 599, or 0 when none was recorded. Its possible values are a range of integers rather than a list of codes."
-  },
-  "core.preview_domain_http": {
-    "value": "HTTP",
-    "description": "Field name in the consent preview's list of possible playback-error values: the HTTP status class."
-  },
-  "core.preview_domain_buffer": {
-    "value": "buffer",
-    "description": "Field name in the consent preview's list of possible playback-error values: the buffered time class."
-  },
-  "core.preview_domain_transport": {
-    "value": "errore di trasporto",
-    "description": "Field name in the consent preview's list of possible playback-error values: the class of network error that ended the media transfer."
-  },
-  "core.preview_domain_transfer_age": {
-    "value": "durata del trasferimento prima dell'errore",
-    "description": "Field name in the consent preview's list of possible playback-error values: how long the media transfer had been running when it failed, as a time class."
-  },
-  "core.preview_domain_elapsed": {
-    "value": "tempo trascorso",
-    "description": "Field name in the consent preview's list of possible playback-error values: time since an event."
-  },
-  "core.preview_domain_hls_direction": {
-    "value": "direzione HLS",
-    "description": "Field name in the consent preview's list of possible playback-error values: whether streaming quality went up or down."
-  },
-  "core.preview_domain_delivery_reason": {
-    "value": "motivo della trasmissione",
-    "description": "Field name in the consent preview's list of possible playback-error values."
-  },
-  "core.preview_domain_original_phase": {
-    "value": "fase Originale (inclusi i codici storici mantenuti)",
-    "description": "Field name in the consent preview's list of possible playback-error values: the stage of an original-quality attempt."
-  },
-  "core.preview_domain_original_outcome": {
-    "value": "esito Originale",
-    "description": "Field name in the consent preview's list of possible playback-error values: the result of an original-quality attempt."
-  },
-  "core.unit_gb": {
-    "value": "{value} GB",
-    "args": {
-      "value": "str"
-    },
-    "description": "A size in gigabytes."
-  },
-  "core.unit_mb": {
-    "value": "{value} MB",
-    "args": {
-      "value": "str"
-    },
-    "description": "A size in megabytes."
-  },
-  "core.unit_kb": {
-    "value": "{value} kB",
-    "args": {
-      "value": "str"
-    },
-    "description": "A size in kilobytes."
-  },
-  "core.percent": {
-    "value": "{value}%",
-    "args": {
-      "value": "str"
-    },
-    "description": "A percentage. es and be put a no-break space before the percent sign."
-  },
-  "core.unit_b": {
-    "value": "{value} B",
-    "args": {
-      "value": "str"
-    },
-    "description": "A size in bytes, abbreviated (B), for compact technical read-outs."
-  }
+  "core.system_default": "Predefinita di sistema",
+  "core.converts_on_server": "Conversione sul server",
+  "core.duration_short_hours": "{hours} h {minutes} min",
+  "core.duration_short_minutes": "{minutes} min",
+  "core.duration_long_hours": "{hours} h {minutes} min",
+  "core.duration_long_minutes": "{minutes} min",
+  "core.time_left_hours": "{hours} h {minutes} min rimanenti",
+  "core.time_left_minutes": "{minutes} min rimanenti",
+  "core.seconds": "{seconds} s",
+  "core.season": "S{season}",
+  "core.episode": "E{episode}",
+  "core.episode_ordinal": "S{season}, E{episode}",
+  "core.shared_by": "Condiviso da {handle}",
+  "core.preview_fault": "Rapporto per errore nativo",
+  "core.preview_panic": "Rapporto per panic di Rust",
+  "core.preview_domains": "Valori possibili:",
+  "core.preview_domain_line": "{label}: {values}",
+  "core.preview_domain_failure_kind": "tipo di errore (inclusi i codici storici conservati)",
+  "core.preview_domain_delivery": "modalità di trasmissione",
+  "core.preview_domain_refusal_codes": "codici di rifiuto del server: generale e transcodifica (solo se il server rifiuta)",
+  "core.preview_domain_attempted_delivery": "modalità di trasmissione richiesta",
+  "core.preview_domain_source_video": "codec video del file originale (solo se il server rifiuta)",
+  "core.preview_domain_source_audio": "codec audio del file originale (solo se il server rifiuta)",
+  "core.preview_domain_quality": "qualità",
+  "core.preview_domain_observed_rate": "bitrate rilevato",
+  "core.preview_domain_raster": "risoluzione dell'immagine",
+  "core.preview_domain_pipeline": "pipeline",
+  "core.preview_domain_pipeline_error": "codice d'errore del televisore (0 = nessuno)",
+  "core.preview_domain_attempt_started": "immagine mostrata in questo tentativo",
+  "core.preview_domain_attempt_origin": "motivo del tentativo di riproduzione",
+  "core.preview_domain_attempt_ordinal": "numero del tentativo di riproduzione (1–9, poi 9+)",
+  "core.preview_domain_http_status": "codice di stato HTTP (0 = nessuno)",
+  "core.preview_domain_http": "classe della risposta HTTP",
+  "core.preview_domain_buffer": "buffer",
+  "core.preview_domain_transport": "errore di trasferimento",
+  "core.preview_domain_transfer_age": "durata del trasferimento prima dell'errore",
+  "core.preview_domain_elapsed": "tempo trascorso",
+  "core.preview_domain_hls_direction": "variazione qualità HLS",
+  "core.preview_domain_delivery_reason": "motivo della trasmissione",
+  "core.preview_domain_original_phase": "fase qualità Originale (anche codici storici)",
+  "core.preview_domain_original_outcome": "esito qualità Originale",
+  "core.unit_gb": "{value} GB",
+  "core.unit_mb": "{value} MB",
+  "core.unit_kb": "{value} kB",
+  "core.percent": "{value}%",
+  "core.unit_b": "{value} B"
 }

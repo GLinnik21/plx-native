@@ -123,7 +123,7 @@ fn every_playback_field_pushes_its_picker() {
     assert_eq!(items.iter().map(|(_, d)| *d).collect::<Vec<_>>(),
         [SettingsPage::Picker(PickerKind::Quality), SettingsPage::Picker(PickerKind::DirectPlay),
          SettingsPage::Picker(PickerKind::SubtitleSize), SettingsPage::Picker(PickerKind::SubtitlePosition),
-         SettingsPage::Picker(PickerKind::NextEpisode), SettingsPage::Picker(PickerKind::DeckPress),
+         SettingsPage::Picker(PickerKind::HdrOverlay), SettingsPage::Picker(PickerKind::NextEpisode), SettingsPage::Picker(PickerKind::DeckPress),
          SettingsPage::Picker(PickerKind::SkipInterval)]);
     assert_every_nav_item_pushes_exactly_its_dest("playback", &items, &|| consent_opened(SettingsPage::Playback));
 }
@@ -166,8 +166,7 @@ fn every_language_nav_item_pushes_exactly_its_dest() {
     assert_eq!(items.iter().map(|(_, d)| *d).collect::<Vec<_>>(), [SettingsPage::Contribute]);
     for &(elem, dest) in &items {
         for method in [Method::Ok, Method::Right] {
-            let mut surface = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Language,
-                plx_data::pms::HubsSnapshot::empty_for_test().view());
+            let mut surface = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Language);
             step(&mut surface, ScreenEvent::Mount, None);
             let focus = FocusKey { entry: EntryId(0), elem };
             let ev = match method {

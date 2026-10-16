@@ -390,12 +390,10 @@ mod tests {
         let es = LocaleContext::resolve(Preference::Es, None, Some("es-ES"), None, None);
         let be = LocaleContext::resolve(Preference::Be, None, Some("be-BY"), None, None);
         let fr = LocaleContext::resolve(Preference::Fr, None, Some("fr-FR"), None, None);
-        let pt = LocaleContext::resolve(Preference::PtPt, None, Some("pt-PT"), None, None);
         assert_eq!(text_in(300, &es), "Subtítulos 0,3 s más tarde");
         assert_eq!(text_in(-300, &be), "Субцітры на 0,3 с раней");
         assert_eq!(text_in(0, &es), "Sincronización original");
         assert_eq!(text_in(300, &fr), "Sous-titres 0,3 s plus tard");
-        assert_eq!(text_in(300, &pt), "Legendas 0,3 s mais tarde");
     }
 
     /// **The capsule's sentence fits its fixed [`CAPSULE_TEXT_W`] block in every shipped
@@ -405,11 +403,12 @@ mod tests {
     fn the_capsule_sentence_fits_its_block_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
         use plx_ui::fit::HEADROOM;
-        use plx_platform::i18n::{LocaleContext, Preference};
+        use plx_platform::i18n::{LocaleContext};
         use plx_machine::machine::Measure;
         let mut out = Vec::new();
-        for (language, region) in [(Preference::En, "en-US"), (Preference::Es, "es-ES"), (Preference::Be, "be-BY"), (Preference::Fr, "fr-FR"), (Preference::PtPt, "pt-PT")] {
-            let locale = LocaleContext::resolve(language, None, Some(region), None, None);
+        for language in plx_platform::i18n::SHIPPED {
+            // No format locale: the language's own region (the registry's), as a fresh launch resolves.
+            let locale = LocaleContext::resolve(language, None, None, None, None);
             for ms in [-60_000, 60_000, 0] {
                 let t = text_in(ms, &locale);
                 let w = ShippedMeasure.width_str(&t, theme::size::TITLE, true);
