@@ -867,7 +867,18 @@ fn logo_probe(srv: ServerId, rk: &str) -> Option<PosterKey> {
 /// unsent, in flight, parked for a retry, or the pixels are in; the demo-video accounting
 /// (`plx_ui::placeholder`) reads it to tell "will never arrive" from "has not arrived".
 fn logo_failed(srv: ServerId, rk: &str) -> bool {
-    let Some(key_s) = logo_key(srv, rk) else { return false };
+    logo_key(srv, rk).is_some_and(|key_s| settled_failed(srv, key_s))
+}
+
+/// [`logo_failed`] for any built key: the slot holding `(srv, path, w, h, png)` is `P_FAILED`.
+/// The same pure peek — a key never built, or never requested, has not failed.
+fn art_failed(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> bool {
+    built_key(srv, path, w, h, png).is_some_and(|key_s| settled_failed(srv, key_s))
+}
+
+/// The scan behind [`logo_failed`] and [`art_failed`]: a `P_FAILED` slot for this exact art,
+/// current under the disk generation and the server's grant.
+fn settled_failed(srv: ServerId, key_s: &str) -> bool {
     let g = store();
     let cache_gen = plx_platform::imgcache::generation();
     let grant_epoch = plx_plex::plex::client_for(srv).map_or(0, |c| c.grant_epoch());
@@ -1387,6 +1398,9 @@ impl tex::Source for PosterSource {
     }
     fn logo_failed(&self, srv: u16, rk: &str) -> bool {
         logo_failed(ServerId::from_raw(srv), rk)
+    }
+    fn failed(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> bool {
+        art_failed(ServerId::from_raw(srv), path, w, h, png)
     }
     fn unresident(&self, key: PosterKey, refused: bool) {
         let mut g = store();

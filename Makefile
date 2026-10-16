@@ -1114,7 +1114,7 @@ ICONS     = $(if $(filter stable,$(FLAVOR)),pkg/icon.png pkg/largeIcon.png,$(ICO
 # and in `.claude/hooks/outbound-guard.py`'s PRIVATE_FILES — it carries a live credential.
 LAB_FILES = $(if $(LAB),pkg/lab.json,)
 APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
-            pkg/appfont.ttf pkg/appfont-bold.ttf pkg/appfont-cjk.ttf pkg/OFL.txt \
+            pkg/appfont.ttf pkg/appfont-bold.ttf pkg/appfont-cjk.ttf pkg/appfont-emoji.ttf pkg/OFL.txt \
             pkg/le-roots.pem \
             THIRD-PARTY-NOTICES.md LICENSING.md \
             $(LAB_FILES) \
@@ -1156,7 +1156,8 @@ SUBS_FONT_FILES = $(sort $(wildcard pkg/fonts/subs/*.ttf)) pkg/fonts/subs/manife
 # optional extra: without it a Korean, Japanese or Chinese library renders as tofu end to end, and
 # the television's own DroidSansFallback is present on the sets we have measured but is not
 # something a submission can be graded against. `rust-modules/base/src/fontcov.rs`'s host gate asserts
-# what it must cover; `text.rs`'s module doc is the chain.
+# what it must cover; `text.rs`'s module doc is the chain. appfont-emoji.ttf (monochrome Noto
+# Emoji, tools/cut-noto-emoji.py, under 1 MB) is the chain's emoji link.
 
 # TRADEMARKS.md ships too: it carries the brand reservation and the Plex/LG non-affiliation
 # statement, which used to be appended to LICENSE. It was moved out because GitHub's `licensee`

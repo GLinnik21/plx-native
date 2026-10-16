@@ -1806,10 +1806,11 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // says so itself now, from its own `Tick` — `PlayerOverlayScreen::step` pushes
         // `PlayerReq::ExtendHud`.)
         // (The scrub gesture's per-frame block stood here: the continuous accelerating advance,
-        // the `SCRUB_LOST_MS` lost-keyup safety commit and the tap-release debounce, all three run
+        // the `SCRUB_LOST_MS` lost-keyup safety net and the tap-release debounce, all three run
         // against the mounted `PlayerScreen`'s own `scrub` from the loop. They are that screen's
-        // `Tick` now — `step_scrub_hold` and `step_tap_commit`, formula for formula — which is
-        // what makes the field have one owner. Phase 12, PX-PLAYER.)
+        // `Tick` now — `step_scrub_hold`, formula for formula, and the debounce gone with
+        // click-to-confirm (a key target waits for OK) — which is what makes the field have one
+        // owner. Phase 12, PX-PLAYER.)
         // Focus follows the control row's OCCUPANT, on both edges. Driven by slot identity
         // rather than a "was something shown" bool, because the two edges have different jobs
         // and the previous bool implemented neither of the ones its comment promised.
@@ -1835,7 +1836,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                 // the DISMISSAL and the ring in one act, because raising the timer alone left
                 // the tile behind a transport nobody drew. `HudState::raise_for_offer` is where
                 // that rule, its resting-position clause and the bug are written down.
-                player.hud.raise_for_offer(fr.now, fr.ctrl.primary_btn());
+                player.raise_for_offer(fr.now, fr.ctrl.primary_btn());
             } else if plx_appkit::player_hud::standin_left_the_ring(
                 player.hud.was_standin,
                 fr.ctrl,

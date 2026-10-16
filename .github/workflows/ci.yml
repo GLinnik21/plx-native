@@ -50,8 +50,13 @@ on:
     # Likewise `docs/release-notes/v*.md` and `docs/release-audits/v*.md` are linted by
     # ci/check-package.py only for the STABLE flavour (release.yml and rc.yml); this workflow
     # builds `FLAVOR=debug` (see the cross-build job), so they stay excluded.
-    # There are no required status checks on `main` (branch protection allows merging without a
-    # green run), so a run this filter skips can never wedge a PR waiting on it.
+    # This filter applies to `push` ONLY. `main` requires two status checks (`host checks (NOT a
+    # device gate)` and `cross-build (armv7) + artifact assertions`), and a pull request whose
+    # workflow never starts never reports them, so it could only be admin-merged (Dependabot's
+    # requirements-docs.txt bump, #772). `pull_request` therefore starts on EVERY PR and the
+    # `changes` job below applies this same list to the PR's changed files (ci/ci_paths.py reads
+    # it from this file): a PR that touches nothing a gate reads skips the heavy jobs, and the two
+    # required names still report, green, from their always-running aggregators.
     paths: &ci_paths
       - '**'
       - '!README.md'
@@ -103,8 +108,8 @@ on:
       - '!.github/*.md'
       - '!.github/CODEOWNERS'
       - '!.github/dependabot.yml'
+  # NO `paths` here, deliberately: see the comment on `push`'s list.
   pull_request:
-    paths: *ci_paths
   workflow_dispatch:
 
 permissions:
@@ -115,6 +120,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Decides whether the heavy jobs run. `gated` is 'true' for every event but a pull request, and for
+  # a pull request when at least one changed file (a rename counts both its old and new path) is
+  # included by the `push` filter's `&ci_paths` list above, evaluated with GitHub's ordered
+  # include/exclude rules by ci/ci_paths.py. FAIL CLOSED: any error listing or evaluating the files,
+  # an empty list, or a list at the REST API's 3000-file cap sets `gated` to 'true' (a skipped run
+  # that should have run is the silent failure; a needless run only costs minutes). The files come
+  # from the pulls/N/files REST listing, paginated, because it needs no history and works with the
+  # read-only token a fork's PR gets. The checkout is only ci/ci_paths.py and this file.
+  changes:
+    name: which gates apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      gated: ${{ steps.gate.outputs.gated }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            ci/ci_paths.py
+            .github/workflows/ci.yml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          gated=true
+          if [ "$EVENT" = pull_request ]; then
+            if gh api --paginate "repos/$REPO/pulls/$PR/files?per_page=100" \
+                 --jq '.[] | .filename, (.previous_filename // empty)' > files.txt \
+               && [ "$(wc -l < files.txt)" -gt 0 ] && [ "$(wc -l < files.txt)" -lt 3000 ] \
+               && out=$(python3 ci/ci_paths.py --workflow .github/workflows/ci.yml < files.txt) \
+               && { [ "$out" = true ] || [ "$out" = false ]; }; then
+              gated=$out
+            else
+              echo '::warning::could not decide from the changed files; running every gate'
+            fi
+            echo "changed-file lines: $(wc -l < files.txt 2>/dev/null || echo unknown)"
+          fi
+          echo "gated=$gated" | tee -a "$GITHUB_OUTPUT"
   # The host gates are FOUR parallel jobs plus one aggregator, all deliberately SEPARATE from
   # cross-build rather than a prerequisite of it: the Makefile documents that `make check` is not a
   # prerequisite of `all` so the cross-build never depends on a host toolchain run. Running them in
@@ -133,6 +185,8 @@ jobs:
 
   host-lint:
     name: host lint + type-checks
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-latest
     # Measured max 3.8 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
@@ -196,6 +250,8 @@ jobs:
 
   host-unit-default:
     name: host unit tests (default features)
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-latest
     # Measured max 10.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 25
@@ -256,6 +312,8 @@ jobs:
 
   host-unit-hostsim:
     name: host unit tests (hostsim)
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-latest
     # Measured max 12.6 min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 30
@@ -291,6 +349,8 @@ jobs:
 
   host-python:
     name: host python/shell/C gates
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-latest
     # Measured max 4.6 min over the last 40 successful runs of the old serial recipe (it runs its steps
     # concurrently now, so it is much shorter); limit ~2x, rounded up to 5 (unset = 360).
@@ -320,6 +380,8 @@ jobs:
   # `make check-python` is still the two halves, run side by side locally.
   host-python-harness:
     name: host harness tests
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -335,18 +397,21 @@ jobs:
   # it is RED unless every host job above is green. `if: always()` because a job that needs a failed
   # job is otherwise SKIPPED, and a skipped check reads as "not required" to merge gating rather
   # than as a failure; each result is compared with `success` explicitly, so cancelled and skipped
-  # count as failures too. (No status check is required on `main` today; this keeps one if that
-  # changes.)
+  # count as failures too. This name is a REQUIRED status check on `main`, and it reports on every
+  # pull request: when `changes` says no gated file was touched the host jobs are skipped and this
+  # passes, on purpose and only then (a skip with `gated` true is red).
   host-checks:
     name: host checks (NOT a device gate)
     runs-on: ubuntu-latest
     # Measured max under 1 (the 31.6 in the raw data predates the job split, when this name was the whole suite) min over the last 40 successful runs; limit ~2x, rounded up to 5 (unset = 360).
     timeout-minutes: 10
-    needs: [host-lint, host-unit-default, host-unit-hostsim, host-python, host-python-harness]
+    needs: [changes, host-lint, host-unit-default, host-unit-hostsim, host-python, host-python-harness]
     if: always()
     steps:
       - name: Every host job must have succeeded
         env:
+          GATED: ${{ needs.changes.outputs.gated }}
+          CHANGES: ${{ needs.changes.result }}
           RESULTS: |
             host-lint=${{ needs.host-lint.result }}
             host-unit-default=${{ needs.host-unit-default.result }}
@@ -354,7 +419,20 @@ jobs:
             host-python=${{ needs.host-python.result }}
             host-python-harness=${{ needs.host-python-harness.result }}
         run: |
-          printf '%s\n' "$RESULTS"
+          printf 'changes=%s gated=%s\n%s\n' "$CHANGES" "$GATED" "$RESULTS"
+          if [ "$CHANGES" != success ]; then
+            echo '::error::the changes job did not succeed'
+            exit 1
+          fi
+          if [ "$GATED" = false ]; then
+            # a pull request that touches no file a gate reads: the host jobs were skipped on purpose
+            if printf '%s\n' "$RESULTS" | grep -v '=skipped$' | grep -q .; then
+              echo '::error::gated is false but a host job ran or is missing'
+              exit 1
+            fi
+            echo 'no gated file changed: the host gates were skipped'
+            exit 0
+          fi
           if printf '%s\n' "$RESULTS" | grep -v '=success$' | grep -q .; then
             echo '::error::a host job did not succeed (see the results above)'
             exit 1
@@ -377,7 +455,9 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
   cross-build:
-    name: cross-build (armv7) + artifact assertions
+    name: armv7 cross-build and artifact assertions
+    needs: changes
+    if: needs.changes.outputs.gated == 'true'
     # MUST be arm64 Linux. webosbrew/native-toolchain publishes darwin-arm64, darwin-x86_64 and
     # linux-aarch64 for this release — there is NO linux-x86_64 build, so ubuntu-latest cannot
     # obtain the toolchain at all. See the Makefile's NDK bootstrap block.
@@ -545,3 +625,29 @@ jobs:
           # comment — that is a literal block scalar, and every line in it is a path.)
           path: |
             pkg/*.ipk
+
+  # The required status check `cross-build (armv7) + artifact assertions`, as its own always-running
+  # job: the heavy job above is skipped on a PR that touches no gated file, and a required check that
+  # is SKIPPED is not something to lean on (whether merging treats it as passing is a setting and a
+  # history of changes in GitHub's behaviour). This reports a real result on every run: green when the
+  # heavy job succeeded, or when `changes` found nothing gated and the heavy job was skipped; red for
+  # anything else, including a cancelled or skipped heavy job on a gated run.
+  cross-build-required:
+    name: cross-build (armv7) + artifact assertions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes, cross-build]
+    if: always()
+    steps:
+      - name: The cross-build must have succeeded, or been skipped for a reason
+        env:
+          GATED: ${{ needs.changes.outputs.gated }}
+          CHANGES: ${{ needs.changes.result }}
+          BUILD: ${{ needs.cross-build.result }}
+        run: |
+          echo "changes=$CHANGES gated=$GATED cross-build=$BUILD"
+          if [ "$CHANGES" = success ] && { [ "$BUILD" = success ] || { [ "$GATED" = false ] && [ "$BUILD" = skipped ]; }; }; then
+            exit 0
+          fi
+          echo '::error::the armv7 cross-build did not succeed (see the results above)'
+          exit 1

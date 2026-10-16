@@ -1,5 +1,5 @@
 diff --git a/src/backends/native/minidump/sentry_minidump_linux.c b/src/backends/native/minidump/sentry_minidump_linux.c
-index 753a1939..db3c09bb 100644
+index 50a6115a..8ac71b5b 100644
 --- a/src/backends/native/minidump/sentry_minidump_linux.c
 +++ b/src/backends/native/minidump/sentry_minidump_linux.c
 @@ -12,6 +12,7 @@
@@ -32,7 +32,7 @@ index 753a1939..db3c09bb 100644
  #    include "sentry_elf.h"
  #    include "sentry_logger.h"
 diff --git a/src/backends/native/sentry_crash_context.h b/src/backends/native/sentry_crash_context.h
-index b57264a7..a5c89d00 100644
+index 14678564..3f70bfbc 100644
 --- a/src/backends/native/sentry_crash_context.h
 +++ b/src/backends/native/sentry_crash_context.h
 @@ -93,6 +93,15 @@ typedef DWORD pid_t;
@@ -52,10 +52,10 @@ index b57264a7..a5c89d00 100644
      5000 // 5 seconds between daemon health checks
  #define SENTRY_CRASH_HANDLER_POLL_INTERVAL_MS                                  \
 diff --git a/src/backends/native/sentry_crash_daemon.c b/src/backends/native/sentry_crash_daemon.c
-index 377f9162..6d1b3077 100644
+index 79477d12..c8c5b731 100644
 --- a/src/backends/native/sentry_crash_daemon.c
 +++ b/src/backends/native/sentry_crash_daemon.c
-@@ -38,10 +38,24 @@
+@@ -39,10 +39,24 @@
  #    include <inttypes.h>
  #    include <signal.h>
  #    include <sys/stat.h>
@@ -80,7 +80,7 @@ index 377f9162..6d1b3077 100644
  #    if defined(SENTRY_PLATFORM_MACOS)
  #        include <crt_externs.h>
  #        include <mach-o/dyld.h>
-@@ -752,6 +766,12 @@ build_registers_from_remote_registers(
+@@ -590,6 +604,12 @@ build_registers_from_remote_registers(
   */
  #define MAX_STACK_FRAMES 128
  
@@ -93,7 +93,7 @@ index 377f9162..6d1b3077 100644
  /**
   * Read a pointer-sized value from the stack buffer.
   * Returns true if successful, false if address is outside the buffer.
-@@ -905,6 +925,9 @@ build_stacktrace_for_thread(
+@@ -743,6 +763,9 @@ build_stacktrace_for_thread(
      uint64_t ip = 0;
      uint64_t fp = 0;
      uint64_t sp = 0;
@@ -103,7 +103,7 @@ index 377f9162..6d1b3077 100644
  #if defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)
      // Use thread-specific context, defaulting to crashed thread
      const ucontext_t *thread_context = &ctx->platform.context;
-@@ -1174,7 +1197,7 @@ build_stacktrace_for_thread(
+@@ -1012,7 +1035,7 @@ build_stacktrace_for_thread(
                  = sentry_malloc(sizeof(*remote_frames) * MAX_STACK_FRAMES);
              size_t remote_count = remote_frames
                  ? sentry__unwind_stack_from_thread(
@@ -112,7 +112,7 @@ index 377f9162..6d1b3077 100644
                  : 0;
  
              if (remote_count > 0) {
-@@ -1182,7 +1205,7 @@ build_stacktrace_for_thread(
+@@ -1020,7 +1043,7 @@ build_stacktrace_for_thread(
                      remote_count, tid);
  
                  for (size_t i = 0;
@@ -121,7 +121,7 @@ index 377f9162..6d1b3077 100644
                      if (remote_frames[i].ip == 0
                          || !is_valid_code_addr(remote_frames[i].ip)) {
                          continue;
-@@ -1251,7 +1274,7 @@ build_stacktrace_for_thread(
+@@ -1089,7 +1112,7 @@ build_stacktrace_for_thread(
              ctx->platform.backtrace_count);
  
          for (size_t i = 0;
@@ -130,7 +130,7 @@ index 377f9162..6d1b3077 100644
              i++) {
              uint64_t frame_ip = ctx->platform.backtrace_ips[i];
              if (frame_ip == 0 || !is_valid_code_addr(frame_ip)) {
-@@ -1294,7 +1317,7 @@ build_stacktrace_for_thread(
+@@ -1132,7 +1155,7 @@ build_stacktrace_for_thread(
  #endif
  
      // Add the crashing frame (instruction pointer)
@@ -139,7 +139,7 @@ index 377f9162..6d1b3077 100644
          temp_frames[frame_count] = sentry_value_new_object();
          sentry_value_set_by_key(temp_frames[frame_count], "instruction_addr",
              sentry__value_new_addr(ip));
-@@ -1310,7 +1333,7 @@ build_stacktrace_for_thread(
+@@ -1148,7 +1171,7 @@ build_stacktrace_for_thread(
      }
  
      // Walk the frame pointer chain if we have stack memory
@@ -148,7 +148,7 @@ index 377f9162..6d1b3077 100644
          uint64_t current_fp = fp;
          int walk_count = 0;
  #if defined(__arm__)
-@@ -1320,7 +1343,7 @@ build_stacktrace_for_thread(
+@@ -1158,7 +1181,7 @@ build_stacktrace_for_thread(
          if (!g_vma_complete) {
              SENTRY_TRACE(
                  "Mappings incomplete; skipping the ARM32 frame-pointer walk");
@@ -157,7 +157,7 @@ index 377f9162..6d1b3077 100644
          }
  #endif
  
-@@ -1332,7 +1355,7 @@ build_stacktrace_for_thread(
+@@ -1170,7 +1193,7 @@ build_stacktrace_for_thread(
                  (unsigned long long)stack_end);
          }
  
@@ -166,7 +166,7 @@ index 377f9162..6d1b3077 100644
              uint64_t saved_fp = 0;
              uint64_t return_addr = 0;
  
-@@ -3413,6 +3436,13 @@ build_native_event(const sentry_crash_context_t *ctx,
+@@ -3251,6 +3274,13 @@ build_native_event(const sentry_crash_context_t *ctx,
      sentry_value_set_by_key(
          event, "platform", sentry_value_new_string("native"));
  
@@ -181,12 +181,12 @@ index 377f9162..6d1b3077 100644
  
      // Build exception
 diff --git a/src/backends/native/sentry_crash_handler.c b/src/backends/native/sentry_crash_handler.c
-index ab709321..c447d3f8 100644
+index a811712a..6847cd3e 100644
 --- a/src/backends/native/sentry_crash_handler.c
 +++ b/src/backends/native/sentry_crash_handler.c
-@@ -360,10 +360,13 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
-         sizeof(ctx->platform.threads[0].context));
+@@ -376,10 +376,13 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
  
+ #    if defined(SENTRY_PLATFORM_LINUX) || defined(SENTRY_PLATFORM_ANDROID)
      // Capture backtrace using libunwind (DWARF-based, works without frame
 -    // pointers). This runs in the signal handler, which is safe because
 -    // libunwind's core unwinding API (unw_init_local2, unw_step, unw_get_reg)
@@ -202,7 +202,7 @@ index ab709321..c447d3f8 100644
      ctx->platform.backtrace_count = 0;
      {
          unw_cursor_t cursor;
-@@ -754,13 +757,17 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
+@@ -762,13 +765,17 @@ crash_signal_handler(int signum, siginfo_t *info, void *context)
      sentry__page_allocator_enable();
  #    endif
  
@@ -221,7 +221,7 @@ index ab709321..c447d3f8 100644
 +#    endif
  
      // Try to notify daemon
-     if (sentry__atomic_compare_swap(&ctx->state, SENTRY_CRASH_STATE_READY,
+     if (sentry__atomic_compare_swap(&ctx->state, SENTRY_CRASH_STATE_CRASHING,
 diff --git a/src/modulefinder/sentry_modulefinder_linux.c b/src/modulefinder/sentry_modulefinder_linux.c
 index 7d6b0d66..1a1b28cd 100644
 --- a/src/modulefinder/sentry_modulefinder_linux.c

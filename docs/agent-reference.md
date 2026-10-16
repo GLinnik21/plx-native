@@ -152,7 +152,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   running process holds their inodes), the bundled FFmpeg libraries with a retirement loop for any
   previous major, and — since 2026-09-02 — **everything else in ONE scp from `DEPLOY_FILES`**,
   which is `APP_FILES` (the exact list `ipk` stages into the `.ipk`) minus those three carve-outs:
-  this flavour's `appinfo.json`, both icon sizes, `pkg/splash.png`, the three font files
+  this flavour's `appinfo.json`, both icon sizes, `pkg/splash.png`, the font files
   (UNCONDITIONALLY, including the 13 MB CJK face — the old `test -f || scp` guard on the fonts
   meant a changed one could never reach the TV, and a separate md5 guard on the CJK face alone had
   the same failure mode by omission: it kept `pkg/splash.png`, both icons, `pkg/OFL.txt` and

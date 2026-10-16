@@ -295,14 +295,15 @@ impl AutoOriginalCandidate {
     /// is `None` for Off and `Some(render ordinal)` for a pick; an external sidecar pick has no
     /// demuxer ordinal (`-1`), which is stored as `None` because `player::sidecar` draws it once
     /// the route is direct and `request_subtitle(-1)` never touches that renderer. A pick the
-    /// client cannot draw would need a burn, which the Original route by definition does not do:
-    /// `false`, and the caller drops the candidate.
-    pub(super) fn retarget_subtitle(&mut self, ordinal: Option<i32>, client_renderable: bool) -> bool {
-        if ordinal.is_some() && !client_renderable {
-            return false;
-        }
+    /// client cannot draw (an image sidecar, a pick with no ordinal and no sidecar key) is KEPT
+    /// with `None` too: the Original route never shows it client-side, and the server burns it
+    /// wherever the route is enhanced (M7's Burn). That is a deliberate mid-play behaviour, not
+    /// parity with a cold start (an image sidecar selected at cold start plays with the subtitle
+    /// off). Releasing or recovering to a route that would silently drop it is prevented by
+    /// `candidate_shows_selected_subtitle`, not here. Unlike the audio sibling this cannot fail,
+    /// so the candidate is never dropped by a subtitle pick.
+    pub(super) fn retarget_subtitle(&mut self, ordinal: Option<i32>) {
         self.subtitle_ordinal = ordinal.filter(|o| *o >= 0);
-        true
     }
 }
 

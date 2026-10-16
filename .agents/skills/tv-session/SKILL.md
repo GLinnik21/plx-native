@@ -62,6 +62,21 @@ set, and the mock's server arrives OWNED through the app's normal sign-in, so se
 The stored session it leaves on the install is mock-only; clear `state/` under the debug runtime
 root when done.
 
+A REAL-LOOKING network loss between the set and the mock needs no root and no change to the set's
+network: `tools/netloss-proxy.py` is a host-side TCP proxy the mock advertises as its own address
+(`tests/mock_pms.py --host 0.0.0.0 --port M --advertise-ip <host LAN IPv4> --advertise-port P
+--home-users 2 --authorize-after 2`, then `tools/netloss-proxy.py --upstream 127.0.0.1:M --listen
+0.0.0.0:P --control-port C`; plex.tv sign-in still reaches the mock directly through the
+`--mock-plextv=M` tunnel, and every PMS connection after it, the SSE feed included, crosses the
+proxy). `curl -X POST -d '{"mode":"blackhole"}' http://127.0.0.1:C/_proxy/mode` then flips it:
+`pass`; `blackhole` (existing connections stay open and go silent in both directions, new ones are
+accepted and never answered: no FIN, no RST, the closest userland analogue to a dead link, and what
+was held is delivered on `pass`); `reset` (RST every connection, RST new ones on accept); `refuse`
+(listener closed). `--schedule blackhole@10,pass@70` flips on a timer for a one-lease run. Every
+mode change and connection is logged with a timestamp. Stopping or SIGSTOPping the mock is NOT
+this: use it when the question is what the app does when the link itself dies. Stop the proxy and
+the mock when the run ends.
+
 `screen off` blanks the picture while the app keeps running and playback keeps decoding — a PANEL
 state, not an app state (see the owner's panel rule below). `sound off`/`on` calls
 `com.webos.service.audio/setMuted` and reads `getVolume` back to confirm rather than trusting the

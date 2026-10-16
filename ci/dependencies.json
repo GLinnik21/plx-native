@@ -17,11 +17,11 @@
   {
     "id": "sentry-native",
     "bundled": true,
-    "version": "0.16.6",
+    "version": "0.17.3",
     "license": "MIT",
-    "archive": "sentry-native-0.16.6.tar.gz",
-    "url": "https://github.com/getsentry/sentry-native/archive/refs/tags/0.16.6.tar.gz",
-    "sha256": "a194ac434da1534723556c5628256752208b0b6989fee7bf5ed6c5b3c84773ab",
+    "archive": "sentry-native-0.17.3.tar.gz",
+    "url": "https://github.com/getsentry/sentry-native/archive/refs/tags/0.17.3.tar.gz",
+    "sha256": "a762fdda9374fe1576be1377a18e96f347cc656118ed1f1b932bf1cdd7551a32",
     "update": {
       "type": "github-release",
       "repo": "getsentry/sentry-native",
@@ -30,7 +30,7 @@
     "patches": [
       {
         "path": "ci/patches/sentry-native-0001-webos-arm32.patch",
-        "sha256": "3d5042f224fc00ba69bcd4036d3103823c46a1098c5ef819a72dabe13d6fa443"
+        "sha256": "59bcf1e14370a67bf9239c3702b68547e61a189df854dbd886ee1d539d44d953"
       }
     ]
   },
